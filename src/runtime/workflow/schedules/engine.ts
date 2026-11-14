@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { getRepository } from '../../../cli/repositories/registry';
+import { getRepository } from '../../repositories/registry';
 import { findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../execution/jobs/store';
 import { readRepositoryProjection } from '../../projections/materialized-view';
 import {
@@ -28,6 +28,7 @@ export { cronDue };
 import { listUserRequests } from '../../../../packages/kernel/identity/api/index';
 
 import { classifyScheduledBrowserObservation, executeScheduledBrowserProbe } from './browser-probe';
+import { executeSupervisorHealthcheck } from './supervisor-health';
 import { executeScheduledGithubIssueWatch } from './github-issue-watch';
 import type {
   RepositorySchedule,
@@ -41,12 +42,14 @@ const LIVE_MAINTENANCE_OPERATION = 'runtime_maintenance_apply';
 const RETIRED_AUTONOMOUS_CONTINUATION_OPERATIONS = new Set(['external_controller_wake', 'controller_progression']);
 const BROWSER_PROBE_OPERATION = 'browser_probe';
 const GITHUB_ISSUE_WATCH_OPERATION = 'github_issue_watch';
+const SUPERVISOR_HEALTH_OPERATION = 'supervisor_healthcheck';
 
 function isDeterministicSchedule(schedule: RepositorySchedule): boolean {
   // Kernel executes only typed, bounded dispatch operations.
   return schedule.action.operation === LIVE_MAINTENANCE_OPERATION
     || schedule.action.operation === BROWSER_PROBE_OPERATION
-    || schedule.action.operation === GITHUB_ISSUE_WATCH_OPERATION;
+    || schedule.action.operation === GITHUB_ISSUE_WATCH_OPERATION
+    || schedule.action.operation === SUPERVISOR_HEALTH_OPERATION;
 }
 
 export function retiredScheduleReason(schedule: RepositorySchedule): string | undefined {
@@ -374,6 +377,27 @@ export async function evaluateSchedule(
   }
 
   const args = schedule.action.arguments ?? {};
+  if (schedule.action.operation === SUPERVISOR_HEALTH_OPERATION) {
+    try {
+      const report = await executeSupervisorHealthcheck();
+      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
+        lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId,
+        consecutiveFailures: 0, nextEligibleAt: undefined,
+      }));
+      return decideOccurrence(controllerHome, schedule, occurrence, 'execute', 'succeeded',
+        report.unhealthy > 0
+          ? 'Supervisor patrol completed; unresolved failures remain with their original owners.'
+          : 'Supervisor patrol completed without unresolved script failures.',
+        occurrenceDecisionEvidence(report));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
+        outcome: 'failed', decision: 'execute', reason,
+      });
+      return failed.occurrence ?? occurrence;
+    }
+  }
+
   if (schedule.action.operation === GITHUB_ISSUE_WATCH_OPERATION) {
     try {
       const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });

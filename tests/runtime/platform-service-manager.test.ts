@@ -16,7 +16,7 @@ describe('platform service manager selection', () => {
   });
 
   test('keeps platform service mechanics behind the runtime platform host boundary', () => {
-    for (const path of ['src/runtime/root/service.ts', 'src/runtime/root/package-runtime-service.ts', 'src/runtime/root/package-connector-service.ts']) {
+    for (const path of ['src/runtime/platform/service-manager.ts', 'src/runtime/root/service.ts', 'src/runtime/root/package-runtime-service.ts', 'src/runtime/root/package-connector-service.ts']) {
       const source = readFileSync(join(process.cwd(), path), 'utf8');
       expect(source).not.toContain("from '../../cli/controller/launch-agents'");
       expect(source).not.toContain("from '../../cli/controller/systemd-user'");

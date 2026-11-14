@@ -11,19 +11,19 @@
 import {
   commandExecutionScopeKey,
   type RepositoryCommandScopeTarget,
-} from '../../../cli/repositories/command-scope';
-import { classifyRepositoryCommand, fixedShellWrapperCommand } from '../../../cli/repositories/command-classifier';
+} from '../../repositories/command-scope';
+import { classifyRepositoryCommand, fixedShellWrapperCommand } from '../../../core/repository-command/classification';
 import {
   executeRepositoryCommandAsync,
   executeRepositoryReadOnlyCommandDirect,
   REPOSITORY_COMMAND_DEFAULT_TIMEOUT_MS,
   type RepositoryCommandExecution,
-} from '../../../cli/repositories/command-executor';
-import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
+} from '../../repositories/command-executor';
+import { normalizeRepositoryCommand } from '../../../core/repository-command/normalization';
 import {
   assertRepositoryCommandNoPluginExecutionBypass,
   assertRepositoryCommandStableHostIdentity,
-} from '../../../cli/repositories/command-scope';
+} from '../../repositories/command-scope';
 import { claimsForRepositoryCommand, claimsRequireLiveDeviceAdmission, LIVE_DEVICE_ADMISSION_WAIT_MS, looksLikeBuildOrTest, scopeResourceClaims, toProcessClaims } from './resource-claims';
 import {
   spawnWithQueuedAdmission,

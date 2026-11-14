@@ -6,7 +6,7 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { InMemoryTransport, Server } from "@modelcontextprotocol/server";
 import { Client, SdkError, SdkErrorCode, SdkHttpError, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { forgeToolSurfaceFingerprint } from '../../src/cli/controller/runtime-config';
+import { forgeToolSurfaceFingerprint } from '../../src/runtime/shared/runtime-config';
 import { mcpToolDefinitionToSdk } from '../../packages/protocols/mcp/tool-contract';
 import {
   CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS,
@@ -47,7 +47,7 @@ import {
   startRuntimeMcpTransport,
 } from '../../src/runtime/root/mcp-transport';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
-import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
+import { addRepositoryCheckout, registerRepository } from '../../src/runtime/repositories/registry';
 import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
 import { waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';

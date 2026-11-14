@@ -1,13 +1,13 @@
 import type { McpToolDefinition, CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { boundedPluginArtifactImageContent, jsonPreview, result, resultWithPluginArtifactImages } from './result-adapter';
-import { expectedRevision, repositoryRootForRepoId, selected, stringList } from './shared-adapter';
+import { expectedRevision, selected, stringList } from './shared-adapter';
 import { repositoryChangeVerify } from '../../../src/cli/controller/composite-operations';
 import {
   commitSelectedPaths,
   selectedPathDiff,
   stageSelectedPaths,
-} from '../../../src/cli/repositories/selected-path-actions';
+} from '../../../src/runtime/repositories/selected-path-actions';
 
 
 

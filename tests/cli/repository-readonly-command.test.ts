@@ -3,8 +3,8 @@ import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { executeRepositoryReadOnlyCommandDirect } from '../../src/cli/repositories/command-executor';
-import type { RepositoryRecord } from '../../src/cli/repositories/types';
+import { executeRepositoryReadOnlyCommandDirect } from '../../src/runtime/repositories/command-executor';
+import type { RepositoryRecord } from '../../src/core/repository/types';
 
 function repositoryRecord(root: string): RepositoryRecord {
   const now = new Date().toISOString();

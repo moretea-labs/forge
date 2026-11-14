@@ -33,7 +33,7 @@ import {
   FORGE_MCP_SCHEMA_VERSION,
   FORGE_TOOL_SURFACE,
   FORGE_VERSION,
-} from '../../../src/cli/controller/runtime-config';
+} from '../../../src/runtime/shared/runtime-config';
 import { McpSessionRegistry, type ClosableMcpTransport, type McpSessionRegistryOptions, type McpSessionRoute } from './session-registry';
 import { getConfiguredPublicOrigin, getPublicOrigin, registerMcpOAuthHttpRoutes } from './oauth-http';
 import { registerMcpHttpObservationRoutes } from './http-observation';

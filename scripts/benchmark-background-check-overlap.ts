@@ -15,7 +15,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { performance } from 'perf_hooks';
 import { createMcpToolContext } from '../adapters/mcp/server';
-import { registerRepository } from '../src/cli/repositories/registry';
+import { registerRepository } from '../src/runtime/repositories/registry';
 import { callRuntimeTool } from '../adapters/mcp/runtime-gateway/runtime-tools';
 import { callProcessTool } from '../src/runtime/execution/process-runtime/tool-dispatch';
 import { routeDurableMcpCall } from '../adapters/mcp/runtime-gateway/router';
@@ -24,7 +24,7 @@ import {
   clearGitIdentityCacheForTest,
   clearGitSnapshotCacheForTest,
   gitSnapshotPerformanceSnapshot,
-} from '../src/cli/repository/inspector';
+} from '../src/runtime/repositories/inspector';
 
 const CHECK_DURATION_MS = 1_200;
 const MAX_INITIAL_HANDLE_LATENCY_MS = 700;

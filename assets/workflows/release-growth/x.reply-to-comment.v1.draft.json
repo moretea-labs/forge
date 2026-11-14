@@ -606,7 +606,7 @@
       "runtime": "node",
       "deterministic": true,
       "outputFormat": "json",
-      "body": "const a=JSON.parse(process.argv[1]||'{}');const account=String(a.account||'');const rows=Array.isArray(a.matches)?a.matches:[];const label=String(rows[0]?.text||'').replace(/\\s+/g,' ');if(rows.length!==1||!label.includes('@'+account)){process.stderr.write('X_AUTHENTICATED_ACCOUNT_MISMATCH');process.exit(2)}process.stdout.write(JSON.stringify({account}));"
+      "body": "const a=JSON.parse(process.argv[1]||'{}');const account=String(a.account||'');const rows=Array.isArray(a.matches)?a.matches:[];const label=String(rows[0]?.text||'').replace(/\\s+/g,' ');const handles=[...label.matchAll(/(?:^|\\s)@([A-Za-z0-9_]{1,15})(?=\\s|$)/g)].map(m=>m[1].toLowerCase());if(rows.length!==1||handles.length!==1||handles[0]!==account.toLowerCase()){process.stderr.write('X_AUTHENTICATED_ACCOUNT_MISMATCH');process.exit(2)}process.stdout.write(JSON.stringify({account}));"
     },
     "assertParent": {
       "runtime": "node",

@@ -1,5 +1,7 @@
 import { redactMcpText } from '../../../adapters/mcp/redaction';
 import type { ExecutionJob } from '../execution/jobs/types';
+import { readRawAgentMeta } from '../agent-jobs/read-model';
+import { getLocalBridgeJobSnapshot } from '../local-bridge/read-model';
 import { buildJobOperationDigest } from '../control-plane/facade/operation-digest';
 import {
   childReferenceFromJob,
@@ -14,8 +16,6 @@ import {
   evidenceRef,
   RESPONSE_BUDGET,
 } from '../shared/response-budget';
-import { getLocalBridgeJob } from '../../cli/local-bridge/job-store';
-import { getAgentJob } from '../../cli/agent-jobs/job-manager';
 
 type SafeErrorClass = NonNullable<SafeJobResultSummary['safeError']>['class'];
 type SafeArtifactRef = NonNullable<SafeJobResultSummary['artifactRefs']>[number];
@@ -139,10 +139,11 @@ function suggestedFixesFor(message: string, errorClass: SafeErrorClass): string[
   return ['Open the bounded job details only if the safe summary is insufficient.'];
 }
 
+/** Delegated child status is observational; read persisted Runtime snapshots without lifecycle reconciliation. */
 function enrichDelegatedDigest(
   job: ExecutionJob,
   digest: ReturnType<typeof buildJobOperationDigest>,
-  repoRoot?: string,
+  repoRoot: string | undefined,
 ): ReturnType<typeof buildJobOperationDigest> {
   if (!repoRoot) return digest;
   const childReference = digest.childReference ?? childReferenceFromJob(job);
@@ -154,23 +155,17 @@ function enrichDelegatedDigest(
     let childLocalJobStatus = digest.childLocalJobStatus;
     let childRunStatus = digest.childRunStatus;
     if (childReference.localJobId) {
-      try {
-        const localJob = getLocalBridgeJob(repoRoot, childReference.localJobId);
+      const localJob = getLocalBridgeJobSnapshot(repoRoot, childReference.localJobId).job;
+      if (localJob) {
         childLocalJobStatus = localJob.status;
         if (localJob.runId) childReference.runId = localJob.runId;
         if (localJob.issueId) childReference.issueId = localJob.issueId;
         if (localJob.taskId) childReference.taskId = localJob.taskId;
-      } catch {
-        // Local Job may have been cleaned; Run remains the authority when present.
       }
     }
     if (childReference.runId) {
-      try {
-        const run = getAgentJob(repoRoot, childReference.runId);
-        childRunStatus = run.status;
-      } catch {
-        // Run lookup failures leave the parent Job status authoritative for itself.
-      }
+      const run = readRawAgentMeta(repoRoot, childReference.runId);
+      if (run) childRunStatus = run.status;
     }
     const summary = childRunStatus
       ? `父 Job 已委派；子 Run ${childReference.runId} 状态 ${childRunStatus}。`
@@ -192,7 +187,7 @@ function enrichDelegatedDigest(
   }
 }
 
-export function summarizeExecutionJobForMcp(job: ExecutionJob, repoRoot?: string): Record<string, unknown> {
+export function summarizeExecutionJobForMcp(job: ExecutionJob, repoRoot: string | undefined): Record<string, unknown> {
   const payloadArguments = job.payload.arguments && typeof job.payload.arguments === 'object'
     ? Object.keys(job.payload.arguments as Record<string, unknown>).slice(0, 12)
     : undefined;

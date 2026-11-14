@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { executeWorkflow, validateWorkflowRunInputs, workflowCapabilityDependencies } from '../../packages/workflow-runtime/api/index';
@@ -7,6 +7,7 @@ import {
   ensureReleaseGrowthWorkflowInstalled,
   materializedReleaseGrowthWorkflow,
   RELEASE_GROWTH_WORKFLOW_IDS,
+  X_EFFECT_WORKFLOW_IDS,
 } from '../../src/runtime/workflows/first-party/release-growth';
 
 const homes: string[] = [];
@@ -22,6 +23,20 @@ function script(workflowId: string, scriptId: string, input: Record<string, unkn
 }
 
 describe('first-party release and growth Workflow assets (#652)', () => {
+  test('deployed bundle retains all four release and growth assets outside the source checkout', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'forge-release-growth-bundle-'));
+    homes.push(directory);
+    const entrypoint = join(directory, 'probe.ts');
+    const modulePath = new URL('../../src/runtime/workflows/first-party/release-growth.ts', import.meta.url).pathname;
+    writeFileSync(entrypoint, `import { materializedReleaseGrowthWorkflow, RELEASE_GROWTH_WORKFLOW_IDS, X_EFFECT_WORKFLOW_IDS } from ${JSON.stringify(modulePath)};\nconsole.log(JSON.stringify([...Object.values(RELEASE_GROWTH_WORKFLOW_IDS), ...Object.values(X_EFFECT_WORKFLOW_IDS)].map(id => materializedReleaseGrowthWorkflow(id).contentDigest)));`);
+    const build = await Bun.build({ entrypoints: [entrypoint], outdir: directory, target: 'bun' });
+    expect(build.success).toBe(true);
+    const run = Bun.spawnSync([process.execPath, build.outputs[0].path], { cwd: directory, stdout: 'pipe', stderr: 'pipe' });
+    expect({ exitCode: run.exitCode, stderr: run.stderr.toString() }).toEqual({ exitCode: 0, stderr: '' });
+    expect(JSON.parse(run.stdout.toString())).toEqual([...Object.values(RELEASE_GROWTH_WORKFLOW_IDS), ...Object.values(X_EFFECT_WORKFLOW_IDS)]
+      .map(id => materializedReleaseGrowthWorkflow(id).contentDigest));
+  });
+
   test('authored assets install in existing Workflow registry; only supported read-only plugin capabilities are bound', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-release-growth-workflows-'));
     homes.push(controllerHome);

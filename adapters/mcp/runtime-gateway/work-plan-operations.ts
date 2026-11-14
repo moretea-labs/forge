@@ -15,7 +15,7 @@ import {
   type PlanContractStoreOptions,
 } from '../../../src/runtime/control-plane/facade';
 import { readRequirement } from '../../../src/runtime/control-plane/persistence/requirement-store';
-import { listRepositories } from '../../../src/cli/repositories/registry';
+import { listRepositories } from '../../../src/runtime/repositories/registry';
 import { SEMANTIC_SCOPE_KEY } from '../../../src/effects/controller-home';
 import { result } from './result-adapter';
 

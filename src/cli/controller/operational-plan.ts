@@ -1,5 +1,5 @@
 import { runProcess } from "../../effects/process-runner";
-import type { TaskLedgerProjection } from "./task-ledger";
+import type { TaskLedgerProjection } from "../../runtime/projections/task-ledger-types";
 
 const OPERATIONAL_PLAN_SCHEMA_VERSION = 1;
 

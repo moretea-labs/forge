@@ -21,7 +21,7 @@ import {
   FORGE_TOOL_SURFACE,
   DEFAULT_AGENT_TIMEOUT_MS,
   MAX_AGENT_TIMEOUT_MS,
-} from "../../src/cli/controller/runtime-config";
+} from "../../src/runtime/shared/runtime-config";
 import { ensureControllerHome, ensureRepoPreferredControllerHome } from "../../src/effects/controller-home";
 import { observeRuntimeStatus } from "../../src/runtime/root/status";
 import { configuredControllerAccessMode } from './access-mode';

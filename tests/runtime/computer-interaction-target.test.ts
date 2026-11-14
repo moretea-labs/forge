@@ -664,6 +664,61 @@ describe('Computer durable InteractionTarget authority', () => {
     }
   });
 
+  test('surface updates preserve unchanged index revisions and only retire changed keys', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-surface-index-idempotency-'));
+    const persistence = createRuntimeComputerTargetPersistence();
+    const binding = {
+      providerId: 'browser.chrome-extension',
+      browserProduct: 'chrome',
+      windowId: '123',
+      tabId: '456',
+      observedAt: '2026-11-13T00:00:00.000Z',
+    };
+    const input = {
+      stableIdentity: {
+        surfaceType: 'browser-tab' as const,
+        ownership: 'provider_owned' as const,
+        resource: { namespace: 'chatgpt.bootstrap', key: 'index-idempotency' },
+      },
+      compatibilityAliases: ['index-idempotency-session'],
+      repositoryIds: ['repo-index-idempotency'],
+      providerBinding: binding,
+    };
+    const snapshot = () => persistence.list(controllerHome, {
+      namespace: 'computer_interaction_target_index',
+      scope: 'controller',
+      limit: 100,
+    }).map(({ key, revision }) => ({ key, revision })).sort((left, right) => left.key.localeCompare(right.key));
+
+    try {
+      const created = targetAuthority.upsertSurface(controllerHome, input);
+      const initialIndexes = snapshot();
+      expect(initialIndexes.some((record) => record.key.startsWith('binding-'))).toBe(true);
+
+      const refreshed = targetAuthority.upsertSurface(controllerHome, {
+        ...input,
+        providerBinding: { ...binding, observedAt: '2026-11-13T00:01:00.000Z' },
+      });
+      expect(refreshed.target.targetId).toBe(created.target.targetId);
+      expect(snapshot()).toEqual(initialIndexes);
+
+      await targetAuthority.withSurfaceLease(controllerHome, created.target.targetId, async (lease) => {
+        lease.putCompatibility({
+          namespace: 'browser.session.v1',
+          schemaVersion: 1,
+          value: { sessionId: 'index-idempotency-session', url: 'https://example.com/updated' },
+          updatedAt: '2026-11-13T00:02:00.000Z',
+        });
+      });
+      expect(snapshot()).toEqual(initialIndexes);
+
+      await targetAuthority.withSurfaceLease(controllerHome, created.target.targetId, async (lease) => { lease.clearBinding(); });
+      expect(snapshot()).toEqual(initialIndexes.filter((record) => !record.key.startsWith('binding-')));
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('terminated Computer Surface releases its physical tab without releasing stable identity', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-surface-terminal-binding-'));
     const stable = (key: string) => ({

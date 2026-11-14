@@ -4,26 +4,27 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
 import { repositoryControllerRoot } from "../../src/effects/controller-home";
-import { addRepositoryCheckout, getRepository, listRepositories, refreshRepositoryCheckoutGitMetadata, registerRepository, repositorySummary } from "../../src/cli/repositories/registry";
+import { addRepositoryCheckout, getRepository, listRepositories, refreshRepositoryCheckoutGitMetadata, registerRepository, repositorySummary } from "../../src/runtime/repositories/registry";
 import { callMcpTool } from "../../adapters/mcp/tool-mapping/tools";
 import { callRepositoryTool } from "../../src/runtime/control-plane/facade/repository-tool-dispatch";
 import { repositoryToolDefinitions } from "../../adapters/mcp/tool-mapping/repository-tools";
-import { repositoryGitCommit, repositoryGitMergeBranch, repositoryGitRebaseOnto, repositoryGitStatus } from "../../src/cli/repositories/structured-git";
+import { repositoryGitCommit, repositoryGitMergeBranch, repositoryGitRebaseOnto, repositoryGitStatus } from "../../src/runtime/repositories/structured-git";
 import { callRuntimeTool, runtimeToolDefinitions } from "../../adapters/mcp/runtime-gateway/runtime-tools";
 import { createMcpToolContext } from "../../adapters/mcp/multi-repository";
 import { controllerExposureSnapshot } from '../../adapters/mcp/toolset';
-import { getLocalBridgeJob, readLocalBridgeJobOutput, readLocalBridgeJobOutputSnapshot } from "../../src/cli/local-bridge/job-store";
+import { getLocalBridgeJob } from "../../src/cli/local-bridge/job-store";
+import { readLocalBridgeJobOutputSnapshot } from "../../src/runtime/local-bridge/read-model";
 import { routeDurableMcpCall } from "../../adapters/mcp/runtime-gateway/router";
 import { waitRepositoryCommandProcess } from "../../src/runtime/execution/process-runtime/command-facade";
 import { getExecutionJob, listExecutionJobs } from "../../src/runtime/execution/jobs/store";
-import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { getWorkContract } from '../../packages/kernel/work/api';
 import { readWorkHandle } from "../../src/runtime/control-plane/execution/work-handle-store";
 import { startExecutionSession, updateExecutionSession } from "../../src/runtime/control-plane/execution/session-store";
 import { readControllerResult } from "../../src/runtime/evidence/result-store";
 import { boundedRuntimeResult } from "../../adapters/mcp/runtime-gateway/bounded-result-runtime";
 import { applyExternalFilesystemGrant, previewExternalFilesystemGrant } from "../../src/runtime/safe-tooling/external-filesystem";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
-import { clearGitIdentityCacheForTest, clearGitSnapshotCacheForTest, gitSnapshot, gitSnapshotPerformanceSnapshot, searchRepositoryMany } from "../../src/cli/repository/inspector";
+import { clearGitIdentityCacheForTest, clearGitSnapshotCacheForTest, gitSnapshot, gitSnapshotPerformanceSnapshot, searchRepositoryMany } from "../../src/runtime/repositories/inspector";
 import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 test('oversized direct MCP values externalize through the existing paginated Result Store', () => {
@@ -259,8 +260,12 @@ describe("repository MCP command tools", () => {
       git(repoRoot, ["commit", "-m", "base"]);
       // Existing test fixture also exercises a real upstream: status --branch
       // must agree with rev-parse @{u}, not just the local branch name.
-      git(repoRoot, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
-      git(repoRoot, ["branch", "--set-upstream-to=origin/main", "main"]);
+      const remoteRoot = join(workspace, "origin.git");
+      mkdirSync(remoteRoot, { recursive: true });
+      git(remoteRoot, ["init", "--bare"]);
+      git(repoRoot, ["remote", "add", "origin", remoteRoot]);
+      git(repoRoot, ["push", "--set-upstream", "origin", "main"]);
+      git(repoRoot, ["fetch", "origin"]);
       writeFileSync(join(repoRoot, "owned.txt"), "changed-owned\n");
       writeFileSync(join(repoRoot, "outside.txt"), "changed-outside\n");
       git(repoRoot, ["add", "outside.txt"]);
@@ -1159,7 +1164,10 @@ describe("repository MCP command tools", () => {
         stderr: "warn-1\n",
       });
 
+      const jobMetaPath = join(repoRoot, ".ai/harness/local-jobs/JOB-output/job.json");
+      const originalJobMeta = readFileSync(jobMetaPath, "utf-8");
       const stdout = readLocalBridgeJobOutputSnapshot(repoRoot, "JOB-output", { stream: "stdout" });
+      expect(readFileSync(jobMetaPath, "utf-8")).toBe(originalJobMeta);
       expect(stdout.status).toBe("ok");
       expect(stdout.content).toContain("line-2");
       expect(stdout.path).toBe(".ai/harness/local-jobs/JOB-output/stdout.log");

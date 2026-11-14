@@ -4,8 +4,8 @@ import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 import { ensureControllerHome, resolveControllerHome } from '../../effects/controller-home';
-import { repositoryIdentity } from '../../cli/controller/runtime-config';
-import { stableCheckoutId } from '../../cli/repositories/identity';
+import { repositoryIdentity } from '../shared/runtime-config';
+import { stableCheckoutId } from '../../core/repository/identity';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { resolveManagedRuntimeSourceIdentity } from '../release/identity';
 

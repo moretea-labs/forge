@@ -7,7 +7,7 @@ import {
   acquireControllerLockAsync,
   releaseControllerLock,
   withControllerLock,
-} from '../../cli/repositories/locks';
+} from '../../effects/controller-locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 
 export type WorkspaceTargetAccess = 'read_only' | 'read_write';

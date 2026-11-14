@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { executeWorkflow, workflowCapabilityDependencies } from '../../packages/workflow-runtime/api/index';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { registerRepository } from '../../src/runtime/repositories/registry';
 import { readWorkflowRegistryEntry } from '../../src/runtime/control-plane/persistence/workflow-registry-store';
 import { callRhWorkWorkflowOperation } from '../../adapters/mcp/runtime-gateway/work-workflow-operations';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
@@ -48,7 +48,7 @@ function capabilityOutput(stepId: string, mode: 'success' | 'unknown-submit' | '
     case 'verify-account':
       return { matched: true, observedUrl: profileUrl };
     case 'read-account':
-      return { matches: [{ text: 'Greyson\\n@' + account }], count: 1 };
+      return { matches: [{ text: 'Greyson\n@' + account }], count: 1 };
     case 'read-existing-posts':
       return mode === 'duplicate' ? { matches: [ownArticle(postText)], count: 1 } : { matches: [], count: 0 };
     case 'read-existing-links':
@@ -143,6 +143,14 @@ async function executeAsset(
 }
 
 describe('first-party X publication and reply workflows (#652)', () => {
+  test('account verification rejects another handle with the approved handle as a prefix', () => {
+    for (const workflowId of Object.values(X_EFFECT_WORKFLOW_IDS)) {
+      expect(runScript(workflowId, 'assertAccount', { account: 'greyson', matches: [{ text: 'Other @greyson_extra' }] }).status).not.toBe(0);
+      expect(runScript(workflowId, 'assertAccount', { account: 'greyson', matches: [{ text: 'Greyson @greyson' }] }).status).toBe(0);
+      expect(runScript(workflowId, 'assertAccount', { account: 'Greyson', matches: [{ text: 'Greyson @greyson' }] }).status).toBe(0);
+    }
+  });
+
   test('installs only explicit X effect workflows and scopes remote writes to click/fill', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-x-effect-workflows-'));
     homes.push(controllerHome);

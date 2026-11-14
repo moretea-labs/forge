@@ -1,4 +1,4 @@
-import type { TaskLedgerTaskProjection } from '../task-ledger';
+import type { TaskLedgerTaskProjection } from '../../../runtime/projections/task-ledger-types';
 import type { projectBoard } from '../issue-store';
 import type { buildControllerTaskLedgerProjection } from '../task-ledger';
 

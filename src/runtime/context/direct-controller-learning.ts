@@ -10,7 +10,7 @@ import {
 } from '../../../packages/kernel/cognition/api/index';
 import { readForgeInstanceIdentity, type ScopeRef } from '../../../packages/kernel/identity/api/index';
 import { FORGE_INSTANCE_SCOPE_KEY } from '../../effects/controller-home';
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 import { cognitionMemoryStore, cognitionReadPort, recordCognitiveUsageObservation, type CognitiveUsageRejectionKind } from '../control-plane/persistence/cognition-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { resolveProjectForRepositoryPlacement } from '../control-plane/workspace/workspace-store';

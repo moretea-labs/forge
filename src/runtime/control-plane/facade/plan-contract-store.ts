@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { withControllerLock } from '../../../cli/repositories/locks';
+import { withControllerLock } from '../../../effects/controller-locks';
 import { sanitizeFileComponent } from '../../shared/json-files';
 import {
   normalizePlanScopeKey,

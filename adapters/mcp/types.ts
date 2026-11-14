@@ -1,11 +1,4 @@
-export interface McpPathDecision {
-  ok: boolean;
-  relativePath?: string;
-  absolutePath?: string;
-  reason?: string;
-}
-
-export type McpPathIntent = 'read' | 'write';
+export type { McpPathDecision, McpPathIntent } from '../../src/runtime/safe-tooling/path-policy';
 
 export interface McpAuditEntry {
   timestamp: string;

@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import type { McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
 import type { ExecutionTimeoutPolicy } from '../../../src/runtime/execution/jobs/types';
-import { classifyRepositoryCommand } from '../../../src/cli/repositories/command-classifier';
+import { classifyRepositoryCommand } from '../../../src/core/repository-command/classification';
 import { isFastEligibleTool, routeExecution, type ExecutionDecision } from '../../../src/runtime/execution/thin-harness';
 import { classifyRepositoryCommandRoute } from '../../../src/runtime/execution/process-runtime';
 import { isProcessIsolatedReadDiagnostic } from '../../../src/runtime/diagnostics/process-facade';

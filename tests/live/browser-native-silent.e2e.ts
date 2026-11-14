@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertUniqueGuiChromeProcess } from './chrome-process-identity';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { registerRepository } from '../../src/runtime/repositories/registry';
 import { writeControllerPluginConfig } from '../../src/runtime/plugins/config-store';
 import {
   executeBrowserPluginAction,

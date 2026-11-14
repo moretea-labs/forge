@@ -25,7 +25,7 @@ import {
   discoverBrainRootChoices,
   expandHomePath,
   type BrainRootChoice,
-} from "./brain-root";
+} from "../../effects/brain-root";
 import { runProcess as runBoundedProcess } from "../../effects/process-runner";
 import { runSetupProcess as runProcess, withProcessEnv, type SetupExecutionStep } from './setup-execution';
 

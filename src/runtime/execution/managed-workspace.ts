@@ -2,16 +2,16 @@ import { createHash, randomUUID } from 'crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { repositoryControllerRoot } from '../../effects/controller-home';
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 import {
   addRepositoryCheckout,
   listRepositories,
   repositoryCheckoutRootMatches,
   selectRepositoryCheckout,
-} from '../../cli/repositories/registry';
-import { managedWorktreePath } from '../../cli/repositories/worktree-storage';
+} from '../repositories/registry';
+import { managedWorktreePath } from '../../effects/managed-worktree-storage';
 import { branchSlugSegment, validateBranchName } from '../../core/git-branch-policy';
-import { withControllerLock } from '../../cli/repositories/locks';
+import { withControllerLock } from '../../effects/controller-locks';
 import { resolveGitExecutable } from '../../effects/git-executable';
 import { runProcess } from '../../effects/process-runner';
 import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../shared/process-environment';

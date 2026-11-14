@@ -1269,6 +1269,8 @@ private struct AgentPane: View {
     @State private var pendingAgentCommand: String?
     @State private var showProviderThinking = false
     @State private var isComposerDropTarget = false
+    @StateObject private var voiceDictation = AgentVoiceDictation()
+    @State private var voiceBaseDraft = ""
     @State private var semanticInspector: AgentSemanticContextInspector?
     @FocusState private var composerFocused: Bool
 
@@ -1603,7 +1605,7 @@ private struct AgentPane: View {
             VStack(alignment:.leading,spacing:0) {
                 ZStack(alignment:.topLeading) {
                     if model.draft.isEmpty {
-                        Text("描述要完成的任务…")
+                        Text("输入消息或描述目标…")
                             .font(.system(size:13))
                             .foregroundStyle(.tertiary)
                             .padding(.leading,16).padding(.top,18)
@@ -1614,8 +1616,9 @@ private struct AgentPane: View {
                         .font(.system(size:13))
                         .foregroundStyle(ForgePalette.ink)
                         .scrollContentBackground(.hidden)
-                        .frame(minHeight:56,maxHeight:105)
-                        .padding(.horizontal,12).padding(.top,10)
+                        .frame(minHeight:46,maxHeight:116)
+                        .padding(.horizontal,10).padding(.top,7)
+                        .disabled(voiceDictation.isRecording)
                         .accessibilityLabel("Agent 消息")
                         .accessibilityHint("输入任务描述，按 Command Return 发送")
                         .accessibilityIdentifier("agent.composer")
@@ -1672,6 +1675,39 @@ private struct AgentPane: View {
                     composerQuickConfigurationControls
 
                     Spacer(minLength:12)
+
+                    if voiceDictation.isRecording || voiceDictation.isStarting {
+                        Text(voiceDictation.isStarting ? "正在请求麦克风…" : "正在听写…")
+                            .font(.system(size:10.5,weight:.medium))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .accessibilityIdentifier("agent.voice.recording")
+                    } else if let issue = voiceDictation.error {
+                        Text(issue)
+                            .font(.system(size:10.5))
+                            .foregroundStyle(.orange)
+                            .lineLimit(1)
+                            .help(issue)
+                    }
+                    Button {
+                        if voiceDictation.isRecording || voiceDictation.isStarting {
+                            voiceDictation.stop()
+                            composerFocused = true
+                        } else {
+                            voiceBaseDraft = model.draft
+                            Task { await voiceDictation.start() }
+                        }
+                    } label: {
+                        Image(systemName:(voiceDictation.isRecording || voiceDictation.isStarting) ? "stop.circle.fill" : "mic")
+                            .font(.system(size:14,weight:.medium))
+                            .foregroundStyle((voiceDictation.isRecording || voiceDictation.isStarting) ? Color.red : ForgePalette.secondary)
+                            .frame(width:30,height:30)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.busy)
+                    .help((voiceDictation.isRecording || voiceDictation.isStarting) ? "取消语音输入" : "语音输入（只填入草稿，不自动发送）")
+                    .accessibilityLabel((voiceDictation.isRecording || voiceDictation.isStarting) ? "停止语音输入" : "开始语音输入")
+                    .accessibilityIdentifier("agent.voice.toggle")
 
                     if model.busy {
                         Button { Task { await model.cancel() } } label: {
@@ -1735,12 +1771,13 @@ private struct AgentPane: View {
                     .accessibilityIdentifier("agent.send-block-reason")
                 }
             }
-            .background(.ultraThinMaterial,
-                        in:RoundedRectangle(cornerRadius:15,style:.continuous))
+            .background(.regularMaterial,
+                        in:RoundedRectangle(cornerRadius:17,style:.continuous))
             .overlay {
-                RoundedRectangle(cornerRadius:15,style:.continuous)
-                    .stroke(isComposerDropTarget ? ForgePalette.accent.opacity(0.55)
-                            : Color.primary.opacity(0.075),lineWidth:isComposerDropTarget ? 1.25 : 0.7)
+                if isComposerDropTarget {
+                    RoundedRectangle(cornerRadius:17,style:.continuous)
+                        .strokeBorder(ForgePalette.accent.opacity(0.5),lineWidth:1)
+                }
             }
             .dropDestination(for:URL.self) { urls, _ in
                 guard !model.busy, !urls.isEmpty else { return false }
@@ -1749,9 +1786,8 @@ private struct AgentPane: View {
             } isTargeted: { targeted in
                 isComposerDropTarget = targeted && !model.busy
             }
-            .shadow(color:Color.black.opacity(0.025),radius:6,y:2)
-            .frame(maxWidth:1280)
-            .padding(.horizontal,28).padding(.bottom,16)
+            .frame(maxWidth:980)
+            .padding(.horizontal,24).padding(.bottom,16)
             .frame(maxWidth:.infinity)
         }
         .background(ForgePalette.canvas)
@@ -1789,9 +1825,18 @@ private struct AgentPane: View {
             if !model.busy { composerFocused = true }
         }
         .onChange(of:model.selectedThreadId) { _ in
+            voiceDictation.stop()
             showChanges = false
             if !model.busy { composerFocused = true }
         }
+        .onChange(of:voiceDictation.transcript) { transcript in
+            guard !transcript.isEmpty else { return }
+            model.draft = AgentVoiceDictation.mergedDraft(voiceBaseDraft,transcript:transcript)
+        }
+        .onChange(of:model.busy) { busy in
+            if busy { voiceDictation.stop() }
+        }
+        .onDisappear { voiceDictation.stop() }
     }
 
     private var agentActivityTitle: String {
@@ -2375,10 +2420,8 @@ private struct AgentPane: View {
                 .font(.system(size:6.5,weight:.bold))
                 .foregroundStyle(.tertiary)
         }
-        .padding(.horizontal,8)
+        .padding(.horizontal,5)
         .frame(height:27)
-        .background(ForgePalette.softFill,
-                    in:RoundedRectangle(cornerRadius:9,style:.continuous))
         .contentShape(Rectangle())
     }
 

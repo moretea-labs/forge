@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import type { RepositoryRecord } from '../../src/cli/repositories/types';
+import type { RepositoryRecord } from '../../src/core/repository/types';
 import { sampleRepositoryGitStatusForRepositories } from '../../src/runtime/projections/git-status-sampler';
 
 const roots: string[] = [];

@@ -1,7 +1,7 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { collectRuntimePerformanceDiagnostics } from '../../../src/runtime/diagnostics/performance';
-import { listControllerChecks } from '../../../src/cli/controller/check-runner';
+import { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
 import { readForgeRuntimeStatus } from '../../../src/runtime/control-plane/runtime-status-client';
 import { buildWorkflowWatchdogReport } from '../../../src/runtime/watchdog/workflow-watchdog';
 import { applyRuntimeMaintenance, buildRuntimeMaintenanceStatus } from '../../../src/runtime/recovery';

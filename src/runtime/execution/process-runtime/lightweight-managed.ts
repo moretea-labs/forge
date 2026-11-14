@@ -17,12 +17,12 @@ import {
   type ExecuteRepositoryCommandInput,
   type RepositoryCommandAsyncHooks,
   type RepositoryCommandExecution,
-} from '../../../cli/repositories/command-executor';
+} from '../../repositories/command-executor';
 import {
   releaseControllerCheckSubscription,
   runControllerCheckAsync,
-} from '../../../cli/controller/check-runner';
-import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../../cli/repositories/command-scope';
+} from './check-runner';
+import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../repositories/command-scope';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import {
   defaultProcessIdentityProbe,

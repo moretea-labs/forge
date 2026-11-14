@@ -1,4 +1,4 @@
-import { clearSessionCachesForSession } from '../../../src/cli/repository/session-cache';
+import { clearSessionCachesForSession } from '../../../src/runtime/repositories/session-cache';
 
 export type McpSessionRoute = '/mcp' | '/mcp-grok' | '/mcp-bearer' | '/recovery/mcp';
 

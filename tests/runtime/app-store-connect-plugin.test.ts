@@ -37,6 +37,93 @@ function input(repoRoot: string, actionId: string, args: Record<string, unknown>
   };
 }
 
+describe('app territory availability', () => {
+  async function liveRoot() {
+    const repoRoot = root();
+    const keyPath = join(repoRoot, 'AuthKey_TERRITORIES.p8');
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    writeFileSync(keyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {
+      enabled: true, provider: 'app-store-connect-api', issuer_id: 'territory-issuer',
+      key_id: 'territory-key', private_key_path: keyPath, default_app_id: 'wrong-default-app',
+    }));
+    return repoRoot;
+  }
+
+  test('advertises an explicit app-scoped read and keeps mock results identified', async () => {
+    const repoRoot = root();
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
+    const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
+    expect(manifest.actions.find(a => a.actionId === 'list_app_territory_availabilities')).toMatchObject({
+      readOnly: true, risk: 'readonly', confirmation: 'none', scopes: ['appstoreconnect.apps.read'],
+      argumentsSchema: { required: ['app_id'], additionalProperties: false },
+    });
+    expect(manifest.capabilities.find(c => c.capabilityId === 'app-store-read')?.actions)
+      .toContain('list_app_territory_availabilities');
+    expect(await executeAppStoreConnectPluginAction(input(repoRoot, 'list_app_territory_availabilities', {
+      app_id: '6796884084',
+    }))).toMatchObject({ data: [], meta: { provider: 'mock' } });
+  });
+
+  test('resolves Apple opaque availability ID and preserves territories and pagination', async () => {
+    const repoRoot = await liveRoot();
+    const payload = {
+      data: [{ type: 'territoryAvailabilities', id: 'cn-record',
+        attributes: { available: true, contentStatuses: ['ICP_NUMBER_MISSING'] },
+        relationships: { territory: { data: { type: 'territories', id: 'CHN' } } } }],
+      included: [{ type: 'territories', id: 'CHN', attributes: { currency: 'CNY' } }],
+      links: { next: 'https://api.appstoreconnect.apple.com/v2/appAvailabilities/opaque/territoryAvailabilities?cursor=next' },
+    };
+    const requests: Array<{ url: URL; method: string }> = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (request: string | URL | Request, init?: RequestInit) => {
+      requests.push({ url: new URL(String(request)), method: init?.method ?? 'GET' });
+      return Response.json(requests.length === 1
+        ? { data: { type: 'appAvailabilities', id: 'opaque/availability+id' } } : payload);
+    }) as typeof fetch;
+    try {
+      const result = await executeAppStoreConnectPluginAction(input(repoRoot, 'list_app_territory_availabilities', {
+        app_id: '6796884084', limit: 900, cursor: 'page/+token',
+      }));
+      expect(result).toEqual(payload);
+      expect(requests.map(r => r.url.origin)).toEqual([
+        'https://api.appstoreconnect.apple.com', 'https://api.appstoreconnect.apple.com',
+      ]);
+      expect(requests.map(r => r.url.pathname)).toEqual([
+        '/v1/apps/6796884084/appAvailabilityV2',
+        '/v2/appAvailabilities/opaque%2Favailability%2Bid/territoryAvailabilities',
+      ]);
+      expect(requests.map(r => r.method)).toEqual(['GET', 'GET']);
+      expect(requests[1]!.url.searchParams.get('include')).toBe('territory');
+      expect(requests[1]!.url.searchParams.get('limit')).toBe('200');
+      expect(requests[1]!.url.searchParams.get('cursor')).toBe('page/+token');
+    } finally { globalThis.fetch = original; }
+  });
+
+  test('missing app, malformed discovery and Apple denial never become empty availability', async () => {
+    const repoRoot = await liveRoot();
+    const original = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async (_request: string | URL | Request) => {
+      calls++;
+      return Response.json({ data: { type: 'apps', id: 'wrong-resource' } });
+    }) as typeof fetch;
+    try {
+      await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'list_app_territory_availabilities', {})))
+        .rejects.toThrow('app_id');
+      expect(calls).toBe(0);
+      await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'list_app_territory_availabilities', {
+        app_id: '6796884084',
+      }))).rejects.toThrow('availability');
+      expect(calls).toBe(1);
+      globalThis.fetch = (async (_request: string | URL | Request) => Response.json({ errors: [{ code: 'FORBIDDEN' }] }, { status: 403 })) as typeof fetch;
+      await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'list_app_territory_availabilities', {
+        app_id: '6796884084',
+      }))).rejects.toThrow('token');
+    } finally { globalThis.fetch = original; }
+  });
+});
+
 describe('App Store Connect Xcode Cloud workflow actions', () => {
   test('manifest exposes typed read and strongly-confirmed workflow write actions', async () => {
     const repoRoot = root();

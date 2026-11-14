@@ -1,14 +1,21 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { registerRepository } from '../../src/runtime/repositories/registry';
+import {
+  getGitHubPluginStatus,
+  loadGitHubPluginConfig,
+  saveGitHubPluginConfig,
+} from '../../src/runtime/plugins/github-config';
 import {
   buildGitHubWorkflowDispatchArgs,
   buildGitHubWorkflowListArgs,
   buildGitHubWorkflowRunListArgs,
   buildGitHubProjectItemListArgs,
   parseGitHubProjectItems,
-} from '../../src/cli/github/github';
+} from '../../src/runtime/plugins/github-client';
 import { buildGitHubPluginManifest } from '../../src/runtime/plugins/github-adapter';
 
 describe('GitHub Actions plugin surface', () => {
@@ -55,6 +62,70 @@ describe('GitHub Actions plugin surface', () => {
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('GitHub plugin configuration owner', () => {
+  test('imports legacy repository config once and keeps subsequent config writes in Repository Registry', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'forge-github-plugin-config-'));
+    const repoRoot = join(workspace, 'repo');
+    const controllerHome = join(workspace, 'controller-home');
+    const previousControllerHome = process.env.FORGE_CONTROLLER_HOME;
+    try {
+      mkdirSync(repoRoot, { recursive: true });
+      const initialized = spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      expect(initialized.status).toBe(0);
+      process.env.FORGE_CONTROLLER_HOME = controllerHome;
+
+      const legacyPath = join(repoRoot, '.forge', 'plugins', 'github.json');
+      mkdirSync(join(repoRoot, '.forge', 'plugins'), { recursive: true });
+      writeFileSync(legacyPath, JSON.stringify({
+        enabled: true,
+        repository: 'owner/repo',
+        labels: ['bug'],
+        syncMode: 'checkpoint',
+        includeTasks: false,
+        projectOwner: 'owner',
+        projectNumber: 42,
+        statusField: 'Status',
+      }));
+      const registered = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+      const canonicalRoot = registered.canonicalRoot;
+      const imported = loadGitHubPluginConfig(canonicalRoot);
+      expect(imported).toMatchObject({
+        enabled: true,
+        repository: 'owner/repo',
+        labels: ['bug'],
+        syncMode: 'checkpoint',
+        includeTasks: false,
+        projectOwner: 'owner',
+        projectNumber: 42,
+        statusField: 'Status',
+      });
+      expect(existsSync(legacyPath)).toBe(false);
+
+      const saved = saveGitHubPluginConfig(canonicalRoot, { syncMode: 'manual', projectNumber: null });
+      expect(saved).toMatchObject({
+        enabled: true,
+        repository: 'owner/repo',
+        labels: ['bug'],
+        syncMode: 'manual',
+        includeTasks: false,
+        projectOwner: 'owner',
+        statusField: 'Status',
+      });
+      expect(loadGitHubPluginConfig(canonicalRoot)).toEqual(saved);
+      expect(getGitHubPluginStatus(canonicalRoot)).toMatchObject({
+        config: saved,
+        probed: false,
+        available: false,
+        ready: false,
+      });
+    } finally {
+      if (previousControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+      else process.env.FORGE_CONTROLLER_HOME = previousControllerHome;
+      rmSync(workspace, { recursive: true, force: true });
     }
   });
 });

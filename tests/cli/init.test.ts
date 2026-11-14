@@ -18,7 +18,7 @@ import {
   runInteractiveInit,
   writeGlobalContextFiles,
 } from "../../src/cli/commands/init";
-import { configuredBrainRoot } from "../../src/cli/commands/brain-root";
+import { configuredBrainRoot } from "../../src/effects/brain-root";
 import { applyAdoptionPlan, rollbackAdoptionTransaction } from "../../src/effects/fs-transaction";
 import type { AdoptionPlan } from "../../src/core/adoption/operations";
 

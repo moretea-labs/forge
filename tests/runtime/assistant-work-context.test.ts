@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
 import { ensureControllerHome } from '../../src/effects/controller-home';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { registerRepository } from '../../src/runtime/repositories/registry';
 import { prepareAssistantWorkContext } from '../../src/runtime/context/assistant-work-context';
 import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
 import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';

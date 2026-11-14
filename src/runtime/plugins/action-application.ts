@@ -1,5 +1,5 @@
 import { MAX_PLUGIN_ACTION_TIMEOUT_MS } from '../../../packages/plugin-runtime/external/index';
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 import type { ProcessHandle } from '../execution/process-runtime/types';
 import {
   startManagedControllerPluginAction,

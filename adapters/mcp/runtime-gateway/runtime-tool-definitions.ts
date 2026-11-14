@@ -1,5 +1,5 @@
 import type { McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
-import { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from '../../../src/cli/controller/context/types';
+import { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from '../../../src/runtime/context/context-pack-contract';
 import { RH_WORK_MODEL_OPERATIONS } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../../src/runtime/context/automatic-learning';
 
@@ -43,7 +43,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     detail_level: { type: 'string', enum: ['summary', 'detail'] },
     limit: { type: 'number' },
   }),
-  definition('rh_context', 'Read-only semantic repository retrieval and advisory context, including source snippets, paths, symbols, relationships and optional project knowledge. Requested compiler navigation locations are returned as bounded flat semanticEvidence.locations alongside navigation diagnostics. Reuse known context within the conversation; retrieve only changed or missing evidence. For cross-module changes or retirement of an old mechanism, start with broad source candidates, trace newly discovered callers/indirect entry points using targeted search and explicit semantic_navigation references, and revisit related tests and docs. When readiness identifies omitted or truncated material evidence, decide which gaps affect the original goal and read those exact paths rather than assuming the first result is complete; narrow local edits need no repeated broad search. Execution facts still require live verification at the operation boundary. This tool does not authorize execution or impose a required workflow.', {
+  definition('rh_context', 'Read-only semantic repository retrieval and advisory context, including source snippets, paths, symbols, relationships and optional project knowledge. Requested compiler navigation locations are returned as bounded flat semanticEvidence.locations alongside navigation diagnostics. The model chooses whether semantic retrieval is needed and when its evidence is sufficient; no mandatory retrieval router or tool sequence is imposed. Reuse known context within the conversation; retrieve only changed or missing evidence. For cross-module changes or retirement of an old mechanism, start with broad source candidates, trace newly discovered callers/indirect entry points using targeted search and explicit semantic_navigation references, and revisit related tests and docs. When readiness identifies omitted or truncated material evidence, decide which gaps affect the original goal and read those exact paths rather than assuming the first result is complete; narrow local edits need no repeated broad search. Execution facts still require live verification at the operation boundary. This tool does not authorize execution or impose a required workflow.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple worktrees.' },
     operation: { type: 'string', enum: ['list', 'get', 'search'], description: 'Defaults to get. Search returns semantic source candidates when the model selects this retrieval capability.' },
@@ -112,7 +112,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     expires_in_minutes: { type: 'number', minimum: 1, description: 'Authorization TTL. Canonical Grant limits still apply.' },
     reason: { type: 'string', description: 'Optional revoke reason.' },
   }, ['requirement_id'], false),
-  definition('rh_work', 'Preferred ChatGPT facade for durable Requirement/Plan context, historical read-only Work records, Work-free Workflow execution, browser schedules, and ChatGPT Launch Session. Work lifecycle creation/mutation/ownership is retired; ordinary execution and validation use direct domain capabilities.', {
+  definition('rh_work', 'Preferred ChatGPT facade for optional durable Requirement/Plan/Work semantic context, historical read-only Work records, Work-free Workflow execution, browser schedules, and ChatGPT Launch Session. Work lifecycle creation/mutation/ownership is retired; lifecycle state and authority stay internal to the semantic workflow. Ordinary execution and validation use direct domain capabilities.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional exact checkout identity for repository-bound Plan, Workflow, Schedule, or historical Work reads.' },
     operation: { type: 'string', enum: [...RH_WORK_MODEL_OPERATIONS], description: 'Requirement/Plan operations are writable semantic context. list/get/get_contract are historical Work reads only. Workflow execution and browser schedules are Work-free; launcher_start opens a ChatGPT session without sending a model turn.' },
@@ -174,7 +174,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     schedule_id: { type: 'string', description: 'Schedule identity for schedule_get/pause/resume/delete/trigger.' },
     schedule_name: { type: 'string', description: 'Human-readable schedule name.' },
     schedule_request_id: { type: 'string', description: 'Stable idempotency key for schedule_create.' },
-    schedule_mode: { type: 'string', enum: ['browser_watch', 'browser_keepalive'], description: 'Browser observation mode. Schedules never create, resume, or own Work.' },
+    schedule_mode: { type: 'string', enum: ['browser_watch', 'browser_keepalive', 'supervisor_healthcheck'], description: 'Browser observation or fixed external Supervisor health patrol; no Work continuation.' },
     probe_url: { type: 'string', description: 'Allowed URL to navigate or refresh for browser_watch/browser_keepalive.' },
     probe_browser_session_id: { type: 'string', description: 'Existing Forge browser session used as the external observation target.' },
     probe_selector: { type: 'string', description: 'Optional selector limiting text extraction for browser_watch.' },

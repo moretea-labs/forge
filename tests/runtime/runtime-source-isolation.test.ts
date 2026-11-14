@@ -3,13 +3,13 @@ import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { getToolPolicy } from '../../src/cli/controller/tool-policy';
+import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
-import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
+import { addRepositoryCheckout, listRepositories, registerRepository, resolveRepositorySelection } from '../../src/runtime/repositories/registry';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { callContextAdapter } from '../../adapters/mcp/runtime-gateway/context-adapter';
-import { recordGatewayLatency } from '../../src/runtime/observability/gateway-contention-metrics';
+import { recordGatewayLatency } from '../../src/core/observability/gateway-contention-metrics';
 import { mintEngineeringAdmissionEvidence } from '../../adapters/mcp/runtime-gateway/engineering-preconditions';
 import {
   collectRuntimeSourceIdentity,
@@ -111,6 +111,7 @@ function mcpContext(controllerHome: string, repository: ReturnType<typeof regist
     toolset: 'full',
     enableChatgptBrowser: false,
     explicitRepository: repository,
+    repositoryAccess: { list: listRepositories, resolve: resolveRepositorySelection },
     audit: () => undefined,
   } as unknown as MultiRepositoryMcpToolContext;
 }

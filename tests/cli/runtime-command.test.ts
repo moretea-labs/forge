@@ -163,6 +163,7 @@ describe('runtime command surface', () => {
     expect(httpObservation).toContain('readForgeRuntimeStatus');
     expect(runtimeTools).not.toContain('ensureControllerDaemon');
     expect(runtimeTools).not.toContain('cli/mcp/keepalive');
+    expect(runtimeObservation).not.toContain('cli/local-bridge/job-store');
     const readinessStart = runtimeObservation.indexOf("case 'controller_ready':");
     const readinessEnd = runtimeObservation.indexOf("case 'repository_runtime_snapshot':", readinessStart);
     const readinessBlock = runtimeObservation.slice(readinessStart, readinessEnd);

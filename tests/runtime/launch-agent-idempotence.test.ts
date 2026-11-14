@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { installLaunchAgent, launchAgentPath } from '../../src/cli/controller/launch-agents';
+import { installLaunchAgent, launchAgentPath } from '../../src/runtime/platform/launch-agents';
 
 test.skipIf(process.platform === 'win32')('unchanged secure launchd plist keeps its inode; changed or unsafe targets are replaced', () => {
   const home = mkdtempSync(join(tmpdir(), 'forge-launchagent-idempotence-'));

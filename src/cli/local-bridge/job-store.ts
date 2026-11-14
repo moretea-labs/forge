@@ -4,29 +4,41 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "fs";
-import { dirname, join, relative, resolve, sep } from "path";
+import { dirname, join } from "path";
 import { cancelAgentJob, getAgentJob } from "../agent-jobs/job-manager";
 import { removeEphemeralIssue } from "../controller/issue-store";
 import {
   currentControllerCheckRevision,
   releaseControllerCheckSubscription,
-} from "../controller/check-runner";
+} from "../../runtime/execution/process-runtime/check-runner";
 import {
   DEFAULT_AGENT_TIMEOUT_MS,
   MAX_AGENT_TIMEOUT_MS,
   normalizeAgentTimeoutMs,
-} from "../controller/runtime-config";
+} from "../../runtime/shared/runtime-config";
 import { loadMcpServiceLocalConfig } from "../../../adapters/mcp/auth";
 import type { ControllerTask } from "../controller/types";
 import { taskExecutionPolicy } from "../controller/execution-policy";
-import { tryAppendControllerWorklogEvent } from "../controller/worklog";
+import { tryAppendControllerWorklogEvent } from "../../runtime/evidence/controller-worklog";
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { findExecutionJob } from "../../runtime/execution/jobs/store";
+import {
+  LOCAL_BRIDGE_JOB_ROOT,
+  allStoredJobPaths,
+  eventsPath,
+  getLocalBridgeJobSnapshot,
+  jobDir,
+  metaPath,
+  normalizeLocalJobId,
+  readJson,
+  readLocalBridgeJob,
+  readStoredJobs,
+} from "../../runtime/local-bridge/read-model";
+import type { LocalBridgeJobOutputResult } from "../../runtime/local-bridge/read-model";
 import type {
   LocalBridgeApproval,
   LocalBridgeConfig,
@@ -35,13 +47,10 @@ import type {
   RepositoryCommandPayload,
   RunCheckPayload,
   VerifyEditSessionPayload,
-} from "./types";
+} from "../../runtime/local-bridge/types";
 
-const JOB_ROOT = ".ai/harness/local-jobs";
-const ACTIVE_INDEX_PATH = `${JOB_ROOT}/active-index.json`;
+const ACTIVE_INDEX_PATH = `${LOCAL_BRIDGE_JOB_ROOT}/active-index.json`;
 const CONFIG_PATH = ".forge/local-bridge.json";
-const DEFAULT_LOCAL_JOB_OUTPUT_BYTES = 16 * 1024;
-const MAX_LOCAL_JOB_OUTPUT_BYTES = 512 * 1024;
 
 interface LocalBridgeActiveIndex {
   schemaVersion: 1;
@@ -62,81 +71,8 @@ function checkSubscriberId(jobId: string): string {
   return `local-job:${jobId}`;
 }
 
-function normalizeLocalJobId(jobId: string): string {
-  const normalized = String(jobId).trim();
-  if (!normalized) throw new Error("LOCAL_JOB_ID_REQUIRED: job_id is required");
-  if (normalized === "." || normalized === ".." || normalized.includes("/") || normalized.includes("\\")) {
-    throw new Error("LOCAL_JOB_PATH_INVALID: local job ids must not contain path traversal or path separators");
-  }
-  return normalized;
-}
 
-function localJobRoot(repoRoot: string): string {
-  return resolve(repoRoot, JOB_ROOT);
-}
 
-function resolveLocalJobDir(repoRoot: string, jobId: string): string {
-  const normalizedJobId = normalizeLocalJobId(jobId);
-  const root = localJobRoot(repoRoot);
-  const resolved = resolve(root, normalizedJobId);
-  const rel = relative(root, resolved);
-  if (!rel || rel === ".." || rel.startsWith(`..${sep}`)) {
-    throw new Error("LOCAL_JOB_PATH_INVALID: local job paths must stay within .ai/harness/local-jobs");
-  }
-  return resolved;
-}
-
-function jobDir(repoRoot: string, jobId: string): string {
-  return resolveLocalJobDir(repoRoot, jobId);
-}
-
-function metaPath(repoRoot: string, jobId: string): string {
-  return join(jobDir(repoRoot, jobId), "job.json");
-}
-
-function eventsPath(repoRoot: string, jobId: string): string {
-  return join(jobDir(repoRoot, jobId), "events.jsonl");
-}
-
-function stdoutPath(repoRoot: string, jobId: string): string {
-  return join(jobDir(repoRoot, jobId), "stdout.log");
-}
-
-function stderrPath(repoRoot: string, jobId: string): string {
-  return join(jobDir(repoRoot, jobId), "stderr.log");
-}
-
-function relativeOutputPath(jobId: string, stream: "stdout" | "stderr"): string {
-  const normalizedJobId = normalizeLocalJobId(jobId);
-  return `.ai/harness/local-jobs/${normalizedJobId}/${stream}.log`;
-}
-
-function boundedOutputBytes(value: number | undefined): number {
-  return Math.max(1, Math.min(Math.trunc(value ?? DEFAULT_LOCAL_JOB_OUTPUT_BYTES), MAX_LOCAL_JOB_OUTPUT_BYTES));
-}
-
-function allStoredJobPaths(repoRoot: string): string[] {
-  const root = join(repoRoot, JOB_ROOT);
-  if (!existsSync(root)) return [];
-  return readdirSync(root, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, "job.json")))
-    .map((entry) => join(root, entry.name, "job.json"))
-    .sort((a, b) => b.localeCompare(a));
-}
-
-function storedJobPaths(repoRoot: string, limit = 500): string[] {
-  return allStoredJobPaths(repoRoot).slice(0, Math.max(1, Math.min(limit, 5000)));
-}
-
-function readStoredJobs(repoRoot: string, limit = 500): LocalBridgeJob[] {
-  return storedJobPaths(repoRoot, limit).flatMap((path) => {
-    try {
-      return [readJson<LocalBridgeJob>(path)];
-    } catch (_error) {
-      return [];
-    }
-  });
-}
 
 function activeIndexPath(repoRoot: string): string {
   return join(repoRoot, ACTIVE_INDEX_PATH);
@@ -262,9 +198,6 @@ function writeJson(path: string, value: unknown): void {
   }
 }
 
-function readJson<T>(path: string): T {
-  return JSON.parse(readFileSync(path, "utf-8")) as T;
-}
 
 function normalizeStringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -352,11 +285,6 @@ function taskApproval(task: ControllerTask): LocalBridgeApproval {
   return taskExecutionPolicy(task).approval;
 }
 
-function readLocalBridgeJob(repoRoot: string, jobId: string): LocalBridgeJob {
-  const path = metaPath(repoRoot, jobId);
-  if (!existsSync(path)) throw new Error(`local bridge job not found: ${jobId}`);
-  return readJson<LocalBridgeJob>(path);
-}
 
 function cleanupEphemeralJob(repoRoot: string, job: LocalBridgeJob): void {
   if (!job.ephemeral || !job.issueId || job.cleanupAt || job.status !== "succeeded") return;
@@ -694,24 +622,6 @@ export function getLocalBridgeJob(repoRoot: string, jobId: string): LocalBridgeJ
   return refreshLocalBridgeJob(repoRoot, readLocalBridgeJob(repoRoot, jobId));
 }
 
-export interface LocalBridgeJobSnapshotResult {
-  status: "ok" | "not_found" | "rejected";
-  jobId: string;
-  job?: LocalBridgeJob;
-  error?: { code: string; message: string };
-}
-
-export interface LocalBridgeJobOutputResult {
-  jobId: string;
-  jobStatus?: LocalBridgeJob["status"];
-  stream: "stdout" | "stderr";
-  path?: string;
-  maxBytes: number;
-  truncated: boolean;
-  content: string;
-  status: "ok" | "not_found" | "not_ready" | "rejected";
-  error?: { code: string; message: string };
-}
 
 export interface LocalBridgeJobHandoff {
   jobId: string;
@@ -729,36 +639,6 @@ export interface LocalBridgeJobHandoff {
   error?: { code: string; message: string };
 }
 
-function localJobSnapshotError(jobId: string, error: unknown): LocalBridgeJobSnapshotResult {
-  const message = error instanceof Error ? error.message : String(error);
-  const code = message.startsWith("LOCAL_JOB_PATH_INVALID:")
-    ? "LOCAL_JOB_PATH_INVALID"
-    : message.startsWith("LOCAL_JOB_ID_REQUIRED:")
-      ? "LOCAL_JOB_ID_REQUIRED"
-      : "LOCAL_JOB_NOT_FOUND";
-  return {
-    status: code === "LOCAL_JOB_NOT_FOUND" ? "not_found" : "rejected",
-    jobId: String(jobId).trim(),
-    error: { code, message },
-  };
-}
-
-export function getLocalBridgeJobSnapshot(repoRoot: string, jobId: string): LocalBridgeJobSnapshotResult {
-  try {
-    return {
-      status: "ok",
-      jobId: normalizeLocalJobId(jobId),
-      job: readLocalBridgeJob(repoRoot, jobId),
-    };
-  } catch (error) {
-    return localJobSnapshotError(jobId, error);
-  }
-}
-
-export function listLocalBridgeJobSnapshots(repoRoot: string, limit = 100): LocalBridgeJob[] {
-  const boundedLimit = Math.max(1, Math.min(limit, 500));
-  return readStoredJobs(repoRoot, boundedLimit).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-}
 
 export function listLocalBridgeJobs(repoRoot: string, limit = 100): LocalBridgeJob[] {
   const boundedLimit = Math.max(1, Math.min(limit, 500));
@@ -793,18 +673,6 @@ export function reconcileLocalBridgeJobs(repoRoot: string): {
   }
   return { scanned: jobs.length, active, terminalized };
 }
-export function getLocalBridgeJobEventsSnapshot(
-  repoRoot: string,
-  jobId: string,
-): LocalBridgeJobEvent[] {
-  readLocalBridgeJob(repoRoot, jobId);
-  const path = eventsPath(repoRoot, jobId);
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf-8")
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as LocalBridgeJobEvent);
-}
 
 export function getLocalBridgeJobEvents(
   repoRoot: string,
@@ -819,74 +687,7 @@ export function getLocalBridgeJobEvents(
     .map((line) => JSON.parse(line) as LocalBridgeJobEvent);
 }
 
-export function readLocalBridgeJobOutputSnapshot(
-  repoRoot: string,
-  jobId: string,
-  input: {
-    stream?: "stdout" | "stderr";
-    maxBytes?: number;
-  } = {},
-): LocalBridgeJobOutputResult {
-  const stream = input.stream === "stderr" ? "stderr" : "stdout";
-  const maxBytes = boundedOutputBytes(input.maxBytes);
-  const snapshot = getLocalBridgeJobSnapshot(repoRoot, jobId);
-  if (snapshot.status !== "ok" || !snapshot.job) {
-    return {
-      jobId: snapshot.jobId,
-      stream,
-      maxBytes,
-      truncated: false,
-      content: "",
-      status: snapshot.status,
-      error: snapshot.error,
-    };
-  }
-  const path = stream === "stdout" ? stdoutPath(repoRoot, snapshot.job.jobId) : stderrPath(repoRoot, snapshot.job.jobId);
-  const relativePathValue = relativeOutputPath(snapshot.job.jobId, stream);
-  if (!existsSync(path)) {
-    const active = ["approved", "running", "dispatched"].includes(snapshot.job.status);
-    return {
-      jobId: snapshot.job.jobId,
-      jobStatus: snapshot.job.status,
-      stream,
-      path: relativePathValue,
-      maxBytes,
-      truncated: false,
-      content: "",
-      status: active ? "not_ready" : "not_found",
-      error: {
-        code: active ? "LOCAL_JOB_OUTPUT_NOT_READY" : "LOCAL_JOB_OUTPUT_NOT_FOUND",
-        message: active
-          ? `Local job output is not ready yet for ${snapshot.job.jobId} ${stream}.`
-          : `Local job output file was not found for ${snapshot.job.jobId} ${stream}.`,
-      },
-    };
-  }
-  const bytes = readFileSync(path);
-  const truncated = bytes.byteLength > maxBytes;
-  const content = (truncated ? bytes.subarray(Math.max(0, bytes.byteLength - maxBytes)) : bytes).toString("utf-8");
-  return {
-    jobId: snapshot.job.jobId,
-    jobStatus: snapshot.job.status,
-    stream,
-    path: relativePathValue,
-    maxBytes,
-    truncated,
-    content,
-    status: "ok",
-  };
-}
 
-export function readLocalBridgeJobOutput(
-  repoRoot: string,
-  jobId: string,
-  input: {
-    stream?: "stdout" | "stderr";
-    maxBytes?: number;
-  } = {},
-): LocalBridgeJobOutputResult {
-  return readLocalBridgeJobOutputSnapshot(repoRoot, jobId, input);
-}
 
 function saveJob(repoRoot: string, job: LocalBridgeJob): LocalBridgeJob {
   job.updatedAt = now();

@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { runHook, resolveHookStateRoot } from '../../src/cli/hook/runtime';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { registerRepository } from '../../src/runtime/repositories/registry';
 
 const cleanup: string[] = [];
 

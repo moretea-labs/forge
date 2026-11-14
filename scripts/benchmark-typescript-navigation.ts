@@ -21,7 +21,7 @@ const repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { encodin
 const cases: BenchmarkCase[] = [
   {
     label: 'repository command execution',
-    path: 'src/cli/repositories/command-executor.ts',
+    path: 'src/runtime/repositories/command-executor.ts',
     symbol: 'executeRepositoryCommand',
     marker: 'export function executeRepositoryCommand(',
   },

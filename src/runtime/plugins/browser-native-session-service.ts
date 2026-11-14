@@ -20,6 +20,7 @@ export interface NativeOwnedSessionInspection {
 }
 
 const MAX_NATIVE_INVENTORY_TIMEOUT_MS = 3_000;
+const MAX_NATIVE_RECONCILIATION_TIMEOUT_MS = 10_000;
 
 function nativeInventoryTimeoutMs(timeoutMs: number): number {
   return Math.max(1, Math.min(timeoutMs, MAX_NATIVE_INVENTORY_TIMEOUT_MS));
@@ -99,7 +100,14 @@ export async function inspectNativeOwnedSessions(input: {
     let inventory = inventories.get(product);
     if (!inventory) {
       try {
-        inventory = await listMacOsBrowserTabs(product, nativeInventoryTimeoutMs(timeoutMs));
+        // Liveness only needs exact tab identity and URL; frontmost state is unrelated.
+        // Skip its separate Apple Event so listing/reconciliation performs one native inventory call per product.
+        // Explicit reclamation must tolerate a populated real browser (observed
+        // inventory ~6s); keep ordinary list/close observations on their short budget.
+        const inventoryBudget = input.pruneDead === true
+          ? Math.max(1, Math.min(timeoutMs, MAX_NATIVE_RECONCILIATION_TIMEOUT_MS))
+          : nativeInventoryTimeoutMs(timeoutMs);
+        inventory = await listMacOsBrowserTabs(product, inventoryBudget, { correctFrontmost: false });
       } catch (error) {
         inventory = error instanceof Error ? error : new Error(String(error));
       }
@@ -228,6 +236,29 @@ export async function closeTrackedNativeOwnedSession(
     });
   }
   const ref = { windowId: tab.windowId, tabId: tab.tabId };
+  if (browser.browserProduct === 'chrome') {
+    // The PID-bound Computer provider resolves this saved tab ID to its current
+    // window. Full browser inventory is unnecessary and can stall unrelated
+    // windows; prove both the exact ID and saved URL before closing anything.
+    let metadata: Awaited<ReturnType<typeof readResolvedMacOsBrowserOwnedTabMetadata>>;
+    try {
+      metadata = await readResolvedMacOsBrowserOwnedTabMetadata('chrome', ref, timeoutMs);
+    } catch (error) {
+      if (nativeBrowserApplicationNotRunning(error) || macOsBrowserPageHandleStale(error)) {
+        return { resourceClosed: false, resourceAlreadyMissing: true };
+      }
+      throw error;
+    }
+    if (!metadata.windowId || !metadata.tabId) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN',
+        'Chrome did not return a complete exact tab identity; retaining session metadata.', { retryable: true });
+    }
+    if (metadata.tabId !== ref.tabId || !nativeTabMatchesSessionUrl(session, metadata.url)) {
+      return { resourceClosed: false, resourceAlreadyMissing: true };
+    }
+    await closeResolvedMacOsBrowserOwnedTab('chrome', { windowId: metadata.windowId, tabId: metadata.tabId }, timeoutMs);
+    return { resourceClosed: true, resourceAlreadyMissing: false };
+  }
   let inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>> | undefined;
   try {
     inventory = await listMacOsBrowserTabs(browser.browserProduct, nativeInventoryTimeoutMs(timeoutMs));
@@ -269,4 +300,23 @@ export function nativeOwnedAliasSessionIds(repoRoot: string, session: BrowserSes
       && candidate.browser.tab.windowId === tab.windowId
       && candidate.browser.tab.tabId === tab.tabId)
     .map((candidate) => candidate.sessionId);
+}
+
+/** Admission backpressure, not eviction: old tabs may contain unfinished work. */
+export const MAX_NATIVE_OWNED_BROWSER_TABS = 16;
+export function assertNativeOwnedTabCapacity(sessions: readonly BrowserSessionState[]): void {
+  const owned = new Set(sessions.filter((session) =>
+    session.browser?.provider === 'macos-apple-events'
+    && session.browser.tab?.ownership === 'plugin_owned')
+    .map((session) => {
+      const browser = session.browser!;
+      const tab = browser.tab!;
+      return browser.browserProduct && tab.tabId
+        ? `${browser.browserProduct}:${tab.tabId}` : session.sessionId;
+    }));
+  if (owned.size >= MAX_NATIVE_OWNED_BROWSER_TABS) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_OWNED_TAB_CAPACITY',
+      'Forge-owned native tab capacity reached. Close finished sessions with close_session and reconcile stale sessions before creating another tab. Existing sessions remain usable; user-owned tabs are preserved.',
+      { retryable: false, details: { count: owned.size, limit: MAX_NATIVE_OWNED_BROWSER_TABS } });
+  }
 }

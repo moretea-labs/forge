@@ -1,16 +1,16 @@
 import { loadMcpLocalConfig, loadMcpServiceLocalConfig } from './auth';
-import { getToolPolicy, parseToolProfile } from '../../src/cli/controller/tool-policy';
+import { getToolPolicy, parseToolProfile } from '../../src/runtime/control-plane/tool-policy';
 import { buildMcpToolDefinitions, callMcpTool, type CallToolResult, type McpToolContext, type McpToolDefinition } from './tool-mapping/tools';
-import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_TIMEOUT_MS, normalizeAgentTimeoutMs } from '../../src/cli/controller/runtime-config';
-import type { ToolAgentRunnerName } from '../../src/cli/controller/tool-policy';
+import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_TIMEOUT_MS, normalizeAgentTimeoutMs } from '../../src/runtime/shared/runtime-config';
+import type { ToolAgentRunnerName } from '../../src/runtime/control-plane/tool-policy';
 import { realpathSync } from 'fs';
 import { resolve } from 'path';
 import { ensureRepoPreferredControllerHome } from '../../src/effects/controller-home';
-import { bindRepositoryEntities } from '../../src/cli/repositories/entity-migration';
-import { withControllerLockAsync } from '../../src/cli/repositories/locks';
-import { listRepositories, registerRepository, repositorySummary, resolveRepositorySelection, selectRepositoryCheckout } from '../../src/cli/repositories/registry';
-import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../src/cli/repositories/runtime-storage';
-import type { RepositoryRecord } from '../../src/cli/repositories/types';
+import { bindRepositoryEntities } from '../../src/runtime/repositories/entity-migration';
+import { withControllerLockAsync } from '../../src/effects/controller-locks';
+import { listRepositories, registerRepository, repositorySummary, resolveRepositorySelection, selectRepositoryCheckout } from '../../src/runtime/repositories/registry';
+import { ensureRepositoryRuntimeStorage, inspectRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../src/runtime/repositories/runtime-storage';
+import type { RepositoryRecord } from '../../src/core/repository/types';
 import {
   compactErrorMessage,
   compactRepositoryRef,
@@ -40,11 +40,20 @@ export interface McpServerOptions {
 export interface MultiRepositoryMcpToolContext extends McpToolContext {
   controllerHome: string;
   explicitRepository?: RepositoryRecord;
+  repositoryAccess: {
+    list: typeof listRepositories;
+    resolve: typeof resolveRepositorySelection;
+  };
   toolset: 'full';
   runtimeSourceRoot?: string;
 }
 
 type ToolResult = CallToolResult;
+
+type RepositoryRuntimeStorageSummary = Pick<
+  RepositoryRuntimeStorageReport,
+  'readyForExecution' | 'usesStableRoot' | 'warnings'
+>;
 
 const EXECUTION_STORAGE_TOOLS = new Set([
   'begin_edit_session',
@@ -178,7 +187,7 @@ function errorResult(error: unknown): ToolResult {
 
 function compactEnvelopePayload(
   repository: RepositoryRecord,
-  runtimeStorage: RepositoryRuntimeStorageReport,
+  runtimeStorage: RepositoryRuntimeStorageSummary,
 ): { repoId: string; repository: Record<string, unknown>; runtimeStorage: Record<string, unknown> } {
   const summary = repositorySummary(repository);
   return {
@@ -201,7 +210,7 @@ function compactEnvelopePayload(
 function withRepositoryEnvelope(
   result: ToolResult,
   repository: RepositoryRecord,
-  runtimeStorage: RepositoryRuntimeStorageReport,
+  runtimeStorage: RepositoryRuntimeStorageSummary,
 ): ToolResult {
   const envelope = compactEnvelopePayload(repository, runtimeStorage);
   if (result.structuredContent && typeof result.structuredContent === 'object' && !Array.isArray(result.structuredContent)) {
@@ -321,6 +330,7 @@ export function createMcpToolContext(opts: McpServerOptions): MultiRepositoryMcp
   return {
     controllerHome,
     explicitRepository,
+    repositoryAccess: { list: listRepositories, resolve: resolveRepositorySelection },
     repoRoot: policyRoot,
     policy,
     toolset: 'full',
@@ -340,7 +350,7 @@ export async function callMultiRepositoryTool(
   args: Record<string, unknown> = {},
 ): Promise<ToolResult> {
   try {
-    const repository = resolveRepositorySelection({
+    const repository = ctx.repositoryAccess.resolve({
       repoId: typeof args.repo_id === 'string' ? args.repo_id : undefined,
       checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
       explicitPath: ctx.explicitRepository?.canonicalRoot,
@@ -348,15 +358,21 @@ export async function callMultiRepositoryTool(
       allowSoleRepository: true,
     });
     const scopedArgs = repositoryScopedToolArgs(name, args, repository);
-    const runtimeStorage = ensureRepositoryRuntimeStorage(repository, ctx.controllerHome);
-    if (EXECUTION_STORAGE_TOOLS.has(name) && !runtimeStorage.readyForExecution) {
+    const requiresRuntimeStorage = EXECUTION_STORAGE_TOOLS.has(name);
+    const runtimeStorage = requiresRuntimeStorage
+      ? ensureRepositoryRuntimeStorage(repository, ctx.controllerHome)
+      : inspectRepositoryRuntimeStorage(repository, ctx.controllerHome);
+    if (requiresRuntimeStorage && !runtimeStorage.readyForExecution) {
       throw new Error(`RUNTIME_STORAGE_NOT_READY: ${runtimeStorage.warnings.join('; ')}`);
     }
 
+    // Ordinary reads inspect Controller Home bindings only; they never move,
+    // merge, or link repository storage. Execution tools materialize bindings
+    // before any durable state can be written.
     // Legacy entity migration belongs to writes/registration, never to the
-    // ordinary read hot path (search / read / list / context). Only mutation
-    // tools rebind entities so newly created issues/tasks/sessions stay bound.
-    // Historical entity binding is independent of the physical edit lock.
+    // ordinary read hot path. Only mutation tools rebind entities so newly
+    // created issues/tasks/sessions stay bound. Entity binding is independent
+    // of the physical edit lock.
     const rebindEntities = EXECUTION_STORAGE_TOOLS.has(name) || name === 'configure_github_plugin';
     if (rebindEntities) bindRepositoryEntities(repository);
     const scopedContext: McpToolContext = {

@@ -1,8 +1,8 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
 import { controllerSystemRoot } from '../../effects/controller-home';
-import { listRepositories } from '../../cli/repositories/registry';
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import { listRepositories } from '../repositories/registry';
+import type { RepositoryRecord } from '../../core/repository/types';
 import { sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 
 /** Invocation context carried by adapters; repo identity is not plugin-config authority. */

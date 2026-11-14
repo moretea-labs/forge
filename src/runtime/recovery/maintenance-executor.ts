@@ -3,11 +3,11 @@ import { basename, dirname, join, relative, resolve } from 'path';
 import { tmpdir } from 'os';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { runProcess } from '../../effects/process-runner';
-import { cleanupEditSession, getEditSession, inspectIntegratedEditSession, listEditSessions } from '../../cli/editing/edit-session';
+import { cleanupEditSession, getEditSession, inspectIntegratedEditSession, listEditSessions } from '../editing/edit-session';
 import { withRepositoryMutationExclusion } from '../resources/leases/store';
-import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../cli/repositories/runtime-storage';
-import { getRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../cli/repositories/registry';
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../repositories/runtime-storage';
+import { getRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../repositories/registry';
+import type { RepositoryRecord } from '../../core/repository/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
 import { assertOwnedResourceCleanupTarget, listOwnedResources, markOwnedResourceCleaned, type OwnedResource } from '../../../packages/kernel/identity/api/index';
 import {

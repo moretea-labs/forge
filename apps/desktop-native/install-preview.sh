@@ -38,6 +38,8 @@ cat > "$TMP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleVersion</key><string>0.1.0</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>用于将语音转写到 Forge Agent 消息草稿，不会自动发送。</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>用于将语音转写到 Forge Agent 消息草稿，发送前可编辑。</string>
 </dict>
 </plist>
 PLIST

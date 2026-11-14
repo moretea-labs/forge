@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { ensureControllerHome } from '../../src/effects/controller-home';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { registerRepository } from '../../src/runtime/repositories/registry';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import {
   writeWorkspaceIdentity,

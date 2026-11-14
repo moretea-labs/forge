@@ -22,7 +22,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { controllerSystemRoot, ensureControllerHome } from '../src/effects/controller-home';
-import { registerRepository } from '../src/cli/repositories/registry';
+import { registerRepository } from '../src/runtime/repositories/registry';
 import {
   executeFast,
   executeLightweightLanes,
@@ -36,7 +36,7 @@ import {
 } from '../src/runtime/resources/leases/store';
 import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
 import { listProcessRecords } from '../src/runtime/execution/process-runtime/store';
-import { listLocalBridgeJobSnapshots } from '../src/cli/local-bridge/job-store';
+import { listLocalBridgeJobSnapshots } from '../src/runtime/local-bridge/read-model';
 import { listFastReceipts } from '../src/runtime/execution/thin-harness/fast-receipt';
 import { callRepositoryTool } from '../src/runtime/control-plane/facade/repository-tool-dispatch';
 

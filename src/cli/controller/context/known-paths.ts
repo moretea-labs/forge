@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readdirSync, statSync } from 'fs';
-import { globMatches, resolveMcpPath } from '../../../../adapters/mcp/paths';
-import type { ToolPolicy } from '../tool-policy';
+import { globMatches, resolveMcpPath } from '../../../runtime/safe-tooling/path-policy';
+import type { ToolPolicy } from '../../../runtime/control-plane/tool-policy';
 
 export function looksLikeGlob(path: string): boolean { return /[*?{[]/.test(path); }
 export function coveredByGlob(path: string, globs: string[]): boolean {

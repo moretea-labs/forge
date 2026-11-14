@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { ControllerCheck } from '../../src/cli/controller/check-runner';
+import type { ControllerCheck } from '../../src/runtime/execution/process-runtime/check-runner';
 import { classifyControllerCheckExecution } from '../../src/runtime/execution/process-runtime/check-classification';
 
 function check(overrides: Partial<ControllerCheck> = {}): ControllerCheck {

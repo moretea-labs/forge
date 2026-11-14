@@ -3,7 +3,7 @@ import { join } from 'path';
 import { createHash } from 'crypto';
 import { runProcess } from '../../effects/process-runner';
 import { resolveMcpRepoRoot } from '../../../adapters/mcp/repo';
-import { listControllerChecks, runControllerCheck } from './check-runner';
+import { listControllerChecks, runControllerCheck } from '../../runtime/execution/process-runtime/check-runner';
 import {
   compositeFailed,
   compositeSucceeded,
@@ -11,7 +11,7 @@ import {
   type CompositeToolResult,
 } from './composite-result';
 import { validatePatchSuccess } from './postcondition';
-import { gitSnapshot } from '../repository/inspector';
+import { gitSnapshot } from '../../runtime/repositories/inspector';
 
 function fileSha(repoRoot: string, relativePath: string): string | null {
   const absolute = join(repoRoot, relativePath);

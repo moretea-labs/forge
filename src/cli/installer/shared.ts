@@ -14,13 +14,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-export function atomicWriteFileSync(filePath: string, content: string): void {
-  const dir = path.dirname(filePath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tmp, content, 'utf-8');
-  fs.renameSync(tmp, filePath);
-}
+export { atomicWriteFileSync } from '../../effects/fs-transaction';
+
 
 export function readJsonOrEmpty<T = Record<string, unknown>>(filePath: string): T {
   if (!fs.existsSync(filePath)) return {} as T;

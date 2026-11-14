@@ -1,7 +1,7 @@
 import { spawnSync } from 'child_process';
 import { existsSync, realpathSync } from 'fs';
 import { resolve } from 'path';
-import type { RepositoryRecord } from '../../../cli/repositories/types';
+import type { RepositoryRecord } from '../../../core/repository/types';
 
 export interface WorkLifecycleAttention {
   jobId: string;
@@ -11,15 +11,13 @@ export interface WorkLifecycleAttention {
 
 const CURRENT_READINESS_LIFECYCLE_STATUSES = new Set([
   'active_checkout_missing',
-  'dirty_linked_worktree_unregistered',
-  'linked_worktree_unregistered',
 ]);
 
 /**
- * Runtime readiness consumes only repository/checkout/Git contradictions.
- * Historical Work and WorkHandle records are never consulted and cannot block
- * current execution. Unregistered dirty/unique linked worktrees remain physical
- * source-integrity blockers; unintegrated branch debt is advisory only.
+ * Runtime readiness blocks only a contradiction that makes a registered active
+ * checkout unusable. Unregistered linked worktrees and branch debt remain
+ * advisory attention; they do not, by themselves, establish an active execution
+ * conflict for the selected checkout.
  */
 export function workLifecycleAttentionBlocksReadiness(
   finding: Pick<WorkLifecycleAttention, 'status'>,

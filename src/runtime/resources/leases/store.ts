@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { controllerSystemRoot } from '../../../effects/controller-home';
-import { ControllerLockContentionError, readControllerLock, withControllerLock, withControllerLockAsync } from '../../../cli/repositories/locks';
+import { ControllerLockContentionError, readControllerLock, withControllerLock, withControllerLockAsync } from '../../../effects/controller-locks';
 import type { ResourceClaimSpec } from '../../execution/jobs/types';
 import { readJsonFile, removeFile, writeJsonAtomic } from '../../shared/json-files';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';

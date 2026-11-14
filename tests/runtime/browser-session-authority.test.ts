@@ -28,7 +28,7 @@ import {
   resetBrowserHandoffRuntimeHooksForTest,
   setBrowserHandoffRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-handoff';
-import { patchInteractionSession } from '../../src/runtime/plugins/interaction-session';
+import { patchInteractionSession, writeInteractionSession } from '../../src/runtime/plugins/interaction-session';
 import {
   ensureLegacyBrowserSessionsImported,
   findBrowserSession,
@@ -41,11 +41,12 @@ import { browserSessionOwnerToken, findBrowserSession as findComputerBackedBrows
 import { readLegacyBrowserSessionMigrationEntries } from '../../src/runtime/plugins/browser-session-legacy-migration';
 import { withRuntimeBrowserSessionExecutionContext } from '../../src/runtime/root/browser-session-composition';
 import {
+  listControlPlaneRecords,
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { registerRepository } from '../../src/cli/repositories/registry';
-import { withControllerLockAsync } from '../../src/cli/repositories/locks';
+import { registerRepository } from '../../src/runtime/repositories/registry';
+import { withControllerLockAsync } from '../../src/effects/controller-locks';
 import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import { writeControllerPluginConfig } from '../../src/runtime/plugins/config-store';
@@ -467,6 +468,29 @@ describe('browser session compatibility on Computer target authority', () => {
     const second = await executeBrowserPluginAction({ ...baseInput, actionId: 'list_sessions', args: { limit: 2, cursor: first.nextCursor } });
     expect((second.sessions as Array<{ sessionId: string }>).map((entry) => entry.sessionId)).toEqual(['one']);
 
+    const computerList = await executeBrowserPluginAction({
+      ...baseInput,
+      pluginId: 'computer',
+      requestId: 'computer-authority-native-list',
+      actionId: 'list_sessions',
+      args: {},
+    });
+    expect(computerList).toMatchObject({
+      provider: 'macos-apple-events',
+      sessionCountSemantics: 'controller_authority',
+      scannedSessionCount: 3,
+      savedSessionCount: 1,
+      liveManagedSessionCount: 0,
+      liveNativeSessionCount: 0,
+      unverifiedSessionCount: 1,
+      deadManagedSessionCount: 0,
+      deadNativeSessionCount: 0,
+      totalCount: 1,
+    });
+    expect((computerList.sessions as Array<{ sessionId: string }>).map((entry) => entry.sessionId)).toEqual(['three']);
+    expect((computerList.sessions as Array<{ liveness: string; livenessEvidence: string }>)[0])
+      .toMatchObject({ liveness: 'unverified', livenessEvidence: 'liveness_not_checked' });
+
     const auth = await resolveBrowserPluginAuthorizationContext({
       ...baseInput,
       actionId: 'click',
@@ -806,6 +830,55 @@ describe('browser session compatibility on Computer target authority', () => {
     expect((result.handoff as { targetId?: string }).targetId).toBe('macos-apple-events:chrome:7:9');
   });
 
+  test('get_handoff_status persists a completed result once and keeps repeated observations read-only', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeControllerPluginConfig(controllerHome, 'browser', {
+      schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'],
+    });
+    const nativeSession = session('handoff-status-read', '2026-11-13T00:00:00.000Z', {
+      native: true, windowId: '7', tabId: '9',
+    });
+    saveBrowserSession(controllerHome, 'repo-a', repoA, nativeSession);
+    const interactionId = 'completed-handoff-status-read';
+    writeInteractionSession(repoA, {
+      schemaVersion: 1,
+      interactionId,
+      provider: 'browser',
+      sessionId: nativeSession.sessionId,
+      targetId: 'macos-apple-events:chrome:7:9',
+      status: 'completed',
+      reason: 'manual_review',
+      owner: { repoId: 'repo-a', requestId: interactionId },
+      result: { url: 'https://example.com/finished', title: 'Finished' },
+      createdAt: '2026-11-13T00:00:00.000Z',
+      updatedAt: '2026-11-13T00:01:00.000Z',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const surfaceRevisions = () => listControlPlaneRecords(controllerHome, {
+      namespace: 'computer_interaction_target', limit: 100,
+    }).map(({ key, revision }) => ({ key, revision })).sort((left, right) => left.key.localeCompare(right.key));
+    const before = surfaceRevisions();
+    expect(before).toHaveLength(1);
+
+    const observe = (requestId: string) => executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser', requestId,
+      origin: { surface: 'mcp', actor: 'test' },
+      actionId: 'get_handoff_status', args: { interaction_id: interactionId },
+    });
+    const first = await observe('handoff-status-first-observation');
+    expect(first.handoff).toMatchObject({ status: 'completed', result: { url: 'https://example.com/finished', title: 'Finished' } });
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, nativeSession.sessionId))
+      .toMatchObject({ url: 'https://example.com/finished', title: 'Finished' });
+    const afterFirst = surfaceRevisions();
+    expect(afterFirst[0].revision).toBe(before[0].revision + 1);
+
+    const second = await observe('handoff-status-second-observation');
+    expect(second.handoff).toMatchObject({ status: 'completed', result: { url: 'https://example.com/finished', title: 'Finished' } });
+    expect(surfaceRevisions()).toEqual(afterFirst);
+  });
+
   test('activate_page recovers system foreground through Desktop Operator and preserves exact native tab for trusted input', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
@@ -896,7 +969,7 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(trustedRefs).toEqual([{ product: 'chrome', windowId: '7', tabId: '9' }]);
   });
 
-  test('legacy native broker without tab inventory creates and closes only the exact plugin-owned tab', async () => {
+  test('lists saved metadata without inventory and explicitly reconciles native liveness before close', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     writeControllerPluginConfig(controllerHome, 'browser', {
@@ -974,7 +1047,23 @@ describe('browser session compatibility on Computer target authority', () => {
       actionId: 'list_sessions',
       args: {},
     });
-    expect(listed).toMatchObject({ liveNativeSessionCount: 1, unverifiedSessionCount: 0 });
+    expect(listed).toMatchObject({
+      scannedSessionCount: 1,
+      savedSessionCount: 1,
+      liveNativeSessionCount: 0,
+      unverifiedSessionCount: 1,
+    });
+    expect((listed.sessions as Array<{ liveness: string; livenessEvidence: string }>)[0])
+      .toMatchObject({ liveness: 'unverified', livenessEvidence: 'liveness_not_checked' });
+    expect(inventoryCalls).toBe(0);
+
+    const reconciled = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'legacy-inventory-reconcile',
+      actionId: 'reconcile_sessions',
+      args: {},
+    });
+    expect(reconciled).toMatchObject({ liveNativeSessionCount: 1, unverifiedSessionCount: 0 });
     expect(inventoryCalls).toBe(1);
 
     const closed = await executeBrowserPluginAction({
@@ -985,7 +1074,7 @@ describe('browser session compatibility on Computer target authority', () => {
     });
     expect(closed).toMatchObject({ closed: true, resourceClosed: true });
     expect(closeCalls).toBe(1);
-    expect(inventoryCalls).toBe(2);
+    expect(inventoryCalls).toBe(1);
   });
 
   test('session-bound reads refuse to create a replacement for a missing native tab', async () => {
@@ -1140,9 +1229,11 @@ describe('browser session compatibility on Computer target authority', () => {
         }
         if (script.includes('execute targetTab javascript')) {
           const source = args[0] ?? '';
+          // read_text carries no caller-supplied JavaScript: the native
+          // provider constructs the bounded text extraction itself.
           const value = source.includes('document.readyState')
             ? 'complete'
-            : source.includes('textContent') || source.includes('innerText')
+            : !source || source.includes('textContent') || source.includes('innerText')
               ? 'Drifted Body'
               : { url: currentUrl, title: 'Native Drift' };
           return JSON.stringify({ ok: true, value, page: { url: currentUrl, title: 'Native Drift' } });
@@ -2045,4 +2136,32 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(explicit.health.details?.nativeBrowserCandidates).toEqual(['vivaldi']);
   });
 
+});
+
+
+test('Computer exposes native session reclamation through the existing Browser owner', () => {
+  const manifest = computerPluginAdapter.buildManifest(0);
+  expect(manifest.actions.some((action) => action.actionId === 'reconcile_sessions')).toBe(true);
+  expect(manifest.capabilities.some((capability) => capability.actions.includes('reconcile_sessions'))).toBe(true);
+  expect(manifest.actions.some((action) => action.actionId === 'clear_session')).toBe(false);
+});
+
+test('Computer refuses a seventeenth owned native tab before provider creation', async () => {
+  const { controllerHome, repoA } = fixture();
+  writeControllerPluginConfig(controllerHome, 'browser', {
+    schemaVersion: 1, enabled: true, provider: 'playwright',
+    browserMode: 'attach_preferred', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto',
+  });
+  const legacyRoot = join(repoA, '.forge', 'browser', 'sessions');
+  mkdirSync(legacyRoot, { recursive: true });
+  for (let i = 0; i < 16; i++) {
+    writeFileSync(join(legacyRoot, `owned-${i}.json`), JSON.stringify(session(`owned-${i}`, '2026-11-13T00:00:00Z', {
+      native: true, ownership: 'plugin_owned', tabId: String(i),
+    })));
+  }
+  await expect(computerPluginAdapter.executeAction({
+    controllerHome, repoRoot: repoA, repoId: 'repo-a', pluginId: 'computer',
+    actionId: 'create_session', requestId: 'capacity-seventeenth',
+    args: { url: 'https://example.com/new' }, origin: { surface: 'mcp', actor: 'test' },
+  })).rejects.toThrow('capacity reached');
 });

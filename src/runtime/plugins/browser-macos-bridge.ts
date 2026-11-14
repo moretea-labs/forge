@@ -25,6 +25,20 @@ const MAX_NATIVE_BROWSER_FILE_ATTACH_BYTES = 16 * 1024 * 1024;
 
 export type MacOsBrowserProduct = BrowserNativeProduct;
 
+export interface MacOsBrowserAutomationTiming {
+  action: BrowserAutomationBrokerAction['action'];
+  product?: MacOsBrowserProduct;
+  windowId?: string;
+  tabId?: string;
+  dispatchKind: 'broker' | 'test_hook' | 'not_dispatched';
+  processPreconditionMs: number;
+  brokerRoundTripMs?: number;
+  testHookRoundTripMs?: number;
+  totalMs: number;
+  outcome: 'succeeded' | 'failed';
+  errorCode?: string;
+}
+
 interface MacOsBrowserDefinition {
   product: MacOsBrowserProduct;
   appName: string;
@@ -111,6 +125,9 @@ interface MacOsBrowserRuntimeHooks {
   tabInventory?: (product: MacOsBrowserProduct, timeoutMs: number) => Promise<MacOsBrowserTabInventory>;
   captureRegion?: (region: { x: number; y: number; width: number; height: number }, path: string, timeoutMs: number) => Promise<Buffer>;
   trustedInput?: (request: Extract<BrowserAutomationBrokerAction, { action: 'trusted_input' }>, timeoutMs: number) => Promise<void>;
+  browserAutomationBroker?: (request: BrowserAutomationBrokerAction, timeoutMs: number) => Promise<Record<string, unknown>>;
+  // Test-only phase observer. It never receives script contents, page values, or credentials.
+  onAutomationTiming?: (timing: MacOsBrowserAutomationTiming) => void;
 }
 
 function execFileText(file: string, args: string[], timeoutMs: number): Promise<string> {
@@ -230,12 +247,15 @@ async function runCreateTabAutomation(
   testArgs: string[],
   timeoutMs: number,
 ): Promise<MacOsBrowserCreateTabEvidence> {
-  await assertMacOsBrowserApplicationRunning(request.product, timeoutMs);
-  if (runtimeHooks.runAppleScript) {
-    const value = await runtimeHooks.runAppleScript(testScript, testArgs, timeoutMs);
-    return parseMacOsBrowserCreateTabBrokerResult({ value });
-  }
-  return parseMacOsBrowserCreateTabBrokerResult(await callBrowserAutomationBroker(request, timeoutMs));
+  const useTestHook = Boolean(runtimeHooks.runAppleScript);
+  return await timeMacOsBrowserAutomation(
+    request,
+    useTestHook ? 'test_hook' : 'broker',
+    () => assertMacOsBrowserApplicationRunning(request.product, timeoutMs),
+    async () => useTestHook
+      ? parseMacOsBrowserCreateTabBrokerResult({ value: await runtimeHooks.runAppleScript!(testScript, testArgs, timeoutMs) })
+      : parseMacOsBrowserCreateTabBrokerResult(await dispatchMacOsBrowserAutomationBroker(request, timeoutMs)),
+  );
 }
 
 async function runBrowserAutomationText(
@@ -249,17 +269,24 @@ async function runBrowserAutomationText(
   // fails closed unless the exact browser process is already live, so routine
   // inventory/reconcile work can never launch the user's browser or hand Forge
   // an unauthenticated profile.
-  if ('product' in request) await assertMacOsBrowserApplicationRunning(request.product, timeoutMs);
-  if (runtimeHooks.runAppleScript) return await runtimeHooks.runAppleScript(testScript, testArgs, timeoutMs);
-  const result = await callBrowserAutomationBroker(request, timeoutMs);
-  if (typeof result.value !== 'string') {
-    throw new AssistantPluginError(
-      'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
-      'Stable Forge macOS capability broker returned an invalid text result.',
-      { retryable: true },
-    );
-  }
-  return result.value;
+  const useTestHook = Boolean(runtimeHooks.runAppleScript);
+  return await timeMacOsBrowserAutomation(
+    request,
+    useTestHook ? 'test_hook' : 'broker',
+    'product' in request ? () => assertMacOsBrowserApplicationRunning(request.product, timeoutMs) : undefined,
+    async () => {
+      if (useTestHook) return await runtimeHooks.runAppleScript!(testScript, testArgs, timeoutMs);
+      const result = await dispatchMacOsBrowserAutomationBroker(request, timeoutMs);
+      if (typeof result.value !== 'string') {
+        throw new AssistantPluginError(
+          'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
+          'Stable Forge macOS capability broker returned an invalid text result.',
+          { retryable: true },
+        );
+      }
+      return result.value;
+    },
+  );
 }
 
 /**
@@ -377,6 +404,81 @@ async function sendBrowserTrustedInput(
 }
 
 let runtimeHooks: MacOsBrowserRuntimeHooks = { ...defaultRuntimeHooks };
+
+function dispatchMacOsBrowserAutomationBroker(
+  request: BrowserAutomationBrokerAction,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
+  return runtimeHooks.browserAutomationBroker
+    ? runtimeHooks.browserAutomationBroker(request, timeoutMs)
+    : callBrowserAutomationBroker(request, timeoutMs);
+}
+
+async function timeMacOsBrowserAutomation<T>(
+  request: BrowserAutomationBrokerAction,
+  requestedDispatchKind: Exclude<MacOsBrowserAutomationTiming['dispatchKind'], 'not_dispatched'>,
+  precondition: (() => Promise<void>) | undefined,
+  dispatch: () => Promise<T>,
+): Promise<T> {
+  const observer = runtimeHooks.onAutomationTiming;
+  if (!observer) {
+    await precondition?.();
+    return await dispatch();
+  }
+  const startedAt = performance.now();
+  let processPreconditionMs = 0;
+  let brokerRoundTripMs: number | undefined;
+  let testHookRoundTripMs: number | undefined;
+  let dispatchKind: MacOsBrowserAutomationTiming['dispatchKind'] = 'not_dispatched';
+  let outcome: MacOsBrowserAutomationTiming['outcome'] = 'failed';
+  let errorCode: string | undefined;
+  let resultRef: MacOsBrowserTabRef | undefined;
+  try {
+    if (precondition) {
+      const preconditionStartedAt = performance.now();
+      try {
+        await precondition();
+      } finally {
+        processPreconditionMs = Math.round((performance.now() - preconditionStartedAt) * 10) / 10;
+      }
+    }
+    dispatchKind = requestedDispatchKind;
+    const dispatchStartedAt = performance.now();
+    try {
+      const result = await dispatch();
+      if (!('ref' in request) && result && typeof result === 'object') resultRef = (result as { ref?: MacOsBrowserTabRef }).ref;
+      outcome = 'succeeded';
+      return result;
+    } finally {
+      const elapsed = Math.round((performance.now() - dispatchStartedAt) * 10) / 10;
+      if (requestedDispatchKind === 'test_hook') testHookRoundTripMs = elapsed;
+      else brokerRoundTripMs = elapsed;
+    }
+  } catch (error) {
+    errorCode = error instanceof AssistantPluginError ? error.code : undefined;
+    throw error;
+  } finally {
+    const ref = 'ref' in request ? request.ref : resultRef;
+    try {
+      observer({
+        action: request.action,
+        ...('product' in request ? { product: request.product } : {}),
+        ...(ref?.windowId ? { windowId: ref.windowId } : {}),
+        ...(ref?.tabId ? { tabId: ref.tabId } : {}),
+        dispatchKind,
+        processPreconditionMs,
+        ...(brokerRoundTripMs !== undefined ? { brokerRoundTripMs } : {}),
+        ...(testHookRoundTripMs !== undefined ? { testHookRoundTripMs } : {}),
+        totalMs: Math.round((performance.now() - startedAt) * 10) / 10,
+        outcome,
+        ...(errorCode ? { errorCode } : {}),
+      });
+    } catch {
+      // Test-only telemetry must never alter the browser action's outcome.
+    }
+  }
+}
+
 let lastAttachObservation: MacOsBrowserAttachObservation | undefined;
 const MAX_WARM_NATIVE_PAGE_HANDLES = 128;
 const warmNativePageHandles = new Map<string, MacOsAppleEventsPage>();
@@ -585,18 +687,38 @@ function parseTabInventory(product: MacOsBrowserProduct, raw: string): MacOsBrow
 
 function targetTabPreamble(ref: MacOsBrowserTabRef): string {
   return `set targetTabId to ${quotedAppleScript(ref.tabId)}
+set targetWindowId to ${quotedAppleScript(ref.windowId)}
 set targetWindow to missing value
 set targetTab to missing value
+-- Prefer the saved window before enumerating tabs across every window.
 repeat with candidateWindow in windows
-  repeat with candidateTab in tabs of candidateWindow
-    if ((id of candidateTab) as text) is targetTabId then
-      set targetWindow to candidateWindow
-      set targetTab to candidateTab
-      exit repeat
-    end if
-  end repeat
-  if targetTab is not missing value then exit repeat
+  if ((id of candidateWindow) as text) is targetWindowId then
+    set targetWindow to candidateWindow
+    repeat with candidateTab in tabs of candidateWindow
+      if ((id of candidateTab) as text) is targetTabId then
+        set targetTab to candidateTab
+        exit repeat
+      end if
+    end repeat
+    exit repeat
+  end if
 end repeat
+-- A tab may move between windows without changing its stable ID.
+-- Search other windows only when the saved window no longer contains that exact tab.
+if targetTab is missing value then
+  repeat with candidateWindow in windows
+    if targetWindow is missing value or ((id of candidateWindow) as text) is not targetWindowId then
+      repeat with candidateTab in tabs of candidateWindow
+        if ((id of candidateTab) as text) is targetTabId then
+          set targetWindow to candidateWindow
+          set targetTab to candidateTab
+          exit repeat
+        end if
+      end repeat
+    end if
+    if targetTab is not missing value then exit repeat
+  end repeat
+end if
 if targetTab is missing value then error "FORGE_BROWSER_TAB_NOT_FOUND:" & targetTabId`;
 }
 
@@ -876,6 +998,64 @@ function selectorSource(selector: string, body: string): string {
   })()`;
 }
 
+function clickSource(selector: string): string {
+  return selectorSource(selector, `
+    if (element instanceof HTMLOptionElement) {
+      const selectElement = element.closest('select');
+      if (!(selectElement instanceof HTMLSelectElement)) throw new Error('Option is not attached to a select.');
+      if (element.disabled || selectElement.disabled) throw new Error('Option is disabled.');
+      if (!selectElement.multiple) {
+        const valueSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+        if (valueSetter) valueSetter.call(selectElement, element.value);
+        else selectElement.value = element.value;
+      } else {
+        element.selected = true;
+      }
+      selectElement.dispatchEvent(new Event('input', { bubbles: true }));
+      selectElement.dispatchEvent(new Event('change', { bubbles: true }));
+      if (!Array.from(selectElement.selectedOptions).includes(element)) throw new Error('Option selection did not persist.');
+      return true;
+    }
+    if (typeof element.click !== "function") throw new Error("Element is not clickable.");
+    const rect = typeof element.getBoundingClientRect === 'function' ? element.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
+    const clientX = Number(rect.left || 0) + Number(rect.width || 0) / 2;
+    const clientY = Number(rect.top || 0) + Number(rect.height || 0) / 2;
+    const mouseInit = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: 1, clientX, clientY };
+    if (typeof PointerEvent === 'function') {
+      element.dispatchEvent(new PointerEvent('pointerdown', { ...mouseInit, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+    }
+    element.dispatchEvent(new MouseEvent('mousedown', mouseInit));
+    if (typeof element.focus === 'function') element.focus();
+    if (typeof PointerEvent === 'function') {
+      element.dispatchEvent(new PointerEvent('pointerup', { ...mouseInit, buttons: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+    }
+    element.dispatchEvent(new MouseEvent('mouseup', { ...mouseInit, buttons: 0 }));
+    element.click();
+    return true;
+  `);
+}
+
+function fillSource(selector: string, value: string): string {
+  return selectorSource(selector, `
+    if ('value' in element) {
+      const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      if (setter) setter.call(element, ${JSON.stringify(value)}); else element.value = ${JSON.stringify(value)};
+    } else if (element.isContentEditable) {
+      element.focus();
+      const selection = window.getSelection();
+      if (!selection) throw new Error('Contenteditable selection unavailable.');
+      const range = document.createRange();
+      range.selectNodeContents(element); selection.removeAllRanges(); selection.addRange(range);
+      if (!document.execCommand('insertText', false, ${JSON.stringify(value)})) throw new Error('Contenteditable insertion rejected.');
+      return true;
+    } else throw new Error('Element does not accept text input.');
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  `);
+}
+
 function keyEventSource(selector: string | undefined, keySpec: string): string {
   const parts = keySpec.split('+').filter(Boolean);
   const key = parts.at(-1) ?? keySpec;
@@ -926,6 +1106,7 @@ export class MacOsAppleEventsPage {
   private readonly browser: MacOsBrowserDefinition;
   private timeoutMs: number;
   private targetRef?: MacOsBrowserTabRef;
+  private domIdentityFromCurrentAction = false;
   private readonly createTabEvidence?: MacOsBrowserCreateTabEvidence;
 
   constructor(attachment: MacOsBrowserAttachment, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS, targetRef?: MacOsBrowserTabRef, createTabEvidence?: MacOsBrowserCreateTabEvidence) {
@@ -946,6 +1127,7 @@ export class MacOsAppleEventsPage {
     args: string[] = [],
     timeoutMs = this.timeoutMs,
   ): Promise<string> {
+    const deadline = performance.now() + timeoutMs;
     try {
       let effectiveRequest = request;
       let resolvedRef: MacOsBrowserTabRef | undefined;
@@ -954,14 +1136,25 @@ export class MacOsAppleEventsPage {
         // every DOM JavaScript event (including a tab moved across windows).
         // Do not run a second, full-Chrome inventory in the Controller first.
         // Activation and physical input retain their explicit preflight gates.
-        resolvedRef = this.browser.product === 'chrome' && request.action === 'execute_javascript'
+        resolvedRef = this.browser.product === 'chrome' && (request.action === 'execute_javascript' || request.action === 'read_text')
           ? request.ref
           : await resolveCurrentMacOsBrowserTabRef(this.browser.product, request.ref, timeoutMs);
         this.targetRef = resolvedRef;
         effectiveRequest = { ...request, ref: resolvedRef } as BrowserAutomationBrokerAction;
       }
+      // Preflight and remote dispatch share the caller's action budget.
+      // If exact-tab validation consumed it, never dispatch a mutation whose
+      // eventual outcome would be unknown after the caller already timed out.
+      const remainingMs = Math.ceil(deadline - performance.now());
+      if (remainingMs <= 0) {
+        throw new AssistantPluginError(
+          'BROWSER_AUTOMATION_TIMEOUT',
+          'BROWSER_AUTOMATION_TIMEOUT: Native target preflight exhausted the action budget before dispatch.',
+          { retryable: true, effectOutcome: 'failed' },
+        );
+      }
       const effectiveScript = typeof script === 'function' ? script(resolvedRef ?? this.targetRef) : script;
-      return await runBrowserAutomationText(effectiveRequest, effectiveScript, args, timeoutMs);
+      return await runBrowserAutomationText(effectiveRequest, effectiveScript, args, remainingMs);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // Preserve the provider's *typed* process-identity refusal. In particular,
@@ -992,6 +1185,13 @@ export class MacOsAppleEventsPage {
   }
 
   private async refreshMetadata(): Promise<MacOsBrowserMetadata> {
+    // The process-bound Chrome provider already validates the exact tab ID
+    // while reading metadata. Reuse that same fail-closed path instead of
+    // enumerating every tab just before asking for the same target.
+    // Physical input and activation retain their separate preflight gates.
+    if (this.browser.product === 'chrome' && this.targetRef) {
+      return await this.refreshResolvedMetadata();
+    }
     this.metadata = parseMetadata(this.browser.product, await this.runAutomation(
       { action: 'metadata', product: this.browser.product, ...(this.targetRef ? { ref: this.targetRef } : {}) },
       (resolvedRef) => resolvedRef ? targetMetadataScript(this.browser, resolvedRef) : metadataScript(this.browser),
@@ -1023,6 +1223,18 @@ export class MacOsAppleEventsPage {
     return metadata;
   }
 
+  private javascriptPermissionError(): AssistantPluginError {
+    return new AssistantPluginError(
+      'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED',
+      `${this.browser.appName} rejected JavaScript from Apple Events for the browser instance addressed by macOS automation. This does not prove that the user's visible Chrome instance has this setting disabled. Verify the exact Chrome process/profile and View > Developer > Allow JavaScript from Apple Events before changing settings.`,
+      { retryable: false, details: {
+        browserProduct: this.browser.product, bundleId: this.browser.bundleId,
+        processIdentity: 'unverified',
+        ...(this.targetRef ? { windowId: this.targetRef.windowId, tabId: this.targetRef.tabId } : {}),
+      } },
+    );
+  }
+
   private async executeJavaScriptRaw(source: string, timeoutMs = this.timeoutMs): Promise<string> {
     const eventTimeoutMs = Math.max(timeoutMs, NATIVE_JS_EVENT_TIMEOUT_MS);
     try {
@@ -1033,17 +1245,7 @@ export class MacOsAppleEventsPage {
         eventTimeoutMs,
       );
     } catch (error) {
-      if (macOsBrowserJavaScriptAutomationDisabled(error)) {
-        throw new AssistantPluginError(
-          'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED',
-          `${this.browser.appName} rejected JavaScript from Apple Events for the browser instance addressed by macOS automation. This does not prove that the user's visible Chrome instance has this setting disabled. Verify the exact Chrome process/profile and View > Developer > Allow JavaScript from Apple Events before changing settings.`,
-          { retryable: false, details: {
-            browserProduct: this.browser.product, bundleId: this.browser.bundleId,
-            processIdentity: 'unverified',
-            ...(this.targetRef ? { windowId: this.targetRef.windowId, tabId: this.targetRef.tabId } : {}),
-          } },
-        );
-      }
+      if (macOsBrowserJavaScriptAutomationDisabled(error)) throw this.javascriptPermissionError();
       throw error;
     }
   }
@@ -1128,7 +1330,16 @@ export class MacOsAppleEventsPage {
     return this.metadata.url;
   }
 
-  async identity(): Promise<{ url: string; title: string }> {
+  beginAction(): void {
+    this.domIdentityFromCurrentAction = false;
+  }
+
+  async identity(options: { preferObservedDom?: boolean } = {}): Promise<{ url: string; title: string }> {
+    if (options.preferObservedDom && this.domIdentityFromCurrentAction && this.metadata.url) {
+      this.domIdentityFromCurrentAction = false;
+      return { url: this.metadata.url, title: this.metadata.title };
+    }
+    this.domIdentityFromCurrentAction = false;
     try {
       const identity = await this.evaluate<{ url: string; title: string }>(
         '({ url: String(document.location.href || ""), title: String(document.title || "") })',
@@ -1150,8 +1361,30 @@ export class MacOsAppleEventsPage {
     return await this.evaluate<string>('document.documentElement ? document.documentElement.outerHTML : ""');
   }
 
+  async readText(selector?: string): Promise<string> {
+    this.domIdentityFromCurrentAction = false;
+    if (!this.targetRef) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Reading native page text requires an exact bound tab.', { retryable: false });
+    }
+    try {
+      const raw = await this.runAutomation(
+        { action: 'read_text', product: this.browser.product, ref: this.targetRef, ...(selector ? { selector } : {}) },
+        (resolvedRef) => executeJavaScriptScript(this.browser, resolvedRef),
+      );
+      return this.parseEvaluationResult<string>(raw);
+    } catch (error) {
+      if (macOsBrowserJavaScriptAutomationDisabled(error)) throw this.javascriptPermissionError();
+      throw error;
+    }
+  }
+
   async evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T> {
+    this.domIdentityFromCurrentAction = false;
     const raw = await this.executeJavaScriptRaw(serializeEvaluation(expression, arg));
+    return this.parseEvaluationResult<T>(raw);
+  }
+
+  private parseEvaluationResult<T>(raw: string): T {
     let parsed: { ok?: boolean; value?: unknown; error?: string; page?: { url?: unknown; title?: unknown } };
     try {
       parsed = JSON.parse(raw) as { ok?: boolean; value?: unknown; error?: string; page?: { url?: unknown; title?: unknown } };
@@ -1167,6 +1400,7 @@ export class MacOsAppleEventsPage {
         url: parsed.page.url,
         title: typeof parsed.page.title === 'string' ? parsed.page.title : this.metadata.title,
       };
+      this.domIdentityFromCurrentAction = true;
     }
     if (parsed.value && typeof parsed.value === 'object' && (parsed.value as { __forgeUndefined?: unknown }).__forgeUndefined === true) {
       return undefined as T;
@@ -1370,40 +1604,7 @@ export class MacOsAppleEventsPage {
   }
 
   async click(selector: string): Promise<void> {
-    await this.evaluate(selectorSource(selector, `
-      if (element instanceof HTMLOptionElement) {
-        const selectElement = element.closest('select');
-        if (!(selectElement instanceof HTMLSelectElement)) throw new Error('Option is not attached to a select.');
-        if (element.disabled || selectElement.disabled) throw new Error('Option is disabled.');
-        if (!selectElement.multiple) {
-          const valueSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
-          if (valueSetter) valueSetter.call(selectElement, element.value);
-          else selectElement.value = element.value;
-        } else {
-          element.selected = true;
-        }
-        selectElement.dispatchEvent(new Event('input', { bubbles: true }));
-        selectElement.dispatchEvent(new Event('change', { bubbles: true }));
-        if (!Array.from(selectElement.selectedOptions).includes(element)) throw new Error('Option selection did not persist.');
-        return true;
-      }
-      if (typeof element.click !== "function") throw new Error("Element is not clickable.");
-      const rect = typeof element.getBoundingClientRect === 'function' ? element.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
-      const clientX = Number(rect.left || 0) + Number(rect.width || 0) / 2;
-      const clientY = Number(rect.top || 0) + Number(rect.height || 0) / 2;
-      const mouseInit = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: 1, clientX, clientY };
-      if (typeof PointerEvent === 'function') {
-        element.dispatchEvent(new PointerEvent('pointerdown', { ...mouseInit, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
-      }
-      element.dispatchEvent(new MouseEvent('mousedown', mouseInit));
-      if (typeof element.focus === 'function') element.focus();
-      if (typeof PointerEvent === 'function') {
-        element.dispatchEvent(new PointerEvent('pointerup', { ...mouseInit, buttons: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
-      }
-      element.dispatchEvent(new MouseEvent('mouseup', { ...mouseInit, buttons: 0 }));
-      element.click();
-      return true;
-    `));
+    await this.evaluate(clickSource(selector));
   }
 
   async dblclick(selector: string): Promise<void> {
@@ -1419,24 +1620,7 @@ export class MacOsAppleEventsPage {
   }
 
   async fill(selector: string, value: string): Promise<void> {
-    await this.evaluate(selectorSource(selector, `
-      if ('value' in element) {
-        const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-        const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-        if (setter) setter.call(element, ${JSON.stringify(value)}); else element.value = ${JSON.stringify(value)};
-      } else if (element.isContentEditable) {
-        element.focus();
-        const selection = window.getSelection();
-        if (!selection) throw new Error('Contenteditable selection unavailable.');
-        const range = document.createRange();
-        range.selectNodeContents(element); selection.removeAllRanges(); selection.addRange(range);
-        if (!document.execCommand('insertText', false, ${JSON.stringify(value)})) throw new Error('Contenteditable insertion rejected.');
-        return true;
-      } else throw new Error('Element does not accept text input.');
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    `));
+    await this.evaluate(fillSource(selector, value));
   }
 
   async type(selector: string, text: string): Promise<void> {
@@ -1464,6 +1648,35 @@ export class MacOsAppleEventsPage {
 
   async press(selector: string, key: string): Promise<void> {
     await this.evaluate(keyEventSource(selector, key));
+  }
+
+  async runMutationSteps(
+    steps: Array<{ index: number; action: 'fill' | 'click' | 'press'; selector: string; text?: string; key?: string }>,
+  ): Promise<{
+    completed: Array<{ index: number; action: 'fill' | 'click' | 'press'; selector: string; durationMs: number }>;
+    failure?: { index: number; action: 'fill' | 'click' | 'press'; selector: string };
+  }> {
+    const operations = steps.map((step) => {
+      const source = step.action === 'fill'
+        ? fillSource(step.selector, step.text ?? '')
+        : step.action === 'click'
+          ? clickSource(step.selector)
+          : keyEventSource(step.selector, step.key ?? '');
+      return `{
+        const startedAt = performance.now();
+        try {
+          ${source};
+          completed.push({ index: ${step.index}, action: ${JSON.stringify(step.action)}, selector: ${JSON.stringify(step.selector)}, durationMs: Math.round((performance.now() - startedAt) * 10) / 10 });
+        } catch (error) {
+          return { completed, failure: { index: ${step.index}, action: ${JSON.stringify(step.action)}, selector: ${JSON.stringify(step.selector)} } };
+        }
+      }`;
+    }).join('\n');
+    return await this.evaluate(`(() => {
+      const completed = [];
+      ${operations}
+      return { completed };
+    })()`);
   }
 
   async selectOption(selector: string, values: string | string[]): Promise<unknown> {
@@ -1707,6 +1920,20 @@ export async function readMacOsBrowserOwnedTabMetadata(
   ref: MacOsBrowserTabRef,
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<MacOsBrowserMetadata> {
+  if (product === 'chrome') {
+    // The PID-bound provider resolves the stable tab ID directly and returns
+    // its actual window, even when Chrome moved the tab between windows.
+    // Do not inventory unrelated tabs merely to rebind one saved session.
+    const metadata = await readResolvedMacOsBrowserOwnedTabMetadata(product, ref, timeoutMs);
+    if (metadata.tabId !== ref.tabId) {
+      throw new AssistantPluginError(
+        'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN',
+        'Chrome metadata did not prove the exact saved tab identity.',
+        { retryable: false, details: { requestedTabId: ref.tabId, observedTabId: metadata.tabId } },
+      );
+    }
+    return metadata;
+  }
   const resolvedRef = await resolveCurrentMacOsBrowserTabRef(product, ref, timeoutMs);
   return await readResolvedMacOsBrowserOwnedTabMetadata(product, resolvedRef, timeoutMs);
 }

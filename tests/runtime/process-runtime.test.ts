@@ -45,7 +45,7 @@ import {
   isSafeFixedShellCombination,
   shellCommandHasUnsafeConstructs,
 } from '../../src/cli/repositories/command-classifier';
-import { runCanonicalCommand } from '../../src/cli/repositories/command-process';
+import { runCanonicalCommand } from '../../src/runtime/repositories/command-process';
 import {
   classifyRepositoryCommandRoute,
   executeRepositoryCommandViaProcessRuntime,
@@ -67,7 +67,7 @@ import { classifyGatewayExecutionPath } from '../../adapters/mcp/runtime-gateway
 import { persistedCheckSemanticScopeKey, runPersistedCheckViaProcessRuntime } from '../../adapters/mcp/runtime-gateway/persisted-check-process';
 import { classifyPersistedCheckTerminalEvidence, readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { registerRepository } from '../../src/runtime/repositories/registry';
 import { routeExecution } from '../../src/runtime/execution/thin-harness';
 import { listActiveLeases, acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { resourceClaimsConflict } from '../../src/runtime/resources/claims/conflicts';
@@ -79,8 +79,8 @@ import {
   currentRuntimeWriteClaimEnvironment,
 } from '../../src/runtime/root/write-fence';
 import { defaultProcessIdentityProbe, executableFingerprint } from '../../src/runtime/shared/process-identity';
-import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
-import { resolveEphemeralWorkspaceTarget } from '../../src/cli/repositories/ephemeral-workspace';
+import { ensureRepositoryRuntimeStorage } from '../../src/runtime/repositories/runtime-storage';
+import { resolveEphemeralWorkspaceTarget } from '../../src/runtime/repositories/ephemeral-workspace';
 import { sanitizeFileComponent } from '../../src/runtime/shared/json-files';
 import { callProcessTool, DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS } from '../../src/runtime/execution/process-runtime/tool-dispatch';
 import { processToolDefinitions } from '../../adapters/mcp/runtime-gateway/process-tools';
@@ -3142,7 +3142,7 @@ describe('Process Runtime real lease contention', () => {
       blockingOwnerRelation: 'process_owner',
     } });
     expect(sameWorkDenied.stdout).not.toContain('must-not-run');
-    const { getWorkContract } = await import('../../src/runtime/control-plane/facade/work-contract-store');
+    const { getWorkContract } = await import('../../packages/kernel/work/api');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, 'work-lease-a')?.executionConcurrency).toBeUndefined();
 
     // Parallel reads against a different resource key (or after release) — hold write finished.

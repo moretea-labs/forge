@@ -81,6 +81,7 @@ export type BrowserSessionLivenessEvidence =
   | 'runtime_bound_page_missing'
   | 'runtime_context_unavailable'
   | 'runtime_owner_token_not_observed'
+  | 'liveness_not_checked'
   | 'provider_unverified'
   | 'native_tab_live'
   | 'native_tab_missing'

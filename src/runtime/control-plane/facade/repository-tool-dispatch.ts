@@ -6,14 +6,14 @@
  * permission checks and receipts cannot fork between surfaces. The MCP adapter
  * keeps only its tool schema definitions and depends one-way on this module.
  */
-import { bindRepositoryEntities } from '../../../cli/repositories/entity-migration';
-import { bootstrapLocalProject, diagnoseLatestLocalProjectSource } from '../../../cli/repositories/local-project-onboarding';
-import { resolveEphemeralWorkspaceTarget } from '../../../cli/repositories/ephemeral-workspace';
-import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../../cli/repositories/command-scope';
+import { bindRepositoryEntities } from '../../repositories/entity-migration';
+import { bootstrapLocalProject, diagnoseLatestLocalProjectSource } from '../../repositories/local-project-onboarding';
+import { resolveEphemeralWorkspaceTarget } from '../../repositories/ephemeral-workspace';
+import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../repositories/command-scope';
 import type { ResolvedExecutionIdentity } from '../execution/execution-identity';
 import { getWorkContract, type WorkContract } from '../../../../packages/kernel/work/api';
-import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../../../cli/repositories/command-executor';
-import { withControllerLock } from '../../../cli/repositories/locks';
+import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../../repositories/command-executor';
+import { withControllerLock } from '../../../effects/controller-locks';
 import { withRepositoryMutationExclusion } from '../../resources/leases/store';
 import {
   disableRepository,
@@ -28,11 +28,11 @@ import {
   resolveRepositorySelection,
   updateRepository,
   validateRepository,
-} from '../../../cli/repositories/registry';
-import { repositoryGitRemoveWorktree } from '../../../cli/repositories/structured-worktree-cleanup';
-import { buildControllerWorkbench } from '../../../cli/repositories/workbench';
-import { applySafePatch, buildSafePatchPlan } from '../../../cli/repositories/safe-patch';
-import { getEditSessionDiff, type EditSessionBinding } from '../../../cli/editing/edit-session';
+} from '../../repositories/registry';
+import { repositoryGitRemoveWorktree } from '../../repositories/structured-worktree-cleanup';
+import { buildControllerWorkbench } from '../../repositories/workbench';
+import { applySafePatch, buildSafePatchPlan } from '../../repositories/safe-patch';
+import { getEditSessionDiff, type EditSessionBinding } from '../../editing/edit-session';
 import { buildSyncOperationDigest, classifyUserFacingError } from './operation-digest';
 import {
   repositoryGitCommit,
@@ -43,7 +43,7 @@ import {
   repositoryGitMergeBranch,
   repositoryGitStatus,
   repositoryGitSwitchBranch,
-} from '../../../cli/repositories/structured-git';
+} from '../../repositories/structured-git';
 import {
   readRepositoryGitStatusSample,
   writeRepositoryGitStatusSample,
@@ -62,10 +62,10 @@ import {
   executeRepositoryCommandViaProcessRuntime,
 } from '../../execution/process-runtime/command-facade';
 import { claimPathWrite } from '../../execution/process-runtime/resource-claims';
-import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
-import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
-import { readRepositoryRange } from '../../../cli/repository/inspector';
-import { getToolPolicy } from '../../../cli/controller/tool-policy';
+import { classifyRepositoryCommand } from '../../../core/repository-command/classification';
+import { normalizeRepositoryCommand } from '../../../core/repository-command/normalization';
+import { readRepositoryRange } from '../../repositories/inspector';
+import { getToolPolicy } from '../tool-policy';
 import { redactSensitiveText } from '../../evidence/sensitive-output';
 import type { ToolDispatchResult } from '../../shared/tool-dispatch-result';
 import {

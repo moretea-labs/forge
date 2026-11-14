@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { Command } from 'commander';
 import { resolveControllerHome, controllerSystemRoot } from '../../effects/controller-home';
-import { withControllerLock, type ControllerLockKey } from '../repositories/locks';
+import { withControllerLock, type ControllerLockKey } from '../../effects/controller-locks';
 import { installExternalPluginRegistration, listExternalPluginRegistrations, type ExternalPluginRegistration, type ExternalPluginRegistrationInput } from '../../runtime/plugins/external-registration';
 import { createDesktopOperatorRegistrationInput } from '../../runtime/plugins/desktop-operator-registration';
 import { getControllerPluginManifest, syncControllerPluginRegistry } from '../../runtime/plugins/store';

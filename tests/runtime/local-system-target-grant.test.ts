@@ -22,11 +22,11 @@ import {
   getRepository,
   registerRepository,
   setRepositoryCheckoutLifecycle,
-} from '../../src/cli/repositories/registry';
+} from '../../src/runtime/repositories/registry';
 import {
   acquireControllerLock,
   releaseControllerLock,
-} from '../../src/cli/repositories/locks';
+} from '../../src/effects/controller-locks';
 import {
   authorizeWorkspaceTargetGrant,
   getActiveWorkspaceTargetGrant,
@@ -50,7 +50,7 @@ import {
   submitControllerPluginAction,
 } from '../../src/runtime/plugins/store';
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
-import { getWorkContractByRequestId } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { getWorkContractByRequestId } from '../../packages/kernel/work/api';
 import {
   findActivePluginCapabilityAuthorization,
   listPluginCapabilityAuthorizations,

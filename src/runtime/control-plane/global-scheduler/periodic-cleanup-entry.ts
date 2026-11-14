@@ -1,4 +1,4 @@
-import { listRepositories } from '../../../cli/repositories/registry';
+import { listRepositories } from '../../repositories/registry';
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
 import { gcTerminalProcesses } from '../../execution/process-runtime/gc';
 import { assertRuntimeMayWrite } from '../../root/write-fence';

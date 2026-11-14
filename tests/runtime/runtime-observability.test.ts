@@ -17,7 +17,7 @@ import {
 } from '../../src/runtime/projections/materialized-view';
 import { executionJobRoot, rebuildExecutionJobIndexes } from '../../src/runtime/execution/jobs/store';
 import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
-import type { TaskLedgerProjection } from '../../src/cli/controller/task-ledger';
+import type { TaskLedgerProjection } from '../../src/runtime/projections/task-ledger-types';
 import { flushMcpDiagnostics, recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
 import { classifyForgeIncidentForRepair, maybeRegisterMcpIncidentRepair } from '../../src/runtime/diagnostics/incident-repair';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
@@ -25,7 +25,7 @@ import { authenticatedFacadeControllerIdentity } from '../../adapters/mcp/runtim
 import { createMcpToolContext as createMultiRepositoryContext } from '../../adapters/mcp/multi-repository';
 import { resolveControllerAccessState, persistControllerAccessMode, configuredControllerAccessMode } from '../../adapters/mcp/access-mode';
 import { createForgeMcpServer } from '../../adapters/mcp/server';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { registerRepository } from '../../src/runtime/repositories/registry';
 import { repositoryControllerRoot } from '../../src/effects/controller-home';
 import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
 import { buildRuntimeMaintenanceStatus } from '../../src/runtime/recovery';
@@ -35,13 +35,13 @@ import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../../src
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { collectWorkLifecycleAttention, workLifecycleAttentionBlocksReadiness } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
 import { sampleRepositoryGitStatusForRepositories } from '../../src/runtime/projections/git-status-sampler';
-import { getWorkContract, listWorkContracts } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { getWorkContract, listWorkContracts } from '../../packages/kernel/work/api';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { runHandoffInboxApplication } from '../../src/runtime/control-plane/facade/handoff-inbox-application';
 import { WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { PREFERRED_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '../../adapters/mcp/toolset-names';
-import { FORGE_VERSION } from '../../src/cli/controller/runtime-config';
+import { FORGE_VERSION } from '../../src/runtime/shared/runtime-config';
 import {
   PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG,
   processRunnerReleaseCanaryChildCommand,
@@ -353,7 +353,9 @@ describe('runtime observability', () => {
     expect(workLifecycleAttentionBlocksReadiness({ status: 'active_worktree_missing' })).toBe(false);
     expect(workLifecycleAttentionBlocksReadiness({ status: 'terminal_work_cleanup_unsettled' })).toBe(false);
     expect(workLifecycleAttentionBlocksReadiness({ status: 'branch_not_integrated' })).toBe(false);
-    expect(workLifecycleAttentionBlocksReadiness({ status: 'dirty_linked_worktree_unregistered' })).toBe(true);
+    expect(workLifecycleAttentionBlocksReadiness({ status: 'linked_worktree_unregistered' })).toBe(false);
+    expect(workLifecycleAttentionBlocksReadiness({ status: 'dirty_linked_worktree_unregistered' })).toBe(false);
+    expect(workLifecycleAttentionBlocksReadiness({ status: 'active_checkout_missing' })).toBe(true);
   });
 
   test('derives lifecycle attention for dirty unregistered worktrees and unintegrated Work branches', () => {
@@ -385,9 +387,8 @@ describe('runtime observability', () => {
       ]));
       rebuildRepositoryProjection(controllerHome, repository.repoId);
       const projection = readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection;
-      expect(projection.currentAttention).toEqual(expect.arrayContaining([
-        expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }),
-      ]));
+      expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }));
+      expect(projection.attention).toContainEqual(expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }));
       expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({ status: 'branch_not_integrated' }));
       expect(projection.attention).toContainEqual(expect.objectContaining({ status: 'branch_not_integrated' }));
       const health = evaluateRuntimeHealth(observations({
@@ -398,7 +399,7 @@ describe('runtime observability', () => {
           activeAttentionCount: projection.currentAttention.length,
         },
       }));
-      expect(health.activeBlockers.map((item) => item.code)).toContain('ACTIVE_JOB_ATTENTION_REQUIRED');
+      expect(health.activeBlockers.map((item) => item.code)).not.toContain('ACTIVE_JOB_ATTENTION_REQUIRED');
     } finally {
       spawnSync('git', ['worktree', 'remove', '--force', worktreeRoot], { cwd: repoRoot, stdio: 'ignore' });
       rmSync(worktreeRoot, { recursive: true, force: true });

@@ -88,6 +88,7 @@ import {
   saveBrowserSession,
 } from './browser-session-store';
 import {
+  assertNativeOwnedTabCapacity,
   closeTrackedNativeOwnedSession,
   inspectNativeOwnedSessions,
   nativeOwnedAliasSessionIds,
@@ -314,9 +315,11 @@ type PageLike = {
   goBack?(options?: Record<string, unknown>): Promise<unknown>;
   title(): Promise<string>;
   url(): string;
-  identity?(): Promise<{ url: string; title: string }>;
+  identity?(options?: { preferObservedDom?: boolean }): Promise<{ url: string; title: string }>;
+  beginAction?(): void;
   content?(): Promise<string>;
   evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T>;
+  readText?(selector?: string): Promise<string>;
   screenshot(options: Record<string, unknown>): Promise<Buffer>;
   click(selector: string, options?: Record<string, unknown>): Promise<void>;
   dblclick?(selector: string, options?: Record<string, unknown>): Promise<void>;
@@ -325,6 +328,10 @@ type PageLike = {
   fill(selector: string, value: string, options?: Record<string, unknown>): Promise<void>;
   type?(selector: string, text: string, options?: Record<string, unknown>): Promise<void>;
   press(selector: string, key: string, options?: Record<string, unknown>): Promise<void>;
+  runMutationSteps?(steps: Array<{ index: number; action: 'fill' | 'click' | 'press'; selector: string; text?: string; key?: string }>): Promise<{
+    completed: Array<{ index: number; action: 'fill' | 'click' | 'press'; selector: string; durationMs: number }>;
+    failure?: { index: number; action: 'fill' | 'click' | 'press'; selector: string };
+  }>;
   selectOption?(selector: string, values: string | string[], options?: Record<string, unknown>): Promise<unknown>;
   check?(selector: string, options?: Record<string, unknown>): Promise<void>;
   uncheck?(selector: string, options?: Record<string, unknown>): Promise<void>;
@@ -2579,6 +2586,7 @@ async function openNativeAttachedContext(
   args: Record<string, unknown>,
 ): Promise<{ handle?: BrowserOpenHandle; attempts: MacOsBrowserAttachAttempt[] }> {
   if (config.nativeAttachMode === 'disabled') return { attempts: [] };
+  if (!target.existingSession) assertNativeOwnedTabCapacity(listSavedSessions(repoRoot));
   if (!target.existingSession && !stringValue(args.session_id) && args.__forge_computer_native_only !== true) {
     await inspectNativeOwnedSessions({ repoRoot, savedSessions: listSavedSessions(repoRoot), timeoutMs: config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS, pruneDead: true });
   }
@@ -3116,10 +3124,14 @@ async function withPage<T>(
         ? { ...args, __forge_require_existing_resource: true }
         : args;
       handle = await openBrowser(repoRoot, config, target, browserArgs);
+      handle.page.beginAction?.();
       actionDispatched = true;
       const result = await run(handle.page, handle.diagnostics, handle.connection);
       if (options.persistSession) {
-        const identity = await readPageIdentity(handle.page, handle.connection, target.url);
+        // Native read-only DOM extraction already returns the page identity
+        // with the data in one verified provider event. Mutations still read
+        // fresh identity, and warm pages cannot reuse an earlier action's receipt.
+        const identity = await readPageIdentity(handle.page, handle.connection, target.url, postDispatchReplaySafe);
         saveBrowserSession(repoRoot, sessionFromPage(target, identity.url, identity.title, handle.connection));
         if (result && typeof result === 'object' && !Array.isArray(result) && Object.prototype.hasOwnProperty.call(result, 'url')) {
           (result as Record<string, unknown>).url = identity.url;
@@ -3183,9 +3195,9 @@ function listSavedSessions(repoRoot: string): BrowserSessionState[] {
 async function inspectSavedSessions(
   repoRoot: string,
   config: BrowserPluginConfig,
-  options: { pruneDead?: boolean } = {},
+  options: { pruneDead?: boolean; nativeOnly?: boolean } = {},
 ): Promise<BrowserSessionInventory> {
-  const saved = listSavedSessions(repoRoot);
+  const saved = listSavedSessions(repoRoot).filter((session) => !options.nativeOnly || session.browser?.provider === 'macos-apple-events');
   const sessions: BrowserSessionInventoryItem[] = [];
   let liveManagedSessionCount = 0;
   let unverifiedSessionCount = 0;
@@ -3425,6 +3437,69 @@ const EXTRACTION_SCRIPTS = {
       const inViewport = visible && right > 0 && bottom > 0 && left < viewport.width && top < viewport.height;
       const disabled = Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true');
       const editable = !disabled && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable || el.getAttribute('role') === 'textbox');
+      // Read-only UI quality evidence belongs to this existing DOM snapshot, not a
+      // second browser provider or an automatic aesthetic pass/fail authority.
+      const pixel = (raw) => {
+        const value = Number.parseFloat(raw);
+        return Number.isFinite(value) ? value : null;
+      };
+      const padding = {
+        left: pixel(style?.paddingLeft) ?? 0, right: pixel(style?.paddingRight) ?? 0,
+        top: pixel(style?.paddingTop) ?? 0, bottom: pixel(style?.paddingBottom) ?? 0,
+      };
+      const borderX = (pixel(style?.borderLeftWidth) ?? 0) + (pixel(style?.borderRightWidth) ?? 0);
+      const label = el.labels && el.labels.length ? el.labels[0] : null;
+      const labelBounds = label?.getBoundingClientRect();
+      const labelCenterDeltaY = labelBounds
+        ? Number(labelBounds.top + labelBounds.height / 2 - (top + height / 2))
+        : null;
+      const horizontalOverflow = Number(el.scrollWidth || 0) > Number(el.clientWidth || 0) + 1;
+      const verticalOverflow = Number(el.scrollHeight || 0) > Number(el.clientHeight || 0) + 1;
+      const isSelect = el.tagName === 'SELECT';
+      let select;
+      const review = [];
+      if (isSelect) {
+        const caretRightInset = pixel(style?.getPropertyValue('--select-arrow-offset'));
+        const caretSize = pixel(style?.getPropertyValue('--select-arrow-size'));
+        const extraTextClearance = caretRightInset !== null && caretSize !== null
+          ? padding.right - caretRightInset - caretSize : null;
+        const selectedText = String(el.selectedOptions?.[0]?.textContent || '').trim();
+        let measuredTextWidth = null;
+        if (selectedText && style?.font) {
+          try {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            if (context) {
+              context.font = style.font;
+              measuredTextWidth = Number(context.measureText(selectedText).width);
+            }
+          } catch { /* No measurable text: preserve unknown, never assume fit. */ }
+        }
+        const textRoom = Math.max(0, width - padding.left - padding.right - borderX);
+        const selectedTextFits = measuredTextWidth === null ? null : measuredTextWidth <= textRoom + 1;
+        select = {
+          appearance: style?.appearance || null,
+          caretRightInset, caretSize, extraTextClearance,
+          selectedTextWidth: measuredTextWidth, textRoom, selectedTextFits,
+        };
+        if (visible) {
+          if (select.appearance !== 'none' || caretRightInset === null || caretSize === null) {
+            review.push('select-caret-unmeasured');
+          } else {
+            if (caretRightInset < 12) review.push('select-caret-edge-inset');
+            if (extraTextClearance < 8) review.push('select-caret-text-clearance');
+          }
+          if (selectedTextFits === false) review.push('selected-text-clipped');
+        }
+      }
+      const parentStyle = el.parentElement && typeof getComputedStyle === 'function'
+        ? getComputedStyle(el.parentElement) : null;
+      const parentLayout = parentStyle ? {
+        display: parentStyle.display || null, alignItems: parentStyle.alignItems || null,
+        justifyContent: parentStyle.justifyContent || null,
+        rowGap: pixel(parentStyle.rowGap), columnGap: pixel(parentStyle.columnGap),
+      } : null;
+      const layout = { padding, horizontalOverflow, verticalOverflow, labelCenterDeltaY, parentLayout, select, review };
       return {
         tag: el.tagName.toLowerCase(),
         text,
@@ -3439,11 +3514,17 @@ const EXTRACTION_SCRIPTS = {
         inViewport,
         disabled,
         editable,
+        layout,
       };
     });
     return { geometryVersion: 1, viewport, elements };
   })()`,
 };
+
+// The existing browser snapshot is the sole DOM layout observation path.
+export function browserInteractiveSnapshotScript(limit: number): string {
+  return EXTRACTION_SCRIPTS.interactive(limit);
+}
 
 function selectorUnavailableInTime(errorMessage: string): boolean {
   return /timeout|timed out|waiting for selector|selector.*not found|not found.*selector/i.test(errorMessage);
@@ -3459,7 +3540,7 @@ function selectorRepairHint(selector: string, errorMessage: string): string {
   return `Check selector "${selector}" against the current page structure.`;
 }
 
-type BrowserEvaluationScope = Pick<PageLike, 'evaluate'>;
+type BrowserEvaluationScope = Pick<PageLike, 'evaluate' | 'readText'>;
 
 type BrowserFrameSelection = {
   scope: BrowserEvaluationScope;
@@ -3601,7 +3682,11 @@ function translateFrameGroundingElements(elements: unknown[], offset: { x: numbe
 }
 
 async function extractText(scope: BrowserEvaluationScope, selector: string | undefined, maxChars: number): Promise<Record<string, unknown>> {
-  const raw = await scope.evaluate<string>(scriptText(selector));
+  // The exact native tab can use the provider's constrained read-only action.
+  // Shadow-root selectors retain the canonical script-based implementation.
+  const raw = scope.readText && (!selector || openShadowSelectorParts(selector).length <= 1)
+    ? await scope.readText(selector)
+    : await scope.evaluate<string>(scriptText(selector));
   return truncateText(raw, maxChars);
 }
 
@@ -3664,7 +3749,7 @@ function verifyStateObservationScript(selector: string | undefined, textContains
   })()`;
 }
 
-async function readPageIdentity(page: PageLike, connection?: BrowserConnectionSummary, expectedUrl?: string): Promise<{ url: string; title: string }> {
+async function readPageIdentity(page: PageLike, connection?: BrowserConnectionSummary, expectedUrl?: string, preferObservedDom = false): Promise<{ url: string; title: string }> {
   const normalizeObservedUrl = (value: unknown): string => {
     const internalProduct = browserInternalUrlProduct(value);
     if (connection?.provider === 'macos-apple-events' && connection.tab?.ownership === 'user_owned') {
@@ -3678,7 +3763,7 @@ async function readPageIdentity(page: PageLike, connection?: BrowserConnectionSu
     return normalizedUrl(value);
   };
   if (connection?.provider === 'macos-apple-events' && typeof page.identity === 'function') {
-    const identity = await page.identity();
+    const identity = await page.identity({ preferObservedDom });
     return { url: normalizeObservedUrl(identity.url), title: identity.title };
   }
   return { url: normalizeObservedUrl(page.url()), title: await page.title() };
@@ -4078,7 +4163,10 @@ async function executeBrowserPluginActionInternal(
         };
       }
       case 'list_sessions': {
-        const inventory = await inspectSavedSessions(input.repoRoot, current);
+        // Listing is a metadata read. A full native Apple Events inventory can
+        // take several seconds for a populated browser; callers that need fresh
+        // liveness must explicitly use reconcile_sessions instead.
+        const saved = listSavedSessions(input.repoRoot);
         const requestedLimit = Math.max(1, Math.min(Math.trunc(positiveNumber(input.args.limit, DEFAULT_BROWSER_SESSION_LIST_LIMIT)), MAX_BROWSER_SESSION_LIST_LIMIT));
         let offset = 0;
         const cursor = stringValue(input.args.cursor);
@@ -4092,39 +4180,38 @@ async function executeBrowserPluginActionInternal(
           }
         }
         const visibleSessions = input.pluginId === 'computer'
-          ? inventory.sessions.filter(({ session }) => session.browser?.provider === 'macos-apple-events')
-          : inventory.sessions;
+          ? saved.filter((session) => session.browser?.provider === 'macos-apple-events')
+          : saved;
         const page = visibleSessions.slice(offset, offset + requestedLimit);
         const nextOffset = offset + page.length;
         return {
-          provider: 'playwright',
+          provider: input.pluginId === 'computer' ? 'macos-apple-events' : 'playwright',
           sessionCountSemantics: currentRuntimeBrowserSessionExecutionContext() ? 'controller_authority' : 'saved_metadata',
-          scannedSessionCount: inventory.scannedSessionCount,
-          savedSessionCount: inventory.savedSessionCount,
-          liveManagedSessionCount: inventory.liveManagedSessionCount,
-          liveNativeSessionCount: inventory.liveNativeSessionCount,
-          unverifiedSessionCount: inventory.unverifiedSessionCount,
-          deadManagedSessionCount: inventory.deadManagedSessionCount,
-          deadNativeSessionCount: inventory.deadNativeSessionCount,
+          scannedSessionCount: saved.length,
+          savedSessionCount: visibleSessions.length,
+          liveManagedSessionCount: 0,
+          liveNativeSessionCount: 0,
+          unverifiedSessionCount: visibleSessions.length,
+          deadManagedSessionCount: 0,
+          deadNativeSessionCount: 0,
           limit: requestedLimit,
           totalCount: visibleSessions.length,
           ...(nextOffset < visibleSessions.length ? { nextCursor: Buffer.from(JSON.stringify({ offset: nextOffset }), 'utf8').toString('base64url') } : {}),
-          sessions: page.map(({ session, liveness, evidence, cleanupError }) => ({
+          sessions: page.map((session) => ({
             sessionId: session.sessionId,
             url: session.url,
             title: session.title,
             createdAt: session.createdAt,
             updatedAt: session.updatedAt,
             browser: session.browser,
-            liveness,
-            livenessEvidence: evidence,
-            ...(cleanupError ? { cleanupError } : {}),
+            liveness: 'unverified' as const,
+            livenessEvidence: 'liveness_not_checked' as const,
           })),
         };
       }
       case 'reconcile_sessions': {
         assertBrowserSessionAvailable(input.repoRoot);
-        const inventory = await inspectSavedSessions(input.repoRoot, current, { pruneDead: true });
+        const inventory = await inspectSavedSessions(input.repoRoot, current, { pruneDead: true, nativeOnly: input.pluginId === 'computer' });
         return {
           reconciled: true,
           sessionCountSemantics: 'saved_metadata',
@@ -4293,7 +4380,7 @@ async function executeBrowserPluginActionInternal(
         }
         if (handoff.status === 'completed' && handoff.result?.url) {
           const session = findBrowserSession(input.repoRoot, handoff.sessionId);
-          if (session) {
+          if (session && (session.url !== handoff.result.url || session.title !== handoff.result.title)) {
             saveBrowserSession(input.repoRoot, {
               ...session,
               url: handoff.result.url,
@@ -5062,7 +5149,52 @@ async function executeBrowserPluginActionInternal(
         }
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const completed: Array<{ index: number; action: StepAction; selector: string; durationMs: number }> = [];
-          for (const [index, step] of steps.entries()) {
+          let providerBatchCount = 0;
+          let providerBatchStepCount = 0;
+          let providerBatchDurationMs = 0;
+          for (let index = 0; index < steps.length;) {
+            const step = steps[index]!;
+            if (step.action !== 'wait_for_selector' && page.runMutationSteps) {
+              const batch: Array<{ index: number; action: 'fill' | 'click' | 'press'; selector: string; text?: string; key?: string }> = [];
+              let nextIndex = index;
+              while (nextIndex < steps.length && steps[nextIndex]!.action !== 'wait_for_selector') {
+                const mutation = steps[nextIndex]!;
+                batch.push({ index: nextIndex, action: mutation.action as 'fill' | 'click' | 'press', selector: mutation.selector,
+                  ...(mutation.text !== undefined ? { text: mutation.text } : {}),
+                  ...(mutation.key !== undefined ? { key: mutation.key } : {}) });
+                nextIndex += 1;
+              }
+              if (batch.length > 1) {
+                const startedAt = performance.now();
+                let result: Awaited<ReturnType<NonNullable<PageLike['runMutationSteps']>>>;
+                try {
+                  result = await page.runMutationSteps(batch);
+                } catch {
+                  throw new AssistantPluginError('PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN',
+                    `Browser mutation batch outcome is unknown from step ${index}; reconcile the exact session before any retry.`,
+                    { retryable: false, effectOutcome: 'outcome_unknown', details: { actionId: 'run_steps', batchStartIndex: index,
+                      completedSteps: completed.length, providerBatchSteps: batch.length, batchOutcome: 'unknown' } });
+                }
+                providerBatchDurationMs += performance.now() - startedAt;
+                providerBatchCount += 1;
+                providerBatchStepCount += batch.length;
+                completed.push(...result.completed);
+                if (result.failure) {
+                  throw new AssistantPluginError('PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN',
+                    `Browser batch stopped at step ${result.failure.index}; reconcile the exact session before any retry.`,
+                    { retryable: false, effectOutcome: 'outcome_unknown', details: { actionId: 'run_steps', failedIndex: result.failure.index,
+                      completedSteps: completed.length, stepAction: result.failure.action, providerBatchSteps: batch.length, batchOutcome: 'step_failed' } });
+                }
+                if (result.completed.length !== batch.length) {
+                  throw new AssistantPluginError('PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN',
+                    `Browser mutation batch returned an incomplete result from step ${index}; reconcile the exact session before any retry.`,
+                    { retryable: false, effectOutcome: 'outcome_unknown', details: { actionId: 'run_steps', batchStartIndex: index,
+                      completedSteps: completed.length, providerBatchSteps: batch.length, batchOutcome: 'incomplete' } });
+                }
+                index = nextIndex;
+                continue;
+              }
+            }
             const startedAt = performance.now();
             try {
               if (step.action === 'fill') await page.fill(step.selector, step.text!, { timeout: step.timeoutMs });
@@ -5078,11 +5210,14 @@ async function executeBrowserPluginActionInternal(
             }
             completed.push({ index, action: step.action, selector: step.selector,
               durationMs: Math.round((performance.now() - startedAt) * 10) / 10 });
+            index += 1;
           }
           await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection,
             'run_steps', `Completed ${completed.length} bounded browser steps.`,
-            { completedSteps: completed.length, steps: completed });
+            { completedSteps: completed.length, steps: completed,
+              ...(providerBatchCount > 0 ? { providerBatchCount, providerBatchStepCount,
+                providerBatchDurationMs: Math.round(providerBatchDurationMs * 10) / 10 } : {}) });
         }, { requireExistingResource: true });
       }
       case 'press': {

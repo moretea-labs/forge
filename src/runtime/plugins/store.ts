@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'crypto';
 import { join } from 'path';
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 import { CONTROLLER_SCOPE_REPO_ID, FORGE_INSTANCE_SCOPE_KEY, controllerSystemRoot, ensureControllerHome, repositoryControllerRoot } from '../../effects/controller-home';
-import { listRepositories } from '../../cli/repositories/registry';
+import { listRepositories } from '../repositories/registry';
 import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
@@ -25,7 +25,7 @@ import { markControllerContextProjectionDirty } from '../projections/controller-
 import { acquireExecutionLeasesAsync, releaseExactExecutionLeases, renewExecutionLeases } from '../resources/leases/store';
 import { iosSimulatorResourceKey } from '../resources/claims/conflicts';
 import { isRuntimeWriteFenceError } from '../root/write-fence';
-import { ControllerLockContentionError } from '../../cli/repositories/locks';
+import { ControllerLockContentionError } from '../../effects/controller-locks';
 import type {
   AssistantPluginAdapter,
   AssistantPluginActionDescriptor,
@@ -285,9 +285,11 @@ export function listControllerPluginManifests(
   controllerHome: string,
   options: ListAssistantPluginManifestsOptions = {},
 ): AssistantPluginManifest[] {
-  ensureControllerPluginStateMigrated(controllerHome);
   const preferStored = options.preferStored === true && options.forceRefresh !== true;
   const fallbackToLive = options.fallbackToLive !== false || !preferStored;
+  // Stored-only observations are read-only. Legacy migration belongs to an
+  // explicit plugin discovery/refresh or execution path, never a status read.
+  if (!preferStored || fallbackToLive) ensureControllerPluginStateMigrated(controllerHome);
   const cacheKey = listCacheKey(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE, preferStored, fallbackToLive);
   if (options.forceRefresh !== true) {
     const cached = readPluginManifestCache(pluginManifestListCache, cacheKey, preferStored ? PLUGIN_MANIFEST_STORED_CACHE_TTL_MS : PLUGIN_MANIFEST_LIVE_CACHE_TTL_MS);
@@ -1029,9 +1031,11 @@ export function listAssistantPluginManifests(
   repository: RepositoryRecord,
   options: ListAssistantPluginManifestsOptions = {},
 ): AssistantPluginManifest[] {
-  ensureControllerPluginStateMigrated(controllerHome);
   const preferStored = options.preferStored === true && options.forceRefresh !== true;
   const fallbackToLive = options.fallbackToLive !== false || !preferStored;
+  // Stored-only observations are read-only. Legacy migration belongs to an
+  // explicit plugin discovery/refresh or execution path, never a status read.
+  if (!preferStored || fallbackToLive) ensureControllerPluginStateMigrated(controllerHome);
   const cacheKey = listCacheKey(controllerHome, repository.repoId, preferStored, fallbackToLive);
   if (options.forceRefresh !== true) {
     // Stored manifests are persisted snapshots. Their freshness is governed by

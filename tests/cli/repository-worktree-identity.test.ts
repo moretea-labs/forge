@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "fs"
 import { spawnSync } from "child_process";
 import { tmpdir } from "os";
 import { join } from "path";
-import { getRepository, listRepositories, registerRepository } from "../../src/cli/repositories/registry";
+import { getRepository, listRepositories, registerRepository } from "../../src/runtime/repositories/registry";
 
 function git(root: string, ...args: string[]): void {
   const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });

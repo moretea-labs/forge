@@ -20,14 +20,16 @@ import {
   controllerCheckConcurrencyClass,
   releaseControllerCheckSubscription,
   runControllerCheckAsync,
-} from "../../src/cli/controller/check-runner";
-import { FORGE_TOOL_SURFACE } from "../../src/cli/controller/runtime-config";
+} from "../../src/runtime/execution/process-runtime/check-runner";
+import { FORGE_TOOL_SURFACE } from "../../src/runtime/shared/runtime-config";
 import { createIssue, getIssue, updateTask } from "../../src/cli/controller/issue-store";
-import { beginEditSession, applyEditOperations } from "../../src/cli/editing/edit-session";
-import { getToolPolicy } from '../../src/cli/controller/tool-policy';
+import { beginEditSession, applyEditOperations } from "../../src/runtime/editing/edit-session";
+import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import {
-  getLocalBridgeJob,
   cancelLocalBridgeJob,
+  dispatchLocalBridgeJob,
+  getLocalBridgeJob,
+  getLocalBridgeJobEvents,
   listLocalBridgeJobs,
   reconcileLocalBridgeJobs,
 } from "../../src/cli/local-bridge/job-store";
@@ -36,8 +38,8 @@ import {
   type LocalBridgeServerHandle,
 } from "../../src/cli/local-bridge/server";
 import { isProcessAlive } from "../../src/runtime/shared/process-tree";
-import { addRepositoryCheckout, loadRepositoryRegistry, registerRepository, resolveRepositorySelection } from "../../src/cli/repositories/registry";
-import { acquireControllerLock, releaseControllerLock } from "../../src/cli/repositories/locks";
+import { addRepositoryCheckout, loadRepositoryRegistry, registerRepository, resolveRepositorySelection } from "../../src/runtime/repositories/registry";
+import { acquireControllerLock, releaseControllerLock } from "../../src/effects/controller-locks";
 import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { createMcpToolContext, callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
 import { createSchedule, saveOccurrence, saveSchedule } from "../../src/runtime/workflow/schedules/store";
@@ -184,6 +186,35 @@ describe("Local Execution Bridge", () => {
       expect(response.status).toBe(410);
       expect(await response.json()).toMatchObject({ error: 'LEGACY_CONTROL_PLANE_MUTATION_RETIRED' });
     }
+  });
+
+  test("retires an approved historical Local Bridge Job instead of dispatching it", () => {
+    const root = repo();
+    const jobId = "historical-approved-job";
+    const createdAt = new Date().toISOString();
+    const jobDirectory = join(root, ".ai/harness/local-jobs", jobId);
+    mkdirSync(jobDirectory, { recursive: true });
+    writeFileSync(join(jobDirectory, "job.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      jobId,
+      action: "repository-command",
+      payload: {},
+      requestedBy: "test",
+      approval: "auto",
+      status: "approved",
+      createdAt,
+      updatedAt: createdAt,
+    })}\n`);
+
+    const retired = dispatchLocalBridgeJob(root, jobId);
+    expect(retired.status).toBe("failed");
+    expect(retired.error).toContain("LOCAL_BRIDGE_JOB_RETIRED");
+    expect(getLocalBridgeJobEvents(root, jobId).at(-1)).toMatchObject({
+      type: "job_failed",
+      data: { legacyDispatchRetired: true },
+    });
+    expect(listLocalBridgeJobs(root, 10)).toMatchObject([{ jobId, status: "failed" }]);
+    expect(reconcileLocalBridgeJobs(root)).toMatchObject({ scanned: 0, active: 0, terminalized: 0 });
   });
 
   test("starts successfully when Local Job runtime storage is already linked", async () => {

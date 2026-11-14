@@ -654,6 +654,27 @@ function additionalAscActions(): AssistantPluginActionDescriptor[] {
   })];
 }
 
+async function listAppTerritoryAvailabilities(config: AppStoreConnectPluginConfig, args: Record<string, unknown>) {
+  const app = requiredArg(args, 'app_id');
+  const cursor = args.cursor === undefined ? undefined : requiredArg(args, 'cursor');
+  // Availability IDs are opaque Apple resources, not necessarily the App ID.
+  const availability = await apiRequest<{ data?: { type?: string; id?: string } }>(config, {
+    path: `/v1/apps/${encodeURIComponent(app)}/appAvailabilityV2`,
+  });
+  const id = availability.data?.id;
+  if (availability.data?.type !== 'appAvailabilities' || typeof id !== 'string' ||
+      !id.trim() || id.trim() !== id || id.length > 256) {
+    throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple app availability resource is missing or malformed.', { retryable: false });
+  }
+  return apiRequest<Record<string, unknown>>(config, {
+    path: `/v2/appAvailabilities/${encodeURIComponent(id)}/territoryAvailabilities`,
+    query: {
+      include: 'territory', limit: limit(args.limit, 200), cursor,
+      'fields[territoryAvailabilities]': 'available,releaseDate,contentStatuses,territory',
+    },
+  });
+}
+
 function additionalAscReadRequest(spec: AscReadSpec, args: Record<string, unknown>, config: AppStoreConnectPluginConfig) {
   for (const required of spec.required) requiredArg(args, required);
   const path = spec.path.replace(/:([a-z_]+)/g, (_match, key: string) =>
@@ -1275,6 +1296,7 @@ function capabilities(): AssistantPluginCapability[] {
         'auth_status', 'list_apps', 'list_app_store_versions', 'list_app_store_version_localizations',
         'get_app_info', 'list_app_infos', 'list_builds', 'list_testflight_builds', 'get_build_detail',
         'list_beta_groups', 'list_beta_testers', 'list_review_submissions',
+        'list_app_territory_availabilities',
       ],
     },
     {
@@ -1337,6 +1359,15 @@ function actions(): AssistantPluginActionDescriptor[] {
   const readRemote = [{ resource: 'remote' as const, mode: 'read' as const }];
   const writeRemote = [{ resource: 'remote' as const, mode: 'exclusive' as const }];
   return [
+    {
+      actionId: 'list_app_territory_availabilities', title: 'Read app territory availability',
+      description: 'Resolve the exact app availability resource and return official territory status and pagination without inferring storefront downloadability.',
+      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 90_000,
+      cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote,
+      argumentsSchema: { type: 'object', properties: {
+        app_id: { type: 'string' }, limit: { type: 'number', minimum: 1, maximum: 200 }, cursor: { type: 'string' },
+      }, required: ['app_id'], additionalProperties: false },
+    },
     {
       actionId: 'configure', title: 'Configure App Store Connect plugin', description: 'Enable official App Store Connect API access and save non-secret defaults.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true,
       scopes: ['appstoreconnect.apps.read', 'appstoreconnect.developer_resources.read', 'appstoreconnect.metadata.write', 'appstoreconnect.screenshots.write', 'appstoreconnect.assets.write', 'appstoreconnect.testflight.write', 'appstoreconnect.release.write', 'appstoreconnect.xcodecloud.read', 'appstoreconnect.xcodecloud.write'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
@@ -1796,6 +1827,8 @@ function mockBuild(id: string) {
 }
 
 function mockResponse(actionId: string, args: Record<string, unknown>, config: AppStoreConnectPluginConfig): Record<string, unknown> {
+  if (actionId === 'list_app_territory_availabilities')
+    return { data: [], meta: { provider: 'mock', appId: requiredArg(args, 'app_id') } };
   const id = stringValue(args.app_id) ?? config.defaultAppId ?? stableMockId('app', args);
   const additionalRead = additionalAscReads.find(spec => spec.id === actionId);
   if (actionId === 'upload_asset_library_image')
@@ -2019,6 +2052,7 @@ export async function executeAppStoreConnectPluginAction(input: AssistantPluginA
   if (!config.enabled || !auth.ready) throw new AssistantPluginError('PLUGIN_NOT_READY', 'App Store Connect plugin is not ready.', { retryable: false, details: { enabled: config.enabled, errors: auth.errors } });
 
   if (input.actionId === 'check_release_readiness') return inspectAppStoreReleaseReadiness(config, input.args);
+  if (input.actionId === 'list_app_territory_availabilities') return listAppTerritoryAvailabilities(config, input.args);
   if (input.actionId === 'upload_asset_library_image') return uploadAppAssetLibraryImage(config, input.args, input.repoRoot);
   if (input.actionId === 'summarize_analytics_instance') return summarizeAppleAnalyticsInstance(config,input.args);
   if (['read_analytics_segment_data','summarize_analytics_segment','read_sales_report','read_finance_report'].includes(input.actionId))

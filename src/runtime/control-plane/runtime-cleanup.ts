@@ -10,9 +10,9 @@ import {
 } from 'fs';
 import { basename, dirname, join, relative, resolve } from 'path';
 import { ensureControllerHome } from '../../effects/controller-home';
-import { cleanupTerminalEditSessionRecords } from '../../cli/editing/edit-session';
-import { listRepositories } from '../../cli/repositories/registry';
-import { managedPathInside, managedWorktreeStorageRoot } from '../../cli/repositories/worktree-storage';
+import { cleanupTerminalEditSessionRecords } from '../editing/edit-session';
+import { listRepositories } from '../repositories/registry';
+import { managedPathInside, managedWorktreeStorageRoot } from '../../effects/managed-worktree-storage';
 import { migrateManagedWorkspacePhysicalDependenciesToCanonical } from '../execution/managed-workspace';
 import { listActiveLeases } from '../resources/leases/store';
 import { cleanupScheduleOccurrenceHistory } from '../../../packages/kernel/scheduler/api/index';

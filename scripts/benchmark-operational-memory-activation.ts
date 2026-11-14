@@ -10,7 +10,7 @@ import {
   type OperationalMemoryActivationMeasurement,
   type OperationalMemoryActivationPair,
 } from '../evaluation/lib/operational-memory-activation';
-import { controllerCheckEnvironmentFingerprint, listControllerChecks } from '../src/cli/controller/check-runner';
+import { controllerCheckEnvironmentFingerprint, listControllerChecks } from '../src/runtime/execution/process-runtime/check-runner';
 import {
   OPERATIONAL_MEMORY_NAMESPACE,
   ingestCheckCompletionGraceProcess,

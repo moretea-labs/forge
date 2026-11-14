@@ -488,7 +488,7 @@ function buildComputerManifest(
 ): AssistantPluginManifest {
   const browser = buildBrowserPluginManifest(previousRevision, previousUpdatedAt, repoRoot, context, true);
   const scriptedBrowserActions = new Set([
-    'configure', 'install_unpacked_extension', 'list_unpacked_extensions', 'clear_session', 'reconcile_sessions',
+    'configure', 'install_unpacked_extension', 'list_unpacked_extensions', 'clear_session',
   ]);
   const browserActions = browser.actions.filter((action) => !scriptedBrowserActions.has(action.actionId));
   const browserCapabilities = browser.capabilities.map((capability) => ({
@@ -1212,7 +1212,7 @@ async function resolveDesktopAuthorizationContext(input: AssistantPluginActionEx
 // The independent Browser plugin retains explicit Playwright scripting modes,
 // but Computer must neither select nor silently fall back to those providers.
 function computerNativeBrowserInput(input: AssistantPluginActionExecutionInput): AssistantPluginActionExecutionInput {
-  if (['configure', 'install_unpacked_extension', 'list_unpacked_extensions', 'clear_session', 'reconcile_sessions'].includes(input.actionId)) {
+  if (['configure', 'install_unpacked_extension', 'list_unpacked_extensions', 'clear_session'].includes(input.actionId)) {
     throw new AssistantPluginError('PLUGIN_COMPUTER_BROWSER_SCRIPT_ACTION_SEPARATE',
       'Browser profile configuration and script-managed extensions belong to the independent Browser plugin.', { retryable: false });
   }

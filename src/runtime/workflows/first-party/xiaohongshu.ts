@@ -1,5 +1,6 @@
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import imageNoteDraft from '../../../../assets/workflows/xiaohongshu/xiaohongshu.publish-image-note.v1.draft.json' with { type: 'json' };
+import longTextDraft from '../../../../assets/workflows/xiaohongshu/xiaohongshu.publish-long-text.v1.draft.json' with { type: 'json' };
+import metricsDraft from '../../../../assets/workflows/xiaohongshu/xiaohongshu.collect-metrics.v1.draft.json' with { type: 'json' };
 import { materializeWorkflowAsset, workflowCapabilityDependencies, type WorkflowAssetDefinition, type WorkflowAssetDraft, type WorkflowJsonValue } from '../../../../packages/workflow-runtime/api/index';
 import { writeWorkflowAssetContent } from '../../control-plane/persistence/workflow-content-store';
 import { readWorkflowRegistryEntry, recordWorkflowBindings, registerWorkflowAsset, type WorkflowCapabilityBinding } from '../../control-plane/persistence/workflow-registry-store';
@@ -12,21 +13,17 @@ export const XIAOHONGSHU_WORKFLOW_IDS = {
 
 export type XiaohongshuPublishMode = 'image_note' | 'generated_image_note' | 'long_text';
 
-const ASSET_FILES: Record<string, string> = {
-  [XIAOHONGSHU_WORKFLOW_IDS.imageNote]: 'xiaohongshu.publish-image-note.v1.draft.json',
-  [XIAOHONGSHU_WORKFLOW_IDS.longText]: 'xiaohongshu.publish-long-text.v1.draft.json',
-  [XIAOHONGSHU_WORKFLOW_IDS.metrics]: 'xiaohongshu.collect-metrics.v1.draft.json',
+const AUTHORED_DRAFTS: Record<string, unknown> = {
+  [XIAOHONGSHU_WORKFLOW_IDS.imageNote]: imageNoteDraft,
+  [XIAOHONGSHU_WORKFLOW_IDS.longText]: longTextDraft,
+  [XIAOHONGSHU_WORKFLOW_IDS.metrics]: metricsDraft,
 };
 
-function assetPath(workflowId: string): string {
-  const filename = ASSET_FILES[workflowId];
-  if (!filename) throw new Error(`XHS_WORKFLOW_UNKNOWN: ${workflowId}`);
-  return resolve(import.meta.dir, '../../../../assets/workflows/xiaohongshu', filename);
-}
-
 export function readAuthoredXiaohongshuWorkflowDraft(workflowId: string): WorkflowAssetDraft {
-  const parsed = JSON.parse(readFileSync(assetPath(workflowId), 'utf8')) as WorkflowAssetDraft;
-  return parsed;
+  const draft = AUTHORED_DRAFTS[workflowId];
+  if (!Object.hasOwn(AUTHORED_DRAFTS, workflowId)) throw new Error(`XHS_WORKFLOW_UNKNOWN: ${workflowId}`);
+  // Static imports retain the same authored content in deployed Runtime bundles.
+  return structuredClone(draft) as WorkflowAssetDraft;
 }
 
 export function materializedXiaohongshuWorkflow(workflowId: string): WorkflowAssetDefinition {

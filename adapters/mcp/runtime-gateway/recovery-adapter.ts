@@ -1,12 +1,12 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { listControllerChecks } from '../../../src/cli/controller/check-runner';
-import { listRepositories } from '../../../src/cli/repositories/registry';
-import { ensureRepositoryRuntimeStorage } from '../../../src/cli/repositories/runtime-storage';
-import { cachedGitIdentity } from '../../../src/cli/repository/inspector';
+import { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
+import { listRepositories } from '../../../src/runtime/repositories/registry';
+import { ensureRepositoryRuntimeStorage, inspectRepositoryRuntimeStorage } from '../../../src/runtime/repositories/runtime-storage';
+import { cachedGitIdentity } from '../../../src/runtime/repositories/inspector';
 import { inferLocalControllerProcess } from '../../../src/runtime/diagnostics/performance';
 import { listExecutionJobs } from '../../../src/runtime/execution/jobs/store';
-import { listLocalBridgeJobSnapshots } from '../../../src/cli/local-bridge/job-store';
+import { listLocalBridgeJobSnapshots } from '../../../src/runtime/local-bridge/read-model';
 import { listAssistantPluginManifests } from '../../../src/runtime/plugins/store';
 import { readRepositoryProjectionSnapshot } from '../../../src/runtime/projections/materialized-view';
 import {
@@ -79,7 +79,7 @@ async function capabilityRecoveryInput(
   let runtimeStorageWarnings: string[] = [];
   if (repository) {
     try {
-      const runtimeStorage = ensureRepositoryRuntimeStorage(repository, ctx.controllerHome);
+      const runtimeStorage = inspectRepositoryRuntimeStorage(repository, ctx.controllerHome);
       runtimeStorageReady = runtimeStorage.readyForExecution;
       runtimeStorageWarnings = runtimeStorage.warnings;
     } catch (error) {
@@ -87,7 +87,7 @@ async function capabilityRecoveryInput(
       runtimeStorageWarnings = [error instanceof Error ? error.message : String(error)];
     }
   }
-  const plugins = repository ? listAssistantPluginManifests(ctx.controllerHome, repository, { preferStored: true }) : [];
+  const plugins = repository ? listAssistantPluginManifests(ctx.controllerHome, repository, { preferStored: true, fallbackToLive: false }) : [];
   const localJobs = repository ? listLocalBridgeJobSnapshots(repository.canonicalRoot, 30) : [];
   const executionJobs = repository ? listExecutionJobs(ctx.controllerHome, repository.repoId, 30) : [];
   return {

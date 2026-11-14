@@ -19,7 +19,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { ensureControllerHome, controllerSystemRoot } from '../src/effects/controller-home';
-import { registerRepository } from '../src/cli/repositories/registry';
+import { registerRepository } from '../src/runtime/repositories/registry';
 import { createMcpToolContext } from '../adapters/mcp/server';
 import { callRepositoryTool } from '../src/runtime/control-plane/facade/repository-tool-dispatch';
 import {
@@ -28,7 +28,7 @@ import {
 } from '../adapters/mcp/runtime-gateway/router';
 import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
 import { listProcessRecords } from '../src/runtime/execution/process-runtime/store';
-import { listLocalBridgeJobSnapshots } from '../src/cli/local-bridge/job-store';
+import { listLocalBridgeJobSnapshots } from '../src/runtime/local-bridge/read-model';
 import { listFastReceipts } from '../src/runtime/execution/thin-harness/fast-receipt';
 import {
   getLeaseSideEffectMetrics,

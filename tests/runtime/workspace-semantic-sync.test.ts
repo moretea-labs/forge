@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureForgeInstanceIdentity, MAX_SEMANTIC_SYNC_JOURNAL_ENTRIES } from '../../packages/kernel/identity/api/index';
-import { portableProjectSourceFingerprint, stablePortableProjectId } from '../../src/cli/repositories/identity';
+import { portableProjectSourceFingerprint, stablePortableProjectId } from '../../src/core/repository/identity';
 import type { PlanContract } from '../../src/runtime/control-plane/facade/types';
 import type { Requirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';

@@ -5,7 +5,7 @@ import { join } from 'path';
 import { createMcpToolContext } from '../adapters/mcp/multi-repository';
 import { callRuntimeTool } from '../adapters/mcp/runtime-gateway/runtime-tools';
 import { exposedControllerToolDefinitions } from '../adapters/mcp/toolset';
-import { registerRepository } from '../src/cli/repositories/registry';
+import { registerRepository } from '../src/runtime/repositories/registry';
 
 type ToolCall = { value: Record<string, any>; elapsedMs: number };
 

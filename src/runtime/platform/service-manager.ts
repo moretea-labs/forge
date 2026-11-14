@@ -10,7 +10,7 @@ import {
   retireConflictingForgeLaunchAgents,
   retireLaunchAgentExact,
   type ExactLaunchAgentRetirementResult,
-} from '../../cli/controller/launch-agents';
+} from './launch-agents';
 import {
   installSystemdUserUnit,
   renderSystemdUserUnit,
@@ -20,9 +20,9 @@ import {
   retireSystemdUserUnitExact,
   type ExactSystemdUserUnitRetirementResult,
   type SystemdUserUnitInput,
-} from '../../cli/controller/systemd-user';
+} from './systemd-user';
 
-export type { SystemdUserUnitInput } from '../../cli/controller/systemd-user';
+export type { SystemdUserUnitInput } from './systemd-user';
 
 export type PlatformServiceManagerKind = 'launchd' | 'systemd-user' | 'portable';
 

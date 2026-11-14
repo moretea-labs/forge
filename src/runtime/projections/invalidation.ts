@@ -3,7 +3,7 @@ import { join } from 'path';
 import { repositoryControllerRoot } from '../../effects/controller-home';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { assertRuntimeMayWrite } from '../root/write-fence';
-import { withControllerLock } from '../../cli/repositories/locks';
+import { withControllerLock } from '../../effects/controller-locks';
 
 export type ProjectionRefreshStatus = 'pending' | 'running' | 'failed';
 

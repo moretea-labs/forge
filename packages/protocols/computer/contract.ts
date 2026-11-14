@@ -71,6 +71,7 @@ export type ComputerBrowserAutomationRequest =
   | { action: 'navigate'; product: ComputerBrowserProduct; ref?: ComputerBrowserTabRef; url: string }
   | { action: 'reload'; product: ComputerBrowserProduct; ref?: ComputerBrowserTabRef }
   | { action: 'execute_javascript'; product: ComputerBrowserProduct; ref?: ComputerBrowserTabRef; source: string }
+  | { action: 'read_text'; product: ComputerBrowserProduct; ref: ComputerBrowserTabRef; selector?: string }
   | { action: 'activate'; product: ComputerBrowserProduct; ref?: ComputerBrowserTabRef }
   | { action: 'trusted_input'; product: ComputerBrowserProduct; ref: ComputerBrowserTabRef; input: ComputerTrustedInput }
   | { action: 'capture_region'; region: ComputerCaptureRegion };

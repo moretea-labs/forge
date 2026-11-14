@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { tryAppendControllerWorklogEvent } from "./worklog";
+import { tryAppendControllerWorklogEvent } from "../../runtime/evidence/controller-worklog";
 import { assertLegacyCurrentIssueWriteAllowed, legacyIssueAuthorityRetired, legacyIssueCutoverState } from "./legacy-issue-cutover";
 
 const PROJECT_STATE_PATH = ".ai/harness/controller/project-state.json";

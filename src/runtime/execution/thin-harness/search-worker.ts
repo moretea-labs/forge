@@ -4,13 +4,13 @@
  */
 import { isMainThread, parentPort, workerData, Worker } from 'worker_threads';
 import { fileURLToPath } from 'url';
-import { getToolPolicy } from '../../../cli/controller/tool-policy';
-import type { ToolPolicy } from '../../../cli/controller/tool-policy';
+import { getToolPolicy } from '../../control-plane/tool-policy';
+import type { ToolPolicy } from '../../control-plane/tool-policy';
 import {
   searchRepository,
   searchRepositoryMany,
   type SearchRepositoryManyResult,
-} from '../../../cli/repository/inspector';
+} from '../../repositories/inspector';
 
 export interface SearchWorkerInput {
   repoRoot: string;

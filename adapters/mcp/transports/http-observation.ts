@@ -9,7 +9,7 @@ import { readForgeRuntimeStatus } from '../../../src/runtime/control-plane/runti
 import { projectionBlocksReadiness, readRepositoryProjectionSnapshot } from '../../../src/runtime/projections/materialized-view';
 import { readRuntimeGeneration } from '../../../src/runtime/control-plane/runtime-generation';
 import { readRecentMcpTransportEvents, type McpTransportEvent } from '../../../src/runtime/diagnostics/mcp-timing';
-import { getRepository, listRepositories } from '../../../src/cli/repositories/registry';
+import { getRepository, listRepositories } from '../../../src/runtime/repositories/registry';
 import { buildControllerTaskLedgerProjection } from '../../../src/cli/controller/task-ledger';
 import { legacyIssueAuthorityRetired } from '../../../src/cli/controller/legacy-issue-cutover';
 import { reconcileReadinessProjectionSource } from '../readiness-projection';
@@ -18,7 +18,7 @@ import {
   FORGE_TOOL_SURFACE,
   FORGE_VERSION,
   repositoryIdentity,
-} from '../../../src/cli/controller/runtime-config';
+} from '../../../src/runtime/shared/runtime-config';
 import { McpSessionRegistry } from './session-registry';
 import { reconcileActiveMcpPosts } from './http-post-lifecycle';
 

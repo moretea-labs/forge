@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { workflowCapabilityDependencies } from '../../packages/workflow-runtime/api/index';
@@ -23,6 +23,23 @@ const baseArgs = {
 };
 
 describe('xiaohongshu Workflow compatibility', () => {
+  test('deployed bundle retains authored workflow assets outside the source checkout', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'forge-xhs-bundle-'));
+    try {
+      const entrypoint = join(directory, 'probe.ts');
+      const modulePath = new URL('../../src/runtime/workflows/first-party/xiaohongshu.ts', import.meta.url).pathname;
+      writeFileSync(entrypoint, `import { materializedXiaohongshuWorkflow, XIAOHONGSHU_WORKFLOW_IDS } from ${JSON.stringify(modulePath)};\nconsole.log(JSON.stringify(Object.values(XIAOHONGSHU_WORKFLOW_IDS).map(id => materializedXiaohongshuWorkflow(id).contentDigest)));`);
+      const build = await Bun.build({ entrypoints: [entrypoint], outdir: directory, target: 'bun' });
+      expect(build.success).toBe(true);
+      const run = Bun.spawnSync([process.execPath, build.outputs[0].path], { cwd: directory, stdout: 'pipe', stderr: 'pipe' });
+      expect({ exitCode: run.exitCode, stderr: run.stderr.toString() }).toEqual({ exitCode: 0, stderr: '' });
+      expect(JSON.parse(run.stdout.toString())).toEqual(Object.values(XIAOHONGSHU_WORKFLOW_IDS)
+        .map(id => materializedXiaohongshuWorkflow(id).contentDigest));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test('installed capability bindings follow actual steps, not stale authored metadata', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-xhs-capabilities-'));
     try {

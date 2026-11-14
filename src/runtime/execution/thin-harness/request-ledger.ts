@@ -17,7 +17,7 @@ import {
 } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../effects/controller-home';
-import { withControllerLock } from '../../../cli/repositories/locks';
+import { withControllerLock } from '../../../effects/controller-locks';
 
 export type FastRequestLedgerStatus =
   | 'reserved'

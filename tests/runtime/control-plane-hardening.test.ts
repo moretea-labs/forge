@@ -13,17 +13,17 @@ import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureControllerHome } from '../../src/effects/controller-home';
-import { registerRepository } from '../../src/cli/repositories/registry';
-import { assertCommandPathOperandsStayInRepository, assertRepositoryCommandInputAllowed } from '../../src/cli/repositories/command-scope';
-import type { RepositoryRecord } from '../../src/cli/repositories/types';
-import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { registerRepository } from '../../src/runtime/repositories/registry';
+import { assertCommandPathOperandsStayInRepository, assertRepositoryCommandInputAllowed } from '../../src/runtime/repositories/command-scope';
+import type { RepositoryRecord } from '../../src/core/repository/types';
+import { getWorkContract } from '../../packages/kernel/work/api';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { recordUserRequest } from '../../packages/kernel/identity/api/index';
 import { invalidateExecutionSession, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
-import { applyScheduleRetryableFailure } from '../../src/runtime/workflow/schedules/settlement';
+import { applyScheduleRetryableFailure } from '../../packages/kernel/scheduler/api/index';
 import { createSchedule, getOccurrence, getSchedule, reclaimStaleCreatedOccurrences, saveOccurrence, saveSchedule, updateSchedule } from '../../src/runtime/workflow/schedules/store';
 import {
   buildSchedulerHealthSnapshot,

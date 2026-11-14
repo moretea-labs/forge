@@ -36,12 +36,24 @@ export {
   setDesktopOperatorComputerSocketPathForTest,
 } from './desktop-operator-discovery';
 
-function toComputerProviderError(error: ExternalUnixJsonlTransportError): ComputerProviderError {
+function toComputerProviderError(
+  error: ExternalUnixJsonlTransportError,
+  effectOutcome: 'failed' | 'outcome_unknown' = error.effectOutcome,
+): ComputerProviderError {
   return new ComputerProviderError(error.code, error.detailMessage, {
-    retryable: error.retryable,
-    effectOutcome: error.effectOutcome,
+    retryable: effectOutcome === 'outcome_unknown' ? false : error.retryable,
+    effectOutcome,
     details: error.details,
   });
+}
+
+function isAmbiguousAxPressFailure(
+  request: ComputerRuntimeProviderExecutionRequest,
+  error: ExternalUnixJsonlTransportError,
+): boolean {
+  return request.capability === COMPUTER_INPUT_CAPABILITY
+    && request.action === 'press'
+    && error.code === 'AX_PRESS_FAILED';
 }
 
 function unavailable(error: ComputerProviderError, endpoint: DesktopOperatorComputerEndpoint): ComputerProviderError {
@@ -193,7 +205,8 @@ class DesktopOperatorComputerBinding {
     } catch (error) {
       if (error instanceof ExternalUnixJsonlTransportError) {
         if (error.source === 'transport') this.invalidateNegotiation();
-        throw unavailable(toComputerProviderError(error), this.endpoint);
+        const effectOutcome = isAmbiguousAxPressFailure(request, error) ? 'outcome_unknown' : error.effectOutcome;
+        throw unavailable(toComputerProviderError(error, effectOutcome), this.endpoint);
       }
       if (error instanceof ComputerProviderError) throw unavailable(error, this.endpoint);
       throw error;

@@ -6,14 +6,14 @@
 import type { ResourceClaimSpec } from '../jobs/types';
 import { lstatSync, readFileSync, realpathSync } from 'fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'path';
-import type { ControllerCheckEffects, ControllerCheckExecutionAuthority } from '../../../cli/controller/check-runner';
+import type { ControllerCheckEffects, ControllerCheckExecutionAuthority } from './check-runner';
 import {
   classifyRepositoryCommand,
   fixedShellWrapperCommand,
   shellSegments,
   shellWordsPreservingQuotes,
-} from '../../../cli/repositories/command-classifier';
-import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
+} from '../../../core/repository-command/classification';
+import { normalizeRepositoryCommand } from '../../../core/repository-command/normalization';
 import { isProtectedRemoteBranchDeletionTarget } from '../../../core/git-branch-policy';
 import { isFocusedCheckCommand } from '../thin-harness/execution-router';
 import type { ProcessResourceClaim } from './types';

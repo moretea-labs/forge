@@ -61,7 +61,7 @@ Browser Runtime V3 is the current Browser authority. The V2 ADR in [`../architec
 - exact provider/resource identity is stable while URL/title are mutable observations and are refreshed after persisted reads;
 - provider routing is capability-based instead of fallback-by-exception;
 - a warm provider handle is reusable across bounded actions and full rediscovery is exceptional;
-- cold native rebind uses the saved exact `windowId` + `tabId`; losing optional global tab inventory does not authorize guessing a user tab;
+- cold Chrome rebind uses the saved stable `tabId` via the PID-bound native metadata reader without global tab inventory; it verifies the returned ID and accepts only the observed window move. Other browsers retain their existing resolution rules. Missing or ambiguous identity never authorizes guessing a user tab;
 - mutations compile to provider-local `observe -> act -> verify` transactions;
 - raw Apple Events / AX / socket / CGEvent success is not accepted as mutation success without postcondition evidence;
 - typed browser-internal capabilities are preferred for bookmarks/tabs/downloads instead of driving `chrome://` UI;
@@ -69,7 +69,31 @@ Browser Runtime V3 is the current Browser authority. The V2 ADR in [`../architec
 
 On the macOS process-bound Chrome path, `execute_javascript` addresses the exact saved `tabId` through the native Computer provider, which verifies the Chrome GUI PID and exact tab identity before dispatch (including tabs moved between windows). The Controller must not also enumerate every Chrome window/tab before each DOM event. Activation and foreground physical input retain explicit identity and foreground checks; their post-action receipt reads only the resolved target's metadata. A missing or ambiguous native target still fails closed, and unknown mutation outcomes are not replayed. This is a source-level contract; deployment and live p95 acceptance are verified separately against the installed Desktop Operator and Forge Runtime versions.
 
+For an already bound Chrome tab, metadata/foreground-state reads use the native provider's exact-tab ID verification directly; they do not inventory all tabs beforehand. The returned tab ID must match the saved authority before updating window hints. Physical input and activation keep their stricter preflight and foreground checks.
+
+For read-only native DOM actions, the JSON evaluation receipt already contains the document URL and title. BrowserSession persistence uses that **same-action** observation rather than triggering another Apple Event; each action invalidates any earlier observation. Navigation and other non-replayable actions still perform independent identity verification.
+
+Native `get_text` uses a constrained `read_text` Computer compatibility request for ordinary CSS selectors. The Desktop Operator builds a fixed DOM text reader from an encoded selector; callers cannot submit JavaScript through this action. Unlike arbitrary `execute_javascript`, this side-effect-free read bypasses the mutation-exclusive lock and uses the requested read deadline rather than the 20-second mutation floor. Shadow-root selectors continue through the existing script path, and all operations still bind to the exact Chrome PID and tab. A coordinated Runtime + Desktop Operator deployment is required before live tests can attribute improvements to this contract; mixed versions must not silently fall back to the older mutation path.
+
+Native tab-reference preflight and subsequent provider dispatch share one action timeout budget. If preflight has already exhausted that budget, the mutation is not sent and fails with a typed timeout and known `failed` outcome. This does not claim a deadline across whole multi-step workflows or inside macOS Apple Events; such end-to-end latency still requires live acceptance.
+
 The warm-path performance targets remain p95 <= 350 ms for reads, <= 600 ms for DOM interaction plus verification, and <= 700 ms for typed browser-internal-resource operations. Explicit physical-input fallback targets p95 <= 1500 ms and is foreground-capable only when requested. Current-source live evidence is emitted by `tests/live/browser-runtime-v3.e2e.ts`; Work/Plan evidence owns measured p50/p95 values rather than this maintained runbook.
+
+## Computer native batch and latency acceptance
+
+`run_steps` is the bounded public Computer transaction for an already-decided sequence on one existing exact native Browser session. The live V3 harness uses the self-owned loopback fixture and a separate Forge-owned tab; it preserves the user's active tab and closes the exact owned session during cleanup. It does not use Apple Ads or third-party business pages.
+
+The native sequential-versus-batched comparison uses eight ordered steps (six mutations and two explicit `wait_for_selector` observations). Contiguous `fill`/`press`/`click` mutations form three provider batches; waits remain separate. The expected provider-evaluation count is eight for sequential actions and five for the batched transaction. The harness alternates variant order, runs one warm-up per variant, then records ten paired samples by default (bounded to 5–20). It records sequential and batched caller-wrapper p50/p95, summed provider-batch p50/p95, and each request's phase/request ID/attempt. Failure records additionally include the exact session ID, step count, typed outcome and bounded provider details; page content, form values and credentials are not logged. Each sample performs a separate read-only `get_text` readback to verify the three expected fixture records; that readback is not included in the mutation-wall timer. The deliberate unknown-outcome case is reconciled by readback and asserted exactly once, never replayed.
+
+Interpret the reported spans precisely:
+
+- **Caller-wrapper wall** covers the public action sequence measured by the harness; it is not ChatGPT model reasoning or the entire model/tool scheduling boundary.
+- **Forge Server** is the server-side action receipt duration; it is not a provider-only or native-Apple-Event duration.
+- **Provider-batch duration** covers the native mutation-batch call(s), not the separate waits, final session persistence, or independent readback.
+- **Readback** is a separate postcondition measurement and must be reported separately.
+- **MCP Gateway / Tunnel** attribution requires paired request IDs and matching Gateway/Runtime timing rows. Model-host enqueue, poll, and tool-start attribution requires authenticated host timestamps; if unavailable, leave that interval unmeasured rather than assigning the residual to a guessed component.
+
+Keep cold and warm samples, Browser products, Runtime releases, Computer manifest revisions, and Desktop Operator versions separate. Record the exact source/runtime/provider revisions and the bounded request-correlation trace (phase/request ID/attempt) with each report. Failed or ambiguous mutation samples remain in the failure-rate/diagnostic report and are excluded from successful p50/p95. Reconcile `outcome_unknown` before any new mutation and never replay it; a known pre-dispatch refusal may use only its existing typed safe-retry policy. Do not rerun an unknown-effect sample merely to complete a cohort; require a material provider/environment change before repeating the live native E2E.
 
 ## Configuration
 

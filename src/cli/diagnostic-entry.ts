@@ -1,5 +1,5 @@
 import { resolve } from 'path';
-import { getRepository } from './repositories/registry';
+import { getRepository } from '../runtime/repositories/registry';
 import { executeReadOnlyDiagnostic, isReadOnlyDiagnosticTool } from '../runtime/diagnostics/read-only-tool';
 
 function requiredOption(argv: string[], name: string): string {

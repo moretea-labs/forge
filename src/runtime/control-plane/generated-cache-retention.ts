@@ -13,7 +13,7 @@ import {
 import { homedir } from 'os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { repositoryControllerRoot } from '../../effects/controller-home';
-import { stableCheckoutId } from '../../cli/repositories/identity';
+import { stableCheckoutId } from '../../core/repository/identity';
 import { measureReclaimablePath } from './lifecycle-retention-metrics';
 import { assertOwnedResourceCleanupTarget, getOwnedResource, listOwnedResources, markOwnedResourceCleaned, recordOwnedResource, ownedFilesystemIdentityFingerprint, type OwnedResource } from '../../../packages/kernel/identity/api/index';
 import { fixedShellWrapperCommand, shellSegments, shellWordsPreservingQuotes } from '../../core/shell-command';

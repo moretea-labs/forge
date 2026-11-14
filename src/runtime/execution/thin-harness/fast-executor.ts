@@ -1,14 +1,14 @@
 import { existsSync, readFileSync, statSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
-import { applySafePatch } from '../../../cli/repositories/safe-patch';
+import { applySafePatch } from '../../repositories/safe-patch';
 import {
   executeRepositoryCommandAsync,
   previewRepositoryCommandExecutionAsync,
   type RepositoryCommandSnapshot,
-} from '../../../cli/repositories/command-executor';
-import { getToolPolicy } from '../../../cli/controller/tool-policy';
-import { readRepositoryRange } from '../../../cli/repository/inspector';
-import type { RepositoryRecord } from '../../../cli/repositories/types';
+} from '../../repositories/command-executor';
+import { getToolPolicy } from '../../control-plane/tool-policy';
+import { readRepositoryRange } from '../../repositories/inspector';
+import type { RepositoryRecord } from '../../../core/repository/types';
 import { getLeaseSideEffectMetrics } from '../../resources/leases/store';
 import { runBoundedGit, runBoundedProcess } from './async-process';
 import { extractPatchPaths, pathAllowed, routeExecution } from './execution-router';

@@ -1,12 +1,12 @@
-import { bindRepositoryEntities } from '../../../cli/repositories/entity-migration';
-import { getRepository, repositorySummary, selectRepositoryCheckout } from '../../../cli/repositories/registry';
+import { bindRepositoryEntities } from '../../repositories/entity-migration';
+import { getRepository, listRepositories, repositorySummary, resolveRepositorySelection, selectRepositoryCheckout } from '../../repositories/registry';
 import { callRepositoryTool } from '../../control-plane/facade/repository-tool-dispatch';
 import { callMcpTool, type CallToolResult, type McpToolContext } from '../../../../adapters/mcp/tool-mapping/tools';
 import { runtimePolicy, type MultiRepositoryMcpToolContext } from '../../../../adapters/mcp/multi-repository';
 import { callRuntimeTool } from '../../../../adapters/mcp/runtime-gateway/runtime-tools';
-import { ensureRepositoryRuntimeStorage } from '../../../cli/repositories/runtime-storage';
+import { ensureRepositoryRuntimeStorage } from '../../repositories/runtime-storage';
 import { dispatchLocalBridgeJob, getLocalBridgeJob } from '../../../cli/local-bridge/job-store';
-import type { LocalBridgeJob } from '../../../cli/local-bridge/types';
+import type { LocalBridgeJob } from '../../local-bridge/types';
 import { settleScheduledExecution } from '../../../../packages/kernel/scheduler/api/index';
 import type { ExecutionJob, ExecutionJobOutcome } from '../jobs/types';
 import {
@@ -509,6 +509,7 @@ export async function executeExecutionJob(controllerHome: string, job: Execution
       ...context,
       controllerHome,
       explicitRepository: repository,
+      repositoryAccess: { list: listRepositories, resolve: resolveRepositorySelection },
       toolset: 'full',
     };
     const toolArguments = { ...(job.payload.arguments ?? {}) };

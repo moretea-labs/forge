@@ -1,10 +1,10 @@
 import { ensureForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
-import type { RepositoryRecord } from '../../../cli/repositories/types';
+import type { RepositoryRecord } from '../../../core/repository/types';
 import {
   normalizeRemoteUrl,
   portableProjectSourceFingerprint,
   stablePortableProjectId,
-} from '../../../cli/repositories/identity';
+} from '../../../core/repository/identity';
 import { loadProjectEngineeringContract } from '../../context/project-engineering-contract';
 import {
   ensureProjectWorkspaceBinding,

@@ -1,6 +1,6 @@
 import { resolve } from 'path';
 import { resolveRepoPreferredControllerHome } from '../../src/effects/controller-home';
-import { getToolPolicy, parseToolProfile } from '../../src/cli/controller/tool-policy';
+import { getToolPolicy, parseToolProfile } from '../../src/runtime/control-plane/tool-policy';
 import type { McpToolContext } from './tool-mapping/tools';
 import type { McpServerOptions } from './multi-repository';
 

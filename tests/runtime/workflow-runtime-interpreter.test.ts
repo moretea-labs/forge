@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import type { RepositoryRecord } from '../../src/cli/repositories/types';
+import type { RepositoryRecord } from '../../src/core/repository/types';
 import { writeWorkflowAssetContent } from '../../src/runtime/control-plane/persistence/workflow-content-store';
 import { readWorkflowRun, writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/persistence/workflow-run-store';
 import { recordWorkflowBindings, registerWorkflowAsset } from '../../src/runtime/control-plane/persistence/workflow-registry-store';

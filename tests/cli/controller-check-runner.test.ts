@@ -3,8 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawn, spawnSync } from 'child_process';
-import { runControllerCheck, runControllerCheckAsync } from '../../src/cli/controller/check-runner';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { runControllerCheck, runControllerCheckAsync } from '../../src/runtime/execution/process-runtime/check-runner';
+import { registerRepository } from '../../src/runtime/repositories/registry';
 
 const roots: string[] = [];
 
@@ -137,7 +137,7 @@ describe('Controller Check sidecar cancellation', () => {
         effects: { reads: ['.'] },
       },
     });
-    const checkRunnerPath = join(process.cwd(), 'src/cli/controller/check-runner.ts');
+    const checkRunnerPath = join(process.cwd(), 'src/runtime/execution/process-runtime/check-runner.ts');
     const sidecarScript = "const { runControllerCheckAsync } = await import("
       + JSON.stringify(checkRunnerPath) + ");" + String.fromCharCode(10)
       + "await runControllerCheckAsync(" + JSON.stringify(root)

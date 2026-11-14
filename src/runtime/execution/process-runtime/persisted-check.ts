@@ -7,14 +7,14 @@ import {
   controllerCheckLiveExecutionStateFingerprint,
   listControllerChecks,
   snapshotControllerCheck,
-} from '../../../cli/controller/check-runner';
+} from './check-runner';
 import {
   currentCliRuntimeTarget,
   resolveCliChildInvocation,
   type CliChildInvocation,
   type CliChildInvocationOptions,
   type CliRuntimeTarget,
-} from '../../../cli/runtime-invocation';
+} from '../../shared/runtime-invocation';
 import { readRuntimeGeneration, resolveControllerRuntimeSourceRoot } from '../../control-plane/runtime-generation';
 import { resolveBunExecutable } from '../../shared/process-environment';
 import {

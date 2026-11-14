@@ -11,9 +11,17 @@ import {
 } from 'fs';
 import { join } from 'path';
 import { callMultiRepositoryTool, createMcpToolContext } from '../../adapters/mcp/server';
+import { callRuntimeObservationAdapter } from '../../adapters/mcp/runtime-gateway/runtime-observation-adapter';
+import { callRecoveryAdapter } from '../../adapters/mcp/runtime-gateway/recovery-adapter';
+import { executeReadOnlyDiagnostic } from '../../src/runtime/diagnostics/read-only-tool';
+import { buildControllerWorkbench } from '../../src/runtime/repositories/workbench';
+import { listAssistantPluginManifests, listControllerPluginManifests } from '../../src/runtime/plugins/store';
+import { listExecutionJobs, findExecutionJob, getExecutionJobByRequestId } from '../../src/runtime/execution/jobs/store';
+import { listRecoveryAuditRecords, listInstanceRecoveryAuditRecords } from '../../src/runtime/recovery/store';
+import { readHandoffInboxStore, handoffInboxPath } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { repositoryControllerRoot } from '../../src/effects/controller-home';
-import { ensureRepositoryRuntimeStorage, ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
-import { beginEditSession } from '../../src/cli/editing/edit-session';
+import { ensureRepositoryRuntimeStorage, ensureRepositoryRuntimeStorageBinding } from '../../src/runtime/repositories/runtime-storage';
+import { beginEditSession } from '../../src/runtime/editing/edit-session';
 import { repositoryFixture } from './repository-v81-fixture';
 
 function writeRun(root: string, runId: string, status: string, marker: string): void {
@@ -37,6 +45,23 @@ function writeLocalJob(root: string, jobId: string, status: string, marker: stri
     marker,
     ...(runId ? { runId } : {}),
   }, null, 2)}\n`, 'utf-8');
+}
+
+type RepositoryFixture = ReturnType<typeof repositoryFixture>;
+
+function createLegacyControllerState(fixture: RepositoryFixture) {
+  const source = join(fixture.repoA.canonicalRoot, '.ai', 'harness', 'controller');
+  const marker = join(source, 'read-only-observation.marker');
+  const target = repositoryControllerRoot(fixture.controllerHome, fixture.repoA.repoId);
+  mkdirSync(source, { recursive: true });
+  writeFileSync(marker, 'keep this in the repository\\n', 'utf-8');
+  return { source, marker, target };
+}
+
+function expectLegacyControllerStateNotMigrated(state: ReturnType<typeof createLegacyControllerState>): void {
+  expect(lstatSync(state.source).isSymbolicLink()).toBe(false);
+  expect(readFileSync(state.marker, 'utf-8')).toBe('keep this in the repository\\n');
+  expect(existsSync(state.target)).toBe(false);
 }
 
 describe('v8.1 repository runtime storage isolation', () => {
@@ -318,7 +343,7 @@ describe('v8.1 repository runtime storage isolation', () => {
     }
   });
 
-  test('blocks execution while an active legacy Run remains repository-local', async () => {
+  test('blocks edit-session creation while an active legacy Run remains repository-local', async () => {
     const fixture = repositoryFixture();
     try {
       writeRun(fixture.repoA.canonicalRoot, 'RUN-active', 'running', 'active');
@@ -329,10 +354,8 @@ describe('v8.1 repository runtime storage isolation', () => {
       expect(lstatSync(join(fixture.repoA.canonicalRoot, '.ai', 'harness', 'jobs')).isSymbolicLink()).toBe(false);
 
       const ctx = createMcpToolContext({ controllerHome: fixture.controllerHome, profile: 'controller' });
-      const result = await callMultiRepositoryTool(ctx, 'dispatch_task', {
+      const result = await callMultiRepositoryTool(ctx, 'begin_edit_session', {
         repo_id: fixture.repoA.repoId,
-        issue_id: 'ISS-missing',
-        task_id: 'TASK-missing',
       });
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('RUNTIME_STORAGE_NOT_READY');
@@ -406,6 +429,133 @@ describe('v8.1 repository runtime storage isolation', () => {
       expect(binding?.message).toContain('cannot be merged while Controller Home contains live Git worktrees');
       expect(readFileSync(join(source, 'legacy-metadata', 'marker.txt'), 'utf-8')).toBe('must remain repository-local\n');
       expect(readFileSync(join(activeTarget, 'baseline.txt'), 'utf-8')).toBe('must remain in Controller Home\n');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test('keeps ordinary Local Job listing from migrating repository Controller storage', async () => {
+    const fixture = repositoryFixture();
+    try {
+      const controllerStateSource = join(fixture.repoA.canonicalRoot, '.ai', 'harness', 'controller');
+      const marker = join(controllerStateSource, 'read-only-list.marker');
+      mkdirSync(controllerStateSource, { recursive: true });
+      writeFileSync(marker, 'preserve repository-owned state\n', 'utf-8');
+
+      const controllerStateTarget = join(
+        repositoryControllerRoot(fixture.controllerHome, fixture.repoA.repoId),
+        'controller',
+      );
+      const ctx = createMcpToolContext({
+        controllerHome: fixture.controllerHome,
+        profile: 'controller',
+      });
+      const result = await callMultiRepositoryTool(ctx, 'list_local_jobs', {
+        repo_id: fixture.repoA.repoId,
+        limit: 10,
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(lstatSync(controllerStateSource).isSymbolicLink()).toBe(false);
+      expect(readFileSync(marker, 'utf-8')).toBe('preserve repository-owned state\n');
+      expect(existsSync(controllerStateTarget)).toBe(false);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test('LocalBridge detail and output observations never migrate repository Controller storage', async () => {
+    const fixture = repositoryFixture();
+    try {
+      const state = createLegacyControllerState(fixture);
+      const ctx = createMcpToolContext({ controllerHome: fixture.controllerHome, profile: 'controller' });
+      const args = { repo_id: fixture.repoA.repoId, job_id: 'missing-job' };
+
+      const detail = await callRuntimeObservationAdapter(ctx, 'get_local_job', args);
+      expect(detail?.isError).not.toBe(true);
+      expectLegacyControllerStateNotMigrated(state);
+
+      const output = await callRuntimeObservationAdapter(ctx, 'get_local_job_output', args);
+      expect(output?.isError).not.toBe(true);
+      expectLegacyControllerStateNotMigrated(state);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test('recovery probes and read-only diagnostics inspect storage without migrating it', async () => {
+    const fixture = repositoryFixture();
+    try {
+      const state = createLegacyControllerState(fixture);
+      const legacyPluginRoot = join(fixture.repoA.canonicalRoot, '.repo-harness', 'plugins');
+      const legacyPluginTarget = join(fixture.controllerHome, 'legacy-plugin-state');
+      mkdirSync(join(fixture.repoA.canonicalRoot, '.repo-harness'), { recursive: true });
+      mkdirSync(legacyPluginTarget, { recursive: true });
+      symlinkSync(legacyPluginTarget, legacyPluginRoot, 'dir');
+      const ctx = createMcpToolContext({ controllerHome: fixture.controllerHome, profile: 'controller' });
+      const controllerManifests = listControllerPluginManifests(fixture.controllerHome, {
+        preferStored: true,
+        fallbackToLive: false,
+      });
+      expect(Array.isArray(controllerManifests)).toBe(true);
+      expect(lstatSync(legacyPluginRoot).isSymbolicLink()).toBe(true);
+
+      const repositoryManifests = listAssistantPluginManifests(fixture.controllerHome, fixture.repoA, {
+        preferStored: true,
+        fallbackToLive: false,
+      });
+      expect(Array.isArray(repositoryManifests)).toBe(true);
+      expect(lstatSync(legacyPluginRoot).isSymbolicLink()).toBe(true);
+
+      const recovery = await callRecoveryAdapter(ctx, 'capability_recovery_probe', { repo_id: fixture.repoA.repoId });
+      expect(recovery?.isError).not.toBe(true);
+      expectLegacyControllerStateNotMigrated(state);
+      expect(lstatSync(legacyPluginRoot).isSymbolicLink()).toBe(true);
+
+      const diagnostic = await executeReadOnlyDiagnostic('capability_recovery_probe', fixture.controllerHome, fixture.repoA, {});
+      expect(diagnostic.recovery).toBeDefined();
+      expect(Array.isArray(diagnostic.audit)).toBe(true);
+      expectLegacyControllerStateNotMigrated(state);
+      expect(lstatSync(legacyPluginRoot).isSymbolicLink()).toBe(true);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test('Controller Workbench is a read-only storage observation', () => {
+    const fixture = repositoryFixture();
+    try {
+      const state = createLegacyControllerState(fixture);
+      const workbench = buildControllerWorkbench(fixture.controllerHome, { repoId: fixture.repoA.repoId });
+      expect(workbench.repositories).toHaveLength(1);
+      expect(workbench.repositories[0]?.runtimeStorage.readOnly).toBe(true);
+      expectLegacyControllerStateNotMigrated(state);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test('read-only job and recovery audit queries do not create storage; handoff reads do not migrate legacy state', () => {
+    const fixture = repositoryFixture();
+    try {
+      const absentHome = join(fixture.repoA.canonicalRoot, '.controller-home-read-only');
+      expect(listExecutionJobs(absentHome, fixture.repoA.repoId, 20)).toEqual([]);
+      expect(findExecutionJob(absentHome, 'missing-job')).toBeUndefined();
+      expect(getExecutionJobByRequestId(absentHome, 'missing-request', fixture.repoA.repoId)).toBeUndefined();
+      expect(listRecoveryAuditRecords(absentHome, fixture.repoA.repoId)).toEqual([]);
+      expect(listInstanceRecoveryAuditRecords(absentHome)).toEqual([]);
+      expect(existsSync(absentHome)).toBe(false);
+
+      const location = { controllerHome: fixture.controllerHome, repoId: fixture.repoA.repoId };
+      const legacyPath = handoffInboxPath(location);
+      mkdirSync(join(fixture.controllerHome, 'repositories', fixture.repoA.repoId, 'handoff-inbox'), { recursive: true });
+      const legacyStore = { schemaVersion: 1 as const, updatedAt: '2026-11-13T00:00:00.000Z', items: [] };
+      writeFileSync(legacyPath, `${JSON.stringify(legacyStore, null, 2)}\n`, 'utf-8');
+      const migrationMarker = join(fixture.controllerHome, 'system', 'user-requests', 'migrations', `handoff-inbox-${fixture.repoA.repoId}.json`);
+
+      expect(readHandoffInboxStore(location)).toEqual(legacyStore);
+      expect(existsSync(legacyPath)).toBe(true);
+      expect(existsSync(migrationMarker)).toBe(false);
     } finally {
       fixture.cleanup();
     }

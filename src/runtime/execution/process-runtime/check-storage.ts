@@ -1,7 +1,7 @@
 import { cpSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { durableControllerHome, repositoryControllerRoot } from '../../../effects/controller-home';
-import { findRegisteredRepositoryByCheckoutRoot } from '../../../cli/repositories/registry';
+import { findRegisteredRepositoryByCheckoutRoot } from '../../repositories/registry';
 
 export interface RepositoryCheckStorageAuthority {
   controllerHome: string;

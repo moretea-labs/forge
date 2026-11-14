@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from 'fs';
 import { resolve } from 'path';
-import { repositoryIdentity } from '../../cli/controller/runtime-config';
-import { stableCheckoutId } from '../../cli/repositories/identity';
+import { repositoryIdentity } from '../shared/runtime-config';
+import { stableCheckoutId } from '../../core/repository/identity';
 
 export interface ReleaseIdentityBinding {
   releasePath: string;

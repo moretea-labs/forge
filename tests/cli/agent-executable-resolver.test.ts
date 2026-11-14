@@ -11,7 +11,7 @@ import {
   resolveAgentExecutable,
   revalidateAgentExecutable,
   writeAgentExecutableReadinessSnapshot,
-} from '../../src/cli/agent-jobs/executable-resolver';
+} from '../../src/runtime/agents/executable-resolver';
 
 const roots: string[] = [];
 const originalPath = process.env.PATH;

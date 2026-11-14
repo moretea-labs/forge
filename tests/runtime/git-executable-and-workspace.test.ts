@@ -9,7 +9,7 @@ import {
   getRepository,
   registerRepository,
   selectRepositoryCheckout,
-} from '../../src/cli/repositories/registry';
+} from '../../src/runtime/repositories/registry';
 import { resolveGitExecutable } from '../../src/effects/git-executable';
 import { getOwnedResource } from '../../packages/kernel/identity/api/index';
 import { managedWorkspaceOwnedResourceId } from '../../src/runtime/execution/managed-workspace';

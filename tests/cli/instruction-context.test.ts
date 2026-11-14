@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getToolPolicy } from '../../src/cli/controller/tool-policy';
+import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import { buildRepositoryInstructionContext } from '../../src/cli/controller/context/instruction-context';
 import { buildControllerContextPack } from '../../src/cli/controller/context-pack';
 

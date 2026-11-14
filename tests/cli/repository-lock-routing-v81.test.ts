@@ -8,7 +8,7 @@ import {
   readControllerLock,
   reapControllerLockIfUnchanged,
   releaseControllerLock,
-} from '../../src/cli/repositories/locks';
+} from '../../src/effects/controller-locks';
 import { repositoryFixture } from './repository-v81-fixture';
 
 describe('v8.1 repository lock and remote routing', () => {

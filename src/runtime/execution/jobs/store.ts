@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, opendirSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { ensureControllerHome, ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../effects/controller-home';
-import { releaseControllerLock, tryAcquireControllerLock, withControllerLock } from '../../../cli/repositories/locks';
+import { ensureRepositoryControllerLayout, repositoryControllerRoot, resolveControllerHome } from '../../../effects/controller-home';
+import { releaseControllerLock, tryAcquireControllerLock, withControllerLock } from '../../../effects/controller-locks';
 import { appendJobEvent } from '../../evidence/event-ledger';
 import { cleanupExecutionArtifactsForJob, writeExecutionArtifact } from '../../evidence/artifact-store';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
@@ -49,26 +49,30 @@ export function executionJobCreationRetired(): boolean {
   return true;
 }
 
-export function executionJobRoot(controllerHome: string, repoId: string): string {
-  ensureRepositoryControllerLayout(controllerHome, repoId);
+function executionJobRootPath(controllerHome: string, repoId: string): string {
   return join(repositoryControllerRoot(controllerHome, safeRepoId(repoId)), 'execution-jobs');
 }
 
+export function executionJobRoot(controllerHome: string, repoId: string): string {
+  ensureRepositoryControllerLayout(controllerHome, repoId);
+  return executionJobRootPath(controllerHome, repoId);
+}
+
 function jobPath(controllerHome: string, repoId: string, jobId: string): string {
-  return join(executionJobRoot(controllerHome, repoId), 'records', `${sanitizeFileComponent(jobId)}.json`);
+  return join(executionJobRootPath(controllerHome, repoId), 'records', `${sanitizeFileComponent(jobId)}.json`);
 }
 
 function requestPath(controllerHome: string, requestId: string): string {
   const hash = createHash('sha256').update(requestId).digest('hex');
-  return join(ensureControllerHome(controllerHome), 'indexes', 'execution-jobs', 'requests', `${hash}.json`);
+  return join(resolveControllerHome(controllerHome), 'indexes', 'execution-jobs', 'requests', `${hash}.json`);
 }
 
 function activeIndexPath(controllerHome: string): string {
-  return join(ensureControllerHome(controllerHome), 'indexes', 'execution-jobs', 'active.json');
+  return join(resolveControllerHome(controllerHome), 'indexes', 'execution-jobs', 'active.json');
 }
 
 function recentIndexPath(controllerHome: string): string {
-  return join(ensureControllerHome(controllerHome), 'indexes', 'execution-jobs', 'recent.json');
+  return join(resolveControllerHome(controllerHome), 'indexes', 'execution-jobs', 'recent.json');
 }
 
 function readActiveIndex(controllerHome: string): ActiveJobIndex {
@@ -257,7 +261,7 @@ export function rebuildExecutionJobIndexes(controllerHome: string, repoIds: stri
     const activeEntries: ActiveJobIndex['jobs'] = [];
     const recentEntries: RecentJobIndex['jobs'] = [];
     for (const repoId of targetRepos) {
-      const records = join(executionJobRoot(controllerHome, repoId), 'records');
+      const records = join(executionJobRootPath(controllerHome, repoId), 'records');
       let names: string[] = [];
       // Startup repair must rebuild every active and request authority. Only the
       // recent-history projection below is intentionally bounded.
@@ -292,6 +296,7 @@ export function rebuildExecutionJobIndexes(controllerHome: string, repoIds: stri
 
 function persistJobRecord(controllerHome: string, job: ExecutionJob): ExecutionJob {
   const sanitized = sanitizeJobForPersistence(controllerHome, job);
+  ensureRepositoryControllerLayout(controllerHome, sanitized.repoId);
   writeJsonAtomic(jobPath(controllerHome, sanitized.repoId, sanitized.jobId), sanitized);
   return sanitized;
 }
@@ -335,7 +340,7 @@ export function findExecutionJob(controllerHome: string, jobId: string): Executi
   if (recent) {
     try { return getExecutionJob(controllerHome, recent.repoId, jobId); } catch { /* continue to legacy fallback */ }
   }
-  const home = ensureControllerHome(controllerHome);
+  const home = resolveControllerHome(controllerHome);
   const repositoriesRoot = join(home, 'repositories');
   try {
     for (const repoId of readdirSync(repositoriesRoot)) {
@@ -751,7 +756,7 @@ export function listExecutionJobs(controllerHome: string, repoId: string, limit 
   if (output.length > 0) return output;
 
   // Backward-compatible one-time fallback for state created before the recent index existed.
-  const records = join(executionJobRoot(controllerHome, repoId), 'records');
+  const records = join(executionJobRootPath(controllerHome, repoId), 'records');
   try {
     const legacy = readdirSync(records)
       .filter((name) => name.endsWith('.json'))

@@ -1,7 +1,7 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { callRepositoryTool } from '../../../src/runtime/control-plane/facade/repository-tool-dispatch';
-import { commitSelectedPaths, restoreSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/cli/repositories/selected-path-actions';
+import { commitSelectedPaths, restoreSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/runtime/repositories/selected-path-actions';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
 import { configureInitialControllerConnection, readControllerConnectionSnapshot, repairControllerConnection } from './controller-connection';
@@ -69,6 +69,7 @@ export async function callCoreCapabilityAdapter(
           prompt,
           providerSessionId,
           repoId: repository?.repoId,
+          checkoutId: repository?.activeCheckoutId,
           model,
           reasoningEffort,
           imagePaths,

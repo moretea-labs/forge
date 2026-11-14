@@ -2,7 +2,7 @@
 import { createHash } from 'crypto';
 import { rmSync } from 'fs';
 import { resolve } from 'path';
-import type { ControllerCheckSnapshot } from '../../../cli/controller/check-runner';
+import type { ControllerCheckSnapshot } from './check-runner';
 import { materializeManagedWorkspaceDependencies } from '../managed-workspace';
 import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from './canary';
 
@@ -83,7 +83,7 @@ export async function runPersistedCheckSidecar(argv = process.argv.slice(2)): Pr
       { controllerCheckExecutionIdentity, runControllerCheckAsync, snapshotControllerCheck },
       { writePersistedCheckResultReceipt },
     ] = await Promise.all([
-      import('../../../cli/controller/check-runner'),
+      import('./check-runner'),
       import('./check-result'),
     ]);
 

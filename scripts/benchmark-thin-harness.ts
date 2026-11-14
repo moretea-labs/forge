@@ -18,9 +18,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { ensureControllerHome } from '../src/effects/controller-home';
-import { registerRepository } from '../src/cli/repositories/registry';
+import { registerRepository } from '../src/runtime/repositories/registry';
 import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
-import { listLocalBridgeJobSnapshots } from '../src/cli/local-bridge/job-store';
+import { listLocalBridgeJobSnapshots } from '../src/runtime/local-bridge/read-model';
 import { listProcessRecords } from '../src/runtime/execution/process-runtime/store';
 import { getLeaseSideEffectMetrics } from '../src/runtime/resources/leases/store';
 import {

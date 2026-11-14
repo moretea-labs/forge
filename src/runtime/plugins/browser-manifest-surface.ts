@@ -212,7 +212,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'list_sessions',
       title: 'List browser sessions',
-      description: 'List saved browser session metadata without secrets or cookies.',
+      description: 'List saved browser session metadata without secrets or cookies. Provider liveness is not probed; use reconcile_sessions for a fresh liveness check.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true,
       scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'read' }],
       argumentsSchema: {
@@ -227,7 +227,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'reconcile_sessions',
       title: 'Reconcile browser sessions',
-      description: 'Prune only saved managed-session metadata whose exact Runtime-bound page is positively proven gone. Never removes profiles, cookies, or unverified native sessions.',
+      description: 'Reclaim proven missing session bindings and close invalid Forge-owned native blank tabs. Preserve user-owned tabs, live nonblank tabs, profiles, cookies and unverified resources.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
       scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
       argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
@@ -235,7 +235,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'close_session',
       title: 'Close browser session',
-      description: 'Remove one saved session metadata record.',
+      description: 'Close the exact Forge-owned tab and remove its session bindings; preserve user-owned tabs. Close finished sessions promptly to release browser memory.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
       scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
       argumentsSchema: { type: 'object', properties: { session_id: { type: 'string' } }, required: ['session_id'], additionalProperties: false },
@@ -447,7 +447,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'snapshot_interactive',
       title: 'Snapshot interactive elements',
-      description: 'Snapshot interactive elements with stable selector hints plus CSS-pixel viewport geometry for screenshot-to-input grounding.',
+      description: 'Snapshot interactive elements with selector hints and viewport geometry, including read-only layout evidence (padding, label alignment, overflow, select text/caret clearance). Review signals are not an automatic visual PASS.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
       scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
       argumentsSchema: sessionTargetSchema({ limit: { type: 'number' }, ...frameScopeProperties }),

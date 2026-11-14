@@ -4,9 +4,9 @@ import { isAbsolute, relative, resolve } from 'path';
 import {
   getRepository,
   selectRepositoryCheckout,
-} from '../../../cli/repositories/registry';
+} from '../../repositories/registry';
 import { resolveGitExecutable } from '../../../effects/git-executable';
-import type { RepositoryRecord } from '../../../cli/repositories/types';
+import type { RepositoryRecord } from '../../../core/repository/types';
 
 export type ExecutionIdentityErrorCode =
   | 'EXECUTION_IDENTITY_MISMATCH'

@@ -1,10 +1,10 @@
 import { existsSync, lstatSync, readFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import type { ToolPolicy } from '../../cli/controller/tool-policy';
+import type { ToolPolicy } from '../control-plane/tool-policy';
 import type {
   ControllerContextPackOptions,
   ControllerContextPackProjection,
-} from '../../cli/controller/context/types';
+} from './context-pack-contract';
 import { resolveBunExecutable } from '../shared/process-environment';
 import { runBoundedChild } from '../shared/bounded-child-supervisor';
 

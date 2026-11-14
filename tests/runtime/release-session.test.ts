@@ -8,7 +8,7 @@ import type { RuntimeReleaseAuthority } from '../../src/runtime/root/release-sto
 import { advanceConfiguredRuntimeRelease, decideConfiguredRuntimeReleaseAction, decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
 import type { CandidateExecutionLane, StableExecutionLane } from '../../src/runtime/root/runtime-lane';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { registerRepository } from '../../src/runtime/repositories/registry';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { __resetLiveMonitorsForTests, spawnManagedProcess, waitForProcess } from '../../src/runtime/execution/process-runtime';

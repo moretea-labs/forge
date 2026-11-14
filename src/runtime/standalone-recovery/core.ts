@@ -33,7 +33,7 @@ import {
   sha256FileBounded,
   type KnownGoodRecoveryBundle,
 } from '../root/known-good-recovery';
-import { systemdUserUnitName, systemdUserUnitPath } from '../../cli/controller/systemd-user';
+import { systemdUserUnitName, systemdUserUnitPath } from '../platform/systemd-user';
 import {
   openAiSecureTunnelConnectArgs,
   openAiSecureTunnelStatusArgs,

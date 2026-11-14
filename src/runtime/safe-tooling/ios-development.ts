@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, utimesS
 import { basename, dirname, join, relative, resolve, sep } from 'path';
 import { spawnSync } from 'child_process';
 import { runBoundedChild } from '../shared/bounded-child-supervisor';
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 
 export interface IosCommandResult {
   ok: boolean;

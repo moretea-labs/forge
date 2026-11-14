@@ -4,11 +4,11 @@ import {
   editSessionOutsideWorkspaceFingerprint,
   recordEditSessionProcessCheckReceipts,
   type EditSession,
-} from '../../../cli/editing/edit-session';
-import { listControllerChecks, readLatestControllerCheckEvidence } from '../../../cli/controller/check-runner';
-import type { RepositoryRecord } from '../../../cli/repositories/types';
-import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
-import { selectRepositoryCheckout } from '../../../cli/repositories/registry';
+} from '../../editing/edit-session';
+import { listControllerChecks, readLatestControllerCheckEvidence } from '../../execution/process-runtime/check-runner';
+import type { RepositoryRecord } from '../../../core/repository/types';
+import { repositoryGitStatus } from '../../repositories/structured-git';
+import { selectRepositoryCheckout } from '../../repositories/registry';
 import { executionIdentityForRepository } from './execution-identity';
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from './verification-evidence';
 import {

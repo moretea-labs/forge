@@ -1,4 +1,4 @@
-import type { StructuralNodeSummary, StructuralReadProviderResponse } from './structural-provider';
+import type { StructuralNodeSummary, StructuralReadProviderResponse } from '../../../runtime/context/context-pack-contract';
 
 export function structuralResult(response: StructuralReadProviderResponse): {
   nodes: StructuralNodeSummary[];

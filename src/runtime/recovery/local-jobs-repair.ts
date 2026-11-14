@@ -2,12 +2,12 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { basename, dirname, join, relative, resolve, sep } from 'path';
 import { randomUUID } from 'crypto';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 import { repositoryControllerRoot } from '../../effects/controller-home';
 import { quarantineRuntimePath } from './quarantine-retention';
 import { findExecutionJob } from '../execution/jobs/store';
 import { isProcessAlive } from '../shared/process-tree';
-import type { LocalBridgeJob } from '../../cli/local-bridge/types';
+import type { LocalBridgeJob } from '../local-bridge/types';
 
 export type RuntimeStorageRepairCandidateKind =
   | 'missing_job_json'

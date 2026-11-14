@@ -29,7 +29,7 @@ import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-stor
 import { getRuntimeWriteClaim } from '../../src/runtime/root/write-fence';
 import { recordMcpIncident, recordMcpTiming, type McpTimingTrace } from '../../src/runtime/diagnostics/mcp-timing';
 import { maybeRegisterMcpIncidentRepair } from '../../src/runtime/diagnostics/incident-repair';
-import { FORGE_VERSION, forgeToolSurfaceFingerprint } from '../../src/cli/controller/runtime-config';
+import { FORGE_VERSION, forgeToolSurfaceFingerprint } from '../../src/runtime/shared/runtime-config';
 import { RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN } from '../../src/runtime/root/mcp-transport';
 
 export type { McpServerOptions } from './multi-repository';

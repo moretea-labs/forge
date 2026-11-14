@@ -13,6 +13,9 @@ import {
   rebuildExecutionJobIndexes,
 } from '../../src/runtime/execution/jobs/store';
 import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
+import type { AgentJobMetaReadShape } from '../../src/runtime/agent-jobs/read-model';
+import type { LocalBridgeJob } from '../../src/runtime/local-bridge/types';
+import { summarizeExecutionJobForMcp } from '../../src/runtime/safe-tooling/job-summary';
 import {
   acquireExecutionLeases,
   listActiveLeases,
@@ -173,5 +176,64 @@ describe('ExecutionJob reconciliation isolation', () => {
 
     const after = JSON.parse(readFileSync(join(controllerHome, 'indexes', 'execution-jobs', 'active.json'), 'utf8'));
     expect(after.jobs).toEqual([]);
+  });
+});
+
+describe('ExecutionJob delegated summary snapshots', () => {
+  test('reads child snapshots without reconciling or mutating lifecycle state', () => {
+    const repoRoot = tempControllerHome();
+    const timestamp = new Date().toISOString();
+    const localJob: LocalBridgeJob = {
+      schemaVersion: 1,
+      jobId: 'local-child',
+      action: 'quick-agent-session',
+      payload: { title: 'Child run', objective: 'Exercise read-only summary' },
+      requestedBy: 'test',
+      approval: 'auto',
+      status: 'running',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      runId: 'run-child',
+      issueId: 'ISSUE-7',
+      taskId: 'task-7',
+      ephemeral: false,
+    };
+    const localJobPath = join(repoRoot, '.ai/harness/local-jobs/local-child/job.json');
+    mkdirSync(join(repoRoot, '.ai/harness/local-jobs/local-child'), { recursive: true });
+    const localJobContents = `${JSON.stringify(localJob)}\n`;
+    writeFileSync(localJobPath, localJobContents, 'utf8');
+
+    // A dead worker with no result would be terminalized by getAgentJob; summaries must not trigger that reconciliation.
+    const agentMeta: AgentJobMetaReadShape & { resultPath: string; workerPid: number } = {
+      schemaVersion: 3,
+      runId: 'run-child',
+      issueId: 'ISSUE-7',
+      taskId: 'task-7',
+      agent: 'codex',
+      provider: 'local',
+      status: 'running',
+      repoRoot,
+      worktree: repoRoot,
+      createdAt: timestamp,
+      resultPath: 'missing-result.json',
+      workerPid: 2_147_483_647,
+    };
+    const agentMetaPath = join(repoRoot, '.ai/harness/jobs/run-child/meta.json');
+    mkdirSync(join(repoRoot, '.ai/harness/jobs/run-child'), { recursive: true });
+    const agentMetaContents = `${JSON.stringify(agentMeta)}\n`;
+    writeFileSync(agentMetaPath, agentMetaContents, 'utf8');
+
+    const job = executionJob('delegated-summary', 'succeeded', {
+      type: 'agent-run',
+      payload: { operation: 'dispatch_task', target: 'mcp-tool' },
+      result: { childReference: { localJobId: 'local-child' } },
+    });
+    const summary = summarizeExecutionJobForMcp(job, repoRoot);
+
+    expect(summary.childLocalJobStatus).toBe('running');
+    expect(summary.childRunStatus).toBe('running');
+    expect(summary.childReference).toMatchObject({ localJobId: 'local-child', runId: 'run-child', issueId: 'ISSUE-7', taskId: 'task-7' });
+    expect(readFileSync(localJobPath, 'utf8')).toBe(localJobContents);
+    expect(readFileSync(agentMetaPath, 'utf8')).toBe(agentMetaContents);
   });
 });

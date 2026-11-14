@@ -1,14 +1,14 @@
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 import { loadMcpRuntimeState } from '../../../adapters/mcp/auth';
-import { listControllerChecks } from '../../cli/controller/check-runner';
-import { listLocalBridgeJobSnapshots } from '../../cli/local-bridge/job-store';
-import { ensureRepositoryRuntimeStorage } from '../../cli/repositories/runtime-storage';
-import { sessionCacheGlobalDiagnostics } from '../../cli/repository/session-cache';
+import { listControllerChecks } from '../execution/process-runtime/check-runner';
+import { listLocalBridgeJobSnapshots } from '../local-bridge/read-model';
+import { inspectRepositoryRuntimeStorage } from '../repositories/runtime-storage';
+import { sessionCacheGlobalDiagnostics } from '../repositories/session-cache';
 import {
   cachedGitIdentity,
   gitIdentityPerformanceSnapshot,
   gitSnapshotPerformanceSnapshot,
-} from '../../cli/repository/inspector';
+} from '../repositories/inspector';
 import { previewRuntimeCleanup } from '../maintenance/cleanup';
 import {
   buildCapabilityRecoverySnapshot,
@@ -140,7 +140,7 @@ function recoveryProbe(
   let runtimeStorageReady = false;
   let runtimeStorageWarnings: string[] = [];
   try {
-    const storage = ensureRepositoryRuntimeStorage(repository, controllerHome);
+    const storage = inspectRepositoryRuntimeStorage(repository, controllerHome);
     runtimeStorageReady = storage.readyForExecution;
     runtimeStorageWarnings = storage.warnings;
   } catch (error) {
@@ -149,7 +149,7 @@ function recoveryProbe(
   const localJobs = listLocalBridgeJobSnapshots(repository.canonicalRoot, 30);
   const recentErrors = Array.isArray(args.recent_errors) ? args.recent_errors.map(String) : [];
   const contextProjectionStale = diagnosticContextProjectionStale(controllerHome, repository, args);
-  const plugins = listAssistantPluginManifests(controllerHome, repository, { preferStored: true });
+  const plugins = listAssistantPluginManifests(controllerHome, repository, { preferStored: true, fallbackToLive: false });
   const recovery = buildCapabilityRecoverySnapshot({
     generatedAt: new Date().toISOString(),
     daemonStatus: daemon.status === 'ready' ? 'ready' : daemon.status,

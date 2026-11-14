@@ -3,9 +3,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { hashMcpInput, mcpAuditLogPath, tryWriteMcpAuditEntry, writeMcpAuditEntry } from '../../adapters/mcp/audit';
-import { getToolPolicy, parseToolProfile } from '../../src/cli/controller/tool-policy';
+import { getToolPolicy, parseToolProfile } from '../../src/runtime/control-plane/tool-policy';
 import { redactMcpText } from '../../adapters/mcp/redaction';
-import { globMatches, normalizeMcpRelativePath, resolveMcpPath } from '../../adapters/mcp/paths';
+import { globMatches, normalizeMcpRelativePath, resolveMcpPath } from '../../src/runtime/safe-tooling/path-policy';
 import { buildMcpToolDefinitions } from '../../adapters/mcp/tool-mapping/tools';
 
 describe('mcp policy and paths', () => {

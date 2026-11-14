@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import type { RepositoryRecord } from '../../../cli/repositories/types';
+import type { RepositoryRecord } from '../../../core/repository/types';
 import { runBoundedGit } from './async-process';
 import { routeExecution } from './execution-router';
 import { executeFast } from './fast-executor';

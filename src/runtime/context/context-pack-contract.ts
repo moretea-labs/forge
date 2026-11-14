@@ -1,0 +1,372 @@
+import type { RepositoryReadSession } from '../repositories/inspector';
+
+export type SourceMaterializationKind = 'complete_file' | 'symbol' | 'line_window';
+
+export interface MaterializedSourceSnippet {
+  path: string;
+  startLine: number;
+  endLine: number;
+  totalLines: number;
+  sha256: string;
+  content: string;
+  truncated: boolean;
+  redactions: Array<{ type: string; count: number }>;
+  reason: string;
+  cacheHit?: boolean;
+  /** Internal proof: required owner declarations actually present in this emitted snippet. */
+  ownerQueries?: string[];
+  materialization: SourceMaterializationKind;
+  symbol?: {
+    kind: string;
+    name?: string;
+    enclosing?: string;
+  };
+}
+
+export type StructuralReadOperation = 'status' | 'search' | 'context' | 'impact' | 'file_dependencies';
+export type StructuralProviderStatus = 'ready' | 'stale' | 'unavailable' | 'degraded';
+
+export interface StructuralNodeSummary {
+  id: string;
+  kind: string;
+  name: string;
+  qualifiedName?: string;
+  filePath: string;
+  language?: string;
+  startLine: number;
+  endLine: number;
+  signature?: string;
+}
+
+export interface StructuralIndexMetadata {
+  initialized: boolean;
+  lastIndexedAt: number | null;
+  buildVersion: string | null;
+  extractionVersion: number | null;
+  staleEngine: boolean;
+  changedFiles: {
+    added: string[];
+    modified: string[];
+    removed: string[];
+  };
+  ignoredChangedFileCount?: number;
+}
+
+export interface StructuralReadRequest {
+  operation: StructuralReadOperation;
+  query?: string;
+  nodeId?: string;
+  filePath?: string;
+  limit?: number;
+  maxNodes?: number;
+  maxDepth?: number;
+  refresh?: 'if_stale';
+}
+
+export interface StructuralReadProviderResponse {
+  schemaVersion: 1;
+  provider: 'none';
+  operation: StructuralReadOperation;
+  ok: boolean;
+  status: StructuralProviderStatus;
+  metadata?: StructuralIndexMetadata;
+  result?: Record<string, unknown>;
+  error?: {
+    code: string;
+    message: string;
+  };
+  timingsMs: {
+    total: number;
+    process?: number;
+    open?: number;
+    query?: number;
+  };
+}
+
+export const CONTEXT_PACK_SCHEMA_VERSION = 11;
+export type StructuralContextMode = 'off' | 'auto' | 'required';
+export type ControllerContextRetrievalMode = 'implementation' | 'plan' | 'debug' | 'review';
+export type ControllerEvidenceReadinessStatus = 'ready' | 'degraded' | 'insufficient';
+export type ControllerSemanticEvidenceStatus = 'not_requested' | 'ready' | 'partial' | 'unavailable' | 'error';
+export const CONTROLLER_CONTEXT_IMPACT_DOMAINS = [
+  'persistence', 'scheduler', 'notification', 'timeline', 'events', 'cache', 'api', 'concurrency',
+] as const;
+export type ControllerContextImpactDomain = (typeof CONTROLLER_CONTEXT_IMPACT_DOMAINS)[number];
+export type GovernanceRuleLevel = 'kernel' | 'capability' | 'platform' | 'project';
+export type GovernanceRuleSeverity = 'info' | 'warning' | 'error';
+export type GovernanceCheckCostClass = 'L0' | 'L1' | 'L2' | 'L3' | 'L4';
+export type GovernanceCheckRiskFloor = 'readonly' | 'low' | 'medium' | 'high' | 'destructive';
+export type GovernanceCheckPhase = 'pre_edit' | 'post_edit' | 'pre_finalize' | 'release';
+
+export interface ControllerContextPackOptions {
+  description?: string;
+  issueId?: string;
+  taskId?: string;
+  knownPaths?: string[];
+  includeGlobs?: string[];
+  excludeGlobs?: string[];
+  searchTerms?: string[];
+  maxFiles?: number;
+  maxSnippets?: number;
+  maxCharsPerSnippet?: number;
+  structuralContext?: StructuralContextMode;
+  structuralIndexRoot?: string;
+  retrievalMode?: ControllerContextRetrievalMode;
+  impactDomains?: ControllerContextImpactDomain[];
+  session?: RepositoryReadSession;
+}
+
+export interface ControllerContextPackDependencies {
+  queryStructural?: (repoRoot: string, request: StructuralReadRequest) => StructuralReadProviderResponse;
+  queryStructuralAsync?: (repoRoot: string, request: StructuralReadRequest) => Promise<StructuralReadProviderResponse>;
+}
+
+export type ControllerContextPackSnippet = MaterializedSourceSnippet;
+
+export interface ControllerContextPackFile {
+  path: string;
+  reasons: string[];
+  hitLines: number[];
+  snippetCount: number;
+  snippets: ControllerContextPackSnippet[];
+}
+
+export interface ControllerEvidenceReadiness {
+  status: ControllerEvidenceReadinessStatus;
+  sourceRevision: string | null;
+  rawSource: {
+    status: 'current' | 'partial' | 'unavailable';
+    materializedFileCount: number;
+    snippetTruncated: boolean;
+  };
+  structural: {
+    requested: StructuralContextMode;
+    status: 'disabled' | 'ready' | 'stale' | 'unavailable' | 'degraded';
+    requiredSatisfied: boolean;
+    baselineRevisionMatches: boolean;
+    overlayChangedFileCount: number;
+  };
+  semantic: {
+    status: ControllerSemanticEvidenceStatus;
+    reasonCodes: string[];
+  };
+  retrieval: {
+    searchTruncated: boolean;
+    omittedCandidateCount: number;
+    policyDeniedCandidateCount: number;
+    likelyRelatedNotInspectedCount: number;
+  };
+  unresolvedReasonCodes: string[];
+  readyForHighConfidenceMutation: boolean;
+}
+
+export interface ControllerContextExpansionState {
+  waveCount: number;
+  expansionPerformed: boolean;
+  expansionBudgetUsed: number;
+  expansionBudgetMax: number;
+  discoveredPaths: string[];
+  materializedPaths: string[];
+}
+
+export interface ControllerContextPackProjection {
+  schemaVersion: typeof CONTEXT_PACK_SCHEMA_VERSION;
+  generatedAt: string;
+  source: 'controller-context-pack';
+  focus: { issueId?: string; issueTitle?: string; taskId?: string; taskTitle?: string; taskStatus?: string };
+  goal: string;
+  git: { branch: string | null; status: string; diffStat: string; dirty: boolean };
+  search: {
+    terms: string[];
+    impactDomains: ControllerContextImpactDomain[];
+    impactCoverage: Array<{
+      domain: ControllerContextImpactDomain;
+      queries: string[];
+      matchedFiles: string[];
+      selectedFiles: string[];
+      omittedFileCount: number;
+      status: 'selected' | 'matched_not_selected' | 'no_evidence';
+    }>;
+    includeGlobs: string[];
+    excludeGlobs: string[];
+    scannedFiles: number;
+    policyDeniedFiles: number;
+    skippedLargeFiles: number;
+    skippedBinaryFiles: number;
+    /** Raw lexical/discovery result cap was reached. This may be harmless when exact-known files were fully materialized. */
+    truncated: boolean;
+    /** True only when truncation can hide material source evidence. */
+    evidenceTruncated: boolean;
+    cacheHit: boolean;
+  };
+  instructionContext: {
+    status: 'none' | 'ready' | 'degraded';
+    authority: 'guidance_only';
+    targetPaths: string[];
+    contracts: Array<{
+      path: string;
+      appliesTo: string[];
+      content: string;
+      truncated: boolean;
+    }>;
+    coverageGaps: string[];
+    truncated: boolean;
+  };
+  governanceContext: {
+    status: 'none' | 'ready' | 'degraded';
+    authority: 'repository_rule_registry';
+    registry: { rulesPath: string; exceptionsPath: string };
+    activeRules: Array<{
+      id: string;
+      title: string;
+      level: GovernanceRuleLevel;
+      severity: GovernanceRuleSeverity;
+      invariant: string;
+      owner?: string;
+      version?: number;
+      matchedPaths: string[];
+      matchedSignals: string[];
+      checkIds: string[];
+      partialExceptionIds: string[];
+      suppressedPaths: string[];
+    }>;
+    suppressedRules: Array<{
+      id: string;
+      title: string;
+      level: GovernanceRuleLevel;
+      severity: GovernanceRuleSeverity;
+      invariant: string;
+      owner?: string;
+      version?: number;
+      matchedPaths: string[];
+      matchedSignals: string[];
+      checkIds: string[];
+      partialExceptionIds: string[];
+      suppressedPaths: string[];
+      exceptionIds: string[];
+    }>;
+    recommendedCheckIds: string[];
+    recommendedChecks: Array<{
+      checkId: string;
+      ruleIds: string[];
+      available: boolean;
+      costClass?: GovernanceCheckCostClass;
+      riskFloor?: GovernanceCheckRiskFloor;
+      phases?: GovernanceCheckPhase[];
+    }>;
+    expiredExceptionIds: string[];
+    coverageGaps: string[];
+    metrics: {
+      rulesLoaded: number;
+      rulesEvaluated: number;
+      exceptionsLoaded: number;
+      filesScanned: number;
+      bytesScanned: number;
+      elapsedMs: number;
+    };
+  };
+  structuralContext: {
+    provider: 'none';
+    requestedMode: StructuralContextMode;
+    status: 'disabled' | 'ready' | 'stale' | 'unavailable' | 'degraded';
+    requiredSatisfied: boolean;
+    indexSource: 'current_checkout' | 'repository_baseline';
+    overlayChangedFiles: string[];
+    baselineRevisionMatches: boolean;
+    query?: string;
+    entryPoints: Array<Pick<StructuralNodeSummary, 'id' | 'kind' | 'name' | 'filePath' | 'startLine' | 'endLine'>>;
+    relatedFiles: string[];
+    metadata?: Pick<StructuralIndexMetadata, 'initialized' | 'lastIndexedAt' | 'buildVersion' | 'extractionVersion' | 'staleEngine' | 'changedFiles' | 'ignoredChangedFileCount'>;
+    fallbackReason?: string;
+    timingsMs?: StructuralReadProviderResponse['timingsMs'];
+    truncated: boolean;
+  };
+  impactContext: {
+    status: 'not_requested' | 'ready' | 'degraded';
+    confidence: 'low' | 'medium' | 'high';
+    primaryTargets: string[];
+    structuralHints: string[];
+    mustInspect: string[];
+    likelyAffected: string[];
+    relevantTests: string[];
+    relevantChecks: string[];
+    architectureContracts: string[];
+    coverageGaps: string[];
+    relationSources: Array<'structural' | 'lexical' | 'forge_checks'>;
+    freshness: {
+      structuralStatus: 'disabled' | 'ready' | 'stale' | 'unavailable' | 'degraded';
+      lastIndexedAt?: number | null;
+      changedFileCount: number;
+      indexSource: 'current_checkout' | 'repository_baseline';
+      overlayChangedFileCount: number;
+      baselineRevisionMatches: boolean;
+    };
+  };
+  readiness: ControllerEvidenceReadiness;
+  expansion: ControllerContextExpansionState;
+  files: ControllerContextPackFile[];
+  coverage: {
+    inspectedFiles: string[];
+    likelyRelatedNotInspected: string[];
+    unresolvedRelationships: string[];
+    relevantTests: string[];
+    exactKnownPaths: { requested: string[]; materialized: string[]; missing: string[] };
+    skippedCandidates: {
+      omittedFiles: number;
+      policyDeniedFiles: number;
+      largeFiles: number;
+      binaryFiles: number;
+      /** Raw result cap signal retained for diagnostics. */
+      searchTruncated: boolean;
+      /** Whether the raw cap actually omitted material evidence. */
+      evidenceTruncated: boolean;
+      structuralTruncated: boolean;
+    };
+    materialization: { completeFiles: number; symbols: number; fallbackWindows: number };
+  };
+  cache: {
+    sessionBound: boolean;
+    lexicalHit: boolean;
+    structuralHits: number;
+    structuralMisses: number;
+    rangeHits: number;
+    rangeMisses: number;
+    reused: boolean;
+  };
+  timingsMs: {
+    gitAndFocus: number;
+    structural: number;
+    lexical: number;
+    materialization: number;
+    governance: number;
+    total: number;
+    parallelFirstPass?: boolean;
+    parallelPrefetch?: number;
+    structuralPrefetchBudgetMs?: number;
+    structuralPrefetchDeferred?: boolean;
+    structuralPrefetchReusedInFlight?: boolean;
+    waveCount: number;
+    expansionBudgetUsed: number;
+    expansionBudgetMax: number;
+  };
+  deniedPaths: Array<{ path: string; reason: string }>;
+  omitted: Array<{ path: string; reason: string }>;
+  limits: {
+    maxFiles: number;
+    maxSnippets: number;
+    maxCharsPerSnippet: number;
+    requestedMaxFiles: number;
+    requestedMaxSnippets: number;
+    reservedExactKnownFiles: number;
+  };
+  validation: { policy: 'task-targeted' | 'minimal'; checks: string[] };
+  contextContract: {
+    strategy: string;
+    retrievalMode: ControllerContextRetrievalMode;
+    semanticSufficiencyAuthority: 'chatgpt';
+    rawCodeRequiredForImplementation: boolean;
+    expansionSignals: string[];
+    notes: string[];
+  };
+  next: string[];
+}

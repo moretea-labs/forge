@@ -17,31 +17,48 @@ adapters/mcp/runtime-gateway/
 
 `toolset-names.ts` defines the bounded default connector surface. The six facade tools come from `src/runtime/control-plane/facade/types.ts`; repository, patch, check, Process, plugin-dispatch, and result tools bring the current default to 20.
 
-The HTTP transport owns authentication and protocol-era routing. MCP 2026-07-28 is the canonical public path: `createMcpHandler` serves each modern request without `Mcp-Session-Id`. `McpSessionRegistry` is retained only for explicit 2025-era compatibility, where it owns session capacity, active-request protection, stream leases, replacement, and close accounting. Durable Work/Process/ControllerRound authority never comes from either transport form. Controller capability rotation and legacy-owner upgrades are Runtime recovery mechanics; ordinary model-facing Work operations neither expose nor require `controller_claim`. Legacy tool-surface mismatches still return a recoverable reinitialize response; modern requests resolve the current Runtime schema per request.
+The HTTP transport owns authentication and protocol-era routing. MCP 2026-07-28 is the canonical public path: `createMcpHandler` serves each modern request without `Mcp-Session-Id`. `McpSessionRegistry` is retained only for explicit 2025-era compatibility, where it owns session capacity, active-request protection, stream leases, replacement, and close accounting. Durable Work/Process/ControllerRound authority never comes from either transport form. Controller capability rotation and legacy-owner upgrades are Runtime recovery mechanics; ordinary model-facing Work operations neither expose nor require `controller_claim`. Legacy tool-surface mismatches still return a recoverable reinitialize response; modern requests resolve the current Runtime schema per request. The shared `NativeBrowserChannel` contract and native product discovery are owned by `src/runtime/platform/browser-product-discovery.ts`; CLI ChatGPT-browser session/protocol contracts remain in `src/cli/chatgpt-browser/types.ts`.
 
 ## 2. Repository registry and execution identity
 
 Primary code:
 
 ```text
-src/cli/repositories/registry.ts
-src/cli/repositories/ephemeral-workspace.ts
+src/runtime/repositories/registry.ts
+src/runtime/repositories/ephemeral-workspace.ts
 src/runtime/control-plane/execution/execution-identity.ts
+src/effects/managed-worktree-storage.ts
+src/runtime/repositories/selected-path-actions.ts
 ```
 
-Registered work is resolved to `repoId` plus `checkoutId`. Git top-level/common-directory checks prevent a caller from supplying a different checkout through `cwd`. `ephemeral-workspace.ts` represents the separate explicit authority for an existing unregistered local directory. `src/cli/repositories/structured-git.ts` partitions porcelain status once; `src/runtime/projections/git-status-sampler.ts` uses that parser for its sampled projection rather than maintaining an independent classification.
+Registered work is resolved to `repoId` plus `checkoutId`. Git top-level/common-directory checks prevent a caller from supplying a different checkout through `cwd`. `ephemeral-workspace.ts` represents the separate explicit authority for an existing unregistered local directory. `src/runtime/repositories/structured-git.ts` partitions porcelain status once; `src/runtime/projections/git-status-sampler.ts` uses that parser for its sampled projection rather than maintaining an independent classification. Controller-owned managed-worktree roots and path-overlap checks are shared filesystem effects in `src/effects/managed-worktree-storage.ts`; Runtime cleanup and workspace creation consume that one owner. Selected-path diff/stage/restore/commit and patch-handoff artifact preparation are owned by `src/runtime/repositories/selected-path-actions.ts`; adapters translate requests without owning Git mutation policy.
 
 ## 3. Context and source access
 
 Primary code:
 
 ```text
+src/effects/brain-root.ts
+src/runtime/context/context-pack-contract.ts
+src/runtime/context/context-pack-process.ts
+src/runtime/agents/types.ts
+src/runtime/agents/executable-resolver.ts
+src/runtime/platform/launch-agents.ts
+src/runtime/platform/systemd-user.ts
+src/runtime/platform/service-manager.ts
+src/runtime/local-bridge/types.ts
+src/runtime/local-bridge/read-model.ts
+src/runtime/agent-jobs/read-model.ts
+src/runtime/plugins/github-client.ts
+src/runtime/plugins/github-config.ts
+src/runtime/projections/task-ledger-types.ts
 src/cli/controller/context-pack.ts
-src/cli/repository/inspector.ts
-src/runtime/repository/session-cache.ts
+src/cli/github/issue-sync.ts
+src/runtime/repositories/inspector.ts
+src/runtime/repositories/session-cache.ts
 ```
 
-`rh_context` is the normal code-location/context router. Repository observations are bounded and cached by session/repository identity where valid. Clean Git snapshots avoid redundant `git diff --stat` subprocesses because `git status` already proves that no unstaged diff can exist.
+`src/runtime/context/context-pack-contract.ts` owns the shared Context Pack schema, options/projection, source-snippet and structural-response contracts. `src/runtime/agents/types.ts` owns shared agent identity/auth-readiness contracts; `src/runtime/agents/executable-resolver.ts` owns executable probing and readiness snapshot persistence. `src/runtime/platform/launch-agents.ts` and `systemd-user.ts` own native service operations; `service-manager.ts` composes the platform adapter. CLI recovery commands and Runtime recovery consume these Runtime owners. `src/runtime/local-bridge/types.ts` owns the LocalBridge payload/job contract and TaskRisk; CLI job-store and Runtime execution/recovery consume that shared contract. `src/runtime/projections/task-ledger-types.ts` owns the read-only TaskLedgerProjection schema and version constant; the legacy CLI builder emits this Runtime-owned contract. Runtime and MCP adapters consume neutral contracts; CLI builders/metadata import them in the permitted direction. `rh_context` is the normal code-location/context router. Repository observations are bounded and cached by session/repository identity where valid. Clean Git snapshots avoid redundant `git diff --stat` subprocesses because `git status` already proves that no unstaged diff can exist. User-level Brain root discovery and configuration are filesystem effects in `src/effects/brain-root.ts`, shared by Runtime assistant context and CLI setup/brain commands. The Runtime-owned `src/runtime/plugins/github-client.ts` owns GitHub CLI execution, repository resolution, status probing, Workflow operations and Project reads; `src/runtime/plugins/github-config.ts` owns repository-scoped plugin configuration, legacy import and readiness caching. `src/cli/github/issue-sync.ts` and `src/cli/github/plugin.ts` retain Controller Issue synchronization because the legacy issue store remains CLI-owned. The Runtime-owned `src/runtime/local-bridge/read-model.ts` provides pure LocalBridge file-backed projections and bounded stdout/stderr snapshots; `src/cli/local-bridge/job-store.ts` remains the sole job writer and lifecycle reconciler. The Runtime-owned `src/runtime/agent-jobs/read-model.ts` normalizes and reads AgentJob metadata and active run indexes; `src/cli/agent-jobs/job-manager.ts` retains the lifecycle writer, reconciliation and run-index lock.
 
 Structural CodeGraph context is optional augmentation for call/dependency questions; it is not another mandatory top-level search abstraction.
 
@@ -50,11 +67,11 @@ Structural CodeGraph context is optional augmentation for call/dependency questi
 Primary code:
 
 ```text
-src/cli/editing/edit-session.ts
+src/runtime/editing/edit-session.ts
 adapters/mcp/tool-mapping/repository-tools.ts
 ```
 
-A bounded patch can be applied directly to the selected checkout with file fingerprints, revisions, savepoints, change budgets, and focused verification. Direct Edit is the default for understood small work; a Plan or worktree is not a prerequisite. Anchor occurrence positioning is owned by `src/cli/editing/edit-session.ts` and reused by `src/cli/repositories/safe-patch.ts` preflight, so preview and the actual patch executor cannot drift on repeated anchors.
+A bounded patch can be applied directly to the selected checkout with file fingerprints, revisions, savepoints, change budgets, and focused verification. Direct Edit is the default for understood small work; a Plan or worktree is not a prerequisite. Anchor occurrence positioning is owned by `src/runtime/editing/edit-session.ts` and reused by `src/runtime/repositories/safe-patch.ts` preflight, so preview and the actual patch executor cannot drift on repeated anchors.
 
 ## 5. Command policy and ephemeral workspaces
 
@@ -62,7 +79,7 @@ Primary code:
 
 ```text
 src/cli/repositories/command-classifier.ts
-src/cli/repositories/command-executor.ts
+src/runtime/repositories/command-executor.ts
 src/runtime/execution/process-runtime/command-facade.ts
 ```
 
@@ -91,10 +108,11 @@ src/runtime/execution/process-runtime/runtime.ts
 src/runtime/execution/process-runtime/store.ts
 src/runtime/execution/process-runtime/interactive-admission.ts
 src/runtime/shared/process-identity.ts
+src/runtime/shared/runtime-invocation.ts
 adapters/mcp/runtime-gateway/process-tools.ts
 ```
 
-`spawnManagedProcess` creates one Process record and one physical child execution. Exact PID/start-time/executable identity protects later lifecycle operations. Known-long processes can return handles immediately; short commands may complete during a bounded interactive window. Process startup captures command/start-time together and reuses the running-state persistence result instead of repeating store writes/reads on the hot path.
+`spawnManagedProcess` creates one Process record and one physical child execution. Exact PID/start-time/executable identity protects later lifecycle operations. Known-long processes can return handles immediately; short commands may complete during a bounded interactive window. Process startup captures command/start-time together and reuses the running-state persistence result instead of repeating store writes/reads on the hot path. `src/runtime/shared/runtime-invocation.ts` resolves explicit source, package-launcher, and immutable-release child targets plus argv identity for Runtime diagnostics and persisted-check sidecars.
 
 ## 7. Resource claims, leases, and concurrency
 
@@ -122,19 +140,19 @@ src/runtime/projections/
 
 Equivalent checks can single-flight, coalesce subscribers, and reuse successful evidence when their content/environment contract matches. Invalidated revisions run physically again. Evidence and large result artifacts remain addressable without making hot status payloads unbounded.
 
-## 9. Durable Work, scheduler, and isolation
+## 9. Historical Work, scheduler, and isolation
 
 Primary code:
 
 ```text
-src/runtime/control-plane/facade/work-contract-store.ts
+packages/kernel/work/api/index.ts
 src/runtime/control-plane/repo-actor/
 src/runtime/scheduler/
 src/runtime/execution/workers/
 src/runtime/control-plane/facade/goal-workloop.ts
 ```
 
-Durable Work stores objectives, scope, checks, lifecycle, and evidence when the task actually needs recovery or a longer lifecycle. The scheduler controls global capacity; repository actors decide repository-local safety. Isolated worktrees and workers are mechanisms selected for concurrency/risk, not default ceremony for every code edit.
+Work records remain historical, read-only compatibility data. GitHub Issues and GitHub Projects own current mutable progress and delivery state; Requirements and Plans are recovery context, not a second progress ledger. The scheduler controls global capacity; repository actors decide repository-local safety. Isolated worktrees and workers are mechanisms selected for concurrency/risk, not default ceremony for every code edit.
 
 ## 10. Canonical Runtime root
 

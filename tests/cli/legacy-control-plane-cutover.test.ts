@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { registerRepository } from '../../src/runtime/repositories/registry';
 import { getIssueReadView, createIssue, updateTask } from '../../src/cli/controller/issue-store';
 import { buildControllerTaskLedgerProjection } from '../../src/cli/controller/task-ledger';
 import { inspectProjectGovernance, reconcileProjectGovernance } from '../../src/cli/controller/governance';

@@ -4,7 +4,7 @@ import {
   COMPUTER_OBSERVE_CAPABILITY,
 } from '../../../../packages/protocols/computer/index';
 import type { AssistantPluginManifest } from '../../plugins/types';
-import { EDIT_OPERATION_INPUT_SCHEMA } from '../../../cli/editing/edit-operation-contract';
+import { EDIT_OPERATION_INPUT_SCHEMA } from '../../editing/edit-operation-contract';
 import { FACADE_TOOLS, type CapabilityDescriptor, type CapabilityDomain, type CapabilityExecutionSurface, type CapabilityGroupSummary, type CapabilityOperationClass, type CapabilityRisk, type FacadeTool } from './types';
 
 const CORE_CAPABILITIES: CapabilityDescriptor[] = [

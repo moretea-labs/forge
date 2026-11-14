@@ -5,7 +5,7 @@ import {
   releaseControllerLock,
   renewControllerLock,
   type ControllerLockRecord,
-} from '../../cli/repositories/locks';
+} from '../../effects/controller-locks';
 
 const IOS_DEVICE_LOCK_PREFIX = 'ios-device:';
 const IOS_DEVICE_LOCK_TTL_MS = 2 * 60 * 60_000;

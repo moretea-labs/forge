@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { runInNewContext } from 'node:vm';
 import { ComputerProviderError } from '../../packages/plugin-runtime/computer/index';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 import { rethrowBrowserAutomationBrokerError } from '../../src/runtime/plugins/browser-automation-service';
@@ -17,6 +18,7 @@ import {
   browserActionCanReplayAfterDispatch,
   browserExplicitSessionRequiresExistingResource,
   settleNativeCreatedPageIdentity,
+  browserInteractiveSnapshotScript,
 } from '../../src/runtime/plugins/browser-adapter';
 import {
   type BrowserRuntimeProvider,
@@ -28,6 +30,7 @@ import {
   createMacOsBrowserOwnedPageForProduct,
   listMacOsBrowserTabs,
   nativeDomLoadStateSatisfied,
+  type MacOsBrowserAutomationTiming,
   parseMacOsBrowserCreateTabBrokerResult,
   reattachMacOsBrowserOwnedPage,
   resetMacOsBrowserRuntimeHooksForTest,
@@ -145,6 +148,10 @@ describe('Native Chrome Apple Events denial identity', () => {
         details: { browserProduct: 'chrome', processIdentity: 'unverified', windowId: '7', tabId: '9' } });
       expect(String(error)).toContain('does not prove');
     }
+    await expect(bound.page.readText('body')).rejects.toMatchObject({
+      code: 'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED',
+      details: { browserProduct: 'chrome', processIdentity: 'unverified', windowId: '7', tabId: '9' },
+    });
   });
 });
 
@@ -491,6 +498,106 @@ describe('Browser Runtime V3 routing', () => {
     expect(mutations).toBe(5);
   });
 
+  test('reports native create_tab process-precondition and broker round-trip timings', async () => {
+    const url = 'https://example.com/native-create-timing';
+    const timings: MacOsBrowserAutomationTiming[] = [];
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      onAutomationTiming: (timing) => timings.push(timing),
+      browserAutomationBroker: async (request) => {
+        expect(request).toMatchObject({ action: 'create_tab', product: 'chrome', url });
+        return {
+          value: `7${nativeSeparator}10`,
+          ref: { windowId: '7', tabId: '10' },
+          navigation: { provenanceVersion: 1, requestedUrl: url, assignmentAccepted: true },
+        };
+      },
+    });
+
+    const created = await createMacOsBrowserOwnedPageForProduct('chrome', url, [], '7', 1_000);
+    expect(created.page.creationEvidence()).toMatchObject({
+      ref: { windowId: '7', tabId: '10' },
+      refSource: 'structured',
+      navigation: { provenanceVersion: 1, requestedUrl: url, assignmentAccepted: true },
+    });
+    expect(timings).toHaveLength(1);
+    expect(timings[0]).toMatchObject({
+      action: 'create_tab',
+      product: 'chrome',
+      windowId: '7',
+      tabId: '10',
+      dispatchKind: 'broker',
+      outcome: 'succeeded',
+    });
+    expect(timings[0]?.processPreconditionMs).toBeGreaterThanOrEqual(0);
+    expect(timings[0]?.brokerRoundTripMs).toBeGreaterThanOrEqual(0);
+    expect(timings[0]?.testHookRoundTripMs).toBeUndefined();
+  });
+
+  test('records a failed create_tab precondition without dispatching the broker', async () => {
+    const timings: MacOsBrowserAutomationTiming[] = [];
+    let brokerCalls = 0;
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => false,
+      onAutomationTiming: (timing) => timings.push(timing),
+      browserAutomationBroker: async () => {
+        brokerCalls += 1;
+        return {};
+      },
+    });
+
+    await expect(createMacOsBrowserOwnedPageForProduct('chrome', 'https://example.com/not-running', [], '7', 1_000))
+      .rejects.toMatchObject({ code: 'PLUGIN_BROWSER_NATIVE_APP_NOT_RUNNING' });
+    expect(brokerCalls).toBe(0);
+    expect(timings).toHaveLength(1);
+    expect(timings[0]).toMatchObject({
+      action: 'create_tab',
+      dispatchKind: 'not_dispatched',
+      outcome: 'failed',
+      errorCode: 'PLUGIN_BROWSER_NATIVE_APP_NOT_RUNNING',
+    });
+    expect(timings[0]?.brokerRoundTripMs).toBeUndefined();
+  });
+
+  test('reports native Browser process-precondition and dispatch phase timings through the test hook', async () => {
+    const url = 'https://example.com/native-phase-timing';
+    const timings: MacOsBrowserAutomationTiming[] = [];
+    const metadata = ['false', url, 'Native Timing', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(nativeSeparator);
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      onAutomationTiming: (timing) => timings.push(timing),
+      runAppleScript: async (script) => {
+        if (script.includes('execute targetTab javascript')) {
+          return JSON.stringify({ ok: true, value: 'Native Timing', page: { url, title: 'Native Timing' } });
+        }
+        return metadata;
+      },
+    });
+
+    const attached = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    await attached.page.evaluate('document.title');
+
+    const sample = timings.filter((timing) => timing.action === 'execute_javascript').at(-1);
+    expect(sample).toMatchObject({
+      action: 'execute_javascript',
+      product: 'chrome',
+      windowId: '7',
+      tabId: '9',
+      dispatchKind: 'test_hook',
+      outcome: 'succeeded',
+    });
+    expect(sample?.processPreconditionMs).toBeGreaterThanOrEqual(0);
+    expect(sample?.testHookRoundTripMs).toBeGreaterThanOrEqual(0);
+    expect(sample?.brokerRoundTripMs).toBeUndefined();
+    expect(sample?.totalMs).toBeGreaterThanOrEqual(sample?.processPreconditionMs ?? 0);
+  });
+
   test('uses a real idempotent click transition for macOS check and uncheck', async () => {
     const url = 'https://example.com/react-checkbox';
     const javaScriptCalls: string[] = [];
@@ -523,6 +630,53 @@ describe('Browser Runtime V3 routing', () => {
     expect(javaScriptCalls[1]).toContain('element.checked !== false');
     expect(javaScriptCalls[1]).toContain('element.click()');
     expect(javaScriptCalls[1]).not.toContain('element.checked = false');
+  });
+
+  test('cold Chrome tab reattachment trusts exact tab ID and searches the saved window first', async () => {
+    let inventoryReads = 0;
+    let observedTabId = '9';
+    const url = 'https://example.com/cold-exact';
+    const metadataScripts: string[] = [];
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      tabInventory: async () => {
+        inventoryReads += 1;
+        return {
+          product: 'chrome',
+          truncated: false,
+          tabs: [{ windowId: '7', tabId: '9', active: false, url, title: 'Cold Exact' }],
+        };
+      },
+      // A Chrome tab may move windows without changing its stable tab ID.
+      runAppleScript: async (script) => {
+        metadataScripts.push(script);
+        return [
+          'false', url, 'Cold Exact', '0', '0', '1200', '800', '99', observedTabId, 'false', 'false',
+        ].join(nativeSeparator);
+      },
+    });
+
+    const cold = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    expect(cold.page.tabRef()).toEqual({ windowId: '99', tabId: '9' });
+    expect(inventoryReads).toBe(0);
+
+    const metadataScript = metadataScripts[0] ?? '';
+    const savedWindowLookup = metadataScript.indexOf('if ((id of candidateWindow) as text) is targetWindowId');
+    const firstTabEnumeration = metadataScript.indexOf('repeat with candidateTab in tabs of candidateWindow');
+    const movedWindowFallback = metadataScript.indexOf('if targetTab is missing value then');
+    expect(metadataScript).toContain('set targetWindowId to "7"');
+    expect(savedWindowLookup).toBeGreaterThan(-1);
+    expect(firstTabEnumeration).toBeGreaterThan(savedWindowLookup);
+    expect(movedWindowFallback).toBeGreaterThan(firstTabEnumeration);
+    expect(metadataScript).toContain('is not targetWindowId');
+
+    invalidateMacOsBrowserPageHandle('chrome', { windowId: '99', tabId: '9' });
+    observedTabId = '10';
+    await expect(reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000))
+      .rejects.toMatchObject({ code: 'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN', retryable: false });
+    expect(inventoryReads).toBe(0);
   });
 
   test('reuses one stable native tab handle without metadata or foreground preflight on the warm path', async () => {
@@ -601,6 +755,147 @@ describe('Browser Runtime V3 routing', () => {
     expect(inventoryReads - beforeAction).toBe(0);
     expect(exactTabScripts).toBe(1);
     expect(attached.page.tabRef()).toEqual({ windowId: '7', tabId: '9' });
+  });
+
+  test('native DOM text uses one bounded read-only receipt without tab-inventory preflight', async () => {
+    const url = 'https://example.com/constrained-text';
+    const title = 'Constrained Read';
+    const metadata = ['false', url, title, '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(nativeSeparator);
+    let inventoryReads = 0;
+    let domReads = 0;
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      tabInventory: async () => {
+        inventoryReads += 1;
+        return { product: 'chrome', truncated: false, tabs: [{ windowId: '7', tabId: '9', active: false, url, title }] };
+      },
+      runAppleScript: async (script, _args, timeoutMs) => {
+        if (script.includes('execute targetTab javascript')) {
+          domReads += 1;
+          expect(timeoutMs).toBe(1_000);
+          return JSON.stringify({ ok: true, value: 'constrained-content', page: { url, title } });
+        }
+        return metadata;
+      },
+    });
+    const { page } = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    const afterAttach = inventoryReads;
+    page.beginAction();
+    expect(await page.readText('#main')).toBe('constrained-content');
+    expect(await page.identity({ preferObservedDom: true })).toEqual({ url, title });
+    expect(domReads).toBe(1);
+    expect(inventoryReads).toBe(afterAttach);
+  });
+
+  test('native read identity reuses only the current DOM evaluation receipt', async () => {
+    let nativeJsEvents = 0;
+    const url = 'https://example.com/native-observed-identity';
+    const title = 'Observed Native Page';
+    const metadata = ['false', url, title, '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(nativeSeparator);
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script, args) => {
+        if (script.includes('execute targetTab javascript')) {
+          nativeJsEvents += 1;
+          return JSON.stringify({
+            ok: true,
+            value: args[0]?.includes('document.body.innerText') ? 'read-only-content' : { url, title },
+            page: { url, title },
+          });
+        }
+        return metadata;
+      },
+    });
+    const { page } = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    page.beginAction();
+    expect(await page.evaluate<string>('document.body.innerText')).toBe('read-only-content');
+    expect(await page.identity({ preferObservedDom: true })).toEqual({ url, title });
+    expect(nativeJsEvents).toBe(1);
+
+    // Starting a new action discards the previous DOM receipt.
+    page.beginAction();
+    expect(await page.identity({ preferObservedDom: true })).toEqual({ url, title });
+    expect(nativeJsEvents).toBe(2);
+
+    // Mutation postconditions never consume the read-only fast-path receipt.
+    page.beginAction();
+    expect(await page.evaluate<string>('document.body.innerText')).toBe('read-only-content');
+    expect(await page.identity()).toEqual({ url, title });
+    expect(nativeJsEvents).toBe(4);
+  });
+
+  test('native mutation preflight consumes the same request timeout without dispatching after expiry', async () => {
+    let preflightSlow = false;
+    let reloadCalls = 0;
+    const url = 'https://example.com/preflight-deadline';
+    const metadata = [
+      'true', url, '', '0', '0', '1200', '800', '7', '9', 'true', 'false',
+    ].join(nativeSeparator);
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      tabInventory: async () => {
+        if (preflightSlow) await new Promise((resolve) => setTimeout(resolve, 35));
+        return {
+          product: 'chrome',
+          truncated: false,
+          tabs: [{ windowId: '7', tabId: '9', active: true, url, title: '' }],
+        };
+      },
+      runAppleScript: async (script) => {
+        if (script.includes('reload targetTab')) reloadCalls += 1;
+        return metadata;
+      },
+    });
+    const { page } = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    preflightSlow = true;
+    await expect(page.reload({ timeout: 10 })).rejects.toMatchObject({
+      code: 'BROWSER_AUTOMATION_TIMEOUT',
+      effectOutcome: 'failed',
+    });
+    expect(reloadCalls).toBe(0);
+    expect(page.tabRef()).toEqual({ windowId: '7', tabId: '9' });
+  });
+
+  test('bound Chrome metadata uses exact provider identity without another global tab inventory', async () => {
+    let inventoryReads = 0;
+    let metadataTabId = '9';
+    const url = 'https://example.com/exact-metadata';
+    const metadata = () => [
+      'true', url, '', '0', '0', '1200', '800', '7', metadataTabId, 'true', 'false',
+    ].join(nativeSeparator);
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      tabInventory: async () => {
+        inventoryReads += 1;
+        return {
+          product: 'chrome',
+          truncated: false,
+          tabs: [{ windowId: '7', tabId: '9', active: true, url, title: 'Exact Metadata' }],
+        };
+      },
+      runAppleScript: async () => metadata(),
+    });
+    const { page } = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    const readsAfterAttach = inventoryReads;
+    expect(await page.foregroundState()).toEqual({ frontmost: true, active: true });
+    expect(inventoryReads).toBe(readsAfterAttach);
+    expect(page.tabRef()).toEqual({ windowId: '7', tabId: '9' });
+
+    // The native provider's tab ID, not a prior inventory guess, is binding.
+    metadataTabId = '10';
+    await expect(page.foregroundState()).rejects.toMatchObject({
+      code: 'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN',
+      retryable: false,
+    });
+    expect(page.tabRef()).toEqual({ windowId: '7', tabId: '9' });
   });
 
   test('re-resolves a stable native tab immediately before activation after window topology drift', async () => {
@@ -817,5 +1112,133 @@ describe('Browser Runtime V3 routing', () => {
 
     await expect(listMacOsBrowserTabs('vivaldi', 1_000)).rejects.toThrow('PLUGIN_BROWSER_NATIVE_APP_NOT_INSTALLED');
     expect(scripts).toEqual([]);
+  });
+});
+
+test('interactive snapshot measures select text, caret clearance, label offset and scroll overflow using the existing DOM owner', () => {
+  const select = {
+    tagName: 'SELECT', nodeType: 1, id: 'language', disabled: false, innerText: '', textContent: '',
+    selectedOptions: [{ textContent: 'A very long option label' }],
+    clientWidth: 136, scrollWidth: 164, clientHeight: 34, scrollHeight: 34,
+    isContentEditable: false, parentElement: { tagName: 'DIV' }, previousElementSibling: null,
+    getAttribute: (name: string) => name === 'aria-label' ? 'Language' : null,
+    getBoundingClientRect: () => ({ left: 200, top: 90, width: 140, height: 34, right: 340, bottom: 124 }),
+    querySelectorAll: () => [],
+    labels: [{ getBoundingClientRect: () => ({ top: 96, height: 16 }) }],
+  };
+  const style = {
+    display: 'block', visibility: 'visible', opacity: '1',
+    paddingLeft: '10px', paddingRight: '9px', paddingTop: '4px', paddingBottom: '4px',
+    borderLeftWidth: '1px', borderRightWidth: '1px',
+    appearance: 'none', backgroundImage: 'url("chevron-down.svg")',
+    font: '12px system-ui', whiteSpace: 'nowrap', textAlign: 'start',
+    getPropertyValue: (name: string) => ({ '--select-arrow-offset': '4px', '--select-arrow-size': '12px' })[name as '--select-arrow-offset'] ?? '',
+  };
+  const script = browserInteractiveSnapshotScript(5);
+  const result = runInNewContext(script, {
+    window: { innerWidth: 1024, innerHeight: 768, scrollX: 0, scrollY: 0, devicePixelRatio: 1 },
+    document: {
+      documentElement: { clientWidth: 1024, clientHeight: 768 },
+      querySelectorAll: (selector: string) => selector.includes(',') || selector === '#language' ? [select] : [],
+      createElement: () => ({ getContext: () => ({ font: '', measureText: (text: string) => ({ width: text.length * 7 }) }) }),
+    },
+    getComputedStyle: (element: unknown) => element === select ? style : ({ display: 'flex', alignItems: 'center', justifyContent: 'space-between', rowGap: '6px', columnGap: '12px' }),
+    CSS: { escape: (value: string) => value },
+  }) as { elements: Array<Record<string, any>>; geometryVersion: number };
+  expect(result.geometryVersion).toBe(1);
+  expect(result.elements).toHaveLength(1);
+  const el = result.elements[0]!;
+  expect(el.bounds).toMatchObject({ x: 200, y: 90, width: 140, height: 34 });
+  expect(el.layout.padding).toEqual({ left: 10, right: 9, top: 4, bottom: 4 });
+  expect(el.layout.horizontalOverflow).toBe(true);
+  expect(el.layout.labelCenterDeltaY).toBe(-3);
+  expect(el.layout.parentLayout).toMatchObject({ display: 'flex', alignItems: 'center', rowGap: 6, columnGap: 12 });
+  expect(el.layout.select).toMatchObject({
+    appearance: 'none', caretRightInset: 4, caretSize: 12,
+    extraTextClearance: -7, selectedTextFits: false,
+  });
+  expect(el.layout.review).toContain('select-caret-edge-inset');
+  expect(el.layout.review).toContain('select-caret-text-clearance');
+  expect(el.layout.review).toContain('selected-text-clipped');
+  // Correct inset and short text: advisory review is empty.
+  style.paddingRight = '36px';
+  select.selectedOptions[0]!.textContent = 'Short';
+  style.getPropertyValue = (name: string) =>
+    ({ '--select-arrow-offset': '14px', '--select-arrow-size': '12px' })[name as '--select-arrow-offset'] ?? '';
+  const corrected = runInNewContext(script, {
+    window: { innerWidth: 1024, innerHeight: 768, devicePixelRatio: 1 },
+    document: {
+      documentElement: { clientWidth: 1024, clientHeight: 768 },
+      querySelectorAll: (selector: string) => selector.includes(',') || selector === '#language' ? [select] : [],
+      createElement: () => ({ getContext: () => ({ font: '', measureText: (text: string) => ({ width: text.length * 7 }) }) }),
+    },
+    getComputedStyle: (element: unknown) => element === select ? style : ({ display: 'flex', alignItems: 'center', justifyContent: 'space-between', rowGap: '6px', columnGap: '12px' }),
+    CSS: { escape: (value: string) => value },
+  }) as { elements: Array<Record<string, any>> };
+  expect(corrected.elements[0]!.layout.select).toMatchObject({
+    caretRightInset: 14, caretSize: 12, extraTextClearance: 10, selectedTextFits: true,
+  });
+  expect(corrected.elements[0]!.layout.review).toEqual([]);
+  // Native browser arrows cannot be measured from CSS variables; never invent clearance.
+  style.appearance = 'auto';
+  const native = runInNewContext(script, {
+    window: { innerWidth: 1024, innerHeight: 768, devicePixelRatio: 1 },
+    document: {
+      documentElement: { clientWidth: 1024, clientHeight: 768 },
+      querySelectorAll: (selector: string) => selector.includes(',') || selector === '#language' ? [select] : [],
+      createElement: () => ({ getContext: () => ({ font: '', measureText: (text: string) => ({ width: text.length * 7 }) }) }),
+    },
+    getComputedStyle: (element: unknown) => element === select ? style : ({ display: 'flex', alignItems: 'center', justifyContent: 'space-between', rowGap: '6px', columnGap: '12px' }),
+    CSS: { escape: (value: string) => value },
+  }) as { elements: Array<Record<string, any>> };
+  expect(native.elements[0]!.layout.review).toContain('select-caret-unmeasured');
+});
+
+
+describe('Native Browser mutation batching', () => {
+  test('runs contiguous fill, click and press steps in one exact-tab JavaScript evaluation', async () => {
+    const calls: Array<{ script: string; args: string[] }> = [];
+    const metadata = [
+      'false', 'https://example.com/', 'Example', '0', '0', '900', '600', '7', '9', 'false', 'false',
+    ].join(nativeSeparator);
+    const batchResult: {
+      completed: Array<{ index: number; action: 'fill' | 'click' | 'press'; selector: string; durationMs: number }>;
+    } = {
+      completed: [
+        { index: 0, action: 'fill', selector: '#task', durationMs: 0.2 },
+        { index: 1, action: 'click', selector: '#add', durationMs: 0.3 },
+        { index: 2, action: 'press', selector: '#task', durationMs: 0.1 },
+      ],
+    };
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script, args) => {
+        calls.push({ script, args });
+        if (script.includes('return (frontmost as text)')) return metadata;
+        return JSON.stringify({
+          ok: true,
+          value: batchResult,
+          page: { url: 'https://example.com/', title: 'Example' },
+        });
+      },
+    });
+
+    const { page } = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    const result = await page.runMutationSteps([
+      { index: 0, action: 'fill', selector: '#task', text: 'first' },
+      { index: 1, action: 'click', selector: '#add' },
+      { index: 2, action: 'press', selector: '#task', key: 'Enter' },
+    ]);
+
+    expect(result).toEqual(batchResult);
+    const evaluations = calls.filter((call) => call.script.includes('execute targetTab javascript javascriptSource'));
+    expect(evaluations).toHaveLength(1);
+    const source = evaluations[0]!.args[0]!;
+    expect(source.indexOf('document.querySelector("#task")')).toBeLessThan(source.indexOf('document.querySelector("#add")'));
+    expect(source).toContain("new Event('input', { bubbles: true })");
+    expect(source).toContain("new KeyboardEvent('keydown', init)");
+    expect(source).toContain('element.click()');
   });
 });

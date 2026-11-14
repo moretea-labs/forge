@@ -1,5 +1,7 @@
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import releaseObservationDraft from '../../../../assets/workflows/release-growth/appstore.observe-release.v1.draft.json' with { type: 'json' };
+import postMetricsDraft from '../../../../assets/workflows/release-growth/x.observe-post-metrics.v1.draft.json' with { type: 'json' };
+import publishPostDraft from '../../../../assets/workflows/release-growth/x.publish-post.v1.draft.json' with { type: 'json' };
+import replyToCommentDraft from '../../../../assets/workflows/release-growth/x.reply-to-comment.v1.draft.json' with { type: 'json' };
 import {
   materializeWorkflowAsset, workflowCapabilityDependencies,
   type WorkflowAssetDefinition, type WorkflowAssetDraft,
@@ -20,25 +22,20 @@ export const X_EFFECT_WORKFLOW_IDS = {
   replyToComment: 'x.reply-to-comment',
 } as const;
 
-const ASSET_FILES: Record<string, string> = {
-  [RELEASE_GROWTH_WORKFLOW_IDS.releaseObservation]: 'appstore.observe-release.v1.draft.json',
-  [RELEASE_GROWTH_WORKFLOW_IDS.postMetrics]: 'x.observe-post-metrics.v1.draft.json',
-  [X_EFFECT_WORKFLOW_IDS.publishPost]: 'x.publish-post.v1.draft.json',
-  [X_EFFECT_WORKFLOW_IDS.replyToComment]: 'x.reply-to-comment.v1.draft.json',
+const AUTHORED_DRAFTS: Record<string, unknown> = {
+  [RELEASE_GROWTH_WORKFLOW_IDS.releaseObservation]: releaseObservationDraft,
+  [RELEASE_GROWTH_WORKFLOW_IDS.postMetrics]: postMetricsDraft,
+  [X_EFFECT_WORKFLOW_IDS.publishPost]: publishPostDraft,
+  [X_EFFECT_WORKFLOW_IDS.replyToComment]: replyToCommentDraft,
 };
 
 const BROWSER_BASE_ACTIONS = new Set(['navigate', 'verify_state', 'wait_for_selector', 'query_all', 'get_attribute', 'get_text']);
 const BROWSER_X_WRITE_ACTIONS = new Set(['click', 'fill', 'reconcile_effect']);
 const X_WRITE_WORKFLOW_IDS = new Set<string>(Object.values(X_EFFECT_WORKFLOW_IDS));
 
-function assetFile(workflowId: string): string {
-  const filename = ASSET_FILES[workflowId];
-  if (!filename) throw new Error('RELEASE_GROWTH_WORKFLOW_UNKNOWN');
-  return resolve(import.meta.dir, '../../../../assets/workflows/release-growth', filename);
-}
-
 export function readReleaseGrowthWorkflowDraft(workflowId: string): WorkflowAssetDraft {
-  return JSON.parse(readFileSync(assetFile(workflowId), 'utf8')) as WorkflowAssetDraft;
+  if (!Object.hasOwn(AUTHORED_DRAFTS, workflowId)) throw new Error('RELEASE_GROWTH_WORKFLOW_UNKNOWN');
+  return structuredClone(AUTHORED_DRAFTS[workflowId]) as WorkflowAssetDraft;
 }
 
 export function materializedReleaseGrowthWorkflow(workflowId: string): WorkflowAssetDefinition {

@@ -18,7 +18,7 @@ import {
   renewExecutionLeases,
 } from '../../resources/leases/store';
 import type { ExecutionLease, ExecutionLeaseOwnerIdentity } from '../../resources/leases/types';
-import { recordGatewayLatency } from '../../observability/gateway-contention-metrics';
+import { recordGatewayLatency } from '../../../core/observability/gateway-contention-metrics';
 import type { ResourceClaimSpec } from '../../execution/jobs/types';
 import { runBoundedGit } from './async-process';
 import { terminateProcessTree } from '../../shared/process-tree';

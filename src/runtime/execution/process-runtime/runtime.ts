@@ -30,7 +30,7 @@ import {
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { capProcessOutput } from '../../../effects/process-runner';
-import { getRepository, selectRepositoryCheckout } from '../../../cli/repositories/registry';
+import { getRepository, selectRepositoryCheckout } from '../../repositories/registry';
 import { recordProcessHandleIndexEntry } from './handle-index';
 import { processScopeExecutionTarget, processScopeFromKey } from './process-scope';
 import { redactSensitiveText, sanitizeSensitiveTextFileInPlace } from '../../evidence/sensitive-output';

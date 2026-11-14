@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { runBrainPromote } from '../../src/cli/commands/brain';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { registerRepository } from '../../src/runtime/repositories/registry';
 import { createRequirement, reviseRequirementSemantic } from '../../src/runtime/control-plane/persistence/requirement-store';
 
 function git(repo: string, ...args: string[]) {

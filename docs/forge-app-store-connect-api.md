@@ -4,6 +4,24 @@ Forge exposes App Store Connect as an optional first-party provider behind the s
 
 See [Plugin management](forge-plugin-management.md) and [Verification and Release Gates](architecture/CURRENT.md).
 
+## App territory availability
+
+`list_app_territory_availabilities` requires an explicit `app_id`. It resolves
+`GET /v1/apps/{id}/appAvailabilityV2` first, validates the returned opaque
+`appAvailabilities` resource ID, then reads
+`GET /v2/appAvailabilities/{availabilityId}/territoryAvailabilities` with
+`include=territory` and at most 200 rows. The default limit is 200; an optional
+opaque `cursor` continues the same fixed endpoint. Callers cannot supply a URL.
+
+The response preserves Apple's `available`, `releaseDate`, `contentStatuses`,
+territory relationships and pagination. Missing/malformed discovery and Apple
+permission/network failures stay errors. A missing country or remaining page is
+unknown, never proof that all countries are available. These official settings
+are separate from public name-search, storefront-detail and actual-download
+evidence. Mock output is explicitly identified and supplies no release proof.
+
+See [Apple's territory availability endpoint](https://developer.apple.com/documentation/appstoreconnectapi/get-v2-appavailabilities-_id_-territoryavailabilities).
+
 ## Screenshot processing
 
 `upload_app_screenshot` verifies the exact App, editable iOS version, localization and display set, then confirms the committed screenshot checksum through the official API. It observes the same screenshot ID for up to 45 seconds. `processingComplete: true` requires `COMPLETE`; `processingComplete: false` means the committed asset remains in `UPLOAD_COMPLETE`. Use `list_app_screenshots` to observe that asset before claiming storefront acceptance.

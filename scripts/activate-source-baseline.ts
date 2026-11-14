@@ -12,7 +12,7 @@ import {
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { resolveRepoPreferredControllerHome } from '../src/effects/controller-home';
-import { findRegisteredRepositoryByCheckoutRoot } from '../src/cli/repositories/registry';
+import { findRegisteredRepositoryByCheckoutRoot } from '../src/runtime/repositories/registry';
 import { runProcess } from '../src/effects/process-runner';
 
 interface CheckReceipt {

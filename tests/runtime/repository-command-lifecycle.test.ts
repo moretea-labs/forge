@@ -4,7 +4,7 @@ import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import { closeSync, existsSync, mkdtempSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { MAX_AGENT_TIMEOUT_MS, MIN_AGENT_TIMEOUT_MS } from '../../src/cli/controller/runtime-config';
+import { MAX_AGENT_TIMEOUT_MS, MIN_AGENT_TIMEOUT_MS } from '../../src/runtime/shared/runtime-config';
 import {
   getLocalBridgeJob,
   reconcileLocalBridgeJobs,
@@ -16,17 +16,17 @@ import {
   previewRepositoryCommandExecution,
   REPOSITORY_COMMAND_DEFAULT_TIMEOUT_MS,
   REPOSITORY_COMMAND_MAX_TIMEOUT_MS,
-  REPOSITORY_COMMAND_MIN_TIMEOUT_MS} from '../../src/cli/repositories/command-executor';
-import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/cli/repositories/registry';
-import { repositoryGitRemoveWorktree } from '../../src/cli/repositories/structured-worktree-cleanup';
+  REPOSITORY_COMMAND_MIN_TIMEOUT_MS} from '../../src/runtime/repositories/command-executor';
+import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/runtime/repositories/registry';
+import { repositoryGitRemoveWorktree } from '../../src/runtime/repositories/structured-worktree-cleanup';
 import { recordOwnedResource } from '../../packages/kernel/identity/api/index';
-import { commitSelectedPaths, restoreSelectedPaths, selectedPathDiff } from '../../src/cli/repositories/selected-path-actions';
-import { acquireControllerLock, releaseControllerLock } from '../../src/cli/repositories/locks';
+import { commitSelectedPaths, restoreSelectedPaths, selectedPathDiff } from '../../src/runtime/repositories/selected-path-actions';
+import { acquireControllerLock, releaseControllerLock } from '../../src/effects/controller-locks';
 import { persistControllerAccessMode } from '../../adapters/mcp/access-mode';
 import { classifyRepositoryCommand } from '../../src/cli/repositories/command-classifier';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { readWorkHandle, WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
-import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { getWorkContract } from '../../packages/kernel/work/api';
 import { classifyRepositoryCommandRoute, executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { processScopeRoot } from '../../src/runtime/execution/process-runtime/process-scope';

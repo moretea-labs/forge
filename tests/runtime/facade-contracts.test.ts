@@ -5,7 +5,7 @@ import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/polic
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
 import { buildClaudeControllerInvocation, buildCodexControllerInvocation, buildSuperControllerInvocation, type ExternalControllerInvocationRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
-import { buildLocalConversationProviderArgs, conversationPrompt, cancelLocalConversation, parseCodexConversationJsonl, parseCodexModelCatalog, readLocalConversationActivity, readLocalConversationProviderStatus, runCodexConversation, validateLocalConversationImagePaths } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
+import { buildLocalConversationProviderArgs, conversationPrompt, cancelLocalConversation, parseCodexConversationJsonl, parseCodexModelCatalog, readLocalConversationActivity, readLocalConversationProviderStatus, runCodexConversation, sendLocalConversation, validateLocalConversationImagePaths } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 import { mcpServerInstructions } from '../../adapters/mcp/instructions';
@@ -72,6 +72,9 @@ describe('handoff and facade contracts', () => {
     expect(guidance).toContain('Independent review is optional');
     expect(guidance).toContain('a green check or merged PR alone is insufficient');
     expect(guidance).toContain('source-language search terms');
+    expect(guidance).toContain('text and icon/caret internal clearance');
+    expect(guidance).toContain('real rendered layout');
+    expect(guidance).toContain('NOT RUN or BLOCKED');
     expect(guidance).toContain('no fixed search quota');
     expect(guidance).toContain('Forge source uses GitHub Issue/Project');
     const repositoryGuidance = readFileSync(join(import.meta.dir, '../../AGENTS.md'), 'utf8');
@@ -232,16 +235,35 @@ describe('handoff and facade contracts', () => {
   });
 
   test('local controller retrieves current guidance without Work or a known source file', () => {
-    const attached = conversationPrompt('继续优化用药 UI', 'repo-medication');
+    const attached = conversationPrompt('继续优化用药 UI', 'repo-medication', 'checkout-medication');
     expect(attached).toContain('rh_context');
     expect(attached).toContain('known_paths=["AGENTS.md"]');
     expect(attached).toContain('relevant module guidance');
     expect(attached).toContain('explicit user corrections ahead of historical learning');
+    expect(attached).toContain('actual-rendered geometry');
+    expect(attached).toContain('row/column spacing');
+    expect(attached).toContain('failed or untested cases');
+    expect(attached).toContain('selected checkout: checkout-medication');
     expect(attached).toContain('repo_id=repo-medication');
+    expect(attached).toContain('checkout_id=checkout-medication');
+    const adapterSource = readFileSync(new URL('../../adapters/mcp/runtime-gateway/core-capability-adapter.ts', import.meta.url), 'utf8');
+    expect(adapterSource).toContain('checkoutId: repository?.activeCheckoutId');
     const detached = conversationPrompt('普通聊天');
     expect(detached).not.toContain('rh_context');
     expect(detached).toContain('No repository is attached');
     expect(attached).toContain('Work and ControllerRound are retired');
+  });
+
+  test('local conversation requires repository and exact checkout as a pair', async () => {
+    const input = {
+      controllerHome: '/tmp/forge-local-conversation-test',
+      conversationId: 'conversation-checkout-pair',
+      prompt: 'continue',
+    };
+    await expect(sendLocalConversation({ ...input, repoId: 'repo-medication' }))
+      .rejects.toThrow('LOCAL_CONVERSATION_CHECKOUT_REQUIRED');
+    await expect(sendLocalConversation({ ...input, checkoutId: 'checkout-medication' }))
+      .rejects.toThrow('LOCAL_CONVERSATION_REPOSITORY_REQUIRED');
   });
 
   test('uses the Codex catalog as model authority and builds bounded per-turn overrides', () => {

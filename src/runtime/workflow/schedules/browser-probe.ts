@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import type { RepositoryRecord } from '../../../cli/repositories/types';
+import type { RepositoryRecord } from '../../../core/repository/types';
 import { executeBrowserPluginAction } from '../../plugins/browser-adapter';
 
 export type ScheduledBrowserProbeStatus = 'observed' | 'keepalive' | 'auth_required';

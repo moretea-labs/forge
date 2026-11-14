@@ -29,7 +29,7 @@ import {
 } from '../../src/runtime/root/package-runtime-service';
 import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { ensurePackageConnectorService, packageConnectorEndpointStatusHealthy, packageConnectorLaunchSpec, packageConnectorReadinessEndpoint, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, packageConnectorSystemdInstallCommands, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit, syncPackageConnectorActiveEntrypoint, waitForPackageConnectorEndpointReady } from '../../src/runtime/root/package-connector-service';
-import { retireConflictingForgeLaunchAgents } from '../../src/cli/controller/launch-agents';
+import { retireConflictingForgeLaunchAgents } from '../../src/runtime/platform/launch-agents';
 import { writeMcpServiceLocalConfig } from '../../adapters/mcp/auth';
 
 const roots: string[] = [];

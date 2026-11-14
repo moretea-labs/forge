@@ -5,10 +5,10 @@ import {
   searchRepositoryMany,
   searchRepositoryManyAsync,
   searchRepositoryManyCacheIdentity,
-} from "../repository/inspector";
-import { globMatches } from "../../../adapters/mcp/paths";
+} from "../../runtime/repositories/inspector";
+import { globMatches } from "../../runtime/safe-tooling/path-policy";
 import { posix } from "path";
-import type { ToolPolicy } from './tool-policy';
+import type { ToolPolicy } from '../../runtime/control-plane/tool-policy';
 import { exactCodeOwnerEvidence, exactCodeOwnerQueries, materializeSource } from "./context/source-materializer";
 import { projectBoard } from "./issue-store";
 import { buildControllerTaskLedgerProjection } from "./task-ledger";
@@ -22,7 +22,8 @@ import {
   type ControllerContextPackOptions,
   type ControllerContextPackProjection,
   type ControllerContextPackSnippet,
-} from './context/types';
+  type StructuralReadProviderResponse,
+} from '../../runtime/context/context-pack-contract';
 import {
   DEFAULT_MAX_CHARS_PER_SNIPPET,
   DEFAULT_MAX_FILES,
@@ -44,13 +45,12 @@ import { structuralResult } from './context/structural';
 import {
   unavailableStructuralProvider,
   unavailableStructuralProviderAsync,
-  type StructuralReadProviderResponse,
 } from './context/structural-provider';
 import { buildRepositoryInstructionContext } from './context/instruction-context';
 import { resolveRepositoryGovernance } from './context/rule-resolution';
-import { controllerCheckSelection, listControllerChecks } from './check-runner';
+import { controllerCheckSelection, listControllerChecks } from '../../runtime/execution/process-runtime/check-runner';
 
-export { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from './context/types';
+export { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from '../../runtime/context/context-pack-contract';
 export type {
   ControllerContextImpactDomain,
   ControllerContextPackDependencies,
@@ -62,7 +62,7 @@ export type {
   ControllerEvidenceReadiness,
   ControllerContextExpansionState,
   StructuralContextMode,
-} from './context/types';
+} from '../../runtime/context/context-pack-contract';
 
 const MAX_CONTEXT_EVIDENCE_WAVES = 3;
 const SOURCE_REFERENCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.json'] as const;

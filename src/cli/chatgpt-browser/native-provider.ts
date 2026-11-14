@@ -2,8 +2,8 @@ import { spawn } from 'child_process';
 import { createServer } from 'net';
 import { resolve } from 'path';
 import { pathToFileURL } from 'url';
-import type { BrowserConsultInput, NativeBrowserChannel, PromptBundle } from './types';
-import { describeNativeBrowserProduct, discoverNativeBrowserProduct } from '../../runtime/platform/browser-product-discovery';
+import type { BrowserConsultInput, PromptBundle } from './types';
+import { describeNativeBrowserProduct, discoverNativeBrowserProduct, type NativeBrowserChannel } from '../../runtime/platform/browser-product-discovery';
 
 export interface NativeProviderResult {
   status: 'completed' | 'failed' | 'incomplete_capture';

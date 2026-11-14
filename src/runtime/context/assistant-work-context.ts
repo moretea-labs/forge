@@ -1,5 +1,5 @@
-import { getRepository } from '../../cli/repositories/registry';
-import { configuredBrainRoot } from '../../cli/commands/brain-root';
+import { getRepository } from '../repositories/registry';
+import { configuredBrainRoot } from '../../effects/brain-root';
 import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { queryExperiences, type ExperienceApplicability } from '../../../packages/kernel/memory/api/index';
 import { memoryUnitFromExperience } from '../../../packages/kernel/cognition/api/index';

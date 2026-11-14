@@ -1,4 +1,4 @@
-import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
+import { normalizeRepositoryCommand } from '../../../core/repository-command/normalization';
 
 const SHORT_COMMANDS = new Set([
   'true', 'false', 'echo', 'printf', 'pwd', 'basename', 'dirname', 'test', '[', 'which',

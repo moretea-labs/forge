@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
-import { configureBrainRoot, defaultBrainRootChoice, expandHomePath } from "./brain-root";
+import { configureBrainRoot, defaultBrainRootChoice, expandHomePath } from "../../effects/brain-root";
 import { runInstall, type InstallTargetSpec } from "./install";
 import { runProcess as runBoundedProcess } from "../../effects/process-runner";
 import { runSetupProcess as runProcess, withProcessEnv, type SetupExecutionStep } from './setup-execution';

@@ -1,7 +1,7 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { SEMANTIC_SCOPE_KEY } from '../../../src/effects/controller-home';
-import { listControllerChecks } from '../../../src/cli/controller/check-runner';
+import { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { isRhWorkAcceptedOperation } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { findControlPlaneRecordsByKey, readControlPlaneRecord } from '../../../src/runtime/control-plane/persistence/sqlite-store';

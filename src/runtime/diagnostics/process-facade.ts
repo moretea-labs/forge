@@ -1,14 +1,14 @@
 import { executionIdentityForRepository } from '../control-plane/execution/execution-identity';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 import {
   currentCliRuntimeTarget,
   resolveCliChildInvocation,
   type CliChildInvocation,
   type CliChildInvocationOptions,
   type CliRuntimeTarget,
-} from '../../cli/runtime-invocation';
+} from '../shared/runtime-invocation';
 import { readRuntimeGeneration, resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
 import {
   effectiveProcessStatus,

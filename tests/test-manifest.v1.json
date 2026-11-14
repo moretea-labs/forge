@@ -24,6 +24,27 @@
   ],
   "pathModuleRules": [
     {
+      "prefix": "src/runtime/repositories/",
+      "modules": [
+        "repository"
+      ]
+    },
+    {
+      "prefix": "src/core/repository/",
+      "modules": [
+        "core",
+        "repository"
+      ]
+    },
+    {
+      "prefix": "src/effects/controller-locks.ts",
+      "modules": [
+        "controller",
+        "process-runtime",
+        "repository"
+      ]
+    },
+    {
       "prefix": "src/cli/controller/",
       "modules": [
         "controller"
@@ -160,6 +181,30 @@
     }
   ],
   "tests": {
+    "tests/cli/instruction-context.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
+    "tests/cli/mcp-doctor-runtime-status.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/desktop-native-cognition.test.ts": {
+      "module": "controller",
+      "resource": "process-tree"
+    },
+    "tests/runtime/ios-agent-device-multidisplay.test.ts": {
+      "module": "ios",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/release-growth-publish-workflows.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/release-growth-workflows.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
     "tests/access-policy.test.ts": {
       "module": "core",
       "resource": "pure",

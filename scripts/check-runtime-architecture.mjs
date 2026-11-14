@@ -48,7 +48,7 @@ function forbidBetween(path, startNeedle, endNeedle, expression, description) {
 forbid('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', /definition\('ios_(?:xcode_status|simulators_list|project_discover|schemes_list|simulator_boot|app_build|app_install|app_launch|simulator_screenshot|simulator_log_tail|ui_smoke_test)'/, 'retired iOS MCP aliases must not be re-exposed');
 // The orchestrator MCP profile and unregistered run_agent_goal operation were retired.
 // Do not allow a second model runner or legacy profile to reappear as a bypass.
-forbid('src/cli/controller/tool-policy.ts', /profile === 'orchestrator'|value === 'orchestrator'/, 'orchestrator MCP policy must stay retired');
+forbid('src/runtime/control-plane/tool-policy.ts', /profile === 'orchestrator'|value === 'orchestrator'/, 'orchestrator MCP policy must stay retired');
 // The desktop native Agent local harness must execute tools through the
 // protocol-neutral dispatchers, never through the MCP adapter surface.
 forbid('apps/desktop/src-tauri/resources/forge-local-tool.mjs', /adapters\/mcp/, 'local Agent harness must not import the MCP adapter execution owner');
@@ -59,7 +59,7 @@ forbid('src/runtime/execution/process-runtime/tool-dispatch.ts', /from\s+['"][^'
 for (const path of [
   'src/runtime/control-plane/facade/repository-tool-dispatch.ts',
   'src/runtime/execution/process-runtime/tool-dispatch.ts',
-  'src/cli/controller/tool-policy.ts',
+  'src/runtime/control-plane/tool-policy.ts',
 ]) {
   forbid(path, /from\s+['"][^'"]*adapters\//, 'protocol-neutral tool authority must not depend on transport adapters');
 }
@@ -570,8 +570,6 @@ if (semanticAuthorityGuardrailFixture) {
 const SEMANTIC_STRING_AUTHORITY_DEBT = new Set([
   `adapters/mcp/runtime-gateway/execution-tools.ts::message.includes(':')`,
   `adapters/mcp/runtime-gateway/context-adapter.ts::error.message.startsWith('PLUGIN_NOT_FOUND:')`,
-  `src/cli/local-bridge/job-store.ts::message.startsWith(\"LOCAL_JOB_ID_REQUIRED:\")`,
-  `src/cli/local-bridge/job-store.ts::message.startsWith(\"LOCAL_JOB_PATH_INVALID:\")`,
   `src/cli/local-bridge/server.ts::message.startsWith(\"REPOSITORY_SELF_PROTECTED\")`,
   `src/runtime/control-plane/facade/requirement-authority.ts::error.message.startsWith('REQUIREMENT_ALREADY_EXISTS:')`,
   `src/runtime/control-plane/global-scheduler/reconciliation.ts::message.includes(':')`,
@@ -669,7 +667,12 @@ for (const path of ['README.md', 'docs/ROADMAP.md', 'docs/architecture/CURRENT.m
 
 const required = [
   'adapters/mcp/runtime-gateway/router.ts',
-  'src/cli/agent-jobs/executable-resolver.ts',
+  'src/runtime/agents/types.ts',
+  'src/runtime/agents/executable-resolver.ts',
+  'src/runtime/platform/launch-agents.ts',
+  'src/runtime/platform/systemd-user.ts',
+  'src/runtime/local-bridge/types.ts',
+  'src/core/repository-command/normalization.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   'src/runtime/control-plane/global-scheduler/config.ts',
   'src/runtime/control-plane/global-scheduler/state.ts',
@@ -718,7 +721,10 @@ const required = [
   'src/runtime/context/semantic-navigation-contract.ts',
   'packages/protocols/mcp/tool-contract.ts',
   'packages/protocols/mcp/execution-context.ts',
-  'src/cli/github/contracts.ts',
+  'src/runtime/plugins/github-client.ts',
+  'src/runtime/plugins/github-config.ts',
+  'src/runtime/local-bridge/read-model.ts',
+  'src/runtime/agent-jobs/read-model.ts',
   'adapters/mcp/runtime-gateway/runtime-tool-definitions.ts',
   'adapters/mcp/server.ts',
   'adapters/mcp/oauth.ts',
@@ -737,6 +743,7 @@ const required = [
   'src/runtime/evidence/evidence-store.ts',
   'src/runtime/evidence/artifact-store.ts',
   'src/runtime/projections/materialized-view.ts',
+  'src/runtime/projections/task-ledger-types.ts',
   'src/runtime/projections/git-status-sampler.ts',
   'src/runtime/projections/controller-context.ts',
   'src/runtime/projections/invalidation.ts',
@@ -890,7 +897,7 @@ forbid(
 requireText('packages/kernel/work/domain/types.ts', "export const SEMANTIC_WORK_STATES = ['open', 'completed', 'cancelled'] as const;");
 requireText('packages/kernel/work/domain/types.ts', 'export type SemanticWorkState = (typeof SEMANTIC_WORK_STATES)[number];');
 requireText('packages/kernel/work/api/index.ts', "export * from '../application/work-service'");
-requireText('src/cli/repositories/selected-path-actions.ts', 'beforeCommitGuard');
+requireText('src/runtime/repositories/selected-path-actions.ts', 'beforeCommitGuard');
 requireMissing('src/runtime/control-plane/execution/direct-edit-work-completion.ts');
 requireMissing('src/runtime/control-plane/execution/content-equivalent-commit-authority.ts');
 requireMissing('src/runtime/control-plane/execution/retained-work-resume.ts');
@@ -899,7 +906,7 @@ requireMissing('src/runtime/control-plane/facade/goal-workloop.ts');
 requireMissing('src/runtime/control-plane/facade/goal-workloop-access.ts');
 requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /ImplementationReview|executeWorkVerification|work_finalize/, 'rh_work must not regain review, verification, or finalization behavior authority');
-forbid('src/cli/repositories/selected-path-actions.ts', /ImplementationReview|workRequiresImplementationReview|requestWorkImplementationReview/, 'repository Git safety must not depend on Work review methodology');
+forbid('src/runtime/repositories/selected-path-actions.ts', /ImplementationReview|workRequiresImplementationReview|requestWorkImplementationReview/, 'repository Git safety must not depend on Work review methodology');
 
 // The model-facing rh_work surface is the thin semantic ABI: the schema enum must
 // come from the single operation registry, that registry's model list must not
@@ -1040,7 +1047,7 @@ requireText('packages/kernel/scheduler/application/eligibility.ts', 'scheduleTri
 requireText('packages/kernel/scheduler/application/settlement.ts', 'applyScheduleFailure');
 requireText('packages/kernel/scheduler/application/settlement.ts', 'applyScheduleRetryableFailure');
 requireText('packages/kernel/scheduler/application/settlement.ts', 'settleScheduledExecution');
-requireText('src/runtime/workflow/schedules/settlement.ts', '@deprecated Kernel V2 compatibility shim');
+requireMissing('src/runtime/workflow/schedules/settlement.ts');
 requireMissing('packages/kernel/scheduler/domain/continuation.ts');
 requireMissing('packages/kernel/scheduler/application/continuation-service.ts');
 requireMissing('packages/kernel/scheduler/infrastructure/continuation-dispatch-store.ts');
@@ -1117,10 +1124,9 @@ for (const path of sourceFiles('src')) {
 for (const path of sourceFiles('src')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*controller-session-store['"]/, 'production source must consume packages/kernel/controller instead of retired ControllerSession facade authority');
 }
+requireMissing('src/runtime/control-plane/facade/work-contract-store.ts');
 const B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS = new Set([
-  'src/runtime/control-plane/facade/work-contract-store.ts',
   'src/runtime/control-plane/facade/types.ts',
-  'src/runtime/workflow/schedules/settlement.ts',
 ]);
 // The compatibility-shim ledger may only shrink. A shim with no remaining
 // importer at all is migration debt, not a boundary: delete the file and its
@@ -1305,6 +1311,11 @@ for (const projectionPath of [
 }
 requireText('src/runtime/projections/invalidation.ts', 'runtimeInstanceId?: string');
 requireText('src/runtime/projections/materialized-view.ts', 'currentOwner.runtimeInstanceId !== owner.runtimeInstanceId');
+requireText('src/runtime/projections/task-ledger-types.ts', 'export interface TaskLedgerProjection');
+requireText('src/runtime/projections/task-ledger-types.ts', 'TASK_LEDGER_SCHEMA_VERSION');
+requireText('src/core/repository-command/normalization.ts', 'export interface CanonicalRepositoryCommand');
+requireText('src/core/repository-command/normalization.ts', 'export function normalizeRepositoryCommand');
+requireMissing('src/cli/repositories/command-normalization.ts');
 requireText('src/runtime/control-plane/global-scheduler/projection-refresh.ts', 'getRuntimeWriteClaim()?.runtimeInstanceId');
 forbid(
   'src/runtime/execution/jobs/receipt-store.ts',
@@ -1400,7 +1411,7 @@ for (const path of [
   'src/runtime/root/package-connector-service.ts',
   'src/runtime/root/package-runtime-service.ts',
   'src/runtime/root/package-runtime-release.ts',
-  'src/cli/controller/systemd-user.ts',
+  'src/runtime/platform/systemd-user.ts',
 ]) {
   forbid(path, /^function\s+atomicWrite\s*\(/m, 'service/release text writes must reuse the shared atomic writer');
   requireText(path, 'writeAtomicTextFile');
@@ -1412,16 +1423,16 @@ for (const path of ['src/runtime/control-plane/global-scheduler/reconciliation.t
   forbid(path, /^function\s+isAgentDelegationJob\s*\(/m, 'delegation classification must stay in the shared child-reference owner');
 }
 // Live and sampled Git snapshots share the same porcelain partitioning semantics.
-requireText('src/cli/repositories/structured-git.ts', 'export function splitRepositoryGitStatus');
+requireText('src/runtime/repositories/structured-git.ts', 'export function splitRepositoryGitStatus');
 forbid('src/runtime/projections/git-status-sampler.ts', /^function\s+splitStatus\s*\(/m, 'Git projection must not duplicate the live porcelain parser');
 for (const path of ['src/cli/commands/init.ts', 'src/cli/commands/init-hook.ts', 'src/cli/commands/global-runtime.ts']) {
   forbid(path, /^function\s+(?:withProcessEnv|runProcess)(?:<|\()/m, 'setup commands must import their canonical synchronous process/environment owner');
 }
-requireText('src/cli/editing/edit-session.ts', 'export function findOccurrence');
-forbid('src/cli/repositories/safe-patch.ts', /^function\s+findOccurrence\s*\(/m, 'Safe Patch preflight must reuse Direct Edit anchor occurrence matching');
-requireText('src/cli/editing/edit-session.ts', 'beforeMode');
-requireText('src/cli/editing/edit-session.ts', 'afterMode');
-requireText('src/cli/editing/edit-session.ts', '{ mode: record.beforeMode }');
+requireText('src/runtime/editing/edit-session.ts', 'export function findOccurrence');
+forbid('src/runtime/repositories/safe-patch.ts', /^function\s+findOccurrence\s*\(/m, 'Safe Patch preflight must reuse Direct Edit anchor occurrence matching');
+requireText('src/runtime/editing/edit-session.ts', 'beforeMode');
+requireText('src/runtime/editing/edit-session.ts', 'afterMode');
+requireText('src/runtime/editing/edit-session.ts', '{ mode: record.beforeMode }');
 requireText('src/cli/editing/executable-modes.ts', "mode | 0o111");
 requireText('scripts/repair-executable-modes.ts', "process.argv.includes('--check')");
 requireText('package.json', 'check:executable-modes');
@@ -1605,7 +1616,7 @@ forbidBetween(
   /rebuildRepositoryProjection\s*\(/,
   'repository_runtime_snapshot must be a bounded materialized-view read, never a live rebuild',
 );
-requireText('src/cli/local-bridge/job-store.ts', 'listLocalBridgeJobSnapshots');
+requireText('src/runtime/local-bridge/read-model.ts', 'listLocalBridgeJobSnapshots');
 forbid(
   'src/runtime/execution/workers/executor.ts',
   /\bwriteControllerContextProjection\b/,
@@ -1677,8 +1688,18 @@ requireText('src/runtime/control-plane/global-scheduler/worker-process.ts', 'ter
 requireText('src/runtime/control-plane/global-scheduler/worker-process.ts', "child.once('close'");
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'writeAgentExecutableReadinessSnapshot');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'sampleRepositoryGitStatusForRepositories');
-requireText('src/cli/agent-jobs/executable-resolver.ts', 'revalidateAgentExecutable');
-requireText('src/cli/agent-jobs/executable-resolver.ts', 'AGENT_EXECUTABLE_IDENTITY_CHANGED');
+requireText('src/runtime/agents/executable-resolver.ts', 'revalidateAgentExecutable');
+requireText('src/runtime/agents/executable-resolver.ts', 'AGENT_EXECUTABLE_IDENTITY_CHANGED');
+requireText('src/runtime/agents/types.ts', 'ControllerAgent');
+requireText('src/runtime/agents/types.ts', 'AgentExecutableIdentity');
+requireMissing('src/cli/agent-jobs/executable-resolver.ts');
+requireText('src/runtime/platform/launch-agents.ts', 'export async function safeLaunchdHandoff');
+requireText('src/runtime/platform/systemd-user.ts', 'export function writeSystemdUserUnit');
+requireMissing('src/cli/controller/launch-agents.ts');
+requireMissing('src/cli/controller/systemd-user.ts');
+requireText('src/runtime/local-bridge/types.ts', 'export interface LocalBridgeJob');
+requireText('src/runtime/local-bridge/types.ts', "export type TaskRisk = 'readonly'");
+requireMissing('src/cli/local-bridge/types.ts');
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences'");
 requireText('src/runtime/projections/git-status-sampler.ts', 'writeRepositoryGitStatusSample');
 requireText('src/runtime/projections/git-status-sampler.ts', 'readRepositoryGitStatusSample');
@@ -1889,12 +1910,13 @@ const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
   'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/shared/json-files.ts',
   'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/effects/controller-home.ts',
-  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/cli/repositories/locks.ts',
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/effects/controller-locks.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/control-plane/facade/handoff-inbox-store.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/shared/json-files.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/evidence/event-ledger.ts',
 ]);
 requireExactShrinkingDebt('Kernel -> legacy src dependency debt', b7KernelLegacyEdges, B7_ALLOWED_KERNEL_LEGACY_EDGES);
+requireMissing('src/cli/repositories/locks.ts');
 const b7ProductionEdges = new Set(dependencyEdges(b7ProductionGraph));
 if (!b7ProductionEdges.has('src/runtime/standalone-recovery/core.ts -> src/runtime/standalone-recovery/operation-lock.ts')) {
   failures.push('Recovery Core must consume the single shared operation-lock authority');
@@ -1988,8 +2010,9 @@ requireMissing('src/runtime/control-plane/execution/work-evidence-policy.ts');
 requireText('packages/kernel/identity/infrastructure/user-request-store.ts', "throw new Error('USER_REQUEST_WORK_SCOPE_RETIRED')");
 forbid('src/runtime/context/cognitive-attention.ts', /resolveCognitiveAttentionForWork|renderCognitiveAttentionForWork/, 'current cognition must not expose Work-scoped convenience APIs');
 forbid('packages/kernel/scheduler/domain/schedule.ts', /scheduleOwnsWork|\bworkId\b/, 'current Scheduler domain must not expose Work ownership in ScheduleResourceClaim or helper APIs');
-forbid('src/cli/editing/edit-session.ts', /\bworkId\b/, 'current EditSession schema, summary and worklog must not expose legacy Work identity');
+forbid('src/runtime/editing/edit-session.ts', /\bworkId\b/, 'current EditSession schema, summary and worklog must not expose legacy Work identity');
 forbid('src/cli/controller/task-ledger.ts', /active_work|Work in progress/, 'current TaskLedger schema must use Run terminology, not first-class Work terminology');
+forbid('src/cli/controller/task-ledger.ts', /export interface TaskLedgerProjection|export type TaskLedgerStatusKind/, 'TaskLedger projection schema must be owned by Runtime projections, not the CLI builder');
 forbid('src/cli/controller/operational-plan.ts', /Current Work/, 'current controller UI projection must expose Current Run, not Current Work');
 forbid(
   'src/runtime/evidence/result-store.ts',
@@ -2092,7 +2115,7 @@ forbid(
   'periodic maintenance must not query historical Work state to authorize evidence retention',
 );
 forbid(
-  'src/cli/editing/edit-session.ts',
+  'src/runtime/editing/edit-session.ts',
   /protectedWorkIds|skippedByReason\.active_work/,
   'EditSession retention must be owned by EditSession state/retention rather than Work liveness',
 );

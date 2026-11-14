@@ -1,6 +1,6 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { WorkflowJsonValue } from '../../../packages/workflow-runtime/api/index';
-import { selectRepositoryCheckout } from '../../../src/cli/repositories/registry';
+import { selectRepositoryCheckout } from '../../../src/runtime/repositories/registry';
 import { executionIdentityForRepository } from '../../../src/runtime/control-plane/execution/execution-identity';
 import { readWorkflowRun } from '../../../src/runtime/control-plane/persistence/workflow-run-store';
 import { publicationOutcomeFollowupDueAt, schedulePublicationOutcomeCollection } from '../../../src/runtime/root/assistant-learning-loop';

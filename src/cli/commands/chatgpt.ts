@@ -11,7 +11,8 @@ import {
   runBrowserFollowup,
   runBrowserSetup,
 } from '../chatgpt-browser/engine';
-import type { BrowserProviderName, BrowserSessionStatus, NativeBrowserChannel, ThinkingLevel } from '../chatgpt-browser/types';
+import type { BrowserProviderName, BrowserSessionStatus, ThinkingLevel } from '../chatgpt-browser/types';
+import type { NativeBrowserChannel } from '../../runtime/platform/browser-product-discovery';
 
 interface BrowserCommonOptions {
   repo?: string;
