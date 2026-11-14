@@ -12,6 +12,9 @@ import { computerPluginAdapter } from '../../src/runtime/plugins/computer-regist
 import {
   invalidateMacOsBrowserPageHandles,
   listMacOsBrowserTabs,
+  resetMacOsBrowserRuntimeHooksForTest,
+  setMacOsBrowserRuntimeHooksForTest,
+  type MacOsBrowserAutomationTiming,
   type MacOsBrowserProduct,
 } from '../../src/runtime/plugins/browser-macos-bridge';
 import { callBrowserAutomationBroker } from '../../src/runtime/plugins/browser-automation-service';
@@ -37,6 +40,7 @@ const attemptedSessionCloses = new Set<string>();
 const attemptedBrokerTabCloses = new Set<string>();
 const cleanupReceipts: Array<Record<string, unknown>> = [];
 const cleanupFailures: Array<Record<string, unknown>> = [];
+const nativeAutomationTimings: MacOsBrowserAutomationTiming[] = [];
 let safeProviderRetries = 0;
 let testCompleted = false;
 const brokerOwnedTabs: Array<{ product: MacOsBrowserProduct; ref: OwnedTabRef }> = [];
@@ -187,7 +191,7 @@ async function action(actionId: string, args: Record<string, unknown>, phase = a
   throw new Error('Browser action retry loop exhausted unexpectedly.');
 }
 
-type ComputerActionTrace = { phase: string; requestId: string; attempt: number; durationMs?: number };
+type ComputerActionTrace = { phase: string; requestId: string; attempt: number; durationMs?: number; providerPhases?: MacOsBrowserAutomationTiming[] };
 
 async function computerAction(
   actionId: string,
@@ -199,6 +203,7 @@ async function computerAction(
     const phase = context.phase ?? actionId;
     const traceRecord: ComputerActionTrace = { phase, requestId, attempt };
     context.trace?.push(traceRecord);
+    const timingStartIndex = nativeAutomationTimings.length;
     const startedAt = performance.now();
     try {
       const result = await computerPluginAdapter.executeAction({
@@ -212,9 +217,11 @@ async function computerAction(
         origin: { surface: 'local-ui', actor: 'computer-v3-live' },
       }) as Record<string, unknown>;
       traceRecord.durationMs = Math.round((performance.now() - startedAt) * 10) / 10;
+      traceRecord.providerPhases = nativeAutomationTimings.slice(timingStartIndex);
       return result;
     } catch (error) {
       traceRecord.durationMs = Math.round((performance.now() - startedAt) * 10) / 10;
+      traceRecord.providerPhases = nativeAutomationTimings.slice(timingStartIndex);
       const providerFailure = error as {
         code?: unknown; retryable?: unknown; effectOutcome?: unknown; details?: unknown;
       };
@@ -382,6 +389,7 @@ try {
   const wrong = `${origin}/wrong`;
 
   setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+  setMacOsBrowserRuntimeHooksForTest({ onAutomationTiming: (timing) => nativeAutomationTimings.push(timing) });
   const report: Record<string, unknown> = { schemaVersion: 1, source: 'current-worktree', products: {} };
 
   for (const product of requestedProducts) {
@@ -684,6 +692,31 @@ try {
         return [action, { samples: durations.length, p50Ms: percentile(durations, 0.5), p95Ms: percentile(durations, 0.95) }];
       }),
     );
+    const nativePhaseSamples = [...sequentialBatchRequestTrace, ...nativeBatchRequestTrace]
+      .filter((sample) => !sample.warmup)
+      .flatMap((sample) => sample.requests.flatMap((request) => request.providerPhases ?? []));
+    const phaseSummary = (values: number[]) => values.length === 0
+      ? { samples: 0 }
+      : {
+        samples: values.length,
+        p50Ms: percentile(values, 0.5),
+        p95Ms: percentile(values, 0.95),
+        maxMs: Math.max(...values),
+      };
+    const nativeAutomationPhaseByAction = Object.fromEntries(
+      [...new Set(nativePhaseSamples.map((sample) => sample.action))].sort().map((action) => {
+        const samples = nativePhaseSamples.filter((sample) => sample.action === action);
+        return [action, {
+          requests: samples.length,
+          succeeded: samples.filter((sample) => sample.outcome === 'succeeded').length,
+          failed: samples.filter((sample) => sample.outcome === 'failed').length,
+          processPrecondition: phaseSummary(samples.map((sample) => sample.processPreconditionMs)),
+          brokerRoundTrip: phaseSummary(samples.flatMap((sample) => sample.brokerRoundTripMs === undefined ? [] : [sample.brokerRoundTripMs])),
+          testHookRoundTrip: phaseSummary(samples.flatMap((sample) => sample.testHookRoundTripMs === undefined ? [] : [sample.testHookRoundTripMs])),
+          total: phaseSummary(samples.map((sample) => sample.totalMs)),
+        }];
+      }),
+    );
     assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'native mutation batch');
 
     const unknownMarker = `computer-${product}-unknown-outcome`;
@@ -790,6 +823,8 @@ try {
         providerBatchP95Ms: percentile(nativeProviderBatchDurations, 0.95),
         stepDurationByActionMs: nativeBatchStepDurationByAction,
         stepTimingSamples: nativeBatchStepTimings,
+        nativeAutomationPhaseBoundary: 'process precondition and Computer provider broker round-trip; broker timing includes Runtime-to-sidecar dispatch and is not an inner Apple Event span',
+        nativeAutomationPhaseByAction,
         p50Speedup: Math.round((percentile(sequentialBatchSamples, 0.5) / percentile(nativeBatchSamples, 0.5)) * 100) / 100,
         unknownOutcomeReconciledOnce: true,
         requestTrace: {
@@ -844,6 +879,7 @@ try {
   invalidateMacOsBrowserPageHandles();
   disposeRuntimeComputerComposition();
   resetBrowserPluginRuntimeHooksForTest();
+  resetMacOsBrowserRuntimeHooksForTest();
   rmSync(repoRoot, { recursive: true, force: true });
   const cleanupOk = cleanupFailures.length === 0 && openSessions.size === 0 && brokerOwnedTabs.length === 0;
   if (cleanupOk) rmSync(controllerHome, { recursive: true, force: true });

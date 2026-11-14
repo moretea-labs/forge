@@ -30,6 +30,7 @@ import {
   createMacOsBrowserOwnedPageForProduct,
   listMacOsBrowserTabs,
   nativeDomLoadStateSatisfied,
+  type MacOsBrowserAutomationTiming,
   parseMacOsBrowserCreateTabBrokerResult,
   reattachMacOsBrowserOwnedPage,
   resetMacOsBrowserRuntimeHooksForTest,
@@ -495,6 +496,41 @@ describe('Browser Runtime V3 routing', () => {
       });
     }
     expect(mutations).toBe(5);
+  });
+
+  test('reports native Browser process-precondition and dispatch phase timings through the test hook', async () => {
+    const url = 'https://example.com/native-phase-timing';
+    const timings: MacOsBrowserAutomationTiming[] = [];
+    const metadata = ['false', url, 'Native Timing', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(nativeSeparator);
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      onAutomationTiming: (timing) => timings.push(timing),
+      runAppleScript: async (script) => {
+        if (script.includes('execute targetTab javascript')) {
+          return JSON.stringify({ ok: true, value: 'Native Timing', page: { url, title: 'Native Timing' } });
+        }
+        return metadata;
+      },
+    });
+
+    const attached = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    await attached.page.evaluate('document.title');
+
+    const sample = timings.filter((timing) => timing.action === 'execute_javascript').at(-1);
+    expect(sample).toMatchObject({
+      action: 'execute_javascript',
+      product: 'chrome',
+      windowId: '7',
+      tabId: '9',
+      dispatchKind: 'test_hook',
+      outcome: 'succeeded',
+    });
+    expect(sample?.processPreconditionMs).toBeGreaterThanOrEqual(0);
+    expect(sample?.testHookRoundTripMs).toBeGreaterThanOrEqual(0);
+    expect(sample?.brokerRoundTripMs).toBeUndefined();
+    expect(sample?.totalMs).toBeGreaterThanOrEqual(sample?.processPreconditionMs ?? 0);
   });
 
   test('uses a real idempotent click transition for macOS check and uncheck', async () => {

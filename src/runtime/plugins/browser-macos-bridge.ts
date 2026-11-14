@@ -25,6 +25,20 @@ const MAX_NATIVE_BROWSER_FILE_ATTACH_BYTES = 16 * 1024 * 1024;
 
 export type MacOsBrowserProduct = BrowserNativeProduct;
 
+export interface MacOsBrowserAutomationTiming {
+  action: BrowserAutomationBrokerAction['action'];
+  product?: MacOsBrowserProduct;
+  windowId?: string;
+  tabId?: string;
+  dispatchKind: 'broker' | 'test_hook' | 'not_dispatched';
+  processPreconditionMs: number;
+  brokerRoundTripMs?: number;
+  testHookRoundTripMs?: number;
+  totalMs: number;
+  outcome: 'succeeded' | 'failed';
+  errorCode?: string;
+}
+
 interface MacOsBrowserDefinition {
   product: MacOsBrowserProduct;
   appName: string;
@@ -111,6 +125,8 @@ interface MacOsBrowserRuntimeHooks {
   tabInventory?: (product: MacOsBrowserProduct, timeoutMs: number) => Promise<MacOsBrowserTabInventory>;
   captureRegion?: (region: { x: number; y: number; width: number; height: number }, path: string, timeoutMs: number) => Promise<Buffer>;
   trustedInput?: (request: Extract<BrowserAutomationBrokerAction, { action: 'trusted_input' }>, timeoutMs: number) => Promise<void>;
+  // Test-only phase observer. It never receives script contents, page values, or credentials.
+  onAutomationTiming?: (timing: MacOsBrowserAutomationTiming) => void;
 }
 
 function execFileText(file: string, args: string[], timeoutMs: number): Promise<string> {
@@ -249,17 +265,82 @@ async function runBrowserAutomationText(
   // fails closed unless the exact browser process is already live, so routine
   // inventory/reconcile work can never launch the user's browser or hand Forge
   // an unauthenticated profile.
-  if ('product' in request) await assertMacOsBrowserApplicationRunning(request.product, timeoutMs);
-  if (runtimeHooks.runAppleScript) return await runtimeHooks.runAppleScript(testScript, testArgs, timeoutMs);
-  const result = await callBrowserAutomationBroker(request, timeoutMs);
-  if (typeof result.value !== 'string') {
-    throw new AssistantPluginError(
-      'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
-      'Stable Forge macOS capability broker returned an invalid text result.',
-      { retryable: true },
-    );
+  const onAutomationTiming = runtimeHooks.onAutomationTiming;
+  const startedAt = onAutomationTiming ? performance.now() : undefined;
+  let processPreconditionMs = 0;
+  let brokerRoundTripMs: number | undefined;
+  let testHookRoundTripMs: number | undefined;
+  let dispatchKind: MacOsBrowserAutomationTiming['dispatchKind'] = 'not_dispatched';
+  let outcome: MacOsBrowserAutomationTiming['outcome'] = 'failed';
+  let errorCode: string | undefined;
+  try {
+    if ('product' in request) {
+      const preconditionStartedAt = onAutomationTiming ? performance.now() : undefined;
+      try {
+        await assertMacOsBrowserApplicationRunning(request.product, timeoutMs);
+      } finally {
+        if (preconditionStartedAt !== undefined) {
+          processPreconditionMs = Math.round((performance.now() - preconditionStartedAt) * 10) / 10;
+        }
+      }
+    }
+    if (runtimeHooks.runAppleScript) {
+      dispatchKind = 'test_hook';
+      const dispatchStartedAt = onAutomationTiming ? performance.now() : undefined;
+      try {
+        const value = await runtimeHooks.runAppleScript(testScript, testArgs, timeoutMs);
+        outcome = 'succeeded';
+        return value;
+      } finally {
+        if (dispatchStartedAt !== undefined) {
+          testHookRoundTripMs = Math.round((performance.now() - dispatchStartedAt) * 10) / 10;
+        }
+      }
+    }
+    dispatchKind = 'broker';
+    const dispatchStartedAt = onAutomationTiming ? performance.now() : undefined;
+    let result: Record<string, unknown>;
+    try {
+      result = await callBrowserAutomationBroker(request, timeoutMs);
+    } finally {
+      if (dispatchStartedAt !== undefined) {
+        brokerRoundTripMs = Math.round((performance.now() - dispatchStartedAt) * 10) / 10;
+      }
+    }
+    if (typeof result.value !== 'string') {
+      throw new AssistantPluginError(
+        'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
+        'Stable Forge macOS capability broker returned an invalid text result.',
+        { retryable: true },
+      );
+    }
+    outcome = 'succeeded';
+    return result.value;
+  } catch (error) {
+    errorCode = error instanceof AssistantPluginError ? error.code : undefined;
+    throw error;
+  } finally {
+    if (onAutomationTiming && startedAt !== undefined) {
+      const ref = 'ref' in request ? request.ref : undefined;
+      try {
+        onAutomationTiming({
+          action: request.action,
+          ...('product' in request ? { product: request.product } : {}),
+          ...(ref?.windowId ? { windowId: ref.windowId } : {}),
+          ...(ref?.tabId ? { tabId: ref.tabId } : {}),
+          dispatchKind,
+          processPreconditionMs,
+          ...(brokerRoundTripMs !== undefined ? { brokerRoundTripMs } : {}),
+          ...(testHookRoundTripMs !== undefined ? { testHookRoundTripMs } : {}),
+          totalMs: Math.round((performance.now() - startedAt) * 10) / 10,
+          outcome,
+          ...(errorCode ? { errorCode } : {}),
+        });
+      } catch {
+        // Test-only telemetry must never alter the browser action's outcome.
+      }
+    }
   }
-  return result.value;
 }
 
 /**
