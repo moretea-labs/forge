@@ -11,6 +11,7 @@ import {
 } from '../../../src/runtime/autopilot';
 import { callRepositoryTool } from '../../../src/runtime/control-plane/facade/repository-tool-dispatch';
 import { repositoryToolDefinitions } from '../tool-mapping/repository-tools';
+import { defaultAutopilotPolicy } from '../../../src/runtime/autopilot/store';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
 
@@ -32,9 +33,23 @@ export async function callAutopilotAdapter(
     const reqId = requirementId(args);
     const provider = autopilotProviderReadiness();
     switch (operation) {
-      case 'status':
+      case 'status': {
+        const current = autopilotStatus(ctx.controllerHome, repository.repoId, reqId);
+        const policy = current.grant?.constraints ?? current.run?.policy ?? defaultAutopilotPolicy({
+          provider: provider.profile.provider,
+          endpoint: provider.profile.endpoint,
+          protocol: provider.profile.protocol,
+          model: provider.profile.model,
+        });
+        const requiresReapproval = current.requiresReapproval
+          || Boolean(current.run && current.run.requirementRevision !== current.requirementRevision)
+          || Boolean(current.run && current.run.checkoutId !== repository.activeCheckoutId)
+          || Boolean(current.run && (!current.grant || current.run.grantId !== current.grant.grantId))
+          || Boolean(current.grant && String(current.grant.constraints?.checkoutId ?? '') !== repository.activeCheckoutId);
         return result({
-          ...autopilotStatus(ctx.controllerHome, repository.repoId, reqId),
+          ...current,
+          policy,
+          requiresReapproval,
           provider: provider.profile.provider,
           providerReady: provider.ready,
           providerEndpoint: provider.profile.endpoint,
@@ -48,7 +63,14 @@ export async function callAutopilotAdapter(
             sourceProgress: 'github-project-issue',
           },
         });
+      }
       case 'authorize': {
+        const expectedRequirementRevision = args.expected_requirement_revision;
+        if (typeof expectedRequirementRevision !== 'number'
+            || !Number.isSafeInteger(expectedRequirementRevision)
+            || expectedRequirementRevision < 1) {
+          throw new Error('AUTOPILOT_EXPECTED_REQUIREMENT_REVISION_REQUIRED');
+        }
         const enrolled = authorizeAutopilot({
           controllerHome: ctx.controllerHome,
           repoId: repository.repoId,
@@ -56,6 +78,7 @@ export async function callAutopilotAdapter(
           requirementId: reqId,
           principalId: ctx.principalId,
           confirmAuthorization: args.confirm_authorization === true,
+          expectedRequirementRevision,
           expiresInMinutes: typeof args.expires_in_minutes === 'number' ? args.expires_in_minutes : undefined,
           policy: {
             provider: provider.profile.provider,

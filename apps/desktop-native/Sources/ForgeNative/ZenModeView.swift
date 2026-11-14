@@ -189,7 +189,6 @@ struct ZenWorkspacePane: View {
     @ObservedObject var model: NativeWorkspace
     @Binding var screen: ZenScreen
     @Binding var focusedRequirementId: String?
-    let onOpenPlanning: () -> Void
     let onDraftGoal: (String) -> Void
     let onOpenInbox: () -> Void
     let onOpenAgent: (ForgeRecord, String, String?, Bool) -> Void
@@ -206,6 +205,7 @@ struct ZenWorkspacePane: View {
     @State private var showingPlanSheet = false
     @State private var pendingReviewRecord: ForgeRecord?
     @State private var pendingProposal: ZenChangeProposal?
+    @State private var pendingExecutionApproval: ZenExecutionApproval?
     @State private var proposalSourceRepoId = ""
     @State private var proposalSourceCheckoutId = ""
     @State private var proposalProblem = ""
@@ -301,7 +301,7 @@ struct ZenWorkspacePane: View {
                     Button {
                         reviewLatestProposal()
                     } label: {
-                        Label("审阅提案",systemImage:"checkmark.document")
+                        Label("审阅提案",systemImage:"doc.text.magnifyingglass")
                     }
                     .buttonStyle(.bordered)
                     .disabled(model.repoId == nil || model.busy || !canReviewLatestProposal)
@@ -375,6 +375,11 @@ struct ZenWorkspacePane: View {
             ZenProposalReviewSheet(model:model,sourceRepoId:proposalSourceRepoId,sourceCheckoutId:proposalSourceCheckoutId,proposal:item) { requirementId in
                 focusedRequirementId=requirementId
                 screen = .canvas
+            }
+        }
+        .sheet(item:$pendingExecutionApproval) { approval in
+            ZenExecutionApprovalSheet(model:model,approval:approval) {
+                pendingExecutionApproval=nil
             }
         }
         .alert("提案不可用",isPresented:$showingProposalProblem) {
@@ -795,6 +800,36 @@ struct ZenWorkspacePane: View {
 
 
 
+    private func prepareExecutionApproval(_ item:ForgeRecord,repoId activeRepoId:String) {
+        guard item.kind == .requirement,let activeCheckoutId=model.checkoutId else { return }
+        Task {
+            await model.openRecord(item.id)
+            guard model.repoId == activeRepoId,model.checkoutId == activeCheckoutId,
+                  model.selectedRecord == item.id,
+                  case .requirement(let detail)=model.recordDetail,
+                  detail.requirementId == item.recordId,detail.state == "open" else { return }
+            await model.loadAutopilotStatus(item.recordId)
+            guard model.repoId == activeRepoId,model.checkoutId == activeCheckoutId,
+                  let status=model.planningAutopilotStatuses[item.recordId] else { return }
+            guard status.requirementRevision == detail.revision else {
+                model.error="需求已变化，请刷新后重新批准。"
+                return
+            }
+            let plans=model.records.filter {
+                $0.kind == .plan && $0.requirementId == item.recordId && $0.state == "active"
+            }
+            pendingExecutionApproval=ZenExecutionApproval(
+                repoId:activeRepoId,
+                checkoutId:activeCheckoutId,
+                projectLabel:model.project?.displayName ?? activeRepoId,
+                checkoutLabel:model.checkoutBranch ?? activeCheckoutId,
+                requirement:detail,
+                status:status,
+                plans:plans
+            )
+        }
+    }
+
     private func handleNodeAction(_ item:ForgeRecord,_ action:ZenNodeAction) {
         guard let activeRepoId=model.repoId,
               let root=requirements.first(where:{$0.recordId == focusedRequirementId}),
@@ -834,12 +869,12 @@ struct ZenWorkspacePane: View {
         case .review:
             pendingReviewRecord=item
         case .executionSettings:
-            onOpenPlanning()
+            prepareExecutionApproval(item,repoId:activeRepoId)
         case .toggleExecution:
             guard item.kind == .requirement,root.state == "open",
                   let status=model.planningAutopilotStatuses[item.recordId] else { return }
             if !status.authorized || status.requiresReapproval {
-                onOpenPlanning()
+                prepareExecutionApproval(item,repoId:activeRepoId)
             } else if status.runtimeActive {
                 runExecution(item.recordId,"pause")
             } else if status.providerReady {

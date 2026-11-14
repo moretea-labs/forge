@@ -181,6 +181,7 @@ struct PlanRecordItem: Identifiable {
 
 struct AutopilotStatusDetail {
     let authorized: Bool
+    let provider: String?
     let providerReady: Bool
     let runtimeActive: Bool
     let requiresReapproval: Bool
@@ -200,6 +201,7 @@ struct AutopilotStatusDetail {
     let maxTurns: Int?
     let toolCalls: Int
     let maxToolCalls: Int?
+    let checkpointPlanIds: [String]
 }
 
 struct PlanRecordDetail {
@@ -2628,9 +2630,10 @@ final class NativeWorkspace: ObservableObject {
         let grant = data["grant"] as? [String:Any]
         let run = data["run"] as? [String:Any]
         let usage = run?["usage"] as? [String:Any] ?? [:]
-        let policy = run?["policy"] as? [String:Any] ?? grant?["constraints"] as? [String:Any] ?? [:]
+        let policy = data["policy"] as? [String:Any] ?? run?["policy"] as? [String:Any] ?? grant?["constraints"] as? [String:Any] ?? [:]
         return AutopilotStatusDetail(
             authorized:grant != nil,
+            provider:policy["provider"] as? String ?? data["provider"] as? String,
             providerReady:data["providerReady"] as? Bool ?? false,
             runtimeActive:data["runtimeActive"] as? Bool ?? false,
             requiresReapproval:data["requiresReapproval"] as? Bool ?? false,
@@ -2649,7 +2652,8 @@ final class NativeWorkspace: ObservableObject {
             turns:usage["turns"] as? Int ?? 0,
             maxTurns:policy["maxTurns"] as? Int,
             toolCalls:usage["toolCalls"] as? Int ?? 0,
-            maxToolCalls:policy["maxToolCalls"] as? Int
+            maxToolCalls:policy["maxToolCalls"] as? Int,
+            checkpointPlanIds:policy["checkpointPlanIds"] as? [String] ?? []
         )
     }
 
@@ -2795,6 +2799,7 @@ final class NativeWorkspace: ObservableObject {
         requirementId:String,
         operation:String,
         confirmAuthorization:Bool=false,
+        expectedRequirementRevision:Int?=nil,
         model:String?=nil,
         maxTotalTokens:Int?=nil,
         maxTurns:Int?=nil,
@@ -2803,6 +2808,10 @@ final class NativeWorkspace: ObservableObject {
     ) async -> Bool {
         guard let repoId else { error="请先选择项目。"; return false }
         guard let checkoutId else { error="当前项目没有 checkout。"; return false }
+        guard operation != "authorize" || (expectedRequirementRevision ?? 0) > 0 else {
+            error="请先确认当前 Requirement 修订。"
+            return false
+        }
         guard !autopilotLoading,!autopilotControlPending else { return false }
         let requestGeneration=beginAutopilotRequest()
         let contextGeneration=projectContextGeneration
@@ -2817,6 +2826,7 @@ final class NativeWorkspace: ObservableObject {
             "requirementId":requirementId,"operation":operation,
             "confirmAuthorization":confirmAuthorization,"checkpointPlanIds":checkpointPlanIds
         ]
+        if let expectedRequirementRevision { args["expectedRequirementRevision"]=expectedRequirementRevision }
         if let model,!model.isEmpty { args["model"]=model }
         if let maxTotalTokens { args["maxTotalTokens"]=maxTotalTokens }
         if let maxTurns { args["maxTurns"]=maxTurns }

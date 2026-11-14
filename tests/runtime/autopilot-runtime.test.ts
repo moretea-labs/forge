@@ -30,6 +30,10 @@ import { executionIdentityForRepository } from '../../src/runtime/control-plane/
 import { waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { readAutopilotProviderApiKey, readAutopilotProviderProfile } from '../../src/runtime/autopilot/provider-config';
 
+const authorize = (
+  input: Omit<Parameters<typeof authorizeAutopilot>[0], 'expectedRequirementRevision'> & { expectedRequirementRevision?: number },
+) => authorizeAutopilot({ ...input, expectedRequirementRevision: input.expectedRequirementRevision ?? 1 });
+
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root,{recursive:true,force:true});
@@ -121,7 +125,7 @@ describe('Requirement Autopilot',() => {
 
   test('pauses on an accepted command with missing Process identity instead of treating it as completed',async() => {
     const fx=fixture('pending-without-identity');
-    const enrolled=authorizeAutopilot({controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
+    const enrolled=authorize({controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',confirmAuthorization:true,policy:{
         provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',model:'JoyAI-Code-1.6',
         maxTurns:3,maxToolCalls:3,maxTotalTokens:20_000,
@@ -149,7 +153,7 @@ describe('Requirement Autopilot',() => {
   });
   test('joins a real managed Process terminal before the model makes a completion decision',async() => {
     const fx=fixture('real-process-join');
-    const enrolled=authorizeAutopilot({controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
+    const enrolled=authorize({controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',confirmAuthorization:true,policy:{
         provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',model:'JoyAI-Code-1.6',
         maxTurns:3,maxToolCalls:3,maxTotalTokens:20_000,
@@ -201,7 +205,7 @@ describe('Requirement Autopilot',() => {
 
   test('joins a real lightweight repository Process without duplicating the command',async() => {
     const fx=fixture('lightweight-process-join');
-    const enrolled=authorizeAutopilot({
+    const enrolled=authorize({
       controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',confirmAuthorization:true,
       policy:{provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',
@@ -266,7 +270,7 @@ describe('Requirement Autopilot',() => {
 
   test('reconciles persisted lightweight Process after interrupted Agent loop without replay',async() => {
     const fx=fixture('interrupted-process-join');
-    const enrolled=authorizeAutopilot({
+    const enrolled=authorize({
       controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',confirmAuthorization:true,
       policy:{provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',
@@ -330,7 +334,7 @@ describe('Requirement Autopilot',() => {
 
   test('fails closed on an unavailable persisted Process and does not run model or tools',async() => {
     const fx=fixture('unknown-process-on-resume');
-    const enrolled=authorizeAutopilot({
+    const enrolled=authorize({
       controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',confirmAuthorization:true,
       policy:{provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',
@@ -362,7 +366,7 @@ describe('Requirement Autopilot',() => {
 
   test('persists the request identity before command admission and never replays when its receipt is lost',async() => {
     const fx=fixture('lost-command-receipt');
-    const enrolled=authorizeAutopilot({
+    const enrolled=authorize({
       controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',confirmAuthorization:true,
       policy:{provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',
@@ -455,7 +459,7 @@ describe('Requirement Autopilot',() => {
 
   test('runs an authorized JoyCode policy through the Desktop model-round authority without an API key',async() => {
     const fx=fixture('joycode');
-    const enrolled=authorizeAutopilot({
+    const enrolled=authorize({
       controllerHome:fx.controllerHome,
       repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
@@ -527,11 +531,12 @@ describe('Requirement Autopilot',() => {
       remainingWork:['remaining-work-marker'],
       acceptedEvidenceRefs:Array.from({length:40},(_,index)=>'accepted-evidence-marker-'+index),
     });
-    const enrolled=authorizeAutopilot({
+    const enrolled=authorize({
       controllerHome:fx.controllerHome,
       repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:true,
+      expectedRequirementRevision:2,
       policy:{
         provider:'joycode',
         endpoint:'https://api-ai.jd.com',
@@ -595,7 +600,7 @@ describe('Requirement Autopilot',() => {
 
   test('normalizes JoyCode argv strings and stops repeated read-only exploration after six calls',async() => {
     const fx=fixture('inspection-guard');
-    const enrolled=authorizeAutopilot({
+    const enrolled=authorize({
       controllerHome:fx.controllerHome,
       repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
@@ -663,7 +668,7 @@ describe('Requirement Autopilot',() => {
 
   test('reauthorizes a budget-paused run in place and preserves its lifecycle identity',async() => {
     const fx=fixture('budget-refresh');
-    const first=authorizeAutopilot({
+    const first=authorize({
       controllerHome:fx.controllerHome,
       repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
@@ -695,8 +700,22 @@ describe('Requirement Autopilot',() => {
     expect(paused.stopReason).toBe('max_total_tokens_reached');
     const runId=paused.runId;
     const usage={...paused.usage};
+    expect(() => authorize({
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
+      requirementId:'REQ-AUTO',
+      confirmAuthorization:true,
+      expectedRequirementRevision:1,
+      policy:{
+        ...paused.policy,
+        maxTotalTokens:Math.max(1_000,paused.policy.maxTotalTokens-1),
+        maxTurns:Math.max(1,paused.policy.maxTurns-1),
+        maxToolCalls:Math.max(1,paused.policy.maxToolCalls-1),
+      },
+    })).toThrow('AUTOPILOT_BUDGET_REAUTHORIZATION_INSUFFICIENT');
+    expect(activeAutopilotGrant(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.grantId).toBe(first.grant.grantId);
 
-    const second=authorizeAutopilot({
+    const second=authorize({
       controllerHome:fx.controllerHome,
       repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
@@ -737,7 +756,7 @@ describe('Requirement Autopilot',() => {
 
   test('opens a new bounded budget window even when lifetime usage exceeds the policy hard caps',async() => {
     const fx=fixture('budget-window');
-    const first=authorizeAutopilot({
+    const first=authorize({
       controllerHome:fx.controllerHome,
       repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
@@ -759,7 +778,7 @@ describe('Requirement Autopilot',() => {
       usage:{promptTokens:610_000,completionTokens:15_000,totalTokens:625_000,turns:61,toolCalls:151},
     }),'test_budget_window_fixture');
     const runId=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value.runId;
-    const second=authorizeAutopilot({
+    const second=authorize({
       controllerHome:fx.controllerHome,
       repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
@@ -795,14 +814,14 @@ describe('Requirement Autopilot',() => {
 
   test('requires explicit authorization, binds the exact Requirement revision, and replaces prior grants',() => {
     const fx=fixture('authorization');
-    expect(() => authorizeAutopilot({
+    expect(() => authorize({
       controllerHome:fx.controllerHome,
       repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:false,
     })).toThrow('AUTOPILOT_AUTHORIZATION_CONFIRMATION_REQUIRED');
 
-    const first=authorizeAutopilot({
+    const first=authorize({
       controllerHome:fx.controllerHome,
       repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
@@ -812,7 +831,7 @@ describe('Requirement Autopilot',() => {
     expect(first.grant.constraints?.requirementRevision).toBe(1);
     expect(first.grant.riskCeiling).toBe('workspace_write');
 
-    const second=authorizeAutopilot({
+    const second=authorize({
       controllerHome:fx.controllerHome,
       repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
@@ -824,9 +843,105 @@ describe('Requirement Autopilot',() => {
       .toBe(second.grant.grantId);
   });
 
+  test('rejects authorization when the reviewed Requirement revision is stale',() => {
+    const fx=fixture('authorization-revision-cas');
+    const first=authorize({
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,
+      checkoutId:fx.repository.activeCheckoutId,
+      requirementId:'REQ-AUTO',
+      confirmAuthorization:true,
+    });
+    reviseRequirementSemantic({controllerHome:fx.controllerHome},'REQ-AUTO',{
+      expectedRevision:1,
+      outcomeStatement:'Changed after the user reviewed the previous revision.',
+    });
+    expect(() => authorizeAutopilot({
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,
+      checkoutId:fx.repository.activeCheckoutId,
+      requirementId:'REQ-AUTO',
+      confirmAuthorization:true,
+      expectedRequirementRevision:1,
+    })).toThrow('AUTOPILOT_REQUIREMENT_REVISION_MISMATCH');
+    expect(activeAutopilotGrant(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.grantId).toBe(first.grant.grantId);
+  });
+
+  test('does not replace an active grant while execution is running or waiting for human acceptance',() => {
+    for (const stopReason of [undefined,'human_checkpoint:PLAN-a']) {
+      const fx=fixture(`reauthorization-blocked-${stopReason ?? 'running'}`);
+      const first=authorize({
+        controllerHome:fx.controllerHome,
+        repoId:fx.repository.repoId,
+        checkoutId:fx.repository.activeCheckoutId,
+        requirementId:'REQ-AUTO',
+        confirmAuthorization:true,
+      });
+      createAutopilotRun(fx.controllerHome,{
+        repoId:fx.repository.repoId,
+        checkoutId:first.checkoutId,
+        requirementId:'REQ-AUTO',
+        requirementRevision:1,
+        grantId:first.grant.grantId,
+        policy:first.policy,
+      });
+      if (stopReason) {
+        updateAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',(run) => ({
+          ...run,status:'paused',stopReason,
+        }),'test_human_checkpoint_pause');
+      }
+      expect(() => authorize({
+        controllerHome:fx.controllerHome,
+        repoId:fx.repository.repoId,
+        checkoutId:fx.repository.activeCheckoutId,
+        requirementId:'REQ-AUTO',
+        confirmAuthorization:true,
+      })).toThrow('AUTOPILOT_RUN_REAUTHORIZATION_BLOCKED');
+      expect(activeAutopilotGrant(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.grantId).toBe(first.grant.grantId);
+    }
+  });
+
+  test('replaces a paused run after its Requirement revision changes',() => {
+    const fx=fixture('stale-paused-revision');
+    const first=authorize({
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,
+      checkoutId:fx.repository.activeCheckoutId,
+      requirementId:'REQ-AUTO',
+      confirmAuthorization:true,
+    });
+    createAutopilotRun(fx.controllerHome,{
+      repoId:fx.repository.repoId,
+      checkoutId:first.checkoutId,
+      requirementId:'REQ-AUTO',
+      requirementRevision:1,
+      grantId:first.grant.grantId,
+      policy:first.policy,
+    });
+    updateAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',(run) => ({
+      ...run,status:'paused',stopReason:'human_checkpoint:PLAN-a',
+    }),'test_stale_paused_run');
+    reviseRequirementSemantic({controllerHome:fx.controllerHome},'REQ-AUTO',{
+      expectedRevision:1,
+      outcomeStatement:'Approve the new Requirement revision.',
+    });
+    const second=authorize({
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,
+      checkoutId:fx.repository.activeCheckoutId,
+      requirementId:'REQ-AUTO',
+      confirmAuthorization:true,
+      expectedRequirementRevision:2,
+    });
+    const run=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value;
+    expect(run.status).toBe('cancelled');
+    expect(run.stopReason).toBe('authorization_scope_changed');
+    expect(activeAutopilotGrant(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.grantId).toBe(second.grant.grantId);
+  });
+
   test('requires reapproval after the Requirement semantic revision changes',() => {
     const fx=fixture('revision');
-    authorizeAutopilot({
+    authorize({
       controllerHome:fx.controllerHome,
       repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
@@ -855,7 +970,7 @@ describe('Requirement Autopilot',() => {
       goal:'Pause for human acceptance.',
       items:[],
     });
-    const enrolled=authorizeAutopilot({
+    const enrolled=authorize({
       controllerHome:fx.controllerHome,
       repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
@@ -894,7 +1009,7 @@ describe('Requirement Autopilot',() => {
 
   test('resumes a persisted running run after Runtime restart without creating a second lifecycle owner',async() => {
     const fx=fixture('restart');
-    const enrolled=authorizeAutopilot({
+    const enrolled=authorize({
       controllerHome:fx.controllerHome,
       repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
@@ -933,7 +1048,7 @@ describe('Requirement Autopilot',() => {
 
   test('uses the enrolled Responses endpoint, flattens tools, and normalizes provider usage',async() => {
     const fx=fixture('responses');
-    const enrolled=authorizeAutopilot({
+    const enrolled=authorize({
       controllerHome:fx.controllerHome,
       repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
@@ -995,7 +1110,7 @@ describe('Requirement Autopilot',() => {
 
   test('rejects a remote-write command before the existing repository executor is invoked',async() => {
     const fx=fixture('risk');
-    const enrolled=authorizeAutopilot({
+    const enrolled=authorize({
       controllerHome:fx.controllerHome,
       repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',

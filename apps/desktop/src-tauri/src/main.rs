@@ -969,6 +969,7 @@ async fn autopilot_control(
     requirement_id: String,
     operation: String,
     confirm_authorization: bool,
+    expected_requirement_revision: Option<u64>,
     model: Option<String>,
     max_total_tokens: Option<u64>,
     max_turns: Option<u64>,
@@ -983,12 +984,16 @@ async fn autopilot_control(
     if !matches!(operation.as_str(), "status" | "authorize" | "start" | "pause" | "resume" | "revoke") {
         return Err("FORGE_DESKTOP_AUTOPILOT_OPERATION_UNSUPPORTED".to_string());
     }
+    if operation == "authorize" && !expected_requirement_revision.is_some_and(|revision| revision > 0) {
+        return Err("FORGE_DESKTOP_AUTOPILOT_EXPECTED_REQUIREMENT_REVISION_REQUIRED".to_string());
+    }
     let result = call_runtime_tool("rh_autopilot", json!({
         "repo_id": repo_id,
         "checkout_id": checkout_id,
         "requirement_id": requirement_id,
         "operation": operation,
         "confirm_authorization": confirm_authorization,
+        "expected_requirement_revision": expected_requirement_revision,
         "model": model,
         "max_total_tokens": max_total_tokens,
         "max_turns": max_turns,

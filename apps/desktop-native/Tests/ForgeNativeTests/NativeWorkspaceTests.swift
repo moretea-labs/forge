@@ -333,6 +333,8 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(restored.error,"只读分析会话只能使用 API Provider。")
 
         var codexThread = ChatThread()
+        codexThread.repoId="repo_a"
+        codexThread.checkoutId="checkout_a"
         codexThread.readOnly = true
         codexThread.readOnlyRepoId="repo_a"
         codexThread.readOnlyCheckoutId="checkout_a"
@@ -769,6 +771,11 @@ final class NativeWorkspaceTests: XCTestCase {
 
         let autopilot = NativeWorkspace.autopilotStatusDetail([
             "data":[
+                "policy":[
+                    "provider":"deepseek","model":"deepseek-chat",
+                    "maxTotalTokens":50000,"maxTurns":12,"maxToolCalls":32,
+                    "checkpointPlanIds":["PLAN-a"],
+                ],
                 "grant":[
                     "grantId":"grant-a",
                     "constraints":[
@@ -787,6 +794,8 @@ final class NativeWorkspaceTests: XCTestCase {
             ]
         ])
         XCTAssertEqual(autopilot?.authorized,true)
+        XCTAssertEqual(autopilot?.provider,"deepseek")
+        XCTAssertEqual(autopilot?.checkpointPlanIds,["PLAN-a"])
         XCTAssertEqual(autopilot?.providerReady,true)
         XCTAssertEqual(autopilot?.runStatus,"paused")
         XCTAssertEqual(autopilot?.stopReason,"human_checkpoint:PLAN-a")

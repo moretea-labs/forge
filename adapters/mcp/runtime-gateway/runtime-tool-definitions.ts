@@ -98,12 +98,13 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     expires_in_minutes: { type: 'number', minimum: 1, description: 'Authorization TTL; canonical Grant limits apply.' },
     reason: { type: 'string', description: 'Optional revoke reason.' },
   }, ['credential_ref'], false),
-  definition('rh_autopilot', 'Explicit optional Requirement Autopilot. Ordinary Forge use never requires a Requirement. authorize binds one exact Requirement revision to a canonical AuthorizationGrant; start/resume run a bounded Runtime-owned local execution loop over existing Repository/Git/Process owners. This tool does not create Plan progress/lifecycle state and never grants remote-write or destructive authority.', {
+  definition('rh_autopilot', 'Explicit optional Requirement Autopilot. Ordinary Forge use never requires a Requirement. authorize binds the exact caller-reviewed Requirement revision to a canonical AuthorizationGrant and rejects stale revisions; start/resume run a bounded Runtime-owned local execution loop over existing Repository/Git/Process owners. This tool does not create Plan progress/lifecycle state and never grants remote-write or destructive authority.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Exact checkout selected for the authorization/execution placement.' },
     requirement_id: { type: 'string', description: 'Required Requirement root for Autopilot. This requirement applies only to Autopilot; normal Agent/Repository use remains Requirement-optional.' },
     operation: { type: 'string', enum: ['status', 'authorize', 'start', 'pause', 'resume', 'revoke'], description: 'Defaults to status.' },
-    confirm_authorization: { type: 'boolean', description: 'Must be true for authorize. Authorization is bound to the current Requirement revision.' },
+    confirm_authorization: { type: 'boolean', description: 'Must be true for authorize.' },
+    expected_requirement_revision: { type: 'number', minimum: 1, description: 'Required when operation=authorize. Exact Requirement revision reviewed by the user; stale approvals are rejected.' },
     model: { type: 'string', description: 'DeepSeek model. Defaults to deepseek-chat for the first Runtime-owned provider implementation.' },
     max_total_tokens: { type: 'number', minimum: 1000, maximum: 500000, description: 'Provider-reported token budget across the autonomous run. Forge stops starting new model turns when exhausted.' },
     max_turns: { type: 'number', minimum: 1, maximum: 48 },

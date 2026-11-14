@@ -102,7 +102,6 @@ private struct ForgeWorkspaceView: View {
     @State private var visibility: NavigationSplitViewVisibility = .all
     @State private var zenScreen: ZenScreen = .board
     @State private var zenFocusedRequirementId: String?
-    @State private var zenOpeningPlanning = false
     @State private var renameThreadId: String?
     @State private var renameThreadTitle = ""
     @State private var hoveredThreadId: String?
@@ -152,10 +151,7 @@ private struct ForgeWorkspaceView: View {
             if model.zenMode {
                 ZenWorkspacePane(model:model,screen:$zenScreen,
                                  focusedRequirementId:$zenFocusedRequirementId,
-                                 onOpenPlanning:{
-                    zenOpeningPlanning = true
-                    model.zenMode = false
-                },onDraftGoal:{ description in
+                                 onDraftGoal:{ description in
                     guard let provider=model.readOnlyAnalysisProvider else {
                         model.error="请先配置一个可用的 API Provider，再进行需求分析。"
                         return
@@ -223,10 +219,6 @@ private struct ForgeWorkspaceView: View {
             if model.zenMode { model.show(.requirement) }
         }
         .onChange(of:model.zenMode) { active in
-            if zenOpeningPlanning {
-                zenOpeningPlanning = false
-                return
-            }
             if active {
                 model.show(.requirement)
             } else if model.page == .requirement {
@@ -3129,8 +3121,10 @@ private struct PlanningAuthoringContext: Identifiable {
 }
 
 private struct AutopilotApprovalContext: Identifiable {
+    let repoId: String
+    let checkoutId: String
     let requirement: RequirementRecordDetail
-    var id: String { requirement.requirementId }
+    var id: String { "\(repoId)|\(checkoutId)|\(requirement.requirementId)|\(requirement.revision)" }
 }
 
 private struct AgentPlanningInspector: View {
@@ -5098,17 +5092,24 @@ private struct RecordsPane: View {
     }
 
     private func beginAutopilotApproval(_ requirement:RequirementRecordDetail) {
+        guard let repoId=model.repoId,let checkoutId=model.checkoutId else {
+            model.error="请先选择有效的项目和 Checkout。"
+            return
+        }
         let status=model.autopilotStatus
         autopilotModel=status?.model ?? "deepseek-chat"
         autopilotTokenBudget=status?.maxTotalTokens.map(String.init) ?? "50000"
         autopilotTurnBudget=status?.maxTurns.map(String.init) ?? "12"
         autopilotToolBudget=status?.maxToolCalls.map(String.init) ?? "32"
         autopilotCheckpoints=[]
-        autopilotApproval=AutopilotApprovalContext(requirement:requirement)
+        autopilotApproval=AutopilotApprovalContext(
+            repoId:repoId,checkoutId:checkoutId,requirement:requirement
+        )
     }
 
     @ViewBuilder
     private func autopilotApprovalSheet(_ context:AutopilotApprovalContext) -> some View {
+        let contextCurrent=model.repoId == context.repoId && model.checkoutId == context.checkoutId
         VStack(alignment:.leading,spacing:16) {
             HStack {
                 VStack(alignment:.leading,spacing:4) {
@@ -5124,6 +5125,10 @@ private struct RecordsPane: View {
             }
             Text("需求更新后，原授权失效，需重新批准。")
                 .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
+            if !contextCurrent {
+                Text("工作区已变更，请重新打开批准面板。")
+                    .font(.system(size:11)).foregroundStyle(.orange)
+            }
             Grid(alignment:.leading,horizontalSpacing:12,verticalSpacing:10) {
                 GridRow { Text("模型"); TextField("deepseek-chat",text:$autopilotModel).textFieldStyle(.roundedBorder) }
                 GridRow { Text("Token 上限"); TextField("50000",text:$autopilotTokenBudget).textFieldStyle(.roundedBorder) }
@@ -5164,7 +5169,7 @@ private struct RecordsPane: View {
                 Button("取消") { autopilotApproval=nil }.disabled(autopilotSaving)
                 Button(autopilotSaving ? "批准中…" : "批准") { submitAutopilotApproval(context) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(autopilotSaving || parsedAutopilotBudgets() == nil || autopilotModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                    .disabled(!contextCurrent || autopilotSaving || parsedAutopilotBudgets() == nil || autopilotModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(20).frame(width:520)
@@ -5179,12 +5184,17 @@ private struct RecordsPane: View {
     }
 
     private func submitAutopilotApproval(_ context:AutopilotApprovalContext) {
+        guard model.repoId == context.repoId,model.checkoutId == context.checkoutId else {
+            model.error="工作区已变更，请重新打开批准面板。"
+            return
+        }
         guard let budgets=parsedAutopilotBudgets(),!autopilotSaving else { return }
         autopilotSaving=true
         Task {
             let ok=await model.controlAutopilot(
                 requirementId:context.requirement.requirementId,
                 operation:"authorize",confirmAuthorization:true,
+                expectedRequirementRevision:context.requirement.revision,
                 model:autopilotModel.trimmingCharacters(in:.whitespacesAndNewlines),
                 maxTotalTokens:budgets.0,maxTurns:budgets.1,maxToolCalls:budgets.2,
                 checkpointPlanIds:Array(autopilotCheckpoints).sorted()

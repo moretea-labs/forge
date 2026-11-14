@@ -143,6 +143,7 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 required(args,"requirementId")?,
                 required(args,"operation")?,
                 args.get("confirmAuthorization").and_then(Value::as_bool).unwrap_or(false),
+                args.get("expectedRequirementRevision").and_then(Value::as_u64).filter(|revision| *revision > 0),
                 args.get("model").and_then(Value::as_str).map(str::to_owned),
                 args.get("maxTotalTokens").and_then(Value::as_u64),
                 args.get("maxTurns").and_then(Value::as_u64),
@@ -568,6 +569,14 @@ mod tests {
             "operation":"status"
         })));
         assert_eq!(missing_checkout.unwrap_err(), "FORGE_NATIVE_BRIDGE_checkoutId_REQUIRED");
+        let missing_approval_revision = tauri::async_runtime::block_on(dispatch("autopilot_control", &json!({
+            "repoId":"repo_1",
+            "checkoutId":"checkout_1",
+            "requirementId":"REQ-1",
+            "operation":"authorize",
+            "confirmAuthorization":true
+        })));
+        assert_eq!(missing_approval_revision.unwrap_err(), "FORGE_DESKTOP_AUTOPILOT_EXPECTED_REQUIREMENT_REVISION_REQUIRED");
         let merged = merge_user_request_projections(
             json!({"data":{"items":[
                 {"requestId":"global","title":"Global","summary":"g","status":"pending","updatedAt":"2026-11-09T02:00:00Z"},
