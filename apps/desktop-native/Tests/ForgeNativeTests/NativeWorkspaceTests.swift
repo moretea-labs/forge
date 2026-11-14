@@ -1354,6 +1354,26 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testPluginsPageRefreshGenerationLoadsLatestProjectAndCleansStaleState() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.page = .plugins
+        model.repoId = "repo_a"
+        let older = model.beginPluginsPageRefresh()
+        let newer = model.beginPluginsPageRefresh()
+
+        XCTAssertFalse(model.pluginsPageRequestIsCurrent(older,repoId:"repo_a"))
+        XCTAssertTrue(model.pluginsPageRequestIsCurrent(newer,repoId:"repo_a"))
+        model.finishPluginsPageRefresh(older)
+        XCTAssertTrue(model.pluginsLoading)
+        model.repoId = "repo_b"
+        XCTAssertFalse(model.pluginsPageRequestIsCurrent(newer,repoId:"repo_a"))
+        model.finishPluginsPageRefresh(newer)
+        XCTAssertFalse(model.pluginsLoading)
+    }
+
+    @MainActor
     func testPageTransitionClearsOnlyStalePageError() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }

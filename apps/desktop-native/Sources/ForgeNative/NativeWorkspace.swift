@@ -621,6 +621,7 @@ final class NativeWorkspace: ObservableObject {
     @Published var schedulesLoading = false
     @Published var plugins: [ProjectPluginDetail] = []
     @Published var pluginsLoading = false
+    private(set) var pluginsRequestGeneration = 0
     @Published var runtimeStatus: RuntimeStatusDetail?
     @Published var runtimeDiagnostics: RuntimeDiagnosticsDetail?
     @Published var runtimeLoading = false
@@ -1895,18 +1896,40 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
-    func loadPluginsPage() async {
-        guard let repoId else { plugins = []; return }
-        guard !pluginsLoading else { return }
+    func beginPluginsPageRefresh() -> Int {
+        pluginsRequestGeneration &+= 1
         pluginsLoading = true
-        defer { pluginsLoading = false }
+        return pluginsRequestGeneration
+    }
+
+    func pluginsPageRequestIsCurrent(_ generation:Int,repoId targetRepoId:String) -> Bool {
+        Self.projectScopedRequestIsCurrent(
+            requestRepoId:targetRepoId,currentRepoId:repoId,
+            requestGeneration:generation,currentGeneration:pluginsRequestGeneration
+        ) && page == .plugins
+    }
+
+    func finishPluginsPageRefresh(_ generation:Int) {
+        guard pluginsRequestGeneration == generation else { return }
+        pluginsLoading = false
+    }
+
+    func loadPluginsPage() async {
+        guard let repoId else {
+            pluginsRequestGeneration &+= 1
+            pluginsLoading = false
+            plugins = []
+            return
+        }
+        let requestGeneration = beginPluginsPageRefresh()
+        defer { finishPluginsPageRefresh(requestGeneration) }
         do {
             let value = try await ForgeBridge.request("read_project_plugins",["repoId":repoId])
-            guard self.repoId == repoId, self.page == .plugins else { return }
+            guard pluginsPageRequestIsCurrent(requestGeneration,repoId:repoId) else { return }
             plugins = Self.projectPluginRows(value)
             error = nil
         } catch {
-            guard self.repoId == repoId, self.page == .plugins else { return }
+            guard pluginsPageRequestIsCurrent(requestGeneration,repoId:repoId) else { return }
             plugins = []
             self.error = error.localizedDescription
         }
