@@ -6707,6 +6707,8 @@ private struct SettingsPane: View {
     @State private var joyCodeModel = "JoyAI-Code-1.6"
     @State private var saving = false
     @State private var credentialToDelete: String?
+    @State private var testingProfileId: String?
+    @State private var connectionFeedback: (profileId:String,passed:Bool,message:String)?
 
     var body: some View {
         ScrollView {
@@ -6743,7 +6745,7 @@ private struct SettingsPane: View {
                     HStack {
                         VStack(alignment:.leading,spacing:4) {
                             Text("模型与 API").font(.system(size:17,weight:.semibold))
-                            Text("保存后，在新会话中发送消息验证连接。")
+                            Text("保存 API 配置后，可直接测试模型连接。")
                                 .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                         }
                         Spacer()
@@ -6924,7 +6926,9 @@ private struct SettingsPane: View {
         }
         .task(id:settingsSignature) {
             syncSettingsDraft()
+            connectionFeedback=nil
         }
+        .onChange(of:profiles) { _ in connectionFeedback=nil }
         .alert("删除 API Key？", isPresented: Binding(
             get: { credentialToDelete != nil },
             set: { if !$0 { credentialToDelete=nil } }
@@ -7018,6 +7022,25 @@ private struct SettingsPane: View {
                         .accessibilityIdentifier("settings.credential.status")
                 }
             }
+            HStack(spacing:9) {
+                Button(testingProfileId == profiles[index].id ? "验证中…" : "测试连接") {
+                    testConnection(profiles[index])
+                }
+                .buttonStyle(.bordered)
+                .disabled(testingProfileId != nil || saving || model.settingsLoading || !profileReady(profiles[index]))
+                .accessibilityIdentifier("settings.profile.test-connection")
+                if testingProfileId == profiles[index].id {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            if let feedback=connectionFeedback, feedback.profileId == profiles[index].id {
+                Text(feedback.message)
+                    .font(.system(size:11))
+                    .foregroundStyle(feedback.passed ? Color.green : Color.red)
+                    .accessibilityIdentifier("settings.profile.connection-result")
+            }
+            Text("会向当前模型发送一条短消息，可能产生少量 API 费用。")
+                .font(.system(size:10.5)).foregroundStyle(.tertiary)
         }
         .padding(.vertical,6)
     }
@@ -7097,7 +7120,45 @@ private struct SettingsPane: View {
     }
 
     private func profileReadiness(_ profile:ProviderProfileDraft) -> String {
-        profileReady(profile) ? "已保存 · 尚未验证" : "有未保存更改或配置不完整"
+        guard profileReady(profile) else { return "有未保存更改或配置不完整" }
+        if let feedback=connectionFeedback, feedback.profileId == profile.id {
+            return feedback.passed ? "已保存 · 本次连接正常" : "已保存 · 本次连接失败"
+        }
+        return "已保存 · 尚未验证"
+    }
+
+    private func testConnection(_ profile:ProviderProfileDraft) {
+        guard testingProfileId == nil, !saving, !model.settingsLoading, profileReady(profile) else { return }
+        testingProfileId=profile.id
+        connectionFeedback=nil
+        Task {
+            let outcome: (passed:Bool,message:String)
+            do {
+                try await model.testSavedApiProfile(providerId:profile.providerId)
+                outcome=(true,"模型已响应，连接正常。")
+            } catch {
+                let raw=error.localizedDescription
+                let detail:String
+                if raw.contains("HTTP_401") || raw.contains("HTTP_403") {
+                    detail="认证失败，请检查 API Key 和授权。"
+                } else if raw.contains("HTTP_404") {
+                    detail="模型或接口不存在，请检查模型 ID 和服务地址。"
+                } else if raw.contains("HTTP_429") {
+                    detail="请求受限，请检查额度或稍后重试。"
+                } else if raw.contains("REQUEST_FAILED") {
+                    detail="无法连接到服务，请检查网络和 Endpoint。"
+                } else if raw.contains("PROFILE_NOT_READY") {
+                    detail="当前配置未就绪，请先保存并确认授权。"
+                } else {
+                    detail="连接失败：\(raw)"
+                }
+                outcome=(false,detail)
+            }
+            if profiles.contains(profile) {
+                connectionFeedback=(profile.id,outcome.passed,outcome.message)
+            }
+            testingProfileId=nil
+        }
     }
 
     private func saveApiSettings() {

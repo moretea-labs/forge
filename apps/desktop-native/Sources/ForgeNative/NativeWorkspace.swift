@@ -3965,6 +3965,32 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
+    nonisolated static func apiProfileProbeArguments(profile:ApiProviderProfileDetail) -> [String:Any] {
+        [
+            "conversationId":"profile-check-\(UUID().uuidString)",
+            "provider":profile.providerId,
+            "model":profile.model,
+            "allowEffects":false,
+            "messages":[["role":"user","content":"Reply with OK."]]
+        ]
+    }
+
+    func testSavedApiProfile(providerId:String) async throws {
+        guard let profile=localApiSettings?.profile(providerId:providerId),
+              profile.endpointReady,
+              !profile.model.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else {
+            throw ForgeBridgeError.remote("FORGE_DESKTOP_API_PROFILE_NOT_READY")
+        }
+        // No repository binding, tool authority or persisted conversation.
+        let turn=try ForgeBridge.startApiTurn(Self.apiProfileProbeArguments(profile:profile))
+        let response=try await turn.wait(onProgress:{ _ in })
+        guard let output=response["output"] as? String,
+              !output.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,
+              (response["toolActivityCount"] as? Int ?? 0) == 0 else {
+            throw ForgeBridgeError.remote("FORGE_DESKTOP_API_RESPONSE_MISSING")
+        }
+    }
+
     func send() async {
         let prompt = draft.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !prompt.isEmpty, !busy, let id = selectedThreadId,

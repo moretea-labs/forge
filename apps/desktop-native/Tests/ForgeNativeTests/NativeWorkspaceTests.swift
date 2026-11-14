@@ -1130,6 +1130,25 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(NativeWorkspace.repositoryAccessAllowsEffects(provider:"joycode", accessMode:"full_access", repoId:"repo", checkoutId:"checkout"))
     }
 
+    func testApiProfileConnectionProbeHasNoRepositoryOrEffectAuthority() {
+        let profile=ApiProviderProfileDetail(
+            id:"openai",providerId:"api:openai",label:"OpenAI",
+            endpoint:"https://api.openai.com/v1",model:"gpt-test",
+            apiProtocol:"responses",credentialRef:nil,hasKey:true,endpointReady:true
+        )
+        let payload=NativeWorkspace.apiProfileProbeArguments(profile:profile)
+        XCTAssertEqual(payload["provider"] as? String,"api:openai")
+        XCTAssertEqual(payload["model"] as? String,"gpt-test")
+        XCTAssertEqual(payload["allowEffects"] as? Bool,false)
+        XCTAssertNil(payload["repoId"])
+        XCTAssertNil(payload["checkoutId"])
+        let messages=payload["messages"] as? [[String:String]]
+        XCTAssertEqual(messages?.count,1)
+        XCTAssertEqual(messages?.first?["role"],"user")
+        XCTAssertEqual(messages?.first?["content"],"Reply with OK.")
+        XCTAssertTrue((payload["conversationId"] as? String)?.hasPrefix("profile-check-") == true)
+    }
+
     @MainActor
     func testApiThreadReadinessUsesThreadModelAndSharedEndpoint() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
