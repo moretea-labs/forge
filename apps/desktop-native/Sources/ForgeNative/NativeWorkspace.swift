@@ -1387,6 +1387,13 @@ final class NativeWorkspace: ObservableObject {
         projectListRequestGeneration == generation
     }
 
+    nonisolated static func projectCheckoutRequestIsCurrent(
+        requestGeneration: Int, currentGeneration: Int,
+        requestedRepoId: String, expandedRepoId: String?
+    ) -> Bool {
+        requestGeneration == currentGeneration && requestedRepoId == expandedRepoId
+    }
+
     private func refreshProjects() async {
         let requestGeneration = beginProjectListRefresh()
         projectsLoading = true

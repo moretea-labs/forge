@@ -1322,6 +1322,18 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(model.projectListRequestIsCurrent(newer))
     }
 
+    func testProjectCheckoutRequestFenceRejectsCollapsedAndReopenedSameRepository() {
+        XCTAssertTrue(NativeWorkspace.projectCheckoutRequestIsCurrent(
+            requestGeneration:7,currentGeneration:7,requestedRepoId:"repo_a",expandedRepoId:"repo_a"
+        ))
+        XCTAssertFalse(NativeWorkspace.projectCheckoutRequestIsCurrent(
+            requestGeneration:7,currentGeneration:8,requestedRepoId:"repo_a",expandedRepoId:"repo_a"
+        ))
+        XCTAssertFalse(NativeWorkspace.projectCheckoutRequestIsCurrent(
+            requestGeneration:7,currentGeneration:7,requestedRepoId:"repo_a",expandedRepoId:nil
+        ))
+    }
+
     @MainActor
     func testPageTransitionClearsOnlyStalePageError() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

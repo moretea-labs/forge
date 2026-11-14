@@ -113,6 +113,7 @@ private struct ForgeWorkspaceView: View {
     @State private var expandedProjectRepoId: String?
     @State private var expandedProjectCheckouts: [ProjectCheckoutChoice] = []
     @State private var projectCheckoutsLoading = false
+    @State private var projectCheckoutsRequestGeneration = 0
     @State private var projectCheckoutError: String?
     @State private var inboxShown = false
     @State private var inboxDecisionRequestId: String?
@@ -1143,28 +1144,49 @@ private struct ForgeWorkspaceView: View {
 
     private func toggleProjectCheckouts(_ targetRepoId:String) {
         if expandedProjectRepoId == targetRepoId {
+            projectCheckoutsRequestGeneration &+= 1
             expandedProjectRepoId = nil
             expandedProjectCheckouts = []
             projectCheckoutError = nil
+            projectCheckoutsLoading = false
             return
         }
+        projectCheckoutsRequestGeneration &+= 1
+        let requestGeneration = projectCheckoutsRequestGeneration
         expandedProjectRepoId = targetRepoId
         expandedProjectCheckouts = []
         projectCheckoutError = nil
         projectCheckoutsLoading = true
         Task {
+            defer {
+                if NativeWorkspace.projectCheckoutRequestIsCurrent(
+                    requestGeneration:requestGeneration,
+                    currentGeneration:projectCheckoutsRequestGeneration,
+                    requestedRepoId:targetRepoId,
+                    expandedRepoId:expandedProjectRepoId
+                ) { projectCheckoutsLoading = false }
+            }
             do {
                 let value = try await ForgeBridge.request("read_project_repository",["repoId":targetRepoId])
-                guard expandedProjectRepoId == targetRepoId else { return }
+                guard NativeWorkspace.projectCheckoutRequestIsCurrent(
+                    requestGeneration:requestGeneration,
+                    currentGeneration:projectCheckoutsRequestGeneration,
+                    requestedRepoId:targetRepoId,
+                    expandedRepoId:expandedProjectRepoId
+                ) else { return }
                 expandedProjectCheckouts = ProjectCheckoutChoice.fromRepository(value)
                 if expandedProjectCheckouts.isEmpty {
                     projectCheckoutError = "此仓库没有可用的 Checkout。"
                 }
             } catch {
-                guard expandedProjectRepoId == targetRepoId else { return }
+                guard NativeWorkspace.projectCheckoutRequestIsCurrent(
+                    requestGeneration:requestGeneration,
+                    currentGeneration:projectCheckoutsRequestGeneration,
+                    requestedRepoId:targetRepoId,
+                    expandedRepoId:expandedProjectRepoId
+                ) else { return }
                 projectCheckoutError = error.localizedDescription
             }
-            if expandedProjectRepoId == targetRepoId { projectCheckoutsLoading = false }
         }
     }
 
