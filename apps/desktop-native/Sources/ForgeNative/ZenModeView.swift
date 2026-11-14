@@ -226,6 +226,56 @@ struct ZenWorkspacePane: View {
         }
     }
 
+    static func nodeStatus(
+        for item:ForgeRecord,
+        root:ForgeRecord,
+        executionStatuses:[String:AutopilotStatusDetail]
+    ) -> (label:String,symbol:String,color:Color)? {
+        if let lifecycle=inspectorLifecycleLabel(for:item),lifecycle != "未完成" {
+            return lifecycle == "已完成"
+                ? ("已完成","checkmark.circle.fill",.green)
+                : ("已取消","xmark.circle",.secondary)
+        }
+
+        let requirementId=item.kind == .requirement ? item.recordId : root.recordId
+        guard let status=executionStatuses[requirementId] else { return nil }
+        if item.kind == .plan {
+            guard status.currentPlanId == item.recordId,
+                  ["running","paused","blocked","failed"].contains(status.runStatus ?? "") else {
+                return nil
+            }
+        }
+
+        if status.requiresReapproval {
+            return ("需重新批准","lock.circle",.orange)
+        }
+        if let checkpointPlanId=status.checkpointPlanId,
+           item.kind == .requirement || checkpointPlanId == item.recordId {
+            return ("等待确认","checkmark.seal",.orange)
+        }
+
+        switch status.runStatus {
+        case "running":
+            return status.runtimeActive
+                ? (item.kind == .plan ? "当前执行" : "执行中","circle.lefthalf.filled",.accentColor)
+                : ("运行未激活","pause.circle",.orange)
+        case "paused":
+            return (item.kind == .plan ? "当前暂停" : "已暂停","pause.circle",.orange)
+        case "blocked":
+            return (item.kind == .plan ? "当前受阻" : "受阻","exclamationmark.circle",.orange)
+        case "failed":
+            return (item.kind == .plan ? "当前失败" : "执行失败","xmark.octagon",.red)
+        case "completed":
+            return ("执行完成","checkmark.circle.fill",.green)
+        case "cancelled":
+            return ("执行已取消","xmark.circle",.secondary)
+        default:
+            return item.kind == .requirement && status.authorized
+                ? ("已批准","checkmark.seal",.accentColor)
+                : nil
+        }
+    }
+
     private var executionOutcomeUnknown: Bool {
         model.planningAutopilotStatusError?.contains("操作结果未确认") == true
     }
@@ -1476,9 +1526,9 @@ private struct ZenTreeCanvas: View {
                                             Spacer(minLength:0)
                                         }
                                         .foregroundStyle(.secondary)
-                                        .frame(height:30,alignment:.topLeading)
+                                        .frame(height:28,alignment:.topLeading)
                                         .padding(.trailing,92)
-                                        .padding(.bottom,5)
+                                        .padding(.bottom,4)
                                         Text(item.title)
                                             .font(.system(size:13,weight:.semibold))
                                             .foregroundStyle(.primary)
@@ -1486,6 +1536,20 @@ private struct ZenTreeCanvas: View {
                                             .multilineTextAlignment(.leading)
                                             .frame(maxWidth:.infinity,alignment:.leading)
                                         Spacer(minLength:0)
+                                        if let status=ZenWorkspacePane.nodeStatus(
+                                            for:item,root:root,executionStatuses:executionStatuses
+                                        ) {
+                                            HStack(spacing:5) {
+                                                Image(systemName:status.symbol)
+                                                    .font(.system(size:9,weight:.semibold))
+                                                    .foregroundStyle(status.color)
+                                                Text(status.label)
+                                                    .font(.system(size:9.5,weight:.medium))
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(1)
+                                            }
+                                            .padding(.top,3)
+                                        }
                                     }
                                     .frame(width:194,height:80,alignment:.topLeading)
                                     .padding(.horizontal,13)
