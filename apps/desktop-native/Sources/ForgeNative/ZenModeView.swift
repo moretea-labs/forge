@@ -243,6 +243,29 @@ struct ZenWorkspacePane: View {
         }
     }
 
+    // Presentation-only action derived from the existing Autopilot status owner.
+    // A persisted "running" run without an active loop is recovered by resume, not start.
+    static func executionOperation(status:AutopilotStatusDetail?,outcomeUnknown:Bool) -> String? {
+        guard !outcomeUnknown,let status else { return nil }
+        if !status.authorized || status.requiresReapproval { return "authorize" }
+        if status.runtimeActive { return "pause" }
+        guard status.providerReady else { return nil }
+        return ["running","paused","blocked","failed"].contains(status.runStatus ?? "") ? "resume" : "start"
+    }
+
+    static func executionLabel(operation:String,runStatus:String?) -> String {
+        switch operation {
+        case "authorize": return "批准执行"
+        case "pause": return "暂停执行"
+        case "resume": return runStatus == "running" ? "恢复执行" : "继续执行"
+        default: return "开始执行"
+        }
+    }
+
+    private var executionOutcomeUnknown: Bool {
+        model.planningAutopilotStatusError?.contains("操作结果未确认") == true
+    }
+
     private var visibleStages:[ZenBoardBucket] {
         ZenBoardBucket.allCases.filter { stage in
             !hideEmptyColumns || visibleRequirements.contains(where:{bucket($0) == stage})
@@ -683,7 +706,8 @@ struct ZenWorkspacePane: View {
                     ZenTreeCanvas(
                         root:root,records:model.records,selectedId:model.selectedRecord,
                         executionStatuses:model.planningAutopilotStatuses,
-                        executionBusy:model.autopilotLoading,
+                        executionBusy:model.autopilotLoading || model.autopilotControlPending,
+                        executionOutcomeUnknown:executionOutcomeUnknown,
                         onSelect:{ item in
                             Task { await model.openRecord(item.id) }
                         },onAction:{ item,action in
@@ -872,15 +896,12 @@ struct ZenWorkspacePane: View {
             prepareExecutionApproval(item,repoId:activeRepoId)
         case .toggleExecution:
             guard item.kind == .requirement,root.state == "open",
-                  let status=model.planningAutopilotStatuses[item.recordId] else { return }
-            if !status.authorized || status.requiresReapproval {
-                prepareExecutionApproval(item,repoId:activeRepoId)
-            } else if status.runtimeActive {
-                runExecution(item.recordId,"pause")
-            } else if status.providerReady {
-                let operation=["paused","blocked","failed"].contains(status.runStatus ?? "") ? "resume" : "start"
-                runExecution(item.recordId,operation)
-            }
+                  let operation=Self.executionOperation(
+                    status:model.planningAutopilotStatuses[item.recordId],
+                    outcomeUnknown:executionOutcomeUnknown
+                  ) else { return }
+            if operation == "authorize" { prepareExecutionApproval(item,repoId:activeRepoId) }
+            else { runExecution(item.recordId,operation) }
         }
     }
 
@@ -1113,13 +1134,50 @@ struct ZenWorkspacePane: View {
                 Text("尚未读取到执行状态。").font(.system(size:11))
                     .foregroundStyle(.secondary)
             }
+            if let issue=model.planningAutopilotStatusError {
+                Text(issue).font(.system(size:10)).foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("zen.execution.error")
+            }
+            if item.state == "open" {
+                HStack(spacing:9) {
+                    if let operation=Self.executionOperation(
+                        status:model.planningAutopilotStatuses[item.recordId],
+                        outcomeUnknown:executionOutcomeUnknown
+                    ) {
+                        Button(Self.executionLabel(
+                            operation:operation,
+                            runStatus:model.planningAutopilotStatuses[item.recordId]?.runStatus
+                        )) {
+                            handleNodeAction(item,operation == "authorize" ? .executionSettings : .toggleExecution)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.autopilotLoading || model.autopilotControlPending)
+                        .accessibilityIdentifier("zen.execution.primary")
+                    }
+                    Button {
+                        Task { await model.loadAutopilotStatus(item.recordId) }
+                    } label: {
+                        Label("刷新执行状态",systemImage:"arrow.clockwise")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.autopilotLoading || model.autopilotControlPending)
+                    .accessibilityIdentifier("zen.execution.refresh")
+                }
+            }
         }
         .accessibilityIdentifier("zen.execution.summary")
     }
 
     private func runExecution(_ requirementId:String,_ operation:String) {
-        guard !model.autopilotLoading else { return }
+        guard let repoId=model.repoId,let checkoutId=model.checkoutId,
+              !model.autopilotLoading,!model.autopilotControlPending,
+              Self.executionOperation(
+                status:model.planningAutopilotStatuses[requirementId],
+                outcomeUnknown:executionOutcomeUnknown
+              ) == operation else { return }
         Task {
+            guard model.repoId == repoId,model.checkoutId == checkoutId else { return }
             _ = await model.controlAutopilot(requirementId:requirementId,operation:operation)
         }
     }
@@ -1196,6 +1254,7 @@ private struct ZenTreeCanvas: View {
     let selectedId: String?
     let executionStatuses: [String:AutopilotStatusDetail]
     let executionBusy: Bool
+    let executionOutcomeUnknown: Bool
     let onSelect: (ForgeRecord) -> Void
     let onAction: (ForgeRecord,ZenNodeAction) -> Void
     @State private var hoveredNodeId: String?
@@ -1243,25 +1302,18 @@ private struct ZenTreeCanvas: View {
                 }
                 if canChange && item.kind == .requirement {
                     Divider()
-                    if let status=executionStatuses[item.recordId] {
-                        if status.authorized && !status.requiresReapproval {
-                            if status.runtimeActive {
-                                Button("暂停执行",systemImage:"pause") {
-                                    onAction(item,.toggleExecution)
-                                }
-                                .disabled(executionBusy)
-                            } else if status.providerReady {
-                                Button(["paused","blocked","failed"].contains(status.runStatus ?? "")
-                                       ? "继续执行" : "开始执行",systemImage:"play") {
-                                    onAction(item,.toggleExecution)
-                                }
-                                .disabled(executionBusy)
-                            }
-                        } else {
-                            Button("批准执行",systemImage:"lock.open") {
-                                onAction(item,.executionSettings)
-                            }
+                    if let status=executionStatuses[item.recordId],
+                       let operation=ZenWorkspacePane.executionOperation(
+                         status:status,outcomeUnknown:executionOutcomeUnknown
+                       ) {
+                        Button(
+                            ZenWorkspacePane.executionLabel(operation:operation,runStatus:status.runStatus),
+                            systemImage:operation == "authorize" ? "lock.open" :
+                                (operation == "pause" ? "pause" : "play")
+                        ) {
+                            onAction(item,operation == "authorize" ? .executionSettings : .toggleExecution)
                         }
+                        .disabled(executionBusy)
                     }
                     Button("执行设置",systemImage:"slider.horizontal.3") {
                         onAction(item,.executionSettings)

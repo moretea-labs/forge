@@ -28,6 +28,28 @@ final class ZenProposalTests: XCTestCase {
         )))
     }
 
+    @MainActor
+    func testZenExecutionUsesResumeForDetachedRunningRunAndReconcilesUnknownOutcome() throws {
+        func status(_ state:String,active:Bool=false,ready:Bool=true,authorized:Bool=true) throws -> AutopilotStatusDetail {
+            var data:[String:Any] = [
+                "run":["status":state],"runtimeActive":active,"providerReady":ready
+            ]
+            if authorized { data["grant"] = ["grantId":"grant-one"] }
+            return try XCTUnwrap(NativeWorkspace.autopilotStatusDetail(["data":data]))
+        }
+        let detached=try status("running")
+        XCTAssertEqual(ZenWorkspacePane.executionOperation(status:detached,outcomeUnknown:false),"resume")
+        XCTAssertEqual(ZenWorkspacePane.executionLabel(operation:"resume",runStatus:"running"),"恢复执行")
+        XCTAssertEqual(ZenWorkspacePane.executionOperation(status:try status("running",active:true),outcomeUnknown:false),"pause")
+        XCTAssertEqual(ZenWorkspacePane.executionOperation(status:try status("paused"),outcomeUnknown:false),"resume")
+        XCTAssertEqual(ZenWorkspacePane.executionOperation(status:try status("failed"),outcomeUnknown:false),"resume")
+        XCTAssertEqual(ZenWorkspacePane.executionOperation(status:try status("idle"),outcomeUnknown:false),"start")
+        XCTAssertEqual(ZenWorkspacePane.executionOperation(status:try status("idle",authorized:false),outcomeUnknown:false),"authorize")
+        XCTAssertNil(ZenWorkspacePane.executionOperation(status:try status("paused",ready:false),outcomeUnknown:false))
+        XCTAssertNil(ZenWorkspacePane.executionOperation(status:detached,outcomeUnknown:true))
+        XCTAssertNil(ZenWorkspacePane.executionOperation(status:nil,outcomeUnknown:false))
+    }
+
     func testRejectsAmbiguousOrUnsafeProposalContent() {
         let valid = fenced(
             #"{"decision":"ACCEPT","operation":"create_plan","rationale":"既有目标下增加方案","requirementId":"REQ-1","objective":"原生适配"}"#
