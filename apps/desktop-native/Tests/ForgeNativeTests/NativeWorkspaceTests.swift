@@ -1312,6 +1312,17 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testProjectListRefreshGenerationRejectsStaleResponses() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let older = model.beginProjectListRefresh()
+        let newer = model.beginProjectListRefresh()
+        XCTAssertFalse(model.projectListRequestIsCurrent(older))
+        XCTAssertTrue(model.projectListRequestIsCurrent(newer))
+    }
+
+    @MainActor
     func testPageTransitionClearsOnlyStalePageError() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }

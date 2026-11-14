@@ -546,6 +546,7 @@ final class NativeWorkspace: ObservableObject {
     @Published private(set) var projects: [ForgeProject] = []
     @Published private(set) var projectsLoading = true
     @Published private(set) var projectsError: String?
+    private(set) var projectListRequestGeneration = 0
     @Published var repoId: String?
     @Published var checkoutId: String?
     @Published var threads: [ChatThread] = []
@@ -1377,14 +1378,26 @@ final class NativeWorkspace: ObservableObject {
         return try JSONDecoder().decode([ForgeProject].self,from:bytes)
     }
 
+    func beginProjectListRefresh() -> Int {
+        projectListRequestGeneration &+= 1
+        return projectListRequestGeneration
+    }
+
+    func projectListRequestIsCurrent(_ generation: Int) -> Bool {
+        projectListRequestGeneration == generation
+    }
+
     private func refreshProjects() async {
+        let requestGeneration = beginProjectListRefresh()
         projectsLoading = true
         projectsError = nil
-        defer { projectsLoading = false }
+        defer { if projectListRequestIsCurrent(requestGeneration) { projectsLoading = false } }
         do {
             let result = try await ForgeBridge.request("read_projects")
+            guard projectListRequestIsCurrent(requestGeneration) else { return }
             projects = try Self.decodeProjects(result)
         } catch {
+            guard projectListRequestIsCurrent(requestGeneration) else { return }
             projectsError = error.localizedDescription
         }
     }
