@@ -1384,6 +1384,61 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testKnowledgeSearchGenerationRejectsSupersededQueriesAndContextChanges() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId = "repo_a"
+        model.checkoutId = "checkout_a"
+        model.page = .knowledge
+        model.knowledgeQuery = "first"
+        let contextGeneration = model.projectContextGeneration
+        let older = model.beginKnowledgeSearch()
+
+        model.knowledgeQuery = "latest"
+        let latest = model.beginKnowledgeSearch()
+        XCTAssertFalse(model.knowledgeSearchRequestIsCurrent(
+            older,repoId:"repo_a",checkoutId:"checkout_a",query:"first",
+            contextGeneration:contextGeneration
+        ))
+        XCTAssertTrue(model.knowledgeSearchRequestIsCurrent(
+            latest,repoId:"repo_a",checkoutId:"checkout_a",query:"latest",
+            contextGeneration:contextGeneration
+        ))
+
+        model.checkoutId = "checkout_b"
+        XCTAssertFalse(model.knowledgeSearchRequestIsCurrent(
+            latest,repoId:"repo_a",checkoutId:"checkout_a",query:"latest",
+            contextGeneration:contextGeneration
+        ))
+        model.checkoutId = "checkout_a"
+        model.knowledgeLoading = true
+        model.invalidateProjectContextRequests()
+        XCTAssertFalse(model.knowledgeLoading)
+        XCTAssertFalse(model.knowledgeSearchRequestIsCurrent(
+            latest,repoId:"repo_a",checkoutId:"checkout_a",query:"latest",
+            contextGeneration:contextGeneration
+        ))
+
+        let currentContext = model.projectContextGeneration
+        let current = model.beginKnowledgeSearch()
+        XCTAssertTrue(model.knowledgeSearchRequestIsCurrent(
+            current,repoId:"repo_a",checkoutId:"checkout_a",query:"latest",
+            contextGeneration:currentContext
+        ))
+        model.page = .agent
+        XCTAssertFalse(model.knowledgeSearchRequestIsCurrent(
+            current,repoId:"repo_a",checkoutId:"checkout_a",query:"latest",
+            contextGeneration:currentContext
+        ))
+        model.repoId = "repo_b"
+        XCTAssertFalse(model.knowledgeSearchRequestIsCurrent(
+            current,repoId:"repo_a",checkoutId:"checkout_a",query:"latest",
+            contextGeneration:currentContext
+        ))
+    }
+
+    @MainActor
     func testProjectAndPlanningRefreshFencesRejectStaleResponses() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }

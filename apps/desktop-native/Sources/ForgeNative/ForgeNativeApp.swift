@@ -3381,7 +3381,7 @@ private struct AgentKnowledgeInspector: View {
     @State private var error: String?
     @State private var loadToken = UUID()
     @State private var expandedMemoryIds: Set<String> = []
-    @State private var resultOrigin: (repoId: String, threadId: String)?
+    @State private var resultOrigin: (repoId: String, checkoutId: String?, threadId: String)?
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -3486,7 +3486,7 @@ private struct AgentKnowledgeInspector: View {
             .padding(.horizontal,14).frame(height:34)
         }
         .frame(width:410,height:455)
-        .task(id:[model.repoId ?? "", model.selectedThreadId ?? ""]) { await reload() }
+        .task(id:[model.repoId ?? "", model.checkoutId ?? "", model.selectedThreadId ?? ""]) { await reload() }
     }
 
     private var memories:[KnowledgeMemoryDetail] {
@@ -3509,6 +3509,7 @@ private struct AgentKnowledgeInspector: View {
                     guard !alreadyInDraft,
                           let origin=resultOrigin,
                           origin.repoId == model.repoId,
+                          origin.checkoutId == model.checkoutId,
                           origin.threadId == model.selectedThreadId else { return }
                     model.useKnowledgeInCurrentConversation(memory,expectedThreadId:origin.threadId)
                 }
@@ -3516,6 +3517,7 @@ private struct AgentKnowledgeInspector: View {
                 .font(.system(size:10,weight:.semibold))
                 .foregroundStyle(alreadyInDraft ? ForgePalette.secondary.opacity(0.55) : ForgePalette.secondary)
                 .disabled(alreadyInDraft || model.busy || resultOrigin?.repoId != model.repoId
+                          || resultOrigin?.checkoutId != model.checkoutId
                           || resultOrigin?.threadId != model.selectedThreadId)
                 .accessibilityIdentifier("agent.knowledge-inspector.use.\(memory.id)")
             }
@@ -3554,19 +3556,25 @@ private struct AgentKnowledgeInspector: View {
         error=nil
         guard let repoId=model.repoId,
               let threadId=model.selectedThreadId else { loading=false; return }
+        let checkoutId=model.checkoutId
+        let contextGeneration=model.projectContextGeneration
         let searchQuery=query.trimmingCharacters(in:.whitespacesAndNewlines)
         loading=true
         defer { if loadToken == token { loading=false } }
         do {
-            let fresh=try await model.readKnowledge(searchQuery)
-            guard loadToken == token, model.repoId == repoId,
+            let fresh=try await model.readKnowledge(
+                repoId:repoId,checkoutId:checkoutId,query:searchQuery
+            )
+            guard loadToken == token, model.repoId == repoId, model.checkoutId == checkoutId,
+                  model.projectContextGeneration == contextGeneration,
                   model.selectedThreadId == threadId,
                   query.trimmingCharacters(in:.whitespacesAndNewlines) == searchQuery,
                   !Task.isCancelled else { return }
             result=fresh
-            resultOrigin=(repoId,threadId)
+            resultOrigin=(repoId,checkoutId,threadId)
         } catch {
-            guard loadToken == token, model.repoId == repoId,
+            guard loadToken == token, model.repoId == repoId, model.checkoutId == checkoutId,
+                  model.projectContextGeneration == contextGeneration,
                   model.selectedThreadId == threadId,
                   query.trimmingCharacters(in:.whitespacesAndNewlines) == searchQuery,
                   !Task.isCancelled else { return }

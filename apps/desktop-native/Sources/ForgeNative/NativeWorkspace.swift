@@ -640,6 +640,7 @@ final class NativeWorkspace: ObservableObject {
     @Published var knowledgeQuery = ""
     @Published var knowledgeResult: KnowledgeAuditDetail?
     @Published var knowledgeLoading = false
+    private(set) var knowledgeSearchRequestGeneration = 0
     @Published var localApiSettings: LocalApiSettingsDetail?
     @Published private(set) var managedApiCredentials: [ManagedApiCredentialDetail] = []
     @Published var settingsLoading = false
@@ -884,8 +885,6 @@ final class NativeWorkspace: ObservableObject {
         pendingImageURLs = []
         pendingContextPaths = []
         invalidateAgentChangesRequests(clearSnapshot:contextChanged || refreshProjectContext)
-        knowledgeLoading = false
-        knowledgeResult = nil
         if contextChanged || refreshProjectContext {
             checkoutRoot = nil
             checkoutBranch = nil
@@ -2963,8 +2962,7 @@ final class NativeWorkspace: ObservableObject {
         return try? JSONDecoder().decode(KnowledgeAuditDetail.self,from:bytes)
     }
 
-    func readKnowledge(_ query: String) async throws -> KnowledgeAuditDetail {
-        guard let repoId else { throw ForgeBridgeError.remote("FORGE_NATIVE_REPOSITORY_REQUIRED") }
+    func readKnowledge(repoId:String,checkoutId:String?,query:String) async throws -> KnowledgeAuditDetail {
         var args: [String:Any] = ["repoId":repoId,"query":query]
         if let checkoutId { args["checkoutId"] = checkoutId }
         let value = try await ForgeBridge.request("read_project_knowledge",args)
@@ -3002,28 +3000,54 @@ final class NativeWorkspace: ObservableObject {
         return lines.isEmpty ? nil : lines.joined(separator:"\n")
     }
 
+    func beginKnowledgeSearch() -> Int {
+        knowledgeSearchRequestGeneration &+= 1
+        return knowledgeSearchRequestGeneration
+    }
+
+    func knowledgeSearchRequestIsCurrent(
+        _ generation:Int,repoId targetRepoId:String,checkoutId targetCheckoutId:String?,
+        query targetQuery:String,contextGeneration:Int
+    ) -> Bool {
+        generation == knowledgeSearchRequestGeneration
+            && repoId == targetRepoId
+            && checkoutId == targetCheckoutId
+            && page == .knowledge
+            && knowledgeQuery == targetQuery
+            && projectContextGeneration == contextGeneration
+    }
+
     func searchKnowledge() async {
         guard let repoId else {
-            knowledgeResult = nil
-            knowledgeLoading = false
+            invalidateKnowledgeSearchRequests()
             return
         }
-        guard !knowledgeLoading else { return }
-        let targetQuery=knowledgeQuery
+        let targetCheckoutId = checkoutId
+        let targetQuery = knowledgeQuery
+        let contextGeneration = projectContextGeneration
+        let requestGeneration = beginKnowledgeSearch()
         knowledgeLoading = true
         knowledgeResult = nil
         defer {
-            if self.repoId == repoId {
+            if knowledgeSearchRequestGeneration == requestGeneration {
                 knowledgeLoading = false
             }
         }
         do {
-            let parsed = try await readKnowledge(targetQuery)
-            guard self.repoId == repoId,self.page == .knowledge,self.knowledgeQuery == targetQuery else { return }
+            let parsed = try await readKnowledge(
+                repoId:repoId,checkoutId:targetCheckoutId,query:targetQuery
+            )
+            guard knowledgeSearchRequestIsCurrent(
+                requestGeneration,repoId:repoId,checkoutId:targetCheckoutId,query:targetQuery,
+                contextGeneration:contextGeneration
+            ) else { return }
             knowledgeResult = parsed
             error = nil
         } catch {
-            guard self.repoId == repoId,self.page == .knowledge,self.knowledgeQuery == targetQuery else { return }
+            guard knowledgeSearchRequestIsCurrent(
+                requestGeneration,repoId:repoId,checkoutId:targetCheckoutId,query:targetQuery,
+                contextGeneration:contextGeneration
+            ) else { return }
             knowledgeResult = nil
             self.error = error.localizedDescription
         }
@@ -3063,8 +3087,15 @@ final class NativeWorkspace: ObservableObject {
         return try JSONDecoder().decode(AgentGitDiff.self, from:bytes)
     }
 
+    private func invalidateKnowledgeSearchRequests() {
+        knowledgeSearchRequestGeneration &+= 1
+        knowledgeLoading = false
+        knowledgeResult = nil
+    }
+
     func invalidateProjectContextRequests() {
         projectContextGeneration &+= 1
+        invalidateKnowledgeSearchRequests()
     }
 
     func projectContextRequestIsCurrent(generation: Int, sourceThreadId: String?) -> Bool {
