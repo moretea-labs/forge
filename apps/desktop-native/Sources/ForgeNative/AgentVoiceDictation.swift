@@ -22,14 +22,24 @@ final class AgentVoiceDictation: ObservableObject {
         return existing + (existing.last?.isWhitespace == true ? "" : "\n") + words
     }
 
-    func start() async {
-        guard !isRecording, !isStarting else { return }
-        isStarting = true
-        defer { isStarting = false }
+    func beginStart() -> UUID? {
+        guard !isRecording, !isStarting else { return nil }
         let attemptID = UUID()
         sessionID = attemptID
+        isStarting = true
         error = nil
         transcript = ""
+        return attemptID
+    }
+
+    func finishStarting(_ attemptID: UUID) {
+        guard sessionID == attemptID else { return }
+        isStarting = false
+    }
+
+    func start() async {
+        guard let attemptID = beginStart() else { return }
+        defer { finishStarting(attemptID) }
 
         guard let recognizer = SFSpeechRecognizer(locale: Locale.current)
                 ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
@@ -99,6 +109,7 @@ final class AgentVoiceDictation: ObservableObject {
 
     func stop() {
         sessionID = UUID()
+        isStarting = false
         if engine.isRunning { engine.stop() }
         if request != nil { engine.inputNode.removeTap(onBus: 0) }
         request?.endAudio()
