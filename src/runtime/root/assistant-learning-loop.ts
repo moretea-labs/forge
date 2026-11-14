@@ -2,7 +2,15 @@ import { createHash } from 'crypto';
 import type { WorkflowJsonValue, WorkflowPublicationReceipt } from '../../../packages/workflow-runtime/api/index';
 import { createBrowserObservationSchedule } from '../workflow/schedules/browser-observation';
 
-const DAY_MS = 86_400_000;
+const X_PUBLICATION_FOLLOWUP_MS = 12 * 60 * 60 * 1000;
+
+/** Derive the X follow-up deadline from the canonical publication receipt; the existing Supervisor tick owns dispatch. */
+export function publicationOutcomeFollowupDueAt(publication: WorkflowPublicationReceipt): string | undefined {
+  if (publication.channel !== 'x') return undefined;
+  const publishedAtMs = Date.parse(publication.publishedAt);
+  if (!Number.isFinite(publishedAtMs)) throw new Error('OUTCOME_COLLECTION_PUBLICATION_TIME_INVALID');
+  return new Date(publishedAtMs + X_PUBLICATION_FOLLOWUP_MS).toISOString();
+}
 
 /** External-observation orchestration only. Semantic Memory writes live in the context adapter. */
 export function schedulePublicationOutcomeCollection(input: {
@@ -16,7 +24,7 @@ export function schedulePublicationOutcomeCollection(input: {
   if (!Number.isFinite(publishedAtMs)) throw new Error('OUTCOME_COLLECTION_PUBLICATION_TIME_INVALID');
   const browserSessionId = typeof input.workflowInputs?.session_id === 'string' ? input.workflowInputs.session_id.trim() : '';
   if (!browserSessionId) throw new Error('OUTCOME_COLLECTION_BROWSER_SESSION_REQUIRED');
-  const dueAt = new Date(publishedAtMs + DAY_MS).toISOString();
+  const dueAt = new Date(publishedAtMs + 24 * 60 * 60 * 1000).toISOString();
   const semanticId = createHash('sha256').update(JSON.stringify([
     input.repoId, input.runId, input.publication.receiptId, input.publication.postId, input.publication.postUrl, dueAt,
   ])).digest('hex').slice(0, 24);
