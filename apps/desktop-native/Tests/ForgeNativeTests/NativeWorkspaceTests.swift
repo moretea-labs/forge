@@ -1372,6 +1372,64 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(model.projectListRequestIsCurrent(newer))
     }
 
+    @MainActor
+    func testProjectAndPlanningRefreshFencesRejectStaleResponses() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId = "repo_a"
+        model.checkoutId = "checkout_a"
+        let oldRepository = model.beginProjectRepositoryRefresh()
+        let currentRepository = model.beginProjectRepositoryRefresh()
+        XCTAssertFalse(model.projectRepositoryRequestIsCurrent(
+            oldRepository,repoId:"repo_a",requestedCheckoutId:"checkout_a"
+        ))
+        XCTAssertTrue(model.projectRepositoryRequestIsCurrent(
+            currentRepository,repoId:"repo_a",requestedCheckoutId:"checkout_a"
+        ))
+        model.checkoutId = "checkout_b"
+        XCTAssertFalse(model.projectRepositoryRequestIsCurrent(
+            currentRepository,repoId:"repo_a",requestedCheckoutId:"checkout_a"
+        ))
+        let latestRepository = model.beginProjectRepositoryRefresh()
+        XCTAssertTrue(model.projectRepositoryRequestIsCurrent(
+            latestRepository,repoId:"repo_a",requestedCheckoutId:"checkout_b"
+        ))
+        model.repoId = "repo_b"
+        XCTAssertFalse(model.projectRepositoryRequestIsCurrent(
+            latestRepository,repoId:"repo_a",requestedCheckoutId:"checkout_b"
+        ))
+
+        model.repoId = "repo_a"
+        model.page = .requirement
+        let contextGeneration = model.projectContextGeneration
+        let oldPage = model.beginPlanningPageRefresh()
+        let currentPage = model.beginPlanningPageRefresh()
+        XCTAssertFalse(model.planningPageRequestIsCurrent(
+            oldPage,repoId:"repo_a",page:.requirement,contextGeneration:contextGeneration
+        ))
+        XCTAssertTrue(model.planningPageRequestIsCurrent(
+            currentPage,repoId:"repo_a",page:.requirement,contextGeneration:contextGeneration
+        ))
+        model.page = .plan
+        XCTAssertFalse(model.planningPageRequestIsCurrent(
+            currentPage,repoId:"repo_a",page:.requirement,contextGeneration:contextGeneration
+        ))
+        model.page = .requirement
+        model.invalidateProjectContextRequests()
+        XCTAssertFalse(model.planningPageRequestIsCurrent(
+            currentPage,repoId:"repo_a",page:.requirement,contextGeneration:contextGeneration
+        ))
+        let latestPage = model.beginPlanningPageRefresh()
+        XCTAssertTrue(model.planningPageRequestIsCurrent(
+            latestPage,repoId:"repo_a",page:.requirement,contextGeneration:model.projectContextGeneration
+        ))
+        model.repoId = "repo_b"
+        XCTAssertFalse(model.planningPageRequestIsCurrent(
+            latestPage,repoId:"repo_a",page:.requirement,contextGeneration:model.projectContextGeneration
+        ))
+    }
+
     func testProjectCheckoutRequestFenceRejectsCollapsedAndReopenedSameRepository() {
         XCTAssertTrue(NativeWorkspace.projectCheckoutRequestIsCurrent(
             requestGeneration:7,currentGeneration:7,requestedRepoId:"repo_a",expandedRepoId:"repo_a"

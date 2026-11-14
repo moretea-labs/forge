@@ -547,6 +547,8 @@ final class NativeWorkspace: ObservableObject {
     @Published private(set) var projectsLoading = true
     @Published private(set) var projectsError: String?
     private(set) var projectListRequestGeneration = 0
+    private(set) var projectRepositoryRequestGeneration = 0
+    private(set) var planningPageRequestGeneration = 0
     @Published var repoId: String?
     @Published var checkoutId: String?
     @Published var threads: [ChatThread] = []
@@ -1592,33 +1594,55 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
+    func beginProjectRepositoryRefresh() -> Int {
+        projectRepositoryRequestGeneration &+= 1
+        return projectRepositoryRequestGeneration
+    }
+
+    func projectRepositoryRequestIsCurrent(
+        _ generation:Int,repoId targetRepoId:String,requestedCheckoutId:String?
+    ) -> Bool {
+        Self.projectScopedRequestIsCurrent(
+            requestRepoId:targetRepoId,currentRepoId:repoId,
+            requestGeneration:generation,currentGeneration:projectRepositoryRequestGeneration
+        ) && self.checkoutId == requestedCheckoutId
+    }
+
     func refreshProject() async {
         guard let repoId else {
+            projectRepositoryRequestGeneration &+= 1
             checkoutContextLoading = false
             return
         }
-        checkoutContextLoading = true
+        let requestGeneration = beginProjectRepositoryRefresh()
         let requestedCheckoutId = checkoutId
+        checkoutContextLoading = true
         do {
             let result = try await ForgeBridge.request("read_project_repository", ["repoId":repoId])
-            guard self.repoId == repoId, self.checkoutId == requestedCheckoutId else { return }
+            guard projectRepositoryRequestIsCurrent(
+                requestGeneration,repoId:repoId,requestedCheckoutId:requestedCheckoutId
+            ) else { return }
             let context = Self.repositoryCheckoutContext(result,requestedCheckoutId:requestedCheckoutId)
             checkoutId = context.checkoutId
             checkoutRoot = context.checkoutRoot
             checkoutBranch = context.checkoutBranch
             checkoutContextLoading = false
             await loadRepositoryAccess(for:repoId)
+            guard projectRepositoryRequestIsCurrent(
+                requestGeneration,repoId:repoId,requestedCheckoutId:context.checkoutId
+            ) else { return }
             if page != .agent { await loadPage() }
         } catch {
-            guard self.repoId == repoId, self.checkoutId == requestedCheckoutId else { return }
+            guard projectRepositoryRequestIsCurrent(
+                requestGeneration,repoId:repoId,requestedCheckoutId:requestedCheckoutId
+            ) else { return }
             checkoutRoot = nil
             checkoutBranch = nil
             checkoutContextLoading = false
             self.error = error.localizedDescription
         }
     }
-    func readPlanningRecordsForCurrentProject() async throws -> [ForgeRecord] {
-        guard let repoId else { throw ForgeBridgeError.remote("FORGE_NATIVE_REPOSITORY_REQUIRED") }
+    func readPlanningRecords(repoId:String) async throws -> [ForgeRecord] {
         async let requirementValue = ForgeBridge.request("read_project_requirement_list",["repoId":repoId])
         async let planValue = ForgeBridge.request("read_project_plan_list",["repoId":repoId])
         let (requirementList,planList) = try await (requirementValue,planValue)
@@ -1632,6 +1656,21 @@ final class NativeWorkspace: ObservableObject {
             repoId:repoId
         )
         return Self.planningRecords(requirementRows:projectRequirements,planRows:planRows)
+    }
+
+    func beginPlanningPageRefresh() -> Int {
+        planningPageRequestGeneration &+= 1
+        return planningPageRequestGeneration
+    }
+
+    func planningPageRequestIsCurrent(
+        _ generation:Int,repoId targetRepoId:String,page targetPage:NativePage,
+        contextGeneration:Int
+    ) -> Bool {
+        Self.projectScopedRequestIsCurrent(
+            requestRepoId:targetRepoId,currentRepoId:repoId,
+            requestGeneration:generation,currentGeneration:planningPageRequestGeneration
+        ) && page == targetPage && projectContextGeneration == contextGeneration
     }
 
     func loadPage() async {
@@ -1653,14 +1692,20 @@ final class NativeWorkspace: ObservableObject {
         }
         guard let repoId, [.requirement,.plan].contains(page) else { return }
         let targetPage=page
+        let contextGeneration=projectContextGeneration
+        let requestGeneration=beginPlanningPageRefresh()
         do {
             if targetPage == .requirement {
-                let planning = try await readPlanningRecordsForCurrentProject()
-                guard self.repoId == repoId,self.page == targetPage else { return }
+                let planning = try await readPlanningRecords(repoId:repoId)
+                guard planningPageRequestIsCurrent(
+                    requestGeneration,repoId:repoId,page:targetPage,contextGeneration:contextGeneration
+                ) else { return }
                 records = planning
             } else {
                 let result = try await ForgeBridge.request("read_project_plan_list",["repoId":repoId])
-                guard self.repoId == repoId,self.page == targetPage else { return }
+                guard planningPageRequestIsCurrent(
+                    requestGeneration,repoId:repoId,page:targetPage,contextGeneration:contextGeneration
+                ) else { return }
                 let data = result["data"] as? [String:Any] ?? result
                 let rows = data["plans"] as? [[String:Any]] ?? []
                 records = rows.compactMap { row -> ForgeRecord? in
@@ -1672,7 +1717,9 @@ final class NativeWorkspace: ObservableObject {
                     )
                 }
             }
-            guard self.repoId == repoId,self.page == targetPage else { return }
+            guard planningPageRequestIsCurrent(
+                requestGeneration,repoId:repoId,page:targetPage,contextGeneration:contextGeneration
+            ) else { return }
             planningAutopilotStatuses=[:]
             planningAutopilotStatusError=nil
             detail = ""
@@ -1680,7 +1727,9 @@ final class NativeWorkspace: ObservableObject {
             recordDetail = nil
             error = nil
         } catch {
-            guard self.repoId == repoId,self.page == targetPage else { return }
+            guard planningPageRequestIsCurrent(
+                requestGeneration,repoId:repoId,page:targetPage,contextGeneration:contextGeneration
+            ) else { return }
             self.error = error.localizedDescription
         }
     }

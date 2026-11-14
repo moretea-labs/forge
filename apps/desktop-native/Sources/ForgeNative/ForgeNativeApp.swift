@@ -3361,7 +3361,7 @@ private struct AgentPlanningInspector: View {
         loading=true
         defer { if loadToken == token { loading=false } }
         do {
-            let fresh=try await model.readPlanningRecordsForCurrentProject()
+            let fresh=try await model.readPlanningRecords(repoId:repoId)
             guard loadToken == token, model.repoId == repoId, !Task.isCancelled else { return }
             records=fresh
             loadedRepoId=repoId
