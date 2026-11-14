@@ -565,6 +565,7 @@ try {
     // Keep the existing Browser lifecycle suite intact; measure the public Computer
     // adapter on its own plugin-owned tab so its native-only policy is exercised.
     const computerSessionId = `computer-v3-primary-${product}`;
+    const computerLifecycleRequestTrace: ComputerActionTrace[] = [];
     openSessions.set(computerSessionId, { owner: 'computer', product });
     const computerOpened = await computerAction('create_session', {
       session_id: computerSessionId,
@@ -573,7 +574,7 @@ try {
       native_browser_candidates: [product],
       cdp_attach_fallback: 'fail_closed',
       extract_text: false,
-    });
+    }, { phase: 'native_lifecycle.create_session', trace: computerLifecycleRequestTrace });
     assert.equal(computerOpened.provider, 'macos-apple-events');
     assert.equal(resultSessionId(computerOpened), computerSessionId);
     const computerRef = resultTabRef(computerOpened);
@@ -692,9 +693,12 @@ try {
         return [action, { samples: durations.length, p50Ms: percentile(durations, 0.5), p95Ms: percentile(durations, 0.95) }];
       }),
     );
-    const nativePhaseSamples = [...sequentialBatchRequestTrace, ...nativeBatchRequestTrace]
-      .filter((sample) => !sample.warmup)
-      .flatMap((sample) => sample.requests.flatMap((request) => request.providerPhases ?? []));
+    const nativePhaseSamples = [
+      ...computerLifecycleRequestTrace.flatMap((request) => request.providerPhases ?? []),
+      ...[...sequentialBatchRequestTrace, ...nativeBatchRequestTrace]
+        .filter((sample) => !sample.warmup)
+        .flatMap((sample) => sample.requests.flatMap((request) => request.providerPhases ?? [])),
+    ];
     const phaseSummary = (values: number[]) => values.length === 0
       ? { samples: 0 }
       : {
@@ -825,6 +829,7 @@ try {
         stepTimingSamples: nativeBatchStepTimings,
         nativeAutomationPhaseBoundary: 'process precondition and Computer provider broker round-trip; broker timing includes Runtime-to-sidecar dispatch and is not an inner Apple Event span',
         nativeAutomationPhaseByAction,
+        lifecycleRequestTrace: { create: computerLifecycleRequestTrace },
         p50Speedup: Math.round((percentile(sequentialBatchSamples, 0.5) / percentile(nativeBatchSamples, 0.5)) * 100) / 100,
         unknownOutcomeReconciledOnce: true,
         requestTrace: {

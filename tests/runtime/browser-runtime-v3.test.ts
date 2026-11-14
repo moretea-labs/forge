@@ -498,6 +498,71 @@ describe('Browser Runtime V3 routing', () => {
     expect(mutations).toBe(5);
   });
 
+  test('reports native create_tab process-precondition and broker round-trip timings', async () => {
+    const url = 'https://example.com/native-create-timing';
+    const timings: MacOsBrowserAutomationTiming[] = [];
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      onAutomationTiming: (timing) => timings.push(timing),
+      browserAutomationBroker: async (request) => {
+        expect(request).toMatchObject({ action: 'create_tab', product: 'chrome', url });
+        return {
+          value: `7${nativeSeparator}10`,
+          ref: { windowId: '7', tabId: '10' },
+          navigation: { provenanceVersion: 1, requestedUrl: url, assignmentAccepted: true },
+        };
+      },
+    });
+
+    const created = await createMacOsBrowserOwnedPageForProduct('chrome', url, [], '7', 1_000);
+    expect(created.page.creationEvidence()).toMatchObject({
+      ref: { windowId: '7', tabId: '10' },
+      refSource: 'structured',
+      navigation: { provenanceVersion: 1, requestedUrl: url, assignmentAccepted: true },
+    });
+    expect(timings).toHaveLength(1);
+    expect(timings[0]).toMatchObject({
+      action: 'create_tab',
+      product: 'chrome',
+      windowId: '7',
+      tabId: '10',
+      dispatchKind: 'broker',
+      outcome: 'succeeded',
+    });
+    expect(timings[0]?.processPreconditionMs).toBeGreaterThanOrEqual(0);
+    expect(timings[0]?.brokerRoundTripMs).toBeGreaterThanOrEqual(0);
+    expect(timings[0]?.testHookRoundTripMs).toBeUndefined();
+  });
+
+  test('records a failed create_tab precondition without dispatching the broker', async () => {
+    const timings: MacOsBrowserAutomationTiming[] = [];
+    let brokerCalls = 0;
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => false,
+      onAutomationTiming: (timing) => timings.push(timing),
+      browserAutomationBroker: async () => {
+        brokerCalls += 1;
+        return {};
+      },
+    });
+
+    await expect(createMacOsBrowserOwnedPageForProduct('chrome', 'https://example.com/not-running', [], '7', 1_000))
+      .rejects.toMatchObject({ code: 'PLUGIN_BROWSER_NATIVE_APP_NOT_RUNNING' });
+    expect(brokerCalls).toBe(0);
+    expect(timings).toHaveLength(1);
+    expect(timings[0]).toMatchObject({
+      action: 'create_tab',
+      dispatchKind: 'not_dispatched',
+      outcome: 'failed',
+      errorCode: 'PLUGIN_BROWSER_NATIVE_APP_NOT_RUNNING',
+    });
+    expect(timings[0]?.brokerRoundTripMs).toBeUndefined();
+  });
+
   test('reports native Browser process-precondition and dispatch phase timings through the test hook', async () => {
     const url = 'https://example.com/native-phase-timing';
     const timings: MacOsBrowserAutomationTiming[] = [];

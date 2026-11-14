@@ -125,6 +125,7 @@ interface MacOsBrowserRuntimeHooks {
   tabInventory?: (product: MacOsBrowserProduct, timeoutMs: number) => Promise<MacOsBrowserTabInventory>;
   captureRegion?: (region: { x: number; y: number; width: number; height: number }, path: string, timeoutMs: number) => Promise<Buffer>;
   trustedInput?: (request: Extract<BrowserAutomationBrokerAction, { action: 'trusted_input' }>, timeoutMs: number) => Promise<void>;
+  browserAutomationBroker?: (request: BrowserAutomationBrokerAction, timeoutMs: number) => Promise<Record<string, unknown>>;
   // Test-only phase observer. It never receives script contents, page values, or credentials.
   onAutomationTiming?: (timing: MacOsBrowserAutomationTiming) => void;
 }
@@ -246,12 +247,15 @@ async function runCreateTabAutomation(
   testArgs: string[],
   timeoutMs: number,
 ): Promise<MacOsBrowserCreateTabEvidence> {
-  await assertMacOsBrowserApplicationRunning(request.product, timeoutMs);
-  if (runtimeHooks.runAppleScript) {
-    const value = await runtimeHooks.runAppleScript(testScript, testArgs, timeoutMs);
-    return parseMacOsBrowserCreateTabBrokerResult({ value });
-  }
-  return parseMacOsBrowserCreateTabBrokerResult(await callBrowserAutomationBroker(request, timeoutMs));
+  const useTestHook = Boolean(runtimeHooks.runAppleScript);
+  return await timeMacOsBrowserAutomation(
+    request,
+    useTestHook ? 'test_hook' : 'broker',
+    () => assertMacOsBrowserApplicationRunning(request.product, timeoutMs),
+    async () => useTestHook
+      ? parseMacOsBrowserCreateTabBrokerResult({ value: await runtimeHooks.runAppleScript!(testScript, testArgs, timeoutMs) })
+      : parseMacOsBrowserCreateTabBrokerResult(await dispatchMacOsBrowserAutomationBroker(request, timeoutMs)),
+  );
 }
 
 async function runBrowserAutomationText(
@@ -265,82 +269,24 @@ async function runBrowserAutomationText(
   // fails closed unless the exact browser process is already live, so routine
   // inventory/reconcile work can never launch the user's browser or hand Forge
   // an unauthenticated profile.
-  const onAutomationTiming = runtimeHooks.onAutomationTiming;
-  const startedAt = onAutomationTiming ? performance.now() : undefined;
-  let processPreconditionMs = 0;
-  let brokerRoundTripMs: number | undefined;
-  let testHookRoundTripMs: number | undefined;
-  let dispatchKind: MacOsBrowserAutomationTiming['dispatchKind'] = 'not_dispatched';
-  let outcome: MacOsBrowserAutomationTiming['outcome'] = 'failed';
-  let errorCode: string | undefined;
-  try {
-    if ('product' in request) {
-      const preconditionStartedAt = onAutomationTiming ? performance.now() : undefined;
-      try {
-        await assertMacOsBrowserApplicationRunning(request.product, timeoutMs);
-      } finally {
-        if (preconditionStartedAt !== undefined) {
-          processPreconditionMs = Math.round((performance.now() - preconditionStartedAt) * 10) / 10;
-        }
+  const useTestHook = Boolean(runtimeHooks.runAppleScript);
+  return await timeMacOsBrowserAutomation(
+    request,
+    useTestHook ? 'test_hook' : 'broker',
+    'product' in request ? () => assertMacOsBrowserApplicationRunning(request.product, timeoutMs) : undefined,
+    async () => {
+      if (useTestHook) return await runtimeHooks.runAppleScript!(testScript, testArgs, timeoutMs);
+      const result = await dispatchMacOsBrowserAutomationBroker(request, timeoutMs);
+      if (typeof result.value !== 'string') {
+        throw new AssistantPluginError(
+          'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
+          'Stable Forge macOS capability broker returned an invalid text result.',
+          { retryable: true },
+        );
       }
-    }
-    if (runtimeHooks.runAppleScript) {
-      dispatchKind = 'test_hook';
-      const dispatchStartedAt = onAutomationTiming ? performance.now() : undefined;
-      try {
-        const value = await runtimeHooks.runAppleScript(testScript, testArgs, timeoutMs);
-        outcome = 'succeeded';
-        return value;
-      } finally {
-        if (dispatchStartedAt !== undefined) {
-          testHookRoundTripMs = Math.round((performance.now() - dispatchStartedAt) * 10) / 10;
-        }
-      }
-    }
-    dispatchKind = 'broker';
-    const dispatchStartedAt = onAutomationTiming ? performance.now() : undefined;
-    let result: Record<string, unknown>;
-    try {
-      result = await callBrowserAutomationBroker(request, timeoutMs);
-    } finally {
-      if (dispatchStartedAt !== undefined) {
-        brokerRoundTripMs = Math.round((performance.now() - dispatchStartedAt) * 10) / 10;
-      }
-    }
-    if (typeof result.value !== 'string') {
-      throw new AssistantPluginError(
-        'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
-        'Stable Forge macOS capability broker returned an invalid text result.',
-        { retryable: true },
-      );
-    }
-    outcome = 'succeeded';
-    return result.value;
-  } catch (error) {
-    errorCode = error instanceof AssistantPluginError ? error.code : undefined;
-    throw error;
-  } finally {
-    if (onAutomationTiming && startedAt !== undefined) {
-      const ref = 'ref' in request ? request.ref : undefined;
-      try {
-        onAutomationTiming({
-          action: request.action,
-          ...('product' in request ? { product: request.product } : {}),
-          ...(ref?.windowId ? { windowId: ref.windowId } : {}),
-          ...(ref?.tabId ? { tabId: ref.tabId } : {}),
-          dispatchKind,
-          processPreconditionMs,
-          ...(brokerRoundTripMs !== undefined ? { brokerRoundTripMs } : {}),
-          ...(testHookRoundTripMs !== undefined ? { testHookRoundTripMs } : {}),
-          totalMs: Math.round((performance.now() - startedAt) * 10) / 10,
-          outcome,
-          ...(errorCode ? { errorCode } : {}),
-        });
-      } catch {
-        // Test-only telemetry must never alter the browser action's outcome.
-      }
-    }
-  }
+      return result.value;
+    },
+  );
 }
 
 /**
@@ -458,6 +404,81 @@ async function sendBrowserTrustedInput(
 }
 
 let runtimeHooks: MacOsBrowserRuntimeHooks = { ...defaultRuntimeHooks };
+
+function dispatchMacOsBrowserAutomationBroker(
+  request: BrowserAutomationBrokerAction,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
+  return runtimeHooks.browserAutomationBroker
+    ? runtimeHooks.browserAutomationBroker(request, timeoutMs)
+    : callBrowserAutomationBroker(request, timeoutMs);
+}
+
+async function timeMacOsBrowserAutomation<T>(
+  request: BrowserAutomationBrokerAction,
+  requestedDispatchKind: Exclude<MacOsBrowserAutomationTiming['dispatchKind'], 'not_dispatched'>,
+  precondition: (() => Promise<void>) | undefined,
+  dispatch: () => Promise<T>,
+): Promise<T> {
+  const observer = runtimeHooks.onAutomationTiming;
+  if (!observer) {
+    await precondition?.();
+    return await dispatch();
+  }
+  const startedAt = performance.now();
+  let processPreconditionMs = 0;
+  let brokerRoundTripMs: number | undefined;
+  let testHookRoundTripMs: number | undefined;
+  let dispatchKind: MacOsBrowserAutomationTiming['dispatchKind'] = 'not_dispatched';
+  let outcome: MacOsBrowserAutomationTiming['outcome'] = 'failed';
+  let errorCode: string | undefined;
+  let resultRef: MacOsBrowserTabRef | undefined;
+  try {
+    if (precondition) {
+      const preconditionStartedAt = performance.now();
+      try {
+        await precondition();
+      } finally {
+        processPreconditionMs = Math.round((performance.now() - preconditionStartedAt) * 10) / 10;
+      }
+    }
+    dispatchKind = requestedDispatchKind;
+    const dispatchStartedAt = performance.now();
+    try {
+      const result = await dispatch();
+      if (!('ref' in request) && result && typeof result === 'object') resultRef = (result as { ref?: MacOsBrowserTabRef }).ref;
+      outcome = 'succeeded';
+      return result;
+    } finally {
+      const elapsed = Math.round((performance.now() - dispatchStartedAt) * 10) / 10;
+      if (requestedDispatchKind === 'test_hook') testHookRoundTripMs = elapsed;
+      else brokerRoundTripMs = elapsed;
+    }
+  } catch (error) {
+    errorCode = error instanceof AssistantPluginError ? error.code : undefined;
+    throw error;
+  } finally {
+    const ref = 'ref' in request ? request.ref : resultRef;
+    try {
+      observer({
+        action: request.action,
+        ...('product' in request ? { product: request.product } : {}),
+        ...(ref?.windowId ? { windowId: ref.windowId } : {}),
+        ...(ref?.tabId ? { tabId: ref.tabId } : {}),
+        dispatchKind,
+        processPreconditionMs,
+        ...(brokerRoundTripMs !== undefined ? { brokerRoundTripMs } : {}),
+        ...(testHookRoundTripMs !== undefined ? { testHookRoundTripMs } : {}),
+        totalMs: Math.round((performance.now() - startedAt) * 10) / 10,
+        outcome,
+        ...(errorCode ? { errorCode } : {}),
+      });
+    } catch {
+      // Test-only telemetry must never alter the browser action's outcome.
+    }
+  }
+}
+
 let lastAttachObservation: MacOsBrowserAttachObservation | undefined;
 const MAX_WARM_NATIVE_PAGE_HANDLES = 128;
 const warmNativePageHandles = new Map<string, MacOsAppleEventsPage>();
