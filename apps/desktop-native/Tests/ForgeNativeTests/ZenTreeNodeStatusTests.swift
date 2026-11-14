@@ -106,3 +106,25 @@ final class ZenTreeNodeStatusTests: XCTestCase {
         )
     }
 }
+
+extension ZenTreeNodeStatusTests {
+    func testStaleRunningReceiptAndCompletedRunRemainDistinctFromRequirementLifecycle() {
+        let root=record("REQ-A",kind:.requirement)
+        let stale=["REQ-A":status(
+            runStatus:"running",currentPlanId:"PLAN-A",runtimeActive:false
+        )]
+        let completedRun=["REQ-A":status(
+            runStatus:"completed",currentPlanId:"PLAN-A",runtimeActive:false
+        )]
+
+        XCTAssertEqual(
+            ZenWorkspacePane.nodeStatus(for:root,root:root,executionStatuses:stale)?.label,
+            "运行未激活"
+        )
+        XCTAssertEqual(
+            ZenWorkspacePane.nodeStatus(for:root,root:root,executionStatuses:completedRun)?.label,
+            "执行完成"
+        )
+        XCTAssertEqual(ZenWorkspacePane.inspectorLifecycleLabel(for:root),"未完成")
+    }
+}
