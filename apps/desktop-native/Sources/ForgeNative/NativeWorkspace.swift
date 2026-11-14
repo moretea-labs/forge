@@ -138,6 +138,9 @@ struct ChatThread: Codable, Identifiable {
     // Optional durable planning context. Project/checkout remains sufficient for ordinary Agent use.
     var requirementId: String? = nil
     var planId: String? = nil
+    var readOnly: Bool? = nil
+    var readOnlyRepoId: String? = nil
+    var readOnlyCheckoutId: String? = nil
     var provider: String?
     var providerSessionId: String?
     var model: String?
@@ -727,12 +730,32 @@ final class NativeWorkspace: ObservableObject {
         }
         return localProviderReady
     }
+    var readOnlyAnalysisProvider: String? {
+        if Self.matchesExternalProvider(selectedProvider) && selectedProviderReady {
+            return selectedProvider
+        }
+        if let profile=localApiSettings?.defaultApiProfile,
+           profile.endpointReady,
+           !profile.model.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+            return profile.providerId
+        }
+        if joyCodeProfileReady { return "joycode" }
+        return nil
+    }
     // Single send-readiness boundary shared by the composer and send().
     // A projectless conversation remains valid; repository effects still
     // require the thread's bound checkout to pass physical verification.
     var agentSendBlockReason: String? {
         if busy { return "Agent 正在执行当前任务。" }
         guard let thread else { return "请先选择会话。" }
+        if thread.readOnly == true {
+            if !Self.readOnlyThreadMatchesContext(thread,repoId:repoId,checkoutId:checkoutId) {
+                return "分析工作区已变更，请重新开始分析。"
+            }
+            if !Self.matchesExternalProvider(selectedProvider) {
+                return "只读分析会话需要可用的 API Provider。"
+            }
+        }
         if thread.repoId != nil {
             if thread.checkoutId == nil { return "当前会话缺少 checkout，请重新选择项目。" }
             if checkoutContextLoading { return "正在验证 checkout，完成后即可发送。" }
@@ -792,7 +815,8 @@ final class NativeWorkspace: ObservableObject {
     func newThread(
         provider providerOverride: String? = nil,
         requirementId: String? = nil,
-        planId: String? = nil
+        planId: String? = nil,
+        readOnly: Bool = false
     ) {
         guard !busy else {
             self.error = "请先停止正在运行的会话。"
@@ -805,6 +829,9 @@ final class NativeWorkspace: ObservableObject {
             checkoutId:checkoutId,
             requirementId:requirementId,
             planId:planId,
+            readOnly:readOnly ? true : nil,
+            readOnlyRepoId:readOnly ? repoId : nil,
+            readOnlyCheckoutId:readOnly ? checkoutId : nil,
             provider:provider,
             model:profile?.model ?? (provider == "joycode" ? localApiSettings?.joyCodeModel : nil)
         )
@@ -934,6 +961,10 @@ final class NativeWorkspace: ObservableObject {
     func selectThreadProvider(_ value: String) {
         guard !busy, matchesProvider(value),
               let index = threads.firstIndex(where:{$0.id == selectedThreadId}) else { return }
+        if threads[index].readOnly == true && !Self.matchesExternalProvider(value) {
+            self.error = "只读分析会话只能使用 API Provider。"
+            return
+        }
         if value == "joycode" && !joyCodeProfileReady {
             self.error = "请先登录本机 JoyCode，并确认 JoyCode 模型配置可用。"
             return
@@ -3575,6 +3606,27 @@ final class NativeWorkspace: ObservableObject {
             && checkoutId != nil
     }
 
+    nonisolated static func apiTurnAllowsEffects(
+        provider:String,thread:ChatThread,accessMode:String
+    ) -> Bool {
+        thread.readOnly != true
+            && repositoryAccessAllowsEffects(
+                provider:provider,accessMode:accessMode,
+                repoId:thread.repoId,checkoutId:thread.checkoutId
+            )
+    }
+
+    nonisolated static func readOnlyThreadMatchesContext(
+        _ thread:ChatThread?,repoId:String?,checkoutId:String?
+    ) -> Bool {
+        guard let thread,thread.readOnly == true,
+              let repoId,let checkoutId else { return false }
+        return thread.repoId == repoId
+            && thread.checkoutId == checkoutId
+            && thread.readOnlyRepoId == repoId
+            && thread.readOnlyCheckoutId == checkoutId
+    }
+
     nonisolated static func apiTurnMessages(
         _ thread: ChatThread,
         prompt: String,
@@ -3956,9 +4008,8 @@ final class NativeWorkspace: ObservableObject {
                 var apiArguments: [String:Any] = [
                     "conversationId":id,
                     "provider":turnProvider,
-                    "allowEffects":Self.repositoryAccessAllowsEffects(
-                        provider:turnProvider,accessMode:repositoryAccessMode,
-                        repoId:item.repoId,checkoutId:item.checkoutId
+                    "allowEffects":Self.apiTurnAllowsEffects(
+                        provider:turnProvider,thread:item,accessMode:repositoryAccessMode
                     ),
                     "messages":Self.apiTurnMessages(item,prompt:prompt,contextPaths:contextPaths,advisoryKnowledge:advisoryKnowledge),
                     "model":item.model ?? ""

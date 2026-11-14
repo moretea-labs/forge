@@ -5,6 +5,7 @@ import SwiftUI
 struct ZenProposalReviewSheet: View {
     @ObservedObject var model: NativeWorkspace
     let sourceRepoId: String
+    let sourceCheckoutId: String
     let proposal: ZenChangeProposal
     let onApplied: (String) -> Void
 
@@ -17,7 +18,8 @@ struct ZenProposalReviewSheet: View {
     @State private var problem: String?
 
     private var ready: Bool {
-        guard !loading,!saving,problem == nil,model.repoId == sourceRepoId else { return false }
+        guard !loading,!saving,problem == nil,model.repoId == sourceRepoId,
+              model.checkoutId == sourceCheckoutId else { return false }
         switch proposal.operation {
         case .createRequirement: return true
         case .reviseRequirement:
@@ -147,14 +149,22 @@ struct ZenProposalReviewSheet: View {
         currentRequirement=nil
         currentPlan=nil
         defer { loading=false }
-        guard model.repoId == sourceRepoId else {
-            problem="项目已切换。此提案仅属于原项目，不能跨项目应用。"
+        guard model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else {
+            problem="项目或工作区已切换。此提案仅属于原分析上下文，不能跨上下文应用。"
             return
         }
         do {
+            var currentRecords:[ForgeRecord]=[]
+            if proposal.operation == .createRequirement || proposal.operation == .createPlan {
+                currentRecords=try await model.readPlanningRecords(repoId:sourceRepoId)
+                guard model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else {
+                    problem="项目或工作区已切换。请返回原上下文核对后再继续。"
+                    return
+                }
+            }
             switch proposal.operation {
             case .createRequirement:
-                if model.records.contains(where: {
+                if currentRecords.contains(where: {
                     $0.kind == .requirement &&
                     $0.title.compare(proposal.title ?? "",options:[.caseInsensitive,.diacriticInsensitive]) == .orderedSame
                 }) {
@@ -167,6 +177,10 @@ struct ZenProposalReviewSheet: View {
                 let receipt=try await ForgeBridge.request("read_requirement_detail",[
                     "repoId":sourceRepoId,"requirementId":id
                 ])
+                guard model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else {
+                    problem="项目或工作区已切换。请重新分析后再审阅。"
+                    return
+                }
                 guard let detail=NativeWorkspace.requirementDetail(receipt),
                       detail.requirementId == id else {
                     throw ZenProposalIssue.validation("无法确认当前 Requirement。")
@@ -174,6 +188,13 @@ struct ZenProposalReviewSheet: View {
                 currentRequirement=detail
                 if detail.state != "open" {
                     throw ZenProposalIssue.validation("Requirement 已处于终态，不能修改或追加 Plan。")
+                }
+                if proposal.operation == .createPlan,
+                   currentRecords.contains(where: {
+                       $0.kind == .plan && $0.requirementId == id &&
+                       $0.title.compare(proposal.objective ?? "",options:[.caseInsensitive,.diacriticInsensitive]) == .orderedSame
+                   }) {
+                    throw ZenProposalIssue.validation("该 Requirement 已存在相同目标的 Plan。请先核对现有计划，避免重复创建。")
                 }
                 if proposal.operation == .reviseRequirement &&
                     detail.revision != proposal.expectedRevision {
@@ -186,6 +207,10 @@ struct ZenProposalReviewSheet: View {
                 let receipt=try await ForgeBridge.request("read_plan_detail",[
                     "repoId":sourceRepoId,"planId":id
                 ])
+                guard model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else {
+                    problem="项目或工作区已切换。请重新分析后再审阅。"
+                    return
+                }
                 guard let detail=NativeWorkspace.planDetail(receipt),detail.planId == id else {
                     throw ZenProposalIssue.validation("无法确认当前 Plan。")
                 }
@@ -200,7 +225,7 @@ struct ZenProposalReviewSheet: View {
     }
 
     private func applyProposal() async {
-        guard ready,acknowledged else { return }
+        guard ready,acknowledged,model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else { return }
         saving=true
         defer { saving=false }
         let changedId:String?
@@ -231,6 +256,10 @@ struct ZenProposalReviewSheet: View {
             changedId=ok ? currentPlan?.requirementId : nil
         }
         if let changedId {
+            guard model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else {
+                problem="操作已返回成功，但项目或工作区已切换。请返回原上下文核对记录，不要重复提交。"
+                return
+            }
             onApplied(changedId)
             dismiss()
         } else {

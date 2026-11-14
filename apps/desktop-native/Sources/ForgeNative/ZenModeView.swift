@@ -207,6 +207,7 @@ struct ZenWorkspacePane: View {
     @State private var pendingReviewRecord: ForgeRecord?
     @State private var pendingProposal: ZenChangeProposal?
     @State private var proposalSourceRepoId = ""
+    @State private var proposalSourceCheckoutId = ""
     @State private var proposalProblem = ""
     @State private var showingProposalProblem = false
     @State private var editingRecord: ForgeRecord?
@@ -303,7 +304,7 @@ struct ZenWorkspacePane: View {
                         Label("审阅提案",systemImage:"checkmark.document")
                     }
                     .buttonStyle(.bordered)
-                    .disabled(model.repoId == nil || model.busy)
+                    .disabled(model.repoId == nil || model.busy || !canReviewLatestProposal)
                     .accessibilityIdentifier("zen.proposal.open")
                     Menu {
                         Button("直接创建 Requirement") {
@@ -371,7 +372,7 @@ struct ZenWorkspacePane: View {
         }
         .sheet(isPresented:$showingGoalSheet) { goalSheet }
         .sheet(item:$pendingProposal) { item in
-            ZenProposalReviewSheet(model:model,sourceRepoId:proposalSourceRepoId,proposal:item) { requirementId in
+            ZenProposalReviewSheet(model:model,sourceRepoId:proposalSourceRepoId,sourceCheckoutId:proposalSourceCheckoutId,proposal:item) { requirementId in
                 focusedRequirementId=requirementId
                 screen = .canvas
             }
@@ -978,18 +979,33 @@ struct ZenWorkspacePane: View {
 
 
 
+    private var canReviewLatestProposal: Bool {
+        guard !model.busy,
+              let thread=model.thread,
+              NativeWorkspace.readOnlyThreadMatchesContext(
+                thread,repoId:model.repoId,checkoutId:model.checkoutId
+              ),
+              let response=thread.messages.last,
+              response.role == "assistant",response.incomplete != true else { return false }
+        return (try? ZenChangeProposal.parse(response.text)) != nil
+    }
+
     private func reviewLatestProposal() {
-        guard let repoId=model.repoId,
-              let thread=model.thread,thread.repoId == repoId,
+        guard let repoId=model.repoId,let checkoutId=model.checkoutId,
+              let thread=model.thread,
+              NativeWorkspace.readOnlyThreadMatchesContext(
+                thread,repoId:repoId,checkoutId:checkoutId
+              ),
               let response=thread.messages.last,
               response.role == "assistant",response.incomplete != true else {
-            proposalProblem="请选择当前项目中已经完成分析的 Agent 会话；若模型还未返回，请先完成分析。"
+            proposalProblem="请选择当前项目和工作区中已经完成 ACCEPT 的只读分析会话；若仍在澄清，请返回 Agent 继续。"
             showingProposalProblem=true
             return
         }
         do {
             let proposal=try ZenChangeProposal.parse(response.text)
             proposalSourceRepoId=repoId
+            proposalSourceCheckoutId=checkoutId
             pendingProposal=proposal
         } catch {
             proposalProblem=error.localizedDescription
@@ -1000,7 +1016,7 @@ struct ZenWorkspacePane: View {
     private var goalSheet: some View {
         VStack(alignment:.leading,spacing:14) {
             Text("描述你的目标").font(.system(size:17,weight:.semibold))
-            Text("由现有 Agent 提出修改或新增建议。Agent 的工具权限不由这个页面限制；请使用只读访问进行分析，Zen 仅在你批准后应用结构化提案。")
+            Text("分析过程为只读；多轮澄清后生成提案，只有你批准后才会修改记录。")
                 .font(.system(size:11)).foregroundStyle(.secondary)
             TextField("希望解决什么问题？",text:$goalDraft,axis:.vertical)
                 .lineLimit(5...8)

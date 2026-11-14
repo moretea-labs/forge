@@ -268,6 +268,80 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(restored.selectedProvider,"codex")
     }
 
+    @MainActor
+    func testZenReadOnlyThreadPersistsAndCapsApiEffects() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:store)
+        model.localApiSettings = LocalApiSettingsDetail(
+            provider:"api",endpoint:"https://api.example.com/v1",model:"model-a",
+            apiProtocol:"openai",hasKey:true,endpointReady:true
+        )
+        model.repoId = "repo_a"
+        model.checkoutId = "checkout_a"
+        let provider = try XCTUnwrap(model.readOnlyAnalysisProvider)
+        XCTAssertTrue(NativeWorkspace.matchesExternalProvider(provider))
+
+        model.newThread(provider:provider,readOnly:true)
+        let thread = try XCTUnwrap(model.thread)
+        XCTAssertEqual(thread.readOnly,true)
+        XCTAssertEqual(thread.readOnlyRepoId,"repo_a")
+        XCTAssertEqual(thread.readOnlyCheckoutId,"checkout_a")
+        XCTAssertTrue(NativeWorkspace.readOnlyThreadMatchesContext(
+            thread,repoId:"repo_a",checkoutId:"checkout_a"
+        ))
+        XCTAssertFalse(NativeWorkspace.readOnlyThreadMatchesContext(
+            thread,repoId:"repo_b",checkoutId:"checkout_a"
+        ))
+        XCTAssertFalse(NativeWorkspace.readOnlyThreadMatchesContext(
+            thread,repoId:"repo_a",checkoutId:"checkout_b"
+        ))
+        XCTAssertFalse(NativeWorkspace.apiTurnAllowsEffects(
+            provider:model.selectedProvider,thread:thread,accessMode:"full_access"
+        ))
+
+        var ordinaryThread = ChatThread()
+        ordinaryThread.repoId = "repo_a"
+        ordinaryThread.checkoutId = "checkout_a"
+        ordinaryThread.provider = "api"
+        XCTAssertFalse(NativeWorkspace.readOnlyThreadMatchesContext(
+            ordinaryThread,repoId:"repo_a",checkoutId:"checkout_a"
+        ))
+        XCTAssertTrue(NativeWorkspace.apiTurnAllowsEffects(
+            provider:"api",thread:ordinaryThread,accessMode:"full_access"
+        ))
+
+        model.persist()
+        let restored = NativeWorkspace(store:store)
+        let restoredThread = try XCTUnwrap(restored.thread)
+        XCTAssertEqual(restoredThread.readOnly,true)
+        XCTAssertEqual(restoredThread.readOnlyRepoId,"repo_a")
+        XCTAssertEqual(restoredThread.readOnlyCheckoutId,"checkout_a")
+        XCTAssertFalse(NativeWorkspace.apiTurnAllowsEffects(
+            provider:"api:legacy-api",thread:restoredThread,accessMode:"full_access"
+        ))
+        restored.threads[0].checkoutId="checkout_b"
+        XCTAssertEqual(restored.agentSendBlockReason,"分析工作区已变更，请重新开始分析。")
+        restored.threads[0].checkoutId="checkout_a"
+        restored.checkoutId="checkout_b"
+        XCTAssertEqual(restored.agentSendBlockReason,"分析工作区已变更，请重新开始分析。")
+        restored.checkoutId="checkout_a"
+
+        restored.selectThreadProvider("codex")
+        XCTAssertEqual(restored.thread?.provider,"api:legacy-api")
+        XCTAssertEqual(restored.error,"只读分析会话只能使用 API Provider。")
+
+        var codexThread = ChatThread()
+        codexThread.readOnly = true
+        codexThread.readOnlyRepoId="repo_a"
+        codexThread.readOnlyCheckoutId="checkout_a"
+        codexThread.provider = "codex"
+        restored.threads = [codexThread]
+        restored.selectedThreadId = codexThread.id
+        XCTAssertEqual(restored.agentSendBlockReason,"只读分析会话需要可用的 API Provider。")
+    }
+
     func testApiTurnHistoryAndEffectAuthorizationAreBounded() {
         var thread = ChatThread(provider:"api")
         thread.messages = [

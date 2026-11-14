@@ -156,15 +156,23 @@ private struct ForgeWorkspaceView: View {
                     zenOpeningPlanning = true
                     model.zenMode = false
                 },onDraftGoal:{ description in
-                    model.zenMode = false
-                    model.newThread()
+                    guard let provider=model.readOnlyAnalysisProvider else {
+                        model.error="请先配置一个可用的 API Provider，再进行需求分析。"
+                        return
+                    }
+                    guard model.checkoutId != nil,model.checkoutIsAvailable else {
+                        model.error="当前项目工作区尚未就绪，请稍后重试。"
+                        return
+                    }
+                    model.newThread(provider:provider,readOnly:true)
                     model.draft = """
                     当前项目目标：\(description)
 
-                    请以 Requirement-first 方式分析。优先复用现有 Requirement / Plan，新增独立目标或方案时说明理由。仅输出经核查的一个提案，不进行写操作。
+                    请以 Requirement-first 方式分析。先读取现有 Requirement / Plan 和当前工作区证据；信息不足时通过本会话多轮澄清，不要猜测，也不要输出未确认提案。
 
                     \(ZenChangeProposal.outputContract)
                     """
+                    Task { await model.send() }
                 },onOpenInbox:{
                     inboxShown = true
                     Task { await model.loadUserRequests() }
@@ -2342,6 +2350,22 @@ private struct AgentPane: View {
 
     @ViewBuilder
     private var composerQuickConfigurationControls: some View {
+        if model.thread?.readOnly == true {
+            Label("只读",systemImage:"lock.fill")
+                .font(.system(size:10,weight:.medium))
+                .foregroundStyle(ForgePalette.secondary)
+                .accessibilityIdentifier("agent.read-only")
+            Button {
+                model.zenMode=true
+            } label: {
+                Label("返回 Zen",systemImage:"arrow.uturn.backward")
+                    .font(.system(size:10,weight:.medium))
+            }
+            .buttonStyle(.plain)
+            .disabled(model.busy)
+            .help("返回 Zen 审阅提案")
+            .accessibilityIdentifier("agent.return-to-zen")
+        }
         if showsQuickProviderPicker {
             quickProviderMenu
         }
@@ -2349,7 +2373,9 @@ private struct AgentPane: View {
         if model.selectedProvider == "codex" && !model.selectedReasoningOptions.isEmpty {
             quickReasoningMenu
         }
-        if model.checkoutId != nil && NativeWorkspace.matchesExternalProvider(model.selectedProvider) {
+        if model.thread?.readOnly != true,
+           model.checkoutId != nil,
+           NativeWorkspace.matchesExternalProvider(model.selectedProvider) {
             quickRepositoryAccessMenu
         }
     }
@@ -2389,7 +2415,7 @@ private struct AgentPane: View {
                     Text("Codex")
                 }
             }
-            .disabled(!model.localProviderReady && model.selectedProvider != "codex")
+            .disabled(model.thread?.readOnly == true || (!model.localProviderReady && model.selectedProvider != "codex"))
 
             if let profiles = model.localApiSettings?.profiles {
                 ForEach(profiles) { profile in
