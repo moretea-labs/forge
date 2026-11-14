@@ -1525,6 +1525,43 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testSupersededAutopilotControlCannotUnlockNewContextRequest() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId="repo_a"
+        model.checkoutId="checkout_a"
+        let oldContextGeneration=model.projectContextGeneration
+        let oldRequest=try XCTUnwrap(model.beginAutopilotControlRequest())
+        XCTAssertTrue(model.autopilotLoading)
+        XCTAssertTrue(model.autopilotControlPending)
+
+        model.repoId="repo_b"
+        model.checkoutId="checkout_b"
+        model.invalidateProjectContextRequests()
+        model.invalidateAutopilotRequests()
+        XCTAssertFalse(model.autopilotLoading)
+        XCTAssertFalse(model.autopilotControlPending)
+
+        let newContextGeneration=model.projectContextGeneration
+        let newRequest=try XCTUnwrap(model.beginAutopilotControlRequest())
+        XCTAssertTrue(model.autopilotLoading)
+        XCTAssertTrue(model.autopilotControlPending)
+
+        model.finishAutopilotControlRequest(
+            oldRequest,repoId:"repo_a",checkoutId:"checkout_a",contextGeneration:oldContextGeneration
+        )
+        XCTAssertTrue(model.autopilotLoading)
+        XCTAssertTrue(model.autopilotControlPending)
+
+        model.finishAutopilotControlRequest(
+            newRequest,repoId:"repo_b",checkoutId:"checkout_b",contextGeneration:newContextGeneration
+        )
+        XCTAssertFalse(model.autopilotLoading)
+        XCTAssertFalse(model.autopilotControlPending)
+    }
+
+    @MainActor
     func testKnowledgeSearchGenerationRejectsSupersededQueriesAndContextChanges() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }

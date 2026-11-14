@@ -2713,8 +2713,28 @@ final class NativeWorkspace: ObservableObject {
     func invalidateAutopilotRequests() {
         autopilotRequestGeneration &+= 1
         autopilotLoading=false
+        autopilotControlPending=false
         autopilotStatus=nil
         planningAutopilotStatusError=nil
+    }
+
+    func beginAutopilotControlRequest() -> Int? {
+        guard !autopilotLoading,!autopilotControlPending else { return nil }
+        let generation=beginAutopilotRequest()
+        autopilotLoading=true
+        autopilotControlPending=true
+        return generation
+    }
+
+    func finishAutopilotControlRequest(
+        _ generation:Int,repoId targetRepoId:String,checkoutId targetCheckoutId:String,
+        contextGeneration:Int
+    ) {
+        guard autopilotRequestIsCurrent(
+            generation,repoId:targetRepoId,checkoutId:targetCheckoutId,contextGeneration:contextGeneration
+        ) else { return }
+        autopilotControlPending=false
+        autopilotLoading=false
     }
 
     private func autopilotRequestIsCurrent(
@@ -2840,14 +2860,12 @@ final class NativeWorkspace: ObservableObject {
             error="请先确认当前 Requirement 修订。"
             return false
         }
-        guard !autopilotLoading,!autopilotControlPending else { return false }
-        let requestGeneration=beginAutopilotRequest()
         let contextGeneration=projectContextGeneration
-        autopilotLoading=true
-        autopilotControlPending=true
+        guard let requestGeneration=beginAutopilotControlRequest() else { return false }
         defer {
-            autopilotControlPending=false
-            autopilotLoading=false
+            finishAutopilotControlRequest(
+                requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
+            )
         }
         var args:[String:Any]=[
             "repoId":repoId,"checkoutId":checkoutId,
