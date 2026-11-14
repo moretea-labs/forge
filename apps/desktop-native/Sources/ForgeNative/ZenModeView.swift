@@ -713,6 +713,18 @@ struct ZenWorkspacePane: View {
         }
     }
 
+    // Plan records have no lifecycle in this view; their 'Plan' source marker is a kind.
+    // Requirement labels describe its canonical lifecycle, not Autopilot activity.
+    static func inspectorLifecycleLabel(for item:ForgeRecord) -> String? {
+        guard item.kind == .requirement else { return nil }
+        switch item.state {
+        case "open": return "未完成"
+        case "completed", "done": return "已完成"
+        case "cancelled": return "已取消"
+        default: return nil
+        }
+    }
+
     private func detailInspector(_ item:ForgeRecord,compact:Bool = false) -> some View {
         ScrollView {
             VStack(alignment:.leading,spacing:15) {
@@ -720,7 +732,9 @@ struct ZenWorkspacePane: View {
                     Text(item.kind == .requirement ? "Requirement" : "Plan")
                         .font(.system(size:10,weight:.semibold)).foregroundStyle(.secondary)
                     Spacer()
-                    Text(item.state).font(.system(size:10)).foregroundStyle(.secondary)
+                    if let state=Self.inspectorLifecycleLabel(for:item) {
+                        Text(state).font(.system(size:10)).foregroundStyle(.secondary)
+                    }
                     Button {
                         withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
                             model.clearRecordSelection()

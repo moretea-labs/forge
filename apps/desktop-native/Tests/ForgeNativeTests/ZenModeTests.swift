@@ -145,3 +145,22 @@ extension ZenModeTests {
         )
     }
 }
+
+extension ZenModeTests {
+    func testInspectorShowsOnlyKnownRequirementLifecycleNotPlanTypeMarker() {
+        func record(_ state:String,kind:SemanticRecordKind) -> ForgeRecord {
+            ForgeRecord(recordId:"REC",title:"Sample",state:state,kind:kind,depth:0,
+                        requirementId:nil,parentPlanId:nil)
+        }
+        XCTAssertEqual(ZenWorkspacePane.inspectorLifecycleLabel(
+            for:record("open",kind:.requirement)),"未完成")
+        XCTAssertEqual(ZenWorkspacePane.inspectorLifecycleLabel(
+            for:record("completed",kind:.requirement)),"已完成")
+        XCTAssertEqual(ZenWorkspacePane.inspectorLifecycleLabel(
+            for:record("cancelled",kind:.requirement)),"已取消")
+        XCTAssertNil(ZenWorkspacePane.inspectorLifecycleLabel(
+            for:record("Plan",kind:.plan)))
+        XCTAssertNil(ZenWorkspacePane.inspectorLifecycleLabel(
+            for:record("unknown",kind:.requirement)))
+    }
+}
