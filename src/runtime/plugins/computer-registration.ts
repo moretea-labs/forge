@@ -1051,19 +1051,38 @@ async function openDesktopTarget(
           { retryable: false, details: { targetId: target.targetId, providerId: binding.providerId } },
         );
       }
+      // An explicit durable target may represent one of several running copies of
+      // the same bundle. Its saved PID must not silently drift on provider reattach.
+      const boundProcessId = requestedTargetId && input.args.launch !== true
+        ? binding?.processId
+        : undefined;
       if (binding && input.args.activate !== true && expectedProcessId === undefined) {
         try {
-          await provider.executeAction(providerInput(input, 'desktop_observe', {
-            interaction_id: binding.providerSessionId,
-            max_depth: 1,
-            max_nodes: 1,
-          }, 'target-open-verify-binding'));
+          const exactRead = boundProcessId !== undefined;
+          const observed = await provider.executeAction(providerInput(input, exactRead ? 'observe_elements' : 'desktop_observe',
+            exactRead
+              ? { interactionId: binding.providerSessionId, maxDepth: 1, maxNodes: 1 }
+              : { interaction_id: binding.providerSessionId, max_depth: 1, max_nodes: 1 },
+            'target-open-verify-binding'));
+          if (exactRead && (observed.pid !== boundProcessId || observed.interactionId !== binding.providerSessionId)) {
+            throw new AssistantPluginError(
+              'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH',
+              'The existing Desktop provider session no longer proves the durable target process identity.',
+              { retryable: false, details: { targetId: target.targetId, boundProcessId } },
+            );
+          }
           return desktopTargetSummary(target);
         } catch (error) {
           if (!isMissingProviderSessionFailure(error)) throw error;
         }
       }
-      await rebindProviderSession(input, lease, provider);
+      await rebindProviderSession(
+        boundProcessId !== undefined && expectedProcessId === undefined
+          ? { ...input, args: { ...input.args, process_id: boundProcessId } }
+          : input,
+        lease,
+        provider,
+      );
       return desktopTargetSummary(lease.current());
     });
   }

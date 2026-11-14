@@ -229,9 +229,9 @@ async function providerFixture(): Promise<ProviderFixture> {
           state.elementObserveCount += 1;
           const snapshotRevision = state.elementObserveCount * 2 - 1;
           session.snapshotRevision = snapshotRevision;
-          const target = { interactionId, pid: 4242, bundleIdentifier: session.bundleIdentifier, appName: session.appName, windowRef: 'ax_window_1', snapshotRevision };
+          const target = { interactionId, pid: session.pid, bundleIdentifier: session.bundleIdentifier, appName: session.appName, windowRef: 'ax_window_1', snapshotRevision };
           result = {
-            protocolVersion: 2, interactionId, snapshotRevision, pid: 4242, bundleIdentifier: session.bundleIdentifier, appName: session.appName,
+            protocolVersion: 2, interactionId, snapshotRevision, pid: session.pid, bundleIdentifier: session.bundleIdentifier, appName: session.appName,
             truncated: false, nodeCount: 1,
             root: { ref: `ax_${snapshotRevision}_1`, target, role: 'AXTextArea', name: 'One', description: 'Chat with ChatGPT', state: { enabled: true, focused: false }, actions: ['invoke', 'set_value'], children: [] },
           };
@@ -503,6 +503,57 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(fixture.state.pressCount).toBe(1);
     expect(new Set(targetAuthority.listAllApplications(fixture.controllerHome).map(target => target.targetId)))
       .toEqual(new Set([originalTargetId, staleTargetId]));
+  });
+
+  test('exact target-id reuse verifies native session PID and fails closed on provider drift', async () => {
+    const fixture = await providerFixture();
+    const targetId = await openTarget(fixture);
+    const before = targetAuthority.get(fixture.controllerHome, targetId);
+    const providerSessionId = before?.providerBinding?.providerSessionId;
+    expect(providerSessionId).toBeString();
+
+    const reused = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome, 'desktop_target_open',
+      { target_id: targetId, launch: false, activate: false },
+      'target-live-exact-pid-observe',
+    ));
+    expect(reused).toMatchObject({ targetId, processId: 4242 });
+    expect(fixture.state.sessionOpenCount).toBe(1);
+    expect(fixture.state.elementObserveCount).toBe(1);
+
+    fixture.sessions.get(providerSessionId!)!.pid = 4343;
+    await expect(computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome, 'desktop_target_open',
+      { target_id: targetId, launch: false, activate: false },
+      'target-drifted-provider-pid',
+    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH' });
+    expect(fixture.state.sessionOpenCount).toBe(1);
+    expect(targetAuthority.get(fixture.controllerHome, targetId)).toEqual(before);
+    expect(fixture.state.pressCount).toBe(0);
+  });
+
+  test('exact target-id stale binding reopens only the saved process, not a sibling bundle instance', async () => {
+    const fixture = await providerFixture();
+    const targetId = await openTarget(fixture);
+    const before = targetAuthority.get(fixture.controllerHome, targetId);
+    fixture.sessions.clear();
+    const reattached = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome, 'desktop_target_open',
+      { target_id: targetId, launch: false, activate: false },
+      'target-stale-pid-rebind',
+    ));
+    expect(reattached).toMatchObject({ targetId, processId: 4242 });
+    expect(fixture.state.sessionOpenCount).toBe(2);
+    expect(fixture.state.lastSessionOpenArgs).toMatchObject({
+      bundle_id: 'com.example.Editor',
+      process_id: 4242,
+      launch: false,
+      activate: false,
+      reuse_existing: false,
+    });
+    expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.processId).toBe(4242);
+    expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId)
+      .not.toBe(before?.providerBinding?.providerSessionId);
   });
 
   test('exact PID disambiguates same-bundle targets and returns the bound PID', async () => {
