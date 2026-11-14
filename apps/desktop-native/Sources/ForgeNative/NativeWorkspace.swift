@@ -567,6 +567,7 @@ final class NativeWorkspace: ObservableObject {
     @Published var userRequestsTotalCount: Int?
     @Published var busy = false
     @Published private(set) var activeConversationId: String?
+    private(set) var activeConversationGeneration = 0
     private var activeApiTurn: ForgeApiTurn?
     private var activeTurnProvider: String?
     private var conversationScrollRevision = 0
@@ -1279,6 +1280,13 @@ final class NativeWorkspace: ObservableObject {
         requestGeneration:Int,currentGeneration:Int
     ) -> Bool {
         requestRepoId == currentRepoId && requestGeneration == currentGeneration
+    }
+
+    nonisolated static func liveActivityRequestIsCurrent(
+        requestConversationId:String,currentConversationId:String?,
+        requestGeneration:Int,currentGeneration:Int
+    ) -> Bool {
+        requestConversationId == currentConversationId && requestGeneration == currentGeneration
     }
 
     private func userRequestsOperationIsCurrent(_ generation:Int,repoId targetRepoId:String?) -> Bool {
@@ -3052,17 +3060,24 @@ final class NativeWorkspace: ObservableObject {
             self.error = error.localizedDescription
         }
     }
-    func refreshLiveActivity(conversationId: String) async {
+    func refreshLiveActivity(conversationId:String,generation:Int) async {
+        guard Self.liveActivityRequestIsCurrent(
+            requestConversationId:conversationId,currentConversationId:activeConversationId,
+            requestGeneration:generation,currentGeneration:activeConversationGeneration
+        ) else { return }
         do {
             let value = try await ForgeBridge.request("read_local_conversation_activity",[
                 "conversationId":conversationId
             ])
+            guard Self.liveActivityRequestIsCurrent(
+                requestConversationId:conversationId,currentConversationId:activeConversationId,
+                requestGeneration:generation,currentGeneration:activeConversationGeneration
+            ) else { return }
             let bytes = try JSONSerialization.data(withJSONObject:value)
             let activity = try JSONDecoder().decode(AgentLiveActivity.self,from:bytes)
             // Runtime is the sole Codex process owner. Its observed JSONL
             // agent_message is a provisional preview, not a persisted reply.
-            if activeConversationId == conversationId,
-               let preview = value["responsePreview"] as? String {
+            if let preview = value["responsePreview"] as? String {
                 streamedAnswer = String(preview.prefix(32_000))
             }
             liveActivity = activity.status == "running" ? activity : nil
@@ -3759,6 +3774,8 @@ final class NativeWorkspace: ObservableObject {
         let contextPaths = pendingContextPaths
         cancelRequestedBeforeTurn = false
         busy = true
+        activeConversationGeneration &+= 1
+        let activityGeneration = activeConversationGeneration
         activeConversationId = id
         streamedAnswer = ""
         streamedReasoning = ""
@@ -3789,7 +3806,7 @@ final class NativeWorkspace: ObservableObject {
         if turnProvider == "codex" {
             activityMonitor = Task { [weak self] in
                 while !Task.isCancelled {
-                    await self?.refreshLiveActivity(conversationId:id)
+                    await self?.refreshLiveActivity(conversationId:id,generation:activityGeneration)
                     try? await Task.sleep(for:.milliseconds(350))
                 }
             }

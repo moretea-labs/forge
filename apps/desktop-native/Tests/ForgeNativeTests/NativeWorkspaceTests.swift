@@ -2210,6 +2210,25 @@ final class NativeWorkspaceTests: XCTestCase {
 
 
 extension NativeWorkspaceTests {
+    func testLiveActivityRefreshRequiresExactConversationTurnGeneration() {
+        XCTAssertTrue(NativeWorkspace.liveActivityRequestIsCurrent(
+            requestConversationId:"conversation-a",currentConversationId:"conversation-a",
+            requestGeneration:7,currentGeneration:7
+        ))
+        XCTAssertFalse(NativeWorkspace.liveActivityRequestIsCurrent(
+            requestConversationId:"conversation-a",currentConversationId:"conversation-a",
+            requestGeneration:6,currentGeneration:7
+        ))
+        XCTAssertFalse(NativeWorkspace.liveActivityRequestIsCurrent(
+            requestConversationId:"conversation-a",currentConversationId:"conversation-b",
+            requestGeneration:7,currentGeneration:7
+        ))
+        XCTAssertFalse(NativeWorkspace.liveActivityRequestIsCurrent(
+            requestConversationId:"conversation-a",currentConversationId:nil,
+            requestGeneration:7,currentGeneration:7
+        ))
+    }
+
     func testLiveActivityTimelineDecodesAndRemainsBackwardCompatible() throws {
         let current = Data("""
         {"conversationId":"c1","status":"running","phase":"tool","toolActivityCount":1,"lastActivity":"正在使用 forge.rh_status","events":[{"phase":"thinking","label":"正在推理","status":"completed","startedAt":"2026-11-07T00:00:00.000Z","completedAt":"2026-11-07T00:00:01.000Z"},{"phase":"tool","label":"正在使用 forge.rh_status","status":"active","startedAt":"2026-11-07T00:00:01.000Z"}]}
