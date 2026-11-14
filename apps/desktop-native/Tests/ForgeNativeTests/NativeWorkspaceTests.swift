@@ -1335,6 +1335,25 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testZenGitHubBoardRefreshGenerationRejectsStaleResultsAndCleanup() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId = "repo_a"
+        let older = model.beginZenGitHubBoardRefresh()
+        let newer = model.beginZenGitHubBoardRefresh()
+
+        XCTAssertFalse(model.zenGitHubBoardRequestIsCurrent(older,repoId:"repo_a"))
+        XCTAssertTrue(model.zenGitHubBoardRequestIsCurrent(newer,repoId:"repo_a"))
+        model.finishZenGitHubBoardRefresh(older)
+        XCTAssertTrue(model.zenGitHubBoardLoading)
+        model.repoId = "repo_b"
+        XCTAssertFalse(model.zenGitHubBoardRequestIsCurrent(newer,repoId:"repo_a"))
+        model.finishZenGitHubBoardRefresh(newer)
+        XCTAssertFalse(model.zenGitHubBoardLoading)
+    }
+
+    @MainActor
     func testPageTransitionClearsOnlyStalePageError() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }

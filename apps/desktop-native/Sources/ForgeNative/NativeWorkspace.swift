@@ -608,6 +608,7 @@ final class NativeWorkspace: ObservableObject {
     @Published var zenGitHubBoardTruncated = false
     @Published var zenGitHubBoardError: String?
     @Published var zenGitHubBoardLoading = false
+    private(set) var zenGitHubBoardRequestGeneration = 0
     @Published var records: [ForgeRecord] = []
     @Published var selectedRecord: String?
     @Published var recordDetail: SemanticRecordDetail?
@@ -1442,18 +1443,40 @@ final class NativeWorkspace: ObservableObject {
         error = nil
     }
 
+    func beginZenGitHubBoardRefresh() -> Int {
+        zenGitHubBoardRequestGeneration &+= 1
+        zenGitHubBoardLoading = true
+        zenGitHubBoardError = nil
+        return zenGitHubBoardRequestGeneration
+    }
+
+    func zenGitHubBoardRequestIsCurrent(_ generation:Int,repoId targetRepoId:String) -> Bool {
+        Self.projectScopedRequestIsCurrent(
+            requestRepoId:targetRepoId,currentRepoId:repoId,
+            requestGeneration:generation,currentGeneration:zenGitHubBoardRequestGeneration
+        )
+    }
+
+    func finishZenGitHubBoardRefresh(_ generation:Int) {
+        guard zenGitHubBoardRequestGeneration == generation else { return }
+        zenGitHubBoardLoading = false
+    }
+
     func loadZenGitHubBoard() async {
         guard let repoId else {
+            zenGitHubBoardRequestGeneration &+= 1
+            zenGitHubBoardLoading = false
             zenGitHubBoardItems=[]
             zenGitHubBoardConfigured=nil
+            zenGitHubBoardTruncated=false
             zenGitHubBoardError=nil
             return
         }
-        zenGitHubBoardLoading=true
-        defer { if self.repoId == repoId { zenGitHubBoardLoading=false } }
+        let requestGeneration = beginZenGitHubBoardRefresh()
+        defer { finishZenGitHubBoardRefresh(requestGeneration) }
         do {
             let data=try await ForgeBridge.request("read_github_project_items",["repoId":repoId])
-            guard self.repoId == repoId else { return }
+            guard zenGitHubBoardRequestIsCurrent(requestGeneration,repoId:repoId) else { return }
             guard let configured=data["configured"] as? Bool,
                   let rows=data["items"] as? [[String:Any]],
                   JSONSerialization.isValidJSONObject(rows) else {
@@ -1466,7 +1489,7 @@ final class NativeWorkspace: ObservableObject {
             zenGitHubBoardTruncated=data["truncated"] as? Bool ?? false
             zenGitHubBoardError=nil
         } catch {
-            guard self.repoId == repoId else { return }
+            guard zenGitHubBoardRequestIsCurrent(requestGeneration,repoId:repoId) else { return }
             zenGitHubBoardConfigured=nil
             zenGitHubBoardItems=[]
             zenGitHubBoardError=error.localizedDescription
