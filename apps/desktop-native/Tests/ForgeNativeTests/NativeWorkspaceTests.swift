@@ -932,6 +932,35 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(model.connectionLoading)
     }
 
+    @MainActor
+    func testScheduleRefreshAndControlKeepProjectScopedLoadingIndependent() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.page = .schedule
+        model.repoId = "repo_a"
+
+        let older = model.beginSchedulePageRefresh(repoId:"repo_a")!
+        model.repoId = "repo_b"
+        let newer = model.beginSchedulePageRefresh(repoId:"repo_b")!
+        XCTAssertFalse(model.schedulePageRequestIsCurrent(older,repoId:"repo_a"))
+        XCTAssertTrue(model.schedulePageRequestIsCurrent(newer,repoId:"repo_b"))
+        model.finishSchedulePageRefresh(older)
+        XCTAssertTrue(model.schedulesLoading)
+        XCTAssertFalse(model.beginScheduleControl(repoId:"repo_b"))
+        model.finishSchedulePageRefresh(newer)
+        XCTAssertFalse(model.schedulesLoading)
+
+        XCTAssertTrue(model.beginScheduleControl(repoId:"repo_a"))
+        XCTAssertNil(model.beginSchedulePageRefresh(repoId:"repo_a"))
+        let otherProjectRead = model.beginSchedulePageRefresh(repoId:"repo_b")!
+        model.finishSchedulePageRefresh(otherProjectRead)
+        XCTAssertTrue(model.schedulesLoading)
+        model.finishScheduleControl(repoId:"repo_a")
+        XCTAssertFalse(model.schedulesLoading)
+        XCTAssertNil(model.scheduleActionRepoId)
+    }
+
     func testKnowledgeProjectionDecodesCanonicalReadOnlyAudit() {
         let result = NativeWorkspace.knowledgeAuditDetail([
             "readonly":true,"advisoryOnly":true,

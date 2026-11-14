@@ -618,7 +618,11 @@ final class NativeWorkspace: ObservableObject {
     @Published var autopilotLoading = false
     @Published var detail = ""
     @Published var schedules: [ProjectScheduleDetail] = []
-    @Published var schedulesLoading = false
+    @Published private var schedulesReadLoading = false
+    @Published private var schedulesActionLoading = false
+    private(set) var scheduleActionRepoId: String?
+    private(set) var scheduleRequestGeneration = 0
+    var schedulesLoading: Bool { schedulesReadLoading || schedulesActionLoading }
     @Published var plugins: [ProjectPluginDetail] = []
     @Published var pluginsLoading = false
     private(set) var pluginsRequestGeneration = 0
@@ -1855,27 +1859,62 @@ final class NativeWorkspace: ObservableObject {
         return nil
     }
 
+    func beginSchedulePageRefresh(repoId targetRepoId:String) -> Int? {
+        guard scheduleActionRepoId != targetRepoId else { return nil }
+        scheduleRequestGeneration &+= 1
+        schedulesReadLoading = true
+        return scheduleRequestGeneration
+    }
+
+    func schedulePageRequestIsCurrent(_ generation:Int,repoId targetRepoId:String) -> Bool {
+        Self.projectScopedRequestIsCurrent(
+            requestRepoId:targetRepoId,currentRepoId:repoId,
+            requestGeneration:generation,currentGeneration:scheduleRequestGeneration
+        ) && page == .schedule
+    }
+
+    func finishSchedulePageRefresh(_ generation:Int) {
+        guard scheduleRequestGeneration == generation else { return }
+        schedulesReadLoading = false
+    }
+
+    func beginScheduleControl(repoId:String) -> Bool {
+        guard !schedulesActionLoading, !schedulesReadLoading else { return false }
+        schedulesActionLoading = true
+        scheduleActionRepoId = repoId
+        return true
+    }
+
+    func finishScheduleControl(repoId:String) {
+        guard scheduleActionRepoId == repoId else { return }
+        scheduleActionRepoId = nil
+        schedulesActionLoading = false
+    }
+
     func loadSchedulePage() async {
-        guard let repoId else { schedules = []; return }
-        guard !schedulesLoading else { return }
-        schedulesLoading = true
-        defer { schedulesLoading = false }
+        guard let repoId else {
+            scheduleRequestGeneration &+= 1
+            schedulesReadLoading = false
+            schedules = []
+            return
+        }
+        guard let requestGeneration = beginSchedulePageRefresh(repoId:repoId) else { return }
+        defer { finishSchedulePageRefresh(requestGeneration) }
         do {
             let value = try await ForgeBridge.request("read_project_schedules",["repoId":repoId])
-            guard self.repoId == repoId, self.page == .schedule else { return }
+            guard schedulePageRequestIsCurrent(requestGeneration,repoId:repoId) else { return }
             schedules = Self.projectScheduleRows(value)
             error = nil
         } catch {
-            guard self.repoId == repoId, self.page == .schedule else { return }
+            guard schedulePageRequestIsCurrent(requestGeneration,repoId:repoId) else { return }
             schedules = []
             self.error = error.localizedDescription
         }
     }
 
     func controlSchedule(_ schedule: ProjectScheduleDetail, action: ProjectScheduleAction) async {
-        guard let repoId, !schedulesLoading else { return }
-        schedulesLoading = true
-        defer { schedulesLoading = false }
+        guard let repoId, beginScheduleControl(repoId:repoId) else { return }
+        defer { finishScheduleControl(repoId:repoId) }
         do {
             let receipt = try await ForgeBridge.request("control_project_schedule",[
                 "repoId":repoId,
