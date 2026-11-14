@@ -42,36 +42,29 @@ struct ZenSidebar: View {
     let onInbox: () -> Void
     let onAddProject: () -> Void
 
+    // Derived solely from the existing conversation activity; no project recency store.
+    static func recentProjects(_ projects:[ForgeProject],threads:[ChatThread],
+                               selectedRepoId:String?,limit:Int=7) -> [ForgeProject] {
+        var lastActivity:[String:Date]=[:]
+        for thread in threads {
+            guard let repoId=thread.repoId else { continue }
+            lastActivity[repoId]=max(lastActivity[repoId] ?? .distantPast,thread.updatedAt)
+        }
+        let candidates=projects.filter {
+            $0.repoId == selectedRepoId || lastActivity[$0.repoId] != nil
+        }
+        return Array(candidates.sorted { lhs,rhs in
+            if lhs.repoId == selectedRepoId { return rhs.repoId != selectedRepoId }
+            if rhs.repoId == selectedRepoId { return false }
+            let left=lastActivity[lhs.repoId] ?? .distantPast
+            let right=lastActivity[rhs.repoId] ?? .distantPast
+            if left != right { return left > right }
+            return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
+        }.prefix(max(0,limit)))
+    }
+
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
-            HStack {
-                Text("项目").font(.system(size:13,weight:.semibold))
-                Spacer()
-                Text("\(model.projects.count)").font(.system(size:11)).foregroundStyle(.secondary)
-                Button(action:onAddProject) {
-                    Image(systemName:"plus").frame(width:28,height:28)
-                }
-                .buttonStyle(.plain)
-                .help("添加本地项目")
-                .accessibilityLabel("添加项目")
-                .accessibilityIdentifier("zen.project.add")
-            }
-            .padding(.horizontal,15).frame(height:54)
-
-            Button {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration:0.18)) {
-                    screen = .projects
-                }
-            } label: {
-                Label("全部项目",systemImage:"square.grid.2x2")
-                    .frame(maxWidth:.infinity,alignment:.leading).frame(height:33)
-                    .padding(.horizontal,10)
-                    .background(screen == .projects ? Color.primary.opacity(0.075) : .clear,
-                                in:RoundedRectangle(cornerRadius:9))
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal,9)
-
             Button(action:onInbox) {
                 HStack(spacing:9) {
                     Image(systemName:"tray").frame(width:18)
@@ -90,9 +83,35 @@ struct ZenSidebar: View {
             .padding(.horizontal,9)
             .accessibilityIdentifier("zen.inbox")
 
+            HStack {
+                Text("最近项目")
+                    .font(.system(size:11,weight:.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("全部") {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration:0.18)) {
+                        screen = .projects
+                    }
+                }
+                .font(.system(size:11))
+                .buttonStyle(.plain)
+                .foregroundStyle(screen == .projects ? .primary : .secondary)
+                .accessibilityLabel("全部项目")
+                .accessibilityIdentifier("zen.projects.all")
+                Button(action:onAddProject) {
+                    Image(systemName:"plus").frame(width:28,height:28)
+                }
+                .buttonStyle(.plain)
+                .help("添加本地项目")
+                .accessibilityLabel("添加项目")
+                .accessibilityIdentifier("zen.project.add")
+            }
+            .padding(.horizontal,15).frame(height:48)
+
             ScrollView {
                 LazyVStack(alignment:.leading,spacing:3) {
-                    ForEach(model.projects) { project in
+                    ForEach(Self.recentProjects(model.projects,threads:model.threads,
+                                                selectedRepoId:model.repoId)) { project in
                         Button {
                             guard !model.busy else { return }
                             model.focusZenProject(project.repoId)

@@ -113,3 +113,34 @@ extension ZenModeTests {
         XCTAssertEqual(layout.width,900)
     }
 }
+
+extension ZenModeTests {
+    func testSidebarRecentsPinCurrentProjectAndUseRealConversationActivity() {
+        let projects=["A","B","C","D"].map {
+            ForgeProject(repoId:$0,displayName:$0,localRoot:nil,
+                         checkoutId:nil,remoteUrl:nil,defaultBranch:nil)
+        }
+        var older=ChatThread()
+        older.repoId="B"
+        older.updatedAt=Date(timeIntervalSince1970:10)
+        var newer=ChatThread()
+        newer.repoId="C"
+        newer.updatedAt=Date(timeIntervalSince1970:20)
+
+        XCTAssertEqual(
+            ZenSidebar.recentProjects(projects,threads:[older,newer],
+                                      selectedRepoId:"A",limit:2).map(\.repoId),
+            ["A","C"]
+        )
+        XCTAssertEqual(
+            ZenSidebar.recentProjects(projects,threads:[older,newer],
+                                      selectedRepoId:nil,limit:3).map(\.repoId),
+            ["C","B"]
+        )
+        XCTAssertEqual(
+            ZenSidebar.recentProjects(projects,threads:[],
+                                      selectedRepoId:"D",limit:7).map(\.repoId),
+            ["D"]
+        )
+    }
+}
