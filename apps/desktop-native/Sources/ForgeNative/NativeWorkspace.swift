@@ -547,6 +547,7 @@ final class NativeWorkspace: ObservableObject {
     @Published private(set) var projectsLoading = true
     @Published private(set) var projectsError: String?
     private(set) var projectListRequestGeneration = 0
+    private(set) var workspaceRefreshRequestGeneration = 0
     private(set) var projectRepositoryRequestGeneration = 0
     private(set) var planningPageRequestGeneration = 0
     @Published var repoId: String?
@@ -1163,7 +1164,7 @@ final class NativeWorkspace: ObservableObject {
                 self.error = "Forge 注册成功响应缺少 Repository / Checkout 身份，未切换会话。"
                 return false
             }
-            await refresh()
+            await refreshProjects()
             guard projects.contains(where: { $0.repoId == registeredRepoId }) else {
                 self.error = "新注册仓库尚未出现在 Forge Registry 中。"
                 return false
@@ -1417,36 +1418,55 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
+    func beginWorkspaceRefresh() -> Int {
+        workspaceRefreshRequestGeneration &+= 1
+        return workspaceRefreshRequestGeneration
+    }
+
+    func workspaceRefreshRequestIsCurrent(_ generation:Int) -> Bool {
+        generation == workspaceRefreshRequestGeneration
+    }
+
     func refresh() async {
+        let requestGeneration = beginWorkspaceRefresh()
         await refreshProjects()
+        guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
         // Agent repository context is owned by the selected ChatThread. Do not
         // fabricate a binding from preferredRepoId for an unbound conversation.
-        if let status = try? await ForgeBridge.request("read_local_provider_status") {
-            applyLocalProviderStatus(status)
+        let providerStatus = try? await ForgeBridge.request("read_local_provider_status")
+        guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
+        if let providerStatus {
+            applyLocalProviderStatus(providerStatus)
         } else {
             provider = "Codex 不可用"
             localProviderReady = false
             imageInputAvailable = false
         }
         if !selectedProviderSupportsImages { pendingImageURLs = [] }
-        if let settingsValue = try? await ForgeBridge.request("read_local_api_settings"),
-           let parsed = Self.localApiSettingsDetail(settingsValue) {
+        let settingsValue = try? await ForgeBridge.request("read_local_api_settings")
+        guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
+        if let settingsValue, let parsed = Self.localApiSettingsDetail(settingsValue) {
             localApiSettings = parsed
         }
-        if let catalog = try? await ForgeBridge.request("read_local_provider_models"),
+        let catalog = try? await ForgeBridge.request("read_local_provider_models")
+        guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
+        if let catalog,
            let rows = catalog["models"] as? [[String: Any]],
            let bytes = try? JSONSerialization.data(withJSONObject: rows),
            let decoded = try? JSONDecoder().decode([AgentModelOption].self, from: bytes) {
             agentModels = decoded
         }
         let connectionValue = try? await ForgeBridge.request("read_connection_status")
+        guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
         if let connectionValue, let parsed = Self.controllerConnectionDetail(connectionValue) {
             connectionStatus = parsed
         } else {
             connectionStatus = nil
         }
         await refreshProject()
+        guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
         await loadUserRequests()
+        guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
         error = nil
     }
 
