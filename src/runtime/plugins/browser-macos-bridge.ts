@@ -363,10 +363,19 @@ async function captureBrowserAutomation(
   region: { x: number; y: number; width: number; height: number },
   path: string,
   timeoutMs: number,
+  target?: { product: MacOsBrowserProduct; ref?: MacOsBrowserTabRef },
 ): Promise<Buffer> {
-  if (runtimeHooks.captureRegion) return await runtimeHooks.captureRegion(region, path, timeoutMs);
-  const bytes = await captureBrowserAutomationRegion(region, timeoutMs);
-  writeFileSync(path, bytes);
+  const useTestHook = Boolean(runtimeHooks.captureRegion);
+  const bytes = await timeMacOsBrowserAutomation(
+    { action: 'capture_region', region },
+    useTestHook ? 'test_hook' : 'broker',
+    undefined,
+    async () => useTestHook
+      ? await runtimeHooks.captureRegion!(region, path, timeoutMs)
+      : await captureBrowserAutomationRegion(region, timeoutMs),
+    target,
+  );
+  if (!useTestHook) writeFileSync(path, bytes);
   return bytes;
 }
 
@@ -374,14 +383,27 @@ async function sendBrowserTrustedInput(
   request: BrowserAutomationTrustedInputRequest,
   timeoutMs: number,
 ): Promise<void> {
-  await assertMacOsBrowserApplicationRunning(request.product, timeoutMs);
-  if (runtimeHooks.trustedInput) {
-    await runtimeHooks.trustedInput(request, timeoutMs);
-    return;
-  }
-  let result: Record<string, unknown>;
+  const useTestHook = Boolean(runtimeHooks.trustedInput);
   try {
-    result = await callBrowserAutomationBroker(request, timeoutMs);
+    await timeMacOsBrowserAutomation(
+      request,
+      useTestHook ? 'test_hook' : 'broker',
+      () => assertMacOsBrowserApplicationRunning(request.product, timeoutMs),
+      async () => {
+        if (useTestHook) {
+          await runtimeHooks.trustedInput!(request, timeoutMs);
+          return;
+        }
+        const result = await callBrowserAutomationBroker(request, timeoutMs);
+        if (result.performed !== true) {
+          throw new AssistantPluginError(
+            'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
+            'Stable Forge macOS capability broker did not confirm trusted browser input.',
+            { retryable: true },
+          );
+        }
+      },
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error ?? '');
     if ((error instanceof AssistantPluginError && error.code === 'BROWSER_AUTOMATION_ACTION_UNSUPPORTED')
@@ -393,13 +415,6 @@ async function sendBrowserTrustedInput(
       );
     }
     throw error;
-  }
-  if (result.performed !== true) {
-    throw new AssistantPluginError(
-      'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
-      'Stable Forge macOS capability broker did not confirm trusted browser input.',
-      { retryable: true },
-    );
   }
 }
 
@@ -419,6 +434,7 @@ async function timeMacOsBrowserAutomation<T>(
   requestedDispatchKind: Exclude<MacOsBrowserAutomationTiming['dispatchKind'], 'not_dispatched'>,
   precondition: (() => Promise<void>) | undefined,
   dispatch: () => Promise<T>,
+  timingTarget?: { product?: MacOsBrowserProduct; ref?: MacOsBrowserTabRef },
 ): Promise<T> {
   const observer = runtimeHooks.onAutomationTiming;
   if (!observer) {
@@ -458,11 +474,12 @@ async function timeMacOsBrowserAutomation<T>(
     errorCode = error instanceof AssistantPluginError ? error.code : undefined;
     throw error;
   } finally {
-    const ref = 'ref' in request ? request.ref : resultRef;
+    const ref = 'ref' in request ? request.ref : resultRef ?? timingTarget?.ref;
+    const product = 'product' in request ? request.product : timingTarget?.product;
     try {
       observer({
         action: request.action,
-        ...('product' in request ? { product: request.product } : {}),
+        ...(product ? { product } : {}),
         ...(ref?.windowId ? { windowId: ref.windowId } : {}),
         ...(ref?.tabId ? { tabId: ref.tabId } : {}),
         dispatchKind,
@@ -1600,7 +1617,10 @@ export class MacOsAppleEventsPage {
         details: { browserProduct: this.browser.product, windowId: this.targetRef.windowId, tabId: this.targetRef.tabId },
       });
     }
-    return await captureBrowserAutomation(metadata.bounds, path, this.timeoutMs);
+    return await captureBrowserAutomation(metadata.bounds, path, this.timeoutMs, {
+      product: this.browser.product,
+      ref: this.targetRef,
+    });
   }
 
   async click(selector: string): Promise<void> {
