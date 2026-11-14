@@ -1235,6 +1235,7 @@ struct ZenWorkspacePane: View {
 struct ZenTreeGeometry {
     static let columnStep: CGFloat = 250
     static let rowStep: CGFloat = 166
+    static let nodeHeight: CGFloat = 104
 
     let width: CGFloat
     let height: CGFloat
@@ -1392,8 +1393,7 @@ private struct ZenTreeCanvas: View {
         .font(.system(size:11,weight:.medium))
         .buttonStyle(.plain)
         .foregroundStyle(Color.primary)
-        .padding(.horizontal,3).padding(.vertical,2)
-        .background(.regularMaterial,in:RoundedRectangle(cornerRadius:8))
+        // The card reserves this header area for actions; no second raised surface.
     }
 
     private var levels: [[ForgeRecord]] {
@@ -1438,8 +1438,8 @@ private struct ZenTreeCanvas: View {
                                 let start=layout.point(for:parent,row:row-1)
                                 let end=layout.point(for:child,row:row)
                                 var path=Path()
-                                path.move(to:CGPoint(x:start.x,y:start.y+46))
-                                path.addCurve(to:CGPoint(x:end.x,y:end.y-46),
+                                path.move(to:CGPoint(x:start.x,y:start.y+ZenTreeGeometry.nodeHeight/2))
+                                path.addCurve(to:CGPoint(x:end.x,y:end.y-ZenTreeGeometry.nodeHeight/2),
                                               control1:CGPoint(x:start.x,y:(start.y+end.y)/2),
                                               control2:CGPoint(x:end.x,y:(start.y+end.y)/2))
                                 context.stroke(path,with:.color(.secondary.opacity(0.28)),
@@ -1462,7 +1462,9 @@ private struct ZenTreeCanvas: View {
                                             Spacer(minLength:0)
                                         }
                                         .foregroundStyle(.secondary)
-                                        .padding(.bottom,9)
+                                        .frame(height:30,alignment:.topLeading)
+                                        .padding(.trailing,92)
+                                        .padding(.bottom,5)
                                         Text(item.title)
                                             .font(.system(size:13,weight:.semibold))
                                             .foregroundStyle(.primary)
@@ -1471,7 +1473,7 @@ private struct ZenTreeCanvas: View {
                                             .frame(maxWidth:.infinity,alignment:.leading)
                                         Spacer(minLength:0)
                                     }
-                                    .frame(width:194,height:68,alignment:.topLeading)
+                                    .frame(width:194,height:80,alignment:.topLeading)
                                     .padding(.horizontal,13)
                                     .padding(.vertical,12)
                                     .background(Color(nsColor:.controlBackgroundColor),

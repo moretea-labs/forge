@@ -102,6 +102,7 @@ extension ZenModeTests {
         XCTAssertLessThan(x(l3,2),x(r1,2))
         XCTAssertGreaterThanOrEqual(x(r1,2)-x(l3,2),ZenTreeGeometry.columnStep)
         XCTAssertGreaterThanOrEqual(layout.width,4*ZenTreeGeometry.columnStep+70)
+        XCTAssertGreaterThan(ZenTreeGeometry.rowStep,ZenTreeGeometry.nodeHeight)
     }
 
     func testTreeGeometryCentersSingleRequirementInAvailableViewport() {
