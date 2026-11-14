@@ -168,6 +168,8 @@ export function authorizeAutopilot(input: {
         ...run,
         grantId: grant.grantId,
         policy,
+        // A new bounded window is authorized; retain the paused run, not its exhausted reason.
+        stopReason: undefined,
         budgetBaseline: {
           totalTokens: run.usage.totalTokens,
           turns: run.usage.turns,

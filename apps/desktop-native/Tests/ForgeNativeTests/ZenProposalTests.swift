@@ -30,9 +30,13 @@ final class ZenProposalTests: XCTestCase {
 
     @MainActor
     func testZenExecutionUsesResumeForDetachedRunningRunAndReconcilesUnknownOutcome() throws {
-        func status(_ state:String,active:Bool=false,ready:Bool=true,authorized:Bool=true) throws -> AutopilotStatusDetail {
+        func status(_ state:String,active:Bool=false,ready:Bool=true,authorized:Bool=true,
+                    reason:String?=nil,needsReapproval:Bool=false) throws -> AutopilotStatusDetail {
+            var run:[String:Any]=["status":state]
+            if let reason { run["stopReason"]=reason }
             var data:[String:Any] = [
-                "run":["status":state],"runtimeActive":active,"providerReady":ready
+                "run":run,"runtimeActive":active,"providerReady":ready,
+                "requiresReapproval":needsReapproval
             ]
             if authorized { data["grant"] = ["grantId":"grant-one"] }
             return try XCTUnwrap(NativeWorkspace.autopilotStatusDetail(["data":data]))
@@ -46,6 +50,21 @@ final class ZenProposalTests: XCTestCase {
         XCTAssertEqual(ZenWorkspacePane.executionOperation(status:try status("idle"),outcomeUnknown:false),"start")
         XCTAssertEqual(ZenWorkspacePane.executionOperation(status:try status("idle",authorized:false),outcomeUnknown:false),"authorize")
         XCTAssertNil(ZenWorkspacePane.executionOperation(status:try status("paused",ready:false),outcomeUnknown:false))
+        for reason in ["max_total_tokens_reached","max_turns_reached","max_tool_calls_reached"] {
+            let exhausted=try status("paused",reason:reason)
+            XCTAssertTrue(exhausted.needsBudgetRenewal)
+            XCTAssertEqual(exhausted.nextExecutionOperation(),"authorize")
+            XCTAssertEqual(ZenWorkspacePane.executionLabel(
+                operation:"authorize",runStatus:"paused",needsBudgetRenewal:exhausted.needsBudgetRenewal
+            ),"续期预算")
+            XCTAssertEqual(ZenWorkspacePane.executionOperation(status:exhausted,outcomeUnknown:false),"authorize")
+            XCTAssertNil(exhausted.nextExecutionOperation(outcomeUnknown:true))
+        }
+        let humanCheckpoint=try status("paused",reason:"human_checkpoint:PLAN-a")
+        XCTAssertFalse(humanCheckpoint.needsBudgetRenewal)
+        XCTAssertEqual(humanCheckpoint.nextExecutionOperation(),"resume")
+        let stale=try status("paused",reason:"max_turns_reached",needsReapproval:true)
+        XCTAssertEqual(stale.nextExecutionOperation(),"authorize")
         XCTAssertNil(ZenWorkspacePane.executionOperation(status:detached,outcomeUnknown:true))
         XCTAssertNil(ZenWorkspacePane.executionOperation(status:nil,outcomeUnknown:false))
     }

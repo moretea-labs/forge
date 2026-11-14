@@ -3124,6 +3124,7 @@ private struct AutopilotApprovalContext: Identifiable {
     let repoId: String
     let checkoutId: String
     let requirement: RequirementRecordDetail
+    let status: AutopilotStatusDetail?
     var id: String { "\(repoId)|\(checkoutId)|\(requirement.requirementId)|\(requirement.revision)" }
 }
 
@@ -5021,33 +5022,35 @@ private struct RecordsPane: View {
 
                 HStack(spacing:8) {
                     let status=model.autopilotStatus
-                    if status?.authorized != true || status?.requiresReapproval == true {
-                        Button(status?.requiresReapproval == true ? "重新配置并批准" : "配置并批准") {
+                    let outcomeUnknown=model.planningAutopilotStatusError?.contains("操作结果未确认") == true
+                    let operation=status?.nextExecutionOperation(outcomeUnknown:outcomeUnknown)
+                    if operation == "authorize" || (status == nil && !outcomeUnknown) {
+                        Button(status?.needsBudgetRenewal == true && status?.requiresReapproval == false
+                               ? "续期预算" : (status?.requiresReapproval == true ? "重新配置并批准" : "配置并批准")) {
                             beginAutopilotApproval(requirement)
                         }
                         .buttonStyle(.borderedProminent)
-                    } else {
-                        switch status?.runStatus {
-                        case "running":
-                            Button("暂停") { runAutopilotAction(requirement.requirementId,"pause") }
-                                .buttonStyle(.borderedProminent)
-                        case "paused", "blocked", "failed":
-                            Button("继续") { runAutopilotAction(requirement.requirementId,"resume") }
-                                .buttonStyle(.borderedProminent)
-                                .disabled(status?.providerReady != true)
-                        default:
-                            Button(status?.runStatus == "completed" ? "再次运行" : "开始无人值守") {
-                                runAutopilotAction(requirement.requirementId,"start")
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(status?.providerReady != true)
+                        .disabled(autopilotSaving || model.autopilotLoading || model.autopilotControlPending)
+                    } else if let operation {
+                        Button(operation == "pause" ? "暂停" :
+                               operation == "resume" ? (status?.runStatus == "running" ? "恢复执行" : "继续") :
+                               status?.runStatus == "completed" ? "再次运行" : "开始无人值守") {
+                            runAutopilotAction(requirement.requirementId,operation)
                         }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(autopilotSaving || model.autopilotLoading || model.autopilotControlPending)
+                    }
+                    if status?.authorized == true {
                         Button("重新配置") { beginAutopilotApproval(requirement) }
                             .buttonStyle(.bordered)
+                            .disabled(autopilotSaving || model.autopilotLoading || model.autopilotControlPending
+                                      || outcomeUnknown)
                         Button("撤销授权",role:.destructive) {
                             runAutopilotAction(requirement.requirementId,"revoke")
                         }
                         .buttonStyle(.bordered)
+                        .disabled(autopilotSaving || model.autopilotLoading || model.autopilotControlPending
+                                  || outcomeUnknown)
                     }
                     Button { Task { await model.loadAutopilotStatus(requirement.requirementId) } } label: {
                         Image(systemName:"arrow.clockwise")
@@ -5101,19 +5104,21 @@ private struct RecordsPane: View {
         autopilotTokenBudget=status?.maxTotalTokens.map(String.init) ?? "50000"
         autopilotTurnBudget=status?.maxTurns.map(String.init) ?? "12"
         autopilotToolBudget=status?.maxToolCalls.map(String.init) ?? "32"
-        autopilotCheckpoints=[]
+        autopilotCheckpoints=Set(status?.checkpointPlanIds ?? [])
         autopilotApproval=AutopilotApprovalContext(
-            repoId:repoId,checkoutId:checkoutId,requirement:requirement
+            repoId:repoId,checkoutId:checkoutId,requirement:requirement,status:status
         )
     }
 
     @ViewBuilder
     private func autopilotApprovalSheet(_ context:AutopilotApprovalContext) -> some View {
         let contextCurrent=model.repoId == context.repoId && model.checkoutId == context.checkoutId
+        let budgetRenewal=context.status?.needsBudgetRenewal == true && context.status?.requiresReapproval == false
         VStack(alignment:.leading,spacing:16) {
             HStack {
                 VStack(alignment:.leading,spacing:4) {
-                    Text("批准无人值守执行").font(.system(size:18,weight:.semibold))
+                    Text(budgetRenewal ? "续期执行预算" : "批准无人值守执行")
+                        .font(.system(size:18,weight:.semibold))
                     Text(context.requirement.title).lineLimit(2)
                         .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                     Text("版本 r\(context.requirement.revision)")
@@ -5123,14 +5128,20 @@ private struct RecordsPane: View {
                 Button { autopilotApproval=nil } label:{ Image(systemName:"xmark") }
                     .buttonStyle(.plain).disabled(autopilotSaving)
             }
-            Text("需求更新后，原授权失效，需重新批准。")
+            Text(budgetRenewal
+                 ? "延续当前模型和人工检查点，按确认的上限开启新预算窗口；累计使用量仍保留。"
+                 : "需求更新后，原授权失效，需重新批准。")
                 .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
             if !contextCurrent {
                 Text("工作区已变更，请重新打开批准面板。")
                     .font(.system(size:11)).foregroundStyle(.orange)
             }
             Grid(alignment:.leading,horizontalSpacing:12,verticalSpacing:10) {
-                GridRow { Text("模型"); TextField("deepseek-chat",text:$autopilotModel).textFieldStyle(.roundedBorder) }
+                GridRow {
+                    Text("模型")
+                    TextField("deepseek-chat",text:$autopilotModel)
+                        .textFieldStyle(.roundedBorder).disabled(budgetRenewal)
+                }
                 GridRow { Text("Token 上限"); TextField("50000",text:$autopilotTokenBudget).textFieldStyle(.roundedBorder) }
                 GridRow { Text("最大轮次"); TextField("12",text:$autopilotTurnBudget).textFieldStyle(.roundedBorder) }
                 GridRow { Text("最大工具调用"); TextField("32",text:$autopilotToolBudget).textFieldStyle(.roundedBorder) }
@@ -5156,6 +5167,7 @@ private struct RecordsPane: View {
                                     Text(plan.title).font(.system(size:11)).lineLimit(1)
                                 }
                                 .toggleStyle(.checkbox)
+                                .disabled(budgetRenewal)
                             }
                         }
                     }
@@ -5167,9 +5179,12 @@ private struct RecordsPane: View {
                     .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                 Spacer()
                 Button("取消") { autopilotApproval=nil }.disabled(autopilotSaving)
-                Button(autopilotSaving ? "批准中…" : "批准") { submitAutopilotApproval(context) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!contextCurrent || autopilotSaving || parsedAutopilotBudgets() == nil || autopilotModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                Button(autopilotSaving ? "处理中…" : (budgetRenewal ? "续期预算" : "批准")) {
+                    submitAutopilotApproval(context)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!contextCurrent || autopilotSaving || !approvalBudgetsValid(context)
+                          || autopilotModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(20).frame(width:520)
@@ -5183,12 +5198,23 @@ private struct RecordsPane: View {
         return (tokens,turns,tools)
     }
 
+    private func approvalBudgetsValid(_ context:AutopilotApprovalContext) -> Bool {
+        guard let budgets=parsedAutopilotBudgets() else { return false }
+        guard let prior=context.status,prior.needsBudgetRenewal,!prior.requiresReapproval else { return true }
+        guard let tokens=prior.maxTotalTokens,let turns=prior.maxTurns,let tools=prior.maxToolCalls else {
+            return false
+        }
+        return budgets.0 >= tokens && budgets.1 >= turns && budgets.2 >= tools
+            && autopilotModel == prior.model && autopilotCheckpoints == Set(prior.checkpointPlanIds)
+    }
+
     private func submitAutopilotApproval(_ context:AutopilotApprovalContext) {
         guard model.repoId == context.repoId,model.checkoutId == context.checkoutId else {
             model.error="工作区已变更，请重新打开批准面板。"
             return
         }
-        guard let budgets=parsedAutopilotBudgets(),!autopilotSaving else { return }
+        guard approvalBudgetsValid(context),let budgets=parsedAutopilotBudgets(),
+              !autopilotSaving else { return }
         autopilotSaving=true
         Task {
             let ok=await model.controlAutopilot(

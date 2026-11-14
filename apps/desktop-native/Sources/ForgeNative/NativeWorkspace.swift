@@ -202,6 +202,20 @@ struct AutopilotStatusDetail {
     let toolCalls: Int
     let maxToolCalls: Int?
     let checkpointPlanIds: [String]
+
+    var needsBudgetRenewal: Bool {
+        runStatus == "paused"
+            && ["max_total_tokens_reached", "max_turns_reached", "max_tool_calls_reached"].contains(stopReason ?? "")
+    }
+
+    // One status-derived decision shared by Zen and the traditional Planning view.
+    func nextExecutionOperation(outcomeUnknown:Bool = false) -> String? {
+        guard !outcomeUnknown else { return nil }
+        if !authorized || requiresReapproval || needsBudgetRenewal { return "authorize" }
+        if runtimeActive { return "pause" }
+        guard providerReady else { return nil }
+        return ["running","paused","blocked","failed"].contains(runStatus ?? "") ? "resume" : "start"
+    }
 }
 
 struct PlanRecordDetail {

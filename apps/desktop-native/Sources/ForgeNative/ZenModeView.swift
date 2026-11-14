@@ -243,19 +243,13 @@ struct ZenWorkspacePane: View {
         }
     }
 
-    // Presentation-only action derived from the existing Autopilot status owner.
-    // A persisted "running" run without an active loop is recovered by resume, not start.
     static func executionOperation(status:AutopilotStatusDetail?,outcomeUnknown:Bool) -> String? {
-        guard !outcomeUnknown,let status else { return nil }
-        if !status.authorized || status.requiresReapproval { return "authorize" }
-        if status.runtimeActive { return "pause" }
-        guard status.providerReady else { return nil }
-        return ["running","paused","blocked","failed"].contains(status.runStatus ?? "") ? "resume" : "start"
+        status?.nextExecutionOperation(outcomeUnknown:outcomeUnknown)
     }
 
-    static func executionLabel(operation:String,runStatus:String?) -> String {
+    static func executionLabel(operation:String,runStatus:String?,needsBudgetRenewal:Bool=false) -> String {
         switch operation {
-        case "authorize": return "批准执行"
+        case "authorize": return needsBudgetRenewal ? "续期预算" : "批准执行"
         case "pause": return "暂停执行"
         case "resume": return runStatus == "running" ? "恢复执行" : "继续执行"
         default: return "开始执行"
@@ -1147,7 +1141,8 @@ struct ZenWorkspacePane: View {
                     ) {
                         Button(Self.executionLabel(
                             operation:operation,
-                            runStatus:model.planningAutopilotStatuses[item.recordId]?.runStatus
+                            runStatus:model.planningAutopilotStatuses[item.recordId]?.runStatus,
+                            needsBudgetRenewal:model.planningAutopilotStatuses[item.recordId]?.needsBudgetRenewal == true
                         )) {
                             handleNodeAction(item,operation == "authorize" ? .executionSettings : .toggleExecution)
                         }
@@ -1307,7 +1302,10 @@ private struct ZenTreeCanvas: View {
                          status:status,outcomeUnknown:executionOutcomeUnknown
                        ) {
                         Button(
-                            ZenWorkspacePane.executionLabel(operation:operation,runStatus:status.runStatus),
+                            ZenWorkspacePane.executionLabel(
+                                operation:operation,runStatus:status.runStatus,
+                                needsBudgetRenewal:status.needsBudgetRenewal
+                            ),
                             systemImage:operation == "authorize" ? "lock.open" :
                                 (operation == "pause" ? "pause" : "play")
                         ) {

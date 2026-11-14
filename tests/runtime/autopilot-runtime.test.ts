@@ -733,6 +733,7 @@ describe('Requirement Autopilot',() => {
       toolCalls: usage.toolCalls,
     });
     expect(refreshed.status).toBe('paused');
+    expect(refreshed.stopReason).toBeUndefined();
 
     resumeAutopilot({
       controllerHome:fx.controllerHome,
@@ -790,6 +791,8 @@ describe('Requirement Autopilot',() => {
     expect(refreshed.grantId).toBe(second.grant.grantId);
     expect(refreshed.budgetBaseline).toEqual({totalTokens:625_000,turns:61,toolCalls:151});
     expect(refreshed.usage.totalTokens).toBe(625_000);
+    expect(refreshed.status).toBe('paused');
+    expect(refreshed.stopReason).toBeUndefined();
 
     resumeAutopilot({
       controllerHome:fx.controllerHome,
