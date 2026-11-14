@@ -468,6 +468,29 @@ describe('browser session compatibility on Computer target authority', () => {
     const second = await executeBrowserPluginAction({ ...baseInput, actionId: 'list_sessions', args: { limit: 2, cursor: first.nextCursor } });
     expect((second.sessions as Array<{ sessionId: string }>).map((entry) => entry.sessionId)).toEqual(['one']);
 
+    const computerList = await executeBrowserPluginAction({
+      ...baseInput,
+      pluginId: 'computer',
+      requestId: 'computer-authority-native-list',
+      actionId: 'list_sessions',
+      args: {},
+    });
+    expect(computerList).toMatchObject({
+      provider: 'macos-apple-events',
+      sessionCountSemantics: 'controller_authority',
+      scannedSessionCount: 3,
+      savedSessionCount: 1,
+      liveManagedSessionCount: 0,
+      liveNativeSessionCount: 0,
+      unverifiedSessionCount: 1,
+      deadManagedSessionCount: 0,
+      deadNativeSessionCount: 0,
+      totalCount: 1,
+    });
+    expect((computerList.sessions as Array<{ sessionId: string }>).map((entry) => entry.sessionId)).toEqual(['three']);
+    expect((computerList.sessions as Array<{ liveness: string; livenessEvidence: string }>)[0])
+      .toMatchObject({ liveness: 'unverified', livenessEvidence: 'liveness_not_checked' });
+
     const auth = await resolveBrowserPluginAuthorizationContext({
       ...baseInput,
       actionId: 'click',

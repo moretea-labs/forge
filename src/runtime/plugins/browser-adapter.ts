@@ -4185,13 +4185,13 @@ async function executeBrowserPluginActionInternal(
         const page = visibleSessions.slice(offset, offset + requestedLimit);
         const nextOffset = offset + page.length;
         return {
-          provider: 'playwright',
+          provider: input.pluginId === 'computer' ? 'macos-apple-events' : 'playwright',
           sessionCountSemantics: currentRuntimeBrowserSessionExecutionContext() ? 'controller_authority' : 'saved_metadata',
           scannedSessionCount: saved.length,
-          savedSessionCount: saved.length,
+          savedSessionCount: visibleSessions.length,
           liveManagedSessionCount: 0,
           liveNativeSessionCount: 0,
-          unverifiedSessionCount: saved.length,
+          unverifiedSessionCount: visibleSessions.length,
           deadManagedSessionCount: 0,
           deadNativeSessionCount: 0,
           limit: requestedLimit,
