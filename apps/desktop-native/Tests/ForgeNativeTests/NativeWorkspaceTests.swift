@@ -1400,6 +1400,39 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testAgentComposerDraftBelongsToConversationAndSurvivesRestart() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let model = NativeWorkspace(store: store)
+        let first = try XCTUnwrap(model.selectedThreadId)
+
+        model.draft = "First conversation, unsent"
+        model.newThread()
+        let second = try XCTUnwrap(model.selectedThreadId)
+        XCTAssertEqual(model.draft, "")
+        model.draft = "Second conversation, unsent"
+        model.selectThread(first)
+        XCTAssertEqual(model.draft, "First conversation, unsent")
+        model.selectThread(second)
+        XCTAssertEqual(model.draft, "Second conversation, unsent")
+
+        // The existing atomic conversation store also preserves drafts after restart.
+        try await Task.sleep(for: .milliseconds(650))
+        let restored = NativeWorkspace(store: store)
+        restored.selectThread(first)
+        XCTAssertEqual(restored.draft, "First conversation, unsent")
+        restored.selectThread(second)
+        XCTAssertEqual(restored.draft, "Second conversation, unsent")
+
+        restored.draft = ""
+        try await Task.sleep(for: .milliseconds(650))
+        let afterClearing = NativeWorkspace(store: store)
+        afterClearing.selectThread(second)
+        XCTAssertEqual(afterClearing.draft, "")
+    }
+
+    @MainActor
     func testThreadRenamePersistsWithoutChangingConversationBinding() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = folder.appendingPathComponent("conversations.json")

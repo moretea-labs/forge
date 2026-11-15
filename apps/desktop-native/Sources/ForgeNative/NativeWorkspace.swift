@@ -146,6 +146,8 @@ struct ChatThread: Codable, Identifiable {
     var model: String?
     var reasoningEffort: String?
     var messages: [ChatMessage] = []
+    // The unfinished composer belongs to this conversation, not the workspace.
+    var pendingDraft: String? = nil
     var updatedAt = Date()
 }
 enum SemanticRecordKind: String {
@@ -628,7 +630,24 @@ final class NativeWorkspace: ObservableObject {
     @Published var threads: [ChatThread] = []
     @Published var selectedThreadId: String?
     @Published private(set) var conversationScrollRequest: ConversationScrollRequest?
-    @Published var draft = ""
+    // Read/write through the selected ChatThread: one owner for both the
+    // visible composer and its persisted draft across conversation switches.
+    var draft: String {
+        get { thread?.pendingDraft ?? "" }
+        set {
+            guard let index = threads.firstIndex(where: { $0.id == selectedThreadId }) else { return }
+            let value = newValue.isEmpty ? nil : newValue
+            guard threads[index].pendingDraft != value else { return }
+            threads[index].pendingDraft = value
+            draftSaveTask?.cancel()
+            draftSaveTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(400))
+                guard !Task.isCancelled else { return }
+                self?.persist()
+            }
+        }
+    }
+    private var draftSaveTask: Task<Void, Never>?
     @Published var search = ""
     @Published var showSearch = false
     @Published var userRequests: [UserRequestDetail] = []
@@ -993,7 +1012,6 @@ final class NativeWorkspace: ObservableObject {
             messageId: targetMessageId
         )
         selectedThreadId = item.id
-        draft = ""
         pendingImageURLs = []
         pendingContextPaths = []
         invalidateAgentChangesRequests(clearSnapshot:contextChanged || refreshProjectContext)
