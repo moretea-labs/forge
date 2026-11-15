@@ -20,6 +20,7 @@ struct ZenReadOnlyReviewPane: View {
     @State private var error: String?
     @State private var reviewing: String?
     @State private var activeTurn: ForgeApiTurn?
+    @State private var reviewGeneration = UUID()
 
     var body: some View {
         VStack(alignment:.leading,spacing:12) {
@@ -46,13 +47,13 @@ struct ZenReadOnlyReviewPane: View {
                     .textSelection(.enabled)
             }
             if reviewing != nil {
-                Button("取消审查") { activeTurn?.cancel() }
+                Button("取消审查") { cancelReview() }
                     .buttonStyle(.bordered)
             }
         }
         .frame(maxWidth:.infinity,alignment:.leading)
         .task(id:record.id + providers.joined(separator:"|")) { await run() }
-        .onDisappear { activeTurn?.cancel() }
+        .onDisappear { cancelReview() }
         .accessibilityIdentifier("zen.review.readonly.results")
     }
 
@@ -93,7 +94,21 @@ struct ZenReadOnlyReviewPane: View {
         return text
     }
 
+    private func cancelReview() {
+        reviewGeneration = UUID()
+        activeTurn?.cancel()
+        activeTurn = nil
+        reviewing = nil
+    }
+
     private func run() async {
+        let generation = UUID()
+        reviewGeneration = generation
+        activeTurn?.cancel()
+        activeTurn = nil
+        outputs = []
+        error = nil
+        reviewing = nil
         guard let repoId=model.repoId,let checkoutId=model.checkoutId,
               providers.count >= 1,providers.count <= 2,
               Set(providers).count == providers.count else {
@@ -112,7 +127,7 @@ struct ZenReadOnlyReviewPane: View {
             )
 
             for provider in providers {
-                if Task.isCancelled { return }
+                if Task.isCancelled || reviewGeneration != generation { return }
                 guard model.repoId == repoId,model.checkoutId == checkoutId else {
                     throw ForgeBridgeError.remote("项目已切换，停止审查。")
                 }
@@ -125,6 +140,7 @@ struct ZenReadOnlyReviewPane: View {
                 } else {
                     throw ForgeBridgeError.remote("Provider 已失效或未配置只读 API 通道：\(provider)")
                 }
+                guard reviewGeneration == generation else { return }
                 reviewing="\(name) 审查中"
                 let prompt="""
                 请作为\(role)提供独立审查意见。关注：\(focus)。
@@ -139,10 +155,15 @@ struct ZenReadOnlyReviewPane: View {
                     conversationId:conversationId,repoId:repoId,checkoutId:checkoutId,
                     provider:provider,model:name,prompt:prompt
                 ))
+                guard reviewGeneration == generation, !Task.isCancelled else {
+                    turn.cancel()
+                    return
+                }
                 activeTurn=turn
                 let result=try await turn.wait { _ in }
+                guard reviewGeneration == generation, !Task.isCancelled else { return }
                 activeTurn=nil
-                guard !Task.isCancelled,model.repoId == repoId,
+                guard model.repoId == repoId,
                       model.checkoutId == checkoutId else { return }
                 guard let output=result["output"] as? String,
                       !output.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else {
@@ -151,8 +172,10 @@ struct ZenReadOnlyReviewPane: View {
                 outputs.append(ReviewOutput(provider:provider,model:name,response:output))
             }
         } catch {
+            guard reviewGeneration == generation, !Task.isCancelled else { return }
             self.error="审查未全部完成：\(error.localizedDescription)"
         }
+        guard reviewGeneration == generation else { return }
         reviewing=nil
         activeTurn=nil
     }
