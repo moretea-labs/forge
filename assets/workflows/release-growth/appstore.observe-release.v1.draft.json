@@ -181,4 +181,12 @@
       "runtime": "node",
       "deterministic": true,
       "outputFormat": "json",
-      "body": "const a=JSON.parse(process.argv[1]||'{}');const rows=a.data;if(!Array.isArray(rows)||!a.links||typeof a.links!=='object'){process.stderr.write('CN_TERRITORY_DATA_MISSING');process.exit(2)}if(a.links.next){process.stderr.write('CN_TERRITORY_PAGINATION_INCOMPLETE');process.exit(3)}const matches=rows.filter(r=>r?.relationships?.territory?.data?.id==='CHN');if(matches.length!==1){process.stderr.write('CN_TERRITORY_ROW_NOT_UNIQUE');process.exit(4)}const attrs=matches[0]?.attributes||{};const ava...
+      "body": "const a=JSON.parse(process.argv[1]||'{}');const rows=a.data;if(!Array.isArray(rows)||!a.links||typeof a.links!=='object'){process.stderr.write('CN_TERRITORY_DATA_MISSING');process.exit(2)}if(a.links.next){process.stderr.write('CN_TERRITORY_PAGINATION_INCOMPLETE');process.exit(3)}const matches=rows.filter(r=>r?.relationships?.territory?.data?.id==='CHN');if(matches.length!==1){process.stderr.write('CN_TERRITORY_ROW_NOT_UNIQUE');process.exit(4)}const attrs=matches[0]?.attributes||{};const available=typeof attrs.available==='boolean'?attrs.available:null;const statuses=Array.isArray(attrs.contentStatuses)?attrs.contentStatuses.filter(x=>typeof x==='string'):[];let status='unknown';if(available===false)status='not_available';else if(available===true&&statuses.includes('ICP_NUMBER_MISSING'))status='icp_missing';else if(available===true&&statuses.includes('AVAILABLE'))status='available';process.stdout.write(JSON.stringify({territory:'CHN',status,available,content_statuses:statuses,release_date:attrs.releaseDate??null}));"
+    }
+  },
+  "resources": {
+    "territory": "CHN",
+    "providerPrerequisite": "Requires the existing app_store_connect.list_app_territory_availabilities read action from #643. Do not fall back to Browser UI when the typed action is unavailable.",
+    "policy": "After official version and CHN classification, decideNextAction selects one deterministic next step; release/ICP unknowns require reconciliation, and real CN downloads always need independent proof. appStoreState=READY_FOR_SALE confirms store release; appVersionState=READY_FOR_DISTRIBUTION alone does not. downloadable=true is not China availability. CN is available only when exactly one CHN row is present, no next page exists, available=true and contentStatuses includes AVAILABLE. ICP_NUMBER_MISSING is a hard block. A MANUAL version in PENDING_DEVELOPER_RELEASE remains manual_release_required until an official ASC release action is available. Never claim actual download without public CN name search, visible detail page and actual device download evidence."
+  }
+}
