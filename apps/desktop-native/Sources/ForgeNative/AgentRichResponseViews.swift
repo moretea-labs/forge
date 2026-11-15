@@ -2,6 +2,67 @@ import SwiftUI
 import AppKit
 import ImageIO
 
+struct AgentLocalImagePreview: View {
+    let path: String
+    let accessibilityLabel: String
+    var width: CGFloat? = nil
+    var height: CGFloat? = nil
+    var maxWidth: CGFloat = 500
+    var maxHeight: CGFloat = 300
+    @State private var previewLoading = false
+    @State private var previewError: String?
+    @State private var previewImage: NSImage?
+    @State private var previewSource: String?
+
+    var body: some View {
+        Group {
+            if let previewImage, imagePreviewMatchesSource(previewSource, currentSource: path) {
+                Image(nsImage: previewImage).resizable().scaledToFit()
+            } else if previewLoading || (previewError == nil && !imagePreviewMatchesSource(previewSource, currentSource: path)) {
+                ProgressView().controlSize(.small)
+            } else if let previewError {
+                Label("图片预览失败", systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .help(previewError)
+            }
+        }
+        .frame(width: width, height: height)
+        .frame(maxWidth: maxWidth, maxHeight: maxHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityLabel(accessibilityLabel)
+        .task(id: path) {
+            previewImage = nil
+            previewSource = nil
+            previewError = nil
+            guard FileManager.default.fileExists(atPath: path) else {
+                previewError = "原图已移动或删除"
+                previewLoading = false
+                return
+            }
+            previewLoading = true
+            defer { if !Task.isCancelled { previewLoading = false } }
+            do {
+                try Task.checkCancellation()
+                guard let thumbnail = try await makeLocalImageThumbnail(at: path) else {
+                    previewError = "原图无法解码或格式不受支持"
+                    return
+                }
+                try Task.checkCancellation()
+                previewImage = NSImage(
+                    cgImage: thumbnail,
+                    size: NSSize(width: thumbnail.width, height: thumbnail.height)
+                )
+                previewSource = path
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                previewError = error.localizedDescription
+            }
+        }
+    }
+}
+
 /// Declarative assistant content: links and choices are user-driven; model
 /// text never gets an implicit command-execution capability.
 struct AgentAssistantMessageBody: View {

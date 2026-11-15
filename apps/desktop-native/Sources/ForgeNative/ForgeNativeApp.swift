@@ -1538,6 +1538,31 @@ private struct AgentPane: View {
                                                 .foregroundStyle(ForgePalette.secondary)
                                                 .lineLimit(1)
                                         }
+                                        if let imagePaths = message.attachmentPaths, !imagePaths.isEmpty {
+                                            HStack(alignment:.center,spacing:8) {
+                                                ForEach(Array(imagePaths.enumerated()),id:\.offset) { index,path in
+                                                    let name = URL(fileURLWithPath:path).lastPathComponent
+                                                    Button {
+                                                        NSWorkspace.shared.open(URL(fileURLWithPath:path))
+                                                    } label: {
+                                                        AgentLocalImagePreview(
+                                                            path:path,
+                                                            accessibilityLabel:"图片附件：\(name)",
+                                                            width:82,
+                                                            height:82,
+                                                            maxWidth:82,
+                                                            maxHeight:82
+                                                        )
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                    .help("打开图片：\(name)")
+                                                    .accessibilityLabel("打开图片附件：\(name)")
+                                                    .accessibilityHint("使用 macOS 默认应用打开原图")
+                                                    .accessibilityIdentifier("agent.message.\(message.id).attachment.\(index)")
+                                                    .disabled(!FileManager.default.fileExists(atPath:path))
+                                                }
+                                            }
+                                        }
                                         if let attachments = message.attachmentNames, !attachments.isEmpty {
                                             Label(attachments.joined(separator:" · "),systemImage:"photo")
                                                 .font(.system(size:10.5,weight:.medium))

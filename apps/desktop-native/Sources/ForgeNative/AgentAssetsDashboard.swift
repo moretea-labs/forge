@@ -221,10 +221,6 @@ private struct AgentLocalImageResourceView: View {
     @State private var revealed = false
     @State private var status: String?
     @State private var isSaving = false
-    @State private var previewLoading = false
-    @State private var previewError: String?
-    @State private var previewImage: NSImage?
-    @State private var previewSource: String?
 
     private var exists: Bool {
         FileManager.default.fileExists(atPath: path)
@@ -250,57 +246,21 @@ private struct AgentLocalImageResourceView: View {
                 .accessibilityIdentifier("\(accessibilityIdentifierPrefix).finder")
                 .disabled(!exists)
                 Button(isSaving ? "保存中…" : "另存为…") { save() }
-                    .disabled(!exists || previewLoading || isSaving)
+                    .disabled(!exists || isSaving)
                     .accessibilityIdentifier("\(accessibilityIdentifierPrefix).save")
             }
             .buttonStyle(.plain)
             .font(.system(size: 11))
             if revealed {
-                if let previewImage, exists, imagePreviewMatchesSource(previewSource, currentSource: path) {
-                    Image(nsImage: previewImage)
-                        .resizable().scaledToFit().frame(maxWidth: 500, maxHeight: 300)
-                        .accessibilityLabel("本地图片：\(URL(fileURLWithPath: path).lastPathComponent)")
-                } else if previewLoading || (previewError == nil && exists && !imagePreviewMatchesSource(previewSource, currentSource: path)) {
-                    ProgressView().frame(height: 80)
-                } else if let previewError {
-                    Label("图片预览失败", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.secondary)
-                        .help(previewError)
-                }
+                AgentLocalImagePreview(
+                    path: path,
+                    accessibilityLabel: "本地图片：\(URL(fileURLWithPath: path).lastPathComponent)",
+                    maxWidth: 500,
+                    maxHeight: 300
+                )
             }
             if let status {
                 Text(status).font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-        }
-        .task(id: revealed ? path : nil) {
-            guard revealed, exists else {
-                previewImage = nil
-                previewSource = nil
-                previewError = nil
-                previewLoading = false
-                return
-            }
-            previewSource = nil
-            previewLoading = true
-            previewError = nil
-            defer { if !Task.isCancelled { previewLoading = false } }
-            do {
-                try Task.checkCancellation()
-                guard let thumbnail = try await makeLocalImageThumbnail(at: path) else {
-                    previewError = "原图无法解码或格式不受支持"
-                    return
-                }
-                try Task.checkCancellation()
-                previewImage = NSImage(
-                    cgImage: thumbnail,
-                    size: NSSize(width: thumbnail.width, height: thumbnail.height)
-                )
-                previewSource = path
-            } catch is CancellationError {
-                return
-            } catch {
-                guard !Task.isCancelled else { return }
-                previewError = error.localizedDescription
             }
         }
     }
