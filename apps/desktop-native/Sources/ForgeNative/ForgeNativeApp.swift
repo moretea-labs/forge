@@ -818,6 +818,12 @@ private struct ForgeWorkspaceView: View {
             } label: {
                 Label("重命名",systemImage:"pencil")
             }
+            Button {
+                copyAgentText(thread.markdownTranscript)
+            } label: {
+                Label("复制会话为 Markdown",systemImage:"doc.on.doc")
+            }
+            .disabled(thread.messages.isEmpty)
             Button("删除会话…",role:.destructive) { deleteThreadId = thread.id }
                 .disabled(running)
         }

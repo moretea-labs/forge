@@ -3,6 +3,23 @@ import AppKit
 @testable import ForgeNative
 
 final class NativeWorkspaceTests: XCTestCase {
+    func testAgentMarkdownTranscriptExportsMessagesWithoutLocalPathsOrDrafts() {
+        var thread = ChatThread(title:"Review Notes")
+        thread.pendingDraft = "Private unsent work"
+        thread.messages = [
+            ChatMessage(role:"user",text:"Check this",attachmentPaths:["/Users/example/secret/diagram.png"],contextPaths:["src/Main.swift"]),
+            ChatMessage(role:"assistant",text:"Needs another pass",incomplete:true)
+        ]
+        let markdown = thread.markdownTranscript
+        XCTAssertTrue(markdown.contains("# Review Notes"))
+        XCTAssertTrue(markdown.contains("## 用户\n\nCheck this"))
+        XCTAssertTrue(markdown.contains("附件：Main.swift、diagram.png"))
+        XCTAssertTrue(markdown.contains("## Agent\n\nNeeds another pass"))
+        XCTAssertTrue(markdown.contains("（回复未完成）"))
+        XCTAssertFalse(markdown.contains("Private unsent work"))
+        XCTAssertFalse(markdown.contains("/Users/example"))
+    }
+
     func testProjectListResponseDistinguishesValidEmptyFromMalformedPayloads() throws {
         XCTAssertTrue(try NativeWorkspace.decodeProjects(["repositories": [[String:Any]]()]).isEmpty)
         let projects = try NativeWorkspace.decodeProjects([

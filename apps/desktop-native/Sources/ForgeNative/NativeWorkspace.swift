@@ -155,6 +155,21 @@ struct ChatThread: Codable, Identifiable {
             || !(pendingImagePaths ?? []).isEmpty
             || !(pendingContextPaths ?? []).isEmpty
     }
+    var markdownTranscript: String {
+        var sections = ["# \(title)"]
+        for message in messages {
+            let speaker = message.role == "user" ? "用户" : message.role == "assistant" ? "Agent" : message.role
+            var section = "## \(speaker)\n\n\(message.text)"
+            let files = (message.contextPaths ?? []) + (message.attachmentPaths ?? [])
+            let names = (message.attachmentNames ?? []) + files.map { URL(fileURLWithPath:$0).lastPathComponent }
+            if !names.isEmpty {
+                section += "\n\n附件：" + names.joined(separator:"、")
+            }
+            if message.incomplete == true { section += "\n\n（回复未完成）" }
+            sections.append(section)
+        }
+        return sections.joined(separator:"\n\n") + "\n"
+    }
     var updatedAt = Date()
 }
 enum SemanticRecordKind: String {
