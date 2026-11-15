@@ -158,23 +158,28 @@ describe('GitHub Project items read-only projection', () => {
     expect(() => buildGitHubProjectItemListArgs('moretea-labs', 3, 101)).toThrow();
   });
 
-  test('keeps exact GitHub statuses and filters other repository items without synthesizing statuses', () => {
-    const result = parseGitHubProjectItems({
+  test('returns every Project repository by default and preserves bounded item metadata', () => {
+    const payload = {
       totalCount: 4,
       items: [
-        { id: 'a', title: 'Zen', status: 'In Progress', content: { number: 644, repository: 'moretea-labs/forge', url: 'https://github.com/moretea-labs/forge/issues/644' } },
-        { id: 'b', title: 'Other repo', status: 'Done', content: { number: 9, repository: 'someone/else' } },
+        { id: 'a', title: 'Zen', status: 'In Progress', assignees: ['greysonOuyang'], fieldValues: [{ name: 'Priority', value: 'P1' }], content: { type: 'Issue', number: 644, repository: 'moretea-labs/forge', url: 'https://github.com/moretea-labs/forge/issues/644', body: 'Acceptance details', labels: [{ name: 'P1' }] } },
+        { id: 'b', title: 'Other repo', status: 'Done', assignees: [], content: { type: 'Issue', number: 9, repository: 'someone/else', url: 'https://github.com/someone/else/issues/9', body: 'Other project task', labels: [{ name: 'P2' }] } },
         { id: 'c', title: 'Draft', status: 'Backlog' },
-        { id: 'd', title: 'No status', content: { number: 15, repository: 'moretea-labs/forge' } },
+        { id: 'd', title: 'No status', content: { type: 'Issue', number: 15, repository: 'moretea-labs/forge' } },
       ],
-    }, 'moretea-labs/forge', 4);
-    expect(result.items).toEqual([
-      { id: 'a', title: 'Zen', status: 'In Progress', number: 644,
+    };
+    const all = parseGitHubProjectItems(payload, undefined, 4);
+    expect(all.items).toEqual([
+      { id: 'a', title: 'Zen', status: 'In Progress', contentType: 'Issue', assignees: ['greysonOuyang'], labels: ['P1'], bodyLength: 18, bodyPreview: 'Acceptance details', projectFields: { Priority: 'P1' }, priority: 'P1', number: 644,
         repository: 'moretea-labs/forge', url: 'https://github.com/moretea-labs/forge/issues/644', isDraft: false },
-      { id: 'c', title: 'Draft', status: 'Backlog', isDraft: true },
-      { id: 'd', title: 'No status', status: 'Unassigned', number: 15, repository: 'moretea-labs/forge', isDraft: false },
+      { id: 'b', title: 'Other repo', status: 'Done', contentType: 'Issue', assignees: [], labels: ['P2'], bodyLength: 18, bodyPreview: 'Other project task', number: 9,
+        repository: 'someone/else', url: 'https://github.com/someone/else/issues/9', isDraft: false },
+      { id: 'c', title: 'Draft', status: 'Backlog', contentType: 'DraftIssue', assignees: [], labels: [], isDraft: true },
+      { id: 'd', title: 'No status', status: 'Unassigned', contentType: 'Issue', assignees: [], labels: [], number: 15, repository: 'moretea-labs/forge', isDraft: false },
     ]);
-    expect(result.truncated).toBe(false);
+    expect(all.truncated).toBe(false);
+    const forgeOnly = parseGitHubProjectItems(payload, 'moretea-labs/forge', 4);
+    expect(forgeOnly.items.map((item) => item.id)).toEqual(['a', 'c', 'd']);
   });
 
   test('rejects untrusted/project shape and boundedly signals truncation', () => {

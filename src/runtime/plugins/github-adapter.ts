@@ -177,7 +177,7 @@ function githubActions(projectConfigured: boolean): AssistantPluginActionDescrip
     {
       actionId: 'list_project_items',
       title: 'Read GitHub Project items',
-      description: 'Read-only GitHub Project item status projection, using Repository Registry project configuration.',
+      description: 'Read-only GitHub Project inventory across all repositories; optional repository filter.',
       readOnly: true,
       risk: 'readonly',
       confirmation: 'none',
@@ -190,6 +190,7 @@ function githubActions(projectConfigured: boolean): AssistantPluginActionDescrip
         type: 'object',
         properties: {
           limit: { type: 'number', minimum: 1, maximum: 100 },
+          repository: { type: 'string', maxLength: 160, description: 'Optional repository filter; omitted returns items from every repository in the Project.' },
         },
         additionalProperties: false,
       },
@@ -391,15 +392,13 @@ export async function executeGitHubPluginAction(input: AssistantPluginActionExec
       if (!config.projectOwner || !config.projectNumber) {
         return { configured: false, items: [], truncated: false };
       }
-      if (!config.repository) {
-        return { configured: false, items: [], truncated: false };
-      }
       const limit = typeof input.args.limit === 'number' ? input.args.limit : 100;
+      const repositoryFilter = typeof input.args.repository === 'string' ? input.args.repository : undefined;
       return {
         configured: true,
         owner: config.projectOwner,
         projectNumber: config.projectNumber,
-        ...readGitHubProjectItems(input.repoRoot, config.repository, config.projectOwner, config.projectNumber, limit),
+        ...readGitHubProjectItems(input.repoRoot, config.projectOwner, config.projectNumber, limit, repositoryFilter),
       };
     }
     case 'list_workflows': {
