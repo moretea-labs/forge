@@ -8,13 +8,19 @@ final class NativeWorkspaceTests: XCTestCase {
         thread.pendingDraft = "Private unsent work"
         thread.messages = [
             ChatMessage(role:"user",text:"Check this",attachmentPaths:["/Users/example/secret/diagram.png"],contextPaths:["src/Main.swift"]),
-            ChatMessage(role:"assistant",text:"Needs another pass",incomplete:true)
+            ChatMessage(role:"assistant",text:"Needs another pass",activityEvents:[
+                AgentLiveActivityEvent(phase:"tool",label:"apply_patch",detail:"Updated settings",status:"completed",startedAt:"2026-11-16T00:00:00Z",completedAt:nil,toolCallId:"tool-a"),
+                AgentLiveActivityEvent(phase:"tool",label:"swift test",detail:"One test failed",status:"failed",startedAt:"2026-11-16T00:01:00Z",completedAt:nil,toolCallId:"tool-b")
+            ],incomplete:true)
         ]
         let markdown = thread.markdownTranscript
         XCTAssertTrue(markdown.contains("# Review Notes"))
         XCTAssertTrue(markdown.contains("## 用户\n\nCheck this"))
         XCTAssertTrue(markdown.contains("附件：Main.swift、diagram.png"))
         XCTAssertTrue(markdown.contains("## Agent\n\nNeeds another pass"))
+        XCTAssertTrue(markdown.contains("### 执行记录"))
+        XCTAssertTrue(markdown.contains("[completed] apply_patch — Updated settings"))
+        XCTAssertTrue(markdown.contains("[failed] swift test — One test failed"))
         XCTAssertTrue(markdown.contains("（回复未完成）"))
         XCTAssertFalse(markdown.contains("Private unsent work"))
         XCTAssertFalse(markdown.contains("/Users/example"))

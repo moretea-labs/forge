@@ -165,6 +165,13 @@ struct ChatThread: Codable, Identifiable {
             if !names.isEmpty {
                 section += "\n\n附件：" + names.joined(separator:"、")
             }
+            if let events=message.activityEvents, !events.isEmpty {
+                section += "\n\n### 执行记录"
+                for event in events {
+                    section += "\n- [\(event.status)] \(event.label)"
+                    if let detail=event.detail, !detail.isEmpty { section += " — \(detail)" }
+                }
+            }
             if message.incomplete == true { section += "\n\n（回复未完成）" }
             sections.append(section)
         }
