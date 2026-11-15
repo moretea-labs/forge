@@ -1,5 +1,6 @@
 import {
   listAllControlPlaneRecordsWithinTransaction,
+  listControlPlaneAuditEvents,
   listControlPlaneRecords,
   listControlPlaneRecordsWithinTransaction,
   readControlPlaneRecord,
@@ -367,6 +368,16 @@ export function listRequirementRevisionRecords(
       legacyAliases: [...(record.legacyAliases ?? [])],
     }))
     .sort((left, right) => right.revision - left.revision);
+}
+
+export function listRequirementActivityEvents(
+  options: RequirementStoreOptions,
+  requirementId: string,
+  limit = 20,
+) {
+  return listControlPlaneAuditEvents(options.controllerHome, {
+    namespace: NAMESPACE, scope: SCOPE, key: id(requirementId), limit,
+  });
 }
 
 export function reviseRequirementSemantic(

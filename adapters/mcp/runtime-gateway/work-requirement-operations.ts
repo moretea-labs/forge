@@ -1,7 +1,7 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { admitRequirement, blockingRequirementIds, listRequirementsForProject, listRequirementsForRepository, promoteRequirementCandidate } from '../../../src/runtime/control-plane/facade/requirement-authority';
-import { listRequirementRevisionRecords, listRequirements, readRequirement, requirementSemanticView, reviseRequirementSemantic, REQUIREMENT_PRIORITIES, REQUIREMENT_STATES, type RequirementPriority, type RequirementState } from '../../../src/runtime/control-plane/persistence/requirement-store';
+import { listRequirementActivityEvents, listRequirementRevisionRecords, listRequirements, readRequirement, requirementSemanticView, reviseRequirementSemantic, REQUIREMENT_PRIORITIES, REQUIREMENT_STATES, type RequirementPriority, type RequirementState } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import { readForgeInstanceIdentity } from '../../../packages/kernel/identity/api/index';
 import { listAllProjectIdentities, listProjectPlacements, resolveProjectForRepositoryPlacement } from '../../../src/runtime/control-plane/workspace/workspace-store';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
@@ -233,9 +233,24 @@ export async function callRhWorkRequirementOperation(
           })
           .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.planId.localeCompare(right.planId))
       : undefined;
-    const revisionHistory = args.detail_level === 'detail'
-      ? listRequirementRevisionRecords({ controllerHome: ctx.controllerHome }, requirementId, 20)
+    const revisionRecords = args.detail_level === 'detail'
+      ? listRequirementRevisionRecords({ controllerHome: ctx.controllerHome }, requirementId, 21)
       : undefined;
+    const revisionHistory = revisionRecords?.slice(0, 20);
+    const activityEvents = args.detail_level === 'detail'
+      ? listRequirementActivityEvents({ controllerHome: ctx.controllerHome }, requirementId, 21)
+      : undefined;
+    const revisionByNumber = new Map((revisionRecords ?? []).map((revision) => [revision.revision, revision]));
+    const activityHistory = activityEvents?.slice(0, 20).map((event) => {
+      const snapshot = event.revision === semantic.revision ? semantic : revisionByNumber.get(event.revision);
+      return {
+        eventId: event.eventId, revision: event.revision, action: event.action, occurredAt: event.occurredAt,
+        ...(snapshot ? {
+          status: snapshot.status, priority: snapshot.priority, assignee: snapshot.assignee,
+          title: snapshot.title, progressSummary: snapshot.progressSummary,
+        } : {}),
+      };
+    });
     const dependencyRequirements = args.detail_level === 'detail'
       ? semantic.dependsOnRequirementIds.map((dependencyId) => {
           const dependency = readRequirement({ controllerHome: ctx.controllerHome }, dependencyId)?.value;
@@ -257,6 +272,7 @@ export async function callRhWorkRequirementOperation(
       data: {
         requirement: { ...semantic, blockingDependencyIds: blockingDependencies, ...(projectId || requestedProjectId ? { projectId: projectId ?? requestedProjectId } : {}) },
         ...(revisionHistory ? { revisionHistory } : {}),
+        ...(activityHistory ? { activityHistory, activityHistoryTruncated: (activityEvents?.length ?? 0) > 20 } : {}),
         ...(dependencyRequirements ? { dependencyRequirements } : {}),
         ...(relatedPlans ? { relatedPlans: relatedPlans.slice(0, 20), relatedPlanCount: relatedPlans.length,
           relatedPlansTruncated: relatedPlans.length > 20, planDetailOperation: 'plan_get' } : {}),

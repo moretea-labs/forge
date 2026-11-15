@@ -423,6 +423,11 @@ describe('rh_work Project operations', () => {
       requirementId: 'REQ-PROJECT-B-TASK', title: 'Project B task', status: 'waiting_for_user', priority: 'urgent', assignee: 'bob', repoId: repositoryB.repoId,
     }]);
     expect(taskDetailAfterRestart.data.revisionHistory).toMatchObject([{ revision: 1, status: 'active', priority: 'high', assignee: 'alice', dependsOnRequirementIds: [] }]);
+    expect(taskDetailAfterRestart.data.activityHistory).toMatchObject([
+      { revision: 2, action: 'requirement_semantic_revised', status: 'active', priority: 'high', assignee: 'alice' },
+      { revision: 1, action: 'requirement_created', status: 'active', priority: 'high', assignee: 'alice' },
+    ]);
+    expect(taskDetailAfterRestart.data.activityHistoryTruncated).toBe(false);
     const revisedAfterRun = structured(await callRuntimeTool(context(controllerHome, repositoryAAfterRestart as ReturnType<typeof registerRepository>), 'rh_work', {
       operation: 'requirement_revise', requirement_id: 'REQ-PROJECT-A-TASK', expected_revision: 2,
       requirement_progress_summary: 'Requirement changed after Run authorization; review the new revision.',
@@ -433,6 +438,10 @@ describe('rh_work Project operations', () => {
     }));
     expect(staleRunDetail.data.autopilotRun).toMatchObject({
       requirementRevision: 2, requiresReapproval: true, status: 'paused',
+    });
+    expect(staleRunDetail.data.activityHistory[0]).toMatchObject({
+      revision: 3, action: 'requirement_semantic_revised',
+      status: 'active', progressSummary: 'Requirement changed after Run authorization; review the new revision.',
     });
     const restoredRepositoryTask = structured(await callRuntimeTool(context(controllerHome, repositoryA), 'rh_work', {
       operation: 'requirement_create', requirement_id: 'REQ-ARCHIVED-REPOSITORY-PROJECT',
