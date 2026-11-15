@@ -3726,14 +3726,14 @@ final class NativeWorkspace: ObservableObject {
         if let last = thread.messages.last, last.role == "assistant",
            last.incomplete == true {
             let toolEvents = (last.activityEvents ?? []).filter { $0.phase == "tool" }
-            if !toolEvents.isEmpty || (last.toolActivityCount ?? 0) > 0 {
+            if !toolEvents.isEmpty || (last.toolActivityCount.map { $0 > 0 } ?? true) {
                 let receiptWindow = Array(toolEvents.suffix(40))
                 let coverage: String
                 if let reportedCount = last.toolActivityCount {
                     coverage = "Runtime reported \(reportedCount) tool calls; \(toolEvents.count) per-call receipts are retained."
                         + (reportedCount == toolEvents.count ? " Coverage matches." : " Coverage mismatch; some tool outcomes are unverified.")
                 } else {
-                    coverage = "\(toolEvents.count) per-call receipts are retained; aggregate tool-call count is unavailable."
+                    coverage = "Runtime aggregate tool-call count is unavailable; \(toolEvents.count) per-call receipts are retained. Coverage cannot be verified."
                 }
                 let receiptLines = receiptWindow.map { event in
                     "- \(String(event.label.prefix(64))) · \(event.status)"
@@ -3784,11 +3784,13 @@ final class NativeWorkspace: ObservableObject {
         // A tool with no confirmed successful terminal receipt must not be
         // silently reissued by the one-click continuation affordance.
         let toolEvents = (message.activityEvents ?? []).filter { $0.phase == "tool" }
+        let receiptCoverageUnverified = message.toolActivityCount.map {
+            $0 != toolEvents.count
+        } ?? true
         return toolEvents.contains { $0.status != "completed" }
             || message.text.contains("Process ID:")
-            // The aggregate count is the Runtime's total tool-call count. If it
-            // disagrees with the per-call receipts, at least one outcome is unverified.
-            || (message.toolActivityCount.map { $0 != toolEvents.count } ?? false)
+            // A missing aggregate count is not proof that the turn made zero tool calls.
+            || receiptCoverageUnverified
     }
 
     nonisolated static func apiActivityEvents(_ raw: Any?) -> [AgentLiveActivityEvent]? {

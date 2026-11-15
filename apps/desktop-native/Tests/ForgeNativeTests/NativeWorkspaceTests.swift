@@ -398,7 +398,7 @@ final class NativeWorkspaceTests: XCTestCase {
             ChatMessage(role:"assistant",text:"工具结果需要核对",incomplete:true),
             ChatMessage(role:"user",text:"continue after inspecting the changes"),
             ChatMessage(role:"assistant",text:"Checked the current repository status."),
-            ChatMessage(role:"assistant",text:"partial output",incomplete:true)
+            ChatMessage(role:"assistant",text:"partial output",toolActivityCount:0,incomplete:true)
         ]
         let messages = NativeWorkspace.apiTurnMessages(
             thread,prompt:"finish verification",contextPaths:[]
@@ -431,6 +431,16 @@ final class NativeWorkspaceTests: XCTestCase {
         )))
         XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
             role:"assistant",text:"Process ID: proc_unknown",incomplete:true
+        )))
+        XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"Interrupted with no aggregate count or receipts",incomplete:true
+        )))
+        XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"Interrupted with only partial receipt metadata",
+            activityEvents:[success],incomplete:true
+        )))
+        XCTAssertFalse(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"Known zero tool calls",toolActivityCount:0,incomplete:true
         )))
         XCTAssertFalse(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
             role:"assistant",text:"Interrupted before the next step",
@@ -493,6 +503,16 @@ final class NativeWorkspaceTests: XCTestCase {
             thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
         )
         XCTAssertTrue(missing.last?["content"]?.contains("Runtime reported 1 tool calls; 0 per-call receipts are retained.") == true)
+
+        thread.messages[1] = ChatMessage(
+            role:"assistant",text:"Partial reply",incomplete:true
+        )
+        let unknownCoverage = NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
+        XCTAssertTrue(unknownCoverage.last?["content"]?.contains(
+            "Runtime aggregate tool-call count is unavailable; 0 per-call receipts are retained. Coverage cannot be verified."
+        ) == true)
     }
 
     func testRetryOfIncompleteTurnDoesNotDuplicateUserPromptInModelHistory() {
@@ -501,7 +521,7 @@ final class NativeWorkspaceTests: XCTestCase {
             ChatMessage(role:"user",text:"previous task"),
             ChatMessage(role:"assistant",text:"previous result"),
             ChatMessage(role:"user",text:"build the feature"),
-            ChatMessage(role:"assistant",text:"tool delivery unknown",incomplete:true)
+            ChatMessage(role:"assistant",text:"tool delivery unknown",toolActivityCount:0,incomplete:true)
         ]
         let retry = NativeWorkspace.apiTurnMessages(thread,prompt:"build the feature",contextPaths:[])
         XCTAssertEqual(retry.map { $0["role"] },["user","assistant","user"])
