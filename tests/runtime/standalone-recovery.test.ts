@@ -38,6 +38,7 @@ import {
   promoteConfiguredRuntimeReleaseSessionKnownGood,
   recoverPrimaryRuntime,
   recordWatchdogRuntimeHealthy,
+  managedPrimaryTransportNeedsConnectorRepair,
   repairPublicTunnel,
   restartPrimaryConnector,
   restartPrimaryRuntime,
@@ -3960,6 +3961,32 @@ describe('standalone recovery on canonical Runtime', () => {
       lastFullVerifyAt: Date.now(),
     });
     expect(tick.decision.action).toBe('restart_primary_connector');
+  });
+
+  test('does not restart a healthy Connector for an OpenAI Tunnel remote-control-plane-only incident', () => {
+    const locallyReady = {
+      alias: 'forge-current',
+      tunnelId: 'tunnel-primary',
+      healthy: true,
+      ready: true,
+      tunnelMatches: true,
+      endpointMatches: true,
+      controlPlaneState: 'unknown',
+    };
+    expect(managedPrimaryTransportNeedsConnectorRepair(true, {
+      ok: false, detail: 'remote status unavailable', value: locallyReady,
+    })).toBe(false);
+    expect(managedPrimaryTransportNeedsConnectorRepair(true, {
+      ok: false, detail: 'remote degraded', value: { ...locallyReady, controlPlaneState: 'degraded' },
+    })).toBe(false);
+    expect(managedPrimaryTransportNeedsConnectorRepair(true, {
+      ok: false, detail: 'local listener failed', value: { ...locallyReady, healthy: false },
+    })).toBe(true);
+    expect(managedPrimaryTransportNeedsConnectorRepair(true, {
+      ok: false, detail: 'tunnel identity changed', value: { ...locallyReady, tunnelMatches: false },
+    })).toBe(true);
+    expect(managedPrimaryTransportNeedsConnectorRepair(true, undefined)).toBe(true);
+    expect(managedPrimaryTransportNeedsConnectorRepair(false, undefined)).toBe(false);
   });
 
   test('keeps legacy Connector MCP transport failures fail-closed', async () => {
