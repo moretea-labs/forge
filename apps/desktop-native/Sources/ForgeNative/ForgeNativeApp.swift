@@ -1891,7 +1891,7 @@ private struct AgentPane: View {
                         .scrollContentBackground(.hidden)
                         .frame(minHeight:46,maxHeight:116)
                         .padding(.horizontal,10).padding(.top,7)
-                        .disabled(voiceDictation.isRecording)
+                        .disabled(voiceDictation.isRecording || voiceDictation.isStarting)
                         .accessibilityLabel("Agent 消息")
                         .accessibilityHint("输入任务描述，按 Command Return 发送")
                         .accessibilityIdentifier("agent.composer")
@@ -1961,26 +1961,65 @@ private struct AgentPane: View {
                             .lineLimit(1)
                             .help(issue)
                     }
-                    Button {
-                        if voiceDictation.isRecording || voiceDictation.isStarting {
+                    if voiceDictation.isRecording {
+                        Button {
                             voiceDictation.stop()
                             composerFocused = true
-                        } else {
+                        } label: {
+                            Label("完成",systemImage:"checkmark")
+                                .font(.system(size:10.5,weight:.medium))
+                                .foregroundStyle(ForgePalette.accent)
+                                .frame(height:30)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.busy)
+                        .help("完成语音输入并保留已识别文字")
+                        .accessibilityLabel("完成语音输入")
+                        .accessibilityHint("停止听写并保留已识别的文字")
+                        .accessibilityIdentifier("agent.voice.finish")
+
+                        Button { cancelVoiceDictation() } label: {
+                            Label("取消",systemImage:"xmark")
+                                .font(.system(size:10.5,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .frame(height:30)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.busy)
+                        .help("取消语音输入并恢复开始前的草稿")
+                        .accessibilityLabel("取消语音输入")
+                        .accessibilityHint("丢弃本次识别文字并恢复原草稿")
+                        .accessibilityIdentifier("agent.voice.cancel")
+                    } else if voiceDictation.isStarting {
+                        Button { cancelVoiceDictation() } label: {
+                            Label("取消",systemImage:"xmark")
+                                .font(.system(size:10.5,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .frame(height:30)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.busy)
+                        .help("取消语音输入并恢复开始前的草稿")
+                        .accessibilityLabel("取消语音输入")
+                        .accessibilityHint("取消权限请求，不会启动麦克风")
+                        .accessibilityIdentifier("agent.voice.cancel")
+                    } else {
+                        Button {
                             voiceBaseDraft = model.draft
                             Task { await voiceDictation.start() }
+                        } label: {
+                            Image(systemName:"mic")
+                                .font(.system(size:14,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .frame(width:30,height:30)
+                                .contentShape(Rectangle())
                         }
-                    } label: {
-                        Image(systemName:(voiceDictation.isRecording || voiceDictation.isStarting) ? "stop.circle.fill" : "mic")
-                            .font(.system(size:14,weight:.medium))
-                            .foregroundStyle((voiceDictation.isRecording || voiceDictation.isStarting) ? Color.red : ForgePalette.secondary)
-                            .frame(width:30,height:30)
-                            .contentShape(Rectangle())
+                        .buttonStyle(.plain)
+                        .disabled(model.busy)
+                        .help("语音输入（只填入草稿，不自动发送）")
+                        .accessibilityLabel("开始语音输入")
+                        .accessibilityIdentifier("agent.voice.toggle")
                     }
-                    .buttonStyle(.plain)
-                    .disabled(model.busy)
-                    .help((voiceDictation.isRecording || voiceDictation.isStarting) ? "取消语音输入" : "语音输入（只填入草稿，不自动发送）")
-                    .accessibilityLabel((voiceDictation.isRecording || voiceDictation.isStarting) ? "停止语音输入" : "开始语音输入")
-                    .accessibilityIdentifier("agent.voice.toggle")
 
                     if model.busy {
                         Button { Task { await model.cancel() } } label: {
@@ -2110,6 +2149,12 @@ private struct AgentPane: View {
             if busy { voiceDictation.stop() }
         }
         .onDisappear { voiceDictation.stop() }
+    }
+
+    private func cancelVoiceDictation() {
+        voiceDictation.cancel()
+        model.draft = voiceBaseDraft
+        composerFocused = true
     }
 
     private var agentActivityTitle: String {

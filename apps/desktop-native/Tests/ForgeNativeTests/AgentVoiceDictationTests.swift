@@ -8,7 +8,7 @@ final class AgentVoiceDictationTests: XCTestCase {
         let cancelledAttempt = try XCTUnwrap(dictation.beginStart())
         XCTAssertTrue(dictation.isStarting)
 
-        dictation.stop()
+        dictation.cancel()
         XCTAssertFalse(dictation.isStarting)
 
         let currentAttempt = try XCTUnwrap(dictation.beginStart())
@@ -20,6 +20,27 @@ final class AgentVoiceDictationTests: XCTestCase {
 
         dictation.finishStarting(currentAttempt)
         XCTAssertFalse(dictation.isStarting)
+    }
+
+    @MainActor
+    func testFinishKeepsPartialTranscriptAndCancelDiscardsItAndRejectsLateResults() throws {
+        let dictation = AgentVoiceDictation()
+        let finishedAttempt = try XCTUnwrap(dictation.beginStart())
+        dictation.receiveTranscript("保留的识别文字", for: finishedAttempt)
+
+        dictation.stop()
+        XCTAssertEqual(dictation.transcript, "保留的识别文字")
+
+        let cancelledAttempt = try XCTUnwrap(dictation.beginStart())
+        dictation.receiveTranscript("应被取消的识别文字", for: cancelledAttempt)
+        XCTAssertEqual(dictation.transcript, "应被取消的识别文字")
+
+        dictation.cancel()
+        XCTAssertEqual(dictation.transcript, "")
+        XCTAssertNil(dictation.error)
+
+        dictation.receiveTranscript("迟到的识别结果", for: cancelledAttempt)
+        XCTAssertEqual(dictation.transcript, "")
     }
 
     func testVoiceDictationOnlyAppendsRecognizedTextToExistingDraft() {

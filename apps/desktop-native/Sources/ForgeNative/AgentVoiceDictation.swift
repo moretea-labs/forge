@@ -37,6 +37,17 @@ final class AgentVoiceDictation: ObservableObject {
         isStarting = false
     }
 
+    func receiveTranscript(_ value: String, for attemptID: UUID) {
+        guard sessionID == attemptID else { return }
+        transcript = value
+    }
+
+    func cancel() {
+        stop()
+        transcript = ""
+        error = nil
+    }
+
     func start() async {
         guard let attemptID = beginStart() else { return }
         defer { finishStarting(attemptID) }
@@ -96,7 +107,7 @@ final class AgentVoiceDictation: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self, self.sessionID == session else { return }
                 if let result {
-                    self.transcript = result.bestTranscription.formattedString
+                    self.receiveTranscript(result.bestTranscription.formattedString, for: session)
                     if result.isFinal { self.stop() }
                 }
                 if let failure {
