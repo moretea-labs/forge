@@ -111,10 +111,18 @@ function actions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: { type: 'object', properties: { plugin_id: { type: 'string' }, expected_revision: { type: 'number' } }, required: ['plugin_id'], additionalProperties: false },
     },
     {
-      actionId: 'list_capability_authorizations', title: 'List plugin capability authorizations', description: 'List persistent exact-target plugin capability authorizations owned by the current principal; grants owned by other principals are not returned.',
+      actionId: 'list_capability_authorizations', title: 'List plugin capability authorizations', description: 'List persistent exact-target plugin capability authorizations owned by the current principal; grants owned by other principals are not returned. Optional filters keep native settings views bounded.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true,
       scopes: ['plugin-authorizations.read'], resourceClaims: [{ resource: 'provider-state', mode: 'read' }],
-      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          plugin_id: { type: 'string', minLength: 1, maxLength: 64 },
+          active_only: { type: 'boolean' },
+          limit: { type: 'integer', minimum: 1, maximum: 100 },
+        },
+        additionalProperties: false,
+      },
     },
     {
       actionId: 'revoke_capability_authorization', title: 'Revoke plugin capability authorization', description: 'Revoke one persistent exact-target plugin capability authorization owned by the current principal.',
@@ -149,12 +157,26 @@ export async function executePluginManagementAction(input: AssistantPluginAction
     case 'install_registration': return { registration: installExternalPluginRegistration(input.controllerHome, registrationInput(input.args.registration), { expectedRevision: expectedRevision(input.args.expected_revision) }) };
     case 'disable_registration': return { registration: disableExternalPluginRegistration(input.controllerHome, requiredString(input.args.plugin_id, 'plugin_id'), { expectedRevision: expectedRevision(input.args.expected_revision) }) };
     case 'remove_registration': return { removed: removeExternalPluginRegistration(input.controllerHome, requiredString(input.args.plugin_id, 'plugin_id'), { expectedRevision: expectedRevision(input.args.expected_revision) }) };
-    case 'list_capability_authorizations': return {
-      authorizations: listPluginCapabilityAuthorizations(
+    case 'list_capability_authorizations': {
+      const pluginId = input.args.plugin_id === undefined
+        ? undefined
+        : requiredString(input.args.plugin_id, 'plugin_id');
+      const activeOnly = input.args.active_only === true;
+      const limit = input.args.limit;
+      if (limit !== undefined && (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 100)) {
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'limit must be an integer between 1 and 100.');
+      }
+      const authorizations = listPluginCapabilityAuthorizations(
         input.controllerHome,
         pluginCapabilityAuthorizationOwnerScope(input.origin),
-      ),
-    };
+      ).filter((grant) => (!pluginId || grant.pluginId === pluginId)
+        && (!activeOnly || (!grant.revokedAt && Date.parse(grant.expiresAt) > Date.now())));
+      return {
+        authorizations: limit === undefined ? authorizations : authorizations.slice(0, limit),
+        totalCount: authorizations.length,
+        truncated: limit !== undefined && authorizations.length > limit,
+      };
+    }
     case 'revoke_capability_authorization': return {
       authorization: revokePluginCapabilityAuthorization(input.controllerHome, {
         grantId: requiredString(input.args.grant_id, 'grant_id'),

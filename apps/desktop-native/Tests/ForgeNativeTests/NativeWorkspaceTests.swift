@@ -2446,6 +2446,40 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(NativeWorkspace.pluginManagementLoadErrorMessage("network unavailable"), "network unavailable")
     }
 
+    func testPluginAuthorizationSnapshotDecodesOnlyRequestedPluginRows() {
+        let snapshot = NativeWorkspace.pluginAuthorizationSnapshot([
+            "result":[
+                "authorizations":[[
+                    "grantId":"grant-1","pluginId":"figma","capabilityId":"figma.read",
+                    "target":["kind":"workspace","id":"project-1"],
+                    "scopes":["figma.files.read"],"riskCeiling":"readonly",
+                    "expiresAt":"2026-12-01T00:00:00Z"
+                ]],
+                "totalCount":1,"truncated":false
+            ]
+        ],pluginId:"figma")
+        XCTAssertEqual(snapshot?.items.map(\.grantId),["grant-1"])
+        XCTAssertEqual(snapshot?.items.first?.targetId,"project-1")
+        XCTAssertEqual(snapshot?.items.first?.scopes,["figma.files.read"])
+        XCTAssertEqual(snapshot?.totalCount,1)
+        XCTAssertFalse(snapshot?.truncated ?? true)
+        XCTAssertNil(NativeWorkspace.pluginAuthorizationSnapshot([
+            "authorizations":[["grantId":"other","pluginId":"gmail"]]
+        ],pluginId:"figma"))
+    }
+
+    func testPluginAuthorizationRevocationRequiresRefreshedAbsence() {
+        let item = PluginAuthorizationItem(
+            grantId:"grant-1",pluginId:"figma",capabilityId:"figma.read",
+            targetKind:"workspace",targetId:"project-1",scopes:["figma.files.read"],
+            riskCeiling:"readonly",expiresAt:"2026-12-01T00:00:00Z"
+        )
+        let stillPresent = PluginAuthorizationSnapshot(pluginId:"figma",items:[item],totalCount:1,truncated:false)
+        let revoked = PluginAuthorizationSnapshot(pluginId:"figma",items:[],totalCount:0,truncated:false)
+        XCTAssertNotNil(NativeWorkspace.pluginAuthorizationRevocationWarning(grantId:"grant-1",refreshed:stillPresent))
+        XCTAssertNil(NativeWorkspace.pluginAuthorizationRevocationWarning(grantId:"grant-1",refreshed:revoked))
+    }
+
     func testPluginInstallationRequiresConfirmedVersionFromAuthority() {
         let target = NativeWorkspace.pluginManagementRows(["plugins":[[
             "pluginId":"figma","name":"Figma","version":"0.3.0","description":"Bridge",

@@ -862,6 +862,46 @@ describe('plugin capability authorization management', () => {
     expect(getPluginActionCapabilitySchema('plugin.plugin_management.revoke_capability_authorization', [manifest])?.authorizationReuse).toMatchObject({ mode: 'exact_target_persistent_when_adapter_supported' });
     expect(getPluginActionCapabilitySchema('plugin.plugin_management.remove_registration', [manifest])).toMatchObject({ confirmation: 'strong_confirmation', authorizationReuse: { mode: 'not_reusable' } });
   });
+
+  test('filters current-principal authorizations by plugin and active state with a bounded result', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-capability-filter-'));
+    roots.push(controllerHome);
+    const base = {
+      capabilityId: 'desktop-input',
+      target: { kind: 'desktop-application', id: 'com.example.Editor' },
+      scopes: ['desktop.interact'],
+    };
+    const origin = { surface: 'mcp' as const, actor: 'principal:test-user' };
+    recordPluginCapabilityAuthorization(controllerHome, {
+      ...base, ownerScope: 'mcp:principal:test-user', pluginId: 'computer', riskCeiling: 'workspace_write',
+    });
+    recordPluginCapabilityAuthorization(controllerHome, {
+      ...base, ownerScope: 'mcp:principal:test-user', pluginId: 'computer',
+      target: { ...base.target, id: 'com.example.Terminal' }, riskCeiling: 'workspace_write',
+    });
+    recordPluginCapabilityAuthorization(controllerHome, {
+      ...base, ownerScope: 'mcp:principal:test-user', pluginId: 'gmail', riskCeiling: 'workspace_write',
+    });
+    recordPluginCapabilityAuthorization(controllerHome, {
+      ...base, ownerScope: 'mcp:principal:test-user', pluginId: 'computer',
+      target: { ...base.target, id: 'com.example.Expired' }, riskCeiling: 'workspace_write',
+      now: new Date(Date.now() - 40 * 24 * 60 * 60 * 1_000),
+    });
+
+    const listed = await submitControllerPluginAction(controllerHome, {
+      pluginId: 'plugin_management', actionId: 'list_capability_authorizations', requestId: 'capability-filter',
+      args: { plugin_id: 'computer', active_only: true, limit: 1 }, origin,
+    });
+    const result = listed.result!.result as {
+      authorizations: Array<{ pluginId: string }>;
+      totalCount: number;
+      truncated: boolean;
+    };
+    expect(result.authorizations).toHaveLength(1);
+    expect(result.authorizations[0].pluginId).toBe('computer');
+    expect(result.totalCount).toBe(2);
+    expect(result.truncated).toBe(true);
+  });
 });
 
 describe('external plugin reusable authorization targets', () => {

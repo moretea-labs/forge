@@ -175,6 +175,25 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
         "read_plugin_management" => read_plugin_management().await,
         "install_official_plugin" =>
             install_official_plugin(required(args, "pluginId")?).await,
+        "read_plugin_authorizations" => call_runtime_tool("plugin_action_execute", json!({
+            "plugin_id": "plugin_management",
+            "action_id": "list_capability_authorizations",
+            "arguments": {
+                "plugin_id": required_bounded(args, "pluginId", 64)?,
+                "active_only": true,
+                "limit": 100
+            },
+            "request_id": request_id("plugin-authorizations-read")
+        })).await,
+        "revoke_plugin_authorization" => call_runtime_tool("plugin_action_execute", json!({
+            "plugin_id": "plugin_management",
+            "action_id": "revoke_capability_authorization",
+            "arguments": {
+                "grant_id": required_bounded(args, "grantId", 256)?,
+                "reason": required_bounded(args, "reason", 240)?
+            },
+            "request_id": request_id("plugin-authorization-revoke")
+        })).await,
         "read_local_provider_status" => read_local_provider_status().await,
         "read_local_provider_models" => read_local_provider_models().await,
         "read_local_conversation_activity" =>
@@ -527,6 +546,24 @@ mod tests {
             "send_local_api_conversation", &json!({})
         ));
         assert_eq!(one_shot.unwrap_err(), "FORGE_NATIVE_BRIDGE_OPERATION_UNSUPPORTED");
+    }
+
+    #[test]
+    fn native_plugin_authorization_bridge_requires_bounded_identifiers_and_reason() {
+        let missing_plugin = tauri::async_runtime::block_on(dispatch(
+            "read_plugin_authorizations", &json!({})
+        ));
+        assert_eq!(missing_plugin.unwrap_err(), "FORGE_NATIVE_BRIDGE_pluginId_REQUIRED");
+
+        let missing_grant = tauri::async_runtime::block_on(dispatch(
+            "revoke_plugin_authorization", &json!({})
+        ));
+        assert_eq!(missing_grant.unwrap_err(), "FORGE_NATIVE_BRIDGE_grantId_REQUIRED");
+
+        let missing_reason = tauri::async_runtime::block_on(dispatch(
+            "revoke_plugin_authorization", &json!({"grantId":"grant-1"})
+        ));
+        assert_eq!(missing_reason.unwrap_err(), "FORGE_NATIVE_BRIDGE_reason_REQUIRED");
     }
 
     #[test]

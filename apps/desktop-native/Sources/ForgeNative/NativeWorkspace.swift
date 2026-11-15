@@ -322,6 +322,25 @@ struct PluginManagementItem: Identifiable {
     var id: String { pluginId }
 }
 
+struct PluginAuthorizationItem: Identifiable, Equatable {
+    let grantId: String
+    let pluginId: String
+    let capabilityId: String
+    let targetKind: String
+    let targetId: String
+    let scopes: [String]
+    let riskCeiling: String
+    let expiresAt: String
+    var id: String { grantId }
+}
+
+struct PluginAuthorizationSnapshot: Equatable {
+    let pluginId: String
+    let items: [PluginAuthorizationItem]
+    let totalCount: Int
+    let truncated: Bool
+}
+
 struct ConnectionSetupNextDetail {
     let status: String
     let id: String?
@@ -669,6 +688,10 @@ final class NativeWorkspace: ObservableObject {
     @Published var pluginManagement: [PluginManagementItem] = []
     @Published var pluginManagementLoading = false
     @Published var pluginManagementError: String?
+    @Published var pluginAuthorizationSnapshot: PluginAuthorizationSnapshot?
+    @Published var pluginAuthorizationRequestedPluginId: String?
+    @Published var pluginAuthorizationLoading = false
+    @Published var pluginAuthorizationError: String?
     @Published var knowledgeQuery = ""
     @Published var knowledgeResult: KnowledgeAuditDetail?
     @Published var knowledgeLoading = false
@@ -2199,6 +2222,99 @@ final class NativeWorkspace: ObservableObject {
             // Do not blindly reinstall, and do not erase the prior list.
             pluginManagementError = "无法确认插件安装结果：\(error.localizedDescription)。请刷新核对后再操作。"
         }
+    }
+
+    nonisolated static func pluginAuthorizationSnapshot(
+        _ result:[String:Any],pluginId:String
+    ) -> PluginAuthorizationSnapshot? {
+        let candidates = [
+            result,
+            result["result"] as? [String:Any] ?? [:],
+            result["data"] as? [String:Any] ?? [:],
+            (result["result"] as? [String:Any])?["data"] as? [String:Any] ?? [:],
+        ]
+        guard let payload = candidates.first(where:{ $0["authorizations"] is [[String:Any]] }),
+              let rows = payload["authorizations"] as? [[String:Any]] else { return nil }
+        let items = rows.compactMap { row -> PluginAuthorizationItem? in
+            guard let grantId = row["grantId"] as? String,
+                  let rowPluginId = row["pluginId"] as? String, rowPluginId == pluginId,
+                  let capabilityId = row["capabilityId"] as? String,
+                  let target = row["target"] as? [String:Any],
+                  let targetKind = target["kind"] as? String,
+                  let targetId = target["id"] as? String,
+                  let scopes = row["scopes"] as? [String],
+                  let riskCeiling = row["riskCeiling"] as? String,
+                  let expiresAt = row["expiresAt"] as? String else { return nil }
+            return PluginAuthorizationItem(
+                grantId:grantId,pluginId:rowPluginId,capabilityId:capabilityId,
+                targetKind:targetKind,targetId:targetId,scopes:scopes,
+                riskCeiling:riskCeiling,expiresAt:expiresAt
+            )
+        }
+        guard items.count == rows.count else { return nil }
+        return PluginAuthorizationSnapshot(
+            pluginId:pluginId,items:items,
+            totalCount:(payload["totalCount"] as? NSNumber)?.intValue ?? items.count,
+            truncated:payload["truncated"] as? Bool ?? false
+        )
+    }
+
+    nonisolated static func pluginAuthorizationRevocationWarning(
+        grantId:String,refreshed:PluginAuthorizationSnapshot
+    ) -> String? {
+        refreshed.items.contains(where:{ $0.grantId == grantId })
+            ? "授权仍然有效，请刷新核对后再操作。"
+            : nil
+    }
+
+    func loadPluginAuthorizations(for pluginId:String) async {
+        guard !pluginId.isEmpty, !pluginAuthorizationLoading else { return }
+        pluginAuthorizationRequestedPluginId = pluginId
+        if pluginAuthorizationSnapshot?.pluginId != pluginId {
+            pluginAuthorizationSnapshot = nil
+            pluginAuthorizationError = nil
+        }
+        pluginAuthorizationLoading = true
+        defer { pluginAuthorizationLoading = false }
+        do {
+            let value = try await ForgeBridge.request("read_plugin_authorizations",["pluginId":pluginId])
+            guard pluginAuthorizationRequestedPluginId == pluginId else { return }
+            guard let snapshot = Self.pluginAuthorizationSnapshot(value,pluginId:pluginId) else {
+                pluginAuthorizationError = "PLUGIN_AUTHORIZATION_RESPONSE_INVALID"
+                return
+            }
+            pluginAuthorizationSnapshot = snapshot
+            pluginAuthorizationError = nil
+        } catch {
+            guard pluginAuthorizationRequestedPluginId == pluginId else { return }
+            pluginAuthorizationError = error.localizedDescription
+        }
+    }
+
+    func revokePluginAuthorization(_ item:PluginAuthorizationItem) async {
+        guard !pluginAuthorizationLoading, pluginAuthorizationRequestedPluginId == item.pluginId else { return }
+        pluginAuthorizationLoading = true
+        do {
+            _ = try await ForgeBridge.request("revoke_plugin_authorization",[
+                "grantId":item.grantId,
+                "reason":"Revoked from Forge Client plugin settings",
+            ])
+            let value = try await ForgeBridge.request("read_plugin_authorizations",["pluginId":item.pluginId])
+            guard let refreshed = Self.pluginAuthorizationSnapshot(value,pluginId:item.pluginId) else {
+                pluginAuthorizationError = "无法确认撤销结果，请刷新授权列表核对后再操作。"
+                pluginAuthorizationLoading = false
+                await loadPluginManagement()
+                return
+            }
+            pluginAuthorizationSnapshot = refreshed
+            pluginAuthorizationError = Self.pluginAuthorizationRevocationWarning(
+                grantId:item.grantId,refreshed:refreshed
+            )
+        } catch {
+            pluginAuthorizationError = "无法确认撤销结果，请刷新授权列表核对后再操作。"
+        }
+        pluginAuthorizationLoading = false
+        await loadPluginManagement()
     }
 
     nonisolated static func runtimeStatusDetail(_ result: [String:Any]) -> RuntimeStatusDetail {

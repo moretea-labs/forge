@@ -5967,6 +5967,8 @@ private struct PluginsPane: View {
 private struct PluginSettingsSection: View {
     @ObservedObject var model: NativeWorkspace
     @State private var pendingInstallation: PluginManagementItem?
+    @State private var expandedAuthorizationPluginId: String?
+    @State private var pendingAuthorizationRevocation: PluginAuthorizationItem?
 
     var body: some View {
         VStack(alignment:.leading,spacing:12) {
@@ -6016,36 +6018,59 @@ private struct PluginSettingsSection: View {
             } else {
                 VStack(alignment:.leading,spacing:0) {
                     ForEach(Array(model.pluginManagement.enumerated()),id:\.element.id) { index,item in
-                        HStack(alignment:.top,spacing:11) {
-                            Circle()
-                                .fill(item.installedVersion == nil ? Color.secondary : (item.enabled == false ? Color.orange : Color.green))
-                                .frame(width:7,height:7).padding(.top,6)
-                            VStack(alignment:.leading,spacing:4) {
-                                HStack(spacing:7) {
-                                    Text(item.name).font(.system(size:11.5,weight:.semibold))
-                                    Text(item.version).font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary)
+                        VStack(alignment:.leading,spacing:8) {
+                            HStack(alignment:.top,spacing:11) {
+                                Circle()
+                                    .fill(item.installedVersion == nil ? Color.secondary : (item.enabled == false ? Color.orange : Color.green))
+                                    .frame(width:7,height:7).padding(.top,6)
+                                VStack(alignment:.leading,spacing:4) {
+                                    HStack(spacing:7) {
+                                        Text(item.name).font(.system(size:11.5,weight:.semibold))
+                                        Text(item.version).font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary)
+                                    }
+                                    Text(item.description).font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary).lineLimit(2)
+                                    HStack(spacing:10) {
+                                        Text(item.installedVersion.map { "已安装 \($0)" } ?? "未安装")
+                                        if item.enabled == false && item.installedVersion != nil { Text("已禁用") }
+                                        Button {
+                                            if expandedAuthorizationPluginId == item.pluginId {
+                                                expandedAuthorizationPluginId = nil
+                                            } else {
+                                                expandedAuthorizationPluginId = item.pluginId
+                                                Task { await model.loadPluginAuthorizations(for:item.pluginId) }
+                                            }
+                                        } label: {
+                                            HStack(spacing:3) {
+                                                Text("授权 \(item.authorizationCount)")
+                                                Image(systemName:expandedAuthorizationPluginId == item.pluginId ? "chevron.up" : "chevron.down")
+                                                    .font(.system(size:8,weight:.medium))
+                                            }
+                                        }
+                                        .buttonStyle(.plain)
+                                        .foregroundStyle(ForgePalette.accent)
+                                        .disabled(model.pluginAuthorizationLoading)
+                                        .accessibilityIdentifier("settings.plugins.\(item.pluginId).authorizations")
+                                    }
+                                    .font(.system(size:9.5)).foregroundStyle(.tertiary)
+                                    if !item.compatible {
+                                        Text(item.compatibilityReason ?? "当前平台不兼容")
+                                            .font(.system(size:10.5)).foregroundStyle(.orange)
+                                            .fixedSize(horizontal:false,vertical:true)
+                                    }
                                 }
-                                Text(item.description).font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary).lineLimit(2)
-                                HStack(spacing:10) {
-                                    Text(item.installedVersion.map { "已安装 \($0)" } ?? "未安装")
-                                    if item.enabled == false && item.installedVersion != nil { Text("已禁用") }
-                                    if item.authorizationCount > 0 { Text("授权 \(item.authorizationCount)") }
+                                Spacer(minLength:8)
+                                Button(item.installedVersion == item.version ? "已安装" : (item.installedVersion == nil ? "安装" : "更新")) {
+                                    pendingInstallation = item
                                 }
-                                .font(.system(size:9.5)).foregroundStyle(.tertiary)
-                                if !item.compatible {
-                                    Text(item.compatibilityReason ?? "当前平台不兼容")
-                                        .font(.system(size:10.5)).foregroundStyle(.orange)
-                                        .fixedSize(horizontal:false,vertical:true)
-                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(model.pluginManagementLoading || !item.compatible || item.installedVersion == item.version)
+                                .accessibilityIdentifier("settings.plugins.\(item.pluginId).install")
                             }
-                            Spacer(minLength:8)
-                            Button(item.installedVersion == item.version ? "已安装" : (item.installedVersion == nil ? "安装" : "更新")) {
-                                pendingInstallation = item
+                            if expandedAuthorizationPluginId == item.pluginId {
+                                pluginAuthorizationDetails(for:item)
+                                    .padding(.leading,18)
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .disabled(model.pluginManagementLoading || !item.compatible || item.installedVersion == item.version)
-                            .accessibilityIdentifier("settings.plugins.\(item.pluginId).install")
                         }
                         .padding(.vertical,9)
                         if index < model.pluginManagement.count - 1 { Divider() }
@@ -6054,21 +6079,97 @@ private struct PluginSettingsSection: View {
             }
         }
         .padding(.vertical,8)
-        .confirmationDialog("确认安装官方插件",isPresented:Binding(
-            get:{ pendingInstallation != nil },
-            set:{ if !$0 { pendingInstallation = nil } }
-        ),titleVisibility:.visible) {
-            if let item = pendingInstallation {
+        .confirmationDialog(
+            pendingAuthorizationRevocation == nil ? "确认安装官方插件" : "撤销此项授权？",
+            isPresented:Binding(
+                get:{ pendingInstallation != nil || pendingAuthorizationRevocation != nil },
+                set:{ if !$0 { pendingInstallation = nil; pendingAuthorizationRevocation = nil } }
+            ),titleVisibility:.visible
+        ) {
+            if let item = pendingAuthorizationRevocation {
+                Button("撤销授权",role:.destructive) {
+                    pendingAuthorizationRevocation = nil
+                    Task { await model.revokePluginAuthorization(item) }
+                }
+            } else if let item = pendingInstallation {
                 Button(item.installedVersion == nil ? "确认安装" : "确认更新") {
                     pendingInstallation = nil
                     Task { await model.installOfficialPlugin(item) }
                 }
             }
-            Button("取消",role:.cancel) { pendingInstallation = nil }
+            Button("取消",role:.cancel) { pendingInstallation = nil; pendingAuthorizationRevocation = nil }
         } message: {
-            if let item = pendingInstallation {
+            if let item = pendingAuthorizationRevocation {
+                Text("\(item.capabilityId) · \(item.targetId)\n撤销后，相关操作需要重新授权。")
+            } else if let item = pendingInstallation {
                 Text("\(item.name) · \(item.version)\n安装或更新不会自动授予操作权限。")
             }
+        }
+    }
+
+    @ViewBuilder
+    private func pluginAuthorizationDetails(for plugin:PluginManagementItem) -> some View {
+        VStack(alignment:.leading,spacing:8) {
+            if model.pluginAuthorizationLoading {
+                ProgressView("正在读取授权…").controlSize(.small)
+            }
+            if let error = model.pluginAuthorizationError {
+                HStack(alignment:.firstTextBaseline,spacing:8) {
+                    Text(model.pluginAuthorizationSnapshot?.pluginId == plugin.pluginId
+                         ? "无法更新授权，仍显示上次读取结果。"
+                         : "无法读取授权，请重试。")
+                        .font(.system(size:10.5)).foregroundStyle(.orange).help(error)
+                    Button("重试") { Task { await model.loadPluginAuthorizations(for:plugin.pluginId) } }
+                        .buttonStyle(.plain)
+                        .disabled(model.pluginAuthorizationLoading)
+                }
+            }
+            if let snapshot = model.pluginAuthorizationSnapshot, snapshot.pluginId == plugin.pluginId {
+                if snapshot.items.isEmpty {
+                    Text("暂无当前账户的有效授权。")
+                        .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                } else {
+                    if snapshot.truncated {
+                        Text("显示前 \(snapshot.items.count) 项，共 \(snapshot.totalCount) 项。")
+                            .font(.system(size:9.5)).foregroundStyle(.tertiary)
+                    }
+                    ForEach(snapshot.items) { item in pluginAuthorizationRow(item) }
+                }
+            }
+        }
+    }
+
+    private func pluginAuthorizationRow(_ item:PluginAuthorizationItem) -> some View {
+        HStack(alignment:.top,spacing:10) {
+            VStack(alignment:.leading,spacing:3) {
+                Text(item.capabilityId).font(.system(size:10.5,weight:.medium))
+                    .lineLimit(2).textSelection(.enabled)
+                Text("\(item.targetKind) · \(item.targetId)")
+                    .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
+                    .lineLimit(2).textSelection(.enabled)
+                Text(item.scopes.joined(separator:" · "))
+                    .font(.system(size:9.5)).foregroundStyle(ForgePalette.secondary)
+                    .lineLimit(2).textSelection(.enabled)
+                Text("到期 \(String(item.expiresAt.prefix(10))) · \(authorizationRiskLabel(item.riskCeiling))")
+                    .font(.system(size:9.5)).foregroundStyle(.tertiary)
+            }
+            Spacer(minLength:8)
+            Button("撤销") { pendingAuthorizationRevocation = item }
+                .buttonStyle(.plain)
+                .foregroundStyle(.red)
+                .disabled(model.pluginAuthorizationLoading)
+                .accessibilityIdentifier("settings.plugins.authorization.\(item.grantId).revoke")
+        }
+        .padding(.vertical,6)
+        .overlay(alignment:.bottom) { Divider().opacity(0.55) }
+    }
+
+    private func authorizationRiskLabel(_ value:String) -> String {
+        switch value {
+        case "readonly": return "只读"
+        case "workspace_write": return "工作区写入"
+        case "remote_write": return "远程写入"
+        default: return value
         }
     }
 }
