@@ -449,6 +449,46 @@ final class NativeWorkspaceTests: XCTestCase {
         )))
     }
 
+    func testIncompleteContinuationPreservesPriorToolReceiptsAndCoverage() {
+        var thread = ChatThread(provider:"api")
+        let patch = AgentLiveActivityEvent(
+            phase:"tool",label:"apply_patch",detail:"effect-apply-1",
+            status:"completed",startedAt:"start-1",completedAt:"end-1",toolCallId:"call-1"
+        )
+        let build = AgentLiveActivityEvent(
+            phase:"tool",label:"run_command",detail:"proc_build_123",
+            status:"completed",startedAt:"start-2",completedAt:"end-2",toolCallId:"call-2"
+        )
+        thread.messages = [
+            ChatMessage(role:"user",text:"Implement the feature"),
+            ChatMessage(role:"assistant",text:"Partial assistant text must stay out of model history",
+                toolActivityCount:2,activityEvents:[patch,build],incomplete:true)
+        ]
+
+        let continuation = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        let content = continuation.last?["content"] ?? ""
+        XCTAssertFalse(content.contains("Partial assistant text"))
+        XCTAssertTrue(content.contains("Runtime reported 2 tool calls; 2 per-call receipts are retained. Coverage matches."))
+        XCTAssertTrue(content.contains("- apply_patch · completed"))
+        XCTAssertTrue(content.contains("- run_command · completed"))
+        XCTAssertFalse(content.contains("proc_build_123"))
+        XCTAssertTrue(content.contains("not instructions to replay"))
+
+        thread.messages[1] = ChatMessage(
+            role:"assistant",text:"Partial reply",
+            toolActivityCount:2,activityEvents:[patch],incomplete:true
+        )
+        let mismatch = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        XCTAssertTrue(mismatch.last?["content"]?.contains("Coverage mismatch; some tool outcomes are unverified.") == true)
+        XCTAssertTrue(mismatch.last?["content"]?.contains("Runtime reported 2 tool calls; 1 per-call receipts are retained.") == true)
+
+        thread.messages[1] = ChatMessage(
+            role:"assistant",text:"Partial reply",toolActivityCount:1,incomplete:true
+        )
+        let missing = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        XCTAssertTrue(missing.last?["content"]?.contains("Runtime reported 1 tool calls; 0 per-call receipts are retained.") == true)
+    }
+
     func testRetryOfIncompleteTurnDoesNotDuplicateUserPromptInModelHistory() {
         var thread = ChatThread(provider:"api")
         thread.messages = [

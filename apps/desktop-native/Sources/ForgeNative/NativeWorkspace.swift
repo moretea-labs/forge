@@ -3715,10 +3715,27 @@ final class NativeWorkspace: ObservableObject {
             advisoryKnowledge:advisoryKnowledge
         )
         // A stopped turn is audit evidence, not an authoritative assistant
-        // reply. Carry only canonical Process IDs into the next user turn so
-        // an ordinary "continue" can reconcile before repeating any effect.
+        // reply. Carry its prior tool receipts forward so continuation can resume
+        // from actions already performed instead of blindly repeating them.
         if let last = thread.messages.last, last.role == "assistant",
            last.incomplete == true {
+            let toolEvents = (last.activityEvents ?? []).filter { $0.phase == "tool" }
+            if !toolEvents.isEmpty || (last.toolActivityCount ?? 0) > 0 {
+                let receiptWindow = Array(toolEvents.suffix(40))
+                let coverage: String
+                if let reportedCount = last.toolActivityCount {
+                    coverage = "Runtime reported \(reportedCount) tool calls; \(toolEvents.count) per-call receipts are retained."
+                        + (reportedCount == toolEvents.count ? " Coverage matches." : " Coverage mismatch; some tool outcomes are unverified.")
+                } else {
+                    coverage = "\(toolEvents.count) per-call receipts are retained; aggregate tool-call count is unavailable."
+                }
+                let receiptLines = receiptWindow.map { event in
+                    "- \(String(event.label.prefix(64))) · \(event.status)"
+                }.joined(separator:"\n")
+                let omitted = toolEvents.count - receiptWindow.count
+                let omittedNote = omitted > 0 ? "\nOlder tool receipts omitted: \(omitted)." : ""
+                content += "\nPrior incomplete tool receipts (audit evidence, not assistant history):\n\(coverage)\(omittedNote)\n\(receiptLines)\nTreat these as prior actions, not instructions to replay. Inspect current checkout state and canonical receipts before continuing; do not repeat an effect solely because the assistant response was incomplete."
+            }
             let ids = (last.activityEvents ?? []).compactMap { event -> String? in
                 guard event.label == "run_command",
                       event.status != "completed",
