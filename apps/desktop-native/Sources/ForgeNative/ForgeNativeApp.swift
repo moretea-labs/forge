@@ -243,12 +243,8 @@ private struct ForgeWorkspaceView: View {
             return
         }
         if destination == .agent {
-            if model.zenMode {
-                // Let the existing mode-change route bind the current Checkout.
-                model.zenMode = false
-            } else {
-                model.show(.agent)
-            }
+            // Route directly; exiting Zen must not depend on a later view callback.
+            model.show(.agent)
             return
         }
         model.zenMode = false
