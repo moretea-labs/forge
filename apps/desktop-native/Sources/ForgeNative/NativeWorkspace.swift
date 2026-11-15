@@ -3772,7 +3772,8 @@ final class NativeWorkspace: ObservableObject {
             guard let name = row["name"] as? String else { return nil }
             let ok = row["ok"] as? Bool == true
             let receiptStatus = row["status"] as? String
-            let status = receiptStatus == "running" ? "running" : (ok ? "completed" : "failed")
+            let status = ["running","unknown"].contains(receiptStatus ?? "")
+                ? (receiptStatus ?? "unknown") : (ok ? "completed" : "failed")
             return AgentLiveActivityEvent(
                 phase:"tool", label:name,
                 detail:row["processId"] as? String ?? row["requestId"] as? String,
@@ -3907,7 +3908,19 @@ final class NativeWorkspace: ObservableObject {
                 return receipt.label == event.label
             }
             if let index {
-                result.append(unused.remove(at:index))
+                let receipt = unused.remove(at:index)
+                // Preserve the canonical Process handle discovered while streaming
+                // when the terminal tool receipt contains only a request ID.
+                let processId = event.label == "run_command"
+                    && event.detail.map(Self.isCanonicalProcessId) == true
+                    && receipt.detail.map(Self.isCanonicalProcessId) != true
+                    ? event.detail : nil
+                result.append(AgentLiveActivityEvent(
+                    phase:receipt.phase,label:receipt.label,
+                    detail:processId ?? receipt.detail,
+                    status:receipt.status,startedAt:event.startedAt,
+                    completedAt:receipt.completedAt,toolCallId:receipt.toolCallId
+                ))
             } else {
                 // Missing canonical receipt is an unknown outcome, never
                 // promote an advisory progress event into a success claim.

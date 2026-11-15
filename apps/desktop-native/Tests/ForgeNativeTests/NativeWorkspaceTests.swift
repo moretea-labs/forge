@@ -551,6 +551,36 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(receipt.last?["content"]?.contains("proc_bad") == true)
     }
 
+    func testFinalToolReceiptsPreserveUnknownStatusAndStreamedProcessHandle() {
+        let receipts = NativeWorkspace.apiActivityEvents([[
+            "name":"run_command","ok":false,"status":"unknown",
+            "requestId":"effect-123","toolCallId":"call-123"
+        ]])
+        XCTAssertEqual(receipts?.first?.status,"unknown")
+        let progress = AgentLiveActivityEvent(
+            phase:"tool",label:"run_command",detail:"proc_real_123",
+            status:"running",startedAt:"start",completedAt:nil,toolCallId:"call-123"
+        )
+        let merged = NativeWorkspace.mergeActivityReceipts([progress],receipts:receipts ?? [])
+        XCTAssertEqual(merged.count,1)
+        XCTAssertEqual(merged[0].status,"unknown")
+        XCTAssertEqual(merged[0].detail,"proc_real_123")
+        XCTAssertEqual(merged[0].toolCallId,"call-123")
+        let verified = NativeWorkspace.apiActivityEvents([[
+            "name":"run_command","ok":true,"status":"completed",
+            "processId":"proc_authoritative_9","toolCallId":"call-123"
+        ]]) ?? []
+        let completed = NativeWorkspace.mergeActivityReceipts([progress],receipts:verified)
+        XCTAssertEqual(completed[0].detail,"proc_authoritative_9")
+        XCTAssertEqual(completed[0].status,"completed")
+        let other = AgentLiveActivityEvent(
+            phase:"tool",label:"read_file",detail:"proc_misleading",
+            status:"running",startedAt:"start",completedAt:nil,toolCallId:"call-123"
+        )
+        XCTAssertEqual(NativeWorkspace.mergeActivityReceipts([other],receipts:receipts ?? [])[0].detail,
+                       "effect-123")
+    }
+
     func testManagedProcessActivityRemainsRunningUntilTerminalReceipt() {
         let events = NativeWorkspace.apiActivityEvents([[
             "name":"run_command","ok":false,"status":"running",
