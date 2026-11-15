@@ -283,9 +283,10 @@ async function executeRegisteredWorkflowLocked(
     executeCapability: async ({ step, arguments: args }) => {
       assertWorkflowExecutionScope(input);
       const binding = capabilityBinding(registry.value.bindings, step.capabilityId);
+      const expectedRequestId = requestId(input, step.stepId, asset.contentDigest);
+      let submitted: Awaited<ReturnType<typeof submitPluginAction>>;
       try {
-        const expectedRequestId = requestId(input, step.stepId, asset.contentDigest);
-        const submitted = await submitPluginAction(input.controllerHome, input.repository, {
+        submitted = await submitPluginAction(input.controllerHome, input.repository, {
           pluginId: binding.pluginId!,
           actionId: binding.actionId!,
           requestId: expectedRequestId,
@@ -294,10 +295,6 @@ async function executeRegisteredWorkflowLocked(
           authorizationGrantRefs: registry.value.capabilityGrantRefs,
           origin: { surface: 'system', actor: 'workflow-runtime', correlationId: input.runId },
         });
-        const output = submitted.receipt.status === 'succeeded'
-          ? pluginActionOutput(submitted.result, binding, expectedRequestId)
-          : undefined;
-        return pluginOutcome(submitted.receipt, output);
       } catch (error) {
         const effectOutcome = isAssistantPluginError(error) ? error.effectOutcome : undefined;
         return {
@@ -305,6 +302,10 @@ async function executeRegisteredWorkflowLocked(
           error: { code: isAssistantPluginError(error) ? error.code : 'WORKFLOW_CAPABILITY_EXECUTION_FAILED', message: error instanceof Error ? error.message : String(error) },
         };
       }
+      const output = submitted.receipt.status === 'succeeded'
+        ? pluginActionOutput(submitted.result, binding, expectedRequestId)
+        : undefined;
+      return pluginOutcome(submitted.receipt, output);
     },
     executeScript: async ({ step, script, arguments: args }) => {
       assertWorkflowExecutionScope(input);

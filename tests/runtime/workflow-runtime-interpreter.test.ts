@@ -56,7 +56,7 @@ function draft(): WorkflowAssetDraft {
     },
     requiredCapabilities: ['browser.navigate', 'browser.submit'],
     steps: [
-      { stepId: 'open', capabilityId: 'browser.navigate', idempotency: 'idempotent', input: { url: '{{input.url}}' }, outputContract: { navigated: { type: 'boolean', required: true } } },
+      { stepId: 'open', capabilityId: 'browser.navigate', idempotency: 'idempotent', input: { url: '{{input.url}}' } },
       { stepId: 'normalize', kind: 'script', scriptRef: 'normalize', idempotency: 'idempotent', input: { title: '{{input.title}}' } },
     ],
     scripts: { normalize: { runtime: 'node', deterministic: true, body: 'process.stdout.write(process.argv[1] ?? "")' } },
@@ -89,7 +89,9 @@ describe('thin Workflow Runtime interpreter', () => {
   test('validates typed inputs, resolves references and delegates capability/script execution in order', async () => {
     const controllerHome = temp('forge-workflow-runtime-home-');
     const root = temp('forge-workflow-runtime-repo-');
-    const { repository: repo } = await installedRuntime(controllerHome, root, draft());
+    const asset = draft();
+    asset.steps = [{ ...asset.steps[0]!, outputContract: { navigated: { type: 'boolean', required: true } } }, ...asset.steps.slice(1)];
+    const { repository: repo } = await installedRuntime(controllerHome, root, asset);
     const calls: string[] = [];
     const submittedArgs: Record<string, unknown>[] = [];
     const result = await executeRegisteredWorkflow({
@@ -239,9 +241,16 @@ test('different runs cannot dispatch concurrently for the same Workflow scope', 
   let release!: () => void, entered!: () => void;
   const blocked = new Promise<void>(resolve => { release = resolve; });
   const started = new Promise<void>(resolve => { entered = resolve; });
-  const dependencies = { submitPluginAction: (async () => {
+  const dependencies = { submitPluginAction: (async (_home: string, repo: RepositoryRecord, request: any) => {
     dispatched++; entered(); await blocked;
-    return { receipt: { receiptId: 'receipt', status: 'succeeded' }, result: {} };
+    const result = {
+      schemaVersion: 1,
+      plugin: { pluginId: request.pluginId, provider: 'test', revision: 1, lifecycle: { state: 'enabled' }, health: { state: 'ready' } },
+      action: { actionId: request.actionId, confirmation: 'none', risk: 'readonly', requestId: request.requestId },
+      result: {},
+    };
+    return { receipt: { schemaVersion: 1, receiptId: 'receipt', requestId: request.requestId, repoId: repo.repoId,
+      pluginId: request.pluginId, actionId: request.actionId, semanticKey: 'key', status: 'succeeded', createdAt: new Date().toISOString(), result }, result };
   }) as any };
   const first = executeRegisteredWorkflow(input, dependencies);
   await started;
@@ -267,11 +276,19 @@ test('sensitive retained outputs are refused before a Workflow checkpoint is per
     scopeId: workflowScopeId(), runId, registryScope: { kind: 'controller' }, workflowId: 'runtime-proof',
     inputs: { url: 'https://example.test', title: 'not retained' },
   }, {
-    submitPluginAction: (async (_home: string, repo: RepositoryRecord, request: any) => ({
-      manifest: {}, action: {}, job: {}, deduplicated: false, result: { [forbiddenKey]: 'synthetic-value' },
-      receipt: { schemaVersion: 1, receiptId: 'receipt-sensitive', requestId: request.requestId, repoId: repo.repoId,
-        pluginId: request.pluginId, actionId: request.actionId, semanticKey: 'key', status: 'succeeded', createdAt: new Date().toISOString() },
-    })) as any,
+    submitPluginAction: (async (_home: string, repo: RepositoryRecord, request: any) => {
+      const result = {
+        schemaVersion: 1,
+        plugin: { pluginId: request.pluginId, provider: 'test', revision: 1, lifecycle: { state: 'enabled' }, health: { state: 'ready' } },
+        action: { actionId: request.actionId, confirmation: 'none', risk: 'readonly', requestId: request.requestId },
+        result: { [forbiddenKey]: 'synthetic-value' },
+      };
+      return {
+        manifest: {}, action: {}, job: {}, deduplicated: false, result,
+        receipt: { schemaVersion: 1, receiptId: 'receipt-sensitive', requestId: request.requestId, repoId: repo.repoId,
+          pluginId: request.pluginId, actionId: request.actionId, semanticKey: 'key', status: 'succeeded', createdAt: new Date().toISOString(), result },
+      };
+    }) as any,
   })).rejects.toThrow(`CONTROL_PLANE_METADATA_FIELD_REFUSED: workflow_run.outputs.read-sensitive.${forbiddenKey}`);
   const stored = readWorkflowRun(controllerHome, workflowScopeId(), runId)!;
   expect(stored.value.status).toBe('running');
@@ -315,11 +332,17 @@ test('publication receipt binds real publication identity and is durably persist
       const output = call === 1 ? { matched: true, verified: true }
         : call === 2 ? { postId: 'post-123', postUrl: 'https://www.xiaohongshu.com/explore/post-123', contentDigest }
           : { verified: true };
+      const result = {
+        schemaVersion: 1,
+        plugin: { pluginId: request.pluginId, provider: 'test', revision: 1, lifecycle: { state: 'enabled' }, health: { state: 'ready' } },
+        action: { actionId: request.actionId, confirmation: 'none', risk: 'readonly', requestId: request.requestId },
+        result: output,
+      };
       return {
-        manifest: {}, action: {}, job: {}, deduplicated: false, result: output,
+        manifest: {}, action: {}, job: {}, deduplicated: false, result,
         receipt: { schemaVersion: 1, receiptId: `receipt-${call}`, requestId: request.requestId, repoId: repo.repoId,
           pluginId: request.pluginId, actionId: request.actionId, semanticKey: `key-${call}`, status: 'succeeded',
-          createdAt: call === 1 ? publishedAt : `2026-09-08T00:00:0${call}.000Z` },
+          createdAt: call === 1 ? publishedAt : `2026-09-08T00:00:0${call}.000Z`, result },
       } as any;
     }) as any,
   });
