@@ -3404,6 +3404,7 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(all.filter { !$0.remote }.count, 3)
         XCTAssertEqual(all.first?.title, "Chart")
         XCTAssertEqual(all.first?.threadTitle, "Project A")
+        XCTAssertEqual(Set(all.map(\.threadTitle)), Set(["Project A", "Project B"]))
         XCTAssertEqual(all.first?.threadId, projectA.id)
         XCTAssertEqual(all.first?.messageId, assistantRemoteA.id)
 

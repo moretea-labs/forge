@@ -164,8 +164,12 @@ struct AgentAssetsDashboard: View {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(item.title).font(.system(size: 12, weight: .medium))
                                             .lineLimit(1)
+                                        Text(item.threadTitle)
+                                            .font(.system(size: 10.5))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
                                         Text(item.date.formatted(.dateTime.year().month().day().hour().minute()))
-                                            .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                                            .font(.system(size: 10)).foregroundStyle(.tertiary)
                                     }
                                     Spacer()
                                     Button {
@@ -174,7 +178,7 @@ struct AgentAssetsDashboard: View {
                                         Label("来源会话", systemImage: "arrow.up.right")
                                     }
                                     .buttonStyle(.plain)
-                                    .help(item.threadTitle)
+                                    .help("跳转到原始对话")
                                     .accessibilityLabel("打开来源会话：\(item.threadTitle)")
                                     .accessibilityHint("切换到原始对话")
                                     .accessibilityIdentifier(Self.accessibilityIdentifier(for: item.id, control: "source-thread"))
