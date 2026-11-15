@@ -526,7 +526,7 @@ struct RepositoryCheckoutContext {
     let checkoutRoot: URL?
     let checkoutBranch: String?
 }
-enum ZenScreen {
+enum ZenScreen: Equatable {
     case board, canvas
 }
 
@@ -587,6 +587,19 @@ struct NativeNavigationEntry: Equatable {
     let page: NativePage
     let threadId: String?
     let recordId: String?
+    let zenMode: Bool
+    let zenScreen: ZenScreen
+    let focusedRequirementId: String?
+
+    init(page:NativePage,threadId:String?,recordId:String?,
+         zenMode:Bool = false,zenScreen:ZenScreen = .board,focusedRequirementId:String? = nil) {
+        self.page=page
+        self.threadId=threadId
+        self.recordId=recordId
+        self.zenMode=zenMode
+        self.zenScreen=zenScreen
+        self.focusedRequirementId=focusedRequirementId
+    }
 }
 
 struct ConversationScrollRequest: Equatable {
@@ -745,10 +758,14 @@ final class NativeWorkspace: ObservableObject {
     var navigationBackLabel: String? { navigationBackStack.last?.page.rawValue }
 
     private var currentNavigationEntry: NativeNavigationEntry {
-        NativeNavigationEntry(
+        let isZenWorkbench = zenMode && [.requirement,.plan].contains(page)
+        return NativeNavigationEntry(
             page:page,
             threadId:selectedThreadId,
-            recordId:[.requirement,.plan].contains(page) ? selectedRecord : nil
+            recordId:[.requirement,.plan].contains(page) ? selectedRecord : nil,
+            zenMode:isZenWorkbench,
+            zenScreen:isZenWorkbench ? zenScreen : .board,
+            focusedRequirementId:isZenWorkbench ? zenFocusedRequirementId : nil
         )
     }
 
@@ -1308,9 +1325,12 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func show(_ page: NativePage) {
-        if page != .requirement { zenMode = false }
-        guard self.page != page else { return }
+        guard self.page != page else {
+            if page != .requirement { zenMode = false }
+            return
+        }
         pushNavigationOrigin()
+        if page != .requirement { zenMode = false }
         error = nil
         self.page = page
         if page != .agent { Task { await loadPage() } }
@@ -1323,6 +1343,10 @@ final class NativeWorkspace: ObservableObject {
            let targetThread=threads.first(where:{ $0.id == targetThreadId }) {
             activateThreadContext(targetThread,refreshProjectContext:false)
         }
+        zenMode = target.zenMode
+        zenScreen = target.zenScreen
+        zenFocusedRequirementId = target.focusedRequirementId
+        if target.recordId != nil { clearRecordSelection() }
         error = nil
         page = target.page
         Task {

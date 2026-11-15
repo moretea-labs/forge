@@ -1523,7 +1523,34 @@ final class NativeWorkspaceTests: XCTestCase {
         model.show(.knowledge)
 
         XCTAssertEqual(model.navigationBackStack.last,
-                       NativeNavigationEntry(page:.requirement,threadId:threadId,recordId:"plan:PLAN-123"))
+                       NativeNavigationEntry(page:.requirement,threadId:threadId,recordId:"plan:PLAN-123",
+                                             zenMode:true,zenScreen:.board,focusedRequirementId:nil))
+    }
+
+    @MainActor
+    func testBackRestoresZenPresentationAndCanvasTaskFocus() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.page = .requirement
+        model.zenMode = true
+        model.zenScreen = .canvas
+        model.zenFocusedRequirementId = "REQ-CURRENT"
+        model.selectedRecord = "requirement:REQ-CURRENT"
+
+        model.show(.knowledge)
+        XCTAssertFalse(model.zenMode)
+        XCTAssertEqual(model.navigationBackStack.last?.zenMode,true)
+        XCTAssertEqual(model.navigationBackStack.last?.zenScreen,.canvas)
+        XCTAssertEqual(model.navigationBackStack.last?.focusedRequirementId,"REQ-CURRENT")
+
+        model.goBack()
+
+        XCTAssertEqual(model.page,.requirement)
+        XCTAssertTrue(model.zenMode)
+        XCTAssertEqual(model.zenScreen,.canvas)
+        XCTAssertEqual(model.zenFocusedRequirementId,"REQ-CURRENT")
+        XCTAssertNil(model.selectedRecord)
     }
 
     @MainActor
