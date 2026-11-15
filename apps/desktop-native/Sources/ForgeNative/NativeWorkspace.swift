@@ -146,8 +146,10 @@ struct ChatThread: Codable, Identifiable {
     var model: String?
     var reasoningEffort: String?
     var messages: [ChatMessage] = []
-    // The unfinished composer belongs to this conversation, not the workspace.
+    // The complete unfinished composer belongs to this conversation.
     var pendingDraft: String? = nil
+    var pendingImagePaths: [String]? = nil
+    var pendingContextPaths: [String]? = nil
     var updatedAt = Date()
 }
 enum SemanticRecordKind: String {
@@ -639,15 +641,18 @@ final class NativeWorkspace: ObservableObject {
             let value = newValue.isEmpty ? nil : newValue
             guard threads[index].pendingDraft != value else { return }
             threads[index].pendingDraft = value
-            draftSaveTask?.cancel()
-            draftSaveTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(400))
-                guard !Task.isCancelled else { return }
-                self?.persist()
-            }
+            scheduleComposerPersistence()
         }
     }
     private var draftSaveTask: Task<Void, Never>?
+    private func scheduleComposerPersistence() {
+        draftSaveTask?.cancel()
+        draftSaveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            self?.persist()
+        }
+    }
     @Published var search = ""
     @Published var showSearch = false
     @Published var userRequests: [UserRequestDetail] = []
@@ -671,8 +676,27 @@ final class NativeWorkspace: ObservableObject {
     @Published private(set) var repositoryAccessMode = "request"
     @Published var repositoryAccessLoading = false
     private var repositoryAccessRequestGeneration = 0
-    @Published var pendingImageURLs: [URL] = []
-    @Published var pendingContextPaths: [String] = []
+    var pendingImageURLs: [URL] {
+        get { (thread?.pendingImagePaths ?? []).map { URL(fileURLWithPath:$0) } }
+        set {
+            guard let index = threads.firstIndex(where: { $0.id == selectedThreadId }) else { return }
+            let paths = newValue.map { $0.standardizedFileURL.path }
+            let value = paths.isEmpty ? nil : paths
+            guard threads[index].pendingImagePaths != value else { return }
+            threads[index].pendingImagePaths = value
+            scheduleComposerPersistence()
+        }
+    }
+    var pendingContextPaths: [String] {
+        get { thread?.pendingContextPaths ?? [] }
+        set {
+            guard let index = threads.firstIndex(where: { $0.id == selectedThreadId }) else { return }
+            let value = newValue.isEmpty ? nil : newValue
+            guard threads[index].pendingContextPaths != value else { return }
+            threads[index].pendingContextPaths = value
+            scheduleComposerPersistence()
+        }
+    }
     @Published var checkoutRoot: URL?
     @Published var checkoutBranch: String?
     @Published var checkoutContextLoading = false
@@ -1012,8 +1036,6 @@ final class NativeWorkspace: ObservableObject {
             messageId: targetMessageId
         )
         selectedThreadId = item.id
-        pendingImageURLs = []
-        pendingContextPaths = []
         invalidateAgentChangesRequests(clearSnapshot:contextChanged || refreshProjectContext)
         if contextChanged || refreshProjectContext {
             checkoutRoot = nil
@@ -1292,7 +1314,6 @@ final class NativeWorkspace: ObservableObject {
                 checkoutId = targetCheckoutId
                 checkoutRoot = context.checkoutRoot
                 checkoutBranch = context.checkoutBranch
-                pendingContextPaths = []
                 newThread(provider:sourceProvider)
                 await loadRepositoryAccess(for:id)
             } catch {

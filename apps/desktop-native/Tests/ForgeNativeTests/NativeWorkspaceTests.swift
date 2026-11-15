@@ -1433,6 +1433,60 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testAgentUnsentAttachmentsStayWithConversationAcrossSwitchAndRestart() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:store)
+        let first = try XCTUnwrap(model.selectedThreadId)
+        let screenshot = folder.appendingPathComponent("first.png")
+        let secondImage = folder.appendingPathComponent("second.jpg")
+        model.draft = "First task"
+        model.pendingImageURLs = [screenshot]
+        model.pendingContextPaths = ["Sources/First.swift"]
+
+        model.newThread()
+        let second = try XCTUnwrap(model.selectedThreadId)
+        XCTAssertEqual(model.draft, "")
+        XCTAssertTrue(model.pendingImageURLs.isEmpty)
+        XCTAssertTrue(model.pendingContextPaths.isEmpty)
+        model.draft = "Second task"
+        model.pendingImageURLs = [secondImage]
+        model.pendingContextPaths = ["Sources/Second.swift"]
+
+        model.selectThread(first)
+        XCTAssertEqual(model.draft, "First task")
+        XCTAssertEqual(model.pendingImageURLs, [screenshot])
+        XCTAssertEqual(model.pendingContextPaths, ["Sources/First.swift"])
+        model.selectThread(second)
+        XCTAssertEqual(model.draft, "Second task")
+        XCTAssertEqual(model.pendingImageURLs, [secondImage])
+        XCTAssertEqual(model.pendingContextPaths, ["Sources/Second.swift"])
+
+        try await Task.sleep(for: .milliseconds(650))
+        let restored = NativeWorkspace(store:store)
+        restored.selectThread(first)
+        XCTAssertEqual(restored.draft, "First task")
+        XCTAssertEqual(restored.pendingImageURLs, [screenshot])
+        XCTAssertEqual(restored.pendingContextPaths, ["Sources/First.swift"])
+        restored.selectThread(second)
+        XCTAssertEqual(restored.draft, "Second task")
+        XCTAssertEqual(restored.pendingImageURLs, [secondImage])
+        XCTAssertEqual(restored.pendingContextPaths, ["Sources/Second.swift"])
+
+        restored.pendingImageURLs = []
+        restored.pendingContextPaths = []
+        try await Task.sleep(for: .milliseconds(650))
+        let cleared = NativeWorkspace(store:store)
+        cleared.selectThread(second)
+        XCTAssertEqual(cleared.draft, "Second task")
+        XCTAssertTrue(cleared.pendingImageURLs.isEmpty)
+        XCTAssertTrue(cleared.pendingContextPaths.isEmpty)
+        cleared.selectThread(first)
+        XCTAssertEqual(cleared.pendingImageURLs, [screenshot])
+    }
+
+    @MainActor
     func testThreadRenamePersistsWithoutChangingConversationBinding() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = folder.appendingPathComponent("conversations.json")
