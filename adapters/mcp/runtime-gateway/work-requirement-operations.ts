@@ -134,6 +134,28 @@ export async function callRhWorkRequirementOperation(
   if (operation === 'requirement_revise') {
     const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
     const expectedRevision = Number(args.expected_revision);
+    const hasSemanticUpdate = typeof args.requirement_title === 'string'
+      || typeof args.requirement_outcome === 'string'
+      || Array.isArray(args.requirement_acceptance_criteria)
+      || Array.isArray(args.requirement_delivery_references)
+      || typeof args.requirement_progress_summary === 'string'
+      || Array.isArray(args.requirement_remaining_work)
+      || Array.isArray(args.requirement_accepted_evidence_refs)
+      || Array.isArray(args.requirement_dependencies)
+      || Array.isArray(args.requirement_legacy_aliases)
+      || typeof args.requirement_priority === 'string'
+      || typeof args.requirement_assignee === 'string'
+      || typeof args.requirement_status === 'string'
+      || args.requirement_state === 'open'
+      || args.requirement_state === 'completed'
+      || args.requirement_state === 'cancelled';
+    if (!hasSemanticUpdate) {
+      return result(buildFacadeResult({
+        status: 'blocked',
+        summary: 'REQUIREMENT_REVISION_EMPTY. Supply at least one semantic field.',
+        data: { requirementId, expectedRevision },
+      }) as unknown as Record<string, unknown>, true);
+    }
     try {
       const revised = reviseRequirementSemantic({ controllerHome: ctx.controllerHome }, requirementId, {
         expectedRevision,

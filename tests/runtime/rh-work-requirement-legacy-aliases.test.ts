@@ -83,4 +83,20 @@ describe('rh_work Requirement legacy aliases', () => {
     expect(clearedData?.data?.requirement?.legacyAliases).toEqual([]);
     expect(listRequirementRevisionRecords({ controllerHome }, 'task-a', 10)[0]?.legacyAliases).toEqual([alias]);
   });
+
+  it('rejects an empty revision without consuming a semantic revision', async () => {
+    createTask('task-empty', 'repo-empty');
+    const context = { controllerHome } as MultiRepositoryMcpToolContext;
+
+    const response = await callRhWorkRequirementOperation(context, undefined, 'requirement_revise', {
+      requirement_id: 'task-empty',
+      expected_revision: 1,
+    });
+    const data = response?.structuredContent as { status?: string; summary?: string } | undefined;
+
+    expect(data?.status).toBe('blocked');
+    expect(data?.summary).toContain('REQUIREMENT_REVISION_EMPTY');
+    expect(readRequirement({ controllerHome }, 'task-empty')?.value.semanticRevision).toBe(1);
+    expect(listRequirementRevisionRecords({ controllerHome }, 'task-empty', 10)).toEqual([]);
+  });
 });
