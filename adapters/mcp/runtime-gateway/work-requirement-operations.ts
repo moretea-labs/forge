@@ -123,7 +123,7 @@ export async function callRhWorkRequirementOperation(
       blockingRequirementIds({ controllerHome: ctx.controllerHome }, dependencyIds);
     const sortBy = typeof args.sort_by === 'string' ? args.sort_by : 'updated_at';
     const sortOrder = typeof args.sort_order === 'string' ? args.sort_order : 'desc';
-    if (!['updated_at', 'created_at', 'priority', 'status', 'title'].includes(sortBy)
+    if (!['updated_at', 'created_at', 'priority', 'status', 'title', 'assignee'].includes(sortBy)
       || !['asc', 'desc'].includes(sortOrder)) {
       return result(buildFacadeResult({
         status: 'blocked', summary: 'REQUIREMENT_SORT_INVALID.', data: { sortBy, sortOrder },
@@ -149,6 +149,7 @@ export async function callRhWorkRequirementOperation(
         else if (sortBy === 'created_at') compared = left.createdAt.localeCompare(right.createdAt);
         else if (sortBy === 'priority') compared = (left.priority ? priorityRank.get(left.priority) ?? -1 : -1) - (right.priority ? priorityRank.get(right.priority) ?? -1 : -1);
         else if (sortBy === 'status') compared = (statusRank.get(left.status) ?? -1) - (statusRank.get(right.status) ?? -1);
+        else if (sortBy === 'assignee') compared = (left.assignee ?? '').localeCompare(right.assignee ?? '');
         else compared = left.title.localeCompare(right.title);
         return compared === 0 ? left.requirementId.localeCompare(right.requirementId) : compared * direction;
       });

@@ -98,6 +98,13 @@ describe('Requirement assignment triage', () => {
     expect(unassigned.data.requirements.map((task: { requirementId: string }) => task.requirementId))
       .toEqual(['REQ-NEEDS-OWNER']);
     expect((await queue('assigned')).data.totalCount).toBe(1);
+    const assigneeOrder = structured(await callRuntimeTool(ctx, 'rh_work', {
+      operation: 'requirement_list', project_id: 'triage-project',
+      sort_by: 'assignee', sort_order: 'asc', limit: 10,
+    }));
+    expect(assigneeOrder.data.requirements.map((task: { assignee?: string }) => task.assignee ?? ''))
+      .toEqual(['', 'alice']);
+
     const conflict = await queue('unassigned', { requirement_assignee: 'alice' });
     expect(conflict.status).toBe('blocked');
     const revised = structured(await callRuntimeTool(ctx, 'rh_work', {
@@ -310,7 +317,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(properties.requirement_priority.description).toContain('requirement_list');
     expect(properties.requirement_assignee.description).toContain('requirement_list');
     expect(properties.sort_by).toMatchObject({
-      type: 'string', enum: ['updated_at', 'created_at', 'priority', 'status', 'title'],
+      type: 'string', enum: ['updated_at', 'created_at', 'priority', 'status', 'title', 'assignee'],
     });
     expect(properties.sort_order).toMatchObject({ type: 'string', enum: ['asc', 'desc'] });
     expect(properties.offset).toMatchObject({ type: 'number', minimum: 0 });
