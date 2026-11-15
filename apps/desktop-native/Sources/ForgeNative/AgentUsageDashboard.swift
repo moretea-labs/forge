@@ -9,6 +9,9 @@ struct AgentUsageDashboard: View {
 
     struct Entry: Identifiable {
         let id: String
+        let threadId: String
+        let messageId: String
+        let threadTitle: String
         let date: Date
         let projectId: String?
         let project: String
@@ -68,8 +71,9 @@ struct AgentUsageDashboard: View {
                 let projectName = thread.repoId.flatMap { projectLabels[$0] }
                     ?? thread.repoId ?? "未关联项目"
                 entries.append(Entry(
-                    id: message.id, date: message.createdAt,
-                    projectId: thread.repoId, project: projectName,
+                    id: "\(thread.id):\(message.id)",
+                    threadId: thread.id, messageId: message.id, threadTitle: thread.title,
+                    date: message.createdAt, projectId: thread.repoId, project: projectName,
                     model: message.modelUsed ?? thread.model ?? "未标记模型",
                     provider: message.providerUsed ?? thread.provider ?? "未知",
                     usage: usage
@@ -258,6 +262,16 @@ struct AgentUsageDashboard: View {
                                         .help("用量仅覆盖 \(item.usage.reportedRounds)/\(item.usage.totalRounds) 次模型请求")
                                         .accessibilityLabel("用量数据不完整")
                                 }
+                                Button {
+                                    model.selectThread(item.threadId, messageId: item.messageId)
+                                } label: {
+                                    Label("来源会话", systemImage: "arrow.up.right")
+                                }
+                                .buttonStyle(.plain)
+                                .help(item.threadTitle)
+                                .accessibilityLabel("打开来源会话：\(item.threadTitle)")
+                                .accessibilityHint("跳转到产生这笔用量的回复")
+                                .accessibilityIdentifier("agent.usage.entry.\(item.id).source-thread")
                             }
                             .font(.system(size: 11.5))
                             .accessibilityElement(children: .contain)

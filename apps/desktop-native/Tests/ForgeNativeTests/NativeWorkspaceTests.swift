@@ -3262,6 +3262,7 @@ extension NativeWorkspaceTests {
             createdAt: Date(timeIntervalSince1970: 400)
         )
         var thread = ChatThread()
+        thread.title = "Usage source conversation"
         thread.repoId = "repo-usage"
         thread.messages = [completeMessage, partialMessage, unreportedMessage, oldMessage, userMessage]
 
@@ -3277,17 +3278,28 @@ extension NativeWorkspaceTests {
         )
 
         XCTAssertEqual(snapshot.entries.count, 2)
+        XCTAssertEqual(snapshot.entries.map(\.id), ["\(thread.id):\(partialMessage.id)", "\(thread.id):\(completeMessage.id)"])
+        XCTAssertEqual(snapshot.entries.first?.threadId, thread.id)
+        XCTAssertEqual(snapshot.entries.first?.messageId, partialMessage.id)
+        XCTAssertEqual(snapshot.entries.first?.threadTitle, "Usage source conversation")
         XCTAssertEqual(snapshot.unreportedCount, 1)
         XCTAssertEqual(snapshot.partiallyReported, 1)
         XCTAssertEqual(snapshot.inputTotal, 120)
         XCTAssertEqual(snapshot.outputTotal, 88)
         XCTAssertEqual(snapshot.total, 208)
-        XCTAssertEqual(snapshot.entries.map(\.id), [partialMessage.id, completeMessage.id])
         XCTAssertEqual(snapshot.entries.first?.project, "Usage project")
         XCTAssertEqual(snapshot.entries.first?.provider, "api:anthropic")
         XCTAssertEqual(snapshot.entries.first?.model, "claude-sonnet")
         XCTAssertEqual(snapshot.entries.first?.usage.reportedRounds, 1)
         XCTAssertEqual(snapshot.entries.first?.usage.totalRounds, 2)
+
+        restored.page = .usage
+        let source = try XCTUnwrap(snapshot.entries.first)
+        restored.selectThread(source.threadId, messageId: source.messageId)
+        XCTAssertEqual(restored.page, .agent)
+        XCTAssertEqual(restored.selectedThreadId, thread.id)
+        XCTAssertEqual(restored.conversationScrollRequest?.threadId, thread.id)
+        XCTAssertEqual(restored.conversationScrollRequest?.messageId, partialMessage.id)
     }
 }
 
