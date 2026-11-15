@@ -532,7 +532,7 @@ enum ZenScreen: Equatable {
 
 enum NativePage: String, CaseIterable, Identifiable {
     case agent = "会话", requirement = "规划", plan = "Plan",
-         schedule = "计划任务", plugins = "插件", knowledge = "知识库",
+         schedule = "计划任务", plugins = "项目插件", knowledge = "知识库",
          assets = "资源", usage = "消耗统计", settings = "设置"
     var id: String { rawValue }
     var accessibilityId: String {

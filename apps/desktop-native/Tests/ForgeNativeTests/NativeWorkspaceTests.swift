@@ -902,6 +902,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(NativePage.allCases.contains { $0.rawValue.lowercased().contains("runtime") })
         XCTAssertTrue(NativePage.allCases.contains(.schedule))
         XCTAssertTrue(NativePage.allCases.contains(.plugins))
+        XCTAssertEqual(NativePage.plugins.rawValue,"项目插件")
         XCTAssertTrue(NativePage.allCases.contains(.knowledge))
         XCTAssertTrue(NativePage.allCases.contains(.settings))
     }

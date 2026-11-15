@@ -289,7 +289,7 @@ private struct ForgeWorkspaceView: View {
                 utilitySidebarButton("文件与图片",icon:"photo.on.rectangle",page:.assets)
                 utilitySidebarButton("知识库",icon:"books.vertical",page:.knowledge)
             } else if activeSidebarDestination == .settings {
-                utilitySidebarButton("插件管理",icon:"puzzlepiece",page:.plugins)
+                utilitySidebarButton("项目插件",icon:"puzzlepiece",page:.plugins)
             }
             Spacer(minLength:0)
         }
@@ -6002,7 +6002,7 @@ private struct PluginSettingsSection: View {
         VStack(alignment:.leading,spacing:12) {
             HStack {
                 VStack(alignment:.leading,spacing:4) {
-                    Text("插件管理").font(.system(size:13,weight:.semibold))
+                    Text("官方插件").font(.system(size:13,weight:.semibold))
                     Text("安装或更新不会自动授予操作权限。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary)
                 }
@@ -6013,7 +6013,7 @@ private struct PluginSettingsSection: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(model.pluginManagementLoading)
-                .accessibilityLabel("刷新插件管理")
+                .accessibilityLabel("刷新官方插件")
                 .accessibilityIdentifier("settings.plugins.refresh")
             }
 
@@ -7064,7 +7064,7 @@ private struct SettingsPane: View {
 
                 Divider()
                 RuntimeSettingsSection(model:model)
-                DisclosureGroup("插件管理") {
+                DisclosureGroup("插件安装与授权") {
                     PluginSettingsSection(model:model)
                         .padding(.top,12)
                 }
