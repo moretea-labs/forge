@@ -111,6 +111,18 @@ struct AgentUsageDashboard: View {
         let model: String
     }
 
+    static func distributionRows(
+        _ values: [(String, Int)],
+        limit: Int = 6,
+        remainderLabel: String
+    ) -> [(String, Int)] {
+        guard limit > 0, values.count > limit else { return values }
+        let visibleCount = limit - 1
+        let visible = Array(values.prefix(visibleCount))
+        let remainderTotal = values.dropFirst(visibleCount).reduce(0) { $0 + $1.1 }
+        return visible + [(remainderLabel, remainderTotal)]
+    }
+
     private func providerLabel(_ provider: String) -> String {
         if provider.hasPrefix("api:"),
            let label = model.localApiSettings?.profile(providerId: provider)?.label,
@@ -233,8 +245,14 @@ struct AgentUsageDashboard: View {
                 .accessibilityIdentifier("agent.usage.daily-chart")
 
                 HStack(alignment: .top, spacing: 32) {
-                    distribution("agent.usage.model-distribution", title: "模型用量", values: byModel)
-                    distribution("agent.usage.project-distribution", title: "项目用量", values: byProject)
+                    distribution(
+                        "agent.usage.model-distribution", title: "模型用量",
+                        values: byModel, remainderLabel: "其他模型"
+                    )
+                    distribution(
+                        "agent.usage.project-distribution", title: "项目用量",
+                        values: byProject, remainderLabel: "其他项目"
+                    )
                 }
 
                 LazyVStack(alignment: .leading, spacing: 10) {
@@ -305,13 +323,20 @@ struct AgentUsageDashboard: View {
         .accessibilityIdentifier(identifier)
     }
 
-    private func distribution(_ identifier: String, title: String, values: [(String, Int)]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+    private func distribution(
+        _ identifier: String,
+        title: String,
+        values: [(String, Int)],
+        remainderLabel: String
+    ) -> some View {
+        let displayedValues = Self.distributionRows(values, remainderLabel: remainderLabel)
+        let maximum = max(1, displayedValues.map(\.1).max() ?? 0)
+        return VStack(alignment: .leading, spacing: 12) {
             Text(title).font(.system(size: 15, weight: .semibold))
             if values.isEmpty {
                 Text("暂无数据").font(.system(size: 12)).foregroundStyle(.secondary)
             }
-            ForEach(Array(values.prefix(6).enumerated()), id: \.offset) { _, value in
+            ForEach(Array(displayedValues.enumerated()), id: \.offset) { _, value in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
                         Text(value.0).lineLimit(1)
@@ -324,7 +349,7 @@ struct AgentUsageDashboard: View {
                             .overlay(alignment: .leading) {
                                 Capsule().fill(Color.accentColor.opacity(0.65))
                                     .frame(width: geometry.size.width * CGFloat(value.1) /
-                                           CGFloat(max(1, values.first?.1 ?? 1)))
+                                           CGFloat(maximum))
                             }
                     }
                     .frame(height: 5)

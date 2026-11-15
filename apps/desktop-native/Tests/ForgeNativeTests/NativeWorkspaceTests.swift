@@ -3139,6 +3139,31 @@ extension NativeWorkspaceTests {
         XCTAssertFalse(AgentUsageDashboard.isUsageEligibleAssistantMessage(oldReply, since: cutoff))
     }
 
+    func testUsageDistributionAggregatesRemainingCategoriesWithoutLosingTotals() {
+        let values = [
+            ("Model A", 90), ("Model B", 80), ("Model C", 70), ("Model D", 60),
+            ("Model E", 50), ("Model F", 40), ("Model G", 30), ("Model H", 20),
+            ("Model I", 10), ("Model J", 10), ("Model K", 10), ("Model L", 10)
+        ]
+
+        let displayed = AgentUsageDashboard.distributionRows(
+            values, remainderLabel: "其他模型"
+        )
+
+        XCTAssertEqual(displayed.count, 6)
+        XCTAssertEqual(displayed.map(\.0), [
+            "Model A", "Model B", "Model C", "Model D", "Model E", "其他模型"
+        ])
+        XCTAssertEqual(displayed.last?.1, 130)
+        XCTAssertGreaterThan(displayed.last?.1 ?? 0, displayed.first?.1 ?? 0)
+        XCTAssertEqual(displayed.reduce(0) { $0 + $1.1 }, values.reduce(0) { $0 + $1.1 })
+        XCTAssertEqual(
+            AgentUsageDashboard.distributionRows(Array(values.prefix(6)), remainderLabel: "其他模型").count,
+            6
+        )
+        XCTAssertTrue(AgentUsageDashboard.distributionRows([], remainderLabel: "其他模型").isEmpty)
+    }
+
     func testUsageCoverageCaptionSeparatesMissingAndPartialReceipts() {
         XCTAssertEqual(
             AgentUsageDashboard.usageCoverageCaption(unreportedMessages: 2, partiallyReportedMessages: 1),
