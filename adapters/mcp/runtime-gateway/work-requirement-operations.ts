@@ -101,6 +101,18 @@ export async function callRhWorkRequirementOperation(
       return result(buildFacadeResult({ status: 'blocked', summary: 'REQUIREMENT_PRIORITY_FILTER_INVALID.', data: { priorityFilter } }) as unknown as Record<string, unknown>, true);
     }
     const assigneeFilter = typeof args.requirement_assignee === 'string' ? args.requirement_assignee.trim() : '';
+    const assignmentFilter = typeof args.assignment_filter === 'string' ? args.assignment_filter.trim() : '';
+    if (assignmentFilter && assignmentFilter !== 'assigned' && assignmentFilter !== 'unassigned') {
+      return result(buildFacadeResult({
+        status: 'blocked', summary: 'REQUIREMENT_ASSIGNMENT_FILTER_INVALID.', data: { assignmentFilter },
+      }) as unknown as Record<string, unknown>, true);
+    }
+    if (assignmentFilter === 'unassigned' && assigneeFilter) {
+      return result(buildFacadeResult({
+        status: 'blocked', summary: 'REQUIREMENT_ASSIGNMENT_FILTER_CONFLICT.',
+        data: { assignmentFilter, assigneeFilter },
+      }) as unknown as Record<string, unknown>, true);
+    }
     const searchQuery = typeof args.search_query === 'string' ? args.search_query.trim() : '';
     const normalizedSearchQuery = searchQuery.toLowerCase();
     const dependencyFilter = typeof args.dependency_filter === 'string' ? args.dependency_filter : '';
@@ -126,6 +138,7 @@ export async function callRhWorkRequirementOperation(
       .filter((semantic) => (!statusFilter || semantic.status === statusFilter)
         && (!priorityFilter || semantic.priority === priorityFilter)
         && (!assigneeFilter || semantic.assignee === assigneeFilter)
+        && (!assignmentFilter || Boolean(semantic.assignee) === (assignmentFilter === 'assigned'))
         && (!dependencyFilter || (blockers(semantic.dependsOnRequirementIds).length > 0) === (dependencyFilter === 'blocked'))
         && (!normalizedSearchQuery || [semantic.requirementId, semantic.title, semantic.outcomeStatement,
           semantic.projectId ?? '', ...semantic.legacyAliases]
@@ -182,6 +195,7 @@ export async function callRhWorkRequirementOperation(
           ...(statusFilter ? { status: statusFilter } : {}),
           ...(priorityFilter ? { priority: priorityFilter } : {}),
           ...(assigneeFilter ? { assignee: assigneeFilter } : {}),
+          ...(assignmentFilter ? { assignment: assignmentFilter } : {}),
           ...(dependencyFilter ? { dependency: dependencyFilter } : {}),
           ...(searchQuery ? { searchQuery } : {}),
         },

@@ -74,6 +74,46 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
     ?? JSON.parse(result!.content[0] && 'text' in result!.content[0] ? String(result!.content[0].text) : '{}')) as Record<string, any>;
 }
 
+describe('Requirement assignment triage', () => {
+  test('find unassigned tasks, assign one with CAS and read back the updated queue', async () => {
+    const home = tempRoot('forge-assignment-triage-');
+    ensureControllerHome(home);
+    const ctx = mcpContext(home);
+    expect(structured(await callRuntimeTool(ctx, 'rh_work', {
+      operation: 'project_create', project_id: 'triage-project', project_display_name: 'Triage',
+    })).status).toBe('ok');
+    for (const [id, assignee] of [['REQ-NEEDS-OWNER', undefined], ['REQ-HAS-OWNER', 'alice']] as const) {
+      const created = structured(await callRuntimeTool(ctx, 'rh_work', {
+        operation: 'requirement_create', project_id: 'triage-project', requirement_id: id,
+        requirement_title: id, requirement_outcome: 'Deliver '+id,
+        ...(assignee ? { requirement_assignee: assignee } : {}),
+      }));
+      expect(created.status).toBe('ok');
+    }
+    const queue = async (filter: string, more: Record<string, unknown> = {}) => structured(await callRuntimeTool(ctx, 'rh_work', {
+      operation: 'requirement_list', project_id: 'triage-project', assignment_filter: filter, ...more,
+    }));
+    const unassigned = await queue('unassigned');
+    expect(unassigned.data).toMatchObject({ totalCount: 1, filters: { assignment: 'unassigned' } });
+    expect(unassigned.data.requirements.map((task: { requirementId: string }) => task.requirementId))
+      .toEqual(['REQ-NEEDS-OWNER']);
+    expect((await queue('assigned')).data.totalCount).toBe(1);
+    const conflict = await queue('unassigned', { requirement_assignee: 'alice' });
+    expect(conflict.status).toBe('blocked');
+    const revised = structured(await callRuntimeTool(ctx, 'rh_work', {
+      operation: 'requirement_revise', project_id: 'triage-project',
+      requirement_id: 'REQ-NEEDS-OWNER', expected_revision: 1, requirement_assignee: 'bob',
+    }));
+    expect(revised.status).toBe('ok');
+    expect((await queue('unassigned')).data).toMatchObject({ totalCount: 0, requirements: [] });
+    expect((await queue('assigned')).data.totalCount).toBe(2);
+    const selected = structured(await callRuntimeTool(ctx, 'rh_work', {
+      operation: 'requirement_get', project_id: 'triage-project', requirement_id: 'REQ-NEEDS-OWNER', detail_level: 'detail',
+    }));
+    expect(selected.data.requirement).toMatchObject({ assignee: 'bob', revision: 2 });
+  });
+});
+
 describe('rh_work Requirement bootstrap', () => {
   test('lists canonical Requirements without requiring Work or Plan authority', async () => {
     const repoRoot = tempRoot('forge-requirement-list-repo-');

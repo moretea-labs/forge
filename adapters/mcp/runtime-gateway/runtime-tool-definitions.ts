@@ -150,6 +150,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     requirement_status: { type: 'string', enum: [...REQUIREMENT_STATES], description: 'Full task lifecycle status for requirement_create/requirement_revise or exact requirement_list filter. Completing a task requires empty remaining work and accepted evidence; terminal states cannot be reopened.' },
     requirement_priority: { type: 'string', enum: [...REQUIREMENT_PRIORITIES], description: 'Task priority for requirement_create/requirement_revise or exact requirement_list filter.' },
     requirement_assignee: { type: 'string', maxLength: 160, description: 'Task owner label or identity for requirement_create/requirement_revise or exact requirement_list filter. Metadata only; it does not grant access.' },
+    assignment_filter: { type: 'string', enum: ['assigned', 'unassigned'], description: 'For requirement_list, show tasks with or without an assignee. The unassigned filter cannot be combined with a specific requirement_assignee.' },
     requirement_dependencies: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 160 }, description: 'Complete set of Requirement IDs this task depends on. Dependencies may cross repositories/projects; missing, cancelled, self and cyclic references are rejected.' },
     requirement_candidate_id: { type: 'string', description: 'Exact Cognitive memory id for operation=requirement_promote_candidate.' },
     handoff_id: { type: 'string', description: 'Optional existing HandoffItem to include as bounded context for launcher_start.' },
