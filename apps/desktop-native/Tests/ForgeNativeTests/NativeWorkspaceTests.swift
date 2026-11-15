@@ -3187,7 +3187,7 @@ extension NativeWorkspaceTests {
         try sourceData.write(to: source)
         try Data([0x00, 0x01, 0x02]).write(to: destination)
 
-        try await copyLocalImageAtomically(from: source, to: destination)
+        try await copyLocalFileAtomically(from: source, to: destination)
 
         XCTAssertEqual(try Data(contentsOf: source), sourceData)
         XCTAssertEqual(try Data(contentsOf: destination), sourceData)
@@ -3657,11 +3657,11 @@ extension NativeWorkspaceTests {
         let bytes = Data("local context file".utf8)
         try bytes.write(to: source)
 
-        try await copyLocalFile(from: source, to: destination)
+        try await copyLocalFileAtomically(from: source, to: destination)
         XCTAssertEqual(try Data(contentsOf: destination), bytes)
 
         try Data("previous destination".utf8).write(to: destination)
-        try await copyLocalFile(from: source, to: destination)
+        try await copyLocalFileAtomically(from: source, to: destination)
         XCTAssertEqual(try Data(contentsOf: destination), bytes)
 
         let remainingFiles = try FileManager.default.contentsOfDirectory(atPath: folder.path)

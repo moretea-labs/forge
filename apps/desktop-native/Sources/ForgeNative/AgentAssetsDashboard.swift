@@ -229,14 +229,6 @@ struct AgentAssetsDashboard: View {
     }
 }
 
-func copyLocalImageAtomically(from source: URL, to destination: URL) async throws {
-    let copying = Task.detached(priority: .utility) {
-        let data = try Data(contentsOf: source, options: .mappedIfSafe)
-        try data.write(to: destination, options: .atomic)
-    }
-    try await copying.value
-}
-
 private struct AgentLocalImageResourceView: View {
     let path: String
     let accessibilityIdentifierPrefix: String
@@ -299,7 +291,7 @@ private struct AgentLocalImageResourceView: View {
         Task {
             defer { isSaving = false }
             do {
-                try await copyLocalImageAtomically(from: source, to: destination)
+                try await copyLocalFileAtomically(from: source, to: destination)
                 status = "已保存到 " + destination.lastPathComponent
             } catch {
                 status = "保存失败：" + error.localizedDescription
@@ -327,7 +319,7 @@ func resolveLocalContextFileURL(rootPath: String?, relativePath: String) -> URL?
     return candidate
 }
 
-func copyLocalFile(from source: URL, to destination: URL) async throws {
+func copyLocalFileAtomically(from source: URL, to destination: URL) async throws {
     let copying = Task.detached(priority: .utility) {
         let temporary = destination.deletingLastPathComponent()
             .appendingPathComponent(".\(UUID().uuidString).tmp")
@@ -502,7 +494,7 @@ private struct AgentLocalFileResourceView: View {
             guard panel.runModal() == .OK, let destination = panel.url else { return }
             status = "正在保存…"
             do {
-                try await copyLocalFile(from: source, to: destination)
+                try await copyLocalFileAtomically(from: source, to: destination)
                 status = "已保存到 " + destination.lastPathComponent
             } catch {
                 status = "保存失败：" + error.localizedDescription
