@@ -280,9 +280,27 @@ describe('rh_work Project operations', () => {
     }]);
     expect(taskDetailAfterRestart.data.revisionHistory).toMatchObject([{ revision: 1, status: 'active', priority: 'high', assignee: 'alice', dependsOnRequirementIds: [] }]);
 
-    expect(RH_WORK_MODEL_OPERATIONS).toEqual(expect.arrayContaining(['project_create', 'project_list', 'project_get', 'project_revise']));
+    expect(RH_WORK_MODEL_OPERATIONS).toEqual(expect.arrayContaining([
+      'project_create', 'project_list', 'project_get', 'project_revise',
+      'requirement_list', 'requirement_create', 'requirement_get', 'requirement_revise',
+    ]));
     const rhWork = runtimeToolDefinitions.find((tool) => tool.name === 'rh_work');
-    expect((rhWork?.inputSchema as { properties?: { operation?: { enum?: string[] } } }).properties?.operation?.enum)
-      .toContain('project_revise');
+    const schemaProperties = (rhWork?.inputSchema as {
+      properties?: Record<string, { type?: string; enum?: string[]; description?: string }>;
+    }).properties;
+    expect(schemaProperties?.operation?.enum).toEqual(expect.arrayContaining([
+      'project_create', 'project_list', 'project_get', 'project_revise', 'requirement_list',
+    ]));
+    expect(schemaProperties).toMatchObject({
+      project_id: { type: 'string' },
+      project_display_name: { type: 'string' },
+      project_status: { enum: ['active', 'archived'] },
+      requirement_status: { type: 'string' },
+      requirement_priority: { type: 'string' },
+      requirement_assignee: { type: 'string' },
+      requirement_dependencies: { type: 'array' },
+      requirement_legacy_aliases: { type: 'array' },
+    });
+    expect(schemaProperties?.requirement_legacy_aliases?.description).toContain('requirement_create/requirement_revise');
   });
 });
