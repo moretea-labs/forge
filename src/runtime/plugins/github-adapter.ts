@@ -9,6 +9,7 @@ import {
   listGitHubWorkflows,
   readGitHubProjectItems,
   readGitHubProjectIssue,
+  readGitHubProjectIssueTimeline,
 } from './github-client';
 import type {
   AssistantPluginActionDescriptor,
@@ -217,7 +218,7 @@ function githubActions(projectConfigured: boolean): AssistantPluginActionDescrip
       resourceClaims: [{ resource: 'remote', mode: 'read' }],
       argumentsSchema: {
         type: 'object',
-        properties: { issue_url: { type: 'string', maxLength: 512 } },
+        properties: { issue_url: { type: 'string', maxLength: 512 }, include_timeline: { type: 'boolean' } },
         required: ['issue_url'],
         additionalProperties: false,
       },
@@ -430,7 +431,9 @@ export async function executeGitHubPluginAction(input: AssistantPluginActionExec
     }
     case 'read_project_issue': {
       const issueUrl = typeof input.args.issue_url === 'string' ? input.args.issue_url : '';
-      return { issue: readGitHubProjectIssue(input.repoRoot, issueUrl) };
+      const issue = readGitHubProjectIssue(input.repoRoot, issueUrl);
+      return { issue, ...(input.args.include_timeline === true
+        ? { timeline: readGitHubProjectIssueTimeline(input.repoRoot, issueUrl) } : {}) };
     }
     case 'list_workflows': {
       const config = loadGitHubPluginConfig(input.repoRoot);

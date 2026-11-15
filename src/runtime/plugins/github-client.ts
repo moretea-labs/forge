@@ -419,3 +419,37 @@ export function readGitHubProjectIssue(repoRoot: string, issueUrl: string) {
   if (!result.ok) throw new Error('failed to read GitHub Project Issue: ' + (result.error || result.stderr));
   return parseGitHubProjectIssueDetail(parseJson<unknown>(result.stdout, 'gh issue view'), issueUrl);
 }
+
+/** Read the paginated REST Issue timeline; no Project V2 field-change coverage is implied. */
+export function buildGitHubProjectIssueTimelineArgs(issueUrl: string): string[] {
+  const reference = parseGitHubProjectIssueUrl(issueUrl);
+  return [
+    'api', '-H', 'Accept: application/vnd.github+json',
+    'repos/' + reference.repository + '/issues/' + reference.number + '/timeline?per_page=100',
+    '--paginate', '--jq', '.[] | @json',
+  ];
+}
+
+export function parseGitHubProjectIssueTimeline(stdout: string): Array<Record<string, unknown>> {
+  return stdout.split('\n').filter((line) => Boolean(line.trim())).map((line) => {
+    const event = parseJson<unknown>(line, 'gh issue timeline');
+    if (!event || typeof event !== 'object' || Array.isArray(event)
+      || typeof (event as Record<string, unknown>).event !== 'string'
+      || typeof (event as Record<string, unknown>).created_at !== 'string') {
+      throw new Error('GITHUB_PROJECT_ISSUE_TIMELINE_EVENT_INVALID');
+    }
+    return event as Record<string, unknown>;
+  });
+}
+
+export function readGitHubProjectIssueTimeline(repoRoot: string, issueUrl: string) {
+  const result = gh(repoRoot, buildGitHubProjectIssueTimelineArgs(issueUrl), undefined, 8 * 1024 * 1024);
+  if (!result.ok) throw new Error('failed to read GitHub Project Issue timeline: ' + (result.error || result.stderr));
+  const events = parseGitHubProjectIssueTimeline(result.stdout);
+  return {
+    events,
+    eventsReturned: events.length,
+    historyCoverage: 'github_issue_timeline_paginated' as const,
+    projectV2FieldHistory: 'not_verified' as const,
+  };
+}

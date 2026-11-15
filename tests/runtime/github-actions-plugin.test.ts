@@ -17,6 +17,8 @@ import {
   parseGitHubProjectItems,
   buildGitHubProjectIssueDetailArgs,
   parseGitHubProjectIssueDetail,
+  buildGitHubProjectIssueTimelineArgs,
+  parseGitHubProjectIssueTimeline,
 } from '../../src/runtime/plugins/github-client';
 import { buildGitHubPluginManifest, executeGitHubPluginAction } from '../../src/runtime/plugins/github-adapter';
 
@@ -238,5 +240,32 @@ describe('GitHub Project Issue detail for migration', () => {
     expect(detail.body.length).toBeGreaterThan(500);
     expect(() => parseGitHubProjectIssueDetail({ ...raw, number: 649 }, url)).toThrow(/SHAPE_INVALID/);
     expect(() => parseGitHubProjectIssueDetail({ ...raw, comments: [{}] }, url)).toThrow(/COMMENT_INVALID/);
+  });
+});
+
+describe('GitHub Project Issue paginated timeline', () => {
+  const url = 'https://github.com/moretea-labs/forge/issues/648';
+
+  test('uses the source Issue identity and paginates the existing REST timeline', () => {
+    expect(buildGitHubProjectIssueTimelineArgs(url)).toEqual([
+      'api', '-H', 'Accept: application/vnd.github+json',
+      'repos/moretea-labs/forge/issues/648/timeline?per_page=100',
+      '--paginate', '--jq', '.[] | @json',
+    ]);
+    expect(buildGitHubProjectIssueTimelineArgs('https://github.com/moretea-labs/personal-knowledge-assistant/issues/37')[3])
+      .toBe('repos/moretea-labs/personal-knowledge-assistant/issues/37/timeline?per_page=100');
+  });
+
+  test('preserves each event including unknown properties without dropping page boundaries', () => {
+    const first = { event: 'renamed', created_at: '2026-11-01T00:00:00Z',
+      rename: { from: 'old title', to: 'new title' }, id: 1 };
+    const second = { event: 'cross-referenced', created_at: '2026-11-02T00:00:00Z',
+      source: { issue: { number: 8 } }, id: null };
+    const result = parseGitHubProjectIssueTimeline(JSON.stringify(first) + '\n' + JSON.stringify(second) + '\n');
+    expect(result).toEqual([first, second]);
+    expect(parseGitHubProjectIssueTimeline('')).toEqual([]);
+    expect(() => parseGitHubProjectIssueTimeline('{"event":"assigned"}\n'))
+      .toThrow('GITHUB_PROJECT_ISSUE_TIMELINE_EVENT_INVALID');
+    expect(() => parseGitHubProjectIssueTimeline('not JSON\n')).toThrow('gh issue timeline returned invalid JSON');
   });
 });
