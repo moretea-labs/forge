@@ -28,9 +28,14 @@ extension ZenModeTests {
         XCTAssertEqual(model.threads.count,1)
         model.show(.agent)
         XCTAssertFalse(model.zenMode)
+        XCTAssertEqual(model.page,.agent)
         model.zenMode=true
         model.show(.requirement)
         XCTAssertTrue(model.zenMode)
+        XCTAssertEqual(model.page,.requirement)
+        model.show(.agent)
+        XCTAssertFalse(model.zenMode)
+        XCTAssertEqual(model.page,.agent)
     }
 }
 

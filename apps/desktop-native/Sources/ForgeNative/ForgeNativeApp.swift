@@ -208,20 +208,6 @@ private struct ForgeWorkspaceView: View {
         .task {
             if model.zenMode { model.show(.requirement) }
         }
-        .onChange(of:model.zenMode) { active in
-            if active {
-                model.show(.requirement)
-            } else if model.page == .requirement {
-                if let repoId=model.repoId,let checkoutId=model.checkoutId,
-                   model.thread?.repoId != repoId || model.thread?.checkoutId != checkoutId {
-                    model.openCheckout(inProject:repoId,checkoutId:checkoutId)
-                } else if let repoId=model.repoId,model.thread?.repoId != repoId {
-                    model.openProject(repoId)
-                } else {
-                    model.show(.agent)
-                }
-            }
-        }
         .onChange(of:model.showSearch) { visible in
             sidebarSearchFocused = visible
         }
@@ -2441,6 +2427,7 @@ private struct AgentPane: View {
                 .accessibilityIdentifier("agent.read-only")
             Button {
                 model.zenMode=true
+                model.show(.requirement)
             } label: {
                 Label("返回 Zen",systemImage:"arrow.uturn.backward")
                     .font(.system(size:10,weight:.medium))
