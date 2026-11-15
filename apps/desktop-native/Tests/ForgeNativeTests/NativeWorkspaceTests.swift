@@ -513,6 +513,8 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(resumed.count,2)
         XCTAssertTrue(resumed[1]["content"]?.contains("proc_abc_123") == true)
         XCTAssertTrue(resumed[1]["content"]?.contains("process_status") == true)
+        XCTAssertTrue(resumed[1]["content"]?.contains("LOCAL_FORGE_PROCESS_NOT_MANAGED") == true)
+        XCTAssertTrue(resumed[1]["content"]?.contains("do not reissue the command or call process_cancel") == true)
         XCTAssertEqual(resumed[1]["content"]?.components(separatedBy:"proc_abc_123").count,2)
         XCTAssertFalse(resumed[1]["content"]?.contains("proc_not_ours") == true)
         XCTAssertFalse(resumed[1]["content"]?.contains("Process accepted") == true)

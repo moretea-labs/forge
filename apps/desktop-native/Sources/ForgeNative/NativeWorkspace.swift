@@ -3741,7 +3741,7 @@ final class NativeWorkspace: ObservableObject {
             if !uniqueIDs.isEmpty {
                 content += "\nPrior incomplete run_command Process IDs (not completion evidence): "
                     + uniqueIDs.joined(separator:", ")
-                    + ". First use process_status for authoritative terminal receipts. Do not re-run these commands."
+                    + ". First use process_status for authoritative terminal receipts. If it fails (including LOCAL_FORGE_PROCESS_NOT_MANAGED) or cannot confirm a terminal receipt, stop this effect chain and report the exact error; do not reissue the command or call process_cancel for that Process. Continue only unrelated work that does not depend on it."
             }
         }
         messages.append(["role":"user","content":content])
