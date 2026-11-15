@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "workflowId": "appstore.observe-release",
-  "version": "1",
+  "version": "2",
   "title": "App Store version and mainland territory availability observation",
   "description": "Read-only Apple version state plus typed appAvailabilityV2 territory data. No Browser UI fallback and no release claim from version state alone.",
   "inputContract": {
@@ -137,6 +137,25 @@
           "required": true
         }
       }
+    },
+    {
+      "stepId": "decide-verified-next-action",
+      "kind": "script",
+      "scriptRef": "decideNextAction",
+      "input": {
+        "version_action": "{{output.classify-version.next_action}}",
+        "cn_status": "{{output.classify-cn.status}}"
+      },
+      "outputContract": {
+        "next_action": {
+          "type": "string",
+          "required": true
+        },
+        "public_storefront_and_download_proof_required": {
+          "type": "json",
+          "required": true
+        }
+      }
     }
   ],
   "scripts": {
@@ -152,16 +171,14 @@
       "outputFormat": "json",
       "body": "const x=JSON.parse(process.argv[1]||'{}');const v=x.versions;const target=String(x.version_string||'');if(!Array.isArray(v)||!target||!x.links||typeof x.links!=='object'){process.stderr.write('VERSION_RECORDS_MISSING');process.exit(2)}if(x.links.next){process.stderr.write('VERSION_PAGINATION_INCOMPLETE');process.exit(3)}const matches=v.filter(r=>String(r?.attributes?.versionString||'')===target);if(matches.length!==1){process.stderr.write('VERSION_TARGET_NOT_UNIQUE');process.exit(4)}const a=matches[0]?.attributes||{};const appStoreState=String(a.appStoreState||'unknown');const appVersionState=String(a.appVersionState||'unknown');const releaseType=String(a.releaseType||'unknown');let next_action='inspect_release_state';if(['REJECTED','METADATA_REJECTED'].includes(appVersionState))next_action='prepare_correction';else if(['WAITING_FOR_REVIEW','IN_REVIEW','WAITING_FOR_EXPORT_COMPLIANCE'].includes(appVersionState))next_action='await_or_inspect_review';else if(appStoreState==='READY_FOR_SALE')next_action='verify_territories';else if(appStoreState==='PENDING_DEVELOPER_RELEASE'&&releaseType==='MANUAL')next_action='manual_release_required';else if(appStoreState==='PENDING_DEVELOPER_RELEASE'&&releaseType==='AFTER_APPROVAL')next_action='await_apple_release';else if(appVersionState==='READY_FOR_DISTRIBUTION')next_action='inspect_release_state';process.stdout.write(JSON.stringify({version:target,app_store_state:appStoreState,app_version_state:appVersionState,release_type:releaseType,downloadable:typeof a.downloadable==='boolean'?a.downloadable:null,next_action}));"
     },
+    "decideNextAction": {
+      "runtime": "node",
+      "deterministic": true,
+      "outputFormat": "json",
+      "body": "const x=JSON.parse(process.argv[1]||'{}');const v=x.version_action;const c=x.cn_status;const versionActions=new Set(['prepare_correction','await_or_inspect_review','await_apple_release','verify_territories','manual_release_required','inspect_release_state']);const cnStatuses=new Set(['icp_missing','not_available','available','unknown']);if(!versionActions.has(v)||!cnStatuses.has(c)){process.stderr.write('RELEASE_DECISION_INPUT_UNVERIFIED');process.exit(2)}let next_action='reconcile_asc_release_state';if(v==='prepare_correction')next_action='prepare_correction';else if(v==='await_or_inspect_review')next_action='await_or_inspect_review';else if(v==='await_apple_release')next_action='await_apple_release';else if(c==='icp_missing')next_action='resolve_cn_icp';else if(c==='not_available')next_action='reconcile_cn_distribution';else if(c==='unknown')next_action='reconcile_cn_territory';else if(v==='manual_release_required')next_action='manual_release_after_authorization';else if(v==='verify_territories')next_action='verify_cn_storefront_download';process.stdout.write(JSON.stringify({next_action,public_storefront_and_download_proof_required:next_action==='verify_cn_storefront_download'}));"
+    },
     "classifyCn": {
       "runtime": "node",
       "deterministic": true,
       "outputFormat": "json",
-      "body": "const a=JSON.parse(process.argv[1]||'{}');const rows=a.data;if(!Array.isArray(rows)||!a.links||typeof a.links!=='object'){process.stderr.write('CN_TERRITORY_DATA_MISSING');process.exit(2)}if(a.links.next){process.stderr.write('CN_TERRITORY_PAGINATION_INCOMPLETE');process.exit(3)}const matches=rows.filter(r=>r?.relationships?.territory?.data?.id==='CHN');if(matches.length!==1){process.stderr.write('CN_TERRITORY_ROW_NOT_UNIQUE');process.exit(4)}const attrs=matches[0]?.attributes||{};const available=typeof attrs.available==='boolean'?attrs.available:null;const statuses=Array.isArray(attrs.contentStatuses)?attrs.contentStatuses.filter(x=>typeof x==='string'):[];let status='unknown';if(available===false)status='not_available';else if(available===true&&statuses.includes('ICP_NUMBER_MISSING'))status='icp_missing';else if(available===true&&statuses.includes('AVAILABLE'))status='available';process.stdout.write(JSON.stringify({territory:'CHN',status,available,content_statuses:statuses,release_date:attrs.releaseDate??null}));"
-    }
-  },
-  "resources": {
-    "territory": "CHN",
-    "providerPrerequisite": "Requires the existing app_store_connect.list_app_territory_availabilities read action from #643. Do not fall back to Browser UI when the typed action is unavailable.",
-    "policy": "appStoreState=READY_FOR_SALE confirms store release; appVersionState=READY_FOR_DISTRIBUTION alone does not. downloadable=true is not China availability. CN is available only when exactly one CHN row is present, no next page exists, available=true and contentStatuses includes AVAILABLE. ICP_NUMBER_MISSING is a hard block. A MANUAL version in PENDING_DEVELOPER_RELEASE remains manual_release_required until an official ASC release action is available. Never claim actual download without public CN name search, visible detail page and actual device download evidence."
-  }
-}
+      "body": "const a=JSON.parse(process.argv[1]||'{}');const rows=a.data;if(!Array.isArray(rows)||!a.links||typeof a.links!=='object'){process.stderr.write('CN_TERRITORY_DATA_MISSING');process.exit(2)}if(a.links.next){process.stderr.write('CN_TERRITORY_PAGINATION_INCOMPLETE');process.exit(3)}const matches=rows.filter(r=>r?.relationships?.territory?.data?.id==='CHN');if(matches.length!==1){process.stderr.write('CN_TERRITORY_ROW_NOT_UNIQUE');process.exit(4)}const attrs=matches[0]?.attributes||{};const ava...
