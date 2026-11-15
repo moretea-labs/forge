@@ -170,6 +170,11 @@ describe('rh_work Requirement bootstrap', () => {
     const schema = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work')?.inputSchema;
     expect(schema).toBeDefined();
     const properties = schema?.properties as Record<string, unknown>;
+    expect(properties.requirement_title).toMatchObject({ type: 'string' });
+    expect((properties.requirement_title as { description: string }).description).toContain('requirement_revise');
+    expect((properties.requirement_outcome as { description: string }).description).toContain('requirement_revise');
+    expect(properties.requirement_acceptance_criteria).toMatchObject({ type: 'array', maxItems: 50 });
+    expect((properties.requirement_acceptance_criteria as { description: string }).description).toContain('requirement_revise');
     expect(properties.requirement_progress_summary).toMatchObject({ type: 'string', maxLength: 2_000 });
     expect(properties.requirement_remaining_work).toMatchObject({
       type: 'array', maxItems: 50, items: { type: 'string', maxLength: 500 },
@@ -217,6 +222,9 @@ describe('rh_work Requirement bootstrap', () => {
       operation: 'requirement_revise',
       requirement_id: 'REQ-TYPED-PROGRESS',
       expected_revision: 1,
+      requirement_title: 'Typed progress with revisable core',
+      requirement_outcome: 'Replace the initial goal without creating a second Requirement.',
+      requirement_acceptance_criteria: ['Revised outcome is the current authority.'],
       requirement_progress_summary: 'Source patch submitted; review pending.',
       requirement_remaining_work: ['Review exact HEAD', 'Verify deployed Runtime'],
       requirement_accepted_evidence_refs: ['https://github.com/example/forge/pull/123'],
@@ -227,6 +235,9 @@ describe('rh_work Requirement bootstrap', () => {
     expect(updated.status).toBe('ok');
     expect(updated.data.requirement).toMatchObject({
       revision: 2,
+      title: 'Typed progress with revisable core',
+      outcomeStatement: 'Replace the initial goal without creating a second Requirement.',
+      acceptanceCriteria: ['Revised outcome is the current authority.'],
       progressSummary: 'Source patch submitted; review pending.',
       remainingWork: ['Review exact HEAD', 'Verify deployed Runtime'],
       acceptedEvidenceRefs: ['https://github.com/example/forge/pull/123'],
@@ -237,10 +248,12 @@ describe('rh_work Requirement bootstrap', () => {
       operation: 'requirement_revise',
       requirement_id: 'REQ-TYPED-PROGRESS',
       expected_revision: 1,
+      requirement_outcome: 'Stale goal must not overwrite the revised objective.',
       requirement_progress_summary: 'Stale write must fail.',
     }));
     expect(stale.status).toBe('blocked');
     expect(stale.data.currentRequirement.progressSummary).toBe('Source patch submitted; review pending.');
+    expect(stale.data.currentRequirement.outcomeStatement).toBe('Replace the initial goal without creating a second Requirement.');
 
     const reread = structured(await callRuntimeTool(ctx, 'rh_work', {
       operation: 'requirement_get',
