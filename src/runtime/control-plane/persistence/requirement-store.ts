@@ -84,6 +84,7 @@ export interface RequirementSemanticView {
   remainingWork: string[];
   acceptedEvidenceRefs: string[];
   dependsOnRequirementIds: string[];
+  legacyAliases: string[];
   /** Coarse semantic state retained for existing Requirement/Autopilot consumers. */
   state: SemanticRequirementState;
   /** Full user-facing task lifecycle state. */
@@ -114,6 +115,7 @@ export interface ReviseRequirementSemanticInput {
   remainingWork?: string[];
   acceptedEvidenceRefs?: string[];
   dependsOnRequirementIds?: string[];
+  legacyAliases?: string[];
   state?: SemanticRequirementState;
 }
 
@@ -214,6 +216,7 @@ export function requirementSemanticView(requirement: Requirement): RequirementSe
     remainingWork: [...(requirement.remainingWork ?? [])],
     acceptedEvidenceRefs: [...(requirement.acceptedEvidenceRefs ?? [])],
     dependsOnRequirementIds: [...(requirement.dependsOnRequirementIds ?? [])],
+    legacyAliases: [...(requirement.legacyAliases ?? [])],
     state: semanticRequirementState(requirement),
     status: requirement.state,
     ...(requirement.priority ? { priority: requirement.priority } : {}),
@@ -239,6 +242,28 @@ function readWithin(database: SqliteDatabase, requirementId: string): ControlPla
 function normalizeRequirementDependencies(values: readonly string[] | undefined): string[] {
   if ((values?.length ?? 0) > 50) throw new Error('REQUIREMENT_DEPENDENCY_LIMIT_EXCEEDED');
   return [...new Set((values ?? []).map((value) => id(value)))].sort((left, right) => left.localeCompare(right));
+}
+
+function normalizeRequirementLegacyAliases(values: readonly string[] | undefined): string[] {
+  if ((values?.length ?? 0) > 20) throw new Error('REQUIREMENT_LEGACY_ALIAS_LIMIT_EXCEEDED');
+  const aliases = bounded(values, 20, 160);
+  if (new Set(aliases).size !== aliases.length) throw new Error('REQUIREMENT_LEGACY_ALIAS_DUPLICATE');
+  return aliases;
+}
+
+function assertUniqueRequirementLegacyAliasesWithinTransaction(
+  database: SqliteDatabase,
+  requirementId: string,
+  aliases: readonly string[],
+): void {
+  if (aliases.length === 0) return;
+  const requested = new Set(aliases);
+  const existing = listAllControlPlaneRecordsWithinTransaction<Requirement>(database, { namespace: NAMESPACE, scope: SCOPE });
+  for (const record of existing) {
+    if (record.value.requirementId === requirementId) continue;
+    const conflict = (record.value.legacyAliases ?? []).find((alias) => requested.has(alias));
+    if (conflict) throw new Error(`REQUIREMENT_LEGACY_ALIAS_CONFLICT:${conflict}:${record.value.requirementId}`);
+  }
 }
 
 function assertRequirementDependenciesWithinTransaction(
@@ -311,6 +336,7 @@ export function listRequirementRevisionRecords(
       ...record,
       semanticScope: record.semanticScope ?? ({ schemaVersion: 1, kind: 'requirement', id: record.requirementId } as const),
       dependsOnRequirementIds: [...(record.dependsOnRequirementIds ?? [])],
+      legacyAliases: [...(record.legacyAliases ?? [])],
     }))
     .sort((left, right) => right.revision - left.revision);
 }
@@ -343,6 +369,12 @@ export function reviseRequirementSemantic(
         || dependsOnRequirementIds.some((dependencyId, index) => dependencyId !== normalizedCurrentDependencies[index]));
     if (dependenciesChanged) {
       assertRequirementDependenciesWithinTransaction(database, requirementId, dependsOnRequirementIds);
+    }
+    const legacyAliases = input.legacyAliases === undefined
+      ? [...(current.value.legacyAliases ?? [])]
+      : normalizeRequirementLegacyAliases(input.legacyAliases);
+    if (input.legacyAliases !== undefined) {
+      assertUniqueRequirementLegacyAliasesWithinTransaction(database, requirementId, legacyAliases);
     }
     const requestedState = input.state;
     const semanticStatus: RequirementState | undefined = requestedState === 'completed'
@@ -410,6 +442,7 @@ export function reviseRequirementSemantic(
       remainingWork,
       acceptedEvidenceRefs,
       dependsOnRequirementIds,
+      legacyAliases,
       state: legacyState,
       ...(requestedState ? { needsAttention: false, attentionSummary: undefined } : {}),
       semanticRevision: semanticRevision + 1,
@@ -431,6 +464,7 @@ export function createRequirement(
   const requirementId = id(input.requirementId);
   const at = nowIso(options);
   const initialStatus = input.status ?? 'planned';
+  const legacyAliases = normalizeRequirementLegacyAliases(input.legacyAliases);
   if (initialStatus === 'done' || initialStatus === 'cancelled') {
     throw new Error('REQUIREMENT_CREATE_TERMINAL_STATUS_FORBIDDEN');
   }
@@ -440,7 +474,7 @@ export function createRequirement(
     ...(repositoryId(input.repoId) ? { repoId: repositoryId(input.repoId) } : {}),
     ...(normalizePriority(input.priority) ? { priority: normalizePriority(input.priority) } : {}),
     ...(normalizeAssignee(input.assignee) ? { assignee: normalizeAssignee(input.assignee) } : {}),
-    legacyAliases: bounded(input.legacyAliases, 20, 160),
+    legacyAliases,
     title: String(input.title ?? '').trim().slice(0, 500),
     outcomeStatement: String(input.outcomeStatement ?? '').trim().slice(0, 2_000),
     acceptanceCriteria: bounded(input.acceptanceCriteria, 50),
@@ -460,6 +494,7 @@ export function createRequirement(
   if (!requirement.title || !requirement.outcomeStatement) throw new Error('REQUIREMENT_CONTENT_REQUIRED');
   withControlPlaneTransaction(options.controllerHome, (database) => {
     if (readWithin(database, requirementId)) throw new Error(`REQUIREMENT_ALREADY_EXISTS: ${requirementId}`);
+    assertUniqueRequirementLegacyAliasesWithinTransaction(database, requirementId, legacyAliases);
     const exclusiveCandidateRefs = requirement.auditRefs.filter(ref => ref.startsWith('cognitive-requirement-candidate:'));
     if (exclusiveCandidateRefs.length > 0) {
       const existing = listControlPlaneRecordsWithinTransaction<Requirement>(database, {
@@ -573,6 +608,12 @@ export function updateRequirement(
     if (!current) throw new Error(`REQUIREMENT_NOT_FOUND: ${requirementId}`);
     const next = input.mutate(current.value);
     if (next === current.value) return current.value;
+    const nextLegacyAliases = normalizeRequirementLegacyAliases(next.legacyAliases);
+    const currentLegacyAliases = current.value.legacyAliases ?? [];
+    if (nextLegacyAliases.length !== currentLegacyAliases.length
+      || nextLegacyAliases.some((alias, index) => alias !== currentLegacyAliases[index])) {
+      assertUniqueRequirementLegacyAliasesWithinTransaction(database, requirementId, nextLegacyAliases);
+    }
     if (current.value.state === 'done' || current.value.state === 'cancelled') {
       throw new Error(`REQUIREMENT_TERMINAL_IMMUTABLE:${requirementId}:${current.value.state}`);
     }
@@ -582,6 +623,7 @@ export function updateRequirement(
     if (next.requirementId !== requirementId) throw new Error('REQUIREMENT_ID_IMMUTABLE');
     const updated: Requirement = {
       ...next,
+      legacyAliases: nextLegacyAliases,
       schemaVersion: 1,
       revision: current.value.revision + 1,
       updatedAt: nowIso(options),

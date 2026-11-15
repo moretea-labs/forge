@@ -61,6 +61,7 @@ export async function callRhWorkRequirementOperation(
         ...(semantic.priority ? { priority: semantic.priority } : {}),
         ...(semantic.assignee ? { assignee: semantic.assignee } : {}),
         dependencyCount: semantic.dependsOnRequirementIds.length,
+        legacyAliases: semantic.legacyAliases,
         ...(projectId ? { projectId } : {}),
         updatedAt: semantic.updatedAt,
       }));
@@ -145,6 +146,7 @@ export async function callRhWorkRequirementOperation(
         ...(Array.isArray(args.requirement_remaining_work) ? { remainingWork: args.requirement_remaining_work.map(String) } : {}),
         ...(Array.isArray(args.requirement_accepted_evidence_refs) ? { acceptedEvidenceRefs: args.requirement_accepted_evidence_refs.map(String) } : {}),
         ...(Array.isArray(args.requirement_dependencies) ? { dependsOnRequirementIds: args.requirement_dependencies.map(String) } : {}),
+        ...(Array.isArray(args.requirement_legacy_aliases) ? { legacyAliases: args.requirement_legacy_aliases.map(String) } : {}),
         ...(typeof args.requirement_priority === 'string' ? { priority: args.requirement_priority as RequirementPriority } : {}),
         ...(typeof args.requirement_assignee === 'string' ? { assignee: args.requirement_assignee } : {}),
         ...(typeof args.requirement_status === 'string' ? { status: args.requirement_status as RequirementState } : {}),

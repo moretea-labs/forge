@@ -39,6 +39,7 @@ const FROZEN_SEMANTIC_V1_FIELDS: Record<string, ReadonlySet<string>> = {
     'requirement_assignee',
     'requirement_status',
     'requirement_dependencies',
+    'requirement_legacy_aliases',
     'requirement_state',
   ]),
   plan_get: new Set([...FROZEN_COMMON_FIELDS, 'operation', 'plan_id']),
