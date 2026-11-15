@@ -20,9 +20,20 @@ struct AgentUsageDashboard: View {
         let usage: AgentTokenUsage
     }
 
+    struct UnreportedEntry: Identifiable {
+        let id: String
+        let threadId: String
+        let messageId: String
+        let threadTitle: String
+        let date: Date
+        let model: String
+        let provider: String
+        let incomplete: Bool
+    }
+
     struct UsageSnapshot {
         let entries: [Entry]
-        let unreportedCount: Int
+        let unreportedEntries: [UnreportedEntry]
         let inputTotal: Int
         let outputTotal: Int
         let total: Int
@@ -53,7 +64,7 @@ struct AgentUsageDashboard: View {
         since cutoff: Date
     ) -> UsageSnapshot {
         var entries: [Entry] = []
-        var unreportedCount = 0
+        var unreportedEntries: [UnreportedEntry] = []
         var inputTotal = 0
         var outputTotal = 0
         var total = 0
@@ -61,7 +72,16 @@ struct AgentUsageDashboard: View {
         for thread in threads {
             for message in thread.messages where Self.isUsageEligibleAssistantMessage(message, since: cutoff) {
                 guard let usage = message.usage else {
-                    unreportedCount += 1
+                    unreportedEntries.append(UnreportedEntry(
+                        id: "\(thread.id):\(message.id)",
+                        threadId: thread.id,
+                        messageId: message.id,
+                        threadTitle: thread.title,
+                        date: message.createdAt,
+                        model: message.modelUsed ?? thread.model ?? "未标记模型",
+                        provider: message.providerUsed ?? thread.provider ?? "未知",
+                        incomplete: message.incomplete == true
+                    ))
                     continue
                 }
                 inputTotal += usage.inputTokens
@@ -81,8 +101,9 @@ struct AgentUsageDashboard: View {
             }
         }
         entries.sort { $0.date > $1.date }
+        unreportedEntries.sort { $0.date > $1.date }
         return UsageSnapshot(
-            entries: entries, unreportedCount: unreportedCount,
+            entries: entries, unreportedEntries: unreportedEntries,
             inputTotal: inputTotal, outputTotal: outputTotal,
             total: total, partiallyReported: partiallyReported
         )
@@ -163,7 +184,8 @@ struct AgentUsageDashboard: View {
         )
         let usageSnapshot = Self.makeUsageSnapshot(from: threads, projectLabels: projectLabels, since: cutoff)
         let usageEntries = usageSnapshot.entries
-        let unreportedMessages = usageSnapshot.unreportedCount
+        let unreportedEntries = usageSnapshot.unreportedEntries
+        let unreportedMessages = unreportedEntries.count
         let inputTotal = usageSnapshot.inputTotal
         let outputTotal = usageSnapshot.outputTotal
         let total = usageSnapshot.total
@@ -301,6 +323,63 @@ struct AgentUsageDashboard: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("agent.usage.recent-records")
 
+                if !unreportedEntries.isEmpty {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("缺少用量回执")
+                                .font(.system(size: 15, weight: .semibold))
+                            Spacer()
+                            Text("\(unreportedEntries.count) 条")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        Text("这些回复没有可用的 Token 回执，因此未计入上方统计。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+
+                        ForEach(unreportedEntries) { item in
+                            HStack(spacing: 10) {
+                                Text(item.date.formatted(.dateTime.month().day().hour().minute()))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 105, alignment: .leading)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.model).lineLimit(1)
+                                    Text(providerLabel(item.provider))
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
+                                }
+                                .frame(minWidth: 0, alignment: .leading)
+                                Spacer(minLength: 8)
+                                if item.incomplete {
+                                    Text("中断")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.secondary)
+                                }
+                                Text(item.threadTitle)
+                                    .lineLimit(1)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: 160, alignment: .leading)
+                                Button {
+                                    model.selectThread(item.threadId, messageId: item.messageId)
+                                } label: {
+                                    Label("定位回复", systemImage: "arrow.up.right")
+                                }
+                                .buttonStyle(.plain)
+                                .help(item.threadTitle)
+                                .accessibilityLabel("定位缺少用量回执的回复：\(item.threadTitle)")
+                                .accessibilityHint("跳转到未收到 Token 用量回执的回复")
+                                .accessibilityIdentifier("agent.usage.unreported.entry.\(item.id).source-thread")
+                            }
+                            .font(.system(size: 11.5))
+                            .accessibilityElement(children: .contain)
+                            .accessibilityIdentifier("agent.usage.unreported.entry.\(item.id)")
+                            Divider().opacity(0.3)
+                        }
+                    }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("agent.usage.unreported-records")
+                }
             }
             .padding(26)
             .frame(maxWidth: 960, alignment: .leading)

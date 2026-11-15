@@ -3290,6 +3290,7 @@ extension NativeWorkspaceTests {
         )
         let unreportedMessage = ChatMessage(
             role: "assistant", text: "missing receipt", incomplete: true,
+            providerUsed: "api:openai", modelUsed: "gpt-6",
             createdAt: Date(timeIntervalSince1970: 300)
         )
         let oldMessage = ChatMessage(
@@ -3318,10 +3319,15 @@ extension NativeWorkspaceTests {
 
         XCTAssertEqual(snapshot.entries.count, 2)
         XCTAssertEqual(snapshot.entries.map(\.id), ["\(thread.id):\(partialMessage.id)", "\(thread.id):\(completeMessage.id)"])
+        XCTAssertEqual(snapshot.unreportedEntries.map(\.id), ["\(thread.id):\(unreportedMessage.id)"])
+        XCTAssertEqual(snapshot.unreportedEntries.first?.threadTitle, "Usage source conversation")
+        XCTAssertEqual(snapshot.unreportedEntries.first?.model, "gpt-6")
+        XCTAssertEqual(snapshot.unreportedEntries.first?.provider, "api:openai")
+        XCTAssertEqual(snapshot.unreportedEntries.first?.incomplete, true)
         XCTAssertEqual(snapshot.entries.first?.threadId, thread.id)
         XCTAssertEqual(snapshot.entries.first?.messageId, partialMessage.id)
         XCTAssertEqual(snapshot.entries.first?.threadTitle, "Usage source conversation")
-        XCTAssertEqual(snapshot.unreportedCount, 1)
+        XCTAssertEqual(snapshot.unreportedEntries.count, 1)
         XCTAssertEqual(snapshot.partiallyReported, 1)
         XCTAssertEqual(snapshot.inputTotal, 120)
         XCTAssertEqual(snapshot.outputTotal, 88)
@@ -3339,6 +3345,13 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(restored.selectedThreadId, thread.id)
         XCTAssertEqual(restored.conversationScrollRequest?.threadId, thread.id)
         XCTAssertEqual(restored.conversationScrollRequest?.messageId, partialMessage.id)
+
+        let unreported = try XCTUnwrap(snapshot.unreportedEntries.first)
+        restored.selectThread(unreported.threadId, messageId: unreported.messageId)
+        XCTAssertEqual(restored.page, .agent)
+        XCTAssertEqual(restored.selectedThreadId, thread.id)
+        XCTAssertEqual(restored.conversationScrollRequest?.threadId, thread.id)
+        XCTAssertEqual(restored.conversationScrollRequest?.messageId, unreportedMessage.id)
     }
 }
 
