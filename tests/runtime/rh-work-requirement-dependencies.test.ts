@@ -206,4 +206,67 @@ describe('rh_work Requirement dependencies', () => {
     expect(cancelledData?.summary).toContain('REQUIREMENT_DEPENDENCY_CANCELLED');
     expect(readRequirement({ controllerHome }, 'cancelled-parent-child')).toBeUndefined();
   });
+
+  it('shows downstream tasks across repositories and refreshes their blocking state when a prerequisite completes', async () => {
+    createTask('shared-prerequisite', 'repo-prerequisite');
+    createTask('downstream-a', 'repo-a');
+    createTask('downstream-b', 'repo-b');
+    reviseRequirementSemantic({ controllerHome }, 'downstream-a', {
+      expectedRevision: 1, dependsOnRequirementIds: ['shared-prerequisite'],
+    });
+    reviseRequirementSemantic({ controllerHome }, 'downstream-b', {
+      expectedRevision: 1, dependsOnRequirementIds: ['shared-prerequisite'],
+    });
+
+    const context = { controllerHome } as MultiRepositoryMcpToolContext;
+    const before = await callRhWorkRequirementOperation(context, undefined, 'requirement_get', {
+      requirement_id: 'shared-prerequisite', detail_level: 'detail',
+    });
+    const beforeData = before?.structuredContent as {
+      data?: {
+        dependentRequirements?: Array<{ requirementId: string; status: string; repoId?: string; blocksDependent: boolean }>;
+        dependentRequirementCount?: number;
+        dependentRequirementsTruncated?: boolean;
+      };
+    } | undefined;
+    expect(beforeData?.data).toMatchObject({
+      dependentRequirementCount: 2,
+      dependentRequirementsTruncated: false,
+    });
+    expect(beforeData?.data?.dependentRequirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ requirementId: 'downstream-a', repoId: 'repo-a', status: 'planned', blocksDependent: true }),
+      expect.objectContaining({ requirementId: 'downstream-b', repoId: 'repo-b', status: 'planned', blocksDependent: true }),
+    ]));
+
+    const completed = await callRhWorkRequirementOperation(context, undefined, 'requirement_revise', {
+      requirement_id: 'shared-prerequisite',
+      expected_revision: 1,
+      requirement_status: 'done',
+      requirement_remaining_work: [],
+      requirement_accepted_evidence_refs: ['https://github.com/moretea-labs/forge/actions/runs/42'],
+    });
+    expect((completed?.structuredContent as { status?: string } | undefined)?.status).toBe('ok');
+
+    const after = await callRhWorkRequirementOperation(context, undefined, 'requirement_get', {
+      requirement_id: 'shared-prerequisite', detail_level: 'detail',
+    });
+    const afterData = after?.structuredContent as {
+      data?: {
+        dependentRequirements?: Array<{ requirementId: string; blocksDependent: boolean }>;
+      };
+    } | undefined;
+    expect(afterData?.data?.dependentRequirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ requirementId: 'downstream-a', blocksDependent: false }),
+      expect.objectContaining({ requirementId: 'downstream-b', blocksDependent: false }),
+    ]));
+
+    const blockedTasks = await callRhWorkRequirementOperation(context, undefined, 'requirement_list', {
+      dependency_filter: 'blocked', limit: 20,
+    });
+    const blockedIds = ((blockedTasks?.structuredContent as { data?: { requirements?: Array<{ requirementId: string }> } } | undefined)
+      ?.data?.requirements ?? []).map((task) => task.requirementId);
+    expect(blockedIds).not.toContain('downstream-a');
+    expect(blockedIds).not.toContain('downstream-b');
+  });
+
 });

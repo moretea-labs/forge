@@ -279,6 +279,32 @@ export async function callRhWorkRequirementOperation(
           };
         })
       : undefined;
+    // Reverse dependency navigation is a read-only projection over the same
+    // canonical Requirement owner. Scan once, and only on selected-task detail.
+    const dependentScan = args.detail_level === 'detail'
+      ? listRequirements({ controllerHome: ctx.controllerHome }, 1_000)
+      : undefined;
+    const dependentRecords = dependentScan?.filter(({ value }) =>
+      (value.dependsOnRequirementIds ?? []).includes(semantic.requirementId))
+      .map(({ value }) => requirementSemanticView(value))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)
+        || left.requirementId.localeCompare(right.requirementId));
+    const dependentRequirements = dependentRecords?.slice(0, 20).map((dependent) => ({
+      requirementId: dependent.requirementId,
+      title: dependent.title.slice(0, 240),
+      status: dependent.status,
+      revision: dependent.revision,
+      ...(dependent.repoId ? { repoId: dependent.repoId } : {}),
+      ...(dependent.projectId ? { projectId: dependent.projectId } : {}),
+      ...(dependent.priority ? { priority: dependent.priority } : {}),
+      ...(dependent.assignee ? { assignee: dependent.assignee } : {}),
+      blocksDependent: semantic.status !== 'done',
+    }));
+    const dependentRequirementsTruncated = Boolean(dependentRecords
+      && (dependentRecords.length > 20 || (dependentScan?.length ?? 0) >= 1_000));
+    const dependentRequirementCount = dependentScan && dependentScan.length < 1_000
+      ? dependentRecords?.length
+      : undefined;
     return result(buildFacadeResult({
       summary: `Requirement ${semantic.requirementId} retrieved at semantic revision ${semantic.revision}.`,
       data: {
@@ -287,6 +313,12 @@ export async function callRhWorkRequirementOperation(
         ...(revisionHistory ? { revisionHistory } : {}),
         ...(activityHistory ? { activityHistory, activityHistoryTruncated: (activityEvents?.length ?? 0) > 20 } : {}),
         ...(dependencyRequirements ? { dependencyRequirements } : {}),
+        ...(dependentRequirements ? {
+          dependentRequirements,
+          dependentRequirementsTruncated,
+          ...(dependentRequirementCount !== undefined ? { dependentRequirementCount } : {}),
+          dependentDetailOperation: 'requirement_get',
+        } : {}),
         ...(relatedPlans ? { relatedPlans: relatedPlans.slice(0, 20), relatedPlanCount: relatedPlans.length,
           relatedPlansTruncated: relatedPlans.length > 20, planDetailOperation: 'plan_get' } : {}),
         ...(args.detail_level === 'detail' ? { autopilotRun: autopilotRunSummary } : {}),
