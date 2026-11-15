@@ -891,6 +891,17 @@ final class NativeWorkspace: ObservableObject {
             if checkoutContextLoading { return "正在验证 checkout，完成后即可发送。" }
             if !checkoutIsAvailable { return "checkout 不可用，请切换到有效的工作区。" }
         }
+        if let missingImage = pendingImageURLs.first(where: { url in
+            var isDirectory: ObjCBool = false
+            return !FileManager.default.fileExists(atPath:url.path,isDirectory:&isDirectory) || isDirectory.boolValue
+        }) {
+            return "图片已移动或删除，请移除后发送：\(missingImage.lastPathComponent)"
+        }
+        if let missingFile = pendingContextPaths.first(where: {
+            resolveLocalContextFileURL(rootPath:checkoutRoot?.path,relativePath:$0) == nil
+        }) {
+            return "项目文件已移动或不在当前 checkout，请移除后发送：\(URL(fileURLWithPath:missingFile).lastPathComponent)"
+        }
         if !selectedProviderReady {
             if selectedProvider == "joycode" { return "JoyCode 未就绪，请检查登录与模型配置。" }
             if Self.matchesExternalProvider(selectedProvider) {

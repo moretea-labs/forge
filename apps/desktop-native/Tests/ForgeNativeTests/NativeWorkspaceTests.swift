@@ -566,6 +566,64 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.agentSendBlockReason,"Agent 正在执行当前任务。")
     }
 
+    @MainActor
+    func testRestoredAgentDraftDoesNotSendMovedAttachmentsOrLoseUnsentWork() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let checkout = folder.appendingPathComponent("checkout")
+        let sources = checkout.appendingPathComponent("Sources")
+        let source = sources.appendingPathComponent("Plan.swift")
+        let image = folder.appendingPathComponent("screenshot.png")
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        try FileManager.default.createDirectory(at:sources,withIntermediateDirectories:true)
+        try Data("source".utf8).write(to:source)
+        try Data("image".utf8).write(to:image)
+
+        let original = NativeWorkspace(store:store)
+        let first = try XCTUnwrap(original.selectedThreadId)
+        original.checkoutRoot = checkout
+        original.imageInputAvailable = true
+        original.draft = "Review the attached plan and screenshot"
+        original.addPendingImages([image])
+        original.addPendingContextFiles([source])
+        XCTAssertEqual(original.pendingContextPaths,["Sources/Plan.swift"])
+        XCTAssertEqual(original.pendingImageURLs,[image])
+        original.newThread()
+
+        let restored = NativeWorkspace(store:store)
+        restored.selectThread(first)
+        restored.checkoutRoot = checkout
+        restored.imageInputAvailable = true
+        XCTAssertEqual(restored.draft,"Review the attached plan and screenshot")
+        XCTAssertEqual(restored.pendingContextPaths,["Sources/Plan.swift"])
+        XCTAssertEqual(restored.pendingImageURLs,[image])
+        XCTAssertEqual(restored.agentSendBlockReason,"Codex 未就绪，请刷新 Provider 状态。")
+
+        try FileManager.default.removeItem(at:image)
+        let imageIssue = try XCTUnwrap(restored.agentSendBlockReason)
+        XCTAssertTrue(imageIssue.contains("图片已移动或删除"))
+        XCTAssertTrue(imageIssue.contains("screenshot.png"))
+        await restored.send()
+        XCTAssertEqual(restored.error,imageIssue)
+        XCTAssertEqual(restored.draft,"Review the attached plan and screenshot")
+        XCTAssertEqual(restored.pendingImageURLs,[image])
+        XCTAssertTrue(restored.thread?.messages.isEmpty == true)
+
+        restored.removePendingImage(image)
+        try FileManager.default.removeItem(at:source)
+        let fileIssue = try XCTUnwrap(restored.agentSendBlockReason)
+        XCTAssertTrue(fileIssue.contains("项目文件已移动"))
+        XCTAssertTrue(fileIssue.contains("Plan.swift"))
+        await restored.send()
+        XCTAssertEqual(restored.error,fileIssue)
+        XCTAssertEqual(restored.pendingContextPaths,["Sources/Plan.swift"])
+        XCTAssertEqual(restored.draft,"Review the attached plan and screenshot")
+        XCTAssertTrue(restored.thread?.messages.isEmpty == true)
+
+        restored.removePendingContextPath("Sources/Plan.swift")
+        XCTAssertEqual(restored.agentSendBlockReason,"Codex 未就绪，请刷新 Provider 状态。")
+    }
+
     func testIncompleteManagedProcessIsAvailableToOrdinaryFollowUpWithoutReplaying() {
         var thread = ChatThread(provider:"api")
         thread.messages = [
