@@ -42,6 +42,7 @@ export function normalizeRequirementAdmissionInput(input: CreateRequirementInput
     ...(String(input.repoId ?? '').trim() ? { repoId: String(input.repoId).trim().slice(0, 256) } : {}),
     ...(input.priority ? { priority: input.priority } : {}),
     ...(String(input.assignee ?? '').trim() ? { assignee: String(input.assignee).trim().slice(0, 160) } : {}),
+    ...(input.status ? { status: input.status } : {}),
     title: String(input.title ?? '').trim().slice(0, 500),
     outcomeStatement: String(input.outcomeStatement ?? '').trim().slice(0, 2_000),
     acceptanceCriteria: bounded(input.acceptanceCriteria, 50),
@@ -54,13 +55,13 @@ export function normalizeRequirementAdmissionInput(input: CreateRequirementInput
 }
 
 function sameBootstrapIdentity(existing: Requirement, requested: CreateRequirementInput): boolean {
+  // Status, priority and assignee are mutable metadata: a repeated create reuses
+  // the existing Requirement and never overwrites these fields.
   return existing.requirementId === requested.requirementId
     && existing.title === requested.title
     && existing.outcomeStatement === requested.outcomeStatement
     && JSON.stringify(existing.acceptanceCriteria) === JSON.stringify(requested.acceptanceCriteria ?? [])
     && JSON.stringify(existing.requiredDeliveryReferences) === JSON.stringify(requested.requiredDeliveryReferences ?? [])
-    && existing.priority === requested.priority
-    && existing.assignee === requested.assignee
     && JSON.stringify(existing.legacyAliases) === JSON.stringify(requested.legacyAliases ?? []);
 }
 

@@ -193,11 +193,25 @@ describe('rh_work Requirement bootstrap', () => {
       requirement_id: 'REQ-TYPED-PROGRESS',
       requirement_title: 'Typed progress',
       requirement_outcome: 'Deliver an independently verified change.',
+      requirement_status: 'active',
       requirement_priority: 'high',
       requirement_assignee: 'greyson',
     }));
     expect(created.status).toBe('ok');
-    expect(created.data.requirement).toMatchObject({ status: 'planned', priority: 'high', assignee: 'greyson' });
+    expect(created.data.requirement).toMatchObject({ status: 'active', priority: 'high', assignee: 'greyson' });
+
+    const reused = structured(await callRuntimeTool(ctx, 'rh_work', {
+      operation: 'requirement_create',
+      requirement_id: 'REQ-TYPED-PROGRESS',
+      requirement_title: 'Typed progress',
+      requirement_outcome: 'Deliver an independently verified change.',
+      requirement_status: 'waiting_for_user',
+      requirement_priority: 'urgent',
+      requirement_assignee: 'agent:codex',
+    }));
+    expect(reused.status).toBe('ok');
+    expect(reused.data.admissionDecision).toBe('reuse_existing');
+    expect(reused.data.requirement).toMatchObject({ status: 'active', priority: 'high', assignee: 'greyson' });
 
     const updated = structured(await callRuntimeTool(ctx, 'rh_work', {
       operation: 'requirement_revise',
@@ -206,7 +220,7 @@ describe('rh_work Requirement bootstrap', () => {
       requirement_progress_summary: 'Source patch submitted; review pending.',
       requirement_remaining_work: ['Review exact HEAD', 'Verify deployed Runtime'],
       requirement_accepted_evidence_refs: ['https://github.com/example/forge/pull/123'],
-      requirement_status: 'active',
+      requirement_status: 'waiting_for_user',
       requirement_priority: 'urgent',
       requirement_assignee: 'agent:codex',
     }));
@@ -216,7 +230,7 @@ describe('rh_work Requirement bootstrap', () => {
       progressSummary: 'Source patch submitted; review pending.',
       remainingWork: ['Review exact HEAD', 'Verify deployed Runtime'],
       acceptedEvidenceRefs: ['https://github.com/example/forge/pull/123'],
-      state: 'open', status: 'active', priority: 'urgent', assignee: 'agent:codex',
+      state: 'open', status: 'waiting_for_user', priority: 'urgent', assignee: 'agent:codex',
     });
 
     const stale = structured(await callRuntimeTool(ctx, 'rh_work', {
@@ -239,8 +253,8 @@ describe('rh_work Requirement bootstrap', () => {
       remainingWork: ['Review exact HEAD', 'Verify deployed Runtime'],
       acceptedEvidenceRefs: ['https://github.com/example/forge/pull/123'],
     });
-    expect(reread.data.requirement).toMatchObject({ status: 'active', priority: 'urgent', assignee: 'agent:codex' });
-    expect(reread.data.revisionHistory).toMatchObject([{ revision: 1, status: 'planned', priority: 'high', assignee: 'greyson' }]);
+    expect(reread.data.requirement).toMatchObject({ status: 'waiting_for_user', priority: 'urgent', assignee: 'agent:codex' });
+    expect(reread.data.revisionHistory).toMatchObject([{ revision: 1, status: 'active', priority: 'high', assignee: 'greyson' }]);
   });
 
   test('plan_list returns compact discovery rows and leaves detailed semantic content to plan_get (#478)', async () => {

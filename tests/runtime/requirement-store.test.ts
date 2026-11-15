@@ -216,11 +216,12 @@ test('Requirement task priority, assignee and status share one revisioned author
     requirementId: 'req-task-metadata',
     title: 'Ship task metadata',
     outcomeStatement: 'A project task can be assigned, prioritized and moved through its real lifecycle.',
+    status: 'active',
     priority: 'high',
     assignee: 'greyson',
   });
   expect(requirementSemanticView(created)).toMatchObject({
-    revision: 1, state: 'open', status: 'planned', priority: 'high', assignee: 'greyson',
+    revision: 1, state: 'open', status: 'active', priority: 'high', assignee: 'greyson',
   });
 
   const active = reviseRequirementSemantic(options, created.requirementId, {
@@ -230,7 +231,7 @@ test('Requirement task priority, assignee and status share one revisioned author
     revision: 2, state: 'open', status: 'active', priority: 'urgent', assignee: 'agent:codex',
   });
   expect(listRequirementRevisionRecords(options, created.requirementId, 10)).toMatchObject([
-    { revision: 1, status: 'planned', priority: 'high', assignee: 'greyson' },
+    { revision: 1, status: 'active', priority: 'high', assignee: 'greyson' },
   ]);
 
   const board = buildRequirementBoard({ controllerHome: home }) as { requirements: Array<Record<string, unknown>> };
@@ -251,6 +252,9 @@ test('Requirement task priority, assignee and status share one revisioned author
   expect(() => createRequirement(options, {
     requirementId: 'req-invalid-priority', title: 'Invalid priority', outcomeStatement: 'Reject unknown priority.', priority: 'critical' as never,
   })).toThrow('REQUIREMENT_PRIORITY_INVALID');
+  expect(() => createRequirement(options, {
+    requirementId: 'req-invalid-initial-status', title: 'Invalid initial status', outcomeStatement: 'Terminal tasks are not created directly.', status: 'done',
+  })).toThrow('REQUIREMENT_CREATE_TERMINAL_STATUS_FORBIDDEN');
 });
 
 test('Requirement board and diagnostics preserve Plan-derived repository placement', async () => {

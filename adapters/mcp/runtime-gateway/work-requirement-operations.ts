@@ -168,6 +168,7 @@ export async function callRhWorkRequirementOperation(
       requiredDeliveryReferences: Array.isArray(args.requirement_delivery_references) ? args.requirement_delivery_references.map(String) : [],
       ...(typeof args.requirement_priority === 'string' ? { priority: args.requirement_priority as RequirementPriority } : {}),
       ...(typeof args.requirement_assignee === 'string' ? { assignee: args.requirement_assignee } : {}),
+      ...(typeof args.requirement_status === 'string' ? { status: args.requirement_status as RequirementState } : {}),
       legacyAliases: Array.isArray(args.requirement_legacy_aliases) ? args.requirement_legacy_aliases.map(String) : [],
     };
     const admission = operation === 'requirement_promote_candidate'
@@ -207,7 +208,7 @@ export async function callRhWorkRequirementOperation(
           : `Requirement ${admission.requirement.requirementId} created. Requirement authority does not imply a Plan; Controller chooses the next action.`
         : admission.decision === 'candidate_already_promoted'
           ? `REQUIREMENT_CANDIDATE_ALREADY_PROMOTED: ${admission.requirement.requirementId}. Existing Requirement authority was reused; no duplicate Requirement was created.`
-          : `REQUIREMENT_AUTHORITY_REUSED: ${admission.requirement.requirementId}. Requirement authority does not imply a Plan; Controller chooses the next action.`,
+          : `REQUIREMENT_AUTHORITY_REUSED: ${admission.requirement.requirementId}. Existing status, priority and assignee were preserved; use requirement_revise to change them. Requirement authority does not imply a Plan; Controller chooses the next action.`,
       data: {
         requirement: { ...requirementSemanticView(admission.requirement), ...(projectId ? { projectId } : {}) },
         requirementCreated: admission.created,

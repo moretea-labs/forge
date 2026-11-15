@@ -59,6 +59,7 @@ export interface CreateRequirementInput {
   repoId?: string;
   priority?: RequirementPriority;
   assignee?: string;
+  status?: RequirementState;
   legacyAliases?: string[];
   title: string;
   outcomeStatement: string;
@@ -422,6 +423,10 @@ export function createRequirement(
 ): Requirement {
   const requirementId = id(input.requirementId);
   const at = nowIso(options);
+  const initialStatus = input.status ?? 'planned';
+  if (initialStatus === 'done' || initialStatus === 'cancelled') {
+    throw new Error('REQUIREMENT_CREATE_TERMINAL_STATUS_FORBIDDEN');
+  }
   const requirement: Requirement = {
     schemaVersion: 1,
     requirementId,
@@ -437,7 +442,7 @@ export function createRequirement(
     remainingWork: [],
     acceptedEvidenceRefs: [],
     auditRefs: bounded(input.auditRefs, 50),
-    state: 'planned',
+    state: initialStatus,
     needsAttention: false,
     semanticRevision: 1,
     semanticUpdatedAt: at,
