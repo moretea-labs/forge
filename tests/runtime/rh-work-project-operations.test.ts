@@ -161,6 +161,28 @@ describe('rh_work Project operations', () => {
     }));
     expect(fetched.status).toBe('ok');
     expect(fetched.data.project).toMatchObject({ projectId: 'project-a', displayName: 'Project A Renamed', status: 'active', revision: 3 });
+    expect(fetched.data).toMatchObject({ requirementCount: 1, requirementsTruncated: false });
+    expect(fetched.data.requirements).toMatchObject([{
+      requirementId: 'REQ-PROJECT-A-TASK', title: 'Project A task', status: 'active',
+      priority: 'high', assignee: 'alice', dependencyCount: 1,
+    }]);
+    expect(fetched.data.requirements.map((task: { requirementId: string }) => task.requirementId))
+      .not.toContain('REQ-PROJECT-B-TASK');
+
+    const projectBDetail = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'project_get', project_id: 'project-b', detail_level: 'detail',
+    }));
+    expect(projectBDetail.data.requirements).toMatchObject([{
+      requirementId: 'REQ-PROJECT-B-TASK', status: 'waiting_for_user', priority: 'urgent', assignee: 'bob',
+    }]);
+    const standaloneDetail = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'project_get', project_id: 'project-standalone', detail_level: 'detail',
+    }));
+    expect(standaloneDetail.data).toMatchObject({ requirements: [], requirementCount: 0, requirementsTruncated: false });
+    const summary = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'project_get', project_id: 'project-a',
+    }));
+    expect(summary.data.requirements).toBeUndefined();
     expect(fetched.data.revisionHistory.map((entry: { revision: number; displayName: string; status: string; action: string }) => ({
       revision: entry.revision, displayName: entry.displayName, status: entry.status, action: entry.action,
     }))).toEqual([
