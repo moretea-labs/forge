@@ -1108,8 +1108,27 @@ final class NativeWorkspace: ObservableObject {
                 notes.append("当前 checkout 不可用，文件上下文未恢复。")
             }
         }
-        if message.attachmentNames?.isEmpty == false {
-            notes.append("历史图片仅保存文件名，请重新附加图片后再发送。")
+        let storedImagePaths = message.attachmentPaths ?? []
+        if !storedImagePaths.isEmpty {
+            let storedURLs = storedImagePaths.map { URL(fileURLWithPath:$0) }
+            let availableURLs = storedURLs.filter { url in
+                var isDirectory:ObjCBool = false
+                return Self.agentImageExtensions.contains(url.pathExtension.lowercased())
+                    && FileManager.default.fileExists(atPath:url.path,isDirectory:&isDirectory)
+                    && !isDirectory.boolValue
+            }
+            pendingImageURLs = Array(availableURLs.prefix(4))
+            if availableURLs.count < storedURLs.count {
+                notes.append("部分历史图片已移动、删除或格式不再支持，请重新附加。")
+            }
+            if storedURLs.count > 4 {
+                notes.append("历史消息图片超过当前限制，仅恢复前 4 张。")
+            }
+            if !pendingImageURLs.isEmpty && !selectedProviderSupportsImages {
+                notes.append("当前模型不支持图片输入，请切换到支持图片的模型或移除图片。")
+            }
+        } else if message.attachmentNames?.isEmpty == false {
+            notes.append("历史图片没有保存原始路径，请重新附加图片后再发送。")
         }
         self.error = notes.isEmpty ? nil : Array(Set(notes)).sorted().joined(separator:" ")
     }

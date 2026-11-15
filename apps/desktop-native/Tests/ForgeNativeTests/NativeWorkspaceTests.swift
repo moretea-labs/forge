@@ -2209,6 +2209,45 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testReeditRestoresOnlyExistingExplicitImagePathsAndRespectsProviderCapability() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
+        let image = folder.appendingPathComponent("screen.png")
+        try Data("image".utf8).write(to:image)
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let message = ChatMessage(
+            role:"user",text:"inspect this image",
+            attachmentNames:["screen.png"],attachmentPaths:[image.path]
+        )
+
+        model.imageInputAvailable = false
+        model.reeditMessage(message)
+        XCTAssertEqual(model.pendingImageURLs,[image])
+        XCTAssertTrue(model.error?.contains("不支持图片输入") == true)
+
+        model.imageInputAvailable = true
+        model.reeditMessage(message)
+        XCTAssertEqual(model.pendingImageURLs,[image])
+        XCTAssertNil(model.error)
+    }
+
+    @MainActor
+    func testReeditReportsMissingExplicitImagePathsInsteadOfRestoringThem() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let missing = folder.appendingPathComponent("missing.png")
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.imageInputAvailable = true
+        model.reeditMessage(ChatMessage(
+            role:"user",text:"inspect this image",
+            attachmentNames:["missing.png"],attachmentPaths:[missing.path]
+        ))
+        XCTAssertTrue(model.pendingImageURLs.isEmpty)
+        XCTAssertTrue(model.error?.contains("已移动、删除") == true)
+    }
+
+    @MainActor
     func testAttachmentSelectionAppendsDedupesAndDroppedFilesReuseExistingPaths() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let nested = root.appendingPathComponent("Sources")
