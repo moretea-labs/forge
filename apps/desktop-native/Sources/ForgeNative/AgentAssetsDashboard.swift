@@ -387,6 +387,17 @@ private struct AgentLocalFileResourceView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button {
+                    open()
+                } label: {
+                    Label("打开",systemImage:"arrow.up.right.square")
+                }
+                .buttonStyle(.plain)
+                .help("使用默认应用打开文件")
+                .accessibilityLabel("打开文件：\(fileName)")
+                .accessibilityHint("使用 macOS 默认应用打开此文件")
+                .accessibilityIdentifier("\(accessibilityIdentifierPrefix).open")
+                .disabled(fileURL == nil)
+                Button {
                     reveal()
                 } label: {
                     Image(systemName: "folder")
@@ -406,6 +417,12 @@ private struct AgentLocalFileResourceView: View {
                 Text(status).font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }
+    }
+
+    @MainActor
+    private func open() {
+        guard let source = fileURL else { return }
+        status = NSWorkspace.shared.open(source) ? "已使用默认应用打开" : "无法打开文件"
     }
 
     @MainActor
