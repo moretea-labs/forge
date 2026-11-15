@@ -84,6 +84,36 @@ describe('rh_work Project operations', () => {
     expect(second.status).toBe('ok');
     expect(second.data.project).toMatchObject({ projectId: 'project-b', placements: [{ repositoryId: repositoryB.repoId }] });
 
+    const taskA = structured(await callRuntimeTool(context(controllerHome, repositoryA), 'rh_work', {
+      operation: 'requirement_create', requirement_id: 'REQ-PROJECT-A-TASK',
+      requirement_title: 'Project A task', requirement_outcome: 'Complete the Project A workflow.',
+      requirement_status: 'active', requirement_priority: 'high', requirement_assignee: 'alice',
+    }));
+    expect(taskA.status).toBe('ok');
+    expect(taskA.data.requirement).toMatchObject({ projectId: 'project-a', repoId: repositoryA.repoId, status: 'active', priority: 'high', assignee: 'alice' });
+
+    const taskB = structured(await callRuntimeTool(context(controllerHome, repositoryB), 'rh_work', {
+      operation: 'requirement_create', requirement_id: 'REQ-PROJECT-B-TASK',
+      requirement_title: 'Project B task', requirement_outcome: 'Complete the Project B workflow.',
+      requirement_status: 'waiting_for_user', requirement_priority: 'urgent', requirement_assignee: 'bob',
+    }));
+    expect(taskB.status).toBe('ok');
+    expect(taskB.data.requirement).toMatchObject({ projectId: 'project-b', repoId: repositoryB.repoId, status: 'waiting_for_user', priority: 'urgent', assignee: 'bob' });
+
+    const taskAWithDependency = structured(await callRuntimeTool(context(controllerHome, repositoryA), 'rh_work', {
+      operation: 'requirement_revise', requirement_id: 'REQ-PROJECT-A-TASK', expected_revision: 1,
+      requirement_dependencies: ['REQ-PROJECT-B-TASK'],
+    }));
+    expect(taskAWithDependency.status).toBe('ok');
+    expect(taskAWithDependency.data.requirement).toMatchObject({ projectId: 'project-a', dependsOnRequirementIds: ['REQ-PROJECT-B-TASK'] });
+
+    const staleTaskWrite = structured(await callRuntimeTool(context(controllerHome, repositoryA), 'rh_work', {
+      operation: 'requirement_revise', requirement_id: 'REQ-PROJECT-A-TASK', expected_revision: 1,
+      requirement_priority: 'normal',
+    }));
+    expect(staleTaskWrite.status).toBe('blocked');
+    expect(staleTaskWrite.summary).toMatch(/REVISION_CONFLICT|REVISION_MISMATCH|STALE/i);
+
     const listed = structured(await callRuntimeTool(context(controllerHome, repositoryA), 'rh_work', {
       operation: 'project_list', limit: 20,
     }));
@@ -138,6 +168,31 @@ describe('rh_work Project operations', () => {
       { revision: 2, displayName: 'Project A Renamed', status: 'archived', action: 'project_semantic_write' },
       { revision: 1, displayName: 'Project A', status: 'active', action: 'project_semantic_onboard' },
     ]);
+
+    // Re-read the registry and Requirement authority as a fresh runtime would after restart.
+    ensureControllerHome(controllerHome);
+    const repositoriesAfterRestart = listRepositories(controllerHome);
+    const repositoryAAfterRestart = repositoriesAfterRestart.find((repository) => repository.repoId === repositoryA.repoId);
+    expect(repositoryAAfterRestart).toBeTruthy();
+    const taskListAfterRestart = structured(await callRuntimeTool(
+      context(controllerHome, repositoryAAfterRestart as ReturnType<typeof registerRepository>), 'rh_work',
+      { operation: 'requirement_list', limit: 20 },
+    ));
+    expect(taskListAfterRestart.data.requirements).toMatchObject([{
+      requirementId: 'REQ-PROJECT-A-TASK', projectId: 'project-a', status: 'active', priority: 'high', assignee: 'alice', dependencyCount: 1,
+    }]);
+
+    const taskDetailAfterRestart = structured(await callRuntimeTool(
+      context(controllerHome, repositoryAAfterRestart as ReturnType<typeof registerRepository>), 'rh_work',
+      { operation: 'requirement_get', requirement_id: 'REQ-PROJECT-A-TASK', detail_level: 'detail' },
+    ));
+    expect(taskDetailAfterRestart.data.requirement).toMatchObject({
+      projectId: 'project-a', status: 'active', priority: 'high', assignee: 'alice', dependsOnRequirementIds: ['REQ-PROJECT-B-TASK'],
+    });
+    expect(taskDetailAfterRestart.data.dependencyRequirements).toMatchObject([{
+      requirementId: 'REQ-PROJECT-B-TASK', title: 'Project B task', status: 'waiting_for_user', priority: 'urgent', assignee: 'bob', repoId: repositoryB.repoId,
+    }]);
+    expect(taskDetailAfterRestart.data.revisionHistory).toMatchObject([{ revision: 1, status: 'active', priority: 'high', assignee: 'alice', dependsOnRequirementIds: [] }]);
 
     expect(RH_WORK_MODEL_OPERATIONS).toEqual(expect.arrayContaining(['project_create', 'project_list', 'project_get', 'project_revise']));
     const rhWork = runtimeToolDefinitions.find((tool) => tool.name === 'rh_work');
