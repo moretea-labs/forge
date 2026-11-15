@@ -70,13 +70,21 @@ function writeIssueFixture(repoRoot: string, index: number): void {
   }, null, 2)}\n`);
 }
 
-function duration(result: { structuredContent?: unknown; content?: Array<{ text?: string }> } | undefined): { ms: number; bytes: number; cacheHit: boolean; largestFields: Array<{ key: string; bytes: number }> } {
+export function duration(result: { isError?: boolean; structuredContent?: unknown; content?: Array<{ text?: string }> } | undefined): { ms: number; bytes: number; cacheHit: boolean; largestFields: Array<{ key: string; bytes: number }> } {
+  if (result?.isError === true) throw new Error('CONTROLLER_HOTPATH_TOOL_ERROR: benchmark cannot time a failed tool call');
   const value = (result?.structuredContent
     ?? JSON.parse(result?.content?.[0]?.text ?? '{}')) as Record<string, unknown>;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.status === 'error') {
+    throw new Error('CONTROLLER_HOTPATH_TOOL_ERROR: benchmark requires a successful tool result');
+  }
   const responseMeta = (value.responseMeta ?? {}) as Record<string, unknown>;
+  const serverDurationMs = responseMeta.serverDurationMs;
+  if (typeof serverDurationMs !== 'number' || !Number.isFinite(serverDurationMs) || serverDurationMs < 0) {
+    throw new Error('CONTROLLER_HOTPATH_SERVER_DURATION_MISSING: no valid responseMeta.serverDurationMs');
+  }
   const projection = (value.contextProjection ?? {}) as Record<string, unknown>;
   return {
-    ms: typeof responseMeta.serverDurationMs === 'number' ? responseMeta.serverDurationMs : 0,
+    ms: serverDurationMs,
     bytes: Buffer.byteLength(JSON.stringify(value), 'utf8'),
     cacheHit: responseMeta.cacheHit === true || projection.cacheHit === true,
     largestFields: Object.entries(value)
@@ -204,4 +212,4 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+if (import.meta.main) await main();
