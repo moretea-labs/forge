@@ -48,6 +48,13 @@ fi
 if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then
   exit 0
 fi
+if [ "$1" = "issue" ] && [ "$2" = "view" ]; then
+  printf '{"number":1,"title":"Refreshed title","state":"CLOSED","url":"https://github.com/owner/repo/issues/1?refreshed","labels":[],"assignees":[],"projectItems":[],"updatedAt":"2026-11-15T02:00:00Z"}\n'
+  exit 0
+fi
+if [ "$1" = "issue" ] && [ "$2" = "close" ]; then
+  exit 0
+fi
 if [ "$1" = "project" ] && [ "$2" = "item-add" ]; then
   count=$(grep -c '^project item-add ' "$GH_TEST_LOG" || true)
   case "$count" in
@@ -105,6 +112,56 @@ exit 2
       const completed = getIssue(canonicalRoot, issue.id);
       expect(completed.github).toMatchObject({ number: 1, projectItemId: 'PVTI_4' });
       expect(completed.tasks[0]?.github).toMatchObject({ number: 2, projectItemId: 'PVTI_5' });
+
+      const refreshed = await executeGitHubPluginAction({
+        controllerHome,
+        repoId: repository.repoId,
+        repoRoot: canonicalRoot,
+        pluginId: 'github',
+        actionId: 'refresh_issue',
+        requestId: 'refresh-github-issue',
+        origin: { surface: 'mcp' },
+        args: { issue_id: issue.id },
+      });
+      expect((refreshed.remote as Record<string, unknown>).state).toBe('CLOSED');
+      const afterRefresh = getIssue(canonicalRoot, issue.id);
+      expect(afterRefresh.github?.url).toBe('https://github.com/owner/repo/issues/1?refreshed');
+      expect(afterRefresh.github?.syncedAt).toBeTruthy();
+
+      await executeGitHubPluginAction({
+        controllerHome,
+        repoId: repository.repoId,
+        repoRoot: canonicalRoot,
+        pluginId: 'github',
+        actionId: 'close_issue',
+        requestId: 'close-github-issue',
+        origin: { surface: 'mcp' },
+        args: { issue_id: issue.id },
+      });
+      expect(readFileSync(logPath, 'utf8')).toContain('issue close 1 --repo owner/repo');
+
+      const disabled = await executeGitHubPluginAction({
+        controllerHome,
+        repoId: repository.repoId,
+        repoRoot: canonicalRoot,
+        pluginId: 'github',
+        actionId: 'configure',
+        requestId: 'disable-github-plugin',
+        origin: { surface: 'mcp' },
+        args: { enabled: false },
+      });
+      expect((disabled.config as { enabled: boolean }).enabled).toBe(false);
+      const issueViewCount = readFileSync(logPath, 'utf8').trim().split(/\r?\n/).filter((line) => line.startsWith('issue view ')).length;
+      await expect(executeGitHubPluginAction({
+        controllerHome,
+        repoId: repository.repoId,
+        repoRoot: canonicalRoot,
+        pluginId: 'github',
+        actionId: 'refresh_issue',
+        requestId: 'refresh-disabled-github-plugin',
+        origin: { surface: 'mcp' },
+        args: { issue_id: issue.id },
+      })).rejects.toThrow('GitHub plugin is disabled');
 
       const commands = readFileSync(logPath, 'utf8').trim().split(/\r?\n/);
       expect(commands.filter((line) => line.startsWith('issue create '))).toHaveLength(2);
