@@ -1149,6 +1149,24 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue((payload["conversationId"] as? String)?.hasPrefix("profile-check-") == true)
     }
 
+    func testApiProfileProbeRejectsIncompleteAndToolActivity() {
+        XCTAssertTrue(NativeWorkspace.apiProfileProbeSucceeded([
+            "output":"OK","toolActivityCount":0,"incomplete":false
+        ]))
+        XCTAssertFalse(NativeWorkspace.apiProfileProbeSucceeded([
+            "output":"partial reply","toolActivityCount":0,"incomplete":true
+        ]))
+        XCTAssertFalse(NativeWorkspace.apiProfileProbeSucceeded([
+            "output":"OK","toolActivityCount":1,"incomplete":false
+        ]))
+        XCTAssertFalse(NativeWorkspace.apiProfileProbeSucceeded([
+            "output":"  ","toolActivityCount":0
+        ]))
+        XCTAssertFalse(NativeWorkspace.apiProfileProbeSucceeded([
+            "toolActivityCount":0
+        ]))
+    }
+
     @MainActor
     func testApiThreadReadinessUsesThreadModelAndSharedEndpoint() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
