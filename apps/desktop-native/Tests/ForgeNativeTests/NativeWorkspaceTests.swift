@@ -3461,7 +3461,11 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(resources.map(\.title), ["guide.pdf", "old.pdf"])
         XCTAssertEqual(resources[0].kind, .file)
         XCTAssertEqual(resources[0].localRoot, project.localRoot)
+        XCTAssertEqual(resources[0].repoId, "repo-a")
+        XCTAssertEqual(resources[0].checkoutId, "checkout-a")
         XCTAssertNil(resources[1].localRoot)
+        XCTAssertEqual(resources[1].repoId, "repo-a")
+        XCTAssertEqual(resources[1].checkoutId, "checkout-old")
         XCTAssertEqual(resources[1].source, "Docs/old.pdf")
 
         let hidden = AgentAssetsDashboard.makeResources(
@@ -3506,6 +3510,15 @@ extension NativeWorkspaceTests {
 
         XCTAssertEqual(resources.count, 2)
         XCTAssertEqual(Set(resources.map(\.threadId)), Set([primaryCheckout.id, worktree.id]))
+        XCTAssertTrue(resources.allSatisfy { $0.repoId == "repo-a" })
+        XCTAssertEqual(
+            resources.first(where: { $0.threadId == primaryCheckout.id })?.checkoutId,
+            "checkout-primary"
+        )
+        XCTAssertEqual(
+            resources.first(where: { $0.threadId == worktree.id })?.checkoutId,
+            "checkout-worktree"
+        )
         XCTAssertEqual(Set(resources.map(\.source)), Set([
             "https://example.com/primary.png",
             "https://example.com/worktree.png"

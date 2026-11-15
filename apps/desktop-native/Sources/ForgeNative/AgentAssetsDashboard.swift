@@ -25,6 +25,8 @@ struct AgentAssetsDashboard: View {
         let title: String
         let threadTitle: String
         let threadId: String
+        let repoId: String?
+        let checkoutId: String?
         let messageId: String
         let date: Date
         let source: String
@@ -59,6 +61,8 @@ struct AgentAssetsDashboard: View {
                                 title: label.isEmpty ? "图片" : label,
                                 threadTitle: thread.title,
                                 threadId: thread.id,
+                                repoId: thread.repoId,
+                                checkoutId: thread.checkoutId,
                                 messageId: message.id,
                                 date: message.createdAt,
                                 source: url,
@@ -185,6 +189,9 @@ struct AgentAssetsDashboard: View {
                                     )
                                 case .file:
                                     AgentLocalFileResourceView(
+                                        model: model,
+                                        repoId: item.repoId,
+                                        checkoutId: item.checkoutId,
                                         relativePath: item.source,
                                         rootPath: item.localRoot,
                                         accessibilityIdentifierPrefix: Self.accessibilityIdentifier(for: item.id, control: "local-file")
@@ -321,14 +328,31 @@ func copyLocalFile(from source: URL, to destination: URL) async throws {
 }
 
 private struct AgentLocalFileResourceView: View {
+    @ObservedObject var model: NativeWorkspace
+    let repoId: String?
+    let checkoutId: String?
     let relativePath: String
     let rootPath: String?
     let accessibilityIdentifierPrefix: String
+    @State private var resolvedRootPath: String?
+    @State private var isResolving = false
     @State private var isSaving = false
     @State private var status: String?
 
+    private var effectiveRootPath: String? {
+        resolvedRootPath ?? rootPath
+    }
+
     private var fileURL: URL? {
-        resolveLocalContextFileURL(rootPath: rootPath, relativePath: relativePath)
+        resolveLocalContextFileURL(rootPath: effectiveRootPath, relativePath: relativePath)
+    }
+
+    private var canResolveCheckout: Bool {
+        repoId != nil && checkoutId != nil
+    }
+
+    private var canOpen: Bool {
+        fileURL != nil || canResolveCheckout
     }
 
     private var fileName: String {
@@ -336,7 +360,10 @@ private struct AgentLocalFileResourceView: View {
     }
 
     private var sourceLabel: String {
-        guard rootPath != nil else { return "原 checkout 不可用" }
+        if isResolving { return "正在定位原 checkout…" }
+        guard effectiveRootPath != nil else {
+            return canResolveCheckout ? "按需定位原 checkout" : "原 checkout 不可用"
+        }
         return fileURL == nil ? "原文件已移动或删除" : "本地文件"
     }
 
@@ -356,7 +383,7 @@ private struct AgentLocalFileResourceView: View {
                 .accessibilityLabel("打开文件：\(fileName)")
                 .accessibilityHint("使用 macOS 默认应用打开此文件")
                 .accessibilityIdentifier("\(accessibilityIdentifierPrefix).open")
-                .disabled(fileURL == nil)
+                .disabled(!canOpen || isResolving || isSaving)
                 Button {
                     reveal()
                 } label: {
@@ -366,9 +393,9 @@ private struct AgentLocalFileResourceView: View {
                 .help("在 Finder 中显示")
                 .accessibilityLabel("在 Finder 中显示：\(fileName)")
                 .accessibilityIdentifier("\(accessibilityIdentifierPrefix).finder")
-                .disabled(fileURL == nil)
+                .disabled(!canOpen || isResolving || isSaving)
                 Button(isSaving ? "保存中…" : "另存为…") { save() }
-                    .disabled(fileURL == nil || isSaving)
+                    .disabled(!canOpen || isSaving || isResolving)
                     .accessibilityIdentifier("\(accessibilityIdentifierPrefix).save")
             }
             .buttonStyle(.plain)
@@ -380,27 +407,64 @@ private struct AgentLocalFileResourceView: View {
     }
 
     @MainActor
+    private func resolveSourceURL() async -> URL? {
+        guard !isResolving else { return nil }
+        if let fileURL { return fileURL }
+        guard let repoId, let checkoutId else {
+            status = "原 checkout 不可用"
+            return nil
+        }
+        isResolving = true
+        status = "正在定位原 checkout…"
+        defer { isResolving = false }
+        do {
+            guard let root = try await model.resolveCheckoutRoot(
+                repoId: repoId, checkoutId: checkoutId
+            ) else {
+                status = "原 checkout 不可用"
+                return nil
+            }
+            resolvedRootPath = root.path
+            guard let source = resolveLocalContextFileURL(
+                rootPath: root.path, relativePath: relativePath
+            ) else {
+                status = "原文件已移动或删除"
+                return nil
+            }
+            return source
+        } catch {
+            status = "无法定位原 checkout"
+            return nil
+        }
+    }
+
+    @MainActor
     private func open() {
-        guard let source = fileURL else { return }
-        status = NSWorkspace.shared.open(source) ? "已使用默认应用打开" : "无法打开文件"
+        Task {
+            guard let source = await resolveSourceURL() else { return }
+            status = NSWorkspace.shared.open(source) ? "已使用默认应用打开" : "无法打开文件"
+        }
     }
 
     @MainActor
     private func reveal() {
-        guard let source = fileURL else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([source])
+        Task {
+            guard let source = await resolveSourceURL() else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([source])
+        }
     }
 
     @MainActor
     private func save() {
-        guard let source = fileURL, !isSaving else { return }
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = source.lastPathComponent
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        guard !isSaving, !isResolving else { return }
         isSaving = true
-        status = "正在保存…"
         Task {
             defer { isSaving = false }
+            guard let source = await resolveSourceURL() else { return }
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = source.lastPathComponent
+            guard panel.runModal() == .OK, let destination = panel.url else { return }
+            status = "正在保存…"
             do {
                 try await copyLocalFile(from: source, to: destination)
                 status = "已保存到 " + destination.lastPathComponent

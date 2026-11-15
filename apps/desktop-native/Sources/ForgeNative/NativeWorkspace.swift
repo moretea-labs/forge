@@ -1754,6 +1754,17 @@ final class NativeWorkspace: ObservableObject {
         ) && self.checkoutId == requestedCheckoutId
     }
 
+    // Resolve a conversation's exact checkout without mutating the currently selected
+    // Agent/Zen repository context. Assets uses this only when opening a context file
+    // whose checkout is not the repository's currently projected checkout.
+    func resolveCheckoutRoot(repoId: String, checkoutId: String) async throws -> URL? {
+        let result = try await ForgeBridge.request("read_project_repository", ["repoId": repoId])
+        let context = Self.repositoryCheckoutContext(result, requestedCheckoutId: checkoutId)
+        guard context.checkoutId == checkoutId,
+              Self.checkoutPathIsGitWorktree(context.checkoutRoot) else { return nil }
+        return context.checkoutRoot
+    }
+
     func refreshProject() async {
         guard let repoId else {
             projectRepositoryRequestGeneration &+= 1
