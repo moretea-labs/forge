@@ -3760,9 +3760,12 @@ final class NativeWorkspace: ObservableObject {
         guard message.incomplete == true else { return false }
         // A tool with no confirmed successful terminal receipt must not be
         // silently reissued by the one-click continuation affordance.
-        return (message.activityEvents ?? []).contains {
-            $0.phase == "tool" && $0.status != "completed"
-        } || message.text.contains("Process ID:")
+        let toolEvents = (message.activityEvents ?? []).filter { $0.phase == "tool" }
+        return toolEvents.contains { $0.status != "completed" }
+            || message.text.contains("Process ID:")
+            // The aggregate count is the Runtime's total tool-call count. If it
+            // disagrees with the per-call receipts, at least one outcome is unverified.
+            || (message.toolActivityCount.map { $0 != toolEvents.count } ?? false)
     }
 
     nonisolated static func apiActivityEvents(_ raw: Any?) -> [AgentLiveActivityEvent]? {
@@ -3778,7 +3781,7 @@ final class NativeWorkspace: ObservableObject {
                 phase:"tool", label:name,
                 detail:row["processId"] as? String ?? row["requestId"] as? String,
                 status:status,
-                startedAt:now, completedAt:status == "running" ? nil : now,
+                startedAt:now, completedAt:["running","output"].contains(status) ? nil : now,
                 toolCallId:row["toolCallId"] as? String
             )
         }
@@ -3797,9 +3800,11 @@ final class NativeWorkspace: ObservableObject {
         let detail = payload["processId"] as? String ?? payload["requestId"] as? String
         var events = existing
         let matchingIndex = events.lastIndex { event in
-            guard event.status == "running" else { return false }
-            if let toolCallId { return event.toolCallId == toolCallId }
-            return event.label == name
+            if let toolCallId {
+                return event.toolCallId == toolCallId
+                    && ["running","output"].contains(event.status)
+            }
+            return event.status == "running" && event.label == name
         }
         if let matchingIndex {
             let started = events[matchingIndex]
@@ -3807,7 +3812,7 @@ final class NativeWorkspace: ObservableObject {
                 phase:"tool", label:name,
                 detail:detail ?? started.detail,
                 status:status, startedAt:started.startedAt,
-                completedAt:status == "running" ? nil : now,
+                completedAt:["running","output"].contains(status) ? nil : now,
                 toolCallId:toolCallId ?? started.toolCallId
             )
             return events
@@ -3819,7 +3824,7 @@ final class NativeWorkspace: ObservableObject {
         events.append(AgentLiveActivityEvent(
             phase:"tool", label:name,
             detail:detail, status:status,
-            startedAt:now, completedAt:status == "running" ? nil : now,
+            startedAt:now, completedAt:["running","output"].contains(status) ? nil : now,
             toolCallId:toolCallId
         ))
         return events
@@ -3830,7 +3835,7 @@ final class NativeWorkspace: ObservableObject {
         now:String
     ) -> [AgentLiveActivityEvent] {
         events.map { event in
-            guard event.status == "running" else { return event }
+            guard event.status == "running" || event.status == "output" else { return event }
             return AgentLiveActivityEvent(
                 phase:event.phase, label:event.label, detail:event.detail,
                 status:"unknown", startedAt:event.startedAt, completedAt:now,
@@ -3947,7 +3952,7 @@ final class NativeWorkspace: ObservableObject {
             liveActivity?.events ?? [], payload:payload, now:now
         )
         let completedCount = events.filter {
-            $0.phase == "tool" && $0.status != "running"
+            $0.phase == "tool" && !["running","output"].contains($0.status)
         }.count
         liveActivity = AgentLiveActivity(
             conversationId:conversationId,

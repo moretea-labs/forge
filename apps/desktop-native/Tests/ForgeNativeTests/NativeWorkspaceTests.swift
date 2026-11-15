@@ -434,7 +434,15 @@ final class NativeWorkspaceTests: XCTestCase {
         )))
         XCTAssertFalse(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
             role:"assistant",text:"Interrupted before the next step",
-            activityEvents:[success],incomplete:true
+            toolActivityCount:1,activityEvents:[success],incomplete:true
+        )))
+        XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"Tool receipt missing",
+            toolActivityCount:1,incomplete:true
+        )))
+        XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"One tool receipt missing",
+            toolActivityCount:2,activityEvents:[success],incomplete:true
         )))
         XCTAssertFalse(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
             role:"assistant",text:"Complete result",activityEvents:[failedCommand],incomplete:false
@@ -1994,8 +2002,17 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(started.count,1)
         XCTAssertEqual(started.first?.status,"running")
 
-        let finished = NativeWorkspace.apiToolProgressEvents(
+        let output = NativeWorkspace.apiToolProgressEvents(
             started,
+            payload:["name":"git_status","phase":"output","toolCallId":"call-1"],
+            now:"output-at"
+        )
+        XCTAssertEqual(output.count,1)
+        XCTAssertEqual(output.first?.status,"output")
+        XCTAssertNil(output.first?.completedAt)
+
+        let finished = NativeWorkspace.apiToolProgressEvents(
+            output,
             payload:["name":"git_status","phase":"unknown","toolCallId":"call-1"],
             now:"finished-at"
         )
@@ -2004,6 +2021,16 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(finished.first?.startedAt,"started-at")
         XCTAssertEqual(finished.first?.completedAt,"finished-at")
         XCTAssertEqual(finished.first?.toolCallId,"call-1")
+
+        let terminalReceipt = NativeWorkspace.apiToolProgressEvents(
+            output,
+            payload:["name":"git_status","phase":"completed","toolCallId":"call-1"],
+            now:"completed-at"
+        )
+        XCTAssertEqual(terminalReceipt.count,1)
+        XCTAssertEqual(terminalReceipt.first?.status,"completed")
+        XCTAssertEqual(terminalReceipt.first?.startedAt,"started-at")
+        XCTAssertEqual(terminalReceipt.first?.completedAt,"completed-at")
 
         let distinct = NativeWorkspace.apiToolProgressEvents(
             finished,
@@ -2042,6 +2069,14 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(finalized.first?.status,"unknown")
         XCTAssertEqual(finalized.first?.completedAt,"failed-at")
         XCTAssertEqual(finalized.first?.detail,"request-1")
+
+        let output = AgentLiveActivityEvent(
+            phase:"tool",label:"apply_patch",detail:"request-2",
+            status:"output",startedAt:"started-at",completedAt:nil,toolCallId:"call-2"
+        )
+        let outputFinalized = NativeWorkspace.finalizeFailedToolEvents([output],now:"failed-at")
+        XCTAssertEqual(outputFinalized.first?.status,"unknown")
+        XCTAssertEqual(outputFinalized.first?.completedAt,"failed-at")
     }
 
     @MainActor
