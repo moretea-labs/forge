@@ -135,21 +135,30 @@ export function publishIssueToGitHub(repoRoot: string, issueId: string, options:
   const labels = Array.from(new Set(['forge', issue.kind, ...(options.labels ?? [])].filter(Boolean)));
   const parentBody = bodyFile(repoRoot, `${issue.id}-parent`, issueBody(repoRoot, issue));
   try {
-    let parent = issue.github
+    const persistedParent = issue.github
       ? updateGitHubIssue(repoRoot, repository, issue.github, issue.title, parentBody)
       : createGitHubIssue(repoRoot, repository, issue.title, parentBody, labels);
-    parent = addProjectItem(repoRoot, parent, options.projectOwner, options.projectNumber);
-    issue = updateIssue(repoRoot, issue.id, { github: parent });
+    // Save the remote identity before the optional Project mutation can fail.
+    issue = updateIssue(repoRoot, issue.id, { github: persistedParent });
+    const parent = addProjectItem(repoRoot, persistedParent, options.projectOwner, options.projectNumber);
+    if (parent !== persistedParent) {
+      issue = updateIssue(repoRoot, issue.id, { github: parent });
+    }
 
     if (options.includeTasks) {
       for (const task of issue.tasks.filter((entry) => resolveEffectiveTaskState({ issue, task: entry, runs: readTaskRunEvidence(repoRoot, entry) }).effectiveStatus !== 'superseded')) {
         const taskFile = bodyFile(repoRoot, `${issue.id}-${task.id}`, taskBody(issue, task, parent.url));
         try {
-          let taskLink = task.github
+          const persistedTaskLink = task.github
             ? updateGitHubIssue(repoRoot, repository, task.github, `${task.id}: ${task.title}`, taskFile)
             : createGitHubIssue(repoRoot, repository, `${task.id}: ${task.title}`, taskFile, ['forge-task'], parent.number);
-          taskLink = addProjectItem(repoRoot, taskLink, options.projectOwner, options.projectNumber);
-          issue = updateTask(repoRoot, issue.id, task.id, { github: taskLink, note: `Synced to GitHub: ${taskLink.url}` });
+          // Keep the child Issue identity even if adding it to the Project fails.
+          issue = updateTask(repoRoot, issue.id, task.id, { github: persistedTaskLink });
+          const taskLink = addProjectItem(repoRoot, persistedTaskLink, options.projectOwner, options.projectNumber);
+          issue = updateTask(repoRoot, issue.id, task.id, {
+            ...(taskLink !== persistedTaskLink ? { github: taskLink } : {}),
+            note: `Synced to GitHub: ${taskLink.url}`,
+          });
         } finally {
           rmSync(taskFile, { force: true });
         }
