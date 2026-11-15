@@ -71,6 +71,34 @@ describe('rh_work Project operations', () => {
     expect(standalone.status).toBe('ok');
     expect(standalone.data.project).toMatchObject({ projectId: 'project-standalone', workspaceId: 'workspace-personal', status: 'active', revision: 1, placements: [] });
 
+    const standaloneTask = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'requirement_create', project_id: 'project-standalone',
+      requirement_id: 'REQ-STANDALONE-TASK', requirement_title: 'Independent project task',
+      requirement_outcome: 'Manage a task without any repository binding.',
+      requirement_status: 'active', requirement_priority: 'normal', requirement_assignee: 'owner',
+    }));
+    expect(standaloneTask.status).toBe('ok');
+    expect(standaloneTask.data.requirement).toMatchObject({
+      projectId: 'project-standalone', status: 'active', priority: 'normal', assignee: 'owner',
+    });
+    expect(standaloneTask.data.requirement.repoId).toBeUndefined();
+    const reusedStandaloneTask = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'requirement_create', project_id: 'project-standalone',
+      requirement_id: 'REQ-STANDALONE-TASK', requirement_title: 'Independent project task',
+      requirement_outcome: 'Manage a task without any repository binding.',
+      requirement_status: 'waiting_for_user', requirement_priority: 'urgent',
+    }));
+    expect(reusedStandaloneTask.data).toMatchObject({
+      admissionDecision: 'reuse_existing', requirement: { projectId: 'project-standalone', status: 'active', priority: 'normal' },
+    });
+    const missingProjectTask = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'requirement_create', project_id: 'project-missing',
+      requirement_id: 'REQ-MISSING-PROJECT', requirement_title: 'Not created',
+      requirement_outcome: 'Missing Project cannot own a task.',
+    }));
+    expect(missingProjectTask.status).toBe('blocked');
+    expect(missingProjectTask.summary).toContain('REQUIREMENT_PROJECT_NOT_FOUND');
+
     const created = structured(await callRuntimeTool(context(controllerHome, repositoryA), 'rh_work', {
       operation: 'project_create', project_id: 'project-a', project_display_name: 'Project A',
     }));
@@ -83,6 +111,13 @@ describe('rh_work Project operations', () => {
     }));
     expect(second.status).toBe('ok');
     expect(second.data.project).toMatchObject({ projectId: 'project-b', placements: [{ repositoryId: repositoryB.repoId }] });
+    const mismatchedPlacement = structured(await callRuntimeTool(context(controllerHome, repositoryA), 'rh_work', {
+      operation: 'requirement_create', project_id: 'project-b',
+      requirement_id: 'REQ-INVALID-PROJECT-PLACEMENT', requirement_title: 'Incorrect project',
+      requirement_outcome: 'A repository task cannot claim a different Project.',
+    }));
+    expect(mismatchedPlacement.status).toBe('blocked');
+    expect(mismatchedPlacement.summary).toContain('REQUIREMENT_PROJECT_SCOPE_CONFLICT');
 
     const taskA = structured(await callRuntimeTool(context(controllerHome, repositoryA), 'rh_work', {
       operation: 'requirement_create', requirement_id: 'REQ-PROJECT-A-TASK',
@@ -129,6 +164,13 @@ describe('rh_work Project operations', () => {
     expect(renamed.status).toBe('ok');
     expect(renamed.data.project).toMatchObject({ projectId: 'project-a', displayName: 'Project A Renamed', status: 'archived', revision: 2 });
     expect(renamed.data.project.placements).toEqual([{ schemaVersion: 1, projectId: 'project-a', forgeInstanceId: expect.any(String), repositoryId: repositoryA.repoId }]);
+    const archivedProjectTask = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'requirement_create', project_id: 'project-a',
+      requirement_id: 'REQ-ARCHIVED-PROJECT', requirement_title: 'Blocked while archived',
+      requirement_outcome: 'Archived Projects cannot receive new tasks.',
+    }));
+    expect(archivedProjectTask.status).toBe('blocked');
+    expect(archivedProjectTask.summary).toContain('REQUIREMENT_PROJECT_ARCHIVED');
 
     const archived = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
       operation: 'project_list', project_status: 'archived', limit: 20,
@@ -178,7 +220,19 @@ describe('rh_work Project operations', () => {
     const standaloneDetail = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
       operation: 'project_get', project_id: 'project-standalone', detail_level: 'detail',
     }));
-    expect(standaloneDetail.data).toMatchObject({ requirements: [], requirementCount: 0, requirementsTruncated: false });
+    expect(standaloneDetail.data).toMatchObject({
+      requirements: [{ requirementId: 'REQ-STANDALONE-TASK', projectId: 'project-standalone',
+        title: 'Independent project task', status: 'active', priority: 'normal', assignee: 'owner' }],
+      requirementCount: 1, requirementsTruncated: false,
+    });
+    const standaloneTaskRevised = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'requirement_revise', requirement_id: 'REQ-STANDALONE-TASK',
+      expected_revision: 1, requirement_status: 'waiting_for_user', requirement_priority: 'high',
+    }));
+    expect(standaloneTaskRevised.status).toBe('ok');
+    expect(standaloneTaskRevised.data.requirement).toMatchObject({
+      projectId: 'project-standalone', revision: 2, status: 'waiting_for_user', priority: 'high',
+    });
     const summary = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
       operation: 'project_get', project_id: 'project-a',
     }));
@@ -193,6 +247,16 @@ describe('rh_work Project operations', () => {
 
     // Re-read the registry and Requirement authority as a fresh runtime would after restart.
     ensureControllerHome(controllerHome);
+    const independentAfterRestart = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'project_get', project_id: 'project-standalone', detail_level: 'detail',
+    }));
+    expect(independentAfterRestart.data.requirements).toMatchObject([{
+      requirementId: 'REQ-STANDALONE-TASK', revision: 2, status: 'waiting_for_user', priority: 'high',
+    }]);
+    const standaloneHistory = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'requirement_get', requirement_id: 'REQ-STANDALONE-TASK', detail_level: 'detail',
+    }));
+    expect(standaloneHistory.data.revisionHistory).toMatchObject([{ revision: 1, projectId: 'project-standalone', status: 'active' }]);
     const repositoriesAfterRestart = listRepositories(controllerHome);
     const repositoryAAfterRestart = repositoriesAfterRestart.find((repository) => repository.repoId === repositoryA.repoId);
     expect(repositoryAAfterRestart).toBeTruthy();

@@ -6,9 +6,9 @@ export { FORGE_VERSION } from '../../version';
 /** Product identity exposed by every Forge runtime surface. */
 export const FORGE_TOOL_SURFACE = FORGE_PRODUCT_ID;
 /** Payload schema for MCP health/config records; this is not a product/component version. */
-// 15: Requirement legacy aliases become revision-safe migration metadata; stale
-// Connector snapshots must be fenced after the bounded rh_work schema revision.
-export const FORGE_MCP_SCHEMA_VERSION = 15;
+// 16: Independent Project task creation reuses rh_work.project_id and the
+// canonical Requirement owner; refresh stale Connector contract snapshots.
+export const FORGE_MCP_SCHEMA_VERSION = 16;
 
 type ToolSurfaceDefinition = {
   name: string;

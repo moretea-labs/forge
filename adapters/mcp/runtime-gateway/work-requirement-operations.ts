@@ -62,7 +62,7 @@ export async function callRhWorkRequirementOperation(
         ...(semantic.assignee ? { assignee: semantic.assignee } : {}),
         dependencyCount: semantic.dependsOnRequirementIds.length,
         legacyAliases: semantic.legacyAliases,
-        ...(projectId ? { projectId } : {}),
+        ...(semantic.projectId || projectId ? { projectId: semantic.projectId ?? projectId } : {}),
         updatedAt: semantic.updatedAt,
       }));
     return result(buildFacadeResult({
@@ -178,9 +178,13 @@ export async function callRhWorkRequirementOperation(
     }) as unknown as Record<string, unknown>, true);
   }
   try {
+    const requestedProjectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
+    const selectedProjectId = projectIdForRepository(ctx, repository);
+    if (repository && requestedProjectId && requestedProjectId !== selectedProjectId) throw new Error(`REQUIREMENT_PROJECT_SCOPE_CONFLICT:${requestedProjectId}`);
     const requirementInput = {
       requirementId,
       ...(repository?.repoId ? { repoId: repository.repoId } : {}),
+      ...(!repository && requestedProjectId ? { projectId: requestedProjectId } : {}),
       title,
       outcomeStatement,
       acceptanceCriteria: Array.isArray(args.requirement_acceptance_criteria) ? args.requirement_acceptance_criteria.map(String) : [],

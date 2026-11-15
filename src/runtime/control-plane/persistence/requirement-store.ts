@@ -11,7 +11,8 @@ import {
 } from './sqlite-store';
 import { createHash } from 'node:crypto';
 import { REQUIREMENT_PRIORITIES, REQUIREMENT_STATE_TRANSITIONS, type RequirementPriority, type RequirementState } from '../../../../packages/kernel/goal/api/index';
-import type { ScopeRef } from '../../../../packages/kernel/identity/api/index';
+import type { ProjectIdentity, ScopeRef } from '../../../../packages/kernel/identity/api/index';
+import { PROJECT_SEMANTIC_NAMESPACE } from '../workspace/workspace-store';
 export { REQUIREMENT_PRIORITIES, REQUIREMENT_STATES, type RequirementPriority, type RequirementState } from '../../../../packages/kernel/goal/api/index';
 
 export interface Requirement {
@@ -19,6 +20,8 @@ export interface Requirement {
   requirementId: string;
   /** Optional node-local repository placement; absent for ForgeInstance-scoped legacy/global Requirements. */
   repoId?: string;
+  /** Direct Project membership only for tasks without repository placement. */
+  projectId?: string;
   priority?: RequirementPriority;
   /** Display/identity label only; this metadata never grants access. */
   assignee?: string;
@@ -57,6 +60,8 @@ export interface CreateRequirementInput {
   requirementId: string;
   /** Optional node-local repository placement provenance. */
   repoId?: string;
+  /** Existing canonical Project for a task without repository placement. */
+  projectId?: string;
   priority?: RequirementPriority;
   assignee?: string;
   status?: RequirementState;
@@ -76,6 +81,7 @@ export interface RequirementSemanticView {
   revision: number;
   semanticScope: ScopeRef;
   repoId?: string;
+  projectId?: string;
   title: string;
   outcomeStatement: string;
   acceptanceCriteria: string[];
@@ -208,6 +214,7 @@ export function requirementSemanticView(requirement: Requirement): RequirementSe
     revision: currentRequirementSemanticRevision(requirement),
     semanticScope: { schemaVersion: 1, kind: 'requirement', id: requirement.requirementId },
     ...(requirement.repoId ? { repoId: requirement.repoId } : {}),
+    ...(requirement.projectId ? { projectId: requirement.projectId } : {}),
     title: requirement.title,
     outcomeStatement: requirement.outcomeStatement,
     acceptanceCriteria: [...requirement.acceptanceCriteria],
@@ -356,6 +363,7 @@ export function reviseRequirementSemantic(
       throw new Error(`REQUIREMENT_REVISION_CONFLICT:${requirementId}:expected=${input.expectedRevision}:actual=${semanticRevision}`);
     }
     const requestedRepoId = repositoryId(input.repoId);
+    if (requestedRepoId && current.value.projectId) throw new Error(`REQUIREMENT_PROJECT_REPOSITORY_PLACEMENT_CONFLICT:${requirementId}`);
     if (requestedRepoId && current.value.repoId && current.value.repoId !== requestedRepoId) {
       throw new Error(`REQUIREMENT_REPOSITORY_CONFLICT:${requirementId}:existing=${current.value.repoId}:requested=${requestedRepoId}`);
     }
@@ -462,6 +470,8 @@ export function createRequirement(
   input: CreateRequirementInput,
 ): Requirement {
   const requirementId = id(input.requirementId);
+  const projectId = String(input.projectId ?? '').trim() || undefined;
+  if (projectId && (projectId.length > 512 || repositoryId(input.repoId))) throw new Error('REQUIREMENT_PROJECT_REPOSITORY_PLACEMENT_CONFLICT');
   const at = nowIso(options);
   const initialStatus = input.status ?? 'planned';
   const legacyAliases = normalizeRequirementLegacyAliases(input.legacyAliases);
@@ -472,6 +482,7 @@ export function createRequirement(
     schemaVersion: 1,
     requirementId,
     ...(repositoryId(input.repoId) ? { repoId: repositoryId(input.repoId) } : {}),
+    ...(projectId ? { projectId } : {}),
     ...(normalizePriority(input.priority) ? { priority: normalizePriority(input.priority) } : {}),
     ...(normalizeAssignee(input.assignee) ? { assignee: normalizeAssignee(input.assignee) } : {}),
     legacyAliases,
@@ -494,6 +505,13 @@ export function createRequirement(
   if (!requirement.title || !requirement.outcomeStatement) throw new Error('REQUIREMENT_CONTENT_REQUIRED');
   withControlPlaneTransaction(options.controllerHome, (database) => {
     if (readWithin(database, requirementId)) throw new Error(`REQUIREMENT_ALREADY_EXISTS: ${requirementId}`);
+    if (projectId) {
+      const projects = listControlPlaneRecordsWithinTransaction<ProjectIdentity>(database, { namespace: PROJECT_SEMANTIC_NAMESPACE, limit: 1000 });
+      if (projects.length >= 1000) throw new Error('PROJECT_IDENTITY_LOOKUP_LIMIT');
+      const project = projects.find((record) => record.value.projectId === projectId)?.value;
+      if (!project) throw new Error(`REQUIREMENT_PROJECT_NOT_FOUND:${projectId}`);
+      if (project.status === 'archived') throw new Error(`REQUIREMENT_PROJECT_ARCHIVED:${projectId}`);
+    }
     assertUniqueRequirementLegacyAliasesWithinTransaction(database, requirementId, legacyAliases);
     const exclusiveCandidateRefs = requirement.auditRefs.filter(ref => ref.startsWith('cognitive-requirement-candidate:'));
     if (exclusiveCandidateRefs.length > 0) {
@@ -621,6 +639,7 @@ export function updateRequirement(
       throw new Error(`REQUIREMENT_STATE_TRANSITION_INVALID: ${current.value.state} -> ${next.state}`);
     }
     if (next.requirementId !== requirementId) throw new Error('REQUIREMENT_ID_IMMUTABLE');
+    if (next.projectId !== current.value.projectId) throw new Error('REQUIREMENT_PROJECT_IMMUTABLE');
     const updated: Requirement = {
       ...next,
       legacyAliases: nextLegacyAliases,

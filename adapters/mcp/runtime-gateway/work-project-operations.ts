@@ -5,7 +5,7 @@ import type { ProjectIdentity, ProjectPlacement } from '../../../packages/kernel
 import { normalizeRemoteUrl, portableProjectSourceFingerprint, stablePortableProjectId } from '../../../src/core/repository/identity';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { listRequirementsForRepository } from '../../../src/runtime/control-plane/facade/requirement-authority';
-import { requirementSemanticView } from '../../../src/runtime/control-plane/persistence/requirement-store';
+import { listRequirements, requirementSemanticView } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import {
   createProjectIdentity,
   DEFAULT_PERSONAL_WORKSPACE_ID,
@@ -56,8 +56,14 @@ function projectView(ctx: MultiRepositoryMcpToolContext, record: ProjectRecord) 
   };
 }
 
-function projectRequirements(ctx: MultiRepositoryMcpToolContext, placements: readonly ProjectPlacement[]) {
+function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: string, placements: readonly ProjectPlacement[]) {
   const requirementsById = new Map<string, ReturnType<typeof requirementSemanticView>>();
+  for (const record of listRequirements({ controllerHome: ctx.controllerHome }, 1000)) {
+    if (record.value.projectId === projectId) {
+      const requirement = requirementSemanticView(record.value);
+      requirementsById.set(requirement.requirementId, requirement);
+    }
+  }
   for (const repoId of new Set(placements.map((placement) => placement.repositoryId))) {
     for (const record of listRequirementsForRepository({ controllerHome: ctx.controllerHome }, repoId, 1000)) {
       const requirement = requirementSemanticView(record.value);
@@ -70,6 +76,7 @@ function projectRequirements(ctx: MultiRepositoryMcpToolContext, placements: rea
     requirements: all.slice(0, 100).map((requirement) => ({
       requirementId: requirement.requirementId,
       revision: requirement.revision,
+      projectId,
       ...(requirement.repoId ? { repoId: requirement.repoId } : {}),
       title: requirement.title.slice(0, 240),
       status: requirement.status,
@@ -192,7 +199,7 @@ export function callRhWorkProjectOperation(
     if (operation === 'project_get') {
       const detailLevel = args.detail_level === 'detail' ? 'detail' : 'summary';
       const project = projectView(ctx, record);
-      const taskProjection = detailLevel === 'detail' ? projectRequirements(ctx, project.placements) : undefined;
+      const taskProjection = detailLevel === 'detail' ? projectRequirements(ctx, project.projectId, project.placements) : undefined;
       const revisionHistory = detailLevel === 'detail'
         ? listProjectRevisionRecords(ctx.controllerHome, projectId!, 50)
         : undefined;

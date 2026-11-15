@@ -34,7 +34,7 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // 2026-11-08: managed generic API credentials add one metadata-only rh_credential facade.
 // It owns only credential-use AuthorizationGrant lifecycle; macOS Keychain/provider stores remain secret authorities.
 // Preferred facade names stay stable; any further complete-registry drift fails closed.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = '32f47fb7b6b4e336';
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'a49ea0cf84a8d20c';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a
@@ -50,7 +50,7 @@ const EXPECTED_PREFERRED_CONTROLLER_TOOL_NAMES = [
 // already shipped on main. V3 Work objective relations intentionally extend only
 // the existing rh_work input schema; both changes must invalidate stale Connector
 // schema snapshots without adding a parallel execution or graph authority.
-const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = '44c2e82079f55ae8';
+const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // Every public object-schema tool carries shared transport metadata only through
 // the final tools/list materialization path. Tool schema revisions
 // intentionally invalidate stale Connector schema snapshots.
@@ -82,10 +82,10 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = '44c2e82079f55ae8';
 // unchanged. Refresh the exact combined schema fingerprint.
 // 2026-11-14 integration: #607 describes model-selected retrieval and optional
 // semantic context; #650 adds the fixed supervisor_healthcheck schedule type.
-// 2026-11-15 #648 makes Requirement legacy aliases revision-safe for idempotent
-// GitHub migration; schema v15 fences stale Connector snapshots. Refresh every
-// canonical fingerprint because each digest includes the schema version.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '91ffad76fc291d17';
+// 2026-11-15 #648 extends canonical Project/Requirement membership for tasks
+// without Repository placement. Schema v16 fences stale Connector snapshots;
+// each canonical fingerprint includes the schema version.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '02f1d5e0fca95a6f';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

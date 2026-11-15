@@ -40,6 +40,7 @@ export function normalizeRequirementAdmissionInput(input: CreateRequirementInput
   const normalized: CreateRequirementInput = {
     requirementId: requirementId.slice(0, 160),
     ...(String(input.repoId ?? '').trim() ? { repoId: String(input.repoId).trim().slice(0, 256) } : {}),
+    ...(String(input.projectId ?? '').trim() ? { projectId: String(input.projectId).trim() } : {}),
     ...(input.priority ? { priority: input.priority } : {}),
     ...(String(input.assignee ?? '').trim() ? { assignee: String(input.assignee).trim().slice(0, 160) } : {}),
     ...(input.status ? { status: input.status } : {}),
@@ -58,6 +59,7 @@ function sameBootstrapIdentity(existing: Requirement, requested: CreateRequireme
   // Status, priority and assignee are mutable metadata: a repeated create reuses
   // the existing Requirement and never overwrites these fields.
   return existing.requirementId === requested.requirementId
+    && existing.projectId === requested.projectId
     && existing.title === requested.title
     && existing.outcomeStatement === requested.outcomeStatement
     && JSON.stringify(existing.acceptanceCriteria) === JSON.stringify(requested.acceptanceCriteria ?? [])
