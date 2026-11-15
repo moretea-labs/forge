@@ -5,6 +5,7 @@ import {
   listRequirements,
   normalizeRequirementDependencies,
   readRequirement,
+  requirementSemanticView,
   type CreateRequirementInput,
   type Requirement,
   type RequirementStoreOptions,
@@ -15,6 +16,14 @@ import { cognitionMemoryStore } from '../persistence/cognition-store';
 import { memoryAddressKey, type MemoryUnit } from '../../../../packages/kernel/cognition/api/index';
 import { readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
 import { listProjectPlacements } from '../workspace/workspace-store';
+
+/** Read-only dependency readiness from canonical Requirement records. */
+export function blockingRequirementIds(options: RequirementStoreOptions, dependencyIds: readonly string[]): string[] {
+  return dependencyIds.filter((dependencyId) => {
+    const dependency = readRequirement(options, dependencyId)?.value;
+    return !dependency || requirementSemanticView(dependency).status !== 'done';
+  });
+}
 
 export type RequirementAdmissionDecision = 'created' | 'reuse_existing' | 'existing_conflict';
 

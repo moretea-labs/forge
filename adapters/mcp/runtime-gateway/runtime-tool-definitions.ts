@@ -120,6 +120,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     limit: { type: 'number', minimum: 1, maximum: 100, description: 'Bounded result limit for list operations.' },
     offset: { type: 'number', minimum: 0, maximum: 100000, description: 'Zero-based result offset after operation filters and deterministic ordering for project_list or requirement_list.' },
     search_query: { type: 'string', maxLength: 256, description: 'Case-insensitive text filter: Project ID/name for project_list; Requirement ID/title/outcome/Project ID/legacy aliases for requirement_list.' },
+    dependency_filter: { type: 'string', enum: ['blocked', 'unblocked'], description: 'Filter requirement_list by unresolved dependencies. A dependency is unresolved until its canonical Requirement status is done; includes missing/cancelled dependencies. Unblocked does not imply an executable task status.' },
     sort_by: { type: 'string', enum: ['updated_at', 'created_at', 'priority', 'status', 'title'], description: 'Requirement list sort key; defaults to updated_at.' },
     sort_order: { type: 'string', enum: ['asc', 'desc'], description: 'Requirement list sort direction; defaults to desc.' },
     objective: { type: 'string', description: 'Model-authored Plan goal for plan_create/plan_revise, or Work objective where applicable. On plan_revise this replaces the canonical Plan goal under expected_revision CAS.' },

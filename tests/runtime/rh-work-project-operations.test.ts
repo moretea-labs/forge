@@ -56,6 +56,50 @@ function structured(value: Awaited<ReturnType<typeof callRuntimeTool>>): Record<
 }
 
 describe('rh_work Project operations', () => {
+  test('dependency-filtered project tasks become unblocked when their prerequisite is completed', async () => {
+    const home = tempRoot('forge-project-blockers-');
+    ensureControllerHome(home);
+    expect(structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'project_create', project_id: 'board', project_display_name: 'Board',
+    })).status).toBe('ok');
+    for (const [id, dependencies] of [['REQ-PRE', []], ['REQ-CHILD', ['REQ-PRE']]] as const) {
+      expect(structured(await callRuntimeTool(context(home), 'rh_work', {
+        operation: 'requirement_create', project_id: 'board', requirement_id: id,
+        requirement_title: id, requirement_outcome: 'Deliver '+id,
+        requirement_dependencies: dependencies,
+      })).status).toBe('ok');
+    }
+    const list = async (filter: string, other: Record<string, unknown> = {}) =>
+      structured(await callRuntimeTool(context(home), 'rh_work', {
+        operation: 'requirement_list', project_id: 'board', dependency_filter: filter, ...other,
+      }));
+    expect((await list('blocked')).data.requirements).toEqual([
+      expect.objectContaining({ requirementId: 'REQ-CHILD', blockingDependencyIds: ['REQ-PRE'] }),
+    ]);
+    expect((await list('unblocked')).data.totalCount).toBe(1);
+    const before = structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'project_get', project_id: 'board', detail_level: 'detail',
+    }));
+    expect(before.data.requirements).toContainEqual(expect.objectContaining({
+      requirementId: 'REQ-CHILD', blockingDependencyIds: ['REQ-PRE'],
+    }));
+    const done = structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'requirement_revise', project_id: 'board', requirement_id: 'REQ-PRE',
+      expected_revision: 1, requirement_status: 'done', requirement_remaining_work: [],
+      requirement_accepted_evidence_refs: ['test:prerequisite-accepted'],
+    }));
+    expect(done.status).toBe('ok');
+    expect((await list('blocked')).data.totalCount).toBe(0);
+    const readyPage = await list('unblocked', { sort_by: 'title', sort_order: 'asc', offset: 1, limit: 1 });
+    expect(readyPage.data).toMatchObject({ totalCount: 2, hasMore: false });
+    expect(readyPage.data.requirements[0]).toMatchObject({ requirementId: 'REQ-PRE', blockingDependencyIds: [] });
+    const detail = structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'requirement_get', project_id: 'board', requirement_id: 'REQ-CHILD',
+    }));
+    expect(detail.data.requirement.blockingDependencyIds).toEqual([]);
+    expect((await list('ready')).status).toBe('blocked');
+  });
+
   test('creates, lists, renames, archives and restores canonical Projects with revision-safe writes', async () => {
     const controllerHome = tempRoot('forge-project-operations-home-');
     const repoRootA = tempRoot('forge-project-operations-a-');

@@ -87,8 +87,9 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // filters, stable sort keys, offset pagination, and case-insensitive Project/Requirement search.
 // Schema v20 adds Project-scoped Requirement get/revise protection; v21 exposes
 // Project-only creation of repository-backed tasks through canonical placement.
+// Schema v22 adds canonical dependency-blocker filtering to the task list.
 // Each canonical fingerprint fences stale Connector snapshots.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'a54bb5da9bee701b';
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'ceda4256396f157e';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

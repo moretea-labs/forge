@@ -1,6 +1,6 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { admitRequirement, listRequirementsForProject, listRequirementsForRepository, promoteRequirementCandidate } from '../../../src/runtime/control-plane/facade/requirement-authority';
+import { admitRequirement, blockingRequirementIds, listRequirementsForProject, listRequirementsForRepository, promoteRequirementCandidate } from '../../../src/runtime/control-plane/facade/requirement-authority';
 import { listRequirementRevisionRecords, listRequirements, readRequirement, requirementSemanticView, reviseRequirementSemantic, REQUIREMENT_PRIORITIES, REQUIREMENT_STATES, type RequirementPriority, type RequirementState } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import { readForgeInstanceIdentity } from '../../../packages/kernel/identity/api/index';
 import { listAllProjectIdentities, listProjectPlacements, resolveProjectForRepositoryPlacement } from '../../../src/runtime/control-plane/workspace/workspace-store';
@@ -99,6 +99,12 @@ export async function callRhWorkRequirementOperation(
     const assigneeFilter = typeof args.requirement_assignee === 'string' ? args.requirement_assignee.trim() : '';
     const searchQuery = typeof args.search_query === 'string' ? args.search_query.trim() : '';
     const normalizedSearchQuery = searchQuery.toLowerCase();
+    const dependencyFilter = typeof args.dependency_filter === 'string' ? args.dependency_filter : '';
+    if (dependencyFilter && dependencyFilter !== 'blocked' && dependencyFilter !== 'unblocked') {
+      return result(buildFacadeResult({ status: 'blocked', summary: 'REQUIREMENT_DEPENDENCY_FILTER_INVALID.' }) as unknown as Record<string, unknown>, true);
+    }
+    const blockers = (dependencyIds: readonly string[]) =>
+      blockingRequirementIds({ controllerHome: ctx.controllerHome }, dependencyIds);
     const sortBy = typeof args.sort_by === 'string' ? args.sort_by : 'updated_at';
     const sortOrder = typeof args.sort_order === 'string' ? args.sort_order : 'desc';
     if (!['updated_at', 'created_at', 'priority', 'status', 'title'].includes(sortBy)
@@ -116,6 +122,7 @@ export async function callRhWorkRequirementOperation(
       .filter((semantic) => (!statusFilter || semantic.status === statusFilter)
         && (!priorityFilter || semantic.priority === priorityFilter)
         && (!assigneeFilter || semantic.assignee === assigneeFilter)
+        && (!dependencyFilter || (blockers(semantic.dependsOnRequirementIds).length > 0) === (dependencyFilter === 'blocked'))
         && (!normalizedSearchQuery || [semantic.requirementId, semantic.title, semantic.outcomeStatement,
           semantic.projectId ?? '', ...semantic.legacyAliases]
           .some((value) => value.toLowerCase().includes(normalizedSearchQuery))))
@@ -143,6 +150,7 @@ export async function callRhWorkRequirementOperation(
       remainingWorkCount: semantic.remainingWork.length,
       acceptedEvidenceCount: semantic.acceptedEvidenceRefs.length,
       dependencyCount: semantic.dependsOnRequirementIds.length,
+      blockingDependencyIds: blockers(semantic.dependsOnRequirementIds),
       legacyAliases: semantic.legacyAliases,
       ...(semantic.projectId || projectId || requestedProjectId ? { projectId: semantic.projectId ?? projectId ?? requestedProjectId } : {}),
       createdAt: semantic.createdAt,
@@ -165,6 +173,7 @@ export async function callRhWorkRequirementOperation(
           ...(statusFilter ? { status: statusFilter } : {}),
           ...(priorityFilter ? { priority: priorityFilter } : {}),
           ...(assigneeFilter ? { assignee: assigneeFilter } : {}),
+          ...(dependencyFilter ? { dependency: dependencyFilter } : {}),
           ...(searchQuery ? { searchQuery } : {}),
         },
         authority: 'semantic_context_only',
@@ -189,6 +198,7 @@ export async function callRhWorkRequirementOperation(
       data: { requirementId, ...(requestedProjectId ? { projectId: requestedProjectId } : {}), ...(repository?.repoId ? { repoId: repository.repoId } : {}) },
     }) as unknown as Record<string, unknown>, true);
     const semantic = requirementSemanticView(record.value);
+    const blockingDependencies = blockingRequirementIds({ controllerHome: ctx.controllerHome }, semantic.dependsOnRequirementIds);
     const revisionHistory = args.detail_level === 'detail'
       ? listRequirementRevisionRecords({ controllerHome: ctx.controllerHome }, requirementId, 20)
       : undefined;
@@ -211,7 +221,7 @@ export async function callRhWorkRequirementOperation(
     return result(buildFacadeResult({
       summary: `Requirement ${semantic.requirementId} retrieved at semantic revision ${semantic.revision}.`,
       data: {
-        requirement: { ...semantic, ...(projectId || requestedProjectId ? { projectId: projectId ?? requestedProjectId } : {}) },
+        requirement: { ...semantic, blockingDependencyIds: blockingDependencies, ...(projectId || requestedProjectId ? { projectId: projectId ?? requestedProjectId } : {}) },
         ...(revisionHistory ? { revisionHistory } : {}),
         ...(dependencyRequirements ? { dependencyRequirements } : {}),
         progress: {

@@ -4,7 +4,7 @@ import { ensureForgeInstanceIdentity, readForgeInstanceIdentity } from '../../..
 import type { ProjectIdentity, ProjectPlacement } from '../../../packages/kernel/identity/api/index';
 import { normalizeRemoteUrl, portableProjectSourceFingerprint, stablePortableProjectId } from '../../../src/core/repository/identity';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
-import { listRequirementsForProject } from '../../../src/runtime/control-plane/facade/requirement-authority';
+import { blockingRequirementIds, listRequirementsForProject } from '../../../src/runtime/control-plane/facade/requirement-authority';
 import { bindRequirementProjectPlacement, bindRequirementRepositoryPlacement, readRequirement, requirementSemanticView, REQUIREMENT_STATES, type RequirementState } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import {
   createProjectIdentity,
@@ -84,6 +84,7 @@ function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: stri
       remainingWorkCount: requirement.remainingWork.length,
       acceptedEvidenceCount: requirement.acceptedEvidenceRefs.length,
       dependencyCount: requirement.dependsOnRequirementIds.length,
+      blockingDependencyIds: blockingRequirementIds({ controllerHome: ctx.controllerHome }, requirement.dependsOnRequirementIds),
       updatedAt: requirement.updatedAt,
     })),
     requirementsTruncated: all.length > 100,
