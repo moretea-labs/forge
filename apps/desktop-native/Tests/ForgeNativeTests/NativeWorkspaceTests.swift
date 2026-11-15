@@ -1594,8 +1594,11 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.navigationBackStack.last?.zenMode,true)
         XCTAssertEqual(model.navigationBackStack.last?.zenScreen,.canvas)
         XCTAssertEqual(model.navigationBackStack.last?.focusedRequirementId,"REQ-CURRENT")
+        XCTAssertTrue(model.canNavigateBack)
+        XCTAssertEqual(model.navigationBackLabel,NativePage.requirement.rawValue)
 
         model.goBack()
+        XCTAssertFalse(model.canNavigateBack)
         XCTAssertEqual(model.page,.requirement)
         XCTAssertTrue(model.zenMode)
         XCTAssertEqual(model.zenScreen,.canvas)

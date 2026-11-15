@@ -2144,6 +2144,20 @@ private struct AgentPane: View {
 
     private var agentWorkspaceBar: some View {
         HStack(spacing:10) {
+            if model.canNavigateBack {
+                Button { model.goBack() } label: {
+                    Image(systemName:"chevron.left")
+                        .font(.system(size:10.5,weight:.semibold))
+                        .frame(width:27,height:27)
+                        .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(model.busy)
+                .help("返回 \(model.navigationBackLabel ?? "上一页")")
+                .accessibilityLabel("返回 \(model.navigationBackLabel ?? "上一页")")
+                .accessibilityIdentifier("agent.navigation.back")
+            }
+
             Text("Agent")
                 .font(.system(size:13,weight:.semibold))
                 .accessibilityAddTraits(.isHeader)
