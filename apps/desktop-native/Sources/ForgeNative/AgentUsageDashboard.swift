@@ -4,8 +4,8 @@ import SwiftUI
 /// No token estimation, price catalog, shadow database or separate scheduler.
 struct AgentUsageDashboard: View {
     @ObservedObject var model: NativeWorkspace
-    @State private var days = 30
-    @State private var selectedRepoId = ""
+    @Binding var days: Int
+    @Binding var selectedRepoId: String
 
     struct Entry: Identifiable {
         let id: String

@@ -152,6 +152,11 @@ private struct ForgeWorkspaceView: View {
     @State private var projectCheckoutsRequestGeneration = 0
     @State private var projectCheckoutError: String?
     @State private var inboxShown = false
+    @State private var assetsSelectedRepoId = ""
+    @State private var assetsShowLocalResources = true
+    @State private var assetsShowRemoteImages = true
+    @State private var usageSelectedRepoId = ""
+    @State private var usageDays = 30
     @State private var inboxDecisionRequestId: String?
     @State private var inboxDecision = ""
     @State private var inboxDismissRequestId: String?
@@ -1414,8 +1419,15 @@ private struct ForgeWorkspaceView: View {
             case .schedule: SchedulePane(model:model)
             case .plugins: PluginsPane(model:model)
             case .knowledge: KnowledgePane(model:model)
-            case .assets: AgentAssetsDashboard(model:model)
-            case .usage: AgentUsageDashboard(model:model)
+            case .assets:
+                AgentAssetsDashboard(
+                    model:model,
+                    selectedRepoId:$assetsSelectedRepoId,
+                    showLocalResources:$assetsShowLocalResources,
+                    showRemoteImages:$assetsShowRemoteImages
+                )
+            case .usage:
+                AgentUsageDashboard(model:model,days:$usageDays,selectedRepoId:$usageSelectedRepoId)
             case .settings: SettingsPane(model:model)
             }
         }

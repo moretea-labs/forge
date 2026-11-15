@@ -6,9 +6,9 @@ import QuickLook
 /// links. The conversation transcript remains the sole asset index authority.
 struct AgentAssetsDashboard: View {
     @ObservedObject var model: NativeWorkspace
-    @State private var selectedRepoId = ""
-    @State private var showLocalResources = true
-    @State private var showRemoteImages = true
+    @Binding var selectedRepoId: String
+    @Binding var showLocalResources: Bool
+    @Binding var showRemoteImages: Bool
 
     static func accessibilityIdentifier(for resourceID: String, control: String? = nil) -> String {
         let prefix = "agent.assets.resource.\(resourceID)"
