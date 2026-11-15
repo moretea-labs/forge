@@ -6,6 +6,7 @@ import { normalizeRemoteUrl, portableProjectSourceFingerprint, stablePortablePro
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { blockingRequirementIds, listRequirementsForProject } from '../../../src/runtime/control-plane/facade/requirement-authority';
 import { readPlanContractStore } from '../../../src/runtime/control-plane/facade/plan-contract-store';
+import { listAutopilotRunSummaries } from '../../../src/runtime/autopilot/read-model';
 import { SEMANTIC_SCOPE_KEY } from '../../../src/effects/controller-home';
 import { bindRequirementProjectPlacement, bindRequirementRepositoryPlacement, readRequirement, requirementSemanticView, REQUIREMENT_STATES, type RequirementState } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import {
@@ -71,8 +72,10 @@ function projectTaskSummary(tasks: ReturnType<typeof projectTasks>) {
 
 function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: string) {
   const all = projectTasks(ctx, projectId);
-  // One Plan-store read per distinct repository (or semantic scope), not per task row.
+  const visible = all.slice(0, 100);
+  // One Plan/Run store read per distinct scope/repository, not per visible task row.
   const planCountsByScope = new Map<string, Map<string, number>>();
+  const autopilotRuns = listAutopilotRunSummaries(ctx.controllerHome, visible);
   const linkedPlanCount = (requirement: (typeof all)[number]): number => {
     const scope = requirement.repoId ?? SEMANTIC_SCOPE_KEY;
     let counts = planCountsByScope.get(scope);
@@ -90,7 +93,7 @@ function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: stri
   };
   return {
     ...projectTaskSummary(all),
-    requirements: all.slice(0, 100).map((requirement) => ({
+    requirements: visible.map((requirement) => ({
       requirementId: requirement.requirementId,
       revision: requirement.revision,
       projectId,
@@ -104,6 +107,7 @@ function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: stri
       acceptedEvidenceCount: requirement.acceptedEvidenceRefs.length,
       dependencyCount: requirement.dependsOnRequirementIds.length,
       linkedPlanCount: linkedPlanCount(requirement),
+      autopilotRun: autopilotRuns.get(requirement.requirementId) ?? null,
       blockingDependencyIds: blockingRequirementIds({ controllerHome: ctx.controllerHome }, requirement.dependsOnRequirementIds),
       updatedAt: requirement.updatedAt,
     })),

@@ -11,6 +11,7 @@ import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import { bindRequirementProjectPlacement, bindRequirementRepositoryPlacement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { listRepositories, registerRepository, resolveRepositorySelection } from '../../src/runtime/repositories/registry';
+import { createAutopilotRun, defaultAutopilotPolicy, updateAutopilotRun } from '../../src/runtime/autopilot/store';
 
 const roots: string[] = [];
 
@@ -194,6 +195,33 @@ describe('rh_work Project operations', () => {
       remainingWork: ['Verify the connected list readback.'],
       acceptedEvidenceRefs: ['test:evidence:project-a-progress'],
     });
+    const taskAPlan = structured(await callRuntimeTool(context(controllerHome, repositoryA), 'rh_work', {
+      operation: 'plan_create', plan_id: 'PLAN-PROJECT-A-TASK', requirement_id: 'REQ-PROJECT-A-TASK',
+      objective: 'Complete the Project A task.', plan_items: [{ id: 'implementation', objective: 'Implement and verify.', dependencies: [] }],
+    }));
+    expect(taskAPlan.status).toBe('ok');
+    const autopilotRun = createAutopilotRun(controllerHome, {
+      repoId: repositoryA.repoId, checkoutId: repositoryA.activeCheckoutId!,
+      requirementId: 'REQ-PROJECT-A-TASK', requirementRevision: 2,
+      grantId: 'grant-private-must-not-leak',
+      policy: defaultAutopilotPolicy({ endpoint: 'https://private-endpoint.example.invalid' }),
+    });
+    const updatedAutopilotRun = updateAutopilotRun(controllerHome, repositoryA.repoId, 'REQ-PROJECT-A-TASK', (run) => ({
+      ...run, status: 'paused', currentPlanId: 'PLAN-PROJECT-A-TASK',
+      lastSummary: 'Implementation passed; device validation remains.',
+      stopReason: 'max_tool_calls_reached', pendingProcessId: 'proc-private',
+      pendingCommandRequestId: 'request-private',
+      evidenceRefs: ['check:unit:passed', 'artifact:sha256:abc123'],
+      usage: { promptTokens: 120, completionTokens: 30, totalTokens: 150, turns: 2, toolCalls: 3 },
+    }));
+    expect(updatedAutopilotRun.value.runId).toBe(autopilotRun.value.runId);
+    const taskAList = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'requirement_list', project_id: 'project-a', limit: 20,
+    }));
+    expect(taskAList.data.requirements).toMatchObject([{
+      requirementId: 'REQ-PROJECT-A-TASK',
+      autopilotRun: { runId: autopilotRun.value.runId, status: 'paused', requiresReapproval: false },
+    }]);
 
     const staleTaskWrite = structured(await callRuntimeTool(context(controllerHome, repositoryA), 'rh_work', {
       operation: 'requirement_revise', requirement_id: 'REQ-PROJECT-A-TASK', expected_revision: 1,
@@ -301,7 +329,19 @@ describe('rh_work Project operations', () => {
       priority: 'high', assignee: 'alice', dependencyCount: 1,
       progressSummary: 'Implementation is in progress; dependency wiring is complete.',
       remainingWorkCount: 1, acceptedEvidenceCount: 1,
+      autopilotRun: {
+        runId: autopilotRun.value.runId, status: 'paused', requirementRevision: 2, requiresReapproval: false,
+        currentPlanId: 'PLAN-PROJECT-A-TASK',
+        lastSummary: 'Implementation passed; device validation remains.',
+        stopReason: 'max_tool_calls_reached', processReconciliationPending: true,
+        evidenceRefs: ['check:unit:passed', 'artifact:sha256:abc123'],
+        evidenceTruncatedCount: 0, usage: { totalTokens: 150, turns: 2, toolCalls: 3 },
+      },
     }]);
+    const autopilotSummary = fetched.data.requirements[0].autopilotRun;
+    expect(JSON.stringify(autopilotSummary)).not.toContain('grant-private-must-not-leak');
+    expect(JSON.stringify(autopilotSummary)).not.toContain('private-endpoint');
+    expect(JSON.stringify(autopilotSummary)).not.toContain('request-private');
     expect(fetched.data.requirements.map((task: { requirementId: string }) => task.requirementId))
       .not.toContain('REQ-PROJECT-B-TASK');
 
@@ -310,13 +350,14 @@ describe('rh_work Project operations', () => {
     }));
     expect(projectBDetail.data.requirements).toMatchObject([{
       requirementId: 'REQ-PROJECT-B-TASK', status: 'waiting_for_user', priority: 'urgent', assignee: 'bob',
+      autopilotRun: null,
     }]);
     const standaloneDetail = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
       operation: 'project_get', project_id: 'project-standalone', detail_level: 'detail',
     }));
     expect(standaloneDetail.data).toMatchObject({
       requirements: [{ requirementId: 'REQ-STANDALONE-TASK', projectId: 'project-standalone',
-        title: 'Independent project task', status: 'active', priority: 'normal', assignee: 'owner' }],
+        title: 'Independent project task', status: 'active', priority: 'normal', assignee: 'owner', autopilotRun: null }],
       requirementCount: 1, requirementsTruncated: false,
     });
     const standaloneTaskRevised = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
@@ -374,10 +415,25 @@ describe('rh_work Project operations', () => {
       remainingWork: ['Verify the connected list readback.'],
       acceptedEvidenceRefs: ['test:evidence:project-a-progress'],
     });
+    expect(taskDetailAfterRestart.data.autopilotRun).toMatchObject({
+      runId: autopilotRun.value.runId, status: 'paused', requirementRevision: 2, requiresReapproval: false,
+      currentPlanId: 'PLAN-PROJECT-A-TASK', processReconciliationPending: true, evidenceRefs: ['check:unit:passed', 'artifact:sha256:abc123'],
+    });
     expect(taskDetailAfterRestart.data.dependencyRequirements).toMatchObject([{
       requirementId: 'REQ-PROJECT-B-TASK', title: 'Project B task', status: 'waiting_for_user', priority: 'urgent', assignee: 'bob', repoId: repositoryB.repoId,
     }]);
     expect(taskDetailAfterRestart.data.revisionHistory).toMatchObject([{ revision: 1, status: 'active', priority: 'high', assignee: 'alice', dependsOnRequirementIds: [] }]);
+    const revisedAfterRun = structured(await callRuntimeTool(context(controllerHome, repositoryAAfterRestart as ReturnType<typeof registerRepository>), 'rh_work', {
+      operation: 'requirement_revise', requirement_id: 'REQ-PROJECT-A-TASK', expected_revision: 2,
+      requirement_progress_summary: 'Requirement changed after Run authorization; review the new revision.',
+    }));
+    expect(revisedAfterRun.status).toBe('ok');
+    const staleRunDetail = structured(await callRuntimeTool(context(controllerHome, repositoryAAfterRestart as ReturnType<typeof registerRepository>), 'rh_work', {
+      operation: 'requirement_get', requirement_id: 'REQ-PROJECT-A-TASK', detail_level: 'detail',
+    }));
+    expect(staleRunDetail.data.autopilotRun).toMatchObject({
+      requirementRevision: 2, requiresReapproval: true, status: 'paused',
+    });
     const restoredRepositoryTask = structured(await callRuntimeTool(context(controllerHome, repositoryA), 'rh_work', {
       operation: 'requirement_create', requirement_id: 'REQ-ARCHIVED-REPOSITORY-PROJECT',
       requirement_title: 'Blocked in archived repository Project',

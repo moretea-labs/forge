@@ -8,6 +8,8 @@ import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { result } from './result-adapter';
 import { isCurrentPlanContract, planSemanticView, readPlanContractStore } from '../../../src/runtime/control-plane/facade/plan-contract-store';
 import { SEMANTIC_SCOPE_KEY } from '../../../src/effects/controller-home';
+import { readAutopilotRun } from '../../../src/runtime/autopilot/store';
+import { listAutopilotRunSummaries, summarizeAutopilotRun } from '../../../src/runtime/autopilot/read-model';
 
 const RH_WORK_REQUIREMENT_OPERATIONS = new Set([
   'requirement_create',
@@ -138,7 +140,11 @@ export async function callRhWorkRequirementOperation(
         return compared === 0 ? left.requirementId.localeCompare(right.requirementId) : compared * direction;
       });
     const totalCount = filtered.length;
-    const requirements = filtered.slice(offset, offset + limit).map((semantic) => ({
+    const page = filtered.slice(offset, offset + limit);
+    const autopilotRuns = listAutopilotRunSummaries(ctx.controllerHome, page.map((semantic) => ({
+      ...semantic, repoId: semantic.repoId ?? repository?.repoId,
+    })));
+    const requirements = page.map((semantic) => ({
       requirementId: semantic.requirementId,
       revision: semantic.revision,
       ...(semantic.repoId ? { repoId: semantic.repoId } : {}),
@@ -153,6 +159,7 @@ export async function callRhWorkRequirementOperation(
       acceptedEvidenceCount: semantic.acceptedEvidenceRefs.length,
       dependencyCount: semantic.dependsOnRequirementIds.length,
       blockingDependencyIds: blockers(semantic.dependsOnRequirementIds),
+      autopilotRun: autopilotRuns.get(semantic.requirementId) ?? null,
       legacyAliases: semantic.legacyAliases,
       ...(semantic.projectId || projectId || requestedProjectId ? { projectId: semantic.projectId ?? projectId ?? requestedProjectId } : {}),
       createdAt: semantic.createdAt,
@@ -201,6 +208,10 @@ export async function callRhWorkRequirementOperation(
     }) as unknown as Record<string, unknown>, true);
     const semantic = requirementSemanticView(record.value);
     const blockingDependencies = blockingRequirementIds({ controllerHome: ctx.controllerHome }, semantic.dependsOnRequirementIds);
+    const runRepoId = semantic.repoId ?? repository?.repoId;
+    const autopilotRun = args.detail_level === 'detail' && runRepoId
+      ? readAutopilotRun(ctx.controllerHome, runRepoId, semantic.requirementId)?.value
+      : undefined;
     // The task owns no duplicate Plan relationship: Plan.requirementId is canonical.
     // A global Project-board read resolves the selected task's actual repository.
     const relatedPlans = args.detail_level === 'detail'
@@ -249,6 +260,9 @@ export async function callRhWorkRequirementOperation(
         ...(dependencyRequirements ? { dependencyRequirements } : {}),
         ...(relatedPlans ? { relatedPlans: relatedPlans.slice(0, 20), relatedPlanCount: relatedPlans.length,
           relatedPlansTruncated: relatedPlans.length > 20, planDetailOperation: 'plan_get' } : {}),
+        ...(args.detail_level === 'detail' ? {
+          autopilotRun: autopilotRun ? summarizeAutopilotRun(autopilotRun, semantic.revision) : null,
+        } : {}),
         progress: {
           source: 'requirement',
           summary: semantic.progressSummary,
