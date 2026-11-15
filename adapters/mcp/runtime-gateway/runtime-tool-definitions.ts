@@ -1,4 +1,5 @@
 import type { McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
+import { REQUIREMENT_PRIORITIES, REQUIREMENT_STATES } from '../../../packages/kernel/goal/api/index';
 import { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from '../../../src/runtime/context/context-pack-contract';
 import { RH_WORK_MODEL_OPERATIONS } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../../src/runtime/context/automatic-learning';
@@ -136,7 +137,10 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     requirement_progress_summary: { type: 'string', maxLength: 2_000, description: 'Model-authored Requirement progress summary for requirement_revise; persisted with expected_revision CAS.' },
     requirement_remaining_work: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 500 }, description: 'Remaining Requirement acceptance work for requirement_revise; a semantic description, not scheduler state.' },
     requirement_accepted_evidence_refs: { type: 'array', maxItems: 100, items: { type: 'string', maxLength: 512 }, description: 'Verified evidence references accepted by the model for requirement_revise; not auto-inferred from Git/Work.' },
-    requirement_state: { type: 'string', enum: ['open', 'completed', 'cancelled'], description: 'Thin semantic Requirement state for requirement_revise.' },
+    requirement_state: { type: 'string', enum: ['open', 'completed', 'cancelled'], description: 'Coarse semantic Requirement state retained for existing consumers.' },
+    requirement_status: { type: 'string', enum: [...REQUIREMENT_STATES], description: 'Full task lifecycle status for requirement_create/requirement_revise. Completing a task requires empty remaining work and accepted evidence; terminal states cannot be reopened.' },
+    requirement_priority: { type: 'string', enum: [...REQUIREMENT_PRIORITIES], description: 'Task priority stored on the canonical Requirement.' },
+    requirement_assignee: { type: 'string', maxLength: 160, description: 'Task owner label or identity. Metadata only; it does not grant access.' },
     requirement_candidate_id: { type: 'string', description: 'Exact Cognitive memory id for operation=requirement_promote_candidate.' },
     handoff_id: { type: 'string', description: 'Optional existing HandoffItem to include as bounded context for launcher_start.' },
     learning_signals: { type: 'array', maxItems: CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS, items: { type: 'object', additionalProperties: false,

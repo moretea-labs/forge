@@ -10,15 +10,18 @@ import {
   type SqliteDatabase,
 } from './sqlite-store';
 import { createHash } from 'node:crypto';
-import { REQUIREMENT_STATE_TRANSITIONS, type RequirementState } from '../../../../packages/kernel/goal/api/index';
+import { REQUIREMENT_PRIORITIES, REQUIREMENT_STATE_TRANSITIONS, type RequirementPriority, type RequirementState } from '../../../../packages/kernel/goal/api/index';
 import type { ScopeRef } from '../../../../packages/kernel/identity/api/index';
-export { REQUIREMENT_STATES, type RequirementState } from '../../../../packages/kernel/goal/api/index';
+export { REQUIREMENT_PRIORITIES, REQUIREMENT_STATES, type RequirementPriority, type RequirementState } from '../../../../packages/kernel/goal/api/index';
 
 export interface Requirement {
   schemaVersion: 1;
   requirementId: string;
   /** Optional node-local repository placement; absent for ForgeInstance-scoped legacy/global Requirements. */
   repoId?: string;
+  priority?: RequirementPriority;
+  /** Display/identity label only; this metadata never grants access. */
+  assignee?: string;
   legacyAliases: string[];
   title: string;
   outcomeStatement: string;
@@ -52,6 +55,8 @@ export interface CreateRequirementInput {
   requirementId: string;
   /** Optional node-local repository placement provenance. */
   repoId?: string;
+  priority?: RequirementPriority;
+  assignee?: string;
   legacyAliases?: string[];
   title: string;
   outcomeStatement: string;
@@ -75,7 +80,12 @@ export interface RequirementSemanticView {
   progressSummary: string;
   remainingWork: string[];
   acceptedEvidenceRefs: string[];
+  /** Coarse semantic state retained for existing Requirement/Autopilot consumers. */
   state: SemanticRequirementState;
+  /** Full user-facing task lifecycle state. */
+  status: RequirementState;
+  priority?: RequirementPriority;
+  assignee?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -89,6 +99,9 @@ export interface ReviseRequirementSemanticInput {
   expectedRevision: number;
   /** Optional repository placement captured from the current repository context. */
   repoId?: string;
+  priority?: RequirementPriority | null;
+  assignee?: string | null;
+  status?: RequirementState;
   title?: string;
   outcomeStatement?: string;
   acceptanceCriteria?: string[];
@@ -154,6 +167,19 @@ function repositoryId(value: unknown): string | undefined {
   return normalized ? normalized.slice(0, 256) : undefined;
 }
 
+function normalizePriority(value: unknown): RequirementPriority | undefined {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (!(REQUIREMENT_PRIORITIES as readonly string[]).includes(normalized)) throw new Error('REQUIREMENT_PRIORITY_INVALID');
+  return normalized as RequirementPriority;
+}
+
+function normalizeAssignee(value: unknown): string | undefined {
+  const normalized = String(value ?? '').trim();
+  if (normalized.length > 160) throw new Error('REQUIREMENT_ASSIGNEE_INVALID');
+  return normalized || undefined;
+}
+
 function bounded(values: readonly string[] | undefined, limit: number, maxLength = 500): string[] {
   return (values ?? []).map((value) => String(value).trim()).filter(Boolean).slice(0, limit).map((value) => value.slice(0, maxLength));
 }
@@ -183,6 +209,9 @@ export function requirementSemanticView(requirement: Requirement): RequirementSe
     remainingWork: [...(requirement.remainingWork ?? [])],
     acceptedEvidenceRefs: [...(requirement.acceptedEvidenceRefs ?? [])],
     state: semanticRequirementState(requirement),
+    status: requirement.state,
+    ...(requirement.priority ? { priority: requirement.priority } : {}),
+    ...(requirement.assignee ? { assignee: requirement.assignee } : {}),
     createdAt: requirement.createdAt,
     updatedAt: requirement.semanticUpdatedAt ?? requirement.createdAt,
   };
@@ -273,22 +302,34 @@ export function reviseRequirementSemantic(
       throw new Error(`REQUIREMENT_REPOSITORY_CONFLICT:${requirementId}:existing=${current.value.repoId}:requested=${requestedRepoId}`);
     }
     const requestedState = input.state;
-    const legacyState: RequirementState = requestedState === 'completed'
+    const semanticStatus: RequirementState | undefined = requestedState === 'completed'
       ? 'done'
       : requestedState === 'cancelled'
         ? 'cancelled'
         : requestedState === 'open'
           ? 'active'
-          : current.value.state;
+          : undefined;
+    const requestedStatus = input.status;
+    if (semanticStatus && requestedStatus && semanticStatus !== requestedStatus) {
+      throw new Error(`REQUIREMENT_STATE_INPUT_CONFLICT:${requirementId}:${semanticStatus}!=${requestedStatus}`);
+    }
+    const legacyState: RequirementState = requestedStatus ?? semanticStatus ?? current.value.state;
     const currentTerminal = current.value.state === 'done' || current.value.state === 'cancelled';
     if (requestedState === 'open' && currentTerminal) {
       throw new Error(`REQUIREMENT_SEMANTIC_REOPEN_FORBIDDEN:${requirementId}:${current.value.state}`);
     }
-    if (requestedState && currentTerminal && legacyState !== current.value.state) {
+    if (requestedState && currentTerminal && semanticStatus !== current.value.state) {
       throw new Error(`REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN:${requirementId}:${current.value.state}->${legacyState}`);
+    }
+    if (requestedStatus && currentTerminal && requestedStatus !== current.value.state) {
+      throw new Error(`REQUIREMENT_STATUS_TERMINAL_TRANSITION_FORBIDDEN:${requirementId}:${current.value.state}->${requestedStatus}`);
     }
     if (currentTerminal) {
       throw new Error(`REQUIREMENT_SEMANTIC_TERMINAL_IMMUTABLE:${requirementId}:${current.value.state}`);
+    }
+    if (requestedStatus && requestedStatus !== 'done'
+      && !REQUIREMENT_STATE_TRANSITIONS[current.value.state].includes(requestedStatus)) {
+      throw new Error(`REQUIREMENT_STATE_TRANSITION_INVALID:${current.value.state} -> ${requestedStatus}`);
     }
     const at = nowIso(options);
     const revisionKey = requirementRevisionKey(requirementId, semanticRevision);
@@ -316,6 +357,8 @@ export function reviseRequirementSemantic(
     const updated: Requirement = {
       ...currentValue,
       ...(requestedRepoId && !current.value.repoId ? { repoId: requestedRepoId } : {}),
+      priority: input.priority === undefined ? current.value.priority : normalizePriority(input.priority),
+      assignee: input.assignee === undefined ? current.value.assignee : normalizeAssignee(input.assignee),
       title,
       outcomeStatement,
       acceptanceCriteria: input.acceptanceCriteria === undefined ? [...current.value.acceptanceCriteria] : bounded(input.acceptanceCriteria, 50),
@@ -347,6 +390,8 @@ export function createRequirement(
     schemaVersion: 1,
     requirementId,
     ...(repositoryId(input.repoId) ? { repoId: repositoryId(input.repoId) } : {}),
+    ...(normalizePriority(input.priority) ? { priority: normalizePriority(input.priority) } : {}),
+    ...(normalizeAssignee(input.assignee) ? { assignee: normalizeAssignee(input.assignee) } : {}),
     legacyAliases: bounded(input.legacyAliases, 20, 160),
     title: String(input.title ?? '').trim().slice(0, 500),
     outcomeStatement: String(input.outcomeStatement ?? '').trim().slice(0, 2_000),

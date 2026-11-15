@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { backupControlPlaneDatabase, restoreControlPlaneDatabase, withControlPlaneTransaction, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { createRequirement, listRequirements, normalizeLegacyRequirementAcceptance, readRequirement, reviseRequirementSemantic, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { createRequirement, listRequirementRevisionRecords, listRequirements, normalizeLegacyRequirementAcceptance, readRequirement, requirementSemanticView, reviseRequirementSemantic, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { implementationReviewChangedPathDigest, listWorkContracts } from '../../packages/kernel/work/api';
 import { executionPlacement, scopeRef, semanticRecordMetadata } from '../../packages/kernel/identity/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
@@ -206,6 +206,51 @@ test('keeps portable semantic scope separate from local execution placement', ()
   expect(metadata.scope).toEqual(scope);
   expect(metadata.revision).toBe(7);
   expect(() => semanticRecordMetadata({ ...metadata, revision: -1 })).toThrow(/SEMANTIC_RECORD_REVISION_INVALID/);
+});
+
+test('Requirement task priority, assignee and status share one revisioned authority and board projection', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-requirement-task-'));
+  homes.push(home);
+  const options = { controllerHome: home, now: () => '2026-11-15T00:00:00.000Z' };
+  const created = createRequirement(options, {
+    requirementId: 'req-task-metadata',
+    title: 'Ship task metadata',
+    outcomeStatement: 'A project task can be assigned, prioritized and moved through its real lifecycle.',
+    priority: 'high',
+    assignee: 'greyson',
+  });
+  expect(requirementSemanticView(created)).toMatchObject({
+    revision: 1, state: 'open', status: 'planned', priority: 'high', assignee: 'greyson',
+  });
+
+  const active = reviseRequirementSemantic(options, created.requirementId, {
+    expectedRevision: 1, status: 'active', priority: 'urgent', assignee: 'agent:codex',
+  });
+  expect(requirementSemanticView(active)).toMatchObject({
+    revision: 2, state: 'open', status: 'active', priority: 'urgent', assignee: 'agent:codex',
+  });
+  expect(listRequirementRevisionRecords(options, created.requirementId, 10)).toMatchObject([
+    { revision: 1, status: 'planned', priority: 'high', assignee: 'greyson' },
+  ]);
+
+  const board = buildRequirementBoard({ controllerHome: home }) as { requirements: Array<Record<string, unknown>> };
+  expect(board.requirements[0]).toMatchObject({
+    requirementId: created.requirementId, state: 'active', priority: 'urgent', assignee: 'agent:codex',
+  });
+  expect(() => reviseRequirementSemantic(options, created.requirementId, {
+    expectedRevision: 2, status: 'planned',
+  })).toThrow('REQUIREMENT_STATE_TRANSITION_INVALID');
+
+  const done = reviseRequirementSemantic(options, created.requirementId, {
+    expectedRevision: 2, status: 'done', remainingWork: [], acceptedEvidenceRefs: ['test:task-accepted'],
+  });
+  expect(requirementSemanticView(done)).toMatchObject({ revision: 3, state: 'completed', status: 'done' });
+  expect(() => reviseRequirementSemantic(options, created.requirementId, {
+    expectedRevision: 3, status: 'active',
+  })).toThrow('REQUIREMENT_STATUS_TERMINAL_TRANSITION_FORBIDDEN');
+  expect(() => createRequirement(options, {
+    requirementId: 'req-invalid-priority', title: 'Invalid priority', outcomeStatement: 'Reject unknown priority.', priority: 'critical' as never,
+  })).toThrow('REQUIREMENT_PRIORITY_INVALID');
 });
 
 test('Requirement board and diagnostics preserve Plan-derived repository placement', async () => {

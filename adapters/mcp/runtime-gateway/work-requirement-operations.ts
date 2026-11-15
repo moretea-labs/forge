@@ -1,7 +1,7 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { admitRequirement, listRequirementsForRepository, promoteRequirementCandidate } from '../../../src/runtime/control-plane/facade/requirement-authority';
-import { readRequirement, requirementSemanticView, reviseRequirementSemantic } from '../../../src/runtime/control-plane/persistence/requirement-store';
+import { listRequirementRevisionRecords, readRequirement, requirementSemanticView, reviseRequirementSemantic, type RequirementPriority, type RequirementState } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import { readForgeInstanceIdentity } from '../../../packages/kernel/identity/api/index';
 import { resolveProjectForRepositoryPlacement } from '../../../src/runtime/control-plane/workspace/workspace-store';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
@@ -19,6 +19,18 @@ export function isRhWorkRequirementOperation(operation: string): boolean {
   return RH_WORK_REQUIREMENT_OPERATIONS.has(operation);
 }
 
+function projectIdForRepository(ctx: MultiRepositoryMcpToolContext, repository: { repoId: string; activeCheckoutId?: string } | undefined): string | undefined {
+  if (!repository) return undefined;
+  const instance = readForgeInstanceIdentity(ctx.controllerHome);
+  if (!instance) return undefined;
+  return resolveProjectForRepositoryPlacement({
+    controllerHome: ctx.controllerHome,
+    forgeInstanceId: instance.instanceId,
+    repositoryId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
+  })?.projectId;
+}
+
 export async function callRhWorkRequirementOperation(
   ctx: MultiRepositoryMcpToolContext,
   repository: { repoId: string; activeCheckoutId?: string } | undefined,
@@ -29,6 +41,7 @@ export async function callRhWorkRequirementOperation(
 
   if (operation === 'requirement_list') {
     const limit = Math.max(1, Math.min(Math.trunc(typeof args.limit === 'number' ? args.limit : 20), 100));
+    const projectId = projectIdForRepository(ctx, repository);
     const requirements = listRequirementsForRepository(
       { controllerHome: ctx.controllerHome },
       repository?.repoId,
@@ -44,6 +57,10 @@ export async function callRhWorkRequirementOperation(
         title: semantic.title.slice(0, 240),
         outcomeStatement: semantic.outcomeStatement.slice(0, 500),
         state: semantic.state,
+        status: semantic.status,
+        ...(semantic.priority ? { priority: semantic.priority } : {}),
+        ...(semantic.assignee ? { assignee: semantic.assignee } : {}),
+        ...(projectId ? { projectId } : {}),
         updatedAt: semantic.updatedAt,
       }));
     return result(buildFacadeResult({
@@ -75,10 +92,15 @@ export async function callRhWorkRequirementOperation(
       data: { requirementId, ...(repository?.repoId ? { repoId: repository.repoId } : {}) },
     }) as unknown as Record<string, unknown>, true);
     const semantic = requirementSemanticView(record.value);
+    const projectId = projectIdForRepository(ctx, repository);
+    const revisionHistory = args.detail_level === 'detail'
+      ? listRequirementRevisionRecords({ controllerHome: ctx.controllerHome }, requirementId, 20)
+      : undefined;
     return result(buildFacadeResult({
       summary: `Requirement ${semantic.requirementId} retrieved at semantic revision ${semantic.revision}.`,
       data: {
-        requirement: semantic,
+        requirement: { ...semantic, ...(projectId ? { projectId } : {}) },
+        ...(revisionHistory ? { revisionHistory } : {}),
         progress: {
           source: 'requirement',
           summary: semantic.progressSummary,
@@ -104,12 +126,16 @@ export async function callRhWorkRequirementOperation(
         ...(typeof args.requirement_progress_summary === 'string' ? { progressSummary: args.requirement_progress_summary } : {}),
         ...(Array.isArray(args.requirement_remaining_work) ? { remainingWork: args.requirement_remaining_work.map(String) } : {}),
         ...(Array.isArray(args.requirement_accepted_evidence_refs) ? { acceptedEvidenceRefs: args.requirement_accepted_evidence_refs.map(String) } : {}),
+        ...(typeof args.requirement_priority === 'string' ? { priority: args.requirement_priority as RequirementPriority } : {}),
+        ...(typeof args.requirement_assignee === 'string' ? { assignee: args.requirement_assignee } : {}),
+        ...(typeof args.requirement_status === 'string' ? { status: args.requirement_status as RequirementState } : {}),
         ...(args.requirement_state === 'open' || args.requirement_state === 'completed' || args.requirement_state === 'cancelled' ? { state: args.requirement_state } : {}),
       });
       const semantic = requirementSemanticView(revised);
+      const projectId = projectIdForRepository(ctx, repository);
       return result(buildFacadeResult({
         summary: `Requirement ${semantic.requirementId} revised atomically to semantic revision ${semantic.revision}.`,
-        data: { requirement: semantic, expectedRevision, semanticRevision: semantic.revision },
+        data: { requirement: { ...semantic, ...(projectId ? { projectId } : {}) }, expectedRevision, semanticRevision: semantic.revision },
       }) as unknown as Record<string, unknown>);
     } catch (error) {
       const current = requirementId ? readRequirement({ controllerHome: ctx.controllerHome }, requirementId)?.value : undefined;
@@ -138,6 +164,8 @@ export async function callRhWorkRequirementOperation(
       outcomeStatement,
       acceptanceCriteria: Array.isArray(args.requirement_acceptance_criteria) ? args.requirement_acceptance_criteria.map(String) : [],
       requiredDeliveryReferences: Array.isArray(args.requirement_delivery_references) ? args.requirement_delivery_references.map(String) : [],
+      ...(typeof args.requirement_priority === 'string' ? { priority: args.requirement_priority as RequirementPriority } : {}),
+      ...(typeof args.requirement_assignee === 'string' ? { assignee: args.requirement_assignee } : {}),
       legacyAliases: Array.isArray(args.requirement_legacy_aliases) ? args.requirement_legacy_aliases.map(String) : [],
     };
     const admission = operation === 'requirement_promote_candidate'
@@ -169,6 +197,7 @@ export async function callRhWorkRequirementOperation(
         suggestedNextActions: [],
       }) as unknown as Record<string, unknown>, true);
     }
+    const projectId = projectIdForRepository(ctx, repository);
     return result(buildFacadeResult({
       summary: admission.decision === 'created'
         ? operation === 'requirement_promote_candidate'
@@ -178,7 +207,7 @@ export async function callRhWorkRequirementOperation(
           ? `REQUIREMENT_CANDIDATE_ALREADY_PROMOTED: ${admission.requirement.requirementId}. Existing Requirement authority was reused; no duplicate Requirement was created.`
           : `REQUIREMENT_AUTHORITY_REUSED: ${admission.requirement.requirementId}. Requirement authority does not imply a Plan; Controller chooses the next action.`,
       data: {
-        requirement: requirementSemanticView(admission.requirement),
+        requirement: { ...requirementSemanticView(admission.requirement), ...(projectId ? { projectId } : {}) },
         requirementCreated: admission.created,
         admissionDecision: admission.decision,
         ...('candidateAuditRef' in admission ? {

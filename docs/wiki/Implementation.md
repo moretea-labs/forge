@@ -152,7 +152,7 @@ src/runtime/execution/workers/
 src/runtime/control-plane/facade/goal-workloop.ts
 ```
 
-Work records remain historical, read-only compatibility data. GitHub Issues and GitHub Projects own current mutable progress and delivery state; Requirements and Plans are recovery context, not a second progress ledger. The scheduler controls global capacity; repository actors decide repository-local safety. Isolated worktrees and workers are mechanisms selected for concurrency/risk, not default ceremony for every code edit.
+Work records remain historical, read-only compatibility data. GitHub Issues and GitHub Projects own current mutable progress and delivery state until the #648 migration is fully reconciled and explicitly cut over. During that build-out, task priority, assignee, full lifecycle status and revision history are added to the existing Requirement owner; repository-to-Project context remains derived from ProjectPlacement, and Plan/Run retain execution and evidence. This does not create a second Task store or authorize early migration. The scheduler controls global capacity; repository actors decide repository-local safety. Isolated worktrees and workers are mechanisms selected for concurrency/risk, not default ceremony for every code edit.
 
 ## 10. Canonical Runtime root
 

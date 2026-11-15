@@ -177,6 +177,9 @@ describe('rh_work Requirement bootstrap', () => {
     expect(properties.requirement_accepted_evidence_refs).toMatchObject({
       type: 'array', maxItems: 100, items: { type: 'string', maxLength: 512 },
     });
+    expect(properties.requirement_priority).toMatchObject({ type: 'string', enum: ['low', 'normal', 'high', 'urgent'] });
+    expect(properties.requirement_assignee).toMatchObject({ type: 'string', maxLength: 160 });
+    expect(properties.requirement_status).toMatchObject({ type: 'string', enum: ['planned', 'active', 'waiting_for_user', 'done', 'cancelled'] });
 
     const repoRoot = tempRoot('forge-typed-requirement-progress-repo-');
     const controllerHome = tempRoot('forge-typed-requirement-progress-home-');
@@ -190,8 +193,11 @@ describe('rh_work Requirement bootstrap', () => {
       requirement_id: 'REQ-TYPED-PROGRESS',
       requirement_title: 'Typed progress',
       requirement_outcome: 'Deliver an independently verified change.',
+      requirement_priority: 'high',
+      requirement_assignee: 'greyson',
     }));
     expect(created.status).toBe('ok');
+    expect(created.data.requirement).toMatchObject({ status: 'planned', priority: 'high', assignee: 'greyson' });
 
     const updated = structured(await callRuntimeTool(ctx, 'rh_work', {
       operation: 'requirement_revise',
@@ -200,6 +206,9 @@ describe('rh_work Requirement bootstrap', () => {
       requirement_progress_summary: 'Source patch submitted; review pending.',
       requirement_remaining_work: ['Review exact HEAD', 'Verify deployed Runtime'],
       requirement_accepted_evidence_refs: ['https://github.com/example/forge/pull/123'],
+      requirement_status: 'active',
+      requirement_priority: 'urgent',
+      requirement_assignee: 'agent:codex',
     }));
     expect(updated.status).toBe('ok');
     expect(updated.data.requirement).toMatchObject({
@@ -207,7 +216,7 @@ describe('rh_work Requirement bootstrap', () => {
       progressSummary: 'Source patch submitted; review pending.',
       remainingWork: ['Review exact HEAD', 'Verify deployed Runtime'],
       acceptedEvidenceRefs: ['https://github.com/example/forge/pull/123'],
-      state: 'open',
+      state: 'open', status: 'active', priority: 'urgent', assignee: 'agent:codex',
     });
 
     const stale = structured(await callRuntimeTool(ctx, 'rh_work', {
@@ -222,6 +231,7 @@ describe('rh_work Requirement bootstrap', () => {
     const reread = structured(await callRuntimeTool(ctx, 'rh_work', {
       operation: 'requirement_get',
       requirement_id: 'REQ-TYPED-PROGRESS',
+      detail_level: 'detail',
     }));
     expect(reread.data.progress).toEqual({
       source: 'requirement',
@@ -229,6 +239,8 @@ describe('rh_work Requirement bootstrap', () => {
       remainingWork: ['Review exact HEAD', 'Verify deployed Runtime'],
       acceptedEvidenceRefs: ['https://github.com/example/forge/pull/123'],
     });
+    expect(reread.data.requirement).toMatchObject({ status: 'active', priority: 'urgent', assignee: 'agent:codex' });
+    expect(reread.data.revisionHistory).toMatchObject([{ revision: 1, status: 'planned', priority: 'high', assignee: 'greyson' }]);
   });
 
   test('plan_list returns compact discovery rows and leaves detailed semantic content to plan_get (#478)', async () => {
