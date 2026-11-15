@@ -3149,17 +3149,24 @@ final class NativeWorkspace: ObservableObject {
         return "\(prefix)-\(compact.prefix(12))"
     }
 
-    func createRequirement(title: String, outcome: String, acceptanceCriteria: [String]) async -> String? {
+    func createRequirement(
+        title: String, outcome: String, acceptanceCriteria: [String],
+        taskStatus: String? = nil, priority: String? = nil, assignee: String? = nil
+    ) async -> String? {
         guard let repoId else { error = "请先选择项目。"; return nil }
         let cleanTitle = title.trimmingCharacters(in:.whitespacesAndNewlines)
         let cleanOutcome = outcome.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !cleanTitle.isEmpty, !cleanOutcome.isEmpty else { error = "Requirement 标题和目标不能为空。"; return nil }
         let id = Self.semanticRecordId(prefix:"REQ")
         do {
-            _ = try await ForgeBridge.request("create_requirement",[
+            var arguments:[String:Any]=[
                 "repoId":repoId,"requirementId":id,"title":cleanTitle,"outcome":cleanOutcome,
                 "acceptanceCriteria":acceptanceCriteria.map { $0.trimmingCharacters(in:.whitespacesAndNewlines) }.filter { !$0.isEmpty }
-            ])
+            ]
+            if let taskStatus { arguments["taskStatus"]=taskStatus }
+            if let priority { arguments["priority"]=priority }
+            if let assignee { arguments["assignee"]=assignee }
+            _ = try await ForgeBridge.request("create_requirement",arguments)
             page = .requirement
             await loadPage()
             if let record = records.first(where: { $0.kind == .requirement && $0.recordId == id }) {

@@ -201,6 +201,9 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 args.get("acceptanceCriteria").and_then(Value::as_array)
                     .map(|values| values.iter().filter_map(Value::as_str).map(str::to_owned).take(32).collect())
                     .unwrap_or_default(),
+                args.get("taskStatus").and_then(Value::as_str).map(str::to_owned),
+                args.get("priority").and_then(Value::as_str).map(str::to_owned),
+                args.get("assignee").and_then(Value::as_str).map(str::to_owned),
             ).await,
         "create_plan" =>
             create_plan(

@@ -824,9 +824,17 @@ async fn create_requirement(
     title: String,
     outcome: String,
     acceptance_criteria: Vec<String>,
+    task_status: Option<String>,
+    priority: Option<String>,
+    assignee: Option<String>,
 ) -> Result<Value, String> {
-    if repo_id.trim().is_empty() || requirement_id.trim().is_empty() || title.trim().is_empty() || outcome.trim().is_empty() {
-        return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_ARGUMENT_REQUIRED".to_string());
+    if repo_id.trim().is_empty() || requirement_id.trim().is_empty()
+        || title.trim().is_empty() || outcome.trim().is_empty()
+        || task_status.as_deref().is_some_and(|s| !matches!(s, "planned" | "active" | "waiting_for_user"))
+        || priority.as_deref().is_some_and(|p| !matches!(p, "low" | "normal" | "high" | "urgent"))
+        || assignee.as_ref().is_some_and(|a| a.trim().encode_utf16().count() > 160)
+    {
+        return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_ARGUMENT_INVALID".to_string());
     }
     let result = call_runtime_tool("rh_work", json!({
         "repo_id": repo_id,
@@ -835,9 +843,26 @@ async fn create_requirement(
         "requirement_title": title,
         "requirement_outcome": outcome,
         "requirement_acceptance_criteria": acceptance_criteria,
+        "requirement_status": task_status.clone(),
+        "requirement_priority": priority.clone(),
+        "requirement_assignee": assignee.clone(),
         "request_id": request_id("requirement-create")
     })).await?;
-    Ok(semantic_facade_data(result))
+    let data = semantic_facade_data(result);
+    // The currently installed Runtime may precede task metadata support.
+    // Never present a successful create with silently dropped properties.
+    let status_confirmed = task_status.as_deref().is_none_or(|status|
+        data.pointer("/requirement/status").and_then(Value::as_str) == Some(status));
+    let priority_confirmed = priority.as_deref().is_none_or(|level|
+        data.pointer("/requirement/priority").and_then(Value::as_str) == Some(level));
+    let assignee_confirmed = assignee.as_deref().is_none_or(|owner|
+        data.pointer("/requirement/assignee").and_then(Value::as_str).unwrap_or("") == owner.trim());
+    if !status_confirmed || !priority_confirmed || !assignee_confirmed {
+        return Err(format!(
+            "FORGE_DESKTOP_REQUIREMENT_CREATE_METADATA_UNCONFIRMED: {requirement_id}; refresh the project before retrying"
+        ));
+    }
+    Ok(data)
 }
 
 

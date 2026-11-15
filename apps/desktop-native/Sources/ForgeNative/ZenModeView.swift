@@ -170,6 +170,9 @@ struct ZenWorkspacePane: View {
     @State private var newTitle = ""
     @State private var newOutcome = ""
     @State private var newCriteria = ""
+    @State private var newTaskStatus = "planned"
+    @State private var newPriority = "normal"
+    @State private var newAssignee = ""
     @State private var newPlanGoal = ""
     @State private var newParentPlanId: String?
     @State private var saving = false
@@ -319,6 +322,7 @@ struct ZenWorkspacePane: View {
                     Menu {
                         Button("直接创建 Requirement") {
                             newTitle = ""; newOutcome = ""; newCriteria = ""
+                            newTaskStatus = "planned"; newPriority = "normal"; newAssignee = ""
                             showingRequirementSheet = true
                         }
                     } label: {
@@ -1170,6 +1174,20 @@ struct ZenWorkspacePane: View {
             TextField("预期结果",text:$newOutcome,axis:.vertical).lineLimit(3...5)
             TextField("验收标准（每行一项）",text:$newCriteria,axis:.vertical).lineLimit(3...6)
             HStack {
+                Picker("状态",selection:$newTaskStatus) {
+                    Text("待开始").tag("planned")
+                    Text("进行中").tag("active")
+                    Text("待你处理").tag("waiting_for_user")
+                }
+                Picker("优先级",selection:$newPriority) {
+                    Text("低").tag("low")
+                    Text("普通").tag("normal")
+                    Text("高").tag("high")
+                    Text("紧急").tag("urgent")
+                }
+            }
+            TextField("负责人（可选）",text:$newAssignee)
+            HStack {
                 Spacer()
                 Button("取消") { showingRequirementSheet=false }
                 Button(saving ? "保存中…" : "创建") {
@@ -1177,7 +1195,9 @@ struct ZenWorkspacePane: View {
                     Task {
                         let id=await model.createRequirement(
                             title:newTitle,outcome:newOutcome,
-                            acceptanceCriteria:newCriteria.components(separatedBy:.newlines)
+                            acceptanceCriteria:newCriteria.components(separatedBy:.newlines),
+                            taskStatus:newTaskStatus,priority:newPriority,
+                            assignee:newAssignee
                         )
                         saving=false
                         if let id {
@@ -1189,7 +1209,8 @@ struct ZenWorkspacePane: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(saving || newTitle.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
-                          || newOutcome.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                          || newOutcome.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+                          || newAssignee.utf16.count > 160)
             }
         }
         .padding(22).frame(width:430)
