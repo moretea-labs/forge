@@ -960,7 +960,16 @@ final class NativeWorkspace: ObservableObject {
         return threads.filter { t in
             needle.isEmpty || t.title.localizedCaseInsensitiveContains(needle) ||
             (t.pendingDraft?.localizedCaseInsensitiveContains(needle) == true) ||
-            t.messages.contains { $0.text.localizedCaseInsensitiveContains(needle) }
+            t.messages.contains { message in
+                message.text.localizedCaseInsensitiveContains(needle) ||
+                (message.attachmentNames ?? []).contains { $0.localizedCaseInsensitiveContains(needle) } ||
+                (message.attachmentPaths ?? []).contains { URL(fileURLWithPath:$0).lastPathComponent.localizedCaseInsensitiveContains(needle) } ||
+                (message.contextPaths ?? []).contains { $0.localizedCaseInsensitiveContains(needle) } ||
+                (message.activityEvents ?? []).contains { event in
+                    event.label.localizedCaseInsensitiveContains(needle) ||
+                    (event.detail?.localizedCaseInsensitiveContains(needle) == true)
+                }
+            }
         }.sorted { $0.updatedAt > $1.updatedAt }
     }
     func persist() {

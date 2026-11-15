@@ -20,6 +20,31 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(markdown.contains("/Users/example"))
     }
 
+    @MainActor
+    func testAgentSearchFindsFileAttachmentsAndToolReceiptsAfterRestart() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let model = NativeWorkspace(store: store)
+        let id = model.threads[0].id
+        model.threads[0].messages = [ChatMessage(
+            role:"assistant",text:"Task processed",
+            attachmentPaths:["/private/qa/Sketch.png"],contextPaths:["Sources/Feature.swift"],
+            activityEvents:[AgentLiveActivityEvent(
+                phase:"tool",label:"apply_patch",detail:"Updated settings",status:"completed",
+                startedAt:"2026-11-16T00:00:00Z",completedAt:nil,toolCallId:"tool-a"
+            )]
+        )]
+        model.persist()
+        let restored = NativeWorkspace(store: store)
+        for term in ["sketch.png","feature.swift","APPLY_PATCH","updated settings"] {
+            restored.search = term
+            XCTAssertEqual(restored.visibleThreads.map(\.id),[id],"Search term: \(term)")
+        }
+        restored.search = "not-present"
+        XCTAssertTrue(restored.visibleThreads.isEmpty)
+    }
+
     func testProjectListResponseDistinguishesValidEmptyFromMalformedPayloads() throws {
         XCTAssertTrue(try NativeWorkspace.decodeProjects(["repositories": [[String:Any]]()]).isEmpty)
         let projects = try NativeWorkspace.decodeProjects([
