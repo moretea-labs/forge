@@ -333,10 +333,17 @@ export function reviseRequirementSemantic(
     if (requestedRepoId && current.value.repoId && current.value.repoId !== requestedRepoId) {
       throw new Error(`REQUIREMENT_REPOSITORY_CONFLICT:${requirementId}:existing=${current.value.repoId}:requested=${requestedRepoId}`);
     }
+    const currentDependencies = [...(current.value.dependsOnRequirementIds ?? [])];
     const dependsOnRequirementIds = input.dependsOnRequirementIds === undefined
-      ? [...(current.value.dependsOnRequirementIds ?? [])]
+      ? currentDependencies
       : normalizeRequirementDependencies(input.dependsOnRequirementIds);
-    assertRequirementDependenciesWithinTransaction(database, requirementId, dependsOnRequirementIds);
+    const normalizedCurrentDependencies = [...currentDependencies].sort((left, right) => left.localeCompare(right));
+    const dependenciesChanged = input.dependsOnRequirementIds !== undefined
+      && (dependsOnRequirementIds.length !== normalizedCurrentDependencies.length
+        || dependsOnRequirementIds.some((dependencyId, index) => dependencyId !== normalizedCurrentDependencies[index]));
+    if (dependenciesChanged) {
+      assertRequirementDependenciesWithinTransaction(database, requirementId, dependsOnRequirementIds);
+    }
     const requestedState = input.state;
     const semanticStatus: RequirementState | undefined = requestedState === 'completed'
       ? 'done'

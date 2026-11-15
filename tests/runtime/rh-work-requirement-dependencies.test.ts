@@ -93,13 +93,28 @@ describe('rh_work Requirement dependencies', () => {
       { revision: 1, dependencies: [] },
     ]);
 
-    const cleared = reviseRequirementSemantic({ controllerHome }, 'task-a', {
+    reviseRequirementSemantic({ controllerHome }, 'task-b', { expectedRevision: 2, status: 'cancelled' });
+    const editedAfterDependencyCancellation = reviseRequirementSemantic({ controllerHome }, 'task-a', {
       expectedRevision: 2,
+      title: 'Task task-a remains editable after a dependency is cancelled',
+    });
+    expect(editedAfterDependencyCancellation.dependsOnRequirementIds).toEqual(['task-b']);
+    const savedWithUnchangedDependencies = reviseRequirementSemantic({ controllerHome }, 'task-a', {
+      expectedRevision: 3,
+      title: 'Task task-a can save the unchanged dependency set',
+      dependsOnRequirementIds: ['task-b'],
+    });
+    expect(savedWithUnchangedDependencies.dependsOnRequirementIds).toEqual(['task-b']);
+
+    const cleared = reviseRequirementSemantic({ controllerHome }, 'task-a', {
+      expectedRevision: 4,
       dependsOnRequirementIds: [],
     });
     expect(cleared.dependsOnRequirementIds).toEqual([]);
     expect(listRequirementRevisionRecords({ controllerHome }, 'task-a', 10)
       .map((entry) => ({ revision: entry.revision, dependencies: entry.dependsOnRequirementIds }))).toEqual([
+        { revision: 4, dependencies: ['task-b'] },
+        { revision: 3, dependencies: ['task-b'] },
         { revision: 2, dependencies: ['task-b'] },
         { revision: 1, dependencies: [] },
       ]);
