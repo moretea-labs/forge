@@ -45,9 +45,9 @@ describe('first-party release and growth Workflow assets (#652)', () => {
       const installed = ensureReleaseGrowthWorkflowInstalled(controllerHome, workflowId);
       expect(installed.value.contentDigest).toBe(asset.contentDigest);
       expect(installed.value.bindings.map(binding => binding.capabilityId).sort()).toEqual(workflowCapabilityDependencies(asset));
-      expect(installed.value.bindings.every(b => b.pluginId === 'browser' || b.pluginId === 'app_store_connect')).toBe(true);
+      expect(installed.value.bindings.every(b => b.pluginId === 'computer' || b.pluginId === 'app_store_connect')).toBe(true);
       if (workflowId === RELEASE_GROWTH_WORKFLOW_IDS.releaseObservation || workflowId === RELEASE_GROWTH_WORKFLOW_IDS.postMetrics) {
-        expect(installed.value.bindings.every(b => b.pluginId !== 'browser'
+        expect(installed.value.bindings.every(b => b.pluginId !== 'computer'
           || ['navigate', 'verify_state', 'wait_for_selector', 'query_all', 'get_attribute', 'get_text'].includes(b.actionId ?? ''))).toBe(true);
       }
       expect(installed.value.bindings.every(b => b.pluginId !== 'app_store_connect' || ['list_app_store_versions', 'list_app_territory_availabilities'].includes(b.actionId ?? ''))).toBe(true);
@@ -224,6 +224,11 @@ describe('first-party release and growth Workflow assets (#652)', () => {
     expect(validateWorkflowRunInputs(asset, {
       account: 'developer_x', post_url: 'https://x.com/developer_x/status/1234567890', session_id: 'session-1',
     }).account).toBe('developer_x');
+    expect(asset.version).toBe('2');
+    const viewsStep = asset.steps.find(step => step.stepId === 'read-views');
+    expect(viewsStep).toMatchObject({ capabilityId: 'browser.get_text',
+      input: { selector: 'article[data-testid="tweet"] a[href$="/analytics"]', max_chars: 80 } });
+    expect(viewsStep?.idempotency).not.toBe('non_idempotent');
     const previewStep = asset.steps.find(step => step.stepId === 'read-reply-previews');
     expect(previewStep).toMatchObject({ capabilityId: 'browser.query_all',
       input: { selector: 'article[data-testid="tweet"]', limit: 15 } });
@@ -243,10 +248,17 @@ describe('first-party release and growth Workflow assets (#652)', () => {
       'https://x.com/developer_x/status/1234567890?danger=1',
       'http://x.com/developer_x/status/1234567890',
     ]) expect(script(id, 'validatePost', { account: 'developer_x', post_url }).status).not.toBe(0);
-    const observed = script(id, 'deriveEngagement', { reply_label: '2 Replies. Reply', like_label: '1,234 Likes. Like' });
+    const observed = script(id, 'deriveEngagement', {
+      reply_label: '2 Replies. Reply', like_label: '1,234 Likes. Like', view_label: '31 Views',
+    });
     expect(observed.status).toBe(0);
-    expect(JSON.parse(observed.output)).toEqual({ reply_count: 2, like_count: 1234 });
-    expect(script(id, 'deriveEngagement', { reply_label: '1.2K replies', like_label: '12 likes' }).status).not.toBe(0);
+    expect(JSON.parse(observed.output)).toEqual({ reply_count: 2, like_count: 1234, view_count: 31 });
+    expect(script(id, 'deriveEngagement', {
+      reply_label: '1.2K replies', like_label: '12 likes', view_label: '31 Views',
+    }).status).not.toBe(0);
+    expect(script(id, 'deriveEngagement', {
+      reply_label: '2 Replies. Reply', like_label: '12 Likes. Like',
+    }).status).not.toBe(0);
     const previews = script(id, 'deriveReplyPreviews', {
       account: 'developer_x', post_url: 'https://x.com/developer_x/status/1234567890',
       articles: [
