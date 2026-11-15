@@ -11,6 +11,7 @@ import { invalidFacadeOperation } from './status-inbox-adapter';
 import { normalizeRhWorkInputWireMigration } from './work-input-wire-migration';
 import { callRhWorkScheduleAdapter, isRhWorkScheduleOperation } from './scheduler-adapter';
 import { callRhWorkRequirementOperation, isRhWorkRequirementOperation } from './work-requirement-operations';
+import { callRhWorkProjectOperation, isRhWorkProjectOperation } from './work-project-operations';
 import { callRhWorkSemanticOperation } from './work-semantic-operations';
 import { callRhWorkListProjection } from './work-list-projection';
 import {
@@ -134,6 +135,12 @@ export async function callWorkAdapter(
   const args = wireMigration.args;
   const operation = wireMigration.operation;
   if (!isRhWorkAcceptedOperation(operation)) return invalidFacadeOperation('rh_work', operation);
+
+  if (isRhWorkProjectOperation(operation)) {
+    const repository = selectedOptional(ctx, args);
+    const project = callRhWorkProjectOperation(ctx, repository, operation, args);
+    if (project) return project;
+  }
 
   if (isRhWorkRequirementOperation(operation) && operation !== 'requirement_promote_candidate') {
     const repository = selectedOptional(ctx, args);

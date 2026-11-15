@@ -74,6 +74,65 @@ export function listProjectIdentities(controllerHome: string, workspaceId: strin
   return listControlPlaneRecords<ProjectIdentity>(controllerHome, { namespace: PROJECT_SEMANTIC_NAMESPACE, scope: workspaceId.trim(), limit: 1_000 });
 }
 
+export function listAllProjectIdentities(controllerHome: string): ControlPlaneRecord<ProjectIdentity>[] {
+  return listControlPlaneRecords<ProjectIdentity>(controllerHome, { namespace: PROJECT_SEMANTIC_NAMESPACE, limit: 1_000 });
+}
+
+export function listProjectPlacements(controllerHome: string, forgeInstanceId: string): ControlPlaneRecord<ProjectPlacement>[] {
+  return listControlPlaneRecords<ProjectPlacement>(controllerHome, { namespace: PROJECT_PLACEMENT_NAMESPACE, scope: forgeInstanceId.trim(), limit: 1_000 });
+}
+
+/** Create a Project in the existing semantic owner; only the default personal Workspace is auto-created. */
+export function createProjectIdentity(input: {
+  controllerHome: string;
+  value: Omit<ProjectIdentity, 'schemaVersion'> | ProjectIdentity;
+}): ControlPlaneRecord<ProjectIdentity> {
+  const value = projectIdentity(input.value);
+  return withControlPlaneTransaction(input.controllerHome, (database) => {
+    const projects = listControlPlaneRecordsWithinTransaction<ProjectIdentity>(database, {
+      namespace: PROJECT_SEMANTIC_NAMESPACE,
+      limit: 1_000,
+    });
+    if (projects.length >= 1_000) throw new Error('PROJECT_IDENTITY_LOOKUP_LIMIT');
+    if (projects.some(({ value: current }) => current.projectId === value.projectId)) {
+      throw new Error(`PROJECT_ALREADY_EXISTS: ${value.projectId}`);
+    }
+    if (value.sourceFingerprint && projects.some(({ value: current }) => current.sourceFingerprint === value.sourceFingerprint)) {
+      throw new Error('PROJECT_SOURCE_IDENTITY_ALREADY_EXISTS');
+    }
+
+    let workspace = readControlPlaneRecordWithinTransaction<WorkspaceIdentity>(
+      database,
+      WORKSPACE_SEMANTIC_NAMESPACE,
+      CONTROLLER_SCOPE,
+      value.workspaceId,
+    );
+    if (!workspace) {
+      if (value.workspaceId !== DEFAULT_PERSONAL_WORKSPACE_ID) throw new Error(`PROJECT_WORKSPACE_NOT_FOUND: ${value.workspaceId}`);
+      const workspaceValue = workspaceIdentity({ workspaceId: value.workspaceId, title: DEFAULT_PERSONAL_WORKSPACE_TITLE });
+      workspace = writeControlPlaneRecordWithinTransaction(database, {
+        namespace: WORKSPACE_SEMANTIC_NAMESPACE,
+        scope: CONTROLLER_SCOPE,
+        key: workspaceValue.workspaceId,
+        schemaVersion: 1,
+        value: workspaceValue,
+        action: 'workspace_semantic_onboard',
+        expectedRevision: null,
+      });
+    }
+
+    return writeControlPlaneRecordWithinTransaction(database, {
+      namespace: PROJECT_SEMANTIC_NAMESPACE,
+      scope: value.workspaceId,
+      key: value.projectId,
+      schemaVersion: 1,
+      value,
+      action: 'project_semantic_create',
+      expectedRevision: null,
+    });
+  });
+}
+
 export function writeProjectPlacement(input: { controllerHome: string; value: Omit<ProjectPlacement, 'schemaVersion'> | ProjectPlacement; expectedRevision?: number | null }): ControlPlaneRecord<ProjectPlacement> {
   const value = projectPlacement(input.value);
   return writeControlPlaneRecord(input.controllerHome, {
