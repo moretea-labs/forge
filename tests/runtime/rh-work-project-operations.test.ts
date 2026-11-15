@@ -127,10 +127,17 @@ describe('rh_work Project operations', () => {
     expect(restored.data.project).toMatchObject({ displayName: 'Project A Renamed', status: 'active', revision: 3 });
 
     const fetched = structured(await callRuntimeTool(context(controllerHome, repositoryA), 'rh_work', {
-      operation: 'project_get', project_id: 'project-a', workspace_id: 'workspace-personal',
+      operation: 'project_get', project_id: 'project-a', workspace_id: 'workspace-personal', detail_level: 'detail',
     }));
     expect(fetched.status).toBe('ok');
     expect(fetched.data.project).toMatchObject({ projectId: 'project-a', displayName: 'Project A Renamed', status: 'active', revision: 3 });
+    expect(fetched.data.revisionHistory.map((entry: { revision: number; displayName: string; status: string; action: string }) => ({
+      revision: entry.revision, displayName: entry.displayName, status: entry.status, action: entry.action,
+    }))).toEqual([
+      { revision: 3, displayName: 'Project A Renamed', status: 'active', action: 'project_semantic_write' },
+      { revision: 2, displayName: 'Project A Renamed', status: 'archived', action: 'project_semantic_write' },
+      { revision: 1, displayName: 'Project A', status: 'active', action: 'project_semantic_onboard' },
+    ]);
 
     expect(RH_WORK_MODEL_OPERATIONS).toEqual(expect.arrayContaining(['project_create', 'project_list', 'project_get', 'project_revise']));
     const rhWork = runtimeToolDefinitions.find((tool) => tool.name === 'rh_work');

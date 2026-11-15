@@ -11,6 +11,7 @@ import {
   listAllProjectIdentities,
   listProjectIdentities,
   listProjectPlacements,
+  listProjectRevisionRecords,
   readProjectIdentity,
   readWorkspaceIdentity,
   writeProjectIdentity,
@@ -160,9 +161,18 @@ export function callRhWorkProjectOperation(
     }
 
     if (operation === 'project_get') {
+      const detailLevel = args.detail_level === 'detail' ? 'detail' : 'summary';
+      const revisionHistory = detailLevel === 'detail'
+        ? listProjectRevisionRecords(ctx.controllerHome, projectId!, 50)
+        : undefined;
       return result(buildFacadeResult({
         summary: `Project ${projectId} retrieved at record revision ${record.revision}.`,
-        data: { authority: 'project_semantic', project: projectView(ctx, record) },
+        data: {
+          authority: 'project_semantic',
+          project: projectView(ctx, record),
+          ...(revisionHistory ? { revisionHistory } : {}),
+        },
+        detailLevel,
       }) as unknown as Record<string, unknown>);
     }
 
