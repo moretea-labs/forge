@@ -70,9 +70,9 @@ function projectTaskSummary(tasks: ReturnType<typeof projectTasks>) {
   return { requirementCount: tasks.length, taskStatusCounts };
 }
 
-function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: string) {
+function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: string, limit: number, offset: number) {
   const all = projectTasks(ctx, projectId);
-  const visible = all.slice(0, 100);
+  const visible = all.slice(offset, offset + limit);
   // One Plan/Run store read per distinct scope/repository, not per visible task row.
   const planCountsByScope = new Map<string, Map<string, number>>();
   const autopilotRuns = listAutopilotRunSummaries(ctx.controllerHome, visible);
@@ -111,7 +111,8 @@ function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: stri
       blockingDependencyIds: blockingRequirementIds({ controllerHome: ctx.controllerHome }, requirement.dependsOnRequirementIds),
       updatedAt: requirement.updatedAt,
     })),
-    requirementsTruncated: all.length > 100,
+    limit, offset, hasMore: offset + visible.length < all.length,
+    requirementsTruncated: offset + visible.length < all.length,
   };
 }
 
@@ -240,7 +241,9 @@ export function callRhWorkProjectOperation(
     if (operation === 'project_get') {
       const detailLevel = args.detail_level === 'detail' ? 'detail' : 'summary';
       const project = projectView(ctx, record);
-      const taskProjection = detailLevel === 'detail' ? projectRequirements(ctx, project.projectId) : undefined;
+      const taskLimit = Math.max(1, Math.min(Math.trunc(typeof args.limit === 'number' && Number.isFinite(args.limit) ? args.limit : 100), 100));
+      const taskOffset = Math.max(0, Math.min(Math.trunc(typeof args.offset === 'number' && Number.isFinite(args.offset) ? args.offset : 0), 100_000));
+      const taskProjection = detailLevel === 'detail' ? projectRequirements(ctx, project.projectId, taskLimit, taskOffset) : undefined;
       const revisionHistory = detailLevel === 'detail'
         ? listProjectRevisionRecords(ctx.controllerHome, projectId!, record.revision, 50)
         : undefined;

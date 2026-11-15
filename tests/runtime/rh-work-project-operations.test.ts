@@ -57,6 +57,30 @@ function structured(value: Awaited<ReturnType<typeof callRuntimeTool>>): Record<
 }
 
 describe('rh_work Project operations', () => {
+  test('project detail pages expose all tasks without duplicating or hiding later rows', async () => {
+    const home = tempRoot('forge-project-task-pages-');
+    ensureControllerHome(home);
+    expect(structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'project_create', project_id: 'paged-board', project_display_name: 'Paged Board',
+    })).status).toBe('ok');
+    for (const id of ['REQ-PAGE-A', 'REQ-PAGE-B', 'REQ-PAGE-C']) {
+      expect(structured(await callRuntimeTool(context(home), 'rh_work', {
+        operation: 'requirement_create', project_id: 'paged-board',
+        requirement_id: id, requirement_title: id, requirement_outcome: 'Deliver '+id,
+      })).status).toBe('ok');
+    }
+    const page = async (offset: number) => structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'project_get', project_id: 'paged-board', detail_level: 'detail', limit: 2, offset,
+    }));
+    const first = await page(0);
+    const second = await page(2);
+    expect(first.data).toMatchObject({ requirementCount: 3, limit: 2, offset: 0, hasMore: true, requirementsTruncated: true });
+    expect(second.data).toMatchObject({ requirementCount: 3, limit: 2, offset: 2, hasMore: false, requirementsTruncated: false });
+    const ids = [...first.data.requirements, ...second.data.requirements].map((task: { requirementId: string }) => task.requirementId);
+    expect(ids).toHaveLength(3);
+    expect(new Set(ids)).toEqual(new Set(['REQ-PAGE-A', 'REQ-PAGE-B', 'REQ-PAGE-C']));
+  });
+
   test('dependency-filtered project tasks become unblocked when their prerequisite is completed', async () => {
     const home = tempRoot('forge-project-blockers-');
     ensureControllerHome(home);
@@ -346,6 +370,21 @@ describe('rh_work Project operations', () => {
     expect(JSON.stringify(autopilotSummary)).not.toContain('request-private');
     expect(fetched.data.requirements.map((task: { requirementId: string }) => task.requirementId))
       .not.toContain('REQ-PROJECT-B-TASK');
+
+    const projectFirstPage = structured(await callRuntimeTool(context(controllerHome, repositoryA), 'rh_work', {
+      operation: 'project_get', project_id: 'project-a', detail_level: 'detail', limit: 1, offset: 0,
+    }));
+    expect(projectFirstPage.data).toMatchObject({
+      requirementCount: 1, limit: 1, offset: 0, hasMore: false, requirementsTruncated: false,
+    });
+    expect(projectFirstPage.data.requirements.map((task: { requirementId: string }) => task.requirementId))
+      .toEqual(['REQ-PROJECT-A-TASK']);
+    const beyondEndPage = structured(await callRuntimeTool(context(controllerHome, repositoryA), 'rh_work', {
+      operation: 'project_get', project_id: 'project-a', detail_level: 'detail', limit: 1, offset: 1,
+    }));
+    expect(beyondEndPage.data).toMatchObject({
+      requirementCount: 1, limit: 1, offset: 1, hasMore: false, requirementsTruncated: false, requirements: [],
+    });
 
     const projectBDetail = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
       operation: 'project_get', project_id: 'project-b', detail_level: 'detail',
