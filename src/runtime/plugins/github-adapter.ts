@@ -1,9 +1,4 @@
 import {
-  closeIssueWithGitHubPlugin,
-  publishIssueWithGitHubPlugin,
-  refreshIssueWithGitHubPlugin,
-} from '../../cli/github/plugin';
-import {
   getGitHubPluginStatus,
   loadGitHubPluginConfig,
   saveGitHubPluginConfig,
@@ -362,6 +357,12 @@ function requiredIssueId(value: unknown): string {
   return issueId;
 }
 
+function requireGitHubIssueSyncPort(input: AssistantPluginActionExecutionInput) {
+  const port = input.executionPorts?.githubIssueSync;
+  if (!port) throw new Error('GITHUB_ISSUE_SYNC_PORT_REQUIRED');
+  return port;
+}
+
 export async function executeGitHubPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
   switch (input.actionId) {
     case 'configure': {
@@ -377,10 +378,14 @@ export async function executeGitHubPluginAction(input: AssistantPluginActionExec
       });
       return { config, status: getGitHubPluginStatus(input.repoRoot) };
     }
-    case 'publish_issue':
-      return { issue: publishIssueWithGitHubPlugin(input.repoRoot, requiredIssueId(input.args.issue_id)) };
-    case 'refresh_issue':
-      return refreshIssueWithGitHubPlugin(input.repoRoot, requiredIssueId(input.args.issue_id)) as Record<string, unknown>;
+    case 'publish_issue': {
+      const issueId = requiredIssueId(input.args.issue_id);
+      return { issue: await requireGitHubIssueSyncPort(input).publishIssue(input.repoRoot, issueId) };
+    }
+    case 'refresh_issue': {
+      const issueId = requiredIssueId(input.args.issue_id);
+      return await requireGitHubIssueSyncPort(input).refreshIssue(input.repoRoot, issueId) as Record<string, unknown>;
+    }
     case 'list_project_items': {
       const config = loadGitHubPluginConfig(input.repoRoot);
       if (!config.projectOwner || !config.projectNumber) {
@@ -428,8 +433,10 @@ export async function executeGitHubPluginAction(input: AssistantPluginActionExec
           : undefined,
       });
     }
-    case 'close_issue':
-      return { issue: closeIssueWithGitHubPlugin(input.repoRoot, requiredIssueId(input.args.issue_id)) };
+    case 'close_issue': {
+      const issueId = requiredIssueId(input.args.issue_id);
+      return { issue: await requireGitHubIssueSyncPort(input).closeIssue(input.repoRoot, issueId) };
+    }
     default:
       throw new Error(`PLUGIN_ACTION_NOT_SUPPORTED: github/${input.actionId}`);
   }

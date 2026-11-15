@@ -577,7 +577,7 @@ export function materializePackageRuntimeRelease(input: {
   const pluginActionSidecarPath = join(releaseRoot, pluginActionSidecarEntrypoint);
   const pluginActionSidecarLauncher = launcherSource({
     indexSha256,
-    entryRelativePath: 'src/runtime/plugins/plugin-action-sidecar.ts',
+    entryRelativePath: 'src/cli/github/plugin-action-sidecar.ts',
   });
   const pluginActionSidecarArtifactIdentity = `sha256:${sha256(Buffer.from(pluginActionSidecarLauncher))}`;
   const expectedManifest: Omit<RuntimeReleaseManifest, 'createdAt'> = {

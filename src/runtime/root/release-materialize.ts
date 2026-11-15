@@ -727,7 +727,7 @@ export function stageRuntimeRelease(input: {
     const pluginActionSidecarCompile = compileBinary({
       sourceRoot,
       outputPath: pluginActionSidecarPath,
-      entryPath: join(sourceRoot, 'src/runtime/plugins/plugin-action-sidecar.ts'),
+      entryPath: join(sourceRoot, 'src/cli/github/plugin-action-sidecar.ts'),
     });
     if (!pluginActionSidecarCompile.ok) {
       throw new Error(`RUNTIME_RELEASE_PLUGIN_ACTION_SIDECAR_BUILD_FAILED: ${pluginActionSidecarCompile.stderr || pluginActionSidecarCompile.stdout || pluginActionSidecarCompile.error}`.slice(0, 2_000));

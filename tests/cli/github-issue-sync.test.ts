@@ -1,12 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import { delimiter, join } from 'path';
 import { createIssue, getIssue } from '../../src/cli/controller/issue-store';
 import { registerRepository } from '../../src/runtime/repositories/registry';
-import { saveGitHubPluginConfig } from '../../src/runtime/plugins/github-config';
-import { executeGitHubPluginAction } from '../../src/runtime/plugins/github-adapter';
+import { loadGitHubPluginConfig, saveGitHubPluginConfig } from '../../src/runtime/plugins/github-config';
 
 describe('GitHub Issue publication retry safety', () => {
   test('persists parent and task links before Project attachment and reuses them after failures', async () => {
@@ -31,6 +31,40 @@ describe('GitHub Issue publication retry safety', () => {
       const canonicalRoot = repository.canonicalRoot;
       process.env.PATH = [binRoot, originalPath ?? ''].filter(Boolean).join(delimiter);
       process.env.GH_TEST_LOG = logPath;
+
+      const sidecarEntry = join(process.cwd(), 'src', 'cli', 'github', 'plugin-action-sidecar.ts');
+      const compiledSidecarPath = join(workspace, 'forge-plugin-action-sidecar');
+      const compile = spawnSync(process.execPath, ['build', sidecarEntry, '--compile', '--outfile', compiledSidecarPath], {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        timeout: 120_000,
+        maxBuffer: 16 * 1024 * 1024,
+      });
+      if (compile.status !== 0) throw new Error(`plugin action sidecar compile failed: ${compile.stderr}${compile.stdout}`);
+      expect(existsSync(compiledSidecarPath)).toBe(true);
+
+      let actionSequence = 0;
+      const runSidecarAction = (actionId: string, args: Record<string, unknown>, confirmAuthorization = false, confirmationText?: string) => {
+        const requestId = `github-issue-sync-${actionId}-${++actionSequence}`;
+        const requestPath = join(workspace, `${requestId}.json`);
+        const requestBytes = JSON.stringify({
+          schemaVersion: 1,
+          controllerHome,
+          repoId: repository.repoId,
+          request: { pluginId: 'github', actionId, requestId, args, origin: { surface: 'mcp' }, confirmAuthorization, confirmationText },
+        });
+        writeFileSync(requestPath, requestBytes, 'utf8');
+        const expectedSha256 = createHash('sha256').update(requestBytes).digest('hex');
+        const result = spawnSync(compiledSidecarPath, ['--request', requestPath, '--expected-sha256', expectedSha256], {
+          cwd: process.cwd(),
+          encoding: 'utf8',
+          env: process.env,
+          timeout: 30_000,
+        });
+        expect(existsSync(requestPath)).toBe(false);
+        if (result.status !== 0) throw new Error(`${result.stderr}${result.stdout}`.trim());
+        return JSON.parse(result.stdout.trim()) as { ok: boolean; requestId: string; receiptId: string; deduplicated: boolean };
+      };
 
       const fakeGh = join(binRoot, 'gh');
       writeFileSync(fakeGh, `#!/bin/sh
@@ -81,18 +115,9 @@ exit 2
         tasks: [{ title: 'Child task', objective: 'Verify the child Issue link survives Project sync failure.' }],
       });
 
-      const publish = () => executeGitHubPluginAction({
-        controllerHome,
-        repoId: repository.repoId,
-        repoRoot: canonicalRoot,
-        pluginId: 'github',
-        actionId: 'publish_issue',
-        requestId: 'retry-safe-github-publication',
-        origin: { surface: 'mcp' },
-        args: { issue_id: issue.id },
-      });
+      const publish = () => runSidecarAction('publish_issue', { issue_id: issue.id });
 
-      await expect(publish()).rejects.toThrow('simulated project attachment failure 1');
+      expect(() => publish()).toThrow('simulated project attachment failure 1');
       const afterParentFailure = getIssue(canonicalRoot, issue.id);
       expect(afterParentFailure.github).toMatchObject({
         number: 1,
@@ -100,7 +125,7 @@ exit 2
       });
       expect(afterParentFailure.tasks[0]?.github).toBeUndefined();
 
-      await expect(publish()).rejects.toThrow('simulated project attachment failure 3');
+      expect(() => publish()).toThrow('simulated project attachment failure 3');
       const afterTaskFailure = getIssue(canonicalRoot, issue.id);
       expect(afterTaskFailure.github?.number).toBe(1);
       expect(afterTaskFailure.tasks[0]?.github).toMatchObject({
@@ -108,65 +133,33 @@ exit 2
         url: 'https://github.com/owner/repo/issues/2',
       });
 
-      await publish();
+      expect(publish().ok).toBe(true);
       const completed = getIssue(canonicalRoot, issue.id);
       expect(completed.github).toMatchObject({ number: 1, projectItemId: 'PVTI_4' });
       expect(completed.tasks[0]?.github).toMatchObject({ number: 2, projectItemId: 'PVTI_5' });
 
-      const refreshed = await executeGitHubPluginAction({
-        controllerHome,
-        repoId: repository.repoId,
-        repoRoot: canonicalRoot,
-        pluginId: 'github',
-        actionId: 'refresh_issue',
-        requestId: 'refresh-github-issue',
-        origin: { surface: 'mcp' },
-        args: { issue_id: issue.id },
-      });
-      expect((refreshed.remote as Record<string, unknown>).state).toBe('CLOSED');
+      const refreshed = runSidecarAction('refresh_issue', { issue_id: issue.id });
+      expect(refreshed.ok).toBe(true);
       const afterRefresh = getIssue(canonicalRoot, issue.id);
       expect(afterRefresh.github?.url).toBe('https://github.com/owner/repo/issues/1?refreshed');
       expect(afterRefresh.github?.syncedAt).toBeTruthy();
 
-      await executeGitHubPluginAction({
-        controllerHome,
-        repoId: repository.repoId,
-        repoRoot: canonicalRoot,
-        pluginId: 'github',
-        actionId: 'close_issue',
-        requestId: 'close-github-issue',
-        origin: { surface: 'mcp' },
-        args: { issue_id: issue.id },
-      });
+      const closed = runSidecarAction('close_issue', { issue_id: issue.id }, true, 'close-github-issue');
+      expect(closed.ok).toBe(true);
       expect(readFileSync(logPath, 'utf8')).toContain('issue close 1 --repo owner/repo');
 
-      const disabled = await executeGitHubPluginAction({
-        controllerHome,
-        repoId: repository.repoId,
-        repoRoot: canonicalRoot,
-        pluginId: 'github',
-        actionId: 'configure',
-        requestId: 'disable-github-plugin',
-        origin: { surface: 'mcp' },
-        args: { enabled: false },
-      });
-      expect((disabled.config as { enabled: boolean }).enabled).toBe(false);
+      const disabled = runSidecarAction('configure', { enabled: false });
+      expect(disabled.ok).toBe(true);
+      expect(loadGitHubPluginConfig(canonicalRoot).enabled).toBe(false);
       const issueViewCount = readFileSync(logPath, 'utf8').trim().split(/\r?\n/).filter((line) => line.startsWith('issue view ')).length;
-      await expect(executeGitHubPluginAction({
-        controllerHome,
-        repoId: repository.repoId,
-        repoRoot: canonicalRoot,
-        pluginId: 'github',
-        actionId: 'refresh_issue',
-        requestId: 'refresh-disabled-github-plugin',
-        origin: { surface: 'mcp' },
-        args: { issue_id: issue.id },
-      })).rejects.toThrow('GitHub plugin is disabled');
+      expect(() => runSidecarAction('refresh_issue', { issue_id: issue.id })).toThrow(/PLUGIN_DISABLED|GitHub plugin is disabled/);
 
       const commands = readFileSync(logPath, 'utf8').trim().split(/\r?\n/);
       expect(commands.filter((line) => line.startsWith('issue create '))).toHaveLength(2);
       expect(commands.filter((line) => line.startsWith('issue edit '))).toHaveLength(3);
       expect(commands.filter((line) => line.startsWith('project item-add '))).toHaveLength(5);
+      expect(commands.filter((line) => line.startsWith('issue close '))).toHaveLength(1);
+      expect(commands.filter((line) => line.startsWith('issue view '))).toHaveLength(issueViewCount);
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
       else process.env.PATH = originalPath;
@@ -176,5 +169,5 @@ exit 2
       else process.env.GH_TEST_LOG = originalGhLog;
       rmSync(workspace, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });
