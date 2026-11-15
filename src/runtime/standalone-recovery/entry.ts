@@ -63,7 +63,7 @@ import {
 } from './release';
 import { RECOVERY_MUTATION_IDENTITY_CONTRACT, RECOVERY_MUTATION_IDENTITY_FIELDS } from './mutation-identity-contract';
 import { readReleaseSession } from '../release/release-session';
-import { readRuntimeOwner } from '../root/ownership';
+import { migrateRuntimeIncarnationProcessIdentity, readRuntimeOwner } from '../root/ownership';
 import { observeRuntimeStatus } from '../root/status';
 import { migrateReleaseDurableState } from '../release/release-state-migration';
 import {
@@ -77,8 +77,14 @@ import { runBoundedChild } from '../shared/bounded-child-supervisor';
 import { readRecoveryOperationLock, recoveryOperationLockOwnerAlive } from './operation-lock';
 import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
 
+async function prepareRuntimeReleaseSession(config: RecoveryConfig, requestId?: string) {
+  const migration = migrateRuntimeIncarnationProcessIdentity(config.controllerHome);
+  if (!migration.ok) return { ok: false, attempted: false, noOp: true, detail: migration.detail };
+  return prepareConfiguredRuntimeReleaseSession(config, {}, requestId);
+}
+
 const RECOVERY_RUNTIME_RELEASE_PROVIDER: RuntimeReleaseProvider<RecoveryConfig> = {
-  prepare: (config, requestId) => prepareConfiguredRuntimeReleaseSession(config, {}, requestId),
+  prepare: (config, requestId) => prepareRuntimeReleaseSession(config, requestId),
   verifyCandidate: (config, sessionId, requestId) => bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(config, sessionId, requestId),
   cutover: (config, sessionId, requestId) => cutoverConfiguredRuntimeReleaseSession(config, sessionId, requestId),
   promoteKnownGood: (config, sessionId, requestId) => promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {}, requestId),
@@ -301,7 +307,7 @@ async function cli(): Promise<void> {
       output(await advanceConfiguredRuntimeRelease(config, RECOVERY_RUNTIME_RELEASE_PROVIDER, `recovery-cli:${process.pid}:${Date.now()}`));
       return;
     }
-    case 'release-session-prepare': output(await prepareConfiguredRuntimeReleaseSession(config, {}, `recovery-cli:${process.pid}:${Date.now()}`)); return;
+    case 'release-session-prepare': output(await prepareRuntimeReleaseSession(config, `recovery-cli:${process.pid}:${Date.now()}`)); return;
     case 'release-session-candidate-verify': {
       const sessionId = option('--session-id');
       if (!sessionId) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
@@ -919,7 +925,7 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
     case 'prepare_runtime_release_session': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      return mutationResponse(config, await prepareConfiguredRuntimeReleaseSession(config, {}, `recovery-gateway:${args.request_id}`));
+      return mutationResponse(config, await prepareRuntimeReleaseSession(config, `recovery-gateway:${args.request_id}`));
     }
     case 'verify_runtime_release_session_candidate': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');

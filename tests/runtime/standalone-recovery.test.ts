@@ -2628,6 +2628,56 @@ test('ReleaseSession rejects stale candidate canary completion after concurrent 
   expect(readReleaseSession(home, session.sessionId)?.phase).toBe('failed');
 });
 
+test('ReleaseSession continues canary instead of retiring a running Candidate B on duplicate invocation', async () => {
+  const { home, config, session } = await candidateBootedFixture('canary-duplicate-live');
+  let restartCalls = 0;
+  const result = await bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
+    config,
+    session.sessionId,
+    'candidate-duplicate-live',
+    {
+      restartCandidateRuntime: async () => {
+        restartCalls += 1;
+        return { ok: true, attempted: true, detail: 'candidate canary restart', verify: candidateCanaryVerify() };
+      },
+      observeCandidateRuntime: () => candidateRuntimeObservation(session, 'candidate-runtime-live'),
+    },
+  );
+  expect(restartCalls).toBe(1);
+  expect(result).toMatchObject({ ok: true, releaseSession: { phase: 'cutover_eligible' } });
+  expect(readReleaseSession(home, session.sessionId)?.phase).toBe('cutover_eligible');
+});
+
+test('ReleaseSession accepts a healthy Candidate B after another canary already advanced its runtime instance', async () => {
+  const { home, config, session } = await candidateBootedFixture('canary-concurrent-restart');
+  let observations = 0;
+  const result = await verifyBootedReleaseSessionCandidateCanaries(
+    config,
+    session.sessionId,
+    'candidate-concurrent-restart',
+    {
+      restartCandidateRuntime: async (candidateConfig, dependencies) => {
+        expect(candidateConfig.controllerHome).toBe(session.candidate.controllerHome);
+        expect(dependencies?.expectedRuntimeInstanceId).toBe('candidate-runtime-before');
+        return {
+          ok: false,
+          attempted: false,
+          noOp: true,
+          detail: 'RECOVERY_RUNTIME_RESTART_STALE_INSTANCE: expected candidate-runtime-before, observed candidate-runtime-after',
+          verify: candidateCanaryVerify(),
+        };
+      },
+      observeCandidateRuntime: () => candidateRuntimeObservation(
+        session,
+        observations++ === 0 ? 'candidate-runtime-before' : 'candidate-runtime-after',
+      ),
+    },
+  );
+  expect(observations).toBeGreaterThanOrEqual(2);
+  expect(result).toMatchObject({ ok: true, releaseSession: { phase: 'cutover_eligible' } });
+  expect(readReleaseSession(home, session.sessionId)?.phase).toBe('cutover_eligible');
+});
+
 test('ReleaseSession fails closed when a new invocation finds an interrupted candidate_booted checkpoint', async () => {
   const { home, config, session } = await candidateBootedFixture('canary-interrupted');
   let restartCalls = 0;

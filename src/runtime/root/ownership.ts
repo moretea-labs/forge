@@ -32,6 +32,9 @@ export interface RuntimeIncarnationRecord {
   pid: number;
   fencingGeneration: number;
   activatedAt: string;
+  /** Exact OS-process identity retained after the owner lease is removed. */
+  processStartTime?: string;
+  executableFingerprint?: string;
 }
 
 export interface RuntimeOwnershipHandle {
@@ -78,6 +81,8 @@ export function readRuntimeIncarnation(controllerHome: string): RuntimeIncarnati
       || !Number.isInteger(value.fencingGeneration)
       || value.fencingGeneration < 1
       || !Number.isFinite(Date.parse(value.activatedAt))
+      || (value.processStartTime === undefined) !== (value.executableFingerprint === undefined)
+      || (value.processStartTime !== undefined && (!value.processStartTime.trim() || !value.executableFingerprint?.trim()))
     ) return undefined;
     return value;
   } catch {
@@ -107,6 +112,16 @@ export interface RuntimeOwnershipInspection {
   coherent: boolean;
 }
 
+function runtimeIncarnationProcessAlive(record: RuntimeIncarnationRecord): boolean {
+  if (!record.processStartTime || !record.executableFingerprint) return isProcessAlive(record.pid);
+  const identity = processIdentityMatches({
+    pid: record.pid,
+    processStartTime: record.processStartTime,
+    executableFingerprint: record.executableFingerprint,
+  }, record.pid);
+  return identity.matches || (identity.reason === 'identity_probe_unavailable' && isProcessAlive(record.pid));
+}
+
 export function inspectRuntimeOwnership(controllerHome: string): RuntimeOwnershipInspection {
   const owner = readRuntimeOwner(controllerHome);
   const incarnation = readRuntimeIncarnation(controllerHome);
@@ -128,12 +143,13 @@ export function inspectRuntimeOwnership(controllerHome: string): RuntimeOwnershi
   // RuntimeOwner is the liveness authority whenever it exists. An incoherent
   // incarnation is historical fencing evidence, not a second process-liveness
   // authority: its PID may already have been reused by an unrelated process.
-  // Incarnation-only legacy evidence remains conservative because it has no
-  // independent process identity fields.
+  // New incarnation records retain the same OS-process identity as the
+  // owner lease, so PID reuse cannot keep a stopped Runtime falsely alive.
+  // Legacy records remain conservative because they have no identity fields.
   const incarnationAlive = Boolean(incarnation && (
     owner
       ? coherent && ownerAlive
-      : isProcessAlive(incarnation.pid)
+      : runtimeIncarnationProcessAlive(incarnation)
   ));
   return { owner, incarnation, ownerAlive, incarnationAlive, coherent };
 }
@@ -145,6 +161,50 @@ export function runtimeOwnerProcessIdentityMatches(record: RuntimeOwnerRecord | 
     processStartTime: record.processStartTime,
     executableFingerprint: record.executableFingerprint,
   }, record.pid).matches;
+}
+
+/** Backfill a legacy incarnation only from its exact, currently live owner lease. */
+export function migrateRuntimeIncarnationProcessIdentity(controllerHome: string): {
+  ok: boolean;
+  changed: boolean;
+  detail: string;
+} {
+  const incarnation = readRuntimeIncarnation(controllerHome);
+  if (!incarnation) {
+    return { ok: false, changed: false, detail: 'RUNTIME_INCARNATION_IDENTITY_MIGRATION_INCARNATION_REQUIRED' };
+  }
+  const owner = readRuntimeOwner(controllerHome);
+  if (owner && (
+    owner.pid !== incarnation.pid
+    || owner.runtimeInstanceId !== incarnation.runtimeInstanceId
+    || (owner.fencingGeneration ?? incarnation.fencingGeneration) !== incarnation.fencingGeneration
+  )) {
+    return { ok: false, changed: false, detail: 'RUNTIME_INCARNATION_OWNER_MISMATCH' };
+  }
+  if (incarnation.processStartTime && incarnation.executableFingerprint) {
+    if (owner?.processStartTime && owner.executableFingerprint
+      && (owner.processStartTime !== incarnation.processStartTime || owner.executableFingerprint !== incarnation.executableFingerprint)) {
+      return { ok: false, changed: false, detail: 'RUNTIME_INCARNATION_OWNER_IDENTITY_MISMATCH' };
+    }
+    return runtimeIncarnationProcessAlive(incarnation)
+      ? { ok: true, changed: false, detail: 'Runtime incarnation already has verified process identity' }
+      : { ok: false, changed: false, detail: 'RUNTIME_INCARNATION_PROCESS_IDENTITY_NOT_LIVE' };
+  }
+  if (!owner) {
+    return { ok: false, changed: false, detail: 'RUNTIME_INCARNATION_IDENTITY_MIGRATION_OWNER_REQUIRED' };
+  }
+  if (!owner.processStartTime || !owner.executableFingerprint) {
+    return { ok: false, changed: false, detail: 'RUNTIME_OWNER_IDENTITY_EVIDENCE_MISSING' };
+  }
+  if (!runtimeOwnerProcessIdentityMatches(owner)) {
+    return { ok: false, changed: false, detail: 'RUNTIME_OWNER_IDENTITY_CHANGED' };
+  }
+  writeRuntimeIncarnation({
+    ...incarnation,
+    processStartTime: owner.processStartTime,
+    executableFingerprint: owner.executableFingerprint,
+  });
+  return { ok: true, changed: true, detail: 'Runtime incarnation process identity was backfilled from its matching live owner' };
 }
 
 /**
@@ -282,16 +342,16 @@ export function acquireRuntimeOwnership(
     const generation = nextFencingGeneration(controllerHome, minimumGeneration);
     const processStartTime = defaultProcessIdentityProbe.startTime(process.pid);
     const processCommand = defaultProcessIdentityProbe.command(process.pid);
+    const processIdentity = processStartTime && processCommand
+      ? { processStartTime, executableFingerprint: executableFingerprint(processCommand) }
+      : undefined;
     const record: RuntimeOwnerRecord = {
       schemaVersion: 2,
       runtimeInstanceId,
       pid: process.pid,
       acquiredAt: now(),
       fencingGeneration: generation,
-      ...(processStartTime && processCommand ? {
-        processStartTime,
-        executableFingerprint: executableFingerprint(processCommand),
-      } : {}),
+      ...(processIdentity ?? {}),
     };
     try {
       const fd = openSync(path, 'wx', 0o600);
@@ -308,6 +368,7 @@ export function acquireRuntimeOwnership(
           pid: process.pid,
           fencingGeneration: generation,
           activatedAt: record.acquiredAt,
+          ...(processIdentity ?? {}),
         });
       } catch (writeError) {
         try { unlinkSync(path); } catch { /* ownership did not become usable */ }
