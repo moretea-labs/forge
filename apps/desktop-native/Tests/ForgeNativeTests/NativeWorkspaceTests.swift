@@ -3433,6 +3433,10 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(restored.selectedThreadId, thread.id)
         XCTAssertEqual(restored.conversationScrollRequest?.threadId, thread.id)
         XCTAssertEqual(restored.conversationScrollRequest?.messageId, partialMessage.id)
+        XCTAssertTrue(restored.canNavigateBack)
+        restored.goBack()
+        XCTAssertEqual(restored.page, .usage)
+        XCTAssertFalse(restored.canNavigateBack)
 
         let unreported = try XCTUnwrap(snapshot.unreportedEntries.first)
         restored.selectThread(unreported.threadId, messageId: unreported.messageId)
@@ -3440,6 +3444,10 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(restored.selectedThreadId, thread.id)
         XCTAssertEqual(restored.conversationScrollRequest?.threadId, thread.id)
         XCTAssertEqual(restored.conversationScrollRequest?.messageId, unreportedMessage.id)
+        XCTAssertTrue(restored.canNavigateBack)
+        restored.goBack()
+        XCTAssertEqual(restored.page, .usage)
+        XCTAssertFalse(restored.canNavigateBack)
     }
 }
 
@@ -3495,6 +3503,7 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(Set(all.map(\.threadTitle)), Set(["Project A", "Project B"]))
         XCTAssertEqual(all.first?.threadId, projectA.id)
         XCTAssertEqual(all.first?.messageId, assistantRemoteA.id)
+        XCTAssertEqual(all.first?.id, "\(projectA.id):\(assistantRemoteA.id):remote:0")
 
         let projectAOnly = AgentAssetsDashboard.makeResources(
             from: [projectA, projectB], projects: [], selectedRepoId: "repo-a",
@@ -3502,6 +3511,7 @@ extension NativeWorkspaceTests {
         )
         XCTAssertEqual(projectAOnly.count, 3)
         XCTAssertTrue(projectAOnly.allSatisfy { $0.threadId == projectA.id })
+        XCTAssertEqual(projectAOnly.first?.id, all.first?.id)
 
         let localOnly = AgentAssetsDashboard.makeResources(
             from: [projectA, projectB], projects: [], selectedRepoId: "",
