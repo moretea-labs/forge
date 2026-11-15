@@ -188,7 +188,6 @@ private struct ForgeWorkspaceView: View {
                     inboxShown = true
                     Task { await model.loadUserRequests() }
                 }) { item, prompt, provider, wantsProposal in
-                    model.zenMode = false
                     model.newThread(
                         provider:provider,
                         requirementId:item.kind == .requirement ? item.recordId : item.requirementId,
@@ -228,7 +227,6 @@ private struct ForgeWorkspaceView: View {
             model.show(.agent)
             return
         }
-        model.zenMode = false
         switch destination {
         case .workbench, .agent: break
         case .automations: model.show(.schedule)

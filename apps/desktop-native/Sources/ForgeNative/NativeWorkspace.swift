@@ -914,12 +914,12 @@ final class NativeWorkspace: ObservableObject {
             model:profile?.model ?? (provider == "joycode" ? localApiSettings?.joyCodeModel : nil)
         )
         threads.insert(item, at:0)
-        zenMode = false
         // A new conversation must be immediately visible, even when launched
         // with ⌘N while an unrelated search query is active.
         showSearch = false
         search = ""
         if page != .agent { pushNavigationOrigin() }
+        zenMode = false
         activateThreadContext(item)
         page = .agent
         error = nil
