@@ -18,6 +18,112 @@ fn required(arguments: &Value, field: &str) -> Result<String, String> {
     required_bounded(arguments, field, 4096)
 }
 
+const PLUGIN_AUTHORIZATION_RESULT_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+fn project_plugin_authorizations(payload: &Value, plugin_id: &str) -> Result<Value, String> {
+    let rows = payload
+        .pointer("/result/authorizations")
+        .or_else(|| payload.pointer("/result/data/authorizations"))
+        .or_else(|| payload.pointer("/data/authorizations"))
+        .or_else(|| payload.get("authorizations"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_RESPONSE_INVALID".to_string())?;
+
+    let mut authorizations = Vec::new();
+    for row in rows {
+        let row_plugin_id = row.get("pluginId").and_then(Value::as_str).ok_or_else(|| {
+            "FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_RESPONSE_INVALID".to_string()
+        })?;
+        if row_plugin_id == plugin_id {
+            authorizations.push(row.clone());
+        }
+    }
+    let total_count = authorizations.len();
+    Ok(json!({
+        "authorizations": authorizations,
+        "totalCount": total_count,
+        "truncated": false
+    }))
+}
+
+async fn read_plugin_authorizations(plugin_id: String) -> Result<Value, String> {
+    let response = call_runtime_tool(
+        "plugin_action_execute",
+        json!({
+            "plugin_id": "plugin_management",
+            "action_id": "list_capability_authorizations",
+            "arguments": {},
+            "request_id": request_id("plugin-authorizations-read")
+        }),
+    )
+    .await?;
+
+    let payload = if response
+        .pointer("/result/externalized")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        let result = response
+            .get("result")
+            .ok_or_else(|| "FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_RESULT_INVALID".to_string())?;
+        let session_id = result
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_RESULT_INVALID".to_string())?;
+        let result_ref = result
+            .get("resultRef")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_RESULT_INVALID".to_string())?;
+
+        let mut cursor: Option<u64> = None;
+        let mut body = String::new();
+        loop {
+            let mut arguments = json!({
+                "session_id": session_id,
+                "result_ref": result_ref,
+                "limit": 128,
+                "request_id": request_id("plugin-authorizations-read-page")
+            });
+            if let Some(offset) = cursor {
+                arguments["cursor"] = json!(offset);
+            }
+            let page = call_runtime_tool("result_read", arguments).await?;
+            let chunk = page.get("items").and_then(Value::as_str).ok_or_else(|| {
+                "FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_PAGE_INVALID".to_string()
+            })?;
+            if body.len().saturating_add(chunk.len()) > PLUGIN_AUTHORIZATION_RESULT_MAX_BYTES {
+                return Err("FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_RESULT_TOO_LARGE".to_string());
+            }
+            body.push_str(chunk);
+
+            match page.get("truncated").and_then(Value::as_bool) {
+                Some(false) => break,
+                Some(true) => {
+                    let next = page
+                        .get("nextCursor")
+                        .and_then(Value::as_u64)
+                        .filter(|next| *next > cursor.unwrap_or(0))
+                        .ok_or_else(|| {
+                            "FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_CURSOR_INVALID".to_string()
+                        })?;
+                    cursor = Some(next);
+                }
+                None => {
+                    return Err("FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_PAGE_INVALID".to_string())
+                }
+            }
+        }
+        serde_json::from_str::<Value>(&body)
+            .map_err(|_| "FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_RESULT_INVALID".to_string())?
+    } else {
+        response
+    };
+
+    project_plugin_authorizations(&payload, &plugin_id)
+}
+
 fn required_strings(arguments: &Value, field: &str, max_items: usize) -> Result<Vec<String>, String> {
     let values = arguments.get(field).and_then(Value::as_array)
         .ok_or_else(|| format!("FORGE_NATIVE_BRIDGE_{field}_REQUIRED"))?;
@@ -175,16 +281,8 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
         "read_plugin_management" => read_plugin_management().await,
         "install_official_plugin" =>
             install_official_plugin(required(args, "pluginId")?).await,
-        "read_plugin_authorizations" => call_runtime_tool("plugin_action_execute", json!({
-            "plugin_id": "plugin_management",
-            "action_id": "list_capability_authorizations",
-            "arguments": {
-                "plugin_id": required_bounded(args, "pluginId", 64)?,
-                "active_only": true,
-                "limit": 100
-            },
-            "request_id": request_id("plugin-authorizations-read")
-        })).await,
+        "read_plugin_authorizations" =>
+            read_plugin_authorizations(required_bounded(args, "pluginId", 64)?).await,
         "revoke_plugin_authorization" => call_runtime_tool("plugin_action_execute", json!({
             "plugin_id": "plugin_management",
             "action_id": "revoke_capability_authorization",
@@ -564,6 +662,19 @@ mod tests {
             "revoke_plugin_authorization", &json!({"grantId":"grant-1"})
         ));
         assert_eq!(missing_reason.unwrap_err(), "FORGE_NATIVE_BRIDGE_reason_REQUIRED");
+        let projected = project_plugin_authorizations(&json!({
+            "result": { "authorizations": [
+                { "grantId": "grant-figma", "pluginId": "figma" },
+                { "grantId": "grant-gmail", "pluginId": "gmail" }
+            ]}
+        }), "figma").expect("complete authorization projection");
+        assert_eq!(projected["totalCount"], 1);
+        assert_eq!(projected["truncated"], false);
+        assert_eq!(projected["authorizations"][0]["grantId"], "grant-figma");
+
+        assert!(project_plugin_authorizations(&json!({
+            "result": { "authorizations": [{ "grantId": "missing-plugin-id" }] }
+        }), "figma").is_err());
     }
 
     #[test]

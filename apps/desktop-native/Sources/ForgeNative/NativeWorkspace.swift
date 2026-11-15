@@ -2281,9 +2281,13 @@ final class NativeWorkspace: ObservableObject {
     nonisolated static func pluginAuthorizationRevocationWarning(
         grantId:String,refreshed:PluginAuthorizationSnapshot
     ) -> String? {
-        refreshed.items.contains(where:{ $0.grantId == grantId })
-            ? "授权仍然有效，请刷新核对后再操作。"
-            : nil
+        if refreshed.items.contains(where:{ $0.grantId == grantId }) {
+            return "授权仍然有效，请刷新核对后再操作。"
+        }
+        guard !refreshed.truncated, refreshed.totalCount == refreshed.items.count else {
+            return "授权列表不完整，无法确认撤销结果；请刷新后核对。"
+        }
+        return nil
     }
 
     func loadPluginAuthorizations(for pluginId:String) async {

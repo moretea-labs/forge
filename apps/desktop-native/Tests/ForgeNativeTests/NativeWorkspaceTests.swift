@@ -2507,7 +2507,7 @@ final class NativeWorkspaceTests: XCTestCase {
         ],pluginId:"figma"))
     }
 
-    func testPluginAuthorizationRevocationRequiresRefreshedAbsence() {
+    func testPluginAuthorizationRevocationRequiresCompleteRefreshedAbsence() {
         let item = PluginAuthorizationItem(
             grantId:"grant-1",pluginId:"figma",capabilityId:"figma.read",
             targetKind:"workspace",targetId:"project-1",scopes:["figma.files.read"],
@@ -2515,8 +2515,22 @@ final class NativeWorkspaceTests: XCTestCase {
         )
         let stillPresent = PluginAuthorizationSnapshot(pluginId:"figma",items:[item],totalCount:1,truncated:false)
         let revoked = PluginAuthorizationSnapshot(pluginId:"figma",items:[],totalCount:0,truncated:false)
-        XCTAssertNotNil(NativeWorkspace.pluginAuthorizationRevocationWarning(grantId:"grant-1",refreshed:stillPresent))
+        let truncatedMissing = PluginAuthorizationSnapshot(pluginId:"figma",items:[],totalCount:1,truncated:true)
+        let countMismatch = PluginAuthorizationSnapshot(pluginId:"figma",items:[],totalCount:1,truncated:false)
+
+        XCTAssertEqual(
+            NativeWorkspace.pluginAuthorizationRevocationWarning(grantId:"grant-1",refreshed:stillPresent),
+            "授权仍然有效，请刷新核对后再操作。"
+        )
         XCTAssertNil(NativeWorkspace.pluginAuthorizationRevocationWarning(grantId:"grant-1",refreshed:revoked))
+        XCTAssertEqual(
+            NativeWorkspace.pluginAuthorizationRevocationWarning(grantId:"grant-1",refreshed:truncatedMissing),
+            "授权列表不完整，无法确认撤销结果；请刷新后核对。"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.pluginAuthorizationRevocationWarning(grantId:"grant-1",refreshed:countMismatch),
+            "授权列表不完整，无法确认撤销结果；请刷新后核对。"
+        )
     }
 
     func testPluginInstallationRequiresConfirmedVersionFromAuthority() {
