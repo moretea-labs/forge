@@ -3474,6 +3474,44 @@ extension NativeWorkspaceTests {
         XCTAssertTrue(hidden.isEmpty)
     }
 
+    func testAssetsProjectFilterIncludesAllCheckoutsWithinRepository() {
+        var primaryCheckout = ChatThread()
+        primaryCheckout.repoId = "repo-a"
+        primaryCheckout.checkoutId = "checkout-primary"
+        primaryCheckout.messages = [
+            ChatMessage(role: "assistant", text: "![Primary](https://example.com/primary.png)")
+        ]
+
+        var worktree = ChatThread()
+        worktree.repoId = "repo-a"
+        worktree.checkoutId = "checkout-worktree"
+        worktree.messages = [
+            ChatMessage(role: "assistant", text: "![Worktree](https://example.com/worktree.png)")
+        ]
+
+        var otherProject = ChatThread()
+        otherProject.repoId = "repo-b"
+        otherProject.checkoutId = "checkout-other"
+        otherProject.messages = [
+            ChatMessage(role: "assistant", text: "![Other](https://example.com/other.png)")
+        ]
+
+        let resources = AgentAssetsDashboard.makeResources(
+            from: [primaryCheckout, worktree, otherProject],
+            projects: [],
+            selectedRepoId: "repo-a",
+            showLocalResources: false,
+            showRemoteImages: true
+        )
+
+        XCTAssertEqual(resources.count, 2)
+        XCTAssertEqual(Set(resources.map(\.threadId)), Set([primaryCheckout.id, worktree.id]))
+        XCTAssertEqual(Set(resources.map(\.source)), Set([
+            "https://example.com/primary.png",
+            "https://example.com/worktree.png"
+        ]))
+    }
+
     func testContextFileResolutionRejectsCheckoutEscapeAndSymlinkEscape() throws {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
