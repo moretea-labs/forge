@@ -8,6 +8,7 @@ import {
   listGitHubWorkflowRuns,
   listGitHubWorkflows,
   readGitHubProjectItems,
+  readGitHubProjectIssue,
 } from './github-client';
 import type {
   AssistantPluginActionDescriptor,
@@ -31,6 +32,13 @@ function githubPermissions(ready: boolean, projectConfigured: boolean): Assistan
       description: 'Create, refresh, and close linked GitHub issues.',
       granted: ready,
       required: true,
+    },
+    {
+      scope: 'github:issues:read',
+      mode: 'read',
+      description: 'Read complete current Issue content and returned comments for selected Project items.',
+      granted: ready,
+      required: false,
     },
     {
       scope: 'github:projects:read',
@@ -83,8 +91,8 @@ function githubCapabilities(): AssistantPluginCapability[] {
       capabilityId: 'project-sync',
       title: 'Project Sync',
       description: 'Attach published issues to a configured GitHub Project when project settings exist.',
-      scopes: ['github:projects:read', 'github:projects:write'],
-      actions: ['configure', 'publish_issue', 'list_project_items'],
+      scopes: ['github:projects:read', 'github:projects:write', 'github:issues:read'],
+      actions: ['configure', 'publish_issue', 'list_project_items', 'read_project_issue'],
     },
     {
       capabilityId: 'actions-ci',
@@ -192,6 +200,25 @@ function githubActions(projectConfigured: boolean): AssistantPluginActionDescrip
           limit: { type: 'number', minimum: 1, maximum: 100 },
           repository: { type: 'string', maxLength: 160, description: 'Optional repository filter; omitted returns items from every repository in the Project.' },
         },
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'read_project_issue',
+      title: 'Read GitHub Project Issue detail',
+      description: 'Read the exact linked Issue body, metadata and returned comments without changing the GitHub or Forge progress authorities.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: 60_000,
+      cancellable: true,
+      idempotent: true,
+      scopes: ['github:issues:read'],
+      resourceClaims: [{ resource: 'remote', mode: 'read' }],
+      argumentsSchema: {
+        type: 'object',
+        properties: { issue_url: { type: 'string', maxLength: 512 } },
+        required: ['issue_url'],
         additionalProperties: false,
       },
     },
@@ -400,6 +427,10 @@ export async function executeGitHubPluginAction(input: AssistantPluginActionExec
         projectNumber: config.projectNumber,
         ...readGitHubProjectItems(input.repoRoot, config.projectOwner, config.projectNumber, limit, repositoryFilter),
       };
+    }
+    case 'read_project_issue': {
+      const issueUrl = typeof input.args.issue_url === 'string' ? input.args.issue_url : '';
+      return { issue: readGitHubProjectIssue(input.repoRoot, issueUrl) };
     }
     case 'list_workflows': {
       const config = loadGitHubPluginConfig(input.repoRoot);

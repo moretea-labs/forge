@@ -335,3 +335,87 @@ export function dispatchGitHubWorkflow(
     ...(/^https:\/\//i.test(output) ? { runUrl: output } : {}),
   };
 }
+
+/** Read one GitHub Project Issue by its immutable source URL, not title matching. */
+export function parseGitHubProjectIssueUrl(issueUrl: string): { repository: string; number: number; url: string } {
+  const url = issueUrl.trim();
+  const match = /^https:\/\/github\.com\/([A-Za-z0-9-]{1,80})\/([A-Za-z0-9_.-]{1,100})\/issues\/([1-9]\d*)\/?$/.exec(url);
+  if (!match) throw new Error('GITHUB_PROJECT_ISSUE_URL_INVALID');
+  const number = Number(match[3]);
+  if (!Number.isSafeInteger(number)) throw new Error('GITHUB_PROJECT_ISSUE_NUMBER_INVALID');
+  return { repository: match[1] + '/' + match[2], number, url: 'https://github.com/' + match[1] + '/' + match[2] + '/issues/' + number };
+}
+
+export function buildGitHubProjectIssueDetailArgs(issueUrl: string): string[] {
+  const reference = parseGitHubProjectIssueUrl(issueUrl);
+  return [
+    'issue', 'view', String(reference.number), '--repo', reference.repository, '--json',
+    'number,title,body,url,state,stateReason,assignees,labels,createdAt,updatedAt,closedAt,comments',
+  ];
+}
+
+export function parseGitHubProjectIssueDetail(payload: unknown, issueUrl: string) {
+  const expected = parseGitHubProjectIssueUrl(issueUrl);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('GITHUB_PROJECT_ISSUE_DETAIL_SHAPE_INVALID');
+  }
+  const row = payload as Record<string, unknown>;
+  if (row.url !== expected.url || row.number !== expected.number
+    || typeof row.title !== 'string' || typeof row.body !== 'string'
+    || (row.state !== 'OPEN' && row.state !== 'CLOSED')
+    || typeof row.createdAt !== 'string' || typeof row.updatedAt !== 'string'
+    || !Array.isArray(row.assignees) || !Array.isArray(row.labels) || !Array.isArray(row.comments)) {
+    throw new Error('GITHUB_PROJECT_ISSUE_DETAIL_SHAPE_INVALID');
+  }
+  const assignees = row.assignees.map((candidate: unknown) => {
+    const login = candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+      ? (candidate as Record<string, unknown>).login : undefined;
+    if (typeof login !== 'string' || !login.trim()) throw new Error('GITHUB_PROJECT_ISSUE_ASSIGNEE_INVALID');
+    return login;
+  });
+  const labels = row.labels.map((candidate: unknown) => {
+    const name = candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+      ? (candidate as Record<string, unknown>).name : undefined;
+    if (typeof name !== 'string' || !name.trim()) throw new Error('GITHUB_PROJECT_ISSUE_LABEL_INVALID');
+    return name;
+  });
+  const comments = row.comments.map((candidate: unknown) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      throw new Error('GITHUB_PROJECT_ISSUE_COMMENT_INVALID');
+    }
+    const comment = candidate as Record<string, unknown>;
+    if (typeof comment.body !== 'string' || typeof comment.createdAt !== 'string') {
+      throw new Error('GITHUB_PROJECT_ISSUE_COMMENT_INVALID');
+    }
+    const author = comment.author && typeof comment.author === 'object' && !Array.isArray(comment.author)
+      ? (comment.author as Record<string, unknown>).login : undefined;
+    return {
+      body: comment.body,
+      createdAt: comment.createdAt,
+      ...(typeof comment.url === 'string' ? { url: comment.url } : {}),
+      ...(typeof author === 'string' ? { author } : {}),
+    };
+  });
+  return {
+    repository: expected.repository,
+    number: expected.number,
+    url: expected.url,
+    title: row.title,
+    body: row.body,
+    state: row.state,
+    ...(typeof row.stateReason === 'string' ? { stateReason: row.stateReason } : {}),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    ...(typeof row.closedAt === 'string' ? { closedAt: row.closedAt } : {}),
+    assignees, labels, comments,
+    commentsReturned: comments.length,
+    // gh issue view returns a comment snapshot, not complete edit/project event history.
+    historyCoverage: 'comments_snapshot_only' as const,
+  };
+}
+
+export function readGitHubProjectIssue(repoRoot: string, issueUrl: string) {
+  const result = gh(repoRoot, buildGitHubProjectIssueDetailArgs(issueUrl), undefined, 4 * 1024 * 1024);
+  if (!result.ok) throw new Error('failed to read GitHub Project Issue: ' + (result.error || result.stderr));
+  return parseGitHubProjectIssueDetail(parseJson<unknown>(result.stdout, 'gh issue view'), issueUrl);
+}

@@ -15,6 +15,8 @@ import {
   buildGitHubWorkflowRunListArgs,
   buildGitHubProjectItemListArgs,
   parseGitHubProjectItems,
+  buildGitHubProjectIssueDetailArgs,
+  parseGitHubProjectIssueDetail,
 } from '../../src/runtime/plugins/github-client';
 import { buildGitHubPluginManifest, executeGitHubPluginAction } from '../../src/runtime/plugins/github-adapter';
 
@@ -56,6 +58,11 @@ describe('GitHub Actions plugin surface', () => {
       expect(actions.list_project_items).toMatchObject({
         readOnly: true, risk: 'readonly', confirmation: 'none', idempotent: true,
         scopes: ['github:projects:read'],
+      });
+      expect(actions.read_project_issue).toMatchObject({
+        readOnly: true, risk: 'readonly', confirmation: 'none', idempotent: true,
+        scopes: ['github:issues:read'],
+        argumentsSchema: { required: ['issue_url'] },
       });
       expect(manifest.capabilities.find((capability) => capability.capabilityId === 'actions-ci')?.actions).toEqual([
         'list_workflows', 'list_workflow_runs', 'dispatch_workflow',
@@ -190,5 +197,46 @@ describe('GitHub Project items read-only projection', () => {
     }, 'moretea-labs/forge', 1);
     expect(result.truncated).toBe(true);
     expect(result.items[0].url).toBeUndefined();
+  });
+});
+
+describe('GitHub Project Issue detail for migration', () => {
+  const url = 'https://github.com/moretea-labs/forge/issues/648';
+
+  test('resolves only exact Issue URLs and keeps repository identity across projects', () => {
+    expect(buildGitHubProjectIssueDetailArgs(url)).toEqual([
+      'issue', 'view', '648', '--repo', 'moretea-labs/forge', '--json',
+      'number,title,body,url,state,stateReason,assignees,labels,createdAt,updatedAt,closedAt,comments',
+    ]);
+    expect(buildGitHubProjectIssueDetailArgs('https://github.com/moretea-labs/personal-knowledge-assistant/issues/37')[4]).toBe('moretea-labs/personal-knowledge-assistant');
+    for (const invalid of [
+      'https://github.com/moretea-labs/forge/pull/648',
+      'https://github.com/moretea-labs/forge/issues/648?state=closed',
+      'https://github.com/moretea-labs/forge/issues/0',
+      'https://example.com/moretea-labs/forge/issues/648',
+      'https://github.com/moretea-labs/forge/issues/648\n--foo',
+    ]) expect(() => buildGitHubProjectIssueDetailArgs(invalid)).toThrow(/GITHUB_PROJECT_ISSUE_URL_INVALID/);
+  });
+
+  test('preserves full body, assignees, labels, comment bodies, timestamps and provenance', () => {
+    const body = 'A requirement that must not be truncated. '.repeat(60);
+    const raw = {
+      number: 648, title: 'Migration', body, url, state: 'OPEN', stateReason: null,
+      createdAt: '2026-11-12T00:00:00Z', updatedAt: '2026-11-15T00:00:00Z', closedAt: null,
+      assignees: [{ login: 'greysonOuyang' }], labels: [{ name: 'P0' }],
+      comments: [{ body: 'Exact history text', createdAt: '2026-11-13T00:00:00Z',
+        url: url + '#issuecomment-1', author: { login: 'reviewer' } }],
+    };
+    const detail = parseGitHubProjectIssueDetail(raw, url);
+    expect(detail).toMatchObject({
+      repository: 'moretea-labs/forge', number: 648, title: 'Migration', body,
+      state: 'OPEN', assignees: ['greysonOuyang'], labels: ['P0'],
+      commentsReturned: 1, historyCoverage: 'comments_snapshot_only',
+      comments: [{ body: 'Exact history text', createdAt: '2026-11-13T00:00:00Z',
+        author: 'reviewer', url: url + '#issuecomment-1' }],
+    });
+    expect(detail.body.length).toBeGreaterThan(500);
+    expect(() => parseGitHubProjectIssueDetail({ ...raw, number: 649 }, url)).toThrow(/SHAPE_INVALID/);
+    expect(() => parseGitHubProjectIssueDetail({ ...raw, comments: [{}] }, url)).toThrow(/COMMENT_INVALID/);
   });
 });
