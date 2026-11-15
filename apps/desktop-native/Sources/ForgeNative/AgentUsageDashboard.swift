@@ -237,12 +237,12 @@ struct AgentUsageDashboard: View {
                     distribution("agent.usage.project-distribution", title: "项目用量", values: byProject)
                 }
 
-                VStack(alignment: .leading, spacing: 10) {
+                LazyVStack(alignment: .leading, spacing: 10) {
                     Text("最近用量").font(.system(size: 15, weight: .semibold))
                     if usageEntries.isEmpty {
                         Text("暂无用量记录").font(.system(size: 12)).foregroundStyle(.secondary)
                     } else {
-                        ForEach(Array(usageEntries.prefix(12))) { item in
+                        ForEach(usageEntries) { item in
                             HStack(spacing: 10) {
                                 Text(item.date.formatted(.dateTime.month().day().hour().minute()))
                                     .foregroundStyle(.secondary).frame(width: 105, alignment: .leading)
