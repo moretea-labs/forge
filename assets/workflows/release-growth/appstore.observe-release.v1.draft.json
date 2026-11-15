@@ -93,6 +93,7 @@
       "capabilityId": "asc.list_app_territory_availabilities",
       "input": {
         "app_id": "{{output.validate-app-version.app_id}}",
+        "territory_id": "CHN",
         "limit": 200
       },
       "outputContract": {
