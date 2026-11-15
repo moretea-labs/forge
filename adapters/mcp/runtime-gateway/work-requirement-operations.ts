@@ -241,10 +241,17 @@ export async function callRhWorkRequirementOperation(
       ? listRequirementActivityEvents({ controllerHome: ctx.controllerHome }, requirementId, 21)
       : undefined;
     const revisionByNumber = new Map((revisionRecords ?? []).map((revision) => [revision.revision, revision]));
-    const activityHistory = activityEvents?.slice(0, 20).map((event) => {
-      const snapshot = event.revision === semantic.revision ? semantic : revisionByNumber.get(event.revision);
+    const activityHistory = activityEvents?.slice(0, 20).map((event, index, events) => {
+      // Audit revision is the persisted-record revision; semantic snapshots advance
+      // only for requirement_semantic_revised. Placement/promotion events must map
+      // to the latest semantic snapshot that existed at their point in the timeline.
+      const newerSemanticRevisions = events.slice(0, index)
+        .filter((newer) => newer.action === 'requirement_semantic_revised').length;
+      const semanticRevision = Math.max(1, semantic.revision - newerSemanticRevisions);
+      const snapshot = semanticRevision === semantic.revision ? semantic : revisionByNumber.get(semanticRevision);
       return {
-        eventId: event.eventId, revision: event.revision, action: event.action, occurredAt: event.occurredAt,
+        eventId: event.eventId, revision: event.revision, semanticRevision,
+        action: event.action, occurredAt: event.occurredAt,
         ...(snapshot ? {
           status: snapshot.status, priority: snapshot.priority, assignee: snapshot.assignee,
           title: snapshot.title, progressSummary: snapshot.progressSummary,

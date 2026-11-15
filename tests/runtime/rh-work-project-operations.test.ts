@@ -786,6 +786,42 @@ describe('rh_work Project operations', () => {
       }],
     });
 
+    const activeLegacy = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'requirement_create',
+      requirement_id: 'REQ-LEGACY-ACTIVE',
+      requirement_title: 'Existing active task',
+      requirement_outcome: 'Keep the task editable after Project attachment.',
+      requirement_status: 'active',
+      requirement_priority: 'high',
+      requirement_assignee: 'migration-owner',
+    }));
+    expect(activeLegacy.status).toBe('ok');
+    const activeAttached = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'project_attach_requirement',
+      project_id: 'project-standalone-migration',
+      requirement_id: 'REQ-LEGACY-ACTIVE',
+    }));
+    expect(activeAttached.status).toBe('ok');
+
+    const revisedAfterAttachment = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'requirement_revise',
+      requirement_id: 'REQ-LEGACY-ACTIVE',
+      expected_revision: 1,
+      requirement_priority: 'urgent',
+      requirement_progress_summary: 'Updated after Project attachment.',
+    }));
+    expect(revisedAfterAttachment.status).toBe('ok');
+    const taskHistory = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'requirement_get',
+      requirement_id: 'REQ-LEGACY-ACTIVE',
+      detail_level: 'detail',
+    }));
+    expect(taskHistory.data.activityHistory).toMatchObject([
+      { revision: 3, semanticRevision: 2, action: 'requirement_semantic_revised', status: 'active', priority: 'urgent' },
+      { revision: 2, semanticRevision: 1, action: 'requirement_project_bound', status: 'active', priority: 'high' },
+      { revision: 1, semanticRevision: 1, action: 'requirement_created', status: 'active', priority: 'high' },
+    ]);
+
     const otherProject = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
       operation: 'project_create',
       project_id: 'project-standalone-other',
