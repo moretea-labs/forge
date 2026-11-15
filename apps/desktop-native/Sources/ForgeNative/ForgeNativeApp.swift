@@ -340,25 +340,35 @@ private struct ForgeWorkspaceView: View {
             }
             .padding(.horizontal,10)
 
-            Group {
-                if model.zenMode {
-                    ZenSidebar(model:model,screen:$zenScreen,
-                               focusedRequirementId:$zenFocusedRequirementId,
-                               decisionCount:model.relevantUserRequests.count,
-                               onInbox:{
-                        inboxShown = true
-                        Task { await model.loadUserRequests() }
-                    },onAddProject:{
-                        chooseProjectDirectory(keepZen:true)
-                    })
-                    .popover(isPresented:$inboxShown,arrowEdge:.trailing) {
-                        inboxPanel
-                    }
-                } else if model.page == .agent {
-                    sidebar
-                } else {
-                    contextualSidebar
+            // Keep the three contextual panes mounted. Switching the active
+            // section must not recreate the conversation/Zen sidebar, lose its
+            // scroll position, or reflow the six primary destinations.
+            ZStack(alignment:.topLeading) {
+                ZenSidebar(model:model,screen:$zenScreen,
+                           focusedRequirementId:$zenFocusedRequirementId,
+                           decisionCount:model.relevantUserRequests.count,
+                           onInbox:{
+                    inboxShown = true
+                    Task { await model.loadUserRequests() }
+                },onAddProject:{
+                    chooseProjectDirectory(keepZen:true)
+                })
+                .opacity(model.zenMode ? 1 : 0)
+                .allowsHitTesting(model.zenMode)
+                .accessibilityHidden(!model.zenMode)
+                .popover(isPresented:$inboxShown,arrowEdge:.trailing) {
+                    inboxPanel
                 }
+
+                sidebar
+                    .opacity(!model.zenMode && model.page == .agent ? 1 : 0)
+                    .allowsHitTesting(!model.zenMode && model.page == .agent)
+                    .accessibilityHidden(model.zenMode || model.page != .agent)
+
+                contextualSidebar
+                    .opacity(!model.zenMode && model.page != .agent ? 1 : 0)
+                    .allowsHitTesting(!model.zenMode && model.page != .agent)
+                    .accessibilityHidden(model.zenMode || model.page == .agent)
             }
             .frame(maxWidth:.infinity,maxHeight:.infinity)
 
