@@ -38,9 +38,17 @@ function gitInit(repoRoot: string): void {
   spawnSync('git', ['commit', '-m', 'benchmark fixture'], { cwd: repoRoot, stdio: 'ignore' });
 }
 
-function percentile(values: number[], quantile: number): number {
+export function percentile(values: number[], quantile: number): number {
+  if (values.length === 0) throw new Error('CONTROLLER_HOTPATH_PERCENTILE_EMPTY_SAMPLE');
+  if (!Number.isFinite(quantile) || quantile < 0 || quantile > 1) {
+    throw new Error('CONTROLLER_HOTPATH_PERCENTILE_INVALID_QUANTILE');
+  }
+  if (values.some((value) => !Number.isFinite(value))) {
+    throw new Error('CONTROLLER_HOTPATH_PERCENTILE_INVALID_SAMPLE');
+  }
   const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * quantile))] ?? 0;
+  const rank = Math.max(1, Math.ceil(sorted.length * quantile));
+  return sorted[rank - 1]!;
 }
 
 function timed<T>(fn: () => T): { value: T; ms: number } {
@@ -124,15 +132,14 @@ async function benchmarkScale(scale: number): Promise<Record<string, unknown>> {
       cacheHits += sample.cacheHit ? 1 : 0;
       maxSummaryBytes = Math.max(maxSummaryBytes, sample.bytes);
     }
-    const sorted = [...samples].sort((a, b) => a - b);
     return {
       scale,
       coldSummaryMs: coldSummary.ms,
       coldSummaryResponseBytes: coldSummary.bytes,
       coldMs: cold.ms,
       coldResponseBytes: cold.bytes,
-      hotP50Ms: sorted[Math.floor(sorted.length * 0.5)] ?? 0,
-      hotP95Ms: sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] ?? 0,
+      hotP50Ms: percentile(samples, 0.5),
+      hotP95Ms: percentile(samples, 0.95),
       hotMaxMs: Math.max(...samples, 0),
       cacheHits,
       cacheHitRate: cacheHits / HOT_READS,
