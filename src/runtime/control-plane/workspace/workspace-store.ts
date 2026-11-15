@@ -5,6 +5,7 @@ import {
   listControlPlaneRecordsWithinTransaction,
   readControlPlaneRecord,
   readControlPlaneRecordWithinTransaction,
+  withControlPlaneReadDatabase,
   withControlPlaneTransaction,
   writeControlPlaneRecord,
   writeControlPlaneRecordWithinTransaction,
@@ -115,12 +116,21 @@ export function listProjectPlacements(controllerHome: string, forgeInstanceId: s
   return listControlPlaneRecords<ProjectPlacement>(controllerHome, { namespace: PROJECT_PLACEMENT_NAMESPACE, scope: forgeInstanceId.trim(), limit: 1_000 });
 }
 
-export function listProjectRevisionRecords(controllerHome: string, projectId: string, limit = 200): ProjectRevisionRecord[] {
-  return listControlPlaneRecords<ProjectRevisionRecord>(controllerHome, {
-    namespace: PROJECT_REVISION_NAMESPACE,
-    scope: projectId.trim(),
-    limit: Math.max(1, Math.min(Math.trunc(limit), 1_000)),
-  }).map((record) => record.value).sort((left, right) => right.revision - left.revision);
+export function listProjectRevisionRecords(
+  controllerHome: string, projectId: string, currentRevision: number, limit = 200,
+): ProjectRevisionRecord[] {
+  const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 1_000));
+  if (!Number.isSafeInteger(currentRevision) || currentRevision < 1) throw new Error('PROJECT_HISTORY_REVISION_INVALID');
+  return withControlPlaneReadDatabase(controllerHome, (database) => {
+    const history: ProjectRevisionRecord[] = [];
+    for (let revision = currentRevision; revision >= 1 && history.length < boundedLimit; revision--) {
+      const record = readControlPlaneRecordWithinTransaction<ProjectRevisionRecord>(
+        database, PROJECT_REVISION_NAMESPACE, projectId.trim(), String(revision),
+      );
+      if (record) history.push(record.value);
+    }
+    return history;
+  });
 }
 
 /** Create a Project in the existing semantic owner; only the default personal Workspace is auto-created. */

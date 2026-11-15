@@ -17,6 +17,7 @@ import {
   type SemanticSyncJournalEntry,
 } from '../../src/runtime/control-plane/workspace/semantic-sync-service';
 import {
+  listProjectRevisionRecords,
   readProjectPlacement,
   readWorkspaceIdentity,
   writeProjectIdentity,
@@ -78,6 +79,34 @@ function seedNode(home: string, instanceId: string, repoId: string, projectId: s
 }
 
 describe('Kernel V2 Workspace semantic sync', () => {
+  test('Project history shows the newest revisions after more than one page of edits', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-project-history-'));
+    try {
+      const home = join(root, 'controller');
+      writeWorkspaceIdentity({
+        controllerHome: home, value: { workspaceId: 'workspace-personal', title: 'Personal workspace' },
+        expectedRevision: null,
+      });
+      const identity = { projectId: 'project-history', workspaceId: 'workspace-personal', displayName: 'Original project' };
+      let current = writeProjectIdentity({ controllerHome: home, value: identity, expectedRevision: null });
+      for (let revision = 2; revision <= 58; revision++) {
+        current = writeProjectIdentity({
+          controllerHome: home, value: { ...current.value, displayName: `Updated project ${revision}` },
+          expectedRevision: current.revision,
+        });
+      }
+      expect(current.revision).toBe(58);
+      expect(listProjectRevisionRecords(home, 'project-history', current.revision, 5)).toMatchObject([
+        { revision: 58, displayName: 'Updated project 58' },
+        { revision: 57, displayName: 'Updated project 57' },
+        { revision: 56, displayName: 'Updated project 56' },
+        { revision: 55, displayName: 'Updated project 55' },
+        { revision: 54, displayName: 'Updated project 54' },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   test('onboards a real Work repository using contract-declared Project identity and preserves it idempotently', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-project-onboarding-'));
     const controllerHome = join(root, 'controller');

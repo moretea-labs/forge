@@ -5,6 +5,7 @@ import {
   listControlPlaneRecordsWithinTransaction,
   readControlPlaneRecord,
   readControlPlaneRecordWithinTransaction,
+  withControlPlaneReadDatabase,
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
   type ControlPlaneRecord,
@@ -355,19 +356,29 @@ export function listRequirementRevisionRecords(
   limit = 200,
 ): RequirementRevisionRecord[] {
   const normalizedId = requirementId ? id(requirementId) : undefined;
-  return listControlPlaneRecords<RequirementRevisionRecord>(options.controllerHome, {
-    namespace: REVISION_NAMESPACE,
-    scope: SCOPE,
-    limit: Math.max(1, Math.min(Math.trunc(limit), 1000)),
-  }).map((record) => record.value)
-    .filter((record) => !normalizedId || record.requirementId === normalizedId)
-    .map((record) => ({
-      ...record,
-      semanticScope: record.semanticScope ?? ({ schemaVersion: 1, kind: 'requirement', id: record.requirementId } as const),
-      dependsOnRequirementIds: [...(record.dependsOnRequirementIds ?? [])],
-      legacyAliases: [...(record.legacyAliases ?? [])],
-    }))
-    .sort((left, right) => right.revision - left.revision);
+  const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 1000));
+  const records = normalizedId
+    ? withControlPlaneReadDatabase(options.controllerHome, (database) => {
+        const current = readControlPlaneRecordWithinTransaction<Requirement>(database, NAMESPACE, SCOPE, normalizedId);
+        const latestArchivedRevision = (current?.value.semanticRevision ?? 1) - 1;
+        const revisions: RequirementRevisionRecord[] = [];
+        for (let revision = latestArchivedRevision; revision >= 1 && revisions.length < boundedLimit; revision--) {
+          const archived = readControlPlaneRecordWithinTransaction<RequirementRevisionRecord>(
+            database, REVISION_NAMESPACE, SCOPE, requirementRevisionKey(normalizedId, revision),
+          );
+          if (archived) revisions.push(archived.value);
+        }
+        return revisions;
+      })
+    : listControlPlaneRecords<RequirementRevisionRecord>(options.controllerHome, {
+        namespace: REVISION_NAMESPACE, scope: SCOPE, limit: boundedLimit,
+      }).map((record) => record.value);
+  return records.map((record) => ({
+    ...record,
+    semanticScope: record.semanticScope ?? ({ schemaVersion: 1, kind: 'requirement', id: record.requirementId } as const),
+    dependsOnRequirementIds: [...(record.dependsOnRequirementIds ?? [])],
+    legacyAliases: [...(record.legacyAliases ?? [])],
+  })).sort((left, right) => right.revision - left.revision);
 }
 
 export function listRequirementActivityEvents(

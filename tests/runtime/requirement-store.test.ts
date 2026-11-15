@@ -208,6 +208,34 @@ test('keeps portable semantic scope separate from local execution placement', ()
   expect(() => semanticRecordMetadata({ ...metadata, revision: -1 })).toThrow(/SEMANTIC_RECORD_REVISION_INVALID/);
 });
 
+test('task detail reads its latest revisions even when other Requirements own the first history rows', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-requirement-history-'));
+  homes.push(home);
+  const options = { controllerHome: home, now: () => '2026-11-16T00:00:00.000Z' };
+  for (let index = 0; index < 25; index++) {
+    const requirementId = `req-a-noise-${String(index).padStart(2, '0')}`;
+    createRequirement(options, {
+      requirementId, title: 'Unrelated task', outcomeStatement: 'Unrelated work',
+    });
+    reviseRequirementSemantic(options, requirementId, {
+      expectedRevision: 1, progressSummary: 'Unrelated task was edited.',
+    });
+  }
+  createRequirement(options, {
+    requirementId: 'req-z-history', title: 'Original user task', outcomeStatement: 'Keep its full recent history.',
+  });
+  reviseRequirementSemantic(options, 'req-z-history', {
+    expectedRevision: 1, title: 'First task edit',
+  });
+  reviseRequirementSemantic(options, 'req-z-history', {
+    expectedRevision: 2, title: 'Second task edit',
+  });
+  expect(listRequirementRevisionRecords(options, 'req-z-history', 2)).toMatchObject([
+    { requirementId: 'req-z-history', revision: 2, title: 'First task edit' },
+    { requirementId: 'req-z-history', revision: 1, title: 'Original user task' },
+  ]);
+});
+
 test('Requirement task priority, assignee and status share one revisioned authority and board projection', () => {
   const home = mkdtempSync(join('/tmp', 'forge-requirement-task-'));
   homes.push(home);

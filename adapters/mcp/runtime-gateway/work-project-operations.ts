@@ -242,7 +242,7 @@ export function callRhWorkProjectOperation(
       const project = projectView(ctx, record);
       const taskProjection = detailLevel === 'detail' ? projectRequirements(ctx, project.projectId) : undefined;
       const revisionHistory = detailLevel === 'detail'
-        ? listProjectRevisionRecords(ctx.controllerHome, projectId!, 50)
+        ? listProjectRevisionRecords(ctx.controllerHome, projectId!, record.revision, 50)
         : undefined;
       return result(buildFacadeResult({
         summary: `Project ${projectId} retrieved at record revision ${record.revision}.`,
