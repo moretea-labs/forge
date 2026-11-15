@@ -111,7 +111,7 @@ import {
   scheduleRecoveryControllerHomeMigration,
 } from '../../src/runtime/standalone-recovery/controller-home-migration';
 import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } from '../../adapters/mcp/auth';
-import { acquireRecoveryReleaseLock, installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, RECOVERY_DAEMON_LABEL, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
+import { acquireRecoveryReleaseLock, installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, RECOVERY_DAEMON_LABEL, recoveryPlist, recoverySystemdUserUnitInput, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
 import { publishRecoveryRelease, readCurrentRecoveryRelease, recoveryGatewayIsDraining, writeRecoveryReleaseManifest } from '../../src/runtime/standalone-recovery/release';
 import { createRecoveryHttpTransport } from '../../src/runtime/standalone-recovery/http-transport';
@@ -534,6 +534,52 @@ test('verifyStableRuntime uses stabilized active gateway probing by default', as
 
   expect(readyCalls).toBe(2);
   expect(verified.probes.active_gateway).toEqual({ ok: true, detail: 'HTTP 200', status: 200 });
+});
+
+test('standalone Recovery launchd preserves tunnel proxy connectivity in its isolated service environment', () => {
+  const env = {
+    HOME: '/Users/recovery-fixture',
+    HTTP_PROXY: 'http://127.0.0.1:7890',
+    HTTPS_PROXY: 'http://127.0.0.1:7890',
+    NO_PROXY: 'localhost,127.0.0.1,::1',
+    https_proxy: 'http://127.0.0.1:7891',
+    FORGE_RUNTIME_ID: 'must-not-inherit',
+    PRIVATE_TOKEN: 'must-not-inherit',
+  };
+  const plist = recoveryPlist({
+    label: RECOVERY_DAEMON_LABEL,
+    executable: '/fixture/forge-recovery',
+    command: 'daemon',
+    controllerHome: '/fixture/controller',
+    logPath: '/fixture/daemon.log',
+    productVersion: '1.8.2',
+  }, env);
+  const array = plist.match(/<array>([\s\S]*?)<\/array>/)?.[1] ?? '';
+  const args = [...array.matchAll(/<string>([^<]*)<\/string>/g)].map((match) => match[1]!);
+  const boundary = args.indexOf('/fixture/forge-recovery');
+  const childEnvironment = JSON.parse(execFileSync(args[0]!, [
+    ...args.slice(1, boundary), process.execPath, '-e', 'process.stdout.write(JSON.stringify(process.env))',
+  ], { encoding: 'utf8' }));
+  expect(childEnvironment).toMatchObject({
+    HOME: env.HOME, HTTP_PROXY: env.HTTP_PROXY, HTTPS_PROXY: env.HTTPS_PROXY,
+    NO_PROXY: env.NO_PROXY, https_proxy: env.https_proxy,
+  });
+  expect(childEnvironment.FORGE_RUNTIME_ID).toBeUndefined();
+  expect(childEnvironment.PRIVATE_TOKEN).toBeUndefined();
+});
+
+test('standalone Recovery systemd preserves only configured proxy variables alongside its service contract', () => {
+  const unit = recoverySystemdUserUnitInput('/fixture/controller', 'daemon', {
+    PATH: '/usr/bin', HTTP_PROXY: 'http://127.0.0.1:7890',
+    https_proxy: 'http://127.0.0.1:7891', ALL_PROXY: 'socks5://127.0.0.1:7892',
+    NO_PROXY: 'localhost,127.0.0.1,::1', http_proxy: '', PRIVATE_TOKEN: 'must-not-inherit',
+  });
+  expect(unit.environment).toMatchObject({
+    HTTP_PROXY: 'http://127.0.0.1:7890', https_proxy: 'http://127.0.0.1:7891',
+    ALL_PROXY: 'socks5://127.0.0.1:7892', NO_PROXY: 'localhost,127.0.0.1,::1',
+  });
+  expect(unit.environment).not.toHaveProperty('http_proxy');
+  expect(unit.environment).not.toHaveProperty('PRIVATE_TOKEN');
 });
 
 test('standalone Recovery compiler resolves account Bun when compiled Runtime PATH omits Bun', () => {
