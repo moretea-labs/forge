@@ -6,6 +6,7 @@ struct AgentUsageDashboard: View {
     @ObservedObject var model: NativeWorkspace
     @Binding var days: Int
     @Binding var selectedRepoId: String
+    @Binding var selectedEntryID: String?
 
     struct Entry: Identifiable {
         let id: String
@@ -193,7 +194,8 @@ struct AgentUsageDashboard: View {
         let timeline = makeTimeline(from: usageEntries, today: today)
         let byModel = makeModelDistribution(from: usageEntries)
         let byProject = makeProjectDistribution(from: usageEntries)
-        ScrollView {
+        ScrollViewReader { proxy in
+            ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 HStack {
                     Spacer()
@@ -303,6 +305,7 @@ struct AgentUsageDashboard: View {
                                         .accessibilityLabel("用量数据不完整")
                                 }
                                 Button {
+                                    selectedEntryID = item.id
                                     model.selectThread(item.threadId, messageId: item.messageId)
                                 } label: {
                                     Label("来源会话", systemImage: "arrow.up.right")
@@ -316,6 +319,7 @@ struct AgentUsageDashboard: View {
                             .font(.system(size: 11.5))
                             .accessibilityElement(children: .contain)
                             .accessibilityIdentifier("agent.usage.entry.\(item.id)")
+                            .id(item.id)
                             Divider().opacity(0.3)
                         }
                     }
@@ -361,6 +365,7 @@ struct AgentUsageDashboard: View {
                                     .foregroundStyle(.secondary)
                                     .frame(maxWidth: 160, alignment: .leading)
                                 Button {
+                                    selectedEntryID = item.id
                                     model.selectThread(item.threadId, messageId: item.messageId)
                                 } label: {
                                     Label("定位回复", systemImage: "arrow.up.right")
@@ -374,6 +379,7 @@ struct AgentUsageDashboard: View {
                             .font(.system(size: 11.5))
                             .accessibilityElement(children: .contain)
                             .accessibilityIdentifier("agent.usage.unreported.entry.\(item.id)")
+                            .id(item.id)
                             Divider().opacity(0.3)
                         }
                     }
@@ -384,8 +390,14 @@ struct AgentUsageDashboard: View {
             .padding(26)
             .frame(maxWidth: 960, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .onAppear {
+                guard let target = selectedEntryID else { return }
+                proxy.scrollTo(target, anchor: .center)
+                selectedEntryID = nil
+            }
+            .accessibilityIdentifier("agent.usage.dashboard")
         }
-        .accessibilityIdentifier("agent.usage.dashboard")
     }
 
     private func metric(_ identifier: String, _ label: String, _ value: String, _ caption: String? = nil) -> some View {

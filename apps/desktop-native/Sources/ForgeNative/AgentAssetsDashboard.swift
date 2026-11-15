@@ -9,6 +9,7 @@ struct AgentAssetsDashboard: View {
     @Binding var selectedRepoId: String
     @Binding var showLocalResources: Bool
     @Binding var showRemoteImages: Bool
+    @Binding var selectedResourceID: String?
 
     static func accessibilityIdentifier(for resourceID: String, control: String? = nil) -> String {
         let prefix = "agent.assets.resource.\(resourceID)"
@@ -125,8 +126,9 @@ struct AgentAssetsDashboard: View {
 
     var body: some View {
         let items = resources
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
                 HStack(spacing: 16) {
                     Label("\(items.count) 个资源", systemImage: "square.stack.3d.up")
                         .font(.system(size: 12, weight: .medium))
@@ -165,6 +167,7 @@ struct AgentAssetsDashboard: View {
                                         Text(item.title).font(.system(size: 12, weight: .medium))
                                             .lineLimit(1)
                                         Button {
+                                            selectedResourceID = item.id
                                             model.selectThread(item.threadId, messageId: item.messageId)
                                         } label: {
                                             HStack(spacing: 4) {
@@ -216,6 +219,7 @@ struct AgentAssetsDashboard: View {
                             .padding(.vertical, 14)
                             .accessibilityElement(children: .contain)
                             .accessibilityIdentifier(Self.accessibilityIdentifier(for: item.id))
+                            .id(item.id)
                             Divider().opacity(0.4)
                         }
                     }
@@ -224,8 +228,14 @@ struct AgentAssetsDashboard: View {
             .padding(26)
             .frame(maxWidth: 960, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .onAppear {
+                guard let target = selectedResourceID else { return }
+                proxy.scrollTo(target, anchor: .center)
+                selectedResourceID = nil
+            }
+            .accessibilityIdentifier("agent.assets.dashboard")
         }
-        .accessibilityIdentifier("agent.assets.dashboard")
     }
 }
 

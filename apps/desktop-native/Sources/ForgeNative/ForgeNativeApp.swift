@@ -155,8 +155,10 @@ private struct ForgeWorkspaceView: View {
     @State private var assetsSelectedRepoId = ""
     @State private var assetsShowLocalResources = true
     @State private var assetsShowRemoteImages = true
+    @State private var assetsReturnResourceID: String?
     @State private var usageSelectedRepoId = ""
     @State private var usageDays = 30
+    @State private var usageReturnEntryID: String?
     @State private var inboxDecisionRequestId: String?
     @State private var inboxDecision = ""
     @State private var inboxDismissRequestId: String?
@@ -1424,10 +1426,16 @@ private struct ForgeWorkspaceView: View {
                     model:model,
                     selectedRepoId:$assetsSelectedRepoId,
                     showLocalResources:$assetsShowLocalResources,
-                    showRemoteImages:$assetsShowRemoteImages
+                    showRemoteImages:$assetsShowRemoteImages,
+                    selectedResourceID:$assetsReturnResourceID
                 )
             case .usage:
-                AgentUsageDashboard(model:model,days:$usageDays,selectedRepoId:$usageSelectedRepoId)
+                AgentUsageDashboard(
+                    model:model,
+                    days:$usageDays,
+                    selectedRepoId:$usageSelectedRepoId,
+                    selectedEntryID:$usageReturnEntryID
+                )
             case .settings: SettingsPane(model:model)
             }
         }
