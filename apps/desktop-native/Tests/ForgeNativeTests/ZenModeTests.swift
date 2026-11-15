@@ -19,6 +19,24 @@ final class ZenModeTests: XCTestCase {
 
 extension ZenModeTests {
     @MainActor
+    func testWorkbenchEntryAlwaysResetsToBoardAndClearsStaleTaskFocus() {
+        let url=FileManager.default.temporaryDirectory
+            .appendingPathComponent("forge-workbench-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at:url) }
+        let model=NativeWorkspace(store:url)
+        model.zenScreen = .canvas
+        model.zenFocusedRequirementId = "REQ-OLD-PROJECT"
+
+        model.show(.agent)
+        model.openWorkbench()
+
+        XCTAssertTrue(model.zenMode)
+        XCTAssertEqual(model.page,.requirement)
+        XCTAssertEqual(model.zenScreen,.board)
+        XCTAssertNil(model.zenFocusedRequirementId)
+    }
+
+    @MainActor
     func testZenIsDefaultWithEmptyConversationStoreAndAgentNavigationIsExplicit() {
         let url=FileManager.default.temporaryDirectory
             .appendingPathComponent("forge-zen-\(UUID().uuidString).json")

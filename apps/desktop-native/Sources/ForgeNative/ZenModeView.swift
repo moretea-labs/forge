@@ -2,10 +2,6 @@ import SwiftUI
 
 // A presentation of existing Repository, Requirement, Plan and Autopilot facts.
 // Zen never owns a second plan, project registry, or execution state.
-enum ZenScreen {
-    case board, canvas
-}
-
 enum ZenNodeAction {
     case addPlan, edit, optimize, review, complete, cancel
     case toggleExecution, executionSettings
@@ -112,10 +108,8 @@ struct ZenSidebar: View {
                         ForEach(recent) { project in
                             Button {
                                 guard !model.busy else { return }
-                                model.focusZenProject(project.repoId)
-                                focusedRequirementId = nil
                                 withAnimation(reduceMotion ? nil : .easeInOut(duration:0.18)) {
-                                    screen = .board
+                                    model.focusZenProject(project.repoId)
                                 }
                             } label: {
                                 HStack(spacing:9) {

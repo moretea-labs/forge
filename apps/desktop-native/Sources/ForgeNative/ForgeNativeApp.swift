@@ -51,7 +51,7 @@ struct ForgeNativeApp: App {
                 }.keyboardShortcut("k")
                 Divider()
                 Button("显示会话") { workspace.show(.agent) }.keyboardShortcut("1")
-                Button("显示工作台") { workspace.zenMode = true; workspace.show(.requirement) }.keyboardShortcut("2")
+                Button("显示工作台") { workspace.openWorkbench() }.keyboardShortcut("2")
                 Button("显示自动任务") { workspace.show(.schedule) }.keyboardShortcut("3")
                 Button("显示资源") { workspace.show(.assets) }.keyboardShortcut("4")
                 Button("显示统计") { workspace.show(.usage) }.keyboardShortcut("5")
@@ -139,8 +139,6 @@ private struct ForgeWorkspaceView: View {
     @ObservedObject var model: NativeWorkspace
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var visibility: NavigationSplitViewVisibility = .automatic
-    @State private var zenScreen: ZenScreen = .board
-    @State private var zenFocusedRequirementId: String?
     @State private var renameThreadId: String?
     @State private var renameThreadTitle = ""
     @State private var hoveredThreadId: String?
@@ -166,8 +164,8 @@ private struct ForgeWorkspaceView: View {
                 .navigationSplitViewColumnWidth(min:224,ideal:240,max:264)
         } detail: {
             if model.zenMode {
-                ZenWorkspacePane(model:model,screen:$zenScreen,
-                                 focusedRequirementId:$zenFocusedRequirementId,
+                ZenWorkspacePane(model:model,screen:$model.zenScreen,
+                                 focusedRequirementId:$model.zenFocusedRequirementId,
                                  onDraftGoal:{ description in
                     guard let provider=model.readOnlyAnalysisProvider else {
                         model.error="请先配置一个可用的 API Provider，再进行需求分析。"
@@ -222,10 +220,7 @@ private struct ForgeWorkspaceView: View {
 
     private func openSidebarDestination(_ destination:ForgeSidebarDestination) {
         if destination == .workbench {
-            model.zenMode = true
-            zenScreen = .board
-            zenFocusedRequirementId = nil
-            model.show(.requirement)
+            model.openWorkbench()
             return
         }
         if destination == .agent {
@@ -330,8 +325,8 @@ private struct ForgeWorkspaceView: View {
             // section must not recreate the conversation/Zen sidebar, lose its
             // scroll position, or reflow the six primary destinations.
             ZStack(alignment:.topLeading) {
-                ZenSidebar(model:model,screen:$zenScreen,
-                           focusedRequirementId:$zenFocusedRequirementId,
+                ZenSidebar(model:model,screen:$model.zenScreen,
+                           focusedRequirementId:$model.zenFocusedRequirementId,
                            decisionCount:model.relevantUserRequests.count,
                            onInbox:{
                     inboxShown = true
@@ -1096,8 +1091,6 @@ private struct ForgeWorkspaceView: View {
                                 Button {
                                     if model.zenMode {
                                         model.focusZenProject(project.repoId)
-                                        zenScreen = .board
-                                        zenFocusedRequirementId = nil
                                     } else {
                                         model.openProject(project.repoId)
                                     }
@@ -1168,8 +1161,6 @@ private struct ForgeWorkspaceView: View {
                                             Button {
                                                 if model.zenMode {
                                                     model.focusZenProject(project.repoId,requestedCheckoutId:checkout.id)
-                                                    zenScreen = .board
-                                                    zenFocusedRequirementId = nil
                                                 } else {
                                                     model.openCheckout(inProject:project.repoId,checkoutId:checkout.id)
                                                 }
@@ -1313,11 +1304,6 @@ private struct ForgeWorkspaceView: View {
             if ok {
                 projectPickerShown = false
                 projectSearch = ""
-                if keepZen {
-                    model.zenMode = true
-                    zenScreen = .board
-                    zenFocusedRequirementId = nil
-                }
             }
         }
     }
@@ -2424,8 +2410,7 @@ private struct AgentPane: View {
                 .foregroundStyle(ForgePalette.secondary)
                 .accessibilityIdentifier("agent.read-only")
             Button {
-                model.zenMode=true
-                model.show(.requirement)
+                model.openWorkbench()
             } label: {
                 Label("返回 Zen",systemImage:"arrow.uturn.backward")
                     .font(.system(size:10,weight:.medium))

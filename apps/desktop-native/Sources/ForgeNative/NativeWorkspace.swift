@@ -526,6 +526,10 @@ struct RepositoryCheckoutContext {
     let checkoutRoot: URL?
     let checkoutBranch: String?
 }
+enum ZenScreen {
+    case board, canvas
+}
+
 enum NativePage: String, CaseIterable, Identifiable {
     case agent = "会话", requirement = "规划", plan = "Plan",
          schedule = "计划任务", plugins = "插件", knowledge = "知识库",
@@ -596,6 +600,8 @@ final class NativeWorkspace: ObservableObject {
     @Published var page: NativePage = .agent
     // Presentation mode only; does not own a second execution or project state.
     @Published var zenMode = true
+    @Published var zenScreen: ZenScreen = .board
+    @Published var zenFocusedRequirementId: String?
     @Published private(set) var navigationBackStack: [NativeNavigationEntry] = []
     @Published private(set) var projects: [ForgeProject] = []
     @Published private(set) var projectsLoading = true
@@ -1165,6 +1171,9 @@ final class NativeWorkspace: ObservableObject {
             return
         }
         guard let target = projects.first(where:{$0.repoId == id}) else { return }
+        zenMode = true
+        zenScreen = .board
+        zenFocusedRequirementId = nil
         // An explicit Zen project selection also supersedes an in-flight
         // Agent checkout lookup, even when it reselects the current context.
         invalidateProjectContextRequests()
@@ -1289,6 +1298,13 @@ final class NativeWorkspace: ObservableObject {
             self.error = error.localizedDescription
             return false
         }
+    }
+
+    func openWorkbench() {
+        zenMode = true
+        zenScreen = .board
+        zenFocusedRequirementId = nil
+        show(.requirement)
     }
 
     func show(_ page: NativePage) {
