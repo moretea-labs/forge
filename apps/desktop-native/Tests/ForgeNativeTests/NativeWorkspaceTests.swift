@@ -527,6 +527,30 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(invalid[1]["content"]?.contains("process_status") == true)
     }
 
+    func testIncompleteFailedCommandRetainsVerifiedProcessRecoveryContext() {
+        var thread=ChatThread(provider:"api")
+        thread.messages = [
+            ChatMessage(role:"user",text:"Run the build"),
+            ChatMessage(role:"assistant",text:"Command unconfirmed. Process ID: proc_live_123. Do not retry.",
+                activityEvents:[
+                    AgentLiveActivityEvent(phase:"tool",label:"run_command",detail:"request_not_process",
+                        status:"failed",startedAt:"now",completedAt:"later",toolCallId:"call-1")
+                ],incomplete:true)
+        ]
+        let followUp=NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        XCTAssertTrue(followUp.last?["content"]?.contains("proc_live_123") == true)
+        XCTAssertTrue(followUp.last?["content"]?.contains("process_status") == true)
+        XCTAssertFalse(followUp.last?["content"]?.contains("request_not_process") == true)
+        thread.messages[1]=ChatMessage(role:"assistant",text:"Process ID: proc_bad;rm",
+            activityEvents:[
+                AgentLiveActivityEvent(phase:"tool",label:"run_command",detail:"proc_failed_42",
+                    status:"failed",startedAt:"now",completedAt:"later",toolCallId:"call-2")
+            ],incomplete:true)
+        let receipt=NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        XCTAssertTrue(receipt.last?["content"]?.contains("proc_failed_42") == true)
+        XCTAssertFalse(receipt.last?["content"]?.contains("proc_bad") == true)
+    }
+
     func testManagedProcessActivityRemainsRunningUntilTerminalReceipt() {
         let events = NativeWorkspace.apiActivityEvents([[
             "name":"run_command","ok":false,"status":"running",

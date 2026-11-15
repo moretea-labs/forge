@@ -3721,15 +3721,23 @@ final class NativeWorkspace: ObservableObject {
            last.incomplete == true {
             let ids = (last.activityEvents ?? []).compactMap { event -> String? in
                 guard event.label == "run_command",
-                      event.status == "running" || event.status == "unknown",
-                      let id = event.detail, id.hasPrefix("proc_"), id.count <= 128,
-                      id.utf8.allSatisfy({ byte in
-                          byte == 95 || (48...57).contains(byte)
-                              || (65...90).contains(byte) || (97...122).contains(byte)
-                      }) else { return nil }
+                      event.status != "completed",
+                      let id = event.detail,
+                      Self.isCanonicalProcessId(id) else { return nil }
                 return id
             }
-            let uniqueIDs = Array(Set(ids)).sorted().prefix(3)
+            // The final incomplete result can carry the process ID even when
+            // the tool receipt only exposes a request ID. It is recovery
+            // evidence, never a signal to replay the command.
+            let textIDs = last.text.components(separatedBy:"Process ID: ").dropFirst()
+                .compactMap { tail -> String? in
+                    let id = String(tail.prefix(while: { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }))
+                    let next = tail.dropFirst(id.count).first
+                    guard Self.isCanonicalProcessId(id),
+                          next == nil || next?.isWhitespace == true || next == "." || next == "。" else { return nil }
+                    return id
+                }
+            let uniqueIDs = Array(Set(ids + textIDs)).sorted().prefix(3)
             if !uniqueIDs.isEmpty {
                 content += "\nPrior incomplete run_command Process IDs (not completion evidence): "
                     + uniqueIDs.joined(separator:", ")
@@ -3738,6 +3746,14 @@ final class NativeWorkspace: ObservableObject {
         }
         messages.append(["role":"user","content":content])
         return messages
+    }
+
+    nonisolated static func isCanonicalProcessId(_ id:String) -> Bool {
+        id.hasPrefix("proc_") && id.count <= 128
+            && id.utf8.allSatisfy { byte in
+                byte == 95 || (48...57).contains(byte)
+                    || (65...90).contains(byte) || (97...122).contains(byte)
+            }
     }
 
     nonisolated static func incompleteTurnRequiresReview(_ message:ChatMessage) -> Bool {
