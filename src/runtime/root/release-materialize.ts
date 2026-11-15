@@ -455,7 +455,7 @@ function defaultCompileBinary(input: { sourceRoot: string; outputPath: string; e
   const bun = configured || resolveBunExecutable(process.execPath, process.env);
   return runProcess(bun, [
     'build',
-    input.entryPath ?? join(input.sourceRoot, 'src/runtime/root/entry.ts'),
+    input.entryPath ?? join(input.sourceRoot, 'src/cli/runtime/entry.ts'),
     '--compile',
     '--outfile',
     input.outputPath,
@@ -545,7 +545,7 @@ export function stageRuntimeRelease(input: {
     const runtimeBundle = (dependencies.bundleRuntime ?? defaultBundleRuntimeScript)({
       sourceRoot,
       outputPath: runtimeBundlePath,
-      entryPath: join(sourceRoot, 'src/runtime/root/entry.ts'),
+      entryPath: join(sourceRoot, 'src/cli/runtime/entry.ts'),
     });
     if (!runtimeBundle.ok) {
       throw new Error(`RUNTIME_RELEASE_BUNDLE_BUILD_FAILED: ${runtimeBundle.stderr || runtimeBundle.stdout || runtimeBundle.error}`.slice(0, 2_000));
@@ -701,7 +701,7 @@ export function stageRuntimeRelease(input: {
     const schedulerWorkerCompile = compileBinary({
       sourceRoot,
       outputPath: schedulerWorkerPath,
-      entryPath: join(sourceRoot, 'src/runtime/control-plane/global-scheduler/scheduler-worker-entry.ts'),
+      entryPath: join(sourceRoot, 'src/cli/execution/scheduler-worker-entry.ts'),
     });
     if (!schedulerWorkerCompile.ok) {
       throw new Error(`RUNTIME_RELEASE_SCHEDULER_WORKER_BUILD_FAILED: ${schedulerWorkerCompile.stderr || schedulerWorkerCompile.stdout || schedulerWorkerCompile.error}`.slice(0, 2_000));

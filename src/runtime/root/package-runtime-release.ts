@@ -413,7 +413,7 @@ function launcherSource(input: {
   entryRelativePath?: string;
   managerSignalsProcessGroup?: boolean;
 }): string {
-  const entryRelativePath = input.entryRelativePath ?? 'src/runtime/root/entry.ts';
+  const entryRelativePath = input.entryRelativePath ?? 'src/cli/runtime/entry.ts';
   return `#!${process.execPath}\n`
     + `import { createHash } from 'node:crypto';\n`
     + `import { existsSync, readFileSync } from 'node:fs';\n`

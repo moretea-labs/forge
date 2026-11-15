@@ -150,7 +150,7 @@ function extractRepoRoot(command: string): string | undefined {
 }
 
 function classify(command: string): RuntimeProcessSample['kind'] {
-  if (command.includes('forge-runtime') || command.includes('/runtime/root/entry.ts')) return 'runtime';
+  if (command.includes('forge-runtime') || command.includes('/cli/runtime/entry.ts')) return 'runtime';
   if (command.includes('worker-entry.ts') || command.includes('job-worker.ts') || command.includes('/runtime/execution/workers/')) return 'worker';
   if (command.includes(' controller ui ') || command.includes('src/cli/index.ts controller ui')) return 'local-controller';
   if (command.includes(' mcp serve ') || command.includes('src/cli/index.ts mcp serve')) return 'mcp-server';

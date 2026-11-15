@@ -1,9 +1,7 @@
 {
   "version": 1,
-  "note": "src/runtime -> src/cli reverse dependencies. Entries are removed only when an importer migrates to a neutral owner; new edges are forbidden by scripts/check-module-boundaries.mjs. Three effect boundaries remain: executor retires legacy LocalBridge jobs; Runtime root owns embedded server lifecycle; GitHub adapter performs CLI-owned Controller Issue sync. Job-summary now receives canonical AgentJob and LocalBridge lifecycle refreshers through an adapter-supplied port; reconciliation remains live and CLI-owned. Never replace reconciliation with stale projections; remove an edge only with its canonical lifecycle Writer migration.",
+  "note": "src/runtime -> src/cli reverse dependencies. Entries are removed only when an importer migrates to a neutral owner; new edges are forbidden by scripts/check-module-boundaries.mjs. Execution Worker, scheduler Worker and embedded LocalBridge startup are CLI composition. Runtime owns LocalBridge lifecycle policy and accepts the embedded server handle through its dependency port; the CLI Job Store supplies persistence, process/Agent/Issue effects. One registered effect boundary remains: GitHub adapter performs CLI-owned Controller Issue sync. Never replace live reconciliation with stale projections; remove each edge only with its canonical lifecycle Writer migration.",
   "edges": [
-    "src/runtime/execution/workers/executor.ts|../../../cli/local-bridge/job-store",
-    "src/runtime/plugins/github-adapter.ts|../../cli/github/plugin",
-    "src/runtime/root/local-bridge.ts|../../cli/local-bridge/server"
+    "src/runtime/plugins/github-adapter.ts|../../cli/github/plugin"
   ]
 }

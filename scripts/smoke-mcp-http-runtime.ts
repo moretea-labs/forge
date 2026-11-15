@@ -90,7 +90,7 @@ try {
   }, null, 2)}\n`, 'utf8');
   const runtimePort = await freePort();
   const runtimeChild = spawn('bun', [
-    join(process.cwd(), 'src/runtime/root/entry.ts'),
+    join(process.cwd(), 'src/cli/runtime/entry.ts'),
     '--controller-home', controllerHome,
     '--repo', repoRoot,
     '--release-manifest', releaseManifestPath,
