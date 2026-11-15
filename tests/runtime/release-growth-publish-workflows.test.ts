@@ -163,7 +163,7 @@ describe('first-party X publication and reply workflows (#652)', () => {
       const installed = ensureReleaseGrowthWorkflowInstalled(controllerHome, workflowId);
       expect(installed.value.contentDigest).toBe(asset.contentDigest);
       expect(installed.value.bindings.map(binding => binding.capabilityId).sort()).toEqual(workflowCapabilityDependencies(asset));
-      expect(installed.value.bindings.every(binding => binding.pluginId === 'browser')).toBe(true);
+      expect(installed.value.bindings.every(binding => binding.pluginId === 'computer')).toBe(true);
       const writeActions = installed.value.bindings
         .map(binding => binding.actionId)
         .filter((actionId): actionId is string => actionId === 'click' || actionId === 'fill')
