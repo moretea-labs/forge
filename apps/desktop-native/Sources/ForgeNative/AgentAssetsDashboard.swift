@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import QuickLook
 
 /// A projection of actual conversation attachments and explicit Markdown image
 /// links. The conversation transcript remains the sole asset index authority.
@@ -341,6 +342,7 @@ private struct AgentLocalFileResourceView: View {
     @State private var resolvedRootPath: String?
     @State private var isResolving = false
     @State private var isSaving = false
+    @State private var previewURL: URL?
     @State private var status: String?
 
     private var effectiveRootPath: String? {
@@ -378,6 +380,17 @@ private struct AgentLocalFileResourceView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button {
+                    preview()
+                } label: {
+                    Label("预览", systemImage: "eye")
+                }
+                .buttonStyle(.plain)
+                .help("使用 Quick Look 预览文件")
+                .accessibilityLabel("预览文件：\(fileName)")
+                .accessibilityHint("使用 macOS 快速查看")
+                .accessibilityIdentifier("\(accessibilityIdentifierPrefix).preview")
+                .disabled(!canOpen || isResolving || isSaving)
+                Button {
                     open()
                 } label: {
                     Label("打开",systemImage:"arrow.up.right.square")
@@ -408,6 +421,7 @@ private struct AgentLocalFileResourceView: View {
                 Text(status).font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }
+        .quickLookPreview($previewURL)
     }
 
     @MainActor
@@ -447,6 +461,14 @@ private struct AgentLocalFileResourceView: View {
         Task {
             guard let source = await resolveSourceURL() else { return }
             status = NSWorkspace.shared.open(source) ? "已使用默认应用打开" : "无法打开文件"
+        }
+    }
+
+    @MainActor
+    private func preview() {
+        Task {
+            guard let source = await resolveSourceURL() else { return }
+            previewURL = source
         }
     }
 
