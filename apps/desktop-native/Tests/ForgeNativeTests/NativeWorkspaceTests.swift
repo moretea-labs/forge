@@ -3291,10 +3291,11 @@ extension NativeWorkspaceTests {
 
 extension NativeWorkspaceTests {
     @MainActor
-    func testAssetSourceSelectionRequestsExactMessageScrollAndCanRepeatSameTarget() throws {
+    func testAssetSourceSelectionRequestsExactMessageScrollAndCanReturnToAssets() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: folder) }
         let model = NativeWorkspace(store: folder.appendingPathComponent("conversations.json"))
+        let originalThreadId = model.selectedThreadId
         let imageMessage = ChatMessage(role: "assistant", text: "![chart](https://example.com/chart.png)")
         var sourceThread = ChatThread()
         sourceThread.messages = [ChatMessage(role: "user", text: "before"), imageMessage]
@@ -3306,6 +3307,8 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(model.selectedThreadId, sourceThread.id)
         XCTAssertEqual(first.threadId, sourceThread.id)
         XCTAssertEqual(first.messageId, imageMessage.id)
+        XCTAssertTrue(model.canNavigateBack)
+        XCTAssertEqual(model.navigationBackLabel, NativePage.assets.rawValue)
 
         model.consumeConversationScrollRequest(first)
         XCTAssertNil(model.conversationScrollRequest)
@@ -3316,6 +3319,11 @@ extension NativeWorkspaceTests {
 
         model.selectThread(sourceThread.id, messageId: "missing-message")
         XCTAssertNil(model.conversationScrollRequest?.messageId)
+
+        model.goBack()
+        XCTAssertEqual(model.page, .assets)
+        XCTAssertEqual(model.selectedThreadId, originalThreadId)
+        XCTAssertFalse(model.canNavigateBack)
     }
 }
 
