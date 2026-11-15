@@ -6,9 +6,9 @@ export { FORGE_VERSION } from '../../version';
 /** Product identity exposed by every Forge runtime surface. */
 export const FORGE_TOOL_SURFACE = FORGE_PRODUCT_ID;
 /** Payload schema for MCP health/config records; this is not a product/component version. */
-// 13: native Project create/list/get/revise operations extend the existing rh_work
-// contract; the served input schema changes and must fence stale Connector snapshots.
-export const FORGE_MCP_SCHEMA_VERSION = 13;
+// 14: native Project lifecycle and Requirement dependency operations extend the
+// existing rh_work contract; stale Connector snapshots must be fenced.
+export const FORGE_MCP_SCHEMA_VERSION = 14;
 
 type ToolSurfaceDefinition = {
   name: string;

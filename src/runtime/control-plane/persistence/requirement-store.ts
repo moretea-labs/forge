@@ -31,6 +31,8 @@ export interface Requirement {
   progressSummary?: string;
   remainingWork?: string[];
   acceptedEvidenceRefs?: string[];
+  /** Canonical task dependencies; each id points to another Requirement. */
+  dependsOnRequirementIds?: string[];
   /** @deprecated Migration compatibility pointer only. Current Plan.requirementId is the relationship authority. */
   activePlanId?: string;
   state: RequirementState;
@@ -80,6 +82,7 @@ export interface RequirementSemanticView {
   progressSummary: string;
   remainingWork: string[];
   acceptedEvidenceRefs: string[];
+  dependsOnRequirementIds: string[];
   /** Coarse semantic state retained for existing Requirement/Autopilot consumers. */
   state: SemanticRequirementState;
   /** Full user-facing task lifecycle state. */
@@ -109,6 +112,7 @@ export interface ReviseRequirementSemanticInput {
   progressSummary?: string;
   remainingWork?: string[];
   acceptedEvidenceRefs?: string[];
+  dependsOnRequirementIds?: string[];
   state?: SemanticRequirementState;
 }
 
@@ -208,6 +212,7 @@ export function requirementSemanticView(requirement: Requirement): RequirementSe
     progressSummary: requirement.progressSummary ?? '',
     remainingWork: [...(requirement.remainingWork ?? [])],
     acceptedEvidenceRefs: [...(requirement.acceptedEvidenceRefs ?? [])],
+    dependsOnRequirementIds: [...(requirement.dependsOnRequirementIds ?? [])],
     state: semanticRequirementState(requirement),
     status: requirement.state,
     ...(requirement.priority ? { priority: requirement.priority } : {}),
@@ -228,6 +233,30 @@ export function isLegacyMachineRequirementWait(requirement: Pick<Requirement, 's
 
 function readWithin(database: SqliteDatabase, requirementId: string): ControlPlaneRecord<Requirement> | undefined {
   return readControlPlaneRecordWithinTransaction(database, NAMESPACE, SCOPE, requirementId);
+}
+
+function normalizeRequirementDependencies(values: readonly string[] | undefined): string[] {
+  if ((values?.length ?? 0) > 50) throw new Error('REQUIREMENT_DEPENDENCY_LIMIT_EXCEEDED');
+  return [...new Set((values ?? []).map((value) => id(value)))].sort((left, right) => left.localeCompare(right));
+}
+
+function assertRequirementDependenciesWithinTransaction(
+  database: SqliteDatabase,
+  requirementId: string,
+  dependencies: readonly string[],
+): void {
+  const visited = new Set<string>();
+  const pending = [...dependencies];
+  while (pending.length > 0) {
+    const dependencyId = pending.pop()!;
+    if (dependencyId === requirementId) throw new Error(`REQUIREMENT_DEPENDENCY_CYCLE:${requirementId}`);
+    if (visited.has(dependencyId)) continue;
+    visited.add(dependencyId);
+    const dependency = readWithin(database, dependencyId);
+    if (!dependency) throw new Error(`REQUIREMENT_DEPENDENCY_NOT_FOUND:${dependencyId}`);
+    if (dependency.value.state === 'cancelled') throw new Error(`REQUIREMENT_DEPENDENCY_CANCELLED:${dependencyId}`);
+    pending.push(...(dependency.value.dependsOnRequirementIds ?? []));
+  }
 }
 
 export function readRequirement(
@@ -261,6 +290,7 @@ export function getRequirementRevisionRecord(
   return record ? {
     ...record,
     semanticScope: record.semanticScope ?? { schemaVersion: 1, kind: 'requirement', id: record.requirementId },
+    dependsOnRequirementIds: [...(record.dependsOnRequirementIds ?? [])],
   } : undefined;
 }
 
@@ -279,6 +309,7 @@ export function listRequirementRevisionRecords(
     .map((record) => ({
       ...record,
       semanticScope: record.semanticScope ?? ({ schemaVersion: 1, kind: 'requirement', id: record.requirementId } as const),
+      dependsOnRequirementIds: [...(record.dependsOnRequirementIds ?? [])],
     }))
     .sort((left, right) => right.revision - left.revision);
 }
@@ -301,6 +332,10 @@ export function reviseRequirementSemantic(
     if (requestedRepoId && current.value.repoId && current.value.repoId !== requestedRepoId) {
       throw new Error(`REQUIREMENT_REPOSITORY_CONFLICT:${requirementId}:existing=${current.value.repoId}:requested=${requestedRepoId}`);
     }
+    const dependsOnRequirementIds = input.dependsOnRequirementIds === undefined
+      ? [...(current.value.dependsOnRequirementIds ?? [])]
+      : normalizeRequirementDependencies(input.dependsOnRequirementIds);
+    assertRequirementDependenciesWithinTransaction(database, requirementId, dependsOnRequirementIds);
     const requestedState = input.state;
     const semanticStatus: RequirementState | undefined = requestedState === 'completed'
       ? 'done'
@@ -366,6 +401,7 @@ export function reviseRequirementSemantic(
       progressSummary: input.progressSummary === undefined ? current.value.progressSummary ?? '' : String(input.progressSummary).trim().slice(0, 2_000),
       remainingWork,
       acceptedEvidenceRefs,
+      dependsOnRequirementIds,
       state: legacyState,
       ...(requestedState ? { needsAttention: false, attentionSummary: undefined } : {}),
       semanticRevision: semanticRevision + 1,
