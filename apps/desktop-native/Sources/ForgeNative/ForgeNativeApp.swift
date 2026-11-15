@@ -1619,6 +1619,7 @@ private struct AgentPane: View {
                                         .foregroundStyle(ForgePalette.secondary)
                                         if message.incomplete == true,
                                            message.id == model.thread?.messages.last?.id {
+                                            let requiresReview = NativeWorkspace.incompleteTurnRequiresReview(message)
                                             HStack(alignment:.center,spacing:9) {
                                                 Image(systemName:"exclamationmark.arrow.triangle.2.circlepath")
                                                     .font(.system(size:15))
@@ -1642,9 +1643,13 @@ private struct AgentPane: View {
                                                 .disabled(model.checkoutId == nil)
                                                 Button {
                                                     model.draft = "继续执行上一次未完成的开发任务。上次未完成回执（仅作线索）：\n\(String(message.text.prefix(1100)))\n若有 Process ID，先调用 process_status 获取终态；否则先核对 checkout 的 Git 状态和最近工具回执。不要重放未知或仍在运行的写操作，再继续实施和验证。"
-                                                    Task { await model.send() }
+                                                    if !requiresReview { Task { await model.send() } }
                                                 } label: {
-                                                    Label("继续执行",systemImage:"play.fill")
+                                                    Label(
+                                                        requiresReview ? "准备核对" : "继续执行",
+                                                        systemImage:requiresReview
+                                                            ? "doc.text.magnifyingglass" : "play.fill"
+                                                    )
                                                         .font(.system(size:10.5,weight:.medium))
                                                 }
                                                 .buttonStyle(.bordered)

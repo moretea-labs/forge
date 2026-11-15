@@ -415,6 +415,32 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(thread.messages[1].incomplete,true)
     }
 
+    func testIncompleteWriteToolOutcomeRequiresExplicitRecoveryReview() {
+        let failedCommand = AgentLiveActivityEvent(
+            phase:"tool",label:"run_command",detail:"proc_example",
+            status:"failed",startedAt:"2026-11-15T00:00:00Z",
+            completedAt:"2026-11-15T00:00:01Z",toolCallId:"call-1"
+        )
+        let success = AgentLiveActivityEvent(
+            phase:"tool",label:"git_status",detail:nil,
+            status:"completed",startedAt:"2026-11-15T00:00:00Z",
+            completedAt:"2026-11-15T00:00:01Z",toolCallId:"call-2"
+        )
+        XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"Unconfirmed process",activityEvents:[failedCommand],incomplete:true
+        )))
+        XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"Process ID: proc_unknown",incomplete:true
+        )))
+        XCTAssertFalse(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"Interrupted before the next step",
+            activityEvents:[success],incomplete:true
+        )))
+        XCTAssertFalse(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"Complete result",activityEvents:[failedCommand],incomplete:false
+        )))
+    }
+
     func testRetryOfIncompleteTurnDoesNotDuplicateUserPromptInModelHistory() {
         var thread = ChatThread(provider:"api")
         thread.messages = [

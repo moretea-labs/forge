@@ -3740,6 +3740,15 @@ final class NativeWorkspace: ObservableObject {
         return messages
     }
 
+    nonisolated static func incompleteTurnRequiresReview(_ message:ChatMessage) -> Bool {
+        guard message.incomplete == true else { return false }
+        // A tool with no confirmed successful terminal receipt must not be
+        // silently reissued by the one-click continuation affordance.
+        return (message.activityEvents ?? []).contains {
+            $0.phase == "tool" && $0.status != "completed"
+        } || message.text.contains("Process ID:")
+    }
+
     nonisolated static func apiActivityEvents(_ raw: Any?) -> [AgentLiveActivityEvent]? {
         guard let rows = raw as? [[String:Any]], !rows.isEmpty else { return nil }
         let now = ISO8601DateFormatter().string(from:Date())
