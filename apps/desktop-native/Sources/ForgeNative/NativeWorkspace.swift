@@ -3873,14 +3873,22 @@ final class NativeWorkspace: ObservableObject {
         return result
     }
 
+    // Do not surface the original effectful request as a ready-to-send draft
+    // when the last turn has unverified receipts or may have changed files.
+    nonisolated static func failedTurnNeedsReview(_ message: ChatMessage, effectReviewRequired: Bool) -> Bool {
+        effectReviewRequired || !(message.activityEvents ?? []).isEmpty
+            || incompleteTurnRequiresReview(message)
+    }
+
     @discardableResult
     func restoreFailedComposer(
         conversationId: String,
         prompt: String,
         imageURLs: [URL],
-        contextPaths: [String]
+        contextPaths: [String],
+        requiresReview: Bool = false
     ) -> Bool {
-        guard selectedThreadId == conversationId,
+        guard !requiresReview, selectedThreadId == conversationId,
               draft.isEmpty, pendingImageURLs.isEmpty, pendingContextPaths.isEmpty else { return false }
         draft = prompt
         pendingImageURLs = imageURLs
@@ -4482,27 +4490,32 @@ final class NativeWorkspace: ObservableObject {
             let now = ISO8601DateFormatter().string(from:Date())
             let activityEvents = Self.finalizeFailedToolEvents(liveActivity?.events ?? [], now:now)
             let failure = Self.agentTurnFailure(rawError, toolName:activityEvents.last?.label)
+            let completedCount = activityEvents.filter { $0.status != "running" }.count
+            let incompleteReply = ChatMessage(
+                role:"assistant", text:failure.message,
+                toolActivityCount:completedCount > 0 ? completedCount : nil,
+                activityEvents:activityEvents.isEmpty ? nil : activityEvents,
+                incomplete:true
+            )
+            let requiresReview = Self.failedTurnNeedsReview(
+                incompleteReply, effectReviewRequired:failure.effectReviewRequired
+            )
             if let current = threads.firstIndex(where:{$0.id == id}) {
-                let completedCount = activityEvents.filter { $0.status != "running" }.count
-                threads[current].messages.append(ChatMessage(
-                    role:"assistant", text:failure.message,
-                    toolActivityCount:completedCount > 0 ? completedCount : nil,
-                    activityEvents:activityEvents.isEmpty ? nil : activityEvents,
-                    incomplete:true
-                ))
+                threads[current].messages.append(incompleteReply)
                 threads[current].updatedAt = Date()
                 persist()
             }
             let restored = restoreFailedComposer(
-                conversationId:id, prompt:prompt, imageURLs:imageURLs, contextPaths:contextPaths
+                conversationId:id, prompt:prompt, imageURLs:imageURLs,
+                contextPaths:contextPaths, requiresReview:requiresReview
             )
             let recoveryNote: String
-            if restored && !failure.effectReviewRequired {
-                recoveryNote = "原请求已恢复到输入框；本次没有未确认的写入操作，可以修改后重试。"
+            if requiresReview {
+                recoveryNote = "上次请求与工具回执已保留在历史中，不会自动重试。请先查看改动，再点击「填入核对指令」检查原执行结果。"
             } else if restored {
-                recoveryNote = "原请求已恢复到输入框。请先展开上方最近一条回复中的工具调用记录，并检查 Changes；写入结果未确认前不要重复发送。"
+                recoveryNote = "原请求已恢复到输入框；可修改后重试。"
             } else {
-                recoveryNote = "未覆盖当前输入；如需重试，可从历史消息选择“重新编辑”。"
+                recoveryNote = "未覆盖当前输入；如需修改原请求，可从历史消息选择「重新编辑」。"
             }
             self.error = recoveryNote
         }

@@ -1702,8 +1702,11 @@ private struct AgentPane: View {
                                                         .font(.system(size:10.5,weight:.medium))
                                                 }
                                                 .buttonStyle(.bordered)
+                                                // Review only fills the composer; it is safe to prepare
+                                                // while the Provider is offline. One-click execution still
+                                                // requires a ready Provider and an empty composer.
                                                 .disabled(model.busy || !model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
-                                                    || model.agentSendBlockReason != nil)
+                                                    || (!requiresReview && model.agentSendBlockReason != nil))
                                                 .accessibilityIdentifier("agent.continue-incomplete")
                                             }
                                             .padding(10)

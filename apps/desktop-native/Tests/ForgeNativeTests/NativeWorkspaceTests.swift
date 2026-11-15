@@ -2269,6 +2269,50 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testInterruptedEffectDoesNotRefillOriginalExecutionPrompt() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let id = model.selectedThreadId!
+        let running = AgentLiveActivityEvent(
+            phase:"tool", label:"run_command", detail:"proc_example_123",
+            status:"running", startedAt:"t1", completedAt:nil, toolCallId:"call-1"
+        )
+        let unknown = NativeWorkspace.finalizeFailedToolEvents([running],now:"failed-at")
+        let incomplete = ChatMessage(role:"assistant",text:"Process ID: proc_example_123",
+                                     toolActivityCount:1,activityEvents:unknown,incomplete:true)
+        let requiresReview = NativeWorkspace.failedTurnNeedsReview(incomplete,effectReviewRequired:true)
+        XCTAssertTrue(requiresReview)
+        XCTAssertFalse(model.restoreFailedComposer(
+            conversationId:id, prompt:"run command again",imageURLs:[],
+            contextPaths:[],requiresReview:requiresReview
+        ))
+        XCTAssertEqual(model.draft,"")
+        XCTAssertEqual(model.pendingContextPaths,[])
+        XCTAssertEqual(model.pendingImageURLs,[])
+        XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(incomplete))
+        XCTAssertTrue(NativeWorkspace.incompleteTurnContinuationPrompt.contains("不要重放"))
+
+        // Even fully completed tool receipts may have already changed files;
+        // only a failed turn with verified no-tool coverage can be refilled.
+        let completed = AgentLiveActivityEvent(
+            phase:"tool",label:"apply_patch",detail:"request-1",status:"completed",
+            startedAt:"t1",completedAt:"t2",toolCallId:"call-2"
+        )
+        let finished = ChatMessage(role:"assistant",text:"interrupted",
+                                   toolActivityCount:1,activityEvents:[completed],incomplete:true)
+        XCTAssertTrue(NativeWorkspace.failedTurnNeedsReview(finished,effectReviewRequired:false))
+        let noTools = ChatMessage(role:"assistant",text:"no tools ran",
+                                  toolActivityCount:0,activityEvents:[],incomplete:true)
+        XCTAssertFalse(NativeWorkspace.failedTurnNeedsReview(noTools,effectReviewRequired:false))
+        XCTAssertTrue(model.restoreFailedComposer(
+            conversationId:id,prompt:"retry read-only",imageURLs:[],
+            contextPaths:[],requiresReview:false
+        ))
+        XCTAssertEqual(model.draft,"retry read-only")
+    }
+
+    @MainActor
     func testFailedComposerRecoveryNeverOverwritesNewInput() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }
