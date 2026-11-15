@@ -8,7 +8,7 @@ import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { result } from './result-adapter';
 import { isCurrentPlanContract, planSemanticView, readPlanContractStore } from '../../../src/runtime/control-plane/facade/plan-contract-store';
 import { SEMANTIC_SCOPE_KEY } from '../../../src/effects/controller-home';
-import { readAutopilotRun } from '../../../src/runtime/autopilot/store';
+import { listAutopilotRunActivityEvents, readAutopilotRun } from '../../../src/runtime/autopilot/store';
 import { listAutopilotRunSummaries, summarizeAutopilotRun } from '../../../src/runtime/autopilot/read-model';
 
 const RH_WORK_REQUIREMENT_OPERATIONS = new Set([
@@ -251,6 +251,18 @@ export async function callRhWorkRequirementOperation(
         } : {}),
       };
     });
+    const autopilotRunActivityEvents = autopilotRun && runRepoId
+      ? listAutopilotRunActivityEvents(ctx.controllerHome, runRepoId, semantic.requirementId, 21)
+      : undefined;
+    const autopilotRunSummary = autopilotRun
+      ? {
+          ...summarizeAutopilotRun(autopilotRun, semantic.revision),
+          activityHistory: (autopilotRunActivityEvents ?? []).slice(0, 20).map(({ eventId, revision, action, occurredAt }) => ({
+            eventId, revision, action, occurredAt,
+          })),
+          activityHistoryTruncated: (autopilotRunActivityEvents?.length ?? 0) > 20,
+        }
+      : null;
     const dependencyRequirements = args.detail_level === 'detail'
       ? semantic.dependsOnRequirementIds.map((dependencyId) => {
           const dependency = readRequirement({ controllerHome: ctx.controllerHome }, dependencyId)?.value;
@@ -277,9 +289,7 @@ export async function callRhWorkRequirementOperation(
         ...(dependencyRequirements ? { dependencyRequirements } : {}),
         ...(relatedPlans ? { relatedPlans: relatedPlans.slice(0, 20), relatedPlanCount: relatedPlans.length,
           relatedPlansTruncated: relatedPlans.length > 20, planDetailOperation: 'plan_get' } : {}),
-        ...(args.detail_level === 'detail' ? {
-          autopilotRun: autopilotRun ? summarizeAutopilotRun(autopilotRun, semantic.revision) : null,
-        } : {}),
+        ...(args.detail_level === 'detail' ? { autopilotRun: autopilotRunSummary } : {}),
         progress: {
           source: 'requirement',
           summary: semantic.progressSummary,

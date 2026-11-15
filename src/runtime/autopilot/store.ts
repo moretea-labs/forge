@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import {
+  listControlPlaneAuditEvents,
   listControlPlaneRecords,
   readControlPlaneRecord,
   writeControlPlaneRecord,
@@ -38,6 +39,17 @@ export function listAutopilotRuns(
 ): ControlPlaneRecord<AutopilotRun>[] {
   return listControlPlaneRecords<AutopilotRun>(controllerHome, {
     namespace: NAMESPACE, scope: repoId, limit: Math.max(1, Math.min(Math.trunc(limit), 1_000)),
+  });
+}
+
+export function listAutopilotRunActivityEvents(
+  controllerHome: string,
+  repoId: string,
+  requirementId: string,
+  limit = 20,
+) {
+  return listControlPlaneAuditEvents(controllerHome, {
+    namespace: NAMESPACE, scope: repoId, key: requirementId, limit,
   });
 }
 

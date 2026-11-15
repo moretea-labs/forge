@@ -421,6 +421,11 @@ describe('rh_work Project operations', () => {
     expect(taskDetailAfterRestart.data.autopilotRun).toMatchObject({
       runId: autopilotRun.value.runId, status: 'paused', requirementRevision: 2, requiresReapproval: false,
       currentPlanId: 'PLAN-PROJECT-A-TASK', processReconciliationPending: true, evidenceRefs: ['check:unit:passed', 'artifact:sha256:abc123'],
+      activityHistory: [
+        { revision: 2, action: 'autopilot_run_updated' },
+        { revision: 1, action: 'autopilot_run_started' },
+      ],
+      activityHistoryTruncated: false,
     });
     expect(taskDetailAfterRestart.data.dependencyRequirements).toMatchObject([{
       requirementId: 'REQ-PROJECT-B-TASK', title: 'Project B task', status: 'waiting_for_user', priority: 'urgent', assignee: 'bob', repoId: repositoryB.repoId,
