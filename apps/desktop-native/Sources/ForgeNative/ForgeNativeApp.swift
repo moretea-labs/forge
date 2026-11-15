@@ -336,8 +336,6 @@ private struct ForgeWorkspaceView: View {
                            onInbox:{
                     inboxShown = true
                     Task { await model.loadUserRequests() }
-                },onAddProject:{
-                    chooseProjectDirectory(keepZen:true)
                 })
                 .opacity(model.zenMode ? 1 : 0)
                 .allowsHitTesting(model.zenMode)
@@ -1232,7 +1230,7 @@ private struct ForgeWorkspaceView: View {
 
             Divider()
             Button {
-                chooseProjectDirectory()
+                chooseProjectDirectory(keepZen:model.zenMode)
             } label: {
                 HStack(spacing:8) {
                     if registeringProject {

@@ -3,7 +3,7 @@ import SwiftUI
 // A presentation of existing Repository, Requirement, Plan and Autopilot facts.
 // Zen never owns a second plan, project registry, or execution state.
 enum ZenScreen {
-    case projects, board, canvas
+    case board, canvas
 }
 
 enum ZenNodeAction {
@@ -40,9 +40,9 @@ struct ZenSidebar: View {
     @Binding var focusedRequirementId: String?
     let decisionCount: Int
     let onInbox: () -> Void
-    let onAddProject: () -> Void
 
-    // Derived solely from the existing conversation activity; no project recency store.
+    // Quick-switch only to other recently used projects. The shared
+    // project/checkout picker remains the sole full project selector.
     static func recentProjects(_ projects:[ForgeProject],threads:[ChatThread],
                                selectedRepoId:String?,limit:Int=7) -> [ForgeProject] {
         var lastActivity:[String:Date]=[:]
@@ -51,11 +51,9 @@ struct ZenSidebar: View {
             lastActivity[repoId]=max(lastActivity[repoId] ?? .distantPast,thread.updatedAt)
         }
         let candidates=projects.filter {
-            $0.repoId == selectedRepoId || lastActivity[$0.repoId] != nil
+            $0.repoId != selectedRepoId && lastActivity[$0.repoId] != nil
         }
         return Array(candidates.sorted { lhs,rhs in
-            if lhs.repoId == selectedRepoId { return rhs.repoId != selectedRepoId }
-            if rhs.repoId == selectedRepoId { return false }
             let left=lastActivity[lhs.repoId] ?? .distantPast
             let right=lastActivity[rhs.repoId] ?? .distantPast
             if left != right { return left > right }
@@ -83,68 +81,49 @@ struct ZenSidebar: View {
             .padding(.horizontal,9)
             .accessibilityIdentifier("zen.inbox")
 
-            HStack {
-                Text("最近项目")
-                    .font(.system(size:11,weight:.medium))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("全部") {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration:0.18)) {
-                        screen = .projects
-                    }
-                }
-                .font(.system(size:11))
-                .buttonStyle(.plain)
-                .foregroundStyle(screen == .projects ? .primary : .secondary)
-                .accessibilityLabel("全部项目")
-                .accessibilityIdentifier("zen.projects.all")
-                Button(action:onAddProject) {
-                    Image(systemName:"plus").frame(width:28,height:28)
-                }
-                .buttonStyle(.plain)
-                .help("添加本地项目")
-                .accessibilityLabel("添加项目")
-                .accessibilityIdentifier("zen.project.add")
-            }
-            .padding(.horizontal,15).frame(height:48)
+            Text("最近使用")
+                .font(.system(size:11,weight:.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal,15).frame(height:42)
 
             ScrollView {
                 LazyVStack(alignment:.leading,spacing:3) {
-                    ForEach(Self.recentProjects(model.projects,threads:model.threads,
-                                                selectedRepoId:model.repoId)) { project in
-                        Button {
-                            guard !model.busy else { return }
-                            model.focusZenProject(project.repoId)
-                            focusedRequirementId = nil
-                            withAnimation(reduceMotion ? nil : .easeInOut(duration:0.18)) {
-                                screen = .board
-                            }
-                        } label: {
-                            HStack(spacing:9) {
-                                Image(systemName:"folder")
-                                    .font(.system(size:11)).foregroundStyle(.secondary)
-                                    .frame(width:17)
-                                Text(project.displayName)
-                                    .font(.system(size:12,weight:model.repoId == project.repoId ? .semibold : .regular))
-                                    .lineLimit(1)
-                                Spacer(minLength:0)
-                                if model.repoId == project.repoId {
-                                    Circle().fill(Color.accentColor.opacity(0.7))
-                                        .frame(width:5,height:5)
+                    let recent=Self.recentProjects(model.projects,threads:model.threads,
+                                                   selectedRepoId:model.repoId)
+                    if recent.isEmpty {
+                        Text("暂无其他最近项目")
+                            .font(.system(size:11))
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal,11).padding(.vertical,8)
+                    } else {
+                        ForEach(recent) { project in
+                            Button {
+                                guard !model.busy else { return }
+                                model.focusZenProject(project.repoId)
+                                focusedRequirementId = nil
+                                withAnimation(reduceMotion ? nil : .easeInOut(duration:0.18)) {
+                                    screen = .board
                                 }
+                            } label: {
+                                HStack(spacing:9) {
+                                    Image(systemName:"folder")
+                                        .font(.system(size:11)).foregroundStyle(.secondary)
+                                        .frame(width:17)
+                                    Text(project.displayName)
+                                        .font(.system(size:12)).lineLimit(1)
+                                    Spacer(minLength:0)
+                                }
+                                .padding(.horizontal,10).frame(height:35)
+                                .contentShape(Rectangle())
                             }
-                            .padding(.horizontal,10).frame(height:35)
-                            .background(model.repoId == project.repoId ? Color.primary.opacity(0.075) : .clear,
-                                        in:RoundedRectangle(cornerRadius:9))
-                            .contentShape(Rectangle())
+                            .buttonStyle(ZenPressStyle())
+                            .disabled(model.busy)
+                            .help(project.displayName)
+                            .accessibilityIdentifier("zen.project.\(project.repoId)")
                         }
-                        .buttonStyle(ZenPressStyle())
-                        .disabled(model.busy)
-                        .help(project.displayName)
-                        .accessibilityIdentifier("zen.project.\(project.repoId)")
                     }
                 }
-                .padding(.horizontal,9).padding(.top,16)
+                .padding(.horizontal,9).padding(.top,8)
             }
             .scrollIndicators(.hidden)
             Spacer(minLength:0)
@@ -314,8 +293,7 @@ struct ZenWorkspacePane: View {
                     .buttonStyle(.plain).help("返回看板")
                     .accessibilityLabel("返回看板")
                 }
-                Text(screen == .projects ? "全部项目" :
-                     screen == .board ? "工作台" :
+                Text(screen == .board ? "工作台" :
                      (requirements.first(where:{$0.recordId == focusedRequirementId})?.title ?? "Requirement"))
                     .font(.system(size:16,weight:.semibold))
                     .lineLimit(1)
@@ -384,8 +362,6 @@ struct ZenWorkspacePane: View {
 
             Group {
                 switch screen {
-                case .projects:
-                    projectOverview
                 case .board:
                     boardView
                 case .canvas:
@@ -475,46 +451,6 @@ struct ZenWorkspacePane: View {
               let first=requirements.first else { return }
         focusedRequirementId=first.recordId
         Task { await model.openRecord(first.id) }
-    }
-
-    private var projectOverview: some View {
-        ScrollView {
-            LazyVStack(alignment:.leading,spacing:0) {
-                ForEach(model.projects) { project in
-                    Button {
-                        guard !model.busy else { return }
-                        model.focusZenProject(project.repoId)
-                        focusedRequirementId = nil
-                        navigate(.board)
-                    } label: {
-                        HStack(spacing:15) {
-                            Image(systemName:"folder")
-                                .font(.system(size:17)).foregroundStyle(.secondary)
-                                .frame(width:35,height:38)
-                            VStack(alignment:.leading,spacing:4) {
-                                Text(project.displayName).font(.system(size:14,weight:.medium))
-                                Text(project.defaultBranch ?? project.localRoot ?? project.repoId)
-                                    .font(.system(size:11)).foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            Spacer()
-                            Image(systemName:"chevron.right").foregroundStyle(.tertiary)
-                        }
-                        .padding(.vertical,12)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(ZenPressStyle())
-                    .disabled(model.busy)
-                    Divider()
-                }
-            }
-            .padding(.horizontal,29).padding(.top,20)
-        }
-        .overlay {
-            if model.projects.isEmpty {
-                ZenEmptyState(title:"暂无项目",subtitle:"请先在 Forge 中注册项目。",symbol:"folder")
-            }
-        }
     }
 
     private var boardView: some View {
