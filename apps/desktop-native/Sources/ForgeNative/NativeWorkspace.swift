@@ -150,6 +150,11 @@ struct ChatThread: Codable, Identifiable {
     var pendingDraft: String? = nil
     var pendingImagePaths: [String]? = nil
     var pendingContextPaths: [String]? = nil
+    var hasUnsentContent: Bool {
+        !(pendingDraft ?? "").trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+            || !(pendingImagePaths ?? []).isEmpty
+            || !(pendingContextPaths ?? []).isEmpty
+    }
     var updatedAt = Date()
 }
 enum SemanticRecordKind: String {
@@ -928,6 +933,7 @@ final class NativeWorkspace: ObservableObject {
         let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
         return threads.filter { t in
             needle.isEmpty || t.title.localizedCaseInsensitiveContains(needle) ||
+            (t.pendingDraft?.localizedCaseInsensitiveContains(needle) == true) ||
             t.messages.contains { $0.text.localizedCaseInsensitiveContains(needle) }
         }.sorted { $0.updatedAt > $1.updatedAt }
     }

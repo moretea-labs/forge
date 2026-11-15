@@ -1487,6 +1487,37 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testUnsentAgentDraftIsSearchableAndMarkedAfterRestart() async throws {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store=folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:store)
+        let first=try XCTUnwrap(model.selectedThreadId)
+        model.draft="Review the medication schedule before leaving"
+        XCTAssertTrue(try XCTUnwrap(model.thread).hasUnsentContent)
+        model.newThread()
+        let second=try XCTUnwrap(model.selectedThreadId)
+        XCTAssertFalse(try XCTUnwrap(model.thread).hasUnsentContent)
+
+        model.search="MEDICATION SCHEDULE"
+        XCTAssertEqual(model.visibleThreads.map(\.id),[first])
+        try await Task.sleep(for:.milliseconds(650))
+        let restored=NativeWorkspace(store:store)
+        restored.search="medication schedule"
+        XCTAssertEqual(restored.visibleThreads.map(\.id),[first])
+        restored.selectThread(first)
+        XCTAssertTrue(try XCTUnwrap(restored.thread).hasUnsentContent)
+        restored.draft=""
+        XCTAssertFalse(try XCTUnwrap(restored.thread).hasUnsentContent)
+        restored.search="medication schedule"
+        XCTAssertTrue(restored.visibleThreads.isEmpty)
+        restored.pendingContextPaths=["Sources/Plan.swift"]
+        XCTAssertTrue(try XCTUnwrap(restored.thread).hasUnsentContent)
+        restored.selectThread(second)
+        XCTAssertFalse(try XCTUnwrap(restored.thread).hasUnsentContent)
+    }
+
+    @MainActor
     func testThreadRenamePersistsWithoutChangingConversationBinding() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = folder.appendingPathComponent("conversations.json")

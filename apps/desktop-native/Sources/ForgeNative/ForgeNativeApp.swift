@@ -749,6 +749,12 @@ private struct ForgeWorkspaceView: View {
                         .font(.system(size:12,weight:selected ? .medium : .regular))
                         .lineLimit(1)
                     Spacer(minLength:0)
+                    if thread.hasUnsentContent {
+                        Text("草稿")
+                            .font(.system(size:10,weight:.medium))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .accessibilityLabel("有未发送草稿")
+                    }
                     if running {
                         ProgressView().controlSize(.mini)
                             .accessibilityLabel("执行中")
@@ -759,7 +765,7 @@ private struct ForgeWorkspaceView: View {
             }
             .buttonStyle(.plain)
             .disabled(model.busy && !running)
-            .help(projectLabel + " · " + thread.title)
+            .help(projectLabel + " · " + thread.title + (thread.hasUnsentContent ? " · 有未发送草稿" : ""))
             .popover(isPresented:Binding(
                 get:{ renameThreadId == thread.id },
                 set:{ if !$0 && renameThreadId == thread.id { renameThreadId = nil } }
