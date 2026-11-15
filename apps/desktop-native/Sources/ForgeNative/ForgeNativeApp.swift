@@ -155,6 +155,7 @@ private struct ForgeWorkspaceView: View {
     @State private var assetsSelectedRepoId = ""
     @State private var assetsShowLocalResources = true
     @State private var assetsShowRemoteImages = true
+    @State private var assetsSearchQuery = ""
     @State private var assetsReturnResourceID: String?
     @State private var usageSelectedRepoId = ""
     @State private var usageDays = 30
@@ -1433,6 +1434,7 @@ private struct ForgeWorkspaceView: View {
                     selectedRepoId:$assetsSelectedRepoId,
                     showLocalResources:$assetsShowLocalResources,
                     showRemoteImages:$assetsShowRemoteImages,
+                    searchQuery:$assetsSearchQuery,
                     selectedResourceID:$assetsReturnResourceID
                 )
             case .usage:

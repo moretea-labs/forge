@@ -9,6 +9,7 @@ struct AgentAssetsDashboard: View {
     @Binding var selectedRepoId: String
     @Binding var showLocalResources: Bool
     @Binding var showRemoteImages: Bool
+    @Binding var searchQuery: String
     @Binding var selectedResourceID: String?
 
     static func accessibilityIdentifier(for resourceID: String, control: String? = nil) -> String {
@@ -43,7 +44,8 @@ struct AgentAssetsDashboard: View {
         projects: [ForgeProject],
         selectedRepoId: String,
         showLocalResources: Bool,
-        showRemoteImages: Bool
+        showRemoteImages: Bool,
+        searchQuery: String = ""
     ) -> [Resource] {
         let threads = sourceThreads.filter { selectedRepoId.isEmpty || $0.repoId == selectedRepoId }
         let items = threads.flatMap { thread -> [Resource] in
@@ -111,7 +113,14 @@ struct AgentAssetsDashboard: View {
                 return values
             }
         }
-        return items.sorted { $0.date > $1.date }
+        let needle = searchQuery.trimmingCharacters(in:.whitespacesAndNewlines)
+        let matching = needle.isEmpty ? items : items.filter { item in
+            item.title.localizedStandardContains(needle)
+                || item.threadTitle.localizedStandardContains(needle)
+                || item.source.localizedStandardContains(needle)
+                || (item.repoId?.localizedStandardContains(needle) ?? false)
+        }
+        return matching.sorted { $0.date > $1.date }
     }
 
     private var resources: [Resource] {
@@ -120,7 +129,8 @@ struct AgentAssetsDashboard: View {
             projects: model.projects,
             selectedRepoId: selectedRepoId,
             showLocalResources: showLocalResources,
-            showRemoteImages: showRemoteImages
+            showRemoteImages: showRemoteImages,
+            searchQuery:searchQuery
         )
     }
 
@@ -129,9 +139,33 @@ struct AgentAssetsDashboard: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                HStack(spacing: 16) {
+                HStack(spacing: 10) {
                     Label("\(items.count) 个资源", systemImage: "square.stack.3d.up")
                         .font(.system(size: 12, weight: .medium))
+                    HStack(spacing:6) {
+                        Image(systemName:"magnifyingglass")
+                            .font(.system(size:10))
+                            .foregroundStyle(.secondary)
+                        TextField("搜索图片、文件或会话",text:$searchQuery)
+                            .textFieldStyle(.plain)
+                            .font(.system(size:11.5))
+                            .accessibilityLabel("搜索资源")
+                            .accessibilityIdentifier("agent.assets.search")
+                        if !searchQuery.isEmpty {
+                            Button { searchQuery = "" } label: {
+                                Image(systemName:"xmark.circle.fill")
+                                    .font(.system(size:10))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.tertiary)
+                            .help("清除搜索")
+                            .accessibilityLabel("清除资源搜索")
+                        }
+                    }
+                    .padding(.horizontal,8)
+                    .frame(minWidth:120,maxWidth:210)
+                    .frame(height:28)
+                    .background(Color.primary.opacity(0.035),in:RoundedRectangle(cornerRadius:7,style:.continuous))
                     Toggle("我的附件", isOn: $showLocalResources)
                         .accessibilityIdentifier("agent.assets.filter.local")
                     Toggle("回复图片", isOn: $showRemoteImages)
@@ -153,7 +187,8 @@ struct AgentAssetsDashboard: View {
                 if items.isEmpty {
                     VStack(spacing: 9) {
                         Image(systemName: "square.stack.3d.up").font(.system(size: 28)).foregroundStyle(.tertiary)
-                        Text("暂无资源").font(.system(size: 14, weight: .medium))
+                        Text(searchQuery.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty ? "暂无资源" : "没有匹配的资源")
+                            .font(.system(size: 14, weight: .medium))
                     }
                     .frame(maxWidth: .infinity, minHeight: 240)
                 } else {

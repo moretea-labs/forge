@@ -3799,6 +3799,51 @@ extension NativeWorkspaceTests {
         ]))
     }
 
+    func testAssetsSearchMatchesResourceNameSourceAndConversationWithoutBreakingProjectFilters() {
+        var thread=ChatThread()
+        thread.title="Release review"
+        thread.repoId="repo-a"
+        thread.checkoutId="checkout-a"
+        let assistant=ChatMessage(role:"assistant",text:"![Architecture diagram](https://cdn.example.com/forge/architecture.png)",createdAt:Date(timeIntervalSince1970:300))
+        var user=ChatMessage(role:"user",text:"Attached release notes",createdAt:Date(timeIntervalSince1970:200))
+        user.attachmentPaths=["/tmp/release-screenshot.png"]
+        user.contextPaths=["Docs/ReleaseChecklist.pdf"]
+        thread.messages=[assistant,user]
+
+        let all=AgentAssetsDashboard.makeResources(
+            from:[thread],projects:[],selectedRepoId:"",showLocalResources:true,showRemoteImages:true
+        )
+        XCTAssertEqual(all.count,3)
+        XCTAssertEqual(AgentAssetsDashboard.makeResources(
+            from:[thread],projects:[],selectedRepoId:"",showLocalResources:true,showRemoteImages:true,
+            searchQuery:"release-screenshot"
+        ).map { $0.title },["release-screenshot.png"])
+        XCTAssertEqual(AgentAssetsDashboard.makeResources(
+            from:[thread],projects:[],selectedRepoId:"",showLocalResources:true,showRemoteImages:true,
+            searchQuery:"architecture diagram"
+        ).map { $0.title },["Architecture diagram"])
+        XCTAssertEqual(AgentAssetsDashboard.makeResources(
+            from:[thread],projects:[],selectedRepoId:"",showLocalResources:true,showRemoteImages:true,
+            searchQuery:"ReleaseChecklist.pdf"
+        ).map { $0.title },["ReleaseChecklist.pdf"])
+        XCTAssertEqual(AgentAssetsDashboard.makeResources(
+            from:[thread],projects:[],selectedRepoId:"",showLocalResources:true,showRemoteImages:true,
+            searchQuery:"cdn.example.com"
+        ).map { $0.title },["Architecture diagram"])
+        XCTAssertEqual(AgentAssetsDashboard.makeResources(
+            from:[thread],projects:[],selectedRepoId:"",showLocalResources:true,showRemoteImages:true,
+            searchQuery:"RELEASE REVIEW"
+        ).count,3)
+        XCTAssertEqual(AgentAssetsDashboard.makeResources(
+            from:[thread],projects:[],selectedRepoId:"repo-other",showLocalResources:true,showRemoteImages:true,
+            searchQuery:"release"
+        ).count,0)
+        XCTAssertEqual(AgentAssetsDashboard.makeResources(
+            from:[thread],projects:[],selectedRepoId:"repo-a",showLocalResources:false,showRemoteImages:true,
+            searchQuery:"release-screenshot"
+        ).count,0)
+    }
+
     func testContextFileResolutionRejectsCheckoutEscapeAndSymlinkEscape() throws {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
