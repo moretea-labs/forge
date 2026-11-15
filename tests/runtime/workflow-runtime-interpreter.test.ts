@@ -56,7 +56,7 @@ function draft(): WorkflowAssetDraft {
     },
     requiredCapabilities: ['browser.navigate', 'browser.submit'],
     steps: [
-      { stepId: 'open', capabilityId: 'browser.navigate', idempotency: 'idempotent', input: { url: '{{input.url}}' } },
+      { stepId: 'open', capabilityId: 'browser.navigate', idempotency: 'idempotent', input: { url: '{{input.url}}' }, outputContract: { navigated: { type: 'boolean', required: true } } },
       { stepId: 'normalize', kind: 'script', scriptRef: 'normalize', idempotency: 'idempotent', input: { title: '{{input.title}}' } },
     ],
     scripts: { normalize: { runtime: 'node', deterministic: true, body: 'process.stdout.write(process.argv[1] ?? "")' } },
@@ -105,9 +105,15 @@ describe('thin Workflow Runtime interpreter', () => {
       submitPluginAction: (async (_home: string, _repo: RepositoryRecord, request: any) => {
         calls.push(`capability:${request.pluginId}/${request.actionId}`);
         submittedArgs.push(request.args);
+        const result = {
+          schemaVersion: 1,
+          plugin: { pluginId: request.pluginId, provider: 'test', revision: 1, lifecycle: { state: 'enabled' }, health: { state: 'ready' } },
+          action: { actionId: request.actionId, confirmation: 'none', risk: 'readonly', requestId: request.requestId },
+          result: { navigated: true },
+        };
         return {
-          manifest: {}, action: {}, job: {}, deduplicated: false, result: { navigated: true },
-          receipt: { schemaVersion: 1, receiptId: 'receipt-open', requestId: request.requestId, repoId: repo.repoId, pluginId: request.pluginId, actionId: request.actionId, semanticKey: 'key', status: 'succeeded', createdAt: new Date().toISOString() },
+          manifest: {}, action: {}, job: {}, deduplicated: false, result,
+          receipt: { schemaVersion: 1, receiptId: 'receipt-open', requestId: request.requestId, repoId: repo.repoId, pluginId: request.pluginId, actionId: request.actionId, semanticKey: 'key', status: 'succeeded', createdAt: new Date().toISOString(), result },
         } as any;
       }) as any,
       executeCommand: (async (input: any) => {
@@ -122,6 +128,7 @@ describe('thin Workflow Runtime interpreter', () => {
     expect(submittedArgs).toEqual([{ url: 'https://example.test/new' }]);
     const stored = readWorkflowRun(controllerHome, workflowScopeId(), 'run-1')!;
     expect(stored.value.status).toBe('succeeded');
+    expect(stored.value.outputs.open).toEqual({ navigated: true });
     expect(JSON.stringify(stored.value)).not.toContain('Human title is not machine state');
     expect(stored.value.inputDigest).toStartWith('sha256:');
   });
