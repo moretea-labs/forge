@@ -121,4 +121,203 @@ describe('first-party release and growth Workflow assets (#652)', () => {
         relationships: { territory: { data: { id: 'CHN', type: 'territories' } } } }],
       links: { next: null },
     });
-    expect(cnMissing.status...
+    expect(cnMissing.status).toBe(0);
+    expect(JSON.parse(cnMissing.output)).toEqual({
+      territory: 'CHN', status: 'icp_missing', available: true,
+      content_statuses: ['ICP_NUMBER_MISSING'], release_date: null,
+    });
+    const cnAvailable = script(id, 'classifyCn', {
+      data: [{ attributes: { available: true, contentStatuses: ['AVAILABLE'], releaseDate: null },
+        relationships: { territory: { data: { id: 'CHN', type: 'territories' } } } }],
+      links: { next: null },
+    });
+    expect(JSON.parse(cnAvailable.output).status).toBe('available');
+    const cnNotAvailable = script(id, 'classifyCn', {
+      data: [{ attributes: { available: false, contentStatuses: [] },
+        relationships: { territory: { data: { id: 'CHN', type: 'territories' } } } }],
+      links: { next: null },
+    });
+    expect(JSON.parse(cnNotAvailable.output).status).toBe('not_available');
+    expect(script(id, 'classifyCn', {
+      data: [{ attributes: { available: true, contentStatuses: ['AVAILABLE'] },
+        relationships: { territory: { data: { id: 'JPN', type: 'territories' } } } }],
+      links: { next: null },
+    }).status).not.toBe(0);
+    expect(script(id, 'classifyCn', {
+      data: [{ attributes: { available: true, contentStatuses: ['AVAILABLE'] },
+        relationships: { territory: { data: { id: 'CHN', type: 'territories' } } } }],
+      links: { next: 'https://api.example/next' },
+    }).status).not.toBe(0);
+  });
+
+  test('typed release observation uses Apple version and CHN territory records; unsafe or incomplete inputs fail closed', async () => {
+    const asset = materializedReleaseGrowthWorkflow(RELEASE_GROWTH_WORKFLOW_IDS.releaseObservation);
+    const calls: string[] = [];
+    const executeWith = async (
+      appId: string,
+      versionString: string,
+      territoryRows: unknown[],
+      nextPage: string | null = null,
+    ) => executeWorkflow({
+      asset,
+      binding: { scopeId: 'repository:proof', runId: 'observation-' + appId.replace(/[^A-Za-z0-9]/g, '_') + '-' + versionString },
+      inputs: { app_id: appId, version_string: versionString },
+    }, {
+      executeCapability: async ({ step }) => {
+        calls.push(step.stepId);
+        if (step.stepId === 'read-version') return {
+          outcome: 'succeeded', receiptRef: 'ASC-VERSION-READ',
+          output: {
+            data: [{ attributes: { versionString, appStoreState: 'READY_FOR_SALE',
+              appVersionState: 'READY_FOR_DISTRIBUTION', releaseType: 'AFTER_APPROVAL', downloadable: true } }],
+            links: { next: null },
+          },
+        };
+        if (step.stepId === 'read-territory-availability') return {
+          outcome: 'succeeded', receiptRef: 'ASC-TERRITORY-READ',
+          output: { data: territoryRows, links: { next: nextPage } },
+        };
+        throw new Error('UNEXPECTED_CAPABILITY:' + step.stepId);
+      },
+      executeScript: async ({ step, arguments: args }) => {
+        const execution = script(asset.workflowId, step.scriptRef, args);
+        return execution.status === 0
+          ? { outcome: 'succeeded', receiptRef: 'SCRIPT-EXISTING', output: JSON.parse(execution.output) }
+          : { outcome: 'failed', receiptRef: 'SCRIPT-FAIL-CLOSED' };
+      },
+    });
+    const cnMissingRow = [{
+      id: 'territory-row-cn',
+      attributes: { available: true, contentStatuses: ['ICP_NUMBER_MISSING'], releaseDate: null },
+      relationships: { territory: { data: { id: 'CHN', type: 'territories' } } },
+    }];
+    const cnMissing = await executeWith('6796884084', '1.0', cnMissingRow);
+    expect(cnMissing.status).toBe('succeeded');
+    expect(cnMissing.outputs['classify-cn']).toEqual({
+      territory: 'CHN', status: 'icp_missing', available: true,
+      content_statuses: ['ICP_NUMBER_MISSING'], release_date: null,
+    });
+    expect(cnMissing.outputs['classify-version']).toEqual({
+      version: '1.0', app_store_state: 'READY_FOR_SALE', app_version_state: 'READY_FOR_DISTRIBUTION',
+      release_type: 'AFTER_APPROVAL', downloadable: true, next_action: 'verify_territories',
+    });
+    expect(cnMissing.outputs['decide-verified-next-action']).toEqual({
+      next_action: 'resolve_cn_icp', public_storefront_and_download_proof_required: false,
+    });
+    expect(calls).toEqual(['read-version', 'read-territory-availability']);
+
+    calls.length = 0;
+    const bad = await executeWith('malicious/identifier', '1.0', cnMissingRow);
+    expect(bad.status).toBe('failed');
+    expect(calls.length).toBe(0);
+
+    const missingRow = await executeWith('6831952477', '1.2', []);
+    expect(missingRow.status).toBe('failed');
+    expect(missingRow.outputs['classify-cn']).toBeUndefined();
+
+    const paginationIncomplete = await executeWith('6831952477', '1.2', [{
+      attributes: { available: true, contentStatuses: ['AVAILABLE'] },
+      relationships: { territory: { data: { id: 'CHN', type: 'territories' } } },
+    }], 'https://api.appstoreconnect.apple.com/v2/territoryAvailabilities?cursor=next');
+    expect(paginationIncomplete.status).toBe('failed');
+    expect(paginationIncomplete.outputs['classify-cn']).toBeUndefined();
+  });
+
+  test('review, release, ICP and storefront decision is deterministic, safe and never claims download', () => {
+    const id = RELEASE_GROWTH_WORKFLOW_IDS.releaseObservation;
+    const classify = (version_action: string, cn_status: string) => script(id, 'decideNextAction', { version_action, cn_status });
+    const cases: Array<[string, string, string, boolean]> = [
+      ['prepare_correction', 'available', 'prepare_correction', false],
+      ['await_or_inspect_review', 'available', 'await_or_inspect_review', false],
+      ['await_apple_release', 'available', 'await_apple_release', false],
+      ['manual_release_required', 'available', 'manual_release_after_authorization', false],
+      ['verify_territories', 'icp_missing', 'resolve_cn_icp', false],
+      ['manual_release_required', 'icp_missing', 'resolve_cn_icp', false],
+      ['verify_territories', 'not_available', 'reconcile_cn_distribution', false],
+      ['verify_territories', 'unknown', 'reconcile_cn_territory', false],
+      ['verify_territories', 'available', 'verify_cn_storefront_download', true],
+      ['inspect_release_state', 'available', 'reconcile_asc_release_state', false],
+    ];
+    for (const [version, cn, expected, proof] of cases) {
+      const result = classify(version, cn);
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.output)).toEqual({ next_action: expected, public_storefront_and_download_proof_required: proof });
+    }
+    expect(classify('UNKNOWN', 'available').status).not.toBe(0);
+    expect(classify('verify_territories', 'AVAILABLE').status).not.toBe(0);
+    expect(classify('verify_territories', '').status).not.toBe(0);
+  });
+
+  test('X metrics require an exact account/post URL and actual parseable counters', () => {
+    const id = RELEASE_GROWTH_WORKFLOW_IDS.postMetrics;
+    const asset = materializedReleaseGrowthWorkflow(id);
+    expect(validateWorkflowRunInputs(asset, {
+      account: 'developer_x', post_url: 'https://x.com/developer_x/status/1234567890', session_id: 'session-1',
+    }).account).toBe('developer_x');
+    expect(asset.version).toBe('2');
+    const viewsStep = asset.steps.find(step => step.stepId === 'read-views');
+    expect(viewsStep).toMatchObject({ capabilityId: 'browser.get_text',
+      input: { selector: 'article[data-testid="tweet"] a[href$="/analytics"]', max_chars: 80 } });
+    expect(viewsStep?.idempotency).not.toBe('non_idempotent');
+    const previewStep = asset.steps.find(step => step.stepId === 'read-reply-previews');
+    expect(previewStep).toMatchObject({ capabilityId: 'browser.query_all',
+      input: { selector: 'article[data-testid="tweet"]', limit: 15 } });
+    expect(previewStep?.idempotency).not.toBe('non_idempotent');
+    expect(asset.steps.find(step => step.stepId === 'read-reply-preview-links')).toMatchObject({
+      capabilityId: 'browser.query_all', input: { selector: 'article[data-testid="tweet"] a[href*="/status/"]:has(time)', limit: 15 },
+    });
+    expect(asset.steps.find(step => step.stepId === 'derive-reply-previews')).toMatchObject({
+      kind: 'script', scriptRef: 'deriveReplyPreviews',
+    });
+    expect(asset.resources?.replyPolicy).toContain('substantive questions');
+    expect(asset.resources?.replyPolicy).toContain('verified public product/store facts');
+    expect(script(id, 'validatePost', { account: 'developer_x', post_url: 'https://x.com/developer_x/status/1234567890' }).status).toBe(0);
+    for (const post_url of [
+      'https://x.com/wrong_account/status/1234567890',
+      'https://evil.example/developer_x/status/1234567890',
+      'https://x.com/developer_x/status/1234567890?danger=1',
+      'http://x.com/developer_x/status/1234567890',
+    ]) expect(script(id, 'validatePost', { account: 'developer_x', post_url }).status).not.toBe(0);
+    const observed = script(id, 'deriveEngagement', {
+      reply_label: '2 Replies. Reply', like_label: '1,234 Likes. Like', view_label: '31 Views',
+    });
+    expect(observed.status).toBe(0);
+    expect(JSON.parse(observed.output)).toEqual({ reply_count: 2, like_count: 1234, view_count: 31 });
+    expect(script(id, 'deriveEngagement', {
+      reply_label: '1.2K replies', like_label: '12 likes', view_label: '31 Views',
+    }).status).not.toBe(0);
+    expect(script(id, 'deriveEngagement', {
+      reply_label: '2 Replies. Reply', like_label: '12 Likes. Like',
+    }).status).not.toBe(0);
+    const previews = script(id, 'deriveReplyPreviews', {
+      account: 'developer_x', post_url: 'https://x.com/developer_x/status/1234567890',
+      articles: [
+        { text: 'Developer @developer_x · Nov 14 Original post' },
+        { text: 'Alice @alice · Nov 14 This is a useful reply.' },
+        { text: 'Developer @developer_x · Nov 14 Own follow-up' },
+        { text: 'Bob @bob · Nov 14 Another reply.' },
+      ],
+      links: [
+        { href: '/developer_x/status/1234567890' }, { href: '/alice/status/2222222222' },
+        { href: '/developer_x/status/3333333333' }, { href: '/bob/status/4444444444' },
+      ],
+    });
+    expect(previews.status).toBe(0);
+    expect(JSON.parse(previews.output)).toEqual({
+      previews: [
+        { comment_url: 'https://x.com/alice/status/2222222222', comment_id: '2222222222',
+          comment_author: 'alice', preview_text: 'Alice @alice · Nov 14 This is a useful reply.' },
+        { comment_url: 'https://x.com/bob/status/4444444444', comment_id: '4444444444',
+          comment_author: 'bob', preview_text: 'Bob @bob · Nov 14 Another reply.' },
+      ], count: 2,
+    });
+    expect(script(id, 'deriveReplyPreviews', {
+      account: 'developer_x', post_url: 'https://x.com/developer_x/status/1234567890',
+      articles: [{ text: 'reply' }], links: [],
+    }).status).not.toBe(0);
+    expect(script(id, 'deriveReplyPreviews', {
+      account: 'developer_x', post_url: 'https://x.com/developer_x/status/1234567890',
+      articles: [{ text: 'reply' }], links: [{ href: 'https://evil.example/status/1' }],
+    }).status).not.toBe(0);
+  });
+});
