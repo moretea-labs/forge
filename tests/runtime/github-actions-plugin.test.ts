@@ -16,7 +16,7 @@ import {
   buildGitHubProjectItemListArgs,
   parseGitHubProjectItems,
 } from '../../src/runtime/plugins/github-client';
-import { buildGitHubPluginManifest } from '../../src/runtime/plugins/github-adapter';
+import { buildGitHubPluginManifest, executeGitHubPluginAction } from '../../src/runtime/plugins/github-adapter';
 
 describe('GitHub Actions plugin surface', () => {
   test('builds bounded fixed GitHub CLI argv for workflow discovery and dispatch', () => {
@@ -62,6 +62,17 @@ describe('GitHub Actions plugin surface', () => {
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('GitHub issue plugin mutation boundary', () => {
+  test('rejects missing issue identity before any remote sync or controller write', async () => {
+    for (const actionId of ['publish_issue', 'refresh_issue', 'close_issue']) {
+      await expect(executeGitHubPluginAction({
+        actionId,
+        args: { issue_id: '  ' },
+      } as Parameters<typeof executeGitHubPluginAction>[0])).rejects.toThrow('GITHUB_PLUGIN_ISSUE_ID_REQUIRED');
     }
   });
 });

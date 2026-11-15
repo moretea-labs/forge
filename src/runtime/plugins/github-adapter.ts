@@ -356,6 +356,12 @@ export function buildGitHubPluginManifest(previousRevision = 0, previousUpdatedA
   };
 }
 
+function requiredIssueId(value: unknown): string {
+  const issueId = typeof value === 'string' ? value.trim() : '';
+  if (!issueId) throw new Error('GITHUB_PLUGIN_ISSUE_ID_REQUIRED');
+  return issueId;
+}
+
 export async function executeGitHubPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
   switch (input.actionId) {
     case 'configure': {
@@ -372,9 +378,9 @@ export async function executeGitHubPluginAction(input: AssistantPluginActionExec
       return { config, status: getGitHubPluginStatus(input.repoRoot) };
     }
     case 'publish_issue':
-      return { issue: publishIssueWithGitHubPlugin(input.repoRoot, String(input.args.issue_id ?? '').trim()) };
+      return { issue: publishIssueWithGitHubPlugin(input.repoRoot, requiredIssueId(input.args.issue_id)) };
     case 'refresh_issue':
-      return refreshIssueWithGitHubPlugin(input.repoRoot, String(input.args.issue_id ?? '').trim()) as Record<string, unknown>;
+      return refreshIssueWithGitHubPlugin(input.repoRoot, requiredIssueId(input.args.issue_id)) as Record<string, unknown>;
     case 'list_project_items': {
       const config = loadGitHubPluginConfig(input.repoRoot);
       if (!config.projectOwner || !config.projectNumber) {
@@ -423,7 +429,7 @@ export async function executeGitHubPluginAction(input: AssistantPluginActionExec
       });
     }
     case 'close_issue':
-      return { issue: closeIssueWithGitHubPlugin(input.repoRoot, String(input.args.issue_id ?? '').trim()) };
+      return { issue: closeIssueWithGitHubPlugin(input.repoRoot, requiredIssueId(input.args.issue_id)) };
     default:
       throw new Error(`PLUGIN_ACTION_NOT_SUPPORTED: github/${input.actionId}`);
   }
