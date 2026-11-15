@@ -465,7 +465,9 @@ final class NativeWorkspaceTests: XCTestCase {
                 toolActivityCount:2,activityEvents:[patch,build],incomplete:true)
         ]
 
-        let continuation = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        let continuation = NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
         let content = continuation.last?["content"] ?? ""
         XCTAssertFalse(content.contains("Partial assistant text"))
         XCTAssertTrue(content.contains("Runtime reported 2 tool calls; 2 per-call receipts are retained. Coverage matches."))
@@ -478,14 +480,18 @@ final class NativeWorkspaceTests: XCTestCase {
             role:"assistant",text:"Partial reply",
             toolActivityCount:2,activityEvents:[patch],incomplete:true
         )
-        let mismatch = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        let mismatch = NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
         XCTAssertTrue(mismatch.last?["content"]?.contains("Coverage mismatch; some tool outcomes are unverified.") == true)
         XCTAssertTrue(mismatch.last?["content"]?.contains("Runtime reported 2 tool calls; 1 per-call receipts are retained.") == true)
 
         thread.messages[1] = ChatMessage(
             role:"assistant",text:"Partial reply",toolActivityCount:1,incomplete:true
         )
-        let missing = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        let missing = NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
         XCTAssertTrue(missing.last?["content"]?.contains("Runtime reported 1 tool calls; 0 per-call receipts are retained.") == true)
     }
 
@@ -502,10 +508,14 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(retry.map { $0["content"] },[
             "previous task","previous result","build the feature"
         ])
-        let continuation = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        let continuation = NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
         XCTAssertEqual(continuation.map { $0["content"] },[
-            "previous task","previous result","build the feature","继续"
+            "previous task","previous result","build the feature",
+            NativeWorkspace.incompleteTurnContinuationPrompt
         ])
+        XCTAssertFalse(continuation.contains { $0["content"]?.contains("tool delivery unknown") == true })
         // The source of audit evidence is unchanged, even when history is compacted.
         XCTAssertEqual(thread.messages.count,4)
         XCTAssertEqual(thread.messages[3].incomplete,true)
@@ -557,7 +567,9 @@ final class NativeWorkspaceTests: XCTestCase {
                 ],incomplete:true
             )
         ]
-        let resumed = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        let resumed = NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
         XCTAssertEqual(resumed.count,2)
         XCTAssertTrue(resumed[1]["content"]?.contains("proc_abc_123") == true)
         XCTAssertTrue(resumed[1]["content"]?.contains("process_status") == true)
@@ -587,7 +599,9 @@ final class NativeWorkspaceTests: XCTestCase {
                         status:"failed",startedAt:"now",completedAt:"later",toolCallId:"call-1")
                 ],incomplete:true)
         ]
-        let followUp=NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        let followUp=NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
         XCTAssertTrue(followUp.last?["content"]?.contains("proc_live_123") == true)
         XCTAssertTrue(followUp.last?["content"]?.contains("process_status") == true)
         XCTAssertFalse(followUp.last?["content"]?.contains("request_not_process") == true)
@@ -596,7 +610,9 @@ final class NativeWorkspaceTests: XCTestCase {
                 AgentLiveActivityEvent(phase:"tool",label:"run_command",detail:"proc_failed_42",
                     status:"failed",startedAt:"now",completedAt:"later",toolCallId:"call-2")
             ],incomplete:true)
-        let receipt=NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        let receipt=NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
         XCTAssertTrue(receipt.last?["content"]?.contains("proc_failed_42") == true)
         XCTAssertFalse(receipt.last?["content"]?.contains("proc_bad") == true)
     }

@@ -3685,6 +3685,12 @@ final class NativeWorkspace: ObservableObject {
             && thread.readOnlyCheckoutId == checkoutId
     }
 
+    // The UI recovery action must not copy unverified partial assistant prose
+    // into a new user prompt. apiTurnMessages separately attaches structured
+    // tool receipts and canonical Process IDs from the incomplete turn.
+    nonisolated static let incompleteTurnContinuationPrompt =
+        "继续执行上一次未完成的任务。请先核对当前 checkout 和已有工具回执；若存在未确认的 Process，先查询同一 Process 的终态。不要重放未知或仍在运行的写操作；确认后继续实施和验证。"
+
     nonisolated static func apiTurnMessages(
         _ thread: ChatThread,
         prompt: String,
