@@ -158,6 +158,7 @@ private struct ForgeWorkspaceView: View {
     @State private var assetsSearchQuery = ""
     @State private var assetsReturnResourceID: String?
     @State private var usageSelectedRepoId = ""
+    @State private var usageSelectedProviderId = ""
     @State private var usageDays = 30
     @State private var usageReturnEntryID: String?
     @State private var inboxDecisionRequestId: String?
@@ -1442,6 +1443,7 @@ private struct ForgeWorkspaceView: View {
                     model:model,
                     days:$usageDays,
                     selectedRepoId:$usageSelectedRepoId,
+                    selectedProviderId:$usageSelectedProviderId,
                     selectedEntryID:$usageReturnEntryID
                 )
             case .settings: SettingsPane(model:model)

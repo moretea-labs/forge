@@ -6,6 +6,7 @@ struct AgentUsageDashboard: View {
     @ObservedObject var model: NativeWorkspace
     @Binding var days: Int
     @Binding var selectedRepoId: String
+    @Binding var selectedProviderId: String
     @Binding var selectedEntryID: String?
 
     struct Entry: Identifiable {
@@ -59,10 +60,19 @@ struct AgentUsageDashboard: View {
         "无用量记录 \(unreportedMessages) 条 · 用量不完整 \(partiallyReportedMessages) 条"
     }
 
+    static func availableProviderIds(from threads: [ChatThread]) -> [String] {
+        Set(threads.flatMap { thread in
+            thread.messages.filter { $0.role == "assistant" }.map {
+                $0.providerUsed ?? thread.provider ?? "未知"
+            }
+        }).sorted()
+    }
+
     static func makeUsageSnapshot(
         from threads: [ChatThread],
         projectLabels: [String: String],
-        since cutoff: Date
+        since cutoff: Date,
+        providerId: String = ""
     ) -> UsageSnapshot {
         var entries: [Entry] = []
         var unreportedEntries: [UnreportedEntry] = []
@@ -72,6 +82,8 @@ struct AgentUsageDashboard: View {
         var partiallyReported = 0
         for thread in threads {
             for message in thread.messages where Self.isUsageEligibleAssistantMessage(message, since: cutoff) {
+                let provider = message.providerUsed ?? thread.provider ?? "未知"
+                guard providerId.isEmpty || provider == providerId else { continue }
                 guard let usage = message.usage else {
                     unreportedEntries.append(UnreportedEntry(
                         id: "\(thread.id):\(message.id)",
@@ -80,7 +92,7 @@ struct AgentUsageDashboard: View {
                         threadTitle: thread.title,
                         date: message.createdAt,
                         model: message.modelUsed ?? thread.model ?? "未标记模型",
-                        provider: message.providerUsed ?? thread.provider ?? "未知",
+                        provider: provider,
                         incomplete: message.incomplete == true
                     ))
                     continue
@@ -96,7 +108,7 @@ struct AgentUsageDashboard: View {
                     threadId: thread.id, messageId: message.id, threadTitle: thread.title,
                     date: message.createdAt, projectId: thread.repoId, project: projectName,
                     model: message.modelUsed ?? thread.model ?? "未标记模型",
-                    provider: message.providerUsed ?? thread.provider ?? "未知",
+                    provider: provider,
                     usage: usage
                 ))
             }
@@ -183,7 +195,10 @@ struct AgentUsageDashboard: View {
             model.projects.map { ($0.repoId, $0.label) },
             uniquingKeysWith: { _, latest in latest }
         )
-        let usageSnapshot = Self.makeUsageSnapshot(from: threads, projectLabels: projectLabels, since: cutoff)
+        let usageSnapshot = Self.makeUsageSnapshot(
+            from: threads, projectLabels: projectLabels, since: cutoff,
+            providerId: selectedProviderId
+        )
         let usageEntries = usageSnapshot.entries
         let unreportedEntries = usageSnapshot.unreportedEntries
         let unreportedMessages = unreportedEntries.count
@@ -199,6 +214,14 @@ struct AgentUsageDashboard: View {
             VStack(alignment: .leading, spacing: 22) {
                 HStack {
                     Spacer()
+                    Picker("服务", selection: $selectedProviderId) {
+                        Text("全部服务").tag("")
+                        ForEach(Self.availableProviderIds(from: model.threads), id: \.self) { provider in
+                            Text(providerLabel(provider)).tag(provider)
+                        }
+                    }
+                    .frame(maxWidth: 150)
+                    .accessibilityIdentifier("agent.usage.provider-filter")
                     Picker("项目", selection: $selectedRepoId) {
                         Text("全部项目").tag("")
                         ForEach(model.projects) { project in
@@ -261,7 +284,7 @@ struct AgentUsageDashboard: View {
                         .padding(.vertical, 3)
                     }
                     if total == 0 {
-                        Text("暂无用量数据")
+                        Text(selectedProviderId.isEmpty ? "暂无用量数据" : "当前服务没有已记录 Token")
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                 }

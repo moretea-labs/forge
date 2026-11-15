@@ -3646,6 +3646,34 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(snapshot.entries.first?.usage.reportedRounds, 1)
         XCTAssertEqual(snapshot.entries.first?.usage.totalRounds, 2)
 
+        XCTAssertEqual(
+            AgentUsageDashboard.availableProviderIds(from: restored.threads),
+            ["api:anthropic", "api:openai", "未知"]
+        )
+        let unknown = AgentUsageDashboard.makeUsageSnapshot(
+            from: restored.threads, projectLabels: ["repo-usage": "Usage project"],
+            since: cutoff, providerId: "未知"
+        )
+        XCTAssertTrue(unknown.entries.isEmpty)
+        XCTAssertTrue(unknown.unreportedEntries.isEmpty)
+        XCTAssertEqual(unknown.total, 0)
+        let openai = AgentUsageDashboard.makeUsageSnapshot(
+            from: restored.threads, projectLabels: ["repo-usage": "Usage project"],
+            since: cutoff, providerId: "api:openai"
+        )
+        XCTAssertEqual(openai.entries.map(\.messageId), [completeMessage.id])
+        XCTAssertEqual(openai.unreportedEntries.map(\.messageId), [unreportedMessage.id])
+        XCTAssertEqual(openai.total, completeUsage.totalTokens)
+        XCTAssertEqual(openai.partiallyReported, 0)
+        let anthropic = AgentUsageDashboard.makeUsageSnapshot(
+            from: restored.threads, projectLabels: ["repo-usage": "Usage project"],
+            since: cutoff, providerId: "api:anthropic"
+        )
+        XCTAssertEqual(anthropic.entries.map(\.messageId), [partialMessage.id])
+        XCTAssertTrue(anthropic.unreportedEntries.isEmpty)
+        XCTAssertEqual(anthropic.total, partialUsage.totalTokens)
+        XCTAssertEqual(anthropic.partiallyReported, 1)
+
         restored.page = .usage
         let source = try XCTUnwrap(snapshot.entries.first)
         restored.selectThread(source.threadId, messageId: source.messageId)
