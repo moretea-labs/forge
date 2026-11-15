@@ -1533,10 +1533,30 @@ private struct AgentPane: View {
                                             .lineSpacing(5)
                                             .textSelection(.enabled)
                                         if let contextPaths = message.contextPaths, !contextPaths.isEmpty {
-                                            Label(contextPaths.joined(separator:" · "),systemImage:"doc.text")
-                                                .font(.system(size:10.5,weight:.medium))
-                                                .foregroundStyle(ForgePalette.secondary)
-                                                .lineLimit(1)
+                                            HStack(alignment:.center,spacing:8) {
+                                                ForEach(Array(contextPaths.enumerated()),id:\.offset) { index,relativePath in
+                                                    let name = URL(fileURLWithPath:relativePath).lastPathComponent
+                                                    let fileURL = resolveLocalContextFileURL(
+                                                        rootPath:model.checkoutRoot?.path,
+                                                        relativePath:relativePath
+                                                    )
+                                                    Button {
+                                                        if let fileURL { NSWorkspace.shared.open(fileURL) }
+                                                    } label: {
+                                                        Label(name,systemImage:"doc.text")
+                                                            .font(.system(size:10.5,weight:.medium))
+                                                            .foregroundStyle(fileURL == nil ? ForgePalette.secondary.opacity(0.5) : ForgePalette.secondary)
+                                                            .lineLimit(1)
+                                                            .truncationMode(.middle)
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                    .help(fileURL == nil ? "原文件已移动或当前 checkout 不可用" : relativePath)
+                                                    .accessibilityLabel("打开上下文文件：\(name)")
+                                                    .accessibilityHint(fileURL == nil ? "当前 checkout 中找不到该文件" : "使用 macOS 默认应用打开")
+                                                    .accessibilityIdentifier("agent.message.\(message.id).context-file.\(index)")
+                                                    .disabled(fileURL == nil)
+                                                }
+                                            }
                                         }
                                         if let imagePaths = message.attachmentPaths, !imagePaths.isEmpty {
                                             HStack(alignment:.center,spacing:8) {
