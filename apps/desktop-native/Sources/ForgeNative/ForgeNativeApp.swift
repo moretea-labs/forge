@@ -1621,15 +1621,18 @@ private struct AgentPane: View {
                                            message.id == model.thread?.messages.last?.id {
                                             let requiresReview = NativeWorkspace.incompleteTurnRequiresReview(message)
                                             HStack(alignment:.center,spacing:9) {
-                                                Image(systemName:"exclamationmark.arrow.triangle.2.circlepath")
+                                                Image(systemName:requiresReview
+                                                    ? "exclamationmark.arrow.triangle.2.circlepath" : "checkmark.circle")
                                                     .font(.system(size:15))
                                                     .foregroundStyle(ForgePalette.secondary)
                                                     .accessibilityHidden(true)
                                                 VStack(alignment:.leading,spacing:3) {
-                                                    Text("上次执行未完成")
+                                                    Text(requiresReview ? "上次执行未完成" : "可以继续执行")
                                                         .font(.system(size:11,weight:.semibold))
                                                         .foregroundStyle(ForgePalette.ink)
-                                                    Text("继续时先核对 Process 终态与当前改动。")
+                                                    Text(requiresReview
+                                                        ? "工具操作结果尚未完全核实。先查看改动并发送核对指令。"
+                                                        : "工具回执完整，没有待核对的操作。")
                                                         .font(.system(size:10))
                                                         .foregroundStyle(ForgePalette.secondary)
                                                 }
@@ -1646,7 +1649,7 @@ private struct AgentPane: View {
                                                     if !requiresReview { Task { await model.send() } }
                                                 } label: {
                                                     Label(
-                                                        requiresReview ? "准备核对" : "继续执行",
+                                                        requiresReview ? "填入核对指令" : "继续执行",
                                                         systemImage:requiresReview
                                                             ? "doc.text.magnifyingglass" : "play.fill"
                                                     )
