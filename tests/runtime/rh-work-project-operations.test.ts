@@ -457,6 +457,46 @@ describe('rh_work Project operations', () => {
     expect(projectDetail.data.requirements).toEqual(expect.arrayContaining([
       expect.objectContaining({ requirementId: 'REQ-BOARD-TASK', repoId: repository.repoId }),
     ]));
+    const beforePlan = structured(await callRuntimeTool(board, 'rh_work', {
+      operation: 'requirement_get', project_id: 'project-board', requirement_id: 'REQ-BOARD-TASK',
+      detail_level: 'detail',
+    }));
+    expect(beforePlan.data).toMatchObject({ relatedPlanCount: 0, relatedPlans: [], relatedPlansTruncated: false });
+    const createdPlan = structured(await callRuntimeTool(repositoryContext, 'rh_work', {
+      operation: 'plan_create', plan_id: 'PLAN-BOARD-TASK', requirement_id: 'REQ-BOARD-TASK',
+      objective: 'Implement the board task in a linked Plan.',
+      plan_items: [{ id: 'implementation', objective: 'Implement the user workflow.', dependencies: [] }],
+    }));
+    expect(createdPlan.status).toBe('ok');
+    const taskFromBoard = structured(await callRuntimeTool(board, 'rh_work', {
+      operation: 'requirement_get', project_id: 'project-board', requirement_id: 'REQ-BOARD-TASK',
+      detail_level: 'detail',
+    }));
+    expect(taskFromBoard.data).toMatchObject({
+      relatedPlanCount: 1, relatedPlansTruncated: false, planDetailOperation: 'plan_get',
+      relatedPlans: [{
+        planId: 'PLAN-BOARD-TASK', repoId: repository.repoId, requirementId: 'REQ-BOARD-TASK',
+        revision: 1, current: true, goal: 'Implement the board task in a linked Plan.',
+      }],
+    });
+    const navigatedPlan = structured(await callRuntimeTool(board, 'rh_work', {
+      repo_id: taskFromBoard.data.relatedPlans[0].repoId,
+      operation: 'plan_get', plan_id: taskFromBoard.data.relatedPlans[0].planId,
+    }));
+    expect(navigatedPlan.data.plan).toMatchObject({ planId: 'PLAN-BOARD-TASK', requirementId: 'REQ-BOARD-TASK' });
+    const updatedPlan = structured(await callRuntimeTool(board, 'rh_work', {
+      repo_id: taskFromBoard.data.relatedPlans[0].repoId,
+      operation: 'plan_revise', plan_id: 'PLAN-BOARD-TASK', expected_revision: 1,
+      objective: 'Deliver and validate the board task.',
+    }));
+    expect(updatedPlan.status).toBe('ok');
+    const refreshedTaskFromBoard = structured(await callRuntimeTool(board, 'rh_work', {
+      operation: 'requirement_get', project_id: 'project-board', requirement_id: 'REQ-BOARD-TASK',
+      detail_level: 'detail',
+    }));
+    expect(refreshedTaskFromBoard.data.relatedPlans[0]).toMatchObject({
+      revision: 2, goal: 'Deliver and validate the board task.',
+    });
     const repeated = structured(await callRuntimeTool(repositoryContext, 'rh_work', {
       ...newTask, project_id: 'project-board',
     }));

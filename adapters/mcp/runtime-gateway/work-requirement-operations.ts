@@ -6,6 +6,8 @@ import { readForgeInstanceIdentity } from '../../../packages/kernel/identity/api
 import { listAllProjectIdentities, listProjectPlacements, resolveProjectForRepositoryPlacement } from '../../../src/runtime/control-plane/workspace/workspace-store';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { result } from './result-adapter';
+import { isCurrentPlanContract, planSemanticView, readPlanContractStore } from '../../../src/runtime/control-plane/facade/plan-contract-store';
+import { SEMANTIC_SCOPE_KEY } from '../../../src/effects/controller-home';
 
 const RH_WORK_REQUIREMENT_OPERATIONS = new Set([
   'requirement_create',
@@ -101,7 +103,7 @@ export async function callRhWorkRequirementOperation(
     const normalizedSearchQuery = searchQuery.toLowerCase();
     const dependencyFilter = typeof args.dependency_filter === 'string' ? args.dependency_filter : '';
     if (dependencyFilter && dependencyFilter !== 'blocked' && dependencyFilter !== 'unblocked') {
-      return result(buildFacadeResult({ status: 'blocked', summary: 'REQUIREMENT_DEPENDENCY_FILTER_INVALID.' }) as unknown as Record<string, unknown>, true);
+      return result(buildFacadeResult({ status: 'blocked', summary: 'REQUIREMENT_DEPENDENCY_FILTER_INVALID.', data: { dependencyFilter } }) as unknown as Record<string, unknown>, true);
     }
     const blockers = (dependencyIds: readonly string[]) =>
       blockingRequirementIds({ controllerHome: ctx.controllerHome }, dependencyIds);
@@ -199,6 +201,27 @@ export async function callRhWorkRequirementOperation(
     }) as unknown as Record<string, unknown>, true);
     const semantic = requirementSemanticView(record.value);
     const blockingDependencies = blockingRequirementIds({ controllerHome: ctx.controllerHome }, semantic.dependsOnRequirementIds);
+    // The task owns no duplicate Plan relationship: Plan.requirementId is canonical.
+    // A global Project-board read resolves the selected task's actual repository.
+    const relatedPlans = args.detail_level === 'detail'
+      ? readPlanContractStore({
+          controllerHome: ctx.controllerHome,
+          ...(semantic.repoId ? { repoId: semantic.repoId } : { scopeKey: SEMANTIC_SCOPE_KEY }),
+        }).contracts
+          .filter((plan) => plan.requirementId === semantic.requirementId)
+          .map((plan) => {
+            const view = planSemanticView(plan);
+            return {
+              planId: view.planId, requirementId: semantic.requirementId,
+              ...(semantic.repoId ? { repoId: semantic.repoId } : {}),
+              revision: view.revision, goal: view.goal.slice(0, 240),
+              current: isCurrentPlanContract(plan), updatedAt: view.updatedAt,
+              ...(view.parentPlanId ? { parentPlanId: view.parentPlanId } : {}),
+              ...(view.supersededBy ? { supersededBy: view.supersededBy } : {}),
+            };
+          })
+          .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.planId.localeCompare(right.planId))
+      : undefined;
     const revisionHistory = args.detail_level === 'detail'
       ? listRequirementRevisionRecords({ controllerHome: ctx.controllerHome }, requirementId, 20)
       : undefined;
@@ -224,6 +247,8 @@ export async function callRhWorkRequirementOperation(
         requirement: { ...semantic, blockingDependencyIds: blockingDependencies, ...(projectId || requestedProjectId ? { projectId: projectId ?? requestedProjectId } : {}) },
         ...(revisionHistory ? { revisionHistory } : {}),
         ...(dependencyRequirements ? { dependencyRequirements } : {}),
+        ...(relatedPlans ? { relatedPlans: relatedPlans.slice(0, 20), relatedPlanCount: relatedPlans.length,
+          relatedPlansTruncated: relatedPlans.length > 20, planDetailOperation: 'plan_get' } : {}),
         progress: {
           source: 'requirement',
           summary: semantic.progressSummary,
