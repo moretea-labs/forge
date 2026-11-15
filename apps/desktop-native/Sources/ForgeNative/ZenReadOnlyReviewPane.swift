@@ -52,11 +52,23 @@ struct ZenReadOnlyReviewPane: View {
             }
         }
         .frame(maxWidth:.infinity,alignment:.leading)
-        .task(id:record.id + providers.joined(separator:"|")) { await run() }
+        .task(id:Self.reviewRequestIdentity(
+            repoId:model.repoId,checkoutId:model.checkoutId,
+            recordId:record.id,role:role,focus:focus,providers:providers
+        )) { await run() }
         .onDisappear { cancelReview() }
         .accessibilityIdentifier("zen.review.readonly.results")
     }
 
+
+    // The review is scoped to a specific workspace and review intention.
+    // Changing any input cancels the previous SwiftUI task and starts fresh.
+    static func reviewRequestIdentity(
+        repoId:String?,checkoutId:String?,recordId:String,
+        role:String,focus:String,providers:[String]
+    ) -> [String] {
+        [repoId ?? "",checkoutId ?? "",recordId,role,focus] + providers
+    }
 
     // Keep the security-critical API transport contract in one testable path.
     // The model can only use tools exposed by the native helper; false is a
