@@ -97,11 +97,28 @@ export async function callRhWorkRequirementOperation(
     const revisionHistory = args.detail_level === 'detail'
       ? listRequirementRevisionRecords({ controllerHome: ctx.controllerHome }, requirementId, 20)
       : undefined;
+    const dependencyRequirements = args.detail_level === 'detail'
+      ? semantic.dependsOnRequirementIds.map((dependencyId) => {
+          const dependency = readRequirement({ controllerHome: ctx.controllerHome }, dependencyId)?.value;
+          if (!dependency) return { requirementId: dependencyId, missing: true };
+          const dependencySemantic = requirementSemanticView(dependency);
+          return {
+            requirementId: dependencySemantic.requirementId,
+            title: dependencySemantic.title,
+            status: dependencySemantic.status,
+            revision: dependencySemantic.revision,
+            ...(dependencySemantic.repoId ? { repoId: dependencySemantic.repoId } : {}),
+            ...(dependencySemantic.priority ? { priority: dependencySemantic.priority } : {}),
+            ...(dependencySemantic.assignee ? { assignee: dependencySemantic.assignee } : {}),
+          };
+        })
+      : undefined;
     return result(buildFacadeResult({
       summary: `Requirement ${semantic.requirementId} retrieved at semantic revision ${semantic.revision}.`,
       data: {
         requirement: { ...semantic, ...(projectId ? { projectId } : {}) },
         ...(revisionHistory ? { revisionHistory } : {}),
+        ...(dependencyRequirements ? { dependencyRequirements } : {}),
         progress: {
           source: 'requirement',
           summary: semantic.progressSummary,

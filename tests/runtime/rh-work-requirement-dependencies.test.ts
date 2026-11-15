@@ -55,16 +55,21 @@ describe('rh_work Requirement dependencies', () => {
     const listed = await callRhWorkRequirementOperation(context, undefined, 'requirement_list', { limit: 20 });
     const listResponse = listed?.structuredContent as { data?: { requirements?: Array<{ requirementId: string; dependencyCount: number }> } } | undefined;
     expect(listResponse?.data?.requirements?.find((row) => row.requirementId === 'task-a')?.dependencyCount).toBe(1);
-    const detailed = await callRhWorkRequirementOperation(context, undefined, 'requirement_get', {
+    const repositoryA = { repoId: 'repo-a' };
+    const detailed = await callRhWorkRequirementOperation(context, repositoryA, 'requirement_get', {
       requirement_id: 'task-a', detail_level: 'detail',
     });
     const detailResponse = detailed?.structuredContent as {
       data?: {
         requirement?: { dependsOnRequirementIds?: string[] };
+        dependencyRequirements?: Array<{ requirementId: string; title?: string; status?: string; revision?: number; repoId?: string; missing?: boolean }>;
         revisionHistory?: Array<{ revision: number; dependsOnRequirementIds: string[] }>;
       };
     } | undefined;
     expect(detailResponse?.data?.requirement?.dependsOnRequirementIds).toEqual(['task-b']);
+    expect(detailResponse?.data?.dependencyRequirements).toEqual([{
+      requirementId: 'task-b', title: 'Task task-b', status: 'planned', revision: 2, repoId: 'repo-b',
+    }]);
     expect(detailResponse?.data?.revisionHistory?.[0]?.dependsOnRequirementIds).toEqual([]);
 
     createTask('task-cancelled', 'repo-cancelled');
@@ -94,6 +99,15 @@ describe('rh_work Requirement dependencies', () => {
     ]);
 
     reviseRequirementSemantic({ controllerHome }, 'task-b', { expectedRevision: 2, status: 'cancelled' });
+    const cancelledDependencyDetail = await callRhWorkRequirementOperation(context, repositoryA, 'requirement_get', {
+      requirement_id: 'task-a', detail_level: 'detail',
+    });
+    const cancelledDependencyResponse = cancelledDependencyDetail?.structuredContent as {
+      data?: { dependencyRequirements?: Array<{ requirementId: string; status?: string }> };
+    } | undefined;
+    expect(cancelledDependencyResponse?.data?.dependencyRequirements?.[0]).toMatchObject({
+      requirementId: 'task-b', status: 'cancelled',
+    });
     const editedAfterDependencyCancellation = reviseRequirementSemantic({ controllerHome }, 'task-a', {
       expectedRevision: 2,
       title: 'Task task-a remains editable after a dependency is cancelled',
