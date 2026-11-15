@@ -19,7 +19,7 @@ function fixture(targetPackageRoot?: string): { home: string; packageRoot: strin
   const home = join(root, 'home');
   const packageRoot = targetPackageRoot ?? join(root, 'package-source');
   mkdirSync(packageRoot, { recursive: true });
-  for (const dir of ['src/cli', 'src/cli/runtime', 'src/cli/github', 'src/runtime/root', 'src/runtime/shared', 'src/runtime/execution/process-runtime', 'src/runtime/plugins', 'adapters/mcp/runtime-gateway', 'packages/kernel/scheduler/api', 'bin', 'assets', 'scripts']) {
+  for (const dir of ['src/cli', 'src/cli/runtime', 'src/cli/github', 'src/cli/local-bridge', 'src/runtime/root', 'src/runtime/shared', 'src/runtime/execution/process-runtime', 'src/runtime/plugins', 'src/runtime/local-bridge', 'adapters/mcp/runtime-gateway', 'packages/kernel/scheduler/api', 'bin', 'assets', 'scripts']) {
     mkdirSync(join(packageRoot, dir), { recursive: true });
   }
   writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
@@ -28,7 +28,10 @@ function fixture(targetPackageRoot?: string): { home: string; packageRoot: strin
   writeFileSync(join(packageRoot, 'adapters', 'mcp', 'adapter.ts'), 'export const adapter = 1;\n');
   writeFileSync(join(packageRoot, 'adapters', 'mcp', 'runtime-gateway', 'context-pack-sidecar.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge context-pack release canary'); process.exit(0); } process.exit(2);\n");
   writeFileSync(join(packageRoot, 'packages', 'kernel', 'scheduler', 'api', 'index.ts'), 'export const scheduler = 1;\n');
-  writeFileSync(join(packageRoot, 'src', 'cli', 'runtime', 'entry.ts'), "import { adapter } from '../../../adapters/mcp/adapter';\nimport { scheduler } from '../../../packages/kernel/scheduler/api';\nprocess.exit(adapter === 1 && scheduler === 1 ? 0 : 1);\n");
+  writeFileSync(join(packageRoot, 'src', 'cli', 'runtime', 'entry.ts'), "import { adapter } from '../../../adapters/mcp/adapter';\nimport { scheduler } from '../../../packages/kernel/scheduler/api';\nimport { localBridgeRuntime } from '../local-bridge/runtime-bridge';\nprocess.exit(adapter === 1 && scheduler === 1 && localBridgeRuntime === 2 ? 0 : 1);\n");
+  writeFileSync(join(packageRoot, 'src', 'cli', 'local-bridge', 'job-store.ts'), 'export const localBridgeJobStore = 1;\n');
+  writeFileSync(join(packageRoot, 'src', 'runtime', 'local-bridge', 'lifecycle.ts'), 'export const localBridgeLifecycle = 1;\n');
+  writeFileSync(join(packageRoot, 'src', 'cli', 'local-bridge', 'runtime-bridge.ts'), "import { localBridgeJobStore } from './job-store';\nimport { localBridgeLifecycle } from '../../runtime/local-bridge/lifecycle';\nexport const localBridgeRuntime = localBridgeJobStore + localBridgeLifecycle;\n");
   writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), 'export async function load(url, context, nextLoad) { return nextLoad(url, context); }\n');
   writeFileSync(join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime', 'process-runner-entry.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge process-runner release canary'); process.exit(0); } process.exit(2);\n");
   writeFileSync(join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime', 'check-runner-sidecar.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge check-runner release canary'); process.exit(0); } process.exit(2);\n");
@@ -56,6 +59,9 @@ describe('package Runtime release immutability', () => {
     expect(release.packageRoot).toBe(join(release.releaseRoot, 'package'));
     expect(readFileSync(join(release.packageRoot, 'src', 'runtime.ts'), 'utf8')).toBe('export const runtime = 1;\n');
     expect(existsSync(join(release.packageRoot, 'src', 'cli', 'github', 'plugin-action-sidecar.ts'))).toBe(true);
+    expect(readFileSync(join(release.packageRoot, 'src', 'cli', 'local-bridge', 'job-store.ts'), 'utf8')).toBe('export const localBridgeJobStore = 1;\n');
+    expect(readFileSync(join(release.packageRoot, 'src', 'runtime', 'local-bridge', 'lifecycle.ts'), 'utf8')).toBe('export const localBridgeLifecycle = 1;\n');
+    expect(readFileSync(join(release.packageRoot, 'src', 'cli', 'local-bridge', 'runtime-bridge.ts'), 'utf8')).toContain('localBridgeJobStore');
     expect(existsSync(join(release.packageRoot, 'src', 'runtime', 'plugins', 'plugin-action-sidecar.ts'))).toBe(false);
     expect(readFileSync(join(release.packageRoot, 'adapters', 'mcp', 'adapter.ts'), 'utf8')).toBe('export const adapter = 1;\n');
     expect(readFileSync(join(release.packageRoot, 'packages', 'kernel', 'scheduler', 'api', 'index.ts'), 'utf8')).toBe('export const scheduler = 1;\n');

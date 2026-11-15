@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
-import { ensureControllerHome } from '../../../effects/controller-home';
-import { getExecutionJob, heartbeatExecutionJob, transitionExecutionJobFromWorker } from '../jobs/store';
-import { assertFencingToken, releaseExecutionLeases, renewExecutionLeases } from '../../resources/leases/store';
-import { recordExecutionEvidence } from '../../evidence/evidence-store';
-import { boundExecutionResult } from '../../evidence/artifact-store';
-import { executeExecutionJob } from './executor';
+import { ensureControllerHome } from '../../effects/controller-home';
+import { getExecutionJob, heartbeatExecutionJob, transitionExecutionJobFromWorker } from '../../runtime/execution/jobs/store';
+import { assertFencingToken, releaseExecutionLeases, renewExecutionLeases } from '../../runtime/resources/leases/store';
+import { recordExecutionEvidence } from '../../runtime/evidence/evidence-store';
+import { boundExecutionResult } from '../../runtime/evidence/artifact-store';
+import { executeExecutionJob } from '../../runtime/execution/workers/executor';
+import { dispatchLocalBridgeJob, getLocalBridgeJob } from '../local-bridge/job-store';
 import {
   buildDelegatedExecutionResult,
   childReferenceFromJob,
@@ -13,12 +14,12 @@ import {
   hasDurableChildReference,
   isAgentDelegationOperation,
   mergeChildReferences,
-} from '../jobs/child-reference';
-import { markOperationCompleted, markOperationStarted, operationReceiptMatchesJobOwnership, readOperationReceipt } from '../jobs/receipt-store';
-import { markScheduledExecutionRunning } from '../../../../packages/kernel/scheduler/api/index';
-import { invalidateExecutionWorker } from './ownership';
-import { markRepositoryProjectionDirty } from '../../projections/invalidation';
-import { bindInheritedRuntimeWriteClaimFromEnvironment } from '../../root/write-fence';
+} from '../../runtime/execution/jobs/child-reference';
+import { markOperationCompleted, markOperationStarted, operationReceiptMatchesJobOwnership, readOperationReceipt } from '../../runtime/execution/jobs/receipt-store';
+import { markScheduledExecutionRunning } from '../../../packages/kernel/scheduler/api/index';
+import { invalidateExecutionWorker } from '../../runtime/execution/workers/ownership';
+import { markRepositoryProjectionDirty } from '../../runtime/projections/invalidation';
+import { bindInheritedRuntimeWriteClaimFromEnvironment } from '../../runtime/root/write-fence';
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -165,7 +166,10 @@ async function main(): Promise<void> {
   heartbeat.unref();
 
   executionStarted = true;
-  const execution = await executeExecutionJob(controllerHome, job);
+  const execution = await executeExecutionJob(controllerHome, job, {
+    getJob: getLocalBridgeJob,
+    dispatchJob: dispatchLocalBridgeJob,
+  });
   const current = getExecutionJob(controllerHome, repoId, jobId);
   const completionInvalidation = invalidateExecutionWorker(controllerHome, repoId, jobId, {
     workerPid: process.pid,
