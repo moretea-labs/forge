@@ -1,9 +1,9 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { admitRequirement, listRequirementsForRepository, promoteRequirementCandidate } from '../../../src/runtime/control-plane/facade/requirement-authority';
-import { listRequirementRevisionRecords, readRequirement, requirementSemanticView, reviseRequirementSemantic, type RequirementPriority, type RequirementState } from '../../../src/runtime/control-plane/persistence/requirement-store';
+import { admitRequirement, listRequirementsForProject, listRequirementsForRepository, promoteRequirementCandidate } from '../../../src/runtime/control-plane/facade/requirement-authority';
+import { listRequirementRevisionRecords, listRequirements, readRequirement, requirementSemanticView, reviseRequirementSemantic, REQUIREMENT_PRIORITIES, REQUIREMENT_STATES, type RequirementPriority, type RequirementState } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import { readForgeInstanceIdentity } from '../../../packages/kernel/identity/api/index';
-import { resolveProjectForRepositoryPlacement } from '../../../src/runtime/control-plane/workspace/workspace-store';
+import { listAllProjectIdentities, listProjectPlacements, resolveProjectForRepositoryPlacement } from '../../../src/runtime/control-plane/workspace/workspace-store';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { result } from './result-adapter';
 
@@ -31,6 +31,23 @@ function projectIdForRepository(ctx: MultiRepositoryMcpToolContext, repository: 
   })?.projectId;
 }
 
+/** Project board reads and edits must use the same task membership as Project detail. */
+function requirementInSelectedScope(
+  ctx: MultiRepositoryMcpToolContext,
+  repository: { repoId: string } | undefined,
+  requirementId: string,
+  requestedProjectId: string,
+) {
+  if (!requirementId) return undefined;
+  const record = repository?.repoId
+    ? listRequirementsForRepository({ controllerHome: ctx.controllerHome }, repository.repoId, 1000)
+      .find((candidate) => candidate.value.requirementId === requirementId)
+    : readRequirement({ controllerHome: ctx.controllerHome }, requirementId);
+  if (!record || !requestedProjectId) return record;
+  return listRequirementsForProject({ controllerHome: ctx.controllerHome }, requestedProjectId, 1000)
+    .some((candidate) => candidate.value.requirementId === requirementId) ? record : undefined;
+}
+
 export async function callRhWorkRequirementOperation(
   ctx: MultiRepositoryMcpToolContext,
   repository: { repoId: string; activeCheckoutId?: string } | undefined,
@@ -41,36 +58,115 @@ export async function callRhWorkRequirementOperation(
 
   if (operation === 'requirement_list') {
     const limit = Math.max(1, Math.min(Math.trunc(typeof args.limit === 'number' ? args.limit : 20), 100));
+    const offset = Math.max(0, Math.min(Math.trunc(typeof args.offset === 'number' && Number.isFinite(args.offset) ? args.offset : 0), 100_000));
+    const requestedProjectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
     const projectId = projectIdForRepository(ctx, repository);
-    const requirements = listRequirementsForRepository(
-      { controllerHome: ctx.controllerHome },
-      repository?.repoId,
-      500,
-    )
+    if (repository && requestedProjectId && requestedProjectId !== projectId) {
+      return result(buildFacadeResult({
+        status: 'blocked',
+        summary: `REQUIREMENT_PROJECT_SCOPE_CONFLICT:${requestedProjectId}`,
+        data: { requestedProjectId, repositoryId: repository.repoId, selectedProjectId: projectId },
+      }) as unknown as Record<string, unknown>, true);
+    }
+
+    let records;
+    if (repository && requestedProjectId) {
+      records = listRequirementsForProject({ controllerHome: ctx.controllerHome }, requestedProjectId, 1000);
+    } else if (repository) {
+      records = listRequirementsForRepository({ controllerHome: ctx.controllerHome }, repository.repoId, 1000);
+    } else if (requestedProjectId) {
+      const projects = listAllProjectIdentities(ctx.controllerHome);
+      if (projects.length >= 1000) throw new Error('PROJECT_IDENTITY_LOOKUP_LIMIT');
+      const matches = projects.filter(({ value }) => value.projectId === requestedProjectId);
+      if (matches.length > 1) throw new Error(`PROJECT_IDENTITY_AMBIGUOUS: ${requestedProjectId}`);
+      if (!matches.length) return result(buildFacadeResult({
+        status: 'not_found', summary: `Project ${requestedProjectId} not found.`, data: { projectId: requestedProjectId },
+      }) as unknown as Record<string, unknown>, true);
+      records = listRequirementsForProject({ controllerHome: ctx.controllerHome }, requestedProjectId, 1000);
+    } else {
+      records = listRequirements({ controllerHome: ctx.controllerHome }, 1000);
+    }
+    if (records.length >= 1000) throw new Error('REQUIREMENT_LIST_LOOKUP_LIMIT');
+
+    const statusFilter = typeof args.requirement_status === 'string' ? args.requirement_status.trim() : '';
+    if (statusFilter && !(REQUIREMENT_STATES as readonly string[]).includes(statusFilter)) {
+      return result(buildFacadeResult({ status: 'blocked', summary: 'REQUIREMENT_STATUS_FILTER_INVALID.', data: { statusFilter } }) as unknown as Record<string, unknown>, true);
+    }
+    const priorityFilter = typeof args.requirement_priority === 'string' ? args.requirement_priority.trim() : '';
+    if (priorityFilter && !(REQUIREMENT_PRIORITIES as readonly string[]).includes(priorityFilter)) {
+      return result(buildFacadeResult({ status: 'blocked', summary: 'REQUIREMENT_PRIORITY_FILTER_INVALID.', data: { priorityFilter } }) as unknown as Record<string, unknown>, true);
+    }
+    const assigneeFilter = typeof args.requirement_assignee === 'string' ? args.requirement_assignee.trim() : '';
+    const searchQuery = typeof args.search_query === 'string' ? args.search_query.trim() : '';
+    const normalizedSearchQuery = searchQuery.toLowerCase();
+    const sortBy = typeof args.sort_by === 'string' ? args.sort_by : 'updated_at';
+    const sortOrder = typeof args.sort_order === 'string' ? args.sort_order : 'desc';
+    if (!['updated_at', 'created_at', 'priority', 'status', 'title'].includes(sortBy)
+      || !['asc', 'desc'].includes(sortOrder)) {
+      return result(buildFacadeResult({
+        status: 'blocked', summary: 'REQUIREMENT_SORT_INVALID.', data: { sortBy, sortOrder },
+      }) as unknown as Record<string, unknown>, true);
+    }
+
+    const priorityRank = new Map(REQUIREMENT_PRIORITIES.map((value, index) => [value, index]));
+    const statusRank = new Map(REQUIREMENT_STATES.map((value, index) => [value, index]));
+    const direction = sortOrder === 'asc' ? 1 : -1;
+    const filtered = records
       .map((record) => requirementSemanticView(record.value))
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .slice(0, limit)
-      .map((semantic) => ({
-        requirementId: semantic.requirementId,
-        revision: semantic.revision,
-        ...(semantic.repoId ? { repoId: semantic.repoId } : {}),
-        title: semantic.title.slice(0, 240),
-        outcomeStatement: semantic.outcomeStatement.slice(0, 500),
-        state: semantic.state,
-        status: semantic.status,
-        ...(semantic.priority ? { priority: semantic.priority } : {}),
-        ...(semantic.assignee ? { assignee: semantic.assignee } : {}),
-        dependencyCount: semantic.dependsOnRequirementIds.length,
-        legacyAliases: semantic.legacyAliases,
-        ...(semantic.projectId || projectId ? { projectId: semantic.projectId ?? projectId } : {}),
-        updatedAt: semantic.updatedAt,
-      }));
+      .filter((semantic) => (!statusFilter || semantic.status === statusFilter)
+        && (!priorityFilter || semantic.priority === priorityFilter)
+        && (!assigneeFilter || semantic.assignee === assigneeFilter)
+        && (!normalizedSearchQuery || [semantic.requirementId, semantic.title, semantic.outcomeStatement,
+          semantic.projectId ?? '', ...semantic.legacyAliases]
+          .some((value) => value.toLowerCase().includes(normalizedSearchQuery))))
+      .sort((left, right) => {
+        let compared = 0;
+        if (sortBy === 'updated_at') compared = left.updatedAt.localeCompare(right.updatedAt);
+        else if (sortBy === 'created_at') compared = left.createdAt.localeCompare(right.createdAt);
+        else if (sortBy === 'priority') compared = (left.priority ? priorityRank.get(left.priority) ?? -1 : -1) - (right.priority ? priorityRank.get(right.priority) ?? -1 : -1);
+        else if (sortBy === 'status') compared = (statusRank.get(left.status) ?? -1) - (statusRank.get(right.status) ?? -1);
+        else compared = left.title.localeCompare(right.title);
+        return compared === 0 ? left.requirementId.localeCompare(right.requirementId) : compared * direction;
+      });
+    const totalCount = filtered.length;
+    const requirements = filtered.slice(offset, offset + limit).map((semantic) => ({
+      requirementId: semantic.requirementId,
+      revision: semantic.revision,
+      ...(semantic.repoId ? { repoId: semantic.repoId } : {}),
+      title: semantic.title.slice(0, 240),
+      outcomeStatement: semantic.outcomeStatement.slice(0, 500),
+      state: semantic.state,
+      status: semantic.status,
+      ...(semantic.priority ? { priority: semantic.priority } : {}),
+      ...(semantic.assignee ? { assignee: semantic.assignee } : {}),
+      progressSummary: semantic.progressSummary.slice(0, 500),
+      remainingWorkCount: semantic.remainingWork.length,
+      acceptedEvidenceCount: semantic.acceptedEvidenceRefs.length,
+      dependencyCount: semantic.dependsOnRequirementIds.length,
+      legacyAliases: semantic.legacyAliases,
+      ...(semantic.projectId || projectId || requestedProjectId ? { projectId: semantic.projectId ?? projectId ?? requestedProjectId } : {}),
+      createdAt: semantic.createdAt,
+      updatedAt: semantic.updatedAt,
+    }));
     return result(buildFacadeResult({
-      summary: `${requirements.length} canonical Requirement(s); use requirement_get for full semantic context.`,
+      summary: `${totalCount} canonical Requirement(s) match the selected Project and filters; returning ${requirements.length} from offset ${offset}.`,
       data: {
         requirements,
         bounded: true,
         limit,
+        offset,
+        totalCount,
+        hasMore: offset + requirements.length < totalCount,
+        requirementsTruncated: offset + requirements.length < totalCount,
+        sortBy,
+        sortOrder,
+        filters: {
+          ...(requestedProjectId ? { projectId: requestedProjectId } : {}),
+          ...(statusFilter ? { status: statusFilter } : {}),
+          ...(priorityFilter ? { priority: priorityFilter } : {}),
+          ...(assigneeFilter ? { assignee: assigneeFilter } : {}),
+          ...(searchQuery ? { searchQuery } : {}),
+        },
         authority: 'semantic_context_only',
         progressAuthority: 'github_issue_project',
         detailOperation: 'requirement_get',
@@ -80,21 +176,19 @@ export async function callRhWorkRequirementOperation(
 
   if (operation === 'requirement_get') {
     const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
-    const record = requirementId
-      ? repository?.repoId
-        ? listRequirementsForRepository({ controllerHome: ctx.controllerHome }, repository.repoId, 1000)
-            .find((candidate) => candidate.value.requirementId === requirementId)
-        : readRequirement({ controllerHome: ctx.controllerHome }, requirementId)
-      : undefined;
+    const requestedProjectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
+    const projectId = projectIdForRepository(ctx, repository);
+    if (repository && requestedProjectId && requestedProjectId !== projectId) return result(buildFacadeResult({
+      status: 'blocked', summary: `REQUIREMENT_PROJECT_SCOPE_CONFLICT:${requestedProjectId}`,
+      data: { requirementId, requestedProjectId, repositoryId: repository.repoId, selectedProjectId: projectId },
+    }) as unknown as Record<string, unknown>, true);
+    const record = requirementInSelectedScope(ctx, repository, requirementId, requestedProjectId);
     if (!record) return result(buildFacadeResult({
       status: 'not_found',
-      summary: repository?.repoId
-        ? `Requirement ${requirementId || '(missing)'} not found in repository ${repository.repoId}.`
-        : `Requirement ${requirementId || '(missing)'} not found.`,
-      data: { requirementId, ...(repository?.repoId ? { repoId: repository.repoId } : {}) },
+      summary: `Requirement ${requirementId || '(missing)'} not found in the selected ${requestedProjectId ? 'Project' : repository ? 'repository' : 'scope'}.`,
+      data: { requirementId, ...(requestedProjectId ? { projectId: requestedProjectId } : {}), ...(repository?.repoId ? { repoId: repository.repoId } : {}) },
     }) as unknown as Record<string, unknown>, true);
     const semantic = requirementSemanticView(record.value);
-    const projectId = projectIdForRepository(ctx, repository);
     const revisionHistory = args.detail_level === 'detail'
       ? listRequirementRevisionRecords({ controllerHome: ctx.controllerHome }, requirementId, 20)
       : undefined;
@@ -117,7 +211,7 @@ export async function callRhWorkRequirementOperation(
     return result(buildFacadeResult({
       summary: `Requirement ${semantic.requirementId} retrieved at semantic revision ${semantic.revision}.`,
       data: {
-        requirement: { ...semantic, ...(projectId ? { projectId } : {}) },
+        requirement: { ...semantic, ...(projectId || requestedProjectId ? { projectId: projectId ?? requestedProjectId } : {}) },
         ...(revisionHistory ? { revisionHistory } : {}),
         ...(dependencyRequirements ? { dependencyRequirements } : {}),
         progress: {
@@ -134,6 +228,16 @@ export async function callRhWorkRequirementOperation(
   if (operation === 'requirement_revise') {
     const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
     const expectedRevision = Number(args.expected_revision);
+    const requestedProjectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
+    const selectedProjectId = projectIdForRepository(ctx, repository);
+    if (repository && requestedProjectId && requestedProjectId !== selectedProjectId) return result(buildFacadeResult({
+      status: 'blocked', summary: `REQUIREMENT_PROJECT_SCOPE_CONFLICT:${requestedProjectId}`,
+      data: { requirementId, requestedProjectId, repositoryId: repository.repoId, selectedProjectId },
+    }) as unknown as Record<string, unknown>, true);
+    if (requestedProjectId && !requirementInSelectedScope(ctx, repository, requirementId, requestedProjectId)) return result(buildFacadeResult({
+      status: 'blocked', summary: `REQUIREMENT_NOT_IN_PROJECT:${requirementId}:${requestedProjectId}`,
+      data: { requirementId, projectId: requestedProjectId, expectedRevision },
+    }) as unknown as Record<string, unknown>, true);
     const hasSemanticUpdate = typeof args.requirement_title === 'string'
       || typeof args.requirement_outcome === 'string'
       || Array.isArray(args.requirement_acceptance_criteria)
@@ -178,7 +282,7 @@ export async function callRhWorkRequirementOperation(
       const projectId = projectIdForRepository(ctx, repository);
       return result(buildFacadeResult({
         summary: `Requirement ${semantic.requirementId} revised atomically to semantic revision ${semantic.revision}.`,
-        data: { requirement: { ...semantic, ...(projectId ? { projectId } : {}) }, expectedRevision, semanticRevision: semantic.revision },
+        data: { requirement: { ...semantic, ...(projectId || requestedProjectId ? { projectId: projectId ?? requestedProjectId } : {}) }, expectedRevision, semanticRevision: semantic.revision },
       }) as unknown as Record<string, unknown>);
     } catch (error) {
       const current = requirementId ? readRequirement({ controllerHome: ctx.controllerHome }, requirementId)?.value : undefined;
@@ -203,10 +307,21 @@ export async function callRhWorkRequirementOperation(
     const requestedProjectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
     const selectedProjectId = projectIdForRepository(ctx, repository);
     if (repository && requestedProjectId && requestedProjectId !== selectedProjectId) throw new Error(`REQUIREMENT_PROJECT_SCOPE_CONFLICT:${requestedProjectId}`);
+    let placedRepositoryId = repository?.repoId;
+    if (!placedRepositoryId && requestedProjectId) {
+      const instance = readForgeInstanceIdentity(ctx.controllerHome);
+      if (instance) {
+        const placements = listProjectPlacements(ctx.controllerHome, instance.instanceId);
+        if (placements.length >= 1000) throw new Error('PROJECT_PLACEMENT_LOOKUP_LIMIT');
+        const matches = placements.filter(({ value }) => value.projectId === requestedProjectId);
+        if (matches.length > 1) throw new Error(`PROJECT_PLACEMENT_AMBIGUOUS:${requestedProjectId}`);
+        placedRepositoryId = matches[0]?.value.repositoryId;
+      }
+    }
     const requirementInput = {
       requirementId,
-      ...(repository?.repoId ? { repoId: repository.repoId } : {}),
-      ...(!repository && requestedProjectId ? { projectId: requestedProjectId } : {}),
+      ...(placedRepositoryId ? { repoId: placedRepositoryId } : {}),
+      ...(!placedRepositoryId && requestedProjectId ? { projectId: requestedProjectId } : {}),
       title,
       outcomeStatement,
       acceptanceCriteria: Array.isArray(args.requirement_acceptance_criteria) ? args.requirement_acceptance_criteria.map(String) : [],
@@ -215,6 +330,7 @@ export async function callRhWorkRequirementOperation(
       ...(typeof args.requirement_assignee === 'string' ? { assignee: args.requirement_assignee } : {}),
       ...(typeof args.requirement_status === 'string' ? { status: args.requirement_status as RequirementState } : {}),
       legacyAliases: Array.isArray(args.requirement_legacy_aliases) ? args.requirement_legacy_aliases.map(String) : [],
+      dependsOnRequirementIds: Array.isArray(args.requirement_dependencies) ? args.requirement_dependencies.map(String) : [],
     };
     const admission = operation === 'requirement_promote_candidate'
       ? (() => {
@@ -245,7 +361,7 @@ export async function callRhWorkRequirementOperation(
         suggestedNextActions: [],
       }) as unknown as Record<string, unknown>, true);
     }
-    const projectId = projectIdForRepository(ctx, repository);
+    const projectId = selectedProjectId ?? requestedProjectId;
     return result(buildFacadeResult({
       summary: admission.decision === 'created'
         ? operation === 'requirement_promote_candidate'

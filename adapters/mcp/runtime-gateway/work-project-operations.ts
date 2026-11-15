@@ -4,8 +4,8 @@ import { ensureForgeInstanceIdentity, readForgeInstanceIdentity } from '../../..
 import type { ProjectIdentity, ProjectPlacement } from '../../../packages/kernel/identity/api/index';
 import { normalizeRemoteUrl, portableProjectSourceFingerprint, stablePortableProjectId } from '../../../src/core/repository/identity';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
-import { listRequirementsForRepository } from '../../../src/runtime/control-plane/facade/requirement-authority';
-import { listRequirements, requirementSemanticView } from '../../../src/runtime/control-plane/persistence/requirement-store';
+import { listRequirementsForProject } from '../../../src/runtime/control-plane/facade/requirement-authority';
+import { bindRequirementProjectPlacement, bindRequirementRepositoryPlacement, readRequirement, requirementSemanticView, REQUIREMENT_STATES, type RequirementState } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import {
   createProjectIdentity,
   DEFAULT_PERSONAL_WORKSPACE_ID,
@@ -20,7 +20,7 @@ import {
 } from '../../../src/runtime/control-plane/workspace/workspace-store';
 import { result } from './result-adapter';
 
-const RH_WORK_PROJECT_OPERATIONS = new Set(['project_create', 'project_list', 'project_get', 'project_revise']);
+const RH_WORK_PROJECT_OPERATIONS = new Set(['project_create', 'project_list', 'project_get', 'project_revise', 'project_attach_requirement']);
 
 type ProjectRecord = ReturnType<typeof listProjectIdentities>[number];
 type Repository = NonNullable<MultiRepositoryMcpToolContext['explicitRepository']>;
@@ -56,23 +56,21 @@ function projectView(ctx: MultiRepositoryMcpToolContext, record: ProjectRecord) 
   };
 }
 
-function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: string, placements: readonly ProjectPlacement[]) {
-  const requirementsById = new Map<string, ReturnType<typeof requirementSemanticView>>();
-  for (const record of listRequirements({ controllerHome: ctx.controllerHome }, 1000)) {
-    if (record.value.projectId === projectId) {
-      const requirement = requirementSemanticView(record.value);
-      requirementsById.set(requirement.requirementId, requirement);
-    }
-  }
-  for (const repoId of new Set(placements.map((placement) => placement.repositoryId))) {
-    for (const record of listRequirementsForRepository({ controllerHome: ctx.controllerHome }, repoId, 1000)) {
-      const requirement = requirementSemanticView(record.value);
-      requirementsById.set(requirement.requirementId, requirement);
-    }
-  }
-  const all = [...requirementsById.values()]
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.requirementId.localeCompare(right.requirementId));
+function projectTasks(ctx: MultiRepositoryMcpToolContext, projectId: string) {
+  return listRequirementsForProject({ controllerHome: ctx.controllerHome }, projectId, 1000)
+    .map((record) => requirementSemanticView(record.value));
+}
+
+function projectTaskSummary(tasks: ReturnType<typeof projectTasks>) {
+  const taskStatusCounts = Object.fromEntries(REQUIREMENT_STATES.map((status) => [status, 0])) as Record<RequirementState, number>;
+  for (const task of tasks) taskStatusCounts[task.status] += 1;
+  return { requirementCount: tasks.length, taskStatusCounts };
+}
+
+function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: string) {
+  const all = projectTasks(ctx, projectId);
   return {
+    ...projectTaskSummary(all),
     requirements: all.slice(0, 100).map((requirement) => ({
       requirementId: requirement.requirementId,
       revision: requirement.revision,
@@ -82,10 +80,12 @@ function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: stri
       status: requirement.status,
       ...(requirement.priority ? { priority: requirement.priority } : {}),
       ...(requirement.assignee ? { assignee: requirement.assignee } : {}),
+      progressSummary: requirement.progressSummary.slice(0, 500),
+      remainingWorkCount: requirement.remainingWork.length,
+      acceptedEvidenceCount: requirement.acceptedEvidenceRefs.length,
       dependencyCount: requirement.dependsOnRequirementIds.length,
       updatedAt: requirement.updatedAt,
     })),
-    requirementCount: all.length,
     requirementsTruncated: all.length > 100,
   };
 }
@@ -114,8 +114,11 @@ export function callRhWorkProjectOperation(
   try {
     if (operation === 'project_list') {
       const limit = Math.max(1, Math.min(Math.trunc(typeof args.limit === 'number' ? args.limit : 50), 100));
+      const offset = Math.max(0, Math.min(Math.trunc(typeof args.offset === 'number' && Number.isFinite(args.offset) ? args.offset : 0), 100_000));
       const workspaceId = text(args.workspace_id);
       const statusFilter = text(args.project_status);
+      const searchQuery = text(args.search_query);
+      const normalizedSearchQuery = searchQuery?.toLowerCase();
       if (statusFilter && statusFilter !== 'active' && statusFilter !== 'archived') return blocked('PROJECT_STATUS_INVALID.');
       if (workspaceId && !readWorkspaceIdentity(ctx.controllerHome, workspaceId)) {
         return result(buildFacadeResult({ status: 'not_found', summary: `Workspace ${workspaceId} not found.`, data: { workspaceId } }) as unknown as Record<string, unknown>, true);
@@ -124,14 +127,26 @@ export function callRhWorkProjectOperation(
         ? listProjectIdentities(ctx.controllerHome, workspaceId)
         : listAllProjectIdentities(ctx.controllerHome);
       if (records.length >= 1_000) throw new Error('PROJECT_IDENTITY_LOOKUP_LIMIT');
-      const projects = records
-        .filter(({ value }) => !statusFilter || (value.status ?? 'active') === statusFilter)
-        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-        .slice(0, limit)
-        .map((record) => projectView(ctx, record));
+      const filtered = records
+        .filter(({ value }) => (!statusFilter || (value.status ?? 'active') === statusFilter)
+          && (!normalizedSearchQuery || value.projectId.toLowerCase().includes(normalizedSearchQuery)
+            || value.displayName.toLowerCase().includes(normalizedSearchQuery)))
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)
+          || left.value.projectId.localeCompare(right.value.projectId));
+      const totalCount = filtered.length;
+      const projects = filtered.slice(offset, offset + limit).map((record) => ({
+        ...projectView(ctx, record),
+        ...projectTaskSummary(projectTasks(ctx, record.value.projectId)),
+      }));
+      const hasMore = offset + projects.length < totalCount;
       return result(buildFacadeResult({
-        summary: `Listed ${projects.length} Forge projects from canonical Project identity${statusFilter ? ` (${statusFilter})` : ''}.`,
-        data: { authority: 'project_semantic', bounded: true, limit, ...(statusFilter ? { statusFilter } : {}), projects },
+        summary: `Listed ${projects.length} of ${totalCount} Forge projects from canonical Project identity${statusFilter ? ` (${statusFilter})` : ''}${searchQuery ? ` matching "${searchQuery}"` : ''}, starting at offset ${offset}.`,
+        data: {
+          authority: 'project_semantic', bounded: true, limit, offset, totalCount,
+          hasMore, projectsTruncated: hasMore,
+          ...(statusFilter ? { statusFilter } : {}),
+          ...(searchQuery ? { searchQuery } : {}), projects,
+        },
       }) as unknown as Record<string, unknown>);
     }
 
@@ -190,8 +205,9 @@ export function callRhWorkProjectOperation(
       }) as unknown as Record<string, unknown>);
     }
 
+    if (!projectId) return blocked('PROJECT_ID_REQUIRED.');
     const workspaceId = text(args.workspace_id);
-    const record = findProject(ctx, projectId!, workspaceId);
+    const record = findProject(ctx, projectId, workspaceId);
     if (!record) {
       return result(buildFacadeResult({ status: 'not_found', summary: `Project ${projectId} not found.`, data: { projectId, ...(workspaceId ? { workspaceId } : {}) } }) as unknown as Record<string, unknown>, true);
     }
@@ -199,7 +215,7 @@ export function callRhWorkProjectOperation(
     if (operation === 'project_get') {
       const detailLevel = args.detail_level === 'detail' ? 'detail' : 'summary';
       const project = projectView(ctx, record);
-      const taskProjection = detailLevel === 'detail' ? projectRequirements(ctx, project.projectId, project.placements) : undefined;
+      const taskProjection = detailLevel === 'detail' ? projectRequirements(ctx, project.projectId) : undefined;
       const revisionHistory = detailLevel === 'detail'
         ? listProjectRevisionRecords(ctx.controllerHome, projectId!, 50)
         : undefined;
@@ -212,6 +228,120 @@ export function callRhWorkProjectOperation(
           ...(revisionHistory ? { revisionHistory } : {}),
         },
         detailLevel,
+      }) as unknown as Record<string, unknown>);
+    }
+
+    if (operation === 'project_attach_requirement') {
+      const requirementId = text(args.requirement_id);
+      if (!requirementId) return blocked('PROJECT_REQUIREMENT_ID_REQUIRED.');
+      const existing = readRequirement({ controllerHome: ctx.controllerHome }, requirementId);
+      if (!existing) {
+        return result(buildFacadeResult({
+          status: 'not_found',
+          summary: `Requirement ${requirementId} not found.`,
+          data: { projectId, requirementId },
+        }) as unknown as Record<string, unknown>, true);
+      }
+
+      const requirement = existing.value;
+      const placements = currentPlacements(ctx, projectId);
+      if (requirement.projectId) {
+        if (requirement.projectId !== projectId) {
+          return blocked(`REQUIREMENT_PROJECT_CONFLICT:${requirementId}:existing=${requirement.projectId}:requested=${projectId}`, {
+            requirementId, existingProjectId: requirement.projectId, projectId,
+          });
+        }
+        return result(buildFacadeResult({
+          summary: `Requirement ${requirementId} is already attached to Project ${projectId}; no task or semantic revision was created.`,
+          data: {
+            authority: 'project_semantic',
+            project: projectView(ctx, record),
+            requirement: { ...requirementSemanticView(requirement), projectId },
+            attachmentCreated: false,
+            attachmentStatus: 'already_attached',
+          },
+        }) as unknown as Record<string, unknown>);
+      }
+
+      if (requirement.repoId) {
+        if (!placements.some((placement) => placement.repositoryId === requirement.repoId)) {
+          return blocked(`REQUIREMENT_REPOSITORY_OUTSIDE_PROJECT:${requirementId}:repository=${requirement.repoId}:project=${projectId}`, {
+            requirementId, repositoryId: requirement.repoId, projectId,
+          });
+        }
+        return result(buildFacadeResult({
+          summary: `Requirement ${requirementId} is already attached to Project ${projectId} through repository ${requirement.repoId}.`,
+          data: {
+            authority: 'project_semantic',
+            project: projectView(ctx, record),
+            requirement: { ...requirementSemanticView(requirement), projectId },
+            repositoryId: requirement.repoId,
+            attachmentCreated: false,
+            attachmentStatus: 'already_attached',
+          },
+        }) as unknown as Record<string, unknown>);
+      }
+
+      if ((record.value.status ?? 'active') === 'archived') return blocked(`PROJECT_ARCHIVED:${projectId}`);
+      if (placements.length === 0) {
+        if (repository?.repoId) {
+          return blocked(`PROJECT_REPOSITORY_NOT_PLACED:${repository.repoId} is not attached to Project ${projectId}.`, {
+            projectId, requirementId, repositoryId: repository.repoId,
+          });
+        }
+        const updated = bindRequirementProjectPlacement(
+          { controllerHome: ctx.controllerHome },
+          requirementId,
+          projectId,
+        );
+        const attachmentCreated = updated.revision > existing.revision;
+        return result(buildFacadeResult({
+          summary: attachmentCreated
+            ? `Requirement ${requirementId} attached directly to standalone Project ${projectId}; its existing semantic state and history were preserved.`
+            : `Requirement ${requirementId} is already attached to Project ${projectId}; no duplicate task was created.`,
+          data: {
+            authority: 'project_semantic',
+            project: projectView(ctx, record),
+            requirement: requirementSemanticView(updated),
+            attachmentCreated,
+            attachmentStatus: attachmentCreated ? 'attached' : 'already_attached',
+          },
+        }) as unknown as Record<string, unknown>);
+      }
+
+      const selectedRepositoryId = repository?.repoId
+        ?? (placements.length === 1 ? placements[0].repositoryId : undefined);
+      if (!selectedRepositoryId) {
+        return blocked(placements.length === 0
+          ? 'PROJECT_REPOSITORY_PLACEMENT_REQUIRED: attach a repository to this Project before binding an existing Requirement.'
+          : 'PROJECT_REPOSITORY_SELECTION_REQUIRED: this Project has multiple repository placements; select repo_id to choose the Requirement placement.', {
+          projectId, requirementId, placementCount: placements.length,
+        });
+      }
+      if (!placements.some((placement) => placement.repositoryId === selectedRepositoryId)) {
+        return blocked(`PROJECT_REPOSITORY_NOT_PLACED:${selectedRepositoryId} is not attached to Project ${projectId}.`, {
+          projectId, requirementId, repositoryId: selectedRepositoryId,
+        });
+      }
+
+      const updated = bindRequirementRepositoryPlacement(
+        { controllerHome: ctx.controllerHome },
+        requirementId,
+        selectedRepositoryId,
+      );
+      const attachmentCreated = updated.revision > existing.revision;
+      return result(buildFacadeResult({
+        summary: attachmentCreated
+          ? `Requirement ${requirementId} attached to Project ${projectId}; its existing semantic state and history were preserved.`
+          : `Requirement ${requirementId} is already attached to Project ${projectId}; no duplicate task was created.`,
+        data: {
+          authority: 'project_semantic',
+          project: projectView(ctx, record),
+          requirement: { ...requirementSemanticView(updated), projectId },
+          repositoryId: selectedRepositoryId,
+          attachmentCreated,
+          attachmentStatus: attachmentCreated ? 'attached' : 'already_attached',
+        },
       }) as unknown as Record<string, unknown>);
     }
 

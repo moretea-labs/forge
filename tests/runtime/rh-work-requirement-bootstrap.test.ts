@@ -54,11 +54,12 @@ function initRepo(repoRoot: string): string {
   return git(repoRoot, 'rev-parse', 'HEAD');
 }
 
-function mcpContext(controllerHome: string, repository: ReturnType<typeof registerRepository>): MultiRepositoryMcpToolContext {
+function mcpContext(controllerHome: string, repository?: ReturnType<typeof registerRepository>): MultiRepositoryMcpToolContext {
+  const repoRoot = repository?.canonicalRoot ?? controllerHome;
   return {
-    repoRoot: repository.canonicalRoot,
+    repoRoot,
     controllerHome,
-    policy: getToolPolicy('controller', { repoRoot: repository.canonicalRoot }),
+    policy: getToolPolicy('controller', { repoRoot }),
     toolset: 'full',
     enableChatgptBrowser: false,
     explicitRepository: repository,
@@ -136,6 +137,22 @@ describe('rh_work Requirement bootstrap', () => {
       requirementId:'REQ-SCOPE-B', repoId:repositoryA.repoId,
     });
 
+    // A legacy Plan edge cannot override a Requirement's explicit other-repository owner.
+    createPlanSemanticContext({ controllerHome, repoId: repositoryA.repoId }, {
+      planId: 'PLAN-FOREIGN-REPO-EDGE', repoId: repositoryA.repoId,
+      requirementId: 'REQ-SCOPE-B', scopeKey: 'foreign-repo-edge', sourceBasisRevision: 'foreign-repo',
+      goal: 'Do not display or open another repository task through a Plan edge.', items: [],
+    });
+    const foreignLinkedList = structured(await callRuntimeTool(ctxA, 'rh_work', {
+      operation: 'requirement_list', limit: 100,
+    }));
+    expect(foreignLinkedList.data.requirements.map((entry: Record<string, unknown>) => entry.requirementId))
+      .not.toContain('REQ-SCOPE-B');
+    const foreignLinkedGet = structured(await callRuntimeTool(ctxA, 'rh_work', {
+      operation: 'requirement_get', requirement_id: 'REQ-SCOPE-B',
+    }));
+    expect(foreignLinkedGet.status).toBe('not_found');
+
     const legacy = createRequirement({ controllerHome }, {
       requirementId:'REQ-LEGACY-PLAN-EDGE', title:'Legacy edge',
       outcomeStatement:'Remain visible only where an explicit Plan relationship exists.',
@@ -164,6 +181,256 @@ describe('rh_work Requirement bootstrap', () => {
     const legacyB = structured(await callRuntimeTool(ctxB, 'rh_work', { operation:'requirement_list', limit:100 }));
     expect(legacyA.data.requirements.map((entry:Record<string,unknown>) => entry.requirementId)).toContain(legacy.requirementId);
     expect(legacyB.data.requirements.map((entry:Record<string,unknown>) => entry.requirementId)).not.toContain(legacy.requirementId);
+  });
+
+  test('lists canonical Project tasks with filters, deterministic sorting and bounded pagination across repository and standalone Projects', async () => {
+    const repoRootA = tempRoot('forge-requirement-project-list-a-');
+    const repoRootB = tempRoot('forge-requirement-project-list-b-');
+    const controllerHome = tempRoot('forge-requirement-project-list-home-');
+    initRepo(repoRootA);
+    initRepo(repoRootB);
+    ensureControllerHome(controllerHome);
+    const repositoryA = registerRepository({ path: repoRootA, controllerHome, displayName: 'Project list A' });
+    const repositoryB = registerRepository({ path: repoRootB, controllerHome, displayName: 'Project list B' });
+    const ctxA = mcpContext(controllerHome, repositoryA);
+    const ctxB = mcpContext(controllerHome, repositoryB);
+    const globalContext = mcpContext(controllerHome);
+
+    for (const [ctx, projectId, name] of [
+      [ctxA, 'project-filter-a', 'Project Filter A'],
+      [ctxB, 'project-filter-b', 'Project Filter B'],
+    ] as const) {
+      const project = structured(await callRuntimeTool(ctx, 'rh_work', {
+        operation: 'project_create', project_id: projectId, project_display_name: name,
+      }));
+      expect(project.status).toBe('ok');
+    }
+    const standaloneProject = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'project_create', project_id: 'project-filter-standalone', project_display_name: 'Standalone Filter Project',
+    }));
+    expect(standaloneProject.status).toBe('ok');
+
+    const createTask = async (
+      ctx: MultiRepositoryMcpToolContext,
+      requirementId: string,
+      title: string,
+      status: string,
+      priority: string,
+      assignee: string,
+      projectId?: string,
+    ) => structured(await callRuntimeTool(ctx, 'rh_work', {
+      operation: 'requirement_create',
+      requirement_id: requirementId,
+      requirement_title: title,
+      requirement_outcome: `Deliver ${title}.`,
+      ...(projectId ? { project_id: projectId } : {}),
+      requirement_status: status,
+      requirement_priority: priority,
+      requirement_assignee: assignee,
+    }));
+
+    for (const [requirementId, title, status, priority, assignee] of [
+      ['REQ-FILTER-A-URGENT', 'Urgent task', 'active', 'urgent', 'greyson'],
+      ['REQ-FILTER-A-NORMAL', 'Normal task', 'active', 'normal', 'greyson'],
+      ['REQ-FILTER-A-LOW', 'Low task', 'waiting_for_user', 'low', 'alice'],
+    ] as const) {
+      expect((await createTask(ctxA, requirementId, title, status, priority, assignee)).status).toBe('ok');
+    }
+    expect((await createTask(ctxB, 'REQ-FILTER-B-HIGH', 'Other project task', 'active', 'high', 'greyson')).status).toBe('ok');
+    expect((await createTask(
+      globalContext, 'REQ-FILTER-STANDALONE', 'Standalone task', 'active', 'urgent', 'greyson', 'project-filter-standalone',
+    )).status).toBe('ok');
+
+    createPlanSemanticContext({
+      controllerHome, repoId: repositoryA.repoId,
+      now: () => '2026-11-16T00:00:00.000Z',
+    }, {
+      planId: 'PLAN-CROSS-PROJECT-LIST',
+      repoId: repositoryA.repoId,
+      requirementId: 'REQ-FILTER-STANDALONE',
+      scopeKey: 'cross-project-list',
+      sourceBasisRevision: 'source-cross-project-list',
+      goal: 'A Plan relationship must not leak another Project task into this Project list.',
+      items: [],
+    });
+    const repositoryOnlyList = structured(await callRuntimeTool(ctxA, 'rh_work', {
+      operation: 'requirement_list', limit: 100,
+    }));
+    expect(repositoryOnlyList.data.requirements.map((entry: { requirementId: string }) => entry.requirementId))
+      .not.toContain('REQ-FILTER-STANDALONE');
+    const foreignProjectGet = structured(await callRuntimeTool(ctxA, 'rh_work', {
+      operation: 'requirement_get', requirement_id: 'REQ-FILTER-STANDALONE',
+    }));
+    expect(foreignProjectGet.status).toBe('not_found');
+
+    const schema = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work')?.inputSchema;
+    const properties = schema?.properties as Record<string, any>;
+    expect(properties.project_id.description).toContain('requirement_list');
+    expect(properties.requirement_status.description).toContain('requirement_list');
+    expect(properties.requirement_priority.description).toContain('requirement_list');
+    expect(properties.requirement_assignee.description).toContain('requirement_list');
+    expect(properties.sort_by).toMatchObject({
+      type: 'string', enum: ['updated_at', 'created_at', 'priority', 'status', 'title'],
+    });
+    expect(properties.sort_order).toMatchObject({ type: 'string', enum: ['asc', 'desc'] });
+    expect(properties.offset).toMatchObject({ type: 'number', minimum: 0 });
+    expect(properties.search_query).toMatchObject({ type: 'string', maxLength: 256 });
+    expect(properties.project_id.description).toContain('requirement_get/requirement_revise');
+
+    const projectList = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'requirement_list',
+      project_id: 'project-filter-a',
+      limit: 2,
+      sort_by: 'priority',
+      sort_order: 'desc',
+    }));
+    expect(projectList.status).toBe('ok');
+    expect(projectList.data).toMatchObject({
+      totalCount: 3, offset: 0, hasMore: true, requirementsTruncated: true,
+      sortBy: 'priority', sortOrder: 'desc',
+    });
+    expect(projectList.data.requirements).toMatchObject([
+      { requirementId: 'REQ-FILTER-A-URGENT', projectId: 'project-filter-a', priority: 'urgent' },
+      { requirementId: 'REQ-FILTER-A-NORMAL', projectId: 'project-filter-a', priority: 'normal' },
+    ]);
+    const nextRequirementPage = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'requirement_list', project_id: 'project-filter-a', limit: 2, offset: 2,
+      sort_by: 'priority', sort_order: 'desc',
+    }));
+    expect(nextRequirementPage.data).toMatchObject({ totalCount: 3, offset: 2, hasMore: false, requirementsTruncated: false });
+    expect(nextRequirementPage.data.requirements.map((task: { requirementId: string }) => task.requirementId))
+      .toEqual(['REQ-FILTER-A-LOW']);
+    const beyondRequirementPage = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'requirement_list', project_id: 'project-filter-a', limit: 2, offset: 10,
+      sort_by: 'priority', sort_order: 'desc',
+    }));
+    expect(beyondRequirementPage.data).toMatchObject({ totalCount: 3, offset: 10, hasMore: false, requirementsTruncated: false });
+    expect(beyondRequirementPage.data.requirements).toEqual([]);
+
+    const repositoryProjectList = structured(await callRuntimeTool(ctxA, 'rh_work', {
+      operation: 'requirement_list',
+      project_id: 'project-filter-a',
+      sort_by: 'priority',
+      sort_order: 'desc',
+      limit: 100,
+    }));
+    expect(repositoryProjectList.data.totalCount).toBe(3);
+    expect(repositoryProjectList.data.requirements.map((task: { requirementId: string }) => task.requirementId))
+      .not.toContain('REQ-FILTER-STANDALONE');
+
+    const filtered = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'requirement_list',
+      project_id: 'project-filter-a',
+      requirement_status: 'active',
+      requirement_assignee: 'greyson',
+      sort_by: 'title',
+      sort_order: 'asc',
+      limit: 100,
+    }));
+    expect(filtered.data).toMatchObject({
+      totalCount: 2, hasMore: false, sortBy: 'title', sortOrder: 'asc',
+      filters: { projectId: 'project-filter-a', status: 'active', assignee: 'greyson' },
+    });
+    expect(filtered.data.requirements.map((task: { requirementId: string }) => task.requirementId))
+      .toEqual(['REQ-FILTER-A-NORMAL', 'REQ-FILTER-A-URGENT']);
+
+    const searchedRequirements = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'requirement_list', project_id: 'project-filter-a', search_query: 'URGENT TASK', limit: 20,
+    }));
+    expect(searchedRequirements.data).toMatchObject({ totalCount: 1, filters: { projectId: 'project-filter-a', searchQuery: 'URGENT TASK' } });
+    expect(searchedRequirements.data.requirements.map((task: { requirementId: string }) => task.requirementId))
+      .toEqual(['REQ-FILTER-A-URGENT']);
+    const priorityFiltered = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'requirement_list',
+      project_id: 'project-filter-a',
+      requirement_status: 'active',
+      requirement_priority: 'urgent',
+      requirement_assignee: 'greyson',
+    }));
+    expect(priorityFiltered.data.requirements.map((task: { requirementId: string }) => task.requirementId))
+      .toEqual(['REQ-FILTER-A-URGENT']);
+
+    const standalone = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'requirement_list', project_id: 'project-filter-standalone',
+    }));
+    expect(standalone.data.requirements).toMatchObject([
+      { requirementId: 'REQ-FILTER-STANDALONE', projectId: 'project-filter-standalone' },
+    ]);
+
+    const repositoryProjectMismatch = structured(await callRuntimeTool(ctxA, 'rh_work', {
+      operation: 'requirement_list', project_id: 'project-filter-b',
+    }));
+    expect(repositoryProjectMismatch.status).toBe('blocked');
+    expect(repositoryProjectMismatch.summary).toContain('REQUIREMENT_PROJECT_SCOPE_CONFLICT');
+
+    const invalidSort = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'requirement_list', project_id: 'project-filter-a', sort_by: 'unsupported',
+    }));
+    expect(invalidSort.status).toBe('blocked');
+    expect(invalidSort.summary).toContain('REQUIREMENT_SORT_INVALID');
+
+    // The Project board must not read or edit another Project's task by a stale task ID.
+    const foreignProjectRead = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'requirement_get', project_id: 'project-filter-a', requirement_id: 'REQ-FILTER-B-HIGH',
+    }));
+    expect(foreignProjectRead.status).toBe('not_found');
+    const foreignProjectWrite = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'requirement_revise', project_id: 'project-filter-a', requirement_id: 'REQ-FILTER-B-HIGH',
+      expected_revision: 1, requirement_assignee: 'wrong-project-owner',
+    }));
+    expect(foreignProjectWrite.status).toBe('blocked');
+    expect(foreignProjectWrite.data.currentRequirement).toBeUndefined();
+    const foreignAfter = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'requirement_get', project_id: 'project-filter-b', requirement_id: 'REQ-FILTER-B-HIGH',
+    }));
+    expect(foreignAfter.data.requirement).toMatchObject({ revision: 1, assignee: 'greyson' });
+
+    const wrongStandaloneRead = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'requirement_get', project_id: 'project-filter-a', requirement_id: 'REQ-FILTER-STANDALONE',
+    }));
+    expect(wrongStandaloneRead.status).toBe('not_found');
+    const wrongStandaloneWrite = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'requirement_revise', project_id: 'project-filter-a', requirement_id: 'REQ-FILTER-STANDALONE',
+      expected_revision: 1, requirement_assignee: 'wrong-project-owner',
+    }));
+    expect(wrongStandaloneWrite.status).toBe('blocked');
+
+    const repoWrongProjectRead = structured(await callRuntimeTool(ctxA, 'rh_work', {
+      operation: 'requirement_get', project_id: 'project-filter-b', requirement_id: 'REQ-FILTER-A-NORMAL',
+    }));
+    expect(repoWrongProjectRead.status).toBe('blocked');
+    expect(repoWrongProjectRead.summary).toContain('REQUIREMENT_PROJECT_SCOPE_CONFLICT');
+    const repoWrongProjectWrite = structured(await callRuntimeTool(ctxA, 'rh_work', {
+      operation: 'requirement_revise', project_id: 'project-filter-b', requirement_id: 'REQ-FILTER-A-NORMAL',
+      expected_revision: 1, requirement_priority: 'low',
+    }));
+    expect(repoWrongProjectWrite.status).toBe('blocked');
+    expect(repoWrongProjectWrite.summary).toContain('REQUIREMENT_PROJECT_SCOPE_CONFLICT');
+
+    const rightProjectWrite = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'requirement_revise', project_id: 'project-filter-a', requirement_id: 'REQ-FILTER-A-NORMAL',
+      expected_revision: 1, requirement_assignee: 'project-editor',
+    }));
+    expect(rightProjectWrite.status).toBe('ok');
+    expect(rightProjectWrite.data.requirement).toMatchObject({
+      requirementId: 'REQ-FILTER-A-NORMAL', projectId: 'project-filter-a', revision: 2, assignee: 'project-editor',
+    });
+    const rightProjectRead = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'requirement_get', project_id: 'project-filter-a', requirement_id: 'REQ-FILTER-A-NORMAL', detail_level: 'detail',
+    }));
+    expect(rightProjectRead.data.requirement).toMatchObject({ revision: 2, assignee: 'project-editor' });
+    expect(rightProjectRead.data.revisionHistory).toMatchObject([{ revision: 1, assignee: 'greyson' }]);
+    const rightRepositoryRead = structured(await callRuntimeTool(ctxA, 'rh_work', {
+      operation: 'requirement_get', project_id: 'project-filter-a', requirement_id: 'REQ-FILTER-A-NORMAL',
+    }));
+    expect(rightRepositoryRead.status).toBe('ok');
+    expect(rightRepositoryRead.data.requirement).toMatchObject({ revision: 2, assignee: 'project-editor' });
+    const staleProjectWrite = structured(await callRuntimeTool(globalContext, 'rh_work', {
+      operation: 'requirement_revise', project_id: 'project-filter-a', requirement_id: 'REQ-FILTER-A-NORMAL',
+      expected_revision: 1, requirement_assignee: 'stale-owner',
+    }));
+    expect(staleProjectWrite.status).toBe('blocked');
+    expect(staleProjectWrite.summary).toContain('REQUIREMENT_REVISION_CONFLICT');
   });
 
   test('exposes typed Requirement progress and CAS through rh_work without a Work or legacy carrier', async () => {

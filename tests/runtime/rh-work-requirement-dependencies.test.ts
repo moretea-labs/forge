@@ -133,4 +133,77 @@ describe('rh_work Requirement dependencies', () => {
         { revision: 1, dependencies: [] },
       ]);
   });
+
+  it('creates dependency-bearing Requirements atomically and includes dependencies in bootstrap identity', async () => {
+    createTask('parent', 'repo-parent');
+    const context = { controllerHome } as MultiRepositoryMcpToolContext;
+    const args = {
+      requirement_id: 'child',
+      requirement_title: 'Child task',
+      requirement_outcome: 'Deliver the child task after its existing parent.',
+      requirement_acceptance_criteria: ['The child is linked to the exact parent.'],
+      requirement_delivery_references: ['https://github.com/moretea-labs/forge/issues/129'],
+      requirement_legacy_aliases: ['github:moretea-labs/forge#129'],
+      requirement_dependencies: ['parent'],
+      requirement_priority: 'urgent',
+      requirement_status: 'active',
+    };
+
+    const created = await callRhWorkRequirementOperation(context, undefined, 'requirement_create', args);
+    const response = created?.structuredContent as {
+      data?: {
+        requirementCreated?: boolean;
+        admissionDecision?: string;
+        requirement?: { dependsOnRequirementIds?: string[]; legacyAliases?: string[]; status?: string; priority?: string };
+      };
+    } | undefined;
+    expect(response?.data).toMatchObject({
+      requirementCreated: true,
+      admissionDecision: 'created',
+      requirement: {
+        dependsOnRequirementIds: ['parent'],
+        legacyAliases: ['github:moretea-labs/forge#129'],
+        status: 'active',
+        priority: 'urgent',
+      },
+    });
+    expect(readRequirement({ controllerHome }, 'child')?.value.dependsOnRequirementIds).toEqual(['parent']);
+
+    const repeated = await callRhWorkRequirementOperation(context, undefined, 'requirement_create', args);
+    const repeatedData = repeated?.structuredContent as { data?: { requirementCreated?: boolean; admissionDecision?: string } } | undefined;
+    expect(repeatedData?.data).toMatchObject({ requirementCreated: false, admissionDecision: 'reuse_existing' });
+
+    const conflicting = await callRhWorkRequirementOperation(context, undefined, 'requirement_create', {
+      ...args,
+      requirement_dependencies: [],
+    });
+    const conflictData = conflicting?.structuredContent as { status?: string; summary?: string } | undefined;
+    expect(conflictData?.status).toBe('blocked');
+    expect(conflictData?.summary).toContain('REQUIREMENT_ALREADY_EXISTS_CONFLICT');
+    expect(readRequirement({ controllerHome }, 'child')?.value.dependsOnRequirementIds).toEqual(['parent']);
+
+    const missing = await callRhWorkRequirementOperation(context, undefined, 'requirement_create', {
+      ...args,
+      requirement_id: 'missing-parent-child',
+      requirement_legacy_aliases: ['github:moretea-labs/forge#130'],
+      requirement_dependencies: ['not-found'],
+    });
+    const missingData = missing?.structuredContent as { status?: string; summary?: string } | undefined;
+    expect(missingData?.status).toBe('blocked');
+    expect(missingData?.summary).toContain('REQUIREMENT_DEPENDENCY_NOT_FOUND');
+    expect(readRequirement({ controllerHome }, 'missing-parent-child')).toBeUndefined();
+
+    createTask('cancelled-parent', 'repo-cancelled');
+    reviseRequirementSemantic({ controllerHome }, 'cancelled-parent', { expectedRevision: 1, status: 'cancelled' });
+    const cancelled = await callRhWorkRequirementOperation(context, undefined, 'requirement_create', {
+      ...args,
+      requirement_id: 'cancelled-parent-child',
+      requirement_legacy_aliases: ['github:moretea-labs/forge#131'],
+      requirement_dependencies: ['cancelled-parent'],
+    });
+    const cancelledData = cancelled?.structuredContent as { status?: string; summary?: string } | undefined;
+    expect(cancelledData?.status).toBe('blocked');
+    expect(cancelledData?.summary).toContain('REQUIREMENT_DEPENDENCY_CANCELLED');
+    expect(readRequirement({ controllerHome }, 'cancelled-parent-child')).toBeUndefined();
+  });
 });

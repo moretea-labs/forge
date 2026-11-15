@@ -83,9 +83,12 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // 2026-11-14 integration: #607 describes model-selected retrieval and optional
 // semantic context; #650 adds the fixed supervisor_healthcheck schedule type.
 // 2026-11-15 #648 extends canonical Project/Requirement membership for tasks
-// without Repository placement. Schema v16 fences stale Connector snapshots;
-// each canonical fingerprint includes the schema version.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '02f1d5e0fca95a6f';
+// without Repository placement. 2026-11-16 adds Project-scoped Requirement
+// filters, stable sort keys, offset pagination, and case-insensitive Project/Requirement search.
+// Schema v20 adds Project-scoped Requirement get/revise protection; v21 exposes
+// Project-only creation of repository-backed tasks through canonical placement.
+// Each canonical fingerprint fences stale Connector snapshots.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'a54bb5da9bee701b';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

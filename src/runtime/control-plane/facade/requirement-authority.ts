@@ -3,6 +3,7 @@ import {
   bindRequirementRepositoryPlacement,
   createRequirement,
   listRequirements,
+  normalizeRequirementDependencies,
   readRequirement,
   type CreateRequirementInput,
   type Requirement,
@@ -12,6 +13,8 @@ import { readPlanContractStore } from './plan-contract-store';
 import type { PlanContract } from './types';
 import { cognitionMemoryStore } from '../persistence/cognition-store';
 import { memoryAddressKey, type MemoryUnit } from '../../../../packages/kernel/cognition/api/index';
+import { readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
+import { listProjectPlacements } from '../workspace/workspace-store';
 
 export type RequirementAdmissionDecision = 'created' | 'reuse_existing' | 'existing_conflict';
 
@@ -49,6 +52,7 @@ export function normalizeRequirementAdmissionInput(input: CreateRequirementInput
     acceptanceCriteria: bounded(input.acceptanceCriteria, 50),
     requiredDeliveryReferences: bounded(input.requiredDeliveryReferences, 50),
     legacyAliases: bounded(input.legacyAliases, 20, 160),
+    dependsOnRequirementIds: normalizeRequirementDependencies(input.dependsOnRequirementIds),
     auditRefs: bounded(input.auditRefs, 50),
   };
   if (!normalized.title || !normalized.outcomeStatement) throw new Error('REQUIREMENT_CONTENT_REQUIRED');
@@ -64,7 +68,8 @@ function sameBootstrapIdentity(existing: Requirement, requested: CreateRequireme
     && existing.outcomeStatement === requested.outcomeStatement
     && JSON.stringify(existing.acceptanceCriteria) === JSON.stringify(requested.acceptanceCriteria ?? [])
     && JSON.stringify(existing.requiredDeliveryReferences) === JSON.stringify(requested.requiredDeliveryReferences ?? [])
-    && JSON.stringify(existing.legacyAliases) === JSON.stringify(requested.legacyAliases ?? []);
+    && JSON.stringify(existing.legacyAliases) === JSON.stringify(requested.legacyAliases ?? [])
+    && JSON.stringify(existing.dependsOnRequirementIds ?? []) === JSON.stringify(requested.dependsOnRequirementIds ?? []);
 }
 
 function existingDecision(
@@ -121,8 +126,50 @@ export function listRequirementsForRepository(
       .filter((requirementId): requirementId is string => Boolean(requirementId)),
   );
   return all
-    .filter((record) => record.value.repoId === repoId || relatedRequirementIds.has(record.value.requirementId))
+    .filter(({ value }) => value.repoId === repoId
+      // A legacy Plan edge may reveal an unplaced Requirement, but cannot
+      // override explicit ownership by another repository or a standalone Project.
+      || (!value.repoId && !value.projectId && relatedRequirementIds.has(value.requirementId)))
     .slice(0, limit);
+}
+
+/**
+ * Canonical Project task membership combines direct standalone tasks with
+ * repository tasks reachable through this ForgeInstance's Project placements.
+ * Legacy Plan-linked Requirements remain visible, but explicit placement on a
+ * different Project or repository is never misattributed.
+ */
+export function listRequirementsForProject(
+  options: RequirementStoreOptions,
+  projectIdInput: string,
+  limit = 1000,
+) {
+  const projectId = String(projectIdInput ?? '').trim();
+  if (!projectId) throw new Error('REQUIREMENT_PROJECT_REQUIRED');
+  const all = listRequirements(options, 1000);
+  if (all.length >= 1000) throw new Error('REQUIREMENT_PROJECT_TASK_LOOKUP_LIMIT');
+
+  const byId = new Map(all
+    .filter((record) => record.value.projectId === projectId)
+    .map((record) => [record.value.requirementId, record] as const));
+
+  const instance = readForgeInstanceIdentity(options.controllerHome);
+  if (instance) {
+    const allPlacements = listProjectPlacements(options.controllerHome, instance.instanceId);
+    if (allPlacements.length >= 1000) throw new Error('PROJECT_PLACEMENT_LOOKUP_LIMIT');
+    for (const placement of allPlacements.filter(({ value }) => value.projectId === projectId)) {
+      for (const record of listRequirementsForRepository(options, placement.value.repositoryId, 1000)) {
+        if (record.value.projectId && record.value.projectId !== projectId) continue;
+        if (record.value.repoId && record.value.repoId !== placement.value.repositoryId) continue;
+        byId.set(record.value.requirementId, record);
+      }
+    }
+  }
+
+  return [...byId.values()]
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)
+      || left.value.requirementId.localeCompare(right.value.requirementId))
+    .slice(0, Math.max(1, Math.min(Math.trunc(limit), 1000)));
 }
 
 export type RequirementCandidatePromotionDecision =
