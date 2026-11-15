@@ -3,7 +3,7 @@ import { isAbsolute, join, resolve } from 'path';
 import { hostname } from 'os';
 import { systemdUserUnitName } from '../src/runtime/platform/systemd-user';
 import { openAiSecureTunnelConnectArgs } from '../adapters/mcp/tunnels/openai-secure-tunnel';
-import type { OpenAiSecureTunnelServiceConfig, PrimaryConnectorServiceConfig, PublicTunnelServiceConfig, RecoveryTunnelServiceConfig } from '../src/runtime/standalone-recovery/core';
+import { loadRecoveryConfig, type OpenAiSecureTunnelServiceConfig, type PrimaryConnectorServiceConfig, type PublicTunnelServiceConfig, type RecoveryTunnelServiceConfig } from '../src/runtime/standalone-recovery/core';
 import { installStandaloneRecovery } from '../src/runtime/standalone-recovery/installer';
 
 function option(name: string): string | undefined {
@@ -88,6 +88,11 @@ const controllerHome = resolve(controllerHomeRaw);
 if (!controllerHomeRaw || controllerHome === resolve('.')) throw new Error('RECOVERY_CONTROLLER_HOME_REQUIRED');
 const port = integerOption('--port', 8787, 1024, 65535);
 const stageOnly = process.argv.includes('--stage-only');
+const existingRecoveryConfig = loadRecoveryConfig(controllerHome);
+const primaryRuntimeSourceRoot = existingRecoveryConfig.primaryRuntimeSourceRoot;
+const primaryRuntimeSourceRepositoryId = existingRecoveryConfig.primaryRuntimeSourceRepositoryId;
+if (!stageOnly && !primaryRuntimeSourceRoot) throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_ROOT_REQUIRED');
+if (!stageOnly && !primaryRuntimeSourceRepositoryId) throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_REPOSITORY_ID_REQUIRED');
 const publicMcpUrl = endpointOption('--public-mcp-url');
 const recoveryPublicUrl = endpointOption('--recovery-public-url');
 
@@ -167,7 +172,9 @@ assertDistinctOpenAiTunnelIdentity(recoveryTunnelService, primaryPublicTunnelSer
 
 const result = await installStandaloneRecovery({
   controllerHome,
-  repoRoot: process.cwd(),
+  // Build Recovery from this clean checkout, but keep primary Runtime source authority on its registered durable root.
+  repoRoot: primaryRuntimeSourceRoot ?? process.cwd(),
+  primaryRuntimeSourceRepositoryId,
   sourceRoot: process.cwd(),
   port,
   stageOnly,
@@ -186,6 +193,8 @@ console.log(JSON.stringify({
   binary: join(controllerHome, 'recovery', 'bin', 'forge-recovery'),
   config: {
     controllerHome: config.controllerHome,
+    primaryRuntimeSourceRoot: config.primaryRuntimeSourceRoot,
+    primaryRuntimeSourceRepositoryId: config.primaryRuntimeSourceRepositoryId,
     gateway: { host: config.gateway?.host, port: config.gateway?.port },
     publicMcpUrl: config.publicMcpUrl,
     recoveryPublicUrl: config.recoveryPublicUrl,
