@@ -74,6 +74,8 @@ describe('first-party release and growth Workflow assets (#652)', () => {
     expect(asset.steps.some(s => s.kind !== 'script' && s.capabilityId === 'asc.list_app_territory_availabilities')).toBe(true);
     expect(asset.steps.some(s => s.kind !== 'script' && s.capabilityId.startsWith('browser.'))).toBe(false);
     expect(asset.steps.some(s => s.stepId === 'classify-cn')).toBe(true);
+    expect(asset.version).toBe('2');
+    expect(asset.steps.some(s => s.stepId === 'decide-verified-next-action')).toBe(true);
     expect(script(id, 'validateAppVersion', { app_id: '6831952477', version_string: '1.2' }).status).toBe(0);
     expect(script(id, 'validateAppVersion', { app_id: 'not-an-id', version_string: '1.2' }).status).not.toBe(0);
     expect(script(id, 'validateAppVersion', { app_id: '6831952477', version_string: 'latest' }).status).not.toBe(0);
@@ -199,6 +201,9 @@ describe('first-party release and growth Workflow assets (#652)', () => {
       version: '1.0', app_store_state: 'READY_FOR_SALE', app_version_state: 'READY_FOR_DISTRIBUTION',
       release_type: 'AFTER_APPROVAL', downloadable: true, next_action: 'verify_territories',
     });
+    expect(cnMissing.outputs['decide-verified-next-action']).toEqual({
+      next_action: 'resolve_cn_icp', public_storefront_and_download_proof_required: false,
+    });
     expect(calls).toEqual(['read-version', 'read-territory-availability']);
 
     calls.length = 0;
@@ -216,6 +221,31 @@ describe('first-party release and growth Workflow assets (#652)', () => {
     }], 'https://api.appstoreconnect.apple.com/v2/territoryAvailabilities?cursor=next');
     expect(paginationIncomplete.status).toBe('failed');
     expect(paginationIncomplete.outputs['classify-cn']).toBeUndefined();
+  });
+
+  test('review, release, ICP and storefront decision is deterministic, safe and never claims download', () => {
+    const id = RELEASE_GROWTH_WORKFLOW_IDS.releaseObservation;
+    const classify = (version_action: string, cn_status: string) => script(id, 'decideNextAction', { version_action, cn_status });
+    const cases: Array<[string, string, string, boolean]> = [
+      ['prepare_correction', 'available', 'prepare_correction', false],
+      ['await_or_inspect_review', 'available', 'await_or_inspect_review', false],
+      ['await_apple_release', 'available', 'await_apple_release', false],
+      ['manual_release_required', 'available', 'manual_release_after_authorization', false],
+      ['verify_territories', 'icp_missing', 'resolve_cn_icp', false],
+      ['manual_release_required', 'icp_missing', 'resolve_cn_icp', false],
+      ['verify_territories', 'not_available', 'reconcile_cn_distribution', false],
+      ['verify_territories', 'unknown', 'reconcile_cn_territory', false],
+      ['verify_territories', 'available', 'verify_cn_storefront_download', true],
+      ['inspect_release_state', 'available', 'reconcile_asc_release_state', false],
+    ];
+    for (const [version, cn, expected, proof] of cases) {
+      const result = classify(version, cn);
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.output)).toEqual({ next_action: expected, public_storefront_and_download_proof_required: proof });
+    }
+    expect(classify('UNKNOWN', 'available').status).not.toBe(0);
+    expect(classify('verify_territories', 'AVAILABLE').status).not.toBe(0);
+    expect(classify('verify_territories', '').status).not.toBe(0);
   });
 
   test('X metrics require an exact account/post URL and actual parseable counters', () => {
