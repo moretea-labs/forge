@@ -182,6 +182,20 @@ function benchmarkGitSampling(): Record<string, unknown> {
   }
 }
 
+export function controllerHotpathAcceptance(scales: Array<{ scale: number; hotP95Ms: number; maxSummaryBytes: number }>, gitSampling: { identityCounters: { subprocesses: number }; snapshotCounters: { subprocesses: number }; snapshotIdentityCounters: { subprocesses: number } }) {
+  const thresholds = { warmP95Ms: 100, maxSummaryBytes: 32 * 1024, identitySubprocessesPerSample: 1, snapshotUniqueSubprocesses: 2 };
+  const failures: string[] = [];
+  for (const scale of scales) {
+    if (!Number.isFinite(scale.hotP95Ms) || scale.hotP95Ms < 0 || scale.hotP95Ms > thresholds.warmP95Ms) failures.push(`scale=${scale.scale}: hotP95Ms=${scale.hotP95Ms}`);
+    if (!Number.isFinite(scale.maxSummaryBytes) || scale.maxSummaryBytes < 1 || scale.maxSummaryBytes > thresholds.maxSummaryBytes) failures.push(`scale=${scale.scale}: maxSummaryBytes=${scale.maxSummaryBytes}`);
+  }
+  if (!scales.length) failures.push('no scale samples');
+  if (!Number.isFinite(gitSampling.identityCounters.subprocesses) || gitSampling.identityCounters.subprocesses > thresholds.identitySubprocessesPerSample) failures.push('git identity subprocess budget exceeded');
+  const snapshotProcesses = gitSampling.snapshotCounters.subprocesses + gitSampling.snapshotIdentityCounters.subprocesses;
+  if (!Number.isFinite(snapshotProcesses) || snapshotProcesses > thresholds.snapshotUniqueSubprocesses) failures.push('git snapshot subprocess budget exceeded');
+  return { ...thresholds, passed: failures.length === 0, failures };
+}
+
 async function main(): Promise<void> {
   const scaleResults = [];
   for (const scale of SCALES) scaleResults.push(await benchmarkScale(scale));
@@ -194,19 +208,16 @@ async function main(): Promise<void> {
     gitInit(repoRoot);
     const ctx = createMcpToolContext({ repo: repoRoot, profile: 'controller', controllerHome }) as MultiRepositoryMcpToolContext;
     const exposedTools = exposedControllerToolDefinitions(ctx).length;
+    const acceptance = controllerHotpathAcceptance(scaleResults as Array<{ scale: number; hotP95Ms: number; maxSummaryBytes: number }>, gitSampling as { identityCounters: { subprocesses: number }; snapshotCounters: { subprocesses: number }; snapshotIdentityCounters: { subprocesses: number } });
     console.log(JSON.stringify({
       benchmark: 'controller-hotpath',
       hotReads: HOT_READS,
       scales: scaleResults,
       gitSampling,
       exposedTools,
-      acceptance: {
-        warmP95Ms: 100,
-        maxSummaryBytes: 32 * 1024,
-        identitySubprocessesPerSample: 1,
-        snapshotUniqueSubprocesses: 2,
-      },
+      acceptance,
     }, null, 2));
+    if (!acceptance.passed) throw new Error(`CONTROLLER_HOTPATH_ACCEPTANCE_FAILED: ${acceptance.failures.join('; ')}`);
   } finally {
     rmSync(profileRepo, { recursive: true, force: true });
   }

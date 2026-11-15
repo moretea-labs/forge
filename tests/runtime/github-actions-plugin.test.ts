@@ -70,9 +70,15 @@ describe('GitHub issue plugin mutation boundary', () => {
   test('rejects missing issue identity before any remote sync or controller write', async () => {
     for (const actionId of ['publish_issue', 'refresh_issue', 'close_issue']) {
       await expect(executeGitHubPluginAction({
+        controllerHome: '/nonexistent-controller-home',
+        repoId: 'test-repo',
+        repoRoot: '/nonexistent-repository',
+        pluginId: 'github',
         actionId,
+        requestId: `empty-issue-${actionId}`,
+        origin: { surface: 'system' },
         args: { issue_id: '  ' },
-      } as Parameters<typeof executeGitHubPluginAction>[0])).rejects.toThrow('GITHUB_PLUGIN_ISSUE_ID_REQUIRED');
+      })).rejects.toThrow('GITHUB_PLUGIN_ISSUE_ID_REQUIRED');
     }
   });
 });

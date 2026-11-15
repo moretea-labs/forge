@@ -24,3 +24,19 @@ describe('controller hotpath timing integrity', () => {
     expect(() => duration({ structuredContent: { status: 'error', responseMeta: { serverDurationMs: 1 } } })).toThrow('CONTROLLER_HOTPATH_TOOL_ERROR');
   });
 });
+
+describe('controller hotpath acceptance', () => {
+  const git = { identityCounters: { subprocesses: 1 }, snapshotCounters: { subprocesses: 1 }, snapshotIdentityCounters: { subprocesses: 1 } };
+  test('passes valid samples within actual thresholds', async () => {
+    const { controllerHotpathAcceptance } = await import('../../scripts/benchmark-controller-hotpath');
+    expect(controllerHotpathAcceptance([{ scale: 0, hotP95Ms: 20, maxSummaryBytes: 6400 }], git)).toMatchObject({ passed: true, failures: [] });
+  });
+  test('rejects a slow sample, oversized response, excessive subprocesses and missing scale data', async () => {
+    const { controllerHotpathAcceptance } = await import('../../scripts/benchmark-controller-hotpath');
+    const failed = controllerHotpathAcceptance([{ scale: 25, hotP95Ms: 101, maxSummaryBytes: 32769 }], { ...git, identityCounters: { subprocesses: 2 } });
+    expect(failed.passed).toBe(false);
+    expect(failed.failures).toHaveLength(3);
+    expect(controllerHotpathAcceptance([], git).passed).toBe(false);
+    expect(controllerHotpathAcceptance([{ scale: 0, hotP95Ms: Number.NaN, maxSummaryBytes: 2 }], git).passed).toBe(false);
+  });
+});
