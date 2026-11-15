@@ -43,14 +43,22 @@ extension ZenModeTests {
         defer { try? FileManager.default.removeItem(at:url) }
         let model=NativeWorkspace(store:url)
         XCTAssertTrue(model.zenMode)
+        XCTAssertEqual(model.page,.requirement)
         XCTAssertEqual(model.threads.count,1)
+        XCTAssertTrue(model.navigationBackStack.isEmpty)
+
+        model.openWorkbench()
+        XCTAssertEqual(model.page,.requirement)
+        XCTAssertTrue(model.navigationBackStack.isEmpty)
+
         model.show(.agent)
         XCTAssertFalse(model.zenMode)
         XCTAssertEqual(model.page,.agent)
-        model.zenMode=true
-        model.show(.requirement)
+        model.goBack()
         XCTAssertTrue(model.zenMode)
         XCTAssertEqual(model.page,.requirement)
+        XCTAssertTrue(model.navigationBackStack.isEmpty)
+
         model.show(.agent)
         XCTAssertFalse(model.zenMode)
         XCTAssertEqual(model.page,.agent)

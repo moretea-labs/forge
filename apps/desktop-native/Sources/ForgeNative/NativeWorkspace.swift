@@ -738,7 +738,11 @@ final class NativeWorkspace: ObservableObject {
                 checkoutId = first.checkoutId
             }
         }
-        if threads.isEmpty { newThread() }
+        if threads.isEmpty {
+            newThread()
+            // Bootstrap keeps a hidden draft conversation without selecting the Agent page.
+            page = .requirement
+        }
         // Bootstrap creates one hidden draft thread; it does not choose Agent Mode.
         zenMode = true
     }
