@@ -3588,3 +3588,61 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(Set(remainingFiles), Set(["source.txt", "exported.txt"]))
     }
 }
+
+
+extension NativeWorkspaceTests {
+    func testPlanningRecordsPreserveCanonicalRequirementTaskMetadata() {
+        let rows:[[String:Any]] = [[
+            "requirementId":"REQ-TASK-1",
+            "title":"完善项目任务",
+            "state":"open",
+            "status":"waiting_for_user",
+            "priority":"urgent",
+            "assignee":"Greyson"
+        ]]
+        let records=NativeWorkspace.planningRecords(requirementRows:rows,planRows:[])
+        XCTAssertEqual(records.count,1)
+        XCTAssertEqual(records[0].taskStatus,"waiting_for_user")
+        XCTAssertEqual(records[0].priority,"urgent")
+        XCTAssertEqual(records[0].assignee,"Greyson")
+    }
+
+    func testRequirementDetailParsesCanonicalTaskMetadata() {
+        let detail=NativeWorkspace.requirementDetail([
+            "data":[
+                "requirement":[
+                    "requirementId":"REQ-TASK-2",
+                    "revision":4,
+                    "title":"修正任务编辑",
+                    "outcomeStatement":"可以管理任务属性",
+                    "state":"open",
+                    "status":"active",
+                    "priority":"high",
+                    "assignee":"Greyson",
+                    "acceptanceCriteria":[],
+                    "progressSummary":"",
+                    "remainingWork":[],
+                    "acceptedEvidenceRefs":[]
+                ]
+            ]
+        ])
+        XCTAssertEqual(detail?.taskStatus,"active")
+        XCTAssertEqual(detail?.priority,"high")
+        XCTAssertEqual(detail?.assignee,"Greyson")
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    func testCanonicalTaskStatusSeparatesPlanningFromLiveExecution() {
+        XCTAssertEqual(ZenBoardBucket.classify(requirementState:"open",taskStatus:"planned",runtimeActive:false),.planned)
+        XCTAssertEqual(ZenBoardBucket.classify(requirementState:"open",taskStatus:"active",runtimeActive:false),.active)
+        XCTAssertEqual(ZenBoardBucket.classify(requirementState:"open",taskStatus:"active",runtimeActive:true),.running)
+        XCTAssertEqual(ZenBoardBucket.classify(requirementState:"open",taskStatus:"waiting_for_user",runtimeActive:false),.waitingForUser)
+        XCTAssertEqual(ZenWorkspacePane.editableTaskStatuses(from:nil),["unset","planned","active","waiting_for_user"])
+        XCTAssertEqual(ZenWorkspacePane.editableTaskStatuses(from:"planned"),["planned","active","waiting_for_user"])
+        XCTAssertEqual(ZenWorkspacePane.editableTaskStatuses(from:"active"),["active","waiting_for_user"])
+        XCTAssertEqual(ZenWorkspacePane.editableTaskStatuses(from:"waiting_for_user"),["waiting_for_user","planned","active"])
+        XCTAssertEqual(ZenWorkspacePane.editableTaskStatuses(from:"done"),["done"])
+    }
+}

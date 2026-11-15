@@ -160,6 +160,9 @@ struct ForgeRecord: Identifiable {
     let depth: Int
     let requirementId: String?
     let parentPlanId: String?
+    var taskStatus: String? = nil
+    var priority: String? = nil
+    var assignee: String? = nil
     var id: String { "\(kind.rawValue):\(recordId)" }
 }
 struct RequirementRecordDetail {
@@ -172,6 +175,9 @@ struct RequirementRecordDetail {
     let progressSummary: String
     let remainingWork: [String]
     let acceptedEvidenceRefs: [String]
+    let taskStatus: String?
+    let priority: String?
+    let assignee: String?
 }
 
 struct PlanRecordItem: Identifiable {
@@ -1961,7 +1967,10 @@ final class NativeWorkspace: ObservableObject {
                 recordId:requirementId,
                 title:row["title"] as? String ?? row["outcomeStatement"] as? String ?? requirementId,
                 state:row["state"] as? String ?? "",
-                kind:.requirement,depth:0,requirementId:requirementId,parentPlanId:nil
+                kind:.requirement,depth:0,requirementId:requirementId,parentPlanId:nil,
+                taskStatus:row["status"] as? String,
+                priority:row["priority"] as? String,
+                assignee:row["assignee"] as? String
             ))
             appendPlanTree(plans.filter { $0.requirementId == requirementId },baseDepth:1)
         }
@@ -2794,7 +2803,10 @@ final class NativeWorkspace: ObservableObject {
             acceptanceCriteria:value["acceptanceCriteria"] as? [String] ?? [],
             progressSummary:value["progressSummary"] as? String ?? "",
             remainingWork:value["remainingWork"] as? [String] ?? [],
-            acceptedEvidenceRefs:value["acceptedEvidenceRefs"] as? [String] ?? []
+            acceptedEvidenceRefs:value["acceptedEvidenceRefs"] as? [String] ?? [],
+            taskStatus:value["status"] as? String,
+            priority:value["priority"] as? String,
+            assignee:value["assignee"] as? String
         )
     }
 
@@ -3204,7 +3216,8 @@ final class NativeWorkspace: ObservableObject {
 
     func reviseRequirement(
         id:String, expectedRevision:Int,
-        title:String, outcome:String, acceptanceCriteria:[String]
+        title:String, outcome:String, acceptanceCriteria:[String],
+        taskStatus:String? = nil, priority:String? = nil, assignee:String? = nil
     ) async -> Bool {
         guard let repoId,expectedRevision > 0 else {
             error="无法确认当前 Requirement 的版本，请刷新后重试。"
@@ -3217,12 +3230,16 @@ final class NativeWorkspace: ObservableObject {
             return false
         }
         do {
-            let receipt=try await ForgeBridge.request("revise_requirement",[
+            var arguments:[String:Any]=[
                 "repoId":repoId,"requirementId":id,"expectedRevision":expectedRevision,
                 "title":cleanTitle,"outcome":cleanOutcome,
                 "acceptanceCriteria":acceptanceCriteria.map{$0.trimmingCharacters(in:.whitespacesAndNewlines)}
                     .filter{!$0.isEmpty}
-            ])
+            ]
+            if let taskStatus { arguments["taskStatus"]=taskStatus }
+            if let priority { arguments["priority"]=priority }
+            if let assignee { arguments["assignee"]=assignee }
+            let receipt=try await ForgeBridge.request("revise_requirement",arguments)
             guard let changed=receipt["requirement"] as? [String:Any],
                   changed["requirementId"] as? String == id,
                   changed["revision"] as? Int == expectedRevision + 1 else {

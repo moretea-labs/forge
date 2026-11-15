@@ -235,6 +235,9 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                         .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<String>>())
                         .ok_or("FORGE_NATIVE_BRIDGE_EVIDENCE_REFS_INVALID")
                 }).transpose()?,
+                args.get("taskStatus").and_then(Value::as_str).map(str::to_owned),
+                args.get("priority").and_then(Value::as_str).map(str::to_owned),
+                args.get("assignee").and_then(Value::as_str).map(str::to_owned),
             ).await,
         "revise_plan" =>
             revise_plan(

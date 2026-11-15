@@ -12,22 +12,35 @@ enum ZenNodeAction {
 }
 
 enum ZenBoardBucket: Int, CaseIterable {
-    case todo, planned, running, done, cancelled
+    case todo, planned, active, waitingForUser, running, done, cancelled
 
     var title: String {
         switch self {
         case .todo: return "待规划"
-        case .planned: return "已规划"
+        case .planned: return "待开始"
+        case .active: return "进行中"
+        case .waitingForUser: return "待你处理"
         case .running: return "执行中"
         case .done: return "已完成"
         case .cancelled: return "已取消"
         }
     }
 
-    static func classify(requirementState: String, runtimeActive: Bool, hasPlan: Bool = false) -> Self {
-        if requirementState == "completed" || requirementState == "done" { return .done }
-        if requirementState == "cancelled" { return .cancelled }
+    static func classify(
+        requirementState: String, taskStatus: String? = nil,
+        runtimeActive: Bool, hasPlan: Bool = false
+    ) -> Self {
+        if requirementState == "completed" || requirementState == "done" || taskStatus == "done" {
+            return .done
+        }
+        if requirementState == "cancelled" || taskStatus == "cancelled" { return .cancelled }
         if runtimeActive { return .running }
+        switch taskStatus {
+        case "planned": return .planned
+        case "active": return .active
+        case "waiting_for_user": return .waitingForUser
+        default: break
+        }
         if hasPlan { return .planned }
         return .todo
     }
@@ -167,6 +180,11 @@ struct ZenWorkspacePane: View {
     @State private var editTitle = ""
     @State private var editOutcome = ""
     @State private var editCriteria = ""
+    @State private var editTaskStatus: String?
+    @State private var editTaskStatusOptions: [String] = []
+    @State private var editPriority = "unset"
+    @State private var editAssignee = ""
+
     @State private var newTitle = ""
     @State private var newOutcome = ""
     @State private var newCriteria = ""
@@ -191,6 +209,38 @@ struct ZenWorkspacePane: View {
         return items.filter {
             $0.title.localizedStandardContains(term)
             || $0.recordId.localizedStandardContains(term)
+        }
+    }
+
+    static func taskStatusLabel(_ value:String?) -> String? {
+        guard let value,!value.isEmpty else { return nil }
+        switch value {
+        case "planned": return "待开始"
+        case "active": return "进行中"
+        case "waiting_for_user": return "待你处理"
+        case "done": return "已完成"
+        case "cancelled": return "已取消"
+        default: return value
+        }
+    }
+
+    static func priorityLabel(_ value:String?) -> String? {
+        switch value {
+        case "low": return "低"
+        case "normal": return "普通"
+        case "high": return "高"
+        case "urgent": return "紧急"
+        default: return nil
+        }
+    }
+
+    static func editableTaskStatuses(from current:String?) -> [String] {
+        switch current {
+        case nil: return ["unset","planned","active","waiting_for_user"]
+        case "planned": return ["planned","active","waiting_for_user"]
+        case "active": return ["active","waiting_for_user"]
+        case "waiting_for_user": return ["waiting_for_user","planned","active"]
+        case let value?: return [value]
         }
     }
 
@@ -276,7 +326,7 @@ struct ZenWorkspacePane: View {
 
     private func bucket(_ item:ForgeRecord) -> ZenBoardBucket {
         ZenBoardBucket.classify(
-            requirementState:item.state,
+            requirementState:item.state,taskStatus:item.taskStatus,
             runtimeActive:model.planningAutopilotStatuses[item.recordId]?.runtimeActive == true,
             hasPlan:model.records.contains(where:{$0.kind == .plan && $0.requirementId == item.recordId})
         )
@@ -320,9 +370,10 @@ struct ZenWorkspacePane: View {
                     .disabled(model.repoId == nil || model.busy || !canReviewLatestProposal)
                     .accessibilityIdentifier("zen.proposal.open")
                     Menu {
-                        Button("直接创建 Requirement") {
+                        Button("新建任务") {
                             newTitle = ""; newOutcome = ""; newCriteria = ""
                             newTaskStatus = "planned"; newPriority = "normal"; newAssignee = ""
+                            model.error = nil
                             showingRequirementSheet = true
                         }
                     } label: {
@@ -331,7 +382,7 @@ struct ZenWorkspacePane: View {
                     .menuStyle(.borderlessButton)
                     .fixedSize()
                     .disabled(model.repoId == nil)
-                    .help("直接创建 Requirement")
+                    .help("新建任务")
                     .accessibilityIdentifier("zen.requirement.new")
                 }
                 Button {
@@ -563,7 +614,8 @@ struct ZenWorkspacePane: View {
                                     HStack(spacing:9) {
                                         Circle()
                                             .fill(stage == .done ? Color.green.opacity(0.75) :
-                                                  stage == .running ? Color.accentColor : Color.secondary.opacity(0.5))
+                                                  stage == .running || stage == .active ? Color.accentColor :
+                                                  stage == .waitingForUser ? Color.orange : Color.secondary.opacity(0.5))
                                             .frame(width:7,height:7)
                                         Text(stage.title).font(.system(size:12,weight:.semibold))
                                         Text("\(items.count)").font(.system(size:10)).foregroundStyle(.secondary)
@@ -598,7 +650,19 @@ struct ZenWorkspacePane: View {
                                                                 .font(.system(size:9,design:.monospaced))
                                                                 .lineLimit(1).truncationMode(.middle)
                                                             Spacer(minLength:0)
-                                                            if let status=model.planningAutopilotStatuses[item.recordId],
+                                                            if item.priority != nil || item.assignee?.isEmpty == false {
+                                                             HStack(spacing:7) {
+                                                                 if let priority=ZenWorkspacePane.priorityLabel(item.priority) {
+                                                                     Text(priority)
+                                                                         .foregroundStyle(priority == "紧急" ? Color.orange : Color.secondary)
+                                                                 }
+                                                                 if let assignee=item.assignee,!assignee.isEmpty {
+                                                                     Text(assignee).foregroundStyle(.secondary).lineLimit(1)
+                                                                 }
+                                                             }
+                                                             .font(.system(size:9.5))
+                                                         }
+                                                         if let status=model.planningAutopilotStatuses[item.recordId],
                                                                stage == .running {
                                                                 Text(status.runStatus ?? "执行中")
                                                                     .font(.system(size:9))
@@ -722,6 +786,13 @@ struct ZenWorkspacePane: View {
                     Text(item.kind == .requirement ? "Requirement" : "Plan")
                         .font(.system(size:10,weight:.semibold)).foregroundStyle(.secondary)
                     Spacer()
+                    if detailLoaded(for:item) {
+                         Button(item.kind == .requirement ? "编辑任务" : "编辑") {
+                             beginEdit(item)
+                         }
+                         .buttonStyle(.plain)
+                         .font(.system(size:10))
+                     }
                     if let state=Self.inspectorLifecycleLabel(for:item) {
                         Text(state).font(.system(size:10)).foregroundStyle(.secondary)
                     }
@@ -744,6 +815,26 @@ struct ZenWorkspacePane: View {
                 Divider()
                 switch model.recordDetail {
                 case .requirement(let detail) where item.kind == .requirement && detail.requirementId == item.recordId:
+                     HStack(alignment:.top,spacing:18) {
+                         VStack(alignment:.leading,spacing:3) {
+                             Text("状态").font(.system(size:10)).foregroundStyle(.secondary)
+                             Text(Self.taskStatusLabel(detail.taskStatus) ?? "未设置")
+                                 .font(.system(size:11,weight:.medium))
+                         }
+                         VStack(alignment:.leading,spacing:3) {
+                             Text("优先级").font(.system(size:10)).foregroundStyle(.secondary)
+                             Text(Self.priorityLabel(detail.priority) ?? "未设置")
+                                 .font(.system(size:11,weight:.medium))
+                         }
+                         if let assignee=detail.assignee,!assignee.isEmpty {
+                             VStack(alignment:.leading,spacing:3) {
+                                 Text("负责人").font(.system(size:10)).foregroundStyle(.secondary)
+                                 Text(assignee).font(.system(size:11,weight:.medium)).lineLimit(1)
+                             }
+                         }
+                     }
+                     Divider()
+
                     Text("目标").font(.system(size:12,weight:.semibold))
                     Text(detail.outcomeStatement).font(.system(size:12))
                         .textSelection(.enabled)
@@ -956,18 +1047,24 @@ struct ZenWorkspacePane: View {
             editTitle=value.title
             editOutcome=value.outcomeStatement
             editCriteria=value.acceptanceCriteria.joined(separator:"\n")
+            editTaskStatus=value.taskStatus
+            editTaskStatusOptions=Self.editableTaskStatuses(from:value.taskStatus)
+            editPriority=value.priority ?? "unset"
+            editAssignee=value.assignee ?? ""
+
         case .plan(let value) where item.kind == .plan:
             editRevision=value.revision
             editTitle=value.goal
         default:
             return
         }
+        model.error = nil
         editingRecord=item
     }
 
     private func editSheet(for item:ForgeRecord) -> some View {
         VStack(alignment:.leading,spacing:14) {
-            Text(item.kind == .requirement ? "编辑 Requirement" : "编辑 Plan")
+            Text(item.kind == .requirement ? "编辑任务" : "编辑计划")
                 .font(.system(size:17,weight:.semibold))
             Text(item.recordId + " · v\(editRevision)")
                 .font(.system(size:10,design:.monospaced))
@@ -979,15 +1076,40 @@ struct ZenWorkspacePane: View {
                     .lineLimit(3...6)
                 TextField("验收标准（每行一项）",text:$editCriteria,axis:.vertical)
                     .lineLimit(3...7)
+                 Picker("状态",selection:Binding(
+                     get:{ editTaskStatus ?? "unset" },
+                     set:{ editTaskStatus=$0 == "unset" ? nil : $0 }
+                 )) {
+                     ForEach(editTaskStatusOptions,id:\.self) { status in
+                         Text(status == "unset" ? "未设置" : Self.taskStatusLabel(status) ?? status)
+                             .tag(status)
+                     }
+                 }
+                 Picker("优先级",selection:$editPriority) {
+                     if editPriority == "unset" { Text("未设置").tag("unset") }
+                     Text("低").tag("low")
+                     Text("普通").tag("normal")
+                     Text("高").tag("high")
+                     Text("紧急").tag("urgent")
+                 }
+                 TextField("负责人（留空表示未指派）",text:$editAssignee)
             } else {
                 TextField("计划目标",text:$editTitle,axis:.vertical)
                     .lineLimit(3...6)
             }
 
+            if let problem=model.error {
+                Text(problem)
+                    .font(.system(size:11))
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("zen.record.edit.error")
+            }
             HStack {
                 Spacer()
                 Button("取消") { editingRecord=nil }
                 Button(saving ? "保存中…" : "保存修改") {
+                    model.error = nil
                     saving=true
                     Task {
                         let ok:Bool
@@ -995,7 +1117,10 @@ struct ZenWorkspacePane: View {
                             ok=await model.reviseRequirement(
                                 id:item.recordId,expectedRevision:editRevision,
                                 title:editTitle,outcome:editOutcome,
-                                acceptanceCriteria:editCriteria.components(separatedBy:.newlines)
+                                acceptanceCriteria:editCriteria.components(separatedBy:.newlines),
+                                 taskStatus:editTaskStatus,
+                                 priority:editPriority == "unset" ? nil : editPriority,
+                                 assignee:editAssignee
                             )
                         } else {
                             ok=await model.revisePlan(
@@ -1009,7 +1134,7 @@ struct ZenWorkspacePane: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(saving || editTitle.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
                           || (item.kind == .requirement
-                              && editOutcome.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty))
+                              && (editOutcome.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || editAssignee.utf16.count > 160)))
             }
         }
         .padding(22)
@@ -1169,7 +1294,7 @@ struct ZenWorkspacePane: View {
 
     private var createRequirementSheet: some View {
         VStack(alignment:.leading,spacing:12) {
-            Text("新建 Requirement").font(.system(size:17,weight:.semibold))
+            Text("新建任务").font(.system(size:17,weight:.semibold))
             TextField("名称",text:$newTitle)
             TextField("预期结果",text:$newOutcome,axis:.vertical).lineLimit(3...5)
             TextField("验收标准（每行一项）",text:$newCriteria,axis:.vertical).lineLimit(3...6)
@@ -1187,10 +1312,18 @@ struct ZenWorkspacePane: View {
                 }
             }
             TextField("负责人（可选）",text:$newAssignee)
+            if let problem=model.error {
+                Text(problem)
+                    .font(.system(size:11))
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("zen.requirement.create.error")
+            }
             HStack {
                 Spacer()
                 Button("取消") { showingRequirementSheet=false }
                 Button(saving ? "保存中…" : "创建") {
+                    model.error = nil
                     saving=true
                     Task {
                         let id=await model.createRequirement(

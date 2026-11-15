@@ -876,11 +876,17 @@ async fn revise_requirement(
     acceptance_criteria: Vec<String>,
     state: Option<String>,
     accepted_evidence_refs: Option<Vec<String>>,
+    task_status: Option<String>,
+    priority: Option<String>,
+    assignee: Option<String>,
 ) -> Result<Value, String> {
     if repo_id.trim().is_empty() || requirement_id.trim().is_empty()
         || expected_revision == 0 || title.trim().is_empty() || outcome.trim().is_empty()
         || acceptance_criteria.len() > 50
         || state.as_deref().is_some_and(|value| !matches!(value, "open" | "completed" | "cancelled"))
+        || task_status.as_deref().is_some_and(|value| !matches!(value, "planned" | "active" | "waiting_for_user" | "done" | "cancelled"))
+        || priority.as_deref().is_some_and(|value| !matches!(value, "low" | "normal" | "high" | "urgent"))
+        || assignee.as_ref().is_some_and(|value| value.trim().encode_utf16().count() > 160)
         || accepted_evidence_refs.as_ref().is_some_and(|refs| refs.len() > 100 || refs.iter().any(|reference| reference.len() > 512)) {
         return Err("FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID".to_string());
     }
@@ -893,6 +899,9 @@ async fn revise_requirement(
         "requirement_outcome": outcome,
         "requirement_acceptance_criteria": acceptance_criteria,
         "requirement_state": state,
+        "requirement_status": task_status.clone(),
+        "requirement_priority": priority.clone(),
+        "requirement_assignee": assignee.clone(),
         "requirement_accepted_evidence_refs": accepted_evidence_refs,
         "request_id": request_id("requirement-revise")
     })).await?;
@@ -900,6 +909,23 @@ async fn revise_requirement(
     let revision = data.pointer("/requirement/revision").and_then(Value::as_u64);
     if revision != expected_revision.checked_add(1) {
         return Err("FORGE_DESKTOP_REQUIREMENT_REVISE_NOT_CONFIRMED: refresh before retrying".to_string());
+    }
+    if let Some(status) = task_status.as_deref() {
+        if data.pointer("/requirement/status").and_then(Value::as_str) != Some(status) {
+            return Err("FORGE_DESKTOP_REQUIREMENT_TASK_STATUS_NOT_CONFIRMED: refresh before retrying".to_string());
+        }
+    }
+    if let Some(priority) = priority.as_deref() {
+        let actual = data.pointer("/requirement/priority").and_then(Value::as_str).unwrap_or("");
+        if actual != priority {
+            return Err("FORGE_DESKTOP_REQUIREMENT_PRIORITY_NOT_CONFIRMED: refresh before retrying".to_string());
+        }
+    }
+    if let Some(assignee) = assignee.as_deref() {
+        let actual = data.pointer("/requirement/assignee").and_then(Value::as_str).unwrap_or("");
+        if actual != assignee.trim() {
+            return Err("FORGE_DESKTOP_REQUIREMENT_ASSIGNEE_NOT_CONFIRMED: refresh before retrying".to_string());
+        }
     }
     Ok(data)
 }
