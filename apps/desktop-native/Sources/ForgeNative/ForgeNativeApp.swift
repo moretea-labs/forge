@@ -1057,6 +1057,7 @@ private struct ForgeWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(model.projectsLoading)
+                .accessibilityLabel(model.projectsLoading ? "正在加载项目" : "刷新项目列表")
                 .help(model.projectsLoading ? "正在加载项目列表" : "刷新项目列表")
             }
 
@@ -1075,6 +1076,7 @@ private struct ForgeWorkspaceView: View {
                         Text("无法更新项目列表，仍显示上次加载的项目")
                             .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                             .help(projectError)
+                            .accessibilityHint(projectError)
                             .lineLimit(2)
                             .frame(maxWidth:.infinity,alignment:.leading)
                             .padding(.horizontal,8)
@@ -1090,6 +1092,7 @@ private struct ForgeWorkspaceView: View {
                         Text("无法加载项目列表，请重试")
                             .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                             .help(projectError)
+                            .accessibilityHint(projectError)
                             .frame(maxWidth:.infinity,minHeight:76)
                             .padding(.horizontal,12)
                     } else if filteredProjects.isEmpty {
