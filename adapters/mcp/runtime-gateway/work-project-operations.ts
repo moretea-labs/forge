@@ -167,7 +167,7 @@ export function callRhWorkProjectOperation(
       return result(buildFacadeResult({
         summary: `Listed ${projects.length} of ${totalCount} Forge projects from canonical Project identity${statusFilter ? ` (${statusFilter})` : ''}${searchQuery ? ` matching "${searchQuery}"` : ''}, starting at offset ${offset}.`,
         data: {
-          authority: 'project_semantic', bounded: true, limit, offset, totalCount,
+          authority: 'project_semantic', progressAuthority: 'github_issue_project', bounded: true, limit, offset, totalCount,
           hasMore, projectsTruncated: hasMore,
           ...(statusFilter ? { statusFilter } : {}),
           ...(searchQuery ? { searchQuery } : {}), projects,
@@ -248,6 +248,7 @@ export function callRhWorkProjectOperation(
         summary: `Project ${projectId} retrieved at record revision ${record.revision}.`,
         data: {
           authority: 'project_semantic',
+          progressAuthority: 'github_issue_project',
           project,
           ...(taskProjection ? taskProjection : {}),
           ...(revisionHistory ? { revisionHistory } : {}),

@@ -235,8 +235,8 @@ describe('rh_work Project operations', () => {
     }));
     expect(listed.status).toBe('ok');
     expect(listed.data).toMatchObject({
-      authority: 'project_semantic', bounded: true, limit: 20, offset: 0,
-      totalCount: 3, hasMore: false, projectsTruncated: false,
+      authority: 'project_semantic', progressAuthority: 'github_issue_project',
+      bounded: true, limit: 20, offset: 0, totalCount: 3, hasMore: false, projectsTruncated: false,
     });
     expect(listed.data.projects.map((project: { projectId: string }) => project.projectId).sort())
       .toEqual(['project-a', 'project-b', 'project-standalone']);
@@ -323,7 +323,9 @@ describe('rh_work Project operations', () => {
     }));
     expect(fetched.status).toBe('ok');
     expect(fetched.data.project).toMatchObject({ projectId: 'project-a', displayName: 'Project A Renamed', status: 'active', revision: 3 });
-    expect(fetched.data).toMatchObject({ requirementCount: 1, requirementsTruncated: false });
+    expect(fetched.data).toMatchObject({
+      progressAuthority: 'github_issue_project', requirementCount: 1, requirementsTruncated: false,
+    });
     expect(fetched.data.requirements).toMatchObject([{
       requirementId: 'REQ-PROJECT-A-TASK', title: 'Project A task', status: 'active',
       priority: 'high', assignee: 'alice', dependencyCount: 1,
@@ -409,6 +411,7 @@ describe('rh_work Project operations', () => {
       context(controllerHome, repositoryAAfterRestart as ReturnType<typeof registerRepository>), 'rh_work',
       { operation: 'requirement_get', requirement_id: 'REQ-PROJECT-A-TASK', detail_level: 'detail' },
     ));
+    expect(taskDetailAfterRestart.data.progressAuthority).toBe('github_issue_project');
     expect(taskDetailAfterRestart.data.requirement).toMatchObject({
       projectId: 'project-a', status: 'active', priority: 'high', assignee: 'alice', dependsOnRequirementIds: ['REQ-PROJECT-B-TASK'],
       progressSummary: 'Implementation is in progress; dependency wiring is complete.',

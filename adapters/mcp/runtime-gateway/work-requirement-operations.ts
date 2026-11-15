@@ -270,6 +270,7 @@ export async function callRhWorkRequirementOperation(
     return result(buildFacadeResult({
       summary: `Requirement ${semantic.requirementId} retrieved at semantic revision ${semantic.revision}.`,
       data: {
+        progressAuthority: 'github_issue_project',
         requirement: { ...semantic, blockingDependencyIds: blockingDependencies, ...(projectId || requestedProjectId ? { projectId: projectId ?? requestedProjectId } : {}) },
         ...(revisionHistory ? { revisionHistory } : {}),
         ...(activityHistory ? { activityHistory, activityHistoryTruncated: (activityEvents?.length ?? 0) > 20 } : {}),
