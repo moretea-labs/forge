@@ -1234,11 +1234,6 @@ private struct ForgeWorkspaceView: View {
                             }
                         }
                     }
-                    if filteredProjects.isEmpty {
-                        Text("没有匹配的项目")
-                            .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
-                            .frame(maxWidth:.infinity).padding(.vertical,18)
-                    }
                 }
             }
             .frame(height:260)
