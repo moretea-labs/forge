@@ -531,6 +531,7 @@ struct AgentRemoteImageView: View {
     @State private var status: String?
     @State private var isSaving = false
     @State private var previewLoading = false
+    @State private var previewAttempt = 0
     @State private var previewError: String?
     @State private var previewData: Data?
     @State private var previewSource: String?
@@ -583,9 +584,20 @@ struct AgentRemoteImageView: View {
                 } else if previewLoading {
                     ProgressView().frame(height: 80)
                 } else if let previewError {
-                    Label("图片加载失败", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.secondary)
-                        .help(previewError)
+                    HStack(spacing: 8) {
+                        Label("图片加载失败", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary)
+                            .help(previewError)
+                        Button {
+                            previewAttempt += 1
+                        } label: {
+                            Label("重试", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(previewLoading)
+                        .accessibilityHint("重新加载图片")
+                        .accessibilityIdentifier("\(accessibilityIdentifierPrefix).retry")
+                    }
                 }
             }
             if let status {
@@ -618,7 +630,7 @@ struct AgentRemoteImageView: View {
             .padding(18)
             .frame(minWidth: 640, minHeight: 420)
         }
-        .task(id: expanded ? source : nil) {
+        .task(id: expanded ? "\(source)#\(previewAttempt)" : nil) {
             guard expanded, let url = remoteURL else {
                 previewData = nil
                 previewSource = nil
