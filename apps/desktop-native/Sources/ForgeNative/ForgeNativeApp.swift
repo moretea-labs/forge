@@ -1071,6 +1071,13 @@ private struct ForgeWorkspaceView: View {
 
             ScrollView {
                 LazyVStack(spacing:4) {
+                    if let projectError = model.projectsError, !model.projects.isEmpty {
+                        Text("刷新失败，仍显示上次加载的项目：\(projectError)")
+                            .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
+                            .lineLimit(2)
+                            .frame(maxWidth:.infinity,alignment:.leading)
+                            .padding(.horizontal,8)
+                    }
                     if model.projectsLoading && model.projects.isEmpty {
                         HStack(spacing:8) {
                             ProgressView().controlSize(.small)
@@ -1078,7 +1085,7 @@ private struct ForgeWorkspaceView: View {
                                 .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                         }
                         .frame(maxWidth:.infinity,minHeight:76)
-                    } else if let projectError = model.projectsError {
+                    } else if model.projects.isEmpty, let projectError = model.projectsError {
                         Text("项目列表加载失败：\(projectError)")
                             .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                             .frame(maxWidth:.infinity,minHeight:76)
