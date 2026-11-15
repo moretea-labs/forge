@@ -22,7 +22,7 @@ import {
   type PluginCapabilityAuthorizationGrant,
 } from './capability-authorization-grants';
 import { markControllerContextProjectionDirty } from '../projections/controller-context';
-import { acquireExecutionLeasesAsync, releaseExactExecutionLeases, renewExecutionLeases } from '../resources/leases/store';
+import { acquireExecutionLeasesAsync, releaseExactExecutionLeasesAsync, renewExecutionLeases } from '../resources/leases/store';
 import { iosSimulatorResourceKey } from '../resources/claims/conflicts';
 import { isRuntimeWriteFenceError } from '../root/write-fence';
 import { ControllerLockContentionError } from '../../effects/controller-locks';
@@ -767,7 +767,7 @@ async function withAssistantPluginResourceLeases<T>(
     clearInterval(heartbeat);
     if (!retainForReconciliation) {
       try {
-        releaseExactExecutionLeases(controllerHome, scope.scopeKey, ownerJobId, expected, { visibility: 'ephemeral' });
+        await releaseExactExecutionLeasesAsync(controllerHome, scope.scopeKey, ownerJobId, expected, { visibility: 'ephemeral' });
       } catch (error) {
         // A successful provider effect can rotate Runtime authority (for example
         // a fenced Runtime cutover). The old sidecar must not release leases
