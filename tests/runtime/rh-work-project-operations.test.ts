@@ -455,7 +455,7 @@ describe('rh_work Project operations', () => {
       operation: 'project_get', project_id: 'project-board', detail_level: 'detail',
     }));
     expect(projectDetail.data.requirements).toEqual(expect.arrayContaining([
-      expect.objectContaining({ requirementId: 'REQ-BOARD-TASK', repoId: repository.repoId }),
+      expect.objectContaining({ requirementId: 'REQ-BOARD-TASK', repoId: repository.repoId, linkedPlanCount: 0 }),
     ]));
     const beforePlan = structured(await callRuntimeTool(board, 'rh_work', {
       operation: 'requirement_get', project_id: 'project-board', requirement_id: 'REQ-BOARD-TASK',
@@ -468,6 +468,12 @@ describe('rh_work Project operations', () => {
       plan_items: [{ id: 'implementation', objective: 'Implement the user workflow.', dependencies: [] }],
     }));
     expect(createdPlan.status).toBe('ok');
+    const projectWithPlan = structured(await callRuntimeTool(board, 'rh_work', {
+      operation: 'project_get', project_id: 'project-board', detail_level: 'detail',
+    }));
+    expect(projectWithPlan.data.requirements).toContainEqual(expect.objectContaining({
+      requirementId: 'REQ-BOARD-TASK', linkedPlanCount: 1,
+    }));
     const taskFromBoard = structured(await callRuntimeTool(board, 'rh_work', {
       operation: 'requirement_get', project_id: 'project-board', requirement_id: 'REQ-BOARD-TASK',
       detail_level: 'detail',

@@ -5,6 +5,8 @@ import type { ProjectIdentity, ProjectPlacement } from '../../../packages/kernel
 import { normalizeRemoteUrl, portableProjectSourceFingerprint, stablePortableProjectId } from '../../../src/core/repository/identity';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { blockingRequirementIds, listRequirementsForProject } from '../../../src/runtime/control-plane/facade/requirement-authority';
+import { readPlanContractStore } from '../../../src/runtime/control-plane/facade/plan-contract-store';
+import { SEMANTIC_SCOPE_KEY } from '../../../src/effects/controller-home';
 import { bindRequirementProjectPlacement, bindRequirementRepositoryPlacement, readRequirement, requirementSemanticView, REQUIREMENT_STATES, type RequirementState } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import {
   createProjectIdentity,
@@ -69,6 +71,23 @@ function projectTaskSummary(tasks: ReturnType<typeof projectTasks>) {
 
 function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: string) {
   const all = projectTasks(ctx, projectId);
+  // One Plan-store read per distinct repository (or semantic scope), not per task row.
+  const planCountsByScope = new Map<string, Map<string, number>>();
+  const linkedPlanCount = (requirement: (typeof all)[number]): number => {
+    const scope = requirement.repoId ?? SEMANTIC_SCOPE_KEY;
+    let counts = planCountsByScope.get(scope);
+    if (!counts) {
+      counts = new Map<string, number>();
+      for (const plan of readPlanContractStore({
+        controllerHome: ctx.controllerHome,
+        ...(requirement.repoId ? { repoId: requirement.repoId } : { scopeKey: SEMANTIC_SCOPE_KEY }),
+      }).contracts) {
+        if (plan.requirementId) counts.set(plan.requirementId, (counts.get(plan.requirementId) ?? 0) + 1);
+      }
+      planCountsByScope.set(scope, counts);
+    }
+    return counts.get(requirement.requirementId) ?? 0;
+  };
   return {
     ...projectTaskSummary(all),
     requirements: all.slice(0, 100).map((requirement) => ({
@@ -84,6 +103,7 @@ function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: stri
       remainingWorkCount: requirement.remainingWork.length,
       acceptedEvidenceCount: requirement.acceptedEvidenceRefs.length,
       dependencyCount: requirement.dependsOnRequirementIds.length,
+      linkedPlanCount: linkedPlanCount(requirement),
       blockingDependencyIds: blockingRequirementIds({ controllerHome: ctx.controllerHome }, requirement.dependsOnRequirementIds),
       updatedAt: requirement.updatedAt,
     })),
