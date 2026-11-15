@@ -5,7 +5,7 @@ import AppKit
 /// links. The conversation transcript remains the sole asset index authority.
 struct AgentAssetsDashboard: View {
     @ObservedObject var model: NativeWorkspace
-    @State private var selectedRepoId = ""
+    @State private var selectedProjectKey = ""
     @State private var showLocalResources = true
     @State private var showRemoteImages = true
 
@@ -34,14 +34,27 @@ struct AgentAssetsDashboard: View {
         var remote: Bool { kind == .remoteImage }
     }
 
+    private struct ProjectFilterOption: Identifiable {
+        let project: ForgeProject
+        let id: String
+    }
+
+    static func projectSelectionKey(repoId: String, checkoutId: String?) -> String {
+        "\(repoId)\u{1F}\(checkoutId ?? "")"
+    }
+
     static func makeResources(
         from sourceThreads: [ChatThread],
         projects: [ForgeProject],
-        selectedRepoId: String,
+        selectedProjectKey: String,
         showLocalResources: Bool,
         showRemoteImages: Bool
     ) -> [Resource] {
-        let threads = sourceThreads.filter { selectedRepoId.isEmpty || $0.repoId == selectedRepoId }
+        let threads = sourceThreads.filter { thread in
+            guard !selectedProjectKey.isEmpty else { return true }
+            guard let repoId = thread.repoId else { return false }
+            return Self.projectSelectionKey(repoId: repoId, checkoutId: thread.checkoutId) == selectedProjectKey
+        }
         let items = threads.flatMap { thread -> [Resource] in
             let localRoot: String?
             if let repoId = thread.repoId, let checkoutId = thread.checkoutId {
@@ -104,11 +117,33 @@ struct AgentAssetsDashboard: View {
         return items.sorted { $0.date > $1.date }
     }
 
+    private var projectFilterOptions: [ProjectFilterOption] {
+        var seen = Set<String>()
+        return model.projects.compactMap { project in
+            let id = Self.projectSelectionKey(repoId: project.repoId, checkoutId: project.checkoutId)
+            guard seen.insert(id).inserted else { return nil }
+            return ProjectFilterOption(project: project, id: id)
+        }
+    }
+
+    private func projectFilterLabel(for option: ProjectFilterOption) -> String {
+        let sameRepository = projectFilterOptions.filter { $0.project.repoId == option.project.repoId }
+        guard sameRepository.count > 1 else { return option.project.label }
+
+        let checkoutName = option.project.localRoot
+            .map { URL(fileURLWithPath: $0).lastPathComponent }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        let suffix = checkoutName
+            ?? option.project.checkoutId.map { String($0.prefix(8)) }
+            ?? "未绑定 checkout"
+        return "\(option.project.label) · \(suffix)"
+    }
+
     private var resources: [Resource] {
         Self.makeResources(
             from: model.threads,
             projects: model.projects,
-            selectedRepoId: selectedRepoId,
+            selectedProjectKey: selectedProjectKey,
             showLocalResources: showLocalResources,
             showRemoteImages: showRemoteImages
         )
@@ -126,10 +161,10 @@ struct AgentAssetsDashboard: View {
                     Toggle("回复图片", isOn: $showRemoteImages)
                         .accessibilityIdentifier("agent.assets.filter.remote")
                     Spacer(minLength: 8)
-                    Picker("项目", selection: $selectedRepoId) {
+                    Picker("项目", selection: $selectedProjectKey) {
                         Text("全部项目").tag("")
-                        ForEach(model.projects) { project in
-                            Text(project.label).tag(project.repoId)
+                        ForEach(projectFilterOptions) { option in
+                            Text(projectFilterLabel(for: option)).tag(option.id)
                         }
                     }
                     .frame(maxWidth: 200)

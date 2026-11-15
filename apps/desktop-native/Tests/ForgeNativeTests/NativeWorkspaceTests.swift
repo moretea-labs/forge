@@ -3377,7 +3377,7 @@ extension NativeWorkspaceTests {
         projectB.messages = [assistantRemoteB, userLocalB]
 
         let all = AgentAssetsDashboard.makeResources(
-            from: [projectA, projectB], projects: [], selectedRepoId: "",
+            from: [projectA, projectB], projects: [], selectedProjectKey: "",
             showLocalResources: true, showRemoteImages: true
         )
         XCTAssertEqual(all.count, 5)
@@ -3395,21 +3395,21 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(all.first?.messageId, assistantRemoteA.id)
 
         let projectAOnly = AgentAssetsDashboard.makeResources(
-            from: [projectA, projectB], projects: [], selectedRepoId: "repo-a",
+            from: [projectA, projectB], projects: [], selectedProjectKey: AgentAssetsDashboard.projectSelectionKey(repoId: "repo-a", checkoutId: nil),
             showLocalResources: true, showRemoteImages: true
         )
         XCTAssertEqual(projectAOnly.count, 3)
         XCTAssertTrue(projectAOnly.allSatisfy { $0.threadId == projectA.id })
 
         let localOnly = AgentAssetsDashboard.makeResources(
-            from: [projectA, projectB], projects: [], selectedRepoId: "",
+            from: [projectA, projectB], projects: [], selectedProjectKey: "",
             showLocalResources: true, showRemoteImages: false
         )
         XCTAssertEqual(localOnly.count, 3)
         XCTAssertTrue(localOnly.allSatisfy { !$0.remote })
 
         let remoteOnly = AgentAssetsDashboard.makeResources(
-            from: [projectA, projectB], projects: [], selectedRepoId: "",
+            from: [projectA, projectB], projects: [], selectedProjectKey: "",
             showLocalResources: false, showRemoteImages: true
         )
         XCTAssertEqual(remoteOnly.count, 2)
@@ -3452,7 +3452,7 @@ extension NativeWorkspaceTests {
         let resources = AgentAssetsDashboard.makeResources(
             from: [matching, stale],
             projects: [project],
-            selectedRepoId: "",
+            selectedProjectKey: "",
             showLocalResources: true,
             showRemoteImages: false
         )
@@ -3467,11 +3467,92 @@ extension NativeWorkspaceTests {
         let hidden = AgentAssetsDashboard.makeResources(
             from: [matching, stale],
             projects: [project],
-            selectedRepoId: "",
+            selectedProjectKey: "",
             showLocalResources: false,
             showRemoteImages: false
         )
         XCTAssertTrue(hidden.isEmpty)
+    }
+
+    func testAssetsProjectFilterSeparatesCheckoutsWithinSameRepository() {
+        let projectA = ForgeProject(
+            repoId: "repo-a", displayName: "Project A",
+            localRoot: "/tmp/project-a-checkout", checkoutId: "checkout-a",
+            remoteUrl: "https://github.com/example/project-a", defaultBranch: "main"
+        )
+        let projectB = ForgeProject(
+            repoId: "repo-a", displayName: "Project A",
+            localRoot: "/tmp/project-b-checkout", checkoutId: "checkout-b",
+            remoteUrl: "https://github.com/example/project-a", defaultBranch: "main"
+        )
+
+        var threadA = ChatThread()
+        threadA.title = "Checkout A"
+        threadA.repoId = "repo-a"
+        threadA.checkoutId = "checkout-a"
+        let imageA = ChatMessage(
+            role: "assistant", text: "![A](https://example.com/a.png)",
+            createdAt: Date(timeIntervalSince1970: 300)
+        )
+        var fileA = ChatMessage(role: "user", text: "A file")
+        fileA.contextPaths = ["Docs/a.pdf"]
+        threadA.messages = [imageA, fileA]
+
+        var threadB = ChatThread()
+        threadB.title = "Checkout B"
+        threadB.repoId = "repo-a"
+        threadB.checkoutId = "checkout-b"
+        let imageB = ChatMessage(
+            role: "assistant", text: "![B](https://example.com/b.png)",
+            createdAt: Date(timeIntervalSince1970: 200)
+        )
+        var fileB = ChatMessage(role: "user", text: "B file")
+        fileB.contextPaths = ["Docs/b.pdf"]
+        threadB.messages = [imageB, fileB]
+
+        var staleThread = ChatThread()
+        staleThread.repoId = "repo-a"
+        staleThread.checkoutId = "checkout-stale"
+        var staleFile = ChatMessage(role: "user", text: "Stale file")
+        staleFile.contextPaths = ["Docs/stale.pdf"]
+        staleThread.messages = [staleFile]
+
+        let all = AgentAssetsDashboard.makeResources(
+            from: [threadA, threadB, staleThread],
+            projects: [projectA, projectB],
+            selectedProjectKey: "",
+            showLocalResources: true,
+            showRemoteImages: true
+        )
+        XCTAssertEqual(all.count, 5)
+
+        let keyA = AgentAssetsDashboard.projectSelectionKey(repoId: "repo-a", checkoutId: "checkout-a")
+        let keyB = AgentAssetsDashboard.projectSelectionKey(repoId: "repo-a", checkoutId: "checkout-b")
+        XCTAssertNotEqual(keyA, keyB)
+
+        let onlyA = AgentAssetsDashboard.makeResources(
+            from: [threadA, threadB, staleThread],
+            projects: [projectA, projectB],
+            selectedProjectKey: keyA,
+            showLocalResources: true,
+            showRemoteImages: true
+        )
+        XCTAssertEqual(onlyA.count, 2)
+        XCTAssertTrue(onlyA.allSatisfy { $0.threadId == threadA.id })
+        XCTAssertEqual(onlyA.first(where: { $0.kind == .file })?.localRoot, projectA.localRoot)
+        XCTAssertEqual(onlyA.first(where: { $0.remote })?.source, "https://example.com/a.png")
+
+        let onlyB = AgentAssetsDashboard.makeResources(
+            from: [threadA, threadB, staleThread],
+            projects: [projectA, projectB],
+            selectedProjectKey: keyB,
+            showLocalResources: true,
+            showRemoteImages: true
+        )
+        XCTAssertEqual(onlyB.count, 2)
+        XCTAssertTrue(onlyB.allSatisfy { $0.threadId == threadB.id })
+        XCTAssertEqual(onlyB.first(where: { $0.kind == .file })?.localRoot, projectB.localRoot)
+        XCTAssertEqual(onlyB.first(where: { $0.remote })?.source, "https://example.com/b.png")
     }
 
     func testContextFileResolutionRejectsCheckoutEscapeAndSymlinkEscape() throws {
