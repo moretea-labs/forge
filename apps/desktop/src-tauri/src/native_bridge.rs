@@ -699,7 +699,7 @@ mod tests {
             Some(" PROJECT-standalone ".into()), None, "scope-required"
         ).expect("standalone Project scope");
         assert_eq!(standalone["project_id"], "PROJECT-standalone");
-        assert!(standalone["repo_id"].is_null());
+        assert!(!standalone.as_object().unwrap().contains_key("repo_id"));
 
         let placed = semantic_project_scope(
             Some("PROJECT-a".into()), Some(" repo-a ".into()), "scope-required"
@@ -710,7 +710,7 @@ mod tests {
         let repository_only = semantic_project_scope(
             None, Some("repo-legacy".into()), "scope-required"
         ).expect("existing repository-only client scope remains accepted");
-        assert!(repository_only["project_id"].is_null());
+        assert!(!repository_only.as_object().unwrap().contains_key("project_id"));
         assert_eq!(repository_only["repo_id"], "repo-legacy");
 
         assert_eq!(

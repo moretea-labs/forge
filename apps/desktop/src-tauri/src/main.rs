@@ -527,7 +527,14 @@ fn semantic_project_scope(
     if !has_requirement_scope(repo_id.as_ref(), project_id.as_ref()) {
         return Err(error_code.to_string());
     }
-    Ok(json!({ "project_id": project_id, "repo_id": repo_id }))
+    let mut scope = json!({});
+    if let Some(project_id) = project_id {
+        scope["project_id"] = json!(project_id);
+    }
+    if let Some(repo_id) = repo_id {
+        scope["repo_id"] = json!(repo_id);
+    }
+    Ok(scope)
 }
 
 fn optional_project_text(args: &Value, field: &str, max_len: usize) -> Result<Option<String>, String> {
@@ -1001,14 +1008,14 @@ async fn read_requirement_detail(
     if requirement_id.trim().is_empty() {
         return Err("FORGE_DESKTOP_REQUIREMENT_DETAIL_ARGUMENT_REQUIRED".to_string());
     }
-    let result = call_runtime_tool("rh_work", json!({
-        "repo_id": repo_id,
-        "project_id": project_id,
-        "operation": "requirement_get",
-        "requirement_id": requirement_id,
-        "detail_level": "detail",
-        "request_id": request_id("requirement-detail")
-    })).await?;
+    let mut arguments = semantic_project_scope(
+        project_id, repo_id, "FORGE_DESKTOP_REQUIREMENT_DETAIL_SCOPE_REQUIRED"
+    )?;
+    arguments["operation"] = json!("requirement_get");
+    arguments["requirement_id"] = json!(requirement_id);
+    arguments["detail_level"] = json!("detail");
+    arguments["request_id"] = json!(request_id("requirement-detail"));
+    let result = call_runtime_tool("rh_work", arguments).await?;
     Ok(semantic_facade_data(result))
 }
 
@@ -1056,20 +1063,28 @@ async fn create_requirement(
     {
         return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_ARGUMENT_INVALID".to_string());
     }
-    let result = call_runtime_tool("rh_work", json!({
-        "repo_id": repo_id,
-        "project_id": project_id,
-        "operation": "requirement_create",
-        "requirement_id": requirement_id,
-        "requirement_title": title,
-        "requirement_outcome": outcome,
-        "requirement_acceptance_criteria": acceptance_criteria,
-        "requirement_status": task_status.clone(),
-        "requirement_priority": priority.clone(),
-        "requirement_assignee": assignee.clone(),
-        "requirement_dependencies": dependencies,
-        "request_id": request_id("requirement-create")
-    })).await?;
+    let mut arguments = semantic_project_scope(
+        project_id.clone(), repo_id, "FORGE_DESKTOP_REQUIREMENT_CREATE_SCOPE_REQUIRED"
+    )?;
+    arguments["operation"] = json!("requirement_create");
+    arguments["requirement_id"] = json!(requirement_id);
+    arguments["requirement_title"] = json!(title);
+    arguments["requirement_outcome"] = json!(outcome);
+    arguments["requirement_acceptance_criteria"] = json!(acceptance_criteria);
+    if let Some(value) = task_status.as_ref() {
+        arguments["requirement_status"] = json!(value);
+    }
+    if let Some(value) = priority.as_ref() {
+        arguments["requirement_priority"] = json!(value);
+    }
+    if let Some(value) = assignee.as_ref() {
+        arguments["requirement_assignee"] = json!(value);
+    }
+    if let Some(value) = dependencies.as_ref() {
+        arguments["requirement_dependencies"] = json!(value);
+    }
+    arguments["request_id"] = json!(request_id("requirement-create"));
+    let result = call_runtime_tool("rh_work", arguments).await?;
     let data = semantic_facade_data(result);
     let status_confirmed = task_status.as_deref().is_none_or(|status|
         data.pointer("/requirement/status").and_then(Value::as_str) == Some(status));
@@ -1121,24 +1136,38 @@ async fn revise_requirement(
     {
         return Err("FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID".to_string());
     }
-    let result = call_runtime_tool("rh_work", json!({
-        "repo_id": repo_id,
-        "project_id": project_id,
-        "operation": "requirement_revise",
-        "requirement_id": requirement_id,
-        "expected_revision": expected_revision,
-        "requirement_title": title,
-        "requirement_outcome": outcome,
-        "requirement_acceptance_criteria": acceptance_criteria,
-        "requirement_state": state,
-        "requirement_status": task_status.clone(),
-        "requirement_priority": priority.clone(),
-        "requirement_assignee": assignee.clone(),
-        "requirement_accepted_evidence_refs": accepted_evidence_refs,
-        "requirement_remaining_work": remaining_work,
-        "requirement_dependencies": dependencies,
-        "request_id": request_id("requirement-revise")
-    })).await?;
+    let mut arguments = semantic_project_scope(
+        project_id.clone(), repo_id, "FORGE_DESKTOP_REQUIREMENT_REVISE_SCOPE_REQUIRED"
+    )?;
+    arguments["operation"] = json!("requirement_revise");
+    arguments["requirement_id"] = json!(requirement_id);
+    arguments["expected_revision"] = json!(expected_revision);
+    arguments["requirement_title"] = json!(title);
+    arguments["requirement_outcome"] = json!(outcome);
+    arguments["requirement_acceptance_criteria"] = json!(acceptance_criteria);
+    if let Some(value) = state.as_ref() {
+        arguments["requirement_state"] = json!(value);
+    }
+    if let Some(value) = task_status.as_ref() {
+        arguments["requirement_status"] = json!(value);
+    }
+    if let Some(value) = priority.as_ref() {
+        arguments["requirement_priority"] = json!(value);
+    }
+    if let Some(value) = assignee.as_ref() {
+        arguments["requirement_assignee"] = json!(value);
+    }
+    if let Some(value) = accepted_evidence_refs.as_ref() {
+        arguments["requirement_accepted_evidence_refs"] = json!(value);
+    }
+    if let Some(value) = remaining_work.as_ref() {
+        arguments["requirement_remaining_work"] = json!(value);
+    }
+    if let Some(value) = dependencies.as_ref() {
+        arguments["requirement_dependencies"] = json!(value);
+    }
+    arguments["request_id"] = json!(request_id("requirement-revise"));
+    let result = call_runtime_tool("rh_work", arguments).await?;
     let data = semantic_facade_data(result);
     let revision = data.pointer("/requirement/revision").and_then(Value::as_u64);
     if revision != expected_revision.checked_add(1) {
@@ -1203,8 +1232,12 @@ async fn create_plan(
     )?;
     arguments["operation"] = json!("plan_create");
     arguments["plan_id"] = json!(plan_id);
-    arguments["requirement_id"] = json!(requirement_id);
-    arguments["parent_plan_id"] = json!(parent_plan_id);
+    if let Some(value) = requirement_id.filter(|value| !value.trim().is_empty()) {
+        arguments["requirement_id"] = json!(value);
+    }
+    if let Some(value) = parent_plan_id.filter(|value| !value.trim().is_empty()) {
+        arguments["parent_plan_id"] = json!(value);
+    }
     arguments["scope_key"] = json!(project_id);
     arguments["objective"] = json!(objective);
     arguments["plan_items"] = json!([]);
