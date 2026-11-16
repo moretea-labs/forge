@@ -3444,6 +3444,12 @@ impl StreamedModelRound {
         }
         match protocol {
             "openai" => {
+                // A transport terminator cannot turn truncated/filtered output
+                // into an authoritative answer or executable tool request.
+                if matches!(value.pointer("/choices/0/finish_reason").and_then(Value::as_str),
+                    Some("length" | "content_filter")) {
+                    return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
+                }
                 let delta = &value["choices"][0]["delta"];
                 if let Some(text) = delta.get("content").and_then(Value::as_str) {
                     self.text.push_str(text);
@@ -3534,6 +3540,12 @@ impl StreamedModelRound {
                             }
                         }
                         _ => {}
+                    }
+                }
+                Some("message_delta") => {
+                    if matches!(value.pointer("/delta/stop_reason").and_then(Value::as_str),
+                        Some("max_tokens" | "model_context_window_exceeded")) {
+                        return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
                     }
                 }
                 Some("message_stop") => self.finished = true,
@@ -4441,7 +4453,7 @@ mod tests {
         }
     }
     fn spawn_scripted_agent_provider(
-        protocol: &'static str, bun_executable: &str,
+        protocol: &'static str, bun_executable: &str, stop_reason: Option<&'static str>,
     ) -> (String, std::thread::JoinHandle<Vec<Value>>) {
         use std::{io::{Read, Write}, net::TcpListener, thread, time::Duration};
         let listener = TcpListener::bind("127.0.0.1:0").expect("mock provider socket");
@@ -4547,12 +4559,24 @@ mod tests {
                     frames.push(json!({"choices":[{"delta":{"content":"Read, edited and verified."}}]}).to_string());
                     frames.push("[DONE]".into());
                 }
+                if protocol != "responses" {
+                    let reason = stop_reason.unwrap_or(if round < 3 {
+                        if protocol == "anthropic" { "tool_use" } else { "tool_calls" }
+                    } else if protocol == "anthropic" { "end_turn" } else { "stop" });
+                    let terminal = if protocol == "anthropic" {
+                        json!({"type":"message_delta","delta":{"stop_reason":reason}})
+                    } else {
+                        json!({"choices":[{"delta":{},"finish_reason":reason}]})
+                    };
+                    frames.insert(frames.len() - 1, terminal.to_string());
+                }
                 let payload = frames.into_iter().map(|frame| format!("data: {frame}\r\n\r\n")).collect::<String>();
                 socket.write_all(format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     payload.len()
                 ).as_bytes()).unwrap();
                 socket.write_all(payload.as_bytes()).unwrap();
+                if stop_reason.is_some() { break; }
             }
             requests
         });
@@ -4563,7 +4587,7 @@ mod tests {
     fn native_provider_loop_executes_real_adapter_for_all_api_protocols() {
         for (profile_id, protocol) in [("openai-real-adapter", "openai"), ("anthropic-real-adapter", "anthropic"), ("responses-real-adapter", "responses")] {
             let fixture = native_provider_tool_fixture();
-            let (endpoint, server) = spawn_scripted_agent_provider(protocol, fixture.bun.to_str().unwrap());
+            let (endpoint, server) = spawn_scripted_agent_provider(protocol, fixture.bun.to_str().unwrap(), None);
             let host = NativeProviderToolHost::new(&fixture);
             let config = json!({"defaultProvider":format!("api:{profile_id}"),"apiProfiles":[{"id":profile_id,"endpoint":endpoint,"model":"test-model","apiProtocol":protocol}]});
             let (_cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
@@ -4589,7 +4613,7 @@ mod tests {
     #[test]
     fn same_native_agent_loop_runs_read_edit_and_test_for_openai_and_anthropic() {
         for (profile_id, protocol) in [("openai-test", "openai"), ("anthropic-test", "anthropic")] {
-            let (endpoint, server) = spawn_scripted_agent_provider(protocol, "bun");
+            let (endpoint, server) = spawn_scripted_agent_provider(protocol, "bun", None);
             let host = ScriptedAgentLoopHost::default();
             let config = json!({
                 "defaultProvider":format!("api:{profile_id}"),
@@ -4637,6 +4661,53 @@ mod tests {
             assert!(requests[1].to_string().contains("before"), "read receipt must return to the same model loop");
             assert!(requests[2].to_string().contains("applied"), "edit receipt must return to the same model loop");
             assert!(requests[3].to_string().contains("tests passed"), "test receipt must return to the same model loop");
+        }
+    }
+
+    #[test]
+    fn truncated_provider_round_never_dispatches_tools() {
+        for (protocol, reason) in [
+            ("openai", "length"), ("openai", "content_filter"),
+            ("anthropic", "max_tokens"), ("anthropic", "model_context_window_exceeded"),
+        ] {
+            let (endpoint, server) = spawn_scripted_agent_provider(protocol, "bun", Some(reason));
+            let host = ScriptedAgentLoopHost::default();
+            let config = json!({"apiProfiles":[{
+                "id":"truncated-test","endpoint":endpoint,"model":"test-model","apiProtocol":protocol
+            }]});
+            let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+            let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+                &host, config, vec![json!({"role":"user","content":"Read fixture.txt"})],
+                Some("repo_test".into()), Some("checkout_test".into()), "conv-truncated".into(),
+                Some("api:truncated-test".into()), None, true, &mut cancellation,
+            ));
+            assert!(host.tool_calls.lock().unwrap().is_empty(),
+                "{protocol}/{reason}: truncated tool requests must never execute");
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+            assert_eq!(server.join().unwrap().len(), 1, "no automatic retry");
+        }
+    }
+
+    #[test]
+    fn truncated_provider_text_is_not_a_completed_answer() {
+        for (protocol, reason) in [("openai", "length"), ("anthropic", "max_tokens")] {
+            let host = RecordingStreamHost::default();
+            let mut round = StreamedModelRound::default();
+            let frames = if protocol == "openai" {
+                vec![json!({"choices":[{"delta":{"content":"Partial answer"}}]}).to_string(),
+                    json!({"choices":[{"delta":{},"finish_reason":reason}]}).to_string(),
+                    "[DONE]".to_string()]
+            } else {
+                vec![json!({"type":"content_block_delta","index":0,
+                    "delta":{"type":"text_delta","text":"Partial answer"}}).to_string(),
+                    json!({"type":"message_delta","delta":{"stop_reason":reason}}).to_string(),
+                    json!({"type":"message_stop"}).to_string()]
+            };
+            let result = frames.iter().try_for_each(|frame| round.consume(protocol, frame, &host, "conv-text"))
+                .and_then(|()| round.finish(protocol));
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+            assert!(host.events.lock().unwrap().iter().any(|event| event["delta"] == "Partial answer"),
+                "text previews remain visible without becoming completion receipts");
         }
     }
 
