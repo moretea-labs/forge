@@ -2180,7 +2180,7 @@ private struct AgentPane: View {
             if !model.busy { composerFocused = true }
         }
         .onChange(of:model.selectedThreadId) { _ in
-            voiceDictation.stop()
+            cancelVoiceDictation()
             showChanges = false
             if !model.busy { composerFocused = true }
         }
