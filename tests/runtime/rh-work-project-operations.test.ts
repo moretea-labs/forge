@@ -638,8 +638,9 @@ describe('rh_work Project operations', () => {
       detail_level: 'detail',
     }));
     expect(beforePlan.data).toMatchObject({ relatedPlanCount: 0, relatedPlans: [], relatedPlansTruncated: false });
-    const createdPlan = structured(await callRuntimeTool(repositoryContext, 'rh_work', {
-      operation: 'plan_create', plan_id: 'PLAN-BOARD-TASK', requirement_id: 'REQ-BOARD-TASK',
+    const createdPlan = structured(await callRuntimeTool(board, 'rh_work', {
+      operation: 'plan_create', project_id: 'project-board', scope_key: 'project-board',
+      plan_id: 'PLAN-BOARD-TASK', requirement_id: 'REQ-BOARD-TASK',
       objective: 'Implement the board task in a linked Plan.',
       plan_items: [{ id: 'implementation', objective: 'Implement the user workflow.', dependencies: [] }],
     }));
@@ -662,12 +663,12 @@ describe('rh_work Project operations', () => {
       }],
     });
     const navigatedPlan = structured(await callRuntimeTool(board, 'rh_work', {
-      repo_id: taskFromBoard.data.relatedPlans[0].repoId,
+      repo_id: taskFromBoard.data.relatedPlans[0].repoId, project_id: 'project-board',
       operation: 'plan_get', plan_id: taskFromBoard.data.relatedPlans[0].planId,
     }));
     expect(navigatedPlan.data.plan).toMatchObject({ planId: 'PLAN-BOARD-TASK', requirementId: 'REQ-BOARD-TASK' });
     const updatedPlan = structured(await callRuntimeTool(board, 'rh_work', {
-      repo_id: taskFromBoard.data.relatedPlans[0].repoId,
+      repo_id: taskFromBoard.data.relatedPlans[0].repoId, project_id: 'project-board',
       operation: 'plan_revise', plan_id: 'PLAN-BOARD-TASK', expected_revision: 1,
       objective: 'Deliver and validate the board task.',
     }));
@@ -938,5 +939,73 @@ describe('rh_work Project operations', () => {
     }));
     expect(conflict.status).toBe('blocked');
     expect(conflict.summary).toContain('REQUIREMENT_PROJECT_CONFLICT');
+  });
+
+  test('standalone Project owns an isolated Plan lineage for its Requirement', async () => {
+    const home = tempRoot('forge-project-plan-scope-');
+    ensureControllerHome(home);
+
+    for (const [projectId, requirementId] of [
+      ['project-plan-a', 'REQ-PLAN-A'],
+      ['project-plan-b', 'REQ-PLAN-B'],
+    ] as const) {
+      expect(structured(await callRuntimeTool(context(home), 'rh_work', {
+        operation: 'project_create', project_id: projectId, project_display_name: projectId,
+      })).status).toBe('ok');
+      expect(structured(await callRuntimeTool(context(home), 'rh_work', {
+        operation: 'requirement_create', project_id: projectId, requirement_id: requirementId,
+        requirement_title: requirementId, requirement_outcome: 'Own a Project-scoped Plan.',
+      })).status).toBe('ok');
+    }
+
+    const created = structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'plan_create', project_id: 'project-plan-a', scope_key: 'project-plan-a',
+      plan_id: 'PLAN-PROJECT-A', requirement_id: 'REQ-PLAN-A', objective: 'Plan standalone Project work.',
+    }));
+    expect(created.status).toBe('ok');
+    expect(created.data.plan).toMatchObject({
+      planId: 'PLAN-PROJECT-A', requirementId: 'REQ-PLAN-A', revision: 1,
+    });
+
+    const detail = structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'plan_get', project_id: 'project-plan-a', plan_id: 'PLAN-PROJECT-A', detail_level: 'detail',
+    }));
+    expect(detail.status).toBe('ok');
+    expect(detail.data.plan.planId).toBe('PLAN-PROJECT-A');
+
+    const projectPlans = structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'plan_list', project_id: 'project-plan-a',
+    }));
+    expect(projectPlans.data.plans.map((plan: { planId: string }) => plan.planId)).toEqual(['PLAN-PROJECT-A']);
+    const otherProjectPlans = structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'plan_list', project_id: 'project-plan-b',
+    }));
+    expect(otherProjectPlans.data.plans).toEqual([]);
+
+    const otherProjectRead = structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'plan_get', project_id: 'project-plan-b', plan_id: 'PLAN-PROJECT-A',
+    }));
+    expect(otherProjectRead.status).toBe('not_found');
+
+    const revised = structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'plan_revise', project_id: 'project-plan-a', plan_id: 'PLAN-PROJECT-A',
+      expected_revision: 1, objective: 'Revised standalone Project plan.',
+    }));
+    expect(revised.status).toBe('ok');
+    expect(revised.data.plan).toMatchObject({ planId: 'PLAN-PROJECT-A', revision: 2 });
+
+    const crossProjectWrite = structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'plan_revise', project_id: 'project-plan-b', plan_id: 'PLAN-PROJECT-A',
+      expected_revision: 2, objective: 'Must not cross Project scope.',
+    }));
+    expect(crossProjectWrite.status).toBe('blocked');
+    expect(crossProjectWrite.summary).toContain('PLAN_PROJECT_SCOPE_CONFLICT');
+
+    const projectDetail = structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'project_get', project_id: 'project-plan-a', detail_level: 'detail',
+    }));
+    expect(projectDetail.data.requirements).toMatchObject([{
+      requirementId: 'REQ-PLAN-A', linkedPlanCount: 1,
+    }]);
   });
 });

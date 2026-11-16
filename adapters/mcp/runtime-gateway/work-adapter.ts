@@ -18,6 +18,7 @@ import {
   callRhWorkPlanCreateOperation,
   callRhWorkPlanCreateWithoutRepository,
   callRhWorkPlanOperation,
+  isRhWorkLightweightPlanOperation,
 } from './work-plan-operations';
 import { callRhWorkWorkflowOperation } from './work-workflow-operations';
 import { callRhWorkLearningOperation } from './work-learning-operations';
@@ -108,10 +109,13 @@ async function routeStableSemanticOperation(
     targetScope = matches[0]!.scope;
   }
 
-  const semanticStore = { controllerHome: ctx.controllerHome, scopeKey: targetScope };
-  return spec.kind === 'work'
-    ? callRhWorkSemanticOperation(semanticStore, operation, args)
-    : callRhWorkPlanOperation(semanticStore, operation, args);
+  if (spec.kind === 'work') {
+    return callRhWorkSemanticOperation({ controllerHome: ctx.controllerHome, scopeKey: targetScope }, operation, args);
+  }
+  const planStore = explicitRepoId
+    ? { controllerHome: ctx.controllerHome, repoId: explicitRepoId }
+    : { controllerHome: ctx.controllerHome, scopeKey: targetScope };
+  return callRhWorkPlanOperation(planStore, operation, args);
 }
 
 /**
@@ -153,6 +157,17 @@ export async function callWorkAdapter(
 
   const repositoryOptionalPlan = await callRhWorkPlanCreateWithoutRepository(ctx, operation, args);
   if (repositoryOptionalPlan) return repositoryOptionalPlan;
+
+  const projectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
+  const explicitRepoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
+  if (projectId && !explicitRepoId && !ctx.explicitRepository && isRhWorkLightweightPlanOperation(operation)) {
+    const projectPlan = await callRhWorkPlanOperation(
+      { controllerHome: ctx.controllerHome, scopeKey: SEMANTIC_SCOPE_KEY },
+      operation,
+      args,
+    );
+    if (projectPlan) return projectPlan;
+  }
 
   const repository = selected(ctx, args);
   const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
