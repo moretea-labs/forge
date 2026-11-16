@@ -2873,9 +2873,12 @@ struct ZenProjectDetailPane: View {
                                 Text("剩余 \(task.remainingWorkCount) · 证据 \(task.acceptedEvidenceCount) · 依赖 \(task.dependencyCount) · 计划 \(task.linkedPlanCount)")
                                     .font(.system(size:9)).foregroundStyle(.tertiary)
                             }
+                            .padding(.trailing,14)
                             }
                             .buttonStyle(.plain)
+                            .disabled(detail.project.status != "active")
                             .padding(.vertical,7)
+                            .overlay(alignment:.trailing) { Image(systemName:"chevron.right").font(.system(size:9,weight:.semibold)).foregroundStyle(.tertiary) }
                             .overlay(alignment:.bottom) { Rectangle().fill(Color.primary.opacity(0.055)).frame(height:1) }
                             .accessibilityIdentifier("zen.projects.detail.task.\(task.requirementId)")
                             .accessibilityLabel("打开任务 \(task.title)")
