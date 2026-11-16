@@ -2082,7 +2082,10 @@ export async function reattachMacOsBrowserOwnedPage(
 ): Promise<{ page: MacOsAppleEventsPage; attachment: MacOsBrowserAttachment }> {
   const cacheKey = nativePageHandleKey(product, ref);
   const cached = warmNativePageHandles.get(cacheKey);
-  if (cached) {
+  // A transient blank observation must not prevent the exact tab's later
+  // navigation from being observed. Re-read metadata, without replaying DOM
+  // actions or adopting another tab. Healthy warm handles retain the fast path.
+  if (cached && cached.url().trim().toLowerCase() !== 'about:blank' && cached.url().trim() !== '') {
     cached.updateTimeout(timeoutMs);
     // Refresh insertion order so bounded eviction behaves as a small LRU.
     warmNativePageHandles.delete(cacheKey);

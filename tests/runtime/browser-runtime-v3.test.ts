@@ -679,6 +679,25 @@ describe('Browser Runtime V3 routing', () => {
     expect(inventoryReads).toBe(0);
   });
 
+  test('reattaches exact native tab after transient about blank metadata without replaying an action', async () => {
+    let reads = 0;
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin', appExists: () => true, processRunning: async () => true,
+      runAppleScript: async () => {
+        reads += 1;
+        return ['false', reads === 1 ? 'about:blank' : 'https://chatgpt.com/',
+          'ChatGPT', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(nativeSeparator);
+      },
+    });
+    const ref = { windowId: '7', tabId: '9' };
+    const first = await reattachMacOsBrowserOwnedPage('chrome', ref, 1_000);
+    expect(first.page.url()).toBe('about:blank');
+    const next = await reattachMacOsBrowserOwnedPage('chrome', ref, 1_000);
+    expect(next.page.url()).toBe('https://chatgpt.com/');
+    expect(next.attachment.metadata.tabId).toBe(ref.tabId);
+    expect(reads).toBe(2);
+  });
+
   test('reuses one stable native tab handle without metadata or foreground preflight on the warm path', async () => {
     const metadataUrl = 'https://example.com/native-warm';
     const driftUrl = 'https://example.com/native-warm/drifted';
