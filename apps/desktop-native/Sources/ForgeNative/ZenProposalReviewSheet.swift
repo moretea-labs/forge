@@ -5,8 +5,8 @@ import SwiftUI
 struct ZenProposalReviewSheet: View {
     @ObservedObject var model: NativeWorkspace
     let sourceProjectId: String
-    let sourceRepoId: String
-    let sourceCheckoutId: String
+    let sourceRepoId: String?
+    let sourceCheckoutId: String?
     let proposal: ZenChangeProposal
     let onApplied: (String) -> Void
 
@@ -161,7 +161,7 @@ struct ZenProposalReviewSheet: View {
             var currentRecords:[ForgeRecord]=[]
             if proposal.operation == .createRequirement || proposal.operation == .createPlan {
                 currentRecords=try await model.readPlanningRecords(
-                    projectId:sourceProjectId,repoId:model.projectRepositoryId)
+                    projectId:sourceProjectId,repoId:sourceRepoId)
                 guard model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId,
                       model.selectedProjectId == sourceProjectId else {
                     problem="项目或工作区已切换。请返回原上下文核对后再继续。"
@@ -183,7 +183,7 @@ struct ZenProposalReviewSheet: View {
                 var arguments:[String:Any]=[
                     "projectId":sourceProjectId,"requirementId":id
                 ]
-                if let repoId=model.projectRepositoryId { arguments["repoId"]=repoId }
+                if let sourceRepoId { arguments["repoId"]=sourceRepoId }
                 let receipt=try await ForgeBridge.request("read_requirement_detail",arguments)
                 guard model.selectedProjectId == sourceProjectId,
                       model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else {
@@ -216,7 +216,7 @@ struct ZenProposalReviewSheet: View {
                 var arguments:[String:Any]=[
                     "projectId":sourceProjectId,"planId":id
                 ]
-                if let repoId=model.projectRepositoryId { arguments["repoId"]=repoId }
+                if let sourceRepoId { arguments["repoId"]=sourceRepoId }
                 let receipt=try await ForgeBridge.request("read_plan_detail",arguments)
                 guard model.selectedProjectId == sourceProjectId,
                       model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else {

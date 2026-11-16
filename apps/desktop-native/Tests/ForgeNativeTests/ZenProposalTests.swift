@@ -129,6 +129,29 @@ final class ZenProposalTests: XCTestCase {
         )?.title,"Zen task")
     }
 
+    @MainActor
+    func testProjectOnlyZenProposalCanBeReviewedWithoutRepositoryCheckout() throws {
+        let payload=fenced(
+            #"{ "decision":"ACCEPT","operation":"create_requirement","rationale":"项目级目标已确认","title":"完善需求流程","outcome":"项目无仓库也可规划","acceptanceCriteria":["可审阅并登记"] }"#
+        )
+        var thread=ChatThread(projectId:"project-only",requirementId:nil,readOnly:true)
+        thread.messages=[ChatMessage(role:"assistant",text:payload)]
+        XCTAssertTrue(NativeWorkspace.readOnlyThreadMatchesContext(
+            thread,repoId:nil,checkoutId:nil,projectId:"project-only"
+        ))
+        XCTAssertFalse(NativeWorkspace.apiTurnAllowsEffects(
+            provider:"api",thread:thread,accessMode:"full_access"
+        ))
+        let candidates=ZenWorkspacePane.reviewableProposals(
+            threads:[thread],repoId:nil,checkoutId:nil,projectId:"project-only"
+        )
+        XCTAssertEqual(candidates.count,1)
+        XCTAssertEqual(candidates.first?.proposal.title,"完善需求流程")
+        XCTAssertTrue(ZenWorkspacePane.reviewableProposals(
+            threads:[thread],repoId:nil,checkoutId:nil,projectId:"other-project"
+        ).isEmpty)
+    }
+
     func testCreateRequirementIsParsedOnlyFromOneExplicitProposal() throws {
         let proposal=try ZenChangeProposal.parse(fenced(
             #"{"decision":"ACCEPT","operation":"create_requirement","rationale":"独立验收目标","title":"PDF 定位","outcome":"可定位源页","acceptanceCriteria":["定位准确"]}"#

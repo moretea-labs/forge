@@ -846,6 +846,31 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.threads.first(where:{$0.id==launchId})?.messages.count,originalMessageCount)
     }
 
+    @MainActor
+    func testProjectOnlyZenAnalysisIsAllowedWithoutRepositoryCheckout() throws {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.selectedProjectId="project-only"
+        model.localApiSettings=LocalApiSettingsDetail(
+            provider:"api",endpoint:"https://api.example.com/v1",model:"model-a",
+            apiProtocol:"openai",hasKey:true,endpointReady:true
+        )
+        let provider=try XCTUnwrap(model.readOnlyAnalysisProvider)
+        model.newThread(provider:provider,requirementId:"REQ-ONLY",readOnly:true)
+        let thread=try XCTUnwrap(model.thread)
+        XCTAssertEqual(thread.projectId,"project-only")
+        XCTAssertNil(thread.repoId)
+        XCTAssertNil(thread.checkoutId)
+        XCTAssertTrue(NativeWorkspace.readOnlyThreadMatchesContext(
+            thread,repoId:nil,checkoutId:nil,projectId:"project-only"
+        ))
+        XCTAssertNil(model.agentSendBlockReason)
+        XCTAssertFalse(NativeWorkspace.apiTurnAllowsEffects(
+            provider:provider,thread:thread,accessMode:"full_access"
+        ))
+    }
+
     func testIncompleteManagedProcessIsAvailableToOrdinaryFollowUpWithoutReplaying() {
         var thread = ChatThread(provider:"api")
         thread.messages = [

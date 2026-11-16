@@ -176,13 +176,23 @@ private struct ForgeWorkspaceView: View {
                 ZenWorkspacePane(model:model,screen:$model.zenScreen,
                                  focusedRequirementId:$model.zenFocusedRequirementId,
                                  onDraftGoal:{ description in
+                    guard model.selectedProjectId != nil else {
+                        model.error="请先选择项目。"
+                        return
+                    }
                     guard let provider=model.readOnlyAnalysisProvider else {
                         model.error="请先配置一个可用的 API Provider，再进行需求分析。"
                         return
                     }
-                    guard model.checkoutId != nil,model.checkoutIsAvailable else {
-                        model.error="当前项目工作区尚未就绪，请稍后重试。"
+                    if model.repoId != nil && model.projectRepositoryId == nil {
+                        model.error="当前仓库不属于所选项目，请重新选择项目或仓库。"
                         return
+                    }
+                    if model.projectRepositoryId != nil {
+                        guard model.checkoutId != nil,model.checkoutIsAvailable else {
+                            model.error="当前项目工作区尚未就绪，请稍后重试。"
+                            return
+                        }
                     }
                     guard !model.busy else {
                         model.error="请先停止正在运行的会话。"
@@ -190,10 +200,13 @@ private struct ForgeWorkspaceView: View {
                     }
                     model.newThread(provider:provider,readOnly:true)
                     guard let launchedThreadId=model.selectedThreadId else { return }
+                    let evidenceScope = model.projectRepositoryId == nil
+                        ? "当前项目没有关联仓库；只基于项目内现有 Requirement / Plan 和真实回执分析，不假设文件或命令可用。"
+                        : "先读取现有 Requirement / Plan 和当前 checkout 的只读工作区证据。"
                     model.draft = """
                     当前项目目标：\(description)
 
-                    请以 Requirement-first 方式分析。先读取现有 Requirement / Plan 和当前工作区证据；信息不足时通过本会话多轮澄清，不要猜测，也不要输出未确认提案。
+                    请以 Requirement-first 方式分析。\(evidenceScope) 信息不足时通过本会话多轮澄清，不要猜测，也不要输出未确认提案。
 
                     \(ZenChangeProposal.outputContract)
                     """

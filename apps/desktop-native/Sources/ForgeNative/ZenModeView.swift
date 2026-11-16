@@ -203,8 +203,8 @@ struct ZenWorkspacePane: View {
     @State private var pendingExecutionApproval: ZenExecutionApproval?
     @State private var pendingCheckpointReview: AutopilotCheckpointReview?
     @State private var proposalSourceProjectId = ""
-    @State private var proposalSourceRepoId = ""
-    @State private var proposalSourceCheckoutId = ""
+    @State private var proposalSourceRepoId: String?
+    @State private var proposalSourceCheckoutId: String?
     @State private var proposalProblem = ""
     @State private var showingProposalProblem = false
     @State private var editingRecord: ForgeRecord?
@@ -475,7 +475,7 @@ struct ZenWorkspacePane: View {
                         Label("描述目标",systemImage:"sparkles")
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.projectRepositoryId == nil || model.busy)
+                    .disabled(model.selectedProjectId == nil || model.busy)
                     .accessibilityIdentifier("zen.goal.describe")
                     if reviewableProposals.count > 1 {
                         Menu {
@@ -488,7 +488,7 @@ struct ZenWorkspacePane: View {
                             Label("审阅提案",systemImage:"doc.text.magnifyingglass")
                         }
                         .menuStyle(.borderedButton)
-                        .disabled(model.projectRepositoryId == nil || model.busy)
+                        .disabled(model.selectedProjectId == nil || model.busy)
                         .accessibilityIdentifier("zen.proposal.open")
                     } else {
                         Button {
@@ -497,7 +497,7 @@ struct ZenWorkspacePane: View {
                             Label("审阅提案",systemImage:"doc.text.magnifyingglass")
                         }
                         .buttonStyle(.bordered)
-                        .disabled(model.projectRepositoryId == nil || model.busy || reviewableProposals.isEmpty)
+                        .disabled(model.selectedProjectId == nil || model.busy || reviewableProposals.isEmpty)
                         .accessibilityIdentifier("zen.proposal.open")
                     }
                     Menu {
@@ -1555,16 +1555,20 @@ struct ZenWorkspacePane: View {
     }
 
     private func reviewProposal(threadId:String?) {
-        guard let projectId=model.selectedProjectId,let repoId=model.projectRepositoryId,
-              let checkoutId=model.checkoutId,!model.busy,
-              let candidate=reviewableProposals.first(where:{$0.threadId == threadId}) else {
+        guard let projectId=model.selectedProjectId,!model.busy else { return }
+        guard model.repoId == nil || model.projectRepositoryId == model.repoId else {
+            proposalProblem="当前仓库不属于所选项目，请重新选择项目或仓库后再审阅。"
+            showingProposalProblem=true
+            return
+        }
+        guard let candidate=reviewableProposals.first(where:{$0.threadId == threadId}) else {
             proposalProblem="当前项目没有可审阅的最终 ACCEPT。请先在只读 Agent 分析会话完成精化。"
             showingProposalProblem=true
             return
         }
         proposalSourceProjectId=projectId
-        proposalSourceRepoId=repoId
-        proposalSourceCheckoutId=checkoutId
+        proposalSourceRepoId=model.repoId
+        proposalSourceCheckoutId=model.checkoutId
         pendingProposal=candidate.proposal
     }
 
