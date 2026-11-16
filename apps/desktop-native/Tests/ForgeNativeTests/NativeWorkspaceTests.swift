@@ -2216,6 +2216,18 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(model.error?.contains("停止正在运行") == true)
     }
 
+    func testProjectDetailNavigationCapturesOriginWhenProjectChangesOnSamePage() {
+        XCTAssertTrue(NativeWorkspace.shouldPushNavigationOrigin(
+            currentPage:.requirement,targetPage:.requirement,contextChanged:true
+        ))
+        XCTAssertFalse(NativeWorkspace.shouldPushNavigationOrigin(
+            currentPage:.requirement,targetPage:.requirement,contextChanged:false
+        ))
+        XCTAssertTrue(NativeWorkspace.shouldPushNavigationOrigin(
+            currentPage:.agent,targetPage:.requirement,contextChanged:false
+        ))
+    }
+
     @MainActor
     func testContextNavigationKeepsOriginAndSupportsBack() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

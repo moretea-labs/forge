@@ -3892,6 +3892,12 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
+    nonisolated static func shouldPushNavigationOrigin(
+        currentPage:NativePage,targetPage:NativePage,contextChanged:Bool
+    ) -> Bool {
+        currentPage != targetPage || contextChanged
+    }
+
     func openProjectRequirement(
         projectId:String,repositoryId:String?,requirementId:String
     ) async {
@@ -3905,8 +3911,12 @@ final class NativeWorkspace: ObservableObject {
             return
         }
         let contextChanged=selectedProjectId != projectId || projectRepositoryId != repositoryId
-        if page != .requirement {
+        if Self.shouldPushNavigationOrigin(
+            currentPage:page,targetPage:.requirement,contextChanged:contextChanged
+        ) {
             pushNavigationOrigin()
+        }
+        if page != .requirement {
             page = .requirement
             error = nil
         }
