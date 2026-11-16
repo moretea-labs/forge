@@ -725,6 +725,7 @@ export async function callRepositoryTool(
           'mcp:repository_safe_patch_apply',
           () => {
             const patchResult = applySafePatch(repository, {
+              controllerHome,
               sessionId: args.session_id,
               purpose: args.purpose,
               operations: args.operations,

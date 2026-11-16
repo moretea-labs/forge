@@ -4595,6 +4595,10 @@ mod tests {
             assert_eq!(result["output"], "Read, edited and verified.");
             assert_eq!(result["toolActivityCount"], 3);
             assert_eq!(std::fs::read_to_string(fixture.repo_root.join("fixture.txt")).unwrap(), "after\n");
+            let edit_storage = fixture.repo_root.join(".ai/harness/edit-sessions")
+                .canonicalize().expect("bound edit storage");
+            assert!(edit_storage.starts_with(fixture.controller_home.canonicalize().unwrap()),
+                "native provider edits must keep caller Controller Home: {}", edit_storage.display());
             let calls = host.tool_calls.lock().unwrap();
             assert_eq!(calls.iter().take(3).map(|call| call["tool"].as_str().unwrap()).collect::<Vec<_>>(), vec!["read_file", "apply_patch", "run_command"]);
             assert!(calls.iter().take(3).all(|call| call["repoId"] == fixture.repo_id && call["checkoutId"] == fixture.checkout_id && call["allowEffects"] == true));
