@@ -2774,8 +2774,14 @@ fn local_running_process_id(receipt: &Value) -> Option<&str> {
         return None;
     }
     let id = receipt.pointer("/result/processId").and_then(Value::as_str)?;
-    (id.starts_with("proc_") && id.len() <= 128
-        && id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
+    let lightweight = id.strip_prefix("lightweight:").is_some_and(|uuid|
+        uuid.len() == 36 && uuid.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) { byte == b'-' }
+            else { byte.is_ascii_hexdigit() }
+        })
+    );
+    (lightweight || (id.starts_with("proc_") && id.len() <= 128
+        && id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')))
         .then_some(id)
 }
 
@@ -5091,6 +5097,93 @@ mod tests {
         assert_eq!(local_effect_outcome("apply_patch", &json!({"ok":false,"result":{
             "status":"failed","terminal":true
         }})), LocalEffectOutcome::TerminalFailure);
+    }
+
+    #[test]
+    fn lightweight_process_receipts_preserve_join_and_pause_identity() {
+        let id = "lightweight:12345678-1234-4abc-8def-1234567890ab";
+        for status in ["starting", "running", "running_recovered"] {
+            let pending = json!({"ok":true,"result":{
+                "accepted":true,"status":status,"processId":id
+            }});
+            assert_eq!(local_running_process_id(&pending), Some(id));
+        }
+        for invalid in ["lightweight:", "lightweight:abc", "lightweight:1234567812344abc8def1234567890ab",
+            "lightweight:12345678-1234-4abc-8def-1234567890ag",
+            "lightweight:12345678-1234-4abc-8def-1234567890ab/other"] {
+            assert!(local_running_process_id(&json!({"ok":true,"result":{
+                "accepted":true,"status":"running","processId":invalid
+            }})).is_none());
+        }
+        for receipt in [
+            json!({"ok":false,"result":{"accepted":true,"status":"running","processId":id}}),
+            json!({"ok":true,"result":{"accepted":false,"status":"running","processId":id}}),
+            json!({"ok":true,"result":{"accepted":true,"status":"succeeded","processId":id}}),
+        ] {
+            assert!(local_running_process_id(&receipt).is_none());
+        }
+        let events = [json!({"name":"run_command","status":"running","processId":id})];
+        let paused = local_api_process_pause(id, 1, &events);
+        assert_eq!(paused["incomplete"], true);
+        assert_eq!(paused["toolEvents"][0]["processId"], id);
+        assert!(paused["output"].as_str().unwrap().contains(id));
+        for (status, exit_code, outcome) in [
+            ("succeeded", json!(0), LocalEffectOutcome::Succeeded),
+            ("failed", json!(1), LocalEffectOutcome::TerminalFailure),
+            ("completed_unknown", Value::Null, LocalEffectOutcome::Unknown),
+        ] {
+            let query = json!({"ok":true,"result":{
+                "processId":id,"completed":true,"status":status,"exitCode":exit_code
+            }});
+            let terminal = local_terminal_process_receipt(id, &query).unwrap();
+            assert_eq!(terminal["result"]["processId"], id);
+            assert_eq!(local_effect_outcome("run_command", &terminal), outcome);
+            assert!(local_terminal_process_receipt("proc_other", &query).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn lightweight_process_wait_queries_only_the_original_bound_handle() {
+        struct ProcessHost {
+            query: Value,
+            calls: std::sync::Mutex<Vec<Value>>,
+        }
+        impl LocalApiHost for ProcessHost {
+            fn packaged_tool_script(&self) -> Result<PathBuf, String> { panic!("test executor only") }
+            fn emit_tool_progress(&self, _: Value) {}
+            fn emit_model_progress(&self, _: Value) {}
+            fn execute_test_tool(&self, payload: &Value) -> Option<Result<Value, String>> {
+                self.calls.lock().unwrap().push(payload.clone());
+                Some(Ok(self.query.clone()))
+            }
+        }
+        let id = "lightweight:12345678-1234-4abc-8def-1234567890ab";
+        let (_, cancel) = tokio::sync::watch::channel(false);
+        for (query, expected) in [
+            (json!({"ok":true,"result":{"processId":id,"completed":true,
+                "status":"succeeded","exitCode":0,"stdoutTail":"done"}}), true),
+            (json!({"ok":false,"error":"PROCESS_HANDLE_PRINCIPAL_MISMATCH"}), false),
+            (json!({"ok":false,"error":"LOCAL_FORGE_PROCESS_CHECKOUT_MISMATCH"}), false),
+            (json!({"ok":true,"result":{"processId":"proc_other","completed":true,
+                "status":"succeeded","exitCode":0}}), false),
+        ] {
+            let host = ProcessHost { query, calls: Default::default() };
+            let result = local_wait_running_process(&host, &mut None, "repo_test",
+                Some("checkout_test"), "conversation_test", id, 1_000, &cancel).await;
+            assert_eq!(result.is_some(), expected);
+            if let Some(receipt) = result {
+                assert_eq!(receipt["result"]["processId"], id);
+                assert_eq!(receipt["result"]["stdoutTail"], "done");
+            }
+            let calls = host.calls.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0]["tool"], "process_status");
+            assert_eq!(calls[0]["arguments"]["process_id"], id);
+            assert_eq!(calls[0]["repoId"], "repo_test");
+            assert_eq!(calls[0]["checkoutId"], "checkout_test");
+            assert_eq!(calls[0]["conversationId"], "conversation_test");
+            assert_eq!(calls[0]["allowEffects"], false);
+        }
     }
 
     #[test]
