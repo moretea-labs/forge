@@ -3529,6 +3529,26 @@ final class NativeWorkspace: ObservableObject {
         )
     }
 
+
+    nonisolated static func semanticRecordReadbackConfirmed(
+        record: ForgeRecord?, detail: SemanticRecordDetail?,
+        kind: SemanticRecordKind, id: String, revision: Int, state: String? = nil
+    ) -> Bool {
+        guard let record, record.recordId == id, record.kind.rawValue == kind.rawValue else { return false }
+        switch detail {
+        case .some(.requirement(let value)) where kind.rawValue == "requirement":
+            return value.requirementId == id && value.revision == revision
+                && record.title == value.title && record.state == value.state
+                && record.taskStatus == value.taskStatus && record.priority == value.priority
+                && record.assignee == value.assignee && (state == nil || state == value.state)
+        case .some(.plan(let value)) where kind.rawValue == "plan":
+            return value.planId == id && value.revision == revision
+                && record.title == value.goal && record.requirementId == value.requirementId
+                && record.parentPlanId == value.parentPlanId && state == nil
+        default: return false
+        }
+    }
+
     func openRecord(_ selectionId: String) async {
         guard let projectId=selectedProjectId,
               let record=records.first(where:{$0.id == selectionId}) else { return }
@@ -3566,6 +3586,29 @@ final class NativeWorkspace: ObservableObject {
             guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId,
                   self.checkoutId == targetCheckoutId,self.selectedRecord == selectionId else { return }
             self.error=error.localizedDescription
+        }
+    }
+
+
+    func refreshSemanticRecordAfterMutation(
+        kind: SemanticRecordKind, recordId: String, projectId: String, repoId: String?,
+        expectedRevision: Int, expectedState: String? = nil
+    ) async {
+        guard page == .requirement, selectedProjectId == projectId, projectRepositoryId == repoId else { return }
+        await loadPage()
+        guard page == .requirement, selectedProjectId == projectId, projectRepositoryId == repoId else { return }
+        let label = kind.rawValue == "requirement" ? "任务" : "计划"
+        guard let record = records.first(where: { $0.recordId == recordId && $0.kind.rawValue == kind.rawValue }) else {
+            error = "\(label)写入已确认，但项目\(label)列表尚未读回。请刷新核对，不要重复提交。"
+            return
+        }
+        await openRecord(record.id)
+        guard page == .requirement, selectedProjectId == projectId, projectRepositoryId == repoId else { return }
+        if !Self.semanticRecordReadbackConfirmed(
+            record:record,detail:recordDetail,kind:kind,id:recordId,
+            revision:expectedRevision,state:expectedState
+        ) {
+            error = "\(label)写入已确认，但列表或详情尚未同步到新修订版本。请刷新核对，不要重复提交。"
         }
     }
 
@@ -3729,13 +3772,13 @@ final class NativeWorkspace: ObservableObject {
                 throw ForgeBridgeError.invalidResponse
             }
             guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId else { return false }
-            await loadPage()
-            if let item=records.first(where:{$0.kind == .requirement && $0.recordId == id}) {
-                await openRecord(item.id)
-            }
+            await refreshSemanticRecordAfterMutation(
+                kind:.requirement,recordId:id,projectId:projectId,repoId:targetRepoId,
+                expectedRevision:expectedRevision + 1
+            )
             return true
         } catch {
-            self.error="修改未确认：\\(error.localizedDescription)。请刷新修订版本后核对。"
+            self.error="修改未确认：\(error.localizedDescription)。请刷新修订版本后核对。"
             return false
         }
     }
@@ -3784,13 +3827,13 @@ final class NativeWorkspace: ObservableObject {
                 throw ForgeBridgeError.invalidResponse
             }
             guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId else { return false }
-            await loadPage()
-            if let selected=records.first(where:{$0.kind == .requirement && $0.recordId == id}) {
-                await openRecord(selected.id)
-            }
+            await refreshSemanticRecordAfterMutation(
+                kind:.requirement,recordId:id,projectId:projectId,repoId:targetRepoId,
+                expectedRevision:expectedRevision + 1,expectedState:state
+            )
             return true
         } catch {
-            self.error="状态更新未确认：\\(error.localizedDescription)。请刷新后核对证据与版本。"
+            self.error="状态更新未确认：\(error.localizedDescription)。请刷新后核对证据与版本。"
             return false
         }
     }
@@ -3817,13 +3860,13 @@ final class NativeWorkspace: ObservableObject {
                 throw ForgeBridgeError.invalidResponse
             }
             guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId else { return false }
-            await loadPage()
-            if let item=records.first(where:{$0.kind == .plan && $0.recordId == id}) {
-                await openRecord(item.id)
-            }
+            await refreshSemanticRecordAfterMutation(
+                kind:.plan,recordId:id,projectId:projectId,repoId:targetRepoId,
+                expectedRevision:expectedRevision + 1
+            )
             return true
         } catch {
-            self.error="修改未确认：\\(error.localizedDescription)。请刷新修订版本后核对。"
+            self.error="修改未确认：\(error.localizedDescription)。请刷新修订版本后核对。"
             return false
         }
     }

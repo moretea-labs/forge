@@ -1148,6 +1148,38 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertNil(map["REQ-b"])
     }
 
+
+    func testSemanticRecordMutationReadbackRequiresCurrentRevisionAndProjection() {
+        let row = ForgeRecord(recordId:"REQ-a",title:"Desktop",state:"completed",kind:.requirement,
+                              depth:0,requirementId:"REQ-a",parentPlanId:nil,
+                              taskStatus:"done",priority:"urgent",assignee:"owner")
+        let detail = RequirementRecordDetail(
+            requirementId:"REQ-a",revision:4,title:"Desktop",outcomeStatement:"Useful client",
+            state:"completed",acceptanceCriteria:["Ship"],progressSummary:"Verified",
+            remainingWork:[],acceptedEvidenceRefs:["git:commit:abc"],taskStatus:"done",
+            priority:"urgent",assignee:"owner",dependencyRequirementIds:[],
+            dependencyRequirements:[],blockingDependencyIds:[]
+        )
+        XCTAssertTrue(NativeWorkspace.semanticRecordReadbackConfirmed(
+            record:row,detail:.requirement(detail),kind:.requirement,id:"REQ-a",revision:4,state:"completed"))
+        XCTAssertFalse(NativeWorkspace.semanticRecordReadbackConfirmed(
+            record:row,detail:.requirement(detail),kind:.requirement,id:"REQ-a",revision:3,state:"completed"))
+        XCTAssertFalse(NativeWorkspace.semanticRecordReadbackConfirmed(
+            record:row,detail:.requirement(detail),kind:.requirement,id:"REQ-a",revision:4,state:"open"))
+        let staleRow = ForgeRecord(recordId:"REQ-a",title:"Old",state:"completed",kind:.requirement,
+                                   depth:0,requirementId:"REQ-a",parentPlanId:nil,
+                                   taskStatus:"done",priority:"urgent",assignee:"owner")
+        XCTAssertFalse(NativeWorkspace.semanticRecordReadbackConfirmed(
+            record:staleRow,detail:.requirement(detail),kind:.requirement,id:"REQ-a",revision:4,state:"completed"))
+        let planRow = ForgeRecord(recordId:"PLAN-a",title:"Ship",state:"Plan",kind:.plan,
+                                  depth:1,requirementId:"REQ-a",parentPlanId:"PLAN-root")
+        let plan = PlanRecordDetail(planId:"PLAN-a",revision:8,requirementId:"REQ-a",
+                                    parentPlanId:"PLAN-root",sourceBasisRevision:nil,goal:"Ship",
+                                    items:[],resolvedDecisions:[],nonGoals:[])
+        XCTAssertTrue(NativeWorkspace.semanticRecordReadbackConfirmed(
+            record:planRow,detail:.plan(plan),kind:.plan,id:"PLAN-a",revision:8))
+    }
+
     func testSemanticRecordIdsAreBoundedAndTyped() {
         let uuid = UUID(uuidString:"01234567-89AB-CDEF-0123-456789ABCDEF")!
         XCTAssertEqual(NativeWorkspace.semanticRecordId(prefix:"REQ",uuid:uuid),"REQ-0123456789ab")
