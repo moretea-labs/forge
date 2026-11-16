@@ -208,6 +208,8 @@ describe('runtime command surface', () => {
     expect(contextHandlerBlock).toContain('runtimeStorageInspection: storageInspection');
     expect(contextHandlerBlock).toContain('buildControllerOperationalPlan(repository.canonicalRoot, taskLedger, liveGit)');
     expect(contextHandlerBlock).toContain("markPhase('build.operational_plan', operationalPlanStartedAt)");
+    expect(contextHandlerBlock).toContain("markPhase('build.task_board', taskBoardStartedAt)");
+    expect(contextHandlerBlock).toContain("markPhase('build.task_ledger', taskLedgerStartedAt)");
     expect(contextHandlerBlock).not.toContain('await controllerReadinessEvidence(ctx, repository)');
     expect(contextHandlerBlock).not.toContain('operationalView: readiness.operationalView');
     expect(contextHandlerBlock).toContain('fallbackToLive: false');

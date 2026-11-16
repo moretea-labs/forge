@@ -824,11 +824,15 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
               const buildStartedAt = performance.now();
               const buildPayload = async (): Promise<Record<string, unknown>> => {
                 const taskStateStartedAt = performance.now();
+                const taskBoardStartedAt = performance.now();
                 const legacyIssuesRetired = legacyIssueAuthorityRetired(repository.canonicalRoot);
                 const board = legacyIssuesRetired
                   ? undefined
                   : projectBoard(repository.canonicalRoot);
+                markPhase('build.task_board', taskBoardStartedAt);
+                const taskLedgerStartedAt = performance.now();
                 const taskLedger = buildControllerTaskLedgerProjection(repository.canonicalRoot, board);
+                markPhase('build.task_ledger', taskLedgerStartedAt);
                 markPhase('build.task_state', taskStateStartedAt);
                 const readinessStartedAt = performance.now();
                 const readiness = await controllerReadiness(ctx, repository, {}, {

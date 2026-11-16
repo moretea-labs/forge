@@ -78,7 +78,7 @@ function writeIssueFixture(repoRoot: string, index: number): void {
   }, null, 2)}\n`);
 }
 
-export function duration(result: { isError?: boolean; structuredContent?: unknown; content?: Array<{ text?: string }> } | undefined): { ms: number; bytes: number; cacheHit: boolean; largestFields: Array<{ key: string; bytes: number }> } {
+export function duration(result: { isError?: boolean; structuredContent?: unknown; content?: Array<{ text?: string }> } | undefined): { ms: number; bytes: number; cacheHit: boolean; phaseTimingsMs: Record<string, number>; largestFields: Array<{ key: string; bytes: number }> } {
   if (result?.isError === true) throw new Error('CONTROLLER_HOTPATH_TOOL_ERROR: benchmark cannot time a failed tool call');
   const value = (result?.structuredContent
     ?? JSON.parse(result?.content?.[0]?.text ?? '{}')) as Record<string, unknown>;
@@ -95,6 +95,9 @@ export function duration(result: { isError?: boolean; structuredContent?: unknow
     ms: serverDurationMs,
     bytes: Buffer.byteLength(JSON.stringify(value), 'utf8'),
     cacheHit: responseMeta.cacheHit === true || projection.cacheHit === true,
+    phaseTimingsMs: responseMeta.phaseTimingsMs && typeof responseMeta.phaseTimingsMs === 'object'
+      ? responseMeta.phaseTimingsMs as Record<string, number>
+      : {},
     largestFields: Object.entries(value)
       .map(([key, field]) => ({ key, bytes: Buffer.byteLength(JSON.stringify(field) ?? 'null', 'utf8') }))
       .sort((a, b) => b.bytes - a.bytes)
@@ -135,8 +138,10 @@ async function benchmarkScale(scale: number): Promise<Record<string, unknown>> {
     return {
       scale,
       coldSummaryMs: coldSummary.ms,
+      coldSummaryPhaseTimingsMs: coldSummary.phaseTimingsMs,
       coldSummaryResponseBytes: coldSummary.bytes,
       coldMs: cold.ms,
+      coldPhaseTimingsMs: cold.phaseTimingsMs,
       coldResponseBytes: cold.bytes,
       hotP50Ms: percentile(samples, 0.5),
       hotP95Ms: percentile(samples, 0.95),
