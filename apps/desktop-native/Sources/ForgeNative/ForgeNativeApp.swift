@@ -157,7 +157,7 @@ private struct ForgeWorkspaceView: View {
     @State private var assetsShowRemoteImages = true
     @State private var assetsSearchQuery = ""
     @State private var assetsReturnResourceID: String?
-    @State private var usageSelectedRepoId = ""
+    @State private var usageSelectedProjectId = ""
     @State private var usageSelectedProviderId = ""
     @State private var usageDays = 30
     @State private var usageReturnEntryID: String?
@@ -1485,7 +1485,7 @@ private struct ForgeWorkspaceView: View {
                 AgentUsageDashboard(
                     model:model,
                     days:$usageDays,
-                    selectedRepoId:$usageSelectedRepoId,
+                    selectedProjectId:$usageSelectedProjectId,
                     selectedProviderId:$usageSelectedProviderId,
                     selectedEntryID:$usageReturnEntryID
                 )

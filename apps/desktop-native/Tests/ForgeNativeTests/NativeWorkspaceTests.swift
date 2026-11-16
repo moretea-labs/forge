@@ -4374,7 +4374,7 @@ extension NativeWorkspaceTests {
         let restored = NativeWorkspace(store: store)
         let snapshot = AgentUsageDashboard.makeUsageSnapshot(
             from: restored.threads,
-            projectLabels: ["repo-usage": "Usage project"],
+            projectLabels: [:], repositoryLabels: ["repo-usage": "Usage repository"],
             since: cutoff
         )
 
@@ -4393,7 +4393,7 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(snapshot.inputTotal, 120)
         XCTAssertEqual(snapshot.outputTotal, 88)
         XCTAssertEqual(snapshot.total, 208)
-        XCTAssertEqual(snapshot.entries.first?.project, "Usage project")
+        XCTAssertEqual(snapshot.entries.first?.project, "未绑定项目 · Usage repository")
         XCTAssertEqual(snapshot.entries.first?.provider, "api:anthropic")
         XCTAssertEqual(snapshot.entries.first?.model, "claude-sonnet")
         XCTAssertEqual(snapshot.entries.first?.usage.reportedRounds, 1)
@@ -4404,14 +4404,14 @@ extension NativeWorkspaceTests {
             ["api:anthropic", "api:openai", "未知"]
         )
         let unknown = AgentUsageDashboard.makeUsageSnapshot(
-            from: restored.threads, projectLabels: ["repo-usage": "Usage project"],
+            from: restored.threads, projectLabels: [:],
             since: cutoff, providerId: "未知"
         )
         XCTAssertTrue(unknown.entries.isEmpty)
         XCTAssertTrue(unknown.unreportedEntries.isEmpty)
         XCTAssertEqual(unknown.total, 0)
         let openai = AgentUsageDashboard.makeUsageSnapshot(
-            from: restored.threads, projectLabels: ["repo-usage": "Usage project"],
+            from: restored.threads, projectLabels: [:],
             since: cutoff, providerId: "api:openai"
         )
         XCTAssertEqual(openai.entries.map(\.messageId), [completeMessage.id])
@@ -4419,7 +4419,7 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(openai.total, completeUsage.totalTokens)
         XCTAssertEqual(openai.partiallyReported, 0)
         let anthropic = AgentUsageDashboard.makeUsageSnapshot(
-            from: restored.threads, projectLabels: ["repo-usage": "Usage project"],
+            from: restored.threads, projectLabels: [:],
             since: cutoff, providerId: "api:anthropic"
         )
         XCTAssertEqual(anthropic.entries.map(\.messageId), [partialMessage.id])
@@ -4454,6 +4454,75 @@ extension NativeWorkspaceTests {
 
 
 extension NativeWorkspaceTests {
+    func testUsageDashboardAttributesAndFiltersBySemanticProjectIdentity() {
+        let cutoff = Date(timeIntervalSince1970: 0)
+        let usage = AgentTokenUsage(
+            inputTokens: 10, outputTokens: 5, totalTokens: 15,
+            reportedRounds: 1, totalRounds: 1
+        )
+        func thread(_ title: String, projectId: String?, repoId: String?, timestamp: TimeInterval) -> ChatThread {
+            var value = ChatThread()
+            value.title = title
+            value.projectId = projectId
+            value.repoId = repoId
+            value.messages = [ChatMessage(
+                role: "assistant", text: title, usage: usage,
+                createdAt: Date(timeIntervalSince1970: timestamp)
+            )]
+            return value
+        }
+
+        let projectA = thread("Project A conversation", projectId: "project-a", repoId: "repo-shared", timestamp: 10)
+        let projectB = thread("Project B conversation", projectId: "project-b", repoId: "repo-shared", timestamp: 20)
+        let standalone = thread("Standalone conversation", projectId: "project-c", repoId: nil, timestamp: 30)
+        let legacyRepository = thread("Legacy repository conversation", projectId: nil, repoId: "repo-legacy", timestamp: 40)
+        let unbound = thread("Unbound conversation", projectId: nil, repoId: nil, timestamp: 50)
+        let threads = [projectA, projectB, standalone, legacyRepository, unbound]
+        let projectLabels = ["project-a": "Project A", "project-b": "Project B", "project-c": "Standalone Project"]
+        let repositoryLabels = ["repo-shared": "Shared Repository", "repo-legacy": "Legacy Repository"]
+
+        let all = AgentUsageDashboard.makeUsageSnapshot(
+            from: threads, projectLabels: projectLabels, repositoryLabels: repositoryLabels, since: cutoff
+        )
+        XCTAssertEqual(all.entries.count, 5)
+        XCTAssertEqual(all.entries.first(where: { $0.threadId == projectA.id })?.project, "Project A")
+        XCTAssertEqual(all.entries.first(where: { $0.threadId == projectB.id })?.project, "Project B")
+        XCTAssertNotEqual(
+            all.entries.first(where: { $0.threadId == projectA.id })?.projectGroupId,
+            all.entries.first(where: { $0.threadId == projectB.id })?.projectGroupId
+        )
+        XCTAssertEqual(all.entries.first(where: { $0.threadId == standalone.id })?.project, "Standalone Project")
+        XCTAssertEqual(all.entries.first(where: { $0.threadId == legacyRepository.id })?.project,
+                       "未绑定项目 · Legacy Repository")
+        XCTAssertEqual(all.entries.first(where: { $0.threadId == unbound.id })?.project, "未关联项目")
+
+        let projectAOnly = AgentUsageDashboard.makeUsageSnapshot(
+            from: threads, projectLabels: projectLabels, repositoryLabels: repositoryLabels,
+            since: cutoff, projectFilter: "project-a"
+        )
+        XCTAssertEqual(projectAOnly.entries.map(\.threadId), [projectA.id])
+
+        let unassignedOnly = AgentUsageDashboard.makeUsageSnapshot(
+            from: threads, projectLabels: projectLabels, repositoryLabels: repositoryLabels,
+            since: cutoff, projectFilter: AgentUsageDashboard.unassignedProjectFilter
+        )
+        XCTAssertEqual(Set(unassignedOnly.entries.map(\.threadId)), Set([legacyRepository.id, unbound.id]))
+
+        let options = AgentUsageDashboard.projectOptions(from: [
+            ForgeSemanticProject(
+                projectId: "project-a", workspaceId: nil, displayName: "Project A",
+                status: "active", revision: 1, placements: [], requirementCount: 1
+            ),
+            ForgeSemanticProject(
+                projectId: "project-b", workspaceId: nil, displayName: "Project B",
+                status: "active", revision: 1, placements: [], requirementCount: 1
+            )
+        ], threads: threads)
+        XCTAssertEqual(Set(options.map(\.id)), Set(["project-a", "project-b", "project-c"]))
+        XCTAssertEqual(options.first(where: { $0.id == "project-a" })?.label, "Project A")
+        XCTAssertEqual(options.first(where: { $0.id == "project-c" })?.label, "project-c")
+    }
+
     func testAssetsProjectionIndexesOnlyExplicitAssistantRemoteAndUserSelectedLocalImages() {
         var projectA = ChatThread()
         projectA.title = "Project A"

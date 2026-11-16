@@ -5,7 +5,7 @@ import SwiftUI
 struct AgentUsageDashboard: View {
     @ObservedObject var model: NativeWorkspace
     @Binding var days: Int
-    @Binding var selectedRepoId: String
+    @Binding var selectedProjectId: String
     @Binding var selectedProviderId: String
     @Binding var selectedEntryID: String?
 
@@ -15,7 +15,7 @@ struct AgentUsageDashboard: View {
         let messageId: String
         let threadTitle: String
         let date: Date
-        let projectId: String?
+        let projectGroupId: String
         let project: String
         let model: String
         let provider: String
@@ -48,8 +48,38 @@ struct AgentUsageDashboard: View {
         var id: Date { date }
     }
 
-    private var relevantThreads: [ChatThread] {
-        model.threads.filter { selectedRepoId.isEmpty || $0.repoId == selectedRepoId }
+    static let unassignedProjectFilter = "__unassigned__"
+
+    struct ProjectOption: Identifiable {
+        let id: String
+        let label: String
+    }
+
+    static func normalizedProjectId(_ value: String?) -> String? {
+        let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized?.isEmpty == false ? normalized : nil
+    }
+
+    static func projectOptions(
+        from projects: [ForgeSemanticProject], threads: [ChatThread]
+    ) -> [ProjectOption] {
+        var labels = Dictionary(
+            projects.map { ($0.projectId, $0.displayName) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        for projectId in threads.compactMap({ normalizedProjectId($0.projectId) }) where labels[projectId] == nil {
+            labels[projectId] = projectId
+        }
+        return labels.map { ProjectOption(id: $0.key, label: $0.value) }
+            .sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
+    }
+
+    static func matchesProjectFilter(_ thread: ChatThread, selectedProjectId: String) -> Bool {
+        guard !selectedProjectId.isEmpty else { return true }
+        guard let projectId = normalizedProjectId(thread.projectId) else {
+            return selectedProjectId == unassignedProjectFilter
+        }
+        return selectedProjectId == projectId
     }
 
     static func isUsageEligibleAssistantMessage(_ message: ChatMessage, since cutoff: Date) -> Bool {
@@ -71,7 +101,9 @@ struct AgentUsageDashboard: View {
     static func makeUsageSnapshot(
         from threads: [ChatThread],
         projectLabels: [String: String],
+        repositoryLabels: [String: String] = [:],
         since cutoff: Date,
+        projectFilter: String = "",
         providerId: String = ""
     ) -> UsageSnapshot {
         var entries: [Entry] = []
@@ -80,7 +112,20 @@ struct AgentUsageDashboard: View {
         var outputTotal = 0
         var total = 0
         var partiallyReported = 0
-        for thread in threads {
+        for thread in threads where Self.matchesProjectFilter(thread, selectedProjectId: projectFilter) {
+            let semanticProjectId = Self.normalizedProjectId(thread.projectId)
+            let projectGroupId: String
+            let projectName: String
+            if let semanticProjectId {
+                projectGroupId = "project:\(semanticProjectId)"
+                projectName = projectLabels[semanticProjectId] ?? semanticProjectId
+            } else if let repoId = thread.repoId, !repoId.isEmpty {
+                projectGroupId = "repository:\(repoId)"
+                projectName = "未绑定项目 · \(repositoryLabels[repoId] ?? repoId)"
+            } else {
+                projectGroupId = "unassigned"
+                projectName = "未关联项目"
+            }
             for message in thread.messages where Self.isUsageEligibleAssistantMessage(message, since: cutoff) {
                 let provider = message.providerUsed ?? thread.provider ?? "未知"
                 guard providerId.isEmpty || provider == providerId else { continue }
@@ -101,12 +146,10 @@ struct AgentUsageDashboard: View {
                 outputTotal += usage.outputTokens
                 total += usage.totalTokens
                 if !usage.complete { partiallyReported += 1 }
-                let projectName = thread.repoId.flatMap { projectLabels[$0] }
-                    ?? thread.repoId ?? "未关联项目"
                 entries.append(Entry(
                     id: "\(thread.id):\(message.id)",
                     threadId: thread.id, messageId: message.id, threadTitle: thread.title,
-                    date: message.createdAt, projectId: thread.repoId, project: projectName,
+                    date: message.createdAt, projectGroupId: projectGroupId, project: projectName,
                     model: message.modelUsed ?? thread.model ?? "未标记模型",
                     provider: provider,
                     usage: usage
@@ -175,10 +218,10 @@ struct AgentUsageDashboard: View {
     }
 
     private func makeProjectDistribution(from entries: [Entry]) -> [(String, Int)] {
-        let grouped = Dictionary(grouping: entries, by: \.projectId)
-        return grouped.map { projectId, values in
+        let grouped = Dictionary(grouping: entries, by: \.projectGroupId)
+        return grouped.map { groupId, values in
             (values.first?.project ?? "未关联项目",
-             values.reduce(0) { $0 + $1.usage.totalTokens }, projectId ?? "")
+             values.reduce(0) { $0 + $1.usage.totalTokens }, groupId)
         }
         .sorted {
             if $0.1 != $1.1 { return $0.1 > $1.1 }
@@ -188,16 +231,21 @@ struct AgentUsageDashboard: View {
     }
 
     var body: some View {
-        let threads = relevantThreads
+        let threads = model.threads
         let today = Calendar.current.startOfDay(for: Date())
         let cutoff = Calendar.current.date(byAdding: .day, value: -(days - 1), to: today) ?? today
         let projectLabels = Dictionary(
+            model.semanticProjects.map { ($0.projectId, $0.displayName) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        let repositoryLabels = Dictionary(
             model.projects.map { ($0.repoId, $0.label) },
             uniquingKeysWith: { _, latest in latest }
         )
+        let projectOptions = Self.projectOptions(from: model.semanticProjects, threads: threads)
         let usageSnapshot = Self.makeUsageSnapshot(
-            from: threads, projectLabels: projectLabels, since: cutoff,
-            providerId: selectedProviderId
+            from: threads, projectLabels: projectLabels, repositoryLabels: repositoryLabels,
+            since: cutoff, projectFilter: selectedProjectId, providerId: selectedProviderId
         )
         let usageEntries = usageSnapshot.entries
         let unreportedEntries = usageSnapshot.unreportedEntries
@@ -222,10 +270,11 @@ struct AgentUsageDashboard: View {
                     }
                     .frame(maxWidth: 150)
                     .accessibilityIdentifier("agent.usage.provider-filter")
-                    Picker("项目", selection: $selectedRepoId) {
+                    Picker("项目", selection: $selectedProjectId) {
                         Text("全部项目").tag("")
-                        ForEach(model.projects) { project in
-                            Text(project.label).tag(project.repoId)
+                        Text("未绑定项目").tag(Self.unassignedProjectFilter)
+                        ForEach(projectOptions) { project in
+                            Text(project.label).tag(project.id)
                         }
                     }
                     .frame(maxWidth: 190)
