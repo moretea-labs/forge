@@ -1471,6 +1471,31 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(placed["repoId"] as? String,"repo-b")
     }
 
+    func testProjectCreationCanExplicitlyAttachOnlyAnUnplacedRepository() {
+        let repositories=[
+            ForgeProject(repoId:"repo-b",displayName:"Beta",localRoot:nil,checkoutId:nil,remoteUrl:nil,defaultBranch:nil),
+            ForgeProject(repoId:"repo-a",displayName:"Alpha",localRoot:nil,checkoutId:nil,remoteUrl:nil,defaultBranch:nil)
+        ]
+        let projects=[ForgeSemanticProject(
+            projectId:"PROJECT-existing",displayName:"Existing",status:"active",revision:1,
+            placements:[ForgeSemanticProjectPlacement(repositoryId:"repo-b")],requirementCount:0
+        )]
+        XCTAssertEqual(
+            NativeWorkspace.availableProjectPlacementRepositories(
+                repositories:repositories,semanticProjects:projects).map(\.repoId),
+            ["repo-a"]
+        )
+        let standalone=NativeWorkspace.semanticProjectCreationArguments(
+            projectId:"PROJECT-new",displayName:"Personal",repositoryId:nil
+        )
+        XCTAssertEqual(standalone["projectId"] as? String,"PROJECT-new")
+        XCTAssertNil(standalone["repoId"])
+        let placed=NativeWorkspace.semanticProjectCreationArguments(
+            projectId:"PROJECT-new",displayName:"Work",repositoryId:"repo-a"
+        )
+        XCTAssertEqual(placed["repoId"] as? String,"repo-a")
+    }
+
     func testSemanticProjectDirectoryPreservesStandaloneAndRepositoryIdentity() throws {
         let projects = try NativeWorkspace.decodeSemanticProjects([
             "projects":[

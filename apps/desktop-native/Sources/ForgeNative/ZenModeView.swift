@@ -2482,7 +2482,14 @@ struct ZenProjectDirectorySheet: View {
     @State private var editingProjectId: String?
     @State private var creating = false
     @State private var draftName = ""
+    @State private var newProjectRepositoryId: String?
     @State private var saving = false
+
+    private var availableRepositories: [ForgeProject] {
+        NativeWorkspace.availableProjectPlacementRepositories(
+            repositories:model.projects,semanticProjects:model.semanticProjects
+        )
+    }
 
     private var visibleProjects: [ForgeSemanticProject] {
         let term = query.trimmingCharacters(in:.whitespacesAndNewlines)
@@ -2518,6 +2525,7 @@ struct ZenProjectDirectorySheet: View {
                     editingProjectId = nil
                     creating = true
                     draftName = ""
+                    newProjectRepositoryId = nil
                     model.error = nil
                 } label: {
                     Label("新建项目",systemImage:"plus")
@@ -2534,15 +2542,37 @@ struct ZenProjectDirectorySheet: View {
                         .textFieldStyle(.roundedBorder)
                         .accessibilityIdentifier("zen.projects.name")
                         .onSubmit { save() }
+                    if creating {
+                        Picker("关联仓库",selection:$newProjectRepositoryId) {
+                            Text("仅项目").tag(Optional<String>.none)
+                            ForEach(availableRepositories) { repository in
+                                Text(repository.label).tag(Optional(repository.repoId))
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .disabled(model.projectsLoading || model.semanticProjectsLoading
+                                  || model.projectsError != nil || model.semanticProjectsError != nil)
+                        .accessibilityIdentifier("zen.projects.repository")
+                        if model.projectsLoading || model.semanticProjectsLoading {
+                            ProgressView("正在读取可关联仓库…").controlSize(.small)
+                        } else if let repositoryError=model.projectsError {
+                            Text("仓库列表暂不可用：\(repositoryError)")
+                                .font(.system(size:11)).foregroundStyle(.secondary)
+                        }
+                    }
                     HStack {
                         Spacer()
                         Button("取消") {
                             creating = false
                             editingProjectId = nil
+                            newProjectRepositoryId = nil
                         }
                         Button(saving ? "保存中…" : "保存") { save() }
                             .buttonStyle(.borderedProminent)
-                            .disabled(saving || draftName.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                            .disabled(saving || draftName.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+                                      || (creating && newProjectRepositoryId != nil
+                                          && (model.projectsLoading || model.semanticProjectsLoading
+                                              || model.projectsError != nil || model.semanticProjectsError != nil)))
                             .accessibilityIdentifier("zen.projects.save")
                     }
                 }
@@ -2683,7 +2713,8 @@ struct ZenProjectDirectorySheet: View {
         Task {
             let ok: Bool
             if creating {
-                ok = await model.createSemanticProject(displayName:name)
+                ok = await model.createSemanticProject(
+                    displayName:name,repositoryId:newProjectRepositoryId)
             } else if let project {
                 ok = await model.reviseSemanticProject(
                     projectId:project.projectId,expectedRevision:project.revision,displayName:name)
@@ -2695,6 +2726,7 @@ struct ZenProjectDirectorySheet: View {
                 creating = false
                 editingProjectId = nil
                 draftName = ""
+                newProjectRepositoryId = nil
             }
         }
     }

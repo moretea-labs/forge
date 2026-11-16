@@ -1933,26 +1933,72 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
-    func createSemanticProject(displayName:String) async -> Bool {
+    nonisolated static func availableProjectPlacementRepositories(
+        repositories:[ForgeProject],semanticProjects:[ForgeSemanticProject]
+    ) -> [ForgeProject] {
+        let assigned=Set(semanticProjects.flatMap(\.repositoryIds))
+        return repositories.filter{!assigned.contains($0.repoId)}.sorted {
+            $0.label.localizedStandardCompare($1.label) == .orderedAscending
+        }
+    }
+
+    nonisolated static func semanticProjectCreationArguments(
+        projectId:String,displayName:String,repositoryId:String?
+    ) -> [String:Any] {
+        var arguments:[String:Any]=["projectId":projectId,"displayName":displayName]
+        if let repositoryId { arguments["repoId"]=repositoryId }
+        return arguments
+    }
+
+    func createSemanticProject(displayName:String,repositoryId:String? = nil) async -> Bool {
         guard !busy else { error="请先停止正在运行的会话。"; return false }
         let name=displayName.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !name.isEmpty else { error="项目名称不能为空。"; return false }
-        // A newly created semantic Project is standalone until the user explicitly links a Repository.
-        let arguments:[String:Any]=[
-            "displayName":name,"projectId":Self.semanticRecordId(prefix:"PROJECT")
-        ]
+        if let repositoryId {
+            guard projects.contains(where:{$0.repoId == repositoryId}) else {
+                error="所选仓库当前不可用，请刷新仓库列表。"
+                return false
+            }
+            guard !semanticProjects.contains(where:{$0.repositoryIds.contains(repositoryId)}) else {
+                error="该仓库已关联到其他项目，请选择未关联的仓库。"
+                return false
+            }
+        }
+        let projectId=Self.semanticRecordId(prefix:"PROJECT")
+        let contextGeneration=projectContextGeneration
+        let arguments=Self.semanticProjectCreationArguments(
+            projectId:projectId,displayName:name,repositoryId:repositoryId
+        )
         do {
             let receipt=try await ForgeBridge.request("project_create",arguments)
             let created=try Self.decodeSemanticProject(receipt)
-            guard created.displayName == name else { throw ForgeBridgeError.invalidResponse }
-            if let index=semanticProjects.firstIndex(where:{$0.projectId == created.projectId}) {
-                semanticProjects[index]=created
-            } else {
-                semanticProjects.insert(created,at:0)
+            guard created.projectId == projectId,created.displayName == name else {
+                throw ForgeBridgeError.invalidResponse
             }
-            // Creating a semantic Project must not silently switch repository-scoped task context.
-            error=nil
-            Task { await refreshSemanticProjects() }
+            if let repositoryId {
+                await refreshSemanticProjects()
+                guard semanticProjectsError == nil,
+                      let readback=semanticProjects.first(where:{$0.projectId == projectId}),
+                      readback.displayName == name,readback.repositoryIds.contains(repositoryId) else {
+                    if !semanticProjects.contains(where:{$0.projectId == projectId}) {
+                        semanticProjects.insert(created,at:0)
+                    }
+                    error="项目已创建，但仓库关联尚未从项目列表确认。请刷新核对，不要重复创建。"
+                    return true
+                }
+                if projectContextGeneration == contextGeneration {
+                    selectSemanticProject(projectId,repositoryId:repositoryId)
+                }
+            } else {
+                if let index=semanticProjects.firstIndex(where:{$0.projectId == created.projectId}) {
+                    semanticProjects[index]=created
+                } else {
+                    semanticProjects.insert(created,at:0)
+                }
+                // Creating a standalone Project must not silently switch repository-scoped task context.
+                error=nil
+                Task { await refreshSemanticProjects() }
+            }
             return true
         } catch {
             self.error="项目创建未确认：\(error.localizedDescription)"
