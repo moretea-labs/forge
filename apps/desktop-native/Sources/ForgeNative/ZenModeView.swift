@@ -2127,6 +2127,13 @@ private struct ZenReviewSheet: View {
     @AppStorage("forge.zen.review.role") private var preferredRole = ZenReviewRole.staff.rawValue
     @AppStorage("forge.zen.review.provider") private var preferredProvider = ""
 
+    private var effectiveReviewProvider: String? {
+        NativeWorkspace.resolveReadOnlyAnalysisProvider(
+            preferred:provider.isEmpty ? nil : provider,
+            fallback:model.readOnlyAnalysisProvider
+        )
+    }
+
     var body: some View {
         VStack(alignment:.leading,spacing:16) {
             HStack {
@@ -2165,11 +2172,11 @@ private struct ZenReviewSheet: View {
             .pickerStyle(.menu)
             Picker("第二模型（可选）",selection:$secondProvider) {
                 Text("不启用").tag("")
-                if model.localApiSettings?.joyCodeReady == true,provider != "joycode" {
+                if model.localApiSettings?.joyCodeReady == true,effectiveReviewProvider != "joycode" {
                     Text("JoyCode").tag("joycode")
                 }
                 ForEach(model.localApiSettings?.profiles.filter({
-                    $0.endpointReady && $0.providerId != provider
+                    $0.endpointReady && $0.providerId != effectiveReviewProvider
                 }) ?? []) { profile in
                     Text("\(profile.label) · \(profile.model)").tag(profile.providerId)
                 }
@@ -2178,11 +2185,11 @@ private struct ZenReviewSheet: View {
             Text("Agent Review 使用已配置的 API Provider / JoyCode，并以只读会话运行；需要执行修改时，请在普通 Agent 中单独发起。Zen 不自动应用审查建议。")
                 .font(.system(size:11)).foregroundStyle(.secondary)
             HStack {
-                if provider == "joycode" || provider.hasPrefix("api:") {
+                if let effectiveReviewProvider {
                     Button("在 Zen 中只读审查") {
                         reviewRole=role.rawValue
                         reviewFocus=role.focus
-                        reviewProviders=[provider] + (secondProvider.isEmpty || secondProvider == provider ? [] : [secondProvider])
+                        reviewProviders=[effectiveReviewProvider] + (secondProvider.isEmpty || secondProvider == effectiveReviewProvider ? [] : [secondProvider])
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.repoId == nil || model.checkoutId == nil)
@@ -2205,9 +2212,9 @@ private struct ZenReviewSheet: View {
         .onAppear {
             role = ZenReviewRole(rawValue:preferredRole) ?? .staff
             let available = model.localApiSettings?.profiles.filter(\.endpointReady).map(\.providerId) ?? []
-            provider = preferredProvider == "codex"
-                || (preferredProvider == "joycode" && model.localApiSettings?.joyCodeReady == true)
+            provider = preferredProvider == "joycode" && model.localApiSettings?.joyCodeReady == true
                 || available.contains(preferredProvider) ? preferredProvider : ""
+            if preferredProvider != provider { preferredProvider = provider }
             secondProvider = preferredSecondProvider == "joycode" && model.localApiSettings?.joyCodeReady == true
                 || available.contains(preferredSecondProvider) ? preferredSecondProvider : ""
         }

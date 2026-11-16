@@ -70,6 +70,19 @@ struct ZenReadOnlyReviewPane: View {
         [projectId ?? "",repoId ?? "",checkoutId ?? "",recordId,role,focus] + providers
     }
 
+    static func reviewModelName(provider:String,settings:LocalApiSettingsDetail?) -> String? {
+        guard let settings else { return nil }
+        if provider == "joycode" {
+            guard settings.joyCodeReady,
+                  !settings.joyCodeModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else { return nil }
+            return settings.joyCodeModel
+        }
+        guard provider == "api" || provider.hasPrefix("api:"),
+              let profile=settings.profile(providerId:provider),profile.endpointReady,
+              !profile.model.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else { return nil }
+        return profile.model
+    }
+
     // Keep the security-critical API transport contract in one testable path.
     // The model can only use tools exposed by the native helper; false is a
     // request ceiling even when the repository currently grants Full Access.
@@ -145,13 +158,7 @@ struct ZenReadOnlyReviewPane: View {
                       model.checkoutId == checkoutId else {
                     throw ForgeBridgeError.remote("项目已切换，停止审查。")
                 }
-                let name:String
-                if provider == "joycode",model.localApiSettings?.joyCodeReady == true {
-                    name=model.localApiSettings?.joyCodeModel ?? ""
-                } else if let profile=model.localApiSettings?.profile(providerId:provider),
-                          profile.endpointReady,provider.hasPrefix("api:") {
-                    name=profile.model
-                } else {
+                guard let name=Self.reviewModelName(provider:provider,settings:model.localApiSettings) else {
                     throw ForgeBridgeError.remote("Provider 已失效或未配置只读 API 通道：\(provider)")
                 }
                 guard reviewGeneration == generation else { return }

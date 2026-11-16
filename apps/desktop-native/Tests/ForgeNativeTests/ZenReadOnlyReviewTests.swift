@@ -26,6 +26,23 @@ final class ZenReadOnlyReviewTests: XCTestCase {
         XCTAssertEqual(original,identity())
     }
 
+    func testReviewModelResolutionSupportsDefaultApiAliasAndConfiguredProfiles() {
+        let settings=LocalApiSettingsDetail(
+            provider:"api",endpoint:"https://api.example.com/v1",model:"default-model",
+            apiProtocol:"openai",hasKey:true,endpointReady:true,
+            joyCodeModel:"joy-model",joyCodeReady:true
+        )
+        XCTAssertEqual(ZenReadOnlyReviewPane.reviewModelName(provider:"api",settings:settings),"default-model")
+        XCTAssertEqual(ZenReadOnlyReviewPane.reviewModelName(provider:"api:legacy-api",settings:settings),"default-model")
+        XCTAssertEqual(ZenReadOnlyReviewPane.reviewModelName(provider:"joycode",settings:settings),"joy-model")
+        XCTAssertNil(ZenReadOnlyReviewPane.reviewModelName(provider:"codex",settings:settings))
+        let unavailable=LocalApiSettingsDetail(
+            provider:"api",endpoint:"https://api.example.com/v1",model:"default-model",
+            apiProtocol:"openai",hasKey:true,endpointReady:false
+        )
+        XCTAssertNil(ZenReadOnlyReviewPane.reviewModelName(provider:"api",settings:unavailable))
+    }
+
     func testReviewTransportAlwaysDisablesEffects() {
         let args=ZenReadOnlyReviewPane.effectDisabledRequest(
             conversationId:"review-1",repoId:"repo-a",checkoutId:"checkout-a",
