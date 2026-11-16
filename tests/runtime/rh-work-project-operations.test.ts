@@ -57,6 +57,51 @@ function structured(value: Awaited<ReturnType<typeof callRuntimeTool>>): Record<
 }
 
 describe('rh_work Project operations', () => {
+  test('repository-scoped project board excludes tasks directly owned by its standalone Project', async () => {
+    const home = tempRoot('forge-project-repository-board-');
+    const repoRoot = tempRoot('forge-project-repository-board-repo-');
+    const otherRoot = tempRoot('forge-project-repository-board-other-');
+    ensureControllerHome(home);
+    initRepo(repoRoot);
+    initRepo(otherRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome: home, displayName: 'Attached repository' });
+    registerRepository({ path: otherRoot, controllerHome: home, displayName: 'Unrelated repository' });
+
+    expect(structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'project_create', project_id: 'shared-board', project_display_name: 'Shared Board',
+    })).status).toBe('ok');
+    expect(structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'requirement_create', project_id: 'shared-board',
+      requirement_id: 'REQ-BOARD-STANDALONE', requirement_title: 'Project-wide task',
+      requirement_outcome: 'Track work without repository placement',
+    })).status).toBe('ok');
+
+    const placed = structured(await callRuntimeTool(context(home, repository), 'rh_work', {
+      operation: 'project_create', project_id: 'shared-board', project_display_name: 'Shared Board',
+    }));
+    expect(placed.status).toBe('ok');
+    expect(placed.data.project.placements).toContainEqual(expect.objectContaining({ repositoryId: repository.repoId }));
+
+    expect(structured(await callRuntimeTool(context(home, repository), 'rh_work', {
+      operation: 'requirement_create', project_id: 'shared-board', requirement_id: 'REQ-BOARD-REPO',
+      requirement_title: 'Repository task', requirement_outcome: 'Deliver repository task',
+    })).status).toBe('ok');
+
+    const global = structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'requirement_list', project_id: 'shared-board',
+    }));
+    expect(global.data.requirements.map((task: { requirementId: string }) => task.requirementId).sort())
+      .toEqual(['REQ-BOARD-REPO', 'REQ-BOARD-STANDALONE']);
+
+    const selected = structured(await callRuntimeTool(context(home, repository), 'rh_work', {
+      operation: 'requirement_list', project_id: 'shared-board',
+    }));
+    expect(selected.status).toBe('ok');
+    expect(selected.data.totalCount).toBe(1);
+    expect(selected.data.requirements.map((task: { requirementId: string }) => task.requirementId))
+      .toEqual(['REQ-BOARD-REPO']);
+  });
+
   test('project detail pages expose all tasks without duplicating or hiding later rows', async () => {
     const home = tempRoot('forge-project-task-pages-');
     ensureControllerHome(home);

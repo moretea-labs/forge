@@ -75,7 +75,12 @@ export async function callRhWorkRequirementOperation(
 
     let records;
     if (repository && requestedProjectId) {
-      records = listRequirementsForProject({ controllerHome: ctx.controllerHome }, requestedProjectId, 1000);
+      const repositoryTaskIds = new Set(
+        listRequirementsForRepository({ controllerHome: ctx.controllerHome }, repository.repoId, 1000)
+          .map(({ value }) => value.requirementId),
+      );
+      records = listRequirementsForProject({ controllerHome: ctx.controllerHome }, requestedProjectId, 1000)
+        .filter(({ value }) => repositoryTaskIds.has(value.requirementId));
     } else if (repository) {
       records = listRequirementsForRepository({ controllerHome: ctx.controllerHome }, repository.repoId, 1000);
     } else if (requestedProjectId) {
