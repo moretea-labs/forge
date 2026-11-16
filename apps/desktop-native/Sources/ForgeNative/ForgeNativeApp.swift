@@ -819,6 +819,12 @@ private struct ForgeWorkspaceView: View {
                 Label("重命名",systemImage:"pencil")
             }
             Button {
+                model.duplicateThread(thread.id)
+            } label: {
+                Label("复制会话",systemImage:"plus.square.on.square")
+            }
+            .disabled(running)
+            Button {
                 copyAgentText(thread.markdownTranscript)
             } label: {
                 Label("复制会话为 Markdown",systemImage:"doc.on.doc")

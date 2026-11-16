@@ -51,6 +51,41 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(restored.visibleThreads.isEmpty)
     }
 
+    @MainActor
+    func testDuplicateAgentThreadCreatesIndependentConversationAndClearsProviderSession() throws {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store=folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:store)
+        let sourceId=model.threads[0].id
+        model.threads[0].title="Release review"
+        model.threads[0].repoId="repo-a"
+        model.threads[0].checkoutId="checkout-a"
+        model.threads[0].provider="codex"
+        model.threads[0].providerSessionId="session-original"
+        model.threads[0].messages=[ChatMessage(role:"user",text:"Review this change")]
+        model.threads[0].pendingDraft="Continue with edge cases"
+        model.threads[0].pendingContextPaths=["Sources/App.swift"]
+        model.persist()
+
+        let duplicateId=try XCTUnwrap(model.duplicateThread(sourceId))
+        XCTAssertNotEqual(duplicateId,sourceId)
+        XCTAssertEqual(model.selectedThreadId,duplicateId)
+        XCTAssertEqual(model.threads.first?.title,"Release review（副本）")
+        XCTAssertEqual(model.thread?.providerSessionId,nil)
+        XCTAssertEqual(model.thread?.provider,"codex")
+        XCTAssertEqual(model.thread?.repoId,"repo-a")
+        XCTAssertEqual(model.thread?.messages.map(\.text),["Review this change"])
+        XCTAssertEqual(model.thread?.pendingDraft,"Continue with edge cases")
+        XCTAssertEqual(model.thread?.pendingContextPaths,["Sources/App.swift"])
+        XCTAssertEqual(model.threads.first(where:{$0.id == sourceId})?.providerSessionId,"session-original")
+
+        let restored=NativeWorkspace(store:store)
+        XCTAssertEqual(restored.threads.count,2)
+        XCTAssertNotEqual(restored.threads[0].id,restored.threads[1].id)
+        XCTAssertNil(restored.threads[0].providerSessionId)
+    }
+
     func testProjectListResponseDistinguishesValidEmptyFromMalformedPayloads() throws {
         XCTAssertTrue(try NativeWorkspace.decodeProjects(["repositories": [[String:Any]]()]).isEmpty)
         let projects = try NativeWorkspace.decodeProjects([

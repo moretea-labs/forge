@@ -1107,6 +1107,29 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
+    @discardableResult
+    func duplicateThread(_ id: String) -> String? {
+        guard !busy, let source=threads.first(where:{$0.id == id}) else {
+            if busy { error="请先停止正在运行的会话。" }
+            return nil
+        }
+        var copy=source
+        copy.id=UUID().uuidString
+        copy.title=String((source.title + "（副本）").prefix(80))
+        copy.providerSessionId=nil
+        copy.updatedAt=Date()
+        threads.insert(copy,at:0)
+        showSearch=false
+        search=""
+        if page != .agent { pushNavigationOrigin() }
+        activateThreadContext(copy)
+        zenMode=false
+        page = .agent
+        error=nil
+        persist()
+        return copy.id
+    }
+
     func selectThread(_ id: String, messageId: String? = nil) {
         if busy {
             guard id == activeConversationId else {
