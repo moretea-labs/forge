@@ -504,6 +504,180 @@ fn semantic_facade_data(result: Value) -> Value {
     result.get("data").cloned().unwrap_or(result)
 }
 
+fn optional_project_text(args: &Value, field: &str, max_len: usize) -> Result<Option<String>, String> {
+    match args.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => {
+            let normalized = value.trim();
+            if normalized.is_empty() {
+                Ok(None)
+            } else if normalized.encode_utf16().count() <= max_len {
+                Ok(Some(normalized.to_owned()))
+            } else {
+                Err(format!("FORGE_DESKTOP_{field}_TOO_LONG"))
+            }
+        },
+        Some(_) => Err(format!("FORGE_DESKTOP_{field}_INVALID")),
+    }
+}
+
+fn required_project_text(args: &Value, field: &str, max_len: usize) -> Result<String, String> {
+    optional_project_text(args, field, max_len)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("FORGE_DESKTOP_{field}_REQUIRED"))
+}
+
+fn project_pagination_value(
+    args: &Value,
+    field: &str,
+    default: u64,
+    minimum: u64,
+    maximum: u64,
+) -> Result<u64, String> {
+    let value = match args.get(field) {
+        None => default,
+        Some(value) => value.as_u64().ok_or_else(|| format!("FORGE_DESKTOP_{field}_INVALID"))?,
+    };
+    if value < minimum || value > maximum {
+        return Err(format!("FORGE_DESKTOP_{field}_INVALID"));
+    }
+    Ok(value)
+}
+
+/// Native bridge for the existing semantic Project identity API. Repository
+/// Registry operations remain separate; this never creates a second Project owner.
+async fn semantic_project_operation(operation: &str, args: &Value) -> Result<Value, String> {
+    let mut request = json!({ "operation": operation });
+    match operation {
+        "project_list" => {
+            let workspace_id = optional_project_text(args, "workspaceId", 512)?;
+            let status = optional_project_text(args, "projectStatus", 32)?;
+            let sort_by = optional_project_text(args, "projectSortBy", 32)?.unwrap_or_else(|| "updated_at".into());
+            let sort_order = optional_project_text(args, "sortOrder", 8)?.unwrap_or_else(|| "desc".into());
+            let search_query = optional_project_text(args, "searchQuery", 512)?;
+            if status.as_deref().is_some_and(|value| value != "active" && value != "archived")
+                || !matches!(sort_by.as_str(), "updated_at" | "display_name" | "status")
+                || !matches!(sort_order.as_str(), "asc" | "desc") {
+                return Err("FORGE_DESKTOP_PROJECT_LIST_FILTER_INVALID".into());
+            }
+            request["limit"] = json!(project_pagination_value(args, "limit", 50, 1, 100)?);
+            request["offset"] = json!(project_pagination_value(args, "offset", 0, 0, 100_000)?);
+            request["project_sort_by"] = json!(sort_by);
+            request["sort_order"] = json!(sort_order);
+            if let Some(value) = workspace_id { request["workspace_id"] = json!(value); }
+            if let Some(value) = status { request["project_status"] = json!(value); }
+            if let Some(value) = search_query { request["search_query"] = json!(value); }
+        }
+        "project_create" => {
+            let project_id = optional_project_text(args, "projectId", 512)?;
+            let repo_id = optional_project_text(args, "repoId", 256)?;
+            if project_id.is_none() && repo_id.is_none() {
+                return Err("FORGE_DESKTOP_PROJECT_ID_OR_REPOSITORY_REQUIRED".into());
+            }
+            request["project_display_name"] = json!(required_project_text(args, "displayName", 512)?);
+            if let Some(value) = project_id { request["project_id"] = json!(value); }
+            if let Some(value) = repo_id { request["repo_id"] = json!(value); }
+            if let Some(value) = optional_project_text(args, "workspaceId", 512)? {
+                request["workspace_id"] = json!(value);
+            }
+        }
+        "project_get" => {
+            request["project_id"] = json!(required_project_text(args, "projectId", 512)?);
+            let detail = optional_project_text(args, "detailLevel", 16)?.unwrap_or_else(|| "summary".into());
+            if detail != "summary" && detail != "detail" {
+                return Err("FORGE_DESKTOP_PROJECT_DETAIL_LEVEL_INVALID".into());
+            }
+            request["detail_level"] = json!(detail);
+            request["limit"] = json!(project_pagination_value(args, "limit", 100, 1, 100)?);
+            request["offset"] = json!(project_pagination_value(args, "offset", 0, 0, 100_000)?);
+            if let Some(value) = optional_project_text(args, "workspaceId", 512)? {
+                request["workspace_id"] = json!(value);
+            }
+        }
+        "project_revise" => {
+            request["project_id"] = json!(required_project_text(args, "projectId", 512)?);
+            let expected_revision = args.get("expectedRevision").and_then(Value::as_u64)
+                .filter(|revision| *revision > 0)
+                .ok_or("FORGE_DESKTOP_PROJECT_EXPECTED_REVISION_REQUIRED")?;
+            request["expected_revision"] = json!(expected_revision);
+            let display_name = optional_project_text(args, "displayName", 512)?;
+            let status = optional_project_text(args, "projectStatus", 32)?;
+            if display_name.as_deref().is_none_or(|value| value.trim().is_empty()) && status.is_none() {
+                return Err("FORGE_DESKTOP_PROJECT_REVISION_EMPTY".into());
+            }
+            if status.as_deref().is_some_and(|value| value != "active" && value != "archived") {
+                return Err("FORGE_DESKTOP_PROJECT_STATUS_INVALID".into());
+            }
+            if let Some(value) = display_name { request["project_display_name"] = json!(value); }
+            if let Some(value) = status { request["project_status"] = json!(value); }
+            if let Some(value) = optional_project_text(args, "workspaceId", 512)? {
+                request["workspace_id"] = json!(value);
+            }
+        }
+        "project_attach_requirement" => {
+            request["project_id"] = json!(required_project_text(args, "projectId", 512)?);
+            request["requirement_id"] = json!(required_project_text(args, "requirementId", 160)?);
+            if let Some(value) = optional_project_text(args, "workspaceId", 512)? {
+                request["workspace_id"] = json!(value);
+            }
+            if let Some(value) = optional_project_text(args, "repoId", 256)? {
+                request["repo_id"] = json!(value);
+            }
+        }
+        _ => return Err("FORGE_DESKTOP_PROJECT_OPERATION_UNSUPPORTED".into()),
+    }
+    request["request_id"] = json!(request_id(match operation {
+        "project_list" => "project-list",
+        "project_create" => "project-create",
+        "project_get" => "project-get",
+        "project_revise" => "project-revise",
+        _ => "project-attach-requirement",
+    }));
+    let result = call_runtime_tool("rh_work", request).await?;
+    let data = semantic_facade_data(result);
+    let project_id = optional_project_text(args, "projectId", 512)?;
+    match operation {
+        "project_list" if !data.get("projects").is_some_and(Value::is_array) => {
+            return Err("FORGE_DESKTOP_PROJECT_LIST_READBACK_INVALID".into());
+        }
+        "project_create" => {
+            let project = data.get("project").ok_or("FORGE_DESKTOP_PROJECT_CREATE_READBACK_INVALID")?;
+            if project.pointer("/projectId").and_then(Value::as_str).is_none()
+                || project.pointer("/displayName").and_then(Value::as_str)
+                    != optional_project_text(args, "displayName", 512)?.as_deref() {
+                return Err("FORGE_DESKTOP_PROJECT_CREATE_NOT_CONFIRMED".into());
+            }
+            if let Some(expected_id) = project_id.as_deref() {
+                if project.pointer("/projectId").and_then(Value::as_str) != Some(expected_id) {
+                    return Err("FORGE_DESKTOP_PROJECT_CREATE_ID_MISMATCH".into());
+                }
+            }
+        }
+        "project_get" => {
+            if data.pointer("/project/projectId").and_then(Value::as_str) != project_id.as_deref() {
+                return Err("FORGE_DESKTOP_PROJECT_DETAIL_NOT_CONFIRMED".into());
+            }
+        }
+        "project_revise" => {
+            let expected = args.get("expectedRevision").and_then(Value::as_u64)
+                .ok_or("FORGE_DESKTOP_PROJECT_EXPECTED_REVISION_REQUIRED")?;
+            if data.pointer("/project/projectId").and_then(Value::as_str) != project_id.as_deref()
+                || data.pointer("/project/revision").and_then(Value::as_u64) != expected.checked_add(1) {
+                return Err("FORGE_DESKTOP_PROJECT_REVISE_NOT_CONFIRMED: refresh before retrying".into());
+            }
+        }
+        "project_attach_requirement" => {
+            let requirement_id = optional_project_text(args, "requirementId", 160)?;
+            if data.pointer("/project/projectId").and_then(Value::as_str) != project_id.as_deref()
+                || data.pointer("/requirement/requirementId").and_then(Value::as_str) != requirement_id.as_deref() {
+                return Err("FORGE_DESKTOP_PROJECT_ATTACHMENT_NOT_CONFIRMED".into());
+            }
+        }
+        _ => {}
+    }
+    Ok(data)
+}
+
 #[tauri::command]
 async fn read_project_requirement_list(repo_id: String) -> Result<Value, String> {
     if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string()); }

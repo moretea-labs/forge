@@ -40,6 +40,8 @@ fn optional_strings(arguments: &Value, field: &str, max_items: usize) -> Result<
 
 async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
     match operation {
+        "project_list" | "project_create" | "project_get" | "project_revise" | "project_attach_requirement" =>
+            semantic_project_operation(operation, args).await,
         "read_projects" => read_projects().await,
         "register_project" => call_runtime_tool("repository_register", json!({
             "path": required(args, "path")?
@@ -554,6 +556,34 @@ mod tests {
             Some(vec!["a".repeat(161)]), None, None, None,
         ));
         assert_eq!(oversized.unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID");
+    }
+
+    #[test]
+    fn semantic_project_bridge_validates_lifecycle_inputs_before_runtime_call() {
+        let invalid_list = tauri::async_runtime::block_on(dispatch("project_list", &json!({
+            "projectStatus": "done"
+        })));
+        assert_eq!(invalid_list.unwrap_err(), "FORGE_DESKTOP_PROJECT_LIST_FILTER_INVALID");
+
+        let missing_project = tauri::async_runtime::block_on(dispatch("project_create", &json!({
+            "displayName": "Standalone project"
+        })));
+        assert_eq!(missing_project.unwrap_err(), "FORGE_DESKTOP_PROJECT_ID_OR_REPOSITORY_REQUIRED");
+
+        let invalid_detail = tauri::async_runtime::block_on(dispatch("project_get", &json!({
+            "projectId": "project-1", "detailLevel": "everything"
+        })));
+        assert_eq!(invalid_detail.unwrap_err(), "FORGE_DESKTOP_PROJECT_DETAIL_LEVEL_INVALID");
+
+        let stale_revision = tauri::async_runtime::block_on(dispatch("project_revise", &json!({
+            "projectId": "project-1", "expectedRevision": 0, "displayName": "Renamed"
+        })));
+        assert_eq!(stale_revision.unwrap_err(), "FORGE_DESKTOP_PROJECT_EXPECTED_REVISION_REQUIRED");
+
+        let missing_requirement = tauri::async_runtime::block_on(dispatch("project_attach_requirement", &json!({
+            "projectId": "project-1"
+        })));
+        assert_eq!(missing_requirement.unwrap_err(), "FORGE_DESKTOP_requirementId_REQUIRED");
     }
 
     #[test]
