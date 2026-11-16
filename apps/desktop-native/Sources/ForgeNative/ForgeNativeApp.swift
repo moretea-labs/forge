@@ -2501,7 +2501,7 @@ private struct AgentPane: View {
                         .lineLimit(event.phase == "message" ? 7 : 2)
                         .textSelection(.enabled)
                 }
-                if let output = event.output, !output.isEmpty {
+                if let output = NativeWorkspace.activityOutputText(for:event) {
                     VStack(alignment:.leading,spacing:3) {
                         Text("工具输出")
                             .font(.system(size:9,weight:.medium))

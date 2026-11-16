@@ -4571,6 +4571,32 @@ final class NativeWorkspace: ObservableObject {
             || receiptCoverageUnverified
     }
 
+    nonisolated static func activityOutputText(for event:AgentLiveActivityEvent) -> String? {
+        guard let output=event.output, !output.isEmpty else { return nil }
+        guard event.label == "run_command",
+              let data=output.data(using:.utf8),
+              let payload=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any],
+              let result=payload["result"] as? [String:Any] else { return output }
+
+        var sections:[String] = []
+        if let stdout=result["stdoutTail"] as? String, !stdout.isEmpty {
+            sections.append("stdout\n\(stdout)")
+        }
+        if let stderr=result["stderrTail"] as? String, !stderr.isEmpty {
+            sections.append("stderr\n\(stderr)")
+        }
+        if let status=result["status"] as? String, !status.isEmpty {
+            sections.append("Process: \(status)")
+        }
+        if let exitCode=result["exitCode"] as? Int {
+            sections.append("Exit code: \(exitCode)")
+        }
+        if result["timedOut"] as? Bool == true { sections.append("Timed out") }
+        if result["cancelled"] as? Bool == true { sections.append("Cancelled") }
+        guard !sections.isEmpty else { return output }
+        return String(sections.joined(separator:"\n\n").prefix(2_000))
+    }
+
     nonisolated static func apiActivityEvents(_ raw: Any?) -> [AgentLiveActivityEvent]? {
         guard let rows = raw as? [[String:Any]], !rows.isEmpty else { return nil }
         let now = ISO8601DateFormatter().string(from:Date())

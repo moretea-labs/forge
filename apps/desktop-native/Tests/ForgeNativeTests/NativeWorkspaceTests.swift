@@ -2832,6 +2832,32 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(completed.first?.status,"completed")
     }
 
+    func testCommandActivityOutputSeparatesStdoutStderrAndProcessResult() {
+        let event=AgentLiveActivityEvent(
+            phase:"tool",label:"run_command",detail:"lightweight:process-id",
+            status:"completed",startedAt:"start",completedAt:"end",toolCallId:"call-1",
+            output:"""
+            {"ok":true,"result":{"status":"failed","exitCode":2,"timedOut":true,"cancelled":false,"stdoutTail":"Build started","stderrTail":"Compiler error"}}
+            """
+        )
+        XCTAssertEqual(
+            NativeWorkspace.activityOutputText(for:event),
+            "stdout\nBuild started\n\nstderr\nCompiler error\n\nProcess: failed\n\nExit code: 2\n\nTimed out"
+        )
+    }
+
+    func testOtherToolActivityOutputRemainsUnchanged() {
+        let event=AgentLiveActivityEvent(
+            phase:"tool",label:"read_file",detail:"README.md",
+            status:"completed",startedAt:"start",completedAt:"end",toolCallId:"call-2",
+            output:"{\"ok\":true,\"result\":{\"content\":\"hello\"}}"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.activityOutputText(for:event),
+            "{\"ok\":true,\"result\":{\"content\":\"hello\"}}"
+        )
+    }
+
     func testLegacyAgentActivityEventDecodesWithoutOutput() throws {
         let data=Data(#"{"phase":"tool","label":"git_status","detail":null,"status":"completed","startedAt":"start","completedAt":null,"toolCallId":"legacy"}"#.utf8)
         let event=try JSONDecoder().decode(AgentLiveActivityEvent.self,from:data)
