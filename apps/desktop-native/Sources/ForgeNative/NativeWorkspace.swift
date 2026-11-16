@@ -757,16 +757,21 @@ struct NativeNavigationEntry: Equatable {
     let threadId: String?
     let recordId: String?
     let projectId: String?
+    let repoId: String?
+    let checkoutId: String?
     let zenMode: Bool
     let zenScreen: ZenScreen
     let focusedRequirementId: String?
 
     init(page:NativePage,threadId:String?,recordId:String?,projectId:String? = nil,
-         zenMode:Bool = false,zenScreen:ZenScreen = .board,focusedRequirementId:String? = nil) {
+         repoId:String? = nil,checkoutId:String? = nil,zenMode:Bool = false,
+         zenScreen:ZenScreen = .board,focusedRequirementId:String? = nil) {
         self.page=page
         self.threadId=threadId
         self.recordId=recordId
         self.projectId=projectId
+        self.repoId=repoId
+        self.checkoutId=checkoutId
         self.zenMode=zenMode
         self.zenScreen=zenScreen
         self.focusedRequirementId=focusedRequirementId
@@ -995,6 +1000,8 @@ final class NativeWorkspace: ObservableObject {
             threadId:selectedThreadId,
             recordId:[.requirement,.plan].contains(page) ? selectedRecord : nil,
             projectId:selectedProjectId,
+            repoId:repoId,
+            checkoutId:checkoutId,
             zenMode:isZenWorkbench,
             zenScreen:isZenWorkbench ? zenScreen : .board,
             focusedRequirementId:isZenWorkbench ? zenFocusedRequirementId : nil
@@ -1263,7 +1270,9 @@ final class NativeWorkspace: ObservableObject {
             checkoutRoot = nil
             checkoutBranch = nil
         }
-        checkoutContextLoading = item.repoId != nil && (contextChanged || refreshProjectContext)
+        checkoutContextLoading = refreshProjectContext
+            && item.repoId != nil
+            && (contextChanged || checkoutRoot == nil)
         if let boundRepoId = item.repoId {
             repoId = boundRepoId
             checkoutId = item.checkoutId
@@ -1640,15 +1649,43 @@ final class NativeWorkspace: ObservableObject {
         if page != .requirement { zenMode = false }
         error = nil
         self.page = page
-        if page != .agent { Task { await loadPage() } }
+        if page == .agent,let thread { activateThreadContext(thread) }
+        else if page != .agent { Task { await loadPage() } }
     }
 
     func goBack() {
         guard let target = navigationBackStack.popLast() else { return }
         let threadChanged = target.threadId != selectedThreadId
+        let contextChangedBeforeActivation = selectedProjectId != target.projectId
+            || repoId != target.repoId
+            || checkoutId != target.checkoutId
         if let targetThreadId=target.threadId,
            let targetThread=threads.first(where:{ $0.id == targetThreadId }) {
             activateThreadContext(targetThread,refreshProjectContext:false)
+        }
+        let contextChanged = selectedProjectId != target.projectId
+            || repoId != target.repoId
+            || checkoutId != target.checkoutId
+        if contextChanged {
+            if repoId != target.repoId {
+                invalidateRepositoryAccessRequests()
+                repositoryAccessMode="request"
+            }
+            invalidateProjectContextRequests()
+            invalidateAgentChangesRequests(clearSnapshot:true)
+            checkoutRoot=nil
+            checkoutBranch=nil
+            repoId=target.repoId
+            checkoutId=target.checkoutId
+            clearRecordSelection()
+            records=[]
+            detail=""
+            planningAutopilotStatuses=[:]
+            planningAutopilotStatusError=nil
+            zenGitHubBoardItems=[]
+            zenGitHubBoardConfigured=nil
+            zenGitHubBoardTruncated=false
+            zenGitHubBoardError=nil
         }
         selectedProjectId = target.projectId
         zenMode = target.zenMode
@@ -1658,8 +1695,11 @@ final class NativeWorkspace: ObservableObject {
         error = nil
         page = target.page
         persist()
+        let shouldRefreshProject = repoId != nil
+            && (threadChanged || contextChangedBeforeActivation || contextChanged || checkoutRoot == nil)
+        checkoutContextLoading = shouldRefreshProject
         Task {
-            if threadChanged, repoId != nil {
+            if shouldRefreshProject {
                 await refreshProject()
             } else if target.page != .agent {
                 await loadPage()

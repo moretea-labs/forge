@@ -1494,11 +1494,11 @@ final class NativeWorkspaceTests: XCTestCase {
 
     func testTaskWritesRequireAnActiveSemanticProject() {
         let active=ForgeSemanticProject(
-            projectId:"PROJECT-active",displayName:"Active",status:"active",
+            projectId:"PROJECT-active",workspaceId:nil,displayName:"Active",status:"active",
             revision:1,placements:[],requirementCount:0
         )
         let archived=ForgeSemanticProject(
-            projectId:"PROJECT-archived",displayName:"Archived",status:"archived",
+            projectId:"PROJECT-archived",workspaceId:nil,displayName:"Archived",status:"archived",
             revision:2,placements:[],requirementCount:4
         )
         XCTAssertEqual(
@@ -1557,7 +1557,7 @@ final class NativeWorkspaceTests: XCTestCase {
             ForgeProject(repoId:"repo-a",displayName:"Alpha",localRoot:nil,checkoutId:nil,remoteUrl:nil,defaultBranch:nil)
         ]
         let projects=[ForgeSemanticProject(
-            projectId:"PROJECT-existing",displayName:"Existing",status:"active",revision:1,
+            projectId:"PROJECT-existing",workspaceId:nil,displayName:"Existing",status:"active",revision:1,
             placements:[ForgeSemanticProjectPlacement(repositoryId:"repo-b")],requirementCount:0
         )]
         XCTAssertEqual(
@@ -2373,7 +2373,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.page,.agent)
         XCTAssertEqual(model.repoId,"repo_b")
         XCTAssertEqual(model.navigationBackStack.last,
-                       NativeNavigationEntry(page:.knowledge,threadId:threadA,recordId:nil))
+                       NativeNavigationEntry(page:.knowledge,threadId:threadA,recordId:nil,repoId:"repo_a",checkoutId:"checkout_a"))
 
         model.goBack()
 
@@ -2381,6 +2381,83 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.selectedThreadId,threadA)
         XCTAssertEqual(model.repoId,"repo_a")
         XCTAssertEqual(model.checkoutId,"checkout_a")
+    }
+
+    @MainActor
+    func testZenWorkspaceContextSurvivesAgentThreadSwitchAndAgentReentry() {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let threadA=model.threads[0].id
+        model.threads[0].projectId="PROJECT-A"
+        model.threads[0].repoId="repo-a"
+        model.threads[0].checkoutId="checkout-a"
+        let threadC=ChatThread(repoId:"repo-c",checkoutId:"checkout-c",projectId:"PROJECT-C")
+        model.threads.append(threadC)
+        model.selectedThreadId=threadA
+        model.selectedProjectId="PROJECT-B"
+        model.repoId="repo-b"
+        model.checkoutId="checkout-b"
+        model.page = .requirement
+        model.zenMode = true
+
+        model.show(.agent)
+        XCTAssertEqual(model.navigationBackStack.last,
+                       NativeNavigationEntry(page:.requirement,threadId:threadA,recordId:nil,
+                                             projectId:"PROJECT-B",repoId:"repo-b",checkoutId:"checkout-b",
+                                             zenMode:true,zenScreen:.board,focusedRequirementId:nil))
+        XCTAssertEqual(model.repoId,"repo-a")
+        XCTAssertEqual(model.selectedProjectId,"PROJECT-A")
+        model.selectThread(threadC.id)
+        model.goBack()
+
+        XCTAssertEqual(model.page,.requirement)
+        XCTAssertTrue(model.zenMode)
+        XCTAssertEqual(model.selectedThreadId,threadA)
+        XCTAssertEqual(model.selectedProjectId,"PROJECT-B")
+        XCTAssertEqual(model.repoId,"repo-b")
+        XCTAssertEqual(model.checkoutId,"checkout-b")
+        XCTAssertEqual(model.thread?.projectId,"PROJECT-A")
+        XCTAssertEqual(model.thread?.repoId,"repo-a")
+        XCTAssertEqual(model.thread?.checkoutId,"checkout-a")
+
+        model.show(.agent)
+        XCTAssertEqual(model.selectedProjectId,"PROJECT-A")
+        XCTAssertEqual(model.repoId,"repo-a")
+        XCTAssertEqual(model.checkoutId,"checkout-a")
+        XCTAssertTrue(NativeWorkspace.agentThreadMatchesContext(
+            model.thread,repoId:model.repoId,checkoutId:model.checkoutId,projectId:model.selectedProjectId
+        ))
+    }
+
+    @MainActor
+    func testBackToAgentRefreshesThreadCheckoutAfterZenProjectSwitch() {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let threadId=model.selectedThreadId!
+        model.threads[0].projectId="PROJECT-A"
+        model.threads[0].repoId="repo-a"
+        model.threads[0].checkoutId="checkout-a"
+        model.selectedProjectId="PROJECT-A"
+        model.repoId="repo-a"
+        model.checkoutId="checkout-a"
+        model.page = .agent
+        model.zenMode = false
+
+        model.openWorkbench()
+        model.selectedProjectId="PROJECT-B"
+        model.repoId="repo-b"
+        model.checkoutId="checkout-b"
+        model.invalidateProjectContextRequests()
+        model.goBack()
+
+        XCTAssertEqual(model.page,.agent)
+        XCTAssertEqual(model.selectedThreadId,threadId)
+        XCTAssertEqual(model.selectedProjectId,"PROJECT-A")
+        XCTAssertEqual(model.repoId,"repo-a")
+        XCTAssertEqual(model.checkoutId,"checkout-a")
+        XCTAssertTrue(model.checkoutContextLoading)
     }
 
     @MainActor
