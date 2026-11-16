@@ -206,13 +206,22 @@ function updateRecoveryIndexMembership(
       const pending = new Set(base.pendingLeaseReleaseIds);
       if (membership.active) active.add(processId); else active.delete(processId);
       if (membership.pendingLeaseRelease) pending.add(processId); else pending.delete(processId);
+      const activeProcessIds = [...active].sort();
+      const pendingLeaseReleaseIds = [...pending].sort();
+      if (
+        activeProcessIds.join('\0') === normalizedProcessIds(base.activeProcessIds).join('\0')
+        && pendingLeaseReleaseIds.join('\0') === normalizedProcessIds(base.pendingLeaseReleaseIds).join('\0')
+      ) {
+        return base;
+      }
       return {
         schemaVersion: 2,
         updatedAt: new Date().toISOString(),
-        activeProcessIds: [...active].sort(),
-        pendingLeaseReleaseIds: [...pending].sort(),
+        activeProcessIds,
+        pendingLeaseReleaseIds,
       };
     },
+    skipWriteWhenMutationReturnsCurrent: true,
   }).value;
   return value;
 }

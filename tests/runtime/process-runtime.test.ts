@@ -31,9 +31,10 @@ import {
   waitForProcess,
 } from '../../src/runtime/execution/process-runtime';
 import type { ProcessHandle } from '../../src/runtime/execution/process-runtime/types';
-import { createProcessRecord, listProcessRecords, updateProcessRecord } from '../../src/runtime/execution/process-runtime/store';
+import { createProcessRecord, deleteProcessRecord, listProcessRecords, updateProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import { resolveProcessRunnerEntryPath, resolveProcessRunnerInvocation } from '../../src/runtime/execution/process-runtime/runtime';
 import { forgeInstanceExecutionTarget, recordProcessHandleIndexEntry } from '../../src/runtime/execution/process-runtime/handle-index';
+import { readControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
   claimRunnerStarted,
   runProcessRunnerFromDescriptor,
@@ -3692,6 +3693,20 @@ describe('Process Runtime real lease contention', () => {
       leaseReleaseState: 'released',
     }, { allowTerminal: true });
     expect(listRecoverableProcessRecords(fx.controllerHome, fx.repository.repoId)).toEqual([]);
+
+    const settledIndex = readControlPlaneRecord(
+      fx.controllerHome,
+      'process_recovery_index',
+      fx.repository.repoId,
+      'v2',
+    );
+    expect(deleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId)).toBe(true);
+    expect(readControlPlaneRecord(
+      fx.controllerHome,
+      'process_recovery_index',
+      fx.repository.repoId,
+      'v2',
+    )?.revision).toBe(settledIndex?.revision);
 
     const projectionPath = join(processLogDir(fx.controllerHome, fx.repository.repoId), '..', 'active-index.json');
     // SQLite is recovery authority. Ordinary lifecycle writes must not create

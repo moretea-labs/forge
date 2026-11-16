@@ -1571,6 +1571,8 @@ export function mutateControlPlaneRecord<T>(
     readLegacy?: () => T | undefined;
     action: string;
     mutate: (current: ControlPlaneRecord<T> | undefined) => T;
+    /** Preserve the current revision when mutate explicitly returns the current value object. */
+    skipWriteWhenMutationReturnsCurrent?: boolean;
   },
 ): ControlPlaneRecord<T> {
   return withControlPlaneTransaction(controllerHome, (database) => {
@@ -1588,12 +1590,20 @@ export function mutateControlPlaneRecord<T>(
         });
       }
     }
+    const next = input.mutate(current);
+    if (
+      input.skipWriteWhenMutationReturnsCurrent === true
+      && current?.schemaVersion === input.schemaVersion
+      && next === current.value
+    ) {
+      return current;
+    }
     return writeRecord(database, {
       namespace: input.namespace,
       scope: input.scope,
       key: input.key,
       schemaVersion: input.schemaVersion,
-      value: input.mutate(current),
+      value: next,
       action: input.action,
     }, current);
   });
