@@ -616,6 +616,12 @@ struct ZenWorkspacePane: View {
                     Task {
                         await model.openProjectRequirement(
                             projectId:projectId,repositoryId:repositoryId,requirementId:requirementId)
+                        guard model.selectedProjectId == projectId,
+                              model.projectRepositoryId == repositoryId,
+                              case .requirement(let detail)=model.recordDetail,
+                              detail.requirementId == requirementId else { return }
+                        focusedRequirementId=requirementId
+                        navigate(.canvas)
                     }
                 }
             )
