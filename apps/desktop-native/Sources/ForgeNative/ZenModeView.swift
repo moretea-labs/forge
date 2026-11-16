@@ -602,9 +602,11 @@ struct ZenWorkspacePane: View {
         .sheet(isPresented:$showingProjectDirectory) {
             ZenProjectDirectorySheet(
                 model:model,
-                onOpenTasks:{ projectId in
+                onOpenTasks:{ projectId,repositoryId in
                     showingProjectDirectory=false
-                    Task { await model.openProjectTasks(projectId:projectId) }
+                    Task {
+                        await model.openProjectTasks(projectId:projectId,repositoryId:repositoryId)
+                    }
                 },
                 onOpenRequirement:{ projectId,repositoryId,requirementId in
                     showingProjectDirectory=false
@@ -2499,7 +2501,7 @@ private struct ZenReviewSheet: View {
 struct ZenProjectDirectorySheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var model: NativeWorkspace
-    let onOpenTasks: (String) -> Void
+    let onOpenTasks: (String,String?) -> Void
     let onOpenRequirement: (String,String?,String) -> Void
     @State private var query = ""
     @State private var editingProjectId: String?
@@ -2801,7 +2803,7 @@ struct ZenProjectDirectorySheet: View {
 struct ZenProjectDetailPane: View {
     @ObservedObject var model: NativeWorkspace
     let projectId: String
-    let onOpenTasks: (String) -> Void
+    let onOpenTasks: (String,String?) -> Void
     let onOpenRequirement: (String,String?,String) -> Void
     let onBack: () -> Void
     @State private var detail: ForgeSemanticProjectDetail?
@@ -2831,9 +2833,35 @@ struct ZenProjectDetailPane: View {
                             Text(placementSummary(detail.project)).font(.system(size:11)).foregroundStyle(.secondary)
                             Spacer()
                             if detail.project.status == "active" {
-                                Button("打开任务列表") { onOpenTasks(projectId) }
-                                    .buttonStyle(.plain).disabled(model.busy)
+                                if detail.project.repositoryIds.isEmpty {
+                                    Button("打开任务列表") { onOpenTasks(projectId,nil) }
+                                        .buttonStyle(.plain).disabled(model.busy)
+                                        .accessibilityIdentifier("zen.projects.detail.open-tasks")
+                                } else {
+                                    Menu {
+                                        Button {
+                                            onOpenTasks(projectId,nil)
+                                        } label: {
+                                            Label("项目级任务",systemImage:"folder")
+                                        }
+                                        Divider()
+                                        ForEach(detail.project.repositoryIds,id:\.self) { repositoryId in
+                                            let repository=model.projects.first(where:{$0.repoId == repositoryId})
+                                            Button {
+                                                onOpenTasks(projectId,repositoryId)
+                                            } label: {
+                                                Label(repository?.label ?? repositoryId,systemImage:"folder")
+                                            }
+                                            .disabled(repository == nil)
+                                        }
+                                    } label: {
+                                        Label("打开任务列表",systemImage:"arrow.right")
+                                    }
+                                    .menuStyle(.borderlessButton)
+                                    .fixedSize()
+                                    .disabled(model.busy)
                                     .accessibilityIdentifier("zen.projects.detail.open-tasks")
+                                }
                             }
                         }
                         Divider()

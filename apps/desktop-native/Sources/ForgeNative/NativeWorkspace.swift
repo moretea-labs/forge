@@ -3904,16 +3904,25 @@ final class NativeWorkspace: ObservableObject {
         currentPage != targetPage || contextChanged
     }
 
-    func openProjectTasks(projectId:String) async {
-        guard let project=semanticProjects.first(where:{$0.projectId == projectId}),project.status == "active" else {
-            error="项目已归档、不存在或尚未加载，请刷新项目列表。"
+    func openProjectTasks(projectId:String,repositoryId:String? = nil) async {
+        guard !busy else {
+            error="请先停止正在运行的会话，再切换项目。"
+            return
+        }
+        guard let project=semanticProjects.first(where:{$0.projectId == projectId}),
+              Self.projectDetailRequirementScopeIsValid(project:project,repositoryId:repositoryId) else {
+            error="项目或仓库范围已失效，请刷新项目详情后重试。"
+            return
+        }
+        if let repositoryId,!projects.contains(where:{$0.repoId == repositoryId}) {
+            error="项目关联的仓库当前不可用，请刷新仓库列表。"
             return
         }
         let contextChanged=Self.projectNavigationContextChanged(
             currentProjectId:selectedProjectId,currentRepoId:repoId,
-            targetProjectId:projectId,targetRepoId:nil
+            targetProjectId:projectId,targetRepoId:repositoryId
         )
-        let alreadyInProjectScope = !contextChanged
+        let alreadyInTargetScope = !contextChanged
         if Self.shouldPushNavigationOrigin(
             currentPage:page,targetPage:.requirement,contextChanged:contextChanged
         ) {
@@ -3923,9 +3932,11 @@ final class NativeWorkspace: ObservableObject {
             page = .requirement
             error = nil
         }
-        await selectSemanticProject(projectId,projectScope:true)
-        guard selectedProjectId == projectId,repoId == nil else { return }
-        if alreadyInProjectScope && !busy { await loadPage() }
+        await selectSemanticProject(
+            projectId,repositoryId:repositoryId,projectScope:repositoryId == nil
+        )
+        guard selectedProjectId == projectId,projectRepositoryId == repositoryId else { return }
+        if alreadyInTargetScope && !busy { await loadPage() }
     }
 
     func openProjectRequirement(

@@ -2221,6 +2221,14 @@ final class NativeWorkspaceTests: XCTestCase {
             currentProjectId:"PROJECT-A",currentRepoId:"repo-a",
             targetProjectId:"PROJECT-A",targetRepoId:nil
         ))
+        XCTAssertTrue(NativeWorkspace.projectNavigationContextChanged(
+            currentProjectId:"PROJECT-A",currentRepoId:nil,
+            targetProjectId:"PROJECT-A",targetRepoId:"repo-a"
+        ))
+        XCTAssertTrue(NativeWorkspace.projectNavigationContextChanged(
+            currentProjectId:"PROJECT-A",currentRepoId:"repo-a",
+            targetProjectId:"PROJECT-A",targetRepoId:"repo-b"
+        ))
         XCTAssertFalse(NativeWorkspace.projectNavigationContextChanged(
             currentProjectId:"PROJECT-A",currentRepoId:nil,
             targetProjectId:"PROJECT-A",targetRepoId:nil
