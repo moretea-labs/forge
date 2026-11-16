@@ -1494,9 +1494,12 @@ final class NativeWorkspaceTests: XCTestCase {
         let url=folder.appendingPathComponent("conversations.json")
         defer { try? FileManager.default.removeItem(at:folder) }
         let model=NativeWorkspace(store:url)
+        let originalThreadId=model.threads[0].id
         model.threads[0].projectId="PROJECT-a"
         model.threads[0].repoId="repo-a"
         model.threads[0].checkoutId="checkout-a"
+        model.newThread()
+        model.selectThread(originalThreadId)
         model.selectedProjectId="PROJECT-b"
         model.repoId="repo-b"
         model.checkoutId="checkout-b"
@@ -1504,6 +1507,8 @@ final class NativeWorkspaceTests: XCTestCase {
 
         let restored=NativeWorkspace(store:url)
         XCTAssertEqual(restored.selectedProjectId,"PROJECT-b")
+        XCTAssertEqual(restored.thread?.id,originalThreadId)
+        XCTAssertEqual(restored.threads.count,2)
         XCTAssertEqual(restored.repoId,"repo-b")
         XCTAssertEqual(restored.checkoutId,"checkout-b")
         XCTAssertEqual(restored.thread?.projectId,"PROJECT-a")
@@ -1521,6 +1526,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertNil(restoredCurrent.checkoutId)
 
         let restoredLegacy=try NativeWorkspaceStore.decode(JSONEncoder().encode([thread]))
+        XCTAssertEqual(restoredLegacy.selectedThreadId,thread.id)
         XCTAssertEqual(restoredLegacy.selectedProjectId,"PROJECT-a")
         XCTAssertEqual(restoredLegacy.repoId,"repo-a")
         XCTAssertEqual(restoredLegacy.checkoutId,"checkout-a")

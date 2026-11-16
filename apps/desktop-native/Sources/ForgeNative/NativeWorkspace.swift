@@ -45,13 +45,15 @@ struct NativeWorkspaceStore: Codable {
 
     let schemaVersion: Int
     let threads: [ChatThread]
+    let selectedThreadId: String?
     let selectedProjectId: String?
     let repoId: String?
     let checkoutId: String?
 
-    init(threads:[ChatThread],selectedProjectId:String?,repoId:String?,checkoutId:String?) {
+    init(threads:[ChatThread],selectedThreadId:String?=nil,selectedProjectId:String?,repoId:String?,checkoutId:String?) {
         schemaVersion=Self.currentSchemaVersion
         self.threads=threads
+        self.selectedThreadId=selectedThreadId
         self.selectedProjectId=selectedProjectId
         self.repoId=repoId
         self.checkoutId=checkoutId
@@ -67,7 +69,7 @@ struct NativeWorkspaceStore: Codable {
         let legacyThreads=try JSONDecoder().decode([ChatThread].self,from:data)
         let first=legacyThreads.first
         return NativeWorkspaceStore(
-            threads:legacyThreads,selectedProjectId:first?.projectId,
+            threads:legacyThreads,selectedThreadId:first?.id,selectedProjectId:first?.projectId,
             repoId:first?.repoId,checkoutId:first?.checkoutId
         )
     }
@@ -889,7 +891,12 @@ final class NativeWorkspace: ObservableObject {
             selectedProjectId=snapshot.selectedProjectId
             repoId=snapshot.repoId
             checkoutId=snapshot.checkoutId
-            if let first=threads.first { selectedThreadId=first.id }
+            if let savedThreadId=snapshot.selectedThreadId,
+               threads.contains(where:{$0.id == savedThreadId}) {
+                selectedThreadId=savedThreadId
+            } else if let first=threads.first {
+                selectedThreadId=first.id
+            }
         }
         if threads.isEmpty {
             newThread()
@@ -1083,8 +1090,8 @@ final class NativeWorkspace: ObservableObject {
             try FileManager.default.createDirectory(at:store.deletingLastPathComponent(),withIntermediateDirectories:true)
             let threadRepositoryContext=selectedProjectId == nil && repoId == nil ? thread : nil
             let snapshot=NativeWorkspaceStore(
-                threads:Array(threads.prefix(100)),selectedProjectId:selectedProjectId,
-                repoId:repoId ?? threadRepositoryContext?.repoId,
+                threads:Array(threads.prefix(100)),selectedThreadId:selectedThreadId,
+                selectedProjectId:selectedProjectId,repoId:repoId ?? threadRepositoryContext?.repoId,
                 checkoutId:checkoutId ?? threadRepositoryContext?.checkoutId
             )
             try JSONEncoder().encode(snapshot).write(to:store,options:.atomic)
