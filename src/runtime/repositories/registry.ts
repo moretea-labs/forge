@@ -186,6 +186,21 @@ export function repositoryCheckoutRootMatches(record: RepositoryRecord, root: st
   return Boolean(repositoryCommon && checkoutCommon && comparablePath(repositoryCommon) === comparablePath(checkoutCommon));
 }
 
+/** Exclude unrelated primary .git directories without spawning Git. This is
+ * only a negative filter: matching/unknown layouts still require Git proof.
+ */
+function mayShareGitCommonDirectory(root: string, comparableCommon: string): boolean {
+  // Git environment overrides supersede on-disk layout.
+  if (process.env.GIT_DIR !== undefined || process.env.GIT_COMMON_DIR !== undefined) return true;
+  try {
+    const marker = join(root, '.git');
+    if (!statSync(marker).isDirectory() || existsSync(join(marker, 'commondir'))) return true;
+    return comparablePath(realpathSync(marker)) === comparableCommon;
+  } catch {
+    return true;
+  }
+}
+
 function repositoryByGitCommonDirectory(records: RepositoryRecord[], root: string): RepositoryRecord | undefined {
   const checkoutCommon = gitCommonDirectory(root);
   if (!checkoutCommon) return undefined;
@@ -199,7 +214,9 @@ function repositoryByGitCommonDirectory(records: RepositoryRecord[], root: strin
     // root is the primary worktree; a linked-worktree canonical record is only a
     // compatibility fallback and must not steal new worktrees from that primary.
     if (record.canonicalRoot && existsSync(record.canonicalRoot)) {
-      const canonicalCommon = gitCommonDirectory(record.canonicalRoot);
+      const canonicalCommon = mayShareGitCommonDirectory(record.canonicalRoot, comparableCommon)
+        ? gitCommonDirectory(record.canonicalRoot)
+        : undefined;
       if (canonicalCommon && comparablePath(canonicalCommon) === comparableCommon) {
         if (isPrimaryGitWorktree(record.canonicalRoot)) return record;
         linkedWorktreeFallback ??= record;
@@ -210,6 +227,7 @@ function repositoryByGitCommonDirectory(records: RepositoryRecord[], root: strin
     const fallbackRoots = Array.from(new Set(record.checkouts.map((checkout) => checkout.canonicalRoot)));
     for (const candidateRoot of fallbackRoots) {
       if (!candidateRoot || !existsSync(candidateRoot)) continue;
+      if (!mayShareGitCommonDirectory(candidateRoot, comparableCommon)) continue;
       const common = gitCommonDirectory(candidateRoot);
       if (common && comparablePath(common) === comparableCommon) {
         historicalCheckoutFallback ??= record;
