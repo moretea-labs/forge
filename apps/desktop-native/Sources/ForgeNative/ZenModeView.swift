@@ -1404,15 +1404,14 @@ struct ZenWorkspacePane: View {
         }
     }
 
-    // Every candidate comes from the final, completed assistant reply of its
-    // read-only conversation. An older ACCEPT superseded within that thread
-    // must never reappear, even if other conversations still have valid ACCEPTs.
+    // Candidates must be final assistant replies from a read-only conversation
+    // bound to this Project/Repo/Checkout. Superseded ACCEPTs never reappear.
     static func reviewableProposals(
-        threads:[ChatThread],repoId:String?,checkoutId:String?
+        threads:[ChatThread],repoId:String?,checkoutId:String?,projectId:String? = nil
     ) -> [ReviewableProposal] {
         threads.sorted(by:{$0.updatedAt > $1.updatedAt}).compactMap { thread in
             guard NativeWorkspace.readOnlyThreadMatchesContext(
-                thread,repoId:repoId,checkoutId:checkoutId
+                thread,repoId:repoId,checkoutId:checkoutId,projectId:projectId
             ),let response=thread.messages.last,
               response.role == "assistant",response.incomplete != true,
               let proposal=try? ZenChangeProposal.parse(response.text) else { return nil }
@@ -1421,13 +1420,18 @@ struct ZenWorkspacePane: View {
     }
 
     static func latestReviewableProposal(
-        threads:[ChatThread],repoId:String?,checkoutId:String?
+        threads:[ChatThread],repoId:String?,checkoutId:String?,projectId:String? = nil
     ) -> ZenChangeProposal? {
-        reviewableProposals(threads:threads,repoId:repoId,checkoutId:checkoutId).first?.proposal
+        reviewableProposals(
+            threads:threads,repoId:repoId,checkoutId:checkoutId,projectId:projectId
+        ).first?.proposal
     }
 
     private var reviewableProposals: [ReviewableProposal] {
-        Self.reviewableProposals(threads:model.threads,repoId:model.repoId,checkoutId:model.checkoutId)
+        Self.reviewableProposals(
+            threads:model.threads,repoId:model.repoId,checkoutId:model.checkoutId,
+            projectId:model.selectedProjectId
+        )
     }
 
     private func reviewLatestProposal() {

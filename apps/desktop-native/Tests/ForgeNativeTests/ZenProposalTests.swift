@@ -87,6 +87,48 @@ final class ZenProposalTests: XCTestCase {
             threads:threads,repoId:"repo-a",checkoutId:"checkout-b").isEmpty)
     }
 
+    @MainActor
+    func testZenProposalThreadIsReadOnlyAndReviewableInItsProjectContext() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:store)
+        model.repoId = "repo-a"
+        model.checkoutId = "checkout-a"
+        model.selectedProjectId = "project-a"
+        model.localApiSettings = LocalApiSettingsDetail(
+            provider:"api",endpoint:"https://api.example.com/v1",model:"model-a",
+            apiProtocol:"openai",hasKey:true,endpointReady:true
+        )
+        let provider = try XCTUnwrap(model.readOnlyAnalysisProvider)
+        model.newThread(provider:provider,requirementId:"REQ-a",planId:"PLAN-a",readOnly:true)
+        var thread = try XCTUnwrap(model.thread)
+        XCTAssertEqual(thread.provider,provider)
+        XCTAssertEqual(thread.projectId,"project-a")
+        XCTAssertEqual(thread.requirementId,"REQ-a")
+        XCTAssertEqual(thread.planId,"PLAN-a")
+        XCTAssertTrue(NativeWorkspace.readOnlyThreadMatchesContext(
+            thread,repoId:"repo-a",checkoutId:"checkout-a",projectId:"project-a"
+        ))
+        XCTAssertFalse(NativeWorkspace.apiTurnAllowsEffects(
+            provider:provider,thread:thread,accessMode:"full_access"
+        ))
+        thread.messages = [ChatMessage(role:"assistant",text:fenced(
+            #"{ "decision":"ACCEPT","operation":"create_requirement","rationale":"已确认","title":"Zen task","outcome":"可验收","acceptanceCriteria":["完成"] }"#
+        ))]
+        var otherProject = thread
+        otherProject.id = UUID().uuidString
+        otherProject.projectId = "project-b"
+        otherProject.messages = [ChatMessage(role:"assistant",text:fenced(
+            #"{ "decision":"ACCEPT","operation":"create_requirement","rationale":"已确认","title":"Wrong project","outcome":"可验收","acceptanceCriteria":["完成"] }"#
+        ))]
+        otherProject.updatedAt = Date().addingTimeInterval(60)
+        XCTAssertEqual(ZenWorkspacePane.latestReviewableProposal(
+            threads:[thread,otherProject],repoId:"repo-a",checkoutId:"checkout-a",
+            projectId:"project-a"
+        )?.title,"Zen task")
+    }
+
     func testCreateRequirementIsParsedOnlyFromOneExplicitProposal() throws {
         let proposal=try ZenChangeProposal.parse(fenced(
             #"{"decision":"ACCEPT","operation":"create_requirement","rationale":"独立验收目标","title":"PDF 定位","outcome":"可定位源页","acceptanceCriteria":["定位准确"]}"#
