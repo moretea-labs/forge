@@ -4248,6 +4248,21 @@ extension NativeWorkspaceTests {
 
 
 extension NativeWorkspaceTests {
+    func testActiveTurnAllowsNavigationOnlyWithinItsSelectedConversation() {
+        XCTAssertTrue(NativeWorkspace.canNavigateToActiveConversation(
+            requestedThreadId:"thread-a",selectedThreadId:"thread-a",activeConversationId:"thread-a"
+        ))
+        XCTAssertFalse(NativeWorkspace.canNavigateToActiveConversation(
+            requestedThreadId:"thread-b",selectedThreadId:"thread-a",activeConversationId:"thread-a"
+        ))
+        XCTAssertFalse(NativeWorkspace.canNavigateToActiveConversation(
+            requestedThreadId:"thread-a",selectedThreadId:"thread-b",activeConversationId:"thread-a"
+        ))
+        XCTAssertFalse(NativeWorkspace.canNavigateToActiveConversation(
+            requestedThreadId:"thread-a",selectedThreadId:"thread-a",activeConversationId:nil
+        ))
+    }
+
     @MainActor
     func testAssetSourceSelectionRequestsExactMessageScrollAndCanReturnToAssets() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -1315,17 +1315,24 @@ final class NativeWorkspace: ObservableObject {
         return copy.id
     }
 
+    nonisolated static func canNavigateToActiveConversation(
+        requestedThreadId:String,selectedThreadId:String?,activeConversationId:String?
+    ) -> Bool {
+        requestedThreadId == selectedThreadId && requestedThreadId == activeConversationId
+    }
+
     func selectThread(_ id: String, messageId: String? = nil) {
-        if busy {
-            guard id == activeConversationId else {
-                self.error = "请先停止正在运行的会话。"
-                return
-            }
+        let isActiveConversation = Self.canNavigateToActiveConversation(
+            requestedThreadId:id,selectedThreadId:selectedThreadId,
+            activeConversationId:activeConversationId
+        )
+        if busy && !isActiveConversation {
+            self.error = "请先停止正在运行的会话。"
             return
         }
         guard let item = threads.first(where: { $0.id == id }) else { return }
         if page != .agent { pushNavigationOrigin() }
-        activateThreadContext(item, scrollToMessageId: messageId)
+        activateThreadContext(item,refreshProjectContext:!busy,scrollToMessageId:messageId)
         zenMode = false
         page = .agent
         error = nil
