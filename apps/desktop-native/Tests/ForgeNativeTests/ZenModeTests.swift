@@ -109,6 +109,64 @@ extension ZenModeTests {
                        "created task")
     }
 
+    func testCreatedRecordDetailRequiresMatchingIdentityAndProjection() {
+        let requirement = ForgeRecord(
+            recordId:"REQ-NEW",title:"created task",state:"open",kind:.requirement,
+            depth:0,requirementId:"REQ-NEW",parentPlanId:nil
+        )
+        let requirementDetail = RequirementRecordDetail(
+            requirementId:"REQ-NEW",revision:1,title:"created task",outcomeStatement:"Ship safely",
+            state:"open",acceptanceCriteria:["Works"],progressSummary:"",
+            remainingWork:[],acceptedEvidenceRefs:[],taskStatus:"planned",priority:"normal",
+            assignee:nil,dependencyRequirementIds:[],dependencyRequirements:[],
+            blockingDependencyIds:[],dependentRequirements:nil,
+            dependentRequirementsTruncated:nil,dependentRequirementCount:nil
+        )
+        XCTAssertTrue(ZenWorkspacePane.createdRecordDetailMatches(
+            requirement,detail:.requirement(requirementDetail)
+        ))
+        XCTAssertFalse(ZenWorkspacePane.createdRecordDetailMatches(requirement,detail:nil))
+        XCTAssertFalse(ZenWorkspacePane.createdRecordDetailMatches(
+            requirement,detail:.requirement(RequirementRecordDetail(
+                requirementId:"REQ-NEW",revision:1,title:"stale title",outcomeStatement:"Ship safely",
+                state:"open",acceptanceCriteria:["Works"],progressSummary:"",
+                remainingWork:[],acceptedEvidenceRefs:[],taskStatus:"planned",priority:"normal",
+                assignee:nil,dependencyRequirementIds:[],dependencyRequirements:[],
+                blockingDependencyIds:[],dependentRequirements:nil,
+                dependentRequirementsTruncated:nil,dependentRequirementCount:nil
+            ))
+        ))
+        XCTAssertFalse(ZenWorkspacePane.createdRecordDetailMatches(
+            requirement,detail:.requirement(RequirementRecordDetail(
+                requirementId:"REQ-OTHER",revision:1,title:"created task",outcomeStatement:"Ship safely",
+                state:"open",acceptanceCriteria:["Works"],progressSummary:"",
+                remainingWork:[],acceptedEvidenceRefs:[],taskStatus:"planned",priority:"normal",
+                assignee:nil,dependencyRequirementIds:[],dependencyRequirements:[],
+                blockingDependencyIds:[],dependentRequirements:nil,
+                dependentRequirementsTruncated:nil,dependentRequirementCount:nil
+            ))
+        ))
+
+        let plan = ForgeRecord(
+            recordId:"PLAN-NEW",title:"Root plan",state:"Plan",kind:.plan,
+            depth:1,requirementId:"REQ-NEW",parentPlanId:nil
+        )
+        let planDetail = PlanRecordDetail(
+            planId:"PLAN-NEW",revision:1,requirementId:"REQ-NEW",parentPlanId:nil,
+            sourceBasisRevision:nil,goal:"Root plan",items:[],resolvedDecisions:[],nonGoals:[]
+        )
+        XCTAssertTrue(ZenWorkspacePane.createdRecordDetailMatches(plan,detail:.plan(planDetail)))
+        XCTAssertFalse(ZenWorkspacePane.createdRecordDetailMatches(
+            plan,detail:.plan(PlanRecordDetail(
+                planId:"PLAN-NEW",revision:1,requirementId:"REQ-NEW",parentPlanId:"PLAN-OTHER",
+                sourceBasisRevision:nil,goal:"Root plan",items:[],resolvedDecisions:[],nonGoals:[]
+            ))
+        ))
+        XCTAssertFalse(ZenWorkspacePane.createdRecordDetailMatches(
+            plan,detail:.requirement(requirementDetail)
+        ))
+    }
+
     func testRequirementBoardSortPreservesSourceOrderAndUsesStablePriorityRanking() {
         func task(_ id:String,_ title:String,_ priority:String?) -> ForgeRecord {
             ForgeRecord(

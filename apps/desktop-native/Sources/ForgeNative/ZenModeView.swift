@@ -1053,15 +1053,24 @@ struct ZenWorkspacePane: View {
         }
     }
 
-    private func detailLoaded(for item:ForgeRecord) -> Bool {
-        switch model.recordDetail {
-        case .requirement(let detail):
-            return item.kind == .requirement && detail.requirementId == item.recordId
-        case .plan(let detail):
-            return item.kind == .plan && detail.planId == item.recordId
+    static func createdRecordDetailMatches(
+        _ item:ForgeRecord,detail:SemanticRecordDetail?
+    ) -> Bool {
+        switch detail {
+        case .requirement(let value):
+            return item.kind == .requirement && value.requirementId == item.recordId
+                && item.title == value.title && item.state == value.state
+        case .plan(let value):
+            return item.kind == .plan && value.planId == item.recordId
+                && item.title == value.goal && item.requirementId == value.requirementId
+                && item.parentPlanId == value.parentPlanId
         case nil:
             return false
         }
+    }
+
+    private func detailLoaded(for item:ForgeRecord) -> Bool {
+        Self.createdRecordDetailMatches(item,detail:model.recordDetail)
     }
 
     // Plan records have no lifecycle in this view; their 'Plan' source marker is a kind.
@@ -1813,7 +1822,7 @@ struct ZenWorkspacePane: View {
             }
             .disabled(pendingCreatedRequirementId != nil)
             if pendingCreatedRequirementId != nil {
-                Text("任务已创建，等待列表确认。")
+                Text("任务已创建，等待详情确认。")
                     .font(.system(size:12)).foregroundStyle(.secondary)
                     .accessibilityIdentifier("zen.requirement.create.pending-readback")
             }
@@ -1862,8 +1871,13 @@ struct ZenWorkspacePane: View {
             saving=false
             guard let id,model.selectedProjectId == context.projectId,
                   model.projectRepositoryId == context.repoId,model.page == .requirement else { return }
-            if Self.createdRequirementRecord(id,in:model.records) != nil {
+            if let record=Self.createdRequirementRecord(id,in:model.records) {
                 guard model.selectedRecord == id else { return }
+                guard detailLoaded(for:record) else {
+                    pendingRequirementReadbacks[context]=id
+                    model.error="任务已创建，但详情尚未读回。请刷新列表核对，不要重复创建。"
+                    return
+                }
                 focusedRequirementId=id
                 screen = .canvas
                 showingRequirementSheet=false
@@ -1876,13 +1890,28 @@ struct ZenWorkspacePane: View {
 
     private func refreshCreatedRequirement(_ id:String) {
         guard let context=currentSemanticCreationContext,
-              pendingRequirementReadbacks[context] == id else { return }
+              pendingRequirementReadbacks[context] == id,
+              model.page == .requirement,
+              model.selectedRecord == nil || model.selectedRecord == id else { return }
+        let targetCheckoutId=model.checkoutId
+        let targetContextGeneration=model.projectContextGeneration
+        let targetPageRequestGeneration=model.planningPageRequestGeneration
+        let expectedPageRequestGeneration=targetPageRequestGeneration + 1
         model.error=nil
         saving=true
         Task {
             await model.loadPage()
             guard model.selectedProjectId == context.projectId,
-                  model.projectRepositoryId == context.repoId else {
+                  model.projectRepositoryId == context.repoId,
+                  model.checkoutId == targetCheckoutId,
+                  NativeWorkspace.semanticRecordCreationNavigationIsCurrent(
+                    targetPage:.requirement,currentPage:model.page,
+                    targetRecordId:nil,currentRecordId:model.selectedRecord,
+                    targetContextGeneration:targetContextGeneration,
+                    currentContextGeneration:model.projectContextGeneration,
+                    targetPlanningPageRequestGeneration:expectedPageRequestGeneration,
+                    currentPlanningPageRequestGeneration:model.planningPageRequestGeneration
+                  ) else {
                 saving=false
                 return
             }
@@ -1893,7 +1922,21 @@ struct ZenWorkspacePane: View {
             }
             await model.openRecord(record.id)
             guard model.selectedProjectId == context.projectId,
-                  model.projectRepositoryId == context.repoId else {
+                  model.projectRepositoryId == context.repoId,
+                  model.checkoutId == targetCheckoutId,
+                  NativeWorkspace.semanticRecordCreationNavigationIsCurrent(
+                    targetPage:.requirement,currentPage:model.page,
+                    targetRecordId:record.id,currentRecordId:model.selectedRecord,
+                    targetContextGeneration:targetContextGeneration,
+                    currentContextGeneration:model.projectContextGeneration,
+                    targetPlanningPageRequestGeneration:expectedPageRequestGeneration,
+                    currentPlanningPageRequestGeneration:model.planningPageRequestGeneration
+                  ) else {
+                saving=false
+                return
+            }
+            guard detailLoaded(for:record) else {
+                model.error="任务已创建并确认，但详情仍未读回。请稍后刷新核对，不要重复创建。"
                 saving=false
                 return
             }
@@ -1912,7 +1955,7 @@ struct ZenWorkspacePane: View {
             TextField("计划目标",text:$newPlanGoal,axis:.vertical).lineLimit(3...5)
                 .disabled(pendingCreatedPlanId != nil)
             if pendingCreatedPlanId != nil {
-                Text("Plan 已创建，等待列表确认。")
+                Text("Plan 已创建，等待详情确认。")
                     .font(.system(size:12)).foregroundStyle(.secondary)
                     .accessibilityIdentifier("zen.plan.create.pending-readback")
             }
@@ -1955,8 +1998,13 @@ struct ZenWorkspacePane: View {
             saving=false
             guard let id,model.selectedProjectId == context.projectId,
                   model.projectRepositoryId == context.repoId,model.page == .requirement else { return }
-            if Self.createdPlanRecord(id,in:model.records) != nil {
+            if let record=Self.createdPlanRecord(id,in:model.records) {
                 guard model.selectedRecord == id else { return }
+                guard detailLoaded(for:record) else {
+                    pendingPlanReadbacks[context]=id
+                    model.error="Plan 已创建，但详情尚未读回。请刷新列表核对，不要重复创建。"
+                    return
+                }
                 showingPlanSheet=false
                 newPlanGoal=""
                 newParentPlanId=nil
@@ -1969,13 +2017,28 @@ struct ZenWorkspacePane: View {
 
     private func refreshCreatedPlan(_ id:String) {
         guard let context=currentSemanticCreationContext,
-              pendingPlanReadbacks[context] == id else { return }
+              pendingPlanReadbacks[context] == id,
+              model.page == .requirement,
+              model.selectedRecord == nil || model.selectedRecord == id else { return }
+        let targetCheckoutId=model.checkoutId
+        let targetContextGeneration=model.projectContextGeneration
+        let targetPageRequestGeneration=model.planningPageRequestGeneration
+        let expectedPageRequestGeneration=targetPageRequestGeneration + 1
         model.error=nil
         saving=true
         Task {
             await model.loadPage()
             guard model.selectedProjectId == context.projectId,
-                  model.projectRepositoryId == context.repoId else {
+                  model.projectRepositoryId == context.repoId,
+                  model.checkoutId == targetCheckoutId,
+                  NativeWorkspace.semanticRecordCreationNavigationIsCurrent(
+                    targetPage:.requirement,currentPage:model.page,
+                    targetRecordId:nil,currentRecordId:model.selectedRecord,
+                    targetContextGeneration:targetContextGeneration,
+                    currentContextGeneration:model.projectContextGeneration,
+                    targetPlanningPageRequestGeneration:expectedPageRequestGeneration,
+                    currentPlanningPageRequestGeneration:model.planningPageRequestGeneration
+                  ) else {
                 saving=false
                 return
             }
@@ -1986,7 +2049,21 @@ struct ZenWorkspacePane: View {
             }
             await model.openRecord(record.id)
             guard model.selectedProjectId == context.projectId,
-                  model.projectRepositoryId == context.repoId else {
+                  model.projectRepositoryId == context.repoId,
+                  model.checkoutId == targetCheckoutId,
+                  NativeWorkspace.semanticRecordCreationNavigationIsCurrent(
+                    targetPage:.requirement,currentPage:model.page,
+                    targetRecordId:record.id,currentRecordId:model.selectedRecord,
+                    targetContextGeneration:targetContextGeneration,
+                    currentContextGeneration:model.projectContextGeneration,
+                    targetPlanningPageRequestGeneration:expectedPageRequestGeneration,
+                    currentPlanningPageRequestGeneration:model.planningPageRequestGeneration
+                  ) else {
+                saving=false
+                return
+            }
+            guard detailLoaded(for:record) else {
+                model.error="Plan 已创建并确认，但详情仍未读回。请稍后刷新核对，不要重复创建。"
                 saving=false
                 return
             }
