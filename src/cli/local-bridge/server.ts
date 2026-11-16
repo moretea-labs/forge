@@ -1,4 +1,4 @@
-import { randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { readFileSync } from "fs";
 import { createServer, type Server } from "http";
 import express, {
@@ -90,6 +90,8 @@ import { applyStuckStateMigration, inspectStuckControllerStates } from "../contr
 import { getToolPolicy } from '../../runtime/control-plane/tool-policy';
 import type { MultiRepositoryMcpToolContext } from "../../../adapters/mcp/multi-repository";
 import { createMcpToolContext as createControllerMcpToolContext } from "../../../adapters/mcp/server";
+import { callRhWorkWorkflowOperation } from "../../../adapters/mcp/runtime-gateway/work-workflow-operations";
+import { AGENTMAIL_EVENT_WORKFLOW_ID } from "../../runtime/workflows/first-party/agentmail-event";
 import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from "../../../adapters/mcp/auth";
 import { loadRepositoryRegistry, registerRepository, removeRepository, resolveRepositorySelection } from "../../runtime/repositories/registry";
 import { withRepositoryMutationExclusion, withRepositoryMutationExclusionAsync } from '../../runtime/resources/leases/store';
@@ -1053,6 +1055,100 @@ export async function startLocalBridgeServer(
           return;
         }
         response.json({ schemaVersion: 1, accepted: true, device: verified.principal.device, signatureVerified: verified.signatureVerified, job });
+        return;
+      }
+      if (intent === "workflow_event") {
+        if (!verified.signatureVerified) throw new Error("MOBILE_INTENT_SIGNATURE_REQUIRED: workflow events require an HMAC signature");
+        if (!mobileIntentHasScope(verified.principal.scopes, `workflow:${AGENTMAIL_EVENT_WORKFLOW_ID}:execute`)) {
+          throw new Error(`MOBILE_INTENT_SCOPE_DENIED: workflow:${AGENTMAIL_EVENT_WORKFLOW_ID}:execute is required`);
+        }
+        if (Object.keys(body).some((key) => !["intent", "event"].includes(key))) {
+          throw new Error("MOBILE_INTENT_EVENT_FIELDS_INVALID: only intent and event are accepted");
+        }
+        const event = body.event && typeof body.event === "object" && !Array.isArray(body.event)
+          ? body.event as Record<string, unknown>
+          : {};
+        const allowedEventFields = new Set(["source", "event_id", "observed_at", "rule_id", "provider_message_id", "sender_email"]);
+        const unknownFields = Object.keys(event).filter((key) => !allowedEventFields.has(key));
+        if (unknownFields.length > 0) throw new Error(`MOBILE_INTENT_EVENT_FIELD_UNSUPPORTED: ${unknownFields.sort().join(",")}`);
+        const source = queryString(event.source);
+        const eventId = queryString(event.event_id);
+        const observedAt = queryString(event.observed_at);
+        const ruleId = queryString(event.rule_id);
+        const providerMessageId = queryString(event.provider_message_id);
+        const senderEmail = queryString(event.sender_email);
+        if (event.sender_email !== undefined && !senderEmail) throw new Error("MOBILE_INTENT_EVENT_SENDER_INVALID");
+        if (source !== "agentmail") throw new Error("MOBILE_INTENT_EVENT_SOURCE_INVALID: only AgentMail events are accepted");
+        if (!eventId || eventId.length > 512) throw new Error("MOBILE_INTENT_EVENT_ID_INVALID");
+        if (!observedAt || !Number.isFinite(Date.parse(observedAt))) throw new Error("MOBILE_INTENT_EVENT_TIME_INVALID");
+        if (!ruleId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(ruleId)) {
+          throw new Error("MOBILE_INTENT_EVENT_RULE_INVALID");
+        }
+        if (!providerMessageId || providerMessageId.length > 1024) throw new Error("MOBILE_INTENT_EVENT_MESSAGE_INVALID");
+        if (senderEmail && senderEmail.length > 320) throw new Error("MOBILE_INTENT_EVENT_SENDER_INVALID");
+        const workflowInputs = {
+          source,
+          event_id: eventId,
+          observed_at: observedAt,
+          rule_id: ruleId,
+          provider_message_id: providerMessageId,
+          ...(senderEmail ? { sender_email: senderEmail } : {}),
+        };
+        const workflowRunId = `agentmail-${createHash("sha256").update(eventId).digest("hex").slice(0, 40)}`;
+        const dispatched = await callRhWorkWorkflowOperation(mcpExposureContext, repository, "workflow_execute", {
+          workflow_id: AGENTMAIL_EVENT_WORKFLOW_ID,
+          workflow_run_id: workflowRunId,
+          workflow_inputs: workflowInputs,
+        });
+        const dispatchResult = dispatched?.structuredContent as Record<string, unknown> | undefined;
+        const dispatchData = dispatchResult?.data && typeof dispatchResult.data === "object"
+          ? dispatchResult.data as Record<string, unknown>
+          : {};
+        const workflow = dispatchData.workflow && typeof dispatchData.workflow === "object"
+          ? dispatchData.workflow as Record<string, unknown>
+          : undefined;
+        const summary = typeof dispatchResult?.summary === "string" ? dispatchResult.summary : "WORKFLOW_EVENT_RECEIPT_FAILED";
+        if (workflow && typeof workflow.status === "string") {
+          response.status(202).json({
+            schemaVersion: 1,
+            accepted: true,
+            durable: true,
+            deduplicated: false,
+            device: verified.principal.device,
+            signatureVerified: verified.signatureVerified,
+            workflowId: AGENTMAIL_EVENT_WORKFLOW_ID,
+            workflowRunId,
+            eventId,
+            status: workflow.status,
+          });
+          return;
+        }
+        if (summary === "WORKFLOW_RUN_ALREADY_SUCCEEDED"
+          || summary.startsWith("WORKFLOW_RUN_RECONCILIATION_REQUIRED:")
+          || summary === "WORKFLOW_RUN_FAILED_RESTART_REQUIRES_NEW_RUN_ID") {
+          response.status(202).json({
+            schemaVersion: 1,
+            accepted: true,
+            durable: true,
+            deduplicated: true,
+            device: verified.principal.device,
+            signatureVerified: verified.signatureVerified,
+            workflowId: AGENTMAIL_EVENT_WORKFLOW_ID,
+            workflowRunId,
+            eventId,
+            status: summary,
+          });
+          return;
+        }
+        response.status(409).json({
+          schemaVersion: 1,
+          accepted: false,
+          durable: false,
+          error: summary,
+          workflowId: AGENTMAIL_EVENT_WORKFLOW_ID,
+          workflowRunId,
+          eventId,
+        });
         return;
       }
       if (intent !== "plugin_action") throw new Error(`MOBILE_INTENT_UNSUPPORTED: ${intent}`);
