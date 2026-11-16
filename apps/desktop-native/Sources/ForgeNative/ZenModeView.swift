@@ -278,6 +278,9 @@ struct ZenWorkspacePane: View {
         return items.filter {
             $0.title.localizedStandardContains(term)
             || $0.recordId.localizedStandardContains(term)
+            || ($0.assignee?.localizedStandardContains(term) ?? false)
+            || (taskStatusLabel($0.taskStatus)?.localizedStandardContains(term) ?? false)
+            || (priorityLabel($0.priority)?.localizedStandardContains(term) ?? false)
         }
     }
 
@@ -646,7 +649,7 @@ struct ZenWorkspacePane: View {
                             .keyboardShortcut("f",modifiers:.command)
                             .help("搜索需求（⌘F）")
                             .accessibilityLabel("搜索需求")
-                            TextField("搜索需求名称或 ID",text:$requirementQuery)
+                            TextField("搜索名称、ID、负责人、状态或优先级",text:$requirementQuery)
                                 .textFieldStyle(.plain)
                                 .focused($searchFocused)
                                 .accessibilityIdentifier("zen.board.search")

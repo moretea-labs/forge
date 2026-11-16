@@ -106,10 +106,11 @@ extension ZenModeTests {
         XCTAssertEqual(items.map(\.recordId),["REQ-normal","REQ-urgent","REQ-unset","REQ-high-a","REQ-low","REQ-high-b"])
     }
 
-    func testSearchMatchesRequirementTitleOrIdWithoutMutatingSource() {
+    func testSearchMatchesTaskTitleIdAssigneeStatusAndPriorityWithoutMutatingSource() {
         let items = [
             ForgeRecord(recordId:"REQ-CANVAS-1",title:"画布交互优化",state:"open",
-                        kind:.requirement,depth:0,requirementId:nil,parentPlanId:nil),
+                        kind:.requirement,depth:0,requirementId:nil,parentPlanId:nil,
+                        taskStatus:"active",priority:"urgent",assignee:"editor"),
             ForgeRecord(recordId:"REQ-OTHER-2",title:"原生项目管理",state:"open",
                         kind:.requirement,depth:0,requirementId:nil,parentPlanId:nil)
         ]
@@ -117,6 +118,12 @@ extension ZenModeTests {
                        ["REQ-CANVAS-1"])
         XCTAssertEqual(ZenWorkspacePane.filterRequirements(items,query:"  项目管理 ").map(\.recordId),
                        ["REQ-OTHER-2"])
+        XCTAssertEqual(ZenWorkspacePane.filterRequirements(items,query:"editor").map(\.recordId),
+                       ["REQ-CANVAS-1"])
+        XCTAssertEqual(ZenWorkspacePane.filterRequirements(items,query:"进行中").map(\.recordId),
+                       ["REQ-CANVAS-1"])
+        XCTAssertEqual(ZenWorkspacePane.filterRequirements(items,query:"紧急").map(\.recordId),
+                       ["REQ-CANVAS-1"])
         XCTAssertEqual(ZenWorkspacePane.filterRequirements(items,query:"无匹配").count,0)
         XCTAssertEqual(ZenWorkspacePane.filterRequirements(items,query:"  ").count,2)
         XCTAssertEqual(items.count,2)
