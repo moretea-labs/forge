@@ -76,6 +76,17 @@ extension ZenModeTests {
 }
 
 extension ZenModeTests {
+    func testCreatedPlanReadbackRequiresTheExactPlanRecord() {
+        let requirement=ForgeRecord(recordId:"PLAN-NEW",title:"same id requirement",state:"open",
+                                    kind:.requirement,depth:0,requirementId:nil,parentPlanId:nil)
+        let plan=ForgeRecord(recordId:"PLAN-NEW",title:"created plan",state:"open",
+                             kind:.plan,depth:1,requirementId:nil,parentPlanId:nil)
+        XCTAssertNil(ZenWorkspacePane.createdPlanRecord("PLAN-NEW",in:[requirement]))
+        XCTAssertNil(ZenWorkspacePane.createdPlanRecord("PLAN-MISSING",in:[plan]))
+        XCTAssertEqual(ZenWorkspacePane.createdPlanRecord("PLAN-NEW",in:[requirement,plan])?.title,
+                       "created plan")
+    }
+
     func testCreatedRequirementReadbackRequiresTheExactRequirementRecord() {
         let plan=ForgeRecord(recordId:"REQ-NEW",title:"same id plan",state:"open",
                              kind:.plan,depth:1,requirementId:nil,parentPlanId:nil)

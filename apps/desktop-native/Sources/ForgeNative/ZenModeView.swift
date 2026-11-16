@@ -172,7 +172,7 @@ struct ZenWorkspacePane: View {
         }
     }
 
-    private struct RequirementCreationContext: Hashable {
+    private struct SemanticCreationContext: Hashable {
         let projectId:String
         let repoId:String?
     }
@@ -236,21 +236,31 @@ struct ZenWorkspacePane: View {
     @State private var newDependencyIdDraft = ""
     @State private var newPlanGoal = ""
     @State private var newParentPlanId: String?
-    @State private var pendingRequirementReadbacks:[RequirementCreationContext:String] = [:]
+    @State private var pendingRequirementReadbacks:[SemanticCreationContext:String] = [:]
+    @State private var pendingPlanReadbacks:[SemanticCreationContext:String] = [:]
     @State private var saving = false
 
-    private var currentRequirementCreationContext:RequirementCreationContext? {
+    private var currentSemanticCreationContext:SemanticCreationContext? {
         guard let projectId=model.selectedProjectId else { return nil }
-        return RequirementCreationContext(projectId:projectId,repoId:model.projectRepositoryId)
+        return SemanticCreationContext(projectId:projectId,repoId:model.projectRepositoryId)
     }
 
     private var pendingCreatedRequirementId:String? {
-        guard let context=currentRequirementCreationContext else { return nil }
+        guard let context=currentSemanticCreationContext else { return nil }
         return pendingRequirementReadbacks[context]
+    }
+
+    private var pendingCreatedPlanId:String? {
+        guard let context=currentSemanticCreationContext else { return nil }
+        return pendingPlanReadbacks[context]
     }
 
     static func createdRequirementRecord(_ id:String,in records:[ForgeRecord]) -> ForgeRecord? {
         records.first(where:{$0.kind == .requirement && $0.recordId == id})
+    }
+
+    static func createdPlanRecord(_ id:String,in records:[ForgeRecord]) -> ForgeRecord? {
+        records.first(where:{$0.kind == .plan && $0.recordId == id})
     }
 
     private var requirements: [ForgeRecord] {
@@ -1710,7 +1720,7 @@ struct ZenWorkspacePane: View {
     }
 
     private func createRequirement() {
-        guard let context=currentRequirementCreationContext else {
+        guard let context=currentSemanticCreationContext else {
             model.error="请先选择项目。"
             return
         }
@@ -1737,7 +1747,7 @@ struct ZenWorkspacePane: View {
     }
 
     private func refreshCreatedRequirement(_ id:String) {
-        guard let context=currentRequirementCreationContext,
+        guard let context=currentSemanticCreationContext,
               pendingRequirementReadbacks[context] == id else { return }
         model.error=nil
         saving=true
@@ -1772,31 +1782,90 @@ struct ZenWorkspacePane: View {
             Text(newParentPlanId == nil ? "新增 Plan" : "新增子 Plan")
                 .font(.system(size:17,weight:.semibold))
             TextField("计划目标",text:$newPlanGoal,axis:.vertical).lineLimit(3...5)
+                .disabled(pendingCreatedPlanId != nil)
+            if pendingCreatedPlanId != nil {
+                Text("Plan 已创建，等待列表确认。")
+                    .font(.system(size:12)).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("zen.plan.create.pending-readback")
+            }
+            if let problem=model.error {
+                Text(problem).font(.system(size:11)).foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("zen.plan.create.error")
+            }
             HStack {
                 Spacer()
                 Button("取消") { showingPlanSheet=false }
-                Button(saving ? "保存中…" : "创建") {
-                    saving=true
-                    Task {
-                        let id=await model.createPlan(objective:newPlanGoal,
-                                                      requirementId:focusedRequirementId,
-                                                      parentPlanId:newParentPlanId)
-                        saving=false
-                        if let id {
-                            showingPlanSheet=false
-                            if let record=model.records.first(where:{
-                                $0.kind == .plan && $0.recordId == id
-                            }) {
-                                await model.openRecord(record.id)
-                            }
-                        }
+                    .disabled(saving)
+                Button(saving ? "处理中…" : pendingCreatedPlanId == nil ? "创建" : "刷新列表") {
+                    if let pendingId=pendingCreatedPlanId {
+                        refreshCreatedPlan(pendingId)
+                    } else {
+                        createPlan()
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(saving || newPlanGoal.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                .disabled(saving || (pendingCreatedPlanId == nil
+                    && newPlanGoal.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty))
             }
         }
         .padding(22).frame(width:400)
+        .accessibilityIdentifier("zen.plan.create")
+    }
+
+    private func createPlan() {
+        guard let context=currentSemanticCreationContext else {
+            model.error="请先选择项目。"
+            return
+        }
+        model.error=nil
+        saving=true
+        Task {
+            let id=await model.createPlan(objective:newPlanGoal,
+                                          requirementId:focusedRequirementId,
+                                          parentPlanId:newParentPlanId)
+            saving=false
+            guard let id,model.selectedProjectId == context.projectId,
+                  model.projectRepositoryId == context.repoId else { return }
+            if Self.createdPlanRecord(id,in:model.records) != nil {
+                showingPlanSheet=false
+                newPlanGoal=""
+                newParentPlanId=nil
+            } else {
+                pendingPlanReadbacks[context]=id
+            }
+        }
+    }
+
+    private func refreshCreatedPlan(_ id:String) {
+        guard let context=currentSemanticCreationContext,
+              pendingPlanReadbacks[context] == id else { return }
+        model.error=nil
+        saving=true
+        Task {
+            await model.loadPage()
+            guard model.selectedProjectId == context.projectId,
+                  model.projectRepositoryId == context.repoId else {
+                saving=false
+                return
+            }
+            guard let record=Self.createdPlanRecord(id,in:model.records) else {
+                model.error="Plan 已创建并确认，但项目计划列表仍未读回该记录。请稍后刷新，不要重复创建。"
+                saving=false
+                return
+            }
+            await model.openRecord(record.id)
+            guard model.selectedProjectId == context.projectId,
+                  model.projectRepositoryId == context.repoId else {
+                saving=false
+                return
+            }
+            pendingPlanReadbacks.removeValue(forKey:context)
+            showingPlanSheet=false
+            newPlanGoal=""
+            newParentPlanId=nil
+            saving=false
+        }
     }
 }
 
