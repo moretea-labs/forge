@@ -2483,6 +2483,7 @@ struct ZenProjectDirectorySheet: View {
     @State private var creating = false
     @State private var draftName = ""
     @State private var newProjectRepositoryId: String?
+    @State private var detailProjectId: String?
     @State private var saving = false
 
     private var availableRepositories: [ForgeProject] {
@@ -2509,6 +2510,22 @@ struct ZenProjectDirectorySheet: View {
     }
 
     var body: some View {
+        Group {
+            if let detailProjectId {
+                ZenProjectDetailPane(model:model,projectId:detailProjectId) {
+                    self.detailProjectId=nil
+                }
+                .id(detailProjectId)
+            } else {
+                projectDirectory
+            }
+        }
+        .frame(minWidth:540,minHeight:470)
+        .task { await model.refreshSemanticProjects() }
+        .accessibilityIdentifier("zen.projects.directory")
+    }
+
+    private var projectDirectory: some View {
         VStack(alignment:.leading,spacing:12) {
             HStack {
                 Text("项目").font(.system(size:19,weight:.semibold))
@@ -2631,6 +2648,10 @@ struct ZenProjectDirectorySheet: View {
                         Spacer(minLength:0)
                         Menu {
                             Button {
+                                detailProjectId=project.projectId
+                            } label: { Label("查看详情",systemImage:"info.circle") }
+                            Divider()
+                            Button {
                                 editingProjectId = project.projectId
                                 creating = false
                                 draftName = project.displayName
@@ -2707,9 +2728,6 @@ struct ZenProjectDirectorySheet: View {
             }
         }
         .padding(22)
-        .frame(minWidth:540,minHeight:470)
-        .task { await model.refreshSemanticProjects() }
-        .accessibilityIdentifier("zen.projects.directory")
     }
 
     private func save() {
@@ -2747,6 +2765,158 @@ struct ZenProjectDirectorySheet: View {
             _ = await model.reviseSemanticProject(
                 projectId:project.projectId,expectedRevision:project.revision,status:status)
             saving = false
+        }
+    }
+}
+
+
+struct ZenProjectDetailPane: View {
+    @ObservedObject var model: NativeWorkspace
+    let projectId: String
+    let onBack: () -> Void
+    @State private var detail: ForgeSemanticProjectDetail?
+    @State private var loading = false
+    @State private var loadingMore = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment:.leading,spacing:12) {
+            HStack {
+                Button(action:onBack) { Label("返回项目",systemImage:"chevron.left") }.buttonStyle(.plain)
+                Spacer()
+                Button { Task { await load(reset:true) } } label: { Label("刷新",systemImage:"arrow.clockwise") }
+                    .disabled(loading || loadingMore)
+            }
+            if loading { ProgressView().controlSize(.small) }
+            if let detail {
+                ScrollView {
+                    VStack(alignment:.leading,spacing:12) {
+                        HStack {
+                            Text(detail.project.displayName).font(.system(size:18,weight:.semibold))
+                            Spacer()
+                            Text("v\(detail.project.revision)").font(.system(size:11,design:.monospaced)).foregroundStyle(.secondary)
+                        }
+                        Text(projectId).font(.system(size:10,design:.monospaced)).foregroundStyle(.secondary)
+                        Text(placementSummary(detail.project)).font(.system(size:11)).foregroundStyle(.secondary)
+                        Divider()
+                        Text("任务概况").font(.system(size:12,weight:.semibold))
+                        HStack(spacing:14) {
+                            Text("未完成 \(detail.taskStatusCounts["open"] ?? 0)")
+                            Text("已完成 \(detail.taskStatusCounts["completed"] ?? 0)")
+                            Text("已取消 \(detail.taskStatusCounts["cancelled"] ?? 0)")
+                            Text("阻塞 \(detail.blockedTaskCount)")
+                        }
+                        .font(.system(size:10)).foregroundStyle(.secondary)
+                        Text("优先级 · 紧急 \(detail.taskPriorityCounts["urgent"] ?? 0) · 高 \(detail.taskPriorityCounts["high"] ?? 0) · 普通 \(detail.taskPriorityCounts["normal"] ?? 0) · 低 \(detail.taskPriorityCounts["low"] ?? 0)")
+                            .font(.system(size:10)).foregroundStyle(.secondary)
+                        Divider()
+                        HStack {
+                            Text("任务").font(.system(size:12,weight:.semibold))
+                            Spacer()
+                            Text("\(detail.requirements.count) / \(detail.requirementCount)").font(.system(size:10,design:.monospaced)).foregroundStyle(.secondary)
+                        }
+                        ForEach(detail.requirements) { task in
+                            VStack(alignment:.leading,spacing:4) {
+                                HStack {
+                                    Text(task.title).font(.system(size:12,weight:.medium)).lineLimit(2)
+                                    Spacer()
+                                    Text(taskStatusLabel(task.status)).font(.system(size:10)).foregroundStyle(.secondary)
+                                }
+                                HStack(spacing:7) {
+                                    Text(task.requirementId).font(.system(size:9,design:.monospaced))
+                                    if let repoId=task.repoId { Text(model.projects.first(where:{$0.repoId == repoId})?.label ?? repoId) }
+                                    if let priority=task.priority { Text(taskPriorityLabel(priority)) }
+                                    if let assignee=task.assignee,!assignee.isEmpty { Text(assignee) }
+                                }
+                                .font(.system(size:9)).foregroundStyle(.secondary)
+                                if !task.progressSummary.isEmpty {
+                                    Text(task.progressSummary).font(.system(size:10)).foregroundStyle(.secondary).lineLimit(2)
+                                }
+                                Text("剩余 \(task.remainingWorkCount) · 证据 \(task.acceptedEvidenceCount) · 依赖 \(task.dependencyCount) · 计划 \(task.linkedPlanCount)")
+                                    .font(.system(size:9)).foregroundStyle(.tertiary)
+                            }
+                            .padding(.vertical,7)
+                            .overlay(alignment:.bottom) { Rectangle().fill(Color.primary.opacity(0.055)).frame(height:1) }
+                            .accessibilityIdentifier("zen.projects.detail.task.\(task.requirementId)")
+                        }
+                        if loadingMore { ProgressView("正在读取更多任务…").controlSize(.small) }
+                        if detail.hasMore {
+                            Button("加载更多任务") { Task { await load(reset:false) } }
+                                .disabled(loading || loadingMore)
+                                .accessibilityIdentifier("zen.projects.detail.load-more")
+                        }
+                        if let error { Text(error).font(.system(size:10)).foregroundStyle(.orange) }
+                        Divider()
+                        Text("项目历史").font(.system(size:12,weight:.semibold))
+                        ForEach(detail.revisionHistory) { record in
+                            HStack(spacing:8) {
+                                Text("v\(record.revision)").font(.system(size:10,design:.monospaced))
+                                Text(actionLabel(record.action)).font(.system(size:10))
+                                Spacer()
+                                Text(record.recordedAt).font(.system(size:9,design:.monospaced)).foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                    .frame(maxWidth:.infinity,alignment:.leading)
+                }
+            } else if let error {
+                Text(error).font(.system(size:11)).foregroundStyle(.orange).textSelection(.enabled)
+                Button("重试") { Task { await load(reset:true) } }.disabled(loading)
+            }
+        }
+        .padding(22)
+        .frame(minWidth:540,minHeight:470)
+        .task { await load(reset:true) }
+        .accessibilityIdentifier("zen.projects.detail")
+    }
+
+    private func load(reset:Bool) async {
+        guard !loading && !loadingMore else { return }
+        let offset=reset ? 0 : (detail?.requirements.count ?? 0)
+        if reset { loading=true } else { loadingMore=true }
+        error=nil
+        defer { loading=false; loadingMore=false }
+        do {
+            let page=try await model.readSemanticProjectDetail(projectId:projectId,offset:offset)
+            guard !Task.isCancelled else { return }
+            if reset || detail == nil { detail=page }
+            else if let current=detail { detail=current.appending(page) }
+        } catch {
+            guard !Task.isCancelled else { return }
+            self.error=error.localizedDescription
+        }
+    }
+
+    private func placementSummary(_ project:ForgeSemanticProject) -> String {
+        let names=project.repositoryIds.map { id in model.projects.first(where:{$0.repoId == id})?.label ?? id }
+        return names.isEmpty ? "仅项目级" : "关联仓库 · " + names.joined(separator:"、")
+    }
+
+    private func taskStatusLabel(_ status:String) -> String {
+        switch status {
+        case "open": return "未完成"
+        case "completed", "done": return "已完成"
+        case "cancelled": return "已取消"
+        default: return status
+        }
+    }
+
+    private func taskPriorityLabel(_ priority:String) -> String {
+        switch priority {
+        case "urgent": return "紧急"
+        case "high": return "高"
+        case "normal": return "普通"
+        case "low": return "低"
+        default: return priority
+        }
+    }
+
+    private func actionLabel(_ action:String) -> String {
+        switch action {
+        case "project_semantic_create": return "创建项目"
+        case "project_semantic_onboard": return "关联仓库"
+        case "project_semantic_write": return "更新项目"
+        default: return action
         }
     }
 }

@@ -31,6 +31,7 @@ struct ForgeSemanticProjectPlacement: Decodable, Equatable {
 
 struct ForgeSemanticProject: Identifiable, Decodable, Equatable {
     let projectId: String
+    let workspaceId: String?
     let displayName: String
     let status: String
     let revision: Int
@@ -38,6 +39,64 @@ struct ForgeSemanticProject: Identifiable, Decodable, Equatable {
     let requirementCount: Int?
     var id: String { projectId }
     var repositoryIds: [String] { placements?.map(\.repositoryId) ?? [] }
+}
+
+struct ForgeProjectRequirementSummary: Decodable, Identifiable, Equatable {
+    let requirementId: String
+    let revision: Int
+    let projectId: String
+    let repoId: String?
+    let title: String
+    let status: String
+    let priority: String?
+    let assignee: String?
+    let progressSummary: String
+    let remainingWorkCount: Int
+    let acceptedEvidenceCount: Int
+    let dependencyCount: Int
+    let linkedPlanCount: Int
+    let blockingDependencyIds: [String]
+    let updatedAt: String
+    var id: String { requirementId }
+}
+
+struct ForgeProjectRevisionRecord: Decodable, Identifiable, Equatable {
+    let revision: Int
+    let recordedAt: String
+    let action: String
+    var id: Int { revision }
+}
+
+struct ForgeSemanticProjectDetail: Decodable, Equatable {
+    let project: ForgeSemanticProject
+    let requirementCount: Int
+    let taskStatusCounts: [String: Int]
+    let taskPriorityCounts: [String: Int]
+    let blockedTaskCount: Int
+    let requirements: [ForgeProjectRequirementSummary]
+    let limit: Int
+    let offset: Int
+    let hasMore: Bool
+    let requirementsTruncated: Bool
+    let revisionHistory: [ForgeProjectRevisionRecord]
+
+    func appending(_ page: ForgeSemanticProjectDetail) -> ForgeSemanticProjectDetail {
+        var seen = Set(requirements.map(\.requirementId))
+        let newRows = page.requirements.filter { seen.insert($0.requirementId).inserted }
+        return ForgeSemanticProjectDetail(
+            project: page.project,
+            requirementCount: page.requirementCount,
+            taskStatusCounts: page.taskStatusCounts,
+            taskPriorityCounts: page.taskPriorityCounts,
+            blockedTaskCount: page.blockedTaskCount,
+            requirements: requirements + newRows,
+            limit: page.limit,
+            offset: page.offset,
+            hasMore: page.hasMore,
+            requirementsTruncated: page.requirementsTruncated,
+            revisionHistory: page.revisionHistory
+        )
+    }
 }
 
 struct NativeWorkspaceStore: Codable {
@@ -1819,6 +1878,39 @@ final class NativeWorkspace: ObservableObject {
         }
         let bytes = try JSONSerialization.data(withJSONObject:row)
         return try JSONDecoder().decode(ForgeSemanticProject.self,from:bytes)
+    }
+
+    nonisolated static func decodeSemanticProjectDetail(_ result:[String:Any]) throws -> ForgeSemanticProjectDetail {
+        let data = result["data"] as? [String:Any] ?? result
+        guard data["project"] as? [String:Any] != nil,
+              data["requirements"] as? [[String:Any]] != nil,
+              data["revisionHistory"] as? [[String:Any]] != nil else {
+            throw ForgeBridgeError.invalidResponse
+        }
+        let bytes = try JSONSerialization.data(withJSONObject:data)
+        return try JSONDecoder().decode(ForgeSemanticProjectDetail.self,from:bytes)
+    }
+
+    func readSemanticProjectDetail(projectId:String,offset:Int = 0) async throws -> ForgeSemanticProjectDetail {
+        let normalizedId=projectId.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !normalizedId.isEmpty,
+              let project=semanticProjects.first(where:{$0.projectId == normalizedId}) else {
+            throw ForgeBridgeError.invalidResponse
+        }
+        var arguments:[String:Any]=[
+            "projectId":normalizedId,
+            "detailLevel":"detail",
+            "limit":100,
+            "offset":max(0,min(offset,100_000))
+        ]
+        if let workspaceId=project.workspaceId { arguments["workspaceId"]=workspaceId }
+        let result=try await ForgeBridge.request("project_get",arguments)
+        let detail=try Self.decodeSemanticProjectDetail(result)
+        guard detail.project.projectId == normalizedId,
+              project.workspaceId == nil || detail.project.workspaceId == project.workspaceId else {
+            throw ForgeBridgeError.invalidResponse
+        }
+        return detail
     }
 
     func beginSemanticProjectListRefresh() -> Int {

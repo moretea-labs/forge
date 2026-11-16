@@ -1295,6 +1295,83 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
 
+    func testSemanticProjectDetailParsesTaskSummaryAndRevisionHistory() throws {
+        let detail=try NativeWorkspace.decodeSemanticProjectDetail([
+            "data":[
+                "project":[
+                    "projectId":"PROJECT-a","workspaceId":"workspace-a","displayName":"Alpha",
+                    "status":"active","revision":3,"updatedAt":"2026-11-17T00:00:00Z",
+                    "placements":[["repositoryId":"repo-a"]]
+                ],
+                "requirementCount":2,
+                "taskStatusCounts":["open":1,"completed":1,"cancelled":0],
+                "taskPriorityCounts":["urgent":1,"high":0,"normal":1,"low":0,"unset":0],
+                "blockedTaskCount":1,
+                "requirements":[[
+                    "requirementId":"REQ-a","revision":4,"projectId":"PROJECT-a","repoId":"repo-a",
+                    "title":"Task A","status":"open","priority":"urgent","assignee":"owner",
+                    "progressSummary":"Implementation in progress","remainingWorkCount":1,
+                    "acceptedEvidenceCount":2,"dependencyCount":1,"linkedPlanCount":1,
+                    "blockingDependencyIds":["REQ-pre"],"updatedAt":"2026-11-17T00:00:00Z"
+                ]],
+                "limit":100,"offset":0,"hasMore":true,"requirementsTruncated":true,
+                "revisionHistory":[[
+                    "projectId":"PROJECT-a","revision":3,"recordedAt":"2026-11-17T00:00:00Z",
+                    "action":"project_semantic_write"
+                ]]
+            ]
+        ])
+
+        XCTAssertEqual(detail.project.projectId,"PROJECT-a")
+        XCTAssertEqual(detail.project.workspaceId,"workspace-a")
+        XCTAssertEqual(detail.project.repositoryIds,["repo-a"])
+        XCTAssertEqual(detail.requirementCount,2)
+        XCTAssertEqual(detail.taskStatusCounts["open"],1)
+        XCTAssertEqual(detail.blockedTaskCount,1)
+        XCTAssertEqual(detail.requirements.first?.requirementId,"REQ-a")
+        XCTAssertEqual(detail.requirements.first?.blockingDependencyIds,["REQ-pre"])
+        XCTAssertEqual(detail.revisionHistory.first?.revision,3)
+        XCTAssertEqual(detail.revisionHistory.first?.action,"project_semantic_write")
+    }
+
+    func testSemanticProjectDetailPagingAppendsUniqueRequirements() throws {
+        func page(_ offset:Int,_ rows:[[String:Any]],hasMore:Bool) throws -> ForgeSemanticProjectDetail {
+            try NativeWorkspace.decodeSemanticProjectDetail([
+                "data":[
+                    "project":[
+                        "projectId":"PROJECT-a","workspaceId":"workspace-a","displayName":"Alpha",
+                        "status":"active","revision":3,"placements":[]
+                    ],
+                    "requirementCount":2,
+                    "taskStatusCounts":["open":2,"completed":0,"cancelled":0],
+                    "taskPriorityCounts":["urgent":0,"high":0,"normal":2,"low":0,"unset":0],
+                    "blockedTaskCount":0,
+                    "requirements":rows,
+                    "limit":100,"offset":offset,"hasMore":hasMore,"requirementsTruncated":hasMore,
+                    "revisionHistory":[[
+                        "revision":3,"recordedAt":"2026-11-17T00:00:00Z","action":"project_semantic_create"
+                    ]]
+                ]
+            ])
+        }
+        func row(_ id:String) -> [String:Any] {
+            [
+                "requirementId":id,"revision":1,"projectId":"PROJECT-a","title":id,"status":"open",
+                "progressSummary":"","remainingWorkCount":0,"acceptedEvidenceCount":0,
+                "dependencyCount":0,"linkedPlanCount":0,"blockingDependencyIds":[],
+                "updatedAt":"2026-11-17T00:00:00Z"
+            ]
+        }
+
+        let first=try page(0,[row("REQ-a")],hasMore:true)
+        let second=try page(1,[row("REQ-a"),row("REQ-b")],hasMore:false)
+        let merged=first.appending(second)
+
+        XCTAssertEqual(merged.requirements.map(\.requirementId),["REQ-a","REQ-b"])
+        XCTAssertEqual(merged.offset,1)
+        XCTAssertFalse(merged.hasMore)
+    }
+
     func testRequirementDetailDistinguishesUnavailableAndEmptyDownstreamProjection() {
         let requirement = ["requirementId":"REQ-prerequisite","revision":3,"title":"Prerequisite"] as [String:Any]
         let unavailable = NativeWorkspace.requirementDetail([
