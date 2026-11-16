@@ -186,16 +186,27 @@ export function repositoryCheckoutRootMatches(record: RepositoryRecord, root: st
   return Boolean(repositoryCommon && checkoutCommon && comparablePath(repositoryCommon) === comparablePath(checkoutCommon));
 }
 
-/** Exclude unrelated primary .git directories without spawning Git. This is
+/** Exclude unrelated on-disk Git directories without spawning Git. This is
  * only a negative filter: matching/unknown layouts still require Git proof.
  */
 function mayShareGitCommonDirectory(root: string, comparableCommon: string): boolean {
-  // Git environment overrides supersede on-disk layout.
   if (process.env.GIT_DIR !== undefined || process.env.GIT_COMMON_DIR !== undefined) return true;
   try {
-    const marker = join(root, '.git');
-    if (!statSync(marker).isDirectory() || existsSync(join(marker, 'commondir'))) return true;
-    return comparablePath(realpathSync(marker)) === comparableCommon;
+    let directory = join(root, '.git');
+    const marker = statSync(directory);
+    if (!marker.isDirectory()) {
+      if (!marker.isFile()) return true;
+      const link = /^gitdir: ([^\r\n]+)\r?\n?$/.exec(readFileSync(directory, 'utf8'))?.[1];
+      if (!link || link !== link.trim()) return true;
+      directory = resolve(root, link);
+    }
+    const commonFile = join(directory, 'commondir');
+    if (existsSync(commonFile)) {
+      const common = readFileSync(commonFile, 'utf8').replace(/\r?\n$/, '');
+      if (!common || common !== common.trim() || /[\r\n]/.test(common)) return true;
+      directory = resolve(directory, common);
+    }
+    return comparablePath(realpathSync(directory)) === comparableCommon;
   } catch {
     return true;
   }

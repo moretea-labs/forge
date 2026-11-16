@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { spawnSync } from "child_process";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, relative, resolve } from "path";
 import { findRegisteredRepositoryByCheckoutRoot, getRepository, listRepositories, registerRepository } from "../../src/runtime/repositories/registry";
 
 function git(root: string, ...args: string[]): void {
@@ -37,8 +37,15 @@ test("linked worktree registered before primary keeps one canonical Repository",
     expect(record.checkouts).toHaveLength(2);
     expect(record.checkouts.some((item) => item.checkoutId === first.activeCheckoutId && item.worktree)).toBe(true);
     expect(registerRepository({ path: linked, controllerHome }).repoId).toBe(first.repoId);
-    const unregisteredLinked = join(sandbox, "unregistered-linked");
+    const unregisteredLinked = join(sandbox, "unregistered linked");
     git(primary, "worktree", "add", "--detach", unregisteredLinked, "HEAD");
+    expect(findRegisteredRepositoryByCheckoutRoot(unregisteredLinked, controllerHome)?.repoId).toBe(first.repoId);
+    const gitFile = join(unregisteredLinked, '.git');
+    const target = readFileSync(gitFile, 'utf8').trim().slice('gitdir: '.length);
+    writeFileSync(gitFile, `gitdir: ${relative(realpathSync(unregisteredLinked), resolve(realpathSync(unregisteredLinked), target))}\n`);
+    expect(findRegisteredRepositoryByCheckoutRoot(unregisteredLinked, controllerHome)?.repoId).toBe(first.repoId);
+    // Unfamiliar whitespace keeps the authoritative Git fallback.
+    writeFileSync(gitFile, `${readFileSync(gitFile, 'utf8')}\n`);
     expect(findRegisteredRepositoryByCheckoutRoot(unregisteredLinked, controllerHome)?.repoId).toBe(first.repoId);
     expect(listRepositories(controllerHome).filter((item) => item.repoId === first.repoId)).toHaveLength(1);
   } finally {
@@ -74,6 +81,9 @@ test("independent clones sharing the same remote remain separate Repositories", 
     expect(getRepository(repositoryB.repoId, controllerHome).canonicalRoot).toBe(realpathSync(cloneB));
     expect(listRepositories(controllerHome)).toHaveLength(2);
 
+    const unrelatedLinked = join(sandbox, "linked-clone-a");
+    git(cloneA, "worktree", "add", "--detach", unrelatedLinked, "HEAD");
+    registerRepository({ path: unrelatedLinked, controllerHome });
     const unrelated = join(sandbox, "unregistered");
     mkdirSync(unrelated);
     git(unrelated, "init", "-q", "-b", "main");
