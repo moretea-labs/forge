@@ -26,10 +26,10 @@ enum ZenBoardBucket: Int, CaseIterable {
         requirementState: String, taskStatus: String? = nil,
         runtimeActive: Bool, hasPlan: Bool = false
     ) -> Self {
-        if requirementState == "completed" || requirementState == "done" || taskStatus == "done" {
-            return .done
-        }
-        if requirementState == "cancelled" || taskStatus == "cancelled" { return .cancelled }
+        if requirementState == "completed" || requirementState == "done" { return .done }
+        if requirementState == "cancelled" { return .cancelled }
+        if taskStatus == "done" { return .done }
+        if taskStatus == "cancelled" { return .cancelled }
         if runtimeActive { return .running }
         switch taskStatus {
         case "planned": return .planned
@@ -39,6 +39,12 @@ enum ZenBoardBucket: Int, CaseIterable {
         }
         if hasPlan { return .planned }
         return .todo
+    }
+
+    static func completedCount(_ requirements:[ForgeRecord]) -> Int {
+        requirements.filter {
+            classify(requirementState:$0.state,taskStatus:$0.taskStatus,runtimeActive:false) == .done
+        }.count
     }
 }
 
@@ -525,7 +531,7 @@ struct ZenWorkspacePane: View {
             } else {
                 HStack(spacing:12) {
                     Text("\(requirements.count) 个 Requirement")
-                    Text("\(requirements.filter{$0.state == "completed"}.count) 已完成")
+                    Text("\(ZenBoardBucket.completedCount(requirements)) 已完成")
                     if !model.relevantUserRequests.isEmpty {
                         Button("\(model.relevantUserRequests.count) 项待决策") { onOpenInbox() }
                             .buttonStyle(.plain)

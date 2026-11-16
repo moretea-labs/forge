@@ -194,3 +194,16 @@ extension ZenModeTests {
             for:record("unknown",kind:.requirement)))
     }
 }
+
+
+extension ZenModeTests {
+    func testBoardCompletionCountUsesSameDoneProjectionAsColumns() {
+        let record:(String,String,String?) -> ForgeRecord = { id,state,status in
+            ForgeRecord(recordId:id,title:id,state:state,kind:.requirement,depth:0,
+                        requirementId:nil,parentPlanId:nil,taskStatus:status)
+        }
+        let items=[record("completed","completed","cancelled"),record("task-done","open","done"),
+                   record("active","open","active"),record("cancelled","cancelled","done")]
+        XCTAssertEqual(ZenBoardBucket.completedCount(items),2)
+    }
+}
