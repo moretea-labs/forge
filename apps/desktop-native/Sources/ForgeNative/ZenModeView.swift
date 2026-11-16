@@ -1861,12 +1861,14 @@ struct ZenWorkspacePane: View {
             )
             saving=false
             guard let id,model.selectedProjectId == context.projectId,
-                  model.projectRepositoryId == context.repoId else { return }
+                  model.projectRepositoryId == context.repoId,model.page == .requirement else { return }
             if Self.createdRequirementRecord(id,in:model.records) != nil {
+                guard model.selectedRecord == id else { return }
                 focusedRequirementId=id
                 screen = .canvas
                 showingRequirementSheet=false
             } else {
+                guard model.selectedRecord == nil else { return }
                 pendingRequirementReadbacks[context]=id
             }
         }
@@ -1952,12 +1954,14 @@ struct ZenWorkspacePane: View {
                                           parentPlanId:newParentPlanId)
             saving=false
             guard let id,model.selectedProjectId == context.projectId,
-                  model.projectRepositoryId == context.repoId else { return }
+                  model.projectRepositoryId == context.repoId,model.page == .requirement else { return }
             if Self.createdPlanRecord(id,in:model.records) != nil {
+                guard model.selectedRecord == id else { return }
                 showingPlanSheet=false
                 newPlanGoal=""
                 newParentPlanId=nil
             } else {
+                guard model.selectedRecord == nil else { return }
                 pendingPlanReadbacks[context]=id
             }
         }

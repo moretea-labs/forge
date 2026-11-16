@@ -4061,6 +4061,18 @@ final class NativeWorkspace: ObservableObject {
         return nil
     }
 
+    nonisolated static func semanticRecordCreationNavigationIsCurrent(
+        targetPage:NativePage,currentPage:NativePage,
+        targetRecordId:String?,currentRecordId:String?,
+        targetContextGeneration:Int,currentContextGeneration:Int,
+        targetPlanningPageRequestGeneration:Int,currentPlanningPageRequestGeneration:Int
+    ) -> Bool {
+        (targetPage == .requirement || targetPage == .plan)
+            && targetPage == currentPage && targetRecordId == currentRecordId
+            && targetContextGeneration == currentContextGeneration
+            && targetPlanningPageRequestGeneration == currentPlanningPageRequestGeneration
+    }
+
     func createRequirement(
         title: String, outcome: String, acceptanceCriteria: [String],
         taskStatus: String? = nil, priority: String? = nil, assignee: String? = nil,
@@ -4068,6 +4080,11 @@ final class NativeWorkspace: ObservableObject {
     ) async -> String? {
         guard let projectId=requireWritableSemanticProjectId() else { return nil }
         let targetRepoId=projectRepositoryId
+        let targetPage=page
+        let targetCheckoutId=checkoutId
+        let targetRecordId=selectedRecord
+        let targetContextGeneration=projectContextGeneration
+        let targetPlanningPageRequestGeneration=planningPageRequestGeneration
         let cleanTitle=title.trimmingCharacters(in:.whitespacesAndNewlines)
         let cleanOutcome=outcome.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !cleanTitle.isEmpty,!cleanOutcome.isEmpty else {
@@ -4087,9 +4104,21 @@ final class NativeWorkspace: ObservableObject {
             if let assignee { arguments["assignee"]=assignee }
             if !dependencyRequirementIds.isEmpty { arguments["dependencyRequirementIds"]=dependencyRequirementIds }
             _=try await ForgeBridge.request("create_requirement",arguments)
-            guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId else { return nil }
+            guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId,
+                  self.checkoutId == targetCheckoutId,
+                  Self.semanticRecordCreationNavigationIsCurrent(
+                    targetPage:targetPage,currentPage:page,
+                    targetRecordId:targetRecordId,currentRecordId:selectedRecord,
+                    targetContextGeneration:targetContextGeneration,
+                    currentContextGeneration:projectContextGeneration,
+                    targetPlanningPageRequestGeneration:targetPlanningPageRequestGeneration,
+                    currentPlanningPageRequestGeneration:planningPageRequestGeneration
+                  ) else { return id }
             page = .requirement
             await loadPage()
+            guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId,
+                  self.checkoutId == targetCheckoutId,self.page == .requirement,
+                  self.projectContextGeneration == targetContextGeneration else { return id }
             guard let record=records.first(where:{$0.kind == .requirement && $0.recordId == id}) else {
                 self.error="Requirement 已创建并收到确认，但项目任务列表尚未回读该记录。请刷新核对，不要重复创建。"
                 return id
@@ -4105,6 +4134,11 @@ final class NativeWorkspace: ObservableObject {
     func createPlan(objective:String,requirementId:String?,parentPlanId:String?) async -> String? {
         guard let projectId=requireWritableSemanticProjectId() else { return nil }
         let targetRepoId=projectRepositoryId
+        let targetPage=page
+        let targetCheckoutId=checkoutId
+        let targetRecordId=selectedRecord
+        let targetContextGeneration=projectContextGeneration
+        let targetPlanningPageRequestGeneration=planningPageRequestGeneration
         let cleanObjective=objective.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !cleanObjective.isEmpty else { error="Plan 目标不能为空。"; return nil }
         let id=Self.semanticRecordId(prefix:"PLAN")
@@ -4114,9 +4148,21 @@ final class NativeWorkspace: ObservableObject {
         if let parentPlanId,!parentPlanId.isEmpty { arguments["parentPlanId"]=parentPlanId }
         do {
             _=try await ForgeBridge.request("create_plan",arguments)
-            guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId else { return nil }
+            guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId,
+                  self.checkoutId == targetCheckoutId,
+                  Self.semanticRecordCreationNavigationIsCurrent(
+                    targetPage:targetPage,currentPage:page,
+                    targetRecordId:targetRecordId,currentRecordId:selectedRecord,
+                    targetContextGeneration:targetContextGeneration,
+                    currentContextGeneration:projectContextGeneration,
+                    targetPlanningPageRequestGeneration:targetPlanningPageRequestGeneration,
+                    currentPlanningPageRequestGeneration:planningPageRequestGeneration
+                  ) else { return id }
             page = .requirement
             await loadPage()
+            guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId,
+                  self.checkoutId == targetCheckoutId,self.page == .requirement,
+                  self.projectContextGeneration == targetContextGeneration else { return id }
             guard let record=records.first(where:{$0.kind == .plan && $0.recordId == id}) else {
                 self.error="Plan 已创建并收到确认，但项目计划列表尚未回读该记录。请刷新核对，不要重复创建。"
                 return id

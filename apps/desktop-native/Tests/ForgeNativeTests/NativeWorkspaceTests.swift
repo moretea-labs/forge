@@ -1446,6 +1446,39 @@ final class NativeWorkspaceTests: XCTestCase {
         ))
     }
 
+    func testSemanticRecordCreationNavigationRequiresOriginalPageSelectionAndContext() {
+        XCTAssertTrue(NativeWorkspace.semanticRecordCreationNavigationIsCurrent(
+            targetPage:.plan,currentPage:.plan,targetRecordId:"PLAN-a",currentRecordId:"PLAN-a",
+            targetContextGeneration:4,currentContextGeneration:4,
+            targetPlanningPageRequestGeneration:2,currentPlanningPageRequestGeneration:2
+        ))
+        XCTAssertFalse(NativeWorkspace.semanticRecordCreationNavigationIsCurrent(
+            targetPage:.plan,currentPage:.agent,targetRecordId:"PLAN-a",currentRecordId:"PLAN-a",
+            targetContextGeneration:4,currentContextGeneration:4,
+            targetPlanningPageRequestGeneration:2,currentPlanningPageRequestGeneration:2
+        ))
+        XCTAssertFalse(NativeWorkspace.semanticRecordCreationNavigationIsCurrent(
+            targetPage:.plan,currentPage:.plan,targetRecordId:"PLAN-a",currentRecordId:"PLAN-b",
+            targetContextGeneration:4,currentContextGeneration:4,
+            targetPlanningPageRequestGeneration:2,currentPlanningPageRequestGeneration:2
+        ))
+        XCTAssertFalse(NativeWorkspace.semanticRecordCreationNavigationIsCurrent(
+            targetPage:.plan,currentPage:.plan,targetRecordId:"PLAN-a",currentRecordId:"PLAN-a",
+            targetContextGeneration:4,currentContextGeneration:5,
+            targetPlanningPageRequestGeneration:2,currentPlanningPageRequestGeneration:2
+        ))
+        XCTAssertFalse(NativeWorkspace.semanticRecordCreationNavigationIsCurrent(
+            targetPage:.agent,currentPage:.agent,targetRecordId:nil,currentRecordId:nil,
+            targetContextGeneration:4,currentContextGeneration:4,
+            targetPlanningPageRequestGeneration:2,currentPlanningPageRequestGeneration:2
+        ))
+        XCTAssertFalse(NativeWorkspace.semanticRecordCreationNavigationIsCurrent(
+            targetPage:.plan,currentPage:.plan,targetRecordId:nil,currentRecordId:nil,
+            targetContextGeneration:4,currentContextGeneration:4,
+            targetPlanningPageRequestGeneration:2,currentPlanningPageRequestGeneration:3
+        ))
+    }
+
     func testSemanticRecordMutationReadbackRequiresCurrentRevisionAndProjection() {
         let row = ForgeRecord(recordId:"REQ-a",title:"Desktop",state:"completed",kind:.requirement,
                               depth:0,requirementId:"REQ-a",parentPlanId:nil,
