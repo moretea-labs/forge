@@ -4172,7 +4172,6 @@ final class NativeWorkspace: ObservableObject {
                 kind:.requirement,recordId:id,projectId:projectId,repoId:targetRepoId,
                 expectedRevision:expectedRevision + 1
             )
-            return true
         } catch {
             self.error="修改未确认：\(error.localizedDescription)。请刷新修订版本后核对。"
             return false
@@ -4227,7 +4226,6 @@ final class NativeWorkspace: ObservableObject {
                 kind:.requirement,recordId:id,projectId:projectId,repoId:targetRepoId,
                 expectedRevision:expectedRevision + 1,expectedState:state
             )
-            return true
         } catch {
             self.error="状态更新未确认：\(error.localizedDescription)。请刷新后核对证据与版本。"
             return false
@@ -4260,7 +4258,6 @@ final class NativeWorkspace: ObservableObject {
                 kind:.plan,recordId:id,projectId:projectId,repoId:targetRepoId,
                 expectedRevision:expectedRevision + 1
             )
-            return true
         } catch {
             self.error="修改未确认：\(error.localizedDescription)。请刷新修订版本后核对。"
             return false
