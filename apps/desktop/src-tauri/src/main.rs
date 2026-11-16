@@ -2785,6 +2785,49 @@ fn local_running_process_id(receipt: &Value) -> Option<&str> {
         .then_some(id)
 }
 
+// Live activity output has a smaller budget than the model's tool result.
+fn local_api_tool_output(name: &str, receipt: &Value) -> String {
+    const LIMIT: usize = 2_000;
+    let serialized = receipt.to_string();
+    if serialized.chars().count() <= LIMIT {
+        return serialized;
+    }
+    if !matches!(name, "run_command" | "process_status" | "process_cancel")
+        || !receipt.get("result").is_some_and(Value::is_object) {
+        return serialized.chars().take(LIMIT).collect();
+    }
+    // Project before serializing: slicing JSON can destroy the terminal fields
+    // and even its syntax. Keep the canonical receipt/model result unchanged.
+    let result = &receipt["result"];
+    let mut display = json!({"outputTruncated":true});
+    for key in ["accepted", "completed", "ok", "timedOut", "cancelled"] {
+        if result.get(key).is_some_and(Value::is_boolean) {
+            display[key] = result[key].clone();
+        }
+    }
+    if result.get("exitCode").is_some_and(|value| value.is_number() || value.is_null()) {
+        display["exitCode"] = result["exitCode"].clone();
+    }
+    for (key, max_chars) in [("processId", 128), ("status", 64)] {
+        if let Some(text) = result.get(key).and_then(Value::as_str) {
+            if text.chars().count() <= max_chars { display[key] = json!(text); }
+        }
+    }
+    let mut text_limit = 600;
+    loop {
+        for key in ["stdout", "stderr", "stdoutTail", "stderrTail"] {
+            if let Some(text) = result.get(key).and_then(Value::as_str) {
+                display[key] = json!(text.chars().take(text_limit).collect::<String>());
+            }
+        }
+        let output = json!({"ok":receipt.get("ok").and_then(Value::as_bool),"result":display}).to_string();
+        if output.chars().count() <= LIMIT { return output; }
+        // Account for JSON escaping (quotes, control characters, etc.), not
+        // just the number of source characters. Bounded metadata fits alone.
+        text_limit /= 2;
+    }
+}
+
 fn local_api_process_pause(process_id: &str, total_calls: usize, events: &[Value]) -> Value {
     json!({
         "output": format!("Forge 命令已受理，但尚未确认终态：可能仍在执行，也可能已经结束而查询未成功。Process ID: {process_id}。不要重复执行该命令；先用 process_status 检查同一 Process。不要仅因观察中断就取消，只有用户明确要求停止或继续执行存在具体安全风险时才使用 process_cancel。"),
@@ -4006,7 +4049,7 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
             if verification_attempt && ok {
                 patch_needs_verification = false;
             }
-            // The same bounded receipt shown to the model is available in the live tool row.
+            // Bound model context separately from the Process display projection.
             let serialized = result.to_string();
             let bounded = if serialized.chars().count() > LOCAL_API_TOOL_RESULT_MAX_CHARS {
                 format!("{}...[truncated; re-read from Forge if needed]",
@@ -4014,7 +4057,7 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
             } else { serialized };
             host.emit_tool_progress(json!({
                 "conversationId":conversation_id, "name":name, "phase":"output",
-                "output":bounded.chars().take(2_000).collect::<String>(),
+                "output":local_api_tool_output(&name, &result),
                 "processId":process_id, "requestId":effect_request_id, "toolCallId":id,
             }));
             let progress_phase = match effect_outcome {
@@ -4205,7 +4248,8 @@ mod tests {
                     assert!(local_verification_command(&payload["arguments"]));
                     json!({"ok":true,"result":{
                         "accepted":true,"status":"succeeded","exitCode":0,"ok":true,
-                        "timedOut":false,"stdoutTail":"tests passed","stderrTail":""
+                        "timedOut":false,"stdoutTail":"tests passed\n".repeat(400),
+                        "stderrTail":"diagnostic output"
                     }})
                 }
                 _ => json!({"ok":false,"error":"LOCAL_FORGE_TOOL_NOT_ALLOWED"}),
@@ -4577,6 +4621,16 @@ mod tests {
                 assert_eq!(phases, vec!["started", "output", "completed"],
                     "one stable tool-call identity must reconcile its complete visible lifecycle");
             }
+            let command_output = events.iter().find(|event| event["channel"] == "tool"
+                && event["payload"]["toolCallId"] == "call-test"
+                && event["payload"]["phase"] == "output").unwrap();
+            let output = command_output["payload"]["output"].as_str().unwrap();
+            assert!(output.chars().count() <= 2_000);
+            let display: Value = serde_json::from_str(output).expect("live Process output JSON");
+            assert_eq!(display["result"]["status"], "succeeded");
+            assert_eq!(display["result"]["exitCode"], 0);
+            assert_eq!(display["result"]["outputTruncated"], true);
+            assert!(display["result"]["stderrTail"].as_str().unwrap().contains("diagnostic output"));
             let requests = server.join().expect("provider server joined");
             assert_eq!(requests.len(), 4);
             assert!(requests.iter().all(|body| body["tools"].as_array().is_some_and(|tools| tools.len() >= 3)));
@@ -5184,6 +5238,32 @@ mod tests {
             assert_eq!(calls[0]["conversationId"], "conversation_test");
             assert_eq!(calls[0]["allowEffects"], false);
         }
+    }
+
+    #[test]
+    fn process_output_preserves_json_and_terminal_diagnostics_under_budget() {
+        for name in ["run_command", "process_status", "process_cancel"] {
+            for text in ["long output".repeat(1_000), "\"\\\n\t\u{0001}中文🫖".repeat(1_000)] {
+                let receipt = json!({"ok":true,"result":{
+                    "processId":"lightweight:12345678-1234-4abc-8def-1234567890ab",
+                    "status":"failed","completed":true,"accepted":true,"ok":false,
+                    "exitCode":17,"timedOut":true,"cancelled":false,
+                    "stdoutTail":text,"stderrTail":format!("stderr: {text}")
+                }});
+                let output = local_api_tool_output(name, &receipt);
+                assert!(output.chars().count() <= 2_000);
+                let parsed: Value = serde_json::from_str(&output).expect("bounded output remains valid JSON");
+                for key in ["processId", "status", "completed", "accepted", "ok", "exitCode", "timedOut", "cancelled"] {
+                    assert_eq!(parsed["result"][key], receipt["result"][key], "{key}");
+                }
+                assert_eq!(parsed["ok"], true);
+                assert_eq!(parsed["result"]["outputTruncated"], true);
+                assert!(!parsed["result"]["stdoutTail"].as_str().unwrap().is_empty());
+                assert!(parsed["result"]["stderrTail"].as_str().unwrap().starts_with("stderr: "));
+            }
+        }
+        let small = json!({"ok":true,"result":{"status":"succeeded","exitCode":0,"stdout":"done","stderr":""}});
+        assert_eq!(local_api_tool_output("run_command", &small), small.to_string());
     }
 
     #[test]
