@@ -1180,6 +1180,38 @@ final class NativeWorkspaceTests: XCTestCase {
         ))
     }
 
+    func testTaskWritesRequireAnActiveSemanticProject() {
+        let active=ForgeSemanticProject(
+            projectId:"PROJECT-active",displayName:"Active",status:"active",
+            revision:1,placements:[],requirementCount:0
+        )
+        let archived=ForgeSemanticProject(
+            projectId:"PROJECT-archived",displayName:"Archived",status:"archived",
+            revision:2,placements:[],requirementCount:4
+        )
+        XCTAssertEqual(
+            NativeWorkspace.writableSemanticProjectId(
+                selectedProjectId:"PROJECT-active",projects:[active,archived]
+            ),
+            "PROJECT-active"
+        )
+        XCTAssertNil(
+            NativeWorkspace.writableSemanticProjectId(
+                selectedProjectId:"PROJECT-archived",projects:[active,archived]
+            )
+        )
+        XCTAssertNil(
+            NativeWorkspace.writableSemanticProjectId(
+                selectedProjectId:"PROJECT-missing",projects:[active,archived]
+            )
+        )
+        XCTAssertNil(
+            NativeWorkspace.writableSemanticProjectId(
+                selectedProjectId:nil,projects:[active,archived]
+            )
+        )
+    }
+
     func testPlanningScopeArgumentsKeepProjectAndOptionalRepositoryDistinct() {
         XCTAssertTrue(NativeWorkspace.projectPlanningScopeMatches(
             requestedProjectId:"PROJECT-standalone",currentProjectId:"PROJECT-standalone",

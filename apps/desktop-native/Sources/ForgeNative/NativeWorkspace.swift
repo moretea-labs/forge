@@ -3596,12 +3596,38 @@ final class NativeWorkspace: ObservableObject {
         return "\(prefix)-\(compact.prefix(12))"
     }
 
+    nonisolated static func writableSemanticProjectId(
+        selectedProjectId:String?,projects:[ForgeSemanticProject]
+    ) -> String? {
+        guard let selectedProjectId,
+              projects.contains(where:{$0.projectId == selectedProjectId && $0.status == "active"}) else {
+            return nil
+        }
+        return selectedProjectId
+    }
+
+    func requireWritableSemanticProjectId() -> String? {
+        if let projectId=Self.writableSemanticProjectId(
+            selectedProjectId:selectedProjectId,projects:semanticProjects
+        ) {
+            return projectId
+        }
+        if selectedProjectId == nil {
+            error="请先选择项目。"
+        } else if semanticProject == nil {
+            error="项目状态尚未确认，请刷新项目列表后重试。"
+        } else {
+            error="当前项目已归档，不能修改任务。请先恢复项目或切换到活动项目。"
+        }
+        return nil
+    }
+
     func createRequirement(
         title: String, outcome: String, acceptanceCriteria: [String],
         taskStatus: String? = nil, priority: String? = nil, assignee: String? = nil,
         dependencyRequirementIds:[String] = []
     ) async -> String? {
-        guard let projectId=selectedProjectId else { error="请先选择项目。"; return nil }
+        guard let projectId=requireWritableSemanticProjectId() else { return nil }
         let targetRepoId=projectRepositoryId
         let cleanTitle=title.trimmingCharacters(in:.whitespacesAndNewlines)
         let cleanOutcome=outcome.trimmingCharacters(in:.whitespacesAndNewlines)
@@ -3638,7 +3664,7 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func createPlan(objective:String,requirementId:String?,parentPlanId:String?) async -> String? {
-        guard let projectId=selectedProjectId else { error="请先选择项目。"; return nil }
+        guard let projectId=requireWritableSemanticProjectId() else { return nil }
         let targetRepoId=projectRepositoryId
         let cleanObjective=objective.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !cleanObjective.isEmpty else { error="Plan 目标不能为空。"; return nil }
@@ -3671,7 +3697,8 @@ final class NativeWorkspace: ObservableObject {
         taskStatus:String? = nil,priority:String? = nil,assignee:String? = nil,
         dependencyRequirementIds:[String]? = nil,remainingWork:[String]? = nil
     ) async -> Bool {
-        guard let projectId=selectedProjectId,expectedRevision > 0 else {
+        guard let projectId=requireWritableSemanticProjectId() else { return false }
+        guard expectedRevision > 0 else {
             error="无法确认当前 Requirement 的版本，请刷新后重试。"
             return false
         }
@@ -3719,7 +3746,8 @@ final class NativeWorkspace: ObservableObject {
         acceptanceCriteria:[String],state:String,acceptedEvidenceRefs:[String]?,
         remainingWork:[String]? = nil
     ) async -> Bool {
-        guard let projectId=selectedProjectId,expectedRevision > 0 else {
+        guard let projectId=requireWritableSemanticProjectId() else { return false }
+        guard expectedRevision > 0 else {
             error="无法确认 Requirement 当前修订版本。"
             return false
         }
@@ -3768,7 +3796,8 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func revisePlan(id:String,expectedRevision:Int,objective:String) async -> Bool {
-        guard let projectId=selectedProjectId,expectedRevision > 0 else {
+        guard let projectId=requireWritableSemanticProjectId() else { return false }
+        guard expectedRevision > 0 else {
             error="无法确认当前 Plan 的版本，请刷新后重试。"
             return false
         }
