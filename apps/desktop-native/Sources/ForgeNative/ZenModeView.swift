@@ -2168,6 +2168,25 @@ struct ZenProjectDirectorySheet: View {
                                 draftName = project.displayName
                                 model.error = nil
                             } label: { Label("重命名",systemImage:"pencil") }
+                            if !project.repositoryIds.isEmpty {
+                                Menu {
+                                    ForEach(project.repositoryIds,id:\.self) { repositoryId in
+                                        Button {
+                                            model.selectSemanticProject(
+                                                project.projectId,repositoryId:repositoryId)
+                                            dismiss()
+                                        } label: {
+                                            let label=model.projects.first(where:{$0.repoId == repositoryId})?.label
+                                                ?? repositoryId
+                                            Label(label,systemImage:model.projectRepositoryId == repositoryId
+                                                  ? "checkmark.circle.fill" : "folder")
+                                        }
+                                        .disabled(project.status != "active")
+                                    }
+                                } label: {
+                                    Label("切换仓库",systemImage:"arrow.left.arrow.right")
+                                }
+                            }
                             Button {
                                 changeStatus(project,to:project.status == "archived" ? "active" : "archived")
                             } label: {

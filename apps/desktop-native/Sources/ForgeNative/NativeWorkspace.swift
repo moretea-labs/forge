@@ -955,6 +955,11 @@ final class NativeWorkspace: ObservableObject {
                 return "只读分析会话需要可用的 API Provider。"
             }
         }
+        if !Self.agentThreadMatchesContext(
+            thread,repoId:repoId,checkoutId:checkoutId,projectId:selectedProjectId
+        ) {
+            return "当前会话绑定了其他项目或工作区。请切回原项目，或从当前项目新建会话。"
+        }
         if thread.repoId != nil {
             if thread.checkoutId == nil { return "当前会话缺少 checkout，请重新选择项目。" }
             if checkoutContextLoading { return "正在验证 checkout，完成后即可发送。" }
@@ -1778,20 +1783,70 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
-    func selectSemanticProject(_ projectId:String) {
+    nonisolated static func projectRepositorySelection(
+        currentRepoId:String?,requestedRepoId:String?,availableRepoIds:[String]
+    ) -> String? {
+        if let requestedRepoId {
+            return availableRepoIds.contains(requestedRepoId) ? requestedRepoId : nil
+        }
+        return currentRepoId.flatMap { availableRepoIds.contains($0) ? $0 : nil }
+    }
+
+    nonisolated static func agentThreadMatchesContext(
+        _ thread:ChatThread?,repoId:String?,checkoutId:String?,projectId:String?
+    ) -> Bool {
+        guard let thread else { return false }
+        return thread.repoId == repoId && thread.checkoutId == checkoutId && thread.projectId == projectId
+    }
+
+    func selectSemanticProject(_ projectId:String,repositoryId requestedRepoId:String? = nil) {
         guard !busy else {
             error="请先停止正在运行的会话，再切换项目。"
             return
         }
-        guard semanticProjects.contains(where:{$0.projectId == projectId}) else {
-            error="项目已不存在或尚未加载，请刷新项目列表。"
+        guard let project=semanticProjects.first(where:{$0.projectId == projectId}),
+              project.status == "active" else {
+            error="项目已归档、不存在或尚未加载，请刷新项目列表。"
             return
         }
-        guard selectedProjectId != projectId else { return }
+        let targetRepoId=Self.projectRepositorySelection(
+            currentRepoId:repoId,requestedRepoId:requestedRepoId,
+            availableRepoIds:project.repositoryIds
+        )
+        if let requestedRepoId,targetRepoId != requestedRepoId {
+            error="该仓库不属于所选项目。"
+            return
+        }
+        if let targetRepoId,!projects.contains(where:{$0.repoId == targetRepoId}) {
+            error="项目关联的仓库当前不可用，请刷新仓库列表。"
+            return
+        }
+        let projectChanged=selectedProjectId != projectId
+        let repoChanged=repoId != targetRepoId
+        guard projectChanged || repoChanged else { return }
+        let targetCheckoutId = repoChanged
+            ? targetRepoId.flatMap { id in projects.first(where:{$0.repoId == id})?.checkoutId }
+            : checkoutId
         invalidateProjectContextRequests()
+        if repoChanged {
+            invalidateRepositoryAccessRequests()
+            invalidateAgentChangesRequests(clearSnapshot:true)
+            repoId=targetRepoId
+            checkoutId=targetCheckoutId
+            checkoutRoot=nil
+            checkoutBranch=nil
+            checkoutContextLoading=targetRepoId != nil
+            zenGitHubBoardItems=[]
+            zenGitHubBoardConfigured=nil
+            zenGitHubBoardError=nil
+            planningAutopilotStatuses=[:]
+        }
         selectedProjectId=projectId
-        if let index=threads.firstIndex(where:{$0.id == selectedThreadId}) {
+        if let index=threads.firstIndex(where:{$0.id == selectedThreadId}),
+           threads[index].messages.isEmpty,!threads[index].hasUnsentContent {
             threads[index].projectId=projectId
+            threads[index].repoId=targetRepoId
+            threads[index].checkoutId=targetCheckoutId
             threads[index].updatedAt=Date()
             persist()
         }
@@ -1799,7 +1854,9 @@ final class NativeWorkspace: ObservableObject {
         records=[]
         detail=""
         error=nil
-        if [.requirement,.plan].contains(page) {
+        if repoChanged,targetRepoId != nil {
+            Task { await refreshProject() }
+        } else if [.requirement,.plan].contains(page) {
             Task { await loadPage() }
         }
     }

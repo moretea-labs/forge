@@ -647,9 +647,12 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.agentSendBlockReason,"Codex 未就绪，请刷新 Provider 状态。")
 
         model.threads[0].repoId = "repo-test"
+        model.repoId = "repo-test"
         model.threads[0].checkoutId = nil
+        model.checkoutId = nil
         XCTAssertEqual(model.agentSendBlockReason,"当前会话缺少 checkout，请重新选择项目。")
         model.threads[0].checkoutId = "checkout-test"
+        model.checkoutId = "checkout-test"
         model.checkoutContextLoading = true
         XCTAssertEqual(model.agentSendBlockReason,"正在验证 checkout，完成后即可发送。")
 
@@ -1149,6 +1152,32 @@ final class NativeWorkspaceTests: XCTestCase {
         let uuid = UUID(uuidString:"01234567-89AB-CDEF-0123-456789ABCDEF")!
         XCTAssertEqual(NativeWorkspace.semanticRecordId(prefix:"REQ",uuid:uuid),"REQ-0123456789ab")
         XCTAssertEqual(NativeWorkspace.semanticRecordId(prefix:"PLAN",uuid:uuid),"PLAN-0123456789ab")
+    }
+
+    func testProjectRepositorySelectionAndAgentContextRemainBoundToOneProject() {
+        XCTAssertEqual(NativeWorkspace.projectRepositorySelection(
+            currentRepoId:"repo-a",requestedRepoId:nil,availableRepoIds:["repo-a","repo-b"]
+        ),"repo-a")
+        XCTAssertEqual(NativeWorkspace.projectRepositorySelection(
+            currentRepoId:"repo-old",requestedRepoId:nil,availableRepoIds:["repo-a","repo-b"]
+        ),nil)
+        XCTAssertEqual(NativeWorkspace.projectRepositorySelection(
+            currentRepoId:"repo-old",requestedRepoId:"repo-b",availableRepoIds:["repo-a","repo-b"]
+        ),"repo-b")
+        XCTAssertNil(NativeWorkspace.projectRepositorySelection(
+            currentRepoId:"repo-old",requestedRepoId:"repo-c",availableRepoIds:["repo-a","repo-b"]
+        ))
+
+        let thread=ChatThread(repoId:"repo-a",checkoutId:"checkout-a",projectId:"PROJECT-a")
+        XCTAssertTrue(NativeWorkspace.agentThreadMatchesContext(
+            thread,repoId:"repo-a",checkoutId:"checkout-a",projectId:"PROJECT-a"
+        ))
+        XCTAssertFalse(NativeWorkspace.agentThreadMatchesContext(
+            thread,repoId:nil,checkoutId:nil,projectId:"PROJECT-b"
+        ))
+        XCTAssertFalse(NativeWorkspace.agentThreadMatchesContext(
+            thread,repoId:"repo-b",checkoutId:"checkout-b",projectId:"PROJECT-a"
+        ))
     }
 
     func testPlanningScopeArgumentsKeepProjectAndOptionalRepositoryDistinct() {
