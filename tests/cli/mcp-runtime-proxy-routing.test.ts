@@ -58,6 +58,7 @@ import { seedHistoricalWorkContract } from '../helpers/historical-work-contract'
 import { processToolDefinitions } from '../../adapters/mcp/runtime-gateway/process-tools';
 import { routeDurableMcpCall } from '../../adapters/mcp/runtime-gateway/router';
 import { callProcessTool } from '../../src/runtime/execution/process-runtime/tool-dispatch';
+import { resetIosDevelopmentHooksForTest, setIosDevelopmentHooksForTest } from '../../src/runtime/safe-tooling';
 
 describe('MCP ordinary tool cognition settlement', () => {
   test('exposes and settles model-authored learning after a successful repository tool outcome', async () => {
@@ -1665,6 +1666,18 @@ test('plugin_action_execute honors an exact checkout_id for iOS repository path 
     controllerInstanceId: 'runtime-ios-checkout-test',
     controllerType: 'chatgpt' as const,
   };
+  // This test exercises repository path policy, not the host's Xcode availability.
+  // Explicitly expose the iOS adapter on non-macOS CI and stub all Xcode probes.
+  setIosDevelopmentHooksForTest({
+    platform: () => 'darwin',
+    runCommand: (command, args) => ({
+      ok: false,
+      status: 1,
+      stdout: '',
+      stderr: 'Xcode intentionally unavailable in the path-guard fixture.',
+      command: [command, ...args],
+    }),
+  });
   const server = createForgeMcpServerFromContext(context);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
@@ -1689,6 +1702,7 @@ test('plugin_action_execute honors an exact checkout_id for iOS repository path 
     expect(response.isError).toBe(true);
     expect(JSON.stringify(response.structuredContent ?? response)).toContain('IOS_PATH_OUTSIDE_REPOSITORY');
   } finally {
+    resetIosDevelopmentHooksForTest();
     await client.close();
     await server.close();
     rmSync(checkoutRoot, { recursive: true, force: true });

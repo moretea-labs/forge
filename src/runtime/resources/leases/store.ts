@@ -536,6 +536,65 @@ export function releaseExecutionLeases(
   }, 10_000);
 }
 
+// Writer fencing: a passive or fenced Runtime cannot release a lease owned by the active Runtime.
+function assertExecutionLeaseReleaseWritable(controllerHome: string): void {
+  try {
+    assertRuntimeMayWriteOrThrow('release_lease', controllerHome);
+  } catch (error) {
+    if (isRuntimeWriteFenceError(error)) throw error;
+    /* unbound legacy */
+  }
+}
+
+function releaseExactExecutionLeasesUnlocked(
+  controllerHome: string,
+  repoId: string,
+  ownerJobId: string,
+  expected: ExpectedLeaseRef[],
+  options?: Pick<LeaseAcquisitionOptions, 'visibility' | 'notifyScheduler' | 'invalidateProjection' | 'emitRuntimeEvent'>,
+): number {
+  const expectedRefs = expectedLeaseMap(expected) ?? new Map<string, ExpectedLeaseRef>();
+  if (expectedRefs.size !== expected.length) {
+    throw new Error('LEASE_SET_INVALID: ' + ownerJobId + ' contains duplicate lease ids');
+  }
+  const owned = listActiveLeasesUnlocked(controllerHome, repoId)
+    .filter((lease) => lease.ownerJobId === ownerJobId);
+  if (owned.length !== expectedRefs.size) {
+    throw new Error('LEASE_SET_MISMATCH: ' + ownerJobId + ' owns ' + owned.length + ' active leases, expected ' + expectedRefs.size);
+  }
+  for (const lease of owned) {
+    if (!leaseMatchesExpected(lease, expectedRefs.get(lease.leaseId))) {
+      throw new Error('LEASE_SET_FENCE_MISMATCH: ' + ownerJobId + ' no longer owns ' + lease.leaseId);
+    }
+  }
+
+  let releasedCount = 0;
+  let visibility: LeaseVisibility = options?.visibility ?? 'durable';
+  for (const lease of owned) {
+    visibility = lease.visibility ?? visibility;
+    appendLeaseLifecycleEvent(controllerHome, lease, 'lease_released', {
+      releaseReason: 'explicit_release',
+      exactSet: true,
+    });
+    leaseSideEffectMetrics.durableReleaseEvents += 1;
+    removeFile(leasePath(controllerHome, repoId, lease.leaseId));
+    if (lease.visibility === 'ephemeral') leaseSideEffectMetrics.ephemeralReleases += 1;
+    releasedCount += 1;
+  }
+  if (releasedCount > 0) {
+    const effects = resolveSideEffects(options, visibility);
+    if (effects.invalidateProjection) {
+      markRepositoryProjectionDirty(controllerHome, repoId, 'leases-released-exact:' + ownerJobId);
+      leaseSideEffectMetrics.projectionDirtyMarks += 1;
+    }
+    if (effects.notifyScheduler) {
+      touchSchedulerWakeSignal(controllerHome, 'leases-released-exact:' + ownerJobId);
+      leaseSideEffectMetrics.schedulerWakes += 1;
+    }
+  }
+  return releasedCount;
+}
+
 export function releaseExactExecutionLeases(
   controllerHome: string,
   repoId: string,
@@ -543,54 +602,36 @@ export function releaseExactExecutionLeases(
   expected: ExpectedLeaseRef[],
   options?: Pick<LeaseAcquisitionOptions, 'visibility' | 'notifyScheduler' | 'invalidateProjection' | 'emitRuntimeEvent'>,
 ): number {
-  try {
-    assertRuntimeMayWriteOrThrow('release_lease', controllerHome);
-  } catch (error) {
-    if (isRuntimeWriteFenceError(error)) throw error;
-    /* unbound legacy */
-  }
-  return withControllerLock(controllerHome, { scope: 'global', resource: 'execution-leases' }, `lease-release-exact:${ownerJobId}`, () => {
-    const expectedRefs = expectedLeaseMap(expected) ?? new Map<string, ExpectedLeaseRef>();
-    if (expectedRefs.size !== expected.length) {
-      throw new Error(`LEASE_SET_INVALID: ${ownerJobId} contains duplicate lease ids`);
-    }
-    const owned = listActiveLeasesUnlocked(controllerHome, repoId)
-      .filter((lease) => lease.ownerJobId === ownerJobId);
-    if (owned.length !== expectedRefs.size) {
-      throw new Error(`LEASE_SET_MISMATCH: ${ownerJobId} owns ${owned.length} active leases, expected ${expectedRefs.size}`);
-    }
-    for (const lease of owned) {
-      if (!leaseMatchesExpected(lease, expectedRefs.get(lease.leaseId))) {
-        throw new Error(`LEASE_SET_FENCE_MISMATCH: ${ownerJobId} no longer owns ${lease.leaseId}`);
-      }
-    }
+  assertExecutionLeaseReleaseWritable(controllerHome);
+  return withControllerLock(
+    controllerHome,
+    { scope: 'global', resource: 'execution-leases' },
+    'lease-release-exact:' + ownerJobId,
+    () => releaseExactExecutionLeasesUnlocked(controllerHome, repoId, ownerJobId, expected, options),
+    10_000,
+  );
+}
 
-    let releasedCount = 0;
-    let visibility: LeaseVisibility = options?.visibility ?? 'durable';
-    for (const lease of owned) {
-      visibility = lease.visibility ?? visibility;
-      appendLeaseLifecycleEvent(controllerHome, lease, 'lease_released', {
-        releaseReason: 'explicit_release',
-        exactSet: true,
-      });
-      leaseSideEffectMetrics.durableReleaseEvents += 1;
-      removeFile(leasePath(controllerHome, repoId, lease.leaseId));
-      if (lease.visibility === 'ephemeral') leaseSideEffectMetrics.ephemeralReleases += 1;
-      releasedCount += 1;
-    }
-    if (releasedCount > 0) {
-      const effects = resolveSideEffects(options, visibility);
-      if (effects.invalidateProjection) {
-        markRepositoryProjectionDirty(controllerHome, repoId, `leases-released-exact:${ownerJobId}`);
-        leaseSideEffectMetrics.projectionDirtyMarks += 1;
-      }
-      if (effects.notifyScheduler) {
-        touchSchedulerWakeSignal(controllerHome, `leases-released-exact:${ownerJobId}`);
-        leaseSideEffectMetrics.schedulerWakes += 1;
-      }
-    }
-    return releasedCount;
-  }, 10_000);
+/**
+ * Async plugin-action cleanup waits briefly for the shared lease lock instead
+ * of converting transient lock-list contention into an unknown provider effect.
+ * The exact owner, lease set and fencing tokens are revalidated after acquisition;
+ * provider dispatch is never retried here.
+ */
+export async function releaseExactExecutionLeasesAsync(
+  controllerHome: string,
+  repoId: string,
+  ownerJobId: string,
+  expected: ExpectedLeaseRef[],
+  options?: Pick<LeaseAcquisitionOptions, 'visibility' | 'notifyScheduler' | 'invalidateProjection' | 'emitRuntimeEvent'>,
+): Promise<number> {
+  assertExecutionLeaseReleaseWritable(controllerHome);
+  return withControllerLockAsync(
+    controllerHome,
+    { scope: 'global', resource: 'execution-leases' },
+    'lease-release-exact:' + ownerJobId,
+    async () => releaseExactExecutionLeasesUnlocked(controllerHome, repoId, ownerJobId, expected, options),
+  );
 }
 
 /**

@@ -300,6 +300,50 @@ describe('plugin action resource replay fencing', () => {
     expect(readFileSync(logPath, 'utf8').trim().split(String.fromCharCode(10)).filter((line) => line === 'execute')).toHaveLength(1);
   }, 10_000);
 
+  test('async plugin cleanup waits through transient lease-lock contention without redispatch', async () => {
+    const { controllerHome, socketPath } = fixture(true, undefined, true, 4_000);
+    const logPath = join(controllerHome, 'provider-lease-cleanup-contention.log');
+    await startExternalProviderFixture(controllerHome, socketPath, logPath, undefined, 'desktop_operator', 1_000);
+    const pending = submitControllerPluginAction(controllerHome, {
+      pluginId: 'desktop_operator', actionId: 'desktop_mutate_slow', requestId: 'lease-cleanup-lock-contention',
+      args: {}, origin: { surface: 'mcp', actor: 'test' },
+    });
+    let dispatched = false;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const lines = existsSync(logPath) ? readFileSync(logPath, 'utf8').split(/\r?\n/) : [];
+      if (lines.includes('execute')) { dispatched = true; break; }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(dispatched).toBe(true);
+
+    let releaseLock!: () => void;
+    let markLockEntered!: () => void;
+    const lockEntered = new Promise<void>((resolve) => { markLockEntered = resolve; });
+    const heldLock = withControllerLockAsync(
+      controllerHome,
+      { scope: 'global', resource: 'execution-leases' },
+      'lease-list:repo-lease-cleanup-contention',
+      async () => {
+        await new Promise<void>((resolve) => {
+          releaseLock = resolve;
+          markLockEntered();
+        });
+      },
+    );
+    await lockEntered;
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+    } finally {
+      releaseLock();
+    }
+    await heldLock;
+
+    const result = await pending;
+    expect(result.receipt.status).toBe('succeeded');
+    expect(listActiveLeases(controllerHome, FORGE_INSTANCE_SCOPE_KEY)).toHaveLength(0);
+    expect(readFileSync(logPath, 'utf8').trim().split('\n').filter((line) => line === 'execute')).toHaveLength(1);
+  }, 10_000);
+
   test('a lease expiring after dispatch produces one unknown receipt, never a false definitive failure', async () => {
     const { controllerHome, socketPath } = fixture(true, undefined, true);
     const logPath = join(controllerHome, 'provider-expired-lease.log');

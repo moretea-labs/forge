@@ -60,9 +60,49 @@ describe('app territory availability', () => {
     });
     expect(manifest.capabilities.find(c => c.capabilityId === 'app-store-read')?.actions)
       .toContain('list_app_territory_availabilities');
+    expect(manifest.actions.find(a => a.actionId === 'list_app_territory_availabilities')?.argumentsSchema)
+      .toMatchObject({ properties: { territory_id: { type: 'string', minLength: 3, maxLength: 3 } } });
     expect(await executeAppStoreConnectPluginAction(input(repoRoot, 'list_app_territory_availabilities', {
       app_id: '6796884084',
     }))).toMatchObject({ data: [], meta: { provider: 'mock' } });
+  });
+
+  test('projects one requested territory while preserving pagination and total-count evidence', async () => {
+    const repoRoot = await liveRoot();
+    const china = { type: 'territoryAvailabilities', id: 'cn-record',
+      attributes: { available: true, contentStatuses: ['AVAILABLE'] },
+      relationships: { territory: { data: { type: 'territories', id: 'CHN' } } } };
+    const unitedStates = { type: 'territoryAvailabilities', id: 'us-record',
+      attributes: { available: true, contentStatuses: ['AVAILABLE'] },
+      relationships: { territory: { data: { type: 'territories', id: 'USA' } } } };
+    const payload = {
+      data: [china, unitedStates],
+      included: [
+        { type: 'territories', id: 'CHN', attributes: { currency: 'CNY' } },
+        { type: 'territories', id: 'USA', attributes: { currency: 'USD' } },
+      ],
+      links: { self: 'https://api.appstoreconnect.apple.com/v2/appAvailabilities/opaque/territoryAvailabilities',
+        next: 'https://api.appstoreconnect.apple.com/v2/appAvailabilities/opaque/territoryAvailabilities?cursor=next' },
+      meta: { paging: { total: 175, limit: 200 } },
+    };
+    const original = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async (_request: string | URL | Request) => {
+      calls++;
+      return Response.json(calls === 1
+        ? { data: { type: 'appAvailabilities', id: 'opaque' } } : payload);
+    }) as typeof fetch;
+    try {
+      await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'list_app_territory_availabilities', {
+        app_id: '6796884084', territory_id: 'CN',
+      }))).rejects.toThrow('PLUGIN_INVALID_ARGUMENT');
+      expect(calls).toBe(0);
+      const result = await executeAppStoreConnectPluginAction(input(repoRoot, 'list_app_territory_availabilities', {
+        app_id: '6796884084', territory_id: 'CHN', limit: 200,
+      }));
+      expect(result).toEqual({ ...payload, data: [china], included: [payload.included[0]] });
+      expect(calls).toBe(2);
+    } finally { globalThis.fetch = original; }
   });
 
   test('resolves Apple opaque availability ID and preserves territories and pagination', async () => {

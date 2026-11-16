@@ -657,6 +657,10 @@ function additionalAscActions(): AssistantPluginActionDescriptor[] {
 async function listAppTerritoryAvailabilities(config: AppStoreConnectPluginConfig, args: Record<string, unknown>) {
   const app = requiredArg(args, 'app_id');
   const cursor = args.cursor === undefined ? undefined : requiredArg(args, 'cursor');
+  const territoryId = args.territory_id === undefined ? undefined : requiredArg(args, 'territory_id');
+  if (territoryId && !/^[A-Z]{3}$/.test(territoryId)) {
+    throw new AssistantPluginError('PLUGIN_INVALID_ARGUMENT', 'territory_id must be a three-letter territory code.', { retryable: false });
+  }
   // Availability IDs are opaque Apple resources, not necessarily the App ID.
   const availability = await apiRequest<{ data?: { type?: string; id?: string } }>(config, {
     path: `/v1/apps/${encodeURIComponent(app)}/appAvailabilityV2`,
@@ -666,13 +670,35 @@ async function listAppTerritoryAvailabilities(config: AppStoreConnectPluginConfi
       !id.trim() || id.trim() !== id || id.length > 256) {
     throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple app availability resource is missing or malformed.', { retryable: false });
   }
-  return apiRequest<Record<string, unknown>>(config, {
+  const response = await apiRequest<Record<string, unknown>>(config, {
     path: `/v2/appAvailabilities/${encodeURIComponent(id)}/territoryAvailabilities`,
     query: {
       include: 'territory', limit: limit(args.limit, 200), cursor,
       'fields[territoryAvailabilities]': 'available,releaseDate,contentStatuses,territory',
     },
   });
+  if (!territoryId) return response;
+  const belongsToTerritory = (value: unknown): boolean => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const relationships = (value as Record<string, unknown>).relationships;
+    if (!relationships || typeof relationships !== 'object' || Array.isArray(relationships)) return false;
+    const territory = (relationships as Record<string, unknown>).territory;
+    if (!territory || typeof territory !== 'object' || Array.isArray(territory)) return false;
+    const data = (territory as Record<string, unknown>).data;
+    return Boolean(data && typeof data === 'object' && !Array.isArray(data)
+      && (data as Record<string, unknown>).id === territoryId);
+  };
+  return {
+    ...response,
+    ...(Array.isArray(response.data) ? { data: response.data.filter(belongsToTerritory) } : {}),
+    ...(Array.isArray(response.included) ? {
+      included: response.included.filter((value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return true;
+        const resource = value as Record<string, unknown>;
+        return resource.type !== 'territories' || resource.id === territoryId;
+      }),
+    } : {}),
+  };
 }
 
 function additionalAscReadRequest(spec: AscReadSpec, args: Record<string, unknown>, config: AppStoreConnectPluginConfig) {
@@ -1365,7 +1391,8 @@ function actions(): AssistantPluginActionDescriptor[] {
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 90_000,
       cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote,
       argumentsSchema: { type: 'object', properties: {
-        app_id: { type: 'string' }, limit: { type: 'number', minimum: 1, maximum: 200 }, cursor: { type: 'string' },
+        app_id: { type: 'string' }, territory_id: { type: 'string', pattern: '^[A-Z]{3}', minLength: 3, maxLength: 3 },
+        limit: { type: 'number', minimum: 1, maximum: 200 }, cursor: { type: 'string' },
       }, required: ['app_id'], additionalProperties: false },
     },
     {

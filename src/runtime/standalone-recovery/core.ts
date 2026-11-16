@@ -4764,6 +4764,12 @@ function candidateCanaryReceipts(
   observeCandidateRuntime: typeof observeRuntimeStatus = observeRuntimeStatus,
 ): Array<{ id: string; kind: 'candidate_canary'; summary: string }> {
   const observation = observeCandidateRuntime(session.candidate.controllerHome);
+  if (
+    !verified.runtime.ok || !verified.runtime.running || !verified.runtime.ready || verified.runtime.stale
+    || !observation.running || !observation.ready || observation.stale
+  ) {
+    throw new Error('RELEASE_SESSION_CANDIDATE_RUNTIME_NOT_READY_AFTER_RESTART');
+  }
   const diagnostics = observation.snapshot?.readiness.diagnostics;
   const mcpProbeNames = ['mcp_initialize', 'mcp_initialized_notification', 'mcp_tools_list', 'mcp_read_only_call', 'mcp_session_close'];
   const failedMcp = mcpProbeNames.filter((name) => verified.probes[name]?.ok !== true);
@@ -4890,7 +4896,11 @@ export async function verifyBootedReleaseSessionCandidateCanaries(
     }),
   });
 
-  if (!restarted.ok) {
+  const restartAlreadyPerformedByConcurrentCanary = !restarted.ok
+    && !restarted.attempted
+    && restarted.noOp
+    && restarted.detail.startsWith('RECOVERY_RUNTIME_RESTART_STALE_INSTANCE:');
+  if (!restarted.ok && !restartAlreadyPerformedByConcurrentCanary) {
     if (!restarted.attempted && restarted.noOp && restarted.detail.startsWith('Recovery mutation already in progress:')) {
       return {
         ok: false, attempted: false, noOp: true,
@@ -4905,10 +4915,22 @@ export async function verifyBootedReleaseSessionCandidateCanaries(
       requestId,
     );
   }
+  // A concurrent canary may have completed the Candidate B restart after this
+  // invocation captured its expected instance ID. Accept only its fresh full
+  // verification; candidateCanaryReceipts still checks live readiness and diagnostics.
+  const verifiedCandidate = restarted.verify;
+  if (!verifiedCandidate) {
+    return failBootedReleaseSessionCandidateCanary(
+      config,
+      session,
+      'RELEASE_SESSION_CANDIDATE_RECOVERY_RESTART_VERIFICATION_MISSING',
+      requestId,
+    );
+  }
 
   let receipts: Array<{ id: string; kind: 'candidate_canary'; summary: string }>;
   try {
-    receipts = candidateCanaryReceipts(session, restarted.verify, observeCandidateRuntime);
+    receipts = candidateCanaryReceipts(session, verifiedCandidate, observeCandidateRuntime);
   } catch (error) {
     return failBootedReleaseSessionCandidateCanary(
       config,
@@ -4996,6 +5018,29 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
     let session = readReleaseSession(config.controllerHome, sessionId);
     if (!session) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
     if (session.phase === 'candidate_booted') {
+      const observeCandidateRuntime = dependencies.observeCandidateRuntime ?? observeRuntimeStatus;
+      let candidateObservation: ReturnType<typeof observeRuntimeStatus>;
+      try {
+        candidateObservation = observeCandidateRuntime(session.candidate.controllerHome);
+      } catch (error) {
+        return {
+          ok: false as const,
+          attempted: false,
+          noOp: true,
+          detail: 'Candidate B owner state is uncertain; preserving the booted candidate: ' + (error instanceof Error ? error.message : String(error)),
+          releaseSession: session,
+        };
+      }
+      if (candidateObservation.running) {
+        return {
+          ok: true as const,
+          attempted: false,
+          noOp: true,
+          detail: 'Candidate B is already running; preserving it for candidate canary verification',
+          releaseSession: session,
+          continueCandidateCanary: true,
+        };
+      }
       const retirement = await stopReleaseSessionCandidateService(session);
       if (!retirement.ok) {
         return {

@@ -106,6 +106,27 @@ function capabilityBinding(bindings: WorkflowCapabilityBinding[], capabilityId: 
   return binding;
 }
 
+/** submitAssistantPluginAction returns its canonical plugin/action/result envelope; Workflow outputs are the nested provider payload. */
+function pluginActionOutput(
+  result: Record<string, unknown> | undefined,
+  binding: WorkflowCapabilityBinding,
+  expectedRequestId: string,
+): Record<string, unknown> {
+  const plugin = result?.plugin;
+  const action = result?.action;
+  const output = result?.result;
+  if (result?.schemaVersion !== 1
+    || !plugin || typeof plugin !== 'object' || Array.isArray(plugin)
+    || (plugin as Record<string, unknown>).pluginId !== binding.pluginId
+    || !action || typeof action !== 'object' || Array.isArray(action)
+    || (action as Record<string, unknown>).actionId !== binding.actionId
+    || (action as Record<string, unknown>).requestId !== expectedRequestId
+    || !output || typeof output !== 'object' || Array.isArray(output)) {
+    throw new Error('WORKFLOW_PLUGIN_RESULT_ENVELOPE_MISMATCH');
+  }
+  return output as Record<string, unknown>;
+}
+
 function pluginOutcome(receipt: PluginActionReceipt, result?: Record<string, unknown>) {
   const outcome = result?.outcome ?? result?.status;
   if (receipt.effectOutcome === 'outcome_unknown' || outcome === 'outcome_unknown') {
@@ -244,27 +265,36 @@ async function executeRegisteredWorkflowLocked(
         || (canonical.repoId !== undefined && canonical.repoId !== input.repository.repoId)
         || canonical.origin?.correlationId !== input.runId
         || canonical.pluginId !== binding.pluginId || canonical.actionId !== binding.actionId
-        || canonical.status !== 'succeeded' || canonical.effectOutcome === 'outcome_unknown'
-        || pluginOutcome(canonical, canonical.result).outcome !== 'succeeded') {
+        || canonical.status !== 'succeeded' || canonical.effectOutcome === 'outcome_unknown') {
         throw new Error(`WORKFLOW_RETAINED_PLUGIN_RECEIPT_MISMATCH: ${step.stepId}`);
       }
-      const canonicalOutput = retainWorkflowOutput(step, canonical.result ?? {});
+      let canonicalResult: Record<string, unknown>;
+      try {
+        canonicalResult = pluginActionOutput(canonical.result, binding, expectedRequestId);
+      } catch {
+        throw new Error(`WORKFLOW_RETAINED_PLUGIN_RECEIPT_MISMATCH: ${step.stepId}`);
+      }
+      if (pluginOutcome(canonical, canonicalResult).outcome !== 'succeeded') {
+        throw new Error(`WORKFLOW_RETAINED_PLUGIN_RECEIPT_MISMATCH: ${step.stepId}`);
+      }
+      const canonicalOutput = retainWorkflowOutput(step, canonicalResult);
       if (JSON.stringify(canonicalOutput) !== JSON.stringify(output)) throw new Error(`WORKFLOW_RETAINED_OUTPUT_MISMATCH: ${step.stepId}`);
     },
     executeCapability: async ({ step, arguments: args }) => {
       assertWorkflowExecutionScope(input);
       const binding = capabilityBinding(registry.value.bindings, step.capabilityId);
+      const expectedRequestId = requestId(input, step.stepId, asset.contentDigest);
+      let submitted: Awaited<ReturnType<typeof submitPluginAction>>;
       try {
-        const submitted = await submitPluginAction(input.controllerHome, input.repository, {
+        submitted = await submitPluginAction(input.controllerHome, input.repository, {
           pluginId: binding.pluginId!,
           actionId: binding.actionId!,
-          requestId: requestId(input, step.stepId, asset.contentDigest),
+          requestId: expectedRequestId,
           args,
           timeoutMs: input.timeoutMs,
           authorizationGrantRefs: registry.value.capabilityGrantRefs,
           origin: { surface: 'system', actor: 'workflow-runtime', correlationId: input.runId },
         });
-        return pluginOutcome(submitted.receipt, submitted.result);
       } catch (error) {
         const effectOutcome = isAssistantPluginError(error) ? error.effectOutcome : undefined;
         return {
@@ -272,6 +302,10 @@ async function executeRegisteredWorkflowLocked(
           error: { code: isAssistantPluginError(error) ? error.code : 'WORKFLOW_CAPABILITY_EXECUTION_FAILED', message: error instanceof Error ? error.message : String(error) },
         };
       }
+      const output = submitted.receipt.status === 'succeeded'
+        ? pluginActionOutput(submitted.result, binding, expectedRequestId)
+        : undefined;
+      return pluginOutcome(submitted.receipt, output);
     },
     executeScript: async ({ step, script, arguments: args }) => {
       assertWorkflowExecutionScope(input);
@@ -400,8 +434,9 @@ async function reconcileRegisteredWorkflowLocked(
   }
   const binding = capabilityBinding(registry.value.bindings, input.reconciliationRequestId ? step.reconcileWithCapabilityId ?? '' : step.capabilityId);
   if (receipt.pluginId !== binding.pluginId || receipt.actionId !== binding.actionId) throw new Error('WORKFLOW_RECONCILIATION_TARGET_MISMATCH');
-  if (pluginOutcome(receipt, receipt.result).outcome !== 'succeeded') throw new Error('WORKFLOW_RECONCILIATION_BUSINESS_VERIFICATION_REQUIRED');
-  let output = receipt.result ?? {};
+  const pluginResult = pluginActionOutput(receipt.result, binding, requestedReceiptId);
+  if (pluginOutcome(receipt, pluginResult).outcome !== 'succeeded') throw new Error('WORKFLOW_RECONCILIATION_BUSINESS_VERIFICATION_REQUIRED');
+  let output = pluginResult;
   if (input.reconciliationRequestId) {
     if (output.effectRequestId !== originalRequestId) throw new Error('WORKFLOW_RECONCILIATION_NOT_PROVEN');
     if (output.outcome === 'not_applied') {
