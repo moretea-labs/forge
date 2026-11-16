@@ -603,13 +603,8 @@ struct ZenWorkspacePane: View {
             ZenProjectDirectorySheet(
                 model:model,
                 onOpenTasks:{ projectId in
-                    let alreadyInProjectScope=model.selectedProjectId == projectId && model.projectRepositoryId == nil
-                    model.page = .requirement
                     showingProjectDirectory=false
-                    Task {
-                        await model.selectSemanticProject(projectId,projectScope:true)
-                        if alreadyInProjectScope && !model.busy { await model.loadPage() }
-                    }
+                    Task { await model.openProjectTasks(projectId:projectId) }
                 },
                 onOpenRequirement:{ projectId,repositoryId,requirementId in
                     showingProjectDirectory=false

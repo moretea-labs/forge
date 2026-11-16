@@ -3892,10 +3892,40 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
+    nonisolated static func projectNavigationContextChanged(
+        currentProjectId:String?,currentRepoId:String?,targetProjectId:String,targetRepoId:String?
+    ) -> Bool {
+        currentProjectId != targetProjectId || currentRepoId != targetRepoId
+    }
+
     nonisolated static func shouldPushNavigationOrigin(
         currentPage:NativePage,targetPage:NativePage,contextChanged:Bool
     ) -> Bool {
         currentPage != targetPage || contextChanged
+    }
+
+    func openProjectTasks(projectId:String) async {
+        guard let project=semanticProjects.first(where:{$0.projectId == projectId}),project.status == "active" else {
+            error="项目已归档、不存在或尚未加载，请刷新项目列表。"
+            return
+        }
+        let contextChanged=Self.projectNavigationContextChanged(
+            currentProjectId:selectedProjectId,currentRepoId:repoId,
+            targetProjectId:projectId,targetRepoId:nil
+        )
+        let alreadyInProjectScope = !contextChanged
+        if Self.shouldPushNavigationOrigin(
+            currentPage:page,targetPage:.requirement,contextChanged:contextChanged
+        ) {
+            pushNavigationOrigin()
+        }
+        if page != .requirement {
+            page = .requirement
+            error = nil
+        }
+        await selectSemanticProject(projectId,projectScope:true)
+        guard selectedProjectId == projectId,repoId == nil else { return }
+        if alreadyInProjectScope && !busy { await loadPage() }
     }
 
     func openProjectRequirement(
@@ -3910,7 +3940,10 @@ final class NativeWorkspace: ObservableObject {
             error="任务关联的仓库当前不可用，请刷新仓库列表。"
             return
         }
-        let contextChanged=selectedProjectId != projectId || projectRepositoryId != repositoryId
+        let contextChanged=Self.projectNavigationContextChanged(
+            currentProjectId:selectedProjectId,currentRepoId:repoId,
+            targetProjectId:projectId,targetRepoId:repositoryId
+        )
         if Self.shouldPushNavigationOrigin(
             currentPage:page,targetPage:.requirement,contextChanged:contextChanged
         ) {

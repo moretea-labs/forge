@@ -2217,6 +2217,14 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     func testProjectDetailNavigationCapturesOriginWhenProjectChangesOnSamePage() {
+        XCTAssertTrue(NativeWorkspace.projectNavigationContextChanged(
+            currentProjectId:"PROJECT-A",currentRepoId:"repo-a",
+            targetProjectId:"PROJECT-A",targetRepoId:nil
+        ))
+        XCTAssertFalse(NativeWorkspace.projectNavigationContextChanged(
+            currentProjectId:"PROJECT-A",currentRepoId:nil,
+            targetProjectId:"PROJECT-A",targetRepoId:nil
+        ))
         XCTAssertTrue(NativeWorkspace.shouldPushNavigationOrigin(
             currentPage:.requirement,targetPage:.requirement,contextChanged:true
         ))
