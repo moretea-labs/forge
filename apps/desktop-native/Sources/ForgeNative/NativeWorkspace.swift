@@ -1115,7 +1115,7 @@ final class NativeWorkspace: ObservableObject {
         }
         var copy=source
         copy.id=UUID().uuidString
-        copy.title=String((source.title + "（副本）").prefix(80))
+        copy.title=String(source.title.prefix(76)) + "（副本）"
         copy.providerSessionId=nil
         copy.updatedAt=Date()
         threads.insert(copy,at:0)

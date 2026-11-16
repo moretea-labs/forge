@@ -72,6 +72,8 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertNotEqual(duplicateId,sourceId)
         XCTAssertEqual(model.selectedThreadId,duplicateId)
         XCTAssertEqual(model.threads.first?.title,"Release review（副本）")
+        XCTAssertTrue(model.threads.first?.title.hasSuffix("（副本）") == true)
+        XCTAssertLessThanOrEqual(model.threads.first?.title.count ?? 0,80)
         XCTAssertEqual(model.thread?.providerSessionId,nil)
         XCTAssertEqual(model.thread?.provider,"codex")
         XCTAssertEqual(model.thread?.repoId,"repo-a")
@@ -84,6 +86,19 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(restored.threads.count,2)
         XCTAssertNotEqual(restored.threads[0].id,restored.threads[1].id)
         XCTAssertNil(restored.threads[0].providerSessionId)
+    }
+
+    @MainActor
+    func testDuplicateLongAgentTitleKeepsCopyMarkerWithinTitleLimit() throws {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let sourceId=model.threads[0].id
+        model.threads[0].title=String(repeating:"A",count:80)
+        let duplicateId=try XCTUnwrap(model.duplicateThread(sourceId))
+        let title=try XCTUnwrap(model.threads.first(where:{$0.id == duplicateId})?.title)
+        XCTAssertEqual(title.count,80)
+        XCTAssertTrue(title.hasSuffix("（副本）"))
     }
 
     func testProjectListResponseDistinguishesValidEmptyFromMalformedPayloads() throws {
