@@ -95,6 +95,13 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 args.get("acceptanceCriteria").and_then(Value::as_array)
                     .map(|values| values.iter().filter_map(Value::as_str).map(str::to_owned).take(32).collect())
                     .unwrap_or_default(),
+                args.get("dependencyRequirementIds").map(|value| {
+                    value.as_array()
+                        .filter(|items| items.len() <= 50
+                            && items.iter().all(|item| item.as_str().is_some_and(|id| id.len() <= 160)))
+                        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<String>>())
+                        .ok_or("FORGE_NATIVE_BRIDGE_DEPENDENCIES_INVALID")
+                }).transpose()?,
                 args.get("taskStatus").and_then(Value::as_str).map(str::to_owned),
                 args.get("priority").and_then(Value::as_str).map(str::to_owned),
                 args.get("assignee").and_then(Value::as_str).map(str::to_owned),
@@ -135,6 +142,13 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                             && items.iter().all(|item| item.as_str().is_some_and(|text| text.len() <= 500)))
                         .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<String>>())
                         .ok_or("FORGE_NATIVE_BRIDGE_REMAINING_WORK_INVALID")
+                }).transpose()?,
+                args.get("dependencyRequirementIds").map(|value| {
+                    value.as_array()
+                        .filter(|items| items.len() <= 50
+                            && items.iter().all(|item| item.as_str().is_some_and(|id| id.len() <= 160)))
+                        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<String>>())
+                        .ok_or("FORGE_NATIVE_BRIDGE_DEPENDENCIES_INVALID")
                 }).transpose()?,
                 args.get("taskStatus").and_then(Value::as_str).map(str::to_owned),
                 args.get("priority").and_then(Value::as_str).map(str::to_owned),
@@ -478,7 +492,7 @@ mod tests {
     fn requirement_task_create_validates_initial_metadata_before_runtime_call() {
         let run = |status: Option<&str>, priority: Option<&str>, assignee: Option<&str>| {
             tauri::async_runtime::block_on(create_requirement(
-                "repo-1".into(), "REQ-NEW".into(), "Task".into(), "Outcome".into(), vec![],
+                "repo-1".into(), "REQ-NEW".into(), "Task".into(), "Outcome".into(), vec![], None,
                 status.map(str::to_owned), priority.map(str::to_owned), assignee.map(str::to_owned),
             ))
         };
@@ -492,7 +506,7 @@ mod tests {
         let run = |status: Option<&str>, priority: Option<&str>, assignee: Option<&str>| {
             tauri::async_runtime::block_on(revise_requirement(
                 "repo-1".into(), "REQ-1".into(), 1,
-                "Task".into(), "Outcome".into(), vec![], None, None, None,
+                "Task".into(), "Outcome".into(), vec![], None, None, None, None,
                 status.map(str::to_owned), priority.map(str::to_owned), assignee.map(str::to_owned),
             ))
         };
@@ -514,7 +528,30 @@ mod tests {
         let oversized = tauri::async_runtime::block_on(revise_requirement(
             "repo-1".into(), "REQ-1".into(), 1,
             "Task".into(), "Outcome".into(), vec![], None, Some(vec!["test:accepted".into()]),
-            Some(vec!["a".repeat(501)]), Some("done".into()), None, None,
+            Some(vec!["a".repeat(501)]), None, Some("done".into()), None, None,
+        ));
+        assert_eq!(oversized.unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID");
+    }
+
+    #[test]
+    fn requirement_task_dependencies_validate_on_create_and_revise() {
+        let malformed = tauri::async_runtime::block_on(dispatch("create_requirement", &json!({
+            "repoId": "repo-1", "requirementId": "REQ-NEW", "title": "Task", "outcome": "Outcome",
+            "dependencyRequirementIds": ["REQ-1", 42]
+        })));
+        assert_eq!(malformed.unwrap_err(), "FORGE_NATIVE_BRIDGE_DEPENDENCIES_INVALID");
+
+        let too_many = (0..51).map(|index| format!("REQ-{index}")).collect::<Vec<_>>();
+        let create = tauri::async_runtime::block_on(create_requirement(
+            "repo-1".into(), "REQ-NEW".into(), "Task".into(), "Outcome".into(), vec![],
+            Some(too_many), None, None, None,
+        ));
+        assert_eq!(create.unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_CREATE_METADATA_INVALID");
+
+        let oversized = tauri::async_runtime::block_on(revise_requirement(
+            "repo-1".into(), "REQ-1".into(), 1,
+            "Task".into(), "Outcome".into(), vec![], None, None, None,
+            Some(vec!["a".repeat(161)]), None, None, None,
         ));
         assert_eq!(oversized.unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID");
     }
