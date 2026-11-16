@@ -1181,6 +1181,32 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
 
+    func testRequirementDetailDistinguishesUnavailableAndEmptyDownstreamProjection() {
+        let requirement = ["requirementId":"REQ-prerequisite","revision":3,"title":"Prerequisite"] as [String:Any]
+        let unavailable = NativeWorkspace.requirementDetail([
+            "data":["requirement":requirement]
+        ])
+        XCTAssertNil(unavailable?.dependentRequirements)
+
+        let empty = NativeWorkspace.requirementDetail([
+            "data":[
+                "requirement":requirement,
+                "dependentRequirements":[],
+                "dependentRequirementsTruncated":false
+            ]
+        ])
+        XCTAssertNotNil(empty?.dependentRequirements)
+        XCTAssertEqual(empty?.dependentRequirements?.count,0)
+
+        let malformed = NativeWorkspace.requirementDetail([
+            "data":[
+                "requirement":requirement,
+                "dependentRequirements":[["title":"missing requirement id"]]
+            ]
+        ])
+        XCTAssertNil(malformed?.dependentRequirements)
+    }
+
     func testRequirementDetailParsesCanonicalDownstreamDependencyProjection() {
         let detail=NativeWorkspace.requirementDetail([
             "data":[
@@ -1195,15 +1221,15 @@ final class NativeWorkspaceTests: XCTestCase {
             ]
         ])
 
-        XCTAssertEqual(detail?.dependentRequirements.count,1)
-        XCTAssertEqual(detail?.dependentRequirements.first?.requirementId,"REQ-downstream")
-        XCTAssertEqual(detail?.dependentRequirements.first?.title,"Downstream task")
-        XCTAssertEqual(detail?.dependentRequirements.first?.status,"planned")
-        XCTAssertEqual(detail?.dependentRequirements.first?.repoId,"repo-b")
-        XCTAssertEqual(detail?.dependentRequirements.first?.projectId,"project-a")
-        XCTAssertEqual(detail?.dependentRequirements.first?.priority,"high")
-        XCTAssertEqual(detail?.dependentRequirements.first?.assignee,"owner")
-        XCTAssertEqual(detail?.dependentRequirements.first?.blocksDependent,true)
+        XCTAssertEqual(detail?.dependentRequirements?.count,1)
+        XCTAssertEqual(detail?.dependentRequirements?.first?.requirementId,"REQ-downstream")
+        XCTAssertEqual(detail?.dependentRequirements?.first?.title,"Downstream task")
+        XCTAssertEqual(detail?.dependentRequirements?.first?.status,"planned")
+        XCTAssertEqual(detail?.dependentRequirements?.first?.repoId,"repo-b")
+        XCTAssertEqual(detail?.dependentRequirements?.first?.projectId,"project-a")
+        XCTAssertEqual(detail?.dependentRequirements?.first?.priority,"high")
+        XCTAssertEqual(detail?.dependentRequirements?.first?.assignee,"owner")
+        XCTAssertEqual(detail?.dependentRequirements?.first?.blocksDependent,true)
         XCTAssertEqual(detail?.dependentRequirementsTruncated,true)
         XCTAssertEqual(detail?.dependentRequirementCount,24)
     }

@@ -249,7 +249,7 @@ struct RequirementRecordDetail {
     let dependencyRequirementIds: [String]
     let dependencyRequirements: [RequirementDependencyDetail]
     let blockingDependencyIds: [String]
-    let dependentRequirements: [DependentRequirementDetail]
+    let dependentRequirements: [DependentRequirementDetail]?
     let dependentRequirementsTruncated: Bool?
     let dependentRequirementCount: Int?
 }
@@ -3238,16 +3238,20 @@ final class NativeWorkspace: ObservableObject {
                 repoId:row["repoId"] as? String,missing:row["missing"] as? Bool ?? false
             )
         }
-        let dependents = (data["dependentRequirements"] as? [[String:Any]] ?? []).compactMap { row -> DependentRequirementDetail? in
-            guard let dependentId = row["requirementId"] as? String else { return nil }
-            return DependentRequirementDetail(
-                requirementId:dependentId,title:row["title"] as? String ?? dependentId,
-                status:row["status"] as? String,revision:row["revision"] as? Int,
-                repoId:row["repoId"] as? String,projectId:row["projectId"] as? String,
-                priority:row["priority"] as? String,assignee:row["assignee"] as? String,
-                blocksDependent:row["blocksDependent"] as? Bool
-            )
-        }
+        let dependents: [DependentRequirementDetail]? = {
+            guard let rows = data["dependentRequirements"] as? [[String:Any]] else { return nil }
+            let parsed = rows.compactMap { row -> DependentRequirementDetail? in
+                guard let dependentId = row["requirementId"] as? String else { return nil }
+                return DependentRequirementDetail(
+                    requirementId:dependentId,title:row["title"] as? String ?? dependentId,
+                    status:row["status"] as? String,revision:row["revision"] as? Int,
+                    repoId:row["repoId"] as? String,projectId:row["projectId"] as? String,
+                    priority:row["priority"] as? String,assignee:row["assignee"] as? String,
+                    blocksDependent:row["blocksDependent"] as? Bool
+                )
+            }
+            return parsed.count == rows.count ? parsed : nil
+        }()
         return RequirementRecordDetail(
             requirementId:id,
             revision:value["revision"] as? Int ?? 0,
