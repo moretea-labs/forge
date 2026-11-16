@@ -445,6 +445,21 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(restored.agentSendBlockReason,"只读分析会话需要可用的 API Provider。")
     }
 
+    func testReadOnlyAnalysisProviderFallsBackFromCodex() {
+        XCTAssertEqual(NativeWorkspace.resolveReadOnlyAnalysisProvider(
+            preferred:"codex",fallback:"api:review"
+        ),"api:review")
+        XCTAssertEqual(NativeWorkspace.resolveReadOnlyAnalysisProvider(
+            preferred:"joycode",fallback:"api:review"
+        ),"joycode")
+        XCTAssertEqual(NativeWorkspace.resolveReadOnlyAnalysisProvider(
+            preferred:nil,fallback:"api:review"
+        ),"api:review")
+        XCTAssertNil(NativeWorkspace.resolveReadOnlyAnalysisProvider(
+            preferred:"codex",fallback:"codex"
+        ))
+    }
+
     func testApiTurnHistoryAndEffectAuthorizationAreBounded() {
         var thread = ChatThread(provider:"api")
         thread.messages = [

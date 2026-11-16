@@ -1248,6 +1248,14 @@ final class NativeWorkspace: ObservableObject {
         value == "joycode" || value == "api" || value.hasPrefix("api:")
     }
 
+    nonisolated static func resolveReadOnlyAnalysisProvider(
+        preferred:String?,fallback:String?
+    ) -> String? {
+        if let preferred, matchesExternalProvider(preferred) { return preferred }
+        guard let fallback, matchesExternalProvider(fallback) else { return nil }
+        return fallback
+    }
+
     func selectAgentModel(_ slug: String) {
         guard let index = threads.firstIndex(where: { $0.id == selectedThreadId }),
               let model = agentModels.first(where: { $0.slug == slug }) else { return }

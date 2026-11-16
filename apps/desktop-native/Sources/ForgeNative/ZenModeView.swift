@@ -2153,9 +2153,8 @@ private struct ZenReviewSheet: View {
             }
             .pickerStyle(.menu)
             Text(role.focus).font(.system(size:11)).foregroundStyle(.secondary)
-            Picker("Provider / Model",selection:$provider) {
-                Text("默认 Provider").tag("")
-                Text("Codex").tag("codex")
+            Picker("只读 Provider / Model",selection:$provider) {
+                Text("默认只读 Provider").tag("")
                 if model.localApiSettings?.joyCodeReady == true {
                     Text("JoyCode · \(model.localApiSettings?.joyCodeModel ?? "JoyCode")").tag("joycode")
                 }
@@ -2176,7 +2175,7 @@ private struct ZenReviewSheet: View {
                 }
             }
             .pickerStyle(.menu)
-            Text("Zen 内审查只支持已配置的 API / JoyCode，强制禁用工具写入；Codex 保留 Agent 入口。Zen 不自动应用审查建议。")
+            Text("Agent Review 使用已配置的 API Provider / JoyCode，并以只读会话运行；需要执行修改时，请在普通 Agent 中单独发起。Zen 不自动应用审查建议。")
                 .font(.system(size:11)).foregroundStyle(.secondary)
             HStack {
                 if provider == "joycode" || provider.hasPrefix("api:") {
@@ -2190,7 +2189,7 @@ private struct ZenReviewSheet: View {
                 }
                 Spacer()
                 Button("取消") { dismiss() }
-                Button("在 Agent 中审查") {
+                Button("在只读 Agent 中审查") {
                     let instruction = "请扮演\(role.rawValue)，对当前 \(record.kind == .requirement ? "Requirement" : "Plan") 做 Review。重点检查：\(role.focus)。仅返回问题、证据与建议；请核对 Agent 当前 Repo Access 权限，不要自动写入或执行。"
                     dismiss()
                     onStart(instruction,provider.isEmpty ? nil : provider)

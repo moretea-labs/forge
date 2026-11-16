@@ -205,19 +205,17 @@ private struct ForgeWorkspaceView: View {
                         model.error="请先停止正在运行的会话。"
                         return
                     }
-                    let selectedProvider = wantsProposal
-                        ? (provider.flatMap { NativeWorkspace.matchesExternalProvider($0) ? $0 : nil }
-                           ?? model.readOnlyAnalysisProvider)
-                        : provider
-                    guard !wantsProposal || selectedProvider != nil else {
-                        model.error="请先配置一个可用的 API Provider，再生成 Zen 提案。"
+                    guard let selectedProvider = NativeWorkspace.resolveReadOnlyAnalysisProvider(
+                        preferred:provider,fallback:model.readOnlyAnalysisProvider
+                    ) else {
+                        model.error="请先配置一个可用的 API Provider，再进行只读审查或生成 Zen 提案。"
                         return
                     }
                     model.newThread(
                         provider:selectedProvider,
                         requirementId:item.kind == .requirement ? item.recordId : item.requirementId,
                         planId:item.kind == .plan ? item.recordId : nil,
-                        readOnly:wantsProposal
+                        readOnly:true
                     )
                     model.draft = wantsProposal
                         ? prompt + "\n\n" + ZenChangeProposal.outputContract
