@@ -1167,6 +1167,33 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
 
+    func testRequirementDetailParsesCanonicalDownstreamDependencyProjection() {
+        let detail=NativeWorkspace.requirementDetail([
+            "data":[
+                "requirement":["requirementId":"REQ-prerequisite","revision":3,"title":"Prerequisite"],
+                "dependentRequirements":[[
+                    "requirementId":"REQ-downstream","title":"Downstream task","status":"planned",
+                    "revision":5,"repoId":"repo-b","projectId":"project-a","priority":"high",
+                    "assignee":"owner","blocksDependent":true
+                ]],
+                "dependentRequirementsTruncated":true,
+                "dependentRequirementCount":24
+            ]
+        ])
+
+        XCTAssertEqual(detail?.dependentRequirements.count,1)
+        XCTAssertEqual(detail?.dependentRequirements.first?.requirementId,"REQ-downstream")
+        XCTAssertEqual(detail?.dependentRequirements.first?.title,"Downstream task")
+        XCTAssertEqual(detail?.dependentRequirements.first?.status,"planned")
+        XCTAssertEqual(detail?.dependentRequirements.first?.repoId,"repo-b")
+        XCTAssertEqual(detail?.dependentRequirements.first?.projectId,"project-a")
+        XCTAssertEqual(detail?.dependentRequirements.first?.priority,"high")
+        XCTAssertEqual(detail?.dependentRequirements.first?.assignee,"owner")
+        XCTAssertEqual(detail?.dependentRequirements.first?.blocksDependent,true)
+        XCTAssertEqual(detail?.dependentRequirementsTruncated,true)
+        XCTAssertEqual(detail?.dependentRequirementCount,24)
+    }
+
     func testSemanticRecordMutationReadbackRequiresCurrentRevisionAndProjection() {
         let row = ForgeRecord(recordId:"REQ-a",title:"Desktop",state:"completed",kind:.requirement,
                               depth:0,requirementId:"REQ-a",parentPlanId:nil,
@@ -1176,7 +1203,8 @@ final class NativeWorkspaceTests: XCTestCase {
             state:"completed",acceptanceCriteria:["Ship"],progressSummary:"Verified",
             remainingWork:[],acceptedEvidenceRefs:["git:commit:abc"],taskStatus:"done",
             priority:"urgent",assignee:"owner",dependencyRequirementIds:[],
-            dependencyRequirements:[],blockingDependencyIds:[]
+            dependencyRequirements:[],blockingDependencyIds:[],dependentRequirements:[],
+            dependentRequirementsTruncated:false,dependentRequirementCount:nil
         )
         XCTAssertTrue(NativeWorkspace.semanticRecordReadbackConfirmed(
             record:row,detail:.requirement(detail),kind:.requirement,id:"REQ-a",revision:4,state:"completed"))

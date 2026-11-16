@@ -1105,6 +1105,52 @@ struct ZenWorkspacePane: View {
                             }
                         }
                     }
+                    if !detail.dependentRequirements.isEmpty {
+                        Divider()
+                        VStack(alignment:.leading,spacing:9) {
+                            Text("依赖此任务").font(.system(size:12,weight:.semibold))
+                            ForEach(detail.dependentRequirements) { dependent in
+                                let projectName=dependent.projectId.flatMap { projectId in
+                                    model.semanticProjects.first(where:{$0.projectId == projectId})?.displayName
+                                }
+                                let repositoryName=dependent.repoId.flatMap { repoId in
+                                    model.projects.first(where:{$0.repoId == repoId})?.label
+                                }
+                                VStack(alignment:.leading,spacing:3) {
+                                    HStack(alignment:.firstTextBaseline,spacing:8) {
+                                        Text(dependent.title).font(.system(size:11,weight:.medium))
+                                            .frame(maxWidth:.infinity,alignment:.leading)
+                                        Text(dependent.blocksDependent.map { $0 ? "仍被此任务阻塞" : "已解除阻塞" } ?? "阻塞状态未知")
+                                            .font(.system(size:10))
+                                            .foregroundStyle(dependent.blocksDependent == true ? .orange : .secondary)
+                                    }
+                                    HStack(spacing:5) {
+                                        Text(dependent.requirementId)
+                                            .font(.system(size:9,design:.monospaced))
+                                        if let projectName {
+                                            Text("· \(projectName)").font(.system(size:9))
+                                        }
+                                        if let repositoryName {
+                                            Text("· \(repositoryName)").font(.system(size:9))
+                                        }
+                                        Spacer(minLength:4)
+                                        if let status=dependent.status {
+                                            Text(Self.taskStatusLabel(status) ?? status)
+                                                .font(.system(size:10)).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    .foregroundStyle(.secondary)
+                                }
+                                .accessibilityIdentifier("zen.record.dependent.\(dependent.requirementId)")
+                            }
+                            if detail.dependentRequirementsTruncated == true {
+                                Text(detail.dependentRequirementCount.map { "仅显示前 20 项，共 \($0) 项" }
+                                     ?? "依赖任务扫描达到上限，当前结果可能不完整")
+                                    .font(.system(size:10)).foregroundStyle(.secondary)
+                            }
+                        }
+                        .accessibilityIdentifier("zen.record.dependents")
+                    }
                     if !detail.progressSummary.isEmpty {
                         Divider()
                         Text("当前进展").font(.system(size:12,weight:.semibold))

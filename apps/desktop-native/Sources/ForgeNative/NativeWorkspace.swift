@@ -221,6 +221,18 @@ struct RequirementDependencyDetail: Identifiable {
     let missing: Bool
     var id: String { requirementId }
 }
+struct DependentRequirementDetail: Identifiable {
+    let requirementId: String
+    let title: String
+    let status: String?
+    let revision: Int?
+    let repoId: String?
+    let projectId: String?
+    let priority: String?
+    let assignee: String?
+    let blocksDependent: Bool?
+    var id: String { requirementId }
+}
 struct RequirementRecordDetail {
     let requirementId: String
     let revision: Int
@@ -237,6 +249,9 @@ struct RequirementRecordDetail {
     let dependencyRequirementIds: [String]
     let dependencyRequirements: [RequirementDependencyDetail]
     let blockingDependencyIds: [String]
+    let dependentRequirements: [DependentRequirementDetail]
+    let dependentRequirementsTruncated: Bool?
+    let dependentRequirementCount: Int?
 }
 
 struct PlanRecordItem: Identifiable {
@@ -3223,6 +3238,16 @@ final class NativeWorkspace: ObservableObject {
                 repoId:row["repoId"] as? String,missing:row["missing"] as? Bool ?? false
             )
         }
+        let dependents = (data["dependentRequirements"] as? [[String:Any]] ?? []).compactMap { row -> DependentRequirementDetail? in
+            guard let dependentId = row["requirementId"] as? String else { return nil }
+            return DependentRequirementDetail(
+                requirementId:dependentId,title:row["title"] as? String ?? dependentId,
+                status:row["status"] as? String,revision:row["revision"] as? Int,
+                repoId:row["repoId"] as? String,projectId:row["projectId"] as? String,
+                priority:row["priority"] as? String,assignee:row["assignee"] as? String,
+                blocksDependent:row["blocksDependent"] as? Bool
+            )
+        }
         return RequirementRecordDetail(
             requirementId:id,
             revision:value["revision"] as? Int ?? 0,
@@ -3238,7 +3263,10 @@ final class NativeWorkspace: ObservableObject {
             assignee:value["assignee"] as? String,
             dependencyRequirementIds:value["dependsOnRequirementIds"] as? [String] ?? dependencies.map(\.requirementId),
             dependencyRequirements:dependencies,
-            blockingDependencyIds:value["blockingDependencyIds"] as? [String] ?? []
+            blockingDependencyIds:value["blockingDependencyIds"] as? [String] ?? [],
+            dependentRequirements:dependents,
+            dependentRequirementsTruncated:data["dependentRequirementsTruncated"] as? Bool,
+            dependentRequirementCount:data["dependentRequirementCount"] as? Int
         )
     }
 
