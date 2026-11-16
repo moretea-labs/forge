@@ -2298,10 +2298,18 @@ struct ZenProjectDirectorySheet: View {
 
             List {
                 ForEach(visibleProjects) { project in
+                    let isSelected=model.selectedProjectId == project.projectId
+                    let selectedPlacement=isSelected
+                        ? model.projectRepositoryId.flatMap { repositoryId in
+                            model.projects.first(where:{$0.repoId == repositoryId})?.label
+                        }
+                        : nil
                     HStack(spacing:10) {
-                        Image(systemName:project.status == "archived" ? "archivebox" : "folder")
-                            .foregroundStyle(.secondary)
+                        Image(systemName:project.status == "archived" ? "archivebox" :
+                              isSelected ? "checkmark.circle.fill" : "folder")
+                            .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                             .frame(width:19)
+                            .accessibilityHidden(true)
                         VStack(alignment:.leading,spacing:3) {
                             Button(project.displayName) {
                                 model.selectSemanticProject(project.projectId)
@@ -2311,7 +2319,13 @@ struct ZenProjectDirectorySheet: View {
                             .font(.system(size:13,weight:.medium))
                             .disabled(model.busy || saving || project.status == "archived")
                             .accessibilityIdentifier("zen.projects.open.\(project.projectId)")
+                            .accessibilityLabel(isSelected ? "\(project.displayName)，当前项目" : project.displayName)
+                            .accessibilityValue(isSelected ? selectedPlacement ?? "项目级" : "")
                             HStack(spacing:8) {
+                                if isSelected {
+                                    Text("当前 · \(selectedPlacement ?? "项目级")")
+                                        .foregroundStyle(Color.accentColor)
+                                }
                                 if project.status == "archived" {
                                     Text("已归档")
                                 }
