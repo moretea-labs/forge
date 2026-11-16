@@ -1422,6 +1422,62 @@ describe('Unified Process Runtime', () => {
     expect(cancelled.cancelled === true || cancelled.status === 'cancelled' || cancelled.completed).toBe(true);
   });
 
+  test('Native Agent resolves lightweight Process receipts without dropping checkout or principal fences', async () => {
+    const fx = fixture();
+    const checkoutId = fx.repository.activeCheckoutId;
+    const process = await startLightweightRepositoryCommand({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      execution: {
+        command: ['git', 'status', '--short'],
+        cwd: fx.repoRoot,
+        timeoutMs: 10_000,
+        maxOutputBytes: 4_096,
+      },
+      readonlyDirect: true,
+      interactiveWaitMs: 0,
+      timeoutMs: 10_000,
+      principalId: 'forge-desktop-local-harness',
+    });
+    expect(process.handle.processId.startsWith('lightweight:')).toBe(true);
+    // Settle the producing Runtime first; a synchronous child inspection must
+    // not block its exit-observation callback and manufacture an unknown outcome.
+    const settled = await waitForLightweightProcess(
+      fx.controllerHome, fx.repository.repoId, process.handle.processId, { timeoutMs: 5_000 },
+    );
+    expect(settled).toMatchObject({ completed: true, ok: true, exitCode: 0 });
+
+    const script = join(FORGE_ROOT, 'apps/desktop/src-tauri/resources/forge-local-tool.mjs');
+    const inspect = (selectedCheckoutId: string) => {
+      const child = spawnSync(globalThis.process.execPath, [script], {
+        input: JSON.stringify({
+          tool: 'process_status', repoId: fx.repository.repoId,
+          checkoutId: selectedCheckoutId, conversationId: 'lightweight-receipt',
+          controllerHome: fx.controllerHome, sourceRoot: FORGE_ROOT,
+          allowEffects: false, arguments: { process_id: process.handle.processId, wait_ms: 5_000 },
+        }),
+        encoding: 'utf8', timeout: 12_000,
+      });
+      expect(child.status, child.stderr).toBe(0);
+      return JSON.parse(child.stdout);
+    };
+    expect(inspect('checkout_foreign')).toEqual({
+      ok: false, error: 'LOCAL_FORGE_PROCESS_CHECKOUT_MISMATCH',
+    });
+    const observed = inspect(checkoutId);
+    expect(observed).toMatchObject({
+      ok: true, result: { processId: process.handle.processId, completed: true, status: 'succeeded', exitCode: 0 },
+    });
+    const foreign = await callProcessTool({
+      controllerHome: fx.controllerHome, principalId: 'other-principal',
+    }, 'process_get', {
+      repo_id: fx.repository.repoId, process_id: process.handle.processId,
+    });
+    expect(foreign?.isError).toBe(true);
+    expect((foreign?.structuredContent?.error as { code?: string } | undefined)?.code)
+      .toBe('PROCESS_HANDLE_PRINCIPAL_MISMATCH');
+  });
+
   test('Native Agent local tool cancels a live managed Process through the canonical Process Runtime', async () => {
     const fx = fixture();
     const checkoutId = fx.repository.activeCheckoutId;
