@@ -2755,12 +2755,16 @@ final class NativeWorkspaceTests: XCTestCase {
 
         let output = NativeWorkspace.apiToolProgressEvents(
             started,
-            payload:["name":"git_status","phase":"output","toolCallId":"call-1"],
+            payload:[
+                "name":"git_status","phase":"output","toolCallId":"call-1",
+                "output":"{\"stdoutTail\":\"Tests passed\"}"
+            ],
             now:"output-at"
         )
         XCTAssertEqual(output.count,1)
         XCTAssertEqual(output.first?.status,"output")
         XCTAssertNil(output.first?.completedAt)
+        XCTAssertEqual(output.first?.output,"{\"stdoutTail\":\"Tests passed\"}")
 
         let finished = NativeWorkspace.apiToolProgressEvents(
             output,
@@ -2782,6 +2786,25 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(terminalReceipt.first?.status,"completed")
         XCTAssertEqual(terminalReceipt.first?.startedAt,"started-at")
         XCTAssertEqual(terminalReceipt.first?.completedAt,"completed-at")
+        XCTAssertEqual(terminalReceipt.first?.output,"{\"stdoutTail\":\"Tests passed\"}")
+
+        let canonicalReceipts = NativeWorkspace.apiActivityEvents([
+            ["name":"git_status","ok":true,"toolCallId":"call-1"]
+        ] as [[String:Any]]) ?? []
+        let mergedReceipts = NativeWorkspace.mergeActivityReceipts(
+            terminalReceipt,receipts:canonicalReceipts
+        )
+        XCTAssertEqual(mergedReceipts.first?.output,"{\"stdoutTail\":\"Tests passed\"}")
+
+        let oversized = NativeWorkspace.apiToolProgressEvents(
+            [],
+            payload:[
+                "name":"git_status","phase":"output","toolCallId":"call-large",
+                "output":String(repeating:"x",count:2_500)
+            ],
+            now:"large-output-at"
+        )
+        XCTAssertEqual(oversized.first?.output?.count,2_000)
 
         let distinct = NativeWorkspace.apiToolProgressEvents(
             finished,
@@ -2809,6 +2832,12 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(completed.first?.status,"completed")
     }
 
+    func testLegacyAgentActivityEventDecodesWithoutOutput() throws {
+        let data=Data(#"{"phase":"tool","label":"git_status","detail":null,"status":"completed","startedAt":"start","completedAt":null,"toolCallId":"legacy"}"#.utf8)
+        let event=try JSONDecoder().decode(AgentLiveActivityEvent.self,from:data)
+        XCTAssertNil(event.output)
+    }
+
     func testFailedToolProgressIsPersistableAsUnknown() {
         let running = AgentLiveActivityEvent(
             phase:"tool", label:"apply_patch", detail:"request-1",
@@ -2823,11 +2852,13 @@ final class NativeWorkspaceTests: XCTestCase {
 
         let output = AgentLiveActivityEvent(
             phase:"tool",label:"apply_patch",detail:"request-2",
-            status:"output",startedAt:"started-at",completedAt:nil,toolCallId:"call-2"
+            status:"output",startedAt:"started-at",completedAt:nil,toolCallId:"call-2",
+            output:"bounded tool result"
         )
         let outputFinalized = NativeWorkspace.finalizeFailedToolEvents([output],now:"failed-at")
         XCTAssertEqual(outputFinalized.first?.status,"unknown")
         XCTAssertEqual(outputFinalized.first?.completedAt,"failed-at")
+        XCTAssertEqual(outputFinalized.first?.output,"bounded tool result")
     }
 
     @MainActor

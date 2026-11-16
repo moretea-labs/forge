@@ -80,6 +80,7 @@ struct AgentLiveActivityEvent: Codable, Identifiable {
     let startedAt: String
     let completedAt: String?
     let toolCallId: String?
+    var output: String? = nil
     var id: String { toolCallId ?? "\(startedAt)|\(phase)|\(label)|\(detail ?? "")" }
 }
 
@@ -4584,7 +4585,8 @@ final class NativeWorkspace: ObservableObject {
                 detail:row["processId"] as? String ?? row["requestId"] as? String,
                 status:status,
                 startedAt:now, completedAt:["running","output"].contains(status) ? nil : now,
-                toolCallId:row["toolCallId"] as? String
+                toolCallId:row["toolCallId"] as? String,
+                output:(row["output"] as? String).map { String($0.prefix(2_000)) }
             )
         }
         return events.isEmpty ? nil : events
@@ -4600,6 +4602,7 @@ final class NativeWorkspace: ObservableObject {
         let status = transportPhase == "started" ? "running" : transportPhase
         let toolCallId = payload["toolCallId"] as? String
         let detail = payload["processId"] as? String ?? payload["requestId"] as? String
+        let output = (payload["output"] as? String).map { String($0.prefix(2_000)) }
         var events = existing
         let matchingIndex = events.lastIndex { event in
             if let toolCallId {
@@ -4615,7 +4618,8 @@ final class NativeWorkspace: ObservableObject {
                 detail:detail ?? started.detail,
                 status:status, startedAt:started.startedAt,
                 completedAt:["running","output"].contains(status) ? nil : now,
-                toolCallId:toolCallId ?? started.toolCallId
+                toolCallId:toolCallId ?? started.toolCallId,
+                output:output ?? started.output
             )
             return events
         }
@@ -4627,7 +4631,7 @@ final class NativeWorkspace: ObservableObject {
             phase:"tool", label:name,
             detail:detail, status:status,
             startedAt:now, completedAt:["running","output"].contains(status) ? nil : now,
-            toolCallId:toolCallId
+            toolCallId:toolCallId, output:output
         ))
         return events
     }
@@ -4641,7 +4645,7 @@ final class NativeWorkspace: ObservableObject {
             return AgentLiveActivityEvent(
                 phase:event.phase, label:event.label, detail:event.detail,
                 status:"unknown", startedAt:event.startedAt, completedAt:now,
-                toolCallId:event.toolCallId
+                toolCallId:event.toolCallId, output:event.output
             )
         }
     }
@@ -4726,7 +4730,8 @@ final class NativeWorkspace: ObservableObject {
                     phase:receipt.phase,label:receipt.label,
                     detail:processId ?? receipt.detail,
                     status:receipt.status,startedAt:event.startedAt,
-                    completedAt:receipt.completedAt,toolCallId:receipt.toolCallId
+                    completedAt:receipt.completedAt,toolCallId:receipt.toolCallId,
+                    output:event.output ?? receipt.output
                 ))
             } else {
                 // Missing canonical receipt is an unknown outcome, never
@@ -4734,7 +4739,8 @@ final class NativeWorkspace: ObservableObject {
                 result.append(AgentLiveActivityEvent(
                     phase:event.phase,label:event.label,detail:event.detail,
                     status:"unknown",startedAt:event.startedAt,
-                    completedAt:event.completedAt,toolCallId:event.toolCallId
+                    completedAt:event.completedAt,toolCallId:event.toolCallId,
+                    output:event.output
                 ))
             }
         }

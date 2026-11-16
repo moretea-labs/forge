@@ -2501,6 +2501,19 @@ private struct AgentPane: View {
                         .lineLimit(event.phase == "message" ? 7 : 2)
                         .textSelection(.enabled)
                 }
+                if let output = event.output, !output.isEmpty {
+                    VStack(alignment:.leading,spacing:3) {
+                        Text("工具输出")
+                            .font(.system(size:9,weight:.medium))
+                            .foregroundStyle(ForgePalette.secondary)
+                        Text(output)
+                            .font(.system(size:9,design:.monospaced))
+                            .foregroundStyle(ForgePalette.ink.opacity(0.82))
+                            .lineLimit(6)
+                            .textSelection(.enabled)
+                    }
+                    .padding(.top,2)
+                }
             }
             Spacer(minLength:8)
             if event.status == "failed" {
