@@ -39,6 +39,39 @@ struct ForgeSemanticProject: Identifiable, Decodable, Equatable {
     var id: String { projectId }
     var repositoryIds: [String] { placements?.map(\.repositoryId) ?? [] }
 }
+
+struct NativeWorkspaceStore: Codable {
+    static let currentSchemaVersion = 1
+
+    let schemaVersion: Int
+    let threads: [ChatThread]
+    let selectedProjectId: String?
+    let repoId: String?
+    let checkoutId: String?
+
+    init(threads:[ChatThread],selectedProjectId:String?,repoId:String?,checkoutId:String?) {
+        schemaVersion=Self.currentSchemaVersion
+        self.threads=threads
+        self.selectedProjectId=selectedProjectId
+        self.repoId=repoId
+        self.checkoutId=checkoutId
+    }
+
+    static func decode(_ data:Data) throws -> NativeWorkspaceStore {
+        if let snapshot=try? JSONDecoder().decode(Self.self,from:data) {
+            guard snapshot.schemaVersion == currentSchemaVersion else {
+                throw ForgeBridgeError.invalidResponse
+            }
+            return snapshot
+        }
+        let legacyThreads=try JSONDecoder().decode([ChatThread].self,from:data)
+        let first=legacyThreads.first
+        return NativeWorkspaceStore(
+            threads:legacyThreads,selectedProjectId:first?.projectId,
+            repoId:first?.repoId,checkoutId:first?.checkoutId
+        )
+    }
+}
 struct AgentReasoningOption: Codable, Identifiable {
     let effort: String
     let description: String
@@ -850,15 +883,13 @@ final class NativeWorkspace: ObservableObject {
     init(store: URL? = nil) {
         self.store = store ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ForgeNative/conversations.json")
-        if let bytes = try? Data(contentsOf: self.store),
-           let items = try? JSONDecoder().decode([ChatThread].self, from: bytes) {
-            threads = Array(items.prefix(100))
-            if let first = threads.first {
-                selectedThreadId = first.id
-                repoId = first.repoId
-                checkoutId = first.checkoutId
-                selectedProjectId = first.projectId
-            }
+        if let bytes = try? Data(contentsOf:self.store),
+           let snapshot=try? NativeWorkspaceStore.decode(bytes) {
+            threads=Array(snapshot.threads.prefix(100))
+            selectedProjectId=snapshot.selectedProjectId
+            repoId=snapshot.repoId
+            checkoutId=snapshot.checkoutId
+            if let first=threads.first { selectedThreadId=first.id }
         }
         if threads.isEmpty {
             newThread()
@@ -1049,8 +1080,14 @@ final class NativeWorkspace: ObservableObject {
     }
     func persist() {
         do {
-            try FileManager.default.createDirectory(at: store.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONEncoder().encode(Array(threads.prefix(100))).write(to: store, options: .atomic)
+            try FileManager.default.createDirectory(at:store.deletingLastPathComponent(),withIntermediateDirectories:true)
+            let threadRepositoryContext=selectedProjectId == nil && repoId == nil ? thread : nil
+            let snapshot=NativeWorkspaceStore(
+                threads:Array(threads.prefix(100)),selectedProjectId:selectedProjectId,
+                repoId:repoId ?? threadRepositoryContext?.repoId,
+                checkoutId:checkoutId ?? threadRepositoryContext?.checkoutId
+            )
+            try JSONEncoder().encode(snapshot).write(to:store,options:.atomic)
         } catch { self.error = "无法保存会话：\(error.localizedDescription)" }
     }
     func newThread(
@@ -1215,6 +1252,7 @@ final class NativeWorkspace: ObservableObject {
         zenMode = false
         page = .agent
         error = nil
+        persist()
     }
 
     func consumeConversationScrollRequest(_ request: ConversationScrollRequest) {
@@ -1398,6 +1436,7 @@ final class NativeWorkspace: ObservableObject {
         }
         if repoId != id { invalidateRepositoryAccessRequests() }
         if repoId == id && (requestedCheckoutId == nil || checkoutId == requestedCheckoutId) {
+            persist()
             if page == .requirement {
                 Task { await loadPage() }
             } else {
@@ -1419,6 +1458,7 @@ final class NativeWorkspace: ObservableObject {
         clearRecordSelection()
         page = .requirement
         error = nil
+        persist()
         Task { await refreshProject() }
     }
 
@@ -1551,6 +1591,7 @@ final class NativeWorkspace: ObservableObject {
         if target.recordId != nil { clearRecordSelection() }
         error = nil
         page = target.page
+        persist()
         Task {
             if threadChanged, repoId != nil {
                 await refreshProject()
@@ -1872,8 +1913,8 @@ final class NativeWorkspace: ObservableObject {
             threads[index].repoId=targetRepoId
             threads[index].checkoutId=targetCheckoutId
             threads[index].updatedAt=Date()
-            persist()
         }
+        persist()
         clearRecordSelection()
         records=[]
         detail=""

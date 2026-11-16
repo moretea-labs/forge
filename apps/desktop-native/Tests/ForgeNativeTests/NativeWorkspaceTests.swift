@@ -1488,6 +1488,45 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(projects[1].status,"archived")
     }
 
+    @MainActor
+    func testZenProjectSelectionSurvivesRestartWithoutRebindingAgentThread() throws {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let url=folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:url)
+        model.threads[0].projectId="PROJECT-a"
+        model.threads[0].repoId="repo-a"
+        model.threads[0].checkoutId="checkout-a"
+        model.selectedProjectId="PROJECT-b"
+        model.repoId="repo-b"
+        model.checkoutId="checkout-b"
+        model.persist()
+
+        let restored=NativeWorkspace(store:url)
+        XCTAssertEqual(restored.selectedProjectId,"PROJECT-b")
+        XCTAssertEqual(restored.repoId,"repo-b")
+        XCTAssertEqual(restored.checkoutId,"checkout-b")
+        XCTAssertEqual(restored.thread?.projectId,"PROJECT-a")
+        XCTAssertEqual(restored.thread?.repoId,"repo-a")
+    }
+
+    func testWorkspaceStorePreservesExplicitNilAndMigratesLegacyConversationArray() throws {
+        let thread=ChatThread(repoId:"repo-a",checkoutId:"checkout-a",projectId:"PROJECT-a")
+        let current=NativeWorkspaceStore(
+            threads:[thread],selectedProjectId:nil,repoId:nil,checkoutId:nil
+        )
+        let restoredCurrent=try NativeWorkspaceStore.decode(JSONEncoder().encode(current))
+        XCTAssertNil(restoredCurrent.selectedProjectId)
+        XCTAssertNil(restoredCurrent.repoId)
+        XCTAssertNil(restoredCurrent.checkoutId)
+
+        let restoredLegacy=try NativeWorkspaceStore.decode(JSONEncoder().encode([thread]))
+        XCTAssertEqual(restoredLegacy.selectedProjectId,"PROJECT-a")
+        XCTAssertEqual(restoredLegacy.repoId,"repo-a")
+        XCTAssertEqual(restoredLegacy.checkoutId,"checkout-a")
+        XCTAssertEqual(restoredLegacy.threads.first?.id,thread.id)
+    }
+
     func testPlanningTreeKeepsRequirementOptionalAndNestsChildPlans() {
         let rows = NativeWorkspace.planningRecords(
             requirementRows:[
