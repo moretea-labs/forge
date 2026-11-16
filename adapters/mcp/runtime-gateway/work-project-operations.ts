@@ -64,10 +64,19 @@ function projectTasks(ctx: MultiRepositoryMcpToolContext, projectId: string) {
     .map((record) => requirementSemanticView(record.value));
 }
 
-function projectTaskSummary(tasks: ReturnType<typeof projectTasks>) {
+function projectTaskSummary(ctx: MultiRepositoryMcpToolContext, tasks: ReturnType<typeof projectTasks>) {
   const taskStatusCounts = Object.fromEntries(REQUIREMENT_STATES.map((status) => [status, 0])) as Record<RequirementState, number>;
-  for (const task of tasks) taskStatusCounts[task.status] += 1;
-  return { requirementCount: tasks.length, taskStatusCounts };
+  const taskPriorityCounts: Record<string, number> = { urgent: 0, high: 0, normal: 0, low: 0, unset: 0 };
+  let blockedTaskCount = 0;
+  for (const task of tasks) {
+    taskStatusCounts[task.status] += 1;
+    const priority = task.priority && task.priority in taskPriorityCounts ? task.priority : 'unset';
+    taskPriorityCounts[priority] += 1;
+    if (blockingRequirementIds({ controllerHome: ctx.controllerHome }, task.dependsOnRequirementIds).length > 0) {
+      blockedTaskCount += 1;
+    }
+  }
+  return { requirementCount: tasks.length, taskStatusCounts, taskPriorityCounts, blockedTaskCount };
 }
 
 function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: string, limit: number, offset: number) {
@@ -92,7 +101,7 @@ function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: stri
     return counts.get(requirement.requirementId) ?? 0;
   };
   return {
-    ...projectTaskSummary(all),
+    ...projectTaskSummary(ctx, all),
     requirements: visible.map((requirement) => ({
       requirementId: requirement.requirementId,
       revision: requirement.revision,
@@ -173,7 +182,7 @@ export function callRhWorkProjectOperation(
       const totalCount = filtered.length;
       const projects = filtered.slice(offset, offset + limit).map((record) => ({
         ...projectView(ctx, record),
-        ...projectTaskSummary(projectTasks(ctx, record.value.projectId)),
+        ...projectTaskSummary(ctx, projectTasks(ctx, record.value.projectId)),
       }));
       const hasMore = offset + projects.length < totalCount;
       return result(buildFacadeResult({
@@ -265,6 +274,7 @@ export function callRhWorkProjectOperation(
           authority: 'project_semantic',
           progressAuthority: 'github_issue_project',
           project,
+          ...(!taskProjection ? projectTaskSummary(ctx, projectTasks(ctx, project.projectId)) : {}),
           ...(taskProjection ? taskProjection : {}),
           ...(revisionHistory ? { revisionHistory } : {}),
         },

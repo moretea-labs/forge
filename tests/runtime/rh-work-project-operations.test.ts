@@ -296,6 +296,14 @@ describe('rh_work Project operations', () => {
     }));
     expect(boundedProjectList.data).toMatchObject({ totalCount: 3, offset: 0, hasMore: true, projectsTruncated: true });
     expect(boundedProjectList.data.projects).toHaveLength(2);
+    const dependencySummary = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'project_get', project_id: 'project-a', detail_level: 'summary',
+    }));
+    expect(dependencySummary.data).toMatchObject({
+      requirementCount: 1,
+      taskPriorityCounts: { urgent: 0, high: 1, normal: 0, low: 0, unset: 0 },
+      blockedTaskCount: 1,
+    });
     const nextProjectPage = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
       operation: 'project_list', limit: 2, offset: 2,
     }));
