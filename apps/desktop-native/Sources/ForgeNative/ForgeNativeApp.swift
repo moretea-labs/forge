@@ -189,6 +189,7 @@ private struct ForgeWorkspaceView: View {
                         return
                     }
                     model.newThread(provider:provider,readOnly:true)
+                    guard let launchedThreadId=model.selectedThreadId else { return }
                     model.draft = """
                     当前项目目标：\(description)
 
@@ -196,7 +197,7 @@ private struct ForgeWorkspaceView: View {
 
                     \(ZenChangeProposal.outputContract)
                     """
-                    Task { await model.send() }
+                    Task { await model.send(expectedThreadId:launchedThreadId) }
                 },onOpenInbox:{
                     inboxShown = true
                     Task { await model.loadUserRequests() }
@@ -217,9 +218,13 @@ private struct ForgeWorkspaceView: View {
                         planId:item.kind == .plan ? item.recordId : nil,
                         readOnly:true
                     )
+                    guard let launchedThreadId=model.selectedThreadId else { return }
                     model.draft = wantsProposal
                         ? prompt + "\n\n" + ZenChangeProposal.outputContract
                         : prompt
+                    // "优化" and "在只读 Agent 中审查" are actions, not draft-only navigation.
+                    // Start their analysis immediately, bound to the new conversation.
+                    Task { await model.send(expectedThreadId:launchedThreadId) }
                 }
             } else {
                 main

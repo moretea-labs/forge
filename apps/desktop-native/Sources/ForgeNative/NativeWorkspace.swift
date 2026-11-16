@@ -4853,9 +4853,10 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
-    func send() async {
+    func send(expectedThreadId: String? = nil) async {
         let prompt = draft.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !prompt.isEmpty, !busy, let id = selectedThreadId,
+              expectedThreadId == nil || expectedThreadId == id,
               let index = threads.firstIndex(where:{$0.id == id}) else { return }
         let turnProvider = selectedProvider
         if let reason = agentSendBlockReason {

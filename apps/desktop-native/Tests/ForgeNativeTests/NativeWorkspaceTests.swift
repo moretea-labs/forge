@@ -816,6 +816,36 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(poisoned.last?["content"]?.contains(handle) == true)
     }
 
+    @MainActor
+    func testZenReadOnlyAnalysisSendIsBoundToNewConversation() async throws {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId="repo-a"
+        model.checkoutId="checkout-a"
+        model.selectedProjectId="project-a"
+        model.newThread(provider:"api:review",requirementId:"REQ-A",planId:"PLAN-A",readOnly:true)
+        let launchId=try XCTUnwrap(model.selectedThreadId)
+        XCTAssertEqual(model.thread?.id,launchId)
+        XCTAssertEqual(model.thread?.requirementId,"REQ-A")
+        XCTAssertEqual(model.thread?.planId,"PLAN-A")
+        XCTAssertEqual(model.thread?.readOnly,true)
+        model.draft="只读分析此任务"
+        model.newThread(provider:"api:review",requirementId:"REQ-B",readOnly:true)
+        let activeId=try XCTUnwrap(model.selectedThreadId)
+        XCTAssertNotEqual(activeId,launchId)
+        XCTAssertEqual(model.threads.first(where:{$0.id==launchId})?.pendingDraft,"只读分析此任务")
+        model.draft="另一个会话自己的草稿"
+        let originalMessageCount=model.threads.first(where:{$0.id==launchId})?.messages.count
+        await model.send(expectedThreadId:launchId)
+        XCTAssertEqual(model.selectedThreadId,activeId)
+        XCTAssertEqual(model.draft,"另一个会话自己的草稿")
+        XCTAssertEqual(model.threads.first(where:{$0.id==launchId})?.pendingDraft,"只读分析此任务")
+        XCTAssertFalse(model.busy)
+        XCTAssertEqual(model.thread?.messages.count,0)
+        XCTAssertEqual(model.threads.first(where:{$0.id==launchId})?.messages.count,originalMessageCount)
+    }
+
     func testIncompleteManagedProcessIsAvailableToOrdinaryFollowUpWithoutReplaying() {
         var thread = ChatThread(provider:"api")
         thread.messages = [
