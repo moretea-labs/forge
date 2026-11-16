@@ -682,8 +682,13 @@ struct ZenWorkspacePane: View {
                 Spacer()
             } else {
                 HStack(spacing:12) {
-                    Text("\(requirements.count) 个任务")
-                    Text("\(ZenBoardBucket.completedCount(requirements)) 已完成")
+                    if boardMode == "forge" {
+                        Text("\(requirements.count) 个需求")
+                        Text("\(ZenBoardBucket.completedCount(requirements)) 已完成")
+                        if let issue=model.planningAutopilotStatusError {
+                            Text(issue).foregroundStyle(.orange).lineLimit(1)
+                        }
+                    }
                     if !model.relevantUserRequests.isEmpty {
                         Button("\(model.relevantUserRequests.count) 项待决策") { onOpenInbox() }
                             .buttonStyle(.plain)
@@ -691,9 +696,6 @@ struct ZenWorkspacePane: View {
                             .accessibilityIdentifier("zen.board.inbox")
                     }
                     Spacer()
-                    if let issue=model.planningAutopilotStatusError {
-                        Text(issue).foregroundStyle(.orange).lineLimit(1)
-                    }
                 }
                 .font(.system(size:11)).foregroundStyle(.secondary)
                 .padding(.horizontal,24).padding(.bottom,13)
@@ -798,11 +800,23 @@ struct ZenWorkspacePane: View {
                         .font(.system(size:10)).foregroundStyle(.secondary)
                         .lineLimit(2).padding(.horizontal,24).padding(.bottom,11)
                 } else if boardMode == "github" && model.zenGitHubBoardConfigured == false {
-                    Text("未配置 GitHub Project；Forge 原生管理不受影响。")
+                    Text("未配置 GitHub Project；下方显示需求视图。")
                         .font(.system(size:10)).foregroundStyle(.secondary)
                         .padding(.horizontal,24).padding(.bottom,11)
                 }
-                if model.zenGitHubBoardConfigured == true && boardMode == "github" {
+                if boardMode == "github",
+                   model.zenGitHubBoardConfigured == nil,
+                   model.zenGitHubBoardLoading {
+                    VStack(spacing:9) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("正在读取 GitHub Project…")
+                            .font(.system(size:11))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth:.infinity,maxHeight:.infinity)
+                    .accessibilityIdentifier("zen.github.board.loading")
+                } else if model.zenGitHubBoardConfigured == true && boardMode == "github" {
                     ZenGitHubBoardView(items:model.zenGitHubBoardItems,
                                        truncated:model.zenGitHubBoardTruncated)
                 } else if boardMode == "forge" && boardPresentation == .list {
