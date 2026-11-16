@@ -847,11 +847,17 @@ async fn revise_requirement(
     acceptance_criteria: Vec<String>,
     state: Option<String>,
     accepted_evidence_refs: Option<Vec<String>>,
+    task_status: Option<String>,
+    priority: Option<String>,
+    assignee: Option<String>,
 ) -> Result<Value, String> {
     if repo_id.trim().is_empty() || requirement_id.trim().is_empty()
         || expected_revision == 0 || title.trim().is_empty() || outcome.trim().is_empty()
         || acceptance_criteria.len() > 50
         || state.as_deref().is_some_and(|value| !matches!(value, "open" | "completed" | "cancelled"))
+        || task_status.as_deref().is_some_and(|value| !matches!(value, "planned" | "active" | "waiting_for_user" | "done" | "cancelled"))
+        || priority.as_deref().is_some_and(|value| !matches!(value, "urgent" | "high" | "normal" | "low"))
+        || assignee.as_ref().is_some_and(|value| value.len() > 160)
         || accepted_evidence_refs.as_ref().is_some_and(|refs| refs.len() > 100 || refs.iter().any(|reference| reference.len() > 512)) {
         return Err("FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID".to_string());
     }
@@ -864,6 +870,9 @@ async fn revise_requirement(
         "requirement_outcome": outcome,
         "requirement_acceptance_criteria": acceptance_criteria,
         "requirement_state": state,
+        "requirement_status": task_status,
+        "requirement_priority": priority,
+        "requirement_assignee": assignee,
         "requirement_accepted_evidence_refs": accepted_evidence_refs,
         "request_id": request_id("requirement-revise")
     })).await?;

@@ -126,6 +126,9 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                         .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<String>>())
                         .ok_or("FORGE_NATIVE_BRIDGE_EVIDENCE_REFS_INVALID")
                 }).transpose()?,
+                args.get("taskStatus").and_then(Value::as_str).map(str::to_owned),
+                args.get("priority").and_then(Value::as_str).map(str::to_owned),
+                args.get("assignee").and_then(Value::as_str).map(str::to_owned),
             ).await,
         "revise_plan" =>
             revise_plan(
@@ -461,6 +464,20 @@ pub fn run() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn requirement_task_edit_validates_status_priority_and_owner_before_runtime_call() {
+        let run = |status: Option<&str>, priority: Option<&str>, assignee: Option<&str>| {
+            tauri::async_runtime::block_on(revise_requirement(
+                "repo-1".into(), "REQ-1".into(), 1,
+                "Task".into(), "Outcome".into(), vec![], None, None,
+                status.map(str::to_owned), priority.map(str::to_owned), assignee.map(str::to_owned),
+            ))
+        };
+        assert_eq!(run(Some("invalid"), None, None).unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID");
+        assert_eq!(run(None, Some("critical"), None).unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID");
+        assert_eq!(run(None, None, Some(&"a".repeat(161))).unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID");
+    }
+
     #[test]
     fn native_model_round_accepts_only_bounded_joycode_chat_payloads() {
         let body = parse_native_model_round_request(&json!({
