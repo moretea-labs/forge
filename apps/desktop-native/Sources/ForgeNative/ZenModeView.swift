@@ -599,7 +599,17 @@ struct ZenWorkspacePane: View {
             Text(proposalProblem)
         }
         .sheet(isPresented:$showingRequirementSheet) { createRequirementSheet }
-        .sheet(isPresented:$showingProjectDirectory) { ZenProjectDirectorySheet(model:model) }
+        .sheet(isPresented:$showingProjectDirectory) {
+            ZenProjectDirectorySheet(model:model) { projectId in
+                let alreadyInProjectScope=model.selectedProjectId == projectId && model.projectRepositoryId == nil
+                model.page = .requirement
+                model.selectSemanticProject(projectId,projectScope:true)
+                if alreadyInProjectScope && !model.busy {
+                    Task { await model.loadPage() }
+                }
+                showingProjectDirectory=false
+            }
+        }
         .sheet(isPresented:$showingPlanSheet) { createPlanSheet }
         .sheet(item:$editingRecord) { item in editSheet(for:item) }
         .sheet(item:$pendingAcceptanceRecord) { item in acceptanceSheet(item) }
@@ -2478,6 +2488,7 @@ private struct ZenReviewSheet: View {
 struct ZenProjectDirectorySheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var model: NativeWorkspace
+    let onOpenTasks: (String) -> Void
     @State private var query = ""
     @State private var editingProjectId: String?
     @State private var creating = false
@@ -2512,7 +2523,7 @@ struct ZenProjectDirectorySheet: View {
     var body: some View {
         Group {
             if let detailProjectId {
-                ZenProjectDetailPane(model:model,projectId:detailProjectId) {
+                ZenProjectDetailPane(model:model,projectId:detailProjectId,onOpenTasks:onOpenTasks) {
                     self.detailProjectId=nil
                 }
                 .id(detailProjectId)
@@ -2773,6 +2784,7 @@ struct ZenProjectDirectorySheet: View {
 struct ZenProjectDetailPane: View {
     @ObservedObject var model: NativeWorkspace
     let projectId: String
+    let onOpenTasks: (String) -> Void
     let onBack: () -> Void
     @State private var detail: ForgeSemanticProjectDetail?
     @State private var loading = false
@@ -2797,7 +2809,15 @@ struct ZenProjectDetailPane: View {
                             Text("v\(detail.project.revision)").font(.system(size:11,design:.monospaced)).foregroundStyle(.secondary)
                         }
                         Text(projectId).font(.system(size:10,design:.monospaced)).foregroundStyle(.secondary)
-                        Text(placementSummary(detail.project)).font(.system(size:11)).foregroundStyle(.secondary)
+                        HStack {
+                            Text(placementSummary(detail.project)).font(.system(size:11)).foregroundStyle(.secondary)
+                            Spacer()
+                            if detail.project.status == "active" {
+                                Button("打开任务列表") { onOpenTasks(projectId) }
+                                    .buttonStyle(.plain).disabled(model.busy)
+                                    .accessibilityIdentifier("zen.projects.detail.open-tasks")
+                            }
+                        }
                         Divider()
                         Text("任务概况").font(.system(size:12,weight:.semibold))
                         HStack(spacing:14) {
