@@ -15,9 +15,6 @@ export interface SchedulerHealthSnapshot {
   lastTickAt?: string;
   lastDispatchAt?: string;
   lastReconcileAt?: string;
-  lastSourceScanAt?: string;
-  lastSourceScanRepoCount?: number;
-  sourceScansAvoided?: number;
   lastRepoDispatch?: Record<string, number>;
 }
 
@@ -28,20 +25,6 @@ export function readSchedulerHealthSnapshot(controllerHome: string): SchedulerHe
   });
 }
 
-export interface SchedulerRestoredState {
-  lastSourceScanAt: number;
-  lastSourceScanRepoCount: number;
-  sourceScansAvoided: number;
-}
-
-export function restoreSchedulerState(state: SchedulerHealthSnapshot): SchedulerRestoredState {
-  return {
-    lastSourceScanAt: state.lastSourceScanAt ? Date.parse(state.lastSourceScanAt) || 0 : 0,
-    lastSourceScanRepoCount: state.lastSourceScanRepoCount ?? 0,
-    sourceScansAvoided: state.sourceScansAvoided ?? 0,
-  };
-}
-
 export interface SchedulerStateSnapshotInput {
   loopStartedAt: string;
   lastHeartbeatAt: string;
@@ -49,9 +32,6 @@ export interface SchedulerStateSnapshotInput {
   lastTickAt: string;
   lastDispatchAt?: string;
   lastReconcileAt?: string;
-  lastSourceScanAt: number;
-  lastSourceScanRepoCount: number;
-  sourceScansAvoided: number;
 }
 
 export function buildSchedulerHealthSnapshot(
@@ -67,9 +47,6 @@ export function buildSchedulerHealthSnapshot(
     lastTickAt: input.lastTickAt,
     lastDispatchAt: input.lastDispatchAt,
     lastReconcileAt: input.lastReconcileAt,
-    lastSourceScanAt: input.lastSourceScanAt ? new Date(input.lastSourceScanAt).toISOString() : undefined,
-    lastSourceScanRepoCount: input.lastSourceScanRepoCount,
-    sourceScansAvoided: input.sourceScansAvoided,
   };
 }
 

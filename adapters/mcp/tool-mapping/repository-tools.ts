@@ -103,7 +103,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
   definition('repository_git_status', 'Return a structured Git status snapshot for the selected repository checkout.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-    refresh: { type: 'boolean', description: 'When true, explicitly refresh the Git status sample. The default public hot path only reads the latest daemon sample.' },
+    refresh: { type: 'boolean', description: 'Defaults to true: read current Git status on demand. Set false to read the last cached snapshot without running Git; no periodic sampling is required.' },
   }, [], true),
 
   definition('repository_git_diff', 'Return a bounded structured git diff for the selected repository, optionally staged and path-scoped.', {

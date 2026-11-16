@@ -683,7 +683,6 @@ const required = [
   'src/runtime/control-plane/global-scheduler/worker-attachment.ts',
   'src/runtime/control-plane/global-scheduler/worker-lifecycle-store.ts',
   'src/runtime/control-plane/global-scheduler/maintenance.ts',
-  'src/runtime/control-plane/global-scheduler/source-scan.ts',
   'src/runtime/control-plane/global-scheduler/worker-exit-decision.ts',
   'src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts',
   'src/runtime/control-plane/global-scheduler/worker-process.ts',
@@ -1680,8 +1679,7 @@ requireText('src/runtime/control-plane/release-retention.ts', "releasePaths.add(
 requireText('src/runtime/control-plane/release-retention.ts', 'const connectorRelease = loadPackageConnectorReleaseProtection(controllerHome, releasesRoot);');
 requireText('src/runtime/control-plane/release-retention.ts', 'const databaseBackup = (previous as Record<string, unknown>).databaseBackup;');
 requireText('src/runtime/root/scheduler.ts', 'isolatePeriodicCleanup: true');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'planSchedulerSourceSampling');
-requireText('src/runtime/control-plane/global-scheduler/source-scan.ts', 'selectSchedulerSourceScanRepositories');
+forbid('src/runtime/control-plane/global-scheduler/scheduler.ts', /planSchedulerSourceSampling|lastGitStatusSampleAt/, 'Scheduler must not restore periodic Git polling');
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'persistSchedulerTerminalWorkerLifecycle');
 requireText('src/runtime/control-plane/global-scheduler/worker-lifecycle-store.ts', 'TERMINAL_JOB_STATUSES');
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'evaluateSchedulerWorkerExitCandidate');
@@ -1710,13 +1708,13 @@ requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occu
 requireText('src/runtime/projections/git-status-sampler.ts', 'writeRepositoryGitStatusSample');
 requireText('src/runtime/projections/git-status-sampler.ts', 'readRepositoryGitStatusSample');
 requireText('src/runtime/control-plane/facade/repository-tool-dispatch.ts', 'readRepositoryGitStatusSample');
-requireText('src/runtime/control-plane/facade/repository-tool-dispatch.ts', 'args.refresh === true');
+requireText('src/runtime/control-plane/facade/repository-tool-dispatch.ts', 'args.refresh !== false');
 forbidBetween(
   'src/runtime/control-plane/facade/repository-tool-dispatch.ts',
   "case 'repository_git_status':",
   "case 'repository_git_diff':",
   /repositoryGitStatus\s*\(/,
-  'repository_git_status must default to daemon samples; live refresh must be explicit and sampled',
+  'repository_git_status must use its bounded async on-demand snapshot writer',
 );
 requireText('src/runtime/control-plane/execution/session-store.ts', 'lastValidatedAt: now');
 requireText('src/runtime/control-plane/execution/session-repository-binding.ts', 'currentPermissionSnapshotVersion');

@@ -56,6 +56,10 @@ Git and the registered checkout/worktree identity own repository source and plac
 
 Ordinary worktree creation and source edits do not require semantic Work. Structured worktree retirement proves the exact registered checkout, source HEAD, physical identity, cleanliness, live Process/Lease state and Git containment before removal. Historical WorkHandle or OwnedResource evidence may cause an explicit legacy-cleanup path to preserve uncertain bytes, but it cannot authorize mutation or re-create Work ownership.
 
+### Git status observation (Refs #312)
+
+Git status is demand-driven. `repository_git_status` reads a fresh bounded asynchronous snapshot by default; `refresh=false` explicitly selects the last cached snapshot, including its observation time and age. A missing cached snapshot remains unknown until requested. The Scheduler does not periodically scan idle repositories or restore Git polling timers/counters. Actual projection invalidation may refresh the affected repository and its Git snapshot; explicit status/diff review and Git mutation safety still obtain current evidence through their existing owners. External edits are observed on the next live read, not certified by a background heartbeat. Snapshot provenance distinguishes caller reads from Scheduler invalidation work.
+
 ### Generated build-cache lifecycle (Refs #194, #630)
 
 The existing Runtime Scheduler sweeps one registered repository per minute through the single bounded `cleanupGeneratedRepositoryCheckoutCaches` owner (default 1,000 examined entries / 8 removals per pass), rotating repository and checkout scan priority. Only tool-produced, aged, untracked output is eligible: validated Xcode DerivedData children, SwiftPM `.build` platform/configuration products with `Package.swift`, Cargo `target/debug|release` with `Cargo.toml` and `CACHEDIR.TAG`, and Next.js `.next/cache` with a matching package manifest/BUILD_ID. It retains release/runtime files in `.next`, dependency checkouts, `.xcresult`, test/review evidence, source manifests and unknown folders.

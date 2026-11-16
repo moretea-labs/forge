@@ -5,9 +5,8 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import {
   GlobalScheduler,
-  selectSchedulerSourceScanRepositories,
 } from '../../src/runtime/control-plane/global-scheduler/scheduler';
-import { planSchedulerSourceSampling } from '../../src/runtime/control-plane/global-scheduler/source-scan';
+import { readRepositoryGitStatusSample } from '../../src/runtime/projections/git-status-sampler';
 import type { SchedulerPeriodicCleanupSpawnResult } from '../../src/runtime/control-plane/global-scheduler/periodic-cleanup-process';
 import {
   cleanupControllerRuntimeState,
@@ -766,45 +765,6 @@ describe('runtime cleanup', () => {
     expect(preview.truncated.candidates).toBe(true);
   });
 
-  test('source scan selection prefers active repositories and bounds the idle safety scan', () => {
-    const repositories = [
-      { repoId: 'repo-a' },
-      { repoId: 'repo-b' },
-      { repoId: 'repo-c' },
-    ];
-    const now = 10 * 60_000;
-    expect(selectSchedulerSourceScanRepositories(
-      repositories,
-      new Set(['repo-b', 'repo-c']),
-      now,
-      now,
-    ).map((repository) => repository.repoId)).toEqual(['repo-b', 'repo-c']);
-    expect(selectSchedulerSourceScanRepositories(
-      repositories,
-      new Set(),
-      now,
-      now,
-    )).toEqual([]);
-    expect(selectSchedulerSourceScanRepositories(
-      repositories,
-      new Set(),
-      now,
-      now - 60_000,
-    )).toHaveLength(1);
-
-    expect(planSchedulerSourceSampling({
-      repositories,
-      activeRepoIds: new Set(['repo-a']),
-      nowMs: now,
-      lastSourceScanAt: now,
-      lastGitStatusSampleAt: now - 5_000,
-    })).toMatchObject({
-      sourceScanRepositories: [{ repoId: 'repo-a' }],
-      shouldSample: true,
-      avoidedRepositoryCount: 2,
-    });
-  });
-
   test('canonical scheduler isolates periodic cleanup instead of running synchronous cleanup on the event loop', async () => {
     const home = controllerHome();
     const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 }, { isolatePeriodicCleanup: true });
@@ -815,8 +775,6 @@ describe('runtime cleanup', () => {
       runtimeCleanup: () => void;
       periodicCleanupSpawn: () => SchedulerPeriodicCleanupSpawnResult;
       repositoryList: () => Array<{ repoId: string; enabled: boolean; canonicalRoot: string; removedAt?: string }>;
-      lastSourceScanAt: number;
-      lastGitStatusSampleAt: number;
       workValidationReconcile: () => { errors: unknown[] };
       editValidationReconcile: () => Promise<{ errors: unknown[] }>;
     };
@@ -826,8 +784,6 @@ describe('runtime cleanup', () => {
       return { ok: false, startupError: 'synthetic isolated cleanup launch' };
     };
     internal.repositoryList = () => [];
-    internal.lastSourceScanAt = now;
-    internal.lastGitStatusSampleAt = now;
     internal.workValidationReconcile = () => ({ errors: [] });
     internal.editValidationReconcile = async () => ({ errors: [] });
     const originalError = console.error;
@@ -908,8 +864,6 @@ describe('runtime cleanup', () => {
       processGc: (options: { repoId: string }) => { ok: boolean };
       editValidationReconcile: (controllerHome: string, repository: { repoId: string }, limit: number) => Promise<{ errors: unknown[] }>;
       repositoryList: () => Array<{ repoId: string; enabled: boolean; canonicalRoot: string; removedAt?: string }>;
-      lastSourceScanAt: number;
-      lastGitStatusSampleAt: number;
     };
     internal.runtimeCleanup = () => undefined;
     internal.processGc = (options) => {
@@ -926,8 +880,6 @@ describe('runtime cleanup', () => {
       { repoId: 'repo-b', enabled: true, canonicalRoot: home, checkouts: [] },
       { repoId: 'repo-disabled', enabled: false, canonicalRoot: home, checkouts: [] },
     ];
-    internal.lastSourceScanAt = now;
-    internal.lastGitStatusSampleAt = now;
 
     await scheduler.tick();
     expect(processGcRepos).toHaveLength(1);
@@ -966,6 +918,7 @@ describe('runtime cleanup', () => {
     const home = controllerHome();
     const root = mkdtempSync(join(tmpdir(), 'forge-projection-refresh-disabled-dispatch-'));
     homes.push(root);
+    expect(spawnSync('git', ['init', '-b', 'main', root]).status).toBe(0);
     const at = new Date().toISOString();
     const repository: RepositoryRecord = {
       schemaVersion: 1,
@@ -989,16 +942,12 @@ describe('runtime cleanup', () => {
     const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 });
     const internal = scheduler as unknown as {
       repositoryList: () => RepositoryRecord[];
-      lastSourceScanAt: number;
-      lastGitStatusSampleAt: number;
       runtimeCleanup: () => void;
       processGc: () => { ok: boolean };
       workValidationReconcile: () => { errors: unknown[] };
       editValidationReconcile: () => Promise<{ errors: unknown[] }>;
     };
     internal.repositoryList = () => [repository];
-    internal.lastSourceScanAt = 0;
-    internal.lastGitStatusSampleAt = 0;
     internal.runtimeCleanup = () => undefined;
     internal.processGc = () => ({ ok: true });
     internal.workValidationReconcile = () => ({ errors: [] });
@@ -1009,9 +958,21 @@ describe('runtime cleanup', () => {
     await expect(scheduler.tick()).resolves.toEqual({ activeJobs: 0 });
 
     expect(repositoryProjectionIsDirty(home, repository.repoId)).toBe(false);
+    const sampleBefore = readRepositoryGitStatusSample(home, repository.repoId, repository.activeCheckoutId);
+    expect(sampleBefore).toBeDefined();
+    // Crossing the former idle interval must not create fresh Git work.
+    const actualNow = Date.now;
+    Date.now = () => actualNow() + 120_000;
+    try {
+      await scheduler.tick();
+    } finally {
+      Date.now = actualNow;
+    }
+    expect(readRepositoryGitStatusSample(home, repository.repoId, repository.activeCheckoutId)?.observedAt)
+      .toBe(sampleBefore?.observedAt);
   });
 
-  test('refreshes a dirty projection before its idle round-robin source-scan slot', async () => {
+  test('refreshes only invalidated projections without idle Git polling', async () => {
     const home = controllerHome();
     const now = Date.now();
     const makeRepository = (repoId: string): RepositoryRecord => {
@@ -1043,24 +1004,17 @@ describe('runtime cleanup', () => {
     const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 });
     const internal = scheduler as unknown as {
       repositoryList: () => RepositoryRecord[];
-      lastSourceScanAt: number;
-      lastGitStatusSampleAt: number;
       runtimeCleanup: () => void;
       processGc: () => { ok: boolean };
       workValidationReconcile: () => { errors: unknown[] };
       editValidationReconcile: () => Promise<{ errors: unknown[] }>;
     };
     internal.repositoryList = () => [repositoryA, repositoryB];
-    // Idle safety scan is deliberately not due. Old behavior therefore had no
-    // projection refresh target and left repo-idle-b dirty past the grace window.
-    internal.lastSourceScanAt = now;
-    internal.lastGitStatusSampleAt = now;
     internal.runtimeCleanup = () => undefined;
     internal.processGc = () => ({ ok: true });
     internal.workValidationReconcile = () => ({ errors: [] });
     internal.editValidationReconcile = async () => ({ errors: [] });
     markRepositoryProjectionDirty(home, repositoryB.repoId, 'source-change-before-idle-slot', { sourceRevision: 'def456' });
-    expect(selectSchedulerSourceScanRepositories([repositoryA, repositoryB], new Set(), now, now)).toEqual([]);
     expect(repositoryProjectionIsDirty(home, repositoryB.repoId)).toBe(true);
 
     await expect(scheduler.tick()).resolves.toEqual({ activeJobs: 0 });

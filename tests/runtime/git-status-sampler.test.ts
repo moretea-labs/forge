@@ -7,6 +7,9 @@ import type { RepositoryRecord } from '../../src/core/repository/types';
 import { readRepositoryGitStatusSample, sampleRepositoryGitStatusForRepositories, writeRepositoryGitStatusSample } from '../../src/runtime/projections/git-status-sampler';
 import { repositoryGitStatus } from '../../src/runtime/repositories/structured-git';
 
+import { registerRepository } from '../../src/runtime/repositories/registry';
+import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
+
 const roots: string[] = [];
 
 function tempRoot(prefix: string): string {
@@ -114,4 +117,29 @@ describe('git status sampler', () => {
     git('checkout', '--detach');
     expect((await compareLive()).branch).toBeNull();
   });
+});
+
+// The caller owns freshness. An explicit cached read must remain cheap, while
+// an ordinary status request must not depend on a background daemon scan.
+test('repository status refreshes on demand and cached reads stay explicit', async () => {
+  const controllerHome = tempRoot('forge-git-demand-home-');
+  const root = tempRoot('forge-git-demand-repo-');
+  execFileSync('git', ['init', '-b', 'main', root], { stdio: 'ignore' });
+  const repository = registerRepository({ path: root, controllerHome });
+  const status = async (refresh?: boolean) => {
+    const result = await callRepositoryTool(controllerHome, 'repository_git_status', {
+      repo_id: repository.repoId, ...(refresh === undefined ? {} : { refresh }),
+    });
+    expect(result?.isError).not.toBe(true);
+    return JSON.parse(result!.content[0]!.text).status;
+  };
+  expect((await status(false)).sampled).toBe(false);
+  expect((await status()).clean).toBe(true);
+  writeFileSync(join(root, 'external-edit.txt'), 'changed outside Forge\n');
+  expect((await status(false)).clean).toBe(true);
+  const live = await status();
+  expect(live.clean).toBe(false);
+  expect(live.untracked).toContain('external-edit.txt');
+  expect(live.sampledBy).toBe('caller');
+  expect(live.sampleSource).toBe('live');
 });

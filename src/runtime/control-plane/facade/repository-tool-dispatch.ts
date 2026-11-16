@@ -640,7 +640,7 @@ export async function callRepositoryTool(
       }
       case 'repository_git_status': {
         const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
-        const status = args.refresh === true
+        const status = args.refresh !== false
           ? await writeRepositoryGitStatusSample(controllerHome, repository)
           : readRepositoryGitStatusSample(controllerHome, repository.repoId, repository.activeCheckoutId);
         return result({
@@ -651,7 +651,7 @@ export async function callRepositoryTool(
             sampled: false,
             observedAt: null,
             staleAgeMs: null,
-            message: 'Git status has not been sampled by the Forge Runtime yet. Retry after scheduler heartbeat or call with refresh=true for an explicit live refresh.',
+            message: 'No cached Git status snapshot exists. Omit refresh=false to read the current Git status.',
           },
         });
       }

@@ -7,8 +7,8 @@ import { runBoundedGit } from '../execution/thin-harness/async-process';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 
 export interface RepositoryGitStatusSample extends RepositoryGitStatusSnapshot {
-  sampleSource: 'daemon-sample';
-  sampledBy: 'scheduler';
+  sampleSource: 'live' | 'daemon-sample';
+  sampledBy: 'scheduler' | 'caller';
 }
 
 function samplePath(controllerHome: string, repoId: string, checkoutId: string): string {
@@ -33,6 +33,7 @@ async function gitSample(repository: RepositoryRecord, args: readonly string[], 
 export async function writeRepositoryGitStatusSample(
   controllerHome: string,
   repository: RepositoryRecord,
+  sampledBy: RepositoryGitStatusSample['sampledBy'] = 'caller',
 ): Promise<RepositoryGitStatusSample> {
   const observedAt = new Date().toISOString();
   const [porcelainResult, headResult] = await Promise.all([
@@ -62,8 +63,8 @@ export async function writeRepositoryGitStatusSample(
     checkoutId: repository.activeCheckoutId,
     observedAt,
     staleAgeMs: 0,
-    sampleSource: 'daemon-sample',
-    sampledBy: 'scheduler',
+    sampleSource: sampledBy === 'scheduler' ? 'daemon-sample' : 'live',
+    sampledBy,
     branch: identity.branch,
     head: headResult.ok && headResult.stdout.trim() ? headResult.stdout.trim() : null,
     upstream: identity.upstream,
@@ -86,9 +87,7 @@ export function readRepositoryGitStatusSample(
     const observedMs = Date.parse(sample.observedAt);
     return {
       ...sample,
-      sampleSource: 'daemon-sample',
       staleAgeMs: Number.isFinite(observedMs) ? Math.max(0, Date.now() - observedMs) : Number.POSITIVE_INFINITY,
-      sampledBy: 'scheduler',
     };
   } catch {
     return undefined;
@@ -107,6 +106,7 @@ export async function sampleRepositoryGitStatusForRepositories(
       await writeRepositoryGitStatusSample(
         controllerHome,
         selectRepositoryCheckout(repository, repository.activeCheckoutId),
+        'scheduler',
       );
       return { ok: true as const, repository };
     } catch (error) {
