@@ -162,6 +162,7 @@ struct ZenWorkspacePane: View {
     @State private var showingGoalSheet = false
     @State private var goalDraft = ""
     @State private var showingRequirementSheet = false
+    @State private var showingProjectDirectory = false
     @State private var showingPlanSheet = false
     @State private var pendingReviewRecord: ForgeRecord?
     @State private var pendingProposal: ZenChangeProposal?
@@ -367,6 +368,13 @@ struct ZenWorkspacePane: View {
                 Spacer(minLength:0)
                 if screen == .board {
                     Button {
+                        showingProjectDirectory = true
+                    } label: {
+                        Label("项目",systemImage:"folder")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("zen.projects.open")
+                    Button {
                         goalDraft = ""
                         showingGoalSheet = true
                     } label: {
@@ -411,12 +419,12 @@ struct ZenWorkspacePane: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .disabled(model.repoId == nil)
+                    .disabled(model.selectedProjectId == nil)
                     .help("新建任务")
                     .accessibilityIdentifier("zen.requirement.new")
                 }
                 Button {
-                    if model.repoId != nil {
+                    if model.selectedProjectId != nil {
                         Task {
                             await model.loadPage()
                             await model.refreshPlanningAutopilotStatuses()
@@ -427,7 +435,7 @@ struct ZenWorkspacePane: View {
                     Image(systemName:"arrow.clockwise").frame(width:28,height:28)
                 }
                 .buttonStyle(.plain)
-                .disabled(model.repoId == nil || model.checkoutContextLoading)
+                .disabled(model.selectedProjectId == nil || model.checkoutContextLoading)
                 .help("刷新当前项目")
                 .accessibilityLabel("刷新当前项目")
             }
@@ -486,6 +494,7 @@ struct ZenWorkspacePane: View {
             Text(proposalProblem)
         }
         .sheet(isPresented:$showingRequirementSheet) { createRequirementSheet }
+        .sheet(isPresented:$showingProjectDirectory) { ZenProjectDirectorySheet(model:model) }
         .sheet(isPresented:$showingPlanSheet) { createPlanSheet }
         .sheet(item:$editingRecord) { item in editSheet(for:item) }
         .sheet(item:$pendingAcceptanceRecord) { item in acceptanceSheet(item) }
@@ -540,12 +549,12 @@ struct ZenWorkspacePane: View {
 
     private var boardView: some View {
         VStack(alignment:.leading,spacing:0) {
-            if model.repoId == nil {
+            if model.selectedProjectId == nil {
                 ZenEmptyState(title:"选择项目",subtitle:"从左侧选择要推进的项目。",symbol:"folder")
                 Spacer()
             } else {
                 HStack(spacing:12) {
-                    Text("\(requirements.count) 个 Requirement")
+                    Text("\(requirements.count) 个任务")
                     Text("\(ZenBoardBucket.completedCount(requirements)) 已完成")
                     if !model.relevantUserRequests.isEmpty {
                         Button("\(model.relevantUserRequests.count) 项待决策") { onOpenInbox() }
@@ -2031,5 +2040,207 @@ private struct ZenReviewSheet: View {
         .onChange(of:secondProvider) { preferredSecondProvider = $0 }
         .onChange(of:role) { preferredRole = $0.rawValue }
         .onChange(of:provider) { preferredProvider = $0 }
+    }
+}
+
+struct ZenProjectDirectorySheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var model: NativeWorkspace
+    @State private var query = ""
+    @State private var editingProjectId: String?
+    @State private var creating = false
+    @State private var draftName = ""
+    @State private var saving = false
+
+    private var visibleProjects: [ForgeSemanticProject] {
+        let term = query.trimmingCharacters(in:.whitespacesAndNewlines)
+        return model.semanticProjects
+            .filter { term.isEmpty || $0.displayName.localizedStandardContains(term)
+                || $0.projectId.localizedStandardContains(term) }
+            .sorted {
+                if ($0.status == "archived") != ($1.status == "archived") {
+                    return $0.status != "archived"
+                }
+                return $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+            }
+    }
+
+    private var editingProject: ForgeSemanticProject? {
+        model.semanticProjects.first { $0.projectId == editingProjectId }
+    }
+
+    var body: some View {
+        VStack(alignment:.leading,spacing:12) {
+            HStack {
+                Text("项目").font(.system(size:19,weight:.semibold))
+                Spacer()
+                Button("完成") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            HStack(spacing:12) {
+                TextField("搜索项目",text:$query)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("zen.projects.search")
+                Button {
+                    editingProjectId = nil
+                    creating = true
+                    draftName = ""
+                    model.error = nil
+                } label: {
+                    Label("新建项目",systemImage:"plus")
+                }
+                .disabled(saving || model.busy)
+                .accessibilityIdentifier("zen.projects.create")
+            }
+
+            if creating || editingProjectId != nil {
+                VStack(alignment:.leading,spacing:10) {
+                    Text(creating ? "新建项目" : "重命名项目")
+                        .font(.system(size:13,weight:.semibold))
+                    TextField("项目名称",text:$draftName)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("zen.projects.name")
+                        .onSubmit { save() }
+                    HStack {
+                        Spacer()
+                        Button("取消") {
+                            creating = false
+                            editingProjectId = nil
+                        }
+                        Button(saving ? "保存中…" : "保存") { save() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(saving || draftName.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                            .accessibilityIdentifier("zen.projects.save")
+                    }
+                }
+                .padding(.vertical,8)
+            }
+
+            if model.semanticProjectsLoading {
+                ProgressView().controlSize(.small)
+            }
+            if let problem = model.semanticProjectsError ?? model.error {
+                Text(problem).font(.system(size:12)).foregroundStyle(.orange)
+                    .textSelection(.enabled)
+            }
+
+            List {
+                ForEach(visibleProjects) { project in
+                    HStack(spacing:10) {
+                        Image(systemName:project.status == "archived" ? "archivebox" : "folder")
+                            .foregroundStyle(.secondary)
+                            .frame(width:19)
+                        VStack(alignment:.leading,spacing:3) {
+                            Button(project.displayName) {
+                                model.selectSemanticProject(project.projectId)
+                                dismiss()
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size:13,weight:.medium))
+                            .disabled(model.busy || saving || project.status == "archived")
+                            .accessibilityIdentifier("zen.projects.open.\(project.projectId)")
+                            HStack(spacing:8) {
+                                if project.status == "archived" {
+                                    Text("已归档")
+                                }
+                                if let count = project.requirementCount {
+                                    Text("\(count) 个任务")
+                                }
+                                Text(project.repositoryIds.isEmpty ? "无关联仓库" :
+                                     "\(project.repositoryIds.count) 个仓库")
+                            }
+                            .font(.system(size:11)).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength:0)
+                        Menu {
+                            Button {
+                                editingProjectId = project.projectId
+                                creating = false
+                                draftName = project.displayName
+                                model.error = nil
+                            } label: { Label("重命名",systemImage:"pencil") }
+                            Button {
+                                changeStatus(project,to:project.status == "archived" ? "active" : "archived")
+                            } label: {
+                                Label(project.status == "archived" ? "恢复项目" : "归档项目",
+                                      systemImage:project.status == "archived" ? "arrow.uturn.backward" : "archivebox")
+                            }
+                        } label: {
+                            Image(systemName:"ellipsis")
+                                .frame(width:28,height:28)
+                                .contentShape(Rectangle())
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .disabled(saving || model.busy)
+                        .accessibilityLabel("\(project.displayName) 的操作")
+                    }
+                    .padding(.vertical,4)
+                    .accessibilityIdentifier("zen.projects.row.\(project.projectId)")
+                }
+            }
+            .listStyle(.plain)
+            .overlay {
+                if visibleProjects.isEmpty && !model.semanticProjectsLoading {
+                    VStack(spacing:10) {
+                        Image(systemName:"folder")
+                            .font(.system(size:24)).foregroundStyle(.secondary)
+                        Text(query.isEmpty ? "暂无项目" : "没有匹配的项目")
+                            .font(.system(size:13)).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            HStack {
+                Text(model.semanticProjects.count >= 100 ? "当前显示前 100 个项目" :
+                     "共 \(model.semanticProjects.count) 个项目")
+                    .font(.system(size:11)).foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    Task { await model.refreshSemanticProjects() }
+                } label: { Label("刷新",systemImage:"arrow.clockwise") }
+                    .disabled(model.semanticProjectsLoading || saving)
+            }
+        }
+        .padding(22)
+        .frame(minWidth:540,minHeight:470)
+        .task { await model.refreshSemanticProjects() }
+        .accessibilityIdentifier("zen.projects.directory")
+    }
+
+    private func save() {
+        guard !saving else { return }
+        let name = draftName.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let project = editingProject
+        guard creating || project != nil else { return }
+        saving = true
+        Task {
+            let ok: Bool
+            if creating {
+                ok = await model.createSemanticProject(displayName:name)
+            } else if let project {
+                ok = await model.reviseSemanticProject(
+                    projectId:project.projectId,expectedRevision:project.revision,displayName:name)
+            } else {
+                ok = false
+            }
+            saving = false
+            if ok {
+                creating = false
+                editingProjectId = nil
+                draftName = ""
+            }
+        }
+    }
+
+    private func changeStatus(_ project:ForgeSemanticProject,to status:String) {
+        guard !saving else { return }
+        saving = true
+        Task {
+            _ = await model.reviseSemanticProject(
+                projectId:project.projectId,expectedRevision:project.revision,status:status)
+            saving = false
+        }
     }
 }

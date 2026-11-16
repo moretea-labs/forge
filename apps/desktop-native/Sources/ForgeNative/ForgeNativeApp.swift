@@ -3542,12 +3542,17 @@ private struct AgentPlanningInspector: View {
         records=[]
         loadedRepoId=nil
         error=nil
-        guard let repoId=model.repoId else { loading=false; return }
+        guard let repoId=model.repoId,let projectId=model.selectedProjectId else {
+            loading=false
+            return
+        }
         loading=true
         defer { if loadToken == token { loading=false } }
         do {
-            let fresh=try await model.readPlanningRecords(repoId:repoId)
-            guard loadToken == token, model.repoId == repoId, !Task.isCancelled else { return }
+            let fresh=try await model.readPlanningRecords(
+                projectId:projectId,repoId:model.projectRepositoryId)
+            guard loadToken == token, model.repoId == repoId,
+                  model.selectedProjectId == projectId, !Task.isCancelled else { return }
             records=fresh
             loadedRepoId=repoId
         } catch {

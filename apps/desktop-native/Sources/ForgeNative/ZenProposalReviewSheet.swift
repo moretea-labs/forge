@@ -156,8 +156,13 @@ struct ZenProposalReviewSheet: View {
         do {
             var currentRecords:[ForgeRecord]=[]
             if proposal.operation == .createRequirement || proposal.operation == .createPlan {
-                currentRecords=try await model.readPlanningRecords(repoId:sourceRepoId)
-                guard model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else {
+                guard let projectId=model.selectedProjectId else {
+                    throw ZenProposalIssue.validation("请先选择项目，再审阅提案。")
+                }
+                currentRecords=try await model.readPlanningRecords(
+                    projectId:projectId,repoId:model.projectRepositoryId)
+                guard model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId,
+                      model.selectedProjectId == projectId else {
                     problem="项目或工作区已切换。请返回原上下文核对后再继续。"
                     return
                 }

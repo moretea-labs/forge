@@ -24,6 +24,21 @@ struct ForgeProject: Identifiable, Decodable {
         return remoteUrl.replacingOccurrences(of: ".git", with: "").split(separator: "/").suffix(2).joined(separator: "/")
     }
 }
+
+struct ForgeSemanticProjectPlacement: Decodable, Equatable {
+    let repositoryId: String
+}
+
+struct ForgeSemanticProject: Identifiable, Decodable, Equatable {
+    let projectId: String
+    let displayName: String
+    let status: String
+    let revision: Int
+    let placements: [ForgeSemanticProjectPlacement]?
+    let requirementCount: Int?
+    var id: String { projectId }
+    var repositoryIds: [String] { placements?.map(\.repositoryId) ?? [] }
+}
 struct AgentReasoningOption: Codable, Identifiable {
     let effort: String
     let description: String
@@ -135,6 +150,7 @@ struct ChatThread: Codable, Identifiable {
     var title = "新会话"
     var repoId: String?
     var checkoutId: String?
+    var projectId: String? = nil
     // Optional durable planning context. Project/checkout remains sufficient for ordinary Agent use.
     var requirementId: String? = nil
     var planId: String? = nil
@@ -630,15 +646,17 @@ struct NativeNavigationEntry: Equatable {
     let page: NativePage
     let threadId: String?
     let recordId: String?
+    let projectId: String?
     let zenMode: Bool
     let zenScreen: ZenScreen
     let focusedRequirementId: String?
 
-    init(page:NativePage,threadId:String?,recordId:String?,
+    init(page:NativePage,threadId:String?,recordId:String?,projectId:String? = nil,
          zenMode:Bool = false,zenScreen:ZenScreen = .board,focusedRequirementId:String? = nil) {
         self.page=page
         self.threadId=threadId
         self.recordId=recordId
+        self.projectId=projectId
         self.zenMode=zenMode
         self.zenScreen=zenScreen
         self.focusedRequirementId=focusedRequirementId
@@ -662,6 +680,11 @@ final class NativeWorkspace: ObservableObject {
     @Published private(set) var projects: [ForgeProject] = []
     @Published private(set) var projectsLoading = true
     @Published private(set) var projectsError: String?
+    @Published private(set) var semanticProjects: [ForgeSemanticProject] = []
+    @Published private(set) var semanticProjectsLoading = false
+    @Published private(set) var semanticProjectsError: String?
+    @Published var selectedProjectId: String?
+    private(set) var semanticProjectListRequestGeneration = 0
     private(set) var projectListRequestGeneration = 0
     private(set) var workspaceRefreshRequestGeneration = 0
     private(set) var projectRepositoryRequestGeneration = 0
@@ -818,6 +841,7 @@ final class NativeWorkspace: ObservableObject {
                 selectedThreadId = first.id
                 repoId = first.repoId
                 checkoutId = first.checkoutId
+                selectedProjectId = first.projectId
             }
         }
         if threads.isEmpty {
@@ -830,6 +854,14 @@ final class NativeWorkspace: ObservableObject {
     }
 
     var project: ForgeProject? { projects.first { $0.repoId == repoId } }
+    var semanticProject: ForgeSemanticProject? {
+        semanticProjects.first { $0.projectId == selectedProjectId }
+    }
+    var projectRepositoryId: String? {
+        guard let repoId,let semanticProject,
+              semanticProject.repositoryIds.contains(repoId) else { return nil }
+        return repoId
+    }
     var thread: ChatThread? { threads.first { $0.id == selectedThreadId } }
     var relevantUserRequests: [UserRequestDetail] {
         userRequests.filter { request in
@@ -849,6 +881,7 @@ final class NativeWorkspace: ObservableObject {
             page:page,
             threadId:selectedThreadId,
             recordId:[.requirement,.plan].contains(page) ? selectedRecord : nil,
+            projectId:selectedProjectId,
             zenMode:isZenWorkbench,
             zenScreen:isZenWorkbench ? zenScreen : .board,
             focusedRequirementId:isZenWorkbench ? zenFocusedRequirementId : nil
@@ -913,7 +946,9 @@ final class NativeWorkspace: ObservableObject {
         if busy { return "Agent 正在执行当前任务。" }
         guard let thread else { return "请先选择会话。" }
         if thread.readOnly == true {
-            if !Self.readOnlyThreadMatchesContext(thread,repoId:repoId,checkoutId:checkoutId) {
+            if !Self.readOnlyThreadMatchesContext(
+                thread,repoId:repoId,checkoutId:checkoutId,projectId:selectedProjectId
+            ) {
                 return "分析工作区已变更，请重新开始分析。"
             }
             if !Self.matchesExternalProvider(selectedProvider) {
@@ -1012,6 +1047,7 @@ final class NativeWorkspace: ObservableObject {
         let item = ChatThread(
             repoId:repoId,
             checkoutId:checkoutId,
+            projectId:selectedProjectId,
             requirementId:requirementId,
             planId:planId,
             readOnly:readOnly ? true : nil,
@@ -1083,9 +1119,11 @@ final class NativeWorkspace: ObservableObject {
         refreshProjectContext: Bool = true,
         scrollToMessageId: String? = nil
     ) {
-        let contextChanged = item.repoId != repoId || item.checkoutId != checkoutId
+        let projectChanged = item.projectId != selectedProjectId
+        let contextChanged = item.repoId != repoId || item.checkoutId != checkoutId || projectChanged
         if item.repoId != repoId { invalidateRepositoryAccessRequests() }
         invalidateProjectContextRequests()
+        selectedProjectId = item.projectId
         conversationScrollRevision += 1
         let targetMessageId = scrollToMessageId.flatMap { target in
             item.messages.contains(where: { $0.id == target }) ? target : nil
@@ -1469,6 +1507,7 @@ final class NativeWorkspace: ObservableObject {
            let targetThread=threads.first(where:{ $0.id == targetThreadId }) {
             activateThreadContext(targetThread,refreshProjectContext:false)
         }
+        selectedProjectId = target.projectId
         zenMode = target.zenMode
         zenScreen = target.zenScreen
         zenFocusedRequirementId = target.focusedRequirementId
@@ -1679,6 +1718,143 @@ final class NativeWorkspace: ObservableObject {
         return try JSONDecoder().decode([ForgeProject].self,from:bytes)
     }
 
+    nonisolated static func decodeSemanticProjects(_ result:[String:Any]) throws -> [ForgeSemanticProject] {
+        let data = result["data"] as? [String:Any] ?? result
+        guard let rows = data["projects"] as? [[String:Any]] else {
+            throw ForgeBridgeError.invalidResponse
+        }
+        let bytes = try JSONSerialization.data(withJSONObject:rows)
+        return try JSONDecoder().decode([ForgeSemanticProject].self,from:bytes)
+    }
+
+    nonisolated static func decodeSemanticProject(_ result:[String:Any]) throws -> ForgeSemanticProject {
+        let data = result["data"] as? [String:Any] ?? result
+        guard let row = data["project"] as? [String:Any] else {
+            throw ForgeBridgeError.invalidResponse
+        }
+        let bytes = try JSONSerialization.data(withJSONObject:row)
+        return try JSONDecoder().decode(ForgeSemanticProject.self,from:bytes)
+    }
+
+    func beginSemanticProjectListRefresh() -> Int {
+        semanticProjectListRequestGeneration &+= 1
+        return semanticProjectListRequestGeneration
+    }
+
+    func semanticProjectListRequestIsCurrent(_ generation:Int) -> Bool {
+        semanticProjectListRequestGeneration == generation
+    }
+
+    func refreshSemanticProjects() async {
+        let generation=beginSemanticProjectListRefresh()
+        semanticProjectsLoading=true
+        semanticProjectsError=nil
+        defer {
+            if semanticProjectListRequestIsCurrent(generation) {
+                semanticProjectsLoading=false
+            }
+        }
+        do {
+            let result=try await ForgeBridge.request("project_list",["limit":100,"offset":0])
+            guard semanticProjectListRequestIsCurrent(generation) else { return }
+            semanticProjects=try Self.decodeSemanticProjects(result)
+            if selectedProjectId == nil,let repoId {
+                let matches=semanticProjects.filter { $0.repositoryIds.contains(repoId) }
+                if matches.count == 1,let match=matches.first {
+                    selectSemanticProject(match.projectId)
+                }
+            }
+        } catch {
+            guard semanticProjectListRequestIsCurrent(generation) else { return }
+            semanticProjectsError=error.localizedDescription
+        }
+    }
+
+    func selectSemanticProject(_ projectId:String) {
+        guard !busy else {
+            error="请先停止正在运行的会话，再切换项目。"
+            return
+        }
+        guard semanticProjects.contains(where:{$0.projectId == projectId}) else {
+            error="项目已不存在或尚未加载，请刷新项目列表。"
+            return
+        }
+        guard selectedProjectId != projectId else { return }
+        invalidateProjectContextRequests()
+        selectedProjectId=projectId
+        if let index=threads.firstIndex(where:{$0.id == selectedThreadId}) {
+            threads[index].projectId=projectId
+            threads[index].updatedAt=Date()
+            persist()
+        }
+        clearRecordSelection()
+        records=[]
+        detail=""
+        error=nil
+        if [.requirement,.plan].contains(page) {
+            Task { await loadPage() }
+        }
+    }
+
+    func createSemanticProject(displayName:String) async -> Bool {
+        guard !busy else { error="请先停止正在运行的会话。"; return false }
+        let name=displayName.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !name.isEmpty else { error="项目名称不能为空。"; return false }
+        // A newly created semantic Project is standalone until the user explicitly links a Repository.
+        let arguments:[String:Any]=[
+            "displayName":name,"projectId":Self.semanticRecordId(prefix:"PROJECT")
+        ]
+        do {
+            let receipt=try await ForgeBridge.request("project_create",arguments)
+            let created=try Self.decodeSemanticProject(receipt)
+            guard created.displayName == name else { throw ForgeBridgeError.invalidResponse }
+            if let index=semanticProjects.firstIndex(where:{$0.projectId == created.projectId}) {
+                semanticProjects[index]=created
+            } else {
+                semanticProjects.insert(created,at:0)
+            }
+            // Creating a semantic Project must not silently switch repository-scoped task context.
+            error=nil
+            Task { await refreshSemanticProjects() }
+            return true
+        } catch {
+            self.error="项目创建未确认：\(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func reviseSemanticProject(
+        projectId:String,expectedRevision:Int,displayName:String? = nil,status:String? = nil
+    ) async -> Bool {
+        guard !busy,expectedRevision > 0,
+              displayName?.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty != true,
+              displayName != nil || status != nil else {
+            error="无法确认项目修改内容或版本。"
+            return false
+        }
+        var arguments:[String:Any]=["projectId":projectId,"expectedRevision":expectedRevision]
+        if let displayName { arguments["displayName"]=displayName.trimmingCharacters(in:.whitespacesAndNewlines) }
+        if let status { arguments["projectStatus"]=status }
+        do {
+            let receipt=try await ForgeBridge.request("project_revise",arguments)
+            let changed=try Self.decodeSemanticProject(receipt)
+            guard changed.projectId == projectId,changed.revision == expectedRevision + 1,
+                  displayName == nil || changed.displayName == displayName?.trimmingCharacters(in:.whitespacesAndNewlines),
+                  status == nil || changed.status == status else {
+                throw ForgeBridgeError.invalidResponse
+            }
+            if let index=semanticProjects.firstIndex(where:{$0.projectId == projectId}) {
+                semanticProjects[index]=changed
+            }
+            error=nil
+            Task { await refreshSemanticProjects() }
+            return true
+        } catch {
+            self.error="项目修改未确认：\(error.localizedDescription)"
+            return false
+        }
+    }
+
     func beginProjectListRefresh() -> Int {
         projectListRequestGeneration &+= 1
         return projectListRequestGeneration
@@ -1725,7 +1901,9 @@ final class NativeWorkspace: ObservableObject {
 
     func refresh() async {
         let requestGeneration = beginWorkspaceRefresh()
-        await refreshProjects()
+        async let repositoryRefresh:Void = refreshProjects()
+        async let semanticRefresh:Void = refreshSemanticProjects()
+        _ = await (repositoryRefresh,semanticRefresh)
         guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
         if !settingsLoading {
             // Agent repository context is owned by the selected ChatThread. Do not
@@ -1971,20 +2149,26 @@ final class NativeWorkspace: ObservableObject {
             self.error = error.localizedDescription
         }
     }
-    func readPlanningRecords(repoId:String) async throws -> [ForgeRecord] {
-        async let requirementValue = ForgeBridge.request("read_project_requirement_list",["repoId":repoId])
-        async let planValue = ForgeBridge.request("read_project_plan_list",["repoId":repoId])
-        let (requirementList,planList) = try await (requirementValue,planValue)
-        let requirementData = requirementList["data"] as? [String:Any] ?? requirementList
-        let requirementRows = requirementData["requirements"] as? [[String:Any]] ?? []
-        let planData = planList["data"] as? [String:Any] ?? planList
-        let planRows = planData["plans"] as? [[String:Any]] ?? []
-        let projectRequirements = Self.projectRequirementRows(
-            requirementRows:requirementRows,
-            planRows:planRows,
-            repoId:repoId
-        )
-        return Self.planningRecords(requirementRows:projectRequirements,planRows:planRows)
+    func readPlanningRecords(projectId:String,repoId:String?) async throws -> [ForgeRecord] {
+        let projectResult=try await ForgeBridge.request("project_get",[
+            "projectId":projectId,"detailLevel":"detail","limit":100,"offset":0
+        ])
+        let projectData=projectResult["data"] as? [String:Any] ?? projectResult
+        guard (projectData["project"] as? [String:Any])?["projectId"] as? String == projectId else {
+            throw ForgeBridgeError.invalidResponse
+        }
+        let requirementRows=projectData["requirements"] as? [[String:Any]] ?? []
+        var planRows:[[String:Any]]=[]
+        if let repoId {
+            let planResult=try await ForgeBridge.request("read_project_plan_list",["repoId":repoId])
+            let planData=planResult["data"] as? [String:Any] ?? planResult
+            let requirementIds=Set(requirementRows.compactMap{$0["requirementId"] as? String})
+            planRows=(planData["plans"] as? [[String:Any]] ?? []).filter { row in
+                guard let requirementId=row["requirementId"] as? String else { return false }
+                return requirementIds.contains(requirementId)
+            }
+        }
+        return Self.planningRecords(requirementRows:requirementRows,planRows:planRows)
     }
 
     func beginPlanningPageRefresh() -> Int {
@@ -2000,6 +2184,17 @@ final class NativeWorkspace: ObservableObject {
             requestRepoId:targetRepoId,currentRepoId:repoId,
             requestGeneration:generation,currentGeneration:planningPageRequestGeneration
         ) && page == targetPage && projectContextGeneration == contextGeneration
+    }
+
+    func projectPlanningPageRequestIsCurrent(
+        _ generation:Int,projectId targetProjectId:String,repoId targetRepoId:String?,
+        page targetPage:NativePage,contextGeneration:Int
+    ) -> Bool {
+        generation == planningPageRequestGeneration
+            && selectedProjectId == targetProjectId
+            && repoId == targetRepoId
+            && page == targetPage
+            && projectContextGeneration == contextGeneration
     }
 
     func loadPage() async {
@@ -2019,62 +2214,39 @@ final class NativeWorkspace: ObservableObject {
             await loadSettingsPage()
             return
         }
-        guard let repoId, [.requirement,.plan].contains(page) else { return }
+        guard [.requirement,.plan].contains(page) else { return }
+        guard let projectId=selectedProjectId else {
+            records=[]
+            selectedRecord=nil
+            recordDetail=nil
+            error="请先选择项目。"
+            return
+        }
         let targetPage=page
+        let targetRepoId=projectRepositoryId
         let contextGeneration=projectContextGeneration
         let requestGeneration=beginPlanningPageRefresh()
         do {
-            if targetPage == .requirement {
-                let planning = try await readPlanningRecords(repoId:repoId)
-                guard planningPageRequestIsCurrent(
-                    requestGeneration,repoId:repoId,page:targetPage,contextGeneration:contextGeneration
-                ) else { return }
-                records = planning
-            } else {
-                let result = try await ForgeBridge.request("read_project_plan_list",["repoId":repoId])
-                guard planningPageRequestIsCurrent(
-                    requestGeneration,repoId:repoId,page:targetPage,contextGeneration:contextGeneration
-                ) else { return }
-                let data = result["data"] as? [String:Any] ?? result
-                let rows = data["plans"] as? [[String:Any]] ?? []
-                records = rows.compactMap { row -> ForgeRecord? in
-                    guard let id = row["planId"] as? String else { return nil }
-                    return ForgeRecord(
-                        recordId:id,title:row["goal"] as? String ?? row["objective"] as? String ?? id,
-                        state:"Plan",kind:.plan,depth:0,
-                        requirementId:row["requirementId"] as? String,parentPlanId:row["parentPlanId"] as? String
-                    )
-                }
-            }
-            guard planningPageRequestIsCurrent(
-                requestGeneration,repoId:repoId,page:targetPage,contextGeneration:contextGeneration
+            let planning=try await readPlanningRecords(projectId:projectId,repoId:targetRepoId)
+            guard projectPlanningPageRequestIsCurrent(
+                requestGeneration,projectId:projectId,repoId:targetRepoId,
+                page:targetPage,contextGeneration:contextGeneration
             ) else { return }
+            records=targetPage == .requirement ? planning : planning.filter{$0.kind == .plan}
             planningAutopilotStatuses=[:]
             planningAutopilotStatusError=nil
-            detail = ""
-            selectedRecord = nil
-            recordDetail = nil
-            error = nil
+            detail=""
+            selectedRecord=nil
+            recordDetail=nil
+            error=nil
         } catch {
-            guard planningPageRequestIsCurrent(
-                requestGeneration,repoId:repoId,page:targetPage,contextGeneration:contextGeneration
+            guard projectPlanningPageRequestIsCurrent(
+                requestGeneration,projectId:projectId,repoId:targetRepoId,
+                page:targetPage,contextGeneration:contextGeneration
             ) else { return }
-            self.error = error.localizedDescription
+            self.error=error.localizedDescription
         }
     }
-    nonisolated static func projectRequirementRows(
-        requirementRows: [[String:Any]],
-        planRows: [[String:Any]],
-        repoId: String
-    ) -> [[String:Any]] {
-        let linkedRequirementIds = Set(planRows.compactMap { $0["requirementId"] as? String })
-        return requirementRows.filter { row in
-            guard let requirementId = row["requirementId"] as? String else { return false }
-            let placedRepoId = row["repoId"] as? String
-            return placedRepoId == repoId || linkedRequirementIds.contains(requirementId)
-        }
-    }
-
     nonisolated static func planningRecords(
         requirementRows: [[String:Any]],
         planRows: [[String:Any]]
@@ -2132,7 +2304,7 @@ final class NativeWorkspace: ObservableObject {
             result.append(ForgeRecord(
                 recordId:requirementId,
                 title:row["title"] as? String ?? row["outcomeStatement"] as? String ?? requirementId,
-                state:row["state"] as? String ?? "",
+                state:row["state"] as? String ?? "open",
                 kind:.requirement,depth:0,requirementId:requirementId,parentPlanId:nil,
                 taskStatus:row["status"] as? String,
                 priority:row["priority"] as? String,
@@ -3285,31 +3457,42 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func openRecord(_ selectionId: String) async {
-        guard let repoId,
-              let record = records.first(where: { $0.id == selectionId }) else { return }
-        let checkoutId=self.checkoutId
+        guard let projectId=selectedProjectId,
+              let record=records.first(where:{$0.id == selectionId}) else { return }
+        let targetRepoId=projectRepositoryId
+        let targetCheckoutId=checkoutId
         invalidateAutopilotRequests()
-        selectedRecord = selectionId
-        recordDetail = nil
+        selectedRecord=selectionId
+        recordDetail=nil
         do {
             switch record.kind {
             case .plan:
-                let result = try await ForgeBridge.request("read_plan_detail",["repoId":repoId,"planId":record.recordId])
-                guard self.repoId == repoId,self.checkoutId == checkoutId,self.selectedRecord == selectionId else { return }
-                guard let parsed = Self.planDetail(result) else { throw ForgeBridgeError.invalidResponse }
+                var arguments:[String:Any]=["projectId":projectId,"planId":record.recordId]
+                if let targetRepoId { arguments["repoId"]=targetRepoId }
+                let result=try await ForgeBridge.request("read_plan_detail",arguments)
+                guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId,
+                      self.checkoutId == targetCheckoutId,self.selectedRecord == selectionId else { return }
+                guard let parsed=Self.planDetail(result) else { throw ForgeBridgeError.invalidResponse }
                 recordDetail = .plan(parsed)
             case .requirement:
-                let result = try await ForgeBridge.request("read_requirement_detail",["repoId":repoId,"requirementId":record.recordId])
-                guard self.repoId == repoId,self.checkoutId == checkoutId,self.selectedRecord == selectionId else { return }
-                guard let parsed = Self.requirementDetail(result) else { throw ForgeBridgeError.invalidResponse }
+                var arguments:[String:Any]=["projectId":projectId,"requirementId":record.recordId]
+                if let targetRepoId { arguments["repoId"]=targetRepoId }
+                let result=try await ForgeBridge.request("read_requirement_detail",arguments)
+                guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId,
+                      self.checkoutId == targetCheckoutId,self.selectedRecord == selectionId else { return }
+                guard let parsed=Self.requirementDetail(result) else { throw ForgeBridgeError.invalidResponse }
                 recordDetail = .requirement(parsed)
-                await loadAutopilotStatus(record.recordId)
-                guard self.repoId == repoId,self.checkoutId == checkoutId,self.selectedRecord == selectionId else { return }
+                if targetRepoId != nil,targetCheckoutId != nil {
+                    await loadAutopilotStatus(record.recordId)
+                    guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId,
+                          self.checkoutId == targetCheckoutId,self.selectedRecord == selectionId else { return }
+                }
             }
-            error = nil
+            error=nil
         } catch {
-            guard self.repoId == repoId,self.checkoutId == checkoutId,self.selectedRecord == selectionId else { return }
-            self.error = error.localizedDescription
+            guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId,
+                  self.checkoutId == targetCheckoutId,self.selectedRecord == selectionId else { return }
+            self.error=error.localizedDescription
         }
     }
 
@@ -3345,66 +3528,77 @@ final class NativeWorkspace: ObservableObject {
         taskStatus: String? = nil, priority: String? = nil, assignee: String? = nil,
         dependencyRequirementIds:[String] = []
     ) async -> String? {
-        guard let repoId else { error = "请先选择项目。"; return nil }
-        let cleanTitle = title.trimmingCharacters(in:.whitespacesAndNewlines)
-        let cleanOutcome = outcome.trimmingCharacters(in:.whitespacesAndNewlines)
-        guard !cleanTitle.isEmpty, !cleanOutcome.isEmpty else { error = "Requirement 标题和目标不能为空。"; return nil }
-        let id = Self.semanticRecordId(prefix:"REQ")
+        guard let projectId=selectedProjectId else { error="请先选择项目。"; return nil }
+        let targetRepoId=projectRepositoryId
+        let cleanTitle=title.trimmingCharacters(in:.whitespacesAndNewlines)
+        let cleanOutcome=outcome.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !cleanTitle.isEmpty,!cleanOutcome.isEmpty else {
+            error="Requirement 标题和目标不能为空。"
+            return nil
+        }
+        let id=Self.semanticRecordId(prefix:"REQ")
         do {
             var arguments:[String:Any]=[
-                "repoId":repoId,"requirementId":id,"title":cleanTitle,"outcome":cleanOutcome,
-                "acceptanceCriteria":acceptanceCriteria.map { $0.trimmingCharacters(in:.whitespacesAndNewlines) }.filter { !$0.isEmpty }
+                "projectId":projectId,"requirementId":id,"title":cleanTitle,"outcome":cleanOutcome,
+                "acceptanceCriteria":acceptanceCriteria.map{$0.trimmingCharacters(in:.whitespacesAndNewlines)}
+                    .filter{!$0.isEmpty}
             ]
+            if let targetRepoId { arguments["repoId"]=targetRepoId }
             if let taskStatus { arguments["taskStatus"]=taskStatus }
             if let priority { arguments["priority"]=priority }
             if let assignee { arguments["assignee"]=assignee }
             if !dependencyRequirementIds.isEmpty { arguments["dependencyRequirementIds"]=dependencyRequirementIds }
-            _ = try await ForgeBridge.request("create_requirement",arguments)
+            _=try await ForgeBridge.request("create_requirement",arguments)
+            guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId else { return nil }
             page = .requirement
             await loadPage()
-            if let record = records.first(where: { $0.kind == .requirement && $0.recordId == id }) {
+            if let record=records.first(where:{$0.kind == .requirement && $0.recordId == id}) {
                 await openRecord(record.id)
             }
             return id
         } catch {
-            self.error = error.localizedDescription
+            self.error=error.localizedDescription
             return nil
         }
     }
 
-    func createPlan(objective: String, requirementId: String?, parentPlanId: String?) async -> String? {
-        guard let repoId else { error = "请先选择项目。"; return nil }
-        let cleanObjective = objective.trimmingCharacters(in:.whitespacesAndNewlines)
-        guard !cleanObjective.isEmpty else { error = "Plan 目标不能为空。"; return nil }
-        let id = Self.semanticRecordId(prefix:"PLAN")
-        var arguments: [String:Any] = ["repoId":repoId,"planId":id,"objective":cleanObjective]
-        if let requirementId, !requirementId.isEmpty { arguments["requirementId"] = requirementId }
-        if let parentPlanId, !parentPlanId.isEmpty { arguments["parentPlanId"] = parentPlanId }
+    func createPlan(objective:String,requirementId:String?,parentPlanId:String?) async -> String? {
+        guard let projectId=selectedProjectId else { error="请先选择项目。"; return nil }
+        let targetRepoId=projectRepositoryId
+        let cleanObjective=objective.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !cleanObjective.isEmpty else { error="Plan 目标不能为空。"; return nil }
+        let id=Self.semanticRecordId(prefix:"PLAN")
+        var arguments:[String:Any]=["projectId":projectId,"planId":id,"objective":cleanObjective]
+        if let targetRepoId { arguments["repoId"]=targetRepoId }
+        if let requirementId,!requirementId.isEmpty { arguments["requirementId"]=requirementId }
+        if let parentPlanId,!parentPlanId.isEmpty { arguments["parentPlanId"]=parentPlanId }
         do {
-            _ = try await ForgeBridge.request("create_plan",arguments)
+            _=try await ForgeBridge.request("create_plan",arguments)
+            guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId else { return nil }
             page = .requirement
             await loadPage()
-            if let record = records.first(where: { $0.kind == .plan && $0.recordId == id }) {
+            if let record=records.first(where:{$0.kind == .plan && $0.recordId == id}) {
                 await openRecord(record.id)
             }
             return id
         } catch {
-            self.error = error.localizedDescription
+            self.error=error.localizedDescription
             return nil
         }
     }
 
 
     func reviseRequirement(
-        id:String, expectedRevision:Int,
-        title:String, outcome:String, acceptanceCriteria:[String],
-        taskStatus:String? = nil, priority:String? = nil, assignee:String? = nil,
-        dependencyRequirementIds:[String]? = nil, remainingWork:[String]? = nil
+        id:String,expectedRevision:Int,
+        title:String,outcome:String,acceptanceCriteria:[String],
+        taskStatus:String? = nil,priority:String? = nil,assignee:String? = nil,
+        dependencyRequirementIds:[String]? = nil,remainingWork:[String]? = nil
     ) async -> Bool {
-        guard let repoId,expectedRevision > 0 else {
+        guard let projectId=selectedProjectId,expectedRevision > 0 else {
             error="无法确认当前 Requirement 的版本，请刷新后重试。"
             return false
         }
+        let targetRepoId=projectRepositoryId
         let cleanTitle=title.trimmingCharacters(in:.whitespacesAndNewlines)
         let cleanOutcome=outcome.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !cleanTitle.isEmpty,!cleanOutcome.isEmpty else {
@@ -3413,11 +3607,12 @@ final class NativeWorkspace: ObservableObject {
         }
         do {
             var arguments:[String:Any]=[
-                "repoId":repoId,"requirementId":id,"expectedRevision":expectedRevision,
+                "projectId":projectId,"requirementId":id,"expectedRevision":expectedRevision,
                 "title":cleanTitle,"outcome":cleanOutcome,
                 "acceptanceCriteria":acceptanceCriteria.map{$0.trimmingCharacters(in:.whitespacesAndNewlines)}
                     .filter{!$0.isEmpty}
             ]
+            if let targetRepoId { arguments["repoId"]=targetRepoId }
             if let taskStatus { arguments["taskStatus"]=taskStatus }
             if let priority { arguments["priority"]=priority }
             if let assignee { arguments["assignee"]=assignee }
@@ -3429,14 +3624,14 @@ final class NativeWorkspace: ObservableObject {
                   changed["revision"] as? Int == expectedRevision + 1 else {
                 throw ForgeBridgeError.invalidResponse
             }
-            guard self.repoId == repoId else { return false }
+            guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId else { return false }
             await loadPage()
             if let item=records.first(where:{$0.kind == .requirement && $0.recordId == id}) {
                 await openRecord(item.id)
             }
             return true
         } catch {
-            self.error="修改未确认：\(error.localizedDescription)。请刷新修订版本后核对。"
+            self.error="修改未确认：\\(error.localizedDescription)。请刷新修订版本后核对。"
             return false
         }
     }
@@ -3447,10 +3642,11 @@ final class NativeWorkspace: ObservableObject {
         acceptanceCriteria:[String],state:String,acceptedEvidenceRefs:[String]?,
         remainingWork:[String]? = nil
     ) async -> Bool {
-        guard let repoId,expectedRevision > 0 else {
+        guard let projectId=selectedProjectId,expectedRevision > 0 else {
             error="无法确认 Requirement 当前修订版本。"
             return false
         }
+        let targetRepoId=projectRepositoryId
         guard state == "open" || state == "completed" || state == "cancelled" else {
             error="不支持的 Requirement 状态。"
             return false
@@ -3467,10 +3663,11 @@ final class NativeWorkspace: ObservableObject {
             return false
         }
         var args:[String:Any]=[
-            "repoId":repoId,"requirementId":id,
+            "projectId":projectId,"requirementId":id,
             "expectedRevision":expectedRevision,"title":title,
             "outcome":outcome,"acceptanceCriteria":acceptanceCriteria,"state":state
         ]
+        if let targetRepoId { args["repoId"]=targetRepoId }
         if let references { args["acceptedEvidenceRefs"]=references }
         if let cleanRemainingWork { args["remainingWork"]=cleanRemainingWork }
         do {
@@ -3481,43 +3678,46 @@ final class NativeWorkspace: ObservableObject {
                   changed["state"] as? String == state else {
                 throw ForgeBridgeError.invalidResponse
             }
-            guard self.repoId == repoId else { return false }
+            guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId else { return false }
             await loadPage()
             if let selected=records.first(where:{$0.kind == .requirement && $0.recordId == id}) {
                 await openRecord(selected.id)
             }
             return true
         } catch {
-            self.error="状态更新未确认：\(error.localizedDescription)。请刷新后核对证据与版本。"
+            self.error="状态更新未确认：\\(error.localizedDescription)。请刷新后核对证据与版本。"
             return false
         }
     }
 
     func revisePlan(id:String,expectedRevision:Int,objective:String) async -> Bool {
-        guard let repoId,expectedRevision > 0 else {
+        guard let projectId=selectedProjectId,expectedRevision > 0 else {
             error="无法确认当前 Plan 的版本，请刷新后重试。"
             return false
         }
+        let targetRepoId=projectRepositoryId
         let goal=objective.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !goal.isEmpty else { error="Plan 目标不能为空。"; return false }
         do {
-            let receipt=try await ForgeBridge.request("revise_plan",[
-                "repoId":repoId,"planId":id,
+            var arguments:[String:Any]=[
+                "projectId":projectId,"planId":id,
                 "expectedRevision":expectedRevision,"objective":goal
-            ])
+            ]
+            if let targetRepoId { arguments["repoId"]=targetRepoId }
+            let receipt=try await ForgeBridge.request("revise_plan",arguments)
             guard let changed=receipt["plan"] as? [String:Any],
                   changed["planId"] as? String == id,
                   changed["revision"] as? Int == expectedRevision + 1 else {
                 throw ForgeBridgeError.invalidResponse
             }
-            guard self.repoId == repoId else { return false }
+            guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId else { return false }
             await loadPage()
             if let item=records.first(where:{$0.kind == .plan && $0.recordId == id}) {
                 await openRecord(item.id)
             }
             return true
         } catch {
-            self.error="修改未确认：\(error.localizedDescription)。请刷新修订版本后核对。"
+            self.error="修改未确认：\\(error.localizedDescription)。请刷新修订版本后核对。"
             return false
         }
     }
@@ -4048,10 +4248,9 @@ final class NativeWorkspace: ObservableObject {
     }
 
     nonisolated static func readOnlyThreadMatchesContext(
-        _ thread:ChatThread?,repoId:String?,checkoutId:String?
+        _ thread:ChatThread?,repoId:String?,checkoutId:String?,projectId:String? = nil
     ) -> Bool {
-        guard let thread,thread.readOnly == true,
-              let repoId,let checkoutId else { return false }
+        guard let thread,thread.readOnly == true,thread.projectId == projectId else { return false }
         return thread.repoId == repoId
             && thread.checkoutId == checkoutId
             && thread.readOnlyRepoId == repoId

@@ -146,6 +146,8 @@ fn optional_strings(arguments: &Value, field: &str, max_items: usize) -> Result<
 
 async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
     match operation {
+        "project_list" | "project_create" | "project_get" | "project_revise" | "project_attach_requirement" =>
+            semantic_project_operation(operation, args).await,
         "read_projects" => read_projects().await,
         "register_project" => call_runtime_tool("repository_register", json!({
             "path": required(args, "path")?
@@ -189,18 +191,30 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 args.get("decision").and_then(Value::as_str).unwrap_or("").to_string(),
             ).await,
         "read_requirement_detail" =>
-            read_requirement_detail(required(args, "repoId")?, required(args, "requirementId")?).await,
+            read_requirement_detail(
+                optional_project_text(args, "repoId", 256)?,
+                optional_project_text(args, "projectId", 512)?,
+                required_bounded(args, "requirementId", 160)?,
+            ).await,
         "read_plan_detail" =>
             read_plan_detail(required(args, "repoId")?, required(args, "planId")?).await,
         "create_requirement" =>
             create_requirement(
-                required(args,"repoId")?,
-                required(args,"requirementId")?,
+                optional_project_text(args, "repoId", 256)?,
+                optional_project_text(args, "projectId", 512)?,
+                required_bounded(args,"requirementId",160)?,
                 required_bounded(args,"title",240)?,
                 required_bounded(args,"outcome",4000)?,
                 args.get("acceptanceCriteria").and_then(Value::as_array)
                     .map(|values| values.iter().filter_map(Value::as_str).map(str::to_owned).take(32).collect())
                     .unwrap_or_default(),
+                args.get("dependencyRequirementIds").map(|value| {
+                    value.as_array()
+                        .filter(|items| items.len() <= 50
+                            && items.iter().all(|item| item.as_str().is_some_and(|id| id.len() <= 160)))
+                        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<String>>())
+                        .ok_or("FORGE_NATIVE_BRIDGE_DEPENDENCIES_INVALID")
+                }).transpose()?,
                 args.get("taskStatus").and_then(Value::as_str).map(str::to_owned),
                 args.get("priority").and_then(Value::as_str).map(str::to_owned),
                 args.get("assignee").and_then(Value::as_str).map(str::to_owned),
@@ -215,8 +229,9 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             ).await,
         "revise_requirement" =>
             revise_requirement(
-                required(args,"repoId")?,
-                required(args,"requirementId")?,
+                optional_project_text(args, "repoId", 256)?,
+                optional_project_text(args, "projectId", 512)?,
+                required_bounded(args,"requirementId",160)?,
                 args.get("expectedRevision").and_then(Value::as_u64)
                     .filter(|revision| *revision > 0)
                     .ok_or("FORGE_NATIVE_BRIDGE_EXPECTED_REVISION_REQUIRED")?,
@@ -234,6 +249,20 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                             && items.iter().all(|item| item.as_str().is_some_and(|text| text.len() <= 512)))
                         .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<String>>())
                         .ok_or("FORGE_NATIVE_BRIDGE_EVIDENCE_REFS_INVALID")
+                }).transpose()?,
+                args.get("remainingWork").map(|value| {
+                    value.as_array()
+                        .filter(|items| items.len() <= 50
+                            && items.iter().all(|item| item.as_str().is_some_and(|text| text.len() <= 500)))
+                        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<String>>())
+                        .ok_or("FORGE_NATIVE_BRIDGE_REMAINING_WORK_INVALID")
+                }).transpose()?,
+                args.get("dependencyRequirementIds").map(|value| {
+                    value.as_array()
+                        .filter(|items| items.len() <= 50
+                            && items.iter().all(|item| item.as_str().is_some_and(|id| id.len() <= 160)))
+                        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<String>>())
+                        .ok_or("FORGE_NATIVE_BRIDGE_DEPENDENCIES_INVALID")
                 }).transpose()?,
                 args.get("taskStatus").and_then(Value::as_str).map(str::to_owned),
                 args.get("priority").and_then(Value::as_str).map(str::to_owned),
