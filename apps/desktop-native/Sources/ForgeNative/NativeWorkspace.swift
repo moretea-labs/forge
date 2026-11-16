@@ -3625,9 +3625,11 @@ final class NativeWorkspace: ObservableObject {
             guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId else { return nil }
             page = .requirement
             await loadPage()
-            if let record=records.first(where:{$0.kind == .requirement && $0.recordId == id}) {
-                await openRecord(record.id)
+            guard let record=records.first(where:{$0.kind == .requirement && $0.recordId == id}) else {
+                self.error="Requirement 已创建并收到确认，但项目任务列表尚未回读该记录。请刷新核对，不要重复创建。"
+                return id
             }
+            await openRecord(record.id)
             return id
         } catch {
             self.error=error.localizedDescription
@@ -3650,9 +3652,11 @@ final class NativeWorkspace: ObservableObject {
             guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId else { return nil }
             page = .requirement
             await loadPage()
-            if let record=records.first(where:{$0.kind == .plan && $0.recordId == id}) {
-                await openRecord(record.id)
+            guard let record=records.first(where:{$0.kind == .plan && $0.recordId == id}) else {
+                self.error="Plan 已创建并收到确认，但项目计划列表尚未回读该记录。请刷新核对，不要重复创建。"
+                return id
             }
+            await openRecord(record.id)
             return id
         } catch {
             self.error=error.localizedDescription

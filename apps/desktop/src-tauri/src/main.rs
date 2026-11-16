@@ -996,6 +996,53 @@ async fn control_user_request(
     })).await
 }
 
+fn requirement_create_matches_request(
+    data: &Value,
+    requirement_id: &str,
+    project_id: Option<&str>,
+    task_status: Option<&str>,
+    priority: Option<&str>,
+    assignee: Option<&str>,
+    dependencies: Option<&[String]>,
+) -> bool {
+    let Some(requirement) = data.get("requirement") else {
+        return false;
+    };
+    if requirement.get("requirementId").and_then(Value::as_str) != Some(requirement_id) {
+        return false;
+    }
+    if let Some(project_id) = project_id {
+        if requirement.get("projectId").and_then(Value::as_str) != Some(project_id) {
+            return false;
+        }
+    }
+    if let Some(status) = task_status {
+        if requirement.get("status").and_then(Value::as_str) != Some(status) {
+            return false;
+        }
+    }
+    if let Some(priority) = priority {
+        if requirement.get("priority").and_then(Value::as_str) != Some(priority) {
+            return false;
+        }
+    }
+    if let Some(assignee) = assignee {
+        if requirement.get("assignee").and_then(Value::as_str).unwrap_or("") != assignee.trim() {
+            return false;
+        }
+    }
+    if let Some(expected) = dependencies {
+        let actual = requirement.get("dependsOnRequirementIds")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+            .unwrap_or_default();
+        if actual != expected.iter().map(String::as_str).collect::<Vec<_>>() {
+            return false;
+        }
+    }
+    true
+}
+
 #[tauri::command]
 async fn read_requirement_detail(
     repo_id: Option<String>,
@@ -1086,17 +1133,17 @@ async fn create_requirement(
     arguments["request_id"] = json!(request_id("requirement-create"));
     let result = call_runtime_tool("rh_work", arguments).await?;
     let data = semantic_facade_data(result);
-    let status_confirmed = task_status.as_deref().is_none_or(|status|
-        data.pointer("/requirement/status").and_then(Value::as_str) == Some(status));
-    let priority_confirmed = priority.as_deref().is_none_or(|level|
-        data.pointer("/requirement/priority").and_then(Value::as_str) == Some(level));
-    let assignee_confirmed = assignee.as_deref().is_none_or(|owner|
-        data.pointer("/requirement/assignee").and_then(Value::as_str).unwrap_or("") == owner.trim());
-    let project_confirmed = project_id.as_deref().is_none_or(|project|
-        data.pointer("/requirement/projectId").and_then(Value::as_str) == Some(project));
-    if !status_confirmed || !priority_confirmed || !assignee_confirmed || !project_confirmed {
+    if !requirement_create_matches_request(
+        &data,
+        &requirement_id,
+        project_id.as_deref(),
+        task_status.as_deref(),
+        priority.as_deref(),
+        assignee.as_deref(),
+        dependencies.as_deref(),
+    ) {
         return Err(format!(
-            "FORGE_DESKTOP_REQUIREMENT_CREATE_METADATA_UNCONFIRMED: {requirement_id}; refresh the project before retrying"
+            "FORGE_DESKTOP_REQUIREMENT_CREATE_RECEIPT_UNCONFIRMED: {requirement_id}; refresh the project before retrying"
         ));
     }
     Ok(data)

@@ -720,6 +720,37 @@ mod tests {
     }
 
     #[test]
+    fn requirement_create_receipt_confirms_exact_project_metadata_and_dependencies() {
+        let dependencies = vec!["REQ-parent".to_string()];
+        let receipt = json!({
+            "requirement": {
+                "requirementId": "REQ-child",
+                "projectId": "PROJECT-a",
+                "status": "planned",
+                "priority": "high",
+                "assignee": "owner",
+                "dependsOnRequirementIds": ["REQ-parent"]
+            }
+        });
+        assert!(super::requirement_create_matches_request(
+            &receipt, "REQ-child", Some("PROJECT-a"), Some("planned"),
+            Some("high"), Some("owner"), Some(&dependencies)
+        ));
+        assert!(!super::requirement_create_matches_request(
+            &receipt, "REQ-child", Some("PROJECT-b"), Some("planned"),
+            Some("high"), Some("owner"), Some(&dependencies)
+        ));
+        assert!(!super::requirement_create_matches_request(
+            &receipt, "REQ-child", Some("PROJECT-a"), Some("planned"),
+            Some("high"), Some("owner"), Some(&[])
+        ));
+        assert!(!super::requirement_create_matches_request(
+            &receipt, "REQ-other", Some("PROJECT-a"), Some("planned"),
+            Some("high"), Some("owner"), Some(&dependencies)
+        ));
+    }
+
+    #[test]
     fn native_project_and_plan_bridge_rejects_missing_canonical_scope() {
         let requirement_list = tauri::async_runtime::block_on(dispatch(
             "read_project_requirement_list", &json!({})
