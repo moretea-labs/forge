@@ -135,6 +135,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     workspace_id: { type: 'string', maxLength: 512, description: 'Workspace scope for project_create/get/revise/list. Defaults to the existing Personal workspace on create.' },
     project_display_name: { type: 'string', maxLength: 512, description: 'Project display name for project_create or project_revise.' },
     project_status: { type: 'string', enum: ['active', 'archived'], description: 'Project lifecycle state for project_revise or status filter for project_list. Archiving preserves project identity and repository placement; it does not delete data.' },
+    project_sort_by: { type: 'string', enum: ['updated_at', 'display_name', 'status'], description: 'Sort key for project_list; defaults to updated_at.' },
     requirement_id: { type: 'string', description: 'Stable Requirement identity for Requirement operations, project_attach_requirement, Plan provenance, or optional Workflow semantic guard.' },
     expected_revision: { type: 'number', minimum: 1, description: 'Expected current record revision for project_revise, or semantic revision for requirement_revise/plan_revise. Stale writers fail; Forge never performs an implicit merge.' },
     requirement_revision: { type: 'number', minimum: 1, description: 'Optional Requirement basis revision recorded by Plan create/revise.' },

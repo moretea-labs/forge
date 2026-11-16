@@ -91,7 +91,7 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // Each canonical fingerprint fences stale Connector snapshots.
 // 2026-11-16 #648: optional assigned/unassigned task triage filter; existing
 // Requirement storage, assignment writer and revision CAS remain unchanged.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'b9108d52254886cd';
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '575fa648fe29267a';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

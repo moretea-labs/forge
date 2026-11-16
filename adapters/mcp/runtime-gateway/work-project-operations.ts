@@ -143,6 +143,11 @@ export function callRhWorkProjectOperation(
       const offset = Math.max(0, Math.min(Math.trunc(typeof args.offset === 'number' && Number.isFinite(args.offset) ? args.offset : 0), 100_000));
       const workspaceId = text(args.workspace_id);
       const statusFilter = text(args.project_status);
+      const projectSortBy = text(args.project_sort_by) ?? 'updated_at';
+      const sortOrder = text(args.sort_order) ?? 'desc';
+      if (!['updated_at', 'display_name', 'status'].includes(projectSortBy)) return blocked('PROJECT_SORT_INVALID.', { projectSortBy });
+      if (sortOrder !== 'asc' && sortOrder !== 'desc') return blocked('PROJECT_SORT_ORDER_INVALID.', { sortOrder });
+      const direction = sortOrder === 'asc' ? 1 : -1;
       const searchQuery = text(args.search_query);
       const normalizedSearchQuery = searchQuery?.toLowerCase();
       if (statusFilter && statusFilter !== 'active' && statusFilter !== 'archived') return blocked('PROJECT_STATUS_INVALID.');
@@ -157,8 +162,14 @@ export function callRhWorkProjectOperation(
         .filter(({ value }) => (!statusFilter || (value.status ?? 'active') === statusFilter)
           && (!normalizedSearchQuery || value.projectId.toLowerCase().includes(normalizedSearchQuery)
             || value.displayName.toLowerCase().includes(normalizedSearchQuery)))
-        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)
-          || left.value.projectId.localeCompare(right.value.projectId));
+        .sort((left, right) => {
+          const compared = projectSortBy === 'display_name'
+            ? left.value.displayName.localeCompare(right.value.displayName)
+            : projectSortBy === 'status'
+              ? (left.value.status ?? 'active').localeCompare(right.value.status ?? 'active')
+              : left.updatedAt.localeCompare(right.updatedAt);
+          return direction * compared || left.value.projectId.localeCompare(right.value.projectId);
+        });
       const totalCount = filtered.length;
       const projects = filtered.slice(offset, offset + limit).map((record) => ({
         ...projectView(ctx, record),
@@ -170,6 +181,7 @@ export function callRhWorkProjectOperation(
         data: {
           authority: 'project_semantic', progressAuthority: 'github_issue_project', bounded: true, limit, offset, totalCount,
           hasMore, projectsTruncated: hasMore,
+          projectSortBy, sortOrder,
           ...(statusFilter ? { statusFilter } : {}),
           ...(searchQuery ? { searchQuery } : {}), projects,
         },

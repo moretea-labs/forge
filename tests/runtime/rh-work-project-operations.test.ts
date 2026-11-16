@@ -269,6 +269,17 @@ describe('rh_work Project operations', () => {
     }));
     expect(searchedProjects.data).toMatchObject({ totalCount: 1, searchQuery: 'project b', hasMore: false });
     expect(searchedProjects.data.projects.map((project: { projectId: string }) => project.projectId)).toEqual(['project-b']);
+    const nameSorted = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'project_list', project_sort_by: 'display_name', sort_order: 'asc', limit: 20,
+    }));
+    expect(nameSorted.data).toMatchObject({ projectSortBy: 'display_name', sortOrder: 'asc' });
+    const names = nameSorted.data.projects.map((project: { displayName: string }) => project.displayName);
+    expect(names).toEqual([...names].sort((a: string, b: string) => a.localeCompare(b)));
+    const statusSorted = structured(await callRuntimeTool(context(controllerHome), 'rh_work', {
+      operation: 'project_list', project_sort_by: 'status', sort_order: 'asc', limit: 20,
+    }));
+    const statuses = statusSorted.data.projects.map((project: { status: string }) => project.status);
+    expect(statuses).toEqual([...statuses].sort((a: string, b: string) => a.localeCompare(b)));
     expect(listed.data.projects).toEqual(expect.arrayContaining([
       expect.objectContaining({ projectId: 'project-a', requirementCount: 1, taskStatusCounts: {
         planned: 0, active: 1, waiting_for_user: 0, done: 0, cancelled: 0,
