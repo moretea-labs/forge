@@ -4,6 +4,7 @@ import SwiftUI
 // Requirement/Plan revision writer; no approval or Plan state is persisted here.
 struct ZenProposalReviewSheet: View {
     @ObservedObject var model: NativeWorkspace
+    let sourceProjectId: String
     let sourceRepoId: String
     let sourceCheckoutId: String
     let proposal: ZenChangeProposal
@@ -18,8 +19,8 @@ struct ZenProposalReviewSheet: View {
     @State private var problem: String?
 
     private var ready: Bool {
-        guard !loading,!saving,problem == nil,model.repoId == sourceRepoId,
-              model.checkoutId == sourceCheckoutId else { return false }
+        guard !loading,!saving,problem == nil,model.selectedProjectId == sourceProjectId,
+              model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else { return false }
         switch proposal.operation {
         case .createRequirement: return true
         case .reviseRequirement:
@@ -149,20 +150,18 @@ struct ZenProposalReviewSheet: View {
         currentRequirement=nil
         currentPlan=nil
         defer { loading=false }
-        guard model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else {
+        guard model.selectedProjectId == sourceProjectId,model.repoId == sourceRepoId,
+              model.checkoutId == sourceCheckoutId else {
             problem="项目或工作区已切换。此提案仅属于原分析上下文，不能跨上下文应用。"
             return
         }
         do {
             var currentRecords:[ForgeRecord]=[]
             if proposal.operation == .createRequirement || proposal.operation == .createPlan {
-                guard let projectId=model.selectedProjectId else {
-                    throw ZenProposalIssue.validation("请先选择项目，再审阅提案。")
-                }
                 currentRecords=try await model.readPlanningRecords(
-                    projectId:projectId,repoId:model.projectRepositoryId)
+                    projectId:sourceProjectId,repoId:model.projectRepositoryId)
                 guard model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId,
-                      model.selectedProjectId == projectId else {
+                      model.selectedProjectId == sourceProjectId else {
                     problem="项目或工作区已切换。请返回原上下文核对后再继续。"
                     return
                 }
@@ -179,10 +178,13 @@ struct ZenProposalReviewSheet: View {
                 guard let id=proposal.operation == .reviseRequirement ? proposal.targetId : proposal.requirementId else {
                     throw ZenProposalIssue.validation("缺少 Requirement ID。")
                 }
-                let receipt=try await ForgeBridge.request("read_requirement_detail",[
-                    "repoId":sourceRepoId,"requirementId":id
-                ])
-                guard model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else {
+                var arguments:[String:Any]=[
+                    "projectId":sourceProjectId,"requirementId":id
+                ]
+                if let repoId=model.projectRepositoryId { arguments["repoId"]=repoId }
+                let receipt=try await ForgeBridge.request("read_requirement_detail",arguments)
+                guard model.selectedProjectId == sourceProjectId,
+                      model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else {
                     problem="项目或工作区已切换。请重新分析后再审阅。"
                     return
                 }
@@ -209,10 +211,13 @@ struct ZenProposalReviewSheet: View {
                 guard let id=proposal.targetId else {
                     throw ZenProposalIssue.validation("缺少 Plan ID。")
                 }
-                let receipt=try await ForgeBridge.request("read_plan_detail",[
-                    "repoId":sourceRepoId,"planId":id
-                ])
-                guard model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else {
+                var arguments:[String:Any]=[
+                    "projectId":sourceProjectId,"planId":id
+                ]
+                if let repoId=model.projectRepositoryId { arguments["repoId"]=repoId }
+                let receipt=try await ForgeBridge.request("read_plan_detail",arguments)
+                guard model.selectedProjectId == sourceProjectId,
+                      model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else {
                     problem="项目或工作区已切换。请重新分析后再审阅。"
                     return
                 }
@@ -230,7 +235,8 @@ struct ZenProposalReviewSheet: View {
     }
 
     private func applyProposal() async {
-        guard ready,acknowledged,model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else { return }
+        guard ready,acknowledged,model.selectedProjectId == sourceProjectId,
+              model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else { return }
         saving=true
         defer { saving=false }
         let changedId:String?

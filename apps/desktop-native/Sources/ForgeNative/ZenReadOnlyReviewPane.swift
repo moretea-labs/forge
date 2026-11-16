@@ -53,7 +53,7 @@ struct ZenReadOnlyReviewPane: View {
         }
         .frame(maxWidth:.infinity,alignment:.leading)
         .task(id:Self.reviewRequestIdentity(
-            repoId:model.repoId,checkoutId:model.checkoutId,
+            projectId:model.selectedProjectId,repoId:model.projectRepositoryId,checkoutId:model.checkoutId,
             recordId:record.id,role:role,focus:focus,providers:providers
         )) { await run() }
         .onDisappear { cancelReview() }
@@ -64,10 +64,10 @@ struct ZenReadOnlyReviewPane: View {
     // The review is scoped to a specific workspace and review intention.
     // Changing any input cancels the previous SwiftUI task and starts fresh.
     static func reviewRequestIdentity(
-        repoId:String?,checkoutId:String?,recordId:String,
+        projectId:String?,repoId:String?,checkoutId:String?,recordId:String,
         role:String,focus:String,providers:[String]
     ) -> [String] {
-        [repoId ?? "",checkoutId ?? "",recordId,role,focus] + providers
+        [projectId ?? "",repoId ?? "",checkoutId ?? "",recordId,role,focus] + providers
     }
 
     // Keep the security-critical API transport contract in one testable path.
@@ -121,17 +121,18 @@ struct ZenReadOnlyReviewPane: View {
         outputs = []
         error = nil
         reviewing = nil
-        guard let repoId=model.repoId,let checkoutId=model.checkoutId,
+        guard let projectId=model.selectedProjectId,let repoId=model.projectRepositoryId,
+              let checkoutId=model.checkoutId,
               providers.count >= 1,providers.count <= 2,
               Set(providers).count == providers.count else {
-            error="需要有效的 Repository / Checkout 和一至两个不同的 API Provider。"
+            error="需要有效的 Project / Repository / Checkout 和一至两个不同的 API Provider。"
             return
         }
         do {
             let operation=record.kind == .requirement ? "read_requirement_detail" : "read_plan_detail"
             let inputKey=record.kind == .requirement ? "requirementId" : "planId"
             let data=try await ForgeBridge.request(operation,[
-                "repoId":repoId,inputKey:record.recordId
+                "projectId":projectId,"repoId":repoId,inputKey:record.recordId
             ])
             let sourceText=try Self.canonicalSnapshot(
                 data,key:record.kind == .requirement ? "requirement" : "plan",
@@ -140,7 +141,8 @@ struct ZenReadOnlyReviewPane: View {
 
             for provider in providers {
                 if Task.isCancelled || reviewGeneration != generation { return }
-                guard model.repoId == repoId,model.checkoutId == checkoutId else {
+                guard model.selectedProjectId == projectId,model.projectRepositoryId == repoId,
+                      model.checkoutId == checkoutId else {
                     throw ForgeBridgeError.remote("项目已切换，停止审查。")
                 }
                 let name:String

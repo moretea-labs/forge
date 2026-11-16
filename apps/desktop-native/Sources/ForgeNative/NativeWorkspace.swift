@@ -2157,24 +2157,23 @@ final class NativeWorkspace: ObservableObject {
             self.error = error.localizedDescription
         }
     }
+    nonisolated static func planningScopeArguments(projectId:String,repoId:String?) -> [String:Any] {
+        var arguments:[String:Any]=["projectId":projectId]
+        if let repoId { arguments["repoId"]=repoId }
+        return arguments
+    }
+
     func readPlanningRecords(projectId:String,repoId:String?) async throws -> [ForgeRecord] {
-        let projectResult=try await ForgeBridge.request("project_get",[
-            "projectId":projectId,"detailLevel":"detail","limit":100,"offset":0
-        ])
-        let projectData=projectResult["data"] as? [String:Any] ?? projectResult
-        guard (projectData["project"] as? [String:Any])?["projectId"] as? String == projectId else {
+        let scope=Self.planningScopeArguments(projectId:projectId,repoId:repoId)
+        let requirementResult=try await ForgeBridge.request("read_project_requirement_list",scope)
+        let requirementData=requirementResult["data"] as? [String:Any] ?? requirementResult
+        guard let requirementRows=requirementData["requirements"] as? [[String:Any]] else {
             throw ForgeBridgeError.invalidResponse
         }
-        let requirementRows=projectData["requirements"] as? [[String:Any]] ?? []
-        var planRows:[[String:Any]]=[]
-        if let repoId {
-            let planResult=try await ForgeBridge.request("read_project_plan_list",["repoId":repoId])
-            let planData=planResult["data"] as? [String:Any] ?? planResult
-            let requirementIds=Set(requirementRows.compactMap{$0["requirementId"] as? String})
-            planRows=(planData["plans"] as? [[String:Any]] ?? []).filter { row in
-                guard let requirementId=row["requirementId"] as? String else { return false }
-                return requirementIds.contains(requirementId)
-            }
+        let planResult=try await ForgeBridge.request("read_project_plan_list",scope)
+        let planData=planResult["data"] as? [String:Any] ?? planResult
+        guard let planRows=planData["plans"] as? [[String:Any]] else {
+            throw ForgeBridgeError.invalidResponse
         }
         return Self.planningRecords(requirementRows:requirementRows,planRows:planRows)
     }
@@ -2194,13 +2193,22 @@ final class NativeWorkspace: ObservableObject {
         ) && page == targetPage && projectContextGeneration == contextGeneration
     }
 
+    nonisolated static func projectPlanningScopeMatches(
+        requestedProjectId:String,currentProjectId:String?,
+        requestedRepoId:String?,currentRepoId:String?
+    ) -> Bool {
+        currentProjectId == requestedProjectId && currentRepoId == requestedRepoId
+    }
+
     func projectPlanningPageRequestIsCurrent(
         _ generation:Int,projectId targetProjectId:String,repoId targetRepoId:String?,
         page targetPage:NativePage,contextGeneration:Int
     ) -> Bool {
         generation == planningPageRequestGeneration
-            && selectedProjectId == targetProjectId
-            && repoId == targetRepoId
+            && Self.projectPlanningScopeMatches(
+                requestedProjectId:targetProjectId,currentProjectId:selectedProjectId,
+                requestedRepoId:targetRepoId,currentRepoId:projectRepositoryId
+            )
             && page == targetPage
             && projectContextGeneration == contextGeneration
     }

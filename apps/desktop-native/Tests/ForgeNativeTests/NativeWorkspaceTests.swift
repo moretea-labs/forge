@@ -1151,6 +1151,33 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(NativeWorkspace.semanticRecordId(prefix:"PLAN",uuid:uuid),"PLAN-0123456789ab")
     }
 
+    func testPlanningScopeArgumentsKeepProjectAndOptionalRepositoryDistinct() {
+        XCTAssertTrue(NativeWorkspace.projectPlanningScopeMatches(
+            requestedProjectId:"PROJECT-standalone",currentProjectId:"PROJECT-standalone",
+            requestedRepoId:nil,currentRepoId:nil
+        ))
+        XCTAssertFalse(NativeWorkspace.projectPlanningScopeMatches(
+            requestedProjectId:"PROJECT-standalone",currentProjectId:"PROJECT-standalone",
+            requestedRepoId:nil,currentRepoId:"repo-previous"
+        ))
+        XCTAssertFalse(NativeWorkspace.projectPlanningScopeMatches(
+            requestedProjectId:"PROJECT-a",currentProjectId:"PROJECT-b",
+            requestedRepoId:"repo-a",currentRepoId:"repo-a"
+        ))
+        XCTAssertTrue(NativeWorkspace.projectPlanningScopeMatches(
+            requestedProjectId:"PROJECT-a",currentProjectId:"PROJECT-a",
+            requestedRepoId:"repo-a",currentRepoId:"repo-a"
+        ))
+
+        let standalone=NativeWorkspace.planningScopeArguments(projectId:"PROJECT-a",repoId:nil)
+        XCTAssertEqual(standalone["projectId"] as? String,"PROJECT-a")
+        XCTAssertNil(standalone["repoId"])
+
+        let placed=NativeWorkspace.planningScopeArguments(projectId:"PROJECT-b",repoId:"repo-b")
+        XCTAssertEqual(placed["projectId"] as? String,"PROJECT-b")
+        XCTAssertEqual(placed["repoId"] as? String,"repo-b")
+    }
+
     func testSemanticProjectDirectoryPreservesStandaloneAndRepositoryIdentity() throws {
         let projects = try NativeWorkspace.decodeSemanticProjects([
             "projects":[

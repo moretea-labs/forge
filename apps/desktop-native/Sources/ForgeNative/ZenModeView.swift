@@ -168,6 +168,7 @@ struct ZenWorkspacePane: View {
     @State private var pendingProposal: ZenChangeProposal?
     @State private var pendingExecutionApproval: ZenExecutionApproval?
     @State private var pendingCheckpointReview: AutopilotCheckpointReview?
+    @State private var proposalSourceProjectId = ""
     @State private var proposalSourceRepoId = ""
     @State private var proposalSourceCheckoutId = ""
     @State private var proposalProblem = ""
@@ -475,7 +476,9 @@ struct ZenWorkspacePane: View {
         }
         .sheet(isPresented:$showingGoalSheet) { goalSheet }
         .sheet(item:$pendingProposal) { item in
-            ZenProposalReviewSheet(model:model,sourceRepoId:proposalSourceRepoId,sourceCheckoutId:proposalSourceCheckoutId,proposal:item) { requirementId in
+            ZenProposalReviewSheet(model:model,sourceProjectId:proposalSourceProjectId,
+                                   sourceRepoId:proposalSourceRepoId,sourceCheckoutId:proposalSourceCheckoutId,
+                                   proposal:item) { requirementId in
                 focusedRequirementId=requirementId
                 screen = .canvas
             }
@@ -1269,12 +1272,14 @@ struct ZenWorkspacePane: View {
     }
 
     private func reviewProposal(threadId:String?) {
-        guard let repoId=model.repoId,let checkoutId=model.checkoutId,!model.busy,
+        guard let projectId=model.selectedProjectId,let repoId=model.projectRepositoryId,
+              let checkoutId=model.checkoutId,!model.busy,
               let candidate=reviewableProposals.first(where:{$0.threadId == threadId}) else {
             proposalProblem="当前项目没有可审阅的最终 ACCEPT。请先在只读 Agent 分析会话完成精化。"
             showingProposalProblem=true
             return
         }
+        proposalSourceProjectId=projectId
         proposalSourceRepoId=repoId
         proposalSourceCheckoutId=checkoutId
         pendingProposal=candidate.proposal

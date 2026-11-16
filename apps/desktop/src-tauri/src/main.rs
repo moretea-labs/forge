@@ -513,6 +513,23 @@ fn has_requirement_scope(repo_id: Option<&String>, project_id: Option<&String>) 
         || project_id.is_some_and(|value| !value.trim().is_empty())
 }
 
+fn semantic_project_scope(
+    project_id: Option<String>,
+    repo_id: Option<String>,
+    error_code: &str,
+) -> Result<Value, String> {
+    let project_id = project_id
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let repo_id = repo_id
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    if !has_requirement_scope(repo_id.as_ref(), project_id.as_ref()) {
+        return Err(error_code.to_string());
+    }
+    Ok(json!({ "project_id": project_id, "repo_id": repo_id }))
+}
+
 fn optional_project_text(args: &Value, field: &str, max_len: usize) -> Result<Option<String>, String> {
     match args.get(field) {
         None | Some(Value::Null) => Ok(None),
@@ -688,26 +705,32 @@ async fn semantic_project_operation(operation: &str, args: &Value) -> Result<Val
 }
 
 #[tauri::command]
-async fn read_project_requirement_list(repo_id: String) -> Result<Value, String> {
-    if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string()); }
-    let result = call_runtime_tool("rh_work", json!({
-        "repo_id": repo_id,
-        "operation": "requirement_list",
-        "limit": 100,
-        "request_id": request_id("project-requirement-list")
-    })).await?;
+async fn read_project_requirement_list(
+    project_id: Option<String>,
+    repo_id: Option<String>,
+) -> Result<Value, String> {
+    let mut arguments = semantic_project_scope(
+        project_id, repo_id, "FORGE_DESKTOP_REQUIREMENT_LIST_SCOPE_REQUIRED"
+    )?;
+    arguments["operation"] = json!("requirement_list");
+    arguments["limit"] = json!(100);
+    arguments["request_id"] = json!(request_id("project-requirement-list"));
+    let result = call_runtime_tool("rh_work", arguments).await?;
     Ok(semantic_facade_data(result))
 }
 
 #[tauri::command]
-async fn read_project_plan_list(repo_id: String) -> Result<Value, String> {
-    if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string()); }
-    let result = call_runtime_tool("rh_work", json!({
-        "repo_id": repo_id,
-        "operation": "plan_list",
-        "limit": 100,
-        "request_id": request_id("project-plan-list")
-    })).await?;
+async fn read_project_plan_list(
+    project_id: Option<String>,
+    repo_id: Option<String>,
+) -> Result<Value, String> {
+    let mut arguments = semantic_project_scope(
+        project_id, repo_id, "FORGE_DESKTOP_PLAN_LIST_SCOPE_REQUIRED"
+    )?;
+    arguments["operation"] = json!("plan_list");
+    arguments["limit"] = json!(100);
+    arguments["request_id"] = json!(request_id("project-plan-list"));
+    let result = call_runtime_tool("rh_work", arguments).await?;
     Ok(semantic_facade_data(result))
 }
 
@@ -990,17 +1013,22 @@ async fn read_requirement_detail(
 }
 
 #[tauri::command]
-async fn read_plan_detail(repo_id: String, plan_id: String) -> Result<Value, String> {
-    if repo_id.trim().is_empty() || plan_id.trim().is_empty() {
-        return Err("FORGE_DESKTOP_PLAN_DETAIL_ARGUMENT_REQUIRED".to_string());
+async fn read_plan_detail(
+    repo_id: Option<String>,
+    project_id: Option<String>,
+    plan_id: String,
+) -> Result<Value, String> {
+    if plan_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_PLAN_DETAIL_SCOPE_REQUIRED".to_string());
     }
-    let result = call_runtime_tool("rh_work", json!({
-        "repo_id": repo_id,
-        "operation": "plan_get",
-        "plan_id": plan_id,
-        "detail_level": "detail",
-        "request_id": request_id("plan-detail")
-    })).await?;
+    let mut arguments = semantic_project_scope(
+        project_id, repo_id, "FORGE_DESKTOP_PLAN_DETAIL_SCOPE_REQUIRED"
+    )?;
+    arguments["operation"] = json!("plan_get");
+    arguments["plan_id"] = json!(plan_id);
+    arguments["detail_level"] = json!("detail");
+    arguments["request_id"] = json!(request_id("plan-detail"));
+    let result = call_runtime_tool("rh_work", arguments).await?;
     Ok(semantic_facade_data(result))
 }
 
@@ -1159,49 +1187,54 @@ async fn revise_requirement(
 
 #[tauri::command]
 async fn create_plan(
-    repo_id: String,
+    project_id: String,
+    repo_id: Option<String>,
     plan_id: String,
     objective: String,
     requirement_id: Option<String>,
     parent_plan_id: Option<String>,
 ) -> Result<Value, String> {
-    if repo_id.trim().is_empty() || plan_id.trim().is_empty() || objective.trim().is_empty() {
+    if project_id.trim().is_empty() || plan_id.trim().is_empty() || objective.trim().is_empty() {
         return Err("FORGE_DESKTOP_PLAN_CREATE_ARGUMENT_REQUIRED".to_string());
     }
-    let result = call_runtime_tool("rh_work", json!({
-        "repo_id": repo_id,
-        "operation": "plan_create",
-        "plan_id": plan_id,
-        "requirement_id": requirement_id,
-        "parent_plan_id": parent_plan_id,
-        "scope_key": plan_id,
-        "objective": objective,
-        "plan_items": [],
-        "request_id": request_id("plan-create")
-    })).await?;
+    let project_id = project_id.trim().to_owned();
+    let mut arguments = semantic_project_scope(
+        Some(project_id.clone()), repo_id, "FORGE_DESKTOP_PLAN_CREATE_ARGUMENT_REQUIRED"
+    )?;
+    arguments["operation"] = json!("plan_create");
+    arguments["plan_id"] = json!(plan_id);
+    arguments["requirement_id"] = json!(requirement_id);
+    arguments["parent_plan_id"] = json!(parent_plan_id);
+    arguments["scope_key"] = json!(project_id);
+    arguments["objective"] = json!(objective);
+    arguments["plan_items"] = json!([]);
+    arguments["request_id"] = json!(request_id("plan-create"));
+    let result = call_runtime_tool("rh_work", arguments).await?;
     Ok(semantic_facade_data(result))
 }
 
 
 #[tauri::command]
 async fn revise_plan(
-    repo_id: String,
+    project_id: String,
+    repo_id: Option<String>,
     plan_id: String,
     expected_revision: u64,
     objective: String,
 ) -> Result<Value, String> {
-    if repo_id.trim().is_empty() || plan_id.trim().is_empty()
+    if project_id.trim().is_empty() || plan_id.trim().is_empty()
         || expected_revision == 0 || objective.trim().is_empty() {
         return Err("FORGE_DESKTOP_PLAN_REVISE_ARGUMENT_INVALID".to_string());
     }
-    let result = call_runtime_tool("rh_work", json!({
-        "repo_id": repo_id,
-        "operation": "plan_revise",
-        "plan_id": plan_id,
-        "expected_revision": expected_revision,
-        "objective": objective,
-        "request_id": request_id("plan-revise")
-    })).await?;
+    let mut arguments = semantic_project_scope(
+        Some(project_id), repo_id, "FORGE_DESKTOP_PLAN_REVISE_ARGUMENT_INVALID"
+    )?;
+    arguments["operation"] = json!("plan_revise");
+    arguments["plan_id"] = json!(plan_id);
+    arguments["expected_revision"] = json!(expected_revision);
+    arguments["objective"] = json!(objective);
+    arguments["request_id"] = json!(request_id("plan-revise"));
+    let result = call_runtime_tool("rh_work", arguments).await?;
     let data = semantic_facade_data(result);
     let revision = data.pointer("/plan/revision").and_then(Value::as_u64);
     if revision != expected_revision.checked_add(1) {

@@ -6,8 +6,9 @@ A requirement-first, low-noise UI inside the existing native macOS Forge Client.
 
 ## Source of truth
 
-- Repository and Checkout: Forge Registry.
-- Requirement and Plan content: Forge's current semantic records.
+- Semantic Project identity and lifecycle: Forge's canonical Project records. A Project may be standalone or have multiple Repository placements.
+- Repository and Checkout: Forge Registry. Repository selects an optional Project placement; Checkout is execution context only.
+- Requirement and Plan content: Forge's current semantic records. Project owns the task context; Repository-backed boards read the canonical Project ∩ Repository membership, while standalone Projects read Project membership alone.
 - Process and Autopilot activity: existing receipt/status API, never synthetic progress.
 - **Delivery progress authority remains GitHub Issues + GitHub Project until #648's full migration acceptance.** Forge Repository Registry owns projects/checkouts; Requirement/Plan own semantic requirement and plan content; Process/Autopilot own execution receipts. These are not a second task/progress ledger. The local Requirement board is a semantic workspace view only: never infer GitHub status from Requirement lifecycle, Plan existence or an Autopilot receipt.
 - Zen view owns only presentation state (current screen and selected Requirement). Switching projects must not create ChatThread records.
@@ -18,7 +19,7 @@ A requirement-first, low-noise UI inside the existing native macOS Forge Client.
 - macOS native icon rail and lightweight translucent project sidebar.
 - Local Requirement board grouped from canonical Requirement lifecycle, linked Plan and active Autopilot receipt. It is a semantic view, not the delivery-progress board. Planned means a Plan exists; it never implies a running process. No synthetic percentage. Add local Git projects without creating an Agent conversation.
 - Single-Requirement canvas: Requirement root with top-down linked Plan levels. The inspector shows canonical Requirement/Plan details and acceptance criteria.
-- Create Requirement / Plan through the existing Bridge and record API. Direct editing uses the canonical `rh_work` Requirement/Plan revision actions with `expected_revision` CAS and verifies the exact successor revision before indicating success; no silent overwrite on stale versions. Agent-assisted optimization and Review open a prefilled, context-bound conversation for explicit user action; they are explicit user-controlled proposal and review workflows, not automatic background writers.
+- Create Requirement / Plan through the existing Bridge and record API. Requirement lists receive `projectId` plus the selected `repoId` when a placement is active; without a placement they receive only `projectId`. Plan list/get/create/revise are Project-scoped; repository-backed Plans also carry the matching `repoId`, while standalone Plans omit it. New Plan lineage uses `scope_key == project_id`, never the Plan or Repository ID. Direct editing uses canonical `rh_work` Requirement/Plan revision actions with `expected_revision` CAS and verifies the exact successor revision before indicating success; no silent overwrite on stale versions. Agent-assisted optimization and Review open a prefilled, context-bound conversation for explicit user action; they are explicit user-controlled proposal and review workflows, not automatic background writers.
 - Decision inbox reuses existing user-action requests, with a visible count on the board. Runtime execution logs remain hidden until entering Agent mode.
 - “Describe goal” opens a project-bound, read-only API conversation. The user can drive multiple clarification turns; the model may return exactly one fenced `ACCEPT` proposal. Zen rejects malformed/incomplete suggestions and shows a review sheet against canonical Requirement/Plan data with a fresh revision check. User acknowledgement is required before writing; existing CAS APIs are the only writers. This is currently a **manual user-driven multi-turn flow**, not an automatic bounded refinement loop or background writer.
 - Read-only analysis is enforced by the thread's read-only flag, an exact repository/checkout context check, and native API-turn `allowEffects=false`; read-only threads cannot switch to the Codex/local CLI provider. The prompt is guidance, not the security boundary. The same boundary must be preserved when providers or transports change.
@@ -38,9 +39,9 @@ A requirement-first, low-noise UI inside the existing native macOS Forge Client.
 ## Manual checks
 
 1. Launch: Zen default; switch Zen ↔ Agent without data loss.
-2. Projects: change projects; verify no new chat thread was created; return to previous project.
+2. Projects: switch between standalone, single-repository and multi-repository Projects; verify no new chat thread is created, no task leaks across Repository placements, and returning to the prior Project restores its own task view.
 3. Add an existing local Git directory from Zen, ensure it appears in Forge Registry without creating a chat. Verify local To do, Planned, In progress, Done, Cancelled buckets without GitHub access.
-4. Canvas: select Requirement then Plan, confirm canonical details and parent links.
+4. Canvas: select Requirement then Plan, confirm canonical details and parent links. Verify standalone Plan create/list/get/revise and repository-backed Project ∩ Repository task/Plan scoping.
 5. Create/edit Requirement and Plan, verify CAS revision increments and stale revision rejection. Explicit completion must include real acceptance references and no remaining work; cancellation requires confirmation and cannot be undone.
 6. Agent: generate one fenced forge-proposal JSON block from an Agent linked to the current project; return to Zen and choose “审阅提案”; verify a single valid proposal, canonical before/after diff, stale revision rejection, explicit acknowledgement and CAS receipt. Select Review role/provider separately; no implicit multi-provider execution or unsupported read-only claims.
 7. Error states and keyboard navigation. Verify only one installed app when publishing is separately authorized.

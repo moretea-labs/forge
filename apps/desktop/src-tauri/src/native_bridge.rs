@@ -163,9 +163,15 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
         "read_github_project_items" =>
             read_github_project_items(required(args, "repoId")?).await,
         "read_project_requirement_list" =>
-            read_project_requirement_list(required(args, "repoId")?).await,
+            read_project_requirement_list(
+                optional_project_text(args, "projectId", 512)?,
+                optional_project_text(args, "repoId", 256)?,
+            ).await,
         "read_project_plan_list" =>
-            read_project_plan_list(required(args, "repoId")?).await,
+            read_project_plan_list(
+                optional_project_text(args, "projectId", 512)?,
+                optional_project_text(args, "repoId", 256)?,
+            ).await,
         "read_project_schedules" =>
             read_project_schedules(required(args, "repoId")?).await,
         "control_project_schedule" =>
@@ -197,7 +203,11 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 required_bounded(args, "requirementId", 160)?,
             ).await,
         "read_plan_detail" =>
-            read_plan_detail(required(args, "repoId")?, required(args, "planId")?).await,
+            read_plan_detail(
+                optional_project_text(args, "repoId", 256)?,
+                optional_project_text(args, "projectId", 512)?,
+                required_bounded(args, "planId", 160)?,
+            ).await,
         "create_requirement" =>
             create_requirement(
                 optional_project_text(args, "repoId", 256)?,
@@ -221,8 +231,9 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             ).await,
         "create_plan" =>
             create_plan(
-                required(args,"repoId")?,
-                required(args,"planId")?,
+                required_bounded(args,"projectId",512)?,
+                optional_project_text(args,"repoId",256)?,
+                required_bounded(args,"planId",160)?,
                 required_bounded(args,"objective",4000)?,
                 args.get("requirementId").and_then(Value::as_str).map(str::to_owned),
                 args.get("parentPlanId").and_then(Value::as_str).map(str::to_owned),
@@ -270,8 +281,9 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             ).await,
         "revise_plan" =>
             revise_plan(
-                required(args,"repoId")?,
-                required(args,"planId")?,
+                required_bounded(args,"projectId",512)?,
+                optional_project_text(args,"repoId",256)?,
+                required_bounded(args,"planId",160)?,
                 args.get("expectedRevision").and_then(Value::as_u64)
                     .filter(|revision| *revision > 0)
                     .ok_or("FORGE_NATIVE_BRIDGE_EXPECTED_REVISION_REQUIRED")?,
@@ -679,6 +691,60 @@ mod tests {
             "send_local_api_conversation", &json!({})
         ));
         assert_eq!(one_shot.unwrap_err(), "FORGE_NATIVE_BRIDGE_OPERATION_UNSUPPORTED");
+    }
+
+    #[test]
+    fn semantic_project_scope_preserves_project_and_repository_identity() {
+        let standalone = semantic_project_scope(
+            Some(" PROJECT-standalone ".into()), None, "scope-required"
+        ).expect("standalone Project scope");
+        assert_eq!(standalone["project_id"], "PROJECT-standalone");
+        assert!(standalone["repo_id"].is_null());
+
+        let placed = semantic_project_scope(
+            Some("PROJECT-a".into()), Some(" repo-a ".into()), "scope-required"
+        ).expect("Project and Repository intersection");
+        assert_eq!(placed["project_id"], "PROJECT-a");
+        assert_eq!(placed["repo_id"], "repo-a");
+
+        let repository_only = semantic_project_scope(
+            None, Some("repo-legacy".into()), "scope-required"
+        ).expect("existing repository-only client scope remains accepted");
+        assert!(repository_only["project_id"].is_null());
+        assert_eq!(repository_only["repo_id"], "repo-legacy");
+
+        assert_eq!(
+            semantic_project_scope(None, None, "scope-required").unwrap_err(),
+            "scope-required"
+        );
+    }
+
+    #[test]
+    fn native_project_and_plan_bridge_rejects_missing_canonical_scope() {
+        let requirement_list = tauri::async_runtime::block_on(dispatch(
+            "read_project_requirement_list", &json!({})
+        ));
+        assert_eq!(requirement_list.unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_LIST_SCOPE_REQUIRED");
+
+        let plan_list = tauri::async_runtime::block_on(dispatch(
+            "read_project_plan_list", &json!({})
+        ));
+        assert_eq!(plan_list.unwrap_err(), "FORGE_DESKTOP_PLAN_LIST_SCOPE_REQUIRED");
+
+        let plan_detail = tauri::async_runtime::block_on(dispatch(
+            "read_plan_detail", &json!({"planId":"PLAN-1"})
+        ));
+        assert_eq!(plan_detail.unwrap_err(), "FORGE_DESKTOP_PLAN_DETAIL_SCOPE_REQUIRED");
+
+        let repo_only_create = tauri::async_runtime::block_on(dispatch(
+            "create_plan", &json!({"repoId":"repo-a","planId":"PLAN-1","objective":"Plan"})
+        ));
+        assert_eq!(repo_only_create.unwrap_err(), "FORGE_NATIVE_BRIDGE_projectId_REQUIRED");
+
+        let repo_only_revise = tauri::async_runtime::block_on(dispatch(
+            "revise_plan", &json!({"repoId":"repo-a","planId":"PLAN-1","expectedRevision":1,"objective":"Plan"})
+        ));
+        assert_eq!(repo_only_revise.unwrap_err(), "FORGE_NATIVE_BRIDGE_projectId_REQUIRED");
     }
 
     #[test]
