@@ -1980,7 +1980,7 @@ final class NativeWorkspace: ObservableObject {
             if selectedProjectId == nil,let repoId {
                 let matches=semanticProjects.filter { $0.repositoryIds.contains(repoId) }
                 if matches.count == 1,let match=matches.first {
-                    selectSemanticProject(match.projectId)
+                    await selectSemanticProject(match.projectId)
                 }
             }
         } catch {
@@ -2006,9 +2006,17 @@ final class NativeWorkspace: ObservableObject {
         return thread.repoId == repoId && thread.checkoutId == checkoutId && thread.projectId == projectId
     }
 
+    nonisolated static func projectDetailRequirementScopeIsValid(
+        project:ForgeSemanticProject,repositoryId:String?
+    ) -> Bool {
+        guard project.status == "active" else { return false }
+        guard let repositoryId else { return true }
+        return project.repositoryIds.contains(repositoryId)
+    }
+
     func selectSemanticProject(
         _ projectId:String,repositoryId requestedRepoId:String? = nil,projectScope:Bool = false
-    ) {
+    ) async {
         guard !busy else {
             error="请先停止正在运行的会话，再切换项目。"
             return
@@ -2064,9 +2072,9 @@ final class NativeWorkspace: ObservableObject {
         detail=""
         error=nil
         if repoChanged,targetRepoId != nil {
-            Task { await refreshProject() }
+            await refreshProject()
         } else if [.requirement,.plan].contains(page) {
-            Task { await loadPage() }
+            await loadPage()
         }
     }
 
@@ -2124,7 +2132,7 @@ final class NativeWorkspace: ObservableObject {
                     return true
                 }
                 if projectContextGeneration == contextGeneration {
-                    selectSemanticProject(projectId,repositoryId:repositoryId)
+                    await selectSemanticProject(projectId,repositoryId:repositoryId)
                 }
             } else {
                 if let index=semanticProjects.firstIndex(where:{$0.projectId == created.projectId}) {
@@ -3882,6 +3890,37 @@ final class NativeWorkspace: ObservableObject {
         ) {
             error = "\(label)写入已确认，但列表或详情尚未同步到新修订版本。请刷新核对，不要重复提交。"
         }
+    }
+
+    func openProjectRequirement(
+        projectId:String,repositoryId:String?,requirementId:String
+    ) async {
+        guard let project=semanticProjects.first(where:{$0.projectId == projectId}),
+              Self.projectDetailRequirementScopeIsValid(project:project,repositoryId:repositoryId) else {
+            error="该任务不属于所选活动项目，或项目已归档。请刷新项目详情后重试。"
+            return
+        }
+        if let repositoryId,!projects.contains(where:{$0.repoId == repositoryId}) {
+            error="任务关联的仓库当前不可用，请刷新仓库列表。"
+            return
+        }
+        let contextChanged=selectedProjectId != projectId || projectRepositoryId != repositoryId
+        if page != .requirement {
+            pushNavigationOrigin()
+            page = .requirement
+            error = nil
+        }
+        await selectSemanticProject(projectId,repositoryId:repositoryId,projectScope:repositoryId == nil)
+        guard selectedProjectId == projectId,projectRepositoryId == repositoryId else { return }
+        if !contextChanged && !records.contains(where:{$0.kind == .requirement && $0.recordId == requirementId}) {
+            await loadPage()
+        }
+        guard selectedProjectId == projectId,projectRepositoryId == repositoryId else { return }
+        guard let record=records.first(where:{$0.kind == .requirement && $0.recordId == requirementId}) else {
+            error="当前项目范围内暂时找不到该任务。请刷新项目详情后重试。"
+            return
+        }
+        await openRecord(record.id)
     }
 
     func openRequirement(_ id: String) async {

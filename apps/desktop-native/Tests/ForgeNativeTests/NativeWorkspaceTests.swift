@@ -1493,14 +1493,14 @@ final class NativeWorkspaceTests: XCTestCase {
         ))
     }
 
-    func testTaskWritesRequireAnActiveSemanticProject() {
+    func testTaskWritesAndProjectDetailRequireAnActiveProjectAndValidPlacement() {
         let active=ForgeSemanticProject(
             projectId:"PROJECT-active",workspaceId:nil,displayName:"Active",status:"active",
-            revision:1,placements:[],requirementCount:0
+            revision:1,placements:[ForgeSemanticProjectPlacement(repositoryId:"repo-a")],requirementCount:0
         )
         let archived=ForgeSemanticProject(
             projectId:"PROJECT-archived",workspaceId:nil,displayName:"Archived",status:"archived",
-            revision:2,placements:[],requirementCount:4
+            revision:2,placements:[ForgeSemanticProjectPlacement(repositoryId:"repo-a")],requirementCount:4
         )
         XCTAssertEqual(
             NativeWorkspace.writableSemanticProjectId(
@@ -1523,6 +1523,10 @@ final class NativeWorkspaceTests: XCTestCase {
                 selectedProjectId:nil,projects:[active,archived]
             )
         )
+        XCTAssertTrue(NativeWorkspace.projectDetailRequirementScopeIsValid(project:active,repositoryId:nil))
+        XCTAssertTrue(NativeWorkspace.projectDetailRequirementScopeIsValid(project:active,repositoryId:"repo-a"))
+        XCTAssertFalse(NativeWorkspace.projectDetailRequirementScopeIsValid(project:active,repositoryId:"repo-b"))
+        XCTAssertFalse(NativeWorkspace.projectDetailRequirementScopeIsValid(project:archived,repositoryId:nil))
     }
 
     func testPlanningScopeArgumentsKeepProjectAndOptionalRepositoryDistinct() {

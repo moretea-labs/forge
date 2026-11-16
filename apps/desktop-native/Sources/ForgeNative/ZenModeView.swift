@@ -600,15 +600,25 @@ struct ZenWorkspacePane: View {
         }
         .sheet(isPresented:$showingRequirementSheet) { createRequirementSheet }
         .sheet(isPresented:$showingProjectDirectory) {
-            ZenProjectDirectorySheet(model:model) { projectId in
-                let alreadyInProjectScope=model.selectedProjectId == projectId && model.projectRepositoryId == nil
-                model.page = .requirement
-                model.selectSemanticProject(projectId,projectScope:true)
-                if alreadyInProjectScope && !model.busy {
-                    Task { await model.loadPage() }
+            ZenProjectDirectorySheet(
+                model:model,
+                onOpenTasks:{ projectId in
+                    let alreadyInProjectScope=model.selectedProjectId == projectId && model.projectRepositoryId == nil
+                    model.page = .requirement
+                    showingProjectDirectory=false
+                    Task {
+                        await model.selectSemanticProject(projectId,projectScope:true)
+                        if alreadyInProjectScope && !model.busy { await model.loadPage() }
+                    }
+                },
+                onOpenRequirement:{ projectId,repositoryId,requirementId in
+                    showingProjectDirectory=false
+                    Task {
+                        await model.openProjectRequirement(
+                            projectId:projectId,repositoryId:repositoryId,requirementId:requirementId)
+                    }
                 }
-                showingProjectDirectory=false
-            }
+            )
         }
         .sheet(isPresented:$showingPlanSheet) { createPlanSheet }
         .sheet(item:$editingRecord) { item in editSheet(for:item) }
@@ -2489,6 +2499,7 @@ struct ZenProjectDirectorySheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var model: NativeWorkspace
     let onOpenTasks: (String) -> Void
+    let onOpenRequirement: (String,String?,String) -> Void
     @State private var query = ""
     @State private var editingProjectId: String?
     @State private var creating = false
@@ -2523,7 +2534,10 @@ struct ZenProjectDirectorySheet: View {
     var body: some View {
         Group {
             if let detailProjectId {
-                ZenProjectDetailPane(model:model,projectId:detailProjectId,onOpenTasks:onOpenTasks) {
+                ZenProjectDetailPane(
+                    model:model,projectId:detailProjectId,
+                    onOpenTasks:onOpenTasks,onOpenRequirement:onOpenRequirement
+                ) {
                     self.detailProjectId=nil
                 }
                 .id(detailProjectId)
@@ -2631,7 +2645,7 @@ struct ZenProjectDirectorySheet: View {
                             .accessibilityHidden(true)
                         VStack(alignment:.leading,spacing:3) {
                             Button(project.displayName) {
-                                model.selectSemanticProject(project.projectId)
+                                Task { await model.selectSemanticProject(project.projectId) }
                                 dismiss()
                             }
                             .buttonStyle(.plain)
@@ -2671,7 +2685,7 @@ struct ZenProjectDirectorySheet: View {
                             if !project.repositoryIds.isEmpty {
                                 Menu {
                                     Button {
-                                        model.selectSemanticProject(project.projectId,projectScope:true)
+                                        Task { await model.selectSemanticProject(project.projectId,projectScope:true) }
                                         dismiss()
                                     } label: {
                                         Label("项目级",systemImage:isSelected && model.projectRepositoryId == nil
@@ -2681,8 +2695,10 @@ struct ZenProjectDirectorySheet: View {
                                     Divider()
                                     ForEach(project.repositoryIds,id:\.self) { repositoryId in
                                         Button {
-                                            model.selectSemanticProject(
-                                                project.projectId,repositoryId:repositoryId)
+                                            Task {
+                                                await model.selectSemanticProject(
+                                                    project.projectId,repositoryId:repositoryId)
+                                            }
                                             dismiss()
                                         } label: {
                                             let label=model.projects.first(where:{$0.repoId == repositoryId})?.label
@@ -2785,6 +2801,7 @@ struct ZenProjectDetailPane: View {
     @ObservedObject var model: NativeWorkspace
     let projectId: String
     let onOpenTasks: (String) -> Void
+    let onOpenRequirement: (String,String?,String) -> Void
     let onBack: () -> Void
     @State private var detail: ForgeSemanticProjectDetail?
     @State private var loading = false
@@ -2836,7 +2853,8 @@ struct ZenProjectDetailPane: View {
                             Text("\(detail.requirements.count) / \(detail.requirementCount)").font(.system(size:10,design:.monospaced)).foregroundStyle(.secondary)
                         }
                         ForEach(detail.requirements) { task in
-                            VStack(alignment:.leading,spacing:4) {
+                            Button { onOpenRequirement(projectId,task.repoId,task.requirementId) } label: {
+                                VStack(alignment:.leading,spacing:4) {
                                 HStack {
                                     Text(task.title).font(.system(size:12,weight:.medium)).lineLimit(2)
                                     Spacer()
@@ -2855,9 +2873,12 @@ struct ZenProjectDetailPane: View {
                                 Text("剩余 \(task.remainingWorkCount) · 证据 \(task.acceptedEvidenceCount) · 依赖 \(task.dependencyCount) · 计划 \(task.linkedPlanCount)")
                                     .font(.system(size:9)).foregroundStyle(.tertiary)
                             }
+                            }
+                            .buttonStyle(.plain)
                             .padding(.vertical,7)
                             .overlay(alignment:.bottom) { Rectangle().fill(Color.primary.opacity(0.055)).frame(height:1) }
                             .accessibilityIdentifier("zen.projects.detail.task.\(task.requirementId)")
+                            .accessibilityLabel("打开任务 \(task.title)")
                         }
                         if loadingMore { ProgressView("正在读取更多任务…").controlSize(.small) }
                         if detail.hasMore {
