@@ -5,6 +5,13 @@ import SwiftUI
 enum ZenNodeAction {
     case addPlan, edit, optimize, review, complete, cancel
     case toggleExecution, executionSettings
+
+    var requiresRepository:Bool {
+        switch self {
+        case .toggleExecution, .executionSettings: return true
+        default: return false
+        }
+    }
 }
 
 enum ZenBoardBucket: Int, CaseIterable {
@@ -1001,6 +1008,7 @@ struct ZenWorkspacePane: View {
                             ZenTreeCanvas(
                                 root:root,records:model.records,selectedId:model.selectedRecord,
                                 executionStatuses:model.planningAutopilotStatuses,
+                                hasRepository:model.projectRepositoryId != nil,
                                 executionBusy:model.autopilotLoading || model.autopilotControlPending,
                                 executionOutcomeUnknown:executionOutcomeUnknown,
                                 onSelect:{ item in
@@ -1225,7 +1233,8 @@ struct ZenWorkspacePane: View {
                         .controlSize(.small)
                 }
 
-                if detailLoaded(for:item) && item.kind == .requirement {
+                if detailLoaded(for:item) && item.kind == .requirement
+                    && model.projectRepositoryId != nil {
                     zenExecutionSection(item)
                 }
             }
@@ -1268,9 +1277,10 @@ struct ZenWorkspacePane: View {
     }
 
     private func handleNodeAction(_ item:ForgeRecord,_ action:ZenNodeAction) {
-        guard let activeRepoId=model.repoId,
+        guard let context=currentSemanticCreationContext,
               let root=requirements.first(where:{$0.recordId == focusedRequirementId}),
-              item.id == root.id || item.requirementId == root.recordId else { return }
+              item.id == root.id || item.requirementId == root.recordId,
+              !action.requiresRepository || context.repoId != nil else { return }
         switch action {
         case .addPlan:
             guard root.state == "open" else { return }
@@ -1281,7 +1291,8 @@ struct ZenWorkspacePane: View {
             guard root.state == "open" else { return }
             Task {
                 await model.openRecord(item.id)
-                guard model.repoId == activeRepoId,
+                guard model.selectedProjectId == context.projectId,
+                      model.projectRepositoryId == context.repoId,
                       model.selectedRecord == item.id,
                       detailLoaded(for:item) else { return }
                 switch action {
@@ -1307,14 +1318,16 @@ struct ZenWorkspacePane: View {
         case .review:
             pendingReviewRecord=item
         case .executionSettings:
-            prepareExecutionApproval(item,repoId:activeRepoId)
+            guard let repoId=context.repoId else { return }
+            prepareExecutionApproval(item,repoId:repoId)
         case .toggleExecution:
-            guard item.kind == .requirement,root.state == "open",
+            guard let repoId=context.repoId,
+                  item.kind == .requirement,root.state == "open",
                   let operation=Self.executionOperation(
                     status:model.planningAutopilotStatuses[item.recordId],
                     outcomeUnknown:executionOutcomeUnknown
                   ) else { return }
-            if operation == "authorize" { prepareExecutionApproval(item,repoId:activeRepoId) }
+            if operation == "authorize" { prepareExecutionApproval(item,repoId:repoId) }
             else if operation == "accept_checkpoint" {
                 guard let status=model.planningAutopilotStatuses[item.recordId] else { return }
                 pendingCheckpointReview=AutopilotCheckpointReview(
@@ -2031,6 +2044,7 @@ private struct ZenTreeCanvas: View {
     let records: [ForgeRecord]
     let selectedId: String?
     let executionStatuses: [String:AutopilotStatusDetail]
+    let hasRepository:Bool
     let executionBusy: Bool
     let executionOutcomeUnknown: Bool
     let onSelect: (ForgeRecord) -> Void
@@ -2097,10 +2111,12 @@ private struct ZenTreeCanvas: View {
                         }
                         .disabled(executionBusy)
                     }
-                    Button("执行设置",systemImage:"slider.horizontal.3") {
-                        onAction(item,.executionSettings)
+                    if hasRepository {
+                        Button("执行设置",systemImage:"slider.horizontal.3") {
+                            onAction(item,.executionSettings)
+                        }
                     }
-                    Divider()
+                    if hasRepository { Divider() }
                     Button("验收完成",systemImage:"checkmark.circle") {
                         onAction(item,.complete)
                     }

@@ -15,6 +15,17 @@ final class ZenModeTests: XCTestCase {
     func testUnknownRequirementStateDoesNotFabricateCompletion() {
         XCTAssertEqual(ZenBoardBucket.classify(requirementState:"unknown",runtimeActive:false),.todo)
     }
+
+    func testOnlyAutopilotNodeActionsRequireARepositoryBinding() {
+        XCTAssertFalse(ZenNodeAction.addPlan.requiresRepository)
+        XCTAssertFalse(ZenNodeAction.edit.requiresRepository)
+        XCTAssertFalse(ZenNodeAction.optimize.requiresRepository)
+        XCTAssertFalse(ZenNodeAction.review.requiresRepository)
+        XCTAssertFalse(ZenNodeAction.complete.requiresRepository)
+        XCTAssertFalse(ZenNodeAction.cancel.requiresRepository)
+        XCTAssertTrue(ZenNodeAction.toggleExecution.requiresRepository)
+        XCTAssertTrue(ZenNodeAction.executionSettings.requiresRepository)
+    }
 }
 
 extension ZenModeTests {
