@@ -146,6 +146,20 @@ struct ZenSidebar: View {
 }
 
 struct ZenWorkspacePane: View {
+    enum RequirementSortOrder: String, CaseIterable {
+        case source
+        case priority
+        case title
+
+        var title: String {
+            switch self {
+            case .source: return "默认"
+            case .priority: return "优先级"
+            case .title: return "名称"
+            }
+        }
+    }
+
     @ObservedObject var model: NativeWorkspace
     @Binding var screen: ZenScreen
     @Binding var focusedRequirementId: String?
@@ -156,6 +170,7 @@ struct ZenWorkspacePane: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var searchFocused: Bool
     @State private var requirementQuery = ""
+    @State private var requirementSortOrder: RequirementSortOrder = .source
     @State private var hideEmptyColumns = true
 
     @State private var boardMode = "forge"
@@ -210,7 +225,38 @@ struct ZenWorkspacePane: View {
     }
 
     private var visibleRequirements: [ForgeRecord] {
-        Self.filterRequirements(requirements,query:requirementQuery)
+        Self.sortRequirements(
+            Self.filterRequirements(requirements,query:requirementQuery),
+            order:requirementSortOrder
+        )
+    }
+
+    static func sortRequirements(_ items:[ForgeRecord],order:RequirementSortOrder) -> [ForgeRecord] {
+        guard order != .source else { return items }
+        return items.enumerated().sorted { lhs,rhs in
+            switch order {
+            case .priority:
+                let left=prioritySortRank(lhs.element.priority)
+                let right=prioritySortRank(rhs.element.priority)
+                if left != right { return left < right }
+            case .title:
+                let comparison=lhs.element.title.localizedStandardCompare(rhs.element.title)
+                if comparison != .orderedSame { return comparison == .orderedAscending }
+            case .source:
+                break
+            }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
+    }
+
+    private static func prioritySortRank(_ priority:String?) -> Int {
+        switch priority {
+        case "urgent": return 0
+        case "high": return 1
+        case "normal": return 2
+        case "low": return 3
+        default: return 4
+        }
     }
 
     static func filterRequirements(_ items:[ForgeRecord],query:String) -> [ForgeRecord] {
@@ -611,6 +657,27 @@ struct ZenWorkspacePane: View {
                     }
                     Spacer()
                     if boardMode == "forge" {
+                        Menu {
+                            ForEach(RequirementSortOrder.allCases,id:\.self) { order in
+                                Button {
+                                    requirementSortOrder=order
+                                } label: {
+                                    if requirementSortOrder == order {
+                                        Label(order.title,systemImage:"checkmark")
+                                    } else {
+                                        Text(order.title)
+                                    }
+                                }
+                            }
+                        } label: {
+                            Label(requirementSortOrder.title,systemImage:"arrow.up.arrow.down")
+                                .font(.system(size:11))
+                        }
+                        .menuStyle(.borderlessButton)
+                        .help("按默认顺序、优先级或名称排列任务")
+                        .accessibilityLabel("排序：\(requirementSortOrder.title)")
+                        .accessibilityIdentifier("zen.board.sort")
+
                         Button {
                             hideEmptyColumns.toggle()
                         } label: {

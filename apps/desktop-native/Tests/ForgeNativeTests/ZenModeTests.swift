@@ -76,6 +76,36 @@ extension ZenModeTests {
 }
 
 extension ZenModeTests {
+    func testRequirementBoardSortPreservesSourceOrderAndUsesStablePriorityRanking() {
+        func task(_ id:String,_ title:String,_ priority:String?) -> ForgeRecord {
+            ForgeRecord(
+                recordId:id,title:title,state:"open",kind:.requirement,depth:0,
+                requirementId:nil,parentPlanId:nil,priority:priority
+            )
+        }
+        let items=[
+            task("REQ-normal","Normal","normal"),
+            task("REQ-urgent","Urgent","urgent"),
+            task("REQ-unset","Unset",nil),
+            task("REQ-high-a","High A","high"),
+            task("REQ-low","Low","low"),
+            task("REQ-high-b","High B","high")
+        ]
+        XCTAssertEqual(
+            ZenWorkspacePane.sortRequirements(items,order:.source).map(\.recordId),
+            items.map(\.recordId)
+        )
+        XCTAssertEqual(
+            ZenWorkspacePane.sortRequirements(items,order:.priority).map(\.recordId),
+            ["REQ-urgent","REQ-high-a","REQ-high-b","REQ-normal","REQ-low","REQ-unset"]
+        )
+        XCTAssertEqual(
+            ZenWorkspacePane.sortRequirements(items,order:.title).map(\.recordId),
+            ["REQ-high-a","REQ-high-b","REQ-low","REQ-normal","REQ-unset","REQ-urgent"]
+        )
+        XCTAssertEqual(items.map(\.recordId),["REQ-normal","REQ-urgent","REQ-unset","REQ-high-a","REQ-low","REQ-high-b"])
+    }
+
     func testSearchMatchesRequirementTitleOrIdWithoutMutatingSource() {
         let items = [
             ForgeRecord(recordId:"REQ-CANVAS-1",title:"画布交互优化",state:"open",
