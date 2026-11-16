@@ -381,7 +381,7 @@ struct ZenWorkspacePane: View {
                         Label("描述目标",systemImage:"sparkles")
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.repoId == nil || model.busy)
+                    .disabled(model.projectRepositoryId == nil || model.busy)
                     .accessibilityIdentifier("zen.goal.describe")
                     if reviewableProposals.count > 1 {
                         Menu {
@@ -394,7 +394,7 @@ struct ZenWorkspacePane: View {
                             Label("审阅提案",systemImage:"doc.text.magnifyingglass")
                         }
                         .menuStyle(.borderedButton)
-                        .disabled(model.repoId == nil || model.busy)
+                        .disabled(model.projectRepositoryId == nil || model.busy)
                         .accessibilityIdentifier("zen.proposal.open")
                     } else {
                         Button {
@@ -403,7 +403,7 @@ struct ZenWorkspacePane: View {
                             Label("审阅提案",systemImage:"doc.text.magnifyingglass")
                         }
                         .buttonStyle(.bordered)
-                        .disabled(model.repoId == nil || model.busy || reviewableProposals.isEmpty)
+                        .disabled(model.projectRepositoryId == nil || model.busy || reviewableProposals.isEmpty)
                         .accessibilityIdentifier("zen.proposal.open")
                     }
                     Menu {
@@ -428,7 +428,9 @@ struct ZenWorkspacePane: View {
                         Task {
                             await model.loadPage()
                             await model.refreshPlanningAutopilotStatuses()
-                            if boardMode == "github" { await model.loadZenGitHubBoard() }
+                            if boardMode == "github",model.projectRepositoryId != nil {
+                                await model.loadZenGitHubBoard()
+                            }
                         }
                     }
                 } label: {
@@ -523,12 +525,12 @@ struct ZenWorkspacePane: View {
                 onOpenAgent(item,prompt,provider,false)
             }
         }
-        .onChange(of:model.repoId) { _ in
+        .onChange(of:"\(model.repoId ?? "none")|\(model.selectedProjectId ?? "none")") { _ in
             boardMode = "forge"
             requirementQuery = ""
             searchFocused = false
         }
-        .task(id:"\(model.repoId ?? "none")|\(model.planningRequirementIds.joined(separator:"|"))|\(scenePhase == .active ? "active" : "inactive")") {
+        .task(id:"\(model.projectRepositoryId ?? "none")|\(model.selectedProjectId ?? "none")|\(model.planningRequirementIds.joined(separator:"|"))|\(scenePhase == .active ? "active" : "inactive")") {
             guard scenePhase == .active,!model.planningRequirementIds.isEmpty else { return }
             await model.refreshPlanningAutopilotStatuses()
             while !Task.isCancelled {
@@ -624,6 +626,7 @@ struct ZenWorkspacePane: View {
                             boardMode = "github"
                             Task { await model.loadZenGitHubBoard() }
                         }
+                        .disabled(model.projectRepositoryId == nil)
                     } label: {
                         Label(boardMode == "forge" ? "需求视图" : "GitHub Project",systemImage:"chevron.down")
                     }

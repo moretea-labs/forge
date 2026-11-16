@@ -1359,6 +1359,14 @@ final class NativeWorkspace: ObservableObject {
         // An explicit Zen project selection also supersedes an in-flight
         // Agent checkout lookup, even when it reselects the current context.
         invalidateProjectContextRequests()
+        if semanticProject?.status != "active" || semanticProject?.repositoryIds.contains(id) != true {
+            let matches = semanticProjects.filter {
+                $0.status == "active" && $0.repositoryIds.contains(id)
+            }
+            // A Repository is only execution context. Never guess a semantic Project
+            // when it has multiple placements or no canonical Project association.
+            selectedProjectId = matches.count == 1 ? matches.first?.projectId : nil
+        }
         if repoId != id { invalidateRepositoryAccessRequests() }
         if repoId == id && (requestedCheckoutId == nil || checkoutId == requestedCheckoutId) {
             if page == .requirement {
@@ -1966,7 +1974,7 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func loadZenGitHubBoard() async {
-        guard let repoId else {
+        guard let repoId=projectRepositoryId else {
             zenGitHubBoardRequestGeneration &+= 1
             zenGitHubBoardLoading = false
             zenGitHubBoardItems=[]
@@ -3263,7 +3271,7 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func loadPlanningAutopilotStatuses(_ requirementIds:[String]) async {
-        guard let repoId,let checkoutId else {
+        guard let repoId=projectRepositoryId,let checkoutId else {
             invalidateAutopilotRequests()
             planningAutopilotStatuses=[:]
             planningAutopilotStatusError=nil
