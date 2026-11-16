@@ -170,7 +170,7 @@ private struct ForgeWorkspaceView: View {
     var body: some View {
         NavigationSplitView(columnVisibility:$visibility) {
             unifiedSidebar
-                .navigationSplitViewColumnWidth(min:224,ideal:240,max:264)
+                .navigationSplitViewColumnWidth(min:250,ideal:278,max:310)
         } detail: {
             if model.zenMode {
                 ZenWorkspacePane(model:model,screen:$model.zenScreen,
@@ -265,23 +265,16 @@ private struct ForgeWorkspaceView: View {
         return Button {
             openSidebarDestination(destination)
         } label: {
-            HStack(spacing:11) {
-                Image(systemName:destination.symbol)
-                    .font(.system(size:13,weight:selected ? .semibold : .regular))
-                    .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
-                    .frame(width:19)
-                Text(destination.title)
-                    .font(.system(size:12,weight:selected ? .semibold : .medium))
-                    .foregroundStyle(ForgePalette.ink)
-                Spacer(minLength:0)
-            }
-            .padding(.horizontal,11)
-            .frame(height:34)
-            .background(selected ? ForgePalette.selectionStrong : .clear,
-                        in:RoundedRectangle(cornerRadius:9,style:.continuous))
-            .contentShape(RoundedRectangle(cornerRadius:9,style:.continuous))
+            Image(systemName:destination.symbol)
+                .font(.system(size:16,weight:selected ? .semibold : .regular))
+                .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
+                .frame(width:42,height:40)
+                .background(selected ? ForgePalette.selectionStrong : .clear,
+                            in:RoundedRectangle(cornerRadius:11,style:.continuous))
+                .contentShape(RoundedRectangle(cornerRadius:11,style:.continuous))
         }
         .buttonStyle(.plain)
+        .help(destination.title)
         .accessibilityLabel(destination.title)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
         .accessibilityIdentifier("forge.nav.\(destination.rawValue)")
@@ -322,63 +315,68 @@ private struct ForgeWorkspaceView: View {
     }
 
     private var unifiedSidebar: some View {
-        VStack(alignment:.leading,spacing:0) {
-            HStack(spacing:8) {
+        HStack(alignment:.top,spacing:0) {
+            // Persistent icon rail: navigation never competes with the
+            // contextual conversation/project content for vertical space.
+            VStack(spacing:0) {
                 Image(systemName:"square.stack.3d.up.fill")
-                    .font(.system(size:15,weight:.medium))
-                Text("Forge").font(.system(size:14,weight:.semibold))
-                Spacer()
-            }
-            .padding(.horizontal,19)
-            .frame(height:49)
+                    .font(.system(size:19,weight:.medium))
+                    .foregroundStyle(ForgePalette.ink)
+                    .frame(height:58)
+                    .accessibilityLabel("Forge")
 
-            projectSwitcher
-                .padding(.horizontal,10)
-                .padding(.bottom,10)
-
-            VStack(spacing:2) {
-                ForEach(ForgeSidebarDestination.allCases.filter { $0 != .settings },id:\.self) { destination in
-                    sidebarDestinationButton(destination)
+                VStack(spacing:5) {
+                    ForEach(ForgeSidebarDestination.allCases.filter { $0 != .settings },id:\.self) { destination in
+                        sidebarDestinationButton(destination)
+                    }
                 }
+                Spacer(minLength:12)
+                sidebarDestinationButton(.settings)
+                    .padding(.bottom,14)
             }
-            .padding(.horizontal,10)
+            .frame(width:62)
+            .frame(maxHeight:.infinity)
+            .background(.ultraThinMaterial)
 
-            // Keep the three contextual panes mounted. Switching the active
-            // section must not recreate the conversation/Zen sidebar, lose its
-            // scroll position, or reflow the six primary destinations.
-            ZStack(alignment:.topLeading) {
-                ZenSidebar(model:model,screen:$model.zenScreen,
-                           focusedRequirementId:$model.zenFocusedRequirementId,
-                           decisionCount:model.relevantUserRequests.count,
-                           onInbox:{
-                    inboxShown = true
-                    Task { await model.loadUserRequests() }
-                })
-                .opacity(model.zenMode ? 1 : 0)
-                .allowsHitTesting(model.zenMode)
-                .accessibilityHidden(!model.zenMode)
-                .popover(isPresented:$inboxShown,arrowEdge:.trailing) {
-                    inboxPanel
+            VStack(alignment:.leading,spacing:0) {
+                projectSwitcher
+                    .padding(.horizontal,10)
+                    .padding(.top,8)
+                    .padding(.bottom,8)
+
+                // Keep contextual panes mounted across destination changes so
+                // conversation search, thread scroll, and Zen state survive.
+                ZStack(alignment:.topLeading) {
+                    ZenSidebar(model:model,screen:$model.zenScreen,
+                               focusedRequirementId:$model.zenFocusedRequirementId,
+                               decisionCount:model.relevantUserRequests.count,
+                               onInbox:{
+                        inboxShown = true
+                        Task { await model.loadUserRequests() }
+                    })
+                    .opacity(model.zenMode ? 1 : 0)
+                    .allowsHitTesting(model.zenMode)
+                    .accessibilityHidden(!model.zenMode)
+                    .popover(isPresented:$inboxShown,arrowEdge:.trailing) {
+                        inboxPanel
+                    }
+
+                    sidebar
+                        .opacity(!model.zenMode && model.page == .agent ? 1 : 0)
+                        .allowsHitTesting(!model.zenMode && model.page == .agent)
+                        .accessibilityHidden(model.zenMode || model.page != .agent)
+
+                    contextualSidebar
+                        .opacity(!model.zenMode && model.page != .agent ? 1 : 0)
+                        .allowsHitTesting(!model.zenMode && model.page != .agent)
+                        .accessibilityHidden(model.zenMode || model.page == .agent)
                 }
-
-                sidebar
-                    .opacity(!model.zenMode && model.page == .agent ? 1 : 0)
-                    .allowsHitTesting(!model.zenMode && model.page == .agent)
-                    .accessibilityHidden(model.zenMode || model.page != .agent)
-
-                contextualSidebar
-                    .opacity(!model.zenMode && model.page != .agent ? 1 : 0)
-                    .allowsHitTesting(!model.zenMode && model.page != .agent)
-                    .accessibilityHidden(model.zenMode || model.page == .agent)
+                .frame(maxWidth:.infinity,maxHeight:.infinity)
             }
             .frame(maxWidth:.infinity,maxHeight:.infinity)
-
-            sidebarDestinationButton(.settings)
-                .padding(.horizontal,10)
-                .padding(.bottom,10)
+            .background(Color(nsColor:.windowBackgroundColor))
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
-        .background(.ultraThinMaterial)
     }
 
     private var sidebar: some View {
