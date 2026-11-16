@@ -202,7 +202,12 @@ describe('runtime command surface', () => {
     const contextHandlerStart = runtimeObservation.indexOf("case 'controller_context':");
     const contextHandlerEnd = runtimeObservation.indexOf("case 'controller_ready':", contextHandlerStart);
     const contextHandlerBlock = runtimeObservation.slice(contextHandlerStart, contextHandlerEnd);
-    expect(contextHandlerBlock).toContain('await controllerReadiness(ctx, repository)');
+    expect(contextHandlerBlock).toContain('await controllerReadiness(ctx, repository, {}, {');
+    expect(contextHandlerBlock).toContain('taskLedger,');
+    expect(contextHandlerBlock).toContain('projectionSnapshot: runtimeSnapshot');
+    expect(contextHandlerBlock).toContain('runtimeStorageInspection: storageInspection');
+    expect(contextHandlerBlock).toContain('buildControllerOperationalPlan(repository.canonicalRoot, taskLedger, liveGit)');
+    expect(contextHandlerBlock).toContain("markPhase('build.operational_plan', operationalPlanStartedAt)");
     expect(contextHandlerBlock).not.toContain('await controllerReadinessEvidence(ctx, repository)');
     expect(contextHandlerBlock).not.toContain('operationalView: readiness.operationalView');
     expect(contextHandlerBlock).toContain('fallbackToLive: false');

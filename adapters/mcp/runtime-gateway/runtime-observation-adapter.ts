@@ -6,7 +6,7 @@ import { controllerExposureSnapshot, controllerToolSurfaceStatus } from '../tool
 import { boundedPluginArtifactImageContent, jsonPreview, result, resultWithPluginArtifactImages } from './result-adapter';
 import { expectedRevision, repositoryRootForRepoId, selected, stringList } from './shared-adapter';
 import { callStatusInboxAdapter, GIT_IDENTITY_SAMPLE_TTL_MS } from './status-inbox-adapter';
-import { ageMs, controllerReadinessEvidence, localControllerDiagnosticMatchesRuntime, probeLocalControllerHealth, runtimeSourceSnapshotStatus, type ControllerReadinessSignals } from './runtime-readiness-observation';
+import { ageMs, controllerReadinessEvidence, localControllerDiagnosticMatchesRuntime, probeLocalControllerHealth, runtimeSourceSnapshotStatus, type ControllerReadinessPrecomputed, type ControllerReadinessSignals } from './runtime-readiness-observation';
 import { listRepositories, repositorySummary, resolveRepositorySelection } from '../../../src/runtime/repositories/registry';
 import { repositoryControllerRoot } from '../../../src/effects/controller-home';
 import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../../src/runtime/execution/jobs/store';
@@ -382,8 +382,9 @@ export async function controllerReadiness(
   ctx: MultiRepositoryMcpToolContext,
   repository = ctx.explicitRepository,
   signals: ControllerReadinessSignals = {},
+  precomputed: ControllerReadinessPrecomputed = {},
 ) {
-  const evidence = await controllerReadinessEvidence(ctx, repository, signals);
+  const evidence = await controllerReadinessEvidence(ctx, repository, signals, precomputed);
   const reasonCodes = new Set(evidence.reasons.map((item) => item.code));
   const controllerServicesReady = evidence.daemon.status === 'ready' && evidence.daemon.degraded !== true;
   const schedulerReady = evidence.durableScheduler.status === 'ready';
@@ -822,20 +823,29 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
       
               const buildStartedAt = performance.now();
               const buildPayload = async (): Promise<Record<string, unknown>> => {
+                const taskStateStartedAt = performance.now();
+                const legacyIssuesRetired = legacyIssueAuthorityRetired(repository.canonicalRoot);
+                const board = legacyIssuesRetired
+                  ? undefined
+                  : projectBoard(repository.canonicalRoot);
+                const taskLedger = buildControllerTaskLedgerProjection(repository.canonicalRoot, board);
+                markPhase('build.task_state', taskStateStartedAt);
                 const readinessStartedAt = performance.now();
-                const readiness = await controllerReadiness(ctx, repository);
+                const readiness = await controllerReadiness(ctx, repository, {}, {
+                  projectionSnapshot: runtimeSnapshot,
+                  // Preserve the retired-ledger readiness contract. Active legacy
+                  // boards reuse the exact ledger that readiness would otherwise rebuild.
+                  ...(legacyIssuesRetired ? {} : { taskLedger }),
+                  runtimeStorageInspection: storageInspection,
+                });
                 markPhase('build.readiness', readinessStartedAt);
                 const activeCheckout = repository.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
                 const gitStartedAt = performance.now();
                 const liveGit = gitSnapshot(repository.canonicalRoot);
                 markPhase('build.git', gitStartedAt);
-                const taskStateStartedAt = performance.now();
-                const board = legacyIssueAuthorityRetired(repository.canonicalRoot)
-                  ? undefined
-                  : projectBoard(repository.canonicalRoot);
-                const taskLedger = buildControllerTaskLedgerProjection(repository.canonicalRoot, board);
-                const operationalPlan = buildControllerOperationalPlan(repository.canonicalRoot, taskLedger);
-                markPhase('build.task_state', taskStateStartedAt);
+                const operationalPlanStartedAt = performance.now();
+                const operationalPlan = buildControllerOperationalPlan(repository.canonicalRoot, taskLedger, liveGit);
+                markPhase('build.operational_plan', operationalPlanStartedAt);
                 const currentIssueRecord = board?.currentIssueId
                   ? board.issues.find((issue) => issue.id === board.currentIssueId)
                   : undefined;
