@@ -146,6 +146,18 @@ struct ZenSidebar: View {
 }
 
 struct ZenWorkspacePane: View {
+    enum BoardPresentation: String, CaseIterable {
+        case board
+        case list
+
+        var title: String {
+            switch self {
+            case .board: return "看板"
+            case .list: return "列表"
+            }
+        }
+    }
+
     enum RequirementSortOrder: String, CaseIterable {
         case source
         case priority
@@ -170,6 +182,7 @@ struct ZenWorkspacePane: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var searchFocused: Bool
     @State private var requirementQuery = ""
+    @State private var boardPresentation: BoardPresentation = .board
     @State private var requirementSortOrder: RequirementSortOrder = .source
     @State private var hideEmptyColumns = true
 
@@ -657,6 +670,16 @@ struct ZenWorkspacePane: View {
                     }
                     Spacer()
                     if boardMode == "forge" {
+                        Picker("视图",selection:$boardPresentation) {
+                            ForEach(BoardPresentation.allCases,id:\.self) { presentation in
+                                Text(presentation.title).tag(presentation)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .fixedSize()
+                        .accessibilityIdentifier("zen.board.presentation")
+
                         Menu {
                             ForEach(RequirementSortOrder.allCases,id:\.self) { order in
                                 Button {
@@ -678,17 +701,19 @@ struct ZenWorkspacePane: View {
                         .accessibilityLabel("排序：\(requirementSortOrder.title)")
                         .accessibilityIdentifier("zen.board.sort")
 
-                        Button {
-                            hideEmptyColumns.toggle()
-                        } label: {
-                            Label(hideEmptyColumns ? "显示空列" : "隐藏空列",
-                                  systemImage:hideEmptyColumns ? "rectangle.split.3x1" : "rectangle.split.3x1.fill")
-                                .labelStyle(.iconOnly)
-                                .frame(width:28,height:28)
+                        if boardPresentation == .board {
+                            Button {
+                                hideEmptyColumns.toggle()
+                            } label: {
+                                Label(hideEmptyColumns ? "显示空列" : "隐藏空列",
+                                      systemImage:hideEmptyColumns ? "rectangle.split.3x1" : "rectangle.split.3x1.fill")
+                                    .labelStyle(.iconOnly)
+                                    .frame(width:28,height:28)
+                            }
+                            .buttonStyle(.plain)
+                            .help(hideEmptyColumns ? "显示所有状态列" : "隐藏空状态列")
+                            .accessibilityIdentifier("zen.board.toggleEmptyColumns")
                         }
-                        .buttonStyle(.plain)
-                        .help(hideEmptyColumns ? "显示所有状态列" : "隐藏空状态列")
-                        .accessibilityIdentifier("zen.board.toggleEmptyColumns")
                     }
                     Menu {
                         Button("需求视图") { boardMode = "forge" }
@@ -716,6 +741,17 @@ struct ZenWorkspacePane: View {
                 if model.zenGitHubBoardConfigured == true && boardMode == "github" {
                     ZenGitHubBoardView(items:model.zenGitHubBoardItems,
                                        truncated:model.zenGitHubBoardTruncated)
+                } else if boardMode == "forge" && boardPresentation == .list {
+                    ScrollView {
+                        LazyVStack(spacing:0) {
+                            ForEach(visibleRequirements) { item in
+                                requirementListRow(item)
+                            }
+                        }
+                        .padding(.horizontal,24)
+                        .padding(.bottom,24)
+                    }
+                    .scrollIndicators(.hidden)
                 } else {
                 GeometryReader { frame in
                     ScrollView(.horizontal) {
@@ -827,6 +863,63 @@ struct ZenWorkspacePane: View {
                 }
             }
         }
+    }
+
+    private func openRequirement(_ item:ForgeRecord) {
+        focusedRequirementId=item.recordId
+        navigate(.canvas)
+        Task { await model.openRecord(item.id) }
+    }
+
+    private func bucketColor(_ stage:ZenBoardBucket) -> Color {
+        switch stage {
+        case .done: return .green.opacity(0.75)
+        case .running,.active: return .accentColor
+        case .waitingForUser: return .orange
+        case .todo,.planned,.cancelled: return .secondary.opacity(0.5)
+        }
+    }
+
+    private func requirementListRow(_ item:ForgeRecord) -> some View {
+        let stage=bucket(item)
+        return Button { openRequirement(item) } label: {
+            HStack(spacing:12) {
+                VStack(alignment:.leading,spacing:3) {
+                    Text(item.title)
+                        .font(.system(size:12,weight:.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                    if let summary=model.planningAutopilotStatuses[item.recordId]?.lastSummary,
+                       !summary.isEmpty {
+                        Text(summary).font(.system(size:10)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                .frame(maxWidth:.infinity,alignment:.leading)
+                HStack(spacing:10) {
+                    HStack(spacing:5) {
+                        Circle().fill(bucketColor(stage)).frame(width:6,height:6)
+                        Text(stage.title)
+                    }
+                    if let priority=ZenWorkspacePane.priorityLabel(item.priority) {
+                        Text(priority).foregroundStyle(priority == "紧急" ? Color.orange : Color.secondary)
+                    }
+                    if let assignee=item.assignee,!assignee.isEmpty {
+                        Text(assignee).lineLimit(1).foregroundStyle(.secondary)
+                    }
+                }
+                .font(.system(size:10))
+                Image(systemName:"chevron.right")
+                    .font(.system(size:9,weight:.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.vertical,11)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment:.bottom) {
+            Rectangle().fill(Color.primary.opacity(0.055)).frame(height:1)
+        }
+        .accessibilityIdentifier("zen.requirement.list.\(item.recordId)")
     }
 
     private var canvasContent: some View {
