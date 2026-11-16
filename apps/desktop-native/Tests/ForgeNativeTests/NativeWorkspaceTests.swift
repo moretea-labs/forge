@@ -281,8 +281,9 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(context?.contains("earlier rejection recorded") == true)
         let codex = NativeWorkspace.providerPrompt(
             "Continue implementation",contextPaths:[],
-            requirementId:"REQ-1",advisoryKnowledge:context
+            projectId:"project-a",requirementId:"REQ-1",advisoryKnowledge:context
         )
+        XCTAssertTrue(codex.contains("Project: project-a"))
         XCTAssertTrue(codex.contains("Forge project knowledge"))
         XCTAssertTrue(codex.contains("repository contracts"))
         XCTAssertTrue(codex.contains("project:old"))
@@ -290,12 +291,14 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(codex.contains("Do not add decorative shadows"))
         XCTAssertTrue(codex.contains("partial: read full source before editing"))
         var thread = ChatThread(provider:"api")
+        thread.projectId = "project-a"
         thread.requirementId = "REQ-1"
         let messages = NativeWorkspace.apiTurnMessages(
             thread,prompt:"Continue implementation",contextPaths:[],advisoryKnowledge:context
         )
         XCTAssertEqual(messages.count,1)
         XCTAssertTrue(messages[0]["content"]?.contains("project:new") == true)
+        XCTAssertTrue(messages[0]["content"]?.contains("Project: project-a") == true)
         XCTAssertFalse(NativeWorkspace.providerPrompt("Continue",contextPaths:[]).contains("Forge project knowledge"))
         XCTAssertNil(NativeWorkspace.advisoryKnowledgeText(KnowledgeRecallDetail(
             advisoryOnly:true,items:[],gaps:[]
@@ -2824,9 +2827,11 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(prompt.contains("selected Work"))
         XCTAssertFalse(prompt.contains("Forge optional semantic planning context"))
         let planned = NativeWorkspace.providerPrompt(
-            "Continue",contextPaths:[],requirementId:"REQ-a",planId:"PLAN-child"
+            "Continue",contextPaths:[],projectId:"project-a",
+            requirementId:"REQ-a",planId:"PLAN-child"
         )
         XCTAssertTrue(planned.contains("Forge optional semantic planning context"))
+        XCTAssertTrue(planned.contains("Project: project-a"))
         XCTAssertTrue(planned.contains("REQ-a"))
         XCTAssertTrue(planned.contains("PLAN-child"))
     }

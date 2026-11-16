@@ -4314,17 +4314,20 @@ final class NativeWorkspace: ObservableObject {
     nonisolated static func providerPrompt(
         _ prompt: String,
         contextPaths: [String],
+        projectId: String? = nil,
         requirementId: String? = nil,
         planId: String? = nil,
         advisoryKnowledge: String? = nil
     ) -> String {
         var result = prompt
-        if requirementId != nil || planId != nil {
+        if projectId != nil || requirementId != nil || planId != nil {
+            let project = projectId?.trimmingCharacters(in:.whitespacesAndNewlines)
             let requirement = requirementId?.trimmingCharacters(in:.whitespacesAndNewlines)
             let plan = planId?.trimmingCharacters(in:.whitespacesAndNewlines)
             result += """
 
             [Forge optional semantic planning context]
+            Project: \(project?.isEmpty == false ? project! : "none")
             Requirement: \(requirement?.isEmpty == false ? requirement! : "none")
             Plan: \(plan?.isEmpty == false ? plan! : "none")
             These identifiers are optional durable planning context, not execution or progress authority. Read the canonical Forge records before relying on their details.
@@ -4438,7 +4441,8 @@ final class NativeWorkspace: ObservableObject {
         }
         var content = providerPrompt(
             prompt,contextPaths:contextPaths,
-            requirementId:thread.requirementId,planId:thread.planId,
+            projectId:thread.projectId,requirementId:thread.requirementId,
+            planId:thread.planId,
             advisoryKnowledge:advisoryKnowledge
         )
         // A stopped turn is audit evidence, not an authoritative assistant
@@ -4911,7 +4915,8 @@ final class NativeWorkspace: ObservableObject {
                     "conversationId":id,
                     "prompt":Self.providerPrompt(
                         prompt,contextPaths:contextPaths,
-                        requirementId:item.requirementId,planId:item.planId,
+                        projectId:item.projectId,requirementId:item.requirementId,
+                        planId:item.planId,
                         advisoryKnowledge:advisoryKnowledge
                     )
                 ]
