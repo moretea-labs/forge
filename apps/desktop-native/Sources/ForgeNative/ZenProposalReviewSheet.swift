@@ -267,7 +267,8 @@ struct ZenProposalReviewSheet: View {
             changedId=ok ? currentPlan?.requirementId : nil
         }
         if let changedId {
-            guard model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else {
+            guard model.selectedProjectId == sourceProjectId,
+                  model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else {
                 problem="操作已返回成功，但项目或工作区已切换。请返回原上下文核对记录，不要重复提交。"
                 return
             }
