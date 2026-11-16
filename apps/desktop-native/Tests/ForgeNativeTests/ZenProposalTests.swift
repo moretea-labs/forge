@@ -8,6 +8,38 @@ final class ZenProposalTests: XCTestCase {
         "AI 推荐如下：\n" + fence + "forge-proposal\n" + payload + "\n" + fence
     }
 
+    @MainActor
+    func testZenProposalReviewSurvivesConversationSwitchWithoutRevivingSupersededAccept() throws {
+        let proposalText=fenced(
+            #"{"decision":"ACCEPT","operation":"create_requirement","rationale":"可验收","title":"PDF 定位","outcome":"可定位源页","acceptanceCriteria":["准确定位"]}"#
+        )
+        var accepted=ChatThread(repoId:"repo-a",checkoutId:"checkout-a",readOnly:true,
+            readOnlyRepoId:"repo-a",readOnlyCheckoutId:"checkout-a")
+        accepted.messages=[ChatMessage(role:"assistant",text:proposalText)]
+        accepted.updatedAt=Date(timeIntervalSince1970:100)
+        var ordinary=ChatThread(repoId:"repo-a",checkoutId:"checkout-a")
+        ordinary.messages=[ChatMessage(role:"assistant",text:"Different Agent task")]
+        ordinary.updatedAt=Date(timeIntervalSince1970:200)
+        var unrelated=ChatThread(repoId:"repo-b",checkoutId:"checkout-b",readOnly:true,
+            readOnlyRepoId:"repo-b",readOnlyCheckoutId:"checkout-b")
+        unrelated.messages=[ChatMessage(role:"assistant",text:proposalText)]
+        unrelated.updatedAt=Date(timeIntervalSince1970:300)
+
+        let threads=[ordinary,unrelated,accepted]
+        let result=ZenWorkspacePane.latestReviewableProposal(
+            threads:threads,repoId:"repo-a",checkoutId:"checkout-a")
+        XCTAssertEqual(result?.title,"PDF 定位")
+        XCTAssertNil(ZenWorkspacePane.latestReviewableProposal(
+            threads:threads,repoId:"repo-a",checkoutId:"checkout-other"))
+
+        accepted.messages.append(ChatMessage(role:"user",text:"请重新分析"))
+        XCTAssertNil(ZenWorkspacePane.latestReviewableProposal(
+            threads:[ordinary,unrelated,accepted],repoId:"repo-a",checkoutId:"checkout-a"))
+        accepted.messages=[ChatMessage(role:"assistant",text:proposalText,incomplete:true)]
+        XCTAssertNil(ZenWorkspacePane.latestReviewableProposal(
+            threads:[accepted],repoId:"repo-a",checkoutId:"checkout-a"))
+    }
+
     func testCreateRequirementIsParsedOnlyFromOneExplicitProposal() throws {
         let proposal=try ZenChangeProposal.parse(fenced(
             #"{"decision":"ACCEPT","operation":"create_requirement","rationale":"独立验收目标","title":"PDF 定位","outcome":"可定位源页","acceptanceCriteria":["定位准确"]}"#

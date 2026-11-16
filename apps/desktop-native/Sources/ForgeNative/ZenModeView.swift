@@ -1138,38 +1138,39 @@ struct ZenWorkspacePane: View {
 
 
 
+    // Derive the most recent completed ACCEPT from canonical conversation history.
+    // Never revive a superseded proposal from the middle of a conversation.
+    static func latestReviewableProposal(
+        threads:[ChatThread],repoId:String?,checkoutId:String?
+    ) -> ZenChangeProposal? {
+        for thread in threads.sorted(by:{$0.updatedAt > $1.updatedAt}) {
+            guard NativeWorkspace.readOnlyThreadMatchesContext(
+                thread,repoId:repoId,checkoutId:checkoutId
+            ),let response=thread.messages.last,
+              response.role == "assistant",response.incomplete != true else { continue }
+            if let proposal=try? ZenChangeProposal.parse(response.text) { return proposal }
+        }
+        return nil
+    }
+
     private var canReviewLatestProposal: Bool {
-        guard !model.busy,
-              let thread=model.thread,
-              NativeWorkspace.readOnlyThreadMatchesContext(
-                thread,repoId:model.repoId,checkoutId:model.checkoutId
-              ),
-              let response=thread.messages.last,
-              response.role == "assistant",response.incomplete != true else { return false }
-        return (try? ZenChangeProposal.parse(response.text)) != nil
+        !model.busy && Self.latestReviewableProposal(
+            threads:model.threads,repoId:model.repoId,checkoutId:model.checkoutId
+        ) != nil
     }
 
     private func reviewLatestProposal() {
         guard let repoId=model.repoId,let checkoutId=model.checkoutId,
-              let thread=model.thread,
-              NativeWorkspace.readOnlyThreadMatchesContext(
-                thread,repoId:repoId,checkoutId:checkoutId
-              ),
-              let response=thread.messages.last,
-              response.role == "assistant",response.incomplete != true else {
-            proposalProblem="请选择当前项目和工作区中已经完成 ACCEPT 的只读分析会话；若仍在澄清，请返回 Agent 继续。"
+              let proposal=Self.latestReviewableProposal(
+                threads:model.threads,repoId:repoId,checkoutId:checkoutId
+              ) else {
+            proposalProblem="当前项目没有可审阅的最终 ACCEPT。请先在只读 Agent 分析会话完成精化。"
             showingProposalProblem=true
             return
         }
-        do {
-            let proposal=try ZenChangeProposal.parse(response.text)
-            proposalSourceRepoId=repoId
-            proposalSourceCheckoutId=checkoutId
-            pendingProposal=proposal
-        } catch {
-            proposalProblem=error.localizedDescription
-            showingProposalProblem=true
-        }
+        proposalSourceRepoId=repoId
+        proposalSourceCheckoutId=checkoutId
+        pendingProposal=proposal
     }
 
     private var goalSheet: some View {
