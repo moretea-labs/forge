@@ -6,6 +6,7 @@ import { readWorkflowRun } from '../../../src/runtime/control-plane/persistence/
 import { publicationOutcomeFollowupDueAt, schedulePublicationOutcomeCollection } from '../../../src/runtime/root/assistant-learning-loop';
 import { ensureXiaohongshuWorkflowInstalled, XIAOHONGSHU_WORKFLOW_IDS } from '../../../src/runtime/workflows/first-party/xiaohongshu';
 import { ensureReleaseGrowthWorkflowInstalled, RELEASE_GROWTH_WORKFLOW_IDS, X_EFFECT_WORKFLOW_IDS } from '../../../src/runtime/workflows/first-party/release-growth';
+import { AGENTMAIL_EVENT_WORKFLOW_ID, ensureAgentMailEventWorkflowInstalled } from '../../../src/runtime/workflows/first-party/agentmail-event';
 import { executeRegisteredWorkflow, observeAndReconcileRegisteredWorkflow } from '../../../src/runtime/workflows/runtime';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
@@ -42,6 +43,7 @@ export async function callRhWorkWorkflowOperation(
     if (Object.values(RELEASE_GROWTH_WORKFLOW_IDS).includes(workflowId as never) || Object.values(X_EFFECT_WORKFLOW_IDS).includes(workflowId as never)) {
       ensureReleaseGrowthWorkflowInstalled(ctx.controllerHome, workflowId);
     }
+    if (workflowId === AGENTMAIL_EVENT_WORKFLOW_ID) ensureAgentMailEventWorkflowInstalled(ctx.controllerHome);
     const projectId = typeof args.workflow_scope_project_id === 'string' ? args.workflow_scope_project_id.trim() : '';
     const registryScope = projectId ? { kind: 'project' as const, projectId } : { kind: 'controller' as const };
     const workflowInputs = args.workflow_inputs && typeof args.workflow_inputs === 'object' && !Array.isArray(args.workflow_inputs)

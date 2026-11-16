@@ -1037,6 +1037,94 @@ describe("Local Execution Bridge", () => {
   });
 
 
+  test("persists signed AgentMail events as one canonical WorkflowRun receipt and rejects replay conflicts", async () => {
+    const root = repo();
+    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
+    servers.push(handle);
+    const localHeaders = { "x-forge-local-token": handle.token, "content-type": "application/json" };
+    const created = await fetch(new URL("/api/mobile/devices", handle.url), {
+      method: "POST",
+      headers: localHeaders,
+      body: JSON.stringify({
+        name: "AgentMail macOS",
+        deviceId: "agentmail-macos",
+        scopes: ["workflow:agentmail.mail-watch-event:execute"],
+        rateLimitPerMinute: 120,
+      }),
+    }).then((response) => response.json());
+    expect(created.device.scopes).toEqual(["workflow:agentmail.mail-watch-event:execute"]);
+
+    function signedHeaders(body: string, nonce: string) {
+      const timestamp = new Date().toISOString();
+      const signature = createHmac("sha256", created.token).update(`${timestamp}.${nonce}.${body}`).digest("hex");
+      return {
+        "content-type": "application/json",
+        authorization: `Bearer ${created.token}`,
+        "x-forge-device-id": created.device.deviceId,
+        "x-forge-timestamp": timestamp,
+        "x-forge-nonce": nonce,
+        "x-forge-signature": signature,
+      };
+    }
+
+    const event = {
+      source: "agentmail",
+      event_id: "11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222:provider-message-1",
+      observed_at: "2026-11-16T16:00:00.000Z",
+      rule_id: "11111111-1111-4111-8111-111111111111",
+      provider_message_id: "provider-message-1",
+      sender_email: "apple@example.com",
+    };
+    const body = JSON.stringify({ intent: "workflow_event", event });
+    const first = await fetch(new URL("/mobile/intent", handle.url), {
+      method: "POST",
+      headers: signedHeaders(body, "agentmail-event-0001"),
+      body,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(first.status).toBe(202);
+    expect(first.body).toMatchObject({
+      accepted: true,
+      durable: true,
+      deduplicated: false,
+      workflowId: "agentmail.mail-watch-event",
+      status: "succeeded",
+    });
+    expect(first.body.workflowRunId).toBeString();
+
+    const replay = await fetch(new URL("/mobile/intent", handle.url), {
+      method: "POST",
+      headers: signedHeaders(body, "agentmail-event-0002"),
+      body,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(replay.status).toBe(202);
+    expect(replay.body).toMatchObject({ accepted: true, durable: true, deduplicated: true });
+    expect(replay.body.workflowRunId).toBe(first.body.workflowRunId);
+
+    const changedPayload = JSON.stringify({
+      intent: "workflow_event",
+      event: { ...event, sender_email: "different@example.com" },
+    });
+    const conflict = await fetch(new URL("/mobile/intent", handle.url), {
+      method: "POST",
+      headers: signedHeaders(changedPayload, "agentmail-event-0003"),
+      body: changedPayload,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(conflict.status).toBe(409);
+    expect(conflict.body.error).toBe("WORKFLOW_RUN_IDENTITY_CONFLICT");
+
+    const unsafePayload = JSON.stringify({
+      intent: "workflow_event",
+      event: { ...event, body_text: "OTP 123456" },
+    });
+    const unsafe = await fetch(new URL("/mobile/intent", handle.url), {
+      method: "POST",
+      headers: signedHeaders(unsafePayload, "agentmail-event-0004"),
+      body: unsafePayload,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(unsafe.status).toBe(400);
+    expect(unsafe.body.error).toContain("MOBILE_INTENT_EVENT_FIELD_UNSUPPORTED");
+  });
+
   test("shows direct edits as first-class file changes and completes them through the local API", async () => {
     const root = repo();
     const session = beginEditSession(root, {
