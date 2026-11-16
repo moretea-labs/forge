@@ -757,6 +757,65 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(restored.agentSendBlockReason,"Codex 未就绪，请刷新 Provider 状态。")
     }
 
+    func testInterruptedLightweightProcessCarriesCanonicalHandleIntoRecovery() {
+        let handle = "lightweight:41905731-25b7-491f-bb78-f4bccf85ed21"
+        XCTAssertTrue(NativeWorkspace.isCanonicalProcessId(handle))
+        XCTAssertTrue(NativeWorkspace.isCanonicalProcessId("proc_example_123"))
+        for invalid in [
+            "lightweight:41905731-25b7-491f-bb78-f4bccf85ed21;rm",
+            "lightweight:41905731-25b7-491f-bb78-f4bccf85ed2x",
+            "lightweight:41905731-25b7-491f-bb78-f4bccf85ed21/other",
+            "lightweight:not-a-uuid",
+            "proc_bad;rm"
+        ] {
+            XCTAssertFalse(NativeWorkspace.isCanonicalProcessId(invalid), invalid)
+        }
+
+        let stream = AgentLiveActivityEvent(
+            phase:"tool",label:"run_command",detail:handle,status:"running",
+            startedAt:"start",completedAt:nil,toolCallId:"call-lightweight"
+        )
+        let final = AgentLiveActivityEvent(
+            phase:"tool",label:"run_command",detail:"request-not-handle",status:"unknown",
+            startedAt:"start",completedAt:"end",toolCallId:"call-lightweight"
+        )
+        let merged = NativeWorkspace.mergeActivityReceipts([stream],receipts:[final])
+        XCTAssertEqual(merged.first?.detail,handle)
+        XCTAssertEqual(merged.first?.status,"unknown")
+
+        var thread = ChatThread(provider:"api")
+        thread.messages = [
+            ChatMessage(role:"user",text:"run the build"),
+            ChatMessage(role:"assistant",text:"Process accepted; do not run again",
+                toolActivityCount:1,activityEvents:merged,incomplete:true)
+        ]
+        let continuation = NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
+        let content = continuation.last?["content"] ?? ""
+        XCTAssertTrue(content.contains("Prior incomplete run_command Process IDs"))
+        XCTAssertTrue(content.contains(handle))
+        XCTAssertTrue(content.contains("process_status"))
+        XCTAssertTrue(content.contains("do not reissue the command"))
+        XCTAssertFalse(content.contains("Process accepted; do not run again"))
+        XCTAssertEqual(content.components(separatedBy:handle).count,2)
+        XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(thread.messages[1]))
+
+        thread.messages[1] = ChatMessage(
+            role:"assistant",text:"Process ID: \(handle)。等待同一进程终态。",
+            toolActivityCount:0,activityEvents:[],incomplete:true
+        )
+        let textOnly = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        XCTAssertTrue(textOnly.last?["content"]?.contains(handle) == true)
+
+        thread.messages[1] = ChatMessage(
+            role:"assistant",text:"Process ID: \(handle);rm",
+            toolActivityCount:0,activityEvents:[],incomplete:true
+        )
+        let poisoned = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        XCTAssertFalse(poisoned.last?["content"]?.contains(handle) == true)
+    }
+
     func testIncompleteManagedProcessIsAvailableToOrdinaryFollowUpWithoutReplaying() {
         var thread = ChatThread(provider:"api")
         thread.messages = [

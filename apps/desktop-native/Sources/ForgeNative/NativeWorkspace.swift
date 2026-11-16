@@ -4519,7 +4519,9 @@ final class NativeWorkspace: ObservableObject {
             // evidence, never a signal to replay the command.
             let textIDs = last.text.components(separatedBy:"Process ID: ").dropFirst()
                 .compactMap { tail -> String? in
-                    let id = String(tail.prefix(while: { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }))
+                    let id = String(tail.prefix(while: {
+                        $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == ":" || $0 == "-")
+                    }))
                     let next = tail.dropFirst(id.count).first
                     guard Self.isCanonicalProcessId(id),
                           next == nil || next?.isWhitespace == true || next == "." || next == "。" else { return nil }
@@ -4537,7 +4539,17 @@ final class NativeWorkspace: ObservableObject {
     }
 
     nonisolated static func isCanonicalProcessId(_ id:String) -> Bool {
-        id.hasPrefix("proc_") && id.count <= 128
+        if id.hasPrefix("lightweight:") {
+            // Forge Process Runtime uses "lightweight:" + randomUUID().
+            // Do not accept arbitrary untrusted text as a Process handle.
+            let groups = id.dropFirst("lightweight:".count)
+                .split(separator:"-",omittingEmptySubsequences:false)
+            return groups.map(\.count) == [8,4,4,4,12]
+                && groups.joined().utf8.allSatisfy { byte in
+                    (48...57).contains(byte) || (65...70).contains(byte) || (97...102).contains(byte)
+                }
+        }
+        return id.hasPrefix("proc_") && id.count <= 128
             && id.utf8.allSatisfy { byte in
                 byte == 95 || (48...57).contains(byte)
                     || (65...90).contains(byte) || (97...122).contains(byte)
