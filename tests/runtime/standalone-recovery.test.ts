@@ -5838,6 +5838,7 @@ describe('standalone recovery on canonical Runtime', () => {
       let candidateStrictProbes = 0;
       let readinessProbes = 0;
       let launchdLoaded = true;
+      let stableStrictHealthy = true;
       const currentAuthorityVerify = (ok = true): VerifyResult => {
         const authority = readRuntimeReleaseAuthority(home)!;
         const verify = healthyVerify();
@@ -5851,7 +5852,7 @@ describe('standalone recovery on canonical Runtime', () => {
           probes: ok ? verify.probes : { ...verify.probes, mcp_initialize: { ok: false, detail: 'strict MCP acceptance failed' } },
         };
       };
-      const result = await activateRuntimeRelease(config, candidateManifestPath, {
+      const activate = () => activateRuntimeRelease(config, candidateManifestPath, {
         platform: 'darwin',
         currentUid: async () => 501,
         runCommand: async (_command, args) => {
@@ -5878,7 +5879,7 @@ describe('standalone recovery on canonical Runtime', () => {
             candidateStrictProbes += 1;
             return currentAuthorityVerify(false);
           }
-          return currentAuthorityVerify(true);
+          return currentAuthorityVerify(stableStrictHealthy);
         },
         observeLocal: async () => {
           readinessProbes += 1;
@@ -5887,6 +5888,7 @@ describe('standalone recovery on canonical Runtime', () => {
         now: (() => { let value = 0; return () => value += 250; })(),
         sleep: async () => undefined,
       });
+      const result = await activate();
       expect(result.ok).toBe(false);
       expect(result.rollback).toMatchObject({ ok: true });
       const restoredAuthority = readRuntimeReleaseAuthority(home);
@@ -5900,6 +5902,18 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(strictProbes).toBe(2);
       expect(candidateStrictProbes).toBe(1);
       expect(readinessProbes).toBeGreaterThan(candidateStrictProbes);
+      expect(connectorBindingStates).toEqual(['release-failed-activation:runtime-started', 'release-a:runtime-started']);
+
+      // A transient strict Connector/public failure after Stable A has reached
+      // local readiness must report incomplete rollback verification without
+      // stopping the restored known-good Runtime.
+      stableStrictHealthy = false;
+      connectorBindingStates.length = 0;
+      const degradedRollback = await activate();
+      expect(degradedRollback).toMatchObject({ ok: false, rollback: { ok: false } });
+      expect(degradedRollback.rollback?.detail).toContain('service remains running');
+      expect(launchdLoaded).toBe(true);
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
       expect(connectorBindingStates).toEqual(['release-failed-activation:runtime-started', 'release-a:runtime-started']);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
