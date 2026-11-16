@@ -174,6 +174,7 @@ struct ZenWorkspacePane: View {
     @State private var editingRecord: ForgeRecord?
     @State private var pendingAcceptanceRecord: ForgeRecord?
     @State private var acceptanceReferences = ""
+    @State private var acceptanceRemainingWork = ""
     @State private var acceptanceAcknowledged = false
     @State private var cancellingRequirement: RequirementRecordDetail?
     @State private var editRevision = 0
@@ -184,6 +185,11 @@ struct ZenWorkspacePane: View {
     @State private var editTaskStatusOptions: [String] = []
     @State private var editPriority = "unset"
     @State private var editAssignee = ""
+    @State private var editRemainingWork = ""
+    @State private var editDependencyRequirementIds:[String] = []
+    @State private var editDependencyDetails:[RequirementDependencyDetail] = []
+    @State private var editBlockingDependencyIds:[String] = []
+    @State private var editDependencyIdDraft = ""
 
     @State private var newTitle = ""
     @State private var newOutcome = ""
@@ -191,6 +197,8 @@ struct ZenWorkspacePane: View {
     @State private var newTaskStatus = "planned"
     @State private var newPriority = "normal"
     @State private var newAssignee = ""
+    @State private var newDependencyRequirementIds:[String] = []
+    @State private var newDependencyIdDraft = ""
     @State private var newPlanGoal = ""
     @State private var newParentPlanId: String?
     @State private var saving = false
@@ -210,6 +218,12 @@ struct ZenWorkspacePane: View {
             $0.title.localizedStandardContains(term)
             || $0.recordId.localizedStandardContains(term)
         }
+    }
+
+    static func nonEmptyLines(_ text:String) -> [String] {
+        text.components(separatedBy:.newlines)
+            .map{$0.trimmingCharacters(in:.whitespacesAndNewlines)}
+            .filter{!$0.isEmpty}
     }
 
     static func taskStatusLabel(_ value:String?) -> String? {
@@ -388,6 +402,7 @@ struct ZenWorkspacePane: View {
                         Button("新建任务") {
                             newTitle = ""; newOutcome = ""; newCriteria = ""
                             newTaskStatus = "planned"; newPriority = "normal"; newAssignee = ""
+                            newDependencyRequirementIds=[]; newDependencyIdDraft=""
                             model.error = nil
                             showingRequirementSheet = true
                         }
@@ -861,6 +876,27 @@ struct ZenWorkspacePane: View {
                                 .font(.system(size:11))
                         }
                     }
+                    if !detail.dependencyRequirementIds.isEmpty {
+                        Divider()
+                        Text("依赖任务").font(.system(size:12,weight:.semibold))
+                        ForEach(detail.dependencyRequirementIds,id:\.self) { id in
+                            let dependency=detail.dependencyRequirements.first(where:{$0.requirementId == id})
+                            HStack {
+                                VStack(alignment:.leading,spacing:2) {
+                                    Text(dependency?.title ?? id).font(.system(size:11))
+                                    Text(id).font(.system(size:9,design:.monospaced)).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if dependency?.missing == true {
+                                    Text("未找到").font(.system(size:10)).foregroundStyle(.orange)
+                                } else if detail.blockingDependencyIds.contains(id) {
+                                    Text("阻塞中").font(.system(size:10)).foregroundStyle(.orange)
+                                } else if let status=dependency?.status {
+                                    Text(Self.taskStatusLabel(status) ?? status).font(.system(size:10)).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
                     if !detail.progressSummary.isEmpty {
                         Divider()
                         Text("当前进展").font(.system(size:12,weight:.semibold))
@@ -963,6 +999,7 @@ struct ZenWorkspacePane: View {
                     guard case .requirement(let detail)=model.recordDetail,
                           detail.requirementId == item.recordId,detail.state == "open" else { return }
                     acceptanceReferences=detail.acceptedEvidenceRefs.joined(separator:"\n")
+                    acceptanceRemainingWork=detail.remainingWork.joined(separator:"\n")
                     acceptanceAcknowledged=false
                     pendingAcceptanceRecord=item
                 case .cancel:
@@ -1010,10 +1047,13 @@ struct ZenWorkspacePane: View {
                             .font(.system(size:11))
                     }
                 }
-                if !detail.remainingWork.isEmpty {
-                    Text("还有 \(detail.remainingWork.count) 项剩余工作，不能标记完成。")
+                if !Self.nonEmptyLines(acceptanceRemainingWork).isEmpty {
+                    Text("还有 \(Self.nonEmptyLines(acceptanceRemainingWork).count) 项剩余工作，清空后才能完成。")
                         .font(.system(size:11)).foregroundStyle(.orange)
                 }
+                TextField("剩余工作（每行一项；清空后可完成）",text:$acceptanceRemainingWork,axis:.vertical)
+                    .lineLimit(3...6)
+                    .accessibilityIdentifier("zen.acceptance.remainingWork")
                 TextField("验收证据引用（每行一条）",text:$acceptanceReferences,axis:.vertical)
                     .lineLimit(4...6)
                     .accessibilityIdentifier("zen.acceptance.references")
@@ -1029,7 +1069,8 @@ struct ZenWorkspacePane: View {
                                 id:detail.requirementId,expectedRevision:detail.revision,
                                 title:detail.title,outcome:detail.outcomeStatement,
                                 acceptanceCriteria:detail.acceptanceCriteria,state:"completed",
-                                acceptedEvidenceRefs:acceptanceReferences.components(separatedBy:.newlines)
+                                acceptedEvidenceRefs:acceptanceReferences.components(separatedBy:.newlines),
+                                remainingWork:Self.nonEmptyLines(acceptanceRemainingWork)
                             )
                             saving=false
                             if ok { pendingAcceptanceRecord=nil }
@@ -1037,7 +1078,7 @@ struct ZenWorkspacePane: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(saving || !acceptanceAcknowledged
-                              || !detail.remainingWork.isEmpty
+                              || !Self.nonEmptyLines(acceptanceRemainingWork).isEmpty
                               || acceptanceReferences.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
                 }
             } else {
@@ -1066,6 +1107,11 @@ struct ZenWorkspacePane: View {
             editTaskStatusOptions=Self.editableTaskStatuses(from:value.taskStatus)
             editPriority=value.priority ?? "unset"
             editAssignee=value.assignee ?? ""
+            editRemainingWork=value.remainingWork.joined(separator:"\n")
+            editDependencyRequirementIds=value.dependencyRequirementIds
+            editDependencyDetails=value.dependencyRequirements
+            editBlockingDependencyIds=value.blockingDependencyIds
+            editDependencyIdDraft=""
 
         case .plan(let value) where item.kind == .plan:
             editRevision=value.revision
@@ -1108,6 +1154,13 @@ struct ZenWorkspacePane: View {
                      Text("紧急").tag("urgent")
                  }
                  TextField("负责人（留空表示未指派）",text:$editAssignee)
+                  dependencyEditor(
+                      selection:$editDependencyRequirementIds,excluding:item.recordId,
+                      details:editDependencyDetails,blockingIds:editBlockingDependencyIds,
+                      idDraft:$editDependencyIdDraft
+                  )
+                  TextField("剩余工作（每行一项）",text:$editRemainingWork,axis:.vertical)
+                      .lineLimit(2...5)
             } else {
                 TextField("计划目标",text:$editTitle,axis:.vertical)
                     .lineLimit(3...6)
@@ -1135,7 +1188,9 @@ struct ZenWorkspacePane: View {
                                 acceptanceCriteria:editCriteria.components(separatedBy:.newlines),
                                  taskStatus:editTaskStatus,
                                  priority:editPriority == "unset" ? nil : editPriority,
-                                 assignee:editAssignee
+                                 assignee:editAssignee,
+                                  dependencyRequirementIds:editDependencyRequirementIds,
+                                  remainingWork:Self.nonEmptyLines(editRemainingWork)
                             )
                         } else {
                             ok=await model.revisePlan(
@@ -1327,6 +1382,72 @@ struct ZenWorkspacePane: View {
         }
     }
 
+    private func dependencyEditor(
+        selection:Binding<[String]>,excluding requirementId:String?,
+        details:[RequirementDependencyDetail] = [],blockingIds:[String] = [],idDraft:Binding<String>
+    ) -> some View {
+        let available=requirements.filter{$0.recordId != requirementId && $0.state != "cancelled"}
+        return VStack(alignment:.leading,spacing:7) {
+            HStack {
+                Text("依赖任务").font(.system(size:11,weight:.semibold))
+                Spacer()
+                Menu {
+                    ForEach(available) { candidate in
+                        Button { toggleDependency(candidate.recordId,selection:selection) } label: {
+                            Label(candidate.title,systemImage:selection.wrappedValue.contains(candidate.recordId) ? "checkmark.circle.fill" : "circle")
+                        }
+                        .disabled(selection.wrappedValue.count >= 50 && !selection.wrappedValue.contains(candidate.recordId))
+                    }
+                } label: { Label("选择任务",systemImage:"plus") }
+                .disabled(available.isEmpty)
+            }
+            if !selection.wrappedValue.isEmpty {
+                ScrollView {
+                    VStack(alignment:.leading,spacing:7) {
+                        ForEach(selection.wrappedValue,id:\.self) { id in
+                            let dependency=details.first(where:{$0.requirementId == id})
+                            let candidate=requirements.first(where:{$0.recordId == id})
+                            HStack {
+                                Text("\(dependency?.title ?? candidate?.title ?? id) · \(id)").font(.system(size:11))
+                                Spacer()
+                                if dependency?.missing == true { Text("未找到").font(.system(size:10)).foregroundStyle(.orange) }
+                                else if blockingIds.contains(id) { Text("阻塞中").font(.system(size:10)).foregroundStyle(.orange) }
+                                else if let status=dependency?.status ?? candidate?.taskStatus { Text(Self.taskStatusLabel(status) ?? status).font(.system(size:10)).foregroundStyle(.secondary) }
+                                Button { selection.wrappedValue.removeAll{$0 == id} } label: { Image(systemName:"xmark.circle") }
+                                    .buttonStyle(.plain).help("移除依赖")
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight:112)
+            }
+            HStack(spacing:8) {
+                TextField("其他任务 ID",text:idDraft).font(.system(size:11,design:.monospaced))
+                    .accessibilityIdentifier("zen.requirement.dependencies.id")
+                Button("添加") { addDependency(idDraft.wrappedValue,selection:selection,excluding:requirementId); idDraft.wrappedValue="" }
+                    .disabled(!canAddDependency(idDraft.wrappedValue,selection:selection.wrappedValue,excluding:requirementId))
+            }
+        }
+    }
+
+    private func toggleDependency(_ id:String,selection:Binding<[String]>) {
+        var ids=selection.wrappedValue
+        if ids.contains(id) { ids.removeAll{$0 == id} } else if ids.count < 50 { ids.append(id) }
+        selection.wrappedValue=ids
+    }
+
+    private func addDependency(_ id:String,selection:Binding<[String]>,excluding:String?) {
+        let clean=id.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard canAddDependency(clean,selection:selection.wrappedValue,excluding:excluding) else { return }
+        selection.wrappedValue.append(clean)
+    }
+
+    private func canAddDependency(_ id:String,selection:[String],excluding:String?) -> Bool {
+        let clean=id.trimmingCharacters(in:.whitespacesAndNewlines)
+        return !clean.isEmpty && clean.utf16.count <= 160 && (excluding == nil || clean != excluding)
+            && !selection.contains(clean) && selection.count < 50
+    }
+
     private var createRequirementSheet: some View {
         VStack(alignment:.leading,spacing:12) {
             Text("新建任务").font(.system(size:17,weight:.semibold))
@@ -1347,6 +1468,7 @@ struct ZenWorkspacePane: View {
                 }
             }
             TextField("负责人（可选）",text:$newAssignee)
+            dependencyEditor(selection:$newDependencyRequirementIds,excluding:nil,idDraft:$newDependencyIdDraft)
             if let problem=model.error {
                 Text(problem)
                     .font(.system(size:11))
@@ -1365,7 +1487,7 @@ struct ZenWorkspacePane: View {
                             title:newTitle,outcome:newOutcome,
                             acceptanceCriteria:newCriteria.components(separatedBy:.newlines),
                             taskStatus:newTaskStatus,priority:newPriority,
-                            assignee:newAssignee
+                            assignee:newAssignee,dependencyRequirementIds:newDependencyRequirementIds
                         )
                         saving=false
                         if let id {

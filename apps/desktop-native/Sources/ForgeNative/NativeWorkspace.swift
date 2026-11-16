@@ -196,6 +196,15 @@ struct ForgeRecord: Identifiable {
     var assignee: String? = nil
     var id: String { "\(kind.rawValue):\(recordId)" }
 }
+struct RequirementDependencyDetail: Identifiable {
+    let requirementId: String
+    let title: String
+    let status: String?
+    let revision: Int?
+    let repoId: String?
+    let missing: Bool
+    var id: String { requirementId }
+}
 struct RequirementRecordDetail {
     let requirementId: String
     let revision: Int
@@ -209,6 +218,9 @@ struct RequirementRecordDetail {
     let taskStatus: String?
     let priority: String?
     let assignee: String?
+    let dependencyRequirementIds: [String]
+    let dependencyRequirements: [RequirementDependencyDetail]
+    let blockingDependencyIds: [String]
 }
 
 struct PlanRecordItem: Identifiable {
@@ -2950,6 +2962,14 @@ final class NativeWorkspace: ObservableObject {
         let data = result["data"] as? [String:Any] ?? result
         guard let value = data["requirement"] as? [String:Any],
               let id = value["requirementId"] as? String else { return nil }
+        let dependencies = (data["dependencyRequirements"] as? [[String:Any]] ?? []).compactMap { row -> RequirementDependencyDetail? in
+            guard let dependencyId = row["requirementId"] as? String else { return nil }
+            return RequirementDependencyDetail(
+                requirementId:dependencyId,title:row["title"] as? String ?? dependencyId,
+                status:row["status"] as? String,revision:row["revision"] as? Int,
+                repoId:row["repoId"] as? String,missing:row["missing"] as? Bool ?? false
+            )
+        }
         return RequirementRecordDetail(
             requirementId:id,
             revision:value["revision"] as? Int ?? 0,
@@ -2962,7 +2982,10 @@ final class NativeWorkspace: ObservableObject {
             acceptedEvidenceRefs:value["acceptedEvidenceRefs"] as? [String] ?? [],
             taskStatus:value["status"] as? String,
             priority:value["priority"] as? String,
-            assignee:value["assignee"] as? String
+            assignee:value["assignee"] as? String,
+            dependencyRequirementIds:value["dependsOnRequirementIds"] as? [String] ?? dependencies.map(\.requirementId),
+            dependencyRequirements:dependencies,
+            blockingDependencyIds:value["blockingDependencyIds"] as? [String] ?? []
         )
     }
 
@@ -3319,7 +3342,8 @@ final class NativeWorkspace: ObservableObject {
 
     func createRequirement(
         title: String, outcome: String, acceptanceCriteria: [String],
-        taskStatus: String? = nil, priority: String? = nil, assignee: String? = nil
+        taskStatus: String? = nil, priority: String? = nil, assignee: String? = nil,
+        dependencyRequirementIds:[String] = []
     ) async -> String? {
         guard let repoId else { error = "请先选择项目。"; return nil }
         let cleanTitle = title.trimmingCharacters(in:.whitespacesAndNewlines)
@@ -3334,6 +3358,7 @@ final class NativeWorkspace: ObservableObject {
             if let taskStatus { arguments["taskStatus"]=taskStatus }
             if let priority { arguments["priority"]=priority }
             if let assignee { arguments["assignee"]=assignee }
+            if !dependencyRequirementIds.isEmpty { arguments["dependencyRequirementIds"]=dependencyRequirementIds }
             _ = try await ForgeBridge.request("create_requirement",arguments)
             page = .requirement
             await loadPage()
@@ -3373,7 +3398,8 @@ final class NativeWorkspace: ObservableObject {
     func reviseRequirement(
         id:String, expectedRevision:Int,
         title:String, outcome:String, acceptanceCriteria:[String],
-        taskStatus:String? = nil, priority:String? = nil, assignee:String? = nil
+        taskStatus:String? = nil, priority:String? = nil, assignee:String? = nil,
+        dependencyRequirementIds:[String]? = nil, remainingWork:[String]? = nil
     ) async -> Bool {
         guard let repoId,expectedRevision > 0 else {
             error="无法确认当前 Requirement 的版本，请刷新后重试。"
@@ -3395,6 +3421,8 @@ final class NativeWorkspace: ObservableObject {
             if let taskStatus { arguments["taskStatus"]=taskStatus }
             if let priority { arguments["priority"]=priority }
             if let assignee { arguments["assignee"]=assignee }
+            if let dependencyRequirementIds { arguments["dependencyRequirementIds"]=dependencyRequirementIds }
+            if let remainingWork { arguments["remainingWork"]=remainingWork }
             let receipt=try await ForgeBridge.request("revise_requirement",arguments)
             guard let changed=receipt["requirement"] as? [String:Any],
                   changed["requirementId"] as? String == id,
@@ -3416,7 +3444,8 @@ final class NativeWorkspace: ObservableObject {
 
     func transitionRequirement(
         id:String,expectedRevision:Int,title:String,outcome:String,
-        acceptanceCriteria:[String],state:String,acceptedEvidenceRefs:[String]?
+        acceptanceCriteria:[String],state:String,acceptedEvidenceRefs:[String]?,
+        remainingWork:[String]? = nil
     ) async -> Bool {
         guard let repoId,expectedRevision > 0 else {
             error="无法确认 Requirement 当前修订版本。"
@@ -3432,12 +3461,18 @@ final class NativeWorkspace: ObservableObject {
             error="完成 Requirement 前必须提供可核查的验收证据。"
             return false
         }
+        let cleanRemainingWork=remainingWork?.map{$0.trimmingCharacters(in:.whitespacesAndNewlines)}.filter{!$0.isEmpty}
+        if state == "completed" && cleanRemainingWork?.isEmpty != true {
+            error="完成 Requirement 前必须先清空剩余工作。"
+            return false
+        }
         var args:[String:Any]=[
             "repoId":repoId,"requirementId":id,
             "expectedRevision":expectedRevision,"title":title,
             "outcome":outcome,"acceptanceCriteria":acceptanceCriteria,"state":state
         ]
         if let references { args["acceptedEvidenceRefs"]=references }
+        if let cleanRemainingWork { args["remainingWork"]=cleanRemainingWork }
         do {
             let receipt=try await ForgeBridge.request("revise_requirement",args)
             guard let changed=receipt["requirement"] as? [String:Any],
