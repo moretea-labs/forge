@@ -80,6 +80,8 @@ struct ForgeSemanticProjectDetail: Decodable, Equatable {
     let requirementsTruncated: Bool
     let revisionHistory: [ForgeProjectRevisionRecord]
 
+    var nextRequirementOffset: Int { max(0,offset) + max(0,limit) }
+
     func appending(_ page: ForgeSemanticProjectDetail) -> ForgeSemanticProjectDetail {
         var seen = Set(requirements.map(\.requirementId))
         let newRows = page.requirements.filter { seen.insert($0.requirementId).inserted }

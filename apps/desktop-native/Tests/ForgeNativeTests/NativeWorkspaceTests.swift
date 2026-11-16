@@ -1342,7 +1342,7 @@ final class NativeWorkspaceTests: XCTestCase {
                         "projectId":"PROJECT-a","workspaceId":"workspace-a","displayName":"Alpha",
                         "status":"active","revision":3,"placements":[]
                     ],
-                    "requirementCount":2,
+                    "requirementCount":250,
                     "taskStatusCounts":["open":2,"completed":0,"cancelled":0],
                     "taskPriorityCounts":["urgent":0,"high":0,"normal":2,"low":0,"unset":0],
                     "blockedTaskCount":0,
@@ -1364,12 +1364,13 @@ final class NativeWorkspaceTests: XCTestCase {
         }
 
         let first=try page(0,[row("REQ-a")],hasMore:true)
-        let second=try page(1,[row("REQ-a"),row("REQ-b")],hasMore:false)
+        let second=try page(100,[row("REQ-a"),row("REQ-b")],hasMore:true)
         let merged=first.appending(second)
 
         XCTAssertEqual(merged.requirements.map(\.requirementId),["REQ-a","REQ-b"])
-        XCTAssertEqual(merged.offset,1)
-        XCTAssertFalse(merged.hasMore)
+        XCTAssertEqual(merged.offset,100)
+        XCTAssertEqual(merged.nextRequirementOffset,200)
+        XCTAssertTrue(merged.hasMore)
     }
 
     func testRequirementDetailDistinguishesUnavailableAndEmptyDownstreamProjection() {

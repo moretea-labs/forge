@@ -2892,7 +2892,7 @@ struct ZenProjectDetailPane: View {
 
     private func load(reset:Bool) async {
         guard !loading && !loadingMore else { return }
-        let offset=reset ? 0 : (detail?.requirements.count ?? 0)
+        let offset=reset ? 0 : (detail?.nextRequirementOffset ?? 0)
         if reset { loading=true } else { loadingMore=true }
         error=nil
         defer { loading=false; loadingMore=false }
