@@ -1528,7 +1528,9 @@ struct ZenWorkspacePane: View {
                 thread,repoId:repoId,checkoutId:checkoutId,projectId:projectId
             ),let response=thread.messages.last,
               response.role == "assistant",response.incomplete != true,
-              let proposal=try? ZenChangeProposal.parse(response.text) else { return nil }
+              let proposal=try? ZenChangeProposal.parse(response.text),
+              proposal.matchesAnalysisContext(requirementId:thread.requirementId,planId:thread.planId)
+            else { return nil }
             return ReviewableProposal(threadId:thread.id,threadTitle:thread.title,proposal:proposal)
         }
     }

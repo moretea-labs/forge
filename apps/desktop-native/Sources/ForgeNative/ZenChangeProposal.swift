@@ -35,6 +35,32 @@ struct ZenChangeProposal: Decodable, Identifiable {
 
     var id: String { "\(operation.rawValue):\(targetId ?? requirementId ?? title ?? "new")" }
 
+    // A read-only analysis of one Requirement/Plan must not authorize
+    // mutation of a different record just because it shares a Project.
+    func matchesAnalysisContext(requirementId focusedRequirementId: String?, planId focusedPlanId: String?) -> Bool {
+        if let focusedRequirementId, !focusedRequirementId.isEmpty {
+            switch operation {
+            case .reviseRequirement:
+                guard targetId == focusedRequirementId else { return false }
+            case .createPlan, .revisePlan:
+                guard requirementId == focusedRequirementId else { return false }
+            case .createRequirement:
+                break
+            }
+        }
+        if operation == .revisePlan, let focusedPlanId, !focusedPlanId.isEmpty {
+            return targetId == focusedPlanId
+        }
+        return true
+    }
+
+    func matchesCurrentPlan(_ plan: PlanRecordDetail) -> Bool {
+        operation == .revisePlan
+            && plan.planId == targetId
+            && plan.revision == expectedRevision
+            && plan.requirementId == requirementId
+    }
+
     enum ProposalError: LocalizedError {
         case missing, ambiguous, invalid
 
@@ -90,7 +116,8 @@ struct ZenChangeProposal: Decodable, Identifiable {
     字段按操作填写：新增 Requirement 需要 title/outcome/acceptanceCriteria；
     修改 Requirement 需要 targetId/expectedRevision/title/outcome/acceptanceCriteria；
     新增 Plan 需要 requirementId/objective；
-    修改 Plan 需要 targetId/expectedRevision/objective。
+    修改 Plan 需要 targetId/expectedRevision/requirementId/objective；requirementId 必须与当前 Plan 的所属 Requirement 一致，独立 Plan 填 null。
+    当前分析会话如果已关联 Requirement 或 Plan，则任何修改提案不得指向其他记录。
     每次只提一个独立变更，不输出多个代码块。最终写入必须由用户在 Zen 中明确批准。
     """
     var isValid: Bool {

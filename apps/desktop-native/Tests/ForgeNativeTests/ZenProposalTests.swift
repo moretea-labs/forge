@@ -138,6 +138,57 @@ final class ZenProposalTests: XCTestCase {
         XCTAssertEqual(proposal.acceptanceCriteria,["定位准确"])
     }
 
+    @MainActor
+    func testZenAcceptCannotReviseAnotherPlanningContext() throws {
+        func proposal(_ operation: String, _ extra: String) throws -> ZenChangeProposal {
+            try ZenChangeProposal.parse(fenced(
+                "{\"decision\":\"ACCEPT\",\"operation\":\"\(operation)\",\"rationale\":\"已核对\",\(extra)}"
+            ))
+        }
+        let correct = try proposal("revise_plan",
+            "\"targetId\":\"PLAN-A\",\"expectedRevision\":2,\"requirementId\":\"REQ-A\",\"objective\":\"更新计划\"")
+        XCTAssertTrue(correct.matchesAnalysisContext(requirementId:"REQ-A",planId:"PLAN-A"))
+        XCTAssertFalse(correct.matchesAnalysisContext(requirementId:"REQ-B",planId:"PLAN-A"))
+        XCTAssertFalse(correct.matchesAnalysisContext(requirementId:"REQ-A",planId:"PLAN-B"))
+
+        let wrongRequirement = try proposal("revise_requirement",
+            "\"targetId\":\"REQ-B\",\"expectedRevision\":3,\"title\":\"需求\",\"outcome\":\"目标\",\"acceptanceCriteria\":[]")
+        XCTAssertFalse(wrongRequirement.matchesAnalysisContext(requirementId:"REQ-A",planId:nil))
+        let wrongParent = try proposal("create_plan",
+            "\"requirementId\":\"REQ-B\",\"objective\":\"新计划\"")
+        XCTAssertFalse(wrongParent.matchesAnalysisContext(requirementId:"REQ-A",planId:nil))
+
+        var thread=ChatThread(repoId:"repo-a",checkoutId:"checkout-a",projectId:"project-a",
+            requirementId:"REQ-A",planId:"PLAN-A",readOnly:true,
+            readOnlyRepoId:"repo-a",readOnlyCheckoutId:"checkout-a")
+        thread.messages=[ChatMessage(role:"assistant",text:fenced(
+            #"{"decision":"ACCEPT","operation":"revise_plan","rationale":"已核对","targetId":"PLAN-B","expectedRevision":2,"requirementId":"REQ-B","objective":"其他任务的计划"}"#
+        ))]
+        XCTAssertTrue(ZenWorkspacePane.reviewableProposals(
+            threads:[thread],repoId:"repo-a",checkoutId:"checkout-a",projectId:"project-a"
+        ).isEmpty)
+        thread.messages=[ChatMessage(role:"assistant",text:fenced(
+            #"{"decision":"ACCEPT","operation":"revise_plan","rationale":"已核对","targetId":"PLAN-A","expectedRevision":2,"requirementId":"REQ-A","objective":"当前任务的计划"}"#
+        ))]
+        XCTAssertEqual(ZenWorkspacePane.reviewableProposals(
+            threads:[thread],repoId:"repo-a",checkoutId:"checkout-a",projectId:"project-a"
+        ).count,1)
+
+        func plan(_ owner:String?,revision:Int = 2) -> PlanRecordDetail {
+            PlanRecordDetail(planId:"PLAN-A",revision:revision,requirementId:owner,
+                parentPlanId:nil,sourceBasisRevision:nil,goal:"此前计划",
+                items:[],resolvedDecisions:[],nonGoals:[])
+        }
+        XCTAssertTrue(correct.matchesCurrentPlan(plan("REQ-A")))
+        XCTAssertFalse(correct.matchesCurrentPlan(plan("REQ-B")))
+        XCTAssertFalse(correct.matchesCurrentPlan(plan(nil)))
+        XCTAssertFalse(correct.matchesCurrentPlan(plan("REQ-A",revision:3)))
+        let standalone=try proposal("revise_plan",
+            "\"targetId\":\"PLAN-A\",\"expectedRevision\":2,\"requirementId\":null,\"objective\":\"独立计划\"")
+        XCTAssertTrue(standalone.matchesCurrentPlan(plan(nil)))
+        XCTAssertFalse(standalone.matchesCurrentPlan(plan("REQ-A")))
+    }
+
     func testReviseRequirementRequiresOriginalRevisionAndCriteria() throws {
         let proposal=try ZenChangeProposal.parse(fenced(
             #"{"decision":"ACCEPT","operation":"revise_requirement","rationale":"细化已有需求","targetId":"REQ-1","expectedRevision":3,"title":"需求","outcome":"新目标","acceptanceCriteria":[]}"#

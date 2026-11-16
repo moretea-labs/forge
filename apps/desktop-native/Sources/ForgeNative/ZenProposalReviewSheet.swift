@@ -29,7 +29,7 @@ struct ZenProposalReviewSheet: View {
         case .createPlan:
             return currentRequirement?.state == "open"
         case .revisePlan:
-            return currentPlan?.revision == proposal.expectedRevision
+            return currentPlan.map(proposal.matchesCurrentPlan) == true
         }
     }
 
@@ -107,6 +107,8 @@ struct ZenProposalReviewSheet: View {
             comparison("新增计划目标",before:nil,after:proposal.objective)
         case .revisePlan:
             if let currentPlan {
+                Text("所属 Requirement · \(currentPlan.requirementId ?? "独立 Plan")")
+                    .font(.system(size:11)).foregroundStyle(.secondary)
                 Text("修订：v\(currentPlan.revision) → v\(currentPlan.revision+1)")
                     .font(.system(size:11,design:.monospaced)).foregroundStyle(.secondary)
             }
@@ -225,8 +227,8 @@ struct ZenProposalReviewSheet: View {
                     throw ZenProposalIssue.validation("无法确认当前 Plan。")
                 }
                 currentPlan=detail
-                if detail.revision != proposal.expectedRevision {
-                    throw ZenProposalIssue.validation("Plan 版本已变化，提案过期；请重新分析。")
+                guard proposal.matchesCurrentPlan(detail) else {
+                    throw ZenProposalIssue.validation("Plan 版本或所属 Requirement 与当前分析不一致；请重新核对目标后再生成提案。")
                 }
             }
         } catch {
