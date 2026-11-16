@@ -355,14 +355,29 @@ struct ZenWorkspacePane: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(model.repoId == nil || model.busy)
                     .accessibilityIdentifier("zen.goal.describe")
-                    Button {
-                        reviewLatestProposal()
-                    } label: {
-                        Label("审阅提案",systemImage:"doc.text.magnifyingglass")
+                    if reviewableProposals.count > 1 {
+                        Menu {
+                            ForEach(reviewableProposals,id:\.threadId) { candidate in
+                                Button(candidate.menuLabel) {
+                                    reviewProposal(threadId:candidate.threadId)
+                                }
+                            }
+                        } label: {
+                            Label("审阅提案",systemImage:"doc.text.magnifyingglass")
+                        }
+                        .menuStyle(.borderedButton)
+                        .disabled(model.repoId == nil || model.busy)
+                        .accessibilityIdentifier("zen.proposal.open")
+                    } else {
+                        Button {
+                            reviewLatestProposal()
+                        } label: {
+                            Label("审阅提案",systemImage:"doc.text.magnifyingglass")
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(model.repoId == nil || model.busy || reviewableProposals.isEmpty)
+                        .accessibilityIdentifier("zen.proposal.open")
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(model.repoId == nil || model.busy || !canReviewLatestProposal)
-                    .accessibilityIdentifier("zen.proposal.open")
                     Menu {
                         Button("新建任务") {
                             newTitle = ""; newOutcome = ""; newCriteria = ""
@@ -1138,39 +1153,58 @@ struct ZenWorkspacePane: View {
 
 
 
-    // Derive the most recent completed ACCEPT from canonical conversation history.
-    // Never revive a superseded proposal from the middle of a conversation.
-    static func latestReviewableProposal(
+    struct ReviewableProposal {
+        let threadId: String
+        let threadTitle: String
+        let proposal: ZenChangeProposal
+
+        var menuLabel: String {
+            let subject=proposal.title ?? proposal.objective ?? proposal.targetId
+                ?? proposal.requirementId ?? "未命名"
+            return "\(proposal.operation.displayName) · \(subject.prefix(36)) · \(threadTitle.prefix(24))"
+        }
+    }
+
+    // Every candidate comes from the final, completed assistant reply of its
+    // read-only conversation. An older ACCEPT superseded within that thread
+    // must never reappear, even if other conversations still have valid ACCEPTs.
+    static func reviewableProposals(
         threads:[ChatThread],repoId:String?,checkoutId:String?
-    ) -> ZenChangeProposal? {
-        for thread in threads.sorted(by:{$0.updatedAt > $1.updatedAt}) {
+    ) -> [ReviewableProposal] {
+        threads.sorted(by:{$0.updatedAt > $1.updatedAt}).compactMap { thread in
             guard NativeWorkspace.readOnlyThreadMatchesContext(
                 thread,repoId:repoId,checkoutId:checkoutId
             ),let response=thread.messages.last,
-              response.role == "assistant",response.incomplete != true else { continue }
-            if let proposal=try? ZenChangeProposal.parse(response.text) { return proposal }
+              response.role == "assistant",response.incomplete != true,
+              let proposal=try? ZenChangeProposal.parse(response.text) else { return nil }
+            return ReviewableProposal(threadId:thread.id,threadTitle:thread.title,proposal:proposal)
         }
-        return nil
     }
 
-    private var canReviewLatestProposal: Bool {
-        !model.busy && Self.latestReviewableProposal(
-            threads:model.threads,repoId:model.repoId,checkoutId:model.checkoutId
-        ) != nil
+    static func latestReviewableProposal(
+        threads:[ChatThread],repoId:String?,checkoutId:String?
+    ) -> ZenChangeProposal? {
+        reviewableProposals(threads:threads,repoId:repoId,checkoutId:checkoutId).first?.proposal
+    }
+
+    private var reviewableProposals: [ReviewableProposal] {
+        Self.reviewableProposals(threads:model.threads,repoId:model.repoId,checkoutId:model.checkoutId)
     }
 
     private func reviewLatestProposal() {
-        guard let repoId=model.repoId,let checkoutId=model.checkoutId,
-              let proposal=Self.latestReviewableProposal(
-                threads:model.threads,repoId:repoId,checkoutId:checkoutId
-              ) else {
+        reviewProposal(threadId:reviewableProposals.first?.threadId)
+    }
+
+    private func reviewProposal(threadId:String?) {
+        guard let repoId=model.repoId,let checkoutId=model.checkoutId,!model.busy,
+              let candidate=reviewableProposals.first(where:{$0.threadId == threadId}) else {
             proposalProblem="当前项目没有可审阅的最终 ACCEPT。请先在只读 Agent 分析会话完成精化。"
             showingProposalProblem=true
             return
         }
         proposalSourceRepoId=repoId
         proposalSourceCheckoutId=checkoutId
-        pendingProposal=proposal
+        pendingProposal=candidate.proposal
     }
 
     private var goalSheet: some View {

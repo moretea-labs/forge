@@ -40,6 +40,53 @@ final class ZenProposalTests: XCTestCase {
             threads:[accepted],repoId:"repo-a",checkoutId:"checkout-a"))
     }
 
+    @MainActor
+    func testZenReviewListsSeparateCompletedProposalsWithoutRevivingStaleThreads() throws {
+        func proposal(_ title:String) -> String {
+            fenced(
+                #"{"decision":"ACCEPT","operation":"create_requirement","rationale":"已确认","title":"TITLE","outcome":"可验收","acceptanceCriteria":["完成"]}"#
+                    .replacingOccurrences(of:"TITLE",with:title)
+            )
+        }
+        var first=ChatThread(repoId:"repo-a",checkoutId:"checkout-a",readOnly:true,
+            readOnlyRepoId:"repo-a",readOnlyCheckoutId:"checkout-a")
+        first.title="最初分析"
+        first.messages=[ChatMessage(role:"assistant",text:proposal("第一项"))]
+        first.updatedAt=Date(timeIntervalSince1970:100)
+
+        var second=ChatThread(repoId:"repo-a",checkoutId:"checkout-a",readOnly:true,
+            readOnlyRepoId:"repo-a",readOnlyCheckoutId:"checkout-a")
+        second.title="后续分析"
+        second.messages=[ChatMessage(role:"assistant",text:proposal("第二项"))]
+        second.updatedAt=Date(timeIntervalSince1970:200)
+
+        var wrongCheckout=second
+        wrongCheckout.id=UUID().uuidString
+        wrongCheckout.checkoutId="checkout-b"
+        var ordinary=second
+        ordinary.id=UUID().uuidString
+        ordinary.readOnly=false
+        var incomplete=second
+        incomplete.id=UUID().uuidString
+        incomplete.messages=[ChatMessage(role:"assistant",text:proposal("未完成"),incomplete:true)]
+
+        let threads=[first,wrongCheckout,ordinary,incomplete,second]
+        let candidates=ZenWorkspacePane.reviewableProposals(
+            threads:threads,repoId:"repo-a",checkoutId:"checkout-a")
+        XCTAssertEqual(candidates.map(\.threadId),[second.id,first.id])
+        XCTAssertEqual(candidates.map(\.proposal.title),["第二项","第一项"])
+        XCTAssertTrue(candidates[0].menuLabel.contains("后续分析"))
+        XCTAssertTrue(candidates[1].menuLabel.contains("第一项"))
+        XCTAssertEqual(ZenWorkspacePane.latestReviewableProposal(
+            threads:threads,repoId:"repo-a",checkoutId:"checkout-a")?.title,"第二项")
+
+        first.messages.append(ChatMessage(role:"user",text:"继续重新分析"))
+        XCTAssertEqual(ZenWorkspacePane.reviewableProposals(
+            threads:[first,second],repoId:"repo-a",checkoutId:"checkout-a").map(\.threadId),[second.id])
+        XCTAssertTrue(ZenWorkspacePane.reviewableProposals(
+            threads:threads,repoId:"repo-a",checkoutId:"checkout-b").isEmpty)
+    }
+
     func testCreateRequirementIsParsedOnlyFromOneExplicitProposal() throws {
         let proposal=try ZenChangeProposal.parse(fenced(
             #"{"decision":"ACCEPT","operation":"create_requirement","rationale":"独立验收目标","title":"PDF 定位","outcome":"可定位源页","acceptanceCriteria":["定位准确"]}"#
