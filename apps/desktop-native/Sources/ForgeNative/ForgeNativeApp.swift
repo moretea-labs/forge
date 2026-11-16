@@ -5910,7 +5910,10 @@ private struct PluginsPane: View {
     var body: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:18) {
+                PluginSettingsSection(model:model)
+                Divider()
                 HStack {
+                    Text("当前项目").font(.system(size:13,weight:.semibold))
                     Spacer()
                     Button {
                         searchOpen.toggle()
@@ -7154,10 +7157,6 @@ private struct SettingsPane: View {
 
                 Divider()
                 RuntimeSettingsSection(model:model)
-                DisclosureGroup("插件安装与授权") {
-                    PluginSettingsSection(model:model)
-                        .padding(.top,12)
-                }
             }
             .padding(26)
             .frame(maxWidth:960,alignment:.leading)

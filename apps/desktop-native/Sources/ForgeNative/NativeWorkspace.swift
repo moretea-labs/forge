@@ -2323,10 +2323,12 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func loadPluginsPage() async {
+        async let managementRefresh: Void = loadPluginManagement()
         guard let repoId else {
             pluginsRequestGeneration &+= 1
             pluginsLoading = false
             plugins = []
+            await managementRefresh
             return
         }
         let requestGeneration = beginPluginsPageRefresh()
@@ -2341,6 +2343,7 @@ final class NativeWorkspace: ObservableObject {
             plugins = []
             self.error = error.localizedDescription
         }
+        await managementRefresh
     }
 
     nonisolated static func pluginManagementRows(_ result:[String:Any]) -> [PluginManagementItem] {
@@ -2410,6 +2413,7 @@ final class NativeWorkspace: ObservableObject {
             let refreshed = Self.pluginManagementRows(management)
             pluginManagement = refreshed
             pluginManagementError = Self.pluginInstallationWarning(target:item,refreshed:refreshed)
+            await loadPluginsPage()
         } catch {
             // A request can have been admitted before transport failure.
             // Do not blindly reinstall, and do not erase the prior list.
@@ -2500,7 +2504,7 @@ final class NativeWorkspace: ObservableObject {
             guard let refreshed = Self.pluginAuthorizationSnapshot(value,pluginId:item.pluginId) else {
                 pluginAuthorizationError = "无法确认撤销结果，请刷新授权列表核对后再操作。"
                 pluginAuthorizationLoading = false
-                await loadPluginManagement()
+                await loadPluginsPage()
                 return
             }
             pluginAuthorizationSnapshot = refreshed
@@ -2511,7 +2515,7 @@ final class NativeWorkspace: ObservableObject {
             pluginAuthorizationError = "无法确认撤销结果，请刷新授权列表核对后再操作。"
         }
         pluginAuthorizationLoading = false
-        await loadPluginManagement()
+        await loadPluginsPage()
     }
 
     nonisolated static func runtimeStatusDetail(_ result: [String:Any]) -> RuntimeStatusDetail {
@@ -2753,7 +2757,6 @@ final class NativeWorkspace: ObservableObject {
         defer { settingsLoading = false }
 
         async let runtimeRefresh: Void = loadRuntimePage()
-        async let pluginRefresh: Void = loadPluginManagement()
         async let statusRequest = ForgeBridge.request("read_local_provider_status")
         async let settingsRequest = ForgeBridge.request("read_local_api_settings")
         async let credentialRequest = ForgeBridge.request("managed_api_credential_control",["operation":"list"])
@@ -2786,7 +2789,6 @@ final class NativeWorkspace: ObservableObject {
         }
 
         _ = await runtimeRefresh
-        _ = await pluginRefresh
         if !failures.isEmpty { self.error = failures.joined(separator:"\n") }
     }
 
