@@ -1393,6 +1393,9 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(NativeWorkspace.projectRepositorySelection(
             currentRepoId:"repo-old",requestedRepoId:nil,availableRepoIds:["repo-a","repo-b"]
         ),nil)
+        XCTAssertNil(NativeWorkspace.projectRepositorySelection(
+            currentRepoId:"repo-a",requestedRepoId:nil,availableRepoIds:["repo-a","repo-b"],projectScope:true
+        ))
         XCTAssertEqual(NativeWorkspace.projectRepositorySelection(
             currentRepoId:"repo-old",requestedRepoId:"repo-b",availableRepoIds:["repo-a","repo-b"]
         ),"repo-b")

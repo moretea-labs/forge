@@ -2638,6 +2638,15 @@ struct ZenProjectDirectorySheet: View {
                             } label: { Label("重命名",systemImage:"pencil") }
                             if !project.repositoryIds.isEmpty {
                                 Menu {
+                                    Button {
+                                        model.selectSemanticProject(project.projectId,projectScope:true)
+                                        dismiss()
+                                    } label: {
+                                        Label("项目级",systemImage:isSelected && model.projectRepositoryId == nil
+                                              ? "checkmark.circle.fill" : "folder")
+                                    }
+                                    .disabled(project.status != "active")
+                                    Divider()
                                     ForEach(project.repositoryIds,id:\.self) { repositoryId in
                                         Button {
                                             model.selectSemanticProject(
@@ -2652,7 +2661,7 @@ struct ZenProjectDirectorySheet: View {
                                         .disabled(project.status != "active")
                                     }
                                 } label: {
-                                    Label("切换仓库",systemImage:"arrow.left.arrow.right")
+                                    Label("任务范围",systemImage:"arrow.left.arrow.right")
                                 }
                             }
                             Button {

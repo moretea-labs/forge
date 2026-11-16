@@ -1856,8 +1856,9 @@ final class NativeWorkspace: ObservableObject {
     }
 
     nonisolated static func projectRepositorySelection(
-        currentRepoId:String?,requestedRepoId:String?,availableRepoIds:[String]
+        currentRepoId:String?,requestedRepoId:String?,availableRepoIds:[String],projectScope:Bool = false
     ) -> String? {
+        if projectScope { return nil }
         if let requestedRepoId {
             return availableRepoIds.contains(requestedRepoId) ? requestedRepoId : nil
         }
@@ -1871,7 +1872,9 @@ final class NativeWorkspace: ObservableObject {
         return thread.repoId == repoId && thread.checkoutId == checkoutId && thread.projectId == projectId
     }
 
-    func selectSemanticProject(_ projectId:String,repositoryId requestedRepoId:String? = nil) {
+    func selectSemanticProject(
+        _ projectId:String,repositoryId requestedRepoId:String? = nil,projectScope:Bool = false
+    ) {
         guard !busy else {
             error="请先停止正在运行的会话，再切换项目。"
             return
@@ -1883,7 +1886,7 @@ final class NativeWorkspace: ObservableObject {
         }
         let targetRepoId=Self.projectRepositorySelection(
             currentRepoId:repoId,requestedRepoId:requestedRepoId,
-            availableRepoIds:project.repositoryIds
+            availableRepoIds:project.repositoryIds,projectScope:projectScope
         )
         if let requestedRepoId,targetRepoId != requestedRepoId {
             error="该仓库不属于所选项目。"
