@@ -4751,6 +4751,17 @@ final class NativeWorkspace: ObservableObject {
         )
     }
 
+    nonisolated static func incompleteTurnReplyText(
+        partialAnswer: String,
+        failureMessage: String
+    ) -> String {
+        let partial = partialAnswer.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !partial.isEmpty else { return failureMessage }
+        let failure = failureMessage.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !failure.isEmpty else { return partial }
+        return "\(partial)\n\n**回复未完成：** \(failure)"
+    }
+
     nonisolated static func agentTurnFailure(
         _ raw: String,
         toolName: String? = nil
@@ -5010,7 +5021,10 @@ final class NativeWorkspace: ObservableObject {
             let failure = Self.agentTurnFailure(rawError, toolName:activityEvents.last?.label)
             let completedCount = activityEvents.filter { $0.status != "running" }.count
             let incompleteReply = ChatMessage(
-                role:"assistant", text:failure.message,
+                role:"assistant", text:Self.incompleteTurnReplyText(
+                    partialAnswer:streamedAnswer,
+                    failureMessage:failure.message
+                ),
                 toolActivityCount:completedCount > 0 ? completedCount : nil,
                 activityEvents:activityEvents.isEmpty ? nil : activityEvents,
                 incomplete:true

@@ -575,6 +575,20 @@ final class NativeWorkspaceTests: XCTestCase {
         )))
     }
 
+    func testIncompleteTurnReplyPreservesPartialStreamAndFailureReason() {
+        XCTAssertEqual(
+            NativeWorkspace.incompleteTurnReplyText(partialAnswer:" \n ",failureMessage:"请求已取消。"),
+            "请求已取消。"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.incompleteTurnReplyText(
+                partialAnswer:"已完成第一步，正在整理结果。",
+                failureMessage:"请求已取消。"
+            ),
+            "已完成第一步，正在整理结果。\n\n**回复未完成：** 请求已取消。"
+        )
+    }
+
     func testIncompleteContinuationPreservesPriorToolReceiptsAndCoverage() {
         var thread = ChatThread(provider:"api")
         let patch = AgentLiveActivityEvent(
