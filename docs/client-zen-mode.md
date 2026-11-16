@@ -7,6 +7,7 @@ A requirement-first, low-noise UI inside the existing native macOS Forge Client.
 ## Source of truth
 
 - Repository and Checkout: Forge Registry.
+- Semantic Project Identity: the canonical `project_list` / `project_create` / `project_get` / `project_revise` / `project_attach_requirement` operations. A Project ID is not a Repository ID; a Project may have zero or multiple repository placements. The native `read_projects` operation continues to list Repository Registry entries only.
 - Requirement and Plan content: Forge's current semantic records.
 - Process and Autopilot activity: existing receipt/status API, never synthetic progress.
 - **Current progress Authority:** GitHub Issues/Projects remain the delivery-progress Authority until #648's multi-project lifecycle, native Client acceptance, inventory, sample reconciliation, restart recovery and one-way cutover are accepted. Forge Project identity, Repository Registry, Requirement/Plan and Autopilot are canonical Forge data, but their existence does not mean GitHub Projects have been retired.
