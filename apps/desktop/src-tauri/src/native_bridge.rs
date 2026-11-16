@@ -95,6 +95,9 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 args.get("acceptanceCriteria").and_then(Value::as_array)
                     .map(|values| values.iter().filter_map(Value::as_str).map(str::to_owned).take(32).collect())
                     .unwrap_or_default(),
+                args.get("taskStatus").and_then(Value::as_str).map(str::to_owned),
+                args.get("priority").and_then(Value::as_str).map(str::to_owned),
+                args.get("assignee").and_then(Value::as_str).map(str::to_owned),
             ).await,
         "create_plan" =>
             create_plan(
@@ -471,6 +474,19 @@ pub fn run() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn requirement_task_create_validates_initial_metadata_before_runtime_call() {
+        let run = |status: Option<&str>, priority: Option<&str>, assignee: Option<&str>| {
+            tauri::async_runtime::block_on(create_requirement(
+                "repo-1".into(), "REQ-NEW".into(), "Task".into(), "Outcome".into(), vec![],
+                status.map(str::to_owned), priority.map(str::to_owned), assignee.map(str::to_owned),
+            ))
+        };
+        assert_eq!(run(Some("done"), None, None).unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_CREATE_METADATA_INVALID");
+        assert_eq!(run(None, Some("critical"), None).unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_CREATE_METADATA_INVALID");
+        assert_eq!(run(None, None, Some(&"a".repeat(161))).unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_CREATE_METADATA_INVALID");
+    }
+
     #[test]
     fn requirement_task_edit_validates_status_priority_and_owner_before_runtime_call() {
         let run = |status: Option<&str>, priority: Option<&str>, assignee: Option<&str>| {

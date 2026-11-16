@@ -820,9 +820,17 @@ async fn create_requirement(
     title: String,
     outcome: String,
     acceptance_criteria: Vec<String>,
+    task_status: Option<String>,
+    priority: Option<String>,
+    assignee: Option<String>,
 ) -> Result<Value, String> {
     if repo_id.trim().is_empty() || requirement_id.trim().is_empty() || title.trim().is_empty() || outcome.trim().is_empty() {
         return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_ARGUMENT_REQUIRED".to_string());
+    }
+    if task_status.as_deref().is_some_and(|value| !matches!(value, "planned" | "active" | "waiting_for_user"))
+        || priority.as_deref().is_some_and(|value| !matches!(value, "urgent" | "high" | "normal" | "low"))
+        || assignee.as_ref().is_some_and(|value| value.len() > 160) {
+        return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_METADATA_INVALID".to_string());
     }
     let result = call_runtime_tool("rh_work", json!({
         "repo_id": repo_id,
@@ -831,6 +839,9 @@ async fn create_requirement(
         "requirement_title": title,
         "requirement_outcome": outcome,
         "requirement_acceptance_criteria": acceptance_criteria,
+        "requirement_status": task_status,
+        "requirement_priority": priority,
+        "requirement_assignee": assignee,
         "request_id": request_id("requirement-create")
     })).await?;
     Ok(semantic_facade_data(result))
