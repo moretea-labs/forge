@@ -91,7 +91,8 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // Each canonical fingerprint fences stale Connector snapshots.
 // 2026-11-16 #648: optional assigned/unassigned task triage filter; existing
 // Requirement storage, assignment writer and revision CAS remain unchanged.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '575fa648fe29267a';
+// Schema v23 documents Project-scoped Plan identity and the project_id == scope_key rule.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '1b2d21b836c0fcde';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
