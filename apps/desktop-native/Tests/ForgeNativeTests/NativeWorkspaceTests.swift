@@ -1434,6 +1434,18 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(NativeWorkspace.semanticRecordRefreshPageIsCurrent(.requirement,currentPage:.plan))
     }
 
+    func testSemanticRecordMutationKeepsEditorOpenUntilCurrentContextReadback() {
+        XCTAssertFalse(NativeWorkspace.semanticRecordMutationShouldCloseEditor(
+            contextStillCurrent:true,readbackConfirmed:false
+        ))
+        XCTAssertTrue(NativeWorkspace.semanticRecordMutationShouldCloseEditor(
+            contextStillCurrent:true,readbackConfirmed:true
+        ))
+        XCTAssertTrue(NativeWorkspace.semanticRecordMutationShouldCloseEditor(
+            contextStillCurrent:false,readbackConfirmed:false
+        ))
+    }
+
     func testSemanticRecordMutationReadbackRequiresCurrentRevisionAndProjection() {
         let row = ForgeRecord(recordId:"REQ-a",title:"Desktop",state:"completed",kind:.requirement,
                               depth:0,requirementId:"REQ-a",parentPlanId:nil,

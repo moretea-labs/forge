@@ -3883,30 +3883,44 @@ final class NativeWorkspace: ObservableObject {
         (targetPage == .requirement || targetPage == .plan) && currentPage == targetPage
     }
 
+    nonisolated static func semanticRecordMutationShouldCloseEditor(
+        contextStillCurrent:Bool,readbackConfirmed:Bool
+    ) -> Bool {
+        !contextStillCurrent || readbackConfirmed
+    }
+
     func refreshSemanticRecordAfterMutation(
         kind: SemanticRecordKind, recordId: String, projectId: String, repoId: String?,
         expectedRevision: Int, expectedState: String? = nil
-    ) async {
+    ) async -> Bool {
         let targetPage=page
+        let targetCheckoutId=checkoutId
         guard Self.semanticRecordRefreshPageIsCurrent(targetPage,currentPage:page),
-              selectedProjectId == projectId,projectRepositoryId == repoId else { return }
+              selectedProjectId == projectId,projectRepositoryId == repoId else { return true }
         await loadPage()
         guard Self.semanticRecordRefreshPageIsCurrent(targetPage,currentPage:page),
-              selectedProjectId == projectId,projectRepositoryId == repoId else { return }
+              selectedProjectId == projectId,projectRepositoryId == repoId,
+              checkoutId == targetCheckoutId else { return true }
         let label = kind.rawValue == "requirement" ? "任务" : "计划"
         guard let record = records.first(where: { $0.recordId == recordId && $0.kind.rawValue == kind.rawValue }) else {
             error = "\(label)写入已确认，但项目\(label)列表尚未读回。请刷新核对，不要重复提交。"
-            return
+            return false
         }
         await openRecord(record.id)
-        guard Self.semanticRecordRefreshPageIsCurrent(targetPage,currentPage:page),
-              selectedProjectId == projectId,projectRepositoryId == repoId else { return }
-        if !Self.semanticRecordReadbackConfirmed(
+        let contextStillCurrent = Self.semanticRecordRefreshPageIsCurrent(targetPage,currentPage:page)
+            && selectedProjectId == projectId && projectRepositoryId == repoId
+            && checkoutId == targetCheckoutId && selectedRecord == record.id
+        let readbackConfirmed = contextStillCurrent && Self.semanticRecordReadbackConfirmed(
             record:record,detail:recordDetail,kind:kind,id:recordId,
             revision:expectedRevision,state:expectedState
-        ) {
+        )
+        guard Self.semanticRecordMutationShouldCloseEditor(
+            contextStillCurrent:contextStillCurrent,readbackConfirmed:readbackConfirmed
+        ) else {
             error = "\(label)写入已确认，但列表或详情尚未同步到新修订版本。请刷新核对，不要重复提交。"
+            return false
         }
+        return true
     }
 
     nonisolated static func projectNavigationContextChanged(
@@ -4154,7 +4168,7 @@ final class NativeWorkspace: ObservableObject {
                 throw ForgeBridgeError.invalidResponse
             }
             guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId else { return false }
-            await refreshSemanticRecordAfterMutation(
+            return await refreshSemanticRecordAfterMutation(
                 kind:.requirement,recordId:id,projectId:projectId,repoId:targetRepoId,
                 expectedRevision:expectedRevision + 1
             )
@@ -4209,7 +4223,7 @@ final class NativeWorkspace: ObservableObject {
                 throw ForgeBridgeError.invalidResponse
             }
             guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId else { return false }
-            await refreshSemanticRecordAfterMutation(
+            return await refreshSemanticRecordAfterMutation(
                 kind:.requirement,recordId:id,projectId:projectId,repoId:targetRepoId,
                 expectedRevision:expectedRevision + 1,expectedState:state
             )
@@ -4242,7 +4256,7 @@ final class NativeWorkspace: ObservableObject {
                 throw ForgeBridgeError.invalidResponse
             }
             guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId else { return false }
-            await refreshSemanticRecordAfterMutation(
+            return await refreshSemanticRecordAfterMutation(
                 kind:.plan,recordId:id,projectId:projectId,repoId:targetRepoId,
                 expectedRevision:expectedRevision + 1
             )
