@@ -185,6 +185,7 @@ struct ZenWorkspacePane: View {
     let onOpenAgent: (ForgeRecord, String, String?, Bool) -> Void
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     @FocusState private var searchFocused: Bool
     @State private var requirementQuery = ""
     @State private var boardPresentation: BoardPresentation = .board
@@ -793,14 +794,16 @@ struct ZenWorkspacePane: View {
                                 let items = visibleRequirements.filter { bucket($0) == stage }
                                 VStack(alignment:.leading,spacing:0) {
                                     HStack(spacing:9) {
-                                        Circle()
-                                            .fill(stage == .done ? Color.green.opacity(0.75) :
-                                                  stage == .running || stage == .active ? Color.accentColor :
-                                                  stage == .waitingForUser ? Color.orange : Color.secondary.opacity(0.5))
+                                        Circle().fill(ForgeBoardAppearance.marker(boardTone(stage)))
                                             .frame(width:7,height:7)
-                                        Text(stage.title).font(.system(size:12,weight:.semibold))
-                                        Text("\(items.count)").font(.system(size:10)).foregroundStyle(.secondary)
-                                        Spacer()
+                                        Text(stage.title).font(.system(size:12.5,weight:.semibold))
+                                        Spacer(minLength:5)
+                                        Text("\(items.count)")
+                                            .font(.system(size:10.5,weight:.medium))
+                                            .foregroundStyle(.secondary)
+                                            .padding(.horizontal,9).padding(.vertical,4)
+                                            .background(ForgeBoardAppearance.cardSurface.opacity(0.9),
+                                                        in:Capsule())
                                     }
                                     .padding(.bottom,13)
                                     ScrollView {
@@ -830,15 +833,25 @@ struct ZenWorkspacePane: View {
                                                             Text(item.recordId)
                                                                 .font(.system(size:9,design:.monospaced))
                                                                 .lineLimit(1).truncationMode(.middle)
+                                                                .frame(maxWidth:105,alignment:.leading)
+                                                                .help(item.recordId)
                                                             Spacer(minLength:0)
                                                             if item.priority != nil || item.assignee?.isEmpty == false {
                                                              HStack(spacing:7) {
                                                                  if let priority=ZenWorkspacePane.priorityLabel(item.priority) {
                                                                      Text(priority)
                                                                          .foregroundStyle(priority == "紧急" ? Color.orange : Color.secondary)
+                                                                         .padding(.horizontal,7).padding(.vertical,3)
+                                                                         .background(priority == "紧急" ? Color.orange.opacity(0.10) : Color.primary.opacity(0.045),
+                                                                                     in:Capsule())
                                                                  }
                                                                  if let assignee=item.assignee,!assignee.isEmpty {
-                                                                     Text(assignee).foregroundStyle(.secondary).lineLimit(1)
+                                                                     Text(assignee)
+                                                                         .foregroundStyle(.secondary)
+                                                                         .lineLimit(1)
+                                                                         .padding(.horizontal,7).padding(.vertical,3)
+                                                                         .background(Color.primary.opacity(0.045),in:Capsule())
+                                                                         .help(assignee)
                                                                  }
                                                              }
                                                              .font(.system(size:9.5))
@@ -851,8 +864,11 @@ struct ZenWorkspacePane: View {
                                                         }
                                                         .foregroundStyle(.secondary)
                                                     }
-                                                    .padding(.horizontal,8).padding(.vertical,11)
-                                                    .contentShape(Rectangle())
+                                                    .padding(13)
+                                                    .frame(maxWidth:.infinity,alignment:.leading)
+                                                    .background(ForgeBoardAppearance.cardSurface,
+                                                                in:RoundedRectangle(cornerRadius:10,style:.continuous))
+                                                    .contentShape(RoundedRectangle(cornerRadius:10,style:.continuous))
                                                 }
                                                 .buttonStyle(ZenPressStyle())
                                                 .accessibilityIdentifier("zen.requirement.\(item.recordId)")
@@ -862,10 +878,12 @@ struct ZenWorkspacePane: View {
                                     .scrollIndicators(.hidden)
                                 }
                                 .padding(13)
-                                .frame(width:max(225,(frame.size.width - 76)/3),alignment:.topLeading)
+                                .frame(width:ForgeBoardAppearance.columnWidth(available:frame.size.width,
+                                                                             columnCount:visibleStages.count),
+                                       alignment:.topLeading)
                                 .frame(maxHeight:.infinity)
-                                .background(Color.primary.opacity(0.025),
-                                            in:RoundedRectangle(cornerRadius:12))
+                                .background(ForgeBoardAppearance.columnColor(boardTone(stage),scheme:colorScheme),
+                                            in:RoundedRectangle(cornerRadius:13,style:.continuous))
                             }
                         }
                         .padding(.horizontal,24).padding(.bottom,24)
@@ -902,6 +920,16 @@ struct ZenWorkspacePane: View {
         focusedRequirementId=item.recordId
         navigate(.canvas)
         Task { await model.openRecord(item.id) }
+    }
+
+    private func boardTone(_ stage:ZenBoardBucket) -> ForgeBoardTone {
+        switch stage {
+        case .todo,.planned: return .todo
+        case .active,.running: return .progress
+        case .waitingForUser: return .blocked
+        case .done: return .done
+        case .cancelled: return .neutral
+        }
     }
 
     private func bucketColor(_ stage:ZenBoardBucket) -> Color {

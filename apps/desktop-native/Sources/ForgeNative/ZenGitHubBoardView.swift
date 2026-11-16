@@ -1,14 +1,66 @@
 import SwiftUI
+import AppKit
 
-// Direct, ephemeral presentation of the configured GitHub Project status field.
-// No local status writes and no inference from Requirement / Autopilot.
+// Presentation only: GitHub Project and Requirement/Autopilot remain the status authorities.
+enum ForgeBoardTone {
+    case todo, progress, blocked, done, neutral
+
+    static func forGitHubStatus(_ status:String) -> Self {
+        let key=status.lowercased()
+            .replacingOccurrences(of:" ",with:"")
+            .replacingOccurrences(of:"_",with:"")
+            .replacingOccurrences(of:"-",with:"")
+        switch key {
+        case "todo","backlog","notstarted": return .todo
+        case "inprogress","active","doing": return .progress
+        case "blocked","waiting","waitingforuser": return .blocked
+        case "done","completed","closed": return .done
+        default: return .neutral
+        }
+    }
+}
+
+enum ForgeBoardAppearance {
+    static let cardSurface = Color(nsColor:.textBackgroundColor)
+
+    static func columnColor(_ tone:ForgeBoardTone,scheme:ColorScheme) -> Color {
+        let color:Color
+        switch tone {
+        case .todo: color=Color(red:0.958,green:0.944,blue:0.986)
+        case .progress: color=Color(red:0.996,green:0.961,blue:0.865)
+        case .blocked: color=Color(red:0.992,green:0.930,blue:0.903)
+        case .done: color=Color(red:0.924,green:0.963,blue:0.928)
+        case .neutral: color=Color(nsColor:.controlBackgroundColor)
+        }
+        return scheme == .dark ? color.opacity(0.14) : color
+    }
+
+    static func marker(_ tone:ForgeBoardTone) -> Color {
+        switch tone {
+        case .todo: return Color(red:0.59,green:0.57,blue:0.65)
+        case .progress: return Color(red:0.17,green:0.47,blue:0.88)
+        case .blocked: return Color(red:0.85,green:0.25,blue:0.27)
+        case .done: return Color(red:0.39,green:0.50,blue:0.39)
+        case .neutral: return .secondary
+        }
+    }
+
+    static func columnWidth(available:CGFloat,columnCount:Int) -> CGFloat {
+        let shown=max(1,min(columnCount,4))
+        let spacing=CGFloat(shown-1)*12
+        return max(216,min(340,(available-48-spacing)/CGFloat(shown)))
+    }
+}
+
+// A read-only projection of the configured GitHub Project, not a second task store.
 struct ZenGitHubBoardView: View {
     let items: [ZenGitHubBoardItem]
     let truncated: Bool
+    @Environment(\.colorScheme) private var colorScheme
 
     private var statuses: [String] {
         Array(Set(items.map(\.status))).sorted { left,right in
-            let priority=["Todo","To do","Backlog","In Progress","In progress","Done"]
+            let priority=["Todo","To do","Backlog","In Progress","In progress","Blocked","Done"]
             let a=priority.firstIndex(of:left) ?? priority.count
             let b=priority.firstIndex(of:right) ?? priority.count
             return a == b ? left.localizedStandardCompare(right) == .orderedAscending : a < b
@@ -18,18 +70,25 @@ struct ZenGitHubBoardView: View {
     var body: some View {
         GeometryReader { frame in
             ScrollView(.horizontal) {
-                HStack(alignment:.top,spacing:14) {
+                HStack(alignment:.top,spacing:12) {
                     ForEach(statuses,id:\.self) { status in
                         let group=items.filter { $0.status == status }
-                        VStack(alignment:.leading,spacing:12) {
-                            HStack {
-                                Text(status).font(.system(size:12,weight:.semibold))
+                        let tone=ForgeBoardTone.forGitHubStatus(status)
+                        VStack(alignment:.leading,spacing:13) {
+                            HStack(spacing:9) {
+                                Circle().fill(ForgeBoardAppearance.marker(tone))
+                                    .frame(width:7,height:7)
+                                Text(status).font(.system(size:12.5,weight:.semibold))
+                                Spacer(minLength:5)
                                 Text("\(group.count)")
-                                    .font(.system(size:10)).foregroundStyle(.secondary)
-                                Spacer()
+                                    .font(.system(size:10.5,weight:.medium))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal,9).padding(.vertical,4)
+                                    .background(ForgeBoardAppearance.cardSurface.opacity(0.9),
+                                                in:Capsule())
                             }
                             ScrollView {
-                                LazyVStack(spacing:8) {
+                                LazyVStack(spacing:9) {
                                     ForEach(group) { item in
                                         if let urlText=item.url,let url=URL(string:urlText),
                                            url.scheme == "https",url.host == "github.com" {
@@ -44,10 +103,12 @@ struct ZenGitHubBoardView: View {
                             .scrollIndicators(.hidden)
                         }
                         .padding(13)
-                        .frame(width:max(225,(frame.size.width-76)/3),alignment:.topLeading)
+                        .frame(width:ForgeBoardAppearance.columnWidth(available:frame.size.width,
+                                                                      columnCount:statuses.count),
+                               alignment:.topLeading)
                         .frame(maxHeight:.infinity)
-                        .background(Color.primary.opacity(0.025),
-                                    in:RoundedRectangle(cornerRadius:12))
+                        .background(ForgeBoardAppearance.columnColor(tone,scheme:colorScheme),
+                                    in:RoundedRectangle(cornerRadius:13,style:.continuous))
                     }
                 }
                 .padding(.horizontal,24).padding(.bottom,24)
@@ -80,22 +141,29 @@ struct ZenGitHubBoardView: View {
     }
 
     private func itemRow(_ item:ZenGitHubBoardItem) -> some View {
-        VStack(alignment:.leading,spacing:8) {
-            Text(item.title).font(.system(size:12,weight:.medium))
-                .lineLimit(3).frame(maxWidth:.infinity,alignment:.leading)
+        VStack(alignment:.leading,spacing:14) {
+            Text(item.title)
+                .font(.system(size:12.5,weight:.medium))
+                .lineLimit(3)
+                .frame(maxWidth:.infinity,alignment:.leading)
                 .foregroundStyle(.primary)
             HStack {
                 Text(item.number.map { "#\($0)" } ?? "Draft")
                     .font(.system(size:10,design:.monospaced))
                     .foregroundStyle(.secondary)
-                Spacer()
+                    .padding(.horizontal,8).padding(.vertical,4)
+                    .background(Color.primary.opacity(0.045),in:Capsule())
+                Spacer(minLength:4)
                 if item.url != nil {
                     Image(systemName:"arrow.up.right")
-                        .font(.system(size:9)).foregroundStyle(.secondary)
+                        .font(.system(size:10)).foregroundStyle(.secondary)
                         .accessibilityHidden(true)
                 }
             }
         }
-        .padding(.horizontal,4).padding(.vertical,9)
+        .padding(13)
+        .frame(maxWidth:.infinity,alignment:.leading)
+        .background(ForgeBoardAppearance.cardSurface,
+                    in:RoundedRectangle(cornerRadius:10,style:.continuous))
     }
 }
