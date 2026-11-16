@@ -85,13 +85,18 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 args.get("decision").and_then(Value::as_str).unwrap_or("").to_string(),
             ).await,
         "read_requirement_detail" =>
-            read_requirement_detail(required(args, "repoId")?, required(args, "requirementId")?).await,
+            read_requirement_detail(
+                optional_project_text(args, "repoId", 256)?,
+                optional_project_text(args, "projectId", 512)?,
+                required_bounded(args, "requirementId", 160)?,
+            ).await,
         "read_plan_detail" =>
             read_plan_detail(required(args, "repoId")?, required(args, "planId")?).await,
         "create_requirement" =>
             create_requirement(
-                required(args,"repoId")?,
-                required(args,"requirementId")?,
+                optional_project_text(args, "repoId", 256)?,
+                optional_project_text(args, "projectId", 512)?,
+                required_bounded(args,"requirementId",160)?,
                 required_bounded(args,"title",240)?,
                 required_bounded(args,"outcome",4000)?,
                 args.get("acceptanceCriteria").and_then(Value::as_array)
@@ -118,8 +123,9 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             ).await,
         "revise_requirement" =>
             revise_requirement(
-                required(args,"repoId")?,
-                required(args,"requirementId")?,
+                optional_project_text(args, "repoId", 256)?,
+                optional_project_text(args, "projectId", 512)?,
+                required_bounded(args,"requirementId",160)?,
                 args.get("expectedRevision").and_then(Value::as_u64)
                     .filter(|revision| *revision > 0)
                     .ok_or("FORGE_NATIVE_BRIDGE_EXPECTED_REVISION_REQUIRED")?,
@@ -494,7 +500,7 @@ mod tests {
     fn requirement_task_create_validates_initial_metadata_before_runtime_call() {
         let run = |status: Option<&str>, priority: Option<&str>, assignee: Option<&str>| {
             tauri::async_runtime::block_on(create_requirement(
-                "repo-1".into(), "REQ-NEW".into(), "Task".into(), "Outcome".into(), vec![], None,
+                Some("repo-1".into()), None, "REQ-NEW".into(), "Task".into(), "Outcome".into(), vec![], None,
                 status.map(str::to_owned), priority.map(str::to_owned), assignee.map(str::to_owned),
             ))
         };
@@ -507,7 +513,7 @@ mod tests {
     fn requirement_task_edit_validates_status_priority_and_owner_before_runtime_call() {
         let run = |status: Option<&str>, priority: Option<&str>, assignee: Option<&str>| {
             tauri::async_runtime::block_on(revise_requirement(
-                "repo-1".into(), "REQ-1".into(), 1,
+                Some("repo-1".into()), None, "REQ-1".into(), 1,
                 "Task".into(), "Outcome".into(), vec![], None, None, None, None,
                 status.map(str::to_owned), priority.map(str::to_owned), assignee.map(str::to_owned),
             ))
@@ -528,7 +534,7 @@ mod tests {
         assert_eq!(invalid.unwrap_err(), "FORGE_NATIVE_BRIDGE_REMAINING_WORK_INVALID");
 
         let oversized = tauri::async_runtime::block_on(revise_requirement(
-            "repo-1".into(), "REQ-1".into(), 1,
+            Some("repo-1".into()), None, "REQ-1".into(), 1,
             "Task".into(), "Outcome".into(), vec![], None, Some(vec!["test:accepted".into()]),
             Some(vec!["a".repeat(501)]), None, Some("done".into()), None, None,
         ));
@@ -545,13 +551,13 @@ mod tests {
 
         let too_many = (0..51).map(|index| format!("REQ-{index}")).collect::<Vec<_>>();
         let create = tauri::async_runtime::block_on(create_requirement(
-            "repo-1".into(), "REQ-NEW".into(), "Task".into(), "Outcome".into(), vec![],
+            Some("repo-1".into()), None, "REQ-NEW".into(), "Task".into(), "Outcome".into(), vec![],
             Some(too_many), None, None, None,
         ));
         assert_eq!(create.unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_CREATE_METADATA_INVALID");
 
         let oversized = tauri::async_runtime::block_on(revise_requirement(
-            "repo-1".into(), "REQ-1".into(), 1,
+            Some("repo-1".into()), None, "REQ-1".into(), 1,
             "Task".into(), "Outcome".into(), vec![], None, None, None,
             Some(vec!["a".repeat(161)]), None, None, None,
         ));
@@ -584,6 +590,28 @@ mod tests {
             "projectId": "project-1"
         })));
         assert_eq!(missing_requirement.unwrap_err(), "FORGE_DESKTOP_requirementId_REQUIRED");
+    }
+
+    #[test]
+    fn requirement_task_scope_accepts_repository_or_standalone_project_identity() {
+        assert!(has_requirement_scope(Some(&"repo-1".to_owned()), None));
+        assert!(has_requirement_scope(None, Some(&"project-standalone".to_owned())));
+        assert!(!has_requirement_scope(None, None));
+
+        let create = tauri::async_runtime::block_on(create_requirement(
+            None, None, "REQ-NEW".into(), "Task".into(), "Outcome".into(), vec![],
+            None, None, None, None,
+        ));
+        assert_eq!(create.unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_CREATE_SCOPE_REQUIRED");
+
+        let revise = tauri::async_runtime::block_on(revise_requirement(
+            None, None, "REQ-1".into(), 1, "Task".into(), "Outcome".into(), vec![],
+            None, None, None, None, None, None, None,
+        ));
+        assert_eq!(revise.unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_REVISE_SCOPE_REQUIRED");
+
+        let detail = tauri::async_runtime::block_on(read_requirement_detail(None, None, "REQ-1".into()));
+        assert_eq!(detail.unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_DETAIL_SCOPE_REQUIRED");
     }
 
     #[test]

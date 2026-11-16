@@ -957,13 +957,26 @@ async fn control_user_request(
     })).await
 }
 
+fn has_requirement_scope(repo_id: Option<&String>, project_id: Option<&String>) -> bool {
+    repo_id.is_some_and(|value| !value.trim().is_empty())
+        || project_id.is_some_and(|value| !value.trim().is_empty())
+}
+
 #[tauri::command]
-async fn read_requirement_detail(repo_id: String, requirement_id: String) -> Result<Value, String> {
-    if repo_id.trim().is_empty() || requirement_id.trim().is_empty() {
+async fn read_requirement_detail(
+    repo_id: Option<String>,
+    project_id: Option<String>,
+    requirement_id: String,
+) -> Result<Value, String> {
+    if !has_requirement_scope(repo_id.as_ref(), project_id.as_ref()) {
+        return Err("FORGE_DESKTOP_REQUIREMENT_DETAIL_SCOPE_REQUIRED".to_string());
+    }
+    if requirement_id.trim().is_empty() {
         return Err("FORGE_DESKTOP_REQUIREMENT_DETAIL_ARGUMENT_REQUIRED".to_string());
     }
     let result = call_runtime_tool("rh_work", json!({
         "repo_id": repo_id,
+        "project_id": project_id,
         "operation": "requirement_get",
         "requirement_id": requirement_id,
         "detail_level": "detail",
@@ -989,7 +1002,8 @@ async fn read_plan_detail(repo_id: String, plan_id: String) -> Result<Value, Str
 
 #[tauri::command]
 async fn create_requirement(
-    repo_id: String,
+    repo_id: Option<String>,
+    project_id: Option<String>,
     requirement_id: String,
     title: String,
     outcome: String,
@@ -999,7 +1013,10 @@ async fn create_requirement(
     priority: Option<String>,
     assignee: Option<String>,
 ) -> Result<Value, String> {
-    if repo_id.trim().is_empty() || requirement_id.trim().is_empty() || title.trim().is_empty() || outcome.trim().is_empty() {
+    if !has_requirement_scope(repo_id.as_ref(), project_id.as_ref()) {
+        return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_SCOPE_REQUIRED".to_string());
+    }
+    if requirement_id.trim().is_empty() || title.trim().is_empty() || outcome.trim().is_empty() {
         return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_ARGUMENT_REQUIRED".to_string());
     }
     if task_status.as_deref().is_some_and(|value| !matches!(value, "planned" | "active" | "waiting_for_user"))
@@ -1010,6 +1027,7 @@ async fn create_requirement(
     }
     let result = call_runtime_tool("rh_work", json!({
         "repo_id": repo_id,
+        "project_id": project_id,
         "operation": "requirement_create",
         "requirement_id": requirement_id,
         "requirement_title": title,
@@ -1027,7 +1045,8 @@ async fn create_requirement(
 
 #[tauri::command]
 async fn revise_requirement(
-    repo_id: String,
+    repo_id: Option<String>,
+    project_id: Option<String>,
     requirement_id: String,
     expected_revision: u64,
     title: String,
@@ -1041,7 +1060,10 @@ async fn revise_requirement(
     priority: Option<String>,
     assignee: Option<String>,
 ) -> Result<Value, String> {
-    if repo_id.trim().is_empty() || requirement_id.trim().is_empty()
+    if !has_requirement_scope(repo_id.as_ref(), project_id.as_ref()) {
+        return Err("FORGE_DESKTOP_REQUIREMENT_REVISE_SCOPE_REQUIRED".to_string());
+    }
+    if requirement_id.trim().is_empty()
         || expected_revision == 0 || title.trim().is_empty() || outcome.trim().is_empty()
         || acceptance_criteria.len() > 50
         || state.as_deref().is_some_and(|value| !matches!(value, "open" | "completed" | "cancelled"))
@@ -1055,6 +1077,7 @@ async fn revise_requirement(
     }
     let result = call_runtime_tool("rh_work", json!({
         "repo_id": repo_id,
+        "project_id": project_id,
         "operation": "requirement_revise",
         "requirement_id": requirement_id,
         "expected_revision": expected_revision,
