@@ -172,6 +172,11 @@ struct ZenWorkspacePane: View {
         }
     }
 
+    private struct RequirementCreationContext: Hashable {
+        let projectId:String
+        let repoId:String?
+    }
+
     @ObservedObject var model: NativeWorkspace
     @Binding var screen: ZenScreen
     @Binding var focusedRequirementId: String?
@@ -231,7 +236,22 @@ struct ZenWorkspacePane: View {
     @State private var newDependencyIdDraft = ""
     @State private var newPlanGoal = ""
     @State private var newParentPlanId: String?
+    @State private var pendingRequirementReadbacks:[RequirementCreationContext:String] = [:]
     @State private var saving = false
+
+    private var currentRequirementCreationContext:RequirementCreationContext? {
+        guard let projectId=model.selectedProjectId else { return nil }
+        return RequirementCreationContext(projectId:projectId,repoId:model.projectRepositoryId)
+    }
+
+    private var pendingCreatedRequirementId:String? {
+        guard let context=currentRequirementCreationContext else { return nil }
+        return pendingRequirementReadbacks[context]
+    }
+
+    static func createdRequirementRecord(_ id:String,in records:[ForgeRecord]) -> ForgeRecord? {
+        records.first(where:{$0.kind == .requirement && $0.recordId == id})
+    }
 
     private var requirements: [ForgeRecord] {
         model.records.filter { $0.kind == .requirement }
@@ -1635,24 +1655,32 @@ struct ZenWorkspacePane: View {
     private var createRequirementSheet: some View {
         VStack(alignment:.leading,spacing:12) {
             Text("新建任务").font(.system(size:17,weight:.semibold))
-            TextField("名称",text:$newTitle)
-            TextField("预期结果",text:$newOutcome,axis:.vertical).lineLimit(3...5)
-            TextField("验收标准（每行一项）",text:$newCriteria,axis:.vertical).lineLimit(3...6)
-            HStack {
-                Picker("状态",selection:$newTaskStatus) {
-                    Text("待开始").tag("planned")
-                    Text("进行中").tag("active")
-                    Text("待你处理").tag("waiting_for_user")
+            Group {
+                TextField("名称",text:$newTitle)
+                TextField("预期结果",text:$newOutcome,axis:.vertical).lineLimit(3...5)
+                TextField("验收标准（每行一项）",text:$newCriteria,axis:.vertical).lineLimit(3...6)
+                HStack {
+                    Picker("状态",selection:$newTaskStatus) {
+                        Text("待开始").tag("planned")
+                        Text("进行中").tag("active")
+                        Text("待你处理").tag("waiting_for_user")
+                    }
+                    Picker("优先级",selection:$newPriority) {
+                        Text("低").tag("low")
+                        Text("普通").tag("normal")
+                        Text("高").tag("high")
+                        Text("紧急").tag("urgent")
+                    }
                 }
-                Picker("优先级",selection:$newPriority) {
-                    Text("低").tag("low")
-                    Text("普通").tag("normal")
-                    Text("高").tag("high")
-                    Text("紧急").tag("urgent")
-                }
+                TextField("负责人（可选）",text:$newAssignee)
+                dependencyEditor(selection:$newDependencyRequirementIds,excluding:nil,idDraft:$newDependencyIdDraft)
             }
-            TextField("负责人（可选）",text:$newAssignee)
-            dependencyEditor(selection:$newDependencyRequirementIds,excluding:nil,idDraft:$newDependencyIdDraft)
+            .disabled(pendingCreatedRequirementId != nil)
+            if pendingCreatedRequirementId != nil {
+                Text("任务已创建，等待列表确认。")
+                    .font(.system(size:12)).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("zen.requirement.create.pending-readback")
+            }
             if let problem=model.error {
                 Text(problem)
                     .font(.system(size:11))
@@ -1663,22 +1691,12 @@ struct ZenWorkspacePane: View {
             HStack {
                 Spacer()
                 Button("取消") { showingRequirementSheet=false }
-                Button(saving ? "保存中…" : "创建") {
-                    model.error = nil
-                    saving=true
-                    Task {
-                        let id=await model.createRequirement(
-                            title:newTitle,outcome:newOutcome,
-                            acceptanceCriteria:newCriteria.components(separatedBy:.newlines),
-                            taskStatus:newTaskStatus,priority:newPriority,
-                            assignee:newAssignee,dependencyRequirementIds:newDependencyRequirementIds
-                        )
-                        saving=false
-                        if let id {
-                            focusedRequirementId=id
-                            screen = .canvas
-                            showingRequirementSheet=false
-                        }
+                    .disabled(saving)
+                Button(saving ? "处理中…" : pendingCreatedRequirementId == nil ? "创建" : "刷新列表") {
+                    if let pendingId=pendingCreatedRequirementId {
+                        refreshCreatedRequirement(pendingId)
+                    } else {
+                        createRequirement()
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -1689,6 +1707,64 @@ struct ZenWorkspacePane: View {
         }
         .padding(22).frame(width:430)
         .accessibilityIdentifier("zen.requirement.create")
+    }
+
+    private func createRequirement() {
+        guard let context=currentRequirementCreationContext else {
+            model.error="请先选择项目。"
+            return
+        }
+        model.error=nil
+        saving=true
+        Task {
+            let id=await model.createRequirement(
+                title:newTitle,outcome:newOutcome,
+                acceptanceCriteria:newCriteria.components(separatedBy:.newlines),
+                taskStatus:newTaskStatus,priority:newPriority,
+                assignee:newAssignee,dependencyRequirementIds:newDependencyRequirementIds
+            )
+            saving=false
+            guard let id,model.selectedProjectId == context.projectId,
+                  model.projectRepositoryId == context.repoId else { return }
+            if Self.createdRequirementRecord(id,in:model.records) != nil {
+                focusedRequirementId=id
+                screen = .canvas
+                showingRequirementSheet=false
+            } else {
+                pendingRequirementReadbacks[context]=id
+            }
+        }
+    }
+
+    private func refreshCreatedRequirement(_ id:String) {
+        guard let context=currentRequirementCreationContext,
+              pendingRequirementReadbacks[context] == id else { return }
+        model.error=nil
+        saving=true
+        Task {
+            await model.loadPage()
+            guard model.selectedProjectId == context.projectId,
+                  model.projectRepositoryId == context.repoId else {
+                saving=false
+                return
+            }
+            guard let record=Self.createdRequirementRecord(id,in:model.records) else {
+                model.error="任务已创建并确认，但项目任务列表仍未读回该记录。请稍后刷新，不要重复创建。"
+                saving=false
+                return
+            }
+            await model.openRecord(record.id)
+            guard model.selectedProjectId == context.projectId,
+                  model.projectRepositoryId == context.repoId else {
+                saving=false
+                return
+            }
+            pendingRequirementReadbacks.removeValue(forKey:context)
+            focusedRequirementId=id
+            screen = .canvas
+            showingRequirementSheet=false
+            saving=false
+        }
     }
 
     private var createPlanSheet: some View {
