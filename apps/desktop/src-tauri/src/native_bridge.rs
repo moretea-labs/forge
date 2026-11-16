@@ -126,6 +126,13 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                         .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<String>>())
                         .ok_or("FORGE_NATIVE_BRIDGE_EVIDENCE_REFS_INVALID")
                 }).transpose()?,
+                args.get("remainingWork").map(|value| {
+                    value.as_array()
+                        .filter(|items| items.len() <= 50
+                            && items.iter().all(|item| item.as_str().is_some_and(|text| text.len() <= 500)))
+                        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<String>>())
+                        .ok_or("FORGE_NATIVE_BRIDGE_REMAINING_WORK_INVALID")
+                }).transpose()?,
                 args.get("taskStatus").and_then(Value::as_str).map(str::to_owned),
                 args.get("priority").and_then(Value::as_str).map(str::to_owned),
                 args.get("assignee").and_then(Value::as_str).map(str::to_owned),
@@ -469,13 +476,31 @@ mod tests {
         let run = |status: Option<&str>, priority: Option<&str>, assignee: Option<&str>| {
             tauri::async_runtime::block_on(revise_requirement(
                 "repo-1".into(), "REQ-1".into(), 1,
-                "Task".into(), "Outcome".into(), vec![], None, None,
+                "Task".into(), "Outcome".into(), vec![], None, None, None,
                 status.map(str::to_owned), priority.map(str::to_owned), assignee.map(str::to_owned),
             ))
         };
         assert_eq!(run(Some("invalid"), None, None).unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID");
         assert_eq!(run(None, Some("critical"), None).unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID");
         assert_eq!(run(None, None, Some(&"a".repeat(161))).unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID");
+    }
+
+    #[test]
+    fn requirement_task_completion_rejects_invalid_remaining_work_before_runtime_call() {
+        let invalid = tauri::async_runtime::block_on(dispatch("revise_requirement", &json!({
+            "repoId": "repo-1", "requirementId": "REQ-1", "expectedRevision": 1,
+            "title": "Task", "outcome": "Outcome", "acceptanceCriteria": [],
+            "taskStatus": "done", "acceptedEvidenceRefs": ["test:accepted"],
+            "remainingWork": [42]
+        })));
+        assert_eq!(invalid.unwrap_err(), "FORGE_NATIVE_BRIDGE_REMAINING_WORK_INVALID");
+
+        let oversized = tauri::async_runtime::block_on(revise_requirement(
+            "repo-1".into(), "REQ-1".into(), 1,
+            "Task".into(), "Outcome".into(), vec![], None, Some(vec!["test:accepted".into()]),
+            Some(vec!["a".repeat(501)]), Some("done".into()), None, None,
+        ));
+        assert_eq!(oversized.unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID");
     }
 
     #[test]

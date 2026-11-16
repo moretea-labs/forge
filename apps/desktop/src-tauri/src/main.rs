@@ -847,6 +847,7 @@ async fn revise_requirement(
     acceptance_criteria: Vec<String>,
     state: Option<String>,
     accepted_evidence_refs: Option<Vec<String>>,
+    remaining_work: Option<Vec<String>>,
     task_status: Option<String>,
     priority: Option<String>,
     assignee: Option<String>,
@@ -858,6 +859,7 @@ async fn revise_requirement(
         || task_status.as_deref().is_some_and(|value| !matches!(value, "planned" | "active" | "waiting_for_user" | "done" | "cancelled"))
         || priority.as_deref().is_some_and(|value| !matches!(value, "urgent" | "high" | "normal" | "low"))
         || assignee.as_ref().is_some_and(|value| value.len() > 160)
+        || remaining_work.as_ref().is_some_and(|items| items.len() > 50 || items.iter().any(|item| item.len() > 500))
         || accepted_evidence_refs.as_ref().is_some_and(|refs| refs.len() > 100 || refs.iter().any(|reference| reference.len() > 512)) {
         return Err("FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID".to_string());
     }
@@ -874,6 +876,7 @@ async fn revise_requirement(
         "requirement_priority": priority,
         "requirement_assignee": assignee,
         "requirement_accepted_evidence_refs": accepted_evidence_refs,
+        "requirement_remaining_work": remaining_work,
         "request_id": request_id("requirement-revise")
     })).await?;
     let data = semantic_facade_data(result);
