@@ -126,6 +126,45 @@ describe('rh_work Project operations', () => {
     expect(new Set(ids)).toEqual(new Set(['REQ-PAGE-A', 'REQ-PAGE-B', 'REQ-PAGE-C']));
   });
 
+  test('Requirement and Project task pagination preserves rows above the facade array bound', async () => {
+    const home = tempRoot('forge-project-task-pages-over-50-');
+    ensureControllerHome(home);
+    expect(structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'project_create', project_id: 'large-board', project_display_name: 'Large Board',
+    })).status).toBe('ok');
+    for (let index = 0; index < 52; index += 1) {
+      const id = `REQ-LARGE-${String(index).padStart(2, '0')}`;
+      expect(structured(await callRuntimeTool(context(home), 'rh_work', {
+        operation: 'requirement_create', project_id: 'large-board',
+        requirement_id: id, requirement_title: id, requirement_outcome: `Deliver ${id}`,
+      })).status).toBe('ok');
+    }
+
+    const requirementPage = async (offset: number, limit = 100) => structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'requirement_list', project_id: 'large-board', limit, offset,
+    }));
+    const allRequirements = await requirementPage(0);
+    expect(allRequirements.data).toMatchObject({ totalCount: 52, limit: 100, offset: 0, hasMore: false, requirementsTruncated: false });
+    expect(allRequirements.data.requirements).toHaveLength(52);
+    const firstRequirements = await requirementPage(0, 50);
+    const lastRequirements = await requirementPage(50, 50);
+    expect(firstRequirements.data).toMatchObject({ totalCount: 52, limit: 50, offset: 0, hasMore: true, requirementsTruncated: true });
+    expect(lastRequirements.data).toMatchObject({ totalCount: 52, limit: 50, offset: 50, hasMore: false, requirementsTruncated: false });
+    expect([...firstRequirements.data.requirements, ...lastRequirements.data.requirements]).toHaveLength(52);
+
+    const projectPage = async (offset: number, limit = 100) => structured(await callRuntimeTool(context(home), 'rh_work', {
+      operation: 'project_get', project_id: 'large-board', detail_level: 'detail', limit, offset,
+    }));
+    const allProjectTasks = await projectPage(0);
+    expect(allProjectTasks.data).toMatchObject({ requirementCount: 52, limit: 100, offset: 0, hasMore: false, requirementsTruncated: false });
+    expect(allProjectTasks.data.requirements).toHaveLength(52);
+    const firstProjectTasks = await projectPage(0, 50);
+    const lastProjectTasks = await projectPage(50, 50);
+    expect(firstProjectTasks.data).toMatchObject({ requirementCount: 52, limit: 50, offset: 0, hasMore: true, requirementsTruncated: true });
+    expect(lastProjectTasks.data).toMatchObject({ requirementCount: 52, limit: 50, offset: 50, hasMore: false, requirementsTruncated: false });
+    expect([...firstProjectTasks.data.requirements, ...lastProjectTasks.data.requirements]).toHaveLength(52);
+  });
+
   test('dependency-filtered project tasks become unblocked when their prerequisite is completed', async () => {
     const home = tempRoot('forge-project-blockers-');
     ensureControllerHome(home);
