@@ -1426,6 +1426,14 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(detail?.dependentRequirementCount,24)
     }
 
+    func testSemanticRecordRefreshSupportsOnlyTheOriginalPlanningPage() {
+        XCTAssertTrue(NativeWorkspace.semanticRecordRefreshPageIsCurrent(.requirement,currentPage:.requirement))
+        XCTAssertTrue(NativeWorkspace.semanticRecordRefreshPageIsCurrent(.plan,currentPage:.plan))
+        XCTAssertFalse(NativeWorkspace.semanticRecordRefreshPageIsCurrent(.agent,currentPage:.agent))
+        XCTAssertFalse(NativeWorkspace.semanticRecordRefreshPageIsCurrent(.plan,currentPage:.requirement))
+        XCTAssertFalse(NativeWorkspace.semanticRecordRefreshPageIsCurrent(.requirement,currentPage:.plan))
+    }
+
     func testSemanticRecordMutationReadbackRequiresCurrentRevisionAndProjection() {
         let row = ForgeRecord(recordId:"REQ-a",title:"Desktop",state:"completed",kind:.requirement,
                               depth:0,requirementId:"REQ-a",parentPlanId:nil,

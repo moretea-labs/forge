@@ -3877,20 +3877,30 @@ final class NativeWorkspace: ObservableObject {
     }
 
 
+    nonisolated static func semanticRecordRefreshPageIsCurrent(
+        _ targetPage:NativePage,currentPage:NativePage
+    ) -> Bool {
+        (targetPage == .requirement || targetPage == .plan) && currentPage == targetPage
+    }
+
     func refreshSemanticRecordAfterMutation(
         kind: SemanticRecordKind, recordId: String, projectId: String, repoId: String?,
         expectedRevision: Int, expectedState: String? = nil
     ) async {
-        guard page == .requirement, selectedProjectId == projectId, projectRepositoryId == repoId else { return }
+        let targetPage=page
+        guard Self.semanticRecordRefreshPageIsCurrent(targetPage,currentPage:page),
+              selectedProjectId == projectId,projectRepositoryId == repoId else { return }
         await loadPage()
-        guard page == .requirement, selectedProjectId == projectId, projectRepositoryId == repoId else { return }
+        guard Self.semanticRecordRefreshPageIsCurrent(targetPage,currentPage:page),
+              selectedProjectId == projectId,projectRepositoryId == repoId else { return }
         let label = kind.rawValue == "requirement" ? "任务" : "计划"
         guard let record = records.first(where: { $0.recordId == recordId && $0.kind.rawValue == kind.rawValue }) else {
             error = "\(label)写入已确认，但项目\(label)列表尚未读回。请刷新核对，不要重复提交。"
             return
         }
         await openRecord(record.id)
-        guard page == .requirement, selectedProjectId == projectId, projectRepositoryId == repoId else { return }
+        guard Self.semanticRecordRefreshPageIsCurrent(targetPage,currentPage:page),
+              selectedProjectId == projectId,projectRepositoryId == repoId else { return }
         if !Self.semanticRecordReadbackConfirmed(
             record:record,detail:recordDetail,kind:kind,id:recordId,
             revision:expectedRevision,state:expectedState
