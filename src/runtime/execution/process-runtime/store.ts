@@ -366,6 +366,7 @@ export function claimProcessRequest(input: {
     namespace: 'process_request_binding', scope: input.repoId, key: bindingKey(input.repoId, input.checkoutId, requestId), schemaVersion: 1,
     action: 'process_request_binding_claim', readLegacy: () => readJson<ProcessRequestBinding>(path),
     mutate: (current) => { if (current) { existed = true; return current.value; } return binding; },
+    skipWriteWhenMutationReturnsCurrent: true,
   }).value;
   if (!existing || existing.schemaVersion !== 1 || !existing.processId || !existing.commandFingerprint) {
     throw new Error(`PROCESS_REQUEST_BINDING_CORRUPT: ${requestId}`);
@@ -452,6 +453,7 @@ export function claimProcessCheckExecution(input: {
       disposition = 'existing';
       return existing;
     },
+    skipWriteWhenMutationReturnsCurrent: true,
   }).value;
   if (!binding) throw new Error(`PROCESS_CHECK_EXECUTION_BINDING_CORRUPT: ${cacheKey}`);
   return { status: disposition, binding };
@@ -498,6 +500,7 @@ export function claimProcessInvocation(input: {
     namespace: 'process_invocation_binding', scope: input.repoId, key: bindingKey(input.repoId, input.checkoutId, requestId), schemaVersion: 1,
     action: 'process_invocation_binding_claim', readLegacy: () => readJson<ProcessInvocationBinding>(path),
     mutate: (current) => { if (current) { existed = true; return current.value; } return binding; },
+    skipWriteWhenMutationReturnsCurrent: true,
   }).value;
   if (!existing || existing.schemaVersion !== 1 || !existing.invocationFingerprint) {
     throw new Error(`PROCESS_INVOCATION_BINDING_CORRUPT: ${requestId}`);

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'crypto';
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -192,6 +193,10 @@ function fixture() {
   ensureControllerHome(controllerHome);
   const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'process-rt' });
   return { root, controllerHome, repoRoot, repository };
+}
+
+function processBindingKey(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
 describe('Unified Process Runtime', () => {
@@ -690,6 +695,17 @@ describe('Unified Process Runtime', () => {
       processId,
     });
     expect(source.status).toBe('claimed');
+    const bindingKey = processBindingKey({
+      repoId: fx.repository.repoId,
+      scopeKey: 'repository',
+      cacheKey: 'cache-cross-checkout',
+    });
+    const claimedRevision = readControlPlaneRecord(
+      fx.controllerHome,
+      'process_check_execution_binding',
+      fx.repository.repoId,
+      bindingKey,
+    )?.revision;
     createProcessRecord({
       schemaVersion: 1,
       processId,
@@ -721,6 +737,12 @@ describe('Unified Process Runtime', () => {
     });
     expect(sameSemantic.status).toBe('existing');
     expect(sameSemantic.binding.processId).toBe(processId);
+    expect(readControlPlaneRecord(
+      fx.controllerHome,
+      'process_check_execution_binding',
+      fx.repository.repoId,
+      bindingKey,
+    )?.revision).toBe(claimedRevision);
   });
 
   test('retains successful semantic Check evidence past age cutoff but still enforces terminal record budget', () => {
@@ -1249,7 +1271,24 @@ describe('Unified Process Runtime', () => {
       invocationFingerprint: 'fingerprint-a',
     };
     expect(claimProcessInvocation(input).status).toBe('claimed');
+    const bindingKey = processBindingKey({
+      repoId: input.repoId,
+      checkoutId: input.checkoutId,
+      requestId: input.requestId,
+    });
+    const claimedRevision = readControlPlaneRecord(
+      fx.controllerHome,
+      'process_invocation_binding',
+      fx.repository.repoId,
+      bindingKey,
+    )?.revision;
     expect(claimProcessInvocation(input).status).toBe('existing');
+    expect(readControlPlaneRecord(
+      fx.controllerHome,
+      'process_invocation_binding',
+      fx.repository.repoId,
+      bindingKey,
+    )?.revision).toBe(claimedRevision);
     expect(() => claimProcessInvocation({ ...input, invocationFingerprint: 'fingerprint-b' }))
       .toThrow('PROCESS_REQUEST_ID_CONFLICT');
   });
@@ -1299,14 +1338,33 @@ describe('Unified Process Runtime', () => {
       args: ['-e', 'process.exit(0)'],
       cwd: fx.repoRoot,
     };
-    claimProcessRequest({
+    const claimInput = {
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       requestId,
       commandFingerprint: fingerprintProcessCommand(command),
       processId: 'proc_missing_record',
+    };
+    expect(claimProcessRequest(claimInput).status).toBe('claimed');
+    const bindingKey = processBindingKey({
+      repoId: claimInput.repoId,
+      checkoutId: claimInput.checkoutId,
+      requestId: claimInput.requestId,
     });
+    const claimedRevision = readControlPlaneRecord(
+      fx.controllerHome,
+      'process_request_binding',
+      fx.repository.repoId,
+      bindingKey,
+    )?.revision;
+    expect(claimProcessRequest(claimInput).status).toBe('existing');
+    expect(readControlPlaneRecord(
+      fx.controllerHome,
+      'process_request_binding',
+      fx.repository.repoId,
+      bindingKey,
+    )?.revision).toBe(claimedRevision);
     await expect(spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
