@@ -897,6 +897,7 @@ describe('browser session compatibility on Computer target authority', () => {
     const url = 'https://example.com/native-foreground';
     let frontmost = false;
     let nativeLoading = false;
+    let metadataReads = 0;
     const activations: string[] = [];
     const trustedRefs: Array<{ product?: string; windowId?: string; tabId?: string }> = [];
     const metadata = () => [
@@ -921,6 +922,7 @@ describe('browser session compatibility on Computer target authority', () => {
         if (script.includes('execute targetTab javascript')) {
           return JSON.stringify({ ok: true, value: { url, title: 'Native Foreground' } });
         }
+        metadataReads += 1;
         return metadata();
       },
       trustedInput: async (request) => {
@@ -966,6 +968,7 @@ describe('browser session compatibility on Computer target authority', () => {
 
     // Already-authoritative foreground is a verified fast path, not a fixed
     // wait. The caller's settling budget applies only when state is not ready.
+    const metadataBeforeFast = metadataReads;
     const fastStart = performance.now();
     const alreadyActive = await executeBrowserPluginAction({
       ...baseInput,
@@ -976,6 +979,9 @@ describe('browser session compatibility on Computer target authority', () => {
     expect((alreadyActive.action as { summary?: string }).summary).toContain('authoritative foreground');
     expect(activations).toEqual(['chrome']);
     expect(performance.now() - fastStart).toBeLessThan(2_000);
+    // One post-activation native metadata read is sufficient; no second
+    // foregroundState roundtrip when the same proof is already authoritative.
+    expect(metadataReads - metadataBeforeFast).toBe(1);
 
     // An explicit load-state request must still honor its requested deadline.
     await expect(executeBrowserPluginAction({
