@@ -56,7 +56,8 @@ struct ZenProposalReviewSheet: View {
                 .map{$0.trimmingCharacters(in:.whitespacesAndNewlines)}
                 .filter{!$0.isEmpty}
             return requirement.requirementId == recordId && requirement.revision > 0
-                && requirement.state == "planned"
+                // read_requirement_detail exposes the semantic view, where persisted planned rows are open.
+                && requirement.state == "open"
                 && requirement.title == proposal.title?.trimmingCharacters(in:.whitespacesAndNewlines)
                 && requirement.outcomeStatement == proposal.outcome?.trimmingCharacters(in:.whitespacesAndNewlines)
                 && requirement.acceptanceCriteria == criteria

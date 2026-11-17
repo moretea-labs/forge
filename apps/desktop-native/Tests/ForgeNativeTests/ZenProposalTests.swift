@@ -173,10 +173,10 @@ final class ZenProposalTests: XCTestCase {
         let planProposal=try ZenChangeProposal.parse(fenced(
             #"{ "decision":"ACCEPT","operation":"create_plan","rationale":"按当前需求执行","requirementId":"REQ-1","expectedRequirementRevision":2,"objective":"Plan" }"#
         ))
-        func requirementDetail(outcome:String="Outcome",criteria:[String]=["Ship"]) -> RequirementRecordDetail {
+        func requirementDetail(outcome:String="Outcome",criteria:[String]=["Ship"],state:String="open") -> RequirementRecordDetail {
             RequirementRecordDetail(
                 requirementId:"REQ-1",revision:1,title:"Requirement",outcomeStatement:outcome,
-                state:"planned",acceptanceCriteria:criteria,progressSummary:"",remainingWork:[],
+                state:state,acceptanceCriteria:criteria,progressSummary:"",remainingWork:[],
                 acceptedEvidenceRefs:[],taskStatus:nil,priority:nil,assignee:nil,
                 dependencyRequirementIds:[],dependencyRequirements:[],blockingDependencyIds:[],
                 dependentRequirements:nil,dependentRequirementsTruncated:nil,dependentRequirementCount:nil
@@ -196,6 +196,10 @@ final class ZenProposalTests: XCTestCase {
         XCTAssertTrue(ZenProposalReviewSheet.creationReadbackConfirmed(
             proposal:requirementProposal,recordId:"REQ-1",
             selectedRecord:"requirement:REQ-1",detail:.requirement(requirement)
+        ))
+        XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
+            proposal:requirementProposal,recordId:"REQ-1",
+            selectedRecord:"requirement:REQ-1",detail:.requirement(requirementDetail(state:"planned"))
         ))
         XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
             proposal:requirementProposal,recordId:"REQ-1",
