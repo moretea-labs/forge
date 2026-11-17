@@ -2654,6 +2654,33 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testPlanningContextBindingRejectsMismatchedProjectAndRepository() {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let thread=ChatThread(repoId:"repo-a",checkoutId:"checkout-a",projectId:"PROJECT-A")
+        model.threads=[thread]
+        model.selectedThreadId=thread.id
+
+        model.selectedProjectId="PROJECT-B"
+        model.repoId="repo-b"
+        model.bindCurrentThreadPlanningContext(requirementId:"REQ-b",planId:nil)
+        XCTAssertNil(model.thread?.requirementId)
+        XCTAssertNotNil(model.error)
+
+        model.selectedProjectId="PROJECT-A"
+        model.repoId="repo-b"
+        model.bindCurrentThreadPlanningContext(requirementId:"REQ-b",planId:nil)
+        XCTAssertNil(model.thread?.requirementId)
+        XCTAssertNotNil(model.error)
+
+        model.repoId="repo-a"
+        model.bindCurrentThreadPlanningContext(requirementId:"REQ-a",planId:nil)
+        XCTAssertEqual(model.thread?.requirementId,"REQ-a")
+        XCTAssertNil(model.error)
+    }
+
+    @MainActor
     func testProjectContextSwitchInvalidatesPendingCheckoutResolutionWithoutChangingConversation() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }

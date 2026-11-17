@@ -1214,6 +1214,11 @@ final class NativeWorkspace: ObservableObject {
             return
         }
         guard let index = threads.firstIndex(where: { $0.id == selectedThreadId }) else { return }
+        if requirementId != nil || planId != nil,
+           threads[index].projectId != selectedProjectId || threads[index].repoId != repoId {
+            self.error = "当前会话属于其他项目或仓库，请切换到该范围内的会话或新建会话。"
+            return
+        }
         let requirement = requirementId?.trimmingCharacters(in:.whitespacesAndNewlines)
         let plan = planId?.trimmingCharacters(in:.whitespacesAndNewlines)
         threads[index].requirementId = requirement?.isEmpty == false ? requirement : nil
