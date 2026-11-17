@@ -2754,7 +2754,7 @@ struct ZenProjectDirectorySheet: View {
 
             HStack(spacing:12) {
                 TextField("搜索项目",text:$query)
-                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("搜索项目")
                     .accessibilityIdentifier("zen.projects.search")
                 Button {
                     editingProjectId = nil
@@ -2775,7 +2775,7 @@ struct ZenProjectDirectorySheet: View {
                         .font(ForgeClientDesign.Typography.sectionTitle)
                     ForgeClientFormField(label: "项目名称") {
                         TextField("项目名称",text:$draftName)
-                            .textFieldStyle(.roundedBorder)
+                            .accessibilityLabel("项目名称")
                             .accessibilityIdentifier("zen.projects.name")
                             .onSubmit { save() }
                     }
