@@ -885,15 +885,30 @@ describe('mcp http transport', () => {
           expect(response.headers.get('x-forge-session-reset')).toBe('reinitialize');
           expect(await response.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
         };
-        const waitForClose = async (counter: 'idleTtl' | 'streamLease' | 'absoluteLifetime') => {
+        const waitForClose = async (
+          counter: 'idleTtl' | 'streamLease' | 'absoluteLifetime',
+          sessionId: string,
+          expectedReason: 'idle_ttl' | 'stream_lease' | 'absolute_lifetime',
+        ) => {
           const deadline = Date.now() + 5_000;
-          let latest: { sessions?: { closed?: Record<string, number> } } = {};
+          let latest: {
+            sessions?: { closed?: Record<string, number> };
+            transportEvidence?: { lastSessionClose?: { reason?: string; sessionId?: string; route?: string; kind?: string } | null };
+          } = {};
           while (Date.now() < deadline) {
             latest = await fetch('http://127.0.0.1:' + port + '/health').then((response) => response.json());
-            if ((latest.sessions?.closed?.[counter] ?? 0) >= 1) return;
+            const close = latest.transportEvidence?.lastSessionClose;
+            if ((latest.sessions?.closed?.[counter] ?? 0) >= 1
+              && close?.reason === expectedReason
+              && close.sessionId === sessionId
+              && close.route === '/mcp'
+              && close.kind === 'session_closed') return;
             await Bun.sleep(25);
           }
-          throw new Error('session was not retired by ' + counter + ': ' + JSON.stringify(latest.sessions?.closed));
+          throw new Error('session close evidence mismatch for ' + counter + ': ' + JSON.stringify({
+            counters: latest.sessions?.closed,
+            lastSessionClose: latest.transportEvidence?.lastSessionClose,
+          }));
         };
         const reinitializeAndVerify = async (clientName: string) => {
           const nextSession = await initialize(clientName);
@@ -903,7 +918,7 @@ describe('mcp http transport', () => {
         };
 
         const idleSession = await initialize('idle-ttl-client');
-        await waitForClose('idleTtl');
+        await waitForClose('idleTtl', idleSession, 'idle_ttl');
         await expectReset(idleSession);
         await reinitializeAndVerify('idle-ttl-reconnected');
 
@@ -914,7 +929,7 @@ describe('mcp http transport', () => {
           signal: streamController.signal,
         });
         expect(stream.status).toBe(200);
-        await waitForClose('streamLease');
+        await waitForClose('streamLease', leasedSession, 'stream_lease');
         streamController.abort();
         await stream.body?.cancel().catch(() => undefined);
         await expectReset(leasedSession);
@@ -929,7 +944,7 @@ describe('mcp http transport', () => {
           await response.body?.cancel();
           await Bun.sleep(100);
         }
-        await waitForClose('absoluteLifetime');
+        await waitForClose('absoluteLifetime', absoluteSession, 'absolute_lifetime');
         await expectReset(absoluteSession);
         await reinitializeAndVerify('absolute-lifetime-reconnected');
       });
@@ -1333,6 +1348,12 @@ describe('mcp http transport', () => {
           acceptingNewSessions: true,
         });
         expect(health.sessions.closed.principalCapacity + health.sessions.closed.capacityEviction).toBe(1);
+        expect(health.transportEvidence.lastSessionClose).toMatchObject({
+          kind: 'session_closed',
+          sessionId: oldestSessionId,
+          reason: 'capacity_eviction',
+          route: '/mcp',
+        });
 
         const evicted = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
