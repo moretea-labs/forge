@@ -2945,7 +2945,7 @@ fn local_effect_outcome(name: &str, receipt: &Value) -> LocalEffectOutcome {
         "process_cancel" => {
             let status = result.get("status").and_then(Value::as_str);
             match result.get("completed").and_then(Value::as_bool) {
-                Some(true) if !matches!(status, Some("completed_unknown" | "orphaned")) => LocalEffectOutcome::Succeeded,
+                Some(true) if matches!(status, Some("succeeded" | "failed" | "timed_out" | "cancelled")) => LocalEffectOutcome::Succeeded,
                 _ => LocalEffectOutcome::Unknown,
             }
         }
@@ -5988,6 +5988,31 @@ mod tests {
         assert!(local_tool_catalog(false).iter().any(|tool|
             tool.pointer("/function/name").and_then(Value::as_str)==Some("process_status")
         ));
+    }
+
+    #[test]
+    fn process_cancel_unknown_terminal_status_never_succeeds() {
+        // `unknown` is a canonical terminal Process status, not proof that
+        // cancellation succeeded. Missing/future/active statuses fail closed too.
+        for status in [json!("unknown"), json!("completed_unknown"), json!("orphaned"),
+            Value::Null, json!("future_status"), json!("starting"), json!("running"),
+            json!("running_recovered")] {
+            let receipt = json!({"ok":true,"result":{
+                "processId":"proc_cancel_123","status":status,
+                "completed":true,"cancelled":true
+            }});
+            assert_eq!(local_effect_outcome("process_cancel", &receipt),
+                LocalEffectOutcome::Unknown, "ambiguous cancellation: {receipt}");
+        }
+        for status in ["succeeded", "failed", "timed_out", "cancelled"] {
+            for completed in [false, true] {
+                let receipt = json!({"ok":true,"result":{
+                    "status":status,"completed":completed,"cancelled":false
+                }});
+                assert_eq!(local_effect_outcome("process_cancel", &receipt),
+                    if completed { LocalEffectOutcome::Succeeded } else { LocalEffectOutcome::Unknown });
+            }
+        }
     }
 
     #[test]
