@@ -38,23 +38,32 @@ struct ZenProposalReviewSheet: View {
     }
 
     static func creationReadbackConfirmed(
-        operation: ZenChangeProposal.Operation,
+        proposal: ZenChangeProposal,
         recordId: String,
         selectedRecord: String?,
         detail: SemanticRecordDetail?
     ) -> Bool {
         let expectedKind: SemanticRecordKind
-        switch operation {
+        switch proposal.operation {
         case .createRequirement: expectedKind = .requirement
         case .createPlan: expectedKind = .plan
         default: return false
         }
         guard selectedRecord == "\(expectedKind.rawValue):\(recordId)" else { return false }
-        switch (operation, detail) {
+        switch (proposal.operation, detail) {
         case (.createRequirement, .requirement(let requirement)):
-            return requirement.requirementId == recordId
+            let criteria=(proposal.acceptanceCriteria ?? [])
+                .map{$0.trimmingCharacters(in:.whitespacesAndNewlines)}
+                .filter{!$0.isEmpty}
+            return requirement.requirementId == recordId && requirement.revision > 0
+                && requirement.state == "planned"
+                && requirement.title == proposal.title?.trimmingCharacters(in:.whitespacesAndNewlines)
+                && requirement.outcomeStatement == proposal.outcome?.trimmingCharacters(in:.whitespacesAndNewlines)
+                && requirement.acceptanceCriteria == criteria
         case (.createPlan, .plan(let plan)):
-            return plan.planId == recordId
+            return plan.planId == recordId && plan.revision > 0
+                && plan.requirementId == proposal.requirementId
+                && plan.goal == proposal.objective?.trimmingCharacters(in:.whitespacesAndNewlines)
         default:
             return false
         }
@@ -333,7 +342,7 @@ struct ZenProposalReviewSheet: View {
                     return
                 }
                 guard Self.creationReadbackConfirmed(
-                    operation:.createRequirement,recordId:id,
+                    proposal:proposal,recordId:id,
                     selectedRecord:model.selectedRecord,detail:model.recordDetail
                 ) else {
                     pendingCreationReadback=PendingCreationReadback(operation:.createRequirement,recordId:id)
@@ -363,7 +372,7 @@ struct ZenProposalReviewSheet: View {
                     return
                 }
                 guard Self.creationReadbackConfirmed(
-                    operation:.createPlan,recordId:id,
+                    proposal:proposal,recordId:id,
                     selectedRecord:model.selectedRecord,detail:model.recordDetail
                 ) else {
                     pendingCreationReadback=PendingCreationReadback(operation:.createPlan,recordId:id)
@@ -427,7 +436,7 @@ struct ZenProposalReviewSheet: View {
             return
         }
         guard Self.creationReadbackConfirmed(
-            operation:pending.operation,recordId:pending.recordId,
+            proposal:proposal,recordId:pending.recordId,
             selectedRecord:model.selectedRecord,detail:model.recordDetail
         ) else {
             problem=model.error ?? "记录已出现在列表，但精确详情尚未确认。稍后再次刷新核对。"

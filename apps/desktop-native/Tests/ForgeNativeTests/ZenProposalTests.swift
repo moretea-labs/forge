@@ -166,41 +166,69 @@ final class ZenProposalTests: XCTestCase {
     }
 
     @MainActor
-    func testZenCreationProposalRequiresExactSelectedDetailReadback() {
-        let requirement=RequirementRecordDetail(
-            requirementId:"REQ-1",revision:2,title:"Requirement",outcomeStatement:"Outcome",
-            state:"open",acceptanceCriteria:["Ship"],progressSummary:"",remainingWork:[],
-            acceptedEvidenceRefs:[],taskStatus:nil,priority:nil,assignee:nil,
-            dependencyRequirementIds:[],dependencyRequirements:[],blockingDependencyIds:[],
-            dependentRequirements:nil,dependentRequirementsTruncated:nil,dependentRequirementCount:nil
-        )
-        let plan=PlanRecordDetail(
-            planId:"PLAN-1",revision:1,requirementId:"REQ-1",parentPlanId:nil,
-            sourceBasisRevision:nil,goal:"Plan",items:[],resolvedDecisions:[],nonGoals:[]
-        )
+    func testZenCreationProposalRequiresExactSelectedDetailReadback() throws {
+        let requirementProposal=try ZenChangeProposal.parse(fenced(
+            #"{ "decision":"ACCEPT","operation":"create_requirement","rationale":"登记独立目标","title":"Requirement","outcome":"Outcome","acceptanceCriteria":["Ship"] }"#
+        ))
+        let planProposal=try ZenChangeProposal.parse(fenced(
+            #"{ "decision":"ACCEPT","operation":"create_plan","rationale":"按当前需求执行","requirementId":"REQ-1","expectedRequirementRevision":2,"objective":"Plan" }"#
+        ))
+        func requirementDetail(outcome:String="Outcome",criteria:[String]=["Ship"]) -> RequirementRecordDetail {
+            RequirementRecordDetail(
+                requirementId:"REQ-1",revision:1,title:"Requirement",outcomeStatement:outcome,
+                state:"planned",acceptanceCriteria:criteria,progressSummary:"",remainingWork:[],
+                acceptedEvidenceRefs:[],taskStatus:nil,priority:nil,assignee:nil,
+                dependencyRequirementIds:[],dependencyRequirements:[],blockingDependencyIds:[],
+                dependentRequirements:nil,dependentRequirementsTruncated:nil,dependentRequirementCount:nil
+            )
+        }
+        func planDetail(parentRequirementId:String?="REQ-1",goal:String="Plan") -> PlanRecordDetail {
+            PlanRecordDetail(
+                planId:"PLAN-1",revision:1,requirementId:parentRequirementId,parentPlanId:nil,
+                sourceBasisRevision:nil,goal:goal,items:[],resolvedDecisions:[],nonGoals:[]
+            )
+        }
+        let requirement=requirementDetail()
+        let plan=planDetail()
         XCTAssertTrue(ZenProposalReviewSheet.creationReadbackConfirmed(
-            operation:.createRequirement,recordId:"REQ-1",
+            proposal:requirementProposal,recordId:"REQ-1",
             selectedRecord:"requirement:REQ-1",detail:.requirement(requirement)
         ))
         XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
-            operation:.createRequirement,recordId:"REQ-1",
+            proposal:requirementProposal,recordId:"REQ-1",
             selectedRecord:"plan:REQ-1",detail:.requirement(requirement)
         ))
         XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
-            operation:.createRequirement,recordId:"REQ-1",
+            proposal:requirementProposal,recordId:"REQ-1",
             selectedRecord:"requirement:REQ-2",detail:.requirement(requirement)
         ))
+        XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
+            proposal:requirementProposal,recordId:"REQ-1",
+            selectedRecord:"requirement:REQ-1",detail:.requirement(requirementDetail(outcome:"Different outcome"))
+        ))
+        XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
+            proposal:requirementProposal,recordId:"REQ-1",
+            selectedRecord:"requirement:REQ-1",detail:.requirement(requirementDetail(criteria:["Different"]))
+        ))
         XCTAssertTrue(ZenProposalReviewSheet.creationReadbackConfirmed(
-            operation:.createPlan,recordId:"PLAN-1",
+            proposal:planProposal,recordId:"PLAN-1",
             selectedRecord:"plan:PLAN-1",detail:.plan(plan)
         ))
         XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
-            operation:.createPlan,recordId:"PLAN-1",
+            proposal:planProposal,recordId:"PLAN-1",
             selectedRecord:"plan:PLAN-1",detail:.requirement(requirement)
         ))
         XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
-            operation:.createPlan,recordId:"PLAN-1",
+            proposal:planProposal,recordId:"PLAN-1",
             selectedRecord:"plan:PLAN-2",detail:.plan(plan)
+        ))
+        XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
+            proposal:planProposal,recordId:"PLAN-1",
+            selectedRecord:"plan:PLAN-1",detail:.plan(planDetail(parentRequirementId:"REQ-2"))
+        ))
+        XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
+            proposal:planProposal,recordId:"PLAN-1",
+            selectedRecord:"plan:PLAN-1",detail:.plan(planDetail(goal:"Different plan"))
         ))
     }
 
