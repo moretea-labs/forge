@@ -1,3 +1,9 @@
+import { Server } from '@modelcontextprotocol/server';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { startRuntimeMcpTransport } from '../../src/runtime/root/mcp-transport';
+import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
+import express from 'express';
+import { drainMcpPosts } from '../../adapters/mcp/transports/http-post-lifecycle';
 import { describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'crypto';
 import { createServer } from 'net';
@@ -1418,3 +1424,143 @@ describe('mcp http transport', () => {
     }
   });
 });
+
+test('shutdown preserves admitted HTTP response before closing transport', async () => {
+  const app = express();
+  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0 };
+  let release!: () => void;
+  let admitted!: () => void;
+  const admission = new Promise<void>(resolve => { admitted = resolve; });
+  let response: express.Response;
+  app.post('/mcp', (_req, res) => {
+    response = res;
+    admitMcpPost(stats, res);
+    release = () => res.json({ result: 'original-result' });
+    admitted();
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const result = fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST' }).then(r => r.json()).catch(() => null);
+    await admission;
+    let closed = false;
+    const draining = drainMcpPosts(stats, async () => { closed = true; response.destroy(); });
+    expect(closed).toBe(false);
+    release();
+    expect(await result).toEqual({ result: 'original-result' });
+    await draining;
+    expect(closed).toBe(true);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test('shutdown rejects unadmitted requests without consuming capacity', () => {
+  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0, draining: true };
+  let body: unknown;
+  let status: number;
+  const res = {
+    setHeader() {},
+    status(code: number) { status = code; return this; },
+    json(value: unknown) { body = value; },
+  } as unknown as express.Response;
+  expect(admitMcpPost(stats, res)).toBe(false);
+  expect(status!).toBe(503);
+  expect(body).toMatchObject({ code: 'MCP_GATEWAY_DRAINING', action: 'reconnect' });
+  expect(stats.activePostStartedAt.size).toBe(0);
+});
+
+test('shutdown deadline reports observation unknown before transport closes', async () => {
+  const app = express();
+  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0 };
+  let admitted!: () => void;
+  const admission = new Promise<void>(resolve => { admitted = resolve; });
+  let response!: express.Response;
+  app.post('/mcp', (_req, res) => {
+    response = res;
+    admitMcpPost(stats, res);
+    admitted();
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  try {
+    const port = (server.address() as { port: number }).port;
+    const result = fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST' });
+    await admission;
+    const draining = drainMcpPosts(stats, async () => { expect(response.writableFinished).toBe(true); }, 10);
+    const reply = await result;
+    expect(reply.status).toBe(503);
+    expect(await reply.json()).toMatchObject({ code: 'MCP_GATEWAY_SHUTDOWN_OUTCOME_UNKNOWN', retryable: false, action: 'reconcile' });
+    await draining;
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test('real Gateway SIGTERM drains admitted MCP tool result and rejects new requests', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-gateway-sigterm-'));
+  const controllerHome = join(root, 'controller');
+  const port = await freePort();
+  const token = 'isolated-shutdown-runtime-token';
+  mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+  writeFileSync(join(controllerHome, 'mcp', 'runtime-token'), token);
+  let admitted!: () => void;
+  let release!: () => void;
+  const admission = new Promise<void>(resolve => { admitted = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const readiness = { ready: true, reasonCodes: [], observedAt: new Date().toISOString(), diagnostics: { database: { outcome: 'pass' as const }, scheduler: { outcome: 'pass' as const }, releaseCoherence: { outcome: 'pass' as const }, mcpEndToEnd: { outcome: 'pass' as const } } };
+  const runtime = await startRuntimeMcpTransport({
+    host: '127.0.0.1', port: 0, authToken: token, readiness: () => readiness,
+    createServer: () => {
+      const server = new Server({ name: 'shutdown-fixture', version: '1' }, { capabilities: { tools: {} } });
+      server.setRequestHandler('tools/list', async () => ({ tools: [{ name: 'controller_ready', inputSchema: { type: 'object' as const } }] }));
+      server.setRequestHandler('tools/call', async () => {
+        admitted();
+        await gate;
+        return { content: [{ type: 'text' as const, text: 'original-read-result' }] };
+      });
+      return server;
+    },
+  });
+  const now = new Date().toISOString();
+  writeRuntimeStatusSnapshot(controllerHome, {
+    schemaVersion: 1, runtimeInstanceId: 'shutdown-fixture', pid: process.pid,
+    releaseId: 'shutdown-fixture', artifactIdentity: 'shutdown-fixture',
+    endpoint: runtime.endpoint, readiness, startedAt: now, updatedAt: now,
+  });
+  const proc = Bun.spawn(['bun', '-e', `import { startMcpHttp } from './adapters/mcp/transports/http'; await startMcpHttp({host:'127.0.0.1',port:${port},profile:'controller',auth:'none'});`], {
+    cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome),
+  });
+  const client = new Client({ name: 'shutdown-client', version: '1' }, { capabilities: {} });
+  try {
+    try { await waitForHealth(port); } catch (error) {
+      if (proc.exitCode !== null) throw new Error(await new Response(proc.stderr).text());
+      throw error;
+    }
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+    const result = client.callTool({ name: 'controller_ready', arguments: {} });
+    await admission;
+    proc.kill('SIGTERM');
+    // Health is still served during drain; synchronize on explicit admission refusal.
+    let rejected = false;
+    for (let i = 0; i < 40; i++) {
+      const response = await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      const body = await response.json() as { code?: string };
+      if (body.code === 'MCP_GATEWAY_DRAINING') { rejected = true; break; }
+      await Bun.sleep(5);
+    }
+    expect(rejected).toBe(true);
+    release();
+    expect((await result).content).toEqual([{ type: 'text', text: 'original-read-result' }]);
+    expect(await proc.exited).toBe(0);
+  } finally {
+    release();
+    await client.close();
+    if (proc.exitCode === null) { proc.kill('SIGKILL'); await proc.exited; }
+    await runtime.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 15_000);

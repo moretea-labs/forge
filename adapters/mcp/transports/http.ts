@@ -37,7 +37,7 @@ import {
 import { McpSessionRegistry, type ClosableMcpTransport, type McpSessionRegistryOptions, type McpSessionRoute } from './session-registry';
 import { getConfiguredPublicOrigin, getPublicOrigin, registerMcpOAuthHttpRoutes } from './oauth-http';
 import { registerMcpHttpObservationRoutes } from './http-observation';
-import { reconcileActiveMcpPosts } from './http-post-lifecycle';
+import { drainMcpPosts, reconcileActiveMcpPosts } from './http-post-lifecycle';
 import { RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN } from '../../../src/runtime/root/mcp-transport';
 import { packageConnectorCutoverDrainIsActive } from '../../../src/runtime/root/package-connector-service';
 export { isAllowedMcpOAuthRedirectUri, isIncompleteOAuthAuthorizeRequest } from './oauth-http';
@@ -331,6 +331,7 @@ interface McpRuntimeStats {
   /** Canonical HTTP POST admission owner; one entry per unfinished response. */
   activePostStartedAt: Map<Response, number>;
   rejectedOverload: number;
+  draining?: boolean;
   /** Bounded stale responses removed from admission because no terminal event arrived. */
   reclaimedStalePosts?: number;
 }
@@ -349,6 +350,18 @@ const MCP_SESSION_IDLE_TTL_MS = positiveIntegerEnv('FORGE_MCP_SESSION_IDLE_TTL_M
 const MCP_STREAM_LEASE_MS = positiveIntegerEnv('FORGE_MCP_STREAM_LEASE_MS', 30 * 60_000);
 const MCP_SESSION_ABSOLUTE_LIFETIME_MS = positiveIntegerEnv('FORGE_MCP_SESSION_ABSOLUTE_LIFETIME_MS', 2 * 60 * 60_000);
 const MCP_ACTIVE_POST_STALL_MS = positiveIntegerEnv('FORGE_MCP_ACTIVE_POST_STALL_MS', 10 * 60_000);
+
+function sendMcpGatewayDraining(res: Response): void {
+  res.setHeader('retry-after', '1');
+  res.status(503).json({
+    error: 'gateway_draining',
+    code: 'MCP_GATEWAY_DRAINING',
+    message: 'Gateway is shutting down; this request was not admitted.',
+    recoverable: true,
+    retryable: true,
+    action: 'reconnect',
+  });
+}
 
 function sendReleaseCutoverDraining(res: Response): void {
   res.setHeader('retry-after', '1');
@@ -388,6 +401,10 @@ export function admitMcpPost(
   res: Response,
   cutoverDrain?: { controllerHome: string; connectorEndpoint: string },
 ): boolean {
+  if (stats.draining) {
+    sendMcpGatewayDraining(res);
+    return false;
+  }
   if (cutoverDrain && packageConnectorCutoverDrainIsActive(cutoverDrain.controllerHome, cutoverDrain.connectorEndpoint)) {
     sendReleaseCutoverDraining(res);
     return false;
@@ -819,6 +836,13 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   const forgeVersion = FORGE_VERSION;
   const app = express();
   app.set('trust proxy', 1);
+  app.use((req, res, next) => {
+    if (runtimeStats.draining && ['/mcp', '/mcp-grok', '/mcp-bearer'].includes(req.path)) {
+      sendMcpGatewayDraining(res);
+      return;
+    }
+    next();
+  });
 
   registerMcpHttpObservationRoutes({
     app,
@@ -959,9 +983,17 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   );
 
   const shutdown = () => {
-    void sessionRegistry.closeAll('shutdown');
-    tokenStore?.flush();
-    httpServer.close(() => process.exit(0));
+    if (runtimeStats.draining) return;
+    runtimeStats.draining = true;
+    // Keep the listener alive during drain to explicitly reject new arrivals.
+    // Response completion owns POST liveness, not the SDK handler's return.
+    void drainMcpPosts(runtimeStats, async () => {
+      await sessionRegistry.closeAll('shutdown');
+      await modernMcp.handler.close();
+      await sharedRuntimeProxy?.close();
+      tokenStore?.flush();
+      httpServer.close(() => process.exit(0));
+    });
   };
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);

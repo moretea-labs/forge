@@ -22,6 +22,18 @@
 - The Gateway-to-Canonical-Runtime client classifies structured SDK HTTP 404 as an expired inner session, reconnects once, and replays only an operation already proven replay-safe by its idempotency contract.
 - The public Gateway may burst-scale a bounded shared pool of inner Canonical Runtime MCP lanes. A released lane remains hot only for a bounded idle lease; reuse cancels retirement, while expiry explicitly terminates the Streamable HTTP session before closing the local client so the Runtime does not retain an orphaned Server/transport graph. Durable Work, Process, and Controller authority is never coupled to that transport retention window.
 
+## Gateway shutdown
+
+SIGTERM/SIGINT fences new MCP arrivals before transport teardown. The existing
+response-owned POST registry drains admitted observations for at most 30 seconds,
+then reports `MCP_GATEWAY_SHUTDOWN_OUTCOME_UNKNOWN` (or closes an already streaming
+response). A final error flush is bounded to one second for detached Bun responses.
+This ends observation only: callers must reconcile the original request/Process
+identity, never replay an unknown non-idempotent operation. Legacy sessions, modern
+handlers and shared proxy lanes close after POST drain; stream-only GET channels
+close with their transport. Release cutover's marker-based admission fence remains
+separate and does not cover arbitrary signals or forced process termination.
+
 ## Verification
 
 ```text
