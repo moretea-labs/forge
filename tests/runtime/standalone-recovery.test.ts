@@ -75,6 +75,7 @@ import {
 } from '../../src/runtime/standalone-recovery/entry';
 import { runBoundedChild } from '../../src/runtime/shared/bounded-child-supervisor';
 import { RecoveryMcpServer } from '../../src/runtime/standalone-recovery/mcp-server';
+import { callStandaloneRecoveryTool } from '../../adapters/mcp/runtime-gateway/recovery-client-adapter';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { RECOVERY_MUTATION_IDENTITY_CONTRACT, RECOVERY_MUTATION_IDENTITY_FIELDS } from '../../src/runtime/standalone-recovery/mutation-identity-contract';
 import {
@@ -3150,6 +3151,124 @@ describe('standalone recovery on canonical Runtime', () => {
     } finally {
       if (second) await stop(second);
       else if (first.httpServer.listening) await stop(first);
+    }
+  });
+
+  test('classifies a disconnected standalone Recovery Gateway and bootstraps again when it returns', async () => {
+    const home = controllerHome();
+    const probe = createServer();
+    await new Promise<void>((resolveListen, reject) => {
+      probe.once('error', reject);
+      probe.listen(0, '127.0.0.1', resolveListen);
+    });
+    const address = probe.address();
+    if (!address || typeof address === 'string') throw new Error('TEST_RECOVERY_GATEWAY_ADDRESS_MISSING');
+    await new Promise<void>((resolveClose, reject) => {
+      probe.close((error) => error ? reject(error) : resolveClose());
+    });
+    initializeStandaloneRecovery(home, address.port);
+
+    await expect(callStandaloneRecoveryTool(home, 'runtime_status', {}))
+      .rejects.toThrow(/^RECOVERY_GATEWAY_UNAVAILABLE:/);
+
+    const recovery = new RecoveryMcpServer({
+      tools: RECOVERY_TOOLS as unknown as Tool[],
+      dispatchTool: async (name) => {
+        if (name !== 'runtime_status') throw new Error(`TEST_UNEXPECTED_RECOVERY_TOOL: ${name}`);
+        return { running: true, ready: true };
+      },
+    });
+    const server = createServer(async (request, response) => {
+      let body: unknown;
+      if (request.method === 'POST') {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      }
+      await recovery.handle(request, response, body);
+    });
+    await new Promise<void>((resolveListen, reject) => {
+      server.once('error', reject);
+      server.listen(address.port, '127.0.0.1', resolveListen);
+    });
+    try {
+      await expect(callStandaloneRecoveryTool(home, 'runtime_status', {})).resolves.toMatchObject({
+        running: true,
+        ready: true,
+      });
+    } finally {
+      await recovery.close();
+      await new Promise<void>((resolveClose, reject) => {
+        server.close((error) => error ? reject(error) : resolveClose());
+      });
+    }
+  });
+
+  test('does not classify a post-dispatch Recovery mutation response loss as Gateway unavailability', async () => {
+    const home = controllerHome();
+    const probe = createServer();
+    await new Promise<void>((resolveListen, reject) => {
+      probe.once('error', reject);
+      probe.listen(0, '127.0.0.1', resolveListen);
+    });
+    const address = probe.address();
+    if (!address || typeof address === 'string') throw new Error('TEST_RECOVERY_GATEWAY_ADDRESS_MISSING');
+    await new Promise<void>((resolveClose, reject) => {
+      probe.close((error) => error ? reject(error) : resolveClose());
+    });
+    const config = initializeStandaloneRecovery(home, address.port);
+    let dispatches = 0;
+    let markDispatchStarted!: () => void;
+    const dispatchStarted = new Promise<void>((resolveDispatch) => { markDispatchStarted = resolveDispatch; });
+    const recovery = new RecoveryMcpServer({
+      tools: RECOVERY_TOOLS as unknown as Tool[],
+      dispatchTool: async (name) => {
+        if (name !== 'restart_primary_connector') throw new Error(`TEST_UNEXPECTED_RECOVERY_TOOL: ${name}`);
+        dispatches += 1;
+        markDispatchStarted();
+        return await new Promise<Record<string, unknown>>(() => {});
+      },
+    });
+    const server = createServer(async (request, response) => {
+      if (request.method !== 'POST') {
+        await recovery.handle(request, response);
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const rawBody = Buffer.concat(chunks).toString('utf8');
+      const body = rawBody ? JSON.parse(rawBody) as {
+        method?: string;
+        params?: { name?: string };
+      } : undefined;
+      if (body?.method === 'tools/call' && body.params?.name === 'restart_primary_connector') {
+        void recovery.handle(request, response, body).catch(() => undefined);
+        await dispatchStarted;
+        response.destroy();
+        return;
+      }
+      await recovery.handle(request, response, body);
+    });
+    await new Promise<void>((resolveListen, reject) => {
+      server.once('error', reject);
+      server.listen(address.port, '127.0.0.1', resolveListen);
+    });
+    try {
+      const args = { ...recoveryMutationIdentityArgs(config), request_id: 'post-dispatch-response-loss' };
+      let failure: unknown;
+      try {
+        await callStandaloneRecoveryTool(home, 'restart_primary_connector', args);
+      } catch (error) {
+        failure = error;
+      }
+      expect(dispatches).toBe(1);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).not.toMatch(/^RECOVERY_GATEWAY_UNAVAILABLE:/);
+    } finally {
+      await recovery.close();
+      await new Promise<void>((resolveClose, reject) => {
+        server.close((error) => error ? reject(error) : resolveClose());
+      });
     }
   });
 
