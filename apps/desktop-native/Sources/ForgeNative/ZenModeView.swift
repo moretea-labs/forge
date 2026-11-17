@@ -1696,18 +1696,23 @@ struct ZenWorkspacePane: View {
             Text("描述你的目标").font(.system(size:17,weight:.semibold))
             Text("分析过程为只读；多轮澄清后生成提案，只有你批准后才会修改记录。")
                 .font(.system(size:11)).foregroundStyle(.secondary)
-            TextField("希望解决什么问题？",text:$goalDraft,axis:.vertical)
-                .lineLimit(5...8)
-                .accessibilityIdentifier("zen.goal.input")
+            ForgeClientFormField(label:"目标描述") {
+                TextField("希望解决什么问题？",text:$goalDraft,axis:.vertical)
+                    .lineLimit(5...8)
+                    .accessibilityLabel("目标描述")
+                    .accessibilityIdentifier("zen.goal.input")
+            }
             HStack {
                 Spacer()
                 Button("取消") { showingGoalSheet=false }
+                    .accessibilityIdentifier("zen.goal.cancel")
                 Button("分析需求") {
                     let description=goalDraft.trimmingCharacters(in:.whitespacesAndNewlines)
                     showingGoalSheet=false
                     onDraftGoal(description)
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("zen.goal.analyze")
                 .disabled(goalDraft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
             }
         }
