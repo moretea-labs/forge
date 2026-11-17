@@ -1208,14 +1208,16 @@ final class NativeWorkspace: ObservableObject {
         newThread(requirementId:plan.requirementId,planId:plan.planId)
     }
 
-    func bindCurrentThreadPlanningContext(requirementId: String?, planId: String?) {
+    func bindCurrentThreadPlanningContext(
+        requirementId:String?,planId:String?,projectId:String? = nil,repoId:String? = nil
+    ) {
         guard !busy else {
             self.error = "请先停止正在运行的会话，再更改规划上下文。"
             return
         }
         guard let index = threads.firstIndex(where: { $0.id == selectedThreadId }) else { return }
         if requirementId != nil || planId != nil,
-           threads[index].projectId != selectedProjectId || threads[index].repoId != repoId {
+           threads[index].projectId != projectId || threads[index].repoId != repoId {
             self.error = "当前会话属于其他项目或仓库，请切换到该范围内的会话或新建会话。"
             return
         }

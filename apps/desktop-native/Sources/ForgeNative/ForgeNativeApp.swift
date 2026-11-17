@@ -3541,9 +3541,15 @@ private struct AgentPlanningInspector: View {
             : (model.thread?.planId == nil && model.thread?.requirementId == record.recordId)
         return Button {
             if record.kind == .plan {
-                model.bindCurrentThreadPlanningContext(requirementId:record.requirementId,planId:record.recordId)
+                model.bindCurrentThreadPlanningContext(
+                    requirementId:record.requirementId,planId:record.recordId,
+                    projectId:model.thread?.projectId,repoId:model.thread?.repoId
+                )
             } else {
-                model.bindCurrentThreadPlanningContext(requirementId:record.recordId,planId:nil)
+                model.bindCurrentThreadPlanningContext(
+                    requirementId:record.recordId,planId:nil,
+                    projectId:model.thread?.projectId,repoId:model.thread?.repoId
+                )
             }
         } label: {
             HStack(alignment:.top,spacing:9) {
@@ -5480,7 +5486,9 @@ private struct RecordsPane: View {
                     Button {
                         model.bindCurrentThreadPlanningContext(
                             requirementId:requirement.requirementId,
-                            planId:nil
+                            planId:nil,
+                            projectId:model.selectedProjectId,
+                            repoId:model.projectRepositoryId
                         )
                         if model.error == nil { model.show(.agent) }
                     } label: {
@@ -5591,7 +5599,9 @@ private struct RecordsPane: View {
                     Button {
                         model.bindCurrentThreadPlanningContext(
                             requirementId:plan.requirementId,
-                            planId:plan.planId
+                            planId:plan.planId,
+                            projectId:model.selectedProjectId,
+                            repoId:model.projectRepositoryId
                         )
                         if model.error == nil { model.show(.agent) }
                     } label: {

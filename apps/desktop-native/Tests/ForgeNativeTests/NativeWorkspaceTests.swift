@@ -2664,18 +2664,23 @@ final class NativeWorkspaceTests: XCTestCase {
 
         model.selectedProjectId="PROJECT-B"
         model.repoId="repo-b"
-        model.bindCurrentThreadPlanningContext(requirementId:"REQ-b",planId:nil)
+        model.bindCurrentThreadPlanningContext(
+            requirementId:"REQ-b",planId:nil,projectId:"PROJECT-B",repoId:"repo-b"
+        )
         XCTAssertNil(model.thread?.requirementId)
         XCTAssertNotNil(model.error)
 
-        model.selectedProjectId="PROJECT-A"
-        model.repoId="repo-b"
-        model.bindCurrentThreadPlanningContext(requirementId:"REQ-b",planId:nil)
+        model.bindCurrentThreadPlanningContext(
+            requirementId:"REQ-b",planId:nil,projectId:"PROJECT-A",repoId:"repo-b"
+        )
         XCTAssertNil(model.thread?.requirementId)
         XCTAssertNotNil(model.error)
 
-        model.repoId="repo-a"
-        model.bindCurrentThreadPlanningContext(requirementId:"REQ-a",planId:nil)
+        // The Agent inspector uses the conversation's own scope even while
+        // the global Project picker still points at another Project.
+        model.bindCurrentThreadPlanningContext(
+            requirementId:"REQ-a",planId:nil,projectId:"PROJECT-A",repoId:"repo-a"
+        )
         XCTAssertEqual(model.thread?.requirementId,"REQ-a")
         XCTAssertNil(model.error)
     }
