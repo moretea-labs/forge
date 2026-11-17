@@ -2994,7 +2994,12 @@ async function openNativeAttachedContext(
       && isExplicitNativeUserOwnedSession(target.existingSession)
       && browserInternalUrlProduct(target.url) === savedProduct,
     );
-    if (matchedBy !== 'owned_token' && page.waitForLoadState && !explicitInternalUserSession) {
+    // Both matching states are an exact stable-tab reattach without navigation.
+    // A user-owned tab may stream or report "loading" indefinitely; requiring
+    // full load completion before every read/foreground action creates 30-60s
+    // timeouts. Navigation/reload/explicit wait_for_load_state keep their own
+    // post-action load checks and the strict live URL/identity checks below.
+    if (matchedBy !== 'owned_token' && matchedBy !== 'saved_url' && page.waitForLoadState && !explicitInternalUserSession) {
       await page.waitForLoadState(waitUntil(args.wait_until), { timeout });
     }
     const observedPageUrl = page.url();
