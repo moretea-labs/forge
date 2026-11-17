@@ -1315,7 +1315,8 @@ struct ZenWorkspacePane: View {
                   model.projectContextGeneration == activeContextGeneration,
                   model.repoId == activeRepoId,model.checkoutId == activeCheckoutId,
                   model.selectedRecord == item.id,
-                  let status=model.planningAutopilotStatuses[item.recordId] else { return }
+                  !model.autopilotLoading,!model.autopilotControlPending,
+                  let status=model.autopilotStatus else { return }
             guard status.requirementRevision == detail.revision else {
                 model.error="需求已变化，请刷新后重新批准。"
                 return

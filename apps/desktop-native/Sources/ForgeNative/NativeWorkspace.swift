@@ -3685,6 +3685,11 @@ final class NativeWorkspace: ObservableObject {
         autopilotLoading=false
     }
 
+    static func autopilotStatusRefreshFailureMessage(existingError:String?,failure:String) -> String {
+        guard existingError?.contains("操作结果未确认") == true else { return failure }
+        return "操作结果未确认。执行状态刷新仍失败：\(failure)。请勿重复提交。"
+    }
+
     private func autopilotRequestIsCurrent(
         _ generation:Int,repoId targetRepoId:String,checkoutId targetCheckoutId:String,
         contextGeneration:Int
@@ -3736,9 +3741,12 @@ final class NativeWorkspace: ObservableObject {
             }
             planningAutopilotStatuses=next
             if let first=failed.first {
-                planningAutopilotStatusError=failed.count == 1
+                let failure=failed.count == 1
                     ? "\(first.0): \(first.1)"
                     : "部分执行态刷新失败（\(failed.count)）· \(first.0): \(first.1)"
+                planningAutopilotStatusError=Self.autopilotStatusRefreshFailureMessage(
+                    existingError:planningAutopilotStatusError,failure:failure
+                )
             } else {
                 planningAutopilotStatusError=nil
             }
@@ -3746,7 +3754,9 @@ final class NativeWorkspace: ObservableObject {
             guard autopilotRequestIsCurrent(
                 requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
             ) else { return }
-            planningAutopilotStatusError=error.localizedDescription
+            planningAutopilotStatusError=Self.autopilotStatusRefreshFailureMessage(
+                existingError:planningAutopilotStatusError,failure:error.localizedDescription
+            )
         }
     }
 
@@ -3853,7 +3863,7 @@ final class NativeWorkspace: ObservableObject {
                 guard autopilotRequestIsCurrent(
                     requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
                 ) else { return true }
-                planningAutopilotStatusError="操作已提交，但执行状态暂时无法刷新。请刷新状态确认。"
+                planningAutopilotStatusError="操作结果未确认。操作已提交，但执行状态暂时无法刷新；请先刷新执行状态，不要重复提交。"
             }
             return true
         } catch {

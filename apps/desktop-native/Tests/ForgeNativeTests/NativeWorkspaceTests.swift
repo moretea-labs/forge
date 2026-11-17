@@ -2881,6 +2881,28 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testAutopilotStatusRefreshFailurePreservesUnknownMutationOutcome() {
+        let unknown="操作结果未确认。操作已提交，但执行状态暂时无法刷新。"
+        let partial=NativeWorkspace.autopilotStatusRefreshFailureMessage(
+            existingError:unknown,failure:"REQ-one: provider unavailable"
+        )
+        XCTAssertTrue(partial.contains("操作结果未确认"))
+        XCTAssertTrue(partial.contains("REQ-one: provider unavailable"))
+        XCTAssertTrue(partial.contains("请勿重复提交"))
+
+        let failedAgain=NativeWorkspace.autopilotStatusRefreshFailureMessage(
+            existingError:partial,failure:"connection timed out"
+        )
+        XCTAssertTrue(failedAgain.contains("操作结果未确认"))
+        XCTAssertTrue(failedAgain.contains("connection timed out"))
+
+        XCTAssertEqual(
+            NativeWorkspace.autopilotStatusRefreshFailureMessage(existingError:nil,failure:"offline"),
+            "offline"
+        )
+    }
+
+    @MainActor
     func testKnowledgeSearchGenerationRejectsSupersededQueriesAndContextChanges() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }
