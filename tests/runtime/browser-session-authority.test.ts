@@ -896,10 +896,11 @@ describe('browser session compatibility on Computer target authority', () => {
     const fieldSeparator = String.fromCharCode(31);
     const url = 'https://example.com/native-foreground';
     let frontmost = false;
+    let nativeLoading = false;
     const activations: string[] = [];
     const trustedRefs: Array<{ product?: string; windowId?: string; tabId?: string }> = [];
     const metadata = () => [
-      frontmost ? 'true' : 'false', url, 'Native Foreground', '0', '0', '1200', '800', '7', '9', 'true', 'false',
+      frontmost ? 'true' : 'false', url, 'Native Foreground', '0', '0', '1200', '800', '7', '9', 'true', nativeLoading ? 'true' : 'false',
     ].join(separator);
     const inventory = () => `false${separator}7${fieldSeparator}9${fieldSeparator}true${fieldSeparator}${url}${fieldSeparator}Native Foreground`;
 
@@ -959,6 +960,9 @@ describe('browser session compatibility on Computer target authority', () => {
     });
     expect((activated.action as { summary?: string }).summary).toContain('authoritative foreground');
     expect(activations).toEqual(['chrome']);
+    // Native metadata can report perpetual loading on an already verified
+    // user-owned tab. That must not stall unrelated foreground/read operations.
+    nativeLoading = true;
 
     // Already-authoritative foreground is a verified fast path, not a fixed
     // wait. The caller's settling budget applies only when state is not ready.
@@ -967,11 +971,19 @@ describe('browser session compatibility on Computer target authority', () => {
       ...baseInput,
       requestId: 'native-foreground-already-active',
       actionId: 'activate_page',
-      args: { session_id: 'native-foreground', post_action_wait_ms: 5_000 },
+      args: { session_id: 'native-foreground', post_action_wait_ms: 5_000, timeout_ms: 250 },
     });
     expect((alreadyActive.action as { summary?: string }).summary).toContain('authoritative foreground');
     expect(activations).toEqual(['chrome']);
     expect(performance.now() - fastStart).toBeLessThan(2_000);
+
+    // An explicit load-state request must still honor its requested deadline.
+    await expect(executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'native-foreground-explicit-load-state',
+      actionId: 'wait_for_load_state',
+      args: { session_id: 'native-foreground', timeout_ms: 250 },
+    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_LOAD_STATE_TIMEOUT' });
 
     await executeBrowserPluginAction({
       ...baseInput,
