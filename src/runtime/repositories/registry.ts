@@ -354,15 +354,17 @@ function loadRepositoryRegistryReadSnapshot(controllerHome?: string): Repository
   const cached = beforeIdentity ? repositoryRegistryReadSnapshots.get(path) : undefined;
   if (cached && cached.fileIdentity === beforeIdentity) return cached.registry;
 
+  let readIdentity = beforeIdentity;
   let registry = readRegistryFile(path, true) ?? defaultRegistry();
   let afterIdentity = registryFileIdentity(path);
-  if (beforeIdentity && afterIdentity && beforeIdentity !== afterIdentity) {
-    // A cross-process atomic replacement raced this read. Re-read once from the
-    // new physical authority instead of caching a mixed-generation snapshot.
+  if (beforeIdentity !== afterIdentity) {
+    // Replacement, creation or deletion raced this read. Retry once, without
+    // claiming that this second attempt is immune to another concurrent write.
+    readIdentity = afterIdentity;
     registry = readRegistryFile(path, true) ?? defaultRegistry();
     afterIdentity = registryFileIdentity(path);
   }
-  if (afterIdentity) repositoryRegistryReadSnapshots.set(path, { fileIdentity: afterIdentity, registry });
+  if (afterIdentity && readIdentity === afterIdentity) repositoryRegistryReadSnapshots.set(path, { fileIdentity: afterIdentity, registry });
   else repositoryRegistryReadSnapshots.delete(path);
   return registry;
 }

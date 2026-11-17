@@ -56,6 +56,10 @@ Git and the registered checkout/worktree identity own repository source and plac
 
 Ordinary worktree creation and source edits do not require semantic Work. Structured worktree retirement proves the exact registered checkout, source HEAD, physical identity, cleanliness, live Process/Lease state and Git containment before removal. Historical WorkHandle or OwnedResource evidence may cause an explicit legacy-cleanup path to preserve uncertain bytes, but it cannot authorize mutation or re-create Work ownership.
 
+### Repository Registry snapshot reads (Refs #235)
+
+Repository list/get share the existing Registry file and its derived file-identity cache. A concurrent replacement, creation or deletion gets one bounded reread; contents enter the cache only when that attempt's before/after physical file identities match. A second racing replacement leaves the snapshot uncached so a later read can observe the current Registry, rather than retaining old removed/missing-repository state under the new file's identity. This adds no Registry writer, alias fallback or automatic retry loop.
+
 ### Git status observation (Refs #312)
 
 Git status is demand-driven. `repository_git_status` reads a fresh bounded asynchronous snapshot by default; `refresh=false` explicitly selects the last cached snapshot, including its observation time and age. A missing cached snapshot remains unknown until requested. The Scheduler does not periodically scan idle repositories or restore Git polling timers/counters. Actual projection invalidation may refresh the affected repository and its Git snapshot; explicit status/diff review and Git mutation safety still obtain current evidence through their existing owners. External edits are observed on the next live read, not certified by a background heartbeat. Snapshot provenance distinguishes caller reads from Scheduler invalidation work.
