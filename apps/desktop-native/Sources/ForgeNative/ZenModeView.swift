@@ -3010,13 +3010,8 @@ struct ZenProjectDetailPane: View {
                         }
                         Divider()
                         Text("任务概况").font(.system(size:12,weight:.semibold))
-                        HStack(spacing:14) {
-                            Text("未完成 \(detail.taskStatusCounts["open"] ?? 0)")
-                            Text("已完成 \(detail.taskStatusCounts["completed"] ?? 0)")
-                            Text("已取消 \(detail.taskStatusCounts["cancelled"] ?? 0)")
-                            Text("阻塞 \(detail.blockedTaskCount)")
-                        }
-                        .font(.system(size:10)).foregroundStyle(.secondary)
+                        Text("待开始 \(detail.taskStatusCounts["planned"] ?? 0) · 进行中 \(detail.taskStatusCounts["active"] ?? 0) · 待你处理 \(detail.taskStatusCounts["waiting_for_user"] ?? 0) · 已完成 \(detail.taskStatusCounts["done"] ?? 0) · 已取消 \(detail.taskStatusCounts["cancelled"] ?? 0) · 阻塞 \(detail.blockedTaskCount)")
+                            .font(.system(size:10)).foregroundStyle(.secondary)
                         Text("优先级 · 紧急 \(detail.taskPriorityCounts["urgent"] ?? 0) · 高 \(detail.taskPriorityCounts["high"] ?? 0) · 普通 \(detail.taskPriorityCounts["normal"] ?? 0) · 低 \(detail.taskPriorityCounts["low"] ?? 0)")
                             .font(.system(size:10)).foregroundStyle(.secondary)
                         Divider()

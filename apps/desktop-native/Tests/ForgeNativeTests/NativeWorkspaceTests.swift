@@ -1316,12 +1316,12 @@ final class NativeWorkspaceTests: XCTestCase {
                     "placements":[["repositoryId":"repo-a"]]
                 ],
                 "requirementCount":2,
-                "taskStatusCounts":["open":1,"completed":1,"cancelled":0],
+                "taskStatusCounts":["planned":1,"active":1,"waiting_for_user":0,"done":0,"cancelled":0],
                 "taskPriorityCounts":["urgent":1,"high":0,"normal":1,"low":0,"unset":0],
                 "blockedTaskCount":1,
                 "requirements":[[
                     "requirementId":"REQ-a","revision":4,"projectId":"PROJECT-a","repoId":"repo-a",
-                    "title":"Task A","status":"open","priority":"urgent","assignee":"owner",
+                    "title":"Task A","status":"active","priority":"urgent","assignee":"owner",
                     "progressSummary":"Implementation in progress","remainingWorkCount":1,
                     "acceptedEvidenceCount":2,"dependencyCount":1,"linkedPlanCount":1,
                     "blockingDependencyIds":["REQ-pre"],"updatedAt":"2026-11-17T00:00:00Z"
@@ -1338,7 +1338,9 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(detail.project.workspaceId,"workspace-a")
         XCTAssertEqual(detail.project.repositoryIds,["repo-a"])
         XCTAssertEqual(detail.requirementCount,2)
-        XCTAssertEqual(detail.taskStatusCounts["open"],1)
+        XCTAssertEqual(detail.taskStatusCounts["planned"],1)
+        XCTAssertEqual(detail.taskStatusCounts["active"],1)
+        XCTAssertEqual(detail.requirements.first?.status,"active")
         XCTAssertEqual(detail.blockedTaskCount,1)
         XCTAssertEqual(detail.requirements.first?.requirementId,"REQ-a")
         XCTAssertEqual(detail.requirements.first?.blockingDependencyIds,["REQ-pre"])
@@ -1355,7 +1357,7 @@ final class NativeWorkspaceTests: XCTestCase {
                         "status":"active","revision":3,"placements":[]
                     ],
                     "requirementCount":250,
-                    "taskStatusCounts":["open":2,"completed":0,"cancelled":0],
+                    "taskStatusCounts":["planned":0,"active":2,"waiting_for_user":0,"done":0,"cancelled":0],
                     "taskPriorityCounts":["urgent":0,"high":0,"normal":2,"low":0,"unset":0],
                     "blockedTaskCount":0,
                     "requirements":rows,
@@ -1368,7 +1370,7 @@ final class NativeWorkspaceTests: XCTestCase {
         }
         func row(_ id:String) -> [String:Any] {
             [
-                "requirementId":id,"revision":1,"projectId":"PROJECT-a","title":id,"status":"open",
+                "requirementId":id,"revision":1,"projectId":"PROJECT-a","title":id,"status":"active",
                 "progressSummary":"","remainingWorkCount":0,"acceptedEvidenceCount":0,
                 "dependencyCount":0,"linkedPlanCount":0,"blockingDependencyIds":[],
                 "updatedAt":"2026-11-17T00:00:00Z"
