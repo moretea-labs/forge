@@ -153,13 +153,15 @@ extension ZenModeTests {
         )
         let planDetail = PlanRecordDetail(
             planId:"PLAN-NEW",revision:1,requirementId:"REQ-NEW",parentPlanId:nil,
-            sourceBasisRevision:nil,goal:"Root plan",items:[],resolvedDecisions:[],nonGoals:[]
+            requirementBasisRevision:nil,sourceBasisRevision:nil,
+            goal:"Root plan",items:[],resolvedDecisions:[],nonGoals:[]
         )
         XCTAssertTrue(ZenWorkspacePane.createdRecordDetailMatches(plan,detail:.plan(planDetail)))
         XCTAssertFalse(ZenWorkspacePane.createdRecordDetailMatches(
             plan,detail:.plan(PlanRecordDetail(
                 planId:"PLAN-NEW",revision:1,requirementId:"REQ-NEW",parentPlanId:"PLAN-OTHER",
-                sourceBasisRevision:nil,goal:"Root plan",items:[],resolvedDecisions:[],nonGoals:[]
+                requirementBasisRevision:nil,sourceBasisRevision:nil,
+                goal:"Root plan",items:[],resolvedDecisions:[],nonGoals:[]
             ))
         ))
         XCTAssertFalse(ZenWorkspacePane.createdRecordDetailMatches(

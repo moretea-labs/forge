@@ -182,10 +182,13 @@ final class ZenProposalTests: XCTestCase {
                 dependentRequirements:nil,dependentRequirementsTruncated:nil,dependentRequirementCount:nil
             )
         }
-        func planDetail(parentRequirementId:String?="REQ-1",goal:String="Plan") -> PlanRecordDetail {
+        func planDetail(
+            parentRequirementId:String?="REQ-1",goal:String="Plan",requirementBasisRevision:Int?=2
+        ) -> PlanRecordDetail {
             PlanRecordDetail(
                 planId:"PLAN-1",revision:1,requirementId:parentRequirementId,parentPlanId:nil,
-                sourceBasisRevision:nil,goal:goal,items:[],resolvedDecisions:[],nonGoals:[]
+                requirementBasisRevision:requirementBasisRevision,sourceBasisRevision:nil,
+                goal:goal,items:[],resolvedDecisions:[],nonGoals:[]
             )
         }
         let requirement=requirementDetail()
@@ -229,6 +232,14 @@ final class ZenProposalTests: XCTestCase {
         XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
             proposal:planProposal,recordId:"PLAN-1",
             selectedRecord:"plan:PLAN-1",detail:.plan(planDetail(goal:"Different plan"))
+        ))
+        XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
+            proposal:planProposal,recordId:"PLAN-1",
+            selectedRecord:"plan:PLAN-1",detail:.plan(planDetail(requirementBasisRevision:1))
+        ))
+        XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
+            proposal:planProposal,recordId:"PLAN-1",
+            selectedRecord:"plan:PLAN-1",detail:.plan(planDetail(requirementBasisRevision:nil))
         ))
     }
 
@@ -279,7 +290,7 @@ final class ZenProposalTests: XCTestCase {
 
         func plan(_ owner:String?,revision:Int = 2) -> PlanRecordDetail {
             PlanRecordDetail(planId:"PLAN-A",revision:revision,requirementId:owner,
-                parentPlanId:nil,sourceBasisRevision:nil,goal:"此前计划",
+                parentPlanId:nil,requirementBasisRevision:nil,sourceBasisRevision:nil,goal:"此前计划",
                 items:[],resolvedDecisions:[],nonGoals:[])
         }
         XCTAssertTrue(correct.matchesCurrentPlan(plan("REQ-A")))

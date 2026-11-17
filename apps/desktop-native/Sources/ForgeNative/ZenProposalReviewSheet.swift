@@ -61,8 +61,10 @@ struct ZenProposalReviewSheet: View {
                 && requirement.outcomeStatement == proposal.outcome?.trimmingCharacters(in:.whitespacesAndNewlines)
                 && requirement.acceptanceCriteria == criteria
         case (.createPlan, .plan(let plan)):
+            guard let expectedRequirementRevision=proposal.expectedRequirementRevision else { return false }
             return plan.planId == recordId && plan.revision > 0
                 && plan.requirementId == proposal.requirementId
+                && plan.requirementBasisRevision == expectedRequirementRevision
                 && plan.goal == proposal.objective?.trimmingCharacters(in:.whitespacesAndNewlines)
         default:
             return false

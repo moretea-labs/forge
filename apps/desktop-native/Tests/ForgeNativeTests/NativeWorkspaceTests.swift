@@ -1239,6 +1239,7 @@ final class NativeWorkspaceTests: XCTestCase {
         let plan = NativeWorkspace.planDetail([
             "data":["plan":[
                 "planId":"PLAN-a","revision":8,"requirementId":"REQ-a","parentPlanId":"PLAN-root",
+                "requirementBasisRevision":7,
                 "sourceBasisRevision":"abcdef123456","goal":"Ship client",
                 "items":[["id":"p1","objective":"Polish UI"]],
                 "resolvedDecisions":["One native app"],"nonGoals":["No Work lifecycle"],
@@ -1247,6 +1248,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(plan?.planId,"PLAN-a")
         XCTAssertEqual(plan?.requirementId,"REQ-a")
         XCTAssertEqual(plan?.parentPlanId,"PLAN-root")
+        XCTAssertEqual(plan?.requirementBasisRevision,7)
         XCTAssertEqual(plan?.items.first?.objective,"Polish UI")
         XCTAssertEqual(plan?.resolvedDecisions,["One native app"])
         XCTAssertEqual(plan?.nonGoals,["No Work lifecycle"])
@@ -1515,7 +1517,8 @@ final class NativeWorkspaceTests: XCTestCase {
         let planRow = ForgeRecord(recordId:"PLAN-a",title:"Ship",state:"Plan",kind:.plan,
                                   depth:1,requirementId:"REQ-a",parentPlanId:"PLAN-root")
         let plan = PlanRecordDetail(planId:"PLAN-a",revision:8,requirementId:"REQ-a",
-                                    parentPlanId:"PLAN-root",sourceBasisRevision:nil,goal:"Ship",
+                                    parentPlanId:"PLAN-root",requirementBasisRevision:nil,
+                                    sourceBasisRevision:nil,goal:"Ship",
                                     items:[],resolvedDecisions:[],nonGoals:[])
         XCTAssertTrue(NativeWorkspace.semanticRecordReadbackConfirmed(
             record:planRow,detail:.plan(plan),kind:.plan,id:"PLAN-a",revision:8))

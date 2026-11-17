@@ -410,6 +410,7 @@ struct PlanRecordDetail {
     let revision: Int
     let requirementId: String?
     let parentPlanId: String?
+    let requirementBasisRevision: Int?
     let sourceBasisRevision: String?
     let goal: String
     let items: [PlanRecordItem]
@@ -3882,6 +3883,7 @@ final class NativeWorkspace: ObservableObject {
             revision:value["revision"] as? Int ?? 0,
             requirementId:value["requirementId"] as? String,
             parentPlanId:value["parentPlanId"] as? String,
+            requirementBasisRevision:value["requirementBasisRevision"] as? Int,
             sourceBasisRevision:value["sourceBasisRevision"] as? String,
             goal:value["goal"] as? String ?? id,
             items:items,
