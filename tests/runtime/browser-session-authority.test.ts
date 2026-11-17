@@ -1346,6 +1346,9 @@ describe('browser session compatibility on Computer target authority', () => {
         url: () => currentUrl,
         title: async () => currentTitle,
         goto: async (nextUrl: string) => {
+          const previousOrigin = new URL(currentUrl).origin;
+          const nextOrigin = new URL(nextUrl).origin;
+          if (previousOrigin !== nextOrigin) windowName = '';
           currentUrl = nextUrl;
           currentTitle = 'CDP Owned Session';
           return { status: () => 200 };
@@ -1428,6 +1431,33 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(pages).toHaveLength(2);
     expect(disconnects).toBe(2);
 
+    // A cross-origin navigation clears window.name in Chromium. The same saved
+    // session must restore its exact owner marker before the next action.
+    const nextUrl = 'https://other.example.org/cdp-owned-session';
+    const navigated = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'cdp-owned-cross-origin-navigation',
+      actionId: 'navigate',
+      args: { session_id: sessionId, url: nextUrl },
+    });
+    expect((navigated.session as { url: string }).url).toBe(nextUrl);
+    expect(ownedPage.url()).toBe(nextUrl);
+    expect(pages).toHaveLength(2);
+    expect(disconnects).toBe(3);
+
+    const resumedAfterNavigation = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'cdp-owned-cross-origin-read',
+      actionId: 'get_text',
+      args: { session_id: sessionId, selector: 'body' },
+    });
+    expect(resumedAfterNavigation.text).toBe('CDP page body');
+    const savedAfterNavigation = findBrowserSession(controllerHome, 'repo-a', repoA, sessionId);
+    expect(savedAfterNavigation?.url).toBe(nextUrl);
+    expect(savedAfterNavigation?.browser?.tab)
+      .toMatchObject({ ownership: 'plugin_owned', ownerToken, url: nextUrl });
+    expect(disconnects).toBe(4);
+
     // A missing owned page must not be replaced by the user's exact-URL tab.
     pages.splice(pages.indexOf(ownedPage), 1);
     await expect(executeBrowserPluginAction({
@@ -1438,7 +1468,7 @@ describe('browser session compatibility on Computer target authority', () => {
     })).rejects.toThrow('PLUGIN_BROWSER_ATTACH_UNAVAILABLE');
     expect(pages).toHaveLength(1);
     expect(userPage.url()).toBe(url);
-    expect(disconnects).toBe(3);
+    expect(disconnects).toBe(5);
   });
 
   test('installs unpacked extension through browser-level CDP and verifies exact id/path before success', async () => {
