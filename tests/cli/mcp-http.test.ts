@@ -1078,6 +1078,91 @@ describe('mcp http transport', () => {
     }
   });
 
+  test('reconnects the same MCP session through a restarted local tunnel endpoint process', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-tunnel-process-restart-'));
+    const gatewayPort = await freePort();
+    const tunnelPort = await freePort();
+    let gatewayProc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    let tunnelProc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(gatewayPort) });
+        const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
+        gatewayProc = Bun.spawn(
+          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(gatewayPort), '--profile', 'planner', '--auth', 'bearer'],
+          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
+        );
+        await waitForHealth(gatewayPort);
+        const tunnelSource = [
+          "Bun.serve({",
+          "  hostname: '127.0.0.1',",
+          '  port: ' + tunnelPort + ',',
+          '  async fetch(request) {',
+          '    const target = new URL(request.url);',
+          '    const headers = new Headers(request.headers);',
+          "    headers.delete('host');",
+          "    const body = request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.text();",
+          "    return fetch('http://127.0.0.1:" + gatewayPort + "' + target.pathname + target.search, {",
+          '      method: request.method,',
+          '      headers,',
+          '      ...(body === undefined ? {} : { body }),',
+          '    });',
+          '  },',
+          '});',
+        ].join('\n');
+        const startTunnel = () => Bun.spawn(
+          ['bun', '-e', tunnelSource],
+          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
+        );
+        const endpoint = 'http://127.0.0.1:' + tunnelPort + '/mcp';
+        const headers = { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+        const initialize = async () => {
+          const response = await fetch(endpoint, { method: 'POST', headers, body: initializeBody('tunnel-process-restart') });
+          expect(response.status).toBe(200);
+          const sessionId = response.headers.get('mcp-session-id');
+          expect(sessionId).toBeTruthy();
+          await response.text();
+          return sessionId!;
+        };
+        const toolsList = async (sessionId: string) => {
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { ...headers, 'mcp-session-id': sessionId },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 'tunnel-restarted-tools', method: 'tools/list' }),
+          });
+          expect(response.status).toBe(200);
+          const raw = await response.text();
+          const data = raw.split(/\r?\n/).find((line) => line.startsWith('data:'));
+          const payload = JSON.parse(data ? data.slice(5).trim() : raw) as { result?: { tools?: unknown[] } };
+          expect(payload.result?.tools?.length).toBeGreaterThan(0);
+        };
+
+        tunnelProc = startTunnel();
+        await waitForHealth(tunnelPort);
+        const sessionId = await initialize();
+        await toolsList(sessionId);
+        const previousTunnelPid = tunnelProc.pid;
+        await stopMcpServerProcess(tunnelProc);
+        tunnelProc = null;
+
+        tunnelProc = startTunnel();
+        expect(tunnelProc.pid).not.toBe(previousTunnelPid);
+        await waitForHealth(tunnelPort);
+        await toolsList(sessionId);
+        const health = await fetch('http://127.0.0.1:' + gatewayPort + '/health').then((response) => response.json());
+        expect(health.sessions.active).toBe(1);
+        const deleted = await fetch(endpoint, { method: 'DELETE', headers: { authorization: 'Bearer ' + token, 'mcp-session-id': sessionId } });
+        expect(deleted.status).toBe(200);
+      });
+    } finally {
+      await stopMcpServerProcess(tunnelProc);
+      await stopMcpServerProcess(gatewayProc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   test('bounds 500 real reconnect cycles without applying the OAuth principal quota to shared bearer clients', async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-reconnect-'));
     const port = await freePort();
