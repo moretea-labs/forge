@@ -13,7 +13,7 @@ import {
 import { executeAssistantPluginActionApplication } from '../../../src/runtime/plugins/action-application';
 import { mcpPluginExecutionOrigin } from '../../../src/runtime/plugins/execution-origin';
 import type { AssistantPluginManifest } from '../../../src/runtime/plugins/types';
-import { result, resultWithPluginArtifactImages } from './result-adapter';
+import { result, resultWithPluginArtifactImages, resultWithSubmittedPluginActionImages } from './result-adapter';
 import { boundedRuntimeResult } from './bounded-result-runtime';
 import { selected } from './shared-adapter';
 
@@ -119,17 +119,6 @@ function summarizePluginActionReceipt(manifest: AssistantPluginManifest): Record
       warningCount: manifest.health.warnings.length,
     },
     updatedAt: manifest.updatedAt,
-  };
-}
-
-function compactSubmittedPluginActionResult(value: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
-  if (!value) return undefined;
-  const nested = value.result;
-  if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return value;
-  const work = value.work;
-  return {
-    ...(nested as Record<string, unknown>),
-    ...(work && typeof work === 'object' && !Array.isArray(work) ? { work } : {}),
   };
 }
 
@@ -327,7 +316,6 @@ export async function callPluginAdapter(
           error: submitted.receipt.error ?? { code: 'PLUGIN_ACTION_FAILED', message: 'Plugin action failed.' },
         }, true);
       }
-      const compactResult = compactSubmittedPluginActionResult(submitted.result);
       const value = {
         accepted: true,
         deduplicated: submitted.deduplicated,
@@ -344,7 +332,6 @@ export async function callPluginAdapter(
         receiptId: submitted.receipt.receiptId,
         requestId: submitted.receipt.requestId,
         authorization: submitted.authorization,
-        result: compactResult,
         detail: {
           tool: 'rh_context',
           arguments: {
@@ -353,11 +340,11 @@ export async function callPluginAdapter(
         },
         next: 'Continue with the returned bounded plugin result; use rh_context capability detail only when the typed action schema/policy is needed.',
       };
-      return resultWithPluginArtifactImages(
+      return resultWithSubmittedPluginActionImages(
         value,
         ctx.controllerHome,
         scope.kind === 'repository' ? scope.repository.repoId : FORGE_INSTANCE_SCOPE_KEY,
-        compactResult,
+        submitted.result,
       );
     }
     case 'workspace_auth_status': {
