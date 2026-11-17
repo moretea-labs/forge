@@ -1061,6 +1061,50 @@ final class NativeWorkspace: ObservableObject {
         if joyCodeProfileReady { return "joycode" }
         return nil
     }
+    var isProjectOnlyConversation: Bool {
+        guard let thread else { return false }
+        return thread.projectId != nil && thread.repoId == nil
+    }
+
+    var agentWorkspaceStatusLabel: String {
+        if busy { return "执行中" }
+        if isProjectOnlyConversation { return "仅项目上下文" }
+        if !selectedProviderReady {
+            if selectedProvider == "joycode" { return "JoyCode 未就绪" }
+            return selectedProvider == "api" ? "API 未配置" : "Codex 未就绪"
+        }
+        if thread?.repoId == nil { return "未绑定项目" }
+        if thread?.checkoutId == nil { return "缺少工作区" }
+        if checkoutContextLoading { return "验证工作区" }
+        if !checkoutIsAvailable { return "工作区不可用" }
+        return "本地可执行"
+    }
+
+    var agentWorkspaceStatusDetail: String {
+        if busy { return liveActivity?.lastActivity ?? "Agent 正在执行" }
+        if isProjectOnlyConversation {
+            if let reason = agentSendBlockReason {
+                return "\(reason) 尚未关联本地工作区，无法执行代码操作。"
+            }
+            return "当前会话绑定到项目，可继续需求与计划对话；尚未关联本地工作区，无法执行代码操作。"
+        }
+        if !selectedProviderReady {
+            if selectedProvider == "joycode" {
+                return "JoyCode 尚未就绪；请先在本机 JoyCode 登录并确认模型配置。"
+            }
+            return selectedProvider == "api" ? "兼容 API 配置尚未就绪；请检查 Endpoint、必要的 API Key 与模型" : provider
+        }
+        if thread?.repoId == nil { return "当前会话可以对话，但没有项目工作区，无法执行代码操作。" }
+        if thread?.checkoutId == nil {
+            return "当前会话关联了项目，但没有可用工作区；请重新选择项目后新建会话。"
+        }
+        if checkoutContextLoading { return "正在验证当前会话关联的工作区。" }
+        if !checkoutIsAvailable {
+            return "当前工作区不可用或缺少 Git 信息；请切换到有效工作区后再执行。"
+        }
+        return "本地模型服务和当前工作区已就绪；远程连接状态单独显示。"
+    }
+
     // Single send-readiness boundary shared by the composer and send().
     // A projectless conversation remains valid; repository effects still
     // require the thread's bound checkout to pass physical verification.

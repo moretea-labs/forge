@@ -866,9 +866,19 @@ final class NativeWorkspaceTests: XCTestCase {
             thread,repoId:nil,checkoutId:nil,projectId:"project-only"
         ))
         XCTAssertNil(model.agentSendBlockReason)
+        XCTAssertTrue(model.isProjectOnlyConversation)
+        XCTAssertEqual(model.agentWorkspaceStatusLabel,"仅项目上下文")
+        XCTAssertTrue(model.agentWorkspaceStatusDetail.contains("需求与计划对话"))
+        XCTAssertTrue(model.agentWorkspaceStatusDetail.contains("无法执行代码操作"))
         XCTAssertFalse(NativeWorkspace.apiTurnAllowsEffects(
             provider:provider,thread:thread,accessMode:"full_access"
         ))
+
+        let unbound=NativeWorkspace(store:folder.appendingPathComponent("unbound-conversations.json"))
+        unbound.localApiSettings=model.localApiSettings
+        unbound.newThread(provider:provider)
+        XCTAssertFalse(unbound.isProjectOnlyConversation)
+        XCTAssertEqual(unbound.agentWorkspaceStatusLabel,"未绑定项目")
     }
 
     func testIncompleteManagedProcessIsAvailableToOrdinaryFollowUpWithoutReplaying() {

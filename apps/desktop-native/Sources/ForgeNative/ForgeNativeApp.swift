@@ -1539,10 +1539,25 @@ private struct AgentPane: View {
                                         .lineSpacing(4)
                                         .frame(maxWidth:470)
                                 }
-                                if !model.checkoutIsAvailable || !model.selectedProviderReady {
+                                if model.isProjectOnlyConversation {
+                                    if model.agentSendBlockReason == nil {
+                                        HStack(spacing:8) {
+                                            starterPromptButton("梳理项目需求",systemImage:"list.bullet.clipboard",
+                                                                prompt:"读取当前项目的 Requirement 与 Plan，整理目标、约束和待确认事项。",
+                                                                requiresCheckout:false)
+                                            starterPromptButton("制定下一步",systemImage:"arrow.turn.down.right",
+                                                                prompt:"基于当前项目的 Requirement 与 Plan，提出一个最小可验收的下一步；只分析，不执行代码操作。",
+                                                                requiresCheckout:false)
+                                        }
+                                    } else if !model.selectedProviderReady {
+                                        Button("设置模型") { model.show(.settings) }
+                                            .buttonStyle(.bordered)
+                                            .accessibilityIdentifier("agent.onboarding.provider")
+                                    }
+                                } else if !model.checkoutIsAvailable || !model.selectedProviderReady {
                                     HStack(spacing:12) {
                                         if !model.checkoutIsAvailable {
-                                            Button("选择或添加项目",action:onChooseProject)
+                                            Button(model.thread?.repoId == nil ? "选择或添加项目" : "选择工作区",action:onChooseProject)
                                                 .buttonStyle(.borderedProminent)
                                                 .accessibilityIdentifier("agent.onboarding.project")
                                         }
@@ -2210,7 +2225,14 @@ private struct AgentPane: View {
     }
 
     private var agentEmptyStateDescription: String {
-        if model.checkoutId == nil {
+        if model.isProjectOnlyConversation {
+            if let reason = model.agentSendBlockReason { return reason }
+            return "当前项目可用于需求与计划对话；关联本地工作区后即可执行代码操作。"
+        }
+        if model.thread?.repoId != nil && model.thread?.checkoutId == nil {
+            return "当前会话关联了项目，但没有可用工作区；请选择工作区后即可执行代码操作。"
+        }
+        if model.thread?.repoId == nil {
             return model.projects.isEmpty
                 ? "添加本地项目后即可处理代码；也可以不选项目直接对话。"
                 : "选择项目和工作区后即可处理代码；也可以不选项目直接对话。"
@@ -2218,19 +2240,6 @@ private struct AgentPane: View {
         if !model.checkoutIsAvailable { return "当前工作区尚未就绪，请重新选择项目或工作区。" }
         if !model.selectedProviderReady { return "已选择项目。设置可用模型后即可开始任务。" }
         return "描述你想完成的工作，或选择下方的常用操作。"
-    }
-
-    private var agentWorkspaceStatusLabel: String {
-        if model.busy { return "执行中" }
-        if !model.selectedProviderReady {
-            if model.selectedProvider == "joycode" { return "JoyCode 未就绪" }
-            return model.selectedProvider == "api" ? "API 未配置" : "Codex 未就绪"
-        }
-        if model.thread?.repoId != nil && model.thread?.checkoutId == nil { return "缺少工作区" }
-        if model.thread?.repoId == nil { return "未绑定项目" }
-        if model.checkoutContextLoading { return "验证工作区" }
-        if !model.checkoutIsAvailable { return "工作区不可用" }
-        return "本地可执行"
     }
 
     private var agentWorkspaceStatusColor: Color {
@@ -2242,25 +2251,6 @@ private struct AgentPane: View {
             return Color.orange
         }
         return model.thread?.repoId == nil ? Color.secondary : Color.green
-    }
-
-    private var agentWorkspaceStatusDetail: String {
-        if model.busy { return model.liveActivity?.lastActivity ?? "Agent 正在执行" }
-        if !model.selectedProviderReady {
-            if model.selectedProvider == "joycode" {
-                return "JoyCode 尚未就绪；请先在本机 JoyCode 登录并确认模型配置。"
-            }
-            return model.selectedProvider == "api" ? "兼容 API 配置尚未就绪；请检查 Endpoint、必要的 API Key 与模型" : model.provider
-        }
-        if model.thread?.repoId != nil && model.thread?.checkoutId == nil {
-            return "当前会话关联了项目，但没有可用工作区；请重新选择项目后新建会话。"
-        }
-        if model.checkoutContextLoading { return "正在验证当前会话关联的工作区。" }
-        if model.thread?.repoId != nil && !model.checkoutIsAvailable {
-            return "当前工作区不可用或缺少 Git 信息；请切换到有效工作区后再执行。"
-        }
-        if model.thread?.repoId == nil { return "当前会话可以对话，但没有项目工作区，无法执行代码操作。" }
-        return "本地模型服务和当前工作区已就绪；远程连接状态单独显示。"
     }
 
     private var agentWorkspaceBar: some View {
@@ -2305,16 +2295,16 @@ private struct AgentPane: View {
                     Circle()
                         .fill(agentWorkspaceStatusColor)
                         .frame(width:6,height:6)
-                    Text(agentWorkspaceStatusLabel)
+                    Text(model.agentWorkspaceStatusLabel)
                         .font(.system(size:10.5,weight:.medium))
                         .foregroundStyle(ForgePalette.secondary)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("\(agentWorkspaceStatusDetail)\n点击刷新会话状态和模型服务")
+            .help("\(model.agentWorkspaceStatusDetail)\n点击刷新会话状态和模型服务")
             .accessibilityLabel("Agent 状态")
-            .accessibilityValue(agentWorkspaceStatusLabel)
+            .accessibilityValue(model.agentWorkspaceStatusLabel)
             .accessibilityIdentifier("agent.workspace-refresh")
         }
         .frame(maxWidth:1320)
@@ -2459,7 +2449,12 @@ private struct AgentPane: View {
         }
     }
 
-    private func starterPromptButton(_ title: String, systemImage: String, prompt: String) -> some View {
+    private func starterPromptButton(
+        _ title: String,
+        systemImage: String,
+        prompt: String,
+        requiresCheckout: Bool = true
+    ) -> some View {
         Button {
             model.draft = prompt
             composerFocused = true
@@ -2475,8 +2470,8 @@ private struct AgentPane: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(model.busy || model.checkoutId == nil)
-        .help(model.checkoutId == nil ? "请先选择包含可用工作区的项目" : title)
+        .disabled(model.busy || (requiresCheckout && model.checkoutId == nil))
+        .help(requiresCheckout && model.checkoutId == nil ? "请先选择包含可用工作区的项目" : title)
     }
 
     private func activityTrailRow(_ event: AgentLiveActivityEvent) -> some View {
