@@ -1241,9 +1241,16 @@ async function establishAuthoritativeNativeForeground(
     );
   }
 
+  // The verification budget is a maximum settling window, not a mandatory
+  // sleep. An exact native tab that is already foreground needs no delay.
+  const verifiedState = async (): Promise<{ frontmost: boolean; active: boolean }> => {
+    const immediate = await page.foregroundState!();
+    if ((immediate.frontmost && immediate.active) || waitMs <= 0) return immediate;
+    await delay(waitMs);
+    return page.foregroundState!();
+  };
   await page.bringToFront();
-  await delay(waitMs);
-  let state = await page.foregroundState();
+  let state = await verifiedState();
   if (state.frontmost && state.active) return state;
 
   const product = connection.browserProduct;
@@ -1270,8 +1277,7 @@ async function establishAuthoritativeNativeForeground(
   // App-level activation is intentionally separate from tab selection. Re-assert the exact
   // saved tab after the app becomes frontmost, then verify both authorities together.
   await page.bringToFront();
-  await delay(waitMs);
-  state = await page.foregroundState();
+  state = await verifiedState();
   if (!state.frontmost || !state.active) {
     throw new AssistantPluginError(
       'PLUGIN_BROWSER_ACTIVATION_FAILED',
