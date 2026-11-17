@@ -35,6 +35,8 @@ export interface McpTimingTrace {
   gatewayProxyCanonicalDispatchLagMs?: number;
   /** Canonical Runtime server duration projected back through the proxy response. */
   gatewayProxyCanonicalDurationMs?: number;
+  /** Exact join to the existing canonical_runtime audit span; diagnostic only. */
+  gatewayProxyCanonicalTraceId?: string;
   /** Public Gateway only: response/transport tail after canonical handler completion. */
   gatewayProxyReturnMs?: number;
   gatewayProxyConnectionState?: 'reused' | 'cold_connect' | 'coalesced_connect' | 'identity_reconnect';

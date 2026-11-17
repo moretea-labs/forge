@@ -5,7 +5,7 @@ import { processToolDefinitions } from '../../adapters/mcp/runtime-gateway/proce
 import { mcpToolDefinitionToSdk } from '../../packages/protocols/mcp/tool-contract';
 import { routeDurableMcpCall } from '../../adapters/mcp/runtime-gateway/router';
 import { callProcessTool } from '../../src/runtime/execution/process-runtime/tool-dispatch';
-import { createCanonicalRuntimeProxy, createMcpToolContext } from '../../adapters/mcp/server';
+import { createCanonicalRuntimeProxy, createMcpToolContext, deriveCanonicalForwardingTiming } from '../../adapters/mcp/server';
 import { Server } from '@modelcontextprotocol/server';
 import { Client, SdkErrorCode, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { startRuntimeMcpTransport } from '../../src/runtime/root/mcp-transport';
@@ -1598,7 +1598,7 @@ test('retired Runtime sockets cannot initialize sessions after same-endpoint rep
         server.setRequestHandler('tools/list', async () => ({ tools: [] }));
         server.setRequestHandler('tools/call', async request => {
           if (request.params.arguments?.block) { admitted(); await gate; }
-          return { content: [{ type: 'text' as const, text: generation }] };
+          return { content: [{ type: 'text' as const, text: generation }], structuredContent: { responseMeta: { traceId: '30a0144f-1c29-4b01-8a4a-c34a36b197a5' } } };
         });
         return server;
       },
@@ -1626,7 +1626,9 @@ test('retired Runtime sockets cannot initialize sessions after same-endpoint rep
     const port = runtime.port;
     await runtime.close();
     runtime = await start(port, 'replacement');
-    expect((await proxy.callTool(context, 'controller_ready', {})).content).toEqual([{ type: 'text', text: 'replacement' }]);
+    const replacementTiming: NonNullable<Parameters<typeof proxy.callTool>[3]> = {};
+    expect((await proxy.callTool(context, 'controller_ready', {}, replacementTiming)).content).toEqual([{ type: 'text', text: 'replacement' }]);
+    expect(replacementTiming.gatewayProxyCanonicalTraceId).toBe('30a0144f-1c29-4b01-8a4a-c34a36b197a5');
     expect(runtime.sessionSnapshot?.().active).toBe(1);
   } finally {
     release();
@@ -1804,3 +1806,16 @@ test(`durable Process survives real Gateway process replacement (lost receipt=${
   }
 }, 20_000);
 }
+
+
+test('proxy audit correlation retains Canonical trace identity without requiring timing fields', () => {
+  const traceId = '30a0144f-1c29-4b01-8a4a-c34a36b197a5';
+  expect(deriveCanonicalForwardingTiming({
+    gatewayCallStartedAtMs: 0, gatewayCallDurationMs: 5,
+    response: { content: [], structuredContent: { responseMeta: { traceId } } },
+  })).toEqual({ gatewayProxyCanonicalTraceId: traceId });
+  expect(deriveCanonicalForwardingTiming({
+    gatewayCallStartedAtMs: 0, gatewayCallDurationMs: 5,
+    response: { content: [], structuredContent: { responseMeta: { traceId: 'untrusted arbitrary data' } } },
+  })).toEqual({});
+});

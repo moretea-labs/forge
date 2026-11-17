@@ -77,6 +77,13 @@ freeze unrelated Runtime observations while a semantic source fence is sampled.
 This mitigates a reproduced local blocking path, not a proven attribution of a
 historical production latency spike.
 
+Gateway timing records retain `gatewayProxyCanonicalTraceId` from the Runtime's
+existing response metadata. Join that opaque UUID to a `canonical_runtime`
+record's `traceId` in the same audit ledger, keeping both spans' own IDs intact.
+This avoids timestamp/tool-name guessing for callers without an explicit durable
+request key. The link remains diagnostic and never grants retry/idempotency
+or execution authority; malformed arbitrary metadata is not copied into it.
+
 ## Verification
 
 ```text

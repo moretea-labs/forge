@@ -608,6 +608,7 @@ type GatewayProxyTiming = Pick<McpTimingTrace,
   | 'gatewayProxyCallMs'
   | 'gatewayProxyCanonicalDispatchLagMs'
   | 'gatewayProxyCanonicalDurationMs'
+  | 'gatewayProxyCanonicalTraceId'
   | 'gatewayProxyReturnMs'
   | 'gatewayProxyConnectionState'
 >;
@@ -622,23 +623,29 @@ export function deriveCanonicalForwardingTiming(input: {
   gatewayCallStartedAtMs: number;
   gatewayCallDurationMs: number;
   response: CallToolResult;
-}): Pick<GatewayProxyTiming, 'gatewayProxyCanonicalDispatchLagMs' | 'gatewayProxyCanonicalDurationMs' | 'gatewayProxyReturnMs'> {
+}): Pick<GatewayProxyTiming, 'gatewayProxyCanonicalDispatchLagMs' | 'gatewayProxyCanonicalDurationMs' | 'gatewayProxyCanonicalTraceId' | 'gatewayProxyReturnMs'> {
   const structured = input.response.structuredContent;
   const responseMeta = structured && typeof structured === 'object' && !Array.isArray(structured)
     && (structured as Record<string, unknown>).responseMeta
     && typeof (structured as Record<string, unknown>).responseMeta === 'object'
     ? (structured as Record<string, unknown>).responseMeta as Record<string, unknown>
     : undefined;
+  // Only retain the Runtime's opaque UUID, never arbitrary returned metadata.
+  const traceId = responseMeta?.traceId;
+  const correlation = typeof traceId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(traceId)
+    ? { gatewayProxyCanonicalTraceId: traceId }
+    : {};
   const canonicalStartedAt = typeof responseMeta?.serverStartedAt === 'string'
     ? Date.parse(responseMeta.serverStartedAt)
     : Number.NaN;
   const canonicalDurationMs = typeof responseMeta?.serverDurationMs === 'number'
     ? responseMeta.serverDurationMs
     : Number.NaN;
-  if (!Number.isFinite(canonicalStartedAt) || !Number.isFinite(canonicalDurationMs)) return {};
+  if (!Number.isFinite(canonicalStartedAt) || !Number.isFinite(canonicalDurationMs)) return correlation;
   const dispatchLagMs = roundedMs(canonicalStartedAt - input.gatewayCallStartedAtMs);
   const boundedCanonicalDurationMs = roundedMs(canonicalDurationMs);
   return {
+    ...correlation,
     gatewayProxyCanonicalDispatchLagMs: dispatchLagMs,
     gatewayProxyCanonicalDurationMs: boundedCanonicalDurationMs,
     gatewayProxyReturnMs: roundedMs(input.gatewayCallDurationMs - dispatchLagMs - boundedCanonicalDurationMs),
