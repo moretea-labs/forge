@@ -1985,11 +1985,13 @@ struct ZenWorkspacePane: View {
     }
 
     private var createPlanSheet: some View {
-        VStack(alignment:.leading,spacing:12) {
+        VStack(alignment:.leading,spacing:ForgeClientDesign.Spacing.section) {
             Text(newParentPlanId == nil ? "新增 Plan" : "新增子 Plan")
-                .font(.system(size:17,weight:.semibold))
-            TextField("计划目标",text:$newPlanGoal,axis:.vertical).lineLimit(3...5)
-                .disabled(pendingCreatedPlanId != nil)
+                .font(ForgeClientDesign.Typography.sheetTitle)
+            ForgeClientFormField(label: "计划目标") {
+                TextField("填写计划目标",text:$newPlanGoal,axis:.vertical).lineLimit(3...5)
+                    .disabled(pendingCreatedPlanId != nil)
+            }
             if pendingCreatedPlanId != nil {
                 Text("Plan 已创建，等待详情确认。")
                     .font(.system(size:12)).foregroundStyle(.secondary)
@@ -2016,7 +2018,7 @@ struct ZenWorkspacePane: View {
                     && newPlanGoal.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty))
             }
         }
-        .padding(22).frame(width:400)
+        .padding(ForgeClientDesign.Spacing.sheetPadding).frame(width:400)
         .accessibilityIdentifier("zen.plan.create")
     }
 
@@ -2528,14 +2530,13 @@ private struct ZenReviewSheet: View {
     var body: some View {
         VStack(alignment:.leading,spacing:16) {
             HStack {
-                Text("Review").font(.system(size:17,weight:.semibold))
+                Text("Review").font(ForgeClientDesign.Typography.sheetTitle)
                 Spacer()
                 Button { dismiss() } label: { Image(systemName:"xmark") }
                     .buttonStyle(.plain)
                     .accessibilityLabel("取消 Review")
             }
-            Text(record.title).font(.system(size:12)).lineLimit(2)
-            Divider()
+            Text(record.title).font(ForgeClientDesign.Typography.body).lineLimit(2)
             if !reviewProviders.isEmpty {
                 ScrollView {
                     ZenReadOnlyReviewPane(
@@ -2596,7 +2597,7 @@ private struct ZenReviewSheet: View {
             }
             }
         }
-        .padding(22)
+        .padding(ForgeClientDesign.Spacing.sheetPadding)
         .frame(width:reviewProviders.isEmpty ? 450 : 650,
                height:reviewProviders.isEmpty ? nil : 580)
         .accessibilityIdentifier("zen.review.configure")
@@ -2697,13 +2698,15 @@ struct ZenProjectDirectorySheet: View {
             }
 
             if creating || editingProjectId != nil {
-                VStack(alignment:.leading,spacing:10) {
+                VStack(alignment:.leading,spacing:ForgeClientDesign.Spacing.row) {
                     Text(creating ? "新建项目" : "重命名项目")
-                        .font(.system(size:13,weight:.semibold))
-                    TextField("项目名称",text:$draftName)
-                        .textFieldStyle(.roundedBorder)
-                        .accessibilityIdentifier("zen.projects.name")
-                        .onSubmit { save() }
+                        .font(ForgeClientDesign.Typography.sectionTitle)
+                    ForgeClientFormField(label: "项目名称") {
+                        TextField("项目名称",text:$draftName)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityIdentifier("zen.projects.name")
+                            .onSubmit { save() }
+                    }
                     if creating {
                         Picker("关联仓库",selection:$newProjectRepositoryId) {
                             Text("仅项目").tag(Optional<String>.none)
