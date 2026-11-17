@@ -3428,6 +3428,7 @@ struct StreamedModelRound {
     anthropic_json: std::collections::BTreeMap<usize, String>,
     completed_response: Option<Value>,
     openai_finish_reason: Option<String>,
+    anthropic_stop_reason: Option<String>,
     finished: bool,
 }
 
@@ -3572,12 +3573,19 @@ impl StreamedModelRound {
                     }
                 }
                 Some("message_delta") => {
-                    if matches!(value.pointer("/delta/stop_reason").and_then(Value::as_str),
-                        Some("max_tokens" | "model_context_window_exceeded")) {
-                        return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
+                    if let Some(reason) = value.pointer("/delta/stop_reason").and_then(Value::as_str) {
+                        if !matches!(reason, "end_turn" | "stop_sequence" | "tool_use") {
+                            return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
+                        }
+                        self.anthropic_stop_reason = Some(reason.to_string());
                     }
                 }
-                Some("message_stop") => self.finished = true,
+                Some("message_stop") => {
+                    if self.anthropic_stop_reason.is_none() {
+                        return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
+                    }
+                    self.finished = true;
+                }
                 _ => {}
             },
             _ => return Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into()),
@@ -4773,6 +4781,49 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_unfinished_round_never_dispatches_tools() {
+        for reason in ["missing-finish", "pause_turn", "refusal", "unknown"] {
+            let (endpoint, server) = spawn_scripted_agent_provider("anthropic", "bun", Some(reason));
+            let host = ScriptedAgentLoopHost::default();
+            let config = json!({"apiProfiles":[{
+                "id":"unfinished-test","endpoint":endpoint,"model":"test-model","apiProtocol":"anthropic"
+            }]});
+            let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+            let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+                &host, config, vec![json!({"role":"user","content":"Read fixture.txt"})],
+                Some("repo_test".into()), Some("checkout_test".into()), "conv-unfinished".into(),
+                Some("api:unfinished-test".into()), None, true, &mut cancellation,
+            ));
+            let requests = server.join().unwrap();
+            assert!(host.tool_calls.lock().unwrap().is_empty(),
+                "Anthropic {reason} must not authorize tool previews");
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+            assert_eq!(requests.len(), 1, "no automatic retry");
+        }
+    }
+
+    #[test]
+    fn anthropic_text_requires_supported_model_stop_evidence() {
+        for reason in [Value::Null, json!("pause_turn"), json!("refusal"), json!("unknown"),
+            json!("end_turn"), json!("stop_sequence")] {
+            let host = RecordingStreamHost::default();
+            let mut round = StreamedModelRound::default();
+            round.consume("anthropic", &json!({"type":"content_block_delta","index":0,
+                "delta":{"type":"text_delta","text":"Preview"}}).to_string(), &host, "conv-stop").unwrap();
+            let result = round.consume("anthropic", &json!({"type":"message_delta",
+                "delta":{"stop_reason":reason}}).to_string(), &host, "conv-stop")
+                .and_then(|()| round.consume("anthropic", &json!({"type":"message_stop"}).to_string(), &host, "conv-stop"))
+                .and_then(|()| round.finish("anthropic"));
+            if matches!(reason.as_str(), Some("end_turn" | "stop_sequence")) {
+                assert_eq!(result.unwrap()["content"][0]["text"], "Preview");
+            } else {
+                assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+            }
+            assert!(host.events.lock().unwrap().iter().any(|event| event["delta"] == "Preview"));
+        }
+    }
+
+    #[test]
     fn openai_missing_finish_reason_never_dispatches_tools() {
         let (endpoint, server) = spawn_scripted_agent_provider("openai", "bun", Some("missing-finish"));
         let host = ScriptedAgentLoopHost::default();
@@ -4982,6 +5033,7 @@ mod tests {
                 "content_block":{"type":"tool_use","id":"tool-1","name":"git_status","input":{}}}).to_string(),
             json!({"type":"content_block_delta","index":1,
                 "delta":{"type":"input_json_delta","partial_json":"{}"}}).to_string(),
+            json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}).to_string(),
             json!({"type":"message_stop"}).to_string(),
         ];
         for data in frames {
@@ -5205,6 +5257,7 @@ mod tests {
                 json!({"type":"content_block_start","index":0,"content_block":{
                     "type":"tool_use","id":"toolu-1","name":"read_file","input":{"path":"README.md"}
                 }}).to_string(),
+                json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}).to_string(),
                 json!({"type":"message_stop"}).to_string()
             ], "read_file"),
         ] {
