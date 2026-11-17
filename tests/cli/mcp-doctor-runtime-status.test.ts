@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { runMcpDoctor } from "../../adapters/mcp/setup";
@@ -93,6 +93,49 @@ describe("forge mcp doctor runtime status", () => {
       expect(report.canonicalRuntime?.endpoint).toBe("http://127.0.0.1:8765/mcp");
     } finally {
       rmSync(join(controllerHome, ".."), { recursive: true, force: true });
+    }
+  });
+
+  test("user-level MCP doctor succeeds from a non-Git directory without invoking Git", () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-mcp-doctor-user-level-"));
+    const controllerHome = join(root, "controller-home");
+    const binDir = join(root, "bin");
+    const gitCalls = join(root, "git-calls.log");
+    const previousCwd = process.cwd();
+    const previousPath = process.env.PATH;
+    const previousControllerHome = process.env.FORGE_CONTROLLER_HOME;
+    try {
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(join(binDir, "git"), `#!/bin/sh\nprintf 'called\\n' >> "${gitCalls}"\nexit 1\n`);
+      chmodSync(join(binDir, "git"), 0o700);
+      process.env.PATH = binDir;
+      delete process.env.FORGE_CONTROLLER_HOME;
+      process.chdir(root);
+
+      const result = runMcpDoctor({ userLevel: true, controllerHome, json: true });
+      const report = JSON.parse(result.lines[0] ?? "{}") as {
+        scope?: string;
+        status?: string;
+        repo?: string;
+        mcp?: { localConfig?: boolean; authConfigured?: boolean };
+        chatgpt?: { setup?: string };
+      };
+
+      expect(existsSync(gitCalls)).toBe(false);
+      expect(result.repoRoot).toBeUndefined();
+      expect(report).toMatchObject({
+        scope: "user",
+        status: "user_level",
+        mcp: { localConfig: false, authConfigured: false },
+        chatgpt: { setup: `forge mcp setup chatgpt --user-level --controller-home ${JSON.stringify(controllerHome)}` },
+      });
+      expect(report.repo).toBeUndefined();
+    } finally {
+      process.chdir(previousCwd);
+      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+      if (previousControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+      else process.env.FORGE_CONTROLLER_HOME = previousControllerHome;
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

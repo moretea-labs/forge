@@ -564,10 +564,15 @@ export function runMcpPrintGuide(opts: {
 
 export function runMcpDoctor(opts: {
   repo?: string;
+  controllerHome?: string;
+  userLevel?: boolean;
   json?: boolean;
 }): McpSetupResult {
-  const repoRoot = resolveMcpRepoRoot(opts.repo ?? ".");
-  const controllerHome = ensureRepoPreferredControllerHome(repoRoot);
+  if (opts.userLevel && opts.repo) throw new Error('MCP_DOCTOR_SCOPE_CONFLICT: --user-level cannot be combined with --repo');
+  const repoRoot = opts.userLevel ? undefined : resolveMcpRepoRoot(opts.repo ?? ".");
+  const controllerHome = repoRoot
+    ? ensureRepoPreferredControllerHome(repoRoot, opts.controllerHome)
+    : ensureControllerHome(opts.controllerHome);
   const localConfig = loadMcpServiceLocalConfig(controllerHome);
   const runtimeState = loadMcpServiceRuntimeState(controllerHome);
   // The Canonical Runtime owner/status projection is the single authoritative
@@ -585,21 +590,20 @@ export function runMcpDoctor(opts: {
   const port = localConfig?.server?.port ?? 8765;
   const authMode = localConfig?.auth?.mode ?? "missing";
   const report = {
-    status: existsSync(join(repoRoot, ".ai", "harness", "policy.json"))
-      ? "ready_local"
-      : "not_adopted",
-    repo: repoRoot,
+    scope: repoRoot ? "repository" : "user",
+    status: repoRoot
+      ? (existsSync(join(repoRoot, ".ai", "harness", "policy.json")) ? "ready_local" : "not_adopted")
+      : "user_level",
+    ...(repoRoot ? { repo: repoRoot } : {}),
     mcp: {
       toolset: 'full',
-      localConfig: existsSync(mcpControllerHomeLocalConfigPath(controllerHome)) || existsSync(
-        join(repoRoot, ".forge", "mcp.local.json"),
+      localConfig: existsSync(mcpControllerHomeLocalConfigPath(controllerHome)) || Boolean(
+        repoRoot && existsSync(join(repoRoot, ".forge", "mcp.local.json")),
       ),
-      guide: existsSync(
-        join(repoRoot, "docs", "forge-chatgpt-mcp-setup.md"),
-      ),
+      ...(repoRoot ? { guide: existsSync(join(repoRoot, "docs", "forge-chatgpt-mcp-setup.md")) } : {}),
       authConfigured:
-        (authMode === "oauth" && (existsSync(mcpControllerHomeOAuthPath(controllerHome)) || existsSync(mcpOAuthPath(repoRoot)))) ||
-        (authMode === "bearer" && (existsSync(mcpControllerHomeTokenPath(controllerHome)) || existsSync(mcpTokenPath(repoRoot)))),
+        (authMode === "oauth" && (existsSync(mcpControllerHomeOAuthPath(controllerHome)) || Boolean(repoRoot && existsSync(mcpOAuthPath(repoRoot))))) ||
+        (authMode === "bearer" && (existsSync(mcpControllerHomeTokenPath(controllerHome)) || Boolean(repoRoot && existsSync(mcpTokenPath(repoRoot))))),
       localController: {
         enabled: localConfig?.localController?.enabled ?? true,
         host: localConfig?.localController?.host ?? "127.0.0.1",
@@ -624,7 +628,9 @@ export function runMcpDoctor(opts: {
       publicEndpoint: localConfig?.chatgpt?.endpoint,
       authMode,
       manualStepsRequired: true,
-      setup: "forge mcp setup chatgpt --repo .",
+      setup: repoRoot
+        ? `forge mcp setup chatgpt --repo ${repoRoot}`
+        : `forge mcp setup chatgpt --user-level${opts.controllerHome ? ` --controller-home ${JSON.stringify(resolve(opts.controllerHome))}` : ""}`,
     },
     runtime: runtimeState
       ? {
@@ -654,20 +660,24 @@ export function runMcpDoctor(opts: {
   };
   return {
     status: "ok",
-    repoRoot,
+    ...(repoRoot ? { repoRoot } : {}),
     changed: [],
     lines:
       opts.json === true
         ? [JSON.stringify(report, null, 2)]
         : [
-            `[forge mcp] Repo: ${repoRoot}`,
+            ...(repoRoot
+              ? [`[forge mcp] Repo: ${repoRoot}`]
+              : [`[forge mcp] Scope: user Controller (${controllerHome})`]),
             `[forge mcp] Status: ${report.status}`,
+            ...(repoRoot ? [`[forge mcp] ChatGPT guide: ${report.mcp.guide ? "present" : "missing"}`] : [
+              `[forge mcp] User Controller config: ${report.mcp.localConfig ? "present" : "missing"}`,
+            ]),
             `[forge mcp] ChatGPT MCP server name: ${
               configuredServerName
                 ? `${configuredServerName}${serverNameNeedsMigration ? ' (legacy shared name; rerun setup to disambiguate this Forge instance)' : ''}`
                 : `missing (run setup; default is ${defaultServerName})`
             }`,
-            `[forge mcp] ChatGPT guide: ${report.mcp.guide ? "present" : "missing"}`,
             `[forge mcp] Toolset: ${report.mcp.toolset}`,
             `[forge mcp] Local Controller: ${report.mcp.localController.enabled ? report.chatgpt.localController : "disabled"}`,
             `[forge mcp] ChatGPT auth: ${report.mcp.authConfigured ? `${authMode} present` : "missing"}`,
