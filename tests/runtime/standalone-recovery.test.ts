@@ -10,6 +10,7 @@ import { dirname, join, resolve } from 'path';
 import { sha256FileBounded } from '../../src/runtime/root/known-good-recovery';
 import { parseOpenAiSecureTunnelRuntimeStatus } from '../../adapters/mcp/tunnels/openai-secure-tunnel';
 import { probeRuntimeGateway } from '../../src/runtime/standalone-recovery/probe-observation';
+import { macSystemProxyEnvironment } from '../../src/runtime/standalone-recovery/recovery-shared';
 import {
   activateRuntimeRelease,
   activatePinnedRuntimeRelease,
@@ -37,6 +38,7 @@ import {
   promoteConfiguredRuntimeReleaseSessionKnownGood,
   recoverPrimaryRuntime,
   recordWatchdogRuntimeHealthy,
+  managedPrimaryTransportNeedsConnectorRepair,
   repairPublicTunnel,
   restartPrimaryConnector,
   restartPrimaryRuntime,
@@ -1625,6 +1627,30 @@ test('Recovery-owned commands keep an account HOME without inheriting Runtime au
 
   const interactive = recoveryCommandEnvironment({ PATH: '/usr/bin', HOME: '/Users/other' }, '/Users/example');
   expect(interactive.HOME).toBe('/Users/other');
+});
+
+test('Recovery tunnel commands use the current macOS proxy rather than an inherited fixed client port', () => {
+  const inherited = { HTTP_PROXY: 'http://127.0.0.1:7890', HTTPS_PROXY: 'http://127.0.0.1:7890', ALL_PROXY: 'socks5://127.0.0.1:7890', NO_PROXY: 'internal.local' };
+  const flclash = macSystemProxyEnvironment('HTTPEnable : 1\nHTTPProxy : 127.0.0.1\nHTTPPort : 7890\nHTTPSEnable : 1\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 7890\n', inherited);
+  expect(flclash.HTTPS_PROXY).toBe('http://127.0.0.1:7890');
+  const changed = macSystemProxyEnvironment('HTTPEnable : 1\nHTTPProxy : 127.0.0.1\nHTTPPort : 6080\nHTTPSEnable : 1\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 6080\n', inherited);
+  expect(changed.HTTP_PROXY).toBe('http://127.0.0.1:6080');
+  expect(changed.HTTPS_PROXY).toBe('http://127.0.0.1:6080');
+  expect(changed.ALL_PROXY).toBeUndefined();
+  expect(changed.NO_PROXY).toContain('internal.local');
+  expect(changed.NO_PROXY).toContain('127.0.0.1');
+  const tun = macSystemProxyEnvironment('HTTPEnable : 0\nHTTPSEnable : 0\nSOCKSEnable : 0\n', inherited);
+  expect(tun.HTTP_PROXY).toBeUndefined();
+  expect(tun.HTTPS_PROXY).toBeUndefined();
+  expect(tun.ALL_PROXY).toBeUndefined();
+});
+
+test('Recovery macOS proxy resolution handles system SOCKS and rejects unsupported PAC-only config', () => {
+  const socks = macSystemProxyEnvironment('SOCKSEnable : 1\nSOCKSProxy : localhost\nSOCKSPort : 9090\n', {});
+  expect(socks.HTTPS_PROXY).toBe('socks5://localhost:9090');
+  expect(socks.HTTP_PROXY).toBe('socks5://localhost:9090');
+  expect(() => macSystemProxyEnvironment('ProxyAutoConfigEnable : 1\nProxyAutoConfigURLString : https://example.org/a.pac\n', {})).toThrow('MACOS_SYSTEM_PROXY_PAC_UNSUPPORTED');
+  expect(() => macSystemProxyEnvironment('HTTPSEnable : 1\nHTTPSProxy : localhost\nHTTPSPort : bad\n', {})).toThrow('MACOS_SYSTEM_PROXY_INVALID');
 });
 
 test('automatic release reconciliation backs off a non-converging step instead of forking it every interval', () => {
@@ -3985,6 +4011,32 @@ describe('standalone recovery on canonical Runtime', () => {
       lastFullVerifyAt: Date.now(),
     });
     expect(tick.decision.action).toBe('restart_primary_connector');
+  });
+
+  test('does not restart a healthy Connector for an OpenAI Tunnel remote-control-plane-only incident', () => {
+    const locallyReady = {
+      alias: 'forge-current',
+      tunnelId: 'tunnel-primary',
+      healthy: true,
+      ready: true,
+      tunnelMatches: true,
+      endpointMatches: true,
+      controlPlaneState: 'unknown',
+    };
+    expect(managedPrimaryTransportNeedsConnectorRepair(true, {
+      ok: false, detail: 'remote status unavailable', value: locallyReady,
+    })).toBe(false);
+    expect(managedPrimaryTransportNeedsConnectorRepair(true, {
+      ok: false, detail: 'remote degraded', value: { ...locallyReady, controlPlaneState: 'degraded' },
+    })).toBe(false);
+    expect(managedPrimaryTransportNeedsConnectorRepair(true, {
+      ok: false, detail: 'local listener failed', value: { ...locallyReady, healthy: false },
+    })).toBe(true);
+    expect(managedPrimaryTransportNeedsConnectorRepair(true, {
+      ok: false, detail: 'tunnel identity changed', value: { ...locallyReady, tunnelMatches: false },
+    })).toBe(true);
+    expect(managedPrimaryTransportNeedsConnectorRepair(true, undefined)).toBe(true);
+    expect(managedPrimaryTransportNeedsConnectorRepair(false, undefined)).toBe(false);
   });
 
   test('keeps legacy Connector MCP transport failures fail-closed', async () => {

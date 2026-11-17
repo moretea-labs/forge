@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from 'fs';
+import { readFileSync, realpathSync, statSync } from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';
 import type { CallToolResult as SdkCallToolResult } from "@modelcontextprotocol/client";
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
@@ -49,16 +49,18 @@ export function boundedPluginArtifactImageContent(
     const path = typeof record.path === 'string' ? record.path : '';
     if (!INLINE_PLUGIN_IMAGE_MEDIA_TYPES.has(mediaType) || !path) continue;
 
-    const resolvedPath = resolve(path);
-    if (seenPaths.has(resolvedPath)) continue;
-    const contained = allowedRoots.some((allowedRoot) => {
-      const rel = relative(allowedRoot, resolvedPath);
-      return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
-    });
-    if (!contained) continue;
-    if (!existsSync(resolvedPath)) continue;
-
     try {
+      const resolvedPath = realpathSync(path);
+      if (seenPaths.has(resolvedPath)) continue;
+      const contained = allowedRoots.some((allowedRoot) => {
+        // Compare physical paths: a controller-local symlink must not expose
+        // a screenshot (or any file) outside the selected storage authority.
+        let root: string;
+        try { root = realpathSync(allowedRoot); } catch { return false; }
+        const rel = relative(root, resolvedPath);
+        return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+      });
+      if (!contained) continue;
       const stat = statSync(resolvedPath);
       if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_INLINE_PLUGIN_IMAGE_BYTES) continue;
       images.push({
@@ -87,6 +89,56 @@ export function resultWithPluginArtifactImages(
     structuredContent: value,
   };
   return richResult as unknown as CallToolResult;
+}
+
+const SCREENSHOT_ARTIFACT_KINDS = new Set(['ios_simulator_screenshot', 'ios_agent_device_screenshot']);
+
+function hasScreenshotArtifact(value: Record<string, unknown> | undefined): boolean {
+  if (!value) return false;
+  const nested = value.result && typeof value.result === 'object' && !Array.isArray(value.result)
+    ? value.result as Record<string, unknown>
+    : undefined;
+  const candidates = [
+    ...(Array.isArray(value.artifactCandidates) ? value.artifactCandidates : []),
+    ...(nested && Array.isArray(nested.artifactCandidates) ? nested.artifactCandidates : []),
+  ];
+  return candidates.some((candidate) => candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+    && [candidate.kind, candidate.artifactType].some((kind) => typeof kind === 'string' && SCREENSHOT_ARTIFACT_KINDS.has(kind)));
+}
+
+function compactSubmittedPluginPayload(value: Record<string, unknown>, screenshotArtifact = false): Record<string, unknown> {
+  const compact = { ...value };
+  delete compact.artifactCandidates;
+  if (screenshotArtifact || SCREENSHOT_ARTIFACT_KINDS.has(String(compact.artifactType ?? ''))) {
+    // The portable screenshot reference is enough; local paths and shell argv stay controller-owned.
+    delete compact.absolutePath;
+    delete compact.command;
+  }
+  return compact;
+}
+
+/** Compact submitted provider metadata while extracting images from its original envelope. */
+export function resultWithSubmittedPluginActionImages(
+  value: Record<string, unknown>,
+  controllerHome: string,
+  repoId: string,
+  submittedResult: Record<string, unknown> | undefined,
+): CallToolResult {
+  const nested = submittedResult?.result;
+  const screenshotArtifact = hasScreenshotArtifact(submittedResult);
+  const compactNested = nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? compactSubmittedPluginPayload(nested as Record<string, unknown>, screenshotArtifact)
+    : undefined;
+  const compactResult = compactNested
+    ? {
+        ...compactNested,
+        ...(submittedResult?.work && typeof submittedResult.work === 'object' && !Array.isArray(submittedResult.work)
+          ? { work: submittedResult.work }
+          : {}),
+      }
+    : submittedResult ? compactSubmittedPluginPayload(submittedResult, screenshotArtifact) : undefined;
+  const compactValue = compactResult ? { ...value, result: compactResult } : value;
+  return resultWithPluginArtifactImages(compactValue, controllerHome, repoId, submittedResult);
 }
 
 export function scrubPathText(text: string, replacements: string[]): string {

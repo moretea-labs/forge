@@ -1079,7 +1079,7 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
               const maxBytes = typeof args.max_bytes === 'number' ? args.max_bytes : 64 * 1024;
               const loaded = readExecutionArtifact(ctx.controllerHome, artifactId, maxBytes, { legacyRepoId: legacyArtifactRepoId, principalId: artifactPrincipalId });
               // Do not re-attach controller/repository/runtime envelopes here; multi-repo layer already compact.
-              return result({
+              const value = {
                 referenceType: 'artifact',
                 artifactId: loaded.artifact.artifactId,
                 artifactKind: loaded.artifact.kind,
@@ -1092,7 +1092,16 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
                 next: loaded.truncated
                   ? `Artifact truncated at ${maxBytes} bytes. Re-call get_artifact with a larger max_bytes (up to 512KB) or page via result refs.`
                   : 'Artifact content loaded.',
-              });
+              };
+              // Evidence artifacts store the plugin's bounded file descriptor,
+              // not image bytes. Reuse direct-plugin image delivery after the
+              // canonical artifact reader has checked identity and principal.
+              const descriptor = !loaded.truncated && loaded.artifact.kind === 'evidence'
+                && loaded.content && typeof loaded.content === 'object' && !Array.isArray(loaded.content)
+                ? loaded.content as Record<string, unknown> : undefined;
+              return resultWithPluginArtifactImages(value, ctx.controllerHome, loaded.artifact.repoId ?? '',
+                loaded.artifact.repoId && descriptor?.boundedToControllerStorage === true
+                  ? { artifactCandidates: [descriptor] } : undefined);
             }
       case 'list_jobs': {
               const repository = selected(ctx, args);

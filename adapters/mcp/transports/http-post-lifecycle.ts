@@ -88,10 +88,11 @@ export function terminateReclaimedMcpPost(response: Response): void {
       response.status(504).json({
         error: 'request_timeout',
         code: 'MCP_ACTIVE_POST_STALLED',
-        message: 'This MCP request exceeded its active-response bound; retry if the client is still connected.',
+        message: 'This MCP observation exceeded its active-response bound. Reconcile the original request or Process identity before retrying.',
         recoverable: true,
-        retryable: true,
-        action: 'retry',
+        retryable: false,
+        executionOutcome: 'unknown',
+        action: 'reconcile',
       });
     }
   } catch {
@@ -102,4 +103,47 @@ export function terminateReclaimedMcpPost(response: Response): void {
   } catch {
     // A detached or already-closed response needs no further cleanup.
   }
+}
+
+/** Finish admitted response observations before retiring transport sessions. */
+export async function drainMcpPosts(
+  registry: McpActivePostRegistry,
+  closeTransports: () => Promise<void>,
+  timeoutMs = 30_000,
+): Promise<void> {
+  const responses = [...registry.activePostStartedAt.keys()];
+  await Promise.all(responses.map(response => new Promise<void>(resolve => {
+    let flushTimer: ReturnType<typeof setTimeout> | undefined;
+    const done = (): void => {
+      clearTimeout(timer);
+      if (flushTimer) clearTimeout(flushTimer);
+      response.off('finish', done);
+      response.off('close', done);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      // Losing observation does not establish execution failure. Never instruct
+      // a caller to replay an admitted operation with an unknown outcome.
+      if (!response.headersSent) {
+        // Bun may never emit finish/close for a detached response. Bound even
+        // the final observation-error flush without extending execution authority.
+        flushTimer = setTimeout(() => { response.destroy(); done(); }, 1_000);
+        response.status(503).json({
+          error: 'gateway_shutdown_outcome_unknown',
+          code: 'MCP_GATEWAY_SHUTDOWN_OUTCOME_UNKNOWN',
+          message: 'Gateway observation ended; reconcile the original request or Process identity before retrying.',
+          recoverable: true,
+          retryable: false,
+          action: 'reconcile',
+        });
+      } else {
+        response.destroy();
+        done();
+      }
+    }, timeoutMs);
+    response.once('finish', done);
+    response.once('close', done);
+    if (response.writableEnded || response.writableFinished || response.destroyed || response.closed) done();
+  })));
+  await closeTransports();
 }

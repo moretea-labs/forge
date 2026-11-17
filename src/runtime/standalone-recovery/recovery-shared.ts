@@ -554,15 +554,49 @@ export function recoveryCommandPath(
   return entries.includes(userBin) ? inheritedPath : [userBin, ...entries].join(delimiter);
 }
 /**
- * Child environment for Recovery-owned commands.
- *
- * Keep the hosting Runtime's private FORGE_* authority out, but preserve the
- * account context: user-installed tools resolve their own per-account state from
- * HOME, and a persistent launchd/systemd service starts without an interactive
- * HOME to inherit. Without it, `tunnel-client` cannot see its own alias registry,
- * so Recovery both misreads a healthy dedicated tunnel as stopped and cannot
- * confirm the tunnel it just reconnected.
+ * Resolve the macOS active proxy on each tunnel-client command. macOS launchd
+ * does not inherit GUI System Settings, and stale HTTP_PROXY from another VPN
+ * client must not become a second network authority. A TUN/VPN route has no
+ * explicit HTTP proxy, so clear inherited proxy URLs in that case.
  */
+export function macSystemProxyEnvironment(snapshot: string, inherited: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const settings = new Map<string, string>();
+  for (const line of snapshot.split(/\r?\n/)) {
+    const match = /^\s*([A-Za-z][A-Za-z0-9]*)\s*:\s*(.*?)\s*$/.exec(line);
+    if (match) settings.set(match[1], match[2]);
+  }
+  if (settings.size === 0) throw new Error('MACOS_SYSTEM_PROXY_INVALID');
+  const endpoint = (prefix: 'HTTPS' | 'HTTP' | 'SOCKS', scheme: string): string | undefined => {
+    if (settings.get(`${prefix}Enable`) !== '1') return undefined;
+    const host = settings.get(`${prefix}Proxy`)?.trim() ?? '';
+    const port = Number(settings.get(`${prefix}Port`));
+    if (!/^[A-Za-z0-9.\-:\[\]]+$/.test(host) || !Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error('MACOS_SYSTEM_PROXY_INVALID');
+    }
+    const name = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+    return `${scheme}://${name}:${port}`;
+  };
+  const https = endpoint('HTTPS', 'http');
+  const http = endpoint('HTTP', 'http');
+  const socks = endpoint('SOCKS', 'socks5');
+  if (!https && !http && !socks && settings.get('ProxyAutoConfigEnable') === '1') {
+    throw new Error('MACOS_SYSTEM_PROXY_PAC_UNSUPPORTED');
+  }
+  const next = { ...inherited };
+  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) {
+    delete next[key];
+  }
+  const httpSelected = http ?? https ?? socks;
+  const httpsSelected = https ?? http ?? socks;
+  if (httpSelected) next.HTTP_PROXY = next.http_proxy = httpSelected;
+  if (httpsSelected) next.HTTPS_PROXY = next.https_proxy = httpsSelected;
+  const exclusions = [inherited.NO_PROXY, inherited.no_proxy, 'localhost,127.0.0.1,::1']
+    .filter(Boolean).flatMap((value) => value!.split(',').map((item) => item.trim()).filter(Boolean));
+  next.NO_PROXY = next.no_proxy = [...new Set(exclusions)].join(',');
+  return next;
+}
+
+/** Preserve the user account environment without inheriting private Runtime authority. */
 export function recoveryCommandEnvironment(
   env: NodeJS.ProcessEnv = process.env,
   accountHome = homedir(),
@@ -574,14 +608,24 @@ export function recoveryCommandEnvironment(
     HOME: home,
   };
 }
-export function command(commandName: string, args: string[], timeoutMs = 10_000, options: CommandOptions = {}): Promise<CommandResult> {
+export async function command(commandName: string, args: string[], timeoutMs = 10_000, options: CommandOptions = {}): Promise<CommandResult> {
+  let environment = recoveryCommandEnvironment(process.env, options.home);
+  if (process.platform === 'darwin' && (commandName === 'tunnel-client' || commandName.endsWith('/tunnel-client'))) {
+    const systemProxy = await command('/usr/sbin/scutil', ['--proxy'], 2_500);
+    if (!systemProxy.ok) return { ok: false, status: systemProxy.status, stdout: '', stderr: 'MACOS_SYSTEM_PROXY_UNAVAILABLE' };
+    try {
+      environment = macSystemProxyEnvironment(systemProxy.stdout, environment);
+    } catch (error) {
+      return { ok: false, status: null, stdout: '', stderr: error instanceof Error ? error.message : 'MACOS_SYSTEM_PROXY_INVALID' };
+    }
+  }
   return new Promise((resolveCommand) => {
     const child = spawn(commandName, args, {
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       cwd: options.cwd,
-      env: recoveryCommandEnvironment(process.env, options.home),
+      env: environment,
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
