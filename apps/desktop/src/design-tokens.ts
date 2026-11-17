@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import designTokens from '../../../.design-harness/tokens.json';
+import designTokens from '../../../.design-harness/theme.json';
 
 // Forge Design's Git-tracked tokens are the sole source of visual variables.
 export const desktopThemeStyle = {
