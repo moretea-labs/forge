@@ -1068,31 +1068,55 @@ export async function startLocalBridgeServer(
         const event = body.event && typeof body.event === "object" && !Array.isArray(body.event)
           ? body.event as Record<string, unknown>
           : {};
-        const allowedEventFields = new Set(["source", "event_id", "observed_at", "rule_id", "provider_message_id", "sender_email"]);
+        const allowedEventFields = new Set(["source", "event_id", "observed_at", "ref", "summary"]);
         const unknownFields = Object.keys(event).filter((key) => !allowedEventFields.has(key));
-        if (unknownFields.length > 0) throw new Error(`MOBILE_INTENT_EVENT_FIELD_UNSUPPORTED: ${unknownFields.sort().join(",")}`);
-        const source = queryString(event.source);
-        const eventId = queryString(event.event_id);
-        const observedAt = queryString(event.observed_at);
-        const ruleId = queryString(event.rule_id);
-        const providerMessageId = queryString(event.provider_message_id);
-        const senderEmail = queryString(event.sender_email);
-        if (event.sender_email !== undefined && !senderEmail) throw new Error("MOBILE_INTENT_EVENT_SENDER_INVALID");
-        if (source !== "agentmail") throw new Error("MOBILE_INTENT_EVENT_SOURCE_INVALID: only AgentMail events are accepted");
-        if (!eventId || eventId.length > 512) throw new Error("MOBILE_INTENT_EVENT_ID_INVALID");
-        if (!observedAt || !Number.isFinite(Date.parse(observedAt))) throw new Error("MOBILE_INTENT_EVENT_TIME_INVALID");
-        if (!ruleId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(ruleId)) {
-          throw new Error("MOBILE_INTENT_EVENT_RULE_INVALID");
+        if (unknownFields.length > 0) throw new Error("MOBILE_INTENT_EVENT_FIELD_UNSUPPORTED: " + unknownFields.sort().join(","));
+        const isRecord = (value: unknown): value is Record<string, unknown> =>
+          value !== null && typeof value === "object" && !Array.isArray(value);
+        const isString = (value: unknown, maximum: number, allowEmpty = false): value is string =>
+          typeof value === "string" && value.length <= maximum && (allowEmpty || value.length > 0);
+        const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const ref = isRecord(event.ref) ? event.ref : {};
+        const eventSummary = isRecord(event.summary) ? event.summary : {};
+        const unknownRefFields = Object.keys(ref).filter((key) => !["provider", "account_id", "provider_message_id"].includes(key));
+        const unknownSummaryFields = Object.keys(eventSummary).filter((key) => !["rule_id", "sender_email"].includes(key));
+        if (unknownRefFields.length > 0 || unknownSummaryFields.length > 0) {
+          const unsupported = [
+            ...unknownRefFields.map((key) => "ref." + key),
+            ...unknownSummaryFields.map((key) => "summary." + key),
+          ];
+          throw new Error("MOBILE_INTENT_EVENT_FIELD_UNSUPPORTED: " + unsupported.sort().join(","));
         }
-        if (!providerMessageId || providerMessageId.length > 1024) throw new Error("MOBILE_INTENT_EVENT_MESSAGE_INVALID");
-        if (senderEmail && senderEmail.length > 320) throw new Error("MOBILE_INTENT_EVENT_SENDER_INVALID");
+        const source = event.source;
+        const eventId = event.event_id;
+        const observedAt = event.observed_at;
+        const provider = ref.provider;
+        const accountId = ref.account_id;
+        const providerMessageId = ref.provider_message_id;
+        const ruleId = eventSummary.rule_id;
+        const senderEmail = eventSummary.sender_email;
+        if (source !== "mail.watch.matched") throw new Error("MOBILE_INTENT_EVENT_SOURCE_INVALID: only AgentMail Watch matches are accepted");
+        if (!isString(eventId, 4096)) throw new Error("MOBILE_INTENT_EVENT_ID_INVALID");
+        if (!isString(observedAt, 64) || !Number.isFinite(Date.parse(observedAt))) throw new Error("MOBILE_INTENT_EVENT_TIME_INVALID");
+        if (provider !== "agentmail" || !isString(accountId, 36) || !uuid.test(accountId)) {
+          throw new Error("MOBILE_INTENT_EVENT_ACCOUNT_INVALID");
+        }
+        if (!isString(providerMessageId, 1024)) throw new Error("MOBILE_INTENT_EVENT_MESSAGE_INVALID");
+        if (!isString(ruleId, 36) || !uuid.test(ruleId)) throw new Error("MOBILE_INTENT_EVENT_RULE_INVALID");
+        if (!isString(senderEmail, 320, true)) throw new Error("MOBILE_INTENT_EVENT_SENDER_INVALID");
         const workflowInputs = {
           source,
           event_id: eventId,
           observed_at: observedAt,
-          rule_id: ruleId,
-          provider_message_id: providerMessageId,
-          ...(senderEmail ? { sender_email: senderEmail } : {}),
+          ref: {
+            provider,
+            account_id: accountId,
+            provider_message_id: providerMessageId,
+          },
+          summary: {
+            rule_id: ruleId,
+            sender_email: senderEmail,
+          },
         };
         const workflowRunId = `agentmail-${createHash("sha256").update(eventId).digest("hex").slice(0, 40)}`;
         const dispatched = await callRhWorkWorkflowOperation(mcpExposureContext, repository, "workflow_execute", {

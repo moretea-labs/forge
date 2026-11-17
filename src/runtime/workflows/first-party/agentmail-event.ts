@@ -1,4 +1,8 @@
-import type { WorkflowAssetDraft } from '../../../../packages/workflow-runtime/api/index';
+import {
+  materializeWorkflowAsset,
+  type WorkflowAssetDefinition,
+  type WorkflowAssetDraft,
+} from '../../../../packages/workflow-runtime/api/index';
 import { writeWorkflowAssetContent } from '../../control-plane/persistence/workflow-content-store';
 import {
   readWorkflowRegistryEntry,
@@ -11,16 +15,15 @@ export const AGENTMAIL_EVENT_WORKFLOW_ID = 'agentmail.mail-watch-event';
 const DRAFT: WorkflowAssetDraft = {
   schemaVersion: 1,
   workflowId: AGENTMAIL_EVENT_WORKFLOW_ID,
-  version: '1',
+  version: '2',
   title: 'AgentMail Watch event receipt',
   description: 'Persist a minimal, replay-safe email event receipt in the canonical WorkflowRun store. Message bodies and credentials are not accepted.',
   inputContract: {
     source: { type: 'string', required: true },
     event_id: { type: 'string', required: true },
     observed_at: { type: 'string', required: true },
-    rule_id: { type: 'string', required: true },
-    provider_message_id: { type: 'string', required: true },
-    sender_email: { type: 'string', default: '' },
+    ref: { type: 'json', required: true },
+    summary: { type: 'json', required: true },
   },
   steps: [{
     kind: 'script',
@@ -30,17 +33,15 @@ const DRAFT: WorkflowAssetDraft = {
       source: '{{input.source}}',
       event_id: '{{input.event_id}}',
       observed_at: '{{input.observed_at}}',
-      rule_id: '{{input.rule_id}}',
-      provider_message_id: '{{input.provider_message_id}}',
-      sender_email: '{{input.sender_email}}',
+      ref: '{{input.ref}}',
+      summary: '{{input.summary}}',
     },
     outputContract: {
       source: { type: 'string', required: true },
       event_id: { type: 'string', required: true },
       observed_at: { type: 'string', required: true },
-      rule_id: { type: 'string', required: true },
-      provider_message_id: { type: 'string', required: true },
-      sender_email: { type: 'string' },
+      ref: { type: 'json', required: true },
+      summary: { type: 'json', required: true },
     },
   }],
   scripts: {
@@ -48,19 +49,27 @@ const DRAFT: WorkflowAssetDraft = {
       runtime: 'node',
       deterministic: true,
       outputFormat: 'json',
-      body: `const a=JSON.parse(process.argv[1]||'{}');
-const required=['source','event_id','observed_at','rule_id','provider_message_id'];
-for(const key of required){if(typeof a[key]!=='string'||!a[key].trim())process.exit(2)}
-if(a.source!=='agentmail'||a.event_id.length>512||a.provider_message_id.length>1024)process.exit(2);
-if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(a.rule_id))process.exit(2);
-if(!Number.isFinite(Date.parse(a.observed_at)))process.exit(2);
-if(a.sender_email!==undefined&&(typeof a.sender_email!=='string'||a.sender_email.length>320))process.exit(2);
-const output={source:a.source,event_id:a.event_id,observed_at:a.observed_at,rule_id:a.rule_id,provider_message_id:a.provider_message_id};
-if(a.sender_email!==undefined)output.sender_email=a.sender_email;
-process.stdout.write(JSON.stringify(output));`,
+      body: [
+        "const a=JSON.parse(process.argv[1]||'{}');",
+        "const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;",
+        "const text=(v,max,empty=false)=>typeof v==='string'&&v.length<=max&&(empty||v.length>0);",
+        "const record=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);",
+        "const exactKeys=(v,keys)=>{const actual=Object.keys(v).sort(),expected=[...keys].sort();return actual.length===expected.length&&actual.every((key,index)=>key===expected[index])};",
+        "if(a.source!=='mail.watch.matched'||!text(a.event_id,4096)||!text(a.observed_at,64)||!Number.isFinite(Date.parse(a.observed_at)))process.exit(2);",
+        "if(!record(a.ref)||!exactKeys(a.ref,['provider','account_id','provider_message_id']))process.exit(2);",
+        "if(a.ref.provider!=='agentmail'||!uuid.test(a.ref.account_id)||!text(a.ref.provider_message_id,1024))process.exit(2);",
+        "if(!record(a.summary)||!exactKeys(a.summary,['rule_id','sender_email']))process.exit(2);",
+        "if(!uuid.test(a.summary.rule_id)||!text(a.summary.sender_email,320,true))process.exit(2);",
+        "const output={source:a.source,event_id:a.event_id,observed_at:a.observed_at,ref:{provider:a.ref.provider,account_id:a.ref.account_id,provider_message_id:a.ref.provider_message_id},summary:{rule_id:a.summary.rule_id,sender_email:a.summary.sender_email}};",
+        "process.stdout.write(JSON.stringify(output));",
+      ].join('\n'),
     },
   },
 };
+
+export function materializedAgentMailEventWorkflow(): WorkflowAssetDefinition {
+  return materializeWorkflowAsset(DRAFT);
+}
 
 export function ensureAgentMailEventWorkflowInstalled(controllerHome: string) {
   const draft = structuredClone(DRAFT);
