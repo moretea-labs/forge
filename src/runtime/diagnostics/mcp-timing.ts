@@ -45,7 +45,7 @@ export interface McpTimingTrace {
 }
 
 
-export type McpTransportEventKind = 'interruption' | 'session_initialized';
+export type McpTransportEventKind = 'interruption' | 'session_closed' | 'session_initialized';
 
 export interface McpTransportEvent {
   schemaVersion: 1;
@@ -301,7 +301,7 @@ export function readRecentMcpTransportEvents(
   const unique = new Map<string, McpTransportEvent>();
   for (const event of [...durable, ...memory]) {
     if (event.schemaVersion !== 1
-      || (event.kind !== 'interruption' && event.kind !== 'session_initialized')
+      || (event.kind !== 'interruption' && event.kind !== 'session_closed' && event.kind !== 'session_initialized')
       || typeof event.at !== 'string'
       || !Number.isFinite(Date.parse(event.at))
       || typeof event.sessionId !== 'string'

@@ -38,6 +38,7 @@ export interface McpHttpObservationRouteOptions {
   sessionRegistry: HttpSessionRegistry;
   runtimeStats: McpRuntimeStats;
   runtimeControllerHome?: string;
+  transportControllerHome: string;
   repoRoot?: string;
   forgeInstanceId: string;
   currentRuntimeToolSurfaceFingerprint: () => string | undefined;
@@ -106,6 +107,7 @@ export interface McpRecentTransportEvidence {
   gatewayStartedAt: string;
   gatewayPid: number;
   lastInterruption?: McpTransportEvent;
+  lastSessionClose?: McpTransportEvent;
   lastRecoveryAt?: string;
 }
 
@@ -119,8 +121,15 @@ export function recentMcpTransportEvidence(
     return Number.isFinite(at) && at >= nowMs - RECENT_TRANSPORT_EVIDENCE_WINDOW_MS && at <= nowMs + 60_000;
   });
   const lastInterruption = recent.find((event) => event.kind === 'interruption');
+  const lastSessionClose = recent.find((event) => event.kind === 'interruption' || event.kind === 'session_closed');
   if (!lastInterruption) {
-    return { current: 'healthy', recentStatus: 'stable', gatewayStartedAt: startedAt, gatewayPid: process.pid };
+    return {
+      current: 'healthy',
+      recentStatus: 'stable',
+      gatewayStartedAt: startedAt,
+      gatewayPid: process.pid,
+      ...(lastSessionClose ? { lastSessionClose } : {}),
+    };
   }
   const interruptionAt = Date.parse(lastInterruption.at);
   const recovery = recent.find((event) => event.kind === 'session_initialized' && Date.parse(event.at) > interruptionAt);
@@ -130,6 +139,7 @@ export function recentMcpTransportEvidence(
     gatewayStartedAt: startedAt,
     gatewayPid: process.pid,
     lastInterruption,
+    ...(lastSessionClose ? { lastSessionClose } : {}),
     ...(recovery ? { lastRecoveryAt: recovery.at } : {}),
   };
 }
@@ -141,6 +151,7 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
     sessionRegistry,
     runtimeStats,
     runtimeControllerHome,
+    transportControllerHome,
     repoRoot,
     forgeInstanceId,
     currentRuntimeToolSurfaceFingerprint,
@@ -209,9 +220,10 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
       ? Math.min(...runtimeStats.activePostStartedAt.values()) : undefined;
     const oldestActivePostAgeMs = oldestActivePostAt === undefined
       ? 0 : Math.max(0, Date.now() - oldestActivePostAt);
-    const transportEvidence = runtimeControllerHome
-      ? recentMcpTransportEvidence(readRecentMcpTransportEvents(runtimeControllerHome), startedAt)
-      : { current: 'healthy' as const, recentStatus: 'stable' as const, gatewayStartedAt: startedAt, gatewayPid: process.pid };
+    const transportEvidence = recentMcpTransportEvidence(
+      readRecentMcpTransportEvents(transportControllerHome),
+      startedAt,
+    );
     res.json({
       status: 'ok',
       server: 'forge-mcp',

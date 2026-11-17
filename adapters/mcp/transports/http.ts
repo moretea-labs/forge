@@ -760,9 +760,8 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   const configuredPublicOrigin = getConfiguredPublicOrigin(serviceConfig);
   const sessionRegistry = createMcpHttpSessionRegistry<NodeStreamableHTTPServerTransport, McpToolContext>({
     onSessionClosed: (session, reason) => {
-      if (reason !== 'transport_close') return;
       recordMcpTransportEvent(controllerHome, {
-        kind: 'interruption',
+        kind: reason === 'transport_close' ? 'interruption' : 'session_closed',
         sessionId: session.sessionId,
         connectionId: session.connectionId,
         route: session.route,
@@ -826,6 +825,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     sessionRegistry,
     runtimeStats,
     runtimeControllerHome,
+    transportControllerHome: controllerHome,
     repoRoot,
     forgeInstanceId: forgeInstance.instanceId,
     currentRuntimeToolSurfaceFingerprint,
