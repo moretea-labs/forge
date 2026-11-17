@@ -1,3 +1,5 @@
+import { applySafePatch } from '../../src/runtime/repositories/safe-patch';
+import { applyConsoleSafePatch } from '../../src/cli/local-bridge/facade-api';
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -1246,10 +1248,42 @@ describe("repository MCP command tools", () => {
     }
   });
 
+  test("SafePatch direct and Console entrypoints retain the explicit caller home", async () => {
+    for (const entrypoint of ['direct', 'console'] as const) {
+      const workspace = mkdtempSync(join(tmpdir(), 'forge-safe-patch-caller-home-'));
+      const controllerHome = join(workspace, 'caller-home');
+      const repoRoot = join(workspace, 'repo');
+      const priorHome = process.env.FORGE_CONTROLLER_HOME;
+      process.env.FORGE_CONTROLLER_HOME = join(workspace, 'ambient-home');
+      try {
+        mkdirSync(repoRoot);
+        git(repoRoot, ['init', '-b', 'main']);
+        git(repoRoot, ['config', 'user.name', 'Forge Test']);
+        git(repoRoot, ['config', 'user.email', 'forge-test@example.com']);
+        writeFileSync(join(repoRoot, 'app.txt'), 'before\n');
+        git(repoRoot, ['add', 'app.txt']);
+        git(repoRoot, ['commit', '-m', 'init']);
+        const repository = registerRepository({ path: repoRoot, controllerHome });
+        const input = { operations: [{ type: 'replace', path: 'app.txt', replacements: [{ old_text: 'before', new_text: 'after' }] }] };
+        if (entrypoint === 'direct') applySafePatch(repository, { ...input, controllerHome });
+        else applyConsoleSafePatch({ repository, controllerHome }, input);
+        expect(readFileSync(join(repoRoot, 'app.txt'), 'utf8')).toBe('after\n');
+        expect(realpathSync(join(repoRoot, '.ai/harness/edit-sessions')).startsWith(`${realpathSync(controllerHome)}/`)).toBe(true);
+      } finally {
+        if (priorHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+        else process.env.FORGE_CONTROLLER_HOME = priorHome;
+        await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    }
+  });
+
   test("safe patch apply splits repeated paths, refreshes fingerprints, and returns actionable failures", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-safe-patch-complete-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
+    const priorHome = process.env.FORGE_CONTROLLER_HOME;
+    process.env.FORGE_CONTROLLER_HOME = join(workspace, "ambient-home");
     try {
       mkdirSync(controllerHome, { recursive: true });
       mkdirSync(repoRoot, { recursive: true });
@@ -1272,6 +1306,7 @@ describe("repository MCP command tools", () => {
       }));
       expect(applied.status).toBe("applied");
       expect(applied.appliedChunks.length).toBe(2);
+      expect(realpathSync(join(repoRoot, '.ai/harness/edit-sessions')).startsWith(`${realpathSync(controllerHome)}/`)).toBe(true);
       expect(applied.session.currentRevision).toBe(2);
       expect(applied.reviewEvidence).toMatchObject({
         source: "edit_session",
@@ -1296,6 +1331,8 @@ describe("repository MCP command tools", () => {
       expect(failed.failures[0].code).toBe("REPLACEMENT_TEXT_NOT_FOUND");
       expect(failed.failures[0].context.focus).toContain("alpha-1");
     } finally {
+      if (priorHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+      else process.env.FORGE_CONTROLLER_HOME = priorHome;
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });
     }
