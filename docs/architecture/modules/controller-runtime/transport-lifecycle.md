@@ -69,6 +69,14 @@ request key through a fresh Gateway; running and terminal Process identities mus
 match and the external-effect marker must contain exactly one execution. This
 isolated fixture does not certify a public Tunnel or installed Runtime release.
 
+Runtime context semantic queries retain fresh before/after Git source fences,
+but await the existing bounded child-process executor for their Git status samples.
+The synchronous inspector API remains for synchronous consumers; both paths share
+one porcelain-v2/content-fingerprint parser. A slow repository fsmonitor must not
+freeze unrelated Runtime observations while a semantic source fence is sampled.
+This mitigates a reproduced local blocking path, not a proven attribution of a
+historical production latency spike.
+
 ## Verification
 
 ```text
