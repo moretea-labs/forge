@@ -902,6 +902,10 @@ final class NativeWorkspace: ObservableObject {
         Self.runtimeDescription(runtimeStatus,loading:runtimeLoading)
     }
     @Published var error: String?
+    @Published private(set) var zenRefinementActive=false
+    @Published private(set) var zenRefinementRound=0
+    private var zenRefinementThreadId:String?
+    private var zenRefinementCancelRequested=false
     @Published var zenGitHubBoardItems: [ZenGitHubBoardItem] = []
     @Published var zenGitHubBoardConfigured: Bool?
     @Published var zenGitHubBoardTruncated = false
@@ -5345,11 +5349,18 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
-    func send(expectedThreadId: String? = nil) async {
+    func send(
+        expectedThreadId:String? = nil,zenRefinementContinuation:Bool=false
+    ) async {
         let prompt = draft.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !prompt.isEmpty, !busy, let id = selectedThreadId,
               expectedThreadId == nil || expectedThreadId == id,
               let index = threads.firstIndex(where:{$0.id == id}) else { return }
+        guard !zenRefinementActive
+                || (zenRefinementContinuation && zenRefinementThreadId == id) else {
+            error="自动精化进行中，请先停止当前精化再发送。"
+            return
+        }
         let turnProvider = selectedProvider
         if let reason = agentSendBlockReason {
             self.error = reason
@@ -5562,7 +5573,133 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
+    func sendZenRefinement(expectedThreadId:String) async {
+        guard !zenRefinementActive,!busy,selectedThreadId == expectedThreadId,
+              let thread=threads.first(where:{$0.id == expectedThreadId}),
+              thread.readOnly == true,let provider=thread.provider,
+              Self.matchesExternalProvider(provider),
+              !Self.apiTurnAllowsEffects(
+                provider:provider,thread:thread,accessMode:repositoryAccessMode
+              ) else {
+            error="自动精化需要已配置的只读 API Provider 和当前项目上下文。"
+            return
+        }
+
+        let targetProjectId=thread.projectId
+        let targetRepoId=thread.repoId
+        let targetCheckoutId=thread.checkoutId
+        let targetContextGeneration=projectContextGeneration
+        zenRefinementThreadId=expectedThreadId
+        zenRefinementActive=true
+        zenRefinementRound=0
+        zenRefinementCancelRequested=false
+        error=nil
+        defer {
+            zenRefinementThreadId=nil
+            zenRefinementActive=false
+            zenRefinementRound=0
+            zenRefinementCancelRequested=false
+        }
+
+        let startedAt=Date()
+        var totalTokens=0
+        while zenRefinementRound < ZenChangeProposal.refinementMaximumRounds {
+            guard !zenRefinementCancelRequested else {
+                error="自动精化已停止；当前对话和已收到的回执已保留。"
+                return
+            }
+            guard selectedThreadId == expectedThreadId else { return }
+            guard projectContextGeneration == targetContextGeneration,
+                  selectedProjectId == targetProjectId,
+                  repoId == targetRepoId,checkoutId == targetCheckoutId,
+                  selectedProvider == provider else {
+                error="项目、仓库或 Provider 已变化，自动精化已停止。"
+                return
+            }
+
+            if zenRefinementRound > 0 {
+                guard draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else {
+                    error="检测到新的用户输入，自动精化已暂停；草稿已保留。"
+                    return
+                }
+                let remainingSeconds=max(
+                    0,Int(ZenChangeProposal.refinementMaximumDurationSeconds-Date().timeIntervalSince(startedAt))
+                )
+                guard remainingSeconds > 0 else {
+                    error="自动精化已达到时间预算；当前对话和回执已保留。"
+                    return
+                }
+                draft=ZenChangeProposal.continuationPrompt(
+                    round:zenRefinementRound+1,
+                    remainingTokens:max(0,ZenChangeProposal.refinementMaximumTokens-totalTokens),
+                    remainingSeconds:remainingSeconds
+                )
+            }
+
+            let previousAssistantId=threads.first(where:{$0.id == expectedThreadId})?
+                .messages.last(where:{$0.role == "assistant"})?.id
+            zenRefinementRound += 1
+            await send(expectedThreadId:expectedThreadId,zenRefinementContinuation:true)
+            guard selectedThreadId == expectedThreadId else { return }
+            guard let latestThread=threads.first(where:{$0.id == expectedThreadId}),
+                  let latestAssistant=latestThread.messages.last(where:{$0.role == "assistant"}),
+                  latestAssistant.id != previousAssistantId else {
+                if error == nil { error="自动精化已停止：本轮没有新的 Agent 回复。"}
+                return
+            }
+            if latestAssistant.incomplete == true { return }
+            guard let directive=ZenChangeProposal.refinementDirective(from:latestAssistant.text) else {
+                error="自动精化已停止：Agent 未返回有效的结构化结果；请检查本轮回复。"
+                return
+            }
+
+            switch directive {
+            case .accept:
+                guard let usage=latestAssistant.usage,usage.complete else {
+                    error="自动精化已暂停：最终 ACCEPT 缺少完整 Provider token 回执，无法验证预算。"
+                    return
+                }
+                let (acceptedTotal,overflow)=totalTokens.addingReportingOverflow(usage.totalTokens)
+                guard !overflow,acceptedTotal <= ZenChangeProposal.refinementMaximumTokens else {
+                    error="最终 ACCEPT 超出自动精化 token 预算，已保留提案但不进入审阅。"
+                    return
+                }
+                guard Date().timeIntervalSince(startedAt) <= ZenChangeProposal.refinementMaximumDurationSeconds else {
+                    error="最终 ACCEPT 超出自动精化时间预算，已保留提案但不进入审阅。"
+                    return
+                }
+                return
+            case .needsUser,.blocked:
+                return
+            case .continueRefinement:
+                guard let usage=latestAssistant.usage,usage.complete else {
+                    error="自动精化已暂停：本轮缺少完整 Provider token 回执，无法继续核对预算。"
+                    return
+                }
+                let (nextTotal,overflow)=totalTokens.addingReportingOverflow(usage.totalTokens)
+                guard !overflow else {
+                    error="自动精化 token 预算计算溢出，已停止。"
+                    return
+                }
+                totalTokens=nextTotal
+                if totalTokens >= ZenChangeProposal.refinementMaximumTokens {
+                    error="自动精化已达到 token 预算；当前对话和回执已保留。"
+                    return
+                }
+                if Date().timeIntervalSince(startedAt) >= ZenChangeProposal.refinementMaximumDurationSeconds {
+                    error="自动精化已达到时间预算；当前对话和回执已保留。"
+                    return
+                }
+                if zenRefinementRound >= ZenChangeProposal.refinementMaximumRounds {
+                    error="自动精化已达到轮数上限；当前对话和回执已保留。"
+                    return
+                }
+            }
+        }
+    }
+
     func cancel() async {
+        if zenRefinementActive { zenRefinementCancelRequested=true }
         guard busy, let id = activeConversationId else { return }
         if knowledgeRecallPending {
             cancelRequestedBeforeTurn = true

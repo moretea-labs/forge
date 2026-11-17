@@ -210,7 +210,7 @@ private struct ForgeWorkspaceView: View {
 
                     \(ZenChangeProposal.outputContract)
                     """
-                    Task { await model.send(expectedThreadId:launchedThreadId) }
+                    Task { await model.sendZenRefinement(expectedThreadId:launchedThreadId) }
                 },onOpenInbox:{
                     inboxShown = true
                     Task { await model.loadUserRequests() }
@@ -237,7 +237,13 @@ private struct ForgeWorkspaceView: View {
                         : prompt
                     // "优化" and "在只读 Agent 中审查" are actions, not draft-only navigation.
                     // Start their analysis immediately, bound to the new conversation.
-                    Task { await model.send(expectedThreadId:launchedThreadId) }
+                    Task {
+                        if wantsProposal {
+                            await model.sendZenRefinement(expectedThreadId:launchedThreadId)
+                        } else {
+                            await model.send(expectedThreadId:launchedThreadId)
+                        }
+                    }
                 }
             } else {
                 main
@@ -1675,7 +1681,7 @@ private struct AgentPane: View {
                                             text:message.text,
                                             accessibilityIdentifierPrefix: AgentAssistantMessageBody.accessibilityPrefix(for: message.id),
                                             onExecuteCommand: { command in
-                                                guard !model.busy else { return }
+                                                guard !model.busy,!model.zenRefinementActive else { return }
                                                 guard model.repoId != nil, model.checkoutId != nil else {
                                                     model.error = "执行命令前请先绑定项目与 checkout。"
                                                     return
@@ -1687,7 +1693,7 @@ private struct AgentPane: View {
                                                 pendingAgentCommand = command
                                             },
                                             onReplySelection: { reply in
-                                                guard !model.busy else { return }
+                                                guard !model.busy,!model.zenRefinementActive else { return }
                                                 model.draft += model.draft.isEmpty ? reply : "\n\n" + reply
                                                 composerFocused = true
                                             }
@@ -1773,7 +1779,8 @@ private struct AgentPane: View {
                                                 // Review only fills the composer; it is safe to prepare
                                                 // while the Provider is offline. One-click execution still
                                                 // requires a ready Provider and an empty composer.
-                                                .disabled(model.busy || !model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+                                                .disabled(model.busy || model.zenRefinementActive
+                                                    || !model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
                                                     || (!requiresReview && model.agentSendBlockReason != nil))
                                                 .accessibilityIdentifier("agent.continue-incomplete")
                                             }
@@ -1800,7 +1807,7 @@ private struct AgentPane: View {
                                 .id(message.id)
                             }
                         }
-                        if model.busy {
+                        if model.busy || model.zenRefinementActive {
                             VStack(alignment:.leading,spacing:10) {
                                 HStack(spacing:10) {
                                     ZStack {
@@ -1812,7 +1819,8 @@ private struct AgentPane: View {
                                         Text(agentActivityTitle)
                                             .font(.system(size:11.5,weight:.semibold))
                                             .foregroundStyle(ForgePalette.ink)
-                                        Text(model.liveActivity?.lastActivity ?? "正在处理请求…")
+                                        Text(model.liveActivity?.lastActivity
+                                             ?? (model.zenRefinementActive ? "正在只读核对 Requirement / Plan…" : "正在处理请求…"))
                                             .font(.system(size:10.5))
                                             .foregroundStyle(ForgePalette.secondary)
                                             .lineLimit(1)
@@ -1890,7 +1898,7 @@ private struct AgentPane: View {
                     .padding(.horizontal,28).padding(.top,18).padding(.bottom,22)
                 }.scrollIndicators(.automatic)
                 .overlay(alignment:.bottomTrailing) {
-                    if model.busy {
+                    if model.busy || model.zenRefinementActive {
                         Button {
                             withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
                                 reader.scrollTo("pending",anchor:.bottom)
@@ -1949,7 +1957,7 @@ private struct AgentPane: View {
                         .scrollContentBackground(.hidden)
                         .frame(minHeight:46,maxHeight:116)
                         .padding(.horizontal,10).padding(.top,7)
-                        .disabled(voiceDictation.isRecording || voiceDictation.isStarting)
+                        .disabled(voiceDictation.isRecording || voiceDictation.isStarting || model.zenRefinementActive)
                         .accessibilityLabel("Agent 消息")
                         .accessibilityHint("输入任务描述，按 Command Return 发送")
                         .accessibilityIdentifier("agent.composer")
@@ -1997,13 +2005,15 @@ private struct AgentPane: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .disabled(model.busy || (model.checkoutRoot == nil && !model.selectedProviderSupportsImages))
+                    .disabled(model.busy || model.zenRefinementActive
+                        || (model.checkoutRoot == nil && !model.selectedProviderSupportsImages))
                     .help("添加当前工作区文件或图片")
                     .accessibilityLabel("添加上下文")
                     .accessibilityHint("添加当前工作区文件或当前模型服务支持的图片")
                     .accessibilityIdentifier("agent.attach")
 
                     composerQuickConfigurationControls
+                        .disabled(model.busy || model.zenRefinementActive)
 
                     Spacer(minLength:12)
 
@@ -2073,13 +2083,13 @@ private struct AgentPane: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(model.busy)
+                        .disabled(model.busy || model.zenRefinementActive)
                         .help("语音输入（只填入草稿，不自动发送）")
                         .accessibilityLabel("开始语音输入")
                         .accessibilityIdentifier("agent.voice.toggle")
                     }
 
-                    if model.busy {
+                    if model.busy || model.zenRefinementActive {
                         Button { Task { await model.cancel() } } label: {
                             Image(systemName:"stop.fill")
                                 .font(.system(size:9,weight:.semibold))
@@ -2088,7 +2098,7 @@ private struct AgentPane: View {
                         }
                         .buttonStyle(.plain)
                         .keyboardShortcut(.escape,modifiers:[])
-                        .help("停止 Agent（Esc）")
+                        .help(model.zenRefinementActive ? "停止自动精化（Esc）" : "停止 Agent（Esc）")
                         .accessibilityLabel("停止 Agent")
                         .accessibilityHint("停止当前正在进行的 Agent 请求")
                         .accessibilityIdentifier("agent.cancel")
@@ -2113,7 +2123,7 @@ private struct AgentPane: View {
                         .accessibilityIdentifier("agent.send")
                     }
                 }.padding(.horizontal,13).padding(.bottom,11)
-                if !model.busy, let reason = model.agentSendBlockReason {
+                if !model.busy,!model.zenRefinementActive,let reason = model.agentSendBlockReason {
                     HStack(alignment:.firstTextBaseline,spacing:6) {
                         Image(systemName:"info.circle")
                             .accessibilityHidden(true)
@@ -2150,11 +2160,11 @@ private struct AgentPane: View {
                 }
             }
             .dropDestination(for:URL.self) { urls, _ in
-                guard !model.busy, !urls.isEmpty else { return false }
+                guard !model.busy,!model.zenRefinementActive,!urls.isEmpty else { return false }
                 model.addDroppedAttachments(urls)
                 return true
             } isTargeted: { targeted in
-                isComposerDropTarget = targeted && !model.busy
+                isComposerDropTarget = targeted && !model.busy && !model.zenRefinementActive
             }
             .frame(maxWidth:980)
             .padding(.horizontal,24).padding(.bottom,16)
@@ -2192,12 +2202,12 @@ private struct AgentPane: View {
             Text("这会把命令发送给当前 Agent，可能修改项目文件。请先确认命令内容。")
         }
         .onAppear {
-            if !model.busy { composerFocused = true }
+            if !model.busy && !model.zenRefinementActive { composerFocused = true }
         }
         .onChange(of:model.selectedThreadId) { _ in
             cancelVoiceDictation()
             showChanges = false
-            if !model.busy { composerFocused = true }
+            if !model.busy && !model.zenRefinementActive { composerFocused = true }
         }
         .onChange(of:voiceDictation.transcript) { transcript in
             guard !transcript.isEmpty else { return }
@@ -2216,6 +2226,7 @@ private struct AgentPane: View {
     }
 
     private var agentActivityTitle: String {
+        if model.zenRefinementActive { return "自动精化 · 第 \(model.zenRefinementRound)/\(ZenChangeProposal.refinementMaximumRounds) 轮" }
         switch model.liveActivity?.phase {
         case "thinking", "starting", "model": return "正在思考"
         case "tool": return "正在执行工具"
@@ -2243,7 +2254,7 @@ private struct AgentPane: View {
     }
 
     private var agentWorkspaceStatusColor: Color {
-        if model.busy { return ForgePalette.accent }
+        if model.busy || model.zenRefinementActive { return ForgePalette.accent }
         if !model.selectedProviderReady
             || (model.thread?.repoId != nil && (
                 model.thread?.checkoutId == nil || model.checkoutContextLoading || !model.checkoutIsAvailable

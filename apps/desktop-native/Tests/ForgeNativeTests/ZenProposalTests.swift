@@ -152,6 +152,19 @@ final class ZenProposalTests: XCTestCase {
         ).isEmpty)
     }
 
+    func testZenRefinementRequiresExplicitBoundedStructuredOutcome() {
+        XCTAssertEqual(ZenChangeProposal.refinementDirective(from:fenced(#"{"decision":"CONTINUE","rationale":"仍需核对验收证据"}"#)),.continueRefinement)
+        XCTAssertEqual(ZenChangeProposal.refinementDirective(from:fenced(#"{"decision":"NEEDS_USER","rationale":"请确认目标用户？"}"#)),.needsUser)
+        XCTAssertEqual(ZenChangeProposal.refinementDirective(from:fenced(#"{"decision":"BLOCKED","rationale":"Provider 不可用"}"#)),.blocked)
+        XCTAssertEqual(ZenChangeProposal.refinementDirective(from:fenced(#"{"decision":"ACCEPT","operation":"create_requirement","rationale":"目标和验收均已确认","title":"完整流程","outcome":"用户可完成目标","acceptanceCriteria":["流程可用"]}"#)),.accept)
+        XCTAssertNil(ZenChangeProposal.refinementDirective(from:"请继续补充信息。"))
+        XCTAssertNil(ZenChangeProposal.refinementDirective(from:fenced(#"{"decision":"ACCEPT","rationale":"缺少操作字段"}"#)))
+        XCTAssertNil(ZenChangeProposal.refinementDirective(from:fenced(#"{"decision":"CONTINUE","rationale":"继续"}"#)+"\\n"+fenced(#"{"decision":"BLOCKED","rationale":"停止"}"#)))
+        XCTAssertEqual([ZenChangeProposal.refinementMaximumRounds,ZenChangeProposal.refinementMaximumTokens,Int(ZenChangeProposal.refinementMaximumDurationSeconds)],[4,20_000,120])
+        XCTAssertTrue(ZenChangeProposal.continuationPrompt(round:2,remainingTokens:12_000,remainingSeconds:75).contains("12000 tokens"))
+        XCTAssertTrue(ZenChangeProposal.outputContract.contains("完整 Provider usage receipt"))
+    }
+
     func testCreateRequirementIsParsedOnlyFromOneExplicitProposal() throws {
         let proposal=try ZenChangeProposal.parse(fenced(
             #"{"decision":"ACCEPT","operation":"create_requirement","rationale":"独立验收目标","title":"PDF 定位","outcome":"可定位源页","acceptanceCriteria":["定位准确"]}"#
