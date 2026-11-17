@@ -3520,8 +3520,17 @@ impl StreamedModelRound {
                                 Self::emit_delta(host, conversation_id, "text_delta", text);
                             }
                         }
-                        // Anthropic thinking_delta is private reasoning, not a summary.
-                        Some("thinking_delta") => {}
+                        // Keep signed provider context intact for tool continuation,
+                        // without forwarding this private channel as UI progress.
+                        Some("thinking_delta") => {
+                            if let Some(thinking) = delta.get("thinking").and_then(Value::as_str) {
+                                let block = self.anthropic_blocks.get_mut(&index)
+                                    .filter(|block| block.get("type").and_then(Value::as_str) == Some("thinking"))
+                                    .ok_or("FORGE_DESKTOP_API_STREAM_EVENT_INVALID")?;
+                                let previous = block.get("thinking").and_then(Value::as_str).unwrap_or("");
+                                block["thinking"] = Value::String(format!("{previous}{thinking}"));
+                            }
+                        }
                         Some("signature_delta") => {
                             if let Some(signature) = delta.get("signature").and_then(Value::as_str) {
                                 let block = self.anthropic_blocks.get_mut(&index)
@@ -4534,9 +4543,20 @@ mod tests {
                     };
                     if protocol == "anthropic" {
                         frames.push(json!({"type":"content_block_start","index":0,"content_block":{
+                            "type":"thinking","thinking":"","signature":""
+                        }}).to_string());
+                        for thinking in ["Private ", "provider context."] {
+                            frames.push(json!({"type":"content_block_delta","index":0,"delta":{
+                                "type":"thinking_delta","thinking":thinking
+                            }}).to_string());
+                        }
+                        frames.push(json!({"type":"content_block_delta","index":0,"delta":{
+                            "type":"signature_delta","signature":"fixture-signature"
+                        }}).to_string());
+                        frames.push(json!({"type":"content_block_start","index":1,"content_block":{
                             "type":"tool_use","id":id,"name":name,"input":{}
                         }}).to_string());
-                        frames.push(json!({"type":"content_block_delta","index":0,"delta":{
+                        frames.push(json!({"type":"content_block_delta","index":1,"delta":{
                             "type":"input_json_delta","partial_json":arguments.to_string()
                         }}).to_string());
                         frames.push(json!({"type":"message_stop"}).to_string());
@@ -4611,6 +4631,21 @@ mod tests {
             assert!(requests[1].to_string().contains("before"));
             assert!(requests[2].to_string().contains("applied"));
             assert!(requests[3].to_string().contains("1 pass"));
+            if protocol == "anthropic" {
+                for request in &requests[1..] {
+                    let assistant = request["messages"].as_array().unwrap().iter().rev()
+                        .find(|message| message["role"] == "assistant").unwrap();
+                    assert_eq!(assistant["content"][0], json!({
+                        "type":"thinking", "thinking":"Private provider context.",
+                        "signature":"fixture-signature"
+                    }), "tool continuation must preserve the signed provider block");
+                    assert_eq!(assistant["content"][1]["type"], "tool_use");
+                }
+                assert!(!events.iter().any(|event| event["channel"] == "model"
+                    && event["payload"].to_string().contains("Private provider context.")),
+                    "internal thinking must never become visible model progress");
+                assert!(!result["output"].as_str().unwrap().contains("Private provider context."));
+            }
         }
     }
 
@@ -4822,8 +4857,12 @@ mod tests {
                 "content_block":{"type":"text","text":""}}).to_string(),
             json!({"type":"content_block_delta","index":0,
                 "delta":{"type":"text_delta","text":"Checking"}}).to_string(),
-            json!({"type":"content_block_delta","index":0,
+            json!({"type":"content_block_start","index":2,
+                "content_block":{"type":"thinking","thinking":"","signature":""}}).to_string(),
+            json!({"type":"content_block_delta","index":2,
                 "delta":{"type":"thinking_delta","thinking":"private thought"}}).to_string(),
+            json!({"type":"content_block_delta","index":2,
+                "delta":{"type":"signature_delta","signature":"opaque-signature"}}).to_string(),
             json!({"type":"content_block_start","index":1,
                 "content_block":{"type":"tool_use","id":"tool-1","name":"git_status","input":{}}}).to_string(),
             json!({"type":"content_block_delta","index":1,
@@ -4835,6 +4874,8 @@ mod tests {
         }
         let output = claude.finish("anthropic").expect("Anthropic finished");
         assert_eq!(output["content"][0]["text"],"Checking");
+        assert_eq!(output["content"][2], json!({"type":"thinking",
+            "thinking":"private thought","signature":"opaque-signature"}));
         assert_eq!(provider_tool_calls("anthropic",&output).unwrap()[0].1,"git_status");
         assert!(!host.events.lock().unwrap().iter().any(|event| event["kind"] == "reasoning_summary_delta"),
             "Anthropic thinking_delta must remain private");
