@@ -1067,14 +1067,24 @@ describe("Local Execution Bridge", () => {
       };
     }
 
+    const ruleId = "11111111-1111-4111-8111-111111111111";
+    const accountId = "22222222-2222-4222-8222-222222222222";
+    const providerMessageId = "provider-message-" + "m".repeat(700);
     const event = {
-      source: "agentmail",
-      event_id: "11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222:provider-message-1",
+      source: "mail.watch.matched",
+      event_id: ruleId + ":" + accountId + ":" + providerMessageId,
       observed_at: "2026-11-16T16:00:00.000Z",
-      rule_id: "11111111-1111-4111-8111-111111111111",
-      provider_message_id: "provider-message-1",
-      sender_email: "apple@example.com",
+      ref: {
+        provider: "agentmail",
+        account_id: accountId,
+        provider_message_id: providerMessageId,
+      },
+      summary: {
+        rule_id: ruleId,
+        sender_email: "apple@example.com",
+      },
     };
+    expect(event.event_id.length).toBeGreaterThan(512);
     const body = JSON.stringify({ intent: "workflow_event", event });
     const first = await fetch(new URL("/mobile/intent", handle.url), {
       method: "POST",
@@ -1102,7 +1112,7 @@ describe("Local Execution Bridge", () => {
 
     const changedPayload = JSON.stringify({
       intent: "workflow_event",
-      event: { ...event, sender_email: "different@example.com" },
+      event: { ...event, summary: { ...event.summary, sender_email: "different@example.com" } },
     });
     const conflict = await fetch(new URL("/mobile/intent", handle.url), {
       method: "POST",
@@ -1114,7 +1124,7 @@ describe("Local Execution Bridge", () => {
 
     const unsafePayload = JSON.stringify({
       intent: "workflow_event",
-      event: { ...event, body_text: "OTP 123456" },
+      event: { ...event, summary: { ...event.summary, body_text: "OTP 123456" } },
     });
     const unsafe = await fetch(new URL("/mobile/intent", handle.url), {
       method: "POST",
@@ -1123,6 +1133,15 @@ describe("Local Execution Bridge", () => {
     }).then(async (response) => ({ status: response.status, body: await response.json() }));
     expect(unsafe.status).toBe(400);
     expect(unsafe.body.error).toContain("MOBILE_INTENT_EVENT_FIELD_UNSUPPORTED");
+
+    const oversizedPayload = JSON.stringify({ intent: "workflow_event", event: { ...event, event_id: "x".repeat(4097) } });
+    const oversized = await fetch(new URL("/mobile/intent", handle.url), {
+      method: "POST",
+      headers: signedHeaders(oversizedPayload, "agentmail-event-0005"),
+      body: oversizedPayload,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(oversized.status).toBe(400);
+    expect(oversized.body.error).toContain("MOBILE_INTENT_EVENT_ID_INVALID");
   });
 
   test("shows direct edits as first-class file changes and completes them through the local API", async () => {
