@@ -392,6 +392,8 @@ export async function startRuntimeMcpTransport(
   });
 
   const httpServer = app.listen(options.port, options.host);
+  // Retain socket ownership through drain: Bun can clear its internal server
+  // reference during close(), making closeAllConnections() a no-op.
   const acceptedSockets = new Set<Socket>();
   httpServer.on('connection', (socket: Socket) => {
     acceptedSockets.add(socket);
@@ -468,11 +470,9 @@ export async function startRuntimeMcpTransport(
           }
         },
         forceCloseConnections: () => {
-          httpServer.closeAllConnections?.();
-          // Some keep-alive sockets survive Node-compatible server.close()
-          // during same-port Runtime replacement. The retired server must
-          // never answer a new Runtime's initialize request.
+          // Retired keep-alive/SSE sockets cannot accept another Runtime session.
           for (const socket of acceptedSockets) socket.destroy();
+          httpServer.closeAllConnections?.();
         },
       });
     },

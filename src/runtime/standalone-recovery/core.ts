@@ -6858,6 +6858,19 @@ export function secureEqual(left: string, right: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/**
+ * A failed remote Tunnel lookup is not proof that its local Connector is broken.
+ * Preserve the existing degraded transport diagnosis, but do not restart the
+ * healthy Connector when the Tunnel process, identity and binding are verified.
+ */
+export function managedPrimaryTransportNeedsConnectorRepair(
+  transportFailed: boolean,
+  tunnelProbe: VerifyResult['probes'][string] | undefined,
+): boolean {
+  return transportFailed
+    && !isUpstreamOpenAiControlPlaneIncident(openAiTunnelObservationFromProbe(tunnelProbe));
+}
+
 export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState): Promise<{
   state: WatchdogState;
   decision: WatchdogDecision;
@@ -6971,7 +6984,7 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     && (
       primaryConnectorLocalFailed
       || primaryConnectorCapacityFailed
-      || (primaryPublicTransportManaged && primaryPublicTransportFailed)
+      || (primaryPublicTransportManaged && managedPrimaryTransportNeedsConnectorRepair(primaryPublicTransportFailed, verified.probes.primary_tunnel_runtime))
     ),
   );
   if (primaryRuntimeHealthy && !primaryConnectorFailed && !primaryPublicTransportFailed && recoveryHealthy) {

@@ -1,3 +1,6 @@
+import { spawnSync } from 'child_process';
+import { chmodSync } from 'fs';
+import { freshGitIdentity, freshGitIdentityAsync } from '../../src/runtime/repositories/inspector';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -262,4 +265,40 @@ describe('Context Closure', () => {
 
   });
 
+});
+
+
+test('fresh source identity sampling yields while a real Git fsmonitor is slow', async () => {
+  const root = temp('forge-context-slow-git-');
+  const git = (...args: string[]) => {
+    const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+    if (result.status !== 0) throw new Error(result.stderr);
+  };
+  git('init', '-b', 'main');
+  git('config', 'user.name', 'Context Test');
+  git('config', 'user.email', 'context@example.test');
+  writeFileSync(join(root, 'tracked.txt'), 'original');
+  git('add', 'tracked.txt');
+  git('commit', '-m', 'fixture');
+  const monitor = join(root, '.git', 'slow-monitor');
+  writeFileSync(monitor, '#!/bin/sh\nsleep 0.25\nprintf "token\\0"\n');
+  chmodSync(monitor, 0o755);
+  git('config', 'core.fsmonitor', monitor);
+  writeFileSync(join(root, 'tracked.txt'), 'modified');
+  let heartbeat = false;
+  let heartbeatAt = 0;
+  const startedAt = performance.now();
+  const timer = setTimeout(() => { heartbeat = true; heartbeatAt = performance.now(); }, 20);
+  try {
+    const identity = await freshGitIdentityAsync(root);
+    expect(heartbeat).toBe(true);
+    expect(identity).toMatchObject({ branch: 'main', dirty: true });
+    const synchronous = freshGitIdentity(root);
+    expect(identity.head).toBe(synchronous.head);
+    expect(identity.workingTreeFingerprint).toBe(synchronous.workingTreeFingerprint);
+    console.info(JSON.stringify({ fixture: 'slow-git-identity', heartbeatMs: Number((heartbeatAt - startedAt).toFixed(2)) }));
+    writeFileSync(join(root, 'tracked.txt'), 'changed again');
+    expect((await freshGitIdentityAsync(root)).workingTreeFingerprint).not.toBe(identity.workingTreeFingerprint);
+    expect(await freshGitIdentityAsync(join(root, 'missing'))).toMatchObject({ head: null, branch: null, dirty: false });
+  } finally { clearTimeout(timer); }
 });

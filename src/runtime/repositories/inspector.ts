@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
 import { delimiter, join, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
+import { runBoundedChild } from '../shared/bounded-child-supervisor';
 import { redactSensitiveText } from '../evidence/sensitive-output';
 import { globMatches, resolveMcpPath } from '../safe-tooling/path-policy';
 import type { ToolPolicy } from '../control-plane/tool-policy';
@@ -67,6 +68,59 @@ function pruneGitIdentityCache(): void {
   }
 }
 
+function gitIdentityFromStatus(repoRoot: string, stdout: string): Omit<CachedGitIdentity, 'sampledAt'> {
+  let head: string | null = null;
+  let branch: string | null = null;
+  const statusLines: string[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    if (line.startsWith('# branch.oid ')) {
+      const value = line.slice('# branch.oid '.length).trim();
+      head = value && value !== '(initial)' ? value : null;
+    } else if (line.startsWith('# branch.head ')) {
+      const value = line.slice('# branch.head '.length).trim();
+      branch = value && value !== '(detached)' && value !== '(unknown)' ? value : null;
+    } else if (line && !line.startsWith('# ')) {
+      statusLines.push(line);
+    }
+  }
+  const status = statusLines.join('\n');
+  let dirtyBytes = 0;
+  const dirtyContentIdentity = statusLines.slice(0, 500).map((line) => {
+    const path = line.startsWith('? ') || line.startsWith('! ')
+      ? line.slice(2)
+      : line.startsWith('1 ')
+        ? line.split(' ').slice(8).join(' ')
+        : line.startsWith('2 ')
+          ? line.split(' ').slice(9).join(' ').split('\t')[0]
+          : line.startsWith('u ')
+            ? line.split(' ').slice(10).join(' ')
+            : '';
+    if (!path) return line;
+    try {
+      const absolute = join(repoRoot, path);
+      const stat = lstatSync(absolute);
+      if (!stat.isFile()) return `${path}:${stat.mode}:${stat.size}:${stat.mtimeMs}`;
+      if (stat.size <= 256 * 1024 && dirtyBytes + stat.size <= 4 * 1024 * 1024) {
+        dirtyBytes += stat.size;
+        return `${path}:${createHash('sha256').update(readFileSync(absolute)).digest('hex')}`;
+      }
+      return `${path}:${stat.size}:${stat.mtimeMs}`;
+    } catch {
+      return `${path}:missing`;
+    }
+  }).join('\n');
+  const workingTreeFingerprint = createHash('sha256')
+    .update(`${head ?? ''}\n${branch ?? ''}\n${status}\n${dirtyContentIdentity}`)
+    .digest('hex')
+    .slice(0, 24);
+  return {
+    head,
+    branch,
+    dirty: statusLines.length > 0,
+    workingTreeFingerprint: head || status ? workingTreeFingerprint : undefined,
+  };
+}
+
 function sampleGitIdentity(repoRoot: string): Omit<CachedGitIdentity, 'sampledAt'> {
   // Porcelain v2 branch headers carry HEAD and branch identity together with
   // the worktree status. One Git process therefore replaces the previous
@@ -82,56 +136,7 @@ function sampleGitIdentity(repoRoot: string): Omit<CachedGitIdentity, 'sampledAt
     });
     if (!result.ok) return { head: null, branch: null, dirty: false };
 
-    let head: string | null = null;
-    let branch: string | null = null;
-    const statusLines: string[] = [];
-    for (const line of result.stdout.split(/\r?\n/)) {
-      if (line.startsWith('# branch.oid ')) {
-        const value = line.slice('# branch.oid '.length).trim();
-        head = value && value !== '(initial)' ? value : null;
-      } else if (line.startsWith('# branch.head ')) {
-        const value = line.slice('# branch.head '.length).trim();
-        branch = value && value !== '(detached)' && value !== '(unknown)' ? value : null;
-      } else if (line && !line.startsWith('# ')) {
-        statusLines.push(line);
-      }
-    }
-    const status = statusLines.join('\n');
-    let dirtyBytes = 0;
-    const dirtyContentIdentity = statusLines.slice(0, 500).map((line) => {
-      const path = line.startsWith('? ') || line.startsWith('! ')
-        ? line.slice(2)
-        : line.startsWith('1 ')
-          ? line.split(' ').slice(8).join(' ')
-          : line.startsWith('2 ')
-            ? line.split(' ').slice(9).join(' ').split('\t')[0]
-            : line.startsWith('u ')
-              ? line.split(' ').slice(10).join(' ')
-              : '';
-      if (!path) return line;
-      try {
-        const absolute = join(repoRoot, path);
-        const stat = lstatSync(absolute);
-        if (!stat.isFile()) return `${path}:${stat.mode}:${stat.size}:${stat.mtimeMs}`;
-        if (stat.size <= 256 * 1024 && dirtyBytes + stat.size <= 4 * 1024 * 1024) {
-          dirtyBytes += stat.size;
-          return `${path}:${createHash('sha256').update(readFileSync(absolute)).digest('hex')}`;
-        }
-        return `${path}:${stat.size}:${stat.mtimeMs}`;
-      } catch {
-        return `${path}:missing`;
-      }
-    }).join('\n');
-    const workingTreeFingerprint = createHash('sha256')
-      .update(`${head ?? ''}\n${branch ?? ''}\n${status}\n${dirtyContentIdentity}`)
-      .digest('hex')
-      .slice(0, 24);
-    return {
-      head,
-      branch,
-      dirty: statusLines.length > 0,
-      workingTreeFingerprint: head || status ? workingTreeFingerprint : undefined,
-    };
+    return gitIdentityFromStatus(repoRoot, result.stdout);
   } catch {
     return { head: null, branch: null, dirty: false };
   }
@@ -147,6 +152,28 @@ function sampleGitIdentity(repoRoot: string): Omit<CachedGitIdentity, 'sampledAt
 export function freshGitIdentity(repoRoot: string): CachedGitIdentity {
   const root = resolve(repoRoot);
   const sampled = sampleGitIdentity(root);
+  const entry: CachedGitIdentity = { ...sampled, sampledAt: Date.now() };
+  gitIdentityCache.set(root, entry);
+  pruneGitIdentityCache();
+  return entry;
+}
+
+/** Fresh source fence for asynchronous Runtime callers. */
+export async function freshGitIdentityAsync(repoRoot: string): Promise<CachedGitIdentity> {
+  const root = resolve(repoRoot);
+  gitIdentityPerformance.samples += 1;
+  gitIdentityPerformance.subprocesses += 1;
+  let sampled: Omit<CachedGitIdentity, 'sampledAt'>;
+  try {
+    const result = await runBoundedChild('git', ['status', '--porcelain=v2', '--branch', '--untracked-files=all'], {
+      cwd: root, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024,
+    });
+    sampled = result.status === 0 && !result.timedOut && !result.failureCode
+      ? gitIdentityFromStatus(root, result.stdout)
+      : { head: null, branch: null, dirty: false };
+  } catch {
+    sampled = { head: null, branch: null, dirty: false };
+  }
   const entry: CachedGitIdentity = { ...sampled, sampledAt: Date.now() };
   gitIdentityCache.set(root, entry);
   pruneGitIdentityCache();

@@ -48,10 +48,12 @@ function fixture(): { root: string; home: string; repo: string; token: string } 
 function writePackageRuntimeCanaryFixture(packageRoot: string, supportsCurrentCanary = true): void {
   const executionRoot = join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime');
   const cliRoot = join(packageRoot, 'src', 'cli');
+  const runtimeCliRoot = join(cliRoot, 'runtime');
   const contextPackRoot = join(packageRoot, 'adapters', 'mcp', 'runtime-gateway');
-  const pluginSidecarRoot = join(packageRoot, 'src', 'runtime', 'plugins');
+  const pluginSidecarRoot = join(packageRoot, 'src', 'cli', 'github');
   mkdirSync(executionRoot, { recursive: true });
   mkdirSync(cliRoot, { recursive: true });
+  mkdirSync(runtimeCliRoot, { recursive: true });
   mkdirSync(contextPackRoot, { recursive: true });
   mkdirSync(pluginSidecarRoot, { recursive: true });
   const canaryOnly = supportsCurrentCanary
@@ -67,6 +69,7 @@ function writePackageRuntimeCanaryFixture(packageRoot: string, supportsCurrentCa
   writeFileSync(join(executionRoot, 'check-runner-sidecar.ts'), canaryOnly);
   writeFileSync(join(contextPackRoot, 'context-pack-sidecar.ts'), canaryOnly);
   writeFileSync(join(pluginSidecarRoot, 'plugin-action-sidecar.ts'), canaryOnly);
+  writeFileSync(join(runtimeCliRoot, 'entry.ts'), 'process.exit(0);\n');
   writeFileSync(
     join(cliRoot, 'index.ts'),
     "if (process.argv.slice(2).join(' ') === 'mcp serve --help') process.exit(0);\nprocess.exit(4);\n",
@@ -702,6 +705,9 @@ describe('Forge Runtime service', () => {
     const paths = packageConnectorServicePaths(fx.home, fx.root);
     const plist = renderPackageConnectorLaunchAgent({ paths, launch });
     expect(plist).toContain('<key>RunAtLoad</key>');
+    // 30s POST drain + 1s final error flush must precede launchd SIGKILL.
+    const exitGrace = /<key>ExitTimeOut<\/key>\s*<integer>(\d+)<\/integer>/.exec(plist);
+    expect(Number(exitGrace?.[1] ?? 0)).toBeGreaterThan(31);
     expect(plist).toContain('<key>KeepAlive</key>');
     expect(plist).toContain('<string>8767</string>');
     expect(plist).toContain('<string>oauth</string>');

@@ -22,6 +22,68 @@
 - The Gateway-to-Canonical-Runtime client classifies structured SDK HTTP 404 as an expired inner session, reconnects once, and replays only an operation already proven replay-safe by its idempotency contract.
 - The public Gateway may burst-scale a bounded shared pool of inner Canonical Runtime MCP lanes. A released lane remains hot only for a bounded idle lease; reuse cancels retirement, while expiry explicitly terminates the Streamable HTTP session before closing the local client so the Runtime does not retain an orphaned Server/transport graph. Durable Work, Process, and Controller authority is never coupled to that transport retention window.
 
+## Gateway shutdown
+
+SIGTERM/SIGINT fences new MCP arrivals before transport teardown. The existing
+response-owned POST registry drains admitted observations for at most 30 seconds,
+then reports `MCP_GATEWAY_SHUTDOWN_OUTCOME_UNKNOWN` (or closes an already streaming
+response). A final error flush is bounded to one second for detached Bun responses.
+This ends observation only: callers must reconcile the original request/Process
+identity, never replay an unknown non-idempotent operation. Legacy sessions, modern
+handlers and shared proxy lanes close after POST drain; stream-only GET channels
+close with their transport. Release cutover's marker-based admission fence remains
+separate and does not cover arbitrary signals or forced process termination.
+
+Canonical Runtime teardown retains the listener's actual sockets until admitted
+requests and sessions drain, then destroys those sockets explicitly. Bun's
+`http.Server.close()` clears its internal listener reference, so invoking
+`closeAllConnections()` afterwards alone cannot retire pooled connections. A
+retired socket must never initialize a Session against the previous Runtime
+while subsequent calls route to its same-endpoint replacement. Normal live
+connection reuse remains enabled; reconnect does not replay unknown mutations.
+
+Proxy timing in the existing `mcp-timings.jsonl` ledger separates
+`gatewayProxyHandoffWaitMs` (release handoff and old-lane retirement) from
+`gatewayProxyLaneWaitMs` (bounded scheduler admission), connection establishment,
+canonical call, and return tail. These local spans cannot establish caller-to-
+Tunnel/Gateway ingress waiting without matching upstream per-request evidence.
+
+An admitted POST's observation deadline or generic transport exception cannot
+prove execution failure or authorize replay. Existing error codes/statuses are
+retained, but these responses carry `retryable: false`, `action: reconcile` and
+`executionOutcome: unknown`. Explicit pre-admission overload/drain refusal remains
+retryable. Neither response processing nor session replacement changes the
+original durable request identity.
+
+The macOS Connector LaunchAgent explicitly reserves 45 seconds between SIGTERM
+and forced termination, covering the Gateway's 30-second admitted-response drain
+and one-second final observation-error flush before transport cleanup. This is
+service stop grace, not a longer request/execution timeout. Source rendering does
+not update an installed LaunchAgent or authorize a Runtime release/restart.
+
+The HTTP acceptance fixture replaces a real Gateway child at the same endpoint
+while the original Runtime-owned Process remains running. Both graceful shutdown
+after a submission receipt and forced disconnect before that receipt are covered.
+The latter injects a caller observation deadline, then recovers by the original
+request key through a fresh Gateway; running and terminal Process identities must
+match and the external-effect marker must contain exactly one execution. This
+isolated fixture does not certify a public Tunnel or installed Runtime release.
+
+Runtime context semantic queries retain fresh before/after Git source fences,
+but await the existing bounded child-process executor for their Git status samples.
+The synchronous inspector API remains for synchronous consumers; both paths share
+one porcelain-v2/content-fingerprint parser. A slow repository fsmonitor must not
+freeze unrelated Runtime observations while a semantic source fence is sampled.
+This mitigates a reproduced local blocking path, not a proven attribution of a
+historical production latency spike.
+
+Gateway timing records retain `gatewayProxyCanonicalTraceId` from the Runtime's
+existing response metadata. Join that opaque UUID to a `canonical_runtime`
+record's `traceId` in the same audit ledger, keeping both spans' own IDs intact.
+This avoids timestamp/tool-name guessing for callers without an explicit durable
+request key. The link remains diagnostic and never grants retry/idempotency
+or execution authority; malformed arbitrary metadata is not copied into it.
+
 ## Verification
 
 ```text
