@@ -4013,6 +4013,81 @@ describe('Process Runtime real lease contention', () => {
   });
 });
 
+test('recovered cancellation preserves real receipts and does not claim an unverified stop', async () => {
+  for (const scenario of ['receipt', 'dead', 'untrusted', 'historical-unknown']) {
+    const fx = fixture();
+    const processId = `proc_cancel_evidence_${scenario}`;
+    const exitReceiptPath = join(fx.root, `${processId}.exit.json`);
+    const startedAt = new Date(Date.now() - 60_000).toISOString();
+    createProcessRecord({
+      schemaVersion: 1, processId, repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome, status: scenario === 'historical-unknown' ? 'completed_unknown' : 'running', route: 'managed',
+      ...(scenario === 'historical-unknown' ? { terminalWritten: true, cancelled: true } : {}),
+      command: { kind: 'argv', executable: 'node', args: ['--version'], cwd: fx.repoRoot },
+      resourceClaims: [], interactiveWaitMs: 0, timeoutMs: 30_000, maxOutputBytes: 4096,
+      startedAt, updatedAt: startedAt, terminalFenceToken: 1,
+      identity: { pid: 999_999, processStartTime: scenario === 'untrusted' ? 'untrusted:fixture' : 'Mon Jan  1 00:00:00 2001', executableFingerprint: 'missing-runner' },
+      identityUntrusted: scenario === 'untrusted', exitReceiptPath,
+    });
+    if (scenario === 'receipt') writeFileSync(exitReceiptPath, JSON.stringify({
+      schemaVersion: 1, processId, exitCode: 0, finishedAt: new Date().toISOString(), commandExecutedOnce: true,
+    }));
+    const cancelled = await cancelProcess(fx.controllerHome, fx.repository.repoId, processId);
+    expect(cancelled.status, scenario).toBe(scenario === 'receipt' ? 'succeeded' : 'completed_unknown');
+    expect(cancelled.cancelled, scenario).not.toBe(true);
+    if (scenario === 'receipt') expect(cancelled.exitCode).toBe(0);
+    else expect(existsSync(exitReceiptPath)).toBe(false);
+    const response = await callProcessTool({ controllerHome: fx.controllerHome }, 'process_cancel', {
+      repo_id: fx.repository.repoId, process_id: processId,
+    });
+    expect(response?.structuredContent?.cancelled, scenario).toBe(false);
+    expect((response?.structuredContent?.process as { cancelled?: boolean })?.cancelled, scenario).not.toBe(true);
+    if (scenario === 'historical-unknown') expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.cancelled).toBe(true);
+  }
+});
+
+test('recovered cancellation requires a delivered signal and confirmed termination', () => {
+  for (const outcome of ['still-running', 'already-gone', 'stopped']) {
+    const fx = fixture();
+    const child = spawnSync(process.execPath, ['-e', `
+      import { mock } from 'bun:test';
+      import * as tree from ${JSON.stringify(join(import.meta.dir, '../../src/runtime/shared/process-tree.ts'))};
+      import * as identity from ${JSON.stringify(join(import.meta.dir, '../../src/runtime/shared/process-identity.ts'))};
+      let signals = 0;
+      mock.module(${JSON.stringify(join(import.meta.dir, '../../src/runtime/shared/process-tree.ts'))}, () => ({
+        ...tree, isProcessAlive: () => true,
+        terminateProcessTree: async () => { signals += 1; return {
+          signaled: ${outcome !== 'already-gone'}, exited: ${outcome !== 'still-running'}, remainingPids: [], escalated: false,
+        }; },
+      }));
+      mock.module(${JSON.stringify(join(import.meta.dir, '../../src/runtime/shared/process-identity.ts'))}, () => ({
+        ...identity, defaultProcessIdentityProbe: { inspect: () => ({ command: 'fixture', startTime: 'fixture-start' }) },
+      }));
+      const { createProcessRecord, getProcessRecord } = await import(${JSON.stringify(join(import.meta.dir, '../../src/runtime/execution/process-runtime/store.ts'))});
+      const { cancelProcess } = await import(${JSON.stringify(join(import.meta.dir, '../../src/runtime/execution/process-runtime/runtime.ts'))});
+      const startedAt = new Date().toISOString();
+      const processId = 'proc_cancel_termination_fixture';
+      createProcessRecord({
+        schemaVersion: 1, processId, repoId: ${JSON.stringify(fx.repository.repoId)}, controllerHome: ${JSON.stringify(fx.controllerHome)},
+        status: 'running', route: 'managed', command: { kind: 'argv', executable: 'fixture', args: [], cwd: ${JSON.stringify(fx.repoRoot)} },
+        resourceClaims: [], interactiveWaitMs: 0, timeoutMs: 30_000, maxOutputBytes: 4096,
+        startedAt, updatedAt: startedAt, terminalFenceToken: 1,
+        identity: { pid: 999999, processStartTime: 'fixture-start', executableFingerprint: identity.executableFingerprint('fixture') },
+      });
+      const handle = await cancelProcess(${JSON.stringify(fx.controllerHome)}, ${JSON.stringify(fx.repository.repoId)}, processId);
+      const record = getProcessRecord(${JSON.stringify(fx.controllerHome)}, ${JSON.stringify(fx.repository.repoId)}, processId);
+      console.log(JSON.stringify({ handle, terminalWritten: record.terminalWritten, signals }));
+    `], { encoding: 'utf8', timeout: 5_000 });
+    expect(child.status, child.stderr).toBe(0);
+    const result = JSON.parse(child.stdout);
+    expect(result.signals).toBe(1);
+    expect(result.handle.status, outcome).toBe(outcome === 'still-running' ? 'running' : outcome === 'stopped' ? 'cancelled' : 'completed_unknown');
+    expect(result.handle.completed).toBe(outcome !== 'still-running');
+    expect(result.handle.cancelled === true).toBe(outcome === 'stopped');
+    if (outcome === 'still-running') expect(result.terminalWritten).not.toBe(true);
+  }
+});
+
 describe('Process Runner exactly-once semantics', () => {
   test('independent Runner exits promptly after writing a terminal receipt', async () => {
     const root = mkdtempSync(join(tmpdir(), 'process-runner-prompt-exit-'));

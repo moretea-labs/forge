@@ -56,6 +56,10 @@ Git and the registered checkout/worktree identity own repository source and plac
 
 Ordinary worktree creation and source edits do not require semantic Work. Structured worktree retirement proves the exact registered checkout, source HEAD, physical identity, cleanliness, live Process/Lease state and Git containment before removal. Historical WorkHandle or OwnedResource evidence may cause an explicit legacy-cleanup path to preserve uncertain bytes, but it cannot authorize mutation or re-create Work ownership.
 
+### Recovered Process cancellation outcomes (Refs #235)
+
+Cancellation reconciles an existing validated Runner exit receipt before attempting a stop, and again after recovered-process signalling; it preserves that proven outcome. Without a live monitor, a cancellation needs a delivered signal and confirmed termination, or a known pre-spawn state, before it can record `cancelled`. Unverified identity/termination remains `completed_unknown`; a still-running process retains its nonterminal record. Public `process_cancel.cancelled` follows the canonical cancelled status. Historical unknown records with a legacy cancellation flag project as unconfirmed without rewriting their audit history. No cancellation result implies that prior external effects were rolled back.
+
 ### Repository Registry snapshot reads (Refs #235)
 
 Repository list/get share the existing Registry file and its derived file-identity cache. A concurrent replacement, creation or deletion gets one bounded reread; contents enter the cache only when that attempt's before/after physical file identities match. A second racing replacement leaves the snapshot uncached so a later read can observe the current Registry, rather than retaining old removed/missing-repository state under the new file's identity. This adds no Registry writer, alias fallback or automatic retry loop.

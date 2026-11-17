@@ -98,7 +98,7 @@ export const processToolDefinitions: McpToolDefinition[] = [
   ),
   definition(
     'process_cancel',
-    'Cancel a lightweight or durable process through its owning runtime handle. Classified as workspace-write / process-control.',
+    'Cancel a lightweight or durable process through its owning runtime handle. cancelled=true requires confirmed cancellation; an unknown outcome or a still-running process retains the original handle. Classified as workspace-write / process-control.',
     {
       repo_id: repoIdProp,
       process_id: processIdProp,

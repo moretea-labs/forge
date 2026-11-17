@@ -1107,7 +1107,7 @@ function recordToHandle(
     ok: completed ? safeRecord.status === 'succeeded' : undefined,
     exitCode: safeRecord.exitCode,
     timedOut: safeRecord.timedOut,
-    cancelled: safeRecord.cancelled,
+    cancelled: safeRecord.status === 'completed_unknown' ? false : safeRecord.cancelled,
     stdout,
     stderr,
     stdoutTail: stdout === undefined ? undefined : tailText(Buffer.from(stdout, 'utf8'), PROCESS_LOG_TAIL_BYTES),
@@ -1960,6 +1960,10 @@ export async function cancelProcess(
   // signal so a passive/stale runtime cannot kill the active runtime's work.
   assertRuntimeMayWriteOrThrow('cancel_process', controllerHome);
 
+  // A cancellation request cannot replace an outcome the Runner already proved.
+  const fromReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, record);
+  if (fromReceipt) return recordToHandle(fromReceipt, { completed: true });
+
   const monitor = liveMonitors.get(processId);
   if (monitor) {
     monitor.terminalIntent = 'cancelled';
@@ -1983,17 +1987,25 @@ export async function cancelProcess(
     return recordToHandle(getProcessRecord(controllerHome, repoId, processId)!, { completed: true });
   }
 
+  let verifiedCancellation = record.status === 'starting' && !record.identity;
   if (record.identity && !record.identityUntrusted && identityStillMatches(record.identity, false)) {
-    await terminateProcessTree(record.identity.pid, {
+    const termination = await terminateProcessTree(record.identity.pid, {
       gracePeriodMs: 200,
       killAfterMs: 1_500,
       pollIntervalMs: 25,
     });
-  } else if (record.identityUntrusted || record.identity?.processStartTime?.startsWith('untrusted:')) {
+    const receiptAfterSignal = applyReceiptIfPresent(controllerHome, repoId, processId, record);
+    if (receiptAfterSignal) return recordToHandle(receiptAfterSignal, { completed: true });
+    if (!termination.exited) {
+      return recordToHandle(getProcessRecord(controllerHome, repoId, processId)!, { completed: false });
+    }
+    verifiedCancellation = termination.signaled;
+  }
+  if (!verifiedCancellation) {
     completeProcessFromEvidence(controllerHome, repoId, processId, record.terminalFenceToken, {
       status: 'completed_unknown',
-      cancelled: true,
-      errorMessage: 'refusing to signal PID without verified start time',
+      cancelled: false,
+      errorMessage: 'cancellation not verified; process identity or termination evidence unavailable',
     });
     return recordToHandle(getProcessRecord(controllerHome, repoId, processId)!, { completed: true });
   }

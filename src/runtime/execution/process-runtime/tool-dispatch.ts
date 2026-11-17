@@ -240,7 +240,7 @@ export async function callProcessTool(
         return result({
           ...scopePayload,
           process: handleToPayload(handle),
-          cancelled: handle.cancelled === true || handle.status === 'cancelled' || handle.status === 'completed_unknown',
+          cancelled: handle.status === 'cancelled',
         });
       }
       default:
