@@ -898,6 +898,7 @@ describe('browser session compatibility on Computer target authority', () => {
     let frontmost = false;
     let nativeLoading = false;
     let metadataReads = 0;
+    let identityEvaluations = 0;
     const activations: string[] = [];
     const trustedRefs: Array<{ product?: string; windowId?: string; tabId?: string }> = [];
     const metadata = () => [
@@ -920,6 +921,7 @@ describe('browser session compatibility on Computer target authority', () => {
         if (script.includes('set outputText to "false"')) return inventory();
         if (script.includes('set active tab index of targetWindow')) return '';
         if (script.includes('execute targetTab javascript')) {
+          identityEvaluations += 1;
           return JSON.stringify({ ok: true, value: { url, title: 'Native Foreground' } });
         }
         metadataReads += 1;
@@ -969,6 +971,7 @@ describe('browser session compatibility on Computer target authority', () => {
     // Already-authoritative foreground is a verified fast path, not a fixed
     // wait. The caller's settling budget applies only when state is not ready.
     const metadataBeforeFast = metadataReads;
+    const identityBeforeFast = identityEvaluations;
     const fastStart = performance.now();
     const alreadyActive = await executeBrowserPluginAction({
       ...baseInput,
@@ -982,6 +985,9 @@ describe('browser session compatibility on Computer target authority', () => {
     // One post-activation native metadata read is sufficient; no second
     // foregroundState roundtrip when the same proof is already authoritative.
     expect(metadataReads - metadataBeforeFast).toBe(1);
+    expect(identityEvaluations - identityBeforeFast).toBe(0);
+    // A later action is never allowed to reuse the activation's URL receipt.
+
 
     // An explicit load-state request must still honor its requested deadline.
     await expect(executeBrowserPluginAction({
@@ -991,6 +997,7 @@ describe('browser session compatibility on Computer target authority', () => {
       args: { session_id: 'native-foreground', timeout_ms: 250 },
     })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_LOAD_STATE_TIMEOUT' });
 
+    const identityBeforeMutation = identityEvaluations;
     await executeBrowserPluginAction({
       ...baseInput,
       requestId: 'native-foreground-trusted-input',
@@ -998,6 +1005,7 @@ describe('browser session compatibility on Computer target authority', () => {
       args: { session_id: 'native-foreground', kind: 'click', x: 10, y: 20, post_action_wait_ms: 1 },
     });
     expect(trustedRefs).toEqual([{ product: 'chrome', windowId: '7', tabId: '9' }]);
+    expect(identityEvaluations).toBeGreaterThan(identityBeforeMutation);
   });
 
   test('lists saved metadata without inventory and explicitly reconciles native liveness before close', async () => {

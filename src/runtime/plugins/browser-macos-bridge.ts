@@ -1107,6 +1107,7 @@ export class MacOsAppleEventsPage {
   private timeoutMs: number;
   private targetRef?: MacOsBrowserTabRef;
   private domIdentityFromCurrentAction = false;
+  private verifiedActivationIdentityFromCurrentAction = false;
   private readonly createTabEvidence?: MacOsBrowserCreateTabEvidence;
 
   constructor(attachment: MacOsBrowserAttachment, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS, targetRef?: MacOsBrowserTabRef, createTabEvidence?: MacOsBrowserCreateTabEvidence) {
@@ -1332,9 +1333,18 @@ export class MacOsAppleEventsPage {
 
   beginAction(): void {
     this.domIdentityFromCurrentAction = false;
+    this.verifiedActivationIdentityFromCurrentAction = false;
   }
 
-  async identity(options: { preferObservedDom?: boolean } = {}): Promise<{ url: string; title: string }> {
+  async identity(options: { preferObservedDom?: boolean; preferVerifiedActivation?: boolean } = {}): Promise<{ url: string; title: string }> {
+    // This result belongs to the exact native tab activation just completed.
+    // Never reuse it for click/fill/navigation or a later action: those must
+    // re-read page identity because the mutation may change the URL.
+    if (options.preferVerifiedActivation && this.verifiedActivationIdentityFromCurrentAction && this.metadata.url) {
+      this.verifiedActivationIdentityFromCurrentAction = false;
+      return { url: this.metadata.url, title: this.metadata.title };
+    }
+    this.verifiedActivationIdentityFromCurrentAction = false;
     if (options.preferObservedDom && this.domIdentityFromCurrentAction && this.metadata.url) {
       this.domIdentityFromCurrentAction = false;
       return { url: this.metadata.url, title: this.metadata.title };
@@ -1803,8 +1813,11 @@ export class MacOsAppleEventsPage {
       if (this.metadata.windowId && this.metadata.tabId) {
         this.targetRef = { windowId: this.metadata.windowId, tabId: this.metadata.tabId };
       }
-      // The activation already read authoritative postcondition metadata for
-      // this exact tab. Returning it avoids a second cross-process query.
+      // The activation read the exact tab's authoritative postcondition and
+      // URL/title. Reuse that identity only if the caller is finalizing this
+      // activate_page action, never across later mutations or actions.
+      this.verifiedActivationIdentityFromCurrentAction =
+        this.metadata.frontmost === true && this.metadata.active === true && Boolean(this.metadata.url);
       return { frontmost: this.metadata.frontmost, active: this.metadata.active === true };
     }
     await this.runAutomation(
