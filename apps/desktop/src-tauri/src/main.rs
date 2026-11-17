@@ -3434,6 +3434,11 @@ impl StreamedModelRound {
         &mut self, protocol: &str, data: &str, host: &H, conversation_id: &str,
     ) -> Result<(), String> {
         if data == "[DONE]" {
+            // This sentinel belongs to Chat Completions only. In particular,
+            // it cannot promote an unfinished Anthropic tool preview to authority.
+            if protocol != "openai" {
+                return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
+            }
             self.finished = true;
             return Ok(());
         }
@@ -4579,7 +4584,11 @@ mod tests {
                     frames.push(json!({"choices":[{"delta":{"content":"Read, edited and verified."}}]}).to_string());
                     frames.push("[DONE]".into());
                 }
-                if protocol != "responses" {
+                if stop_reason == Some("foreign-done") {
+                    // A proxy terminates an Anthropic preview using OpenAI's sentinel.
+                    frames.pop();
+                    frames.push("[DONE]".into());
+                } else if protocol != "responses" {
                     let reason = stop_reason.unwrap_or(if round < 3 {
                         if protocol == "anthropic" { "tool_use" } else { "tool_calls" }
                     } else if protocol == "anthropic" { "end_turn" } else { "stop" });
@@ -4725,6 +4734,39 @@ mod tests {
             assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
             assert_eq!(server.join().unwrap().len(), 1, "no automatic retry");
         }
+    }
+
+    #[test]
+    fn anthropic_foreign_terminator_never_dispatches_tools() {
+        let (endpoint, server) = spawn_scripted_agent_provider("anthropic", "bun", Some("foreign-done"));
+        let host = ScriptedAgentLoopHost::default();
+        let config = json!({"apiProfiles":[{
+            "id":"foreign-done-test","endpoint":endpoint,"model":"test-model","apiProtocol":"anthropic"
+        }]});
+        let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+        let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+            &host, config, vec![json!({"role":"user","content":"Read fixture.txt"})],
+            Some("repo_test".into()), Some("checkout_test".into()), "conv-foreign-done".into(),
+            Some("api:foreign-done-test".into()), None, true, &mut cancellation,
+        ));
+        assert!(host.tool_calls.lock().unwrap().is_empty(),
+            "OpenAI's sentinel must not authorize an unfinished Anthropic tool preview");
+        assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+        assert_eq!(server.join().unwrap().len(), 1, "no automatic retry");
+    }
+
+    #[test]
+    fn anthropic_foreign_terminator_does_not_complete_text_preview() {
+        let host = RecordingStreamHost::default();
+        let mut round = StreamedModelRound::default();
+        round.consume("anthropic", &json!({
+            "type":"content_block_delta","index":0,
+            "delta":{"type":"text_delta","text":"Partial answer"}
+        }).to_string(), &host, "conv-foreign-text").unwrap();
+        assert_eq!(round.consume("anthropic", "[DONE]", &host, "conv-foreign-text").unwrap_err(),
+            "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+        assert_eq!(round.finish("anthropic").unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+        assert!(host.events.lock().unwrap().iter().any(|event| event["delta"] == "Partial answer"));
     }
 
     #[test]
