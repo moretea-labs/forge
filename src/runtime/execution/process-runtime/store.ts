@@ -17,6 +17,7 @@ import {
 } from 'fs';
 import { basename, dirname, join } from 'path';
 import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../effects/controller-home';
+import { withControllerLock } from '../../../effects/controller-locks';
 import { mutateControlPlaneRecord, readOrImportControlPlaneRecord } from '../../control-plane/persistence/sqlite-store';
 import { isSensitiveOutputKey, redactSensitiveText } from '../../evidence/sensitive-output';
 import { touchSchedulerWakeSignal } from '../../control-plane/global-scheduler/wake-signal';
@@ -46,6 +47,22 @@ function processesRoot(controllerHome: string, repoId: string): string {
 
 function processPath(controllerHome: string, repoId: string, processId: string): string {
   return join(processesRoot(controllerHome, repoId), `${processId}.json`);
+}
+
+/** Serialize writes to one Process outcome, not every repository Process. */
+function withProcessRecordMutation<T>(
+  controllerHome: string,
+  repoId: string,
+  processId: string,
+  mutation: () => T,
+): T {
+  const identity = createHash('sha256').update(JSON.stringify([repoId, processId])).digest('hex');
+  return withControllerLock(
+    controllerHome,
+    { scope: 'global', resource: `process-record-${identity}` },
+    `process-record:${processId}`,
+    mutation,
+  );
 }
 
 function requestBindingsRoot(controllerHome: string, repoId: string): string {
@@ -331,9 +348,9 @@ function readProcessRecord(path: string): ManagedProcessRecord | undefined {
   // bounded GC has its own metadata-only parser so one such file cannot block
   // cleanup of unrelated proven terminal records.
   if (!record.command || typeof record.command !== 'object' || Array.isArray(record.command)) return undefined;
-  const sanitized = sanitizeProcessRecord(record);
-  if (sanitized.changed) atomicWrite(path, sanitized.record);
-  return sanitized.record;
+  // Reads must not rewrite a stale snapshot over a concurrently committed
+  // terminal outcome. The next explicit record mutation persists sanitation.
+  return sanitizeProcessRecord(record).record;
 }
 
 /**
@@ -521,19 +538,21 @@ export function processLogDir(controllerHome: string, repoId: string): string {
 }
 
 export function createProcessRecord(record: ManagedProcessRecord): ManagedProcessRecord {
-  const path = processPath(record.controllerHome, record.repoId, record.processId);
-  if (existsSync(path)) {
-    throw new Error(`PROCESS_ALREADY_EXISTS: ${record.processId}`);
-  }
-  const sanitized = sanitizeProcessRecord(record).record;
-  atomicWrite(path, sanitized);
-  updateRecoveryIndexMembership(
-    record.controllerHome,
-    record.repoId,
-    record.processId,
-    processRecoveryMembership(sanitized),
-  );
-  return sanitized;
+  return withProcessRecordMutation(record.controllerHome, record.repoId, record.processId, () => {
+    const path = processPath(record.controllerHome, record.repoId, record.processId);
+    if (existsSync(path)) {
+      throw new Error(`PROCESS_ALREADY_EXISTS: ${record.processId}`);
+    }
+    const sanitized = sanitizeProcessRecord(record).record;
+    atomicWrite(path, sanitized);
+    updateRecoveryIndexMembership(
+      record.controllerHome,
+      record.repoId,
+      record.processId,
+      processRecoveryMembership(sanitized),
+    );
+    return sanitized;
+  });
 }
 
 export function getProcessRecord(
@@ -563,33 +582,36 @@ export function tryCompleteProcessRecord(
     status: ProcessRuntimeStatus;
   },
 ): { ok: boolean; record?: ManagedProcessRecord; reason?: string } {
-  const path = processPath(controllerHome, repoId, processId);
-  const current = readProcessRecord(path);
-  if (!current) return { ok: false, reason: 'missing' };
-  if (current.terminalWritten) return { ok: false, reason: 'already_terminal', record: current };
-  if (current.terminalFenceToken !== fenceToken) {
-    return { ok: false, reason: 'fence_mismatch', record: current };
-  }
-  const hasLeases = (current.leaseRefs?.length ?? 0) > 0;
-  const leasesReleased = current.leasesReleased === true || !hasLeases;
-  const next: ManagedProcessRecord = {
-    ...current,
-    ...patch,
-    terminalWritten: true,
-    leaseReleaseState: leasesReleased ? 'released' : 'pending',
-    leasesReleased,
-    finishedAt: patch.finishedAt ?? new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  const sanitized = sanitizeProcessRecord(next).record;
-  atomicWrite(path, sanitized);
-  updateRecoveryIndexMembership(controllerHome, repoId, processId, processRecoveryMembership(sanitized));
+  const completion = withProcessRecordMutation(controllerHome, repoId, processId, () => {
+    const path = processPath(controllerHome, repoId, processId);
+    const current = readProcessRecord(path);
+    if (!current) return { ok: false, reason: 'missing' };
+    if (current.terminalWritten) return { ok: false, reason: 'already_terminal', record: current };
+    if (current.terminalFenceToken !== fenceToken) {
+      return { ok: false, reason: 'fence_mismatch', record: current };
+    }
+    const hasLeases = (current.leaseRefs?.length ?? 0) > 0;
+    const leasesReleased = current.leasesReleased === true || !hasLeases;
+    const next: ManagedProcessRecord = {
+      ...current,
+      ...patch,
+      terminalWritten: true,
+      leaseReleaseState: leasesReleased ? 'released' : 'pending',
+      leasesReleased,
+      finishedAt: patch.finishedAt ?? new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const sanitized = sanitizeProcessRecord(next).record;
+    atomicWrite(path, sanitized);
+    updateRecoveryIndexMembership(controllerHome, repoId, processId, processRecoveryMembership(sanitized));
+    return { ok: true, record: sanitized };
+  });
   // Terminal Process persistence remains the lifecycle authority. The scheduler
   // notification is emitted only after durable terminal state exists, and only
   // for Check-backed Processes whose receipts can unblock Work/Edit validation.
   // Notification failure must never reinterpret or roll back the terminal CAS;
   // the explicit schedule deadline still provides a bounded observation path.
-  if (sanitized.checkExecution || sanitized.origin?.surface === 'check' || sanitized.origin?.checkId) {
+  if (completion.ok && (completion.record?.checkExecution || completion.record?.origin?.surface === 'check' || completion.record?.origin?.checkId)) {
     try {
       touchSchedulerWakeSignal(controllerHome, `check-process-terminal:${processId}`);
     } catch (error) {
@@ -599,7 +621,7 @@ export function tryCompleteProcessRecord(
       );
     }
   }
-  return { ok: true, record: sanitized };
+  return completion;
 }
 
 export function updateProcessRecord(
@@ -609,34 +631,35 @@ export function updateProcessRecord(
   patch: Partial<ManagedProcessRecord>,
   options: { requireFence?: number; allowTerminal?: boolean } = {},
 ): ManagedProcessRecord | undefined {
-  const path = processPath(controllerHome, repoId, processId);
-  const current = readProcessRecord(path);
-  if (!current) return undefined;
-  if (current.terminalWritten && !options.allowTerminal) return current;
-  if (options.requireFence !== undefined && current.terminalFenceToken !== options.requireFence) {
-    return current;
-  }
-  const next: ManagedProcessRecord = {
-    ...current,
-    ...patch,
-    // Never allow patch to clear terminal fencing once set.
-    terminalFenceToken: current.terminalFenceToken,
-    terminalWritten: current.terminalWritten || patch.terminalWritten === true,
-    updatedAt: new Date().toISOString(),
-  };
-  const sanitized = sanitizeProcessRecord(next).record;
-  atomicWrite(path, sanitized);
-  const previousMembership = processRecoveryMembership(current);
-  const nextMembership = processRecoveryMembership(sanitized);
-  if (
-    previousMembership.active !== nextMembership.active
-    || previousMembership.pendingLeaseRelease !== nextMembership.pendingLeaseRelease
-  ) {
-    updateRecoveryIndexMembership(controllerHome, repoId, processId, nextMembership);
-  }
-  return sanitized;
+  return withProcessRecordMutation(controllerHome, repoId, processId, () => {
+    const path = processPath(controllerHome, repoId, processId);
+    const current = readProcessRecord(path);
+    if (!current) return undefined;
+    if (current.terminalWritten && !options.allowTerminal) return current;
+    if (options.requireFence !== undefined && current.terminalFenceToken !== options.requireFence) {
+      return current;
+    }
+    const next: ManagedProcessRecord = {
+      ...current,
+      ...patch,
+      // Never allow patch to clear terminal fencing once set.
+      terminalFenceToken: current.terminalFenceToken,
+      terminalWritten: current.terminalWritten || patch.terminalWritten === true,
+      updatedAt: new Date().toISOString(),
+    };
+    const sanitized = sanitizeProcessRecord(next).record;
+    atomicWrite(path, sanitized);
+    const previousMembership = processRecoveryMembership(current);
+    const nextMembership = processRecoveryMembership(sanitized);
+    if (
+      previousMembership.active !== nextMembership.active
+      || previousMembership.pendingLeaseRelease !== nextMembership.pendingLeaseRelease
+    ) {
+      updateRecoveryIndexMembership(controllerHome, repoId, processId, nextMembership);
+    }
+    return sanitized;
+  });
 }
-
 export function listRecoverableProcessRecords(controllerHome: string, repoId: string): ManagedProcessRecord[] {
   const index = ensureRecoveryIndex(controllerHome, repoId);
   const indexedIds = normalizedProcessIds([
@@ -701,14 +724,16 @@ export function deleteProcessRecord(
   repoId: string,
   processId: string,
 ): boolean {
-  const path = processPath(controllerHome, repoId, processId);
-  if (!existsSync(path)) return false;
-  unlinkSync(path);
-  updateRecoveryIndexMembership(controllerHome, repoId, processId, {
-    active: false,
-    pendingLeaseRelease: false,
+  return withProcessRecordMutation(controllerHome, repoId, processId, () => {
+    const path = processPath(controllerHome, repoId, processId);
+    if (!existsSync(path)) return false;
+    unlinkSync(path);
+    updateRecoveryIndexMembership(controllerHome, repoId, processId, {
+      active: false,
+      pendingLeaseRelease: false,
+    });
+    return true;
   });
-  return true;
 }
 
 export function repositoryProcessesRoot(controllerHome: string, repoId: string): string {

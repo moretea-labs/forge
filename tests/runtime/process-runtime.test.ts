@@ -69,6 +69,7 @@ import { classifyGatewayExecutionPath } from '../../adapters/mcp/runtime-gateway
 import { persistedCheckSemanticScopeKey, runPersistedCheckViaProcessRuntime } from '../../adapters/mcp/runtime-gateway/persisted-check-process';
 import { classifyPersistedCheckTerminalEvidence, readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
+import { withControllerLock } from '../../src/effects/controller-locks';
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { routeExecution } from '../../src/runtime/execution/thin-harness';
 import { listActiveLeases, acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
@@ -1400,6 +1401,61 @@ describe('Unified Process Runtime', () => {
     );
     expect(second.ok).toBe(false);
     expect(second.reason).toBe('already_terminal');
+  });
+
+  test('Process terminal CAS and regular updates share one exact per-record lock', () => {
+    const fx = fixture();
+    const processId = 'proc_terminal_shared_cas_fixture';
+    const now = new Date().toISOString();
+    createProcessRecord({
+      schemaVersion: 1,
+      processId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      controllerHome: fx.controllerHome,
+      status: 'running',
+      route: 'managed',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
+      resourceClaims: [],
+      interactiveWaitMs: 0,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1_024,
+      startedAt: now,
+      updatedAt: now,
+      terminalFenceToken: 41,
+    });
+
+    const identity = createHash('sha256')
+      .update(JSON.stringify([fx.repository.repoId, processId])).digest('hex');
+    const lock = { scope: 'global' as const, resource: `process-record-${identity}` };
+    withControllerLock(fx.controllerHome, lock, 'competing-process-writer', () => {
+      expect(() => tryCompleteProcessRecord(
+        fx.controllerHome, fx.repository.repoId, processId, 41, { status: 'succeeded', exitCode: 0 },
+      )).toThrow('LOCK_HELD');
+      expect(() => updateProcessRecord(
+        fx.controllerHome, fx.repository.repoId, processId, { status: 'running_recovered' },
+      )).toThrow('LOCK_HELD');
+      expect(() => deleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId))
+        .toThrow('LOCK_HELD');
+      expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.status)
+        .toBe('running');
+    });
+
+    const completed = tryCompleteProcessRecord(
+      fx.controllerHome, fx.repository.repoId, processId, 41, { status: 'succeeded', exitCode: 0 },
+    );
+    expect(completed).toMatchObject({ ok: true, record: { status: 'succeeded', terminalWritten: true } });
+    expect(tryCompleteProcessRecord(
+      fx.controllerHome, fx.repository.repoId, processId, 41, { status: 'failed', exitCode: 1 },
+    )).toMatchObject({ ok: false, reason: 'already_terminal' });
+
+    // Stale active monitor writes must never revert the terminal outcome.
+    const stale = updateProcessRecord(
+      fx.controllerHome, fx.repository.repoId, processId, { status: 'running_recovered' },
+    );
+    expect(stale).toMatchObject({ status: 'succeeded', terminalWritten: true, exitCode: 0 });
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId))
+      .toMatchObject({ status: 'succeeded', terminalWritten: true, exitCode: 0 });
   });
 
   test('cancel terminates running process', async () => {
