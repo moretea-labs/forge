@@ -139,6 +139,14 @@ function scanTempDirs(minAgeMinutes: number, limit: number): RuntimeCleanupCandi
   return candidates.sort((a, b) => (b.ageMinutes ?? 0) - (a.ageMinutes ?? 0)).slice(0, limit);
 }
 
+function assertCleanupDirectoryCurrent(path: string, minAgeMinutes: number): void {
+  const stat = lstatSync(path);
+  const ageMinutes = Math.max(0, Math.round((Date.now() - stat.mtimeMs) / 60_000));
+  if (!stat.isDirectory() || ageMinutes < minAgeMinutes) {
+    throw new Error('RUNTIME_CLEANUP_DIRECTORY_CHANGED: candidate is no longer an aged directory');
+  }
+}
+
 function readJson(path: string): unknown {
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return undefined; }
 }
@@ -390,6 +398,9 @@ export function applyRuntimeCleanup(repoRoot: string, options: RuntimeCleanupOpt
         const relativePath = relative(join(repoRoot, '.ai/harness/local-jobs'), candidate.path);
         if (relativePath && !relativePath.startsWith('..')) {
           if (!relocatedRuntimeStorageRoot(repoRoot, 'local-jobs')) throw new Error('RUNTIME_CLEANUP_STORAGE_NOT_RELOCATED');
+          assertCleanupDirectoryCurrent(candidate.path, normalized.minAgeMinutes);
+          const job = readJson(join(candidate.path, 'job.json')) as Record<string, unknown> | undefined;
+          if (!terminalStatus(job?.status)) throw new Error('RUNTIME_CLEANUP_LOCAL_JOB_STATE_CHANGED');
           rmSync(candidate.path, { recursive: true, force: true });
           return { ...candidate, applied: true };
         }
@@ -398,6 +409,14 @@ export function applyRuntimeCleanup(repoRoot: string, options: RuntimeCleanupOpt
         const relativePath = relative(join(repoRoot, '.ai/harness/jobs'), candidate.path);
         if (relativePath && !relativePath.startsWith('..') && basename(candidate.path).startsWith('RUN-')) {
           if (!relocatedRuntimeStorageRoot(repoRoot, 'jobs')) throw new Error('RUNTIME_CLEANUP_STORAGE_NOT_RELOCATED');
+          assertCleanupDirectoryCurrent(candidate.path, normalized.minAgeMinutes);
+          const state = findRunState(candidate.path);
+          if (state?.status !== 'waiting_for_user' || !textIncludesNoOpIntegrate(state)) {
+            throw new Error('RUNTIME_CLEANUP_LEGACY_RUN_STATE_CHANGED');
+          }
+          if (processCommands().some((process) => process.command.includes(basename(candidate.path!)) || process.command.includes(candidate.path!))) {
+            throw new Error('RUNTIME_CLEANUP_LEGACY_RUN_PROCESS_OCCUPIED');
+          }
           rmSync(candidate.path, { recursive: true, force: true });
           return { ...candidate, applied: true };
         }

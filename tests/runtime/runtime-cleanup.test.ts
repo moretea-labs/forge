@@ -134,6 +134,70 @@ describe('runtime cleanup', () => {
     expect(existsSync(idle)).toBe(false);
   });
 
+  test.skipIf(process.platform === 'win32')('cleanup rechecks state and occupancy after candidate discovery', () => {
+    for (const scenario of ['local-state', 'legacy-state', 'legacy-occupancy', 'legacy-goal', 'local-recent', 'legacy-recent']) {
+      const home = controllerHome();
+      const repo = join(home, 'repo');
+      const storage = join(home, 'runtime-storage');
+      const bin = join(home, 'bin');
+      const counter = join(home, 'scan-count');
+      mkdirSync(bin);
+      writeFileSync(counter, '0\n');
+      writeFileSync(join(bin, 'ps'), `#!/bin/sh
+count=0
+if [ -f '${counter}' ]; then read count < '${counter}'; fi
+count=$((count + 1))
+printf '%s\\n' "$count" > '${counter}'
+if [ "$count" -gt 1 ] && [ '${scenario}' = 'legacy-occupancy' ]; then
+  printf '123 worker RUN-waiting\\n'
+else
+  printf '1 /sbin/launchd\\n'
+fi
+`, { mode: 0o700 });
+      const local = scenario.startsWith('local');
+      const name = local ? 'terminal-job' : 'RUN-waiting';
+      const candidate = join(storage, name);
+      const state = join(candidate, local ? 'job.json' : 'state.json');
+      mkdirSync(candidate, { recursive: true });
+      mkdirSync(join(repo, '.ai/harness'), { recursive: true });
+      symlinkSync(storage, join(repo, '.ai/harness', local ? 'local-jobs' : 'jobs'));
+      writeFileSync(state, JSON.stringify(local ? { status: 'failed' } : { status: 'waiting_for_user', note: 'nothing to integrate' }));
+      age(candidate);
+      const child = spawnSync(process.execPath, ['-e', `
+        import { mock } from 'bun:test';
+        import * as fs from 'fs';
+        const read = fs.readFileSync;
+        const write = fs.writeFileSync;
+        let changed = false;
+        mock.module('fs', () => ({ ...fs, readFileSync(path, ...args) {
+          const value = read(path, ...args);
+          if (String(path).endsWith(${JSON.stringify(local ? '/terminal-job/job.json' : '/RUN-waiting/state.json')}) && !changed && ${JSON.stringify(scenario)} !== 'legacy-occupancy') {
+            changed = true;
+            if (${scenario.endsWith('recent')}) fs.utimesSync(${JSON.stringify(candidate)}, new Date(), new Date());
+            else write(path, JSON.stringify({ status: ${JSON.stringify(scenario === 'legacy-goal' ? 'waiting_for_user' : 'running')}, note: 'new active work' }));
+          }
+          return value;
+        } }));
+        const { applyRuntimeCleanup } = await import(${JSON.stringify(join(import.meta.dir, '../../src/runtime/maintenance/cleanup.ts'))});
+        const result = applyRuntimeCleanup(${JSON.stringify(repo)}, {
+          includeTempDirs: false, includeTerminalLocalJobs: ${local}, includeLegacyRuns: ${!local},
+          minAgeMinutes: 60, confirmCleanup: true,
+        });
+        console.log(JSON.stringify({ candidates: result.candidates, applied: result.applied, changed, scans: Number(read(${JSON.stringify(counter)}, 'utf8')) }));
+      `], { env: { ...process.env, PATH: bin, FORGE_CONTROLLER_HOME: home }, encoding: 'utf8', timeout: 5_000 });
+      expect(child.status, child.stderr).toBe(0);
+      const result = JSON.parse(child.stdout);
+      expect(result.applied, JSON.stringify({ scenario, ...result })).toMatchObject([{ applied: false }]);
+      const expectedCode = scenario.endsWith('recent') ? 'RUNTIME_CLEANUP_DIRECTORY_CHANGED'
+        : scenario === 'legacy-occupancy' ? 'RUNTIME_CLEANUP_LEGACY_RUN_PROCESS_OCCUPIED'
+        : local ? 'RUNTIME_CLEANUP_LOCAL_JOB_STATE_CHANGED' : 'RUNTIME_CLEANUP_LEGACY_RUN_STATE_CHANGED';
+      expect(result.applied[0].error).toContain(expectedCode);
+      expect(existsSync(state), scenario).toBe(true);
+      if (scenario === 'legacy-occupancy') expect(result.scans).toBe(2);
+      else expect(result.changed).toBe(true);
+    }
+  });
+
   test('scheduler history retention physically bounds unindexed terminal occurrence evidence and protects active state', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-runtime-scheduler-retention-'));
     homes.push(root);
