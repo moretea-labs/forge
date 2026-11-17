@@ -61,6 +61,14 @@ and one-second final observation-error flush before transport cleanup. This is
 service stop grace, not a longer request/execution timeout. Source rendering does
 not update an installed LaunchAgent or authorize a Runtime release/restart.
 
+The HTTP acceptance fixture replaces a real Gateway child at the same endpoint
+while the original Runtime-owned Process remains running. Both graceful shutdown
+after a submission receipt and forced disconnect before that receipt are covered.
+The latter injects a caller observation deadline, then recovers by the original
+request key through a fresh Gateway; running and terminal Process identities must
+match and the external-effect marker must contain exactly one execution. This
+isolated fixture does not certify a public Tunnel or installed Runtime release.
+
 ## Verification
 
 ```text
