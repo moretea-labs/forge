@@ -3955,7 +3955,7 @@ private struct RecordsPane: View {
                 Text("当前项目")
                     .font(.system(size:9))
                     .foregroundStyle(ForgePalette.secondary)
-                Text(model.project?.label ?? model.repoId ?? "未选择项目")
+                Text(model.semanticProject?.displayName ?? model.project?.label ?? model.repoId ?? "未选择项目")
                     .font(.system(size:11,weight:.semibold))
                     .lineLimit(1)
             }
@@ -3986,7 +3986,7 @@ private struct RecordsPane: View {
                 }
                 .buttonStyle(.plain)
                 .help("新建需求")
-                .disabled(model.repoId == nil)
+                .disabled(model.semanticProject?.status != "active")
                 Button { beginPlan(requirementId:nil,parentPlanId:nil) } label: {
                     Image(systemName:"plus")
                         .frame(width:25,height:25)
@@ -3994,7 +3994,7 @@ private struct RecordsPane: View {
                 }
                 .buttonStyle(.plain)
                 .help("新建计划")
-                .disabled(model.repoId == nil)
+                .disabled(model.semanticProject?.status != "active")
             }
             .padding(.horizontal,13).padding(.top,13).padding(.bottom,9)
 
