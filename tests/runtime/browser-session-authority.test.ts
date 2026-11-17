@@ -960,6 +960,19 @@ describe('browser session compatibility on Computer target authority', () => {
     expect((activated.action as { summary?: string }).summary).toContain('authoritative foreground');
     expect(activations).toEqual(['chrome']);
 
+    // Already-authoritative foreground is a verified fast path, not a fixed
+    // wait. The caller's settling budget applies only when state is not ready.
+    const fastStart = performance.now();
+    const alreadyActive = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'native-foreground-already-active',
+      actionId: 'activate_page',
+      args: { session_id: 'native-foreground', post_action_wait_ms: 5_000 },
+    });
+    expect((alreadyActive.action as { summary?: string }).summary).toContain('authoritative foreground');
+    expect(activations).toEqual(['chrome']);
+    expect(performance.now() - fastStart).toBeLessThan(2_000);
+
     await executeBrowserPluginAction({
       ...baseInput,
       requestId: 'native-foreground-trusted-input',
