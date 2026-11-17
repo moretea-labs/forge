@@ -3227,6 +3227,9 @@ fn responses_assistant_message(output: &Value) -> Result<Value, String> {
         "content":if texts.is_empty(){Value::Null}else{Value::String(texts.join("\n"))}
     });
     if !calls.is_empty() { message["tool_calls"] = Value::Array(calls); }
+    // Keep provider context and item identity intact across tool rounds. The
+    // normalized fields above serve dispatch/presentation, not reconstruction.
+    message["responses_output"] = Value::Array(items.clone());
     Ok(message)
 }
 
@@ -3235,6 +3238,12 @@ fn responses_input(history: &[Value]) -> Result<Vec<Value>, String> {
     for item in history {
         match item.get("role").and_then(Value::as_str) {
             Some(role @ ("user" | "assistant")) => {
+                if role == "assistant" {
+                    if let Some(output) = item.get("responses_output").and_then(Value::as_array) {
+                        input.extend(output.iter().cloned());
+                        continue;
+                    }
+                }
                 if let Some(content) = item.get("content").and_then(Value::as_str)
                     .filter(|value| !value.trim().is_empty()) {
                     input.push(json!({"role":role,"content":content}));
@@ -3874,6 +3883,7 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
                 "model":model,
                 "instructions":system_instruction,
                 "input":responses_input(&history)?,
+                "include":["reasoning.encrypted_content"],
                 "stream":true,
             });
             if !tools.is_empty() { body["tools"] = Value::Array(tools); }
@@ -4526,7 +4536,10 @@ mod tests {
                                 "command":[bun_executable.as_str(),"test","tests/fixture.test.ts"],"timeout_ms":1000
                             })),
                         };
-                        json!({"output":[{"type":"function_call","status":"completed","call_id":id,"name":name,"arguments":arguments.to_string()}]})
+                        json!({"output":[
+                            {"type":"reasoning","id":format!("reasoning-{round}"),"summary":[],"encrypted_content":"opaque-fixture-context"},
+                            {"type":"function_call","id":format!("function-{round}"),"status":"completed","call_id":id,"name":name,"arguments":arguments.to_string()}
+                        ]})
                     } else {
                         json!({"output":[{"type":"message","content":[{"type":"output_text","text":"Read, edited and verified."}]}]})
                     };
@@ -4640,6 +4653,23 @@ mod tests {
             assert!(requests[1].to_string().contains("before"));
             assert!(requests[2].to_string().contains("applied"));
             assert!(requests[3].to_string().contains("1 pass"));
+            if protocol == "responses" {
+                for (round, request) in requests[1..].iter().enumerate() {
+                    let input = request["input"].as_array().unwrap();
+                    let index = input.iter().position(|item| item["id"] == format!("reasoning-{round}"))
+                        .expect("tool continuation must retain its original reasoning item");
+                    assert_eq!(input[index], json!({
+                        "type":"reasoning", "id":format!("reasoning-{round}"),
+                        "summary":[], "encrypted_content":"opaque-fixture-context"
+                    }));
+                    assert_eq!(input[index + 1]["id"], format!("function-{round}"));
+                    assert_eq!(input[index + 1]["status"], "completed");
+                    assert_eq!(input[index + 2]["type"], "function_call_output");
+                    assert_eq!(input[index + 1]["call_id"], input[index + 2]["call_id"]);
+                    assert_eq!(request["include"], json!(["reasoning.encrypted_content"]));
+                }
+                assert!(!events.iter().any(|event| event["payload"].to_string().contains("opaque-fixture-context")));
+            }
             if protocol == "anthropic" {
                 for request in &requests[1..] {
                     let assistant = request["messages"].as_array().unwrap().iter().rev()
@@ -5563,6 +5593,33 @@ mod tests {
                 && assistant["tool_calls"][0]["id"] == id));
         }
         assert_eq!(history.last().unwrap()["tool_call_id"], "call-11");
+    }
+
+    #[test]
+    fn responses_compaction_keeps_provider_items_with_tool_results() {
+        let mut history = vec![json!({"role":"user","content":"inspect files"})];
+        for round in 0..12 {
+            let output = json!({"output":[
+                {"type":"reasoning","id":format!("reasoning-{round}"),"summary":[],"encrypted_content":"opaque"},
+                {"type":"function_call","id":format!("function-{round}"),"call_id":format!("call-{round}"),
+                    "name":"read_file","arguments":"{}","status":"completed"}
+            ]});
+            history.push(responses_assistant_message(&output).unwrap());
+            history.push(json!({"role":"tool","tool_call_id":format!("call-{round}"),"content":"receipt"}));
+        }
+        assert!(compact_local_api_history(&mut history));
+        let input = responses_input(&history).unwrap();
+        let retained = input.iter().filter(|item| item["type"] == "function_call_output").count();
+        assert_eq!(retained, 2);
+        for round in 10..12 {
+            let index = input.iter().position(|item| item["id"] == format!("reasoning-{round}")).unwrap();
+            assert_eq!(input[index]["encrypted_content"], "opaque");
+            assert_eq!(input[index + 1]["id"], format!("function-{round}"));
+            assert_eq!(input[index + 2]["call_id"], format!("call-{round}"));
+        }
+        assert_eq!(input.iter().filter(|item| item["type"] == "function_call").count(), retained,
+            "normalized tool calls must not duplicate the original provider items");
+        assert!(!input.iter().any(|item| item["id"] == "reasoning-9"));
     }
 
     #[test]
