@@ -3485,7 +3485,7 @@ private struct AgentPlanningInspector: View {
     }
 
     private var planningScopeKey:String {
-        "\(model.selectedProjectId ?? "")|\(model.projectRepositoryId ?? "")"
+        "\(model.thread?.projectId ?? "")|\(model.thread?.repoId ?? "")"
     }
 
     private var currentContextLabel: String? {
@@ -3588,8 +3588,8 @@ private struct AgentPlanningInspector: View {
         let token=UUID()
         loadToken=token
         let scopeKey=planningScopeKey
-        let projectId=model.selectedProjectId
-        let repoId=model.projectRepositoryId
+        let projectId=model.thread?.projectId
+        let repoId=model.thread?.repoId
         records=[]
         loadedScopeKey=nil
         error=nil
