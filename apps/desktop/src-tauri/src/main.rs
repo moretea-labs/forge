@@ -3427,6 +3427,7 @@ struct StreamedModelRound {
     anthropic_blocks: std::collections::BTreeMap<usize, Value>,
     anthropic_json: std::collections::BTreeMap<usize, String>,
     completed_response: Option<Value>,
+    openai_finish_reason: Option<String>,
     finished: bool,
 }
 
@@ -3448,6 +3449,9 @@ impl StreamedModelRound {
             if protocol != "openai" {
                 return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
             }
+            if !matches!(self.openai_finish_reason.as_deref(), Some("stop" | "tool_calls")) {
+                return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
+            }
             self.finished = true;
             return Ok(());
         }
@@ -3460,9 +3464,11 @@ impl StreamedModelRound {
             "openai" => {
                 // A transport terminator cannot turn truncated/filtered output
                 // into an authoritative answer or executable tool request.
-                if matches!(value.pointer("/choices/0/finish_reason").and_then(Value::as_str),
-                    Some("length" | "content_filter")) {
-                    return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
+                if let Some(reason) = value.pointer("/choices/0/finish_reason").and_then(Value::as_str) {
+                    if !matches!(reason, "stop" | "tool_calls") {
+                        return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
+                    }
+                    self.openai_finish_reason = Some(reason.to_string());
                 }
                 let delta = &value["choices"][0]["delta"];
                 if let Some(text) = delta.get("content").and_then(Value::as_str) {
@@ -4601,7 +4607,7 @@ mod tests {
                     // A proxy terminates an Anthropic preview using OpenAI's sentinel.
                     frames.pop();
                     frames.push("[DONE]".into());
-                } else if protocol != "responses" {
+                } else if protocol != "responses" && stop_reason != Some("missing-finish") {
                     let reason = stop_reason.unwrap_or(if round < 3 {
                         if protocol == "anthropic" { "tool_use" } else { "tool_calls" }
                     } else if protocol == "anthropic" { "end_turn" } else { "stop" });
@@ -4767,6 +4773,41 @@ mod tests {
     }
 
     #[test]
+    fn openai_missing_finish_reason_never_dispatches_tools() {
+        let (endpoint, server) = spawn_scripted_agent_provider("openai", "bun", Some("missing-finish"));
+        let host = ScriptedAgentLoopHost::default();
+        let config = json!({"apiProfiles":[{
+            "id":"missing-finish-test","endpoint":endpoint,"model":"test-model","apiProtocol":"openai"
+        }]});
+        let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+        let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+            &host, config, vec![json!({"role":"user","content":"Read fixture.txt"})],
+            Some("repo_test".into()), Some("checkout_test".into()), "conv-missing-finish".into(),
+            Some("api:missing-finish-test".into()), None, true, &mut cancellation,
+        ));
+        assert!(host.tool_calls.lock().unwrap().is_empty(),
+            "a transport sentinel must not authorize tools without model finish evidence");
+        assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+        assert_eq!(server.join().unwrap().len(), 1, "no automatic retry");
+    }
+
+    #[test]
+    fn openai_transport_end_does_not_complete_unfinished_text() {
+        for reason in [Value::Null, json!("unknown"), json!("function_call")] {
+            let host = RecordingStreamHost::default();
+            let mut round = StreamedModelRound::default();
+            round.consume("openai", &json!({"choices":[{"delta":{"content":"Preview"}}]})
+                .to_string(), &host, "conv-unfinished").unwrap();
+            let result = round.consume("openai", &json!({"choices":[{"delta":{},"finish_reason":reason}]})
+                .to_string(), &host, "conv-unfinished")
+                .and_then(|()| round.consume("openai", "[DONE]", &host, "conv-unfinished"));
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+            assert_eq!(round.finish("openai").unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+            assert!(host.events.lock().unwrap().iter().any(|event| event["delta"] == "Preview"));
+        }
+    }
+
+    #[test]
     fn anthropic_foreign_terminator_never_dispatches_tools() {
         let (endpoint, server) = spawn_scripted_agent_provider("anthropic", "bun", Some("foreign-done"));
         let host = ScriptedAgentLoopHost::default();
@@ -4834,6 +4875,8 @@ mod tests {
             json!({"choices":[{"delta":{"content":"inspect.","tool_calls":[{
                 "index":0,"function":{"name":"file","arguments":r#""AGENTS.md"}"#}
             }]}}]}).to_string(),
+            json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}).to_string(),
+            json!({"choices":[],"usage":{"total_tokens":10}}).to_string(),
             "[DONE]".to_string(),
         ];
         for data in frames {
@@ -4885,7 +4928,7 @@ mod tests {
             let first = format!("data: {}\r\n\r\n",
                 json!({"choices":[{"delta":{"content":"first "}}]}));
             let rest = format!("data: {}\r\n\r\ndata: [DONE]\r\n\r\n",
-                json!({"choices":[{"delta":{"content":"second"}}]}));
+                json!({"choices":[{"delta":{"content":"second"},"finish_reason":"stop"}]}));
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 first.len() + rest.len()
@@ -5155,6 +5198,7 @@ mod tests {
                 json!({"choices":[{"delta":{"tool_calls":[{
                     "index":0,"id":"tool-1","function":{"name":"git_status","arguments":"{}"}
                 }]}}]}).to_string(),
+                json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}).to_string(),
                 "[DONE]".to_string()
             ], "git_status"),
             ("anthropic", "/v1/messages", vec![
