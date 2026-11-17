@@ -2406,7 +2406,7 @@ private struct AgentPane: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(model.repoId == nil)
+        .disabled(model.thread?.projectId == nil)
         .help(planId?.isEmpty == false
               ? "当前会话已关联计划；点击查看或更换"
               : (requirementId?.isEmpty == false
