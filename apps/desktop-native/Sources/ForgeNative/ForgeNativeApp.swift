@@ -3344,7 +3344,7 @@ private struct AgentPlanningInspector: View {
     @State private var error: String?
     @State private var query = ""
     @State private var loadToken = UUID()
-    @State private var loadedRepoId: String?
+    @State private var loadedScopeKey: String?
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -3481,7 +3481,11 @@ private struct AgentPlanningInspector: View {
             .padding(.horizontal,14).frame(height:34)
         }
         .frame(width:390,height:455)
-        .task(id:model.repoId) { await reload() }
+        .task(id:planningScopeKey) { await reload() }
+    }
+
+    private var planningScopeKey:String {
+        "\(model.selectedProjectId ?? "")|\(model.projectRepositoryId ?? "")"
     }
 
     private var currentContextLabel: String? {
@@ -3574,7 +3578,7 @@ private struct AgentPlanningInspector: View {
             .background(bound ? ForgePalette.selection.opacity(0.65) : .clear)
         }
         .buttonStyle(.plain)
-        .disabled(model.busy || loadedRepoId != model.repoId)
+        .disabled(model.busy || loadedScopeKey != planningScopeKey)
         .accessibilityLabel(record.title + "，" + (bound ? "已关联当前会话" : "关联到当前会话"))
         .accessibilityIdentifier("agent.planning-inspector.bind.\(record.recordId)")
     }
@@ -3583,24 +3587,25 @@ private struct AgentPlanningInspector: View {
     private func reload() async {
         let token=UUID()
         loadToken=token
+        let scopeKey=planningScopeKey
+        let projectId=model.selectedProjectId
+        let repoId=model.projectRepositoryId
         records=[]
-        loadedRepoId=nil
+        loadedScopeKey=nil
         error=nil
-        guard let repoId=model.repoId,let projectId=model.selectedProjectId else {
+        guard let projectId else {
             loading=false
             return
         }
         loading=true
         defer { if loadToken == token { loading=false } }
         do {
-            let fresh=try await model.readPlanningRecords(
-                projectId:projectId,repoId:model.projectRepositoryId)
-            guard loadToken == token, model.repoId == repoId,
-                  model.selectedProjectId == projectId, !Task.isCancelled else { return }
+            let fresh=try await model.readPlanningRecords(projectId:projectId,repoId:repoId)
+            guard loadToken == token, planningScopeKey == scopeKey, !Task.isCancelled else { return }
             records=fresh
-            loadedRepoId=repoId
+            loadedScopeKey=scopeKey
         } catch {
-            guard loadToken == token, model.repoId == repoId, !Task.isCancelled else { return }
+            guard loadToken == token, planningScopeKey == scopeKey, !Task.isCancelled else { return }
             self.error=error.localizedDescription
         }
     }
