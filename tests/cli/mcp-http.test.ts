@@ -26,6 +26,7 @@ import { mergeNoProxy, withDirectNetworkProxyBypass } from '../../adapters/mcp/p
 import { McpSessionRegistry } from '../../adapters/mcp/transports/session-registry';
 import { admitMcpPost, createMcpHttpSessionRegistry, mcpRequestError } from '../../adapters/mcp/transports/http';
 import { recentMcpTransportEvidence } from '../../adapters/mcp/transports/http-observation';
+import { flushMcpDiagnostics, readRecentMcpTransportEvents, recordMcpTransportEvent } from '../../src/runtime/diagnostics/mcp-timing';
 import { readExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import {
   armPackageConnectorCutoverDrain,
@@ -386,6 +387,7 @@ describe('mcp http transport', () => {
       recentStatus: 'recovering',
       gatewayStartedAt: startedAt,
       lastInterruption: { sessionId: 'session-a' },
+      lastSessionClose: { sessionId: 'session-a', reason: 'transport_close' },
     });
 
     const recovered = recentMcpTransportEvidence([{
@@ -411,6 +413,54 @@ describe('mcp http transport', () => {
       recentStatus: 'recovered',
       lastRecoveryAt: '2026-09-22T10:00:05.000Z',
     });
+  });
+
+  test('persists non-transport session close reasons in the durable controller ledger', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-mcp-session-close-evidence-'));
+    const restartedHome = mkdtempSync(join(tmpdir(), 'forge-mcp-session-close-restart-'));
+    try {
+      recordMcpTransportEvent(home, {
+        at: '2026-09-22T10:00:00.000Z',
+        kind: 'session_closed',
+        sessionId: 'session-idle',
+        connectionId: 'connection-a',
+        route: '/mcp',
+        principalId: 'controller-http-client',
+        reason: 'idle_ttl',
+      });
+      await flushMcpDiagnostics(home);
+
+      const ledger = readFileSync(join(home, 'audit', 'mcp-transport-events.jsonl'), 'utf8');
+      expect(ledger).toContain('"reason":"idle_ttl"');
+      mkdirSync(join(restartedHome, 'audit'), { recursive: true });
+      writeFileSync(join(restartedHome, 'audit', 'mcp-transport-events.jsonl'), ledger);
+
+      // Read through a fresh Controller Home so no process-local event cache can
+      // make this assertion pass; this is the same durable path after restart.
+      const events = readRecentMcpTransportEvents(restartedHome);
+      expect(events).toMatchObject([{
+        kind: 'session_closed',
+        sessionId: 'session-idle',
+        reason: 'idle_ttl',
+      }]);
+      expect(recentMcpTransportEvidence(
+        events,
+        '2026-09-22T09:50:00.000Z',
+        Date.parse('2026-09-22T10:10:00.000Z'),
+      )).toMatchObject({
+        current: 'healthy',
+        recentStatus: 'stable',
+        lastSessionClose: {
+          kind: 'session_closed',
+          sessionId: 'session-idle',
+          reason: 'idle_ttl',
+          route: '/mcp',
+        },
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(restartedHome, { recursive: true, force: true });
+    }
   });
 
   test('starts a controller Gateway without selecting or registering its launch directory as a repository', async () => {
@@ -703,6 +753,12 @@ describe('mcp http transport', () => {
           acceptingNewSessions: true,
           closed: { clientDelete: 1 },
           lastClosed: { reason: 'client_delete', route: '/mcp', closedAt: expect.any(String) },
+        });
+        expect(deletedHealth.transportEvidence.lastSessionClose).toMatchObject({
+          kind: 'session_closed',
+          sessionId,
+          reason: 'client_delete',
+          route: '/mcp',
         });
 
         const expiredSession = await fetch(`http://127.0.0.1:${port}/mcp`, {
