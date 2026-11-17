@@ -2006,6 +2006,13 @@ final class NativeWorkspace: ObservableObject {
         return currentRepoId.flatMap { availableRepoIds.contains($0) ? $0 : nil }
     }
 
+    nonisolated static func registeredProjectRepository(
+        for repositoryId:String?,repositories:[ForgeProject]
+    ) -> ForgeProject? {
+        guard let repositoryId else { return nil }
+        return repositories.first { $0.repoId == repositoryId }
+    }
+
     nonisolated static func agentThreadMatchesContext(
         _ thread:ChatThread?,repoId:String?,checkoutId:String?,projectId:String?
     ) -> Bool {
@@ -2041,25 +2048,28 @@ final class NativeWorkspace: ObservableObject {
             error="该仓库不属于所选项目。"
             return
         }
-        if let targetRepoId,!projects.contains(where:{$0.repoId == targetRepoId}) {
-            error="项目关联的仓库当前不可用，请刷新仓库列表。"
-            return
-        }
+        // A Project placement is a semantic task scope. A registered repository
+        // and verified checkout are needed only for repository-bound execution.
+        let localRepository=Self.registeredProjectRepository(for:targetRepoId,repositories:projects)
         let projectChanged=selectedProjectId != projectId
-        let repoChanged=repoId != targetRepoId
-        guard projectChanged || repoChanged else { return }
-        let targetCheckoutId = repoChanged
-            ? targetRepoId.flatMap { id in projects.first(where:{$0.repoId == id})?.checkoutId }
-            : checkoutId
+        let repositoryContextChanged = repoId != targetRepoId
+            || (targetRepoId == nil && checkoutId != nil)
+            || (targetRepoId != nil && localRepository == nil
+                && (checkoutId != nil || checkoutRoot != nil || checkoutBranch != nil
+                    || checkoutContextLoading || repositoryAccessMode != "request" || agentChanges != nil))
+        let refreshLocalRepository = targetRepoId != nil && localRepository != nil
+            && (repositoryContextChanged || checkoutId == nil)
+        guard projectChanged || repositoryContextChanged || refreshLocalRepository else { return }
+        let targetCheckoutId = repositoryContextChanged ? localRepository?.checkoutId : checkoutId
         invalidateProjectContextRequests()
-        if repoChanged {
+        if repositoryContextChanged || refreshLocalRepository {
             invalidateRepositoryAccessRequests()
             invalidateAgentChangesRequests(clearSnapshot:true)
             repoId=targetRepoId
             checkoutId=targetCheckoutId
             checkoutRoot=nil
             checkoutBranch=nil
-            checkoutContextLoading=targetRepoId != nil
+            checkoutContextLoading=localRepository != nil
             zenGitHubBoardItems=[]
             zenGitHubBoardConfigured=nil
             zenGitHubBoardError=nil
@@ -2078,7 +2088,7 @@ final class NativeWorkspace: ObservableObject {
         records=[]
         detail=""
         error=nil
-        if repoChanged,targetRepoId != nil {
+        if refreshLocalRepository {
             await refreshProject()
         } else if [.requirement,.plan].contains(page) {
             await loadPage()
@@ -3945,10 +3955,6 @@ final class NativeWorkspace: ObservableObject {
             error="项目或仓库范围已失效，请刷新项目详情后重试。"
             return
         }
-        if let repositoryId,!projects.contains(where:{$0.repoId == repositoryId}) {
-            error="项目关联的仓库当前不可用，请刷新仓库列表。"
-            return
-        }
         let contextChanged=Self.projectNavigationContextChanged(
             currentProjectId:selectedProjectId,currentRepoId:repoId,
             targetProjectId:projectId,targetRepoId:repositoryId
@@ -3976,10 +3982,6 @@ final class NativeWorkspace: ObservableObject {
         guard let project=semanticProjects.first(where:{$0.projectId == projectId}),
               Self.projectDetailRequirementScopeIsValid(project:project,repositoryId:repositoryId) else {
             error="该任务不属于所选活动项目，或项目已归档。请刷新项目详情后重试。"
-            return
-        }
-        if let repositoryId,!projects.contains(where:{$0.repoId == repositoryId}) {
-            error="任务关联的仓库当前不可用，请刷新仓库列表。"
             return
         }
         let contextChanged=Self.projectNavigationContextChanged(

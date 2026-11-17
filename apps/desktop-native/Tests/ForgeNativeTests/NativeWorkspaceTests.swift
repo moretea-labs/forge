@@ -1546,6 +1546,32 @@ final class NativeWorkspaceTests: XCTestCase {
         ))
     }
 
+    func testProjectTaskPlacementCanBeBrowsedWithoutLocalCheckout() {
+        let project=ForgeSemanticProject(
+            projectId:"PROJECT-active",workspaceId:nil,displayName:"Active",status:"active",
+            revision:1,placements:[ForgeSemanticProjectPlacement(repositoryId:"repo-a")],requirementCount:0
+        )
+        let selectedRepository=NativeWorkspace.projectRepositorySelection(
+            currentRepoId:nil,requestedRepoId:"repo-a",availableRepoIds:project.repositoryIds
+        )
+        XCTAssertEqual(selectedRepository,"repo-a")
+        XCTAssertTrue(NativeWorkspace.projectDetailRequirementScopeIsValid(
+            project:project,repositoryId:selectedRepository
+        ))
+        XCTAssertNil(NativeWorkspace.registeredProjectRepository(for:selectedRepository,repositories:[]))
+
+        let registeredWithoutCheckout=ForgeProject(
+            repoId:"repo-a",displayName:"Repo A",localRoot:nil,checkoutId:nil,
+            remoteUrl:nil,defaultBranch:nil
+        )
+        XCTAssertNotNil(NativeWorkspace.registeredProjectRepository(
+            for:selectedRepository,repositories:[registeredWithoutCheckout]
+        ))
+        XCTAssertNil(NativeWorkspace.registeredProjectRepository(
+            for:selectedRepository,repositories:[registeredWithoutCheckout]
+        )?.checkoutId)
+    }
+
     func testTaskWritesAndProjectDetailRequireAnActiveProjectAndValidPlacement() {
         let active=ForgeSemanticProject(
             projectId:"PROJECT-active",workspaceId:nil,displayName:"Active",status:"active",
