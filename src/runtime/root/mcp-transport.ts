@@ -1,6 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import type { Server as NodeHttpServer } from 'http';
-import type { AddressInfo } from 'net';
+import type { AddressInfo, Socket } from 'net';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import type { Server } from "@modelcontextprotocol/server";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
@@ -392,6 +392,14 @@ export async function startRuntimeMcpTransport(
   });
 
   const httpServer = app.listen(options.port, options.host);
+  // Bun clears its internal server reference in close(), making a later
+  // closeAllConnections() a no-op. Retain socket ownership through drain so
+  // retired keep-alive/SSE connections cannot admit a new session afterwards.
+  const sockets = new Set<Socket>();
+  httpServer.on('connection', (socket: Socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+  });
   await new Promise<void>((resolve, reject) => {
     const onListening = (): void => {
       httpServer.off('error', onError);
@@ -462,7 +470,10 @@ export async function startRuntimeMcpTransport(
             });
           }
         },
-        forceCloseConnections: () => httpServer.closeAllConnections?.(),
+        forceCloseConnections: () => {
+          for (const socket of sockets) socket.destroy();
+          httpServer.closeAllConnections?.();
+        },
       });
     },
   };

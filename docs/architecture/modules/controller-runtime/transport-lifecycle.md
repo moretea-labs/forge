@@ -34,6 +34,14 @@ handlers and shared proxy lanes close after POST drain; stream-only GET channels
 close with their transport. Release cutover's marker-based admission fence remains
 separate and does not cover arbitrary signals or forced process termination.
 
+Canonical Runtime teardown retains the listener's actual sockets until admitted
+requests and sessions drain, then destroys those sockets explicitly. Bun's
+`http.Server.close()` clears its internal listener reference, so invoking
+`closeAllConnections()` afterwards alone cannot retire pooled connections. A
+retired socket must never initialize a Session against the previous Runtime
+while subsequent calls route to its same-endpoint replacement. Normal live
+connection reuse remains enabled; reconnect does not replay unknown mutations.
+
 ## Verification
 
 ```text

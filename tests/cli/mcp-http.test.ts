@@ -1,3 +1,4 @@
+import { createCanonicalRuntimeProxy, createMcpToolContext } from '../../adapters/mcp/server';
 import { Server } from '@modelcontextprotocol/server';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { startRuntimeMcpTransport } from '../../src/runtime/root/mcp-transport';
@@ -1564,3 +1565,45 @@ test('real Gateway SIGTERM drains admitted MCP tool result and rejects new reque
     rmSync(root, { recursive: true, force: true });
   }
 }, 15_000);
+
+test('retired Runtime sockets cannot initialize sessions after same-endpoint replacement', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-runtime-retired-sockets-'));
+  const token = 'retired-socket-fixture';
+  mkdirSync(join(root, 'mcp'), { recursive: true });
+  writeFileSync(join(root, 'mcp', 'runtime-token'), token);
+  const context = createMcpToolContext({ controllerHome: root, profile: 'controller' });
+  if (!('controllerHome' in context)) throw new Error('controller context required');
+  const proxy = createCanonicalRuntimeProxy(context);
+  const readiness = { ready: true, reasonCodes: [], observedAt: new Date().toISOString(), diagnostics: { database: { outcome: 'pass' as const }, scheduler: { outcome: 'pass' as const }, releaseCoherence: { outcome: 'pass' as const }, mcpEndToEnd: { outcome: 'pass' as const } } };
+  const start = async (port: number, generation: string) => {
+    const transport = await startRuntimeMcpTransport({
+      host: '127.0.0.1', port, authToken: token, readiness: () => readiness,
+      createServer: () => {
+        const server = new Server({ name: generation, version: '1' }, { capabilities: { tools: {} } });
+        server.setRequestHandler('tools/list', async () => ({ tools: [] }));
+        server.setRequestHandler('tools/call', async () => ({ content: [{ type: 'text' as const, text: generation }] }));
+        return server;
+      },
+    });
+    const now = new Date().toISOString();
+    writeRuntimeStatusSnapshot(root, {
+      schemaVersion: 1, runtimeInstanceId: generation, pid: process.pid,
+      releaseId: generation, artifactIdentity: generation, endpoint: transport.endpoint,
+      readiness, startedAt: now, updatedAt: now,
+    });
+    return transport;
+  };
+  let runtime = await start(0, 'first');
+  try {
+    expect((await proxy.callTool(context, 'controller_ready', {})).content).toEqual([{ type: 'text', text: 'first' }]);
+    const port = runtime.port;
+    await runtime.close();
+    runtime = await start(port, 'replacement');
+    expect((await proxy.callTool(context, 'controller_ready', {})).content).toEqual([{ type: 'text', text: 'replacement' }]);
+    expect(runtime.sessionSnapshot?.().active).toBe(1);
+  } finally {
+    await proxy.close();
+    await runtime.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 10_000);
