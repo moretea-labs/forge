@@ -1384,8 +1384,8 @@ struct ZenWorkspacePane: View {
     }
 
     private func acceptanceSheet(_ item:ForgeRecord) -> some View {
-        VStack(alignment:.leading,spacing:14) {
-            Text("完成 Requirement").font(.system(size:17,weight:.semibold))
+        VStack(alignment:.leading,spacing:ForgeClientDesign.Spacing.section) {
+            Text("完成 Requirement").font(ForgeClientDesign.Typography.sheetTitle)
             Text("终态不可重开。请先核查验收标准和交付证据；这里只登记已经存在的证据引用，不创建或伪造证据。")
                 .font(.system(size:11)).foregroundStyle(.secondary)
             if case .requirement(let detail) = model.recordDetail,
@@ -1402,12 +1402,16 @@ struct ZenWorkspacePane: View {
                     Text("还有 \(Self.nonEmptyLines(acceptanceRemainingWork).count) 项剩余工作，清空后才能完成。")
                         .font(.system(size:11)).foregroundStyle(.orange)
                 }
-                TextField("剩余工作（每行一项；清空后可完成）",text:$acceptanceRemainingWork,axis:.vertical)
-                    .lineLimit(3...6)
-                    .accessibilityIdentifier("zen.acceptance.remainingWork")
-                TextField("验收证据引用（每行一条）",text:$acceptanceReferences,axis:.vertical)
-                    .lineLimit(4...6)
-                    .accessibilityIdentifier("zen.acceptance.references")
+                ForgeClientFormField(label: "剩余工作") {
+                    TextField("每行一项；清空后可完成",text:$acceptanceRemainingWork,axis:.vertical)
+                        .lineLimit(3...6)
+                        .accessibilityIdentifier("zen.acceptance.remainingWork")
+                }
+                ForgeClientFormField(label: "验收证据引用") {
+                    TextField("每行一条真实证据",text:$acceptanceReferences,axis:.vertical)
+                        .lineLimit(4...6)
+                        .accessibilityIdentifier("zen.acceptance.references")
+                }
                 Toggle("验收标准均已核对，证据引用真实可复查",isOn:$acceptanceAcknowledged)
                     .font(.system(size:11))
                 HStack {
@@ -1442,7 +1446,8 @@ struct ZenWorkspacePane: View {
                     .textSelection(.enabled)
             }
         }
-        .padding(22).frame(width:490)
+        .padding(ForgeClientDesign.Spacing.sheetPadding)
+        .frame(width:ForgeClientDesign.Size.taskAcceptanceSheet)
         .accessibilityIdentifier("zen.acceptance.confirm")
     }
 
@@ -1475,19 +1480,23 @@ struct ZenWorkspacePane: View {
     }
 
     private func editSheet(for item:ForgeRecord) -> some View {
-        VStack(alignment:.leading,spacing:14) {
+        VStack(alignment:.leading,spacing:ForgeClientDesign.Spacing.section) {
             Text(item.kind == .requirement ? "编辑任务" : "编辑计划")
-                .font(.system(size:17,weight:.semibold))
+                .font(ForgeClientDesign.Typography.sheetTitle)
             Text(item.recordId + " · v\(editRevision)")
                 .font(.system(size:10,design:.monospaced))
                 .foregroundStyle(.secondary)
 
             if item.kind == .requirement {
-                TextField("名称",text:$editTitle)
-                TextField("预期结果",text:$editOutcome,axis:.vertical)
-                    .lineLimit(3...6)
-                TextField("验收标准（每行一项）",text:$editCriteria,axis:.vertical)
-                    .lineLimit(3...7)
+                ForgeClientFormField(label: "名称") {
+                    TextField("任务名称",text:$editTitle)
+                }
+                ForgeClientFormField(label: "预期结果") {
+                    TextField("预期结果",text:$editOutcome,axis:.vertical).lineLimit(3...6)
+                }
+                ForgeClientFormField(label: "验收标准") {
+                    TextField("每行一项",text:$editCriteria,axis:.vertical).lineLimit(3...7)
+                }
                  Picker("状态",selection:Binding(
                      get:{ editTaskStatus ?? "unset" },
                      set:{ editTaskStatus=$0 == "unset" ? nil : $0 }
@@ -1504,17 +1513,21 @@ struct ZenWorkspacePane: View {
                      Text("高").tag("high")
                      Text("紧急").tag("urgent")
                  }
-                 TextField("负责人（留空表示未指派）",text:$editAssignee)
+                 ForgeClientFormField(label: "负责人") {
+                     TextField("留空表示未指派",text:$editAssignee)
+                 }
                   dependencyEditor(
                       selection:$editDependencyRequirementIds,excluding:item.recordId,
                       details:editDependencyDetails,blockingIds:editBlockingDependencyIds,
                       idDraft:$editDependencyIdDraft
                   )
-                  TextField("剩余工作（每行一项）",text:$editRemainingWork,axis:.vertical)
-                      .lineLimit(2...5)
+                  ForgeClientFormField(label: "剩余工作") {
+                      TextField("每行一项",text:$editRemainingWork,axis:.vertical).lineLimit(2...5)
+                  }
             } else {
-                TextField("计划目标",text:$editTitle,axis:.vertical)
-                    .lineLimit(3...6)
+                ForgeClientFormField(label: "计划目标") {
+                    TextField("计划目标",text:$editTitle,axis:.vertical).lineLimit(3...6)
+                }
             }
 
             if let problem=model.error {
@@ -1558,8 +1571,8 @@ struct ZenWorkspacePane: View {
                               && (editOutcome.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || editAssignee.utf16.count > 160)))
             }
         }
-        .padding(22)
-        .frame(width:465)
+        .padding(ForgeClientDesign.Spacing.sheetPadding)
+        .frame(width:ForgeClientDesign.Size.taskEditSheet)
         .accessibilityIdentifier("zen.record.edit")
     }
 
@@ -1812,12 +1825,18 @@ struct ZenWorkspacePane: View {
     }
 
     private var createRequirementSheet: some View {
-        VStack(alignment:.leading,spacing:12) {
-            Text("新建任务").font(.system(size:17,weight:.semibold))
-            Group {
-                TextField("名称",text:$newTitle)
-                TextField("预期结果",text:$newOutcome,axis:.vertical).lineLimit(3...5)
-                TextField("验收标准（每行一项）",text:$newCriteria,axis:.vertical).lineLimit(3...6)
+        VStack(alignment:.leading,spacing:ForgeClientDesign.Spacing.section) {
+            Text("新建任务").font(ForgeClientDesign.Typography.sheetTitle)
+            ForgeClientFormSection(title: "任务内容") {
+                ForgeClientFormField(label: "名称") {
+                    TextField("任务名称",text:$newTitle)
+                }
+                ForgeClientFormField(label: "预期结果") {
+                    TextField("预期结果",text:$newOutcome,axis:.vertical).lineLimit(3...5)
+                }
+                ForgeClientFormField(label: "验收标准") {
+                    TextField("每行一项",text:$newCriteria,axis:.vertical).lineLimit(3...6)
+                }
                 HStack {
                     Picker("状态",selection:$newTaskStatus) {
                         Text("待开始").tag("planned")
@@ -1831,7 +1850,9 @@ struct ZenWorkspacePane: View {
                         Text("紧急").tag("urgent")
                     }
                 }
-                TextField("负责人（可选）",text:$newAssignee)
+                ForgeClientFormField(label: "负责人") {
+                    TextField("可选",text:$newAssignee)
+                }
                 dependencyEditor(selection:$newDependencyRequirementIds,excluding:nil,idDraft:$newDependencyIdDraft)
             }
             .disabled(pendingCreatedRequirementId != nil)
@@ -1864,7 +1885,8 @@ struct ZenWorkspacePane: View {
                           || newAssignee.utf16.count > 160)
             }
         }
-        .padding(22).frame(width:430)
+        .padding(ForgeClientDesign.Spacing.sheetPadding)
+        .frame(width:ForgeClientDesign.Size.taskCreateSheet)
         .accessibilityIdentifier("zen.requirement.create")
     }
 

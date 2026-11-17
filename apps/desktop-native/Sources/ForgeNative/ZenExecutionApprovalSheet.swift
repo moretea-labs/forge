@@ -101,23 +101,23 @@ struct ZenExecutionApprovalSheet: View {
     }
 
     private var approvalScope: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("执行目标").font(.system(size: 12, weight: .semibold))
+        VStack(alignment: .leading, spacing: ForgeClientDesign.Spacing.row) {
+            Text("执行目标").font(ForgeClientDesign.Typography.sectionTitle)
             Text(approval.requirement.outcomeStatement)
-                .font(.system(size: 12))
+                .font(ForgeClientDesign.Typography.body)
                 .textSelection(.enabled)
 
             Text("验收标准（\(approval.requirement.acceptanceCriteria.count)）")
-                .font(.system(size: 12, weight: .semibold))
+                .font(ForgeClientDesign.Typography.sectionTitle)
                 .padding(.top, 3)
             if approval.requirement.acceptanceCriteria.isEmpty {
                 Text("当前需求没有登记验收标准。")
                     .foregroundStyle(.secondary)
-                    .font(.system(size: 11))
+                    .font(ForgeClientDesign.Typography.control)
             } else {
                 ForEach(Array(approval.requirement.acceptanceCriteria.enumerated()), id: \.offset) { index, criterion in
                     Text("\(index + 1). \(criterion)")
-                        .font(.system(size: 11))
+                        .font(ForgeClientDesign.Typography.control)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                 }
@@ -127,80 +127,61 @@ struct ZenExecutionApprovalSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
+        VStack(alignment: .leading, spacing: ForgeClientDesign.Spacing.section) {
             HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: ForgeClientDesign.Spacing.titleDetail) {
                     Text(approval.status.requiresReapproval ? "重新批准执行" : (approval.status.authorized ? "执行设置" : "批准执行"))
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(ForgeClientDesign.Typography.sheetTitle)
                     Text(approval.requirement.title)
                         .font(.system(size: 12, weight: .medium))
                         .lineLimit(2)
                 }
                 Spacer()
                 Text("v\(approval.requirement.revision)")
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(ForgeClientDesign.Typography.identifier)
                     .foregroundStyle(.secondary)
             }
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 13) {
-                    Divider()
-                    VStack(alignment: .leading, spacing: 7) {
-                        HStack {
-                            Text("项目")
-                            Spacer()
-                            Text(approval.projectLabel).lineLimit(1)
-                        }
-                        HStack {
-                            Text("Checkout")
-                            Spacer()
-                            Text(approval.checkoutLabel).lineLimit(1).textSelection(.enabled)
-                        }
-                        HStack {
-                            Text("Provider")
-                            Spacer()
-                            Text("\(providerLabel) · \(approval.status.model ?? "默认模型")").lineLimit(1)
-                        }
+                VStack(alignment: .leading, spacing: ForgeClientDesign.Spacing.section) {
+                    ForgeClientFormSection(title: "执行范围") {
+                        ForgeClientMetadataRow(label: "项目", value: approval.projectLabel)
+                        ForgeClientMetadataRow(label: "Checkout", value: approval.checkoutLabel)
+                        ForgeClientMetadataRow(label: "Provider", value: "\(providerLabel) · \(approval.status.model ?? "默认模型")")
                     }
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
 
-                    Divider()
                     approvalScope
-
-                    Divider()
-                    VStack(alignment: .leading, spacing: 9) {
+                    VStack(alignment: .leading, spacing: ForgeClientDesign.Spacing.row) {
                         HStack {
-                            Text("Token 上限").font(.system(size: 11))
+                            Text("Token 上限").font(ForgeClientDesign.Typography.control)
                             Spacer()
                             Stepper(value: $maxTotalTokens, in: tokenMinimum...500_000, step: 10_000) {
-                                Text(maxTotalTokens.formatted()).font(.system(size: 11, design: .monospaced))
+                                Text(maxTotalTokens.formatted()).font(ForgeClientDesign.Typography.identifier)
                             }
                         }
                         HStack {
-                            Text("模型轮数").font(.system(size: 11))
+                            Text("模型轮数").font(ForgeClientDesign.Typography.control)
                             Spacer()
                             Stepper(value: $maxTurns, in: turnMinimum...48) {
-                                Text("\(maxTurns)").font(.system(size: 11, design: .monospaced))
+                                Text("\(maxTurns)").font(ForgeClientDesign.Typography.identifier)
                             }
                         }
                         HStack {
-                            Text("工具调用").font(.system(size: 11))
+                            Text("工具调用").font(ForgeClientDesign.Typography.control)
                             Spacer()
                             Stepper(value: $maxToolCalls, in: toolCallMinimum...128) {
-                                Text("\(maxToolCalls)").font(.system(size: 11, design: .monospaced))
+                                Text("\(maxToolCalls)").font(ForgeClientDesign.Typography.identifier)
                             }
                         }
                     }
 
                     if !approval.plans.isEmpty {
-                        Divider()
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text("执行计划（\(approval.plans.count)）").font(.system(size: 11, weight: .semibold))
+                        VStack(alignment: .leading, spacing: ForgeClientDesign.Spacing.row) {
+                            Text("执行计划（\(approval.plans.count)）").font(ForgeClientDesign.Typography.sectionTitle)
                             Text(budgetRefreshOnly
                                  ? "下列 Plan 均属于本次执行，预算续期时保持验收节点不变。"
                                  : "下列 Plan 均属于执行范围；勾选仅表示在该节点暂停并等待人工验收。")
-                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                                .font(ForgeClientDesign.Typography.supporting).foregroundStyle(.secondary)
                             ForEach(approval.plans) { plan in
                                 Toggle(isOn: Binding(
                                     get: { checkpointPlanIds.contains(plan.recordId) },
@@ -209,7 +190,7 @@ struct ZenExecutionApprovalSheet: View {
                                         else { checkpointPlanIds.remove(plan.recordId) }
                                     }
                                 )) {
-                                    Text(plan.title).font(.system(size: 11))
+                                    Text(plan.title).font(ForgeClientDesign.Typography.control)
                                 }
                                 .toggleStyle(.checkbox)
                                 .disabled(budgetRefreshOnly)
@@ -220,46 +201,46 @@ struct ZenExecutionApprovalSheet: View {
 
                     if approval.plans.isEmpty {
                         Text("当前需求尚无执行 Plan，请确认是否要按现有需求直接执行。")
-                            .font(.system(size: 11))
+                            .font(ForgeClientDesign.Typography.control)
                             .foregroundStyle(.secondary)
                     }
 
                     if !revisionIsCurrent {
                         Label("需求版本已变化，请刷新后重新打开批准面板。", systemImage: "exclamationmark.triangle")
-                            .font(.system(size: 10)).foregroundStyle(.orange)
+                            .font(ForgeClientDesign.Typography.supporting).foregroundStyle(.orange)
                     } else if !scopeIsCurrent {
                         Label("项目或 Checkout 已切换，请重新打开批准面板。", systemImage: "exclamationmark.triangle")
-                            .font(.system(size: 10)).foregroundStyle(.orange)
+                            .font(ForgeClientDesign.Typography.supporting).foregroundStyle(.orange)
                     } else if !approval.status.providerReady {
                         Label("当前 Provider 凭据未就绪，暂时无法批准执行。", systemImage: "exclamationmark.triangle")
-                            .font(.system(size: 10)).foregroundStyle(.orange)
+                            .font(ForgeClientDesign.Typography.supporting).foregroundStyle(.orange)
                     } else if approval.status.runStatus == "running" {
                         Label("当前执行仍在运行，请先暂停后再重新批准。", systemImage: "pause.circle")
-                            .font(.system(size: 10)).foregroundStyle(.orange)
+                            .font(ForgeClientDesign.Typography.supporting).foregroundStyle(.orange)
                     } else if approval.status.runStatus == "paused" && !runAllowsAuthorization {
                         Label("当前运行正在等待人工验收，请先处理该节点。", systemImage: "exclamationmark.triangle")
-                            .font(.system(size: 10)).foregroundStyle(.orange)
+                            .font(ForgeClientDesign.Typography.supporting).foregroundStyle(.orange)
                     }
 
                     if stalePausedRun {
                         Text("需求或 Checkout 已变化；批准后会结束旧的暂停运行，并绑定当前修订。")
-                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                            .font(ForgeClientDesign.Typography.supporting).foregroundStyle(.secondary)
                     }
                     if let errorMessage {
-                        Text(errorMessage).font(.system(size: 10)).foregroundStyle(.orange).textSelection(.enabled)
+                        Text(errorMessage).font(ForgeClientDesign.Typography.supporting).foregroundStyle(.orange).textSelection(.enabled)
                     }
                     Text(budgetRefreshOnly
                          ? (budgetIncreaseSelected
                             ? "本次按调整后的上限开启新的预算窗口，历史累计用量保留。"
                             : "本次按当前上限开启新的预算窗口，历史累计用量保留。")
                          : "授权仅绑定当前 Requirement 修订与 Checkout，不包含远程推送、发布或破坏性操作。批准后仍需选择开始执行。")
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                        .font(ForgeClientDesign.Typography.supporting).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxHeight: 465)
             Toggle("我已核对执行目标、验收标准、计划、预算和工作区范围", isOn: $acknowledged)
-                .font(.system(size: 11))
+                .font(ForgeClientDesign.Typography.control)
 
             HStack {
                 Spacer()
@@ -271,8 +252,8 @@ struct ZenExecutionApprovalSheet: View {
                     .accessibilityIdentifier("zen.execution.approve")
             }
         }
-        .padding(22)
-        .frame(width: 520)
+        .padding(ForgeClientDesign.Spacing.sheetPadding)
+        .frame(width: ForgeClientDesign.Size.approvalSheet)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityIdentifier("zen.execution.approval")
     }

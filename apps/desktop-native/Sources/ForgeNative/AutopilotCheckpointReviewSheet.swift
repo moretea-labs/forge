@@ -51,24 +51,25 @@ struct AutopilotCheckpointReviewSheet: View {
     }
 
     var body: some View {
-        VStack(alignment:.leading,spacing:13) {
-            Text("验收检查点").font(.system(size:17,weight:.semibold))
-            Text(review.planTitle).font(.system(size:13,weight:.medium))
-            Text(review.planId).font(.system(size:10,design:.monospaced))
+        VStack(alignment:.leading,spacing:ForgeClientDesign.Spacing.section) {
+            Text("验收检查点").font(ForgeClientDesign.Typography.sheetTitle)
+            Text(review.planTitle).font(ForgeClientDesign.Typography.body)
+            Text(review.planId).font(ForgeClientDesign.Typography.identifier)
                 .foregroundStyle(.secondary).textSelection(.enabled)
             if let summary=review.summary,!summary.isEmpty {
-                Text("执行摘要").font(.system(size:11,weight:.semibold))
-                Text(summary).font(.system(size:11)).textSelection(.enabled)
+                ForgeClientFormSection(title: "执行摘要") {
+                    Text(summary).font(ForgeClientDesign.Typography.body).textSelection(.enabled)
+                }
             }
-            Text("已有交付证据").font(.system(size:11,weight:.semibold))
+            Text("已有交付证据").font(ForgeClientDesign.Typography.sectionTitle)
             if review.evidenceRefs.isEmpty {
                 Text("当前执行未登记证据，请先核对实际交付再决定是否继续。")
-                    .font(.system(size:11)).foregroundStyle(.secondary)
+                    .font(ForgeClientDesign.Typography.control).foregroundStyle(.secondary)
             } else {
                 ScrollView {
-                    VStack(alignment:.leading,spacing:5) {
+                    VStack(alignment:.leading,spacing:ForgeClientDesign.Spacing.row) {
                         ForEach(review.evidenceRefs,id:\.self) { evidence in
-                            Text(evidence).font(.system(size:10,design:.monospaced))
+                            Text(evidence).font(ForgeClientDesign.Typography.identifier)
                                 .textSelection(.enabled)
                                 .frame(maxWidth:.infinity,alignment:.leading)
                         }
@@ -79,13 +80,13 @@ struct AutopilotCheckpointReviewSheet: View {
             if !current {
                 Label("执行状态或工作区已变化，请刷新后重新验收。",systemImage:"exclamationmark.triangle")
                     .foregroundStyle(.orange)
-                    .font(.system(size:10))
+                    .font(ForgeClientDesign.Typography.supporting)
             }
             if let errorMessage {
-                Text(errorMessage).font(.system(size:10)).foregroundStyle(.orange).textSelection(.enabled)
+                Text(errorMessage).font(ForgeClientDesign.Typography.supporting).foregroundStyle(.orange).textSelection(.enabled)
             }
             Toggle("我已核对此 Plan 的实际结果与证据，同意恢复原运行",isOn:$acknowledged)
-                .font(.system(size:11))
+                .font(ForgeClientDesign.Typography.control)
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }.disabled(submitting)
@@ -96,8 +97,8 @@ struct AutopilotCheckpointReviewSheet: View {
                     .accessibilityIdentifier("autopilot.checkpoint.accept")
             }
         }
-        .padding(22)
-        .frame(width:500)
+        .padding(ForgeClientDesign.Spacing.sheetPadding)
+        .frame(width:ForgeClientDesign.Size.checkpointSheet)
         .interactiveDismissDisabled(submitting)
         .accessibilityIdentifier("autopilot.checkpoint.review")
     }
