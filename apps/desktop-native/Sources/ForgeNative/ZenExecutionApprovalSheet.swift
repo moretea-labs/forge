@@ -35,7 +35,6 @@ struct ZenExecutionApprovalSheet: View {
     @State private var acknowledged = false
     @State private var saving = false
     @State private var errorMessage: String?
-    @State private var outcomeUnknown = false
     @State private var staleRevision = false
 
     init(model: NativeWorkspace, approval: ZenExecutionApproval, onApproved: @escaping () -> Void) {
@@ -58,6 +57,19 @@ struct ZenExecutionApprovalSheet: View {
             projectId:model.selectedProjectId,repoId:model.repoId,
             checkoutId:model.checkoutId,contextGeneration:model.projectContextGeneration
         )
+    }
+
+    private var statusIsCurrent: Bool {
+        guard let latest=model.planningAutopilotStatuses[approval.requirement.requirementId] else { return false }
+        return latest.requirementRevision == approval.status.requirementRevision
+            && latest.runId == approval.status.runId && latest.runStatus == approval.status.runStatus
+            && latest.authorized == approval.status.authorized && latest.requiresReapproval == approval.status.requiresReapproval
+            && latest.maxTotalTokens == approval.status.maxTotalTokens && latest.maxTurns == approval.status.maxTurns
+            && latest.maxToolCalls == approval.status.maxToolCalls && latest.checkpointPlanIds == approval.status.checkpointPlanIds
+    }
+
+    private var outcomeUnknown: Bool {
+        model.autopilotOutcomeUnknown(for:approval.requirement.requirementId)
     }
 
     private var budgetRefreshOnly: Bool {
@@ -95,7 +107,7 @@ struct ZenExecutionApprovalSheet: View {
     }
 
     private var canApprove: Bool {
-        revisionIsCurrent && scopeIsCurrent && approval.status.providerReady && runAllowsAuthorization
+        revisionIsCurrent && scopeIsCurrent && statusIsCurrent && approval.status.providerReady && runAllowsAuthorization
             && acknowledged && !saving && !outcomeUnknown && !staleRevision
     }
 
@@ -235,6 +247,14 @@ struct ZenExecutionApprovalSheet: View {
                         Label("当前运行正在等待人工验收，请先处理该节点。", systemImage: "exclamationmark.triangle")
                             .font(ForgeClientDesign.Typography.supporting).foregroundStyle(.orange)
                     }
+                    if outcomeUnknown {
+                        Label("操作结果未确认。请先刷新执行状态，不要重复提交。",systemImage:"exclamationmark.triangle")
+                            .font(ForgeClientDesign.Typography.supporting).foregroundStyle(.orange)
+                    }
+                    if !statusIsCurrent {
+                        Label("执行状态已变化，请关闭面板并刷新后重新批准。",systemImage:"arrow.clockwise")
+                            .font(ForgeClientDesign.Typography.supporting).foregroundStyle(.orange)
+                    }
 
                     if stalePausedRun {
                         Text("需求或 Checkout 已变化；批准后会结束旧的暂停运行，并绑定当前修订。")
@@ -302,7 +322,6 @@ struct ZenExecutionApprovalSheet: View {
             }
             let message = model.error ?? model.planningAutopilotStatusError ?? "授权未完成，请刷新执行状态后再试。"
             errorMessage = message
-            outcomeUnknown = message.contains("操作结果未确认")
             staleRevision = message.contains("AUTOPILOT_REQUIREMENT_REVISION_MISMATCH")
             if staleRevision {
                 errorMessage = "需求版本已变化，请刷新后重新打开批准面板。"

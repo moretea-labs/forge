@@ -5176,13 +5176,14 @@ private struct RecordsPane: View {
     private func autopilotSection(_ requirement:RequirementRecordDetail) -> some View {
         semanticSection("无人值守") {
             VStack(alignment:.leading,spacing:11) {
+                let status=model.planningAutopilotStatuses[requirement.requirementId]
                 HStack(spacing:8) {
                     Circle()
-                        .fill(autopilotStatusColor(model.autopilotStatus))
+                        .fill(autopilotStatusColor(status))
                         .frame(width:7,height:7)
-                    Text(autopilotStatusLabel(model.autopilotStatus))
+                    Text(autopilotStatusLabel(status))
                         .font(.system(size:12,weight:.semibold))
-                    if let status=model.autopilotStatus,
+                    if let status,
                        let approved=status.approvedRevision {
                         Text("批准版本 r\(approved)")
                             .font(.system(size:9.5,design:.monospaced))
@@ -5192,7 +5193,7 @@ private struct RecordsPane: View {
                     if model.autopilotLoading { ProgressView().controlSize(.small) }
                 }
 
-                if let status=model.autopilotStatus {
+                if let status {
                     if status.requiresReapproval {
                         Label("需求已更新，原授权失效，请重新批准。",systemImage:"exclamationmark.triangle.fill")
                             .font(.system(size:10.5)).foregroundStyle(.orange)
@@ -5240,15 +5241,18 @@ private struct RecordsPane: View {
                             .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                     }
                 } else {
-                    Text("无人值守运行需要单独批准。")
+                    Text("执行状态尚未确认，请先刷新后再批准或启动。")
                         .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                 }
 
+                if model.autopilotOutcomeUnknown(for:requirement.requirementId) {
+                    Text("操作结果未确认。请先刷新执行状态，不要重复提交。")
+                        .font(.system(size:10.5)).foregroundStyle(.orange)
+                }
                 HStack(spacing:8) {
-                    let status=model.autopilotStatus
-                    let outcomeUnknown=model.planningAutopilotStatusError?.contains("操作结果未确认") == true
+                    let outcomeUnknown=model.autopilotOutcomeUnknown(for:requirement.requirementId)
                     let operation=status?.nextExecutionOperation(outcomeUnknown:outcomeUnknown)
-                    if operation == "authorize" || (status == nil && !outcomeUnknown) {
+                    if operation == "authorize" {
                         Button(status?.needsBudgetRenewal == true && status?.requiresReapproval == false
                                ? "续期预算" : (status?.requiresReapproval == true ? "重新配置并批准" : "配置并批准")) {
                             beginAutopilotApproval(requirement)
@@ -5327,16 +5331,24 @@ private struct RecordsPane: View {
     }
 
     private func beginAutopilotApproval(_ requirement:RequirementRecordDetail) {
+        guard !model.autopilotOutcomeUnknown(for:requirement.requirementId) else {
+            model.error="操作结果未确认（\(requirement.requirementId)）。请先刷新执行状态，不要重复提交。"
+            return
+        }
+        guard let status=model.planningAutopilotStatuses[requirement.requirementId],
+              status.requirementRevision == requirement.revision else {
+            model.error="执行状态尚未通过当前 Requirement 修订的有效读回确认，请先刷新。"
+            return
+        }
         guard let repoId=model.repoId,let checkoutId=model.checkoutId else {
             model.error="请先选择有效的项目和 Checkout。"
             return
         }
-        let status=model.autopilotStatus
-        autopilotModel=status?.model ?? "deepseek-chat"
-        autopilotTokenBudget=status?.maxTotalTokens.map(String.init) ?? "50000"
-        autopilotTurnBudget=status?.maxTurns.map(String.init) ?? "12"
-        autopilotToolBudget=status?.maxToolCalls.map(String.init) ?? "32"
-        autopilotCheckpoints=Set(status?.checkpointPlanIds ?? [])
+        autopilotModel=status.model ?? "deepseek-chat"
+        autopilotTokenBudget=status.maxTotalTokens.map(String.init) ?? "50000"
+        autopilotTurnBudget=status.maxTurns.map(String.init) ?? "12"
+        autopilotToolBudget=status.maxToolCalls.map(String.init) ?? "32"
+        autopilotCheckpoints=Set(status.checkpointPlanIds)
         autopilotApproval=AutopilotApprovalContext(
             repoId:repoId,checkoutId:checkoutId,requirement:requirement,status:status
         )
@@ -5345,6 +5357,8 @@ private struct RecordsPane: View {
     @ViewBuilder
     private func autopilotApprovalSheet(_ context:AutopilotApprovalContext) -> some View {
         let contextCurrent=model.repoId == context.repoId && model.checkoutId == context.checkoutId
+        let statusIsCurrent=autopilotApprovalStatusIsCurrent(context)
+        let outcomeUnknown=model.autopilotOutcomeUnknown(for:context.requirement.requirementId)
         let budgetRenewal=context.status?.needsBudgetRenewal == true && context.status?.requiresReapproval == false
         VStack(alignment:.leading,spacing:16) {
             HStack {
@@ -5366,6 +5380,14 @@ private struct RecordsPane: View {
                 .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
             if !contextCurrent {
                 Text("工作区已变更，请重新打开批准面板。")
+                    .font(.system(size:11)).foregroundStyle(.orange)
+            }
+            if outcomeUnknown {
+                Text("操作结果未确认。请先刷新执行状态，不要重复提交。")
+                    .font(.system(size:11)).foregroundStyle(.orange)
+            }
+            if !statusIsCurrent {
+                Text("执行状态已变化，请关闭面板并刷新后重新批准。")
                     .font(.system(size:11)).foregroundStyle(.orange)
             }
             Grid(alignment:.leading,horizontalSpacing:12,verticalSpacing:10) {
@@ -5415,7 +5437,7 @@ private struct RecordsPane: View {
                     submitAutopilotApproval(context)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!contextCurrent || autopilotSaving || !approvalBudgetsValid(context)
+                .disabled(!contextCurrent || !statusIsCurrent || outcomeUnknown || autopilotSaving || !approvalBudgetsValid(context)
                           || autopilotModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
             }
         }
@@ -5440,7 +5462,25 @@ private struct RecordsPane: View {
             && autopilotModel == prior.model && autopilotCheckpoints == Set(prior.checkpointPlanIds)
     }
 
+    private func autopilotApprovalStatusIsCurrent(_ context:AutopilotApprovalContext) -> Bool {
+        guard let snapshot=context.status,
+              let latest=model.planningAutopilotStatuses[context.requirement.requirementId] else { return false }
+        return snapshot.requirementRevision == latest.requirementRevision
+            && snapshot.runId == latest.runId && snapshot.runStatus == latest.runStatus
+            && snapshot.authorized == latest.authorized && snapshot.requiresReapproval == latest.requiresReapproval
+            && snapshot.maxTotalTokens == latest.maxTotalTokens && snapshot.maxTurns == latest.maxTurns
+            && snapshot.maxToolCalls == latest.maxToolCalls && snapshot.checkpointPlanIds == latest.checkpointPlanIds
+    }
+
     private func submitAutopilotApproval(_ context:AutopilotApprovalContext) {
+        guard !model.autopilotOutcomeUnknown(for:context.requirement.requirementId) else {
+            model.error="操作结果未确认（\(context.requirement.requirementId)）。请先刷新执行状态，不要重复提交。"
+            return
+        }
+        guard autopilotApprovalStatusIsCurrent(context) else {
+            model.error="执行状态已变化，请刷新后重新批准。"
+            return
+        }
         guard model.repoId == context.repoId,model.checkoutId == context.checkoutId else {
             model.error="工作区已变更，请重新打开批准面板。"
             return

@@ -41,13 +41,13 @@ struct AutopilotCheckpointReviewSheet: View {
     private var current: Bool {
         guard model.repoId == review.repoId,model.checkoutId == review.checkoutId,
               let status=model.planningAutopilotStatuses[review.requirementId] else { return false }
-        return status.runId == review.runId
+        return status.runId == review.runId && status.runStatus == "paused"
             && status.checkpointPlanId == review.planId
             && status.nextExecutionOperation() == "accept_checkpoint"
     }
 
     private var outcomeUnknown: Bool {
-        model.planningAutopilotStatusError?.contains("操作结果未确认") == true
+        model.autopilotOutcomeUnknown(for:review.requirementId)
     }
 
     var body: some View {
@@ -79,6 +79,11 @@ struct AutopilotCheckpointReviewSheet: View {
             }
             if !current {
                 Label("执行状态或工作区已变化，请刷新后重新验收。",systemImage:"exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .font(ForgeClientDesign.Typography.supporting)
+            }
+            if outcomeUnknown {
+                Label("操作结果未确认。请先刷新执行状态，不要重复提交。",systemImage:"exclamationmark.triangle")
                     .foregroundStyle(.orange)
                     .font(ForgeClientDesign.Typography.supporting)
             }
@@ -119,7 +124,7 @@ struct AutopilotCheckpointReviewSheet: View {
                 dismiss()
                 onAccepted()
             } else {
-                errorMessage=model.planningAutopilotStatusError ?? model.error
+                errorMessage=model.error ?? model.planningAutopilotStatusError
                     ?? "执行状态未确认，请刷新后重新验收。"
             }
         }

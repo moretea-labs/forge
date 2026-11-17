@@ -787,6 +787,13 @@ struct ConversationScrollRequest: Equatable {
     let messageId: String?
 }
 
+struct AutopilotOutcomeContext: Hashable {
+    let projectId: String?
+    let repoId: String
+    let checkoutId: String
+    let requirementId: String
+}
+
 @MainActor
 final class NativeWorkspace: ObservableObject {
     @Published var page: NativePage = .agent
@@ -919,6 +926,9 @@ final class NativeWorkspace: ObservableObject {
     @Published var autopilotStatus: AutopilotStatusDetail?
     @Published var planningAutopilotStatuses: [String:AutopilotStatusDetail] = [:]
     @Published var planningAutopilotStatusError: String?
+    // Unknown effects stay attached to their original Requirement and execution context.
+    // Page/record invalidation must not erase an outcome that has not been read back.
+    @Published private(set) var unresolvedAutopilotOutcomes: Set<AutopilotOutcomeContext> = []
     @Published var autopilotLoading = false
     private(set) var autopilotRequestGeneration = 0
     private(set) var autopilotControlPending = false
@@ -3631,6 +3641,26 @@ final class NativeWorkspace: ObservableObject {
         )
     }
 
+    nonisolated static func autopilotStatusReadbackDetail(
+        _ result:[String:Any],repoId:String,checkoutId:String,requirementId:String
+    ) -> AutopilotStatusDetail? {
+        let data=result["data"] as? [String:Any] ?? result
+        guard let revision=data["requirementRevision"] as? Int,revision > 0 else { return nil }
+        if let returnedRepoId=data["repoId"] as? String,returnedRepoId != repoId { return nil }
+        if let returnedCheckoutId=data["checkoutId"] as? String,returnedCheckoutId != checkoutId { return nil }
+        if let returnedRequirementId=data["requirementId"] as? String,returnedRequirementId != requirementId { return nil }
+        if let run=data["run"] as? [String:Any] {
+            guard run["repoId"] as? String == repoId,
+                  run["checkoutId"] as? String == checkoutId,
+                  run["requirementId"] as? String == requirementId else { return nil }
+        }
+        if let grant=data["grant"] as? [String:Any] {
+            guard let constraints=grant["constraints"] as? [String:Any],
+                  constraints["checkoutId"] as? String == checkoutId else { return nil }
+        }
+        return autopilotStatusDetail(result)
+    }
+
     nonisolated static func autopilotStatusMap(_ result:[String:Any]) -> [String:AutopilotStatusDetail] {
         let raw = result["statuses"] as? [String:Any] ?? [:]
         var parsed:[String:AutopilotStatusDetail] = [:]
@@ -3647,6 +3677,46 @@ final class NativeWorkspace: ObservableObject {
             if item.kind == .requirement { return item.recordId }
             return item.requirementId
         })).sorted()
+    }
+
+    func markAutopilotOutcomeUnknown(
+        projectId:String?,repoId:String,checkoutId:String,requirementId:String
+    ) {
+        unresolvedAutopilotOutcomes.insert(AutopilotOutcomeContext(
+            projectId:projectId,repoId:repoId,checkoutId:checkoutId,requirementId:requirementId
+        ))
+    }
+
+    func resolveAutopilotOutcomeUnknown(
+        projectId:String?,repoId:String,checkoutId:String,requirementId:String
+    ) {
+        unresolvedAutopilotOutcomes.remove(AutopilotOutcomeContext(
+            projectId:projectId,repoId:repoId,checkoutId:checkoutId,requirementId:requirementId
+        ))
+    }
+
+    func clearAutopilotOutcomeUnknownMessage(for requirementId:String) {
+        if let message=error,message.contains("操作结果未确认"),message.contains(requirementId) { error=nil }
+        if let message=planningAutopilotStatusError,
+           message.contains("操作结果未确认"),message.contains(requirementId) {
+            planningAutopilotStatusError=nil
+        }
+    }
+
+    func autopilotOutcomeUnknown(for requirementId:String) -> Bool {
+        guard let repoId,let checkoutId else { return false }
+        return unresolvedAutopilotOutcomes.contains(AutopilotOutcomeContext(
+            projectId:selectedProjectId,repoId:repoId,checkoutId:checkoutId,requirementId:requirementId
+        ))
+    }
+
+    var unresolvedAutopilotRequirementIds: Set<String> {
+        guard let repoId,let checkoutId else { return [] }
+        return Set(unresolvedAutopilotOutcomes.compactMap { context in
+            guard context.projectId == selectedProjectId,
+                  context.repoId == repoId,context.checkoutId == checkoutId else { return nil }
+            return context.requirementId
+        })
     }
 
     func refreshPlanningAutopilotStatuses() async {
@@ -3685,11 +3755,6 @@ final class NativeWorkspace: ObservableObject {
         autopilotLoading=false
     }
 
-    static func autopilotStatusRefreshFailureMessage(existingError:String?,failure:String) -> String {
-        guard existingError?.contains("操作结果未确认") == true else { return failure }
-        return "操作结果未确认。执行状态刷新仍失败：\(failure)。请勿重复提交。"
-    }
-
     private func autopilotRequestIsCurrent(
         _ generation:Int,repoId targetRepoId:String,checkoutId targetCheckoutId:String,
         contextGeneration:Int
@@ -3709,6 +3774,7 @@ final class NativeWorkspace: ObservableObject {
             planningAutopilotStatusError=nil
             return
         }
+        let projectId=selectedProjectId
         guard !requirementIds.isEmpty else {
             invalidateAutopilotRequests()
             planningAutopilotStatuses=[:]
@@ -3728,25 +3794,45 @@ final class NativeWorkspace: ObservableObject {
                 requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
             ) else { return }
             let raw=value["statuses"] as? [String:Any] ?? [:]
-            let failed=raw.compactMap { requirementId,value -> (String,String)? in
-                guard let dictionary=value as? [String:Any],
-                      let message=dictionary["error"] as? String,!message.isEmpty else { return nil }
-                return (requirementId,message)
-            }
-            var next=Self.autopilotStatusMap(value)
-            for (requirementId,_) in failed {
-                if let previous=planningAutopilotStatuses[requirementId] {
-                    next[requirementId]=previous
+            var failed:[(String,String)] = []
+            var next:[String:AutopilotStatusDetail] = [:]
+            for requirementId in requirementIds {
+                guard let dictionary=raw[requirementId] as? [String:Any] else {
+                    failed.append((requirementId,"未返回执行状态"))
+                    continue
                 }
+                let payload=dictionary["data"] as? [String:Any] ?? dictionary
+                if let message=payload["error"] as? String,!message.isEmpty {
+                    failed.append((requirementId,message))
+                    continue
+                }
+                if let error=payload["error"] as? [String:Any] {
+                    let message=error["message"] as? String ?? error["code"] as? String ?? "执行状态读取失败"
+                    failed.append((requirementId,message))
+                    continue
+                }
+                guard let status=Self.autopilotStatusReadbackDetail(
+                    dictionary,repoId:repoId,checkoutId:checkoutId,requirementId:requirementId
+                ) else {
+                    failed.append((requirementId,"状态缺少有效 Requirement 修订或与当前工作区不匹配"))
+                    continue
+                }
+                next[requirementId]=status
+                resolveAutopilotOutcomeUnknown(
+                    projectId:projectId,repoId:repoId,checkoutId:checkoutId,requirementId:requirementId
+                )
+                clearAutopilotOutcomeUnknownMessage(for:requirementId)
             }
             planningAutopilotStatuses=next
+            if let selectedId=selectedRecord,let selected=records.first(where:{$0.id == selectedId}) {
+                let requirementId=selected.kind == .requirement ? selected.recordId : selected.requirementId
+                autopilotStatus=requirementId.flatMap{next[$0]}
+            }
             if let first=failed.first {
                 let failure=failed.count == 1
                     ? "\(first.0): \(first.1)"
                     : "部分执行态刷新失败（\(failed.count)）· \(first.0): \(first.1)"
-                planningAutopilotStatusError=Self.autopilotStatusRefreshFailureMessage(
-                    existingError:planningAutopilotStatusError,failure:failure
-                )
+                planningAutopilotStatusError=failure
             } else {
                 planningAutopilotStatusError=nil
             }
@@ -3754,9 +3840,9 @@ final class NativeWorkspace: ObservableObject {
             guard autopilotRequestIsCurrent(
                 requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
             ) else { return }
-            planningAutopilotStatusError=Self.autopilotStatusRefreshFailureMessage(
-                existingError:planningAutopilotStatusError,failure:error.localizedDescription
-            )
+            planningAutopilotStatuses=[:]
+            autopilotStatus=nil
+            planningAutopilotStatusError=error.localizedDescription
         }
     }
 
@@ -3769,6 +3855,7 @@ final class NativeWorkspace: ObservableObject {
             return
         }
         guard !autopilotLoading,!autopilotControlPending else { return }
+        let projectId=selectedProjectId
         let requestGeneration=beginAutopilotRequest()
         let contextGeneration=projectContextGeneration
         autopilotLoading=true
@@ -3784,18 +3871,28 @@ final class NativeWorkspace: ObservableObject {
                 "repoId":repoId,"checkoutId":checkoutId,
                 "requirementId":requirementId,"operation":"status"
             ])
+            guard let parsed=Self.autopilotStatusReadbackDetail(
+                value,repoId:repoId,checkoutId:checkoutId,requirementId:requirementId
+            ) else { throw ForgeBridgeError.invalidResponse }
+            resolveAutopilotOutcomeUnknown(
+                projectId:projectId,repoId:repoId,checkoutId:checkoutId,requirementId:requirementId
+            )
+            clearAutopilotOutcomeUnknownMessage(for:requirementId)
             guard autopilotRequestIsCurrent(
                 requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
             ),self.selectedRecord == selectionId else { return }
-            autopilotStatus=Self.autopilotStatusDetail(value)
-            if let autopilotStatus { planningAutopilotStatuses[requirementId]=autopilotStatus }
+            autopilotStatus=parsed
+            planningAutopilotStatuses[requirementId]=parsed
             planningAutopilotStatusError=nil
         } catch {
             guard autopilotRequestIsCurrent(
                 requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
             ),self.selectedRecord == selectionId else { return }
             autopilotStatus=nil
-            self.error=error.localizedDescription
+            planningAutopilotStatuses.removeValue(forKey:requirementId)
+            self.error=autopilotOutcomeUnknown(for:requirementId)
+                ? "操作结果未确认（\(requirementId)）。状态读回仍失败：\(error.localizedDescription)。请勿重复提交。"
+                : error.localizedDescription
         }
     }
 
@@ -3814,10 +3911,20 @@ final class NativeWorkspace: ObservableObject {
     ) async -> Bool {
         guard let repoId else { error="请先选择项目。"; return false }
         guard let checkoutId else { error="当前项目没有 checkout。"; return false }
-        guard operation != "authorize" || (expectedRequirementRevision ?? 0) > 0 else {
-            error="请先确认当前 Requirement 修订。"
+        guard !autopilotOutcomeUnknown(for:requirementId) else {
+            error="操作结果未确认（\(requirementId)）。请先刷新执行状态，不要重复提交。"
             return false
         }
+        guard let readback=planningAutopilotStatuses[requirementId],
+              let readbackRevision=readback.requirementRevision,readbackRevision > 0 else {
+            error="执行状态尚未通过当前 Requirement 的有效读回确认（\(requirementId)）。请先刷新执行状态。"
+            return false
+        }
+        guard operation != "authorize" || readbackRevision == expectedRequirementRevision else {
+            error="执行状态与当前 Requirement 修订不一致，请刷新后重新批准。"
+            return false
+        }
+        let projectId=selectedProjectId
         let contextGeneration=projectContextGeneration
         guard let requestGeneration=beginAutopilotControlRequest() else { return false }
         defer {
@@ -3839,19 +3946,22 @@ final class NativeWorkspace: ObservableObject {
         if let maxToolCalls { args["maxToolCalls"]=maxToolCalls }
         do {
             _=try await ForgeBridge.request("autopilot_control",args)
-            guard autopilotRequestIsCurrent(
-                requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
-            ) else { return true }
             do {
                 let status=try await ForgeBridge.request("autopilot_control",[
                     "repoId":repoId,"checkoutId":checkoutId,
                     "requirementId":requirementId,"operation":"status"
                 ])
+                guard let parsed=Self.autopilotStatusReadbackDetail(
+                    status,repoId:repoId,checkoutId:checkoutId,requirementId:requirementId
+                ) else { throw ForgeBridgeError.invalidResponse }
+                resolveAutopilotOutcomeUnknown(
+                    projectId:projectId,repoId:repoId,checkoutId:checkoutId,requirementId:requirementId
+                )
+                clearAutopilotOutcomeUnknownMessage(for:requirementId)
                 guard autopilotRequestIsCurrent(
                     requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
                 ) else { return true }
-                let parsed=Self.autopilotStatusDetail(status)
-                if let parsed { planningAutopilotStatuses[requirementId]=parsed }
+                planningAutopilotStatuses[requirementId]=parsed
                 if let selectionId=selectedRecord,
                    let selected=records.first(where:{$0.id == selectionId}),
                    selected.kind == .requirement,selected.recordId == requirementId {
@@ -3860,20 +3970,33 @@ final class NativeWorkspace: ObservableObject {
                 planningAutopilotStatusError=nil
                 error=nil
             } catch {
+                markAutopilotOutcomeUnknown(
+                    projectId:projectId,repoId:repoId,checkoutId:checkoutId,requirementId:requirementId
+                )
+                planningAutopilotStatuses.removeValue(forKey:requirementId)
                 guard autopilotRequestIsCurrent(
                     requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
-                ) else { return true }
-                planningAutopilotStatusError="操作结果未确认。操作已提交，但执行状态暂时无法刷新；请先刷新执行状态，不要重复提交。"
+                ) else { return false }
+                self.error="操作结果未确认（\(requirementId)）。操作可能已提交，但执行状态未能通过有效读回确认：\(error.localizedDescription)。请刷新执行状态，不要重复提交。"
+                return false
             }
             return true
         } catch {
-            guard autopilotRequestIsCurrent(
-                requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
-            ) else { return false }
             let message=error.localizedDescription
             if message.contains("OUTCOME_UNKNOWN") || message.contains("DELIVERY_UNKNOWN") {
-                planningAutopilotStatusError="操作结果未确认。请先刷新执行状态，不要重复提交。"
+                markAutopilotOutcomeUnknown(
+                    projectId:projectId,repoId:repoId,checkoutId:checkoutId,requirementId:requirementId
+                )
+                planningAutopilotStatuses.removeValue(forKey:requirementId)
+                if autopilotRequestIsCurrent(
+                    requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
+                ) {
+                    self.error="操作结果未确认（\(requirementId)）。操作提交结果不确定；请刷新执行状态，不要重复提交。"
+                }
             } else {
+                guard autopilotRequestIsCurrent(
+                    requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
+                ) else { return false }
                 self.error=message
             }
             return false

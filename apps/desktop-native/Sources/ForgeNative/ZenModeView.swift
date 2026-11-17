@@ -381,8 +381,12 @@ struct ZenWorkspacePane: View {
     static func nodeStatus(
         for item:ForgeRecord,
         root:ForgeRecord,
-        executionStatuses:[String:AutopilotStatusDetail]
+        executionStatuses:[String:AutopilotStatusDetail],
+        unresolvedOutcomeRequirementIds:Set<String> = []
     ) -> (label:String,symbol:String,color:Color)? {
+        if item.kind == .requirement && unresolvedOutcomeRequirementIds.contains(item.recordId) {
+            return ("操作结果未确认","exclamationmark.triangle",.orange)
+        }
         if let lifecycle=inspectorLifecycleLabel(for:item),lifecycle != "未完成" {
             return lifecycle == "已完成"
                 ? ("已完成","checkmark.circle.fill",.green)
@@ -428,8 +432,8 @@ struct ZenWorkspacePane: View {
         }
     }
 
-    private var executionOutcomeUnknown: Bool {
-        model.planningAutopilotStatusError?.contains("操作结果未确认") == true
+    private var executionOutcomeUnknownRequirementIds: Set<String> {
+        model.unresolvedAutopilotRequirementIds
     }
 
     private var visibleStages:[ZenBoardBucket] {
@@ -691,6 +695,11 @@ struct ZenWorkspacePane: View {
                         Text("\(ZenBoardBucket.completedCount(requirements)) 已完成")
                         if let issue=model.planningAutopilotStatusError {
                             Text(issue).foregroundStyle(.orange).lineLimit(1)
+                        }
+                        let unresolvedCount=model.unresolvedAutopilotRequirementIds.count
+                        if unresolvedCount > 0 {
+                            Text("操作结果未确认 · \(unresolvedCount) 项")
+                                .foregroundStyle(.orange).lineLimit(1)
                         }
                     }
                     if !model.relevantUserRequests.isEmpty {
@@ -1051,7 +1060,7 @@ struct ZenWorkspacePane: View {
                                 executionStatuses:model.planningAutopilotStatuses,
                                 hasRepository:model.projectRepositoryId != nil,
                                 executionBusy:model.autopilotLoading || model.autopilotControlPending,
-                                executionOutcomeUnknown:executionOutcomeUnknown,
+                                unresolvedOutcomeRequirementIds:executionOutcomeUnknownRequirementIds,
                                 onSelect:{ item in
                                     Task { await model.openRecord(item.id) }
                                 },onAction:{ item,action in
@@ -1298,6 +1307,10 @@ struct ZenWorkspacePane: View {
 
 
     private func prepareExecutionApproval(_ item:ForgeRecord,repoId activeRepoId:String) {
+        guard !model.autopilotOutcomeUnknown(for:item.recordId) else {
+            model.error="操作结果未确认。请先刷新执行状态，不要重复提交。"
+            return
+        }
         guard item.kind == .requirement,
               let activeProjectId=model.selectedProjectId,
               let activeCheckoutId=model.checkoutId else { return }
@@ -1387,7 +1400,7 @@ struct ZenWorkspacePane: View {
                   item.kind == .requirement,Self.requirementAllowsActions(root.state),
                   let operation=Self.executionOperation(
                     status:model.planningAutopilotStatuses[item.recordId],
-                    outcomeUnknown:executionOutcomeUnknown
+                    outcomeUnknown:model.autopilotOutcomeUnknown(for:item.recordId)
                   ) else { return }
             if operation == "authorize" { prepareExecutionApproval(item,repoId:repoId) }
             else if operation == "accept_checkpoint" {
@@ -1762,6 +1775,12 @@ struct ZenWorkspacePane: View {
                 Text("尚未读取到执行状态。").font(.system(size:11))
                     .foregroundStyle(.secondary)
             }
+            if model.autopilotOutcomeUnknown(for:item.recordId) {
+                Text("操作结果未确认。请先刷新执行状态，不要重复提交。")
+                    .font(.system(size:10)).foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("zen.execution.outcome-unknown")
+            }
             if let issue=model.planningAutopilotStatusError {
                 Text(issue).font(.system(size:10)).foregroundStyle(.orange)
                     .textSelection(.enabled)
@@ -1771,7 +1790,7 @@ struct ZenWorkspacePane: View {
                 HStack(spacing:9) {
                     if let operation=Self.executionOperation(
                         status:model.planningAutopilotStatuses[item.recordId],
-                        outcomeUnknown:executionOutcomeUnknown
+                        outcomeUnknown:model.autopilotOutcomeUnknown(for:item.recordId)
                     ) {
                         Button(Self.executionLabel(
                             operation:operation,
@@ -1804,7 +1823,7 @@ struct ZenWorkspacePane: View {
               !model.autopilotLoading,!model.autopilotControlPending,
               Self.executionOperation(
                 status:model.planningAutopilotStatuses[requirementId],
-                outcomeUnknown:executionOutcomeUnknown
+                outcomeUnknown:model.autopilotOutcomeUnknown(for:requirementId)
               ) == operation else { return }
         let contextGeneration=model.projectContextGeneration
         Task {
@@ -2266,7 +2285,7 @@ private struct ZenTreeCanvas: View {
     let executionStatuses: [String:AutopilotStatusDetail]
     let hasRepository:Bool
     let executionBusy: Bool
-    let executionOutcomeUnknown: Bool
+    let unresolvedOutcomeRequirementIds: Set<String>
     let onSelect: (ForgeRecord) -> Void
     let onAction: (ForgeRecord,ZenNodeAction) -> Void
     @State private var hoveredNodeId: String?
@@ -2316,7 +2335,7 @@ private struct ZenTreeCanvas: View {
                     Divider()
                     if let status=executionStatuses[item.recordId],
                        let operation=ZenWorkspacePane.executionOperation(
-                         status:status,outcomeUnknown:executionOutcomeUnknown
+                         status:status,outcomeUnknown:unresolvedOutcomeRequirementIds.contains(item.recordId)
                        ) {
                         Button(
                             ZenWorkspacePane.executionLabel(
@@ -2331,7 +2350,7 @@ private struct ZenTreeCanvas: View {
                         }
                         .disabled(executionBusy)
                     }
-                    if hasRepository {
+                    if hasRepository && !unresolvedOutcomeRequirementIds.contains(item.kind == .requirement ? item.recordId : (item.requirementId ?? "")) {
                         Button("执行设置",systemImage:"slider.horizontal.3") {
                             onAction(item,.executionSettings)
                         }
@@ -2439,7 +2458,8 @@ private struct ZenTreeCanvas: View {
                                             .frame(maxWidth:.infinity,alignment:.leading)
                                         Spacer(minLength:0)
                                         if let status=ZenWorkspacePane.nodeStatus(
-                                            for:item,root:root,executionStatuses:executionStatuses
+                                            for:item,root:root,executionStatuses:executionStatuses,
+                                             unresolvedOutcomeRequirementIds:unresolvedOutcomeRequirementIds
                                         ) {
                                             HStack(spacing:5) {
                                                 Image(systemName:status.symbol)

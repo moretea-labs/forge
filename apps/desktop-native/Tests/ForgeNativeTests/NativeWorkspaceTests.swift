@@ -1306,6 +1306,48 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertNil(map["REQ-b"])
     }
 
+    func testAutopilotStatusReadbackRequiresExactRequirementCheckoutAndRevision() {
+        let bareStatus:[String:Any] = ["data":["requirementRevision":3,"providerReady":true]]
+        XCTAssertEqual(
+            NativeWorkspace.autopilotStatusReadbackDetail(
+                bareStatus,repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+            )?.requirementRevision,
+            3
+        )
+
+        let validRun:[String:Any] = ["data":[
+            "requirementRevision":4,
+            "run":["repoId":"repo-a","checkoutId":"checkout-a","requirementId":"REQ-A","status":"running"]
+        ]]
+        XCTAssertNotNil(NativeWorkspace.autopilotStatusReadbackDetail(
+            validRun,repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        ))
+        XCTAssertNil(NativeWorkspace.autopilotStatusReadbackDetail(
+            ["data":["providerReady":true]],repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        ))
+        XCTAssertNil(NativeWorkspace.autopilotStatusReadbackDetail(
+            ["data":["requirementRevision":4,"run":["repoId":"repo-a","checkoutId":"checkout-b","requirementId":"REQ-A"]]],
+            repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        ))
+        XCTAssertNil(NativeWorkspace.autopilotStatusReadbackDetail(
+            ["data":["requirementRevision":4,"run":["repoId":"repo-b","checkoutId":"checkout-a","requirementId":"REQ-A"]]],
+            repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        ))
+        XCTAssertNil(NativeWorkspace.autopilotStatusReadbackDetail(
+            ["data":["requirementRevision":4,"run":["repoId":"repo-a","checkoutId":"checkout-a","requirementId":"REQ-B"]]],
+            repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        ))
+        let grantStatus:[String:Any] = ["data":[
+            "requirementRevision":4,"grant":["grantId":"grant-a","constraints":["checkoutId":"checkout-a"]]
+        ]]
+        XCTAssertNotNil(NativeWorkspace.autopilotStatusReadbackDetail(
+            grantStatus,repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        ))
+        XCTAssertNil(NativeWorkspace.autopilotStatusReadbackDetail(
+            ["data":["requirementRevision":4,"grant":["grantId":"grant-a","constraints":["checkoutId":"checkout-b"]]]],
+            repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        ))
+    }
 
     func testSemanticProjectDetailParsesTaskSummaryAndRevisionHistory() throws {
         let detail=try NativeWorkspace.decodeSemanticProjectDetail([
@@ -2881,25 +2923,62 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
-    func testAutopilotStatusRefreshFailurePreservesUnknownMutationOutcome() {
-        let unknown="操作结果未确认。操作已提交，但执行状态暂时无法刷新。"
-        let partial=NativeWorkspace.autopilotStatusRefreshFailureMessage(
-            existingError:unknown,failure:"REQ-one: provider unavailable"
-        )
-        XCTAssertTrue(partial.contains("操作结果未确认"))
-        XCTAssertTrue(partial.contains("REQ-one: provider unavailable"))
-        XCTAssertTrue(partial.contains("请勿重复提交"))
+    func testAutopilotUnknownOutcomeIsScopedToRequirementAndExecutionContext() throws {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.selectedProjectId="project-a"
+        model.repoId="repo-a"
+        model.checkoutId="checkout-a"
 
-        let failedAgain=NativeWorkspace.autopilotStatusRefreshFailureMessage(
-            existingError:partial,failure:"connection timed out"
+        model.markAutopilotOutcomeUnknown(
+            projectId:"project-a",repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
         )
-        XCTAssertTrue(failedAgain.contains("操作结果未确认"))
-        XCTAssertTrue(failedAgain.contains("connection timed out"))
+        model.markAutopilotOutcomeUnknown(
+            projectId:"project-a",repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-B"
+        )
+        XCTAssertTrue(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        XCTAssertFalse(model.autopilotOutcomeUnknown(for:"REQ-C"))
+        XCTAssertEqual(model.unresolvedAutopilotRequirementIds,Set(["REQ-A","REQ-B"]))
 
-        XCTAssertEqual(
-            NativeWorkspace.autopilotStatusRefreshFailureMessage(existingError:nil,failure:"offline"),
-            "offline"
+        // A successful readback for another Requirement must not clear REQ-A.
+        model.resolveAutopilotOutcomeUnknown(
+            projectId:"project-a",repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-B"
         )
+        XCTAssertTrue(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        XCTAssertEqual(model.unresolvedAutopilotRequirementIds,Set(["REQ-A"]))
+
+        // Selection and page/context request invalidation are not execution readbacks.
+        model.selectedRecord="requirement-b"
+        model.invalidateAutopilotRequests()
+        model.invalidateProjectContextRequests()
+        XCTAssertTrue(model.autopilotOutcomeUnknown(for:"REQ-A"))
+
+        // The marker is hidden in a different project context, but retained for return.
+        model.selectedProjectId="project-b"
+        XCTAssertFalse(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        XCTAssertTrue(model.unresolvedAutopilotRequirementIds.isEmpty)
+        model.selectedProjectId="project-a"
+        XCTAssertTrue(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        model.repoId="repo-b"
+        XCTAssertFalse(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        model.repoId="repo-a"
+        XCTAssertTrue(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        model.checkoutId="checkout-b"
+        XCTAssertFalse(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        model.checkoutId="checkout-a"
+        XCTAssertTrue(model.autopilotOutcomeUnknown(for:"REQ-A"))
+
+        // Only an exact context + Requirement readback resolves the marker.
+        model.resolveAutopilotOutcomeUnknown(
+            projectId:"project-b",repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        )
+        XCTAssertTrue(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        model.resolveAutopilotOutcomeUnknown(
+            projectId:"project-a",repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        )
+        XCTAssertFalse(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        XCTAssertTrue(model.unresolvedAutopilotRequirementIds.isEmpty)
     }
 
     @MainActor
