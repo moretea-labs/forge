@@ -2898,7 +2898,8 @@ async fn local_wait_running_process<H: LocalApiHost + Sync>(
         }
         if query.get("ok").and_then(Value::as_bool) != Some(true)
             || query.pointer("/result/processId").and_then(Value::as_str) != Some(process_id)
-            || query.pointer("/result/completed").and_then(Value::as_bool) != Some(false) {
+            || query.pointer("/result/completed").and_then(Value::as_bool) != Some(false)
+            || query.pointer("/result/observationInterrupted").and_then(Value::as_bool) == Some(true) {
             return None;
         }
     }
@@ -5872,6 +5873,8 @@ mod tests {
         for (query, expected) in [
             (json!({"ok":true,"result":{"processId":id,"completed":true,
                 "status":"succeeded","exitCode":0,"stdoutTail":"done"}}), true),
+            (json!({"ok":true,"result":{"processId":id,"completed":true,
+                "observationInterrupted":true,"status":"succeeded","exitCode":0,"stdoutTail":"done"}}), true),
             (json!({"ok":false,"error":"PROCESS_HANDLE_PRINCIPAL_MISMATCH"}), false),
             (json!({"ok":false,"error":"LOCAL_FORGE_PROCESS_CHECKOUT_MISMATCH"}), false),
             (json!({"ok":true,"result":{"processId":"proc_other","completed":true,
@@ -5893,6 +5896,42 @@ mod tests {
             assert_eq!(calls[0]["checkoutId"], "checkout_test");
             assert_eq!(calls[0]["conversationId"], "conversation_test");
             assert_eq!(calls[0]["allowEffects"], false);
+        }
+    }
+
+    #[tokio::test]
+    async fn interrupted_process_observation_pauses_without_reattaching() {
+        struct InterruptedHost(std::sync::Mutex<Vec<Value>>);
+        impl LocalApiHost for InterruptedHost {
+            fn packaged_tool_script(&self) -> Result<PathBuf, String> { panic!("test executor only") }
+            fn emit_tool_progress(&self, _: Value) {}
+            fn emit_model_progress(&self, _: Value) {}
+            fn execute_test_tool(&self, payload: &Value) -> Option<Result<Value, String>> {
+                let mut calls = self.0.lock().unwrap();
+                calls.push(payload.clone());
+                // Bound the RED fixture: an unwanted reattach returns a terminal
+                // result immediately instead of spinning until the wait budget.
+                Some(Ok(json!({"ok":true,"result":{
+                    "processId":payload["arguments"]["process_id"],
+                    "completed":calls.len() > 1,"observationInterrupted":true,
+                    "status":if calls.len() > 1 { "succeeded" } else { "running" },
+                    "exitCode":0
+                }})))
+            }
+        }
+        for id in ["proc_interrupted_123", "lightweight:12345678-1234-4abc-8def-1234567890ab"] {
+            let host = InterruptedHost(Default::default());
+            let (_sender, cancel) = tokio::sync::watch::channel(false);
+            let result = local_wait_running_process(&host, &mut None, "repo_test",
+                Some("checkout_test"), "conversation_test", id, 1_000, &cancel).await;
+            let calls = host.0.lock().unwrap();
+            assert_eq!(calls.len(), 1, "interrupted observation must not silently reattach");
+            assert!(result.is_none(), "caller must pause with the original Process identity");
+            assert_eq!(calls[0]["tool"], "process_status");
+            assert_eq!(calls[0]["arguments"]["process_id"], id);
+            let paused = local_api_process_pause(id, 1, &[]);
+            assert_eq!(paused["incomplete"], true);
+            assert!(paused["output"].as_str().unwrap().contains(id));
         }
     }
 
