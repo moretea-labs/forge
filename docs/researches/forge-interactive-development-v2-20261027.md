@@ -31,7 +31,7 @@
 
 读取的现有 Controller Home 证据（只读）：
 
-- `~/.forge/controller/repositories/repo_123b7cf58b6b17b5cbe46a56/edit-sessions/<ID>/session.json`
+- `~/.forge/controller/repositories/<REDACTED_REPOSITORY_ID>/edit-sessions/<ID>/session.json`
 - 同一仓库 `controller/worklog.jsonl`、`processes/<processId>.json` 和 `audit/commands.jsonl`
 - `~/.forge/controller/audit/mcp-timings.jsonl` 及其 `.previous`；旧 `~/.forge-controller/audit` 为空
 

@@ -638,12 +638,12 @@ describe('Forge Desktop Agent thread identity', () => {
   test('disambiguates misleading registry display names using actual repository identity', () => {
     const design = {
       repoId: 'repo_design', displayName: 'Avela',
-      localRoot: '/Users/greyson/DevProjects/repo-harness-design',
+      localRoot: '/DEMO_HOME/DevProjects/repo-harness-design',
     };
     expect(repositoryLabel(design)).toBe('repo-harness-design');
     expect(repositoryLabel({
       repoId: 'repo_avela', displayName: 'Avela Yi Fu Yao',
-      localRoot: '/Users/greyson/DevProjects/yaozhunshi',
+      localRoot: '/DEMO_HOME/DevProjects/yaozhunshi',
     })).toBe('yaozhunshi');
     expect(repositoryLabel({
       repoId: 'repo_forge', displayName: 'Forge',
@@ -845,7 +845,7 @@ describe('Tauri shell boundary', () => {
 
 describe('approved A workspace + C rail design contract', () => {
   test('shares one Forge Design palette between app shell and project popup', () => {
-    const tokens = JSON.parse(readFileSync(new URL('../../../.design-harness/tokens.json', import.meta.url), 'utf8'));
+    const tokens = JSON.parse(readFileSync(new URL('../../../.design-harness/theme.json', import.meta.url), 'utf8'));
     const project = JSON.parse(readFileSync(new URL('../../../.design-harness/project.json', import.meta.url), 'utf8'));
     const variables = readFileSync(new URL('../src/design-tokens.ts', import.meta.url), 'utf8');
     const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');

@@ -15,13 +15,13 @@ describe('platform executable discovery', () => {
       id: 'tunnel-client',
       candidates: ['tunnel-client'],
       platform: 'darwin',
-      env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: '/Users/greyson' },
-      fileExists: (path) => path === '/Users/greyson/.local/bin/tunnel-client',
+      env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: '/DEMO_HOME' },
+      fileExists: (path) => path === '/DEMO_HOME/.local/bin/tunnel-client',
     });
     expect(local).toEqual({
       id: 'tunnel-client',
       status: 'ready',
-      executable: '/Users/greyson/.local/bin/tunnel-client',
+      executable: '/DEMO_HOME/.local/bin/tunnel-client',
       source: 'path',
     });
 
@@ -29,7 +29,7 @@ describe('platform executable discovery', () => {
       id: 'tunnel-client',
       candidates: ['tunnel-client'],
       platform: 'darwin',
-      env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: '/Users/greyson' },
+      env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: '/DEMO_HOME' },
       fileExists: (path) => path === '/opt/homebrew/bin/tunnel-client',
     });
     expect(homebrew).toEqual({

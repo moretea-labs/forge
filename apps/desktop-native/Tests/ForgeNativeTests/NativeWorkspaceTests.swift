@@ -641,12 +641,12 @@ final class NativeWorkspaceTests: XCTestCase {
 
     func testMcpShellPathQuotingPreservesSpacesAndEmbeddedQuotes() {
         XCTAssertEqual(
-            shellQuotedMcpPath("/Users/greyson/Dev Projects/forge"),
-            "'/Users/greyson/Dev Projects/forge'"
+            shellQuotedMcpPath("/DEMO_HOME/Dev Projects/forge"),
+            "'/DEMO_HOME/Dev Projects/forge'"
         )
         XCTAssertEqual(
-            shellQuotedMcpPath("/Users/greyson/Dev/grey's repo"),
-            "'/Users/greyson/Dev/grey'\\''s repo'"
+            shellQuotedMcpPath("/DEMO_HOME/Dev/grey's repo"),
+            "'/DEMO_HOME/Dev/grey'\\''s repo'"
         )
     }
 
