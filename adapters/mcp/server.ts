@@ -602,6 +602,8 @@ export async function readCanonicalRuntimeToolSchema(
 
 type GatewayProxyTiming = Pick<McpTimingTrace,
   | 'gatewayProxyResolveMs'
+  | 'gatewayProxyLaneWaitMs'
+  | 'gatewayProxyHandoffWaitMs'
   | 'gatewayProxyConnectMs'
   | 'gatewayProxyCallMs'
   | 'gatewayProxyCanonicalDispatchLagMs'
@@ -885,11 +887,15 @@ export function createCanonicalRuntimeProxy(
     laneClass: CanonicalRuntimeLaneClass = 'interactive',
   ): Promise<{ laneId: number; client: Client }> => {
     if (closed) throw new Error('CANONICAL_RUNTIME_PROXY_CLOSED');
+    const handoffStarted = performance.now();
     const handoff = await waitForCanonicalRuntimeReleaseHandoff(
       () => canonicalRuntimeReleaseHandoffActive(ctx.controllerHome),
     );
     if (handoff.waited) await closeAllLanes();
+    timing.gatewayProxyHandoffWaitMs = roundedMs(performance.now() - handoffStarted);
+    const laneStarted = performance.now();
     const laneId = await scheduler.acquire(laneClass);
+    timing.gatewayProxyLaneWaitMs = roundedMs(performance.now() - laneStarted);
     leaseLane(laneId);
     try {
       return { laneId, client: await clientForCurrentRuntime(laneId, timing) };

@@ -42,6 +42,12 @@ retired socket must never initialize a Session against the previous Runtime
 while subsequent calls route to its same-endpoint replacement. Normal live
 connection reuse remains enabled; reconnect does not replay unknown mutations.
 
+Proxy timing in the existing `mcp-timings.jsonl` ledger separates
+`gatewayProxyHandoffWaitMs` (release handoff and old-lane retirement) from
+`gatewayProxyLaneWaitMs` (bounded scheduler admission), connection establishment,
+canonical call, and return tail. These local spans cannot establish caller-to-
+Tunnel/Gateway ingress waiting without matching upstream per-request evidence.
+
 ## Verification
 
 ```text

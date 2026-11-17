@@ -1573,7 +1573,15 @@ test('retired Runtime sockets cannot initialize sessions after same-endpoint rep
   writeFileSync(join(root, 'mcp', 'runtime-token'), token);
   const context = createMcpToolContext({ controllerHome: root, profile: 'controller' });
   if (!('controllerHome' in context)) throw new Error('controller context required');
+  const previousLaneLimit = process.env.FORGE_CANONICAL_RUNTIME_PROXY_LANES;
+  process.env.FORGE_CANONICAL_RUNTIME_PROXY_LANES = '1';
   const proxy = createCanonicalRuntimeProxy(context);
+  if (previousLaneLimit === undefined) delete process.env.FORGE_CANONICAL_RUNTIME_PROXY_LANES;
+  else process.env.FORGE_CANONICAL_RUNTIME_PROXY_LANES = previousLaneLimit;
+  let admitted!: () => void;
+  let release!: () => void;
+  const admission = new Promise<void>(resolve => { admitted = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
   const readiness = { ready: true, reasonCodes: [], observedAt: new Date().toISOString(), diagnostics: { database: { outcome: 'pass' as const }, scheduler: { outcome: 'pass' as const }, releaseCoherence: { outcome: 'pass' as const }, mcpEndToEnd: { outcome: 'pass' as const } } };
   const start = async (port: number, generation: string) => {
     const transport = await startRuntimeMcpTransport({
@@ -1581,7 +1589,10 @@ test('retired Runtime sockets cannot initialize sessions after same-endpoint rep
       createServer: () => {
         const server = new Server({ name: generation, version: '1' }, { capabilities: { tools: {} } });
         server.setRequestHandler('tools/list', async () => ({ tools: [] }));
-        server.setRequestHandler('tools/call', async () => ({ content: [{ type: 'text' as const, text: generation }] }));
+        server.setRequestHandler('tools/call', async request => {
+          if (request.params.arguments?.block) { admitted(); await gate; }
+          return { content: [{ type: 'text' as const, text: generation }] };
+        });
         return server;
       },
     });
@@ -1596,12 +1607,22 @@ test('retired Runtime sockets cannot initialize sessions after same-endpoint rep
   let runtime = await start(0, 'first');
   try {
     expect((await proxy.callTool(context, 'controller_ready', {})).content).toEqual([{ type: 'text', text: 'first' }]);
+    const blocking = proxy.callTool(context, 'controller_ready', { block: true });
+    await admission;
+    const timing: NonNullable<Parameters<typeof proxy.callTool>[3]> = {};
+    const queued = proxy.callTool(context, 'controller_ready', {}, timing);
+    await Bun.sleep(50);
+    release();
+    await Promise.all([blocking, queued]);
+    expect(timing.gatewayProxyLaneWaitMs).toBeGreaterThanOrEqual(30);
+    expect(timing.gatewayProxyHandoffWaitMs).toBeLessThan(timing.gatewayProxyLaneWaitMs!);
     const port = runtime.port;
     await runtime.close();
     runtime = await start(port, 'replacement');
     expect((await proxy.callTool(context, 'controller_ready', {})).content).toEqual([{ type: 'text', text: 'replacement' }]);
     expect(runtime.sessionSnapshot?.().active).toBe(1);
   } finally {
+    release();
     await proxy.close();
     await runtime.close();
     rmSync(root, { recursive: true, force: true });

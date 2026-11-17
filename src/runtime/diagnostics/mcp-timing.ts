@@ -23,6 +23,10 @@ export interface McpTimingTrace {
   resultPersistenceMs?: number;
   /** Public Gateway only: resolve current Canonical Runtime identity/token/endpoint. */
   gatewayProxyResolveMs?: number;
+  /** Public Gateway only: wait for an available existing bounded proxy lane. */
+  gatewayProxyLaneWaitMs?: number;
+  /** Public Gateway only: release handoff wait and retirement of previous lanes. */
+  gatewayProxyHandoffWaitMs?: number;
   /** Public Gateway only: establish or await a Canonical Runtime MCP client connection. */
   gatewayProxyConnectMs?: number;
   /** Public Gateway only: MCP call duration after a client is acquired, including Canonical Runtime work. */
