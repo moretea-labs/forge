@@ -70,6 +70,70 @@ afterEach(() => {
 });
 
 describe('runtime cleanup', () => {
+  test.skipIf(process.platform === 'win32')('explicit cleanup preserves relocated Runs when process inventory is unavailable', () => {
+    for (const [name, script] of [
+      ['failed', 'exit 1'], ['empty', 'exit 0'], ['malformed', 'printf "not-process-data\\n"'],
+      ['partial', 'printf "1 /sbin/launchd\\nunknown occupied command\\n"'],
+      ['hung', 'exec /bin/sleep 10'],
+    ]) {
+      const home = controllerHome();
+      const bin = join(home, 'bin');
+      const repo = join(home, 'repo');
+      const jobs = join(home, 'controller-jobs');
+      const run = join(jobs, 'RUN-retain-unknown-occupancy');
+      mkdirSync(bin, { recursive: true });
+      mkdirSync(join(repo, '.ai/harness'), { recursive: true });
+      mkdirSync(run, { recursive: true });
+      writeFileSync(join(run, 'state.json'), JSON.stringify({ status: 'waiting_for_user', note: 'nothing to integrate' }));
+      age(run);
+      symlinkSync(jobs, join(repo, '.ai/harness/jobs'));
+      writeFileSync(join(bin, 'ps'), `#!/bin/sh\n${script}\n`, { mode: 0o700 });
+      const child = spawnSync(process.execPath, ['-e', `
+        import { applyRuntimeCleanup, previewRuntimeCleanup } from ${JSON.stringify(join(import.meta.dir, '../../src/runtime/maintenance/cleanup.ts'))};
+        const options = { includeTempDirs: false, includeLegacyRuns: true, minAgeMinutes: 0, confirmCleanup: true };
+        for (const operation of [previewRuntimeCleanup, applyRuntimeCleanup]) {
+          try { operation(${JSON.stringify(repo)}, options); console.log('unexpected_success'); }
+          catch (error) { console.log(error.message); }
+        }
+        try { previewRuntimeCleanup(${JSON.stringify(repo)}, { includeTempDirs: true }); console.log('unexpected_success'); }
+        catch (error) { console.log(error.message); }
+      `], { env: { ...process.env, PATH: bin, FORGE_CONTROLLER_HOME: home }, encoding: 'utf8', timeout: 8_000, killSignal: 'SIGKILL' });
+      expect(child.error, name).toBeUndefined();
+      expect(child.status, name).toBe(0);
+      expect(child.stdout, name).not.toContain('unexpected_success');
+      expect(child.stdout.match(/RUNTIME_CLEANUP_PROCESS_INVENTORY_UNAVAILABLE/g), name).toHaveLength(3);
+      expect(existsSync(join(run, 'state.json')), name).toBe(true);
+    }
+  }, 20_000);
+
+  test.skipIf(process.platform === 'win32')('explicit cleanup retains occupied Runs and removes a proven idle Run', () => {
+    const home = controllerHome();
+    const bin = join(home, 'bin');
+    const repo = join(home, 'repo');
+    const jobs = join(home, 'controller-jobs');
+    const occupied = join(jobs, 'RUN-occupied');
+    const idle = join(jobs, 'RUN-idle');
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(join(repo, '.ai/harness'), { recursive: true });
+    for (const run of [occupied, idle]) {
+      mkdirSync(run, { recursive: true });
+      writeFileSync(join(run, 'state.json'), JSON.stringify({ status: 'waiting_for_user', note: 'nothing to integrate' }));
+      age(run);
+    }
+    symlinkSync(jobs, join(repo, '.ai/harness/jobs'));
+    writeFileSync(join(bin, 'ps'), `#!/bin/sh\nprintf '123 /bin/worker ${occupied}\\n'\n`, { mode: 0o700 });
+    const child = spawnSync(process.execPath, ['-e', `
+      import { applyRuntimeCleanup } from ${JSON.stringify(join(import.meta.dir, '../../src/runtime/maintenance/cleanup.ts'))};
+      console.log(JSON.stringify(applyRuntimeCleanup(${JSON.stringify(repo)}, {
+        includeTempDirs: false, includeLegacyRuns: true, minAgeMinutes: 0, confirmCleanup: true,
+      }).applied));
+    `], { env: { ...process.env, PATH: bin, FORGE_CONTROLLER_HOME: home }, encoding: 'utf8', timeout: 5_000 });
+    expect(child.status).toBe(0);
+    expect(JSON.parse(child.stdout)).toMatchObject([{ path: join(repo, '.ai/harness/jobs/RUN-idle'), applied: true }]);
+    expect(existsSync(occupied)).toBe(true);
+    expect(existsSync(idle)).toBe(false);
+  });
+
   test('scheduler history retention physically bounds unindexed terminal occurrence evidence and protects active state', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-runtime-scheduler-retention-'));
     homes.push(root);

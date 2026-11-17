@@ -73,16 +73,24 @@ function normalizeOptions(options: RuntimeCleanupOptions): Required<Omit<Runtime
 }
 
 function processCommands(): Array<{ pid: number; command: string }> {
+  let output: string;
   try {
-    return execFileSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', maxBuffer: 1024 * 1024 })
-      .split('\n')
-      .flatMap((line) => {
-        const match = line.trim().match(/^(\d+)\s+(.+)$/);
-        return match ? [{ pid: Number(match[1]), command: match[2] }] : [];
-      });
+    output = execFileSync('ps', ['-axo', 'pid=,command='], {
+      encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 2_000, killSignal: 'SIGKILL',
+    });
   } catch {
-    return [];
+    throw new Error('RUNTIME_CLEANUP_PROCESS_INVENTORY_UNAVAILABLE: bounded process scan failed');
   }
+  const rows = output.split('\n').filter((line) => line.trim());
+  if (rows.length === 0) throw new Error('RUNTIME_CLEANUP_PROCESS_INVENTORY_UNAVAILABLE: empty process scan');
+  return rows.map((line) => {
+    const match = line.trim().match(/^(\d+)\s+(.+)$/);
+    const pid = Number(match?.[1]);
+    if (!match || !Number.isSafeInteger(pid) || pid <= 0) {
+      throw new Error('RUNTIME_CLEANUP_PROCESS_INVENTORY_UNAVAILABLE: malformed process scan');
+    }
+    return { pid, command: match[2] };
+  });
 }
 
 function isSafeForgeTemp(path: string): boolean {
