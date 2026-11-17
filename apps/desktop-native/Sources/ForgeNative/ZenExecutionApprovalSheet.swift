@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct ZenExecutionApproval: Identifiable {
+    let projectId: String
+    let contextGeneration: Int
     let repoId: String
     let checkoutId: String
     let projectLabel: String
@@ -9,7 +11,16 @@ struct ZenExecutionApproval: Identifiable {
     let status: AutopilotStatusDetail
     let plans: [ForgeRecord]
 
-    var id: String { "\(repoId)|\(checkoutId)|\(requirement.requirementId)|\(requirement.revision)" }
+    var id: String {
+        "\(projectId)|\(contextGeneration)|\(repoId)|\(checkoutId)|\(requirement.requirementId)|\(requirement.revision)"
+    }
+
+    func matchesCurrentContext(
+        projectId: String?, repoId: String?, checkoutId: String?, contextGeneration: Int
+    ) -> Bool {
+        self.projectId == projectId && self.repoId == repoId
+            && self.checkoutId == checkoutId && self.contextGeneration == contextGeneration
+    }
 }
 
 struct ZenExecutionApprovalSheet: View {
@@ -43,7 +54,10 @@ struct ZenExecutionApprovalSheet: View {
     }
 
     private var scopeIsCurrent: Bool {
-        model.repoId == approval.repoId && model.checkoutId == approval.checkoutId
+        approval.matchesCurrentContext(
+            projectId:model.selectedProjectId,repoId:model.repoId,
+            checkoutId:model.checkoutId,contextGeneration:model.projectContextGeneration
+        )
     }
 
     private var budgetRefreshOnly: Bool {
@@ -278,6 +292,10 @@ struct ZenExecutionApprovalSheet: View {
             )
             saving = false
             if succeeded {
+                guard scopeIsCurrent else {
+                    errorMessage="授权已提交到原项目和工作区，但当前上下文已切换。请切回原项目刷新执行状态；不要重复授权。"
+                    return
+                }
                 dismiss()
                 onApproved()
                 return

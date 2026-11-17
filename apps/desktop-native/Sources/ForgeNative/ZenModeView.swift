@@ -1293,15 +1293,23 @@ struct ZenWorkspacePane: View {
 
 
     private func prepareExecutionApproval(_ item:ForgeRecord,repoId activeRepoId:String) {
-        guard item.kind == .requirement,let activeCheckoutId=model.checkoutId else { return }
+        guard item.kind == .requirement,
+              let activeProjectId=model.selectedProjectId,
+              let activeCheckoutId=model.checkoutId else { return }
+        let activeContextGeneration=model.projectContextGeneration
         Task {
             await model.openRecord(item.id)
-            guard model.repoId == activeRepoId,model.checkoutId == activeCheckoutId,
+            guard model.selectedProjectId == activeProjectId,
+                  model.projectContextGeneration == activeContextGeneration,
+                  model.repoId == activeRepoId,model.checkoutId == activeCheckoutId,
                   model.selectedRecord == item.id,
                   case .requirement(let detail)=model.recordDetail,
                   detail.requirementId == item.recordId,detail.state == "open" else { return }
             await model.loadAutopilotStatus(item.recordId)
-            guard model.repoId == activeRepoId,model.checkoutId == activeCheckoutId,
+            guard model.selectedProjectId == activeProjectId,
+                  model.projectContextGeneration == activeContextGeneration,
+                  model.repoId == activeRepoId,model.checkoutId == activeCheckoutId,
+                  model.selectedRecord == item.id,
                   let status=model.planningAutopilotStatuses[item.recordId] else { return }
             guard status.requirementRevision == detail.revision else {
                 model.error="需求已变化，请刷新后重新批准。"
@@ -1311,6 +1319,8 @@ struct ZenWorkspacePane: View {
                 $0.kind == .plan && $0.requirementId == item.recordId && $0.state == "active"
             }
             pendingExecutionApproval=ZenExecutionApproval(
+                projectId:activeProjectId,
+                contextGeneration:activeContextGeneration,
                 repoId:activeRepoId,
                 checkoutId:activeCheckoutId,
                 projectLabel:model.project?.displayName ?? activeRepoId,

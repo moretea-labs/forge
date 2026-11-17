@@ -364,6 +364,35 @@ final class ZenProposalTests: XCTestCase {
         XCTAssertNil(ZenWorkspacePane.executionOperation(status:nil,outcomeUnknown:false))
     }
 
+    func testZenExecutionApprovalIsBoundToExactProjectAndContextGeneration() throws {
+        let requirement=RequirementRecordDetail(
+            requirementId:"REQ-one",revision:3,title:"Requirement",outcomeStatement:"Ship safely",
+            state:"open",acceptanceCriteria:["Works"],progressSummary:"",remainingWork:[],
+            acceptedEvidenceRefs:[],taskStatus:nil,priority:nil,assignee:nil,
+            dependencyRequirementIds:[],dependencyRequirements:[],blockingDependencyIds:[],
+            dependentRequirements:nil,dependentRequirementsTruncated:nil,dependentRequirementCount:nil
+        )
+        let status=try XCTUnwrap(NativeWorkspace.autopilotStatusDetail(["data":["providerReady":true]]))
+        let approval=ZenExecutionApproval(
+            projectId:"project-one",contextGeneration:7,
+            repoId:"repo-one",checkoutId:"checkout-one",
+            projectLabel:"Project one",checkoutLabel:"main",
+            requirement:requirement,status:status,plans:[]
+        )
+        XCTAssertTrue(approval.matchesCurrentContext(
+            projectId:"project-one",repoId:"repo-one",checkoutId:"checkout-one",contextGeneration:7
+        ))
+        XCTAssertFalse(approval.matchesCurrentContext(
+            projectId:"project-two",repoId:"repo-one",checkoutId:"checkout-one",contextGeneration:7
+        ))
+        XCTAssertFalse(approval.matchesCurrentContext(
+            projectId:"project-one",repoId:"repo-one",checkoutId:"checkout-one",contextGeneration:8
+        ))
+        XCTAssertFalse(approval.matchesCurrentContext(
+            projectId:"project-one",repoId:"repo-two",checkoutId:"checkout-one",contextGeneration:7
+        ))
+    }
+
     @MainActor
     func testCheckpointReviewIsBoundToExactWorkspaceRunAndPlan() throws {
         let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
