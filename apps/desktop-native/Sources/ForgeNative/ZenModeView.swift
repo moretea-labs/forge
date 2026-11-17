@@ -1408,10 +1408,17 @@ struct ZenWorkspacePane: View {
                 Text(detail.title).font(.system(size:12,weight:.semibold))
                 if !detail.acceptanceCriteria.isEmpty {
                     Text("验收标准").font(.system(size:11,weight:.semibold))
-                    ForEach(detail.acceptanceCriteria,id:\.self) { criterion in
-                        Label(criterion,systemImage:"checkmark.circle")
-                            .font(.system(size:11))
+                    ScrollView {
+                        VStack(alignment:.leading,spacing:ForgeClientDesign.Spacing.row) {
+                            ForEach(detail.acceptanceCriteria,id:\.self) { criterion in
+                                Label(criterion,systemImage:"checkmark.circle")
+                                    .font(.system(size:11))
+                            }
+                        }
                     }
+                    .frame(maxHeight:ForgeClientDesign.Size.acceptanceCriteriaMaxHeight)
+                    .scrollIndicators(.hidden)
+                    .accessibilityIdentifier("zen.acceptance.criteria")
                 }
                 if !Self.nonEmptyLines(acceptanceRemainingWork).isEmpty {
                     Text("还有 \(Self.nonEmptyLines(acceptanceRemainingWork).count) 项剩余工作，清空后才能完成。")
@@ -1429,9 +1436,11 @@ struct ZenWorkspacePane: View {
                 }
                 Toggle("验收标准均已核对，证据引用真实可复查",isOn:$acceptanceAcknowledged)
                     .font(.system(size:11))
+                    .accessibilityIdentifier("zen.acceptance.acknowledgement")
                 HStack {
                     Spacer()
                     Button("返回") { pendingAcceptanceRecord=nil }
+                        .accessibilityIdentifier("zen.acceptance.cancel")
                     Button(saving ? "提交中…" : "确认完成") {
                         saving=true
                         Task {
@@ -1447,6 +1456,7 @@ struct ZenWorkspacePane: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("zen.acceptance.confirm")
                     .disabled(saving || !acceptanceAcknowledged
                               || !Self.nonEmptyLines(acceptanceRemainingWork).isEmpty
                               || acceptanceReferences.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
@@ -1459,6 +1469,7 @@ struct ZenWorkspacePane: View {
             if let error=model.error {
                 Text(error).font(.system(size:10)).foregroundStyle(.orange)
                     .textSelection(.enabled)
+                    .accessibilityIdentifier("zen.acceptance.error")
             }
         }
         .padding(ForgeClientDesign.Spacing.sheetPadding)

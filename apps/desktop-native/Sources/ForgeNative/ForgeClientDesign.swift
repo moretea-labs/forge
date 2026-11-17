@@ -22,6 +22,7 @@ enum ForgeClientDesign {
         static let taskCreateSheet: CGFloat = 430
         static let taskEditSheet: CGFloat = 465
         static let taskFormContentMaxHeight: CGFloat = 420
+        static let acceptanceCriteriaMaxHeight: CGFloat = 120
         static let taskAcceptanceSheet: CGFloat = 490
         static let metadataLabel: CGFloat = 90
     }
