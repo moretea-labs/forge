@@ -3306,6 +3306,14 @@ fn provider_tool_calls(protocol: &str, output: &Value) -> Result<Vec<(String, St
             }
         }
     }
+    // Validate the whole round before dispatch: each provider call must have
+    // one unambiguous receipt identity, including across distinct output items.
+    let mut ids = std::collections::HashSet::new();
+    for (id, _, _) in &requests {
+        if id.trim().is_empty() || !ids.insert(id.as_str()) {
+            return Err("FORGE_DESKTOP_API_TOOL_CALL_ID_INVALID".into());
+        }
+    }
     Ok(requests)
 }
 
@@ -4613,12 +4621,27 @@ mod tests {
                     frames.push(json!({"choices":[{"delta":{"content":"Read, edited and verified."}}]}).to_string());
                     frames.push("[DONE]".into());
                 }
+                if stop_reason == Some("duplicate-tools") {
+                    let args = json!({"command":["bun","test","tests/fixture.test.ts"],"timeout_ms":1000});
+                    frames = match protocol {
+                        "responses" => vec![json!({"type":"response.completed","response":{"output":(0..2)
+                            .map(|index| json!({"type":"function_call","id":format!("item-{index}"),
+                                "call_id":"duplicate","name":"run_command","arguments":args.to_string()}))
+                            .collect::<Vec<_>>()}}).to_string()],
+                        "anthropic" => (0..2).map(|index| json!({"type":"content_block_start","index":index,
+                            "content_block":{"type":"tool_use","id":"duplicate","name":"run_command","input":args}}).to_string())
+                            .chain(std::iter::once(json!({"type":"message_stop"}).to_string())).collect(),
+                        _ => vec![json!({"choices":[{"delta":{"tool_calls":(0..2)
+                            .map(|index| json!({"index":index,"id":"duplicate","function":{
+                                "name":"run_command","arguments":args.to_string()}})).collect::<Vec<_>>()}}]}).to_string(), "[DONE]".into()],
+                    };
+                }
                 if stop_reason == Some("foreign-done") {
                     // A proxy terminates an Anthropic preview using OpenAI's sentinel.
                     frames.pop();
                     frames.push("[DONE]".into());
                 } else if protocol != "responses" && stop_reason != Some("missing-finish") {
-                    let reason = stop_reason.unwrap_or(if round < 3 {
+                    let reason = stop_reason.filter(|reason| *reason != "duplicate-tools").unwrap_or(if round < 3 {
                         if protocol == "anthropic" { "tool_use" } else { "tool_calls" }
                     } else if protocol == "anthropic" { "end_turn" } else { "stop" });
                     let terminal = if protocol == "anthropic" {
@@ -4755,6 +4778,28 @@ mod tests {
             assert!(requests[1].to_string().contains("before"), "read receipt must return to the same model loop");
             assert!(requests[2].to_string().contains("applied"), "edit receipt must return to the same model loop");
             assert!(requests[3].to_string().contains("tests passed"), "test receipt must return to the same model loop");
+        }
+    }
+
+    #[test]
+    fn duplicate_tool_call_ids_never_dispatch_commands() {
+        for protocol in ["openai", "anthropic", "responses"] {
+            let (endpoint, server) = spawn_scripted_agent_provider(protocol, "bun", Some("duplicate-tools"));
+            let host = ScriptedAgentLoopHost::default();
+            let config = json!({"apiProfiles":[{
+                "id":"duplicate-test","endpoint":endpoint,"model":"test-model","apiProtocol":protocol
+            }]});
+            let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+            let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+                &host, config, vec![json!({"role":"user","content":"Run the focused test"})],
+                Some("repo_test".into()), Some("checkout_test".into()), "conv-duplicate".into(),
+                Some("api:duplicate-test".into()), None, true, &mut cancellation,
+            ));
+            let requests = server.join().unwrap();
+            assert!(host.tool_calls.lock().unwrap().is_empty(),
+                "{protocol}: ambiguous call identity must be rejected before either command dispatch");
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_CALL_ID_INVALID");
+            assert_eq!(requests.len(), 1, "no automatic retry");
         }
     }
 
@@ -5400,6 +5445,31 @@ mod tests {
         let broken = json!({"choices":[{"message":{"tool_calls":[{"id":"bad",
             "function":{"name":"read_file","arguments":"{"}}]}}]});
         assert!(provider_tool_calls("openai", &broken).is_err());
+    }
+
+    #[test]
+    fn tool_call_identity_validation_preserves_distinct_calls_and_rejects_blank_ids() {
+        for protocol in ["openai", "anthropic", "responses"] {
+            for second_id in ["second", "", "   "] {
+                let calls = ["first", second_id].into_iter().map(|id| match protocol {
+                    "anthropic" => json!({"type":"tool_use","id":id,"name":"git_status","input":{}}),
+                    "responses" => json!({"type":"function_call","call_id":id,"name":"git_status","arguments":"{}"}),
+                    _ => json!({"id":id,"type":"function","function":{"name":"git_status","arguments":"{}"}}),
+                }).collect::<Vec<_>>();
+                let output = match protocol {
+                    "anthropic" => json!({"content":calls}),
+                    "responses" => json!({"output":calls}),
+                    _ => json!({"choices":[{"message":{"tool_calls":calls}}]}),
+                };
+                let result = provider_tool_calls(protocol, &output);
+                if second_id == "second" {
+                    assert_eq!(result.unwrap().iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
+                        vec!["first", "second"]);
+                } else {
+                    assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_CALL_ID_INVALID");
+                }
+            }
+        }
     }
 
     #[test]
