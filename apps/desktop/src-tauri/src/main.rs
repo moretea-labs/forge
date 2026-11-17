@@ -3535,6 +3535,11 @@ impl StreamedModelRound {
                     let index = value.get("index").and_then(Value::as_u64)
                         .ok_or("FORGE_DESKTOP_API_STREAM_EVENT_INVALID")? as usize;
                     if index >= 128 { return Err("FORGE_DESKTOP_API_STREAM_EVENT_INVALID".into()); }
+                    // An index identifies one content block for the entire round.
+                    // Reuse must not replace a call's identity or accumulated input.
+                    if self.anthropic_blocks.contains_key(&index) {
+                        return Err("FORGE_DESKTOP_API_STREAM_EVENT_INVALID".into());
+                    }
                     if let Some(block) = value.get("content_block") {
                         self.anthropic_blocks.insert(index, block.clone());
                     }
@@ -4677,12 +4682,24 @@ mod tests {
                     } else { calls[1]["arguments"] = malformed; }
                     frames = vec![json!({"type":"response.completed","response":{"output":calls}}).to_string()];
                 }
+                if stop_reason == Some("duplicate-block-index") {
+                    // A second start silently replaces the original tool block.
+                    frames = vec![
+                        json!({"type":"content_block_start","index":0,
+                            "content_block":{"type":"tool_use","id":"original-call",
+                                "name":"git_status","input":{}}}).to_string(),
+                        json!({"type":"content_block_start","index":0,
+                            "content_block":{"type":"tool_use","id":"replacement-call",
+                                "name":"run_command","input":{"command":["bun","test","tests/fixture.test.ts"],"timeout_ms":1000}}}).to_string(),
+                        json!({"type":"message_stop"}).to_string(),
+                    ];
+                }
                 if stop_reason == Some("foreign-done") {
                     // A proxy terminates an Anthropic preview using OpenAI's sentinel.
                     frames.pop();
                     frames.push("[DONE]".into());
                 } else if protocol != "responses" && stop_reason != Some("missing-finish") {
-                    let reason = stop_reason.filter(|reason| !matches!(*reason, "duplicate-tools" | "invalid-tool-name" | "invalid-tool-args")).unwrap_or(if round < 3 {
+                    let reason = stop_reason.filter(|reason| !matches!(*reason, "duplicate-tools" | "invalid-tool-name" | "invalid-tool-args" | "duplicate-block-index")).unwrap_or(if round < 3 {
                         if protocol == "anthropic" { "tool_use" } else { "tool_calls" }
                     } else if protocol == "anthropic" { "end_turn" } else { "stop" });
                     let terminal = if protocol == "anthropic" {
@@ -4888,6 +4905,26 @@ mod tests {
             assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_ARGUMENTS_INVALID");
             assert_eq!(requests.len(), 1, "no automatic retry");
         }
+    }
+
+    #[test]
+    fn anthropic_duplicate_block_index_never_dispatches_commands() {
+        let (endpoint, server) = spawn_scripted_agent_provider("anthropic", "bun", Some("duplicate-block-index"));
+        let host = ScriptedAgentLoopHost::default();
+        let config = json!({"apiProfiles":[{
+            "id":"block-index-test","endpoint":endpoint,"model":"test-model","apiProtocol":"anthropic"
+        }]});
+        let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+        let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+            &host, config, vec![json!({"role":"user","content":"Run the focused test"})],
+            Some("repo_test".into()), Some("checkout_test".into()), "conv-block-index".into(),
+            Some("api:block-index-test".into()), None, true, &mut cancellation,
+        ));
+        let requests = server.join().unwrap();
+        assert!(host.tool_calls.lock().unwrap().is_empty(),
+            "a reused content-block index must not overwrite identity and authorize a command");
+        assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_EVENT_INVALID");
+        assert_eq!(requests.len(), 1, "no automatic retry");
     }
 
     #[test]
