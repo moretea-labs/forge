@@ -3578,6 +3578,11 @@ impl StreamedModelRound {
                             }
                         }
                         Some("input_json_delta") => {
+                            // Input belongs to an already identified tool block,
+                            // never to a future block or another content type.
+                            self.anthropic_blocks.get(&index)
+                                .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+                                .ok_or("FORGE_DESKTOP_API_STREAM_EVENT_INVALID")?;
                             if let Some(partial) = delta.get("partial_json").and_then(Value::as_str) {
                                 let json = self.anthropic_json.entry(index).or_default();
                                 json.push_str(partial);
@@ -4694,12 +4699,26 @@ mod tests {
                         json!({"type":"message_stop"}).to_string(),
                     ];
                 }
+                if stop_reason == Some("orphan-tool-input") {
+                    // Arguments arriving before the tool block must never be
+                    // attached retroactively to a later command at that index.
+                    frames = vec![
+                        json!({"type":"content_block_delta","index":0,
+                            "delta":{"type":"input_json_delta","partial_json":json!({
+                                "command":["bun","test","tests/fixture.test.ts"],"timeout_ms":1000
+                            }).to_string()}}).to_string(),
+                        json!({"type":"content_block_start","index":0,
+                            "content_block":{"type":"tool_use","id":"late-call",
+                                "name":"run_command","input":{}}}).to_string(),
+                        json!({"type":"message_stop"}).to_string(),
+                    ];
+                }
                 if stop_reason == Some("foreign-done") {
                     // A proxy terminates an Anthropic preview using OpenAI's sentinel.
                     frames.pop();
                     frames.push("[DONE]".into());
                 } else if protocol != "responses" && stop_reason != Some("missing-finish") {
-                    let reason = stop_reason.filter(|reason| !matches!(*reason, "duplicate-tools" | "invalid-tool-name" | "invalid-tool-args" | "duplicate-block-index")).unwrap_or(if round < 3 {
+                    let reason = stop_reason.filter(|reason| !matches!(*reason, "duplicate-tools" | "invalid-tool-name" | "invalid-tool-args" | "duplicate-block-index" | "orphan-tool-input")).unwrap_or(if round < 3 {
                         if protocol == "anthropic" { "tool_use" } else { "tool_calls" }
                     } else if protocol == "anthropic" { "end_turn" } else { "stop" });
                     let terminal = if protocol == "anthropic" {
@@ -4925,6 +4944,43 @@ mod tests {
             "a reused content-block index must not overwrite identity and authorize a command");
         assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_EVENT_INVALID");
         assert_eq!(requests.len(), 1, "no automatic retry");
+    }
+
+    #[test]
+    fn anthropic_orphan_tool_input_never_dispatches_commands() {
+        let (endpoint, server) = spawn_scripted_agent_provider("anthropic", "bun", Some("orphan-tool-input"));
+        let host = ScriptedAgentLoopHost::default();
+        let config = json!({"apiProfiles":[{
+            "id":"orphan-input-test","endpoint":endpoint,"model":"test-model","apiProtocol":"anthropic"
+        }]});
+        let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+        let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+            &host, config, vec![json!({"role":"user","content":"Run the focused test"})],
+            Some("repo_test".into()), Some("checkout_test".into()), "conv-orphan-input".into(),
+            Some("api:orphan-input-test".into()), None, true, &mut cancellation,
+        ));
+        let requests = server.join().unwrap();
+        assert!(host.tool_calls.lock().unwrap().is_empty(),
+            "orphan arguments must not bind retroactively and authorize a command");
+        assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_EVENT_INVALID");
+        assert_eq!(requests.len(), 1, "no automatic retry");
+    }
+
+    #[test]
+    fn anthropic_input_deltas_require_an_existing_tool_block() {
+        for block in [None, Some(json!({"type":"text","text":""})),
+            Some(json!({"type":"thinking","thinking":"","signature":""}))] {
+            let host = RecordingStreamHost::default();
+            let mut round = StreamedModelRound::default();
+            if let Some(block) = block {
+                round.consume("anthropic", &json!({"type":"content_block_start","index":0,
+                    "content_block":block}).to_string(), &host, "conv-input").unwrap();
+            }
+            let result = round.consume("anthropic", &json!({"type":"content_block_delta","index":0,
+                "delta":{"type":"input_json_delta","partial_json":"{}"}}).to_string(), &host, "conv-input");
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_EVENT_INVALID");
+            assert!(round.anthropic_json.is_empty(), "invalid input must not enter round context");
+        }
     }
 
     #[test]
