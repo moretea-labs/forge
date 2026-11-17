@@ -36,6 +36,7 @@ import {
   compileBatchCommand,
   compileSnapshotCommand,
   detectAgentDeviceCapabilities,
+  isSupportedAgentDeviceVersion,
   PREFERRED_AGENT_DEVICE_VERSION,
   type AgentDeviceCapabilityProfile,
   type AgentDeviceHelpContract,
@@ -238,6 +239,10 @@ function statusProbeCacheKey(repoRoot?: string): string {
   ].join('|');
 }
 
+function shouldInspectAgentDeviceHelp(version: string, profile: AgentDeviceCapabilityProfile): boolean {
+  return isSupportedAgentDeviceVersion(version) && profile.source !== 'known-version';
+}
+
 function probeStatus(repoRoot?: string) {
   const backendMode = configuredAgentDeviceBackendMode();
   const typedClient = typedAgentDeviceIdentity({ repoRoot });
@@ -257,10 +262,12 @@ function probeStatus(repoRoot?: string) {
     };
   }
   const runtimeEnv = withTrustedNodePath({ ...process.env });
-  const result = hooks.runCommand(executable(repoRoot), ['--version'], { cwd: repoRoot, env: runtimeEnv, timeoutMs: 3_000 });
+  const result = hooks.runCommand(executable(repoRoot), ['--version'], { cwd: repoRoot, env: runtimeEnv, timeoutMs: 8_000 });
   const detectedVersion = result.ok ? result.stdout.trim() : undefined;
+  const versionProfile = detectAgentDeviceCapabilities(detectedVersion ?? '', {});
+  const shouldProbeHelp = Boolean(result.ok && detectedVersion && shouldInspectAgentDeviceHelp(detectedVersion, versionProfile));
   const help: AgentDeviceHelpContract = {};
-  if (result.ok && detectedVersion) {
+  if (shouldProbeHelp) {
     const rootHelp = hooks.runCommand(executable(repoRoot), ['help'], { cwd: repoRoot, env: runtimeEnv, timeoutMs: 3_000 });
     if (rootHelp.ok) help.root = rootHelp.stdout || rootHelp.stderr;
     for (const topic of ['snapshot', 'press', 'fill', 'batch', 'keyboard'] as const) {
@@ -268,7 +275,9 @@ function probeStatus(repoRoot?: string) {
       if (topicResult.ok) help[topic] = topicResult.stdout || topicResult.stderr;
     }
   }
-  const capabilityProfile = detectAgentDeviceCapabilities(detectedVersion ?? '', help);
+  const capabilityProfile = shouldProbeHelp
+    ? detectAgentDeviceCapabilities(detectedVersion ?? '', help)
+    : versionProfile;
   const typedClientWithCompatibility = {
     ...typedClient,
     cliVersion: detectedVersion,
@@ -339,12 +348,14 @@ async function probeStatusAsync(input: Pick<AssistantPluginActionExecutionInput,
   const result = await hooks.runCommandAsync(executable(repoRoot), ['--version'], {
     cwd: repoRoot,
     env: runtimeEnv,
-    timeoutMs: 3_000,
+    timeoutMs: 8_000,
     signal: input.signal,
   });
   const detectedVersion = result.ok ? result.stdout.trim() : undefined;
+  const versionProfile = detectAgentDeviceCapabilities(detectedVersion ?? '', {});
+  const shouldProbeHelp = Boolean(result.ok && detectedVersion && shouldInspectAgentDeviceHelp(detectedVersion, versionProfile));
   const help: AgentDeviceHelpContract = {};
-  if (result.ok && detectedVersion) {
+  if (shouldProbeHelp) {
     const rootHelp = await hooks.runCommandAsync(executable(repoRoot), ['help'], {
       cwd: repoRoot, env: runtimeEnv, timeoutMs: 3_000, signal: input.signal,
     });
@@ -356,7 +367,9 @@ async function probeStatusAsync(input: Pick<AssistantPluginActionExecutionInput,
       if (topicResult.ok) help[topic] = topicResult.stdout || topicResult.stderr;
     }
   }
-  const capabilityProfile = detectAgentDeviceCapabilities(detectedVersion ?? '', help);
+  const capabilityProfile = shouldProbeHelp
+    ? detectAgentDeviceCapabilities(detectedVersion ?? '', help)
+    : versionProfile;
   const typedClientWithCompatibility = {
     ...typedClient,
     cliVersion: detectedVersion,
@@ -2269,7 +2282,7 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'agent_device_status', title: 'agent-device status',
       description: 'Resolve the exact executable and verify a reviewed agent-device command contract.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 5_000, cancellable: true, idempotent: true,
+      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true,
       scopes: ['ios.discover'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
