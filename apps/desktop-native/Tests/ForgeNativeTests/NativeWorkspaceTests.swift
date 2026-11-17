@@ -2639,6 +2639,21 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testStandaloneRequirementHandoffKeepsProjectWithoutRepository() {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.selectedProjectId="PROJECT-standalone"
+        model.repoId=nil; model.checkoutId=nil
+        model.page = .agent; model.zenMode = false
+        model.newThreadForRequirement("REQ-standalone")
+        XCTAssertEqual(model.thread?.projectId,"PROJECT-standalone")
+        XCTAssertEqual(model.thread?.requirementId,"REQ-standalone")
+        XCTAssertNil(model.thread?.repoId); XCTAssertNil(model.thread?.checkoutId)
+        XCTAssertTrue(NativeWorkspace.agentThreadMatchesContext(model.thread,repoId:nil,checkoutId:nil,projectId:"PROJECT-standalone"))
+    }
+
+    @MainActor
     func testProjectContextSwitchInvalidatesPendingCheckoutResolutionWithoutChangingConversation() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }
