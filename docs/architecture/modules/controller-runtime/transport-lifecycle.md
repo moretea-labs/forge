@@ -48,6 +48,13 @@ Proxy timing in the existing `mcp-timings.jsonl` ledger separates
 canonical call, and return tail. These local spans cannot establish caller-to-
 Tunnel/Gateway ingress waiting without matching upstream per-request evidence.
 
+An admitted POST's observation deadline or generic transport exception cannot
+prove execution failure or authorize replay. Existing error codes/statuses are
+retained, but these responses carry `retryable: false`, `action: reconcile` and
+`executionOutcome: unknown`. Explicit pre-admission overload/drain refusal remains
+retryable. Neither response processing nor session replacement changes the
+original durable request identity.
+
 ## Verification
 
 ```text

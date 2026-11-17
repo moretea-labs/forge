@@ -88,10 +88,11 @@ export function terminateReclaimedMcpPost(response: Response): void {
       response.status(504).json({
         error: 'request_timeout',
         code: 'MCP_ACTIVE_POST_STALLED',
-        message: 'This MCP request exceeded its active-response bound; retry if the client is still connected.',
+        message: 'This MCP observation exceeded its active-response bound. Reconcile the original request or Process identity before retrying.',
         recoverable: true,
-        retryable: true,
-        action: 'retry',
+        retryable: false,
+        executionOutcome: 'unknown',
+        action: 'reconcile',
       });
     }
   } catch {

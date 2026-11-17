@@ -232,19 +232,21 @@ export function mcpRequestError(error: unknown) {
       },
     };
   }
-  const retryable = /(?:\b502\b|\b503\b|\b429\b|ECONNRESET|ETIMEDOUT|EAI_AGAIN|CANONICAL_RUNTIME_TIMEOUT|server_busy|session_capacity|gateway)/i.test(rawMessage);
+  const transient = /(?:\b502\b|\b503\b|\b429\b|ECONNRESET|ETIMEDOUT|EAI_AGAIN|CANONICAL_RUNTIME_TIMEOUT|server_busy|session_capacity|gateway)/i.test(rawMessage);
+  // An HTTP/transport exception is not proof that an admitted operation failed
+  // before dispatch. Preserve its identity for reconciliation, regardless of
+  // whether the observation failure itself appears transient.
   return {
-    status: (retryable ? 503 : 500) as 500 | 503,
+    status: (transient ? 503 : 500) as 500 | 503,
     body: {
       error: 'request_failed' as const,
-      code: (retryable ? 'MCP_TRANSIENT_FAILURE' : 'MCP_REQUEST_FAILED') as 'MCP_TRANSIENT_FAILURE' | 'MCP_REQUEST_FAILED',
-      message: retryable
-        ? 'The MCP Runtime is temporarily unavailable; retry shortly.'
-        : 'The MCP request could not be completed.',
+      code: (transient ? 'MCP_TRANSIENT_FAILURE' : 'MCP_REQUEST_FAILED') as 'MCP_TRANSIENT_FAILURE' | 'MCP_REQUEST_FAILED',
+      message: 'The MCP response could not be observed. Reconcile the original request or Process identity before retrying.',
       recoverable: true as const,
-      retryable,
+      retryable: false as const,
+      executionOutcome: 'unknown' as const,
       sessionPreserved: true as const,
-      action: 'retry' as const,
+      action: 'reconcile' as const,
     },
   };
 }

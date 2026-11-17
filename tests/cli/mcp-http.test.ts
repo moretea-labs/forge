@@ -4,7 +4,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { startRuntimeMcpTransport } from '../../src/runtime/root/mcp-transport';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import express from 'express';
-import { drainMcpPosts } from '../../adapters/mcp/transports/http-post-lifecycle';
+import { drainMcpPosts, terminateReclaimedMcpPost } from '../../adapters/mcp/transports/http-post-lifecycle';
 import { describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'crypto';
 import { createServer } from 'net';
@@ -300,7 +300,7 @@ describe('mcp http transport', () => {
     expect(stats.activePostStartedAt.size).toBe(1);
     for (const entry of stalled) {
       expect(entry.statusCode()).toBe(504);
-      expect(entry.body()).toMatchObject({ code: 'MCP_ACTIVE_POST_STALLED', retryable: true });
+      expect(entry.body()).toMatchObject({ code: 'MCP_ACTIVE_POST_STALLED', retryable: false, action: 'reconcile', executionOutcome: 'unknown' });
     }
 
     // A streaming POST (for example subscriptions/listen) is retained within
@@ -1628,3 +1628,38 @@ test('retired Runtime sockets cannot initialize sessions after same-endpoint rep
     rmSync(root, { recursive: true, force: true });
   }
 }, 10_000);
+
+
+test('Gateway transport failures cannot authorize replay of an admitted mutation', () => {
+  for (const reason of ['HTTP 502', 'ECONNRESET', 'ETIMEDOUT', 'CANONICAL_RUNTIME_TIMEOUT', 'unexpected transport EOF']) {
+    expect(mcpRequestError(new Error(reason)).body).toMatchObject({
+      recoverable: true, retryable: false, action: 'reconcile', executionOutcome: 'unknown',
+    });
+  }
+});
+
+
+test('stalled admitted HTTP observation reports unknown while original execution completes', async () => {
+  const app = express();
+  let executions = 0;
+  let completed!: () => void;
+  const execution = new Promise<void>(resolve => { completed = resolve; });
+  app.post('/mcp', (_req, res) => {
+    executions += 1;
+    setTimeout(completed, 10);
+    terminateReclaimedMcpPost(res);
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  try {
+    const port = (server.address() as { port: number }).port;
+    const response = await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST' });
+    expect(response.status).toBe(504);
+    expect(await response.json()).toMatchObject({ executionOutcome: 'unknown', retryable: false, action: 'reconcile' });
+    await execution;
+    expect(executions).toBe(1);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
