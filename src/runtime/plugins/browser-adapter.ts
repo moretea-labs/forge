@@ -342,7 +342,7 @@ type PageLike = {
   mainFrame?(): FrameLike;
   locator?(selector: string): { screenshot(options?: Record<string, unknown>): Promise<Buffer> };
   on?(event: string, handler: (...args: unknown[]) => void): void;
-  bringToFront?(): Promise<void>;
+  bringToFront?(): Promise<void | { frontmost: boolean; active: boolean }>;
   foregroundState?(): Promise<{ frontmost: boolean; active: boolean }>;
   trustedInput?(input: Record<string, unknown>): Promise<void>;
   mouse?: {
@@ -1249,8 +1249,15 @@ async function establishAuthoritativeNativeForeground(
     await delay(waitMs);
     return page.foregroundState!();
   };
-  await page.bringToFront();
-  let state = await verifiedState();
+  // The native activate-tab provider already returns verified post-activation
+  // metadata. Reuse that exact observation instead of issuing a redundant
+  // Apple Events metadata request. Other providers still take the fresh probe.
+  const activateAndVerify = async (): Promise<{ frontmost: boolean; active: boolean }> => {
+    const observed = await page.bringToFront!();
+    if (observed?.frontmost && observed.active) return observed;
+    return verifiedState();
+  };
+  let state = await activateAndVerify();
   if (state.frontmost && state.active) return state;
 
   const product = connection.browserProduct;
@@ -1276,8 +1283,7 @@ async function establishAuthoritativeNativeForeground(
 
   // App-level activation is intentionally separate from tab selection. Re-assert the exact
   // saved tab after the app becomes frontmost, then verify both authorities together.
-  await page.bringToFront();
-  state = await verifiedState();
+  state = await activateAndVerify();
   if (!state.frontmost || !state.active) {
     throw new AssistantPluginError(
       'PLUGIN_BROWSER_ACTIVATION_FAILED',

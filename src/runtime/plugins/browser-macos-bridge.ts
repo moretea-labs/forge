@@ -1797,13 +1797,15 @@ export class MacOsAppleEventsPage {
     // Apple Events does not expose Playwright console/network event streams.
   }
 
-  async bringToFront(): Promise<void> {
+  async bringToFront(): Promise<void | { frontmost: boolean; active: boolean }> {
     if (this.targetRef) {
       this.metadata = await activateMacOsBrowserOwnedTab(this.browser.product, this.targetRef, this.timeoutMs);
       if (this.metadata.windowId && this.metadata.tabId) {
         this.targetRef = { windowId: this.metadata.windowId, tabId: this.metadata.tabId };
       }
-      return;
+      // The activation already read authoritative postcondition metadata for
+      // this exact tab. Returning it avoids a second cross-process query.
+      return { frontmost: this.metadata.frontmost, active: this.metadata.active === true };
     }
     await this.runAutomation(
       { action: 'activate', product: this.browser.product },
