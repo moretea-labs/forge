@@ -2520,13 +2520,41 @@ async function openAttachedContext(
       try {
         const context = browser.contexts()[0] ?? (browser.newContext ? await browser.newContext() : undefined);
         if (!context) throw new Error('CDP connection did not expose a browser context.');
-        const selected = await selectPage(context, target, { allowBlank: false, allowNewPage: false, requireOwnedToken: true });
-      const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
-      let response: { status?: () => number } | null | undefined;
-      if (selected.matchedBy === 'new_page' || selected.matchedBy === 'blank' || comparableUrl(selected.page.url()) !== comparableUrl(target.url)) {
-        response = await selected.page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout }) as { status?: () => number } | null | undefined;
-      }
-      const diagnostics = attachDiagnostics(selected.page);
+        const selected = await selectPage(context, target, {
+          allowBlank: false,
+          allowNewPage: !target.existingSession && args.__forge_require_existing_resource !== true,
+          requireOwnedToken: true,
+        });
+        const ownerToken = browserSessionOwnerToken(target.sessionId);
+        const createdPage = selected.matchedBy === 'new_page';
+        const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
+        let response: { status?: () => number } | null | undefined;
+        try {
+          if (createdPage) await markManagedPageOwner(selected.page, ownerToken);
+          if (selected.matchedBy === 'new_page' || selected.matchedBy === 'blank' || comparableUrl(selected.page.url()) !== comparableUrl(target.url)) {
+            response = await selected.page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout }) as { status?: () => number } | null | undefined;
+          }
+          if (selected.matchedBy === 'new_page' || selected.matchedBy === 'owned_token') {
+            // Cross-origin navigation can clear window.name. Re-assert the exact
+            // session marker after navigation before persisting or reusing this tab.
+            await markManagedPageOwner(selected.page, ownerToken);
+            const inventory = await inventoryTabs(context);
+            const ownedEntries = inventory.filter((entry) => entry.ownerToken === ownerToken);
+            if (ownedEntries.length !== 1) {
+              throw new AssistantPluginError(
+                'PLUGIN_BROWSER_SESSION_OWNERSHIP_UNVERIFIED',
+                'CDP browser page did not retain one exact Forge owner marker after navigation.',
+                { retryable: true, details: { sessionId: target.sessionId, ownerMatchCount: ownedEntries.length } },
+              );
+            }
+            selected.inventory = inventory;
+            selected.selectedEntry = ownedEntries[0];
+          }
+        } catch (error) {
+          if (createdPage) await selected.page.close?.().catch(() => undefined);
+          throw error;
+        }
+        const diagnostics = attachDiagnostics(selected.page);
       diagnostics.navigation = {
         url: target.url,
         status: response && typeof response.status === 'function' ? response.status() : undefined,
