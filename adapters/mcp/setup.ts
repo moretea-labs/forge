@@ -24,6 +24,7 @@ import {
 } from "../../src/runtime/shared/runtime-config";
 import { ensureControllerHome, ensureRepoPreferredControllerHome } from "../../src/effects/controller-home";
 import { observeRuntimeStatus } from "../../src/runtime/root/status";
+import { readRecentMcpTransportEvents } from "../../src/runtime/diagnostics/mcp-timing";
 import { configuredControllerAccessMode } from './access-mode';
 import { ensureForgeInstanceIdentity, normalizeConfiguredForgeInstanceId, readForgeInstanceIdentity } from "../../packages/kernel/identity/api/index";
 
@@ -579,6 +580,16 @@ export function runMcpDoctor(opts: {
   // runtime liveness source; the connector service state below only describes
   // the optional ChatGPT connector tunnel/server process.
   const runtimeObservation = observeRuntimeStatus(controllerHome);
+  const recentTransportEvents = readRecentMcpTransportEvents(controllerHome).filter((event) => {
+    const at = Date.parse(event.at);
+    return Number.isFinite(at) && at >= Date.now() - 30 * 60_000;
+  });
+  const lastSessionClose = recentTransportEvents.find((event) =>
+    event.kind === "session_closed" || event.kind === "interruption",
+  );
+  const reinitializedAfterLastClose = Boolean(lastSessionClose && recentTransportEvents.some((event) =>
+    event.kind === "session_initialized" && Date.parse(event.at) > Date.parse(lastSessionClose.at),
+  ));
   const configuredServerName = localConfig?.chatgpt?.serverName;
   const forgeInstanceId = localConfig?.identity?.forgeInstanceId?.trim()
     || readForgeInstanceIdentity(controllerHome)?.instanceId;
@@ -657,6 +668,16 @@ export function runMcpDoctor(opts: {
       endpoint: runtimeObservation.snapshot?.endpoint,
       observedAt: runtimeObservation.observedAt,
     },
+    transportEvidence: {
+      lastSessionClose: lastSessionClose ? {
+        kind: lastSessionClose.kind,
+        at: lastSessionClose.at,
+        reason: lastSessionClose.reason ?? "unknown",
+        route: lastSessionClose.route,
+        sessionId: lastSessionClose.sessionId,
+      } : null,
+      reinitializedAfterLastClose,
+    },
     credentialBoundary: {
       controllerHome: {
         oauthFileConfigured: existsSync(mcpControllerHomeOAuthPath(controllerHome)),
@@ -694,6 +715,10 @@ export function runMcpDoctor(opts: {
             `[forge mcp] Local Controller: ${report.mcp.localController.enabled ? report.chatgpt.localController : "disabled"}`,
             `[forge mcp] ChatGPT auth: ${report.mcp.authConfigured ? `${authMode} present` : "missing"}`,
             `[forge mcp] Credentials: Controller Home OAuth=${report.credentialBoundary.controllerHome.oauthFileConfigured ? "present" : "missing"}, bearer=${report.credentialBoundary.controllerHome.bearerTokenFileConfigured ? "present" : "missing"}; OpenAI Secure Tunnel CONTROL_PLANE_API_KEY is supplied by the external runtime environment and not persisted by Forge`,
+            `[forge mcp] Last MCP session close: ${report.transportEvidence.lastSessionClose
+              ? `${report.transportEvidence.lastSessionClose.reason} (${report.transportEvidence.lastSessionClose.kind}, ${report.transportEvidence.lastSessionClose.route}, ${report.transportEvidence.lastSessionClose.at}; reinitialized afterward=${report.transportEvidence.reinitializedAfterLastClose ? "yes" : "no"})`
+              : "no recent evidence"
+            }`,
             `[forge mcp] Runtime: ${
               runtimeObservation.running
                 ? `running (${runtimeObservation.ready ? "ready" : "not ready"}, pid=${runtimeObservation.snapshot?.pid ?? "unknown"}${

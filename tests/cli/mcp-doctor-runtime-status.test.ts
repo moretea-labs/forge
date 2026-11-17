@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } 
 import { tmpdir } from "os";
 import { join } from "path";
 import { runMcpDoctor } from "../../adapters/mcp/setup";
+import { recordMcpTransportEvent } from "../../src/runtime/diagnostics/mcp-timing";
 import { mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath } from "../../adapters/mcp/auth";
 import type { RuntimeStatusSnapshot } from "../../src/runtime/root/types";
 
@@ -169,6 +170,62 @@ describe("forge mcp doctor runtime status", () => {
       });
       expect(JSON.stringify(report)).not.toContain(oauthSecret);
       expect(JSON.stringify(report)).not.toContain(bearerSecret);
+    } finally {
+      rmSync(join(controllerHome, ".."), { recursive: true, force: true });
+    }
+  });
+
+  test("reports the persisted last session-close reason when the Connector is no longer reachable", () => {
+    const { controllerHome } = makeFixture();
+    const closedAt = new Date(Date.now() - 1_000).toISOString();
+    const initializedAt = new Date().toISOString();
+    try {
+      recordMcpTransportEvent(controllerHome, {
+        kind: "session_closed",
+        sessionId: "expired-session",
+        connectionId: "connection-expired",
+        route: "/mcp",
+        principalId: "oauth-client:fixture",
+        reason: "idle_ttl",
+        at: closedAt,
+      });
+      recordMcpTransportEvent(controllerHome, {
+        kind: "session_initialized",
+        sessionId: "replacement-session",
+        connectionId: "connection-expired",
+        route: "/mcp",
+        principalId: "oauth-client:fixture",
+        at: initializedAt,
+      });
+
+      const json = withControllerHome(controllerHome, () => runMcpDoctor({
+        userLevel: true,
+        controllerHome,
+        json: true,
+      }));
+      const report = JSON.parse(json.lines[0] ?? "{}") as {
+        transportEvidence?: {
+          lastSessionClose?: { kind?: string; at?: string; reason?: string; route?: string; sessionId?: string } | null;
+          reinitializedAfterLastClose?: boolean;
+        };
+      };
+      expect(report.transportEvidence).toEqual({
+        lastSessionClose: {
+          kind: "session_closed",
+          at: closedAt,
+          reason: "idle_ttl",
+          route: "/mcp",
+          sessionId: "expired-session",
+        },
+        reinitializedAfterLastClose: true,
+      });
+
+      const human = withControllerHome(controllerHome, () => runMcpDoctor({
+        userLevel: true,
+        controllerHome,
+      }));
+      expect(human.lines.some((line) => line.includes("Last MCP session close: idle_ttl"))).toBe(true);
+      expect(human.repoRoot).toBeUndefined();
     } finally {
       rmSync(join(controllerHome, ".."), { recursive: true, force: true });
     }
