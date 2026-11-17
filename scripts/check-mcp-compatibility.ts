@@ -92,7 +92,12 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // 2026-11-16 #648: optional assigned/unassigned task triage filter; existing
 // Requirement storage, assignment writer and revision CAS remain unchanged.
 // Schema v23 documents Project-scoped Plan identity and the project_id == scope_key rule.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '1b2d21b836c0fcde';
+// 2026-11-17 audited schema revision: #648 adds canonical Project/Requirement
+// operations and bounded record fields (matching their storage constraints);
+// #129 documents the existing host Full Access policy; #235 clarifies proven
+// process_cancel outcomes. All 20 preferred names, previous input properties,
+// and required-field sets remain unchanged. Keep this exact fingerprint fence.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '2a7545d73cc1dee8';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
