@@ -340,6 +340,10 @@ struct ZenWorkspacePane: View {
         }
     }
 
+    static func requirementAllowsActions(_ state:String) -> Bool {
+        state == "planned" || state == "open"
+    }
+
     static func priorityLabel(_ value:String?) -> String? {
         switch value {
         case "low": return "低"
@@ -1092,6 +1096,7 @@ struct ZenWorkspacePane: View {
     static func inspectorLifecycleLabel(for item:ForgeRecord) -> String? {
         guard item.kind == .requirement else { return nil }
         switch item.state {
+        case "planned": return "已规划"
         case "open": return "未完成"
         case "completed", "done": return "已完成"
         case "cancelled": return "已取消"
@@ -1304,7 +1309,7 @@ struct ZenWorkspacePane: View {
                   model.repoId == activeRepoId,model.checkoutId == activeCheckoutId,
                   model.selectedRecord == item.id,
                   case .requirement(let detail)=model.recordDetail,
-                  detail.requirementId == item.recordId,detail.state == "open" else { return }
+                  detail.requirementId == item.recordId,Self.requirementAllowsActions(detail.state) else { return }
             await model.loadAutopilotStatus(item.recordId)
             guard model.selectedProjectId == activeProjectId,
                   model.projectContextGeneration == activeContextGeneration,
@@ -1339,12 +1344,12 @@ struct ZenWorkspacePane: View {
               !action.requiresRepository || context.repoId != nil else { return }
         switch action {
         case .addPlan:
-            guard root.state == "open" else { return }
+            guard Self.requirementAllowsActions(root.state) else { return }
             newPlanGoal=""
             newParentPlanId=item.kind == .plan ? item.recordId : nil
             showingPlanSheet=true
         case .edit, .complete, .cancel:
-            guard root.state == "open" else { return }
+            guard Self.requirementAllowsActions(root.state) else { return }
             Task {
                 await model.openRecord(item.id)
                 guard model.selectedProjectId == context.projectId,
@@ -1356,14 +1361,14 @@ struct ZenWorkspacePane: View {
                     beginEdit(item)
                 case .complete:
                     guard case .requirement(let detail)=model.recordDetail,
-                          detail.requirementId == item.recordId,detail.state == "open" else { return }
+                          detail.requirementId == item.recordId,Self.requirementAllowsActions(detail.state) else { return }
                     acceptanceReferences=detail.acceptedEvidenceRefs.joined(separator:"\n")
                     acceptanceRemainingWork=detail.remainingWork.joined(separator:"\n")
                     acceptanceAcknowledged=false
                     pendingAcceptanceRecord=item
                 case .cancel:
                     guard case .requirement(let detail)=model.recordDetail,
-                          detail.requirementId == item.recordId,detail.state == "open" else { return }
+                          detail.requirementId == item.recordId,Self.requirementAllowsActions(detail.state) else { return }
                     cancellingRequirement=detail
                 default:
                     break
@@ -1378,7 +1383,7 @@ struct ZenWorkspacePane: View {
             prepareExecutionApproval(item,repoId:repoId)
         case .toggleExecution:
             guard let repoId=context.repoId,
-                  item.kind == .requirement,root.state == "open",
+                  item.kind == .requirement,Self.requirementAllowsActions(root.state),
                   let operation=Self.executionOperation(
                     status:model.planningAutopilotStatuses[item.recordId],
                     outcomeUnknown:executionOutcomeUnknown
@@ -1724,7 +1729,7 @@ struct ZenWorkspacePane: View {
                     .textSelection(.enabled)
                     .accessibilityIdentifier("zen.execution.error")
             }
-            if item.state == "open" {
+            if Self.requirementAllowsActions(item.state) {
                 HStack(spacing:9) {
                     if let operation=Self.executionOperation(
                         status:model.planningAutopilotStatuses[item.recordId],
@@ -1756,14 +1761,18 @@ struct ZenWorkspacePane: View {
     }
 
     private func runExecution(_ requirementId:String,_ operation:String) {
-        guard let repoId=model.repoId,let checkoutId=model.checkoutId,
+        guard let projectId=model.selectedProjectId,
+              let repoId=model.repoId,let checkoutId=model.checkoutId,
               !model.autopilotLoading,!model.autopilotControlPending,
               Self.executionOperation(
                 status:model.planningAutopilotStatuses[requirementId],
                 outcomeUnknown:executionOutcomeUnknown
               ) == operation else { return }
+        let contextGeneration=model.projectContextGeneration
         Task {
-            guard model.repoId == repoId,model.checkoutId == checkoutId else { return }
+            guard model.selectedProjectId == projectId,
+                  model.projectContextGeneration == contextGeneration,
+                  model.repoId == repoId,model.checkoutId == checkoutId else { return }
             _ = await model.controlAutopilot(requirementId:requirementId,operation:operation)
         }
     }
@@ -2214,7 +2223,7 @@ private struct ZenTreeCanvas: View {
 
     @ViewBuilder
     private func nodeToolbar(_ item:ForgeRecord) -> some View {
-        let canChange=root.state == "open"
+        let canChange=ZenWorkspacePane.requirementAllowsActions(root.state)
             && (item.kind == .requirement || item.requirementId == root.recordId)
         HStack(spacing:1) {
             if canChange {

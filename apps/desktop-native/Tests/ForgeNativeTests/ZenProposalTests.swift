@@ -364,6 +364,14 @@ final class ZenProposalTests: XCTestCase {
         XCTAssertNil(ZenWorkspacePane.executionOperation(status:nil,outcomeUnknown:false))
     }
 
+    @MainActor
+    func testPlannedRequirementsCanUseZenPlanningAndExecutionUntilTerminal() {
+        XCTAssertTrue(ZenWorkspacePane.requirementAllowsActions("planned"))
+        XCTAssertTrue(ZenWorkspacePane.requirementAllowsActions("open"))
+        XCTAssertFalse(ZenWorkspacePane.requirementAllowsActions("completed"))
+        XCTAssertFalse(ZenWorkspacePane.requirementAllowsActions("cancelled"))
+    }
+
     func testZenExecutionApprovalIsBoundToExactProjectAndContextGeneration() throws {
         let requirement=RequirementRecordDetail(
             requirementId:"REQ-one",revision:3,title:"Requirement",outcomeStatement:"Ship safely",
