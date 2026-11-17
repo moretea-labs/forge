@@ -341,10 +341,6 @@ struct AgentCodeBlockView: View {
             .background(Color.primary.opacity(0.035))
         }
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5)
-        }
     }
 
     private func diffColor(_ line: String) -> Color {

@@ -3268,8 +3268,6 @@ private struct AgentChangesPane: View {
         .padding(10)
         .background(ForgePalette.raisedSurface,
                     in:RoundedRectangle(cornerRadius:11,style:.continuous))
-        .overlay(RoundedRectangle(cornerRadius:11,style:.continuous)
-            .stroke(Color.primary.opacity(0.05),lineWidth:0.7))
     }
 
     private func fileName(_ path: String) -> String {
@@ -3307,8 +3305,6 @@ private struct AgentDiffPatchView: View {
         .background(ForgePalette.softFill,
                     in:RoundedRectangle(cornerRadius:10,style:.continuous))
         .clipShape(RoundedRectangle(cornerRadius:10,style:.continuous))
-        .overlay(RoundedRectangle(cornerRadius:10,style:.continuous)
-            .stroke(Color.primary.opacity(0.05),lineWidth:0.5))
     }
 
     private func background(_ line: String) -> Color {
@@ -4929,11 +4925,8 @@ private struct RecordsPane: View {
         let collapsed=collapsedPlanningRecordIds.contains(item.id)
         let execution=planningExecutionStatus(item)
         let nodeBackground:Color = selected
-            ? ForgePalette.raisedSurface
+            ? ForgePalette.selectionStrong
             : (item.kind == .requirement ? ForgePalette.accent.opacity(0.075) : ForgePalette.raisedSurface.opacity(0.78))
-        let nodeBorder:Color = selected
-            ? ForgePalette.ink.opacity(0.34)
-            : (item.kind == .requirement ? ForgePalette.accent.opacity(0.22) : ForgePalette.secondary.opacity(0.13))
         return ZStack(alignment:.bottomTrailing) {
             Button {
                 Task { await model.openRecord(item.id) }
@@ -4984,10 +4977,6 @@ private struct RecordsPane: View {
                 .padding(11)
                 .frame(width:planningNodeWidth,height:planningNodeHeight,alignment:.topLeading)
                 .background(nodeBackground,in:RoundedRectangle(cornerRadius:13,style:.continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius:13,style:.continuous)
-                        .stroke(nodeBorder,lineWidth:selected ? 1.25 : 0.75)
-                )
                 .overlay(alignment:.leading) {
                     Capsule()
                         .fill(item.kind == .requirement ? ForgePalette.accent.opacity(0.72) : ForgePalette.secondary.opacity(0.28))
@@ -4995,7 +4984,6 @@ private struct RecordsPane: View {
                         .padding(.vertical,12)
                         .padding(.leading,2)
                 }
-                .shadow(color:Color.primary.opacity(selected ? 0.035 : 0),radius:4,y:1)
                 .contentShape(RoundedRectangle(cornerRadius:13,style:.continuous))
             }
             .buttonStyle(.plain)
