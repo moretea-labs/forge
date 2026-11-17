@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
-import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY } from '@modelcontextprotocol/server';
+import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY, type Tool } from '@modelcontextprotocol/server';
 import { execFileSync, spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
@@ -6668,6 +6668,132 @@ describe('standalone recovery on canonical Runtime', () => {
           child.once('exit', () => { clearTimeout(timer); done(); });
         });
       }
+    }
+  });
+
+  test('standalone Recovery rolls back and restarts the canonical Runtime over its independent MCP while primary MCP is unavailable', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const primary = await failingPublicGatewayServer(503);
+      const runtime = await runtimeServer();
+      const first = manifest(home, 'release-a', 'artifact-a');
+      const second = manifest(home, 'release-b', 'artifact-b', 2);
+      ensureActiveRuntimeRelease(home, first);
+      writeMainToken(home);
+      const ownership = startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
+      const config = createRecoveryConfig(home, {
+        publicMcpUrl: runtime.endpoint,
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      await attestKnownGood(config);
+      removeOwnership(ownership);
+      publishRuntimeRelease(home, second, 'publish-release-b');
+      const paths = forgeRuntimeServicePaths(home);
+      runtimeServiceConfig(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      config.publicMcpUrl = primary.endpoint;
+
+      let localProbes = 0;
+      let launchdLoaded = true;
+      const commands: string[][] = [];
+      const recover = (recoveryConfig: typeof config, reason = 'standalone recovery') => recoverPrimaryRuntime(recoveryConfig, reason, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (_command, args) => {
+          commands.push(args);
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'bootstrap') launchdLoaded = true;
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => ++localProbes >= 3
+          ? healthyVerify()
+          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+      const executeTool = createRecoveryToolExecutor(config, {
+        releasePath: join(home, 'recovery', 'releases', 'recovery-bootstrap-fixture'),
+        runChild: async (_command, _args, options) => {
+          const request = JSON.parse(String(options.input)) as { name: string; args: Record<string, unknown> };
+          const value = await dispatchRecoveryTool(config, request.name, request.args, { recoverPrimaryRuntime: recover });
+          return {
+            status: 0,
+            signal: null,
+            timedOut: false,
+            stdout: JSON.stringify({ schemaVersion: 1, ok: true, value }),
+            stderr: '',
+            residualPids: [],
+            remainingPids: [],
+            pidReuseFenced: false,
+          };
+        },
+      });
+      const recoveryMcp = new RecoveryMcpServer({
+        tools: RECOVERY_TOOLS as unknown as Tool[],
+        dispatchTool: executeTool,
+      });
+      const recoveryServer = createServer((request, response) => { void recoveryMcp.handle(request, response); });
+      servers.push(recoveryServer);
+      await new Promise<void>((done, reject) => {
+        recoveryServer.once('error', reject);
+        recoveryServer.listen(0, '127.0.0.1', () => done());
+      });
+      const address = recoveryServer.address();
+      if (!address || typeof address === 'string') throw new Error('independent Recovery MCP test server unavailable');
+      const endpoint = `http://127.0.0.1:${address.port}/recovery/mcp`;
+      const headers = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+      const send = (body: Record<string, unknown>) => fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
+      const decode = async (response: Response) => {
+        const raw = await response.text();
+        const data = raw.split(/\r?\n/).find((line) => line.startsWith('data:'));
+        return JSON.parse(data ? data.slice(5).trim() : raw) as { result?: { structuredContent?: Record<string, unknown> } };
+      };
+
+      expect((await fetch(primary.endpoint)).status).toBe(503);
+      const initialized = await send({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'independent-recovery-test', version: '1' } },
+      });
+      expect(initialized.status).toBe(200);
+      expect((await decode(initialized)).result).toMatchObject({ serverInfo: { name: 'forge-standalone-recovery' } });
+      expect((await send({ jsonrpc: '2.0', method: 'notifications/initialized' })).status).toBe(202);
+
+      const recovered = await send({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'recover_primary_runtime',
+          arguments: {
+            request_id: 'recovery-primary-loss-20261117',
+            ...recoveryMutationIdentityArgs(config),
+          },
+        },
+      });
+      expect(recovered.status).toBe(200);
+      expect((await decode(recovered)).result?.structuredContent).toMatchObject({
+        ok: true,
+        attempted: true,
+        rollback: { ok: true },
+        identity: { controllerHome: resolve(home) },
+      });
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+      expect(commands.some((args) => args.includes('bootout'))).toBe(true);
+      expect(commands.some((args) => args.includes('kickstart'))).toBe(true);
+      expect((await fetch(primary.endpoint)).status).toBe(503);
+      await recoveryMcp.close();
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
     }
   });
 
