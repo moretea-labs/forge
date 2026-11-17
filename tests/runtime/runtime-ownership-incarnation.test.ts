@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+  terminateVerifiedRuntimeOwner,
   acquireRuntimeOwnership,
   inspectRuntimeOwnership,
   migrateRuntimeIncarnationProcessIdentity,
@@ -140,4 +141,48 @@ test('new incarnation preserves exact live process identity after the owner leas
   } finally {
     ownership.release();
   }
+});
+
+
+test('Recovery terminates an identity-verified incarnation after its owner lease disappears', async () => {
+  const home = createControllerHome('forge-runtime-incarnation-orphan-');
+  const child = Bun.spawn([process.execPath, '-e', 'setInterval(() => {}, 1000)'], { stdout: 'ignore', stderr: 'ignore' });
+  try {
+    const { defaultProcessIdentityProbe, executableFingerprint } = await import('../../src/runtime/shared/process-identity');
+    const start = defaultProcessIdentityProbe.startTime(child.pid);
+    const command = defaultProcessIdentityProbe.command(child.pid);
+    expect(start).toBeTruthy();
+    expect(command).toBeTruthy();
+    writeFileSync(runtimeIncarnationPath(home), JSON.stringify({
+      schemaVersion: 1, controllerHome: home, runtimeInstanceId: 'orphan',
+      pid: child.pid, fencingGeneration: 1, activatedAt: new Date().toISOString(),
+      processStartTime: start, executableFingerprint: executableFingerprint(command!),
+    }));
+    const result = await terminateVerifiedRuntimeOwner(home);
+    expect(result).toMatchObject({ ok: true, attempted: true });
+    await child.exited;
+    expect(reconcileStoppedRuntimeOwnership(home).ok).toBe(true);
+  } finally {
+    child.kill();
+    await child.exited;
+  }
+});
+
+
+test('orphan termination refuses legacy incarnation and changed OS identity', async () => {
+  const home = createControllerHome('forge-runtime-incarnation-refuse-');
+  const record = {
+    schemaVersion: 1, controllerHome: home, runtimeInstanceId: 'unverified',
+    pid: process.pid, fencingGeneration: 1, activatedAt: new Date().toISOString(),
+  };
+  writeFileSync(runtimeIncarnationPath(home), JSON.stringify(record));
+  expect(await terminateVerifiedRuntimeOwner(home)).toMatchObject({
+    ok: false, attempted: false, detail: 'RUNTIME_OWNER_IDENTITY_EVIDENCE_MISSING',
+  });
+  writeFileSync(runtimeIncarnationPath(home), JSON.stringify({
+    ...record, processStartTime: 'different process start', executableFingerprint: 'different executable',
+  }));
+  expect(await terminateVerifiedRuntimeOwner(home)).toMatchObject({
+    ok: false, attempted: false, detail: 'RUNTIME_OWNER_IDENTITY_CHANGED',
+  });
 });
