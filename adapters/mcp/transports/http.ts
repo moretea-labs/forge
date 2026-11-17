@@ -29,6 +29,9 @@ import { resolveControllerHome } from '../../../src/effects/controller-home';
 import { readRuntimeGeneration } from '../../../src/runtime/control-plane/runtime-generation';
 import { recordMcpTransportEvent } from '../../../src/runtime/diagnostics/mcp-timing';
 import { readRuntimeStatusSnapshot, runtimeStatusPath } from '../../../src/runtime/root/status';
+import { mcpSessionLookupError } from '../../../src/runtime/shared/mcp-session-errors';
+export { mcpSessionLookupError };
+export type { McpSessionLookupErrorResponse } from '../../../src/runtime/shared/mcp-session-errors';
 import {
   FORGE_MCP_SCHEMA_VERSION,
   FORGE_TOOL_SURFACE,
@@ -100,42 +103,6 @@ function initializeClientIdentity(req: Request, body: unknown, route: McpSession
     ? req.headers['user-agent'].trim().slice(0, 160)
     : 'unknown-agent';
   return `${principalId}|${route}|${clientName}/${clientVersion}|${userAgent}`;
-}
-
-export interface McpSessionLookupErrorResponse {
-  status: 400 | 404;
-  body: {
-    error: 'missing_session' | 'session_not_found';
-    code: 'MCP_SESSION_REQUIRED' | 'MCP_SESSION_EXPIRED';
-    message: string;
-    recoverable: true;
-    action: 'reinitialize';
-  };
-}
-
-export function mcpSessionLookupError(sessionId: string | undefined): McpSessionLookupErrorResponse {
-  if (!sessionId?.trim()) {
-    return {
-      status: 400,
-      body: {
-        error: 'missing_session',
-        code: 'MCP_SESSION_REQUIRED',
-        message: 'Mcp-Session-Id header is required for this request.',
-        recoverable: true,
-        action: 'reinitialize',
-      },
-    };
-  }
-  return {
-    status: 404,
-    body: {
-      error: 'session_not_found',
-      code: 'MCP_SESSION_EXPIRED',
-      message: 'MCP session not found or expired; initialize a new session.',
-      recoverable: true,
-      action: 'reinitialize',
-    },
-  };
 }
 
 export function sendMcpSessionLookupError(res: Response, sessionId: string | undefined): void {
