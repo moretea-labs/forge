@@ -1,3 +1,17 @@
+import { spawnSync } from 'child_process';
+import { existsSync } from 'fs';
+import { registerRepository } from '../../src/runtime/repositories/registry';
+import { processToolDefinitions } from '../../adapters/mcp/runtime-gateway/process-tools';
+import { mcpToolDefinitionToSdk } from '../../packages/protocols/mcp/tool-contract';
+import { routeDurableMcpCall } from '../../adapters/mcp/runtime-gateway/router';
+import { callProcessTool } from '../../src/runtime/execution/process-runtime/tool-dispatch';
+import { createCanonicalRuntimeProxy, createMcpToolContext, deriveCanonicalForwardingTiming } from '../../adapters/mcp/server';
+import { Server } from '@modelcontextprotocol/server';
+import { Client, SdkErrorCode, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { startRuntimeMcpTransport } from '../../src/runtime/root/mcp-transport';
+import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
+import express from 'express';
+import { drainMcpPosts, terminateReclaimedMcpPost } from '../../adapters/mcp/transports/http-post-lifecycle';
 import { describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'crypto';
 import { createServer } from 'net';
@@ -293,7 +307,7 @@ describe('mcp http transport', () => {
     expect(stats.activePostStartedAt.size).toBe(1);
     for (const entry of stalled) {
       expect(entry.statusCode()).toBe(504);
-      expect(entry.body()).toMatchObject({ code: 'MCP_ACTIVE_POST_STALLED', retryable: true });
+      expect(entry.body()).toMatchObject({ code: 'MCP_ACTIVE_POST_STALLED', retryable: false, action: 'reconcile', executionOutcome: 'unknown' });
     }
 
     // A streaming POST (for example subscriptions/listen) is retained within
@@ -1417,4 +1431,391 @@ describe('mcp http transport', () => {
       rmSync(repoRoot, { recursive: true, force: true });
     }
   });
+});
+
+test('shutdown preserves admitted HTTP response before closing transport', async () => {
+  const app = express();
+  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0 };
+  let release!: () => void;
+  let admitted!: () => void;
+  const admission = new Promise<void>(resolve => { admitted = resolve; });
+  let response: express.Response;
+  app.post('/mcp', (_req, res) => {
+    response = res;
+    admitMcpPost(stats, res);
+    release = () => res.json({ result: 'original-result' });
+    admitted();
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const result = fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST' }).then(r => r.json()).catch(() => null);
+    await admission;
+    let closed = false;
+    const draining = drainMcpPosts(stats, async () => { closed = true; response.destroy(); });
+    expect(closed).toBe(false);
+    release();
+    expect(await result).toEqual({ result: 'original-result' });
+    await draining;
+    expect(closed).toBe(true);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test('shutdown rejects unadmitted requests without consuming capacity', () => {
+  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0, draining: true };
+  let body: unknown;
+  let status: number;
+  const res = {
+    setHeader() {},
+    status(code: number) { status = code; return this; },
+    json(value: unknown) { body = value; },
+  } as unknown as express.Response;
+  expect(admitMcpPost(stats, res)).toBe(false);
+  expect(status!).toBe(503);
+  expect(body).toMatchObject({ code: 'MCP_GATEWAY_DRAINING', action: 'reconnect' });
+  expect(stats.activePostStartedAt.size).toBe(0);
+});
+
+test('shutdown deadline reports observation unknown before transport closes', async () => {
+  const app = express();
+  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0 };
+  let admitted!: () => void;
+  const admission = new Promise<void>(resolve => { admitted = resolve; });
+  let response!: express.Response;
+  app.post('/mcp', (_req, res) => {
+    response = res;
+    admitMcpPost(stats, res);
+    admitted();
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  try {
+    const port = (server.address() as { port: number }).port;
+    const result = fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST' });
+    await admission;
+    const draining = drainMcpPosts(stats, async () => { expect(response.writableFinished).toBe(true); }, 10);
+    const reply = await result;
+    expect(reply.status).toBe(503);
+    expect(await reply.json()).toMatchObject({ code: 'MCP_GATEWAY_SHUTDOWN_OUTCOME_UNKNOWN', retryable: false, action: 'reconcile' });
+    await draining;
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test('real Gateway SIGTERM drains admitted MCP tool result and rejects new requests', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-gateway-sigterm-'));
+  const controllerHome = join(root, 'controller');
+  const port = await freePort();
+  const token = 'isolated-shutdown-runtime-token';
+  mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+  writeFileSync(join(controllerHome, 'mcp', 'runtime-token'), token);
+  let admitted!: () => void;
+  let release!: () => void;
+  const admission = new Promise<void>(resolve => { admitted = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const readiness = { ready: true, reasonCodes: [], observedAt: new Date().toISOString(), diagnostics: { database: { outcome: 'pass' as const }, scheduler: { outcome: 'pass' as const }, releaseCoherence: { outcome: 'pass' as const }, mcpEndToEnd: { outcome: 'pass' as const } } };
+  const runtime = await startRuntimeMcpTransport({
+    host: '127.0.0.1', port: 0, authToken: token, readiness: () => readiness,
+    createServer: () => {
+      const server = new Server({ name: 'shutdown-fixture', version: '1' }, { capabilities: { tools: {} } });
+      server.setRequestHandler('tools/list', async () => ({ tools: [{ name: 'controller_ready', inputSchema: { type: 'object' as const } }] }));
+      server.setRequestHandler('tools/call', async () => {
+        admitted();
+        await gate;
+        return { content: [{ type: 'text' as const, text: 'original-read-result' }] };
+      });
+      return server;
+    },
+  });
+  const now = new Date().toISOString();
+  writeRuntimeStatusSnapshot(controllerHome, {
+    schemaVersion: 1, runtimeInstanceId: 'shutdown-fixture', pid: process.pid,
+    releaseId: 'shutdown-fixture', artifactIdentity: 'shutdown-fixture',
+    endpoint: runtime.endpoint, readiness, startedAt: now, updatedAt: now,
+  });
+  const proc = Bun.spawn(['bun', '-e', `import { startMcpHttp } from './adapters/mcp/transports/http'; await startMcpHttp({host:'127.0.0.1',port:${port},profile:'controller',auth:'none'});`], {
+    cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome),
+  });
+  const client = new Client({ name: 'shutdown-client', version: '1' }, { capabilities: {} });
+  try {
+    try { await waitForHealth(port); } catch (error) {
+      if (proc.exitCode !== null) throw new Error(await new Response(proc.stderr).text());
+      throw error;
+    }
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+    const result = client.callTool({ name: 'controller_ready', arguments: {} });
+    await admission;
+    proc.kill('SIGTERM');
+    // Health is still served during drain; synchronize on explicit admission refusal.
+    let rejected = false;
+    for (let i = 0; i < 40; i++) {
+      const response = await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      const body = await response.json() as { code?: string };
+      if (body.code === 'MCP_GATEWAY_DRAINING') { rejected = true; break; }
+      await Bun.sleep(5);
+    }
+    expect(rejected).toBe(true);
+    release();
+    expect((await result).content).toEqual([{ type: 'text', text: 'original-read-result' }]);
+    expect(await proc.exited).toBe(0);
+  } finally {
+    release();
+    await client.close();
+    if (proc.exitCode === null) { proc.kill('SIGKILL'); await proc.exited; }
+    await runtime.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test('retired Runtime sockets cannot initialize sessions after same-endpoint replacement', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-runtime-retired-sockets-'));
+  const token = 'retired-socket-fixture';
+  mkdirSync(join(root, 'mcp'), { recursive: true });
+  writeFileSync(join(root, 'mcp', 'runtime-token'), token);
+  const context = createMcpToolContext({ controllerHome: root, profile: 'controller' });
+  if (!('controllerHome' in context)) throw new Error('controller context required');
+  const previousLaneLimit = process.env.FORGE_CANONICAL_RUNTIME_PROXY_LANES;
+  process.env.FORGE_CANONICAL_RUNTIME_PROXY_LANES = '1';
+  const proxy = createCanonicalRuntimeProxy(context);
+  if (previousLaneLimit === undefined) delete process.env.FORGE_CANONICAL_RUNTIME_PROXY_LANES;
+  else process.env.FORGE_CANONICAL_RUNTIME_PROXY_LANES = previousLaneLimit;
+  let admitted!: () => void;
+  let release!: () => void;
+  const admission = new Promise<void>(resolve => { admitted = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const readiness = { ready: true, reasonCodes: [], observedAt: new Date().toISOString(), diagnostics: { database: { outcome: 'pass' as const }, scheduler: { outcome: 'pass' as const }, releaseCoherence: { outcome: 'pass' as const }, mcpEndToEnd: { outcome: 'pass' as const } } };
+  const start = async (port: number, generation: string) => {
+    const transport = await startRuntimeMcpTransport({
+      host: '127.0.0.1', port, authToken: token, readiness: () => readiness,
+      createServer: () => {
+        const server = new Server({ name: generation, version: '1' }, { capabilities: { tools: {} } });
+        server.setRequestHandler('tools/list', async () => ({ tools: [] }));
+        server.setRequestHandler('tools/call', async request => {
+          if (request.params.arguments?.block) { admitted(); await gate; }
+          return { content: [{ type: 'text' as const, text: generation }], structuredContent: { responseMeta: { traceId: '30a0144f-1c29-4b01-8a4a-c34a36b197a5' } } };
+        });
+        return server;
+      },
+    });
+    const now = new Date().toISOString();
+    writeRuntimeStatusSnapshot(root, {
+      schemaVersion: 1, runtimeInstanceId: generation, pid: process.pid,
+      releaseId: generation, artifactIdentity: generation, endpoint: transport.endpoint,
+      readiness, startedAt: now, updatedAt: now,
+    });
+    return transport;
+  };
+  let runtime = await start(0, 'first');
+  try {
+    expect((await proxy.callTool(context, 'controller_ready', {})).content).toEqual([{ type: 'text', text: 'first' }]);
+    const blocking = proxy.callTool(context, 'controller_ready', { block: true });
+    await admission;
+    const timing: NonNullable<Parameters<typeof proxy.callTool>[3]> = {};
+    const queued = proxy.callTool(context, 'controller_ready', {}, timing);
+    await Bun.sleep(50);
+    release();
+    await Promise.all([blocking, queued]);
+    expect(timing.gatewayProxyLaneWaitMs).toBeGreaterThanOrEqual(30);
+    expect(timing.gatewayProxyHandoffWaitMs).toBeLessThan(timing.gatewayProxyLaneWaitMs!);
+    const port = runtime.port;
+    await runtime.close();
+    runtime = await start(port, 'replacement');
+    const replacementTiming: NonNullable<Parameters<typeof proxy.callTool>[3]> = {};
+    expect((await proxy.callTool(context, 'controller_ready', {}, replacementTiming)).content).toEqual([{ type: 'text', text: 'replacement' }]);
+    expect(replacementTiming.gatewayProxyCanonicalTraceId).toBe('30a0144f-1c29-4b01-8a4a-c34a36b197a5');
+    expect(runtime.sessionSnapshot?.().active).toBe(1);
+  } finally {
+    release();
+    await proxy.close();
+    await runtime.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 10_000);
+
+
+test('Gateway transport failures cannot authorize replay of an admitted mutation', () => {
+  for (const reason of ['HTTP 502', 'ECONNRESET', 'ETIMEDOUT', 'CANONICAL_RUNTIME_TIMEOUT', 'unexpected transport EOF']) {
+    expect(mcpRequestError(new Error(reason)).body).toMatchObject({
+      recoverable: true, retryable: false, action: 'reconcile', executionOutcome: 'unknown',
+    });
+  }
+});
+
+
+test('stalled admitted HTTP observation reports unknown while original execution completes', async () => {
+  const app = express();
+  let executions = 0;
+  let completed!: () => void;
+  const execution = new Promise<void>(resolve => { completed = resolve; });
+  app.post('/mcp', (_req, res) => {
+    executions += 1;
+    setTimeout(completed, 10);
+    terminateReclaimedMcpPost(res);
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  try {
+    const port = (server.address() as { port: number }).port;
+    const response = await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST' });
+    expect(response.status).toBe(504);
+    expect(await response.json()).toMatchObject({ executionOutcome: 'unknown', retryable: false, action: 'reconcile' });
+    await execution;
+    expect(executions).toBe(1);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+for (const loseReceipt of [false, true]) {
+test(`durable Process survives real Gateway process replacement (lost receipt=${loseReceipt})`, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-durable-gateway-replacement-'));
+  const controllerHome = join(root, 'controller');
+  const repoRoot = join(root, 'repo');
+  mkdirSync(join(repoRoot, '.forge'), { recursive: true });
+  for (const args of [['init', '-b', 'main'], ['config', 'user.name', 'Gateway Test'], ['config', 'user.email', 'gateway@example.test']]) {
+    const result = spawnSync('git', args, { cwd: repoRoot });
+    if (result.status !== 0) throw new Error(result.stderr.toString());
+  }
+  writeFileSync(join(repoRoot, 'README.md'), 'Gateway replacement fixture\n');
+  for (const args of [['add', 'README.md'], ['commit', '-m', 'fixture']]) {
+    const result = spawnSync('git', args, { cwd: repoRoot });
+    if (result.status !== 0) throw new Error(result.stderr.toString());
+  }
+  const gate = join(root, 'release-process');
+  const marker = join(root, 'effects');
+  writeFileSync(join(repoRoot, '.forge', 'checks.json'), JSON.stringify({ version: 1, checks: {
+    survival: {
+      description: 'Gateway-independent durable execution',
+      command: [process.execPath, '-e', `const fs=require('node:fs'); const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(gate)})){clearInterval(timer);fs.appendFileSync(${JSON.stringify(marker)},'1');console.log('completed');}},20);`],
+      timeoutMs: 15_000,
+    },
+  } }));
+  const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+  const context = { ...createMcpToolContext({ controllerHome, profile: 'controller', repo: repoRoot }),
+    principalId: 'gateway-replacement-fixture', sessionId: 'runtime-fixture', controllerInstanceId: 'runtime-fixture', controllerType: 'chatgpt' as const };
+  const definitions = processToolDefinitions.filter(tool => ['run_check', 'process_get', 'process_wait'].includes(tool.name));
+  const readiness = { ready: true, reasonCodes: [], observedAt: new Date().toISOString(), diagnostics: { database: { outcome: 'pass' as const }, scheduler: { outcome: 'pass' as const }, releaseCoherence: { outcome: 'pass' as const }, mcpEndToEnd: { outcome: 'pass' as const } } };
+  let processId: string | undefined;
+  let firstSubmission = true;
+  let accepted!: () => void;
+  let releaseReceipt!: () => void;
+  const admission = new Promise<void>(resolve => { accepted = resolve; });
+  const receiptGate = new Promise<void>(resolve => { releaseReceipt = resolve; });
+  const token = 'gateway-replacement-fixture-token';
+  mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+  writeFileSync(join(controllerHome, 'mcp', 'runtime-token'), token);
+  const runtime = await startRuntimeMcpTransport({
+    host: '127.0.0.1', port: 0, authToken: token, readiness: () => readiness,
+    createServer: () => {
+      const server = new Server({ name: 'durable-runtime-fixture', version: '1' }, { capabilities: { tools: {} } });
+      server.setRequestHandler('tools/list', async () => ({ tools: definitions.map(mcpToolDefinitionToSdk) }));
+      server.setRequestHandler('tools/call', async request => {
+        const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+        const result = request.params.name === 'run_check'
+          ? await routeDurableMcpCall(context, request.params.name, args)
+          : await callProcessTool(context, request.params.name, args);
+        if (!result) throw new Error('unhandled fixture tool');
+        if (request.params.name === 'run_check' && firstSubmission) {
+          firstSubmission = false;
+          processId = String((result.structuredContent as Record<string, unknown>).processId);
+          accepted();
+          if (loseReceipt) await receiptGate;
+        }
+        return result;
+      });
+      return server;
+    },
+  });
+  const now = new Date().toISOString();
+  writeRuntimeStatusSnapshot(controllerHome, { schemaVersion: 1, runtimeInstanceId: 'durable-runtime-fixture', pid: process.pid,
+    releaseId: 'durable-runtime-fixture', artifactIdentity: 'durable-runtime-fixture', endpoint: runtime.endpoint,
+    readiness, startedAt: now, updatedAt: now });
+  const port = await freePort();
+  const gateways: Bun.Subprocess<'ignore', 'ignore', 'pipe'>[] = [];
+  const clients: Client[] = [];
+  const connect = async () => {
+    const proc = Bun.spawn(['bun', '-e', `import { startMcpHttp } from './adapters/mcp/transports/http';await startMcpHttp({host:'127.0.0.1',port:${port},profile:'controller',auth:'none'});`], {
+      cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome),
+    });
+    gateways.push(proc);
+    await waitForHealth(port);
+    const client = new Client({ name: 'durable-gateway-client', version: '1' }, { capabilities: {} });
+    clients.push(client);
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+    return { proc, client };
+  };
+  const args = { repo_id: repository.repoId, check_id: 'survival', request_id: 'gateway-replacement-original', interactive_wait_ms: 25 };
+  try {
+    const first = await connect();
+    if (loseReceipt) {
+      // Inject a caller observation deadline; it never changes Process execution.
+      const observation = first.client.callTool({ name: 'run_check', arguments: args }, { timeout: 1_000 }).then(
+        result => ({ result, failed: false, error: undefined }),
+        error => ({ failed: true, error }),
+      );
+      await admission;
+      first.proc.kill('SIGKILL');
+      await first.proc.exited;
+      releaseReceipt();
+      const lost = await observation;
+      expect(lost.failed).toBe(true);
+      expect(lost.error).toMatchObject({ code: SdkErrorCode.RequestTimeout });
+    } else {
+      const started = await first.client.callTool({ name: 'run_check', arguments: args });
+      expect(started.isError).not.toBe(true);
+      expect(started.structuredContent).toMatchObject({ path: 'process_managed', completed: false, processId });
+      first.proc.kill('SIGTERM');
+      expect(await first.proc.exited).toBe(0);
+    }
+    expect(processId).toBeTruthy();
+    expect(existsSync(marker)).toBe(false);
+    await first.client.close();
+
+    const second = await connect();
+    expect(second.proc.pid).not.toBe(first.proc.pid);
+    // Recover by the caller's original key even when no Process ID reached it.
+    const reconciled = await second.client.callTool({ name: 'run_check', arguments: args });
+    expect(reconciled.isError).not.toBe(true);
+    expect(reconciled.structuredContent).toMatchObject({ processId });
+    const recoveredProcessId = String((reconciled.structuredContent as Record<string, unknown>).processId);
+    const running = await second.client.callTool({ name: 'process_get', arguments: { repo_id: repository.repoId, process_id: recoveredProcessId } });
+    expect(running.structuredContent).toMatchObject({ process: { processId, status: 'running', completed: false } });
+    writeFileSync(gate, 'release');
+    const terminal = await second.client.callTool({ name: 'process_wait', arguments: { repo_id: repository.repoId, process_id: processId, timeout_ms: 10_000 } });
+    expect(terminal.structuredContent).toMatchObject({ synchronization: 'terminal_result_available', process: { processId, completed: true, ok: true } });
+    const replayed = await second.client.callTool({ name: 'run_check', arguments: args });
+    expect(replayed.structuredContent).toMatchObject({ processId });
+    expect(readFileSync(marker, 'utf8')).toBe('1');
+  } finally {
+    releaseReceipt();
+    writeFileSync(gate, 'release');
+    if (processId) await callProcessTool(context, 'process_wait', { repo_id: repository.repoId, process_id: processId, timeout_ms: 5_000 }).catch(() => undefined);
+    for (const client of clients) await client.close().catch(() => undefined);
+    for (const proc of gateways) {
+      if (proc.exitCode === null) { proc.kill('SIGKILL'); await proc.exited; }
+    }
+    await runtime.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 20_000);
+}
+
+
+test('proxy audit correlation retains Canonical trace identity without requiring timing fields', () => {
+  const traceId = '30a0144f-1c29-4b01-8a4a-c34a36b197a5';
+  expect(deriveCanonicalForwardingTiming({
+    gatewayCallStartedAtMs: 0, gatewayCallDurationMs: 5,
+    response: { content: [], structuredContent: { responseMeta: { traceId } } },
+  })).toEqual({ gatewayProxyCanonicalTraceId: traceId });
+  expect(deriveCanonicalForwardingTiming({
+    gatewayCallStartedAtMs: 0, gatewayCallDurationMs: 5,
+    response: { content: [], structuredContent: { responseMeta: { traceId: 'untrusted arbitrary data' } } },
+  })).toEqual({});
 });

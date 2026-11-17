@@ -7,7 +7,7 @@ import { result } from "./result-adapter";
 import { boundedRuntimeResult } from "./bounded-result-runtime";
 import { selected } from "./shared-adapter";
 import { resolveMcpPath } from "../../../src/runtime/safe-tooling/path-policy";
-import { freshGitIdentity } from "../../../src/runtime/repositories/inspector";
+import { freshGitIdentityAsync, type CachedGitIdentity } from "../../../src/runtime/repositories/inspector";
 import { repositorySummary, resolveRepositorySelection } from "../../../src/runtime/repositories/registry";
 import { getExecutionJob, listExecutionJobs } from "../../../src/runtime/execution/jobs/store";
 import { isManagedProcessActive, listProcessRecords, listRecoverableProcessRecords, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
@@ -293,13 +293,13 @@ async function rhContextSemanticNavigation(
     .digest('hex')
     .slice(0, 20);
 
-  const fingerprintOf = (identity: ReturnType<typeof freshGitIdentity> | undefined): string | undefined => identity
+  const fingerprintOf = (identity: CachedGitIdentity | undefined): string | undefined => identity
     ? identity.workingTreeFingerprint
       ?? createHash('sha256').update(`${identity.head ?? ''}\n${identity.branch ?? ''}`).digest('hex').slice(0, 24)
     : undefined;
   // Semantic providers are targeted/optional, so pay the stronger fresh identity
   // sampling cost only when semantic evidence was explicitly requested.
-  const sourceBefore = requests.length > 0 ? freshGitIdentity(repoRoot) : undefined;
+  const sourceBefore = requests.length > 0 ? await freshGitIdentityAsync(repoRoot) : undefined;
   const sourceFingerprintBefore = fingerprintOf(sourceBefore);
   const indexedRequests: Array<{ index: number; request: SemanticNavigationRequest }> = [];
 
@@ -405,7 +405,7 @@ async function rhContextSemanticNavigation(
       || Number(leftTarget?.column ?? 0) - Number(rightTarget?.column ?? 0);
   });
 
-  const sourceAfter = requests.length > 0 ? freshGitIdentity(repoRoot) : undefined;
+  const sourceAfter = requests.length > 0 ? await freshGitIdentityAsync(repoRoot) : undefined;
   const sourceFingerprintAfter = fingerprintOf(sourceAfter);
   const sourceChangedDuringQuery = Boolean(
     sourceBefore
@@ -982,7 +982,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       ? currentAttentionScan.filter((item) => item.workId === work.workId)
       : [];
     const workAttention = workAttentionItems[0];
-    const resumeContext = work ? (() => {
+    const resumeContext = work ? await (async () => {
       const semanticWork = workSemanticView(work);
       const requirementRecord = work.requirementId?.trim()
         ? readRequirement({ controllerHome: ctx.controllerHome }, work.requirementId.trim())
@@ -993,7 +993,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       const exactCheckout = work.checkoutId?.trim()
         ? repository.checkouts.find((candidate) => candidate.checkoutId === work.checkoutId)
         : repository.checkouts.find((candidate) => candidate.checkoutId === repository.activeCheckoutId);
-      const source = freshGitIdentity(exactCheckout?.canonicalRoot ?? repository.canonicalRoot);
+      const source = await freshGitIdentityAsync(exactCheckout?.canonicalRoot ?? repository.canonicalRoot);
       const unresolvedHumanRequests = workAttentionItems
         .filter((item) => Boolean(item.creationReason && RESUME_CONTEXT_HUMAN_REQUEST_REASONS.has(item.creationReason)))
         .slice(0, 8)
