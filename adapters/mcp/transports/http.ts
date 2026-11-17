@@ -351,6 +351,11 @@ const MAX_ACTIVE_POSTS = positiveIntegerEnv('FORGE_MCP_MAX_ACTIVE_POSTS', 32);
 const MCP_SESSION_IDLE_TTL_MS = positiveIntegerEnv('FORGE_MCP_SESSION_IDLE_TTL_MS', 15 * 60_000);
 const MCP_STREAM_LEASE_MS = positiveIntegerEnv('FORGE_MCP_STREAM_LEASE_MS', 30 * 60_000);
 const MCP_SESSION_ABSOLUTE_LIFETIME_MS = positiveIntegerEnv('FORGE_MCP_SESSION_ABSOLUTE_LIFETIME_MS', 2 * 60 * 60_000);
+// Expiry observation stays within a bounded fraction of the shortest configured session lifetime.
+const MCP_SESSION_PRUNE_INTERVAL_MS = Math.max(
+  25,
+  Math.min(60_000, Math.floor(Math.min(MCP_SESSION_IDLE_TTL_MS, MCP_STREAM_LEASE_MS, MCP_SESSION_ABSOLUTE_LIFETIME_MS) / 4)),
+);
 const MCP_ACTIVE_POST_STALL_MS = positiveIntegerEnv('FORGE_MCP_ACTIVE_POST_STALL_MS', 10 * 60_000);
 
 function sendMcpGatewayDraining(res: Response): void {
@@ -955,7 +960,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     // A client that disconnects before the response settles may never produce a
     // terminal event (Bun), so admission slots also need a time-bounded sweep.
     reconcileRuntimeMcpPosts(runtimeStats);
-  }, 60_000);
+  }, MCP_SESSION_PRUNE_INTERVAL_MS);
   cleanupTimer.unref();
 
   const httpServer = app.listen(port, host);

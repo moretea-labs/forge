@@ -28,6 +28,7 @@ import { admitMcpPost, createMcpHttpSessionRegistry, mcpRequestError } from '../
 import { recentMcpTransportEvidence } from '../../adapters/mcp/transports/http-observation';
 import { flushMcpDiagnostics, readRecentMcpTransportEvents, recordMcpTransportEvent } from '../../src/runtime/diagnostics/mcp-timing';
 import { readExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
+import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import {
   armPackageConnectorCutoverDrain,
   clearPackageConnectorCutoverDrain,
@@ -737,6 +738,18 @@ describe('mcp http transport', () => {
         const closedStreamHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
         expect(closedStreamHealth.sessions.activeStreams).toBe(0);
 
+        // A tunnel/SSE stream interruption must not retire the MCP session.
+        const tunnelReconnectedTools = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-session-id': sessionId! },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'tunnel-reconnected-tools', method: 'tools/list' }),
+        });
+        expect(tunnelReconnectedTools.status).toBe(200);
+        const tunnelToolsText = await tunnelReconnectedTools.text();
+        const tunnelToolsData = tunnelToolsText.split(/\r?\n/).find((line) => line.startsWith('data:'));
+        const tunnelToolsBody = JSON.parse(tunnelToolsData ? tunnelToolsData.slice(5).trim() : tunnelToolsText) as { result?: { tools?: unknown[] } };
+        expect(tunnelToolsBody.result?.tools?.length).toBeGreaterThan(0);
+
         const deleted = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'DELETE',
           headers: {
@@ -745,8 +758,18 @@ describe('mcp http transport', () => {
           },
         });
         expect(deleted.status).toBe(200);
-        await Bun.sleep(25);
-        const deletedHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
+        let deletedHealth: { sessions?: unknown; transportEvidence?: { lastSessionClose?: { reason?: string } | null } } | undefined;
+        const closeDeadline = Date.now() + 2_000;
+        while (Date.now() < closeDeadline) {
+          deletedHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
+          if (deletedHealth?.transportEvidence?.lastSessionClose?.reason === 'client_delete') break;
+          await Bun.sleep(25);
+        }
+        if (!deletedHealth || deletedHealth.transportEvidence?.lastSessionClose?.reason !== 'client_delete') {
+          throw new Error('durable session-close evidence was not recorded after DELETE');
+        }
+        const lastSessionClose = deletedHealth.transportEvidence.lastSessionClose;
+        if (!lastSessionClose) throw new Error('last session-close evidence is missing');
         expect(deletedHealth.sessions).toMatchObject({
           active: 0,
           capacityAvailable: 64,
@@ -754,7 +777,7 @@ describe('mcp http transport', () => {
           closed: { clientDelete: 1 },
           lastClosed: { reason: 'client_delete', route: '/mcp', closedAt: expect.any(String) },
         });
-        expect(deletedHealth.transportEvidence.lastSessionClose).toMatchObject({
+        expect(lastSessionClose).toMatchObject({
           kind: 'session_closed',
           sessionId,
           reason: 'client_delete',
@@ -814,6 +837,254 @@ describe('mcp http transport', () => {
           headers: { authorization: `Bearer ${token}`, 'mcp-session-id': reinitializedSessionId! },
         });
         expect(reinitializedDelete.status).toBe(200);
+      });
+    } finally {
+      await stopMcpServerProcess(proc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('reinitializes over HTTP after idle TTL, stream lease and absolute lifetime expiry', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-session-expiry-matrix-'));
+    const port = await freePort();
+    let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
+        const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
+        proc = Bun.spawn(
+          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'planner', '--auth', 'bearer'],
+          {
+            cwd: process.cwd(),
+            stdout: 'ignore',
+            stderr: 'pipe',
+            env: isolatedMcpProcessEnv(controllerHome, {
+              FORGE_MCP_SESSION_IDLE_TTL_MS: '400',
+              FORGE_MCP_STREAM_LEASE_MS: '1000',
+              FORGE_MCP_SESSION_ABSOLUTE_LIFETIME_MS: '2200',
+            }),
+          },
+        );
+        await waitForHealth(port);
+        const endpoint = 'http://127.0.0.1:' + port + '/mcp';
+        const headers = { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+        const post = (body: Record<string, unknown>, sessionId?: string) => fetch(endpoint, {
+          method: 'POST',
+          headers: { ...headers, ...(sessionId ? { 'mcp-session-id': sessionId } : {}) },
+          body: JSON.stringify(body),
+        });
+        const initialize = async (clientName: string) => {
+          const response = await post(JSON.parse(initializeBody(clientName)) as Record<string, unknown>);
+          expect(response.status).toBe(200);
+          const sessionId = response.headers.get('mcp-session-id');
+          expect(sessionId).toBeTruthy();
+          await response.text();
+          return sessionId!;
+        };
+        const toolsList = async (sessionId: string) => {
+          const response = await post({ jsonrpc: '2.0', id: 'tools-' + sessionId, method: 'tools/list' }, sessionId);
+          expect(response.status).toBe(200);
+          const raw = await response.text();
+          const data = raw.split(/\r?\n/).find((line) => line.startsWith('data:'));
+          const payload = JSON.parse(data ? data.slice(5).trim() : raw) as { result?: { tools?: unknown[] } };
+          expect(Array.isArray(payload.result?.tools)).toBe(true);
+          expect(payload.result?.tools?.length).toBeGreaterThan(0);
+        };
+        const expectReset = async (sessionId: string) => {
+          const response = await post({ jsonrpc: '2.0', id: 'expired-' + sessionId, method: 'ping' }, sessionId);
+          expect(response.status).toBe(404);
+          expect(response.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
+          expect(response.headers.get('x-forge-session-reset')).toBe('reinitialize');
+          expect(await response.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+        };
+        const waitForClose = async (counter: 'idleTtl' | 'streamLease' | 'absoluteLifetime') => {
+          const deadline = Date.now() + 5_000;
+          let latest: { sessions?: { closed?: Record<string, number> } } = {};
+          while (Date.now() < deadline) {
+            latest = await fetch('http://127.0.0.1:' + port + '/health').then((response) => response.json());
+            if ((latest.sessions?.closed?.[counter] ?? 0) >= 1) return;
+            await Bun.sleep(25);
+          }
+          throw new Error('session was not retired by ' + counter + ': ' + JSON.stringify(latest.sessions?.closed));
+        };
+        const reinitializeAndVerify = async (clientName: string) => {
+          const nextSession = await initialize(clientName);
+          await toolsList(nextSession);
+          const deleted = await fetch(endpoint, { method: 'DELETE', headers: { authorization: 'Bearer ' + token, 'mcp-session-id': nextSession } });
+          expect(deleted.status).toBe(200);
+        };
+
+        const idleSession = await initialize('idle-ttl-client');
+        await waitForClose('idleTtl');
+        await expectReset(idleSession);
+        await reinitializeAndVerify('idle-ttl-reconnected');
+
+        const leasedSession = await initialize('stream-lease-client');
+        const streamController = new AbortController();
+        const stream = await fetch(endpoint, {
+          headers: { authorization: 'Bearer ' + token, 'mcp-session-id': leasedSession, accept: 'text/event-stream' },
+          signal: streamController.signal,
+        });
+        expect(stream.status).toBe(200);
+        await waitForClose('streamLease');
+        streamController.abort();
+        await stream.body?.cancel().catch(() => undefined);
+        await expectReset(leasedSession);
+        await reinitializeAndVerify('stream-lease-reconnected');
+
+        const absoluteSession = await initialize('absolute-lifetime-client');
+        const absoluteDeadline = Date.now() + 2_500;
+        while (Date.now() < absoluteDeadline) {
+          const response = await post({ jsonrpc: '2.0', id: 'keepalive-' + Date.now(), method: 'tools/list' }, absoluteSession);
+          if (response.status === 404) { await response.body?.cancel(); break; }
+          expect(response.status).toBe(200);
+          await response.body?.cancel();
+          await Bun.sleep(100);
+        }
+        await waitForClose('absoluteLifetime');
+        await expectReset(absoluteSession);
+        await reinitializeAndVerify('absolute-lifetime-reconnected');
+      });
+    } finally {
+      await stopMcpServerProcess(proc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('reinitializes the same Controller Gateway after its process restarts', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-gateway-restart-'));
+    const port = await freePort();
+    let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
+        const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
+        const startGateway = () => Bun.spawn(
+          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'planner', '--auth', 'bearer'],
+          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
+        );
+        const endpoint = 'http://127.0.0.1:' + port + '/mcp';
+        const headers = { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+        const initialize = async (clientName: string) => {
+          const response = await fetch(endpoint, { method: 'POST', headers, body: initializeBody(clientName) });
+          expect(response.status).toBe(200);
+          const sessionId = response.headers.get('mcp-session-id');
+          expect(sessionId).toBeTruthy();
+          await response.text();
+          return sessionId!;
+        };
+        const toolsList = async (sessionId: string) => {
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { ...headers, 'mcp-session-id': sessionId },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 'gateway-restarted-tools', method: 'tools/list' }),
+          });
+          expect(response.status).toBe(200);
+          const raw = await response.text();
+          const data = raw.split(/\r?\n/).find((line) => line.startsWith('data:'));
+          const payload = JSON.parse(data ? data.slice(5).trim() : raw) as { result?: { tools?: unknown[] } };
+          expect(payload.result?.tools?.length).toBeGreaterThan(0);
+        };
+
+        proc = startGateway();
+        await waitForHealth(port);
+        const oldSessionId = await initialize('gateway-before-restart');
+        await stopMcpServerProcess(proc);
+        proc = null;
+
+        proc = startGateway();
+        await waitForHealth(port);
+        const expired = await fetch(endpoint, {
+          method: 'POST',
+          headers: { ...headers, 'mcp-session-id': oldSessionId },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'old-gateway-session', method: 'ping' }),
+        });
+        expect(expired.status).toBe(404);
+        expect(expired.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
+        expect(expired.headers.get('x-forge-session-reset')).toBe('reinitialize');
+        expect(await expired.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+
+        const newSessionId = await initialize('gateway-after-restart');
+        expect(newSessionId).not.toBe(oldSessionId);
+        await toolsList(newSessionId);
+        const deleted = await fetch(endpoint, { method: 'DELETE', headers: { authorization: 'Bearer ' + token, 'mcp-session-id': newSessionId } });
+        expect(deleted.status).toBe(200);
+      });
+    } finally {
+      await stopMcpServerProcess(proc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps the existing transport session usable when Runtime identity changes', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-runtime-restart-session-'));
+    const port = await freePort();
+    let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
+        const now = new Date().toISOString();
+        const snapshot = (runtimeInstanceId: string, pid: number, toolSurfaceFingerprint: string) => ({
+          schemaVersion: 1 as const,
+          runtimeInstanceId,
+          pid,
+          releaseId: runtimeInstanceId,
+          artifactIdentity: runtimeInstanceId,
+          toolSurfaceFingerprint,
+          readiness: {
+            ready: true,
+            reasonCodes: [],
+            diagnostics: {
+              database: { outcome: 'pass' as const },
+              scheduler: { outcome: 'pass' as const },
+              releaseCoherence: { outcome: 'pass' as const },
+              mcpEndToEnd: { outcome: 'pass' as const },
+            },
+            observedAt: now,
+          },
+          startedAt: now,
+          updatedAt: now,
+        });
+        writeRuntimeStatusSnapshot(controllerHome, snapshot('runtime-before-restart', process.pid, 'surface-before'));
+        const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
+        proc = Bun.spawn(
+          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'planner', '--auth', 'bearer'],
+          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
+        );
+        await waitForHealth(port);
+        const endpoint = 'http://127.0.0.1:' + port + '/mcp';
+        const headers = { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+        const initialized = await fetch(endpoint, { method: 'POST', headers, body: initializeBody('runtime-restart-session') });
+        expect(initialized.status).toBe(200);
+        const sessionId = initialized.headers.get('mcp-session-id');
+        expect(sessionId).toBeTruthy();
+        await initialized.text();
+
+        const toolsList = async () => {
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { ...headers, 'mcp-session-id': sessionId! },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 'runtime-restart-tools', method: 'tools/list' }),
+          });
+          expect(response.status).toBe(200);
+          const raw = await response.text();
+          const data = raw.split(/\r?\n/).find((line) => line.startsWith('data:'));
+          const payload = JSON.parse(data ? data.slice(5).trim() : raw) as { result?: { tools?: unknown[] } };
+          expect(payload.result?.tools?.length).toBeGreaterThan(0);
+        };
+
+        await toolsList();
+        writeRuntimeStatusSnapshot(controllerHome, snapshot('runtime-after-restart', process.pid + 1, 'surface-after'));
+        await Bun.sleep(100);
+        await toolsList();
+        const health = await fetch('http://127.0.0.1:' + port + '/health').then((response) => response.json());
+        expect(health.sessions.active).toBe(1);
       });
     } finally {
       await stopMcpServerProcess(proc);
@@ -1003,6 +1274,22 @@ describe('mcp http transport', () => {
           body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
         });
         expect(evicted.status).toBe(404);
+        expect(evicted.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
+        expect(evicted.headers.get('x-forge-session-reset')).toBe('reinitialize');
+        expect(await evicted.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+
+        const reconnectedSessionId = await initialize('/mcp', 'client-a-after-capacity-eviction');
+        expect(reconnectedSessionId).not.toBe(oldestSessionId);
+        const reconnectedTools = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-session-id': reconnectedSessionId },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'capacity-reconnected-tools', method: 'tools/list' }),
+        });
+        expect(reconnectedTools.status).toBe(200);
+        const reconnectedToolsText = await reconnectedTools.text();
+        const reconnectedToolsData = reconnectedToolsText.split(/\r?\n/).find((line) => line.startsWith('data:'));
+        const reconnectedToolsBody = JSON.parse(reconnectedToolsData ? reconnectedToolsData.slice(5).trim() : reconnectedToolsText) as { result?: { tools?: unknown[] } };
+        expect(reconnectedToolsBody.result?.tools?.length).toBeGreaterThan(0);
       });
     } finally {
       await stopMcpServerProcess(proc);
