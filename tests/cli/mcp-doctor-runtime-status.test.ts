@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } 
 import { tmpdir } from "os";
 import { join } from "path";
 import { runMcpDoctor } from "../../adapters/mcp/setup";
+import { mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath } from "../../adapters/mcp/auth";
 import type { RuntimeStatusSnapshot } from "../../src/runtime/root/types";
 
 function makeFixture(): { repoDir: string; controllerHome: string } {
@@ -136,6 +137,40 @@ describe("forge mcp doctor runtime status", () => {
       if (previousControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
       else process.env.FORGE_CONTROLLER_HOME = previousControllerHome;
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("reports Controller Home credential presence without exposing values or claiming ownership of Secure Tunnel secrets", () => {
+    const { repoDir, controllerHome } = makeFixture();
+    const oauthSecret = "synthetic-oauth-secret-value";
+    const bearerSecret = "synthetic-bearer-secret-value";
+    try {
+      mkdirSync(join(controllerHome, "mcp"), { recursive: true });
+      writeFileSync(mcpControllerHomeOAuthPath(controllerHome), oauthSecret);
+      writeFileSync(mcpControllerHomeTokenPath(controllerHome), bearerSecret);
+      const result = withControllerHome(controllerHome, () => runMcpDoctor({ repo: repoDir, json: true }));
+      const report = JSON.parse(result.lines[0] ?? "{}") as {
+        credentialBoundary?: {
+          controllerHome?: { oauthFileConfigured?: boolean; bearerTokenFileConfigured?: boolean; secretValuesExposed?: boolean };
+          openAiSecureTunnel?: { credentialName?: string; credentialOwner?: string; persistedByForge?: boolean };
+        };
+      };
+      expect(report.credentialBoundary).toEqual({
+        controllerHome: {
+          oauthFileConfigured: true,
+          bearerTokenFileConfigured: true,
+          secretValuesExposed: false,
+        },
+        openAiSecureTunnel: {
+          credentialName: "CONTROL_PLANE_API_KEY",
+          credentialOwner: "external_runtime_environment",
+          persistedByForge: false,
+        },
+      });
+      expect(JSON.stringify(report)).not.toContain(oauthSecret);
+      expect(JSON.stringify(report)).not.toContain(bearerSecret);
+    } finally {
+      rmSync(join(controllerHome, ".."), { recursive: true, force: true });
     }
   });
 

@@ -657,6 +657,18 @@ export function runMcpDoctor(opts: {
       endpoint: runtimeObservation.snapshot?.endpoint,
       observedAt: runtimeObservation.observedAt,
     },
+    credentialBoundary: {
+      controllerHome: {
+        oauthFileConfigured: existsSync(mcpControllerHomeOAuthPath(controllerHome)),
+        bearerTokenFileConfigured: existsSync(mcpControllerHomeTokenPath(controllerHome)),
+        secretValuesExposed: false,
+      },
+      openAiSecureTunnel: {
+        credentialName: "CONTROL_PLANE_API_KEY",
+        credentialOwner: "external_runtime_environment",
+        persistedByForge: false,
+      },
+    },
   };
   return {
     status: "ok",
@@ -681,6 +693,7 @@ export function runMcpDoctor(opts: {
             `[forge mcp] Toolset: ${report.mcp.toolset}`,
             `[forge mcp] Local Controller: ${report.mcp.localController.enabled ? report.chatgpt.localController : "disabled"}`,
             `[forge mcp] ChatGPT auth: ${report.mcp.authConfigured ? `${authMode} present` : "missing"}`,
+            `[forge mcp] Credentials: Controller Home OAuth=${report.credentialBoundary.controllerHome.oauthFileConfigured ? "present" : "missing"}, bearer=${report.credentialBoundary.controllerHome.bearerTokenFileConfigured ? "present" : "missing"}; OpenAI Secure Tunnel CONTROL_PLANE_API_KEY is supplied by the external runtime environment and not persisted by Forge`,
             `[forge mcp] Runtime: ${
               runtimeObservation.running
                 ? `running (${runtimeObservation.ready ? "ready" : "not ready"}, pid=${runtimeObservation.snapshot?.pid ?? "unknown"}${
