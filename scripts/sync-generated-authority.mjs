@@ -104,10 +104,18 @@ function typescriptCompatibilityWrapper(name) {
   return `#!/usr/bin/env bun\n${reexport}import { runTrackedForgeHelper } from "./lib/run-forge-helper";\n\nif (import.meta.main) runTrackedForgeHelper("${name}");\n`;
 }
 
+// Git shared repositories intentionally add group-write permission to
+// checked-out files (core.sharedRepository=true). Git tracks only the
+// executable bit, so ignore that one local permission bit while keeping
+// owner/world permissions and executable intent strict.
+function comparableMode(mode) {
+  return (mode & 0o777) & ~0o020;
+}
+
 function syncGeneratedText(targetRel, expected, expectedMode = 0o755) {
   const targetPath = join(ROOT, targetRel);
   const actual = readFileSync(targetPath, 'utf8');
-  const actualMode = statSync(targetPath).mode & 0o777;
+  const actualMode = comparableMode(statSync(targetPath).mode);
   const contentDrift = actual !== expected;
   const modeDrift = actualMode !== expectedMode;
   if (!contentDrift && !modeDrift) return false;
@@ -134,8 +142,8 @@ function syncText(sourceRel, targetRel, transform = (value) => value) {
   const source = readFileSync(sourcePath, 'utf8');
   const expected = transform(source);
   const actual = readFileSync(targetPath, 'utf8');
-  const expectedMode = statSync(sourcePath).mode & 0o777;
-  const actualMode = statSync(targetPath).mode & 0o777;
+  const expectedMode = comparableMode(statSync(sourcePath).mode);
+  const actualMode = comparableMode(statSync(targetPath).mode);
   const contentDrift = actual !== expected;
   const modeDrift = actualMode !== expectedMode;
   if (!contentDrift && !modeDrift) return false;

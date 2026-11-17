@@ -618,6 +618,10 @@
       "module": "controller",
       "resource": "process-tree"
     },
+    "tests/runtime/mcp-artifact-images.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/mcp-transport-benchmark.test.ts": {
       "module": "process-runtime",
       "resource": "pure"
