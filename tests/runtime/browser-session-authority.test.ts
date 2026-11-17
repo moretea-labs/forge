@@ -1323,6 +1323,154 @@ describe('browser session compatibility on Computer target authority', () => {
     });
   });
 
+  test('CDP attach creates a dedicated Forge-owned page without adopting or replacing user tabs', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const url = 'https://example.com/cdp-owned-session';
+    writeControllerPluginConfig(controllerHome, 'browser', {
+      schemaVersion: 2,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      profileMode: 'repo_local',
+      cdpEndpoint: 'http://127.0.0.1:9222',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'disabled',
+    });
+
+    function fakePage(initialUrl: string, initialTitle: string) {
+      let currentUrl = initialUrl;
+      let currentTitle = initialTitle;
+      let windowName = '';
+      return {
+        url: () => currentUrl,
+        title: async () => currentTitle,
+        goto: async (nextUrl: string) => {
+          const previousOrigin = new URL(currentUrl).origin;
+          const nextOrigin = new URL(nextUrl).origin;
+          if (previousOrigin !== nextOrigin) windowName = '';
+          currentUrl = nextUrl;
+          currentTitle = 'CDP Owned Session';
+          return { status: () => 200 };
+        },
+        evaluate: async (expression: string | ((...args: unknown[]) => unknown), arg?: unknown) => {
+          if (typeof expression === 'function') {
+            windowName = String(arg ?? '');
+            return undefined;
+          }
+          if (expression.includes('window.name')) return windowName;
+          if (expression.includes('document.querySelector')) return 'CDP page body';
+          if (expression.includes('document.readyState')) return 'complete';
+          return '';
+        },
+        on: () => undefined,
+        close: async () => undefined,
+      };
+    }
+
+    const userPage = fakePage(url, 'Existing User Tab');
+    const ownedPage = fakePage('about:blank', 'New Tab');
+    const pages: ReturnType<typeof fakePage>[] = [userPage];
+    const context = {
+      pages: () => pages,
+      newPage: async () => {
+        pages.push(ownedPage);
+        return ownedPage;
+      },
+      close: async () => undefined,
+    };
+    let disconnects = 0;
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      fetchJson: async () => ({
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/test',
+        Browser: 'Chrome/157',
+      }),
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async () => { throw new Error('managed launch must not run'); },
+          connectOverCDP: async () => ({
+            contexts: () => [context],
+            disconnect: () => { disconnects += 1; },
+          }),
+        },
+      } as never),
+    });
+
+    const baseInput = {
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      origin: { surface: 'mcp' as const, actor: 'test' },
+    };
+    const opened = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'cdp-owned-create',
+      actionId: 'create_session',
+      args: { url },
+    });
+    const sessionId = String((opened.session as { sessionId: string }).sessionId);
+    const ownerToken = browserSessionOwnerToken(sessionId);
+    expect(opened.session).toMatchObject({
+      browser: { provider: 'playwright-cdp', tab: { ownership: 'plugin_owned', ownerToken, url } },
+    });
+    expect(pages).toHaveLength(2);
+    expect(userPage.url()).toBe(url);
+    expect(ownedPage.url()).toBe(url);
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab)
+      .toMatchObject({ ownership: 'plugin_owned', ownerToken });
+
+    const resumed = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'cdp-owned-read',
+      actionId: 'get_text',
+      args: { session_id: sessionId, selector: 'body' },
+    });
+    expect(resumed.text).toBe('CDP page body');
+    expect(pages).toHaveLength(2);
+    expect(disconnects).toBe(2);
+
+    // A cross-origin navigation clears window.name in Chromium. The same saved
+    // session must restore its exact owner marker before the next action.
+    const nextUrl = 'https://other.example.org/cdp-owned-session';
+    const navigated = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'cdp-owned-cross-origin-navigation',
+      actionId: 'navigate',
+      args: { session_id: sessionId, url: nextUrl },
+    });
+    expect((navigated.session as { url: string }).url).toBe(nextUrl);
+    expect(ownedPage.url()).toBe(nextUrl);
+    expect(pages).toHaveLength(2);
+    expect(disconnects).toBe(3);
+
+    const resumedAfterNavigation = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'cdp-owned-cross-origin-read',
+      actionId: 'get_text',
+      args: { session_id: sessionId, selector: 'body' },
+    });
+    expect(resumedAfterNavigation.text).toBe('CDP page body');
+    const savedAfterNavigation = findBrowserSession(controllerHome, 'repo-a', repoA, sessionId);
+    expect(savedAfterNavigation?.url).toBe(nextUrl);
+    expect(savedAfterNavigation?.browser?.tab)
+      .toMatchObject({ ownership: 'plugin_owned', ownerToken, url: nextUrl });
+    expect(disconnects).toBe(4);
+
+    // A missing owned page must not be replaced by the user's exact-URL tab.
+    pages.splice(pages.indexOf(ownedPage), 1);
+    await expect(executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'cdp-owned-stale-read',
+      actionId: 'get_text',
+      args: { session_id: sessionId, selector: 'body' },
+    })).rejects.toThrow('PLUGIN_BROWSER_ATTACH_UNAVAILABLE');
+    expect(pages).toHaveLength(1);
+    expect(userPage.url()).toBe(url);
+    expect(disconnects).toBe(5);
+  });
+
   test('installs unpacked extension through browser-level CDP and verifies exact id/path before success', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });

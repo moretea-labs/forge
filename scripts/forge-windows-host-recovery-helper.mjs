@@ -5,7 +5,7 @@ import { spawnSync } from 'child_process';
 import { pathToFileURL } from 'url';
 
 export const PLUGIN_ID = 'windows_host_recovery';
-export const PLUGIN_VERSION = '0.1.4';
+export const PLUGIN_VERSION = '0.1.5';
 export const PROTOCOL_VERSION = 1;
 export const CAPABILITIES = [
   'windows_host.identity.v1',
@@ -68,6 +68,25 @@ function assertTrustedAssets(config) {
   return actual;
 }
 
+export function parseTaskStatus(output) {
+  let value;
+  try { value = JSON.parse(output); }
+  catch { throw providerError('WINDOWS_RECOVERY_TASK_STATUS_INVALID', 'Windows Recovery task_status returned invalid JSON.'); }
+  if (!value || Array.isArray(value) || typeof value !== 'object'
+    || typeof value.installed !== 'boolean'
+    || !['scheduled_task', 'hkcu_run', 'none'].includes(value.method)
+    || (value.identityMatches !== undefined && typeof value.identityMatches !== 'boolean')
+    || (value.installed && value.method === 'none')
+    || (value.installed && value.method === 'hkcu_run' && value.identityMatches !== true)) {
+    throw providerError('WINDOWS_RECOVERY_TASK_STATUS_INVALID', 'Windows Recovery task_status returned an inconsistent installation identity.');
+  }
+  return {
+    installed: value.installed,
+    method: value.method,
+    ...(value.identityMatches !== undefined ? { identityMatches: value.identityMatches } : {}),
+  };
+}
+
 function minimalEnv() {
   return Object.fromEntries(Object.entries({
     PATH: '/usr/local/bin:/usr/bin:/bin', HOME: process.env.HOME, LANG: process.env.LANG, LC_ALL: process.env.LC_ALL,
@@ -91,11 +110,13 @@ export function executeAction(actionId, input, configInput) {
   if (result.status !== 0) {
     throw providerError('WINDOWS_RECOVERY_ACTION_FAILED', String(result.stderr || result.stdout || 'fixed Windows recovery action failed').slice(-2000), false, { actionId, exitCode: result.status });
   }
+  const output = String(result.stdout || '').trim().slice(0, 32 * 1024);
   return {
     actionId,
     readonly: READONLY_ACTIONS.has(actionId),
     scriptSha256,
-    output: String(result.stdout || '').trim().slice(0, 32 * 1024),
+    output,
+    ...(actionId === 'task_status' ? { taskStatus: parseTaskStatus(output) } : {}),
   };
 }
 
