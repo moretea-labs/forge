@@ -55,6 +55,12 @@ retained, but these responses carry `retryable: false`, `action: reconcile` and
 retryable. Neither response processing nor session replacement changes the
 original durable request identity.
 
+The macOS Connector LaunchAgent explicitly reserves 45 seconds between SIGTERM
+and forced termination, covering the Gateway's 30-second admitted-response drain
+and one-second final observation-error flush before transport cleanup. This is
+service stop grace, not a longer request/execution timeout. Source rendering does
+not update an installed LaunchAgent or authorize a Runtime release/restart.
+
 ## Verification
 
 ```text

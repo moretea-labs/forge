@@ -702,6 +702,9 @@ describe('Forge Runtime service', () => {
     const paths = packageConnectorServicePaths(fx.home, fx.root);
     const plist = renderPackageConnectorLaunchAgent({ paths, launch });
     expect(plist).toContain('<key>RunAtLoad</key>');
+    // 30s POST drain + 1s final error flush must precede launchd SIGKILL.
+    const exitGrace = /<key>ExitTimeOut<\/key>\s*<integer>(\d+)<\/integer>/.exec(plist);
+    expect(Number(exitGrace?.[1] ?? 0)).toBeGreaterThan(31);
     expect(plist).toContain('<key>KeepAlive</key>');
     expect(plist).toContain('<string>8767</string>');
     expect(plist).toContain('<string>oauth</string>');
