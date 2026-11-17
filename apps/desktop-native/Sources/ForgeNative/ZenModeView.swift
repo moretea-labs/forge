@@ -2058,6 +2058,8 @@ struct ZenWorkspacePane: View {
                 .font(ForgeClientDesign.Typography.sheetTitle)
             ForgeClientFormField(label: "计划目标") {
                 TextField("填写计划目标",text:$newPlanGoal,axis:.vertical).lineLimit(3...5)
+                    .accessibilityLabel("计划目标")
+                    .accessibilityIdentifier("zen.plan.create.goal")
                     .disabled(pendingCreatedPlanId != nil)
             }
             if pendingCreatedPlanId != nil {
@@ -2073,6 +2075,7 @@ struct ZenWorkspacePane: View {
             HStack {
                 Spacer()
                 Button("取消") { showingPlanSheet=false }
+                    .accessibilityIdentifier("zen.plan.create.cancel")
                     .disabled(saving)
                 Button(saving ? "处理中…" : pendingCreatedPlanId == nil ? "创建" : "刷新列表") {
                     if let pendingId=pendingCreatedPlanId {
@@ -2082,6 +2085,7 @@ struct ZenWorkspacePane: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("zen.plan.create.submit")
                 .disabled(saving || (pendingCreatedPlanId == nil
                     && newPlanGoal.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty))
             }
