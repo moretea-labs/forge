@@ -3204,7 +3204,7 @@ fn responses_assistant_message(output: &Value) -> Result<Value, String> {
             }
             Some("function_call") => {
                 let call_id = item.get("call_id").and_then(Value::as_str)
-                    .or_else(|| item.get("id").and_then(Value::as_str)).unwrap_or("");
+                    .unwrap_or("");
                 let name = item.get("name").and_then(Value::as_str).unwrap_or("");
                 let arguments = item.get("arguments").and_then(Value::as_str)
                     .ok_or("FORGE_DESKTOP_API_TOOL_ARGUMENTS_INVALID")?;
@@ -4652,7 +4652,8 @@ mod tests {
                                 "name":calls[index].1,"arguments":calls[index].2.to_string()}})).collect::<Vec<_>>()}}]}).to_string(), "[DONE]".into()],
                     };
                 }
-                if matches!(stop_reason, Some("missing-wire-args" | "null-wire-args" | "object-wire-args")) {
+                if matches!(stop_reason, Some("missing-wire-args" | "null-wire-args" | "object-wire-args"
+                    | "missing-call-id" | "null-call-id" | "object-call-id" | "number-call-id")) {
                     let args = json!({"command":["bun","test","tests/fixture.test.ts"],"timeout_ms":1000});
                     let malformed = match stop_reason {
                         Some("object-wire-args") => json!({}),
@@ -4665,6 +4666,14 @@ mod tests {
                     })).collect::<Vec<_>>();
                     if stop_reason == Some("missing-wire-args") {
                         calls[1].as_object_mut().unwrap().remove("arguments");
+                    } else if stop_reason == Some("missing-call-id") {
+                        calls[1].as_object_mut().unwrap().remove("call_id");
+                    } else if matches!(stop_reason, Some("null-call-id" | "object-call-id" | "number-call-id")) {
+                        calls[1]["call_id"] = match stop_reason {
+                            Some("object-call-id") => json!({}),
+                            Some("number-call-id") => json!(42),
+                            _ => Value::Null,
+                        };
                     } else { calls[1]["arguments"] = malformed; }
                     frames = vec![json!({"type":"response.completed","response":{"output":calls}}).to_string()];
                 }
@@ -4878,6 +4887,44 @@ mod tests {
                 "{fault}: malformed wire arguments must reject the batch before any dispatch");
             assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_ARGUMENTS_INVALID");
             assert_eq!(requests.len(), 1, "no automatic retry");
+        }
+    }
+
+    #[test]
+    fn responses_item_id_cannot_authorize_a_tool_call() {
+        for fault in ["missing-call-id", "null-call-id", "object-call-id", "number-call-id"] {
+            let (endpoint, server) = spawn_scripted_agent_provider("responses", "bun", Some(fault));
+            let host = ScriptedAgentLoopHost::default();
+            let config = json!({"apiProfiles":[{
+                "id":"call-id-test","endpoint":endpoint,"model":"test-model","apiProtocol":"responses"
+            }]});
+            let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+            let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+                &host, config, vec![json!({"role":"user","content":"Run the focused test"})],
+                Some("repo_test".into()), Some("checkout_test".into()), "conv-call-id".into(),
+                Some("api:call-id-test".into()), None, true, &mut cancellation,
+            ));
+            let requests = server.join().unwrap();
+            assert!(host.tool_calls.lock().unwrap().is_empty(),
+                "{fault}: an item ID cannot substitute for call identity or admit earlier commands");
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_CALL_ID_INVALID");
+            assert_eq!(requests.len(), 1, "no automatic retry");
+        }
+    }
+
+    #[test]
+    fn responses_tool_identity_requires_explicit_call_id() {
+        for call_id in [None, Some(Value::Null), Some(json!({})), Some(json!(42)),
+            Some(json!("")), Some(json!("  ")), Some(json!("call-1"))] {
+            let mut item = json!({"type":"function_call","id":"item-1",
+                "name":"git_status","arguments":"{}"});
+            if let Some(value) = &call_id { item["call_id"] = value.clone(); }
+            let result = provider_tool_calls("responses", &json!({"output":[item]}));
+            if call_id == Some(json!("call-1")) {
+                assert_eq!(result.unwrap(), vec![("call-1".into(), "git_status".into(), json!({}))]);
+            } else {
+                assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_CALL_ID_INVALID", "{call_id:?}");
+            }
         }
     }
 
