@@ -143,7 +143,7 @@ struct ZenChangeProposal: Decodable, Identifiable {
     static let outputContract = """
     只进行需求/计划的只读分析，禁止调用任何写入工具、命令、源码修改、计划创建或任务执行。
     先从 Forge 现有记录确认目标项目、Requirement/Plan ID、最新 revision 和真实工作区证据；项目没有仓库时，不得假设文件或命令可用。
-    自动精化最多 \(refinementMaximumRounds) 轮、累计 \(refinementMaximumTokens) tokens、\(Int(refinementMaximumDurationSeconds)) 秒。客户端按完整 Provider usage receipt 与实际耗时停止；无法核实 token 用量时不得继续自动轮次。
+    自动精化最多 \(refinementMaximumRounds) 轮、累计 \(refinementMaximumTokens) tokens、\(Int(refinementMaximumDurationSeconds)) 秒。客户端按完整 Provider usage receipt 与实际耗时停止；无法核实 token 用量时不得继续自动轮次。若最终 ACCEPT 本轮自身达到或超过预算，停止自动精化但保留有效提案供人工审阅；绝不自动写入。
     每轮结束都必须恰好输出一个 Markdown fenced JSON 块，语言标识为 forge-proposal，且包含 decision 和非空 rationale：
     - CONTINUE：仍有可由你独立完成的只读核实，rationale 指明下一项必要证据；客户端会自动继续下一轮。
     - NEEDS_USER：必须由用户补充信息，rationale 给出一个最少且具体的问题；停止自动精化并等待用户。

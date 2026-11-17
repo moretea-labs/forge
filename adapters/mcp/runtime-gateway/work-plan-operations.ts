@@ -191,6 +191,7 @@ export async function callRhWorkPlanCreateOperation(
         requirementId: typeof args.requirement_id === 'string' && args.requirement_id.trim() ? args.requirement_id.trim() : undefined,
         parentPlanId: typeof args.parent_plan_id === 'string' && args.parent_plan_id.trim() ? args.parent_plan_id.trim() : undefined,
         requirementBasisRevision: typeof args.requirement_revision === 'number' ? args.requirement_revision : undefined,
+        expectedRequirementRevision: typeof args.expected_requirement_revision === 'number' ? args.expected_requirement_revision : undefined,
         scopeKey: typeof args.scope_key === 'string' ? args.scope_key : undefined,
         sourceBasisRevision: typeof args.source_revision === 'string' ? args.source_revision : undefined,
         goal: String(args.objective ?? ''),

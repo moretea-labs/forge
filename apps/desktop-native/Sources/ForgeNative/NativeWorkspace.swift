@@ -5656,16 +5656,16 @@ final class NativeWorkspace: ObservableObject {
             switch directive {
             case .accept:
                 guard let usage=latestAssistant.usage,usage.complete else {
-                    error="自动精化已暂停：最终 ACCEPT 缺少完整 Provider token 回执，无法验证预算。"
+                    error="自动精化已暂停：最终 ACCEPT 缺少完整 Provider token 回执，预算无法核验；提案仍保留供人工审阅。"
                     return
                 }
                 let (acceptedTotal,overflow)=totalTokens.addingReportingOverflow(usage.totalTokens)
                 guard !overflow,acceptedTotal <= ZenChangeProposal.refinementMaximumTokens else {
-                    error="最终 ACCEPT 超出自动精化 token 预算，已保留提案但不进入审阅。"
+                    error="最终 ACCEPT 超出自动精化 token 预算；提案保留供人工审阅，未继续自动精化。"
                     return
                 }
                 guard Date().timeIntervalSince(startedAt) <= ZenChangeProposal.refinementMaximumDurationSeconds else {
-                    error="最终 ACCEPT 超出自动精化时间预算，已保留提案但不进入审阅。"
+                    error="最终 ACCEPT 超出自动精化时间预算；提案保留供人工审阅，未继续自动精化。"
                     return
                 }
                 return

@@ -1269,6 +1269,7 @@ async fn create_plan(
     objective: String,
     requirement_id: Option<String>,
     parent_plan_id: Option<String>,
+    expected_requirement_revision: Option<u64>,
 ) -> Result<Value, String> {
     if project_id.trim().is_empty() || plan_id.trim().is_empty() || objective.trim().is_empty() {
         return Err("FORGE_DESKTOP_PLAN_CREATE_ARGUMENT_REQUIRED".to_string());
@@ -1289,6 +1290,12 @@ async fn create_plan(
     arguments["objective"] = json!(objective);
     arguments["plan_items"] = json!([]);
     arguments["request_id"] = json!(request_id("plan-create"));
+    if let Some(revision) = expected_requirement_revision {
+        if revision == 0 {
+            return Err("FORGE_DESKTOP_PLAN_REQUIREMENT_REVISION_INVALID".to_string());
+        }
+        arguments["expected_requirement_revision"] = json!(revision);
+    }
     let result = call_runtime_tool("rh_work", arguments).await?;
     Ok(semantic_facade_data(result))
 }

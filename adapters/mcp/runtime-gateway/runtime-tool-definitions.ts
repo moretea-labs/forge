@@ -131,6 +131,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     requirement_id: { type: 'string', description: 'Stable Requirement identity for Requirement operations, Plan provenance, or optional Workflow semantic guard.' },
     expected_revision: { type: 'number', minimum: 1, description: 'Expected current semantic revision for requirement_revise or plan_revise. Stale writers fail; Forge never performs an implicit merge.' },
     requirement_revision: { type: 'number', minimum: 1, description: 'Optional Requirement basis revision recorded by Plan create/revise.' },
+    expected_requirement_revision: { type: 'number', minimum: 1, description: 'For semantic plan_create, atomically compare the current parent Requirement semantic revision before writing the Plan. Pass the exact revision accepted by the user; stale proposals are rejected.' },
     requirement_title: { type: 'string', description: 'Human-readable Requirement title for requirement_create.' },
     requirement_outcome: { type: 'string', description: 'Durable outcome statement for requirement_create.' },
     requirement_acceptance_criteria: { type: 'array', items: { type: 'string' }, description: 'Bounded semantic acceptance criteria for requirement_create.' },

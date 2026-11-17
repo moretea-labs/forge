@@ -237,6 +237,10 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 required_bounded(args,"objective",4000)?,
                 args.get("requirementId").and_then(Value::as_str).map(str::to_owned),
                 args.get("parentPlanId").and_then(Value::as_str).map(str::to_owned),
+                args.get("expectedRequirementRevision").map(|value| {
+                    value.as_u64().filter(|revision| *revision > 0)
+                        .ok_or("FORGE_NATIVE_BRIDGE_EXPECTED_REQUIREMENT_REVISION_INVALID")
+                }).transpose()?,
             ).await,
         "revise_requirement" =>
             revise_requirement(
@@ -771,6 +775,17 @@ mod tests {
             "create_plan", &json!({"repoId":"repo-a","planId":"PLAN-1","objective":"Plan"})
         ));
         assert_eq!(repo_only_create.unwrap_err(), "FORGE_NATIVE_BRIDGE_projectId_REQUIRED");
+
+        let invalid_requirement_revision = tauri::async_runtime::block_on(dispatch(
+            "create_plan", &json!({
+                "projectId":"project-a","repoId":"repo-a","planId":"PLAN-1","objective":"Plan",
+                "requirementId":"REQ-1","expectedRequirementRevision":0
+            })
+        ));
+        assert_eq!(
+            invalid_requirement_revision.unwrap_err(),
+            "FORGE_NATIVE_BRIDGE_EXPECTED_REQUIREMENT_REVISION_INVALID"
+        );
 
         let repo_only_revise = tauri::async_runtime::block_on(dispatch(
             "revise_plan", &json!({"repoId":"repo-a","planId":"PLAN-1","expectedRevision":1,"objective":"Plan"})
