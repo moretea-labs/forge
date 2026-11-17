@@ -1502,34 +1502,51 @@ struct ZenWorkspacePane: View {
                 .font(.system(size:10,design:.monospaced))
                 .foregroundStyle(.secondary)
 
-            if item.kind == .requirement {
+            ScrollView {
+                if item.kind == .requirement {
                 ForgeClientFormField(label: "名称") {
                     TextField("任务名称",text:$editTitle)
+                        .accessibilityIdentifier("zen.record.edit.title")
                 }
                 ForgeClientFormField(label: "预期结果") {
                     TextField("预期结果",text:$editOutcome,axis:.vertical).lineLimit(3...6)
+                        .accessibilityIdentifier("zen.record.edit.outcome")
                 }
                 ForgeClientFormField(label: "验收标准") {
                     TextField("每行一项",text:$editCriteria,axis:.vertical).lineLimit(3...7)
+                        .accessibilityIdentifier("zen.record.edit.acceptance-criteria")
                 }
-                 Picker("状态",selection:Binding(
-                     get:{ editTaskStatus ?? "unset" },
-                     set:{ editTaskStatus=$0 == "unset" ? nil : $0 }
-                 )) {
-                     ForEach(editTaskStatusOptions,id:\.self) { status in
-                         Text(status == "unset" ? "未设置" : Self.taskStatusLabel(status) ?? status)
-                             .tag(status)
-                     }
-                 }
-                 Picker("优先级",selection:$editPriority) {
-                     if editPriority == "unset" { Text("未设置").tag("unset") }
-                     Text("低").tag("low")
-                     Text("普通").tag("normal")
-                     Text("高").tag("high")
-                     Text("紧急").tag("urgent")
-                 }
+                HStack(alignment:.top,spacing:ForgeClientDesign.Spacing.row) {
+                    ForgeClientFormField(label:"状态") {
+                        Picker("",selection:Binding(
+                            get:{ editTaskStatus ?? "unset" },
+                            set:{ editTaskStatus=$0 == "unset" ? nil : $0 }
+                        )) {
+                            ForEach(editTaskStatusOptions,id:\.self) { status in
+                                Text(status == "unset" ? "未设置" : Self.taskStatusLabel(status) ?? status)
+                                    .tag(status)
+                            }
+                        }
+                        .labelsHidden()
+                        .accessibilityLabel("状态")
+                        .accessibilityIdentifier("zen.record.edit.status")
+                    }
+                    ForgeClientFormField(label:"优先级") {
+                        Picker("",selection:$editPriority) {
+                            if editPriority == "unset" { Text("未设置").tag("unset") }
+                            Text("低").tag("low")
+                            Text("普通").tag("normal")
+                            Text("高").tag("high")
+                            Text("紧急").tag("urgent")
+                        }
+                        .labelsHidden()
+                        .accessibilityLabel("优先级")
+                        .accessibilityIdentifier("zen.record.edit.priority")
+                    }
+                }
                  ForgeClientFormField(label: "负责人") {
                      TextField("留空表示未指派",text:$editAssignee)
+                         .accessibilityIdentifier("zen.record.edit.assignee")
                  }
                   dependencyEditor(
                       selection:$editDependencyRequirementIds,excluding:item.recordId,
@@ -1538,12 +1555,16 @@ struct ZenWorkspacePane: View {
                   )
                   ForgeClientFormField(label: "剩余工作") {
                       TextField("每行一项",text:$editRemainingWork,axis:.vertical).lineLimit(2...5)
+                          .accessibilityIdentifier("zen.record.edit.remaining-work")
                   }
             } else {
                 ForgeClientFormField(label: "计划目标") {
                     TextField("计划目标",text:$editTitle,axis:.vertical).lineLimit(3...6)
+                        .accessibilityIdentifier("zen.record.edit.plan-title")
+                }
                 }
             }
+            .frame(maxHeight:ForgeClientDesign.Size.taskFormContentMaxHeight)
 
             if let problem=model.error {
                 Text(problem)
@@ -1846,34 +1867,51 @@ struct ZenWorkspacePane: View {
     private var createRequirementSheet: some View {
         VStack(alignment:.leading,spacing:ForgeClientDesign.Spacing.section) {
             Text("新建任务").font(ForgeClientDesign.Typography.sheetTitle)
-            ForgeClientFormSection(title: "任务内容") {
+            ScrollView {
+                ForgeClientFormSection(title: "任务内容") {
                 ForgeClientFormField(label: "名称") {
                     TextField("任务名称",text:$newTitle)
+                        .accessibilityIdentifier("zen.requirement.create.title")
                 }
                 ForgeClientFormField(label: "预期结果") {
                     TextField("预期结果",text:$newOutcome,axis:.vertical).lineLimit(3...5)
+                        .accessibilityIdentifier("zen.requirement.create.outcome")
                 }
                 ForgeClientFormField(label: "验收标准") {
                     TextField("每行一项",text:$newCriteria,axis:.vertical).lineLimit(3...6)
+                        .accessibilityIdentifier("zen.requirement.create.acceptance-criteria")
                 }
-                HStack {
-                    Picker("状态",selection:$newTaskStatus) {
-                        Text("待开始").tag("planned")
-                        Text("进行中").tag("active")
-                        Text("待你处理").tag("waiting_for_user")
+                HStack(alignment:.top,spacing:ForgeClientDesign.Spacing.row) {
+                    ForgeClientFormField(label:"状态") {
+                        Picker("",selection:$newTaskStatus) {
+                            Text("待开始").tag("planned")
+                            Text("进行中").tag("active")
+                            Text("待你处理").tag("waiting_for_user")
+                        }
+                        .labelsHidden()
+                        .accessibilityLabel("状态")
+                        .accessibilityIdentifier("zen.requirement.create.status")
                     }
-                    Picker("优先级",selection:$newPriority) {
-                        Text("低").tag("low")
-                        Text("普通").tag("normal")
-                        Text("高").tag("high")
-                        Text("紧急").tag("urgent")
+                    ForgeClientFormField(label:"优先级") {
+                        Picker("",selection:$newPriority) {
+                            Text("低").tag("low")
+                            Text("普通").tag("normal")
+                            Text("高").tag("high")
+                            Text("紧急").tag("urgent")
+                        }
+                        .labelsHidden()
+                        .accessibilityLabel("优先级")
+                        .accessibilityIdentifier("zen.requirement.create.priority")
                     }
                 }
                 ForgeClientFormField(label: "负责人") {
                     TextField("可选",text:$newAssignee)
+                        .accessibilityIdentifier("zen.requirement.create.assignee")
                 }
                 dependencyEditor(selection:$newDependencyRequirementIds,excluding:nil,idDraft:$newDependencyIdDraft)
             }
+            }
+            .frame(maxHeight:ForgeClientDesign.Size.taskFormContentMaxHeight)
             .disabled(pendingCreatedRequirementId != nil)
             if pendingCreatedRequirementId != nil {
                 Text("任务已创建，等待详情确认。")
