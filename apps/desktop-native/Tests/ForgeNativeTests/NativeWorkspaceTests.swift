@@ -1670,6 +1670,46 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(placed["repoId"] as? String,"repo-a")
     }
 
+    func testSemanticProjectCreationReadbackRequiresExactIdentityAndPlacement() {
+        let standalone=ForgeSemanticProject(
+            projectId:"PROJECT-standalone",workspaceId:"workspace-personal",
+            displayName:"Personal",status:"active",revision:1,placements:nil,requirementCount:0
+        )
+        XCTAssertTrue(NativeWorkspace.semanticProjectCreationReadbackMatches(
+            standalone,projectId:"PROJECT-standalone",displayName:"Personal",repositoryId:nil
+        ))
+        XCTAssertFalse(NativeWorkspace.semanticProjectCreationReadbackMatches(
+            standalone,projectId:"PROJECT-standalone",displayName:"Personal",repositoryId:"repo-a"
+        ))
+
+        let placed=ForgeSemanticProject(
+            projectId:"PROJECT-placed",workspaceId:"workspace-personal",
+            displayName:"Work",status:"active",revision:1,
+            placements:[ForgeSemanticProjectPlacement(repositoryId:"repo-a")],requirementCount:0
+        )
+        XCTAssertTrue(NativeWorkspace.semanticProjectCreationReadbackMatches(
+            placed,projectId:"PROJECT-placed",displayName:"Work",repositoryId:"repo-a"
+        ))
+        XCTAssertFalse(NativeWorkspace.semanticProjectCreationReadbackMatches(
+            placed,projectId:"PROJECT-placed",displayName:"Work",repositoryId:nil
+        ))
+        XCTAssertFalse(NativeWorkspace.semanticProjectCreationReadbackMatches(
+            placed,projectId:"PROJECT-placed",displayName:"Renamed",repositoryId:"repo-a"
+        ))
+
+        let extraPlacement=ForgeSemanticProject(
+            projectId:"PROJECT-placed",workspaceId:"workspace-personal",
+            displayName:"Work",status:"active",revision:1,
+            placements:[
+                ForgeSemanticProjectPlacement(repositoryId:"repo-a"),
+                ForgeSemanticProjectPlacement(repositoryId:"repo-b")
+            ],requirementCount:0
+        )
+        XCTAssertFalse(NativeWorkspace.semanticProjectCreationReadbackMatches(
+            extraPlacement,projectId:"PROJECT-placed",displayName:"Work",repositoryId:"repo-a"
+        ))
+    }
+
     func testSemanticProjectDirectoryPreservesStandaloneAndRepositoryIdentity() throws {
         let projects = try NativeWorkspace.decodeSemanticProjects([
             "projects":[

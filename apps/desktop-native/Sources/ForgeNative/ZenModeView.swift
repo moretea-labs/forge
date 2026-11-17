@@ -2722,8 +2722,13 @@ struct ZenProjectDirectorySheet: View {
             if model.semanticProjectsLoading {
                 ProgressView().controlSize(.small)
             }
-            if let problem = model.semanticProjectsError ?? model.error {
+            if let problem = model.error {
                 Text(problem).font(.system(size:12)).foregroundStyle(.orange)
+                    .textSelection(.enabled)
+            }
+            if let problem = model.semanticProjectsError {
+                Text("项目列表刷新失败：\(problem)")
+                    .font(.system(size:12)).foregroundStyle(.orange)
                     .textSelection(.enabled)
             }
 

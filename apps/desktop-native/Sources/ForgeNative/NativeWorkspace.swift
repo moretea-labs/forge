@@ -2022,7 +2022,8 @@ final class NativeWorkspace: ObservableObject {
         semanticProjectListRequestGeneration == generation
     }
 
-    func refreshSemanticProjects() async {
+    @discardableResult
+    func refreshSemanticProjects() async -> [ForgeSemanticProject]? {
         let generation=beginSemanticProjectListRefresh()
         semanticProjectsLoading=true
         semanticProjectsError=nil
@@ -2033,17 +2034,20 @@ final class NativeWorkspace: ObservableObject {
         }
         do {
             let result=try await ForgeBridge.request("project_list",["limit":100,"offset":0])
-            guard semanticProjectListRequestIsCurrent(generation) else { return }
-            semanticProjects=try Self.decodeSemanticProjects(result)
+            guard semanticProjectListRequestIsCurrent(generation) else { return nil }
+            let refreshedProjects=try Self.decodeSemanticProjects(result)
+            semanticProjects=refreshedProjects
             if selectedProjectId == nil,let repoId {
-                let matches=semanticProjects.filter { $0.repositoryIds.contains(repoId) }
+                let matches=refreshedProjects.filter { $0.repositoryIds.contains(repoId) }
                 if matches.count == 1,let match=matches.first {
                     await selectSemanticProject(match.projectId)
                 }
             }
+            return refreshedProjects
         } catch {
-            guard semanticProjectListRequestIsCurrent(generation) else { return }
+            guard semanticProjectListRequestIsCurrent(generation) else { return nil }
             semanticProjectsError=error.localizedDescription
+            return nil
         }
     }
 
@@ -2163,6 +2167,15 @@ final class NativeWorkspace: ObservableObject {
         return arguments
     }
 
+    nonisolated static func semanticProjectCreationReadbackMatches(
+        _ project:ForgeSemanticProject,projectId:String,displayName:String,repositoryId:String?
+    ) -> Bool {
+        guard project.projectId == projectId,project.displayName == displayName else { return false }
+        let expectedRepositoryIds=repositoryId.map { [$0] } ?? []
+        return project.repositoryIds.count == expectedRepositoryIds.count
+            && Set(project.repositoryIds) == Set(expectedRepositoryIds)
+    }
+
     func createSemanticProject(displayName:String,repositoryId:String? = nil) async -> Bool {
         guard !busy else { error="请先停止正在运行的会话。"; return false }
         let name=displayName.trimmingCharacters(in:.whitespacesAndNewlines)
@@ -2188,29 +2201,25 @@ final class NativeWorkspace: ObservableObject {
             guard created.projectId == projectId,created.displayName == name else {
                 throw ForgeBridgeError.invalidResponse
             }
-            if let repositoryId {
-                await refreshSemanticProjects()
-                guard semanticProjectsError == nil,
-                      let readback=semanticProjects.first(where:{$0.projectId == projectId}),
-                      readback.displayName == name,readback.repositoryIds.contains(repositoryId) else {
-                    if !semanticProjects.contains(where:{$0.projectId == projectId}) {
-                        semanticProjects.insert(created,at:0)
-                    }
-                    error="项目已创建，但仓库关联尚未从项目列表确认。请刷新核对，不要重复创建。"
-                    return true
-                }
-                if projectContextGeneration == contextGeneration {
-                    await selectSemanticProject(projectId,repositoryId:repositoryId)
-                }
-            } else {
-                if let index=semanticProjects.firstIndex(where:{$0.projectId == created.projectId}) {
-                    semanticProjects[index]=created
-                } else {
+
+            let readbackProjects=await refreshSemanticProjects()
+            guard let readback=readbackProjects?.first(where:{$0.projectId == projectId}),
+                  Self.semanticProjectCreationReadbackMatches(
+                    readback,projectId:projectId,displayName:name,repositoryId:repositoryId
+                  ) else {
+                if !semanticProjects.contains(where:{$0.projectId == projectId}) {
                     semanticProjects.insert(created,at:0)
                 }
-                // Creating a standalone Project must not silently switch repository-scoped task context.
+                error = repositoryId == nil
+                    ? "项目已创建，但尚未从项目列表确认。请刷新核对，不要重复创建。"
+                    : "项目已创建，但仓库关联尚未从项目列表确认。请刷新核对，不要重复创建。"
+                return true
+            }
+
+            if let repositoryId,projectContextGeneration == contextGeneration {
+                await selectSemanticProject(projectId,repositoryId:repositoryId)
+            } else {
                 error=nil
-                Task { await refreshSemanticProjects() }
             }
             return true
         } catch {
@@ -2298,7 +2307,7 @@ final class NativeWorkspace: ObservableObject {
     func refresh() async {
         let requestGeneration = beginWorkspaceRefresh()
         async let repositoryRefresh:Void = refreshProjects()
-        async let semanticRefresh:Void = refreshSemanticProjects()
+        async let semanticRefresh = refreshSemanticProjects()
         _ = await (repositoryRefresh,semanticRefresh)
         guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
         if !settingsLoading {
