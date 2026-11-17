@@ -3444,6 +3444,8 @@ impl StreamedModelRound {
     fn consume<H: LocalApiHost + Sync>(
         &mut self, protocol: &str, data: &str, host: &H, conversation_id: &str,
     ) -> Result<(), String> {
+        // A terminal receipt freezes this round, independent of HTTP chunking.
+        if self.finished { return Ok(()); }
         if data == "[DONE]" {
             // This sentinel belongs to Chat Completions only. In particular,
             // it cannot promote an unfinished Anthropic tool preview to authority.
@@ -3662,6 +3664,7 @@ async fn request_local_api_round_stream<H: LocalApiHost + Sync>(
             if line.is_empty() {
                 if !data.is_empty() {
                     stream.consume(protocol, &data.join("\n"), host, conversation_id)?;
+                    if stream.finished { return stream.finish(protocol); }
                     data.clear();
                 }
             } else if let Some(value) = line.strip_prefix("data:") {
@@ -3671,7 +3674,6 @@ async fn request_local_api_round_stream<H: LocalApiHost + Sync>(
         if buffer.len() > 256 * 1024 {
             return Err("FORGE_DESKTOP_API_STREAM_EVENT_TOO_LARGE".into());
         }
-        if stream.finished { break; }
     }
     if !data.is_empty() {
         stream.consume(protocol, &data.join("\n"), host, conversation_id)?;
@@ -4915,6 +4917,55 @@ mod tests {
     }
 
     #[test]
+    fn completed_stream_round_ignores_trailing_frames() {
+        for protocol in ["openai", "anthropic", "responses"] {
+            let host = RecordingStreamHost::default();
+            let mut round = StreamedModelRound::default();
+            let initial = match protocol {
+                "openai" => vec![
+                    json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"original",
+                        "function":{"name":"git_status","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}).to_string(),
+                    "[DONE]".into(),
+                ],
+                "anthropic" => vec![
+                    json!({"type":"content_block_start","index":0,"content_block":{
+                        "type":"tool_use","id":"original","name":"git_status","input":{}}}).to_string(),
+                    json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}).to_string(),
+                    json!({"type":"message_stop"}).to_string(),
+                ],
+                _ => vec![json!({"type":"response.completed","response":{"output":[{
+                    "type":"function_call","call_id":"original","name":"git_status","arguments":"{}"
+                }]}}).to_string()],
+            };
+            for frame in initial { round.consume(protocol, &frame, &host, "conv-terminal").unwrap(); }
+            let late_tool = match protocol {
+                "openai" => json!({"choices":[{"delta":{"tool_calls":[{"index":1,"id":"late",
+                    "function":{"name":"run_command","arguments":"{}"}}]}}]}),
+                "anthropic" => json!({"type":"content_block_start","index":1,"content_block":{
+                    "type":"tool_use","id":"late","name":"run_command","input":{}}}),
+                _ => json!({"type":"response.completed","response":{"output":[{
+                    "type":"function_call","call_id":"late","name":"run_command","arguments":"{}"
+                }]}}),
+            };
+            round.consume(protocol, &late_tool.to_string(), &host, "conv-terminal").unwrap();
+            let late_text = match protocol {
+                "openai" => json!({"choices":[{"delta":{"content":"late text"}}]}),
+                "anthropic" => json!({"type":"content_block_delta","index":2,
+                    "delta":{"type":"text_delta","text":"late text"}}),
+                _ => json!({"type":"response.output_text.delta","delta":"late text"}),
+            }.to_string();
+            for frame in ["not-json", r#"{"error":{"message":"late error"}}"#, &late_text] {
+                round.consume(protocol, frame, &host, "conv-terminal").unwrap();
+            }
+            let output = round.finish(protocol).unwrap();
+            let calls = provider_tool_calls(protocol, &output).unwrap();
+            assert_eq!(calls.len(), 1, "{protocol}: terminal output is immutable");
+            assert_eq!(calls[0].0, "original", "{protocol}: late frames cannot replace tools");
+            assert!(host.events.lock().unwrap().is_empty(), "no progress after terminal");
+        }
+    }
+
+    #[test]
     fn streamed_openai_reassembles_answer_and_tool_arguments_without_leaking_private_reasoning() {
         let host = RecordingStreamHost::default();
         let mut round = StreamedModelRound::default();
@@ -5245,7 +5296,7 @@ mod tests {
     #[test]
     fn streamed_provider_http_paths_and_tools_use_one_streaming_transport() {
         use std::{io::{Read, Write}, net::TcpListener, thread, time::Duration};
-        for (protocol, expected_path, frames, expected_tool) in [
+        for (protocol, expected_path, mut frames, expected_tool) in [
             ("openai", "/v1/chat/completions", vec![
                 json!({"choices":[{"delta":{"tool_calls":[{
                     "index":0,"id":"tool-1","function":{"name":"git_status","arguments":"{}"}
@@ -5261,6 +5312,15 @@ mod tests {
                 json!({"type":"message_stop"}).to_string()
             ], "read_file"),
         ] {
+            // One HTTP write can coalesce terminal and late frames into one chunk.
+            frames.push(if protocol == "openai" {
+                json!({"choices":[{"delta":{"tool_calls":[{"index":1,"id":"late",
+                    "function":{"name":"run_command","arguments":"{}"}}]}}]}).to_string()
+            } else {
+                json!({"type":"content_block_start","index":1,"content_block":{
+                    "type":"tool_use","id":"late","name":"run_command","input":{}}}).to_string()
+            });
+            frames.push("not-json".into());
             let listener = TcpListener::bind("127.0.0.1:0").expect("mock SSE socket");
             let port = listener.local_addr().unwrap().port();
             let expected_path = expected_path.to_string();
