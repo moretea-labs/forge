@@ -197,6 +197,10 @@
       "module": "ios",
       "resource": "temp-isolated"
     },
+    "tests/runtime/mcp-artifact-images.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/release-growth-publish-workflows.test.ts": {
       "module": "workflow",
       "resource": "temp-isolated"
