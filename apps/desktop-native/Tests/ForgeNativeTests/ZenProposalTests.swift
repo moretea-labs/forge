@@ -165,6 +165,45 @@ final class ZenProposalTests: XCTestCase {
         XCTAssertTrue(ZenChangeProposal.outputContract.contains("完整 Provider usage receipt"))
     }
 
+    @MainActor
+    func testZenCreationProposalRequiresExactSelectedDetailReadback() {
+        let requirement=RequirementRecordDetail(
+            requirementId:"REQ-1",revision:2,title:"Requirement",outcomeStatement:"Outcome",
+            state:"open",acceptanceCriteria:["Ship"],progressSummary:"",remainingWork:[],
+            acceptedEvidenceRefs:[],taskStatus:nil,priority:nil,assignee:nil,
+            dependencyRequirementIds:[],dependencyRequirements:[],blockingDependencyIds:[],
+            dependentRequirements:nil,dependentRequirementsTruncated:nil,dependentRequirementCount:nil
+        )
+        let plan=PlanRecordDetail(
+            planId:"PLAN-1",revision:1,requirementId:"REQ-1",parentPlanId:nil,
+            sourceBasisRevision:nil,goal:"Plan",items:[],resolvedDecisions:[],nonGoals:[]
+        )
+        XCTAssertTrue(ZenProposalReviewSheet.creationReadbackConfirmed(
+            operation:.createRequirement,recordId:"REQ-1",
+            selectedRecord:"requirement:REQ-1",detail:.requirement(requirement)
+        ))
+        XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
+            operation:.createRequirement,recordId:"REQ-1",
+            selectedRecord:"plan:REQ-1",detail:.requirement(requirement)
+        ))
+        XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
+            operation:.createRequirement,recordId:"REQ-1",
+            selectedRecord:"requirement:REQ-2",detail:.requirement(requirement)
+        ))
+        XCTAssertTrue(ZenProposalReviewSheet.creationReadbackConfirmed(
+            operation:.createPlan,recordId:"PLAN-1",
+            selectedRecord:"plan:PLAN-1",detail:.plan(plan)
+        ))
+        XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
+            operation:.createPlan,recordId:"PLAN-1",
+            selectedRecord:"plan:PLAN-1",detail:.requirement(requirement)
+        ))
+        XCTAssertFalse(ZenProposalReviewSheet.creationReadbackConfirmed(
+            operation:.createPlan,recordId:"PLAN-1",
+            selectedRecord:"plan:PLAN-2",detail:.plan(plan)
+        ))
+    }
+
     func testCreateRequirementIsParsedOnlyFromOneExplicitProposal() throws {
         let proposal=try ZenChangeProposal.parse(fenced(
             #"{"decision":"ACCEPT","operation":"create_requirement","rationale":"独立验收目标","title":"PDF 定位","outcome":"可定位源页","acceptanceCriteria":["定位准确"]}"#

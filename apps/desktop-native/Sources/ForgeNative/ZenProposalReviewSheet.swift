@@ -17,10 +17,45 @@ struct ZenProposalReviewSheet: View {
     @State private var saving = false
     @State private var acknowledged = false
     @State private var problem: String?
+    @State private var pendingCreationReadback: PendingCreationReadback?
+
+    private struct PendingCreationReadback: Equatable {
+        let operation: ZenChangeProposal.Operation
+        let recordId: String
+    }
+
+    private var contextIsCurrent: Bool {
+        model.selectedProjectId == sourceProjectId
+            && model.repoId == sourceRepoId
+            && model.checkoutId == sourceCheckoutId
+    }
+
+    static func creationReadbackConfirmed(
+        operation: ZenChangeProposal.Operation,
+        recordId: String,
+        selectedRecord: String?,
+        detail: SemanticRecordDetail?
+    ) -> Bool {
+        let expectedKind: SemanticRecordKind
+        switch operation {
+        case .createRequirement: expectedKind = .requirement
+        case .createPlan: expectedKind = .plan
+        default: return false
+        }
+        guard selectedRecord == "\(expectedKind.rawValue):\(recordId)" else { return false }
+        switch (operation, detail) {
+        case (.createRequirement, .requirement(let requirement)):
+            return requirement.requirementId == recordId
+        case (.createPlan, .plan(let plan)):
+            return plan.planId == recordId
+        default:
+            return false
+        }
+    }
 
     private var ready: Bool {
-        guard !loading,!saving,problem == nil,model.selectedProjectId == sourceProjectId,
-              model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else { return false }
+        guard !loading,!saving,problem == nil,pendingCreationReadback == nil,
+              contextIsCurrent else { return false }
         switch proposal.operation {
         case .createRequirement: return true
         case .reviseRequirement:
@@ -67,8 +102,21 @@ struct ZenProposalReviewSheet: View {
             }
 
             Divider()
+            if let pendingCreationReadback {
+                HStack(spacing:10) {
+                    Text("创建回执已确认 · \(pendingCreationReadback.recordId)。等待详情读回，请刷新核对，不要重复创建。")
+                        .font(.system(size:10)).foregroundStyle(.secondary)
+                    Spacer(minLength:0)
+                    Button(saving ? "核对中…" : "刷新并核对") {
+                        Task { await reconcilePendingCreation() }
+                    }
+                    .disabled(saving || !contextIsCurrent)
+                    .accessibilityIdentifier("zen.proposal.readback.refresh")
+                }
+            }
             Toggle("已核对提案内容、目标项目和影响范围，同意写入 Forge",isOn:$acknowledged)
                 .font(.system(size:11))
+                .disabled(pendingCreationReadback != nil || saving)
             HStack {
                 Spacer()
                 Button("放弃") { dismiss() }
@@ -163,6 +211,7 @@ struct ZenProposalReviewSheet: View {
     private func preflight() async {
         loading=true
         problem=nil
+        pendingCreationReadback=nil
         currentRequirement=nil
         currentPlan=nil
         defer { loading=false }
@@ -255,17 +304,35 @@ struct ZenProposalReviewSheet: View {
     }
 
     private func applyProposal() async {
-        guard ready,acknowledged,model.selectedProjectId == sourceProjectId,
-              model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else { return }
+        guard ready,acknowledged,contextIsCurrent else { return }
         saving=true
+        model.error=nil
         defer { saving=false }
         let changedId:String?
         switch proposal.operation {
         case .createRequirement:
-            changedId=await model.createRequirement(
+            let id=await model.createRequirement(
                 title:proposal.title ?? "",outcome:proposal.outcome ?? "",
                 acceptanceCriteria:proposal.acceptanceCriteria ?? []
             )
+            if let id {
+                guard contextIsCurrent else {
+                    pendingCreationReadback=PendingCreationReadback(operation:.createRequirement,recordId:id)
+                    problem="Requirement 创建回执已确认，但项目或工作区已切换。请返回原上下文刷新核对，不要重复创建。"
+                    return
+                }
+                guard Self.creationReadbackConfirmed(
+                    operation:.createRequirement,recordId:id,
+                    selectedRecord:model.selectedRecord,detail:model.recordDetail
+                ) else {
+                    pendingCreationReadback=PendingCreationReadback(operation:.createRequirement,recordId:id)
+                    problem=model.error ?? "Requirement \(id) 已收到创建回执，但详情尚未确认。请刷新核对，不要重复创建。"
+                    return
+                }
+                changedId=id
+            } else {
+                changedId=nil
+            }
         case .reviseRequirement:
             let ok=await model.reviseRequirement(
                 id:proposal.targetId ?? "",expectedRevision:proposal.expectedRevision ?? 0,
@@ -278,7 +345,24 @@ struct ZenProposalReviewSheet: View {
                 objective:proposal.objective ?? "",requirementId:proposal.requirementId,
                 parentPlanId:nil,expectedRequirementRevision:proposal.expectedRequirementRevision
             )
-            changedId=id != nil ? proposal.requirementId : nil
+            if let id {
+                guard contextIsCurrent else {
+                    pendingCreationReadback=PendingCreationReadback(operation:.createPlan,recordId:id)
+                    problem="Plan 创建回执已确认，但项目或工作区已切换。请返回原上下文刷新核对，不要重复创建。"
+                    return
+                }
+                guard Self.creationReadbackConfirmed(
+                    operation:.createPlan,recordId:id,
+                    selectedRecord:model.selectedRecord,detail:model.recordDetail
+                ) else {
+                    pendingCreationReadback=PendingCreationReadback(operation:.createPlan,recordId:id)
+                    problem=model.error ?? "Plan \(id) 已收到创建回执，但详情尚未确认。请刷新核对，不要重复创建。"
+                    return
+                }
+                changedId=proposal.requirementId
+            } else {
+                changedId=nil
+            }
         case .revisePlan:
             let ok=await model.revisePlan(
                 id:proposal.targetId ?? "",expectedRevision:proposal.expectedRevision ?? 0,
@@ -287,8 +371,7 @@ struct ZenProposalReviewSheet: View {
             changedId=ok ? currentPlan?.requirementId : nil
         }
         if let changedId {
-            guard model.selectedProjectId == sourceProjectId,
-                  model.repoId == sourceRepoId,model.checkoutId == sourceCheckoutId else {
+            guard contextIsCurrent else {
                 problem="操作已返回成功，但项目或工作区已切换。请返回原上下文核对记录，不要重复提交。"
                 return
             }
@@ -297,6 +380,64 @@ struct ZenProposalReviewSheet: View {
         } else {
             problem=model.error ?? "Forge 未确认写入；请先核对当前记录，不要重复提交。"
         }
+    }
+
+    private func reconcilePendingCreation() async {
+        guard let pending=pendingCreationReadback else { return }
+        guard contextIsCurrent else {
+            problem="请先返回提案所属的原项目和工作区，再刷新核对创建回执。"
+            return
+        }
+        saving=true
+        defer { saving=false }
+        problem=nil
+        model.error=nil
+        await model.loadPage()
+        guard contextIsCurrent else {
+            problem="刷新期间项目或工作区已切换。请返回原上下文核对，不要重复创建。"
+            return
+        }
+        let record:ForgeRecord?
+        switch pending.operation {
+        case .createRequirement:
+            record=model.records.first(where:{$0.kind == .requirement && $0.recordId == pending.recordId})
+        case .createPlan:
+            record=model.records.first(where:{$0.kind == .plan && $0.recordId == pending.recordId})
+        default:
+            record=nil
+        }
+        guard let record else {
+            problem=model.error ?? "创建回执已确认，但列表仍未读回该记录。稍后可再次刷新核对，不要重复创建。"
+            return
+        }
+        await model.openRecord(record.id)
+        guard contextIsCurrent else {
+            problem="详情读取期间项目或工作区已切换。请返回原上下文核对，不要重复创建。"
+            return
+        }
+        guard Self.creationReadbackConfirmed(
+            operation:pending.operation,recordId:pending.recordId,
+            selectedRecord:model.selectedRecord,detail:model.recordDetail
+        ) else {
+            problem=model.error ?? "记录已出现在列表，但精确详情尚未确认。稍后再次刷新核对。"
+            return
+        }
+        let requirementId:String
+        switch pending.operation {
+        case .createRequirement:
+            requirementId=pending.recordId
+        case .createPlan:
+            guard let parentId=proposal.requirementId else {
+                problem="Plan 详情已确认，但缺少父 Requirement ID。请返回原上下文核对。"
+                return
+            }
+            requirementId=parentId
+        default:
+            return
+        }
+        pendingCreationReadback=nil
+        onApplied(requirementId)
+        dismiss()
     }
 }
 
