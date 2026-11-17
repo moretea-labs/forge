@@ -6585,6 +6585,236 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
+  test('standalone Recovery restores a real disposable Runtime process over its independent MCP while Primary MCP is unavailable', async () => {
+    if (process.platform !== 'darwin') return;
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    let recoveryChild: ReturnType<typeof spawn> | undefined;
+    let initialPid: number | undefined;
+    let launchdTarget: string | undefined;
+    let restartedPid: number | undefined;
+    const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const waitFor = async (predicate: () => boolean | Promise<boolean>, timeoutMs: number, detail: string) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (await predicate()) return;
+        await new Promise((done) => setTimeout(done, 100));
+      }
+      throw new Error(detail);
+    };
+    const stopPid = async (pid: number | undefined) => {
+      if (!pid || !alive(pid)) return;
+      try { process.kill(pid, 'SIGTERM'); } catch { return; }
+      for (let attempt = 0; attempt < 60 && alive(pid); attempt += 1) await new Promise((done) => setTimeout(done, 100));
+      if (alive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* already exited */ } }
+    };
+    const stopChild = async (child: ReturnType<typeof spawn> | undefined) => {
+      if (!child || child.exitCode !== null || child.signalCode !== null) return;
+      child.kill('SIGTERM');
+      await waitFor(() => child.exitCode !== null || child.signalCode !== null, 5_000, 'child process did not stop');
+    };
+    const launchctl = (...args: string[]) => execFileSync('launchctl', args, {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: home },
+      timeout: 20_000,
+    });
+    const reservePort = async () => {
+      const server = createServer();
+      await new Promise<void>((done, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => done());
+      });
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('disposable port reservation failed');
+      const port = address.port;
+      await new Promise<void>((done, reject) => server.close((error) => error ? reject(error) : done()));
+      return port;
+    };
+    try {
+      process.env.HOME = home;
+      const runtimePort = await reservePort();
+      const recoveryPort = await reservePort();
+      const servicePaths = forgeRuntimeServicePaths(home);
+      runtimeServiceConfig(home);
+      const serviceConfig = JSON.parse(readFileSync(servicePaths.configPath, 'utf8')) as Record<string, unknown>;
+      serviceConfig.host = '127.0.0.1';
+      serviceConfig.port = runtimePort;
+      writeFileSync(servicePaths.configPath, JSON.stringify(serviceConfig, null, 2) + '\n');
+
+      const firstManifestPath = manifest(home, 'release-a', 'artifact-a');
+      const secondManifestPath = manifest(home, 'release-b', 'artifact-b', 2);
+      const releaseRoot = dirname(firstManifestPath);
+      const runtimeScriptPath = join(releaseRoot, 'disposable-runtime.ts');
+      const runtimeScriptSource = [
+        "import { createServer } from 'node:http';",
+        "import { rmSync } from 'node:fs';",
+        "import { acquireRuntimeOwnership, runtimeIncarnationPath } from " + JSON.stringify(resolve('src/runtime/root/ownership.ts')) + ";",
+        "import { removeRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from " + JSON.stringify(resolve('src/runtime/root/status.ts')) + ";",
+        "import { readRuntimeReleaseAuthority } from " + JSON.stringify(resolve('src/runtime/root/release-store.ts')) + ";",
+        "const flag = (name) => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : undefined; };",
+        "const home = flag('--controller-home');",
+        "const host = flag('--host') ?? '127.0.0.1';",
+        "const port = Number(flag('--port'));",
+        "const active = readRuntimeReleaseAuthority(home)?.active;",
+        "if (!active) throw new Error('disposable Runtime release authority missing');",
+        "const runtimeInstanceId = 'disposable-runtime-' + process.pid + '-' + Date.now();",
+        "const ownership = acquireRuntimeOwnership(home, runtimeInstanceId);",
+        "const sessionId = 'disposable-session-' + process.pid;",
+        "const json = (response, status, value) => { response.statusCode = status; response.setHeader('content-type', 'application/json'); response.end(JSON.stringify(value)); };",
+        "const server = createServer((request, response) => {",
+        "  const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;",
+        "  if (request.method === 'GET' && (pathname === '/health' || pathname === '/ready' || pathname === '/transport-ready')) { json(response, 200, { status: 'ok' }); return; }",
+        "  if (request.method === 'GET' && pathname === '/mcp') { response.statusCode = 401; response.setHeader('www-authenticate', 'Bearer'); response.end(JSON.stringify({ error: 'unauthorized' })); return; }",
+        "  if (request.method === 'DELETE' && pathname === '/mcp') { response.statusCode = 204; response.end(); return; }",
+        "  if (request.method !== 'POST' || pathname !== '/mcp') { json(response, 404, { error: 'not_found' }); return; }",
+        "  let body = ''; request.setEncoding('utf8'); request.on('data', (chunk) => { body += chunk; });",
+        "  request.on('end', () => {",
+        "    let rpc; try { rpc = JSON.parse(body); } catch { json(response, 400, { error: 'invalid_json' }); return; }",
+        "    if (rpc.method === 'initialize') { response.setHeader('mcp-session-id', sessionId); json(response, 200, { jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'disposable-runtime', version: '1' } } }); return; }",
+        "    if (rpc.method === 'notifications/initialized') { response.statusCode = 202; response.end(); return; }",
+        "    if (request.headers['mcp-session-id'] !== sessionId) { json(response, 404, { jsonrpc: '2.0', id: rpc.id, error: { code: -32001, message: 'session not found' } }); return; }",
+        "    if (rpc.method === 'tools/list') { json(response, 200, { jsonrpc: '2.0', id: rpc.id, result: { tools: [{ name: 'controller_context', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }] } }); return; }",
+        "    if (rpc.method === 'tools/call') { json(response, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: 'disposable Runtime ready' }] } }); return; }",
+        "    json(response, 200, { jsonrpc: '2.0', id: rpc.id, result: {} });",
+        "  });",
+        "});",
+        "server.listen(port, host, () => {",
+        "  const observedAt = new Date().toISOString();",
+        "  writeRuntimeStatusSnapshot(home, { schemaVersion: 1, runtimeInstanceId, pid: process.pid, releaseId: active.releaseId, artifactIdentity: active.artifactIdentity, endpoint: 'http://' + host + ':' + port + '/mcp', startedAt: observedAt, updatedAt: observedAt, readiness: { ready: true, reasonCodes: [], diagnostics: { database: { outcome: 'pass' }, scheduler: { outcome: 'pass' }, releaseCoherence: { outcome: 'pass' }, mcpEndToEnd: { outcome: 'pass' } }, observedAt } });",
+        "  process.stdout.write('RUNTIME_READY\\\\n');",
+        "});",
+        "let stopping = false;",
+        "const stop = () => { if (stopping) return; stopping = true; server.close(() => { ownership.release(); rmSync(runtimeIncarnationPath(home), { force: true }); removeRuntimeStatusSnapshot(home, runtimeInstanceId, process.pid); process.exit(0); }); server.closeAllConnections?.(); setTimeout(() => process.exit(1), 5000).unref(); };",
+        "process.on('SIGTERM', stop); process.on('SIGINT', stop);",
+      ].join('\n');
+      writeFileSync(runtimeScriptPath, runtimeScriptSource);
+      const shellQuote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
+      const runtimeWrapper = '#!/bin/sh\nexec ' + shellQuote(process.execPath) + ' ' + shellQuote(runtimeScriptPath) + ' "$@"\n';
+      const firstManifest = JSON.parse(readFileSync(firstManifestPath, 'utf8')) as Record<string, unknown>;
+      firstManifest.artifactIdentity = 'sha256:' + createHash('sha256').update(runtimeWrapper).digest('hex');
+      writeFileSync(firstManifestPath, JSON.stringify(firstManifest, null, 2) + '\n');
+      const runtimeEntrypoint = join(releaseRoot, 'forge-runtime');
+      writeFileSync(runtimeEntrypoint, runtimeWrapper, { mode: 0o700 });
+      ensureActiveRuntimeRelease(home, firstManifestPath);
+      writeMainToken(home);
+      const primaryEndpoint = 'http://127.0.0.1:' + runtimePort + '/mcp';
+      const primaryHealth = 'http://127.0.0.1:' + runtimePort + '/health';
+      const config = createRecoveryConfig(home, {
+        publicMcpUrl: primaryEndpoint,
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 20_000 },
+        readOnlyTool: { name: 'controller_context' },
+      });
+      mkdirSync(dirname(servicePaths.stdoutPath), { recursive: true });
+      const launchAgent = ensureForgeRuntimeLaunchAgentContract({ controllerHome: home, installUserLaunchAgent: true });
+      expect(launchAgent.mode).toBe('release');
+      const uid = process.getuid?.();
+      if (uid === undefined) throw new Error('launchd test requires a user UID');
+      const domain = 'gui/' + uid;
+      launchdTarget = domain + '/' + launchAgent.paths.label;
+      launchctl('bootstrap', domain, launchAgent.paths.installedPlistPath);
+      launchctl('enable', launchdTarget);
+      launchctl('kickstart', '-k', launchdTarget);
+      await waitFor(async () => { try { return (await fetch(primaryHealth)).status === 200; } catch { return false; } }, 15_000, 'initial disposable launchd Runtime did not become ready');
+      initialPid = readRuntimeStatusSnapshot(home)?.pid;
+      if (!initialPid) throw new Error('initial launchd Runtime did not publish its process identity');
+      await attestKnownGood(config);
+      publishRuntimeRelease(home, secondManifestPath, 'publish-release-b');
+
+
+
+      const recoveryReleaseRoot = join(home, 'recovery', 'releases', 'recovery-bootstrap-fixture');
+      mkdirSync(recoveryReleaseRoot, { recursive: true });
+      const recoveryEntryPath = resolve('src/runtime/standalone-recovery/entry.ts');
+      const recoveryExecutable = join(recoveryReleaseRoot, 'forge-recovery');
+      const recoveryExecutableSource = '#!/bin/sh\nexec ' + shellQuote(process.execPath) + ' ' + shellQuote(recoveryEntryPath) + ' "$@"\n';
+      writeFileSync(recoveryExecutable, recoveryExecutableSource, { mode: 0o700 });
+      writeRecoveryReleaseManifest(recoveryReleaseRoot, {
+        schemaVersion: 1,
+        releaseRevision: 'recovery-bootstrap-fixture',
+        sourceCommit: 'a'.repeat(40),
+        sourceRoot: process.cwd(),
+        cleanWorkspace: true,
+        builtAt: new Date().toISOString(),
+        productVersion: FORGE_VERSION,
+        artifacts: { 'forge-recovery': { sha256: createHash('sha256').update(recoveryExecutableSource).digest('hex') } },
+      });
+      publishRecoveryRelease(home, recoveryReleaseRoot);
+      const recoveryConfig = initializeStandaloneRecovery(home, recoveryPort, {
+        installProfile: 'manual',
+        publicMcpUrl: primaryEndpoint,
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 20_000 },
+        readOnlyTool: { name: 'controller_context' },
+      });
+      const tokenPath = recoveryConfig.gateway?.bearerTokenFile;
+      if (!tokenPath) throw new Error('standalone Recovery token path missing');
+      const token = (JSON.parse(readFileSync(tokenPath, 'utf8')) as { token: string }).token;
+      recoveryChild = spawn(process.execPath, [recoveryEntryPath, 'daemon', '--controller-home', home], {
+        cwd: process.cwd(),
+        env: { ...process.env, HOME: home },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let recoveryError = '';
+      recoveryChild.stderr?.on('data', (chunk) => { recoveryError += chunk.toString('utf8'); });
+      const recoveryHealth = 'http://127.0.0.1:' + recoveryPort + '/health';
+      await waitFor(async () => {
+        if (recoveryChild?.exitCode !== null) throw new Error('Recovery daemon exited: ' + recoveryError);
+        try { return (await fetch(recoveryHealth)).status === 200; } catch { return false; }
+      }, 15_000, 'independent Recovery daemon did not become ready: ' + recoveryError);
+
+      if (!launchdTarget) throw new Error('disposable launchd target was not installed');
+      launchctl('bootout', launchdTarget);
+      await waitFor(async () => {
+        try { await fetch(primaryHealth, { signal: AbortSignal.timeout(250) }); return false; } catch { return true; }
+      }, 5_000, 'Primary MCP remained available after Runtime shutdown');
+      expect((await fetch(recoveryHealth)).status).toBe(200);
+
+      const endpoint = 'http://127.0.0.1:' + recoveryPort + '/recovery/mcp';
+      const headers = { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+      const send = (body: Record<string, unknown>) => fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
+      const decode = async (response: Response) => {
+        const raw = await response.text();
+        const data = raw.split(/\r?\n/).find((line) => line.startsWith('data:'));
+        return JSON.parse(data ? data.slice(5).trim() : raw) as { result?: { structuredContent?: Record<string, unknown> } };
+      };
+      const initialized = await send({
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'real-disposable-recovery-test', version: '1' } },
+      });
+      expect(initialized.status).toBe(200);
+      expect((await decode(initialized)).result).toMatchObject({ serverInfo: { name: 'forge-standalone-recovery' } });
+      expect((await send({ jsonrpc: '2.0', method: 'notifications/initialized' })).status).toBe(202);
+      const recovered = await send({
+        jsonrpc: '2.0', id: 2, method: 'tools/call',
+        params: { name: 'recover_primary_runtime', arguments: { request_id: 'recovery-real-process-primary-loss-20261117', ...recoveryMutationIdentityArgs(recoveryConfig) } },
+      });
+      expect(recovered.status).toBe(200);
+      const recoveredPayload = await decode(recovered);
+      if (!recoveredPayload.result?.structuredContent) throw new Error('Recovery tool returned no structured result: ' + JSON.stringify(recoveredPayload).slice(0, 8_000));
+      expect(recoveredPayload.result.structuredContent).toMatchObject({ ok: true, attempted: true, rollback: { ok: true } });
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+      await waitFor(async () => { try { return (await fetch(primaryHealth)).status === 200; } catch { return false; } }, 10_000, 'recovered Runtime did not reopen its health endpoint');
+      restartedPid = readRuntimeStatusSnapshot(home)?.pid;
+      if (!restartedPid) throw new Error('recovered Runtime did not publish its process identity');
+      expect(restartedPid).toBeGreaterThan(0);
+      expect(restartedPid).not.toBe(initialPid);
+      expect(alive(restartedPid)).toBe(true);
+      expect(alive(initialPid)).toBe(false);
+      const status = await send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'runtime_status', arguments: {} } });
+      expect(status.status).toBe(200);
+      expect((await decode(status)).result?.structuredContent).toMatchObject({ running: true, ready: true, stale: false, snapshot: { releaseId: 'release-a' } });
+      const primaryInitialize = await fetch(primaryEndpoint, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'primary-reconnect-check', version: '1' } } }) });
+      expect(primaryInitialize.status).toBe(200);
+      expect((await fetch(recoveryHealth)).status).toBe(200);
+    } finally {
+      if (launchdTarget) { try { launchctl('bootout', launchdTarget); } catch { /* already unloaded */ } }
+      await stopChild(recoveryChild);
+      await stopPid(initialPid);
+      await stopPid(restartedPid);
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  }, 120_000);
+
   test('Recovery Connector verifier requires stateless legacy MCP across SSE responses', async () => {
     const home = controllerHome();
     ensureMcpControllerHomeOAuthPassphrase(home);
