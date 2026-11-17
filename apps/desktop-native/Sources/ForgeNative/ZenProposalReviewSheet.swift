@@ -28,6 +28,7 @@ struct ZenProposalReviewSheet: View {
                 && currentRequirement?.state == "open"
         case .createPlan:
             return currentRequirement?.state == "open"
+                && currentRequirement?.revision == proposal.expectedRequirementRevision
         case .revisePlan:
             return currentPlan.map(proposal.matchesCurrentPlan) == true
         }
@@ -103,7 +104,20 @@ struct ZenProposalReviewSheet: View {
                            after:proposal.acceptanceCriteria?.joined(separator:"\n"))
             }
         case .createPlan:
-            comparison("所属 Requirement",before:nil,after:currentRequirement?.title)
+            if let currentRequirement {
+                Text("依据版本 · Requirement v\(currentRequirement.revision)")
+                    .font(.system(size:11,design:.monospaced)).foregroundStyle(.secondary)
+                comparison("所属 Requirement",before:nil,after:currentRequirement.title)
+                comparison("Requirement 预期目标",before:nil,after:currentRequirement.outcomeStatement)
+                if !currentRequirement.acceptanceCriteria.isEmpty {
+                    VStack(alignment:.leading,spacing:6) {
+                        Text("当前验收标准").font(.system(size:12,weight:.semibold))
+                        ForEach(currentRequirement.acceptanceCriteria,id:\.self) { criterion in
+                            Text("• \(criterion)").font(.system(size:11))
+                        }
+                    }
+                }
+            }
             comparison("新增计划目标",before:nil,after:proposal.objective)
         case .revisePlan:
             if let currentPlan {
@@ -209,6 +223,10 @@ struct ZenProposalReviewSheet: View {
                     detail.revision != proposal.expectedRevision {
                     throw ZenProposalIssue.validation("Requirement 版本已变化，提案过期；请重新分析。")
                 }
+                if proposal.operation == .createPlan &&
+                    detail.revision != proposal.expectedRequirementRevision {
+                    throw ZenProposalIssue.validation("父 Requirement 版本已变化，Plan 提案过期；请重新分析。")
+                }
             case .revisePlan:
                 guard let id=proposal.targetId else {
                     throw ZenProposalIssue.validation("缺少 Plan ID。")
@@ -258,7 +276,7 @@ struct ZenProposalReviewSheet: View {
         case .createPlan:
             let id=await model.createPlan(
                 objective:proposal.objective ?? "",requirementId:proposal.requirementId,
-                parentPlanId:nil
+                parentPlanId:nil,expectedRequirementRevision:proposal.expectedRequirementRevision
             )
             changedId=id != nil ? proposal.requirementId : nil
         case .revisePlan:

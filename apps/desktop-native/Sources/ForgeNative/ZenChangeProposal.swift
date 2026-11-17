@@ -27,6 +27,7 @@ struct ZenChangeProposal: Decodable, Identifiable {
     let rationale: String
     let targetId: String?
     let expectedRevision: Int?
+    let expectedRequirementRevision: Int?
     let requirementId: String?
     let title: String?
     let outcome: String?
@@ -150,7 +151,7 @@ struct ZenChangeProposal: Decodable, Identifiable {
     - BLOCKED：存在真实权限、数据或能力阻塞，rationale 说明阻塞；停止自动精化。
     - ACCEPT：仅当事实完整、方案可验收且你明确接受最终内容时使用，并完整填写下方提案字段。工具成功、空闲或普通文本都不能推导 ACCEPT。
     CONTINUE / NEEDS_USER / BLOCKED 只填写 decision 和 rationale，不附带可写入提案。
-    ACCEPT 只绑定同一个 JSON 块中的内容及 expectedRevision；不得为未核实的内容输出 ACCEPT。
+    ACCEPT 只绑定同一个 JSON 块中的内容及对应 revision 字段；修改既有记录使用 expectedRevision，新增 Plan 使用 expectedRequirementRevision。不得为未核实的内容输出 ACCEPT。
     (a) 改变既有 Requirement 目标使用 revise_requirement；
     (b) 在既有目标下改变方法使用 revise_plan；
     (c) 独立可验收的新目标使用 create_requirement；
@@ -163,6 +164,7 @@ struct ZenChangeProposal: Decodable, Identifiable {
       "rationale": "选择修改或新增的依据与影响范围",
       "targetId": null,
       "expectedRevision": null,
+      "expectedRequirementRevision": null,
       "requirementId": null,
       "title": null,
       "outcome": null,
@@ -171,7 +173,7 @@ struct ZenChangeProposal: Decodable, Identifiable {
     }
     字段按操作填写：新增 Requirement 需要 title/outcome/acceptanceCriteria；
     修改 Requirement 需要 targetId/expectedRevision/title/outcome/acceptanceCriteria；
-    新增 Plan 需要 requirementId/objective；
+    新增 Plan 需要 requirementId/expectedRequirementRevision/objective；expectedRequirementRevision 必须是刚读取并核实的父 Requirement 当前语义版本；
     修改 Plan 需要 targetId/expectedRevision/requirementId/objective；requirementId 必须与当前 Plan 的所属 Requirement 一致，独立 Plan 填 null。
     当前分析会话如果已关联 Requirement 或 Plan，则任何修改提案不得指向其他记录。
     每次只提一个独立变更，不输出多个代码块。最终写入必须由用户在 Zen 中明确批准。
@@ -189,16 +191,17 @@ struct ZenChangeProposal: Decodable, Identifiable {
         case .createRequirement:
             return valid(title,limit:240) && valid(outcome,limit:2000)
                 && !criteria.isEmpty && targetId == nil && expectedRevision == nil
+                && expectedRequirementRevision == nil
         case .reviseRequirement:
             return valid(targetId,limit:160) && (expectedRevision ?? 0) > 0
                 && valid(title,limit:240) && valid(outcome,limit:2000)
-                && acceptanceCriteria != nil
+                && acceptanceCriteria != nil && expectedRequirementRevision == nil
         case .createPlan:
-            return valid(requirementId,limit:160) && valid(objective,limit:2000)
-                && targetId == nil && expectedRevision == nil
+            return valid(requirementId,limit:160) && (expectedRequirementRevision ?? 0) > 0
+                && valid(objective,limit:2000) && targetId == nil && expectedRevision == nil
         case .revisePlan:
             return valid(targetId,limit:160) && (expectedRevision ?? 0) > 0
-                && valid(objective,limit:2000)
+                && valid(objective,limit:2000) && expectedRequirementRevision == nil
         }
     }
 }

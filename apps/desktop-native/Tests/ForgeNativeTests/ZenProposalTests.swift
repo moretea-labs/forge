@@ -191,7 +191,7 @@ final class ZenProposalTests: XCTestCase {
             "\"targetId\":\"REQ-B\",\"expectedRevision\":3,\"title\":\"需求\",\"outcome\":\"目标\",\"acceptanceCriteria\":[]")
         XCTAssertFalse(wrongRequirement.matchesAnalysisContext(requirementId:"REQ-A",planId:nil))
         let wrongParent = try proposal("create_plan",
-            "\"requirementId\":\"REQ-B\",\"objective\":\"新计划\"")
+            "\"requirementId\":\"REQ-B\",\"expectedRequirementRevision\":1,\"objective\":\"新计划\"")
         XCTAssertFalse(wrongParent.matchesAnalysisContext(requirementId:"REQ-A",planId:nil))
 
         var thread=ChatThread(repoId:"repo-a",checkoutId:"checkout-a",projectId:"project-a",
@@ -311,9 +311,16 @@ final class ZenProposalTests: XCTestCase {
 
     func testRejectsAmbiguousOrUnsafeProposalContent() {
         let valid = fenced(
-            #"{"decision":"ACCEPT","operation":"create_plan","rationale":"既有目标下增加方案","requirementId":"REQ-1","objective":"原生适配"}"#
+            #"{"decision":"ACCEPT","operation":"create_plan","rationale":"既有目标下增加方案","requirementId":"REQ-1","expectedRequirementRevision":1,"objective":"原生适配"}"#
         )
+        XCTAssertEqual(try ZenChangeProposal.parse(valid).expectedRequirementRevision,1)
         XCTAssertThrowsError(try ZenChangeProposal.parse(valid + "\n" + valid))
+        XCTAssertThrowsError(try ZenChangeProposal.parse(fenced(
+            "{\"decision\":\"ACCEPT\",\"operation\":\"create_plan\",\"rationale\":\"缺少父版本\",\"requirementId\":\"REQ-1\",\"objective\":\"原生适配\"}"
+        )))
+        XCTAssertThrowsError(try ZenChangeProposal.parse(fenced(
+            "{\"decision\":\"ACCEPT\",\"operation\":\"create_plan\",\"rationale\":\"非法父版本\",\"requirementId\":\"REQ-1\",\"expectedRequirementRevision\":0,\"objective\":\"原生适配\"}"
+        )))
         XCTAssertThrowsError(try ZenChangeProposal.parse("没有提案"))
         XCTAssertThrowsError(try ZenChangeProposal.parse(fenced(
             #"{"decision":"ACCEPT","operation":"revise_plan","rationale":"未验证版本","targetId":"PLAN-1","expectedRevision":0,"objective":"目标"}"#

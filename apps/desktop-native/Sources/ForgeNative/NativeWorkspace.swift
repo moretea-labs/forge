@@ -4197,7 +4197,10 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
-    func createPlan(objective:String,requirementId:String?,parentPlanId:String?) async -> String? {
+    func createPlan(
+        objective:String,requirementId:String?,parentPlanId:String?,
+        expectedRequirementRevision:Int? = nil
+    ) async -> String? {
         guard let projectId=requireWritableSemanticProjectId() else { return nil }
         let targetRepoId=projectRepositoryId
         let targetPage=page
@@ -4207,11 +4210,19 @@ final class NativeWorkspace: ObservableObject {
         let targetPlanningPageRequestGeneration=planningPageRequestGeneration
         let cleanObjective=objective.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !cleanObjective.isEmpty else { error="Plan 目标不能为空。"; return nil }
+        if let expectedRequirementRevision,
+           (expectedRequirementRevision < 1 || requirementId?.isEmpty != false) {
+            error="创建 Plan 前必须绑定有效的父 Requirement 版本。"
+            return nil
+        }
         let id=Self.semanticRecordId(prefix:"PLAN")
         var arguments:[String:Any]=["projectId":projectId,"planId":id,"objective":cleanObjective]
         if let targetRepoId { arguments["repoId"]=targetRepoId }
         if let requirementId,!requirementId.isEmpty { arguments["requirementId"]=requirementId }
         if let parentPlanId,!parentPlanId.isEmpty { arguments["parentPlanId"]=parentPlanId }
+        if let expectedRequirementRevision {
+            arguments["expectedRequirementRevision"]=expectedRequirementRevision
+        }
         do {
             _=try await ForgeBridge.request("create_plan",arguments)
             guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId,
