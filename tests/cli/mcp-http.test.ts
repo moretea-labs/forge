@@ -775,6 +775,26 @@ describe('mcp http transport', () => {
         const reinitializedSessionId = reinitialized.headers.get('mcp-session-id');
         expect(reinitializedSessionId).toBeTruthy();
         expect(reinitializedSessionId).not.toBe(sessionId);
+
+        const reinitializedTools = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer ' + token,
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'mcp-session-id': reinitializedSessionId!,
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'reinitialized-tools-list', method: 'tools/list' }),
+        });
+        expect(reinitializedTools.status).toBe(200);
+        const reinitializedToolsText = await reinitializedTools.text();
+        const reinitializedToolsData = reinitializedToolsText.split(/\r?\n/).find((line) => line.startsWith('data:'));
+        const reinitializedToolsBody = JSON.parse(reinitializedToolsData ? reinitializedToolsData.slice(5).trim() : reinitializedToolsText) as {
+          result?: { tools?: unknown[] };
+        };
+        expect(Array.isArray(reinitializedToolsBody.result?.tools)).toBe(true);
+        expect(reinitializedToolsBody.result?.tools?.length).toBeGreaterThan(0);
+
         const reinitializedDelete = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'DELETE',
           headers: { authorization: `Bearer ${token}`, 'mcp-session-id': reinitializedSessionId! },
