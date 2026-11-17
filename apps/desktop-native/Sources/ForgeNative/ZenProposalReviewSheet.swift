@@ -30,6 +30,13 @@ struct ZenProposalReviewSheet: View {
             && model.checkoutId == sourceCheckoutId
     }
 
+    private var sourceScopeSummary: String {
+        let project = contextIsCurrent ? (model.semanticProject?.displayName ?? sourceProjectId) : sourceProjectId
+        let repository = sourceRepoId.map { contextIsCurrent ? (model.project?.label ?? $0) : $0 } ?? "项目级"
+        let checkout = sourceCheckoutId.map { contextIsCurrent ? (model.checkoutBranch ?? $0) : $0 } ?? "无 Checkout"
+        return [project,repository,checkout].joined(separator:" · ")
+    }
+
     static func creationReadbackConfirmed(
         operation: ZenChangeProposal.Operation,
         recordId: String,
@@ -76,6 +83,10 @@ struct ZenProposalReviewSheet: View {
                     Text("审核 AI 变更提案").font(.system(size:17,weight:.semibold))
                     Text(proposal.operation.displayName).font(.system(size:11))
                         .foregroundStyle(.secondary)
+                    Text(sourceScopeSummary)
+                        .font(.system(size:10)).foregroundStyle(.secondary)
+                        .lineLimit(1).textSelection(.enabled)
+                        .accessibilityIdentifier("zen.proposal.scope")
                 }
                 Spacer()
                 Button("关闭") { dismiss() }.buttonStyle(.plain)
