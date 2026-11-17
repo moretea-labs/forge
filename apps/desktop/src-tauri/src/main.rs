@@ -3206,7 +3206,8 @@ fn responses_assistant_message(output: &Value) -> Result<Value, String> {
                 let call_id = item.get("call_id").and_then(Value::as_str)
                     .or_else(|| item.get("id").and_then(Value::as_str)).unwrap_or("");
                 let name = item.get("name").and_then(Value::as_str).unwrap_or("");
-                let arguments = item.get("arguments").and_then(Value::as_str).unwrap_or("{}");
+                let arguments = item.get("arguments").and_then(Value::as_str)
+                    .ok_or("FORGE_DESKTOP_API_TOOL_ARGUMENTS_INVALID")?;
                 if arguments.len() > 64 * 1024 {
                     return Err("FORGE_DESKTOP_API_TOOL_ARGUMENTS_TOO_LARGE".into());
                 }
@@ -3295,7 +3296,8 @@ fn provider_tool_calls(protocol: &str, output: &Value) -> Result<Vec<(String, St
         };
         if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
             for call in calls {
-                let arguments = call.pointer("/function/arguments").and_then(Value::as_str).unwrap_or("{}");
+                let arguments = call.pointer("/function/arguments").and_then(Value::as_str)
+                    .ok_or("FORGE_DESKTOP_API_TOOL_ARGUMENTS_INVALID")?;
                 if arguments.len() > 64 * 1024 { return Err("FORGE_DESKTOP_API_TOOL_ARGUMENTS_TOO_LARGE".into()); }
                 requests.push((
                     call.get("id").and_then(Value::as_str).unwrap_or("").to_string(),
@@ -4650,6 +4652,22 @@ mod tests {
                                 "name":calls[index].1,"arguments":calls[index].2.to_string()}})).collect::<Vec<_>>()}}]}).to_string(), "[DONE]".into()],
                     };
                 }
+                if matches!(stop_reason, Some("missing-wire-args" | "null-wire-args" | "object-wire-args")) {
+                    let args = json!({"command":["bun","test","tests/fixture.test.ts"],"timeout_ms":1000});
+                    let malformed = match stop_reason {
+                        Some("object-wire-args") => json!({}),
+                        _ => Value::Null,
+                    };
+                    let mut calls = (0..2).map(|index| json!({
+                        "type":"function_call", "id":format!("item-{index}"),
+                        "call_id":format!("call-{index}"), "name":if index == 0 { "run_command" } else { "git_status" },
+                        "arguments":args.to_string(),
+                    })).collect::<Vec<_>>();
+                    if stop_reason == Some("missing-wire-args") {
+                        calls[1].as_object_mut().unwrap().remove("arguments");
+                    } else { calls[1]["arguments"] = malformed; }
+                    frames = vec![json!({"type":"response.completed","response":{"output":calls}}).to_string()];
+                }
                 if stop_reason == Some("foreign-done") {
                     // A proxy terminates an Anthropic preview using OpenAI's sentinel.
                     frames.pop();
@@ -4837,6 +4855,51 @@ mod tests {
                     "{protocol}: invalid batch must be rejected before the first command dispatch");
                 assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_NOT_AUTHORIZED");
                 assert_eq!(requests.len(), 1, "no automatic retry");
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_wire_arguments_never_dispatch_commands() {
+        for fault in ["missing-wire-args", "null-wire-args", "object-wire-args"] {
+            let (endpoint, server) = spawn_scripted_agent_provider("responses", "bun", Some(fault));
+            let host = ScriptedAgentLoopHost::default();
+            let config = json!({"apiProfiles":[{
+                "id":"wire-test","endpoint":endpoint,"model":"test-model","apiProtocol":"responses"
+            }]});
+            let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+            let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+                &host, config, vec![json!({"role":"user","content":"Run the focused test"})],
+                Some("repo_test".into()), Some("checkout_test".into()), "conv-wire".into(),
+                Some("api:wire-test".into()), None, true, &mut cancellation,
+            ));
+            let requests = server.join().unwrap();
+            assert!(host.tool_calls.lock().unwrap().is_empty(),
+                "{fault}: malformed wire arguments must reject the batch before any dispatch");
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_ARGUMENTS_INVALID");
+            assert_eq!(requests.len(), 1, "no automatic retry");
+        }
+    }
+
+    #[test]
+    fn tool_arguments_require_explicit_json_strings() {
+        for protocol in ["openai", "responses"] {
+            for arguments in [None, Some(Value::Null), Some(json!({})), Some(json!([])), Some(json!(42)), Some(json!(true)), Some(json!("{}"))] {
+                let mut call = json!({"id":"call-1","type":"function","function":{"name":"git_status"}});
+                let mut item = json!({"id":"item-1","type":"function_call","call_id":"call-1","name":"git_status"});
+                if let Some(value) = &arguments {
+                    call["function"]["arguments"] = value.clone();
+                    item["arguments"] = value.clone();
+                }
+                let output = if protocol == "responses" { json!({"output":[item]}) }
+                    else { json!({"choices":[{"message":{"tool_calls":[call]}}]}) };
+                let result = provider_tool_calls(protocol, &output);
+                if arguments == Some(json!("{}")) {
+                    assert_eq!(result.unwrap(), vec![("call-1".into(), "git_status".into(), json!({}))]);
+                } else {
+                    assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_ARGUMENTS_INVALID",
+                        "{protocol}: {arguments:?}");
+                }
             }
         }
     }
