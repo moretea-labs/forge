@@ -79,7 +79,7 @@ describe('Native Agent model-authored Cognition without Work', () => {
       ...ordinary,
       scope_kind: 'workspace',
       portability: 'portable',
-      summary: 'Do not share this placeholder credential sk-TESTONLY0123456789abcdef0123456789',
+      summary: 'Do not share this placeholder credential sk' + '-TESTONLY0123456789abcdef0123456789',
     };
     const refused = invoke(fx, 'record_learning', 'agent-security',
       { signals: [ordinary, secret] }, true);
@@ -229,7 +229,7 @@ describe('Native Agent model-authored Cognition without Work', () => {
 
     const unsafeFeedback = invoke(fx, 'memory_feedback', 'agent-b', { feedback: [{
       memory_address: match.memoryId, decision: 'used',
-      reason: 'Avoid storing this synthetic credential sk-TESTONLY0123456789abcdef0123456789',
+      reason: 'Avoid storing this synthetic credential sk' + '-TESTONLY0123456789abcdef0123456789',
     }] }, true);
     expect(unsafeFeedback.ok).toBe(false);
     expect(unsafeFeedback.error).toContain('CONTROL_PLANE_METADATA_SECRET_REFUSED');

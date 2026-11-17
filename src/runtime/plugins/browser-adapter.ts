@@ -342,7 +342,7 @@ type PageLike = {
   mainFrame?(): FrameLike;
   locator?(selector: string): { screenshot(options?: Record<string, unknown>): Promise<Buffer> };
   on?(event: string, handler: (...args: unknown[]) => void): void;
-  bringToFront?(): Promise<void>;
+  bringToFront?(): Promise<void | { frontmost: boolean; active: boolean }>;
   foregroundState?(): Promise<{ frontmost: boolean; active: boolean }>;
   trustedInput?(input: Record<string, unknown>): Promise<void>;
   mouse?: {
@@ -1241,9 +1241,23 @@ async function establishAuthoritativeNativeForeground(
     );
   }
 
-  await page.bringToFront();
-  await delay(waitMs);
-  let state = await page.foregroundState();
+  // The verification budget is a maximum settling window, not a mandatory
+  // sleep. An exact native tab that is already foreground needs no delay.
+  const verifiedState = async (): Promise<{ frontmost: boolean; active: boolean }> => {
+    const immediate = await page.foregroundState!();
+    if ((immediate.frontmost && immediate.active) || waitMs <= 0) return immediate;
+    await delay(waitMs);
+    return page.foregroundState!();
+  };
+  // The native activate-tab provider already returns verified post-activation
+  // metadata. Reuse that exact observation instead of issuing a redundant
+  // Apple Events metadata request. Other providers still take the fresh probe.
+  const activateAndVerify = async (): Promise<{ frontmost: boolean; active: boolean }> => {
+    const observed = await page.bringToFront!();
+    if (observed?.frontmost && observed.active) return observed;
+    return verifiedState();
+  };
+  let state = await activateAndVerify();
   if (state.frontmost && state.active) return state;
 
   const product = connection.browserProduct;
@@ -1269,9 +1283,7 @@ async function establishAuthoritativeNativeForeground(
 
   // App-level activation is intentionally separate from tab selection. Re-assert the exact
   // saved tab after the app becomes frontmost, then verify both authorities together.
-  await page.bringToFront();
-  await delay(waitMs);
-  state = await page.foregroundState();
+  state = await activateAndVerify();
   if (!state.frontmost || !state.active) {
     throw new AssistantPluginError(
       'PLUGIN_BROWSER_ACTIVATION_FAILED',
@@ -3016,7 +3028,12 @@ async function openNativeAttachedContext(
       && isExplicitNativeUserOwnedSession(target.existingSession)
       && browserInternalUrlProduct(target.url) === savedProduct,
     );
-    if (matchedBy !== 'owned_token' && page.waitForLoadState && !explicitInternalUserSession) {
+    // Both matching states are an exact stable-tab reattach without navigation.
+    // A user-owned tab may stream or report "loading" indefinitely; requiring
+    // full load completion before every read/foreground action creates 30-60s
+    // timeouts. Navigation/reload/explicit wait_for_load_state keep their own
+    // post-action load checks and the strict live URL/identity checks below.
+    if (matchedBy !== 'owned_token' && matchedBy !== 'saved_url' && page.waitForLoadState && !explicitInternalUserSession) {
       await page.waitForLoadState(waitUntil(args.wait_until), { timeout });
     }
     const observedPageUrl = page.url();
