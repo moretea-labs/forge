@@ -20,7 +20,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY } from '@modelcontextprotocol/server';
-import { mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath } from '../../adapters/mcp/auth';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { loadMcpServiceLocalConfig, mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath, writeMcpServiceLocalConfig } from '../../adapters/mcp/auth';
 import { runMcpSetupChatgpt } from '../../adapters/mcp/setup';
 import { mergeNoProxy, withDirectNetworkProxyBypass } from '../../adapters/mcp/proxy-env';
 import { McpSessionRegistry } from '../../adapters/mcp/transports/session-registry';
@@ -28,7 +29,7 @@ import { admitMcpPost, createMcpHttpSessionRegistry, mcpRequestError } from '../
 import { recentMcpTransportEvidence } from '../../adapters/mcp/transports/http-observation';
 import { flushMcpDiagnostics, readRecentMcpTransportEvents, recordMcpTransportEvent } from '../../src/runtime/diagnostics/mcp-timing';
 import { readExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
-import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
+import { readRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import {
   armPackageConnectorCutoverDrain,
   clearPackageConnectorCutoverDrain,
@@ -1035,6 +1036,140 @@ describe('mcp http transport', () => {
     }
   });
 
+  test('returns a deterministic session-reset path after the Canonical Runtime process restarts', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-runtime-process-restart-'));
+    const runtimePort = await freePort();
+    let runtimeProc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    const clients: Client[] = [];
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(runtimePort) });
+        const token = (JSON.parse(readFileSync(mcpControllerHomeTokenPath(controllerHome), 'utf8')) as { bearerToken: string }).bearerToken;
+        expect(token.length).toBeGreaterThan(0);
+        const localConfig = loadMcpServiceLocalConfig(controllerHome) ?? {};
+        writeMcpServiceLocalConfig(controllerHome, {
+          ...localConfig,
+          localController: { enabled: false, mode: 'disabled', host: '127.0.0.1', port: 8766 },
+        });
+
+        const runtimeTokenFile = join(controllerHome, 'mcp', 'runtime-token');
+        mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+        writeFileSync(runtimeTokenFile, `${token}\n`, { encoding: 'utf8', mode: 0o600 });
+        const releaseManifestPath = join(repoRoot, 'runtime-release.json');
+        writeFileSync(releaseManifestPath, `${JSON.stringify({
+          schemaVersion: 1,
+          releaseId: 'mcp-runtime-process-restart',
+          artifactIdentity: 'sha256:mcp-runtime-process-restart',
+          entrypoint: 'forge-runtime',
+          arguments: [],
+          configurationSchemaVersion: 1,
+          controllerHome,
+          databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+          workerProtocolVersion: 1,
+          createdAt: new Date().toISOString(),
+        }, null, 2)}\n`, 'utf8');
+
+        const childEnv = isolatedMcpProcessEnv(controllerHome, { FORGE_MCP_TOKEN: token });
+        const startRuntime = () => Bun.spawn([
+          process.execPath,
+          join(process.cwd(), 'src/cli/runtime/entry.ts'),
+          '--controller-home', controllerHome,
+          '--repo', repoRoot,
+          '--release-manifest', releaseManifestPath,
+          '--host', '127.0.0.1',
+          '--port', String(runtimePort),
+          '--auth-token-file', runtimeTokenFile,
+        ], { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: childEnv });
+        const waitForRuntimeReady = async (proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'>) => {
+          let lastObservation = 'not observed';
+          for (let attempt = 0; attempt < 400; attempt += 1) {
+            if (proc.exitCode !== null) throw new Error(`RUNTIME_EXITED_BEFORE_READY: ${proc.exitCode}; ${lastObservation}`);
+            try {
+              const response = await fetch(`http://127.0.0.1:${runtimePort}/ready`);
+              const readiness = await response.json() as { ready?: boolean; reasonCodes?: string[] };
+              lastObservation = `HTTP ${response.status}: ${JSON.stringify(readiness)}`;
+              if (response.ok && readiness.ready === true) return;
+            } catch (error) {
+              lastObservation = error instanceof Error ? error.message : String(error);
+            }
+            await Bun.sleep(50);
+          }
+          throw new Error(`RUNTIME_NOT_READY: ${lastObservation}`);
+        };
+
+        const firstRuntimeProc = startRuntime();
+        runtimeProc = firstRuntimeProc;
+        await waitForRuntimeReady(firstRuntimeProc);
+        const firstRuntime = readRuntimeStatusSnapshot(controllerHome);
+        expect(firstRuntime).toMatchObject({ pid: firstRuntimeProc.pid, readiness: { ready: true } });
+
+        const endpoint = `http://127.0.0.1:${runtimePort}/mcp`;
+        const firstTransport = new StreamableHTTPClientTransport(new URL(endpoint), {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+        });
+        const firstClient = new Client({ name: 'forge-runtime-process-restart-test', version: '1.0.0' });
+        clients.push(firstClient);
+        await firstClient.connect(firstTransport);
+        const firstSessionId = firstTransport.sessionId;
+        expect(firstSessionId).toBeTruthy();
+        const firstTools = await firstClient.listTools();
+        expect(firstTools.tools.map((tool) => tool.name)).toContain('controller_ready');
+        const beforeRestart = await firstClient.callTool({ name: 'controller_ready', arguments: {} });
+        expect(beforeRestart.isError).not.toBe(true);
+        expect(beforeRestart.structuredContent).toMatchObject({ ready: true });
+
+        const firstRuntimeInstanceId = firstRuntime?.runtimeInstanceId;
+        const firstRuntimePid = firstRuntime?.pid;
+        await stopMcpServerProcess(runtimeProc);
+        runtimeProc = null;
+
+        const secondRuntimeProc = startRuntime();
+        runtimeProc = secondRuntimeProc;
+        await waitForRuntimeReady(secondRuntimeProc);
+        const secondRuntime = readRuntimeStatusSnapshot(controllerHome);
+        expect(secondRuntime?.runtimeInstanceId).toBeTruthy();
+        expect(secondRuntime?.runtimeInstanceId).not.toBe(firstRuntimeInstanceId);
+        expect(secondRuntime?.pid).not.toBe(firstRuntimePid);
+        expect(secondRuntime?.pid).toBe(secondRuntimeProc.pid);
+
+        const expiredSession = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'mcp-session-id': firstSessionId!,
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'runtime-restarted-old-session', method: 'ping' }),
+        });
+        expect(expiredSession.status).toBe(404);
+        expect(expiredSession.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
+        expect(expiredSession.headers.get('x-forge-session-reset')).toBe('reinitialize');
+        expect(await expiredSession.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+        await firstClient.close().catch(() => undefined);
+
+        const reinitializedTransport = new StreamableHTTPClientTransport(new URL(endpoint), {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+        });
+        const reinitializedClient = new Client({ name: 'forge-runtime-process-reinitialized-test', version: '1.0.0' });
+        clients.push(reinitializedClient);
+        await reinitializedClient.connect(reinitializedTransport);
+        expect(reinitializedTransport.sessionId).toBeTruthy();
+        expect(reinitializedTransport.sessionId).not.toBe(firstSessionId);
+        const reinitializedTools = await reinitializedClient.listTools();
+        expect(reinitializedTools.tools.map((tool) => tool.name)).toContain('controller_ready');
+        const afterRestart = await reinitializedClient.callTool({ name: 'controller_ready', arguments: {} });
+        expect(afterRestart.isError).not.toBe(true);
+        expect(afterRestart.structuredContent).toMatchObject({ ready: true });
+      });
+    } finally {
+      await Promise.all(clients.map(async (client) => await client.close().catch(() => undefined)));
+      await stopMcpServerProcess(runtimeProc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }, 60_000);
   test('keeps the existing transport session usable when Runtime identity changes', async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-runtime-restart-session-'));
     const port = await freePort();

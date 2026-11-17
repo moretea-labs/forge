@@ -5,6 +5,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import type { Server } from "@modelcontextprotocol/server";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import type { RuntimeReadiness } from './types';
+import { mcpSessionLookupError } from '../shared/mcp-session-errors';
 
 interface ManagedSession {
   transport: NodeStreamableHTTPServerTransport;
@@ -111,6 +112,14 @@ function authMiddleware(token: string) {
     }
     next();
   };
+}
+
+function sendRuntimeMcpSessionLookupError(res: Response, sessionId: string | undefined): void {
+  const response = mcpSessionLookupError(sessionId);
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Mcp-Session-Reset', 'reinitialize');
+  res.setHeader('x-forge-session-reset', 'reinitialize');
+  res.status(response.status).json(response.body);
 }
 
 const SESSION_CLOSE_TIMEOUT_MS = 1_000;
@@ -342,7 +351,7 @@ export async function startRuntimeMcpTransport(
       }
       const managed = sessionId ? sessions.get(sessionId) : undefined;
       if (!managed) {
-        res.status(404).json({ error: 'mcp_session_not_found' });
+        sendRuntimeMcpSessionLookupError(res, sessionId);
         return;
       }
       activePost.transport = managed.transport;
@@ -362,7 +371,7 @@ export async function startRuntimeMcpTransport(
       const sessionId = typeof raw === 'string' ? raw : undefined;
       const managed = sessionId ? sessions.get(sessionId) : undefined;
       if (!managed) {
-        res.status(404).json({ error: 'mcp_session_not_found' });
+        sendRuntimeMcpSessionLookupError(res, sessionId);
         return;
       }
       await withManagedSessionRequest(managed, 'stream', async () => await managed.transport.handleRequest(req, res));
@@ -377,7 +386,7 @@ export async function startRuntimeMcpTransport(
       const sessionId = typeof raw === 'string' ? raw : undefined;
       const managed = sessionId ? sessions.get(sessionId) : undefined;
       if (!managed) {
-        res.status(404).json({ error: 'mcp_session_not_found' });
+        sendRuntimeMcpSessionLookupError(res, sessionId);
         return;
       }
       await withManagedSessionRequest(managed, 'post', async () => {
