@@ -3004,7 +3004,7 @@ fn local_terminal_process_receipt(process_id: &str, query: &Value) -> Option<Val
     Some(json!({"ok":true,"result":{
         "accepted":true, "completed":true, "processId":process_id,
         "status":handle["status"], "exitCode":handle["exitCode"],
-        "ok":handle["ok"], "timedOut":handle["timedOut"],
+        "ok":handle["ok"], "timedOut":handle["timedOut"], "cancelled":handle["cancelled"],
         "stdoutTail":handle["stdoutTail"], "stderrTail":handle["stderrTail"]
     }}))
 }
@@ -3034,7 +3034,8 @@ async fn local_wait_running_process<H: LocalApiHost + Sync>(
         }
         if query.get("ok").and_then(Value::as_bool) != Some(true)
             || query.pointer("/result/processId").and_then(Value::as_str) != Some(process_id)
-            || query.pointer("/result/completed").and_then(Value::as_bool) != Some(false) {
+            || query.pointer("/result/completed").and_then(Value::as_bool) != Some(false)
+            || query.pointer("/result/observationInterrupted").and_then(Value::as_bool) == Some(true) {
             return None;
         }
     }
@@ -3080,14 +3081,15 @@ fn local_effect_outcome(name: &str, receipt: &Value) -> LocalEffectOutcome {
         "process_cancel" => {
             let status = result.get("status").and_then(Value::as_str);
             match result.get("completed").and_then(Value::as_bool) {
-                Some(true) if !matches!(status, Some("completed_unknown" | "orphaned")) => LocalEffectOutcome::Succeeded,
+                Some(true) if matches!(status, Some("succeeded" | "failed" | "timed_out" | "cancelled")) => LocalEffectOutcome::Succeeded,
                 _ => LocalEffectOutcome::Unknown,
             }
         }
         "run_command" => match result.get("status").and_then(Value::as_str) {
             Some("succeeded") if result.get("exitCode").and_then(Value::as_i64) == Some(0)
                 && result.get("ok").and_then(Value::as_bool) != Some(false)
-                && result.get("timedOut").and_then(Value::as_bool) != Some(true) => {
+                && result.get("timedOut").and_then(Value::as_bool) != Some(true)
+                && result.get("cancelled").and_then(Value::as_bool) != Some(true) => {
                 LocalEffectOutcome::Succeeded
             }
             Some("succeeded" | "failed" | "timed_out" | "cancelled" | "orphaned") =>
@@ -5556,16 +5558,60 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn agent_process_interrupted_observation_pauses_without_reattaching() {
+        struct InterruptedHost(std::sync::Mutex<Vec<Value>>);
+        impl LocalApiHost for InterruptedHost {
+            fn packaged_tool_script(&self) -> Result<PathBuf, String> { panic!("test executor only") }
+            fn emit_tool_progress(&self, _: Value) {}
+            fn emit_model_progress(&self, _: Value) {}
+            fn execute_test_tool(&self, payload: &Value) -> Option<Result<Value, String>> {
+                let mut calls = self.0.lock().unwrap();
+                calls.push(payload.clone());
+                Some(Ok(json!({"ok":true,"result":{
+                    "processId":payload["arguments"]["process_id"],
+                    "completed":calls.len() > 1,
+                    "observationInterrupted":calls.len() == 1,
+                    "status":"succeeded","exitCode":0,"ok":true
+                }})))
+            }
+        }
+        let host = InterruptedHost(Default::default());
+        let (_, cancel) = tokio::sync::watch::channel(false);
+        let result = local_wait_running_process(
+            &host,&mut None,"repo_test",Some("checkout_test"),"conversation_test",
+            "proc_abc_123",1_000,&cancel
+        ).await;
+        assert!(result.is_none());
+        let calls = host.0.lock().unwrap();
+        assert_eq!(calls.len(),1);
+        assert_eq!(calls[0]["tool"],"process_status");
+        assert_eq!(calls[0]["arguments"]["process_id"],"proc_abc_123");
+        assert_eq!(calls[0]["repoId"],"repo_test");
+        assert_eq!(calls[0]["checkoutId"],"checkout_test");
+        assert_eq!(calls[0]["allowEffects"],false);
+    }
+
     #[test]
     fn process_cancel_outcome_requires_a_known_terminal_process_result() {
         let cancelled = json!({"ok":true,"result":{"status":"cancelled","completed":true,"cancelled":true}});
         assert_eq!(local_effect_outcome("process_cancel", &cancelled), LocalEffectOutcome::Succeeded);
         let already_terminal = json!({"ok":true,"result":{"status":"failed","completed":true,"cancelled":false}});
         assert_eq!(local_effect_outcome("process_cancel", &already_terminal), LocalEffectOutcome::Succeeded);
-        let unknown = json!({"ok":true,"result":{"status":"completed_unknown","completed":true,"cancelled":true}});
-        assert_eq!(local_effect_outcome("process_cancel", &unknown), LocalEffectOutcome::Unknown);
-        let still_running = json!({"ok":true,"result":{"status":"running","completed":false,"cancelled":false}});
-        assert_eq!(local_effect_outcome("process_cancel", &still_running), LocalEffectOutcome::Unknown);
+        for status in ["unknown", "completed_unknown", "orphaned", "future_status", "starting", "running", "running_recovered"] {
+            let ambiguous = json!({"ok":true,"result":{"status":status,"completed":true,"cancelled":true}});
+            assert_eq!(local_effect_outcome("process_cancel", &ambiguous), LocalEffectOutcome::Unknown,
+                "ambiguous cancellation status: {status}");
+        }
+        for status in ["succeeded", "failed", "timed_out", "cancelled"] {
+            for completed in [false, true] {
+                let receipt = json!({"ok":true,"result":{"status":status,"completed":completed,"cancelled":false}});
+                assert_eq!(local_effect_outcome("process_cancel", &receipt),
+                    if completed { LocalEffectOutcome::Succeeded } else { LocalEffectOutcome::Unknown });
+            }
+        }
+        let missing_status = json!({"ok":true,"result":{"completed":true,"cancelled":true}});
+        assert_eq!(local_effect_outcome("process_cancel", &missing_status), LocalEffectOutcome::Unknown);
     }
 
     #[test]
@@ -5612,6 +5658,20 @@ mod tests {
         }});
         let unknown_receipt = local_terminal_process_receipt("proc_abc_123",&unknown).unwrap();
         assert_eq!(local_effect_outcome("run_command",&unknown_receipt),LocalEffectOutcome::Unknown);
+    }
+
+    #[test]
+    fn agent_process_cancelled_evidence_survives_terminal_projection() {
+        for id in ["proc_cancelled", "lightweight:12345678-1234-4abc-8def-1234567890ab"] {
+            let query = json!({"ok":true,"result":{
+                "processId":id,"completed":true,"status":"succeeded",
+                "exitCode":0,"ok":true,"cancelled":true
+            }});
+            assert_eq!(local_effect_outcome("run_command",&query),LocalEffectOutcome::TerminalFailure);
+            let terminal = local_terminal_process_receipt(id,&query).expect("terminal receipt");
+            assert_eq!(terminal["result"]["cancelled"],true);
+            assert_eq!(local_effect_outcome("run_command",&terminal),LocalEffectOutcome::TerminalFailure);
+        }
     }
 
     #[test]
