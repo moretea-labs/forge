@@ -438,3 +438,18 @@ export function applyRuntimeCleanup(repoRoot: string, options: RuntimeCleanupOpt
     cycle,
   };
 }
+
+/** Fixed internal CLI entry; the existing cleanup owner retains all path and liveness checks. */
+export function applyRuntimeCleanupArguments(controllerHome: string, repoRoot: string, args: Record<string, unknown>): RuntimeCleanupApplyResult {
+  const fence = assertRuntimeMayWrite('cleanup', controllerHome);
+  if (!fence.allowed) throw new Error(`RUNTIME_CLEANUP_WRITER_FENCED: ${fence.reason}`);
+  return applyRuntimeCleanup(repoRoot, {
+    minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
+    includeTempDirs: args.include_temp_dirs !== false,
+    includeTerminalLocalJobs: args.include_terminal_local_jobs === true,
+    includeLegacyRuns: args.include_legacy_runs === true,
+    includeHistoricalAttention: args.include_historical_attention === true,
+    maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
+    confirmCleanup: args.confirm_cleanup === true,
+  });
+}

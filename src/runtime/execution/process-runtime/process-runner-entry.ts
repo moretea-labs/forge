@@ -46,7 +46,7 @@ export interface ProcessCommandDescriptor {
   processId: string;
   repoId: string;
   controllerHome: string;
-  trustedRuntimeChild?: 'plugin_action_sidecar';
+  trustedRuntimeChild?: 'plugin_action_sidecar' | 'runtime_cleanup';
   command: {
     kind: 'argv' | 'shell';
     executable?: string;
@@ -109,13 +109,21 @@ function loadDescriptor(path: string): ProcessCommandDescriptor {
 function commandEnvironment(descriptor: ProcessCommandDescriptor): NodeJS.ProcessEnv {
   const command = descriptor.command;
   const sanitized = repositoryChildProcessEnvironment({ ...process.env, ...(command.env ?? {}) });
-  if (descriptor.trustedRuntimeChild !== 'plugin_action_sidecar') return sanitized;
+  if (!descriptor.trustedRuntimeChild) return sanitized;
   if (command.kind !== 'argv' || !command.executable) {
-    throw new Error('PROCESS_RUNNER_TRUSTED_RUNTIME_CHILD_INVALID: plugin action sidecar requires argv executable');
+    throw new Error('PROCESS_RUNNER_TRUSTED_RUNTIME_CHILD_INVALID: trusted Runtime child requires argv executable');
   }
   const authority = readRuntimeReleaseAuthority(descriptor.controllerHome);
   if (!authority) throw new Error('PROCESS_RUNNER_TRUSTED_RUNTIME_CHILD_INVALID: Runtime release authority is missing');
-  const expected = resolve(dirname(authority.active.manifestPath), 'forge-plugin-action-sidecar');
+  const cleanup = descriptor.trustedRuntimeChild === 'runtime_cleanup';
+  const expected = resolve(dirname(authority.active.manifestPath), cleanup ? 'forge-cli' : 'forge-plugin-action-sidecar');
+  if (cleanup && (command.args?.[0] !== 'runtime' || command.args?.[1] !== 'maintenance-apply'
+    || command.args?.[2] !== '--controller-home' || resolve(command.args?.[3] ?? '') !== resolve(descriptor.controllerHome)
+    || command.args?.[4] !== '--repo-id' || command.args?.[5] !== descriptor.repoId
+    || command.args?.[6] !== '--tool' || command.args?.[7] !== 'runtime_cleanup_apply'
+    || command.args?.[8] !== '--args-base64' || command.args?.length !== 10)) {
+    throw new Error('PROCESS_RUNNER_TRUSTED_RUNTIME_CHILD_INVALID: expected fixed runtime cleanup invocation');
+  }
   if (resolve(command.executable) !== expected) {
     throw new Error(`PROCESS_RUNNER_TRUSTED_RUNTIME_CHILD_INVALID: expected ${expected}`);
   }

@@ -136,10 +136,21 @@ export function isProcessIsolatedReadDiagnostic(name: string): name is ReadOnlyD
   return isReadOnlyDiagnosticTool(name);
 }
 
-export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
+type IsolatedRuntimeTool = ReadOnlyDiagnosticTool | 'runtime_cleanup_apply';
+
+export function runReadOnlyDiagnosticViaProcessRuntime(input: Parameters<typeof runIsolatedRuntimeTool>[0] & { tool: ReadOnlyDiagnosticTool }): Promise<Record<string, unknown>> {
+  return runIsolatedRuntimeTool(input);
+}
+
+export function runRuntimeCleanupViaProcessRuntime(input: Omit<Parameters<typeof runIsolatedRuntimeTool>[0], 'tool'>): Promise<Record<string, unknown>> {
+  if (input.args.confirm_cleanup !== true) throw new Error('RUNTIME_CLEANUP_CONFIRMATION_REQUIRED: confirm_cleanup=true is required.');
+  return runIsolatedRuntimeTool({ ...input, tool: 'runtime_cleanup_apply' });
+}
+
+async function runIsolatedRuntimeTool(input: {
   controllerHome: string;
   repository: RepositoryRecord;
-  tool: ReadOnlyDiagnosticTool;
+  tool: IsolatedRuntimeTool;
   args: Record<string, unknown>;
   /** Internal test/embedding override; MCP callers use the fixed 16KiB budget. */
   inlineMaxBytes?: number;
@@ -174,7 +185,11 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
       sourceRevision: 'resolution-failure',
     });
   }
-  const semanticArgs = diagnosticArguments(input.args);
+  const cleanup = input.tool === 'runtime_cleanup_apply';
+  const semanticArgs = {
+    ...diagnosticArguments(input.args),
+    ...(cleanup ? { checkout_id: input.repository.activeCheckoutId } : {}),
+  };
   const encodedArgs = Buffer.from(JSON.stringify(semanticArgs), 'utf8').toString('base64url');
   const returnHandleImmediately = input.args.apply_mode === 'async';
   const interactiveWaitMs = returnHandleImmediately
@@ -203,7 +218,7 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
     repoId: input.repository.repoId,
     checkoutId: input.repository.activeCheckoutId,
     executionIdentity: executionIdentityForRepository(input.repository),
-    commandId: `diagnostic:${input.tool}`,
+    commandId: `${cleanup ? 'maintenance' : 'diagnostic'}:${input.tool}`,
     command: {
       kind: 'argv',
       ...(resolutionFailure
@@ -215,7 +230,7 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
           target?.entry ?? input.cliInvocation!.entry,
           [
             'runtime',
-            'diagnostic-read',
+            cleanup ? 'maintenance-apply' : 'diagnostic-read',
             '--controller-home',
             input.controllerHome,
             '--repo-id',
@@ -243,7 +258,8 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
     interactiveWaitMs,
     timeoutMs,
     maxOutputBytes: DEFAULT_DIAGNOSTIC_MAX_OUTPUT_BYTES,
-    resourceClaims: [],
+    ...(cleanup && target?.runtimeKind === 'compiled_bun_release' ? { trustedRuntimeChild: 'runtime_cleanup' as const } : {}),
+    resourceClaims: cleanup ? [{ resourceKey: 'host-service:runtime-cleanup', mode: 'write' }] : [],
     returnHandleImmediately,
     origin: {
       surface: 'mcp',
