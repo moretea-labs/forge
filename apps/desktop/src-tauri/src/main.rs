@@ -3934,6 +3934,15 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
         let requests = provider_tool_calls(protocol, &output).map_err(|error| {
             contextualize_api_turn_error(error, last_effect_request_id.as_deref())
         })?;
+        // Reject the complete batch before any effect: a later malformed or
+        // unavailable call must not leave an earlier command partially applied.
+        if requests.iter().any(|(_, name, args)| name.is_empty() || !args.is_object()
+            || !available_tools.iter().any(|tool|
+                tool.pointer("/function/name").and_then(Value::as_str) == Some(name.as_str()))) {
+            return Err(contextualize_api_turn_error(
+                "FORGE_DESKTOP_API_TOOL_NOT_AUTHORIZED".into(), last_effect_request_id.as_deref()
+            ));
+        }
         if protocol == "anthropic" {
             let blocks = output.get("content").and_then(Value::as_array)
                 .ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")
@@ -4011,12 +4020,6 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
             if *cancel_receiver.borrow() {
                 return Err(contextualize_api_turn_error(
                     "FORGE_DESKTOP_API_TURN_CANCELLED".into(), last_effect_request_id.as_deref()
-                ));
-            }
-            if id.is_empty() || name.is_empty() || !args.is_object()
-                || !available_tools.iter().any(|tool| tool.pointer("/function/name").and_then(Value::as_str) == Some(&name)) {
-                return Err(contextualize_api_turn_error(
-                    "FORGE_DESKTOP_API_TOOL_NOT_AUTHORIZED".into(), last_effect_request_id.as_deref()
                 ));
             }
             let effectful = matches!(name.as_str(), "apply_patch" | "run_command" | "git_commit" | "process_cancel" | "record_learning" | "memory_feedback");
@@ -4621,19 +4624,30 @@ mod tests {
                     frames.push(json!({"choices":[{"delta":{"content":"Read, edited and verified."}}]}).to_string());
                     frames.push("[DONE]".into());
                 }
-                if stop_reason == Some("duplicate-tools") {
+                if matches!(stop_reason, Some("duplicate-tools" | "invalid-tool-name" | "invalid-tool-args")) {
                     let args = json!({"command":["bun","test","tests/fixture.test.ts"],"timeout_ms":1000});
+                    let calls = (0..2).map(|index| {
+                        let id = if stop_reason == Some("duplicate-tools") { "duplicate".into() }
+                            else { format!("call-{index}") };
+                        let name = if index == 1 && stop_reason == Some("invalid-tool-name") {
+                            "unavailable_tool"
+                        } else { "run_command" };
+                        let arguments = if index == 1 && stop_reason == Some("invalid-tool-args") {
+                            json!([])
+                        } else { args.clone() };
+                        (id, name, arguments)
+                    }).collect::<Vec<_>>();
                     frames = match protocol {
                         "responses" => vec![json!({"type":"response.completed","response":{"output":(0..2)
                             .map(|index| json!({"type":"function_call","id":format!("item-{index}"),
-                                "call_id":"duplicate","name":"run_command","arguments":args.to_string()}))
+                                "call_id":calls[index].0,"name":calls[index].1,"arguments":calls[index].2.to_string()}))
                             .collect::<Vec<_>>()}}).to_string()],
                         "anthropic" => (0..2).map(|index| json!({"type":"content_block_start","index":index,
-                            "content_block":{"type":"tool_use","id":"duplicate","name":"run_command","input":args}}).to_string())
+                            "content_block":{"type":"tool_use","id":calls[index].0,"name":calls[index].1,"input":calls[index].2}}).to_string())
                             .chain(std::iter::once(json!({"type":"message_stop"}).to_string())).collect(),
                         _ => vec![json!({"choices":[{"delta":{"tool_calls":(0..2)
-                            .map(|index| json!({"index":index,"id":"duplicate","function":{
-                                "name":"run_command","arguments":args.to_string()}})).collect::<Vec<_>>()}}]}).to_string(), "[DONE]".into()],
+                            .map(|index| json!({"index":index,"id":calls[index].0,"function":{
+                                "name":calls[index].1,"arguments":calls[index].2.to_string()}})).collect::<Vec<_>>()}}]}).to_string(), "[DONE]".into()],
                     };
                 }
                 if stop_reason == Some("foreign-done") {
@@ -4641,7 +4655,7 @@ mod tests {
                     frames.pop();
                     frames.push("[DONE]".into());
                 } else if protocol != "responses" && stop_reason != Some("missing-finish") {
-                    let reason = stop_reason.filter(|reason| *reason != "duplicate-tools").unwrap_or(if round < 3 {
+                    let reason = stop_reason.filter(|reason| !matches!(*reason, "duplicate-tools" | "invalid-tool-name" | "invalid-tool-args")).unwrap_or(if round < 3 {
                         if protocol == "anthropic" { "tool_use" } else { "tool_calls" }
                     } else if protocol == "anthropic" { "end_turn" } else { "stop" });
                     let terminal = if protocol == "anthropic" {
@@ -4800,6 +4814,30 @@ mod tests {
                 "{protocol}: ambiguous call identity must be rejected before either command dispatch");
             assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_CALL_ID_INVALID");
             assert_eq!(requests.len(), 1, "no automatic retry");
+        }
+    }
+
+    #[test]
+    fn invalid_tool_batch_never_dispatches_commands() {
+        for protocol in ["openai", "anthropic", "responses"] {
+            for fault in ["invalid-tool-name", "invalid-tool-args"] {
+                let (endpoint, server) = spawn_scripted_agent_provider(protocol, "bun", Some(fault));
+                let host = ScriptedAgentLoopHost::default();
+                let config = json!({"apiProfiles":[{
+                    "id":"invalid-batch-test","endpoint":endpoint,"model":"test-model","apiProtocol":protocol
+                }]});
+                let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+                let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+                    &host, config, vec![json!({"role":"user","content":"Run the focused test"})],
+                    Some("repo_test".into()), Some("checkout_test".into()), "conv-invalid-batch".into(),
+                    Some("api:invalid-batch-test".into()), None, true, &mut cancellation,
+                ));
+                let requests = server.join().unwrap();
+                assert!(host.tool_calls.lock().unwrap().is_empty(),
+                    "{protocol}: invalid batch must be rejected before the first command dispatch");
+                assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_NOT_AUTHORIZED");
+                assert_eq!(requests.len(), 1, "no automatic retry");
+            }
         }
     }
 
