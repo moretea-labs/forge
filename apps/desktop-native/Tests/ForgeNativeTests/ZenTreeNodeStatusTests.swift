@@ -112,11 +112,11 @@ final class ZenTreeNodeStatusTests: XCTestCase {
         let statuses=[root.recordId:pending]
         XCTAssertEqual(
             ZenWorkspacePane.nodeStatus(for:root,root:root,executionStatuses:statuses)?.label,
-            "等待 Process 回执"
+            "等待原命令回执"
         )
         XCTAssertEqual(
             ZenWorkspacePane.nodeStatus(for:plan,root:root,executionStatuses:statuses)?.label,
-            "等待 Process 回执"
+            "等待原命令回执"
         )
     }
 
