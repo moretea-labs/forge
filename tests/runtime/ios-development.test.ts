@@ -20,6 +20,7 @@ import {
   iosSimulatorScreenshot,
   iosSimulatorShutdown,
   iosSmokeReview,
+  iosXcodeStatus,
   iosXcodeTest,
   resetIosDevelopmentHooksForTest,
   setIosDevelopmentHooksForTest,
@@ -65,6 +66,33 @@ function repository() {
 }
 
 describe('iOS development simulator reliability', () => {
+  test('uses bounded Xcode version probing and resolves simctl without CLI help', () => {
+    const probes: Array<{ command: string; args: string[]; timeoutMs: number }> = [];
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args, options) => {
+        const timeoutMs = options?.timeoutMs ?? 0;
+        probes.push({ command, args, timeoutMs });
+        if (command === 'xcodebuild') {
+          return result(command, args, { ok: timeoutMs >= 2_500, stderr: 'xcodebuild version probe exceeded its startup budget' });
+        }
+        if (command === 'xcrun') {
+          return result(command, args, { ok: args[0] === '--find' && args[1] === 'simctl', stderr: 'expected xcrun path resolution' });
+        }
+        return result(command, args);
+      },
+    });
+
+    const status = iosXcodeStatus({ forceRefresh: true });
+    expect(probes).toEqual([
+      { command: 'xcode-select', args: ['-p'], timeoutMs: 1_000 },
+      { command: 'xcodebuild', args: ['-version'], timeoutMs: 3_000 },
+      { command: 'xcrun', args: ['--find', 'simctl'], timeoutMs: 1_000 },
+    ]);
+    expect(status.ready).toBe(true);
+    expect('simctlAvailable' in status ? status.simctlAvailable : undefined).toBe(true);
+  });
+
   test('keeps the event loop responsive and reaps only owned compiler descendants on timeout or parent exit', async () => {
     if (process.platform === 'win32') return;
     const repo = repository();
