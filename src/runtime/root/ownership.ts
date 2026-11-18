@@ -423,6 +423,7 @@ export async function terminateVerifiedRuntimeOwner(
   termination?: ProcessTreeTerminationResult;
 }> {
   let owner = readRuntimeOwner(controllerHome);
+  let incarnationOnly = false;
   // The lease may be released before the OS process exits. Retained incarnation
   // identity is still authoritative for that orphan, never a raw PID fallback.
   if (!owner && !expectedOwner) {
@@ -437,9 +438,9 @@ export async function terminateVerifiedRuntimeOwner(
         processStartTime: incarnation.processStartTime,
         executableFingerprint: incarnation.executableFingerprint,
       };
+      incarnationOnly = true;
     }
   }
-  const incarnationOnly = owner && !readRuntimeOwner(controllerHome);
   if (expectedOwner) {
     if (!owner) {
       return {

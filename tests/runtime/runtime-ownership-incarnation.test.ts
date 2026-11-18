@@ -317,7 +317,6 @@ test('Recovery terminates an identity-verified incarnation after its owner lease
   }
 });
 
-
 test('orphan termination refuses legacy incarnation and changed OS identity', async () => {
   const home = createControllerHome('forge-runtime-incarnation-refuse-');
   const record = {
@@ -334,4 +333,18 @@ test('orphan termination refuses legacy incarnation and changed OS identity', as
   expect(await terminateVerifiedRuntimeOwner(home)).toMatchObject({
     ok: false, attempted: false, detail: 'RUNTIME_OWNER_IDENTITY_CHANGED',
   });
+});
+
+
+test('orphan termination refuses to supersede a still-present owner lease', async () => {
+  const home = createControllerHome('forge-runtime-incarnation-active-owner-');
+  const ownership = acquireRuntimeOwnership(home, 'runtime-active-owner');
+  try {
+    expect(await terminateVerifiedRuntimeOwner(home)).toMatchObject({
+      ok: false, attempted: false, detail: 'RUNTIME_OWNER_APPEARED_DURING_STOP',
+    });
+    expect(inspectRuntimeOwnership(home)).toMatchObject({ ownerAlive: true, incarnationAlive: true });
+  } finally {
+    ownership.release();
+  }
 });
