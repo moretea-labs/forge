@@ -188,7 +188,10 @@ case "$MCP_AUTH_MODE" in
   none)
     MCP_INITIALIZE_HEADERS="$TMP_ROOT/mcp-initialize.headers"
     MCP_INITIALIZE_BODY="$TMP_ROOT/mcp-initialize.body"
-    MCP_INITIALIZE_PAYLOAD='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"forge-cloud-readiness","version":"1"}}}'
+    MCP_TOOLS_LIST_HEADERS="$TMP_ROOT/mcp-tools-list.headers"
+    MCP_TOOLS_LIST_BODY="$TMP_ROOT/mcp-tools-list.body"
+    MCP_INITIALIZE_PAYLOAD='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"forge-cloud-readiness","version":"1"}}}'
+    MCP_TOOLS_LIST_PAYLOAD='{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
     for _ in $(seq 1 30); do
       if curl --fail --silent --show-error \
         --dump-header "$MCP_INITIALIZE_HEADERS" \
@@ -198,7 +201,7 @@ case "$MCP_AUTH_MODE" in
         --header 'accept: application/json, text/event-stream' \
         --data "$MCP_INITIALIZE_PAYLOAD" \
         "http://127.0.0.1:${GATEWAY_PORT}/mcp" 2>/dev/null \
-        && grep -Eiq '^mcp-session-id:[[:space:]]*[^[:space:]]+' "$MCP_INITIALIZE_HEADERS" \
+        && ! grep -Eiq '^mcp-session-id:[[:space:]]*[^[:space:]]+' "$MCP_INITIALIZE_HEADERS" \
         && grep -q 'forge-mcp' "$MCP_INITIALIZE_BODY"; then
         break
       fi
@@ -208,8 +211,28 @@ case "$MCP_AUTH_MODE" in
       fi
       sleep 1
     done
-    grep -Eiq '^mcp-session-id:[[:space:]]*[^[:space:]]+' "$MCP_INITIALIZE_HEADERS"
+    ! grep -Eiq '^mcp-session-id:[[:space:]]*[^[:space:]]+' "$MCP_INITIALIZE_HEADERS"
     grep -q 'forge-mcp' "$MCP_INITIALIZE_BODY"
+    for _ in $(seq 1 30); do
+      if curl --fail --silent --show-error \
+        --dump-header "$MCP_TOOLS_LIST_HEADERS" \
+        --output "$MCP_TOOLS_LIST_BODY" \
+        --request POST \
+        --header 'content-type: application/json' \
+        --header 'accept: application/json, text/event-stream' \
+        --header 'mcp-protocol-version: 2025-11-25' \
+        --data "$MCP_TOOLS_LIST_PAYLOAD" \
+        "http://127.0.0.1:${GATEWAY_PORT}/mcp" 2>/dev/null \
+        && grep -q 'tools' "$MCP_TOOLS_LIST_BODY"; then
+        break
+      fi
+      if ! kill -0 "$GATEWAY_PID" 2>/dev/null; then
+        cat "$GATEWAY_LOG" >&2
+        exit 1
+      fi
+      sleep 1
+    done
+    grep -q 'tools' "$MCP_TOOLS_LIST_BODY"
     ;;
   bearer)
     echo 'FORGE_CLOUD_MCP_AUTH_MODE=bearer is not supported by the unauthenticated Secure Tunnel connector path; use oauth or none.' >&2

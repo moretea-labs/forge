@@ -460,10 +460,11 @@ function principalIdFromModernRequestContext(context: McpRequestContext): string
   return /^Bearer\s+/i.test(authorization) ? 'mcp-bearer-client' : 'controller-http-client';
 }
 
-export function createModernMcpHttpHandler(
+function createMcpHttpHandler(
   baseOptions: McpServerOptions,
-  resolveRuntimeSchema?: (context: McpToolContext) => Promise<CanonicalRuntimeToolSchema | undefined>,
-  sharedRuntimeProxy?: CanonicalRuntimeProxy,
+  resolveRuntimeSchema: ((context: McpToolContext) => Promise<CanonicalRuntimeToolSchema | undefined>) | undefined,
+  sharedRuntimeProxy: CanonicalRuntimeProxy | undefined,
+  legacy: 'reject' | 'stateless',
 ): { handler: ReturnType<typeof createMcpHandler>; nodeHandler: NodeMcpRequestHandler } {
   const handler = createMcpHandler(async (requestContext) => {
     const toolContext = createMcpToolContext({
@@ -472,11 +473,24 @@ export function createModernMcpHttpHandler(
     });
     const runtimeSchema = await resolveRuntimeSchema?.(toolContext);
     return createForgeMcpServerFromContext(toolContext, runtimeSchema, sharedRuntimeProxy);
-  }, {
-    legacy: 'reject',
-    responseMode: 'auto',
-  });
+  }, { legacy, responseMode: 'auto' });
   return { handler, nodeHandler: toNodeHandler(handler) };
+}
+
+export function createModernMcpHttpHandler(
+  baseOptions: McpServerOptions,
+  resolveRuntimeSchema?: (context: McpToolContext) => Promise<CanonicalRuntimeToolSchema | undefined>,
+  sharedRuntimeProxy?: CanonicalRuntimeProxy,
+): { handler: ReturnType<typeof createMcpHandler>; nodeHandler: NodeMcpRequestHandler } {
+  return createMcpHttpHandler(baseOptions, resolveRuntimeSchema, sharedRuntimeProxy, 'reject');
+}
+
+export function createStatelessMcpHttpHandler(
+  baseOptions: McpServerOptions,
+  resolveRuntimeSchema?: (context: McpToolContext) => Promise<CanonicalRuntimeToolSchema | undefined>,
+  sharedRuntimeProxy?: CanonicalRuntimeProxy,
+): { handler: ReturnType<typeof createMcpHandler>; nodeHandler: NodeMcpRequestHandler } {
+  return createMcpHttpHandler(baseOptions, resolveRuntimeSchema, sharedRuntimeProxy, 'stateless');
 }
 
 async function handleMcpPost(
@@ -490,7 +504,8 @@ async function handleMcpPost(
   currentToolSurfaceFingerprint: () => string | undefined,
   resolveRuntimeSchema?: (context: McpToolContext) => Promise<CanonicalRuntimeToolSchema | undefined>,
   sharedRuntimeProxy?: CanonicalRuntimeProxy,
-  modernHandler?: NodeMcpRequestHandler,
+  statelessHandler?: NodeMcpRequestHandler,
+  statelessLegacyWithoutSession = false,
 ): Promise<void> {
   let body: unknown;
   try {
@@ -505,14 +520,15 @@ async function handleMcpPost(
   if (!admitMcpPost(stats, res, baseOptions.controllerHome && connectorEndpoint
     ? { controllerHome: baseOptions.controllerHome, connectorEndpoint }
     : undefined)) return;
-  if (modernHandler) {
+  const sessionId = req.headers['mcp-session-id'] as string | undefined;
+  if (statelessHandler) {
     const webRequest = await toWebRequest(req, body);
-    if (!(await isLegacyRequest(webRequest, body))) {
-      await modernHandler(req, res, body);
+    const legacyRequest = await isLegacyRequest(webRequest, body);
+    if (!legacyRequest || (statelessLegacyWithoutSession && !sessionId)) {
+      await statelessHandler(req, res, body);
       return;
     }
   }
-  const sessionId = req.headers['mcp-session-id'] as string | undefined;
   if (isInitializeRequest(body)) {
     if (sessionId) {
       res.setHeader('Mcp-Session-Reset', 'reinitialized');
@@ -889,25 +905,38 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     next();
   };
 
-  // Modern MCP 2026-07-28 is the canonical public serving boundary. The SDK
-  // owns protocol-era classification and serves modern requests without
-  // Mcp-Session-Id. Existing 2025-era traffic is routed explicitly to the
-  // bounded stateful compatibility path below.
+  // The primary ChatGPT endpoint is stateless for new requests in both MCP
+  // eras. The SDK's legacy fallback serves 2025-era POSTs per request without
+  // allocating Mcp-Session-Id. Existing sessionful clients that still present
+  // a session id remain on the bounded compatibility path.
+  const statelessMcp = createStatelessMcpHttpHandler(baseOptions, resolveRuntimeSchema, sharedRuntimeProxy);
   const modernMcp = createModernMcpHttpHandler(baseOptions, resolveRuntimeSchema, sharedRuntimeProxy);
 
   // Primary MCP path: OAuth (or bearer when --auth bearer).
   app.use('/mcp', setMcpResponseHeaders);
   app.post('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp', recordAuthFailure), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy, modernMcp.nodeHandler).catch((error: unknown) => {
+    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy, statelessMcp.nodeHandler, true).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
   app.get('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp', recordAuthFailure), (req, res) => {
+    if (!req.headers['mcp-session-id']) {
+      statelessMcp.nodeHandler(req, res).catch((error: unknown) => {
+        if (!res.headersSent) sendMcpRequestError(res, error);
+      });
+      return;
+    }
     handleMcpGet(req, res, sessionRegistry, '/mcp', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, controllerHome).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
   app.delete('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp', recordAuthFailure), (req, res) => {
+    if (!req.headers['mcp-session-id']) {
+      statelessMcp.nodeHandler(req, res).catch((error: unknown) => {
+        if (!res.headersSent) sendMcpRequestError(res, error);
+      });
+      return;
+    }
     handleMcpDelete(req, res, sessionRegistry, '/mcp').catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
@@ -969,6 +998,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     if (toolSurfaceNotificationTimer) clearTimeout(toolSurfaceNotificationTimer);
     runtimeStatusWatcher?.close();
     void sessionRegistry.closeAll('shutdown');
+    void statelessMcp.handler.close();
     void modernMcp.handler.close();
     void sharedRuntimeProxy?.close();
   });
