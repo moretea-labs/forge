@@ -27,6 +27,7 @@ import { normalizeLegacyRequirementAcceptance } from '../control-plane/persisten
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaim } from './write-fence';
 import { startInProcessScheduler, type RuntimeSchedulerHandle } from './scheduler';
 import { startActiveExecutionPowerAssertion, type RuntimePowerAssertionHandle } from './active-execution-power-assertion';
+import { closeRuntimeComputerChatgptExtension, ensureRuntimeComputerChatgptExtension } from './computer-chatgpt-extension';
 import { normalizeRuntimeDeploymentTopology, type RuntimeDeploymentTopology } from './deployment-topology';
 import { removeRuntimeStartupFailureEvidence, removeRuntimeStatusSnapshot, writeRuntimeStartupFailureEvidence, writeRuntimeStatusSnapshot } from './status';
 import type {
@@ -445,7 +446,7 @@ export class CanonicalForgeRuntime {
     if (this.started) throw new Error('RUNTIME_ALREADY_STARTED');
     this.started = true;
     this.readinessState.markNotReady();
-    let stage: 'release' | 'ownership' | 'source' | 'database' | 'supervisor' | 'scheduler' | 'localBridge' | 'transport' | 'probe' = 'release';
+    let stage: 'release' | 'ownership' | 'source' | 'database' | 'computerProvider' | 'scheduler' | 'localBridge' | 'transport' | 'probe' = 'release';
     try {
       this.release = this.dependencies.loadReleaseManifest(this.config.releaseManifestPath, this.config.controllerHome);
 
@@ -508,6 +509,10 @@ export class CanonicalForgeRuntime {
       this.installJscSamplingProfilerSignal();
       this.readinessState.setDiagnostic('database', 'pass');
       this.publishStatus();
+
+      stage = 'computerProvider';
+      await ensureRuntimeComputerChatgptExtension(this.config.controllerHome);
+
       stage = 'scheduler';
       const standaloneReleaseRoot = this.release.executionMode === 'standalone-binary'
         ? dirname(this.config.releaseManifestPath)
@@ -606,6 +611,7 @@ export class CanonicalForgeRuntime {
     if (stage === 'ownership') return 'RUNTIME_OWNERSHIP_CONFLICT';
     if (stage === 'source') return 'RUNTIME_SOURCE_SNAPSHOT_FAILED';
     if (stage === 'database') return 'DATABASE_UNAVAILABLE';
+    if (stage === 'computerProvider') return 'COMPUTER_CHATGPT_PROVIDER_INITIALIZATION_FAILED';
     if (stage === 'supervisor') return 'WORKFLOW_SUPERVISOR_INITIALIZATION_FAILED';
     if (stage === 'scheduler') return 'SCHEDULER_INITIALIZATION_FAILED';
     if (stage === 'localBridge') return 'LOCAL_BRIDGE_STARTUP_FAILED';
@@ -654,6 +660,7 @@ export class CanonicalForgeRuntime {
       // Stop accepting new MCP work before quiescing Scheduler activity, then
       // release the Controller Home claim only after all in-process services stop.
       await this.transport?.close().catch(() => undefined);
+      await closeRuntimeComputerChatgptExtension(this.config.controllerHome).catch(() => undefined);
       await this.dependencies.stopLightweightProcesses(this.config.controllerHome).catch(() => undefined);
       await this.dependencies.stopContextReadHelpers().catch(() => undefined);
       await this.localBridge?.close().catch(() => undefined);

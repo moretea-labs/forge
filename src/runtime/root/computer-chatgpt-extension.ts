@@ -208,7 +208,7 @@ export async function runtimeComputerChatgptInventory(
   return await port.inventory();
 }
 
-export async function closeRuntimeComputerChatgptExtensionForTest(controllerHome: string): Promise<void> {
+export async function closeRuntimeComputerChatgptExtension(controllerHome: string): Promise<void> {
   const pending = runtimes.get(controllerHome);
   if (!pending) return;
   runtimes.delete(controllerHome);
@@ -216,3 +216,5 @@ export async function closeRuntimeComputerChatgptExtensionForTest(controllerHome
   await runtime.port.close();
   await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
 }
+
+export const closeRuntimeComputerChatgptExtensionForTest = closeRuntimeComputerChatgptExtension;

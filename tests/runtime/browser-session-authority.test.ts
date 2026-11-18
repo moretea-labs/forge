@@ -2377,6 +2377,44 @@ test('Computer exposes native session reclamation through the existing Browser o
   expect(manifest.actions.some((action) => action.actionId === 'clear_session')).toBe(false);
 });
 
+test('Computer ChatGPT targets keep read, binding, and remote effects on their canonical execution paths', () => {
+  const manifest = computerPluginAdapter.buildManifest(0);
+  const action = (actionId: string) => {
+    const found = manifest.actions.find((entry) => entry.actionId === actionId);
+    expect(found).toBeDefined();
+    return found!;
+  };
+
+  const inventory = action('chatgpt_target_inventory');
+  expect(inventory.readOnly).toBe(true);
+  expect(inventory.risk).toBe('readonly');
+  expect(inventory.executionMode).not.toBe('direct_non_persistent');
+  expect(inventory.resourceClaims).toEqual([]);
+
+  const observe = action('chatgpt_target_observe');
+  expect(observe.readOnly).toBe(false);
+  expect(observe.risk).toBe('workspace_write');
+  expect(observe.confirmation).toBe('none');
+  expect(observe.idempotent).toBe(true);
+  expect(observe.executionMode).not.toBe('direct_non_persistent');
+  expect(observe.resourceClaims).toEqual([
+    { resource: 'provider-state', mode: 'write' },
+    { resource: 'remote', mode: 'read' },
+  ]);
+
+  for (const actionId of ['chatgpt_target_prepare', 'chatgpt_target_dispatch']) {
+    const remote = action(actionId);
+    expect(remote.readOnly).toBe(false);
+    expect(remote.risk).toBe('remote_write');
+    expect(remote.confirmation).toBe('authorization');
+    expect(remote.executionMode).not.toBe('direct_non_persistent');
+    expect(remote.resourceClaims).toEqual([
+      { resource: 'provider-state', mode: 'write' },
+      { resource: 'remote', mode: 'write' },
+    ]);
+  }
+});
+
 test('Computer refuses a seventeenth owned native tab before provider creation', async () => {
   const { controllerHome, repoA } = fixture();
   writeControllerPluginConfig(controllerHome, 'browser', {
