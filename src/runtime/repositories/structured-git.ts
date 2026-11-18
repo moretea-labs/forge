@@ -189,7 +189,7 @@ export function splitRepositoryGitStatus(porcelain: string): { staged: string[];
  * Reuse it rather than launching git branch and git rev-parse @{u} again.
  * On an unexpected header fail back to Git itself; never invent identity.
  */
-function porcelainBranchIdentity(porcelain: string): { branch: string | null; upstream: string | null } | undefined {
+export function porcelainBranchIdentity(porcelain: string): { branch: string | null; upstream: string | null } | undefined {
   const header = porcelain.split(/\r?\n/, 1)[0];
   if (!header?.startsWith('## ')) return undefined;
   const value = header.slice(3);

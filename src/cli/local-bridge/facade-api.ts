@@ -1188,6 +1188,7 @@ export function applyConsoleSafePatch(
     { scope: 'repository', repoId: ctx.repository.repoId },
     'console:safe_patch_apply',
     () => applySafePatch(ctx.repository, {
+      controllerHome: ctx.controllerHome,
       sessionId: input.sessionId,
       purpose: input.purpose ?? 'Console interactive edit',
       operations: input.operations,

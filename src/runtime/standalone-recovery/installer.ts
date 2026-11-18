@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
+import { homedir } from 'os';
 import { runProcess, type ProcessRunResult } from '../../effects/process-runner';
 import { resolveBunExecutable } from '../shared/process-environment';
 import {
@@ -390,6 +391,15 @@ export function captureLegacyRecoveryRelease(
   return release;
 }
 
+function recoveryProxyEnvironment(env: NodeJS.ProcessEnv): Record<string, string> {
+  const proxy: Record<string, string> = {};
+  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy']) {
+    const value = env[key];
+    if (value?.trim()) proxy[key] = value;
+  }
+  return proxy;
+}
+
 export function recoverySystemdUserUnitInput(
   controllerHome: string,
   role: RecoveryRuntimeRole,
@@ -402,6 +412,7 @@ export function recoverySystemdUserUnitInput(
     executable: join(recoveryCurrentPath(controllerHome), binary),
     args: [role, '--controller-home', resolve(controllerHome)],
     environment: {
+      ...recoveryProxyEnvironment(env),
       PATH: env.PATH?.trim() || '/usr/bin:/bin:/usr/sbin:/sbin',
       FORGE_BUILD_VERSION: productVersion,
       // Recovery can be running from its own compiled binary. Never let that
@@ -422,17 +433,19 @@ function recoveryRoleServesGateway(role: RecoveryRuntimeRole): boolean {
   return role === 'daemon' || role === 'gateway';
 }
 
-function recoveryPlist(input: {
+export function recoveryPlist(input: {
   label: string;
   executable: string;
   command: RecoveryRuntimeRole;
   controllerHome: string;
   logPath: string;
   productVersion: string;
-}): string {
+}, env: NodeJS.ProcessEnv = process.env): string {
   const xml = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const argumentsList = [
-    '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin:/usr/sbin:/sbin', `FORGE_BUILD_VERSION=${input.productVersion}`, `FORGE_CONNECTOR_EXECUTABLE=${process.execPath}`,
+    '/usr/bin/env', '-i', `HOME=${env.HOME?.trim() || homedir()}`,
+    ...Object.entries(recoveryProxyEnvironment(env)).map(([key, value]) => `${key}=${value}`),
+    'PATH=/usr/bin:/bin:/usr/sbin:/sbin', `FORGE_BUILD_VERSION=${input.productVersion}`, `FORGE_CONNECTOR_EXECUTABLE=${process.execPath}`,
     input.executable, input.command, '--controller-home', input.controllerHome,
   ];
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${xml(input.label)}</string><key>ProgramArguments</key><array>${argumentsList.map((argument) => `<string>${xml(argument)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>5</integer><key>StandardOutPath</key><string>${xml(input.logPath)}</string><key>StandardErrorPath</key><string>${xml(input.logPath)}</string></dict></plist>\n`;

@@ -1,6 +1,9 @@
 export const REQUIREMENT_STATES = ['planned', 'active', 'waiting_for_user', 'done', 'cancelled'] as const;
 export type RequirementState = (typeof REQUIREMENT_STATES)[number];
 
+export const REQUIREMENT_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
+export type RequirementPriority = (typeof REQUIREMENT_PRIORITIES)[number];
+
 export const REQUIREMENT_STATE_TRANSITIONS: Readonly<Record<RequirementState, readonly RequirementState[]>> = {
   planned: ['planned', 'active', 'waiting_for_user', 'cancelled'],
   active: ['active', 'waiting_for_user', 'cancelled'],

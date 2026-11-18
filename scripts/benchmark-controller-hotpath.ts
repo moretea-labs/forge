@@ -38,9 +38,17 @@ function gitInit(repoRoot: string): void {
   spawnSync('git', ['commit', '-m', 'benchmark fixture'], { cwd: repoRoot, stdio: 'ignore' });
 }
 
-function percentile(values: number[], quantile: number): number {
+export function percentile(values: number[], quantile: number): number {
+  if (values.length === 0) throw new Error('CONTROLLER_HOTPATH_PERCENTILE_EMPTY_SAMPLE');
+  if (!Number.isFinite(quantile) || quantile < 0 || quantile > 1) {
+    throw new Error('CONTROLLER_HOTPATH_PERCENTILE_INVALID_QUANTILE');
+  }
+  if (values.some((value) => !Number.isFinite(value))) {
+    throw new Error('CONTROLLER_HOTPATH_PERCENTILE_INVALID_SAMPLE');
+  }
   const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * quantile))] ?? 0;
+  const rank = Math.max(1, Math.ceil(sorted.length * quantile));
+  return sorted[rank - 1]!;
 }
 
 function timed<T>(fn: () => T): { value: T; ms: number } {
@@ -70,15 +78,26 @@ function writeIssueFixture(repoRoot: string, index: number): void {
   }, null, 2)}\n`);
 }
 
-function duration(result: { structuredContent?: unknown; content?: Array<{ text?: string }> } | undefined): { ms: number; bytes: number; cacheHit: boolean; largestFields: Array<{ key: string; bytes: number }> } {
+export function duration(result: { isError?: boolean; structuredContent?: unknown; content?: Array<{ text?: string }> } | undefined): { ms: number; bytes: number; cacheHit: boolean; phaseTimingsMs: Record<string, number>; largestFields: Array<{ key: string; bytes: number }> } {
+  if (result?.isError === true) throw new Error('CONTROLLER_HOTPATH_TOOL_ERROR: benchmark cannot time a failed tool call');
   const value = (result?.structuredContent
     ?? JSON.parse(result?.content?.[0]?.text ?? '{}')) as Record<string, unknown>;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.status === 'error') {
+    throw new Error('CONTROLLER_HOTPATH_TOOL_ERROR: benchmark requires a successful tool result');
+  }
   const responseMeta = (value.responseMeta ?? {}) as Record<string, unknown>;
+  const serverDurationMs = responseMeta.serverDurationMs;
+  if (typeof serverDurationMs !== 'number' || !Number.isFinite(serverDurationMs) || serverDurationMs < 0) {
+    throw new Error('CONTROLLER_HOTPATH_SERVER_DURATION_MISSING: no valid responseMeta.serverDurationMs');
+  }
   const projection = (value.contextProjection ?? {}) as Record<string, unknown>;
   return {
-    ms: typeof responseMeta.serverDurationMs === 'number' ? responseMeta.serverDurationMs : 0,
+    ms: serverDurationMs,
     bytes: Buffer.byteLength(JSON.stringify(value), 'utf8'),
     cacheHit: responseMeta.cacheHit === true || projection.cacheHit === true,
+    phaseTimingsMs: responseMeta.phaseTimingsMs && typeof responseMeta.phaseTimingsMs === 'object'
+      ? responseMeta.phaseTimingsMs as Record<string, number>
+      : {},
     largestFields: Object.entries(value)
       .map(([key, field]) => ({ key, bytes: Buffer.byteLength(JSON.stringify(field) ?? 'null', 'utf8') }))
       .sort((a, b) => b.bytes - a.bytes)
@@ -116,15 +135,16 @@ async function benchmarkScale(scale: number): Promise<Record<string, unknown>> {
       cacheHits += sample.cacheHit ? 1 : 0;
       maxSummaryBytes = Math.max(maxSummaryBytes, sample.bytes);
     }
-    const sorted = [...samples].sort((a, b) => a - b);
     return {
       scale,
       coldSummaryMs: coldSummary.ms,
+      coldSummaryPhaseTimingsMs: coldSummary.phaseTimingsMs,
       coldSummaryResponseBytes: coldSummary.bytes,
       coldMs: cold.ms,
+      coldPhaseTimingsMs: cold.phaseTimingsMs,
       coldResponseBytes: cold.bytes,
-      hotP50Ms: sorted[Math.floor(sorted.length * 0.5)] ?? 0,
-      hotP95Ms: sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] ?? 0,
+      hotP50Ms: percentile(samples, 0.5),
+      hotP95Ms: percentile(samples, 0.95),
       hotMaxMs: Math.max(...samples, 0),
       cacheHits,
       cacheHitRate: cacheHits / HOT_READS,
@@ -174,6 +194,20 @@ function benchmarkGitSampling(): Record<string, unknown> {
   }
 }
 
+export function controllerHotpathAcceptance(scales: Array<{ scale: number; hotP95Ms: number; maxSummaryBytes: number }>, gitSampling: { identityCounters: { subprocesses: number }; snapshotCounters: { subprocesses: number }; snapshotIdentityCounters: { subprocesses: number } }) {
+  const thresholds = { warmP95Ms: 100, maxSummaryBytes: 32 * 1024, identitySubprocessesPerSample: 1, snapshotUniqueSubprocesses: 2 };
+  const failures: string[] = [];
+  for (const scale of scales) {
+    if (!Number.isFinite(scale.hotP95Ms) || scale.hotP95Ms < 0 || scale.hotP95Ms > thresholds.warmP95Ms) failures.push(`scale=${scale.scale}: hotP95Ms=${scale.hotP95Ms}`);
+    if (!Number.isFinite(scale.maxSummaryBytes) || scale.maxSummaryBytes < 1 || scale.maxSummaryBytes > thresholds.maxSummaryBytes) failures.push(`scale=${scale.scale}: maxSummaryBytes=${scale.maxSummaryBytes}`);
+  }
+  if (!scales.length) failures.push('no scale samples');
+  if (!Number.isFinite(gitSampling.identityCounters.subprocesses) || gitSampling.identityCounters.subprocesses > thresholds.identitySubprocessesPerSample) failures.push('git identity subprocess budget exceeded');
+  const snapshotProcesses = gitSampling.snapshotCounters.subprocesses + gitSampling.snapshotIdentityCounters.subprocesses;
+  if (!Number.isFinite(snapshotProcesses) || snapshotProcesses > thresholds.snapshotUniqueSubprocesses) failures.push('git snapshot subprocess budget exceeded');
+  return { ...thresholds, passed: failures.length === 0, failures };
+}
+
 async function main(): Promise<void> {
   const scaleResults = [];
   for (const scale of SCALES) scaleResults.push(await benchmarkScale(scale));
@@ -186,22 +220,19 @@ async function main(): Promise<void> {
     gitInit(repoRoot);
     const ctx = createMcpToolContext({ repo: repoRoot, profile: 'controller', controllerHome }) as MultiRepositoryMcpToolContext;
     const exposedTools = exposedControllerToolDefinitions(ctx).length;
+    const acceptance = controllerHotpathAcceptance(scaleResults as Array<{ scale: number; hotP95Ms: number; maxSummaryBytes: number }>, gitSampling as { identityCounters: { subprocesses: number }; snapshotCounters: { subprocesses: number }; snapshotIdentityCounters: { subprocesses: number } });
     console.log(JSON.stringify({
       benchmark: 'controller-hotpath',
       hotReads: HOT_READS,
       scales: scaleResults,
       gitSampling,
       exposedTools,
-      acceptance: {
-        warmP95Ms: 100,
-        maxSummaryBytes: 32 * 1024,
-        identitySubprocessesPerSample: 1,
-        snapshotUniqueSubprocesses: 2,
-      },
+      acceptance,
     }, null, 2));
+    if (!acceptance.passed) throw new Error(`CONTROLLER_HOTPATH_ACCEPTANCE_FAILED: ${acceptance.failures.join('; ')}`);
   } finally {
     rmSync(profileRepo, { recursive: true, force: true });
   }
 }
 
-await main();
+if (import.meta.main) await main();

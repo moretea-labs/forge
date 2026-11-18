@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
+  reattachMacOsBrowserOwnedPage,
   resetMacOsBrowserRuntimeHooksForTest,
   setMacOsBrowserRuntimeHooksForTest,
+  type MacOsBrowserAutomationTiming,
 } from '../../src/runtime/plugins/browser-macos-bridge';
 import {
   assertNativeOwnedTabCapacity,
@@ -261,5 +263,39 @@ describe('native tab admission backpressure', () => {
     alias.browser!.tab!.windowId = 'other-window';
     expect(() => assertNativeOwnedTabCapacity([...sessions.slice(1), alias])).toThrow('capacity reached');
     expect(() => assertNativeOwnedTabCapacity([...sessions.slice(1), sessions[1]!])).not.toThrow();
+  });
+});
+
+describe('native browser action timing', () => {
+  test('reports capture_region and trusted_input phases for the exact target', async () => {
+    const metadata = ['true', 'https://example.com/native-timing', 'Native Timing', '0', '0', '1200', '800', '7', '9', 'true', 'false'].join(String.fromCharCode(30));
+    const timings: MacOsBrowserAutomationTiming[] = [];
+    const baseHooks = {
+      platform: 'darwin' as const,
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async () => metadata,
+      onAutomationTiming: (timing: MacOsBrowserAutomationTiming) => timings.push(timing),
+    };
+    setMacOsBrowserRuntimeHooksForTest({ ...baseHooks, captureRegion: async () => Buffer.from('png') });
+    const attached = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    expect(await attached.page.screenshot({ path: '/tmp/native-browser-timing.png' })).toEqual(Buffer.from('png'));
+    const capture = timings.find((timing) => timing.action === 'capture_region');
+    expect(capture).toMatchObject({ action: 'capture_region', product: 'chrome', windowId: '7', tabId: '9', dispatchKind: 'test_hook', outcome: 'succeeded' });
+    expect(capture?.testHookRoundTripMs).toBeGreaterThanOrEqual(0);
+
+    resetMacOsBrowserRuntimeHooksForTest();
+    setMacOsBrowserRuntimeHooksForTest({
+      ...baseHooks,
+      trustedInput: async (request) => expect(request).toMatchObject({
+        action: 'trusted_input', product: 'chrome', ref: { windowId: '7', tabId: '9' },
+        input: { kind: 'click', x: 15, y: 20, button: 'left', clickCount: 1 },
+      }),
+    });
+    await attached.page.trustedInput({ kind: 'click', x: 15, y: 20, button: 'left', clickCount: 1 });
+    const input = timings.find((timing) => timing.action === 'trusted_input');
+    expect(input).toMatchObject({ action: 'trusted_input', product: 'chrome', windowId: '7', tabId: '9', dispatchKind: 'test_hook', outcome: 'succeeded' });
+    expect(input?.processPreconditionMs).toBeGreaterThanOrEqual(0);
+    expect(input?.testHookRoundTripMs).toBeGreaterThanOrEqual(0);
   });
 });

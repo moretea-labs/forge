@@ -103,7 +103,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
   definition('repository_git_status', 'Return a structured Git status snapshot for the selected repository checkout.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-    refresh: { type: 'boolean', description: 'When true, explicitly refresh the Git status sample. The default public hot path only reads the latest daemon sample.' },
+    refresh: { type: 'boolean', description: 'Defaults to true: read current Git status on demand. Set false to read the last cached snapshot without running Git; no periodic sampling is required.' },
   }, [], true),
 
   definition('repository_git_diff', 'Return a bounded structured git diff for the selected repository, optionally staged and path-scoped.', {
@@ -190,11 +190,11 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     validation_only: { type: 'boolean', description: 'When true, do not edit. Reconcile/reuse the existing session validation Processes identified by session_id/check_ids/validation_request_id.' },
     apply_mode: { type: 'string', enum: ['sync', 'async'], description: 'Defaults to sync for interactive development. Set async only for a separately durable operation.' },
   }),
-  definition('execute_command', 'Single terminal entry. Registered repository commands use Process Runtime handles; workspace_root targets are bounded direct execution (maximum 30 seconds, no durable handle). No Work or Plan required; host scope requires the existing process:exec Grant.', {
+  definition('execute_command', 'Single terminal entry. Registered repository commands use Process Runtime handles; workspace_root targets are bounded direct execution (maximum 30 seconds, no durable handle). No Work or Plan required. Ordinary commands follow host permissions; host scope uses the existing explicit Full Access setting without a second Forge Grant or per-command confirmation.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-    scope: { type: 'string', enum: ['repository', 'host'], description: 'Defaults to repository; host requires an explicit process:exec ForgeInstance Grant.' },
-    command: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Repository: typed argv or shell string; host: typed argv only.' },
+    scope: { type: 'string', enum: ['repository', 'host'], description: 'Defaults to repository; host requires the existing explicit Full Access setting and authenticated caller, with no additional Forge Grant.' },
+    command: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Repository: typed argv or shell string; host: typed argv (use shell_command for an explicit host shell).' },
     shell_command: { type: 'string', description: 'Host shell only; mutually exclusive with command and requires scope=host.' },
     request_id: { type: 'string', description: 'Stable invocation id for reconnect without duplicate effects.' },
     cwd: { type: 'string', description: 'Optional root-relative working directory.' },

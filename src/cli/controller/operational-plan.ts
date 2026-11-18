@@ -87,6 +87,17 @@ function parseNameStatus(output: string): Array<{ path: string; status: string }
     });
 }
 
+function parseShortStatus(output: string): Array<{ path: string; status: string }> {
+  return output
+    .split(/\r?\n/)
+    .filter((line) => line.trim() && !line.startsWith('##') && line.length >= 3)
+    .slice(0, 200)
+    .map((line) => ({
+      status: line.slice(0, 2).trim() || 'unknown',
+      path: line.slice(3).trim() || line.trim(),
+    }));
+}
+
 function unique(values: string[]): string[] {
   return Array.from(new Set(values.filter((value) => value.trim()).map((value) => value.trim())));
 }
@@ -99,12 +110,22 @@ function checksFromLedger(ledger: TaskLedgerProjection): string[] {
   return unique(candidates.length ? candidates : ["package:check:type"]);
 }
 
-export function buildControllerOperationalPlan(repoRoot: string, ledger: TaskLedgerProjection): ControllerOperationalPlan {
-  const nameStatus = runProcess("git", ["diff", "--name-status"], { cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 64 * 1024 });
-  const diffStat = runProcess("git", ["diff", "--stat"], { cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 64 * 1024 });
-  const changedFiles = nameStatus.ok ? parseNameStatus(nameStatus.stdout) : [];
+export function buildControllerOperationalPlan(
+  repoRoot: string,
+  ledger: TaskLedgerProjection,
+  gitSnapshot?: { status: string; diffStat: string; dirty: boolean },
+): ControllerOperationalPlan {
+  const nameStatus = gitSnapshot
+    ? undefined
+    : runProcess("git", ["diff", "--name-status"], { cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 64 * 1024 });
+  const diffStat = gitSnapshot
+    ? undefined
+    : runProcess("git", ["diff", "--stat"], { cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 64 * 1024 });
+  const changedFiles = gitSnapshot
+    ? parseShortStatus(gitSnapshot.status)
+    : nameStatus?.ok ? parseNameStatus(nameStatus.stdout) : [];
   const checks = checksFromLedger(ledger);
-  const dirty = changedFiles.length > 0;
+  const dirty = gitSnapshot?.dirty ?? (changedFiles.length > 0);
   const blocked = ledger.status.kind === "blocked" || ledger.status.kind === "needs_retry_decision";
   const needsAttention = blocked || ledger.status.severity === "action" || ledger.status.severity === "warning" || dirty;
   // Compatibility projection only. Declared checks are facts the model may use;
@@ -134,7 +155,8 @@ export function buildControllerOperationalPlan(repoRoot: string, ledger: TaskLed
       source: "live-git-diff-projection",
       dirty,
       changedFiles,
-      diffStat: diffStat.ok ? diffStat.stdout.trim() : diffStat.error || diffStat.stderr.trim(),
+      diffStat: gitSnapshot?.diffStat
+        ?? (diffStat?.ok ? diffStat.stdout.trim() : diffStat?.error || diffStat?.stderr.trim() || ''),
       // Legacy field retained for UI ABI only. Dirty state is a fact, not an
       // automatic review lifecycle decision.
       reviewRequired: false,

@@ -264,6 +264,10 @@ export function classifyGatewayExecutionPath(
   reasons: string[];
   decision?: ExecutionDecision;
 } {
+  // Cleanup owns a managed Process, including async calls; never create a retired Job.
+  if (name === 'runtime_cleanup_apply') {
+    return { path: 'fast', reasons: ['isolated_maintenance_process'] };
+  }
   // Heavy read-only diagnostics must leave the Gateway event loop before the
   // generic read-only shortcut. Process Runtime preserves the same request and
   // returns either the completed JSON or a queryable process handle.

@@ -17,7 +17,6 @@ import {
   runSchedulerPeriodicCleanup,
   runSchedulerValidationReconciliation,
 } from './maintenance';
-import { planSchedulerSourceSampling } from './source-scan';
 import { tickSchedules } from '../../workflow/schedules/engine';
 import { sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
 import {
@@ -32,7 +31,6 @@ import {
 import { normalizeSchedulerConfig, type SchedulerConfig } from './config';
 import {
   readSchedulerHealthSnapshot,
-  restoreSchedulerState,
   writeSchedulerHealthSnapshot,
 } from './state';
 export { normalizeSchedulerConfig } from './config';
@@ -40,14 +38,11 @@ export type { SchedulerConfig } from './config';
 export {
   buildSchedulerHealthSnapshot,
   readSchedulerHealthSnapshot,
-  restoreSchedulerState,
 } from './state';
 export type {
   SchedulerHealthSnapshot,
-  SchedulerRestoredState,
   SchedulerStateSnapshotInput,
 } from './state';
-export { selectSchedulerSourceScanRepositories } from './source-scan';
 
 const SCHEDULE_TICK_INTERVAL_MS = 30_000;
 export const SCHEDULER_RECONCILIATION_INTERVAL_MS = 5_000;
@@ -176,10 +171,6 @@ export class GlobalScheduler {
   private lastTickAt = this.loopStartedAt;
   private lastReconcileAt: string | undefined;
   private lastCleanupAt = 0;
-  private lastGitStatusSampleAt = 0;
-  private lastSourceScanAt = 0;
-  private lastSourceScanRepoCount = 0;
-  private sourceScansAvoided = 0;
   private runtimeCleanup = cleanupControllerRuntimeState;
   private processGc = gcTerminalProcesses;
   private periodicCleanupSpawn = spawnSchedulerPeriodicCleanup;
@@ -198,10 +189,6 @@ export class GlobalScheduler {
     this.periodicCleanupExecutable = runtime.periodicCleanupExecutable ? resolve(runtime.periodicCleanupExecutable) : undefined;
     this.isolatePeriodicCleanup = runtime.isolatePeriodicCleanup === true;
     this.fatalOnTickError = runtime.fatalOnTickError === true;
-    const restoredState = restoreSchedulerState(readSchedulerHealthSnapshot(controllerHome));
-    this.lastSourceScanAt = restoredState.lastSourceScanAt;
-    this.lastSourceScanRepoCount = restoredState.lastSourceScanRepoCount;
-    this.sourceScansAvoided = restoredState.sourceScansAvoided;
   }
 
   private persistState(force = false): void {
@@ -214,9 +201,6 @@ export class GlobalScheduler {
       heartbeatTimeoutMs: this.config.heartbeatTimeoutMs,
       lastTickAt: this.lastTickAt,
       lastReconcileAt: this.lastReconcileAt,
-      lastSourceScanAt: this.lastSourceScanAt,
-      lastSourceScanRepoCount: this.lastSourceScanRepoCount,
-      sourceScansAvoided: this.sourceScansAvoided,
     }, now);
   }
 
@@ -302,40 +286,12 @@ export class GlobalScheduler {
       this.lastReconcile = now;
       this.lastReconcileAt = new Date(now).toISOString();
     }
-    const activeSourceRepoIds = new Set<string>();
-    const sourceSampling = planSchedulerSourceSampling({
-      repositories,
-      activeRepoIds: activeSourceRepoIds,
-      nowMs: now,
-      lastSourceScanAt: this.lastSourceScanAt,
-      lastGitStatusSampleAt: this.lastGitStatusSampleAt,
-    });
-    const sourceScanRepositories = sourceSampling.sourceScanRepositories;
+    // Refresh only on actual invalidation. Idle repositories are not Git
+    // polling targets; callers request fresh Git state when they need it.
     const dirtyProjectionRepositories = selectSchedulerDirtyProjectionRepositories(this.controllerHome, repositories);
-    if (sourceSampling.shouldSample) {
-      // Advance source-sampling state before the filesystem probe so a failing
-      // sample cannot create a tight retry loop on every scheduler tick.
-      this.lastGitStatusSampleAt = now;
-      this.lastSourceScanAt = now;
-      this.lastSourceScanRepoCount = sourceScanRepositories.length;
-      await sampleRepositoryGitStatusForRepositories(this.controllerHome, sourceScanRepositories);
+    if (dirtyProjectionRepositories.length > 0) {
+      await sampleRepositoryGitStatusForRepositories(this.controllerHome, dirtyProjectionRepositories);
     }
-    // Dirty projection markers are authoritative maintenance requests. Do not
-    // make them wait behind the idle one-repository-per-minute safety scan: only
-    // the dirty repositories receive this extra fresh source sample.
-    const alreadySampledRepoIds = new Set(
-      sourceSampling.shouldSample ? sourceScanRepositories.map((repository) => repository.repoId) : [],
-    );
-    const dirtyRepositoriesToSample = dirtyProjectionRepositories
-      .filter((repository) => !alreadySampledRepoIds.has(repository.repoId));
-    if (dirtyRepositoriesToSample.length > 0) {
-      await sampleRepositoryGitStatusForRepositories(this.controllerHome, dirtyRepositoriesToSample);
-    }
-    const projectionMaintenanceRepositories = Array.from(new Map(
-      [...sourceScanRepositories, ...dirtyProjectionRepositories]
-        .map((repository) => [repository.repoId, repository] as const),
-    ).values());
-    this.sourceScansAvoided += sourceSampling.avoidedRepositoryCount;
     // Work-bound liveness continuation is retired: GitHub Issues are the only
     // progress ledger and the standalone Workflow Supervisor is the only
     // continuation writer. Schedules still drive explicit Supervisor wakes.
@@ -347,7 +303,7 @@ export class GlobalScheduler {
     refreshSchedulerRepositoryProjections({
       controllerHome: this.controllerHome,
       repositories,
-      sourceScanRepositories: projectionMaintenanceRepositories,
+      dirtyRepositories: dirtyProjectionRepositories,
       projectionRefreshRepoIds: new Set<string>(),
       controllerPid: this.controllerPid,
     });

@@ -7,8 +7,8 @@
  * prove per-path safety by parsing command text. Narrow path/repository
  * guarantees belong to typed filesystem/source/git capabilities.
  *
- * Authorization is one explicit canonical Grant for `process:exec` whose typed
- * target is the exact ForgeInstance. Anything else fails closed.
+ * The authenticated entrypoint checks the existing explicit Full Access setting.
+ * This lane verifies the exact ForgeInstance and caller before spawning.
  */
 
 import { existsSync, realpathSync, statSync } from 'fs';
@@ -20,7 +20,6 @@ import {
 } from './lightweight-managed';
 import { DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_PROCESS_TIMEOUT_MS, type ProcessHandle } from './types';
 
-/** Broad host process-execution capability. `process:*` also satisfies it. */
 const HOST_INTERACTIVE_WAIT_DEFAULT_MS = 8_000;
 const HOST_INTERACTIVE_WAIT_MAX_MS = 120_000;
 const HOST_TIMEOUT_MAX_MS = 24 * 60 * 60_000;
