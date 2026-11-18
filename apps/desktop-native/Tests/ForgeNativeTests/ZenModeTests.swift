@@ -337,3 +337,16 @@ extension ZenModeTests {
         XCTAssertEqual(ZenBoardBucket.completedCount(items),2)
     }
 }
+
+
+extension ZenModeTests {
+    func testProjectDetailUsesCanonicalLocalizedTaskStatusLabels() {
+        XCTAssertEqual(ZenWorkspacePane.taskStatusLabel("planned"), "待开始")
+        XCTAssertEqual(ZenWorkspacePane.taskStatusLabel("active"), "进行中")
+        XCTAssertEqual(ZenWorkspacePane.taskStatusLabel("waiting_for_user"), "待你处理")
+        XCTAssertEqual(ZenWorkspacePane.taskStatusLabel("done"), "已完成")
+        XCTAssertEqual(ZenWorkspacePane.taskStatusLabel("cancelled"), "已取消")
+        XCTAssertEqual(ZenWorkspacePane.taskStatusLabel("unknown"), "unknown")
+        XCTAssertNil(ZenWorkspacePane.taskStatusLabel(nil))
+    }
+}

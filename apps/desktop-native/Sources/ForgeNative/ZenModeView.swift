@@ -3130,7 +3130,7 @@ struct ZenProjectDetailPane: View {
                                 HStack {
                                     Text(task.title).font(.system(size:12,weight:.medium)).lineLimit(2)
                                     Spacer()
-                                    Text(taskStatusLabel(task.status)).font(.system(size:10)).foregroundStyle(.secondary)
+                                    Text(ZenWorkspacePane.taskStatusLabel(task.status) ?? task.status).font(.system(size:10)).foregroundStyle(.secondary)
                                 }
                                 HStack(spacing:7) {
                                     Text(task.requirementId).font(.system(size:9,design:.monospaced))
@@ -3206,15 +3206,6 @@ struct ZenProjectDetailPane: View {
     private func placementSummary(_ project:ForgeSemanticProject) -> String {
         let names=project.repositoryIds.map { id in model.projects.first(where:{$0.repoId == id})?.label ?? id }
         return names.isEmpty ? "仅项目级" : "关联仓库 · " + names.joined(separator:"、")
-    }
-
-    private func taskStatusLabel(_ status:String) -> String {
-        switch status {
-        case "open": return "未完成"
-        case "completed", "done": return "已完成"
-        case "cancelled": return "已取消"
-        default: return status
-        }
     }
 
     private func taskPriorityLabel(_ priority:String) -> String {
