@@ -9,7 +9,10 @@ import {
   reconcileStoppedRuntimeOwnership,
   runtimeIncarnationPath,
   runtimeOwnerPath,
+  runtimeOwnerProcessIdentityMatches,
 } from '../../src/runtime/root/ownership';
+import { forgeRuntimePersistentServiceLabel } from '../../src/runtime/platform/service-inventory';
+import { defaultProcessIdentityProbe, executableFingerprint, processIdentityMatches } from '../../src/runtime/shared/process-identity';
 
 const controllerHomes: string[] = [];
 
@@ -113,6 +116,53 @@ test('legacy incarnation cannot be migrated after its owner lease disappears', (
   const unchanged = JSON.parse(readFileSync(runtimeIncarnationPath(home), 'utf8')) as Record<string, unknown>;
   expect(unchanged.processStartTime).toBeUndefined();
   expect(unchanged.executableFingerprint).toBeUndefined();
+});
+
+test('legacy Linux Runtime identity survives WSL clock correction only when the exact systemd MainPID still owns it', () => {
+  if (process.platform !== 'linux') return;
+  const home = createControllerHome('forge-runtime-incarnation-wsl-clock-correction-');
+  const legacy = defaultProcessIdentityProbe.legacyInspect?.(process.pid);
+  expect(legacy?.command && legacy.startTime).toBeTruthy();
+  const actualStart = new Date(legacy!.startTime!);
+  const correctedStart = new Date(actualStart.getTime() - 26_000);
+  const legacyStartTime = `${correctedStart.toDateString().split(' ').slice(0, 3).join(' ')} ${correctedStart.toTimeString().slice(0, 8)} ${correctedStart.getFullYear()}`;
+  const executable = executableFingerprint(legacy!.command!);
+  const identity = { pid: process.pid, processStartTime: legacyStartTime, executableFingerprint: executable };
+  expect(processIdentityMatches(identity, process.pid).reason).toBe('process_start_time_changed');
+
+  const owner = {
+    schemaVersion: 2 as const,
+    runtimeInstanceId: 'runtime-wsl-clock-corrected',
+    pid: process.pid,
+    acquiredAt: new Date().toISOString(),
+    fencingGeneration: 17,
+    processStartTime: legacyStartTime,
+    executableFingerprint: executable,
+  };
+  writeFileSync(runtimeOwnerPath(home), JSON.stringify(owner, null, 2));
+  writeFileSync(runtimeIncarnationPath(home), JSON.stringify({
+    schemaVersion: 1,
+    controllerHome: home,
+    runtimeInstanceId: owner.runtimeInstanceId,
+    pid: process.pid,
+    fencingGeneration: owner.fencingGeneration,
+    activatedAt: owner.acquiredAt,
+    processStartTime: legacyStartTime,
+    executableFingerprint: executable,
+  }, null, 2));
+
+  const expectedUnit = forgeRuntimePersistentServiceLabel(home);
+  const matchingSystemdPid = (unitName: string) => {
+    expect(unitName).toBe(expectedUnit);
+    return process.pid;
+  };
+  expect(inspectRuntimeOwnership(home, matchingSystemdPid)).toMatchObject({ coherent: true, ownerAlive: true, incarnationAlive: true });
+  expect(migrateRuntimeIncarnationProcessIdentity(home, matchingSystemdPid)).toMatchObject({ ok: true, changed: false });
+  expect(inspectRuntimeOwnership(home, () => process.pid + 1)).toMatchObject({ ownerAlive: false, incarnationAlive: false });
+  expect(runtimeOwnerProcessIdentityMatches({ ...owner, executableFingerprint: 'wrong-executable' }, home, () => process.pid)).toBe(false);
+
+  rmSync(runtimeOwnerPath(home), { force: true });
+  expect(inspectRuntimeOwnership(home, matchingSystemdPid)).toMatchObject({ ownerAlive: false, incarnationAlive: true });
 });
 
 test('new incarnation preserves exact live process identity after the owner lease disappears', () => {
