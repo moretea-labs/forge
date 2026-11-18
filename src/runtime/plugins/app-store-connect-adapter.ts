@@ -1,7 +1,10 @@
 import { createHash, createPrivateKey, sign } from 'crypto';
 import { gunzipSync } from 'zlib';
-import { accessSync, constants as fsConstants, existsSync, promises as fsPromises, readFileSync, statSync } from 'fs';
+import { accessSync, constants as fsConstants, createReadStream, createWriteStream, existsSync, promises as fsPromises, readFileSync, statSync } from 'fs';
 import { basename, extname, isAbsolute, join, relative, resolve } from 'path';
+import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
+import { tmpdir } from 'os';
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
@@ -1363,7 +1366,7 @@ function capabilities(): AssistantPluginCapability[] {
       actions: ['create_app_store_version', 'create_review_submission', 'submit_for_review', 'set_app_store_version_build', 'add_review_submission_item', 'get_app_store_version', 'get_app_store_version_build', 'get_review_submission', 'list_review_submission_items', 'get_app_store_review_detail', 'get_app_store_review_detail_by_id', 'list_app_store_review_attachments', 'get_app_store_review_attachment', 'list_app_store_review_attachment_ids', 'get_review_submission_item', 'list_review_submission_item_ids', 'get_app_store_version_phased_release', 'create_app_store_version_phased_release', 'update_app_store_version_phased_release', 'delete_app_store_version_phased_release', 'update_app_store_review_detail', 'check_release_readiness'],
       // Additional release/version reads are advertised in the commerce and ASO groups below.
     },
-    {capabilityId:'app-asset-library',title:'App Asset Library',description:'Read reusable assets, upload pinned images and place/order approved assets through official Apple endpoints.',scopes:['appstoreconnect.apps.read','appstoreconnect.assets.write'],actions:['get_app_asset_library','list_app_asset_library_reference_data','list_app_asset_library_images','get_app_asset_library_image','list_app_asset_library_image_placements','get_asset_library_placement','list_version_asset_library_placements','upload_asset_library_image','create_asset_library_placement','order_asset_library_placements','delete_asset_library_placement','update_asset_library_image','delete_asset_library_image','update_asset_library_video','delete_asset_library_video','list_app_asset_library_video_placements','list_asset_library_video_placement_ids']},
+    {capabilityId:'app-asset-library',title:'App Asset Library',description:'Read reusable assets, upload pinned images and place/order approved assets through official Apple endpoints.',scopes:['appstoreconnect.apps.read','appstoreconnect.assets.write'],actions:['get_app_asset_library','list_app_asset_library_reference_data','list_app_asset_library_images','get_app_asset_library_image','list_app_asset_library_image_placements','get_asset_library_placement','list_version_asset_library_placements','upload_asset_library_image','upload_asset_library_video','create_asset_library_placement','order_asset_library_placements','delete_asset_library_placement','update_asset_library_image','delete_asset_library_image','update_asset_library_video','delete_asset_library_video','list_app_asset_library_video_placements','list_asset_library_video_placement_ids']},
     {capabilityId:'team-access-read',title:'Team and Access',description:'Read Apple user roles, pending invitations and visible App access.',scopes:['appstoreconnect.team.read'],actions:additionalAscReads.filter(s=>s.scope==='appstoreconnect.team.read').map(s=>s.id)},
     {capabilityId:'webhooks-read',title:'Webhook Delivery Diagnostics',description:'Read Apple webhook configuration and delivery state.',scopes:['appstoreconnect.webhooks.read'],actions:additionalAscReads.filter(s=>s.scope==='appstoreconnect.webhooks.read').map(s=>s.id)},
     {capabilityId:'performance-read',title:'Power and Performance Metrics',description:'Read Apple App and build performance metrics.',scopes:['appstoreconnect.diagnostics.read'],actions:additionalAscReads.filter(s=>s.scope==='appstoreconnect.diagnostics.read').map(s=>s.id)},
@@ -1411,6 +1414,7 @@ function actions(): AssistantPluginActionDescriptor[] {
     { actionId: 'list_app_store_version_localizations', title: 'List App Store version localizations', description: 'List localizations for one App Store version.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { version_id: { type: 'string' }, locale: { type: 'string' }, limit: { type: 'number' } }, required: ['version_id'], additionalProperties: false } },
     { actionId: 'list_app_screenshot_sets', title: 'List localized screenshot sets', description: 'Read device screenshot sets for a verified exact App/version/locale.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' }, version_id: { type: 'string' }, localization_id: { type: 'string' }, locale: { type: 'string' } }, required: ['app_id', 'version_id', 'localization_id', 'locale'], additionalProperties: false } },
     { actionId: 'list_app_screenshots', title: 'List localized screenshots', description: 'Read screenshot upload state and checksum for an exact device screenshot set.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' }, version_id: { type: 'string' }, localization_id: { type: 'string' }, locale: { type: 'string' }, display_type: { type: 'string' } }, required: ['app_id', 'version_id', 'localization_id', 'locale', 'display_type'], additionalProperties: false } },
+    {actionId:'upload_asset_library_video',title:'Stream reusable Apple Asset Library video',description:'SHA-256 pin a checkout-contained MP4/M4V/MOV up to 500 MB, inspect Apple library and duplicate reference name, reserve once, stream signed byte ranges without JWT, commit uploaded=true, then read processing state; no placement or review.',readOnly:false,risk:'remote_write',confirmation:'strong_confirmation',requiredConfirmationText:'upload-asset-library-video',defaultTimeoutMs:600_000,cancellable:true,idempotent:false,scopes:['appstoreconnect.assets.write'],resourceClaims:writeRemote,argumentsSchema:{type:'object',properties:{app_id:{type:'string'},file_path:{type:'string'},expected_sha256:{type:'string'},reference_name:{type:'string'},category:{type:'string',enum:['APP_SCREENSHOTS_AND_PREVIEWS','CREATIVE_ASSETS']},preview_frame_time_code:{type:'string'},dry_run:{type:'boolean'}},required:['file_path','expected_sha256','reference_name','category'],additionalProperties:false}},
     {actionId:'upload_asset_library_image',title:'Upload reusable Apple Asset Library image',description:'Read a pinned PNG/JPEG in checkout, verify app library and reference name, reserve once, PUT Apple signed segments without JWT, commit uploaded=true, and read exact processing state; never auto-place or submit.',readOnly:false,risk:'remote_write',confirmation:'strong_confirmation',requiredConfirmationText:'upload-asset-library-image',defaultTimeoutMs:180_000,cancellable:true,idempotent:false,scopes:['appstoreconnect.assets.write'],resourceClaims:writeRemote,argumentsSchema:{type:'object',properties:{app_id:{type:'string'},file_path:{type:'string'},expected_sha256:{type:'string'},reference_name:{type:'string'},category:{type:'string',enum:['APP_SCREENSHOTS_AND_PREVIEWS','CREATIVE_ASSETS']},dry_run:{type:'boolean'}},required:['file_path','expected_sha256','reference_name','category'],additionalProperties:false}},
     { actionId: 'upload_app_screenshot', title: 'Upload localized App screenshot', description: 'Verify exact App/version/locale/device, reserve Apple upload, PUT signed byte ranges, commit MD5, return processing state. Reconcile by checksum before retry.', readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 180_000, cancellable: true, idempotent: false, scopes: ['appstoreconnect.screenshots.write'], resourceClaims: writeRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' }, version_id: { type: 'string' }, localization_id: { type: 'string' }, locale: { type: 'string' }, display_type: { type: 'string' }, file_path: { type: 'string' }, expected_sha256: { type: 'string' }, dry_run: { type: 'boolean' } }, required: ['app_id', 'version_id', 'localization_id', 'locale', 'display_type', 'file_path'], additionalProperties: false } },
     { actionId: 'reorder_app_screenshots', title: 'Reorder localized screenshots', description: 'Replace exact screenshot ID order after reconciling same-set membership and processing state.', readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 90_000, cancellable: true, idempotent: false, scopes: ['appstoreconnect.screenshots.write'], resourceClaims: writeRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' }, version_id: { type: 'string' }, localization_id: { type: 'string' }, locale: { type: 'string' }, display_type: { type: 'string' }, screenshot_ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 10 }, dry_run: { type: 'boolean' } }, required: ['app_id', 'version_id', 'localization_id', 'locale', 'display_type', 'screenshot_ids'], additionalProperties: false } },
@@ -1550,35 +1554,75 @@ async function screenshotFile(repoRoot: string, inputPath: string) {
   if (!jpeg && !png) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Screenshot image extension/signature mismatch.', { retryable: false });
   return { bytes, name, relativePath: rel, sha256: createHash('sha256').update(bytes).digest('hex'), md5: createHash('md5').update(bytes).digest('hex') };
 }
-async function uploadScreenshotParts(parts: NonNullable<NonNullable<AscScreenshotResource['attributes']>['uploadOperations']>, bytes: Buffer): Promise<void> {
+
+async function assetVideoFile(repoRoot: string, inputPath: string) {
+  const root = await fsPromises.realpath(repoRoot);
+  const path = await fsPromises.realpath(resolve(root, inputPath));
+  const rel = relative(root, path);
+  if (!rel || rel === '..' || rel.startsWith('../') || isAbsolute(rel))
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Video must be inside the authorized checkout.', {retryable:false});
+  const stat = await fsPromises.stat(path);
+  if (!stat.isFile() || stat.size === 0 || stat.size > 524_288_000)
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Video must be a nonempty file up to 500 MiB (524288000 bytes).', {retryable:false});
+  const name = basename(path);
+  if (!['.mp4','.m4v','.mov'].includes(extname(name).toLowerCase()))
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Video file must be .mp4, .m4v, or .mov.', {retryable:false});
+  const handle = await fsPromises.open(path,'r');
+  const prefix = Buffer.alloc(12);
+  try { await handle.read(prefix,0,12,0); } finally { await handle.close(); }
+  if (prefix.toString('ascii',4,8) !== 'ftyp')
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Video file signature does not match MP4/QuickTime.', {retryable:false});
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path,{highWaterMark:1024*1024})) hash.update(chunk as Buffer);
+  const after = await fsPromises.stat(path);
+  if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs)
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Video file changed during SHA-256 verification.', {retryable:false});
+  return {path,relativePath:rel,name,size:stat.size,sha256:hash.digest('hex')};
+}
+
+async function uploadAppleSignedParts(parts: NonNullable<NonNullable<AscScreenshotResource['attributes']>['uploadOperations']>, source: Buffer | {path:string;size:number}): Promise<void> {
+  const size = Buffer.isBuffer(source) ? source.length : source.size;
   const ordered = [...parts].sort((a, b) => a.offset - b.offset);
   let cursor = 0;
   for (const part of ordered) {
     if (!Number.isSafeInteger(part.offset) || !Number.isSafeInteger(part.length) || part.length <= 0 ||
-        part.offset !== cursor || part.length + cursor > bytes.length || part.method !== 'PUT')
+        part.offset !== cursor || part.length + cursor > size || part.method !== 'PUT')
       throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Invalid or non-contiguous Apple upload range.', { retryable: false });
     const url = new URL(part.url);
     if (url.protocol !== 'https:' || !(url.hostname === 'apple.com' || url.hostname.endsWith('.apple.com')) ||
         url.username || url.password)
       throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Unexpected Apple upload host.', { retryable: false });
     for (const h of part.requestHeaders ?? [])
-      if (!/^(content-type|content-md5|x-amz-[a-z0-9-]+|x-apple-[a-z0-9-]+)$/i.test(h.name))
+      if (!/^(content-type|content-length|content-md5|x-amz-[a-z0-9-]+|x-apple-[a-z0-9-]+)$/i.test(h.name) ||
+          (h.name.toLowerCase() === 'content-length' && h.value !== String(part.length)))
         throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Unexpected Apple upload header.', { retryable: false });
     cursor += part.length;
   }
-  if (!ordered.length || cursor !== bytes.length)
+  if (!ordered.length || cursor !== size)
     throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple upload operations do not cover the file.', { retryable: false });
   for (const part of ordered) {
-    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Buffer.isBuffer(source) ? DEFAULT_TIMEOUT_MS : 180_000);
+    const stream = Buffer.isBuffer(source) ? undefined : createReadStream(source.path,{
+      start:part.offset,end:part.offset+part.length-1,highWaterMark:1024*1024,
+    });
     try {
-      const response = await fetch(part.url, { method: 'PUT',
-        headers: Object.fromEntries((part.requestHeaders ?? []).map((h) => [h.name, h.value])),
-        body: new Uint8Array(bytes.subarray(part.offset, part.offset + part.length)), redirect: 'manual', signal: controller.signal });
+      const headers = new Headers();
+      for (const h of part.requestHeaders ?? []) headers.set(h.name,h.value);
+      // Node's Fetch requires duplex=half for a streaming body. The exact Content-Length
+      // prevents implicit chunked transfer to Apple's signed PUT endpoint.
+      if (stream) headers.set('content-length',String(part.length));
+      const body = Buffer.isBuffer(source)
+        ? new Uint8Array(source.subarray(part.offset,part.offset+part.length))
+        : (Readable.toWeb(stream!) as unknown as BodyInit);
+      const request: RequestInit & {duplex?:'half'} = {method:'PUT',headers,body,redirect:'manual',
+        signal:controller.signal,...(stream?{duplex:'half' as const}:{})};
+      const response = await fetch(part.url, request);
       if (!response.ok) throw new Error('UPLOAD_HTTP_ERROR');
     } catch {
       throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Screenshot part outcome is unknown. Reconcile reservation before retry.', {
         retryable: false, details: { offset: part.offset, length: part.length } });
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); stream?.destroy(); }
   }
 }
 async function waitForScreenshotProcessing(config: AppStoreConnectPluginConfig, screenshotId: string, md5: string):
@@ -1653,7 +1697,7 @@ async function uploadOfficialScreenshot(config: AppStoreConnectPluginConfig, arg
   const r = reservation.data;
   if (!r?.id || !r.attributes?.uploadOperations)
     throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple reservation is incomplete; reconcile before retry.', { retryable: false });
-  await uploadScreenshotParts(r.attributes.uploadOperations, file.bytes);
+  await uploadAppleSignedParts(r.attributes.uploadOperations, file.bytes);
   await apiRequest<AscScreenshotResponse>(config, { path: '/v1/appScreenshots/' + encodeURIComponent(r.id),
     method: 'PATCH', body: { data: { type: 'appScreenshots', id: r.id,
       attributes: { uploaded: true, sourceFileChecksum: file.md5 } } } });
@@ -1665,7 +1709,7 @@ async function uploadOfficialScreenshot(config: AppStoreConnectPluginConfig, arg
 
 
 
-type AscAssetLibraryImageResource = {
+type AscAssetLibraryMediaResource = {
   type?: string;
   id: string;
   attributes?: {
@@ -1678,15 +1722,19 @@ type AscAssetLibraryImageResource = {
     uploadOperations?: NonNullable<AscScreenshotResource['attributes']>['uploadOperations'];
   };
 };
-async function uploadAppAssetLibraryImage(config: AppStoreConnectPluginConfig, args: Record<string, unknown>, repoRoot: string):
-  Promise<Record<string, unknown>> {
-  const file = await screenshotFile(repoRoot, requiredArg(args, 'file_path'));
+async function uploadAppAssetLibraryMedia(config: AppStoreConnectPluginConfig, args: Record<string, unknown>, repoRoot: string,
+  mediaKind: 'image' | 'video'): Promise<Record<string, unknown>> {
+  const file = mediaKind === 'image' ? await screenshotFile(repoRoot, requiredArg(args, 'file_path'))
+    : await assetVideoFile(repoRoot, requiredArg(args, 'file_path'));
+  const fileSize = 'bytes' in file ? file.bytes.length : file.size;
+  const resourceType = mediaKind === 'image' ? 'appAssetLibraryImages' : 'appAssetLibraryVideos';
+  const libraryCollection = mediaKind === 'image' ? 'images' : 'videos';
   const expectedHash = requiredArg(args, 'expected_sha256').toLowerCase();
   if (!/^[a-f0-9]{64}$/.test(expectedHash) || expectedHash !== file.sha256)
-    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Image SHA-256 differs from the approved value.', { retryable:false });
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Asset SHA-256 differs from the approved value.', { retryable:false });
   const category = requiredArg(args, 'category');
   if (!['APP_SCREENSHOTS_AND_PREVIEWS', 'CREATIVE_ASSETS'].includes(category))
-    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Invalid Apple image asset category.', { retryable:false });
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Invalid Apple Asset Library category.', { retryable:false });
   const referenceName = requiredArg(args, 'reference_name');
   const id = appId(args, config);
   const library = await apiRequest<{data:{id?:string;type?:string}}>(config, {
@@ -1696,8 +1744,8 @@ async function uploadAppAssetLibraryImage(config: AppStoreConnectPluginConfig, a
   if (!libraryId || library.data.type !== 'appAssetLibraries')
     throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple did not confirm the selected app asset library.', { retryable:false });
   // Apple's referenceName filter avoids silently reserving duplicate media on a repeated request.
-  const existing = await apiRequest<{data:AscAssetLibraryImageResource[];links?:{next?:string|null}}>(config, {
-    path: '/v1/appAssetLibraries/' + encodeURIComponent(libraryId) + '/images',
+  const existing = await apiRequest<{data:AscAssetLibraryMediaResource[];links?:{next?:string|null}}>(config, {
+    path: '/v1/appAssetLibraries/' + encodeURIComponent(libraryId) + '/' + libraryCollection,
     query: { 'filter[referenceName]': referenceName, limit: 200 },
   });
   if (!Array.isArray(existing.data) || existing.links?.next)
@@ -1705,50 +1753,80 @@ async function uploadAppAssetLibraryImage(config: AppStoreConnectPluginConfig, a
   const duplicates = existing.data.filter(item => item.attributes?.referenceName === referenceName);
   if (duplicates.length)
     throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Reference name already belongs to an Apple asset; inspect its state before retry.', {
-      retryable:false, details:{existingImageIds:duplicates.map(v=>v.id), states:duplicates.map(v=>v.attributes?.state)},
+      retryable:false, details:{existingAssetIds:duplicates.map(v=>v.id), states:duplicates.map(v=>v.attributes?.state)},
     });
-  const attributes = { fileName: file.name, fileSize: file.bytes.length, category, referenceName };
-  const body = {data: {type:'appAssetLibraryImages',attributes,
+  const attributes: Record<string,unknown> = {fileName:file.name,fileSize,category,referenceName};
+  if (mediaKind === 'video' && args.preview_frame_time_code !== undefined) {
+    const timecode = requiredArg(args,'preview_frame_time_code');
+    if (!/^(?:[0-1]?[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]:[0-9]{2}$/.test(timecode))
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Invalid video preview frame timecode (HH:MM:SS:FF).', {retryable:false});
+    attributes.previewFrameTimeCode = timecode;
+  }
+  const body = {data: {type:resourceType,attributes,
     relationships:{assetLibrary:{data:{type:'appAssetLibraries',id:libraryId}}}}};
   if (args.dry_run === true) return {dryRun:true,appId:id,libraryId,referenceName,
-    file:{relativePath:file.relativePath,name:file.name,size:file.bytes.length,sha256:file.sha256},
-    request:{method:'POST',path:'/v1/appAssetLibraryImages',body},
+    file:{relativePath:file.relativePath,name:file.name,size:fileSize,sha256:file.sha256},
+    request:{method:'POST',path:'/v1/'+resourceType,body},
     note:'No reservation, upload, commit or placement was executed.'};
-  const reservation = await apiRequest<{data:AscAssetLibraryImageResource}>(config, {
-    path:'/v1/appAssetLibraryImages',method:'POST',body,
-  });
-  const assetId = reservation.data?.id;
-  const parts = reservation.data?.attributes?.uploadOperations;
-  if (!assetId || reservation.data.type !== 'appAssetLibraryImages' || !Array.isArray(parts))
-    throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple image reservation is incomplete; inspect before retry.', {
-      retryable:false,details:{assetId:assetId??null},
-    });
+  let snapshotRoot: string | undefined;
   try {
-    await uploadScreenshotParts(parts,file.bytes);
-    // New Asset Library images commit only uploaded=true, NOT screenshot sourceFileChecksum.
-    await apiRequest(config,{path:'/v1/appAssetLibraryImages/'+encodeURIComponent(assetId),method:'PATCH',
-      body:{data:{type:'appAssetLibraryImages',id:assetId,attributes:{uploaded:true}}}});
-  } catch {
-    throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Image upload or commit outcome is uncertain; inspect this asset before retry.', {
-      retryable:false, details:{assetId},
+    let content: Buffer | { path: string; size: number };
+    if ('bytes' in file) {
+      content = file.bytes;
+    } else {
+      snapshotRoot = await fsPromises.mkdtemp(join(tmpdir(), 'forge-asc-video-'));
+      const snapshotPath = join(snapshotRoot, 'video');
+      // Bound copying even if the source grows, then verify the exact bytes we will send.
+      await pipeline(
+        createReadStream(file.path, { end: file.size }),
+        createWriteStream(snapshotPath, { flags: 'wx', mode: 0o600 }),
+      );
+      const hash = createHash('sha256');
+      for await (const chunk of createReadStream(snapshotPath)) hash.update(chunk as Buffer);
+      if ((await fsPromises.stat(snapshotPath)).size !== file.size || hash.digest('hex') !== expectedHash) {
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Video file changed before upload.', { retryable: false });
+      }
+      content = { path: snapshotPath, size: file.size };
+    }
+    const reservation = await apiRequest<{data:AscAssetLibraryMediaResource}>(config, {
+      path:'/v1/'+resourceType,method:'POST',body,
     });
+    const assetId = reservation.data?.id;
+    const parts = reservation.data?.attributes?.uploadOperations;
+    if (!assetId || reservation.data.type !== resourceType || !Array.isArray(parts))
+      throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple asset reservation is incomplete; inspect before retry.', {
+        retryable:false,details:{assetId:assetId??null},
+      });
+    try {
+      await uploadAppleSignedParts(parts,content);
+      // New Asset Library media commits only uploaded=true, never legacy sourceFileChecksum.
+      await apiRequest(config,{path:'/v1/'+resourceType+'/'+encodeURIComponent(assetId),method:'PATCH',
+        body:{data:{type:resourceType,id:assetId,attributes:{uploaded:true}}}});
+    } catch {
+      throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Asset upload or commit outcome is uncertain; inspect this asset before retry.', {
+        retryable:false, details:{assetId},
+      });
+    }
+    const readback = await apiRequest<{data:AscAssetLibraryMediaResource}>(config,{
+      path:'/v1/'+resourceType+'/'+encodeURIComponent(assetId),
+    });
+    if (readback.data?.id !== assetId)
+      throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR','Apple asset identity readback failed; inspect before retry.',{
+        retryable:false, details:{assetId},
+      });
+    const state = readback.data.attributes?.state ?? null;
+    if (state === 'FAILED')
+      throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR','Apple asset processing failed; inspect stateDetails.',{
+        retryable:false, details:{assetId,state},
+      });
+    return {applied:true,mediaKind,assetId,libraryId,sha256:file.sha256,referenceName,state,
+      specId:readback.data.attributes?.specId??null,
+      readyToPlace:state==='PREPARE_FOR_SUBMISSION'||state==='APPROVED',
+      note:'This creates a reusable library asset only. Placements and App Review remain separate actions.'};
+  } finally {
+    // Cleanup failure must not replace a remote write receipt.
+    if (snapshotRoot) await fsPromises.rm(snapshotRoot, { recursive: true, force: true }).catch(() => undefined);
   }
-  const readback = await apiRequest<{data:AscAssetLibraryImageResource}>(config,{
-    path:'/v1/appAssetLibraryImages/'+encodeURIComponent(assetId),
-  });
-  if (readback.data?.id !== assetId)
-    throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR','Apple asset identity readback failed; inspect before retry.',{
-      retryable:false, details:{assetId},
-    });
-  const state = readback.data.attributes?.state ?? null;
-  if (state === 'FAILED')
-    throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR','Apple image processing failed; inspect stateDetails.',{
-      retryable:false, details:{assetId,state},
-    });
-  return {applied:true,assetId,libraryId,sha256:file.sha256,referenceName,state,
-    specId:readback.data.attributes?.specId??null,
-    readyToPlace:state==='PREPARE_FOR_SUBMISSION'||state==='APPROVED',
-    note:'This creates a reusable library asset only. Placements and App Review remain separate actions.'};
 }
 
 function appId(args: Record<string, unknown>, config: AppStoreConnectPluginConfig): string {
@@ -1858,8 +1936,8 @@ function mockResponse(actionId: string, args: Record<string, unknown>, config: A
     return { data: [], meta: { provider: 'mock', appId: requiredArg(args, 'app_id') } };
   const id = stringValue(args.app_id) ?? config.defaultAppId ?? stableMockId('app', args);
   const additionalRead = additionalAscReads.find(spec => spec.id === actionId);
-  if (actionId === 'upload_asset_library_image')
-    throw new AssistantPluginError('PLUGIN_ACTION_NOT_SUPPORTED', 'Mock provider cannot upload or commit image bytes; use live provider dry_run for preflight.', {retryable:false});
+  if (actionId === 'upload_asset_library_image' || actionId === 'upload_asset_library_video')
+    throw new AssistantPluginError('PLUGIN_ACTION_NOT_SUPPORTED', 'Mock provider cannot upload or commit media bytes; use live provider dry_run for preflight.', {retryable:false});
   if (actionId === 'summarize_analytics_instance')
     return {instanceId:requiredArg(args,'instance_id'),complete:true,segmentCount:0,groups:[],provider:'mock'};
   if (actionId === 'check_release_readiness')
@@ -2031,7 +2109,7 @@ export function buildAppStoreConnectPluginManifest(previousRevision = 0, previou
     pluginId: APP_STORE_CONNECT_PLUGIN_ID,
     provider: 'apple',
     displayName: 'App Store Connect API Plugin',
-    pluginVersion: '1.13.0',
+    pluginVersion: '1.14.0',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-global:system/plugins/config/app-store-connect.json', 'legacy-import-only:system/plugins/profiles|repositories/<repoId>/plugins/config|.forge/plugins|.repo-harness/plugins', 'env:FORGE_ASC_*'] },
     enabled: config.enabled,
     lifecycle: { state: state.lifecycleState, reason: !config.enabled ? 'App Store Connect plugin is disabled.' : auth.ready ? 'App Store Connect API credentials are ready.' : auth.errors[0] ?? auth.warnings[0] },
@@ -2080,7 +2158,9 @@ export async function executeAppStoreConnectPluginAction(input: AssistantPluginA
 
   if (input.actionId === 'check_release_readiness') return inspectAppStoreReleaseReadiness(config, input.args);
   if (input.actionId === 'list_app_territory_availabilities') return listAppTerritoryAvailabilities(config, input.args);
-  if (input.actionId === 'upload_asset_library_image') return uploadAppAssetLibraryImage(config, input.args, input.repoRoot);
+  if (input.actionId === 'upload_asset_library_image' || input.actionId === 'upload_asset_library_video')
+    return uploadAppAssetLibraryMedia(config,input.args,input.repoRoot,
+      input.actionId === 'upload_asset_library_image' ? 'image' : 'video');
   if (input.actionId === 'summarize_analytics_instance') return summarizeAppleAnalyticsInstance(config,input.args);
   if (['read_analytics_segment_data','summarize_analytics_segment','read_sales_report','read_finance_report'].includes(input.actionId))
     return downloadAppleReport(config, input.actionId, input.args);
