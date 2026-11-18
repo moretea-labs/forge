@@ -588,7 +588,11 @@ export function runMcpDoctor(opts: {
     ? Math.max(0, Date.now() - Date.parse(lastSessionClose.at))
     : undefined;
   const reinitializedAfterLastClose = Boolean(lastSessionClose && transportEvents.some((event) =>
-    event.kind === "session_initialized" && Date.parse(event.at) > Date.parse(lastSessionClose.at),
+    event.kind === "session_initialized"
+      && event.connectionId === lastSessionClose.connectionId
+      && event.route === lastSessionClose.route
+      && event.principalId === lastSessionClose.principalId
+      && Date.parse(event.at) > Date.parse(lastSessionClose.at),
   ));
   const sessionCloseCounts = transportEvents.reduce(
     (counts, event) => {
