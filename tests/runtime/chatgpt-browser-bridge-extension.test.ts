@@ -103,7 +103,7 @@ function bridgeHarness() {
     URL,
     fetch,
     setInterval: () => 0,
-    setTimeout: (callback: () => void) => { callback(); return 0; },
+    setTimeout,
   });
 
   return {
