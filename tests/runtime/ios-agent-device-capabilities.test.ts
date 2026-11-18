@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { executeIosAgentDeviceAction, iosAgentDeviceActions, resetIosAgentDeviceRuntimeHooksForTest, setIosAgentDeviceRuntimeHooksForTest } from '../../src/runtime/plugins/ios-agent-device';
-import { writeInteractionSession } from '../../src/runtime/plugins/interaction-session';
+import { readInteractionSession, writeInteractionSession } from '../../src/runtime/plugins/interaction-session';
 import {
   appendSettleFlag,
   compileBatchCommand,
@@ -134,6 +134,50 @@ describe('agent-device coordinate swipe contract', () => {
     await expect(executeSwipe('invalid-swipe', { x1: -1, y1: 650, x2: 200, y2: 220 }))
       .rejects.toMatchObject({ code: 'PLUGIN_ACTION_ARGUMENT_INVALID' });
     expect(calls.filter((args) => args[0] === 'gesture')).toHaveLength(2);
+  });
+
+  it('fences an ambiguous coordinate pan timeout and blocks later mutations', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-ios-swipe-unknown-repo-'));
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-ios-swipe-unknown-home-'));
+    swipeTestRoots.push(repoRoot, controllerHome);
+    const now = new Date('2026-11-18T08:00:00Z');
+    const interactionId = 'ios_agent_device_coordinate_swipe_unknown';
+    const targetId = '96EDA0C4-D3A9-407C-8692-BE28234C5F43';
+    writeInteractionSession(repoRoot, {
+      schemaVersion: 1, interactionId, provider: 'ios-simulator', engine: 'agent-device',
+      sessionId: 'forge-swipe-unknown-test', targetId, targetAliases: [targetId], status: 'waiting_for_user',
+      reason: 'ios_simulator_automation', instructions: 'com.example.test',
+      owner: { repoId: 'repo-ios-swipe-test', requestId: 'open' },
+      createdAt: now.toISOString(), updatedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 600_000).toISOString(),
+    });
+    const calls: string[][] = [];
+    const probe = (command: string, args: string[]) => {
+      calls.push(args);
+      if (args[0] === 'gesture') {
+        return { ok: false, status: 1, stdout: '', stderr: 'command timed out after dispatch', command: [command, ...args], timedOut: true };
+      }
+      return { ok: true, status: 0, stdout: args[0] === '--version' ? '0.20.2' : 'agent-device <command> --json', stderr: '', command: [command, ...args] };
+    };
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin', now: () => now, runCommand: probe,
+      runCommandAsync: async (command, args) => probe(command, args),
+    });
+    const execute = (actionId: string, requestId: string, args: Record<string, unknown>) => executeIosAgentDeviceAction({
+      controllerHome, repoId: 'repo-ios-swipe-test', repoRoot, pluginId: 'ios', actionId, requestId,
+      args: { interaction_id: interactionId, ...args }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    await expect(execute('agent_device_swipe', 'ambiguous-pan', { x1: 200, y1: 650, x2: 200, y2: 220 }))
+      .rejects.toMatchObject({ code: 'AGENT_DEVICE_OUTCOME_UNKNOWN' });
+    expect(readInteractionSession(repoRoot, 'ios-simulator', interactionId)).toMatchObject({
+      status: 'unknown', error: { code: 'AGENT_DEVICE_OUTCOME_UNKNOWN' },
+    });
+    const callsAfterPan = calls.length;
+    await expect(execute('agent_device_scroll', 'after-unknown', { direction: 'down' }))
+      .rejects.toMatchObject({ code: 'AGENT_DEVICE_OUTCOME_UNKNOWN' });
+    expect(calls).toHaveLength(callsAfterPan);
+    expect(calls.some((args) => args[0] === 'gesture')).toBe(true);
+    expect(calls.some((args) => args[0] === 'scroll')).toBe(false);
   });
 });
 
