@@ -404,6 +404,32 @@ describe('mcp http transport', () => {
     });
   });
 
+  test('does not attribute another connection initialization to an interrupted MCP connection', () => {
+    const startedAt = '2026-09-22T09:50:00.000Z';
+    const now = Date.parse('2026-09-22T10:10:00.000Z');
+    const evidence = recentMcpTransportEvidence([{
+      schemaVersion: 1,
+      at: '2026-09-22T10:00:05.000Z',
+      kind: 'session_initialized',
+      sessionId: 'other-session',
+      connectionId: 'connection-b',
+      route: '/mcp',
+      principalId: 'controller-http-client',
+    }, {
+      schemaVersion: 1,
+      at: '2026-09-22T10:00:00.000Z',
+      kind: 'interruption',
+      sessionId: 'session-a',
+      connectionId: 'connection-a',
+      route: '/mcp',
+      principalId: 'controller-http-client',
+      reason: 'transport_close',
+    }], startedAt, now);
+
+    expect(evidence).toMatchObject({ current: 'healthy', recentStatus: 'recovering' });
+    expect(evidence.lastRecoveryAt).toBeUndefined();
+  });
+
   test('persists non-transport session close reasons in the durable controller ledger', async () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-mcp-session-close-evidence-'));
     const restartedHome = mkdtempSync(join(tmpdir(), 'forge-mcp-session-close-restart-'));

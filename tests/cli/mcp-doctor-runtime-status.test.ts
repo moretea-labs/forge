@@ -259,6 +259,38 @@ describe("forge mcp doctor runtime status", () => {
     }
   });
 
+  test("does not attribute another MCP connection's initialization to the last closed connection", () => {
+    const { controllerHome } = makeFixture();
+    const closedAt = new Date(Date.now() - 1_000).toISOString();
+    try {
+      recordMcpTransportEvent(controllerHome, {
+        kind: "session_closed",
+        sessionId: "closed-session",
+        connectionId: "connection-a",
+        route: "/mcp",
+        principalId: "oauth-client:fixture",
+        reason: "idle_ttl",
+        at: closedAt,
+      });
+      recordMcpTransportEvent(controllerHome, {
+        kind: "session_initialized",
+        sessionId: "unrelated-session",
+        connectionId: "connection-b",
+        route: "/mcp",
+        principalId: "oauth-client:fixture",
+        at: new Date().toISOString(),
+      });
+
+      const result = runMcpDoctor({ userLevel: true, controllerHome, json: true });
+      const report = JSON.parse(result.lines[0] ?? "{}") as {
+        transportEvidence?: { reinitializedAfterLastClose?: boolean };
+      };
+      expect(report.transportEvidence?.reinitializedAfterLastClose).toBe(false);
+    } finally {
+      rmSync(join(controllerHome, ".."), { recursive: true, force: true });
+    }
+  });
+
   test("retains the last durable session-close diagnosis after the 30-minute display window", () => {
     const { controllerHome } = makeFixture();
     const closedAt = new Date(Date.now() - 45 * 60_000).toISOString();

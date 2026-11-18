@@ -154,7 +154,13 @@ export function recentMcpTransportEvidence(
     };
   }
   const interruptionAt = Date.parse(lastInterruption.at);
-  const recovery = recent.find((event) => event.kind === 'session_initialized' && Date.parse(event.at) > interruptionAt);
+  const recovery = recent.find((event) =>
+    event.kind === 'session_initialized'
+    && event.connectionId === lastInterruption.connectionId
+    && event.route === lastInterruption.route
+    && event.principalId === lastInterruption.principalId
+    && Date.parse(event.at) > interruptionAt,
+  );
   return {
     current: 'healthy',
     recentStatus: recovery ? 'recovered' : 'recovering',
