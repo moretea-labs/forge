@@ -186,6 +186,32 @@ export function repositoryCheckoutRootMatches(record: RepositoryRecord, root: st
   return Boolean(repositoryCommon && checkoutCommon && comparablePath(repositoryCommon) === comparablePath(checkoutCommon));
 }
 
+/** Exclude unrelated on-disk Git directories without spawning Git. This is
+ * only a negative filter: matching/unknown layouts still require Git proof.
+ */
+function mayShareGitCommonDirectory(root: string, comparableCommon: string): boolean {
+  if (process.env.GIT_DIR !== undefined || process.env.GIT_COMMON_DIR !== undefined) return true;
+  try {
+    let directory = join(root, '.git');
+    const marker = statSync(directory);
+    if (!marker.isDirectory()) {
+      if (!marker.isFile()) return true;
+      const link = /^gitdir: ([^\r\n]+)\r?\n?$/.exec(readFileSync(directory, 'utf8'))?.[1];
+      if (!link || link !== link.trim()) return true;
+      directory = resolve(root, link);
+    }
+    const commonFile = join(directory, 'commondir');
+    if (existsSync(commonFile)) {
+      const common = readFileSync(commonFile, 'utf8').replace(/\r?\n$/, '');
+      if (!common || common !== common.trim() || /[\r\n]/.test(common)) return true;
+      directory = resolve(directory, common);
+    }
+    return comparablePath(realpathSync(directory)) === comparableCommon;
+  } catch {
+    return true;
+  }
+}
+
 function repositoryByGitCommonDirectory(records: RepositoryRecord[], root: string): RepositoryRecord | undefined {
   const checkoutCommon = gitCommonDirectory(root);
   if (!checkoutCommon) return undefined;
@@ -199,7 +225,9 @@ function repositoryByGitCommonDirectory(records: RepositoryRecord[], root: strin
     // root is the primary worktree; a linked-worktree canonical record is only a
     // compatibility fallback and must not steal new worktrees from that primary.
     if (record.canonicalRoot && existsSync(record.canonicalRoot)) {
-      const canonicalCommon = gitCommonDirectory(record.canonicalRoot);
+      const canonicalCommon = mayShareGitCommonDirectory(record.canonicalRoot, comparableCommon)
+        ? gitCommonDirectory(record.canonicalRoot)
+        : undefined;
       if (canonicalCommon && comparablePath(canonicalCommon) === comparableCommon) {
         if (isPrimaryGitWorktree(record.canonicalRoot)) return record;
         linkedWorktreeFallback ??= record;
@@ -210,6 +238,7 @@ function repositoryByGitCommonDirectory(records: RepositoryRecord[], root: strin
     const fallbackRoots = Array.from(new Set(record.checkouts.map((checkout) => checkout.canonicalRoot)));
     for (const candidateRoot of fallbackRoots) {
       if (!candidateRoot || !existsSync(candidateRoot)) continue;
+      if (!mayShareGitCommonDirectory(candidateRoot, comparableCommon)) continue;
       const common = gitCommonDirectory(candidateRoot);
       if (common && comparablePath(common) === comparableCommon) {
         historicalCheckoutFallback ??= record;
@@ -325,15 +354,17 @@ function loadRepositoryRegistryReadSnapshot(controllerHome?: string): Repository
   const cached = beforeIdentity ? repositoryRegistryReadSnapshots.get(path) : undefined;
   if (cached && cached.fileIdentity === beforeIdentity) return cached.registry;
 
+  let readIdentity = beforeIdentity;
   let registry = readRegistryFile(path, true) ?? defaultRegistry();
   let afterIdentity = registryFileIdentity(path);
-  if (beforeIdentity && afterIdentity && beforeIdentity !== afterIdentity) {
-    // A cross-process atomic replacement raced this read. Re-read once from the
-    // new physical authority instead of caching a mixed-generation snapshot.
+  if (beforeIdentity !== afterIdentity) {
+    // Replacement, creation or deletion raced this read. Retry once, without
+    // claiming that this second attempt is immune to another concurrent write.
+    readIdentity = afterIdentity;
     registry = readRegistryFile(path, true) ?? defaultRegistry();
     afterIdentity = registryFileIdentity(path);
   }
-  if (afterIdentity) repositoryRegistryReadSnapshots.set(path, { fileIdentity: afterIdentity, registry });
+  if (afterIdentity && readIdentity === afterIdentity) repositoryRegistryReadSnapshots.set(path, { fileIdentity: afterIdentity, registry });
   else repositoryRegistryReadSnapshots.delete(path);
   return registry;
 }

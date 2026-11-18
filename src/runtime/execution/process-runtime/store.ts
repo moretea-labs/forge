@@ -206,13 +206,22 @@ function updateRecoveryIndexMembership(
       const pending = new Set(base.pendingLeaseReleaseIds);
       if (membership.active) active.add(processId); else active.delete(processId);
       if (membership.pendingLeaseRelease) pending.add(processId); else pending.delete(processId);
+      const activeProcessIds = [...active].sort();
+      const pendingLeaseReleaseIds = [...pending].sort();
+      if (
+        activeProcessIds.join('\0') === normalizedProcessIds(base.activeProcessIds).join('\0')
+        && pendingLeaseReleaseIds.join('\0') === normalizedProcessIds(base.pendingLeaseReleaseIds).join('\0')
+      ) {
+        return base;
+      }
       return {
         schemaVersion: 2,
         updatedAt: new Date().toISOString(),
-        activeProcessIds: [...active].sort(),
-        pendingLeaseReleaseIds: [...pending].sort(),
+        activeProcessIds,
+        pendingLeaseReleaseIds,
       };
     },
+    skipWriteWhenMutationReturnsCurrent: true,
   }).value;
   return value;
 }
@@ -357,6 +366,7 @@ export function claimProcessRequest(input: {
     namespace: 'process_request_binding', scope: input.repoId, key: bindingKey(input.repoId, input.checkoutId, requestId), schemaVersion: 1,
     action: 'process_request_binding_claim', readLegacy: () => readJson<ProcessRequestBinding>(path),
     mutate: (current) => { if (current) { existed = true; return current.value; } return binding; },
+    skipWriteWhenMutationReturnsCurrent: true,
   }).value;
   if (!existing || existing.schemaVersion !== 1 || !existing.processId || !existing.commandFingerprint) {
     throw new Error(`PROCESS_REQUEST_BINDING_CORRUPT: ${requestId}`);
@@ -443,6 +453,7 @@ export function claimProcessCheckExecution(input: {
       disposition = 'existing';
       return existing;
     },
+    skipWriteWhenMutationReturnsCurrent: true,
   }).value;
   if (!binding) throw new Error(`PROCESS_CHECK_EXECUTION_BINDING_CORRUPT: ${cacheKey}`);
   return { status: disposition, binding };
@@ -489,6 +500,7 @@ export function claimProcessInvocation(input: {
     namespace: 'process_invocation_binding', scope: input.repoId, key: bindingKey(input.repoId, input.checkoutId, requestId), schemaVersion: 1,
     action: 'process_invocation_binding_claim', readLegacy: () => readJson<ProcessInvocationBinding>(path),
     mutate: (current) => { if (current) { existed = true; return current.value; } return binding; },
+    skipWriteWhenMutationReturnsCurrent: true,
   }).value;
   if (!existing || existing.schemaVersion !== 1 || !existing.invocationFingerprint) {
     throw new Error(`PROCESS_INVOCATION_BINDING_CORRUPT: ${requestId}`);

@@ -5,8 +5,8 @@ import { callMcpTool, type CallToolResult, type McpToolContext } from '../../../
 import { runtimePolicy, type MultiRepositoryMcpToolContext } from '../../../../adapters/mcp/multi-repository';
 import { callRuntimeTool } from '../../../../adapters/mcp/runtime-gateway/runtime-tools';
 import { ensureRepositoryRuntimeStorage } from '../../repositories/runtime-storage';
-import { dispatchLocalBridgeJob, getLocalBridgeJob } from '../../../cli/local-bridge/job-store';
 import type { LocalBridgeJob } from '../../local-bridge/types';
+import type { LocalBridgeExecutionPort } from '../../local-bridge/lifecycle';
 import { settleScheduledExecution } from '../../../../packages/kernel/scheduler/api/index';
 import type { ExecutionJob, ExecutionJobOutcome } from '../jobs/types';
 import {
@@ -49,32 +49,32 @@ function childReferenceFromLocalJob(
  * Accept a Local Job that hands off to an Agent Run. Parent Execution Jobs only
  * need a durable child reference; they must not hold leases across the full Run.
  */
-function acceptLegacyAgentLocalJob(repoRoot: string, jobId: string): LocalBridgeJob {
-  let current = getLocalBridgeJob(repoRoot, jobId);
+function acceptLegacyAgentLocalJob(localBridge: LocalBridgeExecutionPort, repoRoot: string, jobId: string): LocalBridgeJob {
+  let current = localBridge.getJob(repoRoot, jobId);
   const projectedExecutionPending = current.result
     && typeof current.result.executionJobId === 'string'
     && (current.status === 'dispatched' || (current.status === 'running' && current.ownerPid === undefined));
   if (current.status === 'approved' || projectedExecutionPending) {
-    current = dispatchLocalBridgeJob(repoRoot, jobId);
+    current = localBridge.dispatchJob(repoRoot, jobId);
   }
   // One refresh so projection from the linked Agent Run is current.
-  return getLocalBridgeJob(repoRoot, jobId);
+  return localBridge.getJob(repoRoot, jobId);
 }
 
-async function settleLegacyLocalJob(repoRoot: string, jobId: string, timeoutMs = 15 * 60_000) {
+async function settleLegacyLocalJob(localBridge: LocalBridgeExecutionPort, repoRoot: string, jobId: string, timeoutMs = 15 * 60_000) {
   const started = Date.now();
   const boundedTimeoutMs = Math.max(1_000, Math.trunc(timeoutMs));
-  let current = getLocalBridgeJob(repoRoot, jobId);
+  let current = localBridge.getJob(repoRoot, jobId);
   const projectedExecutionPending = current.result
     && typeof current.result.executionJobId === 'string'
     && (current.status === 'dispatched' || (current.status === 'running' && current.ownerPid === undefined));
   if (current.status === 'approved' || projectedExecutionPending) {
-    current = dispatchLocalBridgeJob(repoRoot, jobId);
+    current = localBridge.dispatchJob(repoRoot, jobId);
   }
   while (['approved', 'dispatched', 'running'].includes(current.status)) {
     if (Date.now() - started >= boundedTimeoutMs) throw new Error(`LEGACY_JOB_TIMEOUT: ${jobId}`);
     await new Promise((resolve) => setTimeout(resolve, 250));
-    current = getLocalBridgeJob(repoRoot, jobId);
+    current = localBridge.getJob(repoRoot, jobId);
   }
   return current;
 }
@@ -287,7 +287,11 @@ function materializePluginArtifacts(
   };
 }
 
-export async function executeExecutionJob(controllerHome: string, job: ExecutionJob): Promise<WorkerExecutionResult> {
+export async function executeExecutionJob(
+  controllerHome: string,
+  job: ExecutionJob,
+  localBridge: LocalBridgeExecutionPort,
+): Promise<WorkerExecutionResult> {
   try {
     if (job.origin.surface === 'schedule' || (job.origin.surface === 'system' && job.payload.portfolioWorkflowId)) {
       assertAutomatedOperationAllowed(job.payload.operation, job.payload.arguments ?? {});
@@ -352,12 +356,13 @@ export async function executeExecutionJob(controllerHome: string, job: Execution
             job.checkoutId,
           );
           const repoRoot = repository.canonicalRoot;
-          const preview = getLocalBridgeJob(repoRoot, legacyJobId);
+          const preview = localBridge.getJob(repoRoot, legacyJobId);
           if (shouldDelegateAgentLocalJob(job, preview)) {
-            const localJob = acceptLegacyAgentLocalJob(repoRoot, legacyJobId);
+            const localJob = acceptLegacyAgentLocalJob(localBridge, repoRoot, legacyJobId);
             return delegatedWorkerResult(controllerHome, job, localJob, repoRoot, record);
           }
           const localJob = await settleLegacyLocalJob(
+            localBridge,
             repoRoot,
             legacyJobId,
             settlementTimeoutMsForJob(job, record),
@@ -441,12 +446,13 @@ export async function executeExecutionJob(controllerHome: string, job: Execution
     if (job.payload.target === 'runtime' && job.payload.operation === 'legacy-local-job') {
       const localJobId = String(job.payload.arguments?.localJobId ?? '').trim();
       if (!localJobId) throw new Error('LEGACY_JOB_ID_REQUIRED');
-      const preview = getLocalBridgeJob(repoRoot, localJobId);
+      const preview = localBridge.getJob(repoRoot, localJobId);
       if (shouldDelegateAgentLocalJob(job, preview)) {
-        const localJob = acceptLegacyAgentLocalJob(repoRoot, localJobId);
+        const localJob = acceptLegacyAgentLocalJob(localBridge, repoRoot, localJobId);
         return delegatedWorkerResult(controllerHome, job, localJob, repoRoot);
       }
       const localJob = await settleLegacyLocalJob(
+        localBridge,
         repoRoot,
         localJobId,
         settlementTimeoutMsForJob(job),
@@ -527,12 +533,13 @@ export async function executeExecutionJob(controllerHome: string, job: Execution
     const legacyJobId = legacyJobIdFromResult(record);
     if (legacyJobId) {
       try {
-        const preview = getLocalBridgeJob(repoRoot, legacyJobId);
+        const preview = localBridge.getJob(repoRoot, legacyJobId);
         if (shouldDelegateAgentLocalJob(job, preview) || isAgentDelegationOperation(job.payload.operation)) {
-          const localJob = acceptLegacyAgentLocalJob(repoRoot, legacyJobId);
+          const localJob = acceptLegacyAgentLocalJob(localBridge, repoRoot, legacyJobId);
           return delegatedWorkerResult(controllerHome, job, localJob, repoRoot, record);
         }
         const localJob = await settleLegacyLocalJob(
+          localBridge,
           repoRoot,
           legacyJobId,
           settlementTimeoutMsForJob(job, record),
@@ -557,7 +564,7 @@ export async function executeExecutionJob(controllerHome: string, job: Execution
       const nestedJobId = legacyJobIdFromResult(record)
         ?? (record.job && typeof record.job === 'object' ? stringField((record.job as Record<string, unknown>).jobId) : undefined);
       if (nestedJobId) {
-        const localJob = acceptLegacyAgentLocalJob(repoRoot, nestedJobId);
+        const localJob = acceptLegacyAgentLocalJob(localBridge, repoRoot, nestedJobId);
         return delegatedWorkerResult(controllerHome, job, localJob, repoRoot, record);
       }
       const inlineChild = childReferenceFromUnknown(record) ?? childReferenceFromUnknown(record.job);

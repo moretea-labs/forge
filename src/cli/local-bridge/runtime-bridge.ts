@@ -3,13 +3,9 @@ import {
   loadMcpServiceRuntimeState,
   writeMcpServiceRuntimeState,
 } from '../../../adapters/mcp/auth';
-import { startLocalBridgeServer } from '../../cli/local-bridge/server';
-import { readRuntimeGeneration } from '../control-plane/runtime-generation';
-
-export interface RuntimeLocalBridgeHandle {
-  endpoint: string;
-  close(): Promise<void>;
-}
+import { readRuntimeGeneration } from '../../runtime/control-plane/runtime-generation';
+import { startLocalBridgeServer } from './server';
+import type { RuntimeLocalBridgeHandle } from '../../runtime/root/runtime';
 
 /**
  * Start the configured Local Bridge inside the canonical Runtime process.

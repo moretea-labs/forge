@@ -5,9 +5,8 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import {
   GlobalScheduler,
-  selectSchedulerSourceScanRepositories,
 } from '../../src/runtime/control-plane/global-scheduler/scheduler';
-import { planSchedulerSourceSampling } from '../../src/runtime/control-plane/global-scheduler/source-scan';
+import { readRepositoryGitStatusSample } from '../../src/runtime/projections/git-status-sampler';
 import type { SchedulerPeriodicCleanupSpawnResult } from '../../src/runtime/control-plane/global-scheduler/periodic-cleanup-process';
 import {
   cleanupControllerRuntimeState,
@@ -71,6 +70,134 @@ afterEach(() => {
 });
 
 describe('runtime cleanup', () => {
+  test.skipIf(process.platform === 'win32')('explicit cleanup preserves relocated Runs when process inventory is unavailable', () => {
+    for (const [name, script] of [
+      ['failed', 'exit 1'], ['empty', 'exit 0'], ['malformed', 'printf "not-process-data\\n"'],
+      ['partial', 'printf "1 /sbin/launchd\\nunknown occupied command\\n"'],
+      ['hung', 'exec /bin/sleep 10'],
+    ]) {
+      const home = controllerHome();
+      const bin = join(home, 'bin');
+      const repo = join(home, 'repo');
+      const jobs = join(home, 'controller-jobs');
+      const run = join(jobs, 'RUN-retain-unknown-occupancy');
+      mkdirSync(bin, { recursive: true });
+      mkdirSync(join(repo, '.ai/harness'), { recursive: true });
+      mkdirSync(run, { recursive: true });
+      writeFileSync(join(run, 'state.json'), JSON.stringify({ status: 'waiting_for_user', note: 'nothing to integrate' }));
+      age(run);
+      symlinkSync(jobs, join(repo, '.ai/harness/jobs'));
+      writeFileSync(join(bin, 'ps'), `#!/bin/sh\n${script}\n`, { mode: 0o700 });
+      const child = spawnSync(process.execPath, ['-e', `
+        import { applyRuntimeCleanup, previewRuntimeCleanup } from ${JSON.stringify(join(import.meta.dir, '../../src/runtime/maintenance/cleanup.ts'))};
+        const options = { includeTempDirs: false, includeLegacyRuns: true, minAgeMinutes: 0, confirmCleanup: true };
+        for (const operation of [previewRuntimeCleanup, applyRuntimeCleanup]) {
+          try { operation(${JSON.stringify(repo)}, options); console.log('unexpected_success'); }
+          catch (error) { console.log(error.message); }
+        }
+        try { previewRuntimeCleanup(${JSON.stringify(repo)}, { includeTempDirs: true }); console.log('unexpected_success'); }
+        catch (error) { console.log(error.message); }
+      `], { env: { ...process.env, PATH: bin, FORGE_CONTROLLER_HOME: home }, encoding: 'utf8', timeout: 8_000, killSignal: 'SIGKILL' });
+      expect(child.error, name).toBeUndefined();
+      expect(child.status, name).toBe(0);
+      expect(child.stdout, name).not.toContain('unexpected_success');
+      expect(child.stdout.match(/RUNTIME_CLEANUP_PROCESS_INVENTORY_UNAVAILABLE/g), name).toHaveLength(3);
+      expect(existsSync(join(run, 'state.json')), name).toBe(true);
+    }
+  }, 20_000);
+
+  test.skipIf(process.platform === 'win32')('explicit cleanup retains occupied Runs and removes a proven idle Run', () => {
+    const home = controllerHome();
+    const bin = join(home, 'bin');
+    const repo = join(home, 'repo');
+    const jobs = join(home, 'controller-jobs');
+    const occupied = join(jobs, 'RUN-occupied');
+    const idle = join(jobs, 'RUN-idle');
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(join(repo, '.ai/harness'), { recursive: true });
+    for (const run of [occupied, idle]) {
+      mkdirSync(run, { recursive: true });
+      writeFileSync(join(run, 'state.json'), JSON.stringify({ status: 'waiting_for_user', note: 'nothing to integrate' }));
+      age(run);
+    }
+    symlinkSync(jobs, join(repo, '.ai/harness/jobs'));
+    writeFileSync(join(bin, 'ps'), `#!/bin/sh\nprintf '123 /bin/worker ${occupied}\\n'\n`, { mode: 0o700 });
+    const child = spawnSync(process.execPath, ['-e', `
+      import { applyRuntimeCleanup } from ${JSON.stringify(join(import.meta.dir, '../../src/runtime/maintenance/cleanup.ts'))};
+      console.log(JSON.stringify(applyRuntimeCleanup(${JSON.stringify(repo)}, {
+        includeTempDirs: false, includeLegacyRuns: true, minAgeMinutes: 0, confirmCleanup: true,
+      }).applied));
+    `], { env: { ...process.env, PATH: bin, FORGE_CONTROLLER_HOME: home }, encoding: 'utf8', timeout: 5_000 });
+    expect(child.status).toBe(0);
+    expect(JSON.parse(child.stdout)).toMatchObject([{ path: join(repo, '.ai/harness/jobs/RUN-idle'), applied: true }]);
+    expect(existsSync(occupied)).toBe(true);
+    expect(existsSync(idle)).toBe(false);
+  });
+
+  test.skipIf(process.platform === 'win32')('cleanup rechecks state and occupancy after candidate discovery', () => {
+    for (const scenario of ['local-state', 'legacy-state', 'legacy-occupancy', 'legacy-goal', 'local-recent', 'legacy-recent']) {
+      const home = controllerHome();
+      const repo = join(home, 'repo');
+      const storage = join(home, 'runtime-storage');
+      const bin = join(home, 'bin');
+      const counter = join(home, 'scan-count');
+      mkdirSync(bin);
+      writeFileSync(counter, '0\n');
+      writeFileSync(join(bin, 'ps'), `#!/bin/sh
+count=0
+if [ -f '${counter}' ]; then read count < '${counter}'; fi
+count=$((count + 1))
+printf '%s\\n' "$count" > '${counter}'
+if [ "$count" -gt 1 ] && [ '${scenario}' = 'legacy-occupancy' ]; then
+  printf '123 worker RUN-waiting\\n'
+else
+  printf '1 /sbin/launchd\\n'
+fi
+`, { mode: 0o700 });
+      const local = scenario.startsWith('local');
+      const name = local ? 'terminal-job' : 'RUN-waiting';
+      const candidate = join(storage, name);
+      const state = join(candidate, local ? 'job.json' : 'state.json');
+      mkdirSync(candidate, { recursive: true });
+      mkdirSync(join(repo, '.ai/harness'), { recursive: true });
+      symlinkSync(storage, join(repo, '.ai/harness', local ? 'local-jobs' : 'jobs'));
+      writeFileSync(state, JSON.stringify(local ? { status: 'failed' } : { status: 'waiting_for_user', note: 'nothing to integrate' }));
+      age(candidate);
+      const child = spawnSync(process.execPath, ['-e', `
+        import { mock } from 'bun:test';
+        import * as fs from 'fs';
+        const read = fs.readFileSync;
+        const write = fs.writeFileSync;
+        let changed = false;
+        mock.module('fs', () => ({ ...fs, readFileSync(path, ...args) {
+          const value = read(path, ...args);
+          if (String(path).endsWith(${JSON.stringify(local ? '/terminal-job/job.json' : '/RUN-waiting/state.json')}) && !changed && ${JSON.stringify(scenario)} !== 'legacy-occupancy') {
+            changed = true;
+            if (${scenario.endsWith('recent')}) fs.utimesSync(${JSON.stringify(candidate)}, new Date(), new Date());
+            else write(path, JSON.stringify({ status: ${JSON.stringify(scenario === 'legacy-goal' ? 'waiting_for_user' : 'running')}, note: 'new active work' }));
+          }
+          return value;
+        } }));
+        const { applyRuntimeCleanup } = await import(${JSON.stringify(join(import.meta.dir, '../../src/runtime/maintenance/cleanup.ts'))});
+        const result = applyRuntimeCleanup(${JSON.stringify(repo)}, {
+          includeTempDirs: false, includeTerminalLocalJobs: ${local}, includeLegacyRuns: ${!local},
+          minAgeMinutes: 60, confirmCleanup: true,
+        });
+        console.log(JSON.stringify({ candidates: result.candidates, applied: result.applied, changed, scans: Number(read(${JSON.stringify(counter)}, 'utf8')) }));
+      `], { env: { ...process.env, PATH: bin, FORGE_CONTROLLER_HOME: home }, encoding: 'utf8', timeout: 5_000 });
+      expect(child.status, child.stderr).toBe(0);
+      const result = JSON.parse(child.stdout);
+      expect(result.applied, JSON.stringify({ scenario, ...result })).toMatchObject([{ applied: false }]);
+      const expectedCode = scenario.endsWith('recent') ? 'RUNTIME_CLEANUP_DIRECTORY_CHANGED'
+        : scenario === 'legacy-occupancy' ? 'RUNTIME_CLEANUP_LEGACY_RUN_PROCESS_OCCUPIED'
+        : local ? 'RUNTIME_CLEANUP_LOCAL_JOB_STATE_CHANGED' : 'RUNTIME_CLEANUP_LEGACY_RUN_STATE_CHANGED';
+      expect(result.applied[0].error).toContain(expectedCode);
+      expect(existsSync(state), scenario).toBe(true);
+      if (scenario === 'legacy-occupancy') expect(result.scans).toBe(2);
+      else expect(result.changed).toBe(true);
+    }
+  });
+
   test('scheduler history retention physically bounds unindexed terminal occurrence evidence and protects active state', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-runtime-scheduler-retention-'));
     homes.push(root);
@@ -766,45 +893,6 @@ describe('runtime cleanup', () => {
     expect(preview.truncated.candidates).toBe(true);
   });
 
-  test('source scan selection prefers active repositories and bounds the idle safety scan', () => {
-    const repositories = [
-      { repoId: 'repo-a' },
-      { repoId: 'repo-b' },
-      { repoId: 'repo-c' },
-    ];
-    const now = 10 * 60_000;
-    expect(selectSchedulerSourceScanRepositories(
-      repositories,
-      new Set(['repo-b', 'repo-c']),
-      now,
-      now,
-    ).map((repository) => repository.repoId)).toEqual(['repo-b', 'repo-c']);
-    expect(selectSchedulerSourceScanRepositories(
-      repositories,
-      new Set(),
-      now,
-      now,
-    )).toEqual([]);
-    expect(selectSchedulerSourceScanRepositories(
-      repositories,
-      new Set(),
-      now,
-      now - 60_000,
-    )).toHaveLength(1);
-
-    expect(planSchedulerSourceSampling({
-      repositories,
-      activeRepoIds: new Set(['repo-a']),
-      nowMs: now,
-      lastSourceScanAt: now,
-      lastGitStatusSampleAt: now - 5_000,
-    })).toMatchObject({
-      sourceScanRepositories: [{ repoId: 'repo-a' }],
-      shouldSample: true,
-      avoidedRepositoryCount: 2,
-    });
-  });
-
   test('canonical scheduler isolates periodic cleanup instead of running synchronous cleanup on the event loop', async () => {
     const home = controllerHome();
     const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 }, { isolatePeriodicCleanup: true });
@@ -815,8 +903,6 @@ describe('runtime cleanup', () => {
       runtimeCleanup: () => void;
       periodicCleanupSpawn: () => SchedulerPeriodicCleanupSpawnResult;
       repositoryList: () => Array<{ repoId: string; enabled: boolean; canonicalRoot: string; removedAt?: string }>;
-      lastSourceScanAt: number;
-      lastGitStatusSampleAt: number;
       workValidationReconcile: () => { errors: unknown[] };
       editValidationReconcile: () => Promise<{ errors: unknown[] }>;
     };
@@ -826,8 +912,6 @@ describe('runtime cleanup', () => {
       return { ok: false, startupError: 'synthetic isolated cleanup launch' };
     };
     internal.repositoryList = () => [];
-    internal.lastSourceScanAt = now;
-    internal.lastGitStatusSampleAt = now;
     internal.workValidationReconcile = () => ({ errors: [] });
     internal.editValidationReconcile = async () => ({ errors: [] });
     const originalError = console.error;
@@ -908,8 +992,6 @@ describe('runtime cleanup', () => {
       processGc: (options: { repoId: string }) => { ok: boolean };
       editValidationReconcile: (controllerHome: string, repository: { repoId: string }, limit: number) => Promise<{ errors: unknown[] }>;
       repositoryList: () => Array<{ repoId: string; enabled: boolean; canonicalRoot: string; removedAt?: string }>;
-      lastSourceScanAt: number;
-      lastGitStatusSampleAt: number;
     };
     internal.runtimeCleanup = () => undefined;
     internal.processGc = (options) => {
@@ -926,8 +1008,6 @@ describe('runtime cleanup', () => {
       { repoId: 'repo-b', enabled: true, canonicalRoot: home, checkouts: [] },
       { repoId: 'repo-disabled', enabled: false, canonicalRoot: home, checkouts: [] },
     ];
-    internal.lastSourceScanAt = now;
-    internal.lastGitStatusSampleAt = now;
 
     await scheduler.tick();
     expect(processGcRepos).toHaveLength(1);
@@ -966,6 +1046,7 @@ describe('runtime cleanup', () => {
     const home = controllerHome();
     const root = mkdtempSync(join(tmpdir(), 'forge-projection-refresh-disabled-dispatch-'));
     homes.push(root);
+    expect(spawnSync('git', ['init', '-b', 'main', root]).status).toBe(0);
     const at = new Date().toISOString();
     const repository: RepositoryRecord = {
       schemaVersion: 1,
@@ -989,16 +1070,12 @@ describe('runtime cleanup', () => {
     const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 });
     const internal = scheduler as unknown as {
       repositoryList: () => RepositoryRecord[];
-      lastSourceScanAt: number;
-      lastGitStatusSampleAt: number;
       runtimeCleanup: () => void;
       processGc: () => { ok: boolean };
       workValidationReconcile: () => { errors: unknown[] };
       editValidationReconcile: () => Promise<{ errors: unknown[] }>;
     };
     internal.repositoryList = () => [repository];
-    internal.lastSourceScanAt = 0;
-    internal.lastGitStatusSampleAt = 0;
     internal.runtimeCleanup = () => undefined;
     internal.processGc = () => ({ ok: true });
     internal.workValidationReconcile = () => ({ errors: [] });
@@ -1009,9 +1086,21 @@ describe('runtime cleanup', () => {
     await expect(scheduler.tick()).resolves.toEqual({ activeJobs: 0 });
 
     expect(repositoryProjectionIsDirty(home, repository.repoId)).toBe(false);
+    const sampleBefore = readRepositoryGitStatusSample(home, repository.repoId, repository.activeCheckoutId);
+    expect(sampleBefore).toBeDefined();
+    // Crossing the former idle interval must not create fresh Git work.
+    const actualNow = Date.now;
+    Date.now = () => actualNow() + 120_000;
+    try {
+      await scheduler.tick();
+    } finally {
+      Date.now = actualNow;
+    }
+    expect(readRepositoryGitStatusSample(home, repository.repoId, repository.activeCheckoutId)?.observedAt)
+      .toBe(sampleBefore?.observedAt);
   });
 
-  test('refreshes a dirty projection before its idle round-robin source-scan slot', async () => {
+  test('refreshes only invalidated projections without idle Git polling', async () => {
     const home = controllerHome();
     const now = Date.now();
     const makeRepository = (repoId: string): RepositoryRecord => {
@@ -1043,24 +1132,17 @@ describe('runtime cleanup', () => {
     const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 });
     const internal = scheduler as unknown as {
       repositoryList: () => RepositoryRecord[];
-      lastSourceScanAt: number;
-      lastGitStatusSampleAt: number;
       runtimeCleanup: () => void;
       processGc: () => { ok: boolean };
       workValidationReconcile: () => { errors: unknown[] };
       editValidationReconcile: () => Promise<{ errors: unknown[] }>;
     };
     internal.repositoryList = () => [repositoryA, repositoryB];
-    // Idle safety scan is deliberately not due. Old behavior therefore had no
-    // projection refresh target and left repo-idle-b dirty past the grace window.
-    internal.lastSourceScanAt = now;
-    internal.lastGitStatusSampleAt = now;
     internal.runtimeCleanup = () => undefined;
     internal.processGc = () => ({ ok: true });
     internal.workValidationReconcile = () => ({ errors: [] });
     internal.editValidationReconcile = async () => ({ errors: [] });
     markRepositoryProjectionDirty(home, repositoryB.repoId, 'source-change-before-idle-slot', { sourceRevision: 'def456' });
-    expect(selectSchedulerSourceScanRepositories([repositoryA, repositoryB], new Set(), now, now)).toEqual([]);
     expect(repositoryProjectionIsDirty(home, repositoryB.repoId)).toBe(true);
 
     await expect(scheduler.tick()).resolves.toEqual({ activeJobs: 0 });

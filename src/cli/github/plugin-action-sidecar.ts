@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { createHash } from 'crypto';
 import { readFileSync, rmSync, writeFileSync } from 'fs';
-import { getRepository } from '../repositories/registry';
-import type { AssistantPluginActionRequest } from './types';
-import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../execution/process-runtime/canary';
-import { submitAssistantPluginAction, submitControllerPluginAction } from './store';
+import { getRepository } from '../../runtime/repositories/registry';
+import type { AssistantPluginActionRequest } from '../../runtime/plugins/types';
+import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../../runtime/execution/process-runtime/canary';
+import { submitAssistantPluginAction, submitControllerPluginAction } from '../../runtime/plugins/store';
+import { githubIssueSyncPort } from './plugin';
 
 interface Envelope {
   schemaVersion: 1;
@@ -34,12 +35,14 @@ export async function runPluginActionSidecar(argv = process.argv.slice(2)): Prom
     if (envelope.schemaVersion !== 1) throw new Error('PLUGIN_ACTION_REQUEST_VERSION_UNSUPPORTED');
     const controllerScoped = envelope.scope?.kind === 'controller';
     const repoId = envelope.scope?.kind === 'repository' ? envelope.scope.repoId : envelope.repoId;
+    const executionPorts = { githubIssueSync: githubIssueSyncPort };
     const submitted = controllerScoped
-      ? await submitControllerPluginAction(envelope.controllerHome, envelope.request)
+      ? await submitControllerPluginAction(envelope.controllerHome, envelope.request, executionPorts)
       : await submitAssistantPluginAction(
           envelope.controllerHome,
           getRepository(repoId ?? '', envelope.controllerHome),
           envelope.request,
+          executionPorts,
         );
     writeFileSync(1, `${JSON.stringify({
       ok: true,

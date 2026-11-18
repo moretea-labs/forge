@@ -1,24 +1,32 @@
 import {
   listAllControlPlaneRecordsWithinTransaction,
+  listControlPlaneAuditEvents,
   listControlPlaneRecords,
   listControlPlaneRecordsWithinTransaction,
   readControlPlaneRecord,
   readControlPlaneRecordWithinTransaction,
+  withControlPlaneReadDatabase,
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
   type ControlPlaneRecord,
   type SqliteDatabase,
 } from './sqlite-store';
 import { createHash } from 'node:crypto';
-import { REQUIREMENT_STATE_TRANSITIONS, type RequirementState } from '../../../../packages/kernel/goal/api/index';
-import type { ScopeRef } from '../../../../packages/kernel/identity/api/index';
-export { REQUIREMENT_STATES, type RequirementState } from '../../../../packages/kernel/goal/api/index';
+import { REQUIREMENT_PRIORITIES, REQUIREMENT_STATE_TRANSITIONS, type RequirementPriority, type RequirementState } from '../../../../packages/kernel/goal/api/index';
+import type { ProjectIdentity, ProjectPlacement, ScopeRef } from '../../../../packages/kernel/identity/api/index';
+import { PROJECT_PLACEMENT_NAMESPACE, PROJECT_SEMANTIC_NAMESPACE } from '../workspace/workspace-store';
+export { REQUIREMENT_PRIORITIES, REQUIREMENT_STATES, type RequirementPriority, type RequirementState } from '../../../../packages/kernel/goal/api/index';
 
 export interface Requirement {
   schemaVersion: 1;
   requirementId: string;
   /** Optional node-local repository placement; absent for ForgeInstance-scoped legacy/global Requirements. */
   repoId?: string;
+  /** Direct Project membership only for tasks without repository placement. */
+  projectId?: string;
+  priority?: RequirementPriority;
+  /** Display/identity label only; this metadata never grants access. */
+  assignee?: string;
   legacyAliases: string[];
   title: string;
   outcomeStatement: string;
@@ -28,6 +36,8 @@ export interface Requirement {
   progressSummary?: string;
   remainingWork?: string[];
   acceptedEvidenceRefs?: string[];
+  /** Canonical task dependencies; each id points to another Requirement. */
+  dependsOnRequirementIds?: string[];
   /** @deprecated Migration compatibility pointer only. Current Plan.requirementId is the relationship authority. */
   activePlanId?: string;
   state: RequirementState;
@@ -52,11 +62,18 @@ export interface CreateRequirementInput {
   requirementId: string;
   /** Optional node-local repository placement provenance. */
   repoId?: string;
+  /** Existing canonical Project for a task without repository placement. */
+  projectId?: string;
+  priority?: RequirementPriority;
+  assignee?: string;
+  status?: RequirementState;
   legacyAliases?: string[];
   title: string;
   outcomeStatement: string;
   acceptanceCriteria?: string[];
   requiredDeliveryReferences?: string[];
+  /** Existing canonical Requirement dependencies; validated atomically before admission. */
+  dependsOnRequirementIds?: string[];
   /** Authority-derived provenance only; raw transports must not pass arbitrary audit refs. */
   auditRefs?: string[];
 }
@@ -68,6 +85,7 @@ export interface RequirementSemanticView {
   revision: number;
   semanticScope: ScopeRef;
   repoId?: string;
+  projectId?: string;
   title: string;
   outcomeStatement: string;
   acceptanceCriteria: string[];
@@ -75,7 +93,14 @@ export interface RequirementSemanticView {
   progressSummary: string;
   remainingWork: string[];
   acceptedEvidenceRefs: string[];
+  dependsOnRequirementIds: string[];
+  legacyAliases: string[];
+  /** Coarse semantic state retained for existing Requirement/Autopilot consumers. */
   state: SemanticRequirementState;
+  /** Full user-facing task lifecycle state. */
+  status: RequirementState;
+  priority?: RequirementPriority;
+  assignee?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -89,6 +114,9 @@ export interface ReviseRequirementSemanticInput {
   expectedRevision: number;
   /** Optional repository placement captured from the current repository context. */
   repoId?: string;
+  priority?: RequirementPriority | null;
+  assignee?: string | null;
+  status?: RequirementState;
   title?: string;
   outcomeStatement?: string;
   acceptanceCriteria?: string[];
@@ -96,6 +124,8 @@ export interface ReviseRequirementSemanticInput {
   progressSummary?: string;
   remainingWork?: string[];
   acceptedEvidenceRefs?: string[];
+  dependsOnRequirementIds?: string[];
+  legacyAliases?: string[];
   state?: SemanticRequirementState;
 }
 
@@ -103,6 +133,25 @@ const NAMESPACE = 'requirement';
 const REVISION_NAMESPACE = 'requirement_revision';
 const SCOPE = 'controller';
 const SCHEMA_VERSION = 1;
+
+/** A repository-bound task must honor the status of its existing Project placement. */
+function assertRepositoryProjectAcceptsTask(database: SqliteDatabase, repoId: string): void {
+  const placements = listControlPlaneRecordsWithinTransaction<ProjectPlacement>(database, {
+    namespace: PROJECT_PLACEMENT_NAMESPACE, limit: 1_000,
+  });
+  if (placements.length >= 1_000) throw new Error('PROJECT_PLACEMENT_LOOKUP_LIMIT');
+  const projectIds = new Set(placements.filter(({ value }) => value.repositoryId === repoId).map(({ value }) => value.projectId));
+  if (!projectIds.size) return;
+  const projects = listControlPlaneRecordsWithinTransaction<ProjectIdentity>(database, {
+    namespace: PROJECT_SEMANTIC_NAMESPACE, limit: 1_000,
+  });
+  if (projects.length >= 1_000) throw new Error('PROJECT_IDENTITY_LOOKUP_LIMIT');
+  for (const projectId of projectIds) {
+    const project = projects.find(({ value }) => value.projectId === projectId)?.value;
+    if (!project) throw new Error(`PROJECT_PLACEMENT_IDENTITY_UNRESOLVED:${projectId}`);
+    if (project.status === 'archived') throw new Error(`REQUIREMENT_PROJECT_ARCHIVED:${projectId}`);
+  }
+}
 
 /** Startup-only format conversion in the existing Requirement owner. The old
  * acceptance remains immutable provenance, never a second completion authority.
@@ -154,6 +203,19 @@ function repositoryId(value: unknown): string | undefined {
   return normalized ? normalized.slice(0, 256) : undefined;
 }
 
+function normalizePriority(value: unknown): RequirementPriority | undefined {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (!(REQUIREMENT_PRIORITIES as readonly string[]).includes(normalized)) throw new Error('REQUIREMENT_PRIORITY_INVALID');
+  return normalized as RequirementPriority;
+}
+
+function normalizeAssignee(value: unknown): string | undefined {
+  const normalized = String(value ?? '').trim();
+  if (normalized.length > 160) throw new Error('REQUIREMENT_ASSIGNEE_INVALID');
+  return normalized || undefined;
+}
+
 function bounded(values: readonly string[] | undefined, limit: number, maxLength = 500): string[] {
   return (values ?? []).map((value) => String(value).trim()).filter(Boolean).slice(0, limit).map((value) => value.slice(0, maxLength));
 }
@@ -175,6 +237,7 @@ export function requirementSemanticView(requirement: Requirement): RequirementSe
     revision: currentRequirementSemanticRevision(requirement),
     semanticScope: { schemaVersion: 1, kind: 'requirement', id: requirement.requirementId },
     ...(requirement.repoId ? { repoId: requirement.repoId } : {}),
+    ...(requirement.projectId ? { projectId: requirement.projectId } : {}),
     title: requirement.title,
     outcomeStatement: requirement.outcomeStatement,
     acceptanceCriteria: [...requirement.acceptanceCriteria],
@@ -182,7 +245,12 @@ export function requirementSemanticView(requirement: Requirement): RequirementSe
     progressSummary: requirement.progressSummary ?? '',
     remainingWork: [...(requirement.remainingWork ?? [])],
     acceptedEvidenceRefs: [...(requirement.acceptedEvidenceRefs ?? [])],
+    dependsOnRequirementIds: [...(requirement.dependsOnRequirementIds ?? [])],
+    legacyAliases: [...(requirement.legacyAliases ?? [])],
     state: semanticRequirementState(requirement),
+    status: requirement.state,
+    ...(requirement.priority ? { priority: requirement.priority } : {}),
+    ...(requirement.assignee ? { assignee: requirement.assignee } : {}),
     createdAt: requirement.createdAt,
     updatedAt: requirement.semanticUpdatedAt ?? requirement.createdAt,
   };
@@ -199,6 +267,52 @@ export function isLegacyMachineRequirementWait(requirement: Pick<Requirement, 's
 
 function readWithin(database: SqliteDatabase, requirementId: string): ControlPlaneRecord<Requirement> | undefined {
   return readControlPlaneRecordWithinTransaction(database, NAMESPACE, SCOPE, requirementId);
+}
+
+export function normalizeRequirementDependencies(values: readonly string[] | undefined): string[] {
+  if ((values?.length ?? 0) > 50) throw new Error('REQUIREMENT_DEPENDENCY_LIMIT_EXCEEDED');
+  return [...new Set((values ?? []).map((value) => id(value)))].sort((left, right) => left.localeCompare(right));
+}
+
+function normalizeRequirementLegacyAliases(values: readonly string[] | undefined): string[] {
+  if ((values?.length ?? 0) > 20) throw new Error('REQUIREMENT_LEGACY_ALIAS_LIMIT_EXCEEDED');
+  const aliases = bounded(values, 20, 160);
+  if (new Set(aliases).size !== aliases.length) throw new Error('REQUIREMENT_LEGACY_ALIAS_DUPLICATE');
+  return aliases;
+}
+
+function assertUniqueRequirementLegacyAliasesWithinTransaction(
+  database: SqliteDatabase,
+  requirementId: string,
+  aliases: readonly string[],
+): void {
+  if (aliases.length === 0) return;
+  const requested = new Set(aliases);
+  const existing = listAllControlPlaneRecordsWithinTransaction<Requirement>(database, { namespace: NAMESPACE, scope: SCOPE });
+  for (const record of existing) {
+    if (record.value.requirementId === requirementId) continue;
+    const conflict = (record.value.legacyAliases ?? []).find((alias) => requested.has(alias));
+    if (conflict) throw new Error(`REQUIREMENT_LEGACY_ALIAS_CONFLICT:${conflict}:${record.value.requirementId}`);
+  }
+}
+
+function assertRequirementDependenciesWithinTransaction(
+  database: SqliteDatabase,
+  requirementId: string,
+  dependencies: readonly string[],
+): void {
+  const visited = new Set<string>();
+  const pending = [...dependencies];
+  while (pending.length > 0) {
+    const dependencyId = pending.pop()!;
+    if (dependencyId === requirementId) throw new Error(`REQUIREMENT_DEPENDENCY_CYCLE:${requirementId}`);
+    if (visited.has(dependencyId)) continue;
+    visited.add(dependencyId);
+    const dependency = readWithin(database, dependencyId);
+    if (!dependency) throw new Error(`REQUIREMENT_DEPENDENCY_NOT_FOUND:${dependencyId}`);
+    if (dependency.value.state === 'cancelled') throw new Error(`REQUIREMENT_DEPENDENCY_CANCELLED:${dependencyId}`);
+    pending.push(...(dependency.value.dependsOnRequirementIds ?? []));
+  }
 }
 
 export function readRequirement(
@@ -232,6 +346,7 @@ export function getRequirementRevisionRecord(
   return record ? {
     ...record,
     semanticScope: record.semanticScope ?? { schemaVersion: 1, kind: 'requirement', id: record.requirementId },
+    dependsOnRequirementIds: [...(record.dependsOnRequirementIds ?? [])],
   } : undefined;
 }
 
@@ -241,17 +356,39 @@ export function listRequirementRevisionRecords(
   limit = 200,
 ): RequirementRevisionRecord[] {
   const normalizedId = requirementId ? id(requirementId) : undefined;
-  return listControlPlaneRecords<RequirementRevisionRecord>(options.controllerHome, {
-    namespace: REVISION_NAMESPACE,
-    scope: SCOPE,
-    limit: Math.max(1, Math.min(Math.trunc(limit), 1000)),
-  }).map((record) => record.value)
-    .filter((record) => !normalizedId || record.requirementId === normalizedId)
-    .map((record) => ({
-      ...record,
-      semanticScope: record.semanticScope ?? ({ schemaVersion: 1, kind: 'requirement', id: record.requirementId } as const),
-    }))
-    .sort((left, right) => right.revision - left.revision);
+  const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 1000));
+  const records = normalizedId
+    ? withControlPlaneReadDatabase(options.controllerHome, (database) => {
+        const current = readControlPlaneRecordWithinTransaction<Requirement>(database, NAMESPACE, SCOPE, normalizedId);
+        const latestArchivedRevision = (current?.value.semanticRevision ?? 1) - 1;
+        const revisions: RequirementRevisionRecord[] = [];
+        for (let revision = latestArchivedRevision; revision >= 1 && revisions.length < boundedLimit; revision--) {
+          const archived = readControlPlaneRecordWithinTransaction<RequirementRevisionRecord>(
+            database, REVISION_NAMESPACE, SCOPE, requirementRevisionKey(normalizedId, revision),
+          );
+          if (archived) revisions.push(archived.value);
+        }
+        return revisions;
+      })
+    : listControlPlaneRecords<RequirementRevisionRecord>(options.controllerHome, {
+        namespace: REVISION_NAMESPACE, scope: SCOPE, limit: boundedLimit,
+      }).map((record) => record.value);
+  return records.map((record) => ({
+    ...record,
+    semanticScope: record.semanticScope ?? ({ schemaVersion: 1, kind: 'requirement', id: record.requirementId } as const),
+    dependsOnRequirementIds: [...(record.dependsOnRequirementIds ?? [])],
+    legacyAliases: [...(record.legacyAliases ?? [])],
+  })).sort((left, right) => right.revision - left.revision);
+}
+
+export function listRequirementActivityEvents(
+  options: RequirementStoreOptions,
+  requirementId: string,
+  limit = 20,
+) {
+  return listControlPlaneAuditEvents(options.controllerHome, {
+    namespace: NAMESPACE, scope: SCOPE, key: id(requirementId), limit,
+  });
 }
 
 export function reviseRequirementSemantic(
@@ -269,26 +406,57 @@ export function reviseRequirementSemantic(
       throw new Error(`REQUIREMENT_REVISION_CONFLICT:${requirementId}:expected=${input.expectedRevision}:actual=${semanticRevision}`);
     }
     const requestedRepoId = repositoryId(input.repoId);
+    if (requestedRepoId && current.value.projectId) throw new Error(`REQUIREMENT_PROJECT_REPOSITORY_PLACEMENT_CONFLICT:${requirementId}`);
     if (requestedRepoId && current.value.repoId && current.value.repoId !== requestedRepoId) {
       throw new Error(`REQUIREMENT_REPOSITORY_CONFLICT:${requirementId}:existing=${current.value.repoId}:requested=${requestedRepoId}`);
     }
+    if (requestedRepoId && !current.value.repoId) assertRepositoryProjectAcceptsTask(database, requestedRepoId);
+    const currentDependencies = [...(current.value.dependsOnRequirementIds ?? [])];
+    const dependsOnRequirementIds = input.dependsOnRequirementIds === undefined
+      ? currentDependencies
+      : normalizeRequirementDependencies(input.dependsOnRequirementIds);
+    const normalizedCurrentDependencies = [...currentDependencies].sort((left, right) => left.localeCompare(right));
+    const dependenciesChanged = input.dependsOnRequirementIds !== undefined
+      && (dependsOnRequirementIds.length !== normalizedCurrentDependencies.length
+        || dependsOnRequirementIds.some((dependencyId, index) => dependencyId !== normalizedCurrentDependencies[index]));
+    if (dependenciesChanged) {
+      assertRequirementDependenciesWithinTransaction(database, requirementId, dependsOnRequirementIds);
+    }
+    const legacyAliases = input.legacyAliases === undefined
+      ? [...(current.value.legacyAliases ?? [])]
+      : normalizeRequirementLegacyAliases(input.legacyAliases);
+    if (input.legacyAliases !== undefined) {
+      assertUniqueRequirementLegacyAliasesWithinTransaction(database, requirementId, legacyAliases);
+    }
     const requestedState = input.state;
-    const legacyState: RequirementState = requestedState === 'completed'
+    const semanticStatus: RequirementState | undefined = requestedState === 'completed'
       ? 'done'
       : requestedState === 'cancelled'
         ? 'cancelled'
         : requestedState === 'open'
           ? 'active'
-          : current.value.state;
+          : undefined;
+    const requestedStatus = input.status;
+    if (semanticStatus && requestedStatus && semanticStatus !== requestedStatus) {
+      throw new Error(`REQUIREMENT_STATE_INPUT_CONFLICT:${requirementId}:${semanticStatus}!=${requestedStatus}`);
+    }
+    const legacyState: RequirementState = requestedStatus ?? semanticStatus ?? current.value.state;
     const currentTerminal = current.value.state === 'done' || current.value.state === 'cancelled';
     if (requestedState === 'open' && currentTerminal) {
       throw new Error(`REQUIREMENT_SEMANTIC_REOPEN_FORBIDDEN:${requirementId}:${current.value.state}`);
     }
-    if (requestedState && currentTerminal && legacyState !== current.value.state) {
+    if (requestedState && currentTerminal && semanticStatus !== current.value.state) {
       throw new Error(`REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN:${requirementId}:${current.value.state}->${legacyState}`);
+    }
+    if (requestedStatus && currentTerminal && requestedStatus !== current.value.state) {
+      throw new Error(`REQUIREMENT_STATUS_TERMINAL_TRANSITION_FORBIDDEN:${requirementId}:${current.value.state}->${requestedStatus}`);
     }
     if (currentTerminal) {
       throw new Error(`REQUIREMENT_SEMANTIC_TERMINAL_IMMUTABLE:${requirementId}:${current.value.state}`);
+    }
+    if (requestedStatus && requestedStatus !== 'done'
+      && !REQUIREMENT_STATE_TRANSITIONS[current.value.state].includes(requestedStatus)) {
+      throw new Error(`REQUIREMENT_STATE_TRANSITION_INVALID:${current.value.state} -> ${requestedStatus}`);
     }
     const at = nowIso(options);
     const revisionKey = requirementRevisionKey(requirementId, semanticRevision);
@@ -316,6 +484,8 @@ export function reviseRequirementSemantic(
     const updated: Requirement = {
       ...currentValue,
       ...(requestedRepoId && !current.value.repoId ? { repoId: requestedRepoId } : {}),
+      priority: input.priority === undefined ? current.value.priority : normalizePriority(input.priority),
+      assignee: input.assignee === undefined ? current.value.assignee : normalizeAssignee(input.assignee),
       title,
       outcomeStatement,
       acceptanceCriteria: input.acceptanceCriteria === undefined ? [...current.value.acceptanceCriteria] : bounded(input.acceptanceCriteria, 50),
@@ -323,6 +493,8 @@ export function reviseRequirementSemantic(
       progressSummary: input.progressSummary === undefined ? current.value.progressSummary ?? '' : String(input.progressSummary).trim().slice(0, 2_000),
       remainingWork,
       acceptedEvidenceRefs,
+      dependsOnRequirementIds,
+      legacyAliases,
       state: legacyState,
       ...(requestedState ? { needsAttention: false, attentionSummary: undefined } : {}),
       semanticRevision: semanticRevision + 1,
@@ -342,12 +514,25 @@ export function createRequirement(
   input: CreateRequirementInput,
 ): Requirement {
   const requirementId = id(input.requirementId);
+  const projectId = String(input.projectId ?? '').trim() || undefined;
+  const repoId = repositoryId(input.repoId);
+  if (projectId && (projectId.length > 512 || repoId)) throw new Error('REQUIREMENT_PROJECT_REPOSITORY_PLACEMENT_CONFLICT');
   const at = nowIso(options);
+  const initialStatus = input.status ?? 'planned';
+  const legacyAliases = normalizeRequirementLegacyAliases(input.legacyAliases);
+  const dependsOnRequirementIds = normalizeRequirementDependencies(input.dependsOnRequirementIds);
+  if (initialStatus === 'done' || initialStatus === 'cancelled') {
+    throw new Error('REQUIREMENT_CREATE_TERMINAL_STATUS_FORBIDDEN');
+  }
   const requirement: Requirement = {
     schemaVersion: 1,
     requirementId,
-    ...(repositoryId(input.repoId) ? { repoId: repositoryId(input.repoId) } : {}),
-    legacyAliases: bounded(input.legacyAliases, 20, 160),
+    ...(repoId ? { repoId } : {}),
+    ...(projectId ? { projectId } : {}),
+    ...(normalizePriority(input.priority) ? { priority: normalizePriority(input.priority) } : {}),
+    ...(normalizeAssignee(input.assignee) ? { assignee: normalizeAssignee(input.assignee) } : {}),
+    legacyAliases,
+    ...(dependsOnRequirementIds.length > 0 ? { dependsOnRequirementIds } : {}),
     title: String(input.title ?? '').trim().slice(0, 500),
     outcomeStatement: String(input.outcomeStatement ?? '').trim().slice(0, 2_000),
     acceptanceCriteria: bounded(input.acceptanceCriteria, 50),
@@ -356,7 +541,7 @@ export function createRequirement(
     remainingWork: [],
     acceptedEvidenceRefs: [],
     auditRefs: bounded(input.auditRefs, 50),
-    state: 'planned',
+    state: initialStatus,
     needsAttention: false,
     semanticRevision: 1,
     semanticUpdatedAt: at,
@@ -367,6 +552,16 @@ export function createRequirement(
   if (!requirement.title || !requirement.outcomeStatement) throw new Error('REQUIREMENT_CONTENT_REQUIRED');
   withControlPlaneTransaction(options.controllerHome, (database) => {
     if (readWithin(database, requirementId)) throw new Error(`REQUIREMENT_ALREADY_EXISTS: ${requirementId}`);
+    if (projectId) {
+      const projects = listControlPlaneRecordsWithinTransaction<ProjectIdentity>(database, { namespace: PROJECT_SEMANTIC_NAMESPACE, limit: 1000 });
+      if (projects.length >= 1000) throw new Error('PROJECT_IDENTITY_LOOKUP_LIMIT');
+      const project = projects.find((record) => record.value.projectId === projectId)?.value;
+      if (!project) throw new Error(`REQUIREMENT_PROJECT_NOT_FOUND:${projectId}`);
+      if (project.status === 'archived') throw new Error(`REQUIREMENT_PROJECT_ARCHIVED:${projectId}`);
+    }
+    if (repoId) assertRepositoryProjectAcceptsTask(database, repoId);
+    assertUniqueRequirementLegacyAliasesWithinTransaction(database, requirementId, legacyAliases);
+    assertRequirementDependenciesWithinTransaction(database, requirementId, dependsOnRequirementIds);
     const exclusiveCandidateRefs = requirement.auditRefs.filter(ref => ref.startsWith('cognitive-requirement-candidate:'));
     if (exclusiveCandidateRefs.length > 0) {
       const existing = listControlPlaneRecordsWithinTransaction<Requirement>(database, {
@@ -402,10 +597,12 @@ export function bindRequirementRepositoryPlacement(
   return withControlPlaneTransaction(options.controllerHome, (database) => {
     const current = readWithin(database, requirementId);
     if (!current) throw new Error(`REQUIREMENT_NOT_FOUND: ${requirementId}`);
+    if (current.value.projectId) throw new Error(`REQUIREMENT_PROJECT_REPOSITORY_PLACEMENT_CONFLICT:${requirementId}`);
     if (current.value.repoId === repoId) return current.value;
     if (current.value.repoId) {
       throw new Error(`REQUIREMENT_REPOSITORY_CONFLICT:${requirementId}:existing=${current.value.repoId}:requested=${repoId}`);
     }
+    assertRepositoryProjectAcceptsTask(database, repoId);
     const updated: Requirement = {
       ...current.value,
       repoId,
@@ -419,6 +616,48 @@ export function bindRequirementRepositoryPlacement(
       schemaVersion: SCHEMA_VERSION,
       value: updated,
       action: 'requirement_repository_bound',
+      expectedRevision: current.revision,
+    }).value;
+  });
+}
+
+export function bindRequirementProjectPlacement(
+  options: RequirementStoreOptions,
+  requirementIdInput: string,
+  projectIdInput: string,
+): Requirement {
+  const requirementId = id(requirementIdInput);
+  const projectId = String(projectIdInput ?? '').trim().slice(0, 512);
+  if (!projectId) throw new Error('REQUIREMENT_PROJECT_REQUIRED');
+  return withControlPlaneTransaction(options.controllerHome, (database) => {
+    const current = readWithin(database, requirementId);
+    if (!current) throw new Error(`REQUIREMENT_NOT_FOUND: ${requirementId}`);
+    if (current.value.repoId) throw new Error(`REQUIREMENT_PROJECT_REPOSITORY_PLACEMENT_CONFLICT:${requirementId}`);
+    if (current.value.projectId === projectId) return current.value;
+    if (current.value.projectId) {
+      throw new Error(`REQUIREMENT_PROJECT_CONFLICT:${requirementId}:existing=${current.value.projectId}:requested=${projectId}`);
+    }
+    const projects = listControlPlaneRecordsWithinTransaction<ProjectIdentity>(database, {
+      namespace: PROJECT_SEMANTIC_NAMESPACE,
+      limit: 1_000,
+    });
+    if (projects.length >= 1_000) throw new Error('PROJECT_IDENTITY_LOOKUP_LIMIT');
+    const project = projects.find((record) => record.value.projectId === projectId)?.value;
+    if (!project) throw new Error(`REQUIREMENT_PROJECT_NOT_FOUND:${projectId}`);
+    if (project.status === 'archived') throw new Error(`REQUIREMENT_PROJECT_ARCHIVED:${projectId}`);
+    const updated: Requirement = {
+      ...current.value,
+      projectId,
+      revision: current.value.revision + 1,
+      updatedAt: nowIso(options),
+    };
+    return writeControlPlaneRecordWithinTransaction(database, {
+      namespace: NAMESPACE,
+      scope: SCOPE,
+      key: requirementId,
+      schemaVersion: SCHEMA_VERSION,
+      value: updated,
+      action: 'requirement_project_bound',
       expectedRevision: current.revision,
     }).value;
   });
@@ -480,6 +719,12 @@ export function updateRequirement(
     if (!current) throw new Error(`REQUIREMENT_NOT_FOUND: ${requirementId}`);
     const next = input.mutate(current.value);
     if (next === current.value) return current.value;
+    const nextLegacyAliases = normalizeRequirementLegacyAliases(next.legacyAliases);
+    const currentLegacyAliases = current.value.legacyAliases ?? [];
+    if (nextLegacyAliases.length !== currentLegacyAliases.length
+      || nextLegacyAliases.some((alias, index) => alias !== currentLegacyAliases[index])) {
+      assertUniqueRequirementLegacyAliasesWithinTransaction(database, requirementId, nextLegacyAliases);
+    }
     if (current.value.state === 'done' || current.value.state === 'cancelled') {
       throw new Error(`REQUIREMENT_TERMINAL_IMMUTABLE:${requirementId}:${current.value.state}`);
     }
@@ -487,8 +732,10 @@ export function updateRequirement(
       throw new Error(`REQUIREMENT_STATE_TRANSITION_INVALID: ${current.value.state} -> ${next.state}`);
     }
     if (next.requirementId !== requirementId) throw new Error('REQUIREMENT_ID_IMMUTABLE');
+    if (next.projectId !== current.value.projectId) throw new Error('REQUIREMENT_PROJECT_IMMUTABLE');
     const updated: Requirement = {
       ...next,
+      legacyAliases: nextLegacyAliases,
       schemaVersion: 1,
       revision: current.value.revision + 1,
       updatedAt: nowIso(options),

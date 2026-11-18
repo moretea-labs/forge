@@ -20,7 +20,7 @@ function boundRecord(value: unknown, depth = 0): unknown {
   if (typeof value === 'string') return boundText(value, depth === 0 ? 4_000 : 1_000);
   if (!value || typeof value !== 'object') return value;
   if (depth >= 5) return '[bounded-depth]';
-  if (Array.isArray(value)) return value.slice(0, 50).map((entry) => boundRecord(entry, depth + 1));
+  if (Array.isArray(value)) return value.slice(0, 100).map((entry) => boundRecord(entry, depth + 1));
   const entries = Object.entries(value as Record<string, unknown>).slice(0, 80);
   return Object.fromEntries(entries.map(([key, entry]) => [key, boundRecord(entry, depth + 1)]));
 }

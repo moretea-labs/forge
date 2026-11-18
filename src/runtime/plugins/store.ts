@@ -30,6 +30,7 @@ import type {
   AssistantPluginAdapter,
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
+  AssistantPluginActionExecutionPorts,
   AssistantPluginActionRequest,
   AssistantPluginAuthorizationContext,
   AssistantPluginManifest,
@@ -1867,6 +1868,7 @@ async function submitPluginAction(
   controllerHome: string,
   scope: PluginActionScopeContext,
   request: AssistantPluginActionRequest,
+  executionPorts?: AssistantPluginActionExecutionPorts,
 ): Promise<{
   manifest: AssistantPluginManifest;
   action: AssistantPluginActionDescriptor;
@@ -2077,6 +2079,7 @@ async function submitPluginAction(
           timeoutMs: request.timeoutMs,
           signal: request.signal,
           authorizationGrantRefs: request.authorizationGrantRefs,
+          executionPorts,
           deadlineAtMs: typeof request.timeoutMs === 'number'
             ? Date.now() + Math.max(1, Math.trunc(request.timeoutMs))
             : undefined,
@@ -2238,6 +2241,7 @@ export function submitAssistantPluginAction(
   controllerHome: string,
   repository: RepositoryRecord,
   request: AssistantPluginActionRequest,
+  executionPorts?: AssistantPluginActionExecutionPorts,
 ) {
   const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
   // Keep Controller migration for every other action; phone receipts, grants and
@@ -2247,17 +2251,18 @@ export function submitAssistantPluginAction(
   // bound actions (computer physical_device_*) on the repository action
   // scope; diverting them to the controller scope hides those actions.
   if (adapter && adapterMatchesController(adapter) && adapter.repositorySurface !== true) {
-    return submitPluginAction(controllerHome, controllerPluginActionScope(controllerHome), request);
+    return submitPluginAction(controllerHome, controllerPluginActionScope(controllerHome), request, executionPorts);
   }
-  return submitPluginAction(controllerHome, repositoryPluginActionScope(repository), request);
+  return submitPluginAction(controllerHome, repositoryPluginActionScope(repository), request, executionPorts);
 }
 
 export function submitControllerPluginAction(
   controllerHome: string,
   request: AssistantPluginActionRequest,
+  executionPorts?: AssistantPluginActionExecutionPorts,
 ) {
   ensureControllerPluginStateMigrated(controllerHome);
-  return submitPluginAction(controllerHome, controllerPluginActionScope(controllerHome), request);
+  return submitPluginAction(controllerHome, controllerPluginActionScope(controllerHome), request, executionPorts);
 }
 
 async function executePluginActionInScope(

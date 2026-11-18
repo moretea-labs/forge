@@ -648,6 +648,32 @@ function explicitTargetIdFromArgs(args: Record<string, unknown>): string | undef
   return targetId;
 }
 
+function exactDesktopProcessId(args: Record<string, unknown>): number | undefined {
+  const pid = args.process_id;
+  const bundlePath = args.bundle_path;
+  if (pid === undefined) {
+    if (bundlePath !== undefined) {
+      throw new AssistantPluginError('PLUGIN_COMPUTER_TARGET_SELECTOR_INVALID', 'bundle_path requires process_id.', { retryable: false });
+    }
+    return undefined;
+  }
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0 || pid > 2_147_483_647 || args.launch === true) {
+    throw new AssistantPluginError('PLUGIN_COMPUTER_TARGET_SELECTOR_INVALID', 'Exact process selection requires a positive process_id and launch=false.', { retryable: false });
+  }
+  if (bundlePath !== undefined && (typeof bundlePath !== 'string' || !bundlePath.startsWith('/'))) {
+    throw new AssistantPluginError('PLUGIN_COMPUTER_TARGET_SELECTOR_INVALID', 'bundle_path must be an absolute path.', { retryable: false });
+  }
+  return pid;
+}
+
+function exactDesktopSelectorVerified(result: Record<string, unknown>, args: Record<string, unknown>): boolean {
+  const pid = exactDesktopProcessId(args);
+  if (pid === undefined) return true;
+  return result.pid === pid
+    && result.exactProcessId === pid
+    && (args.bundle_path === undefined || result.exactBundlePathVerified === true);
+}
+
 function stableIdentityFromArgs(args: Record<string, unknown>): ComputerApplicationStableIdentity {
   const bundleId = typeof args.bundle_id === 'string' ? args.bundle_id.trim() : '';
   const appName = typeof args.app_name === 'string' ? args.app_name.trim() : '';
@@ -808,9 +834,12 @@ async function rebindProviderSession(
     ...(target.stableIdentity.bundleId ? { bundle_id: target.stableIdentity.bundleId } : { app_name: target.stableIdentity.appName }),
     launch: input.args.launch === true,
     activate: input.args.activate === true,
+    ...(exactDesktopProcessId(input.args) !== undefined ? { process_id: exactDesktopProcessId(input.args) } : {}),
+    ...(input.args.bundle_path !== undefined ? { bundle_path: input.args.bundle_path } : {}),
+    ...(exactDesktopProcessId(input.args) !== undefined ? { reuse_existing: false } : {}),
   }, 'binding-reopen'));
   const interactionId = providerSessionId(rebound);
-  if (!targetMatchesProviderSession(target, rebound)) {
+  if (!targetMatchesProviderSession(target, rebound) || !exactDesktopSelectorVerified(rebound, input.args)) {
     try {
       await provider.executeAction(providerInput(input, 'desktop_session_close', { interaction_id: interactionId }, 'binding-reopen-identity-compensate'));
     } catch (cleanupError) {
@@ -822,7 +851,7 @@ async function rebindProviderSession(
     }
     throw new AssistantPluginError(
       'PLUGIN_COMPUTER_TARGET_REBIND_IDENTITY_MISMATCH',
-      'Computer target rebind did not return the durable target application identity.',
+      'Computer target rebind did not verify the requested application identity, exact PID or bundle path.',
       { retryable: false, details: { targetId: target.targetId, stableIdentity: target.stableIdentity } },
     );
   }
@@ -928,6 +957,7 @@ function desktopTargetSummary(target: ComputerApplicationTarget): Record<string,
     kind: target.kind,
     stableIdentity: target.stableIdentity,
     providerBound: target.providerBinding?.providerId === DESKTOP_PROVIDER_ID,
+    ...(target.providerBinding?.processId !== undefined ? { processId: target.providerBinding.processId } : {}),
     launchOwnership: target.launchProvenance?.kind ?? 'unknown',
     createdAt: target.createdAt,
     updatedAt: target.updatedAt,
@@ -985,13 +1015,15 @@ async function openDesktopTarget(
   provider: AssistantPluginAdapter,
 ): Promise<Record<string, unknown>> {
   const requestedTargetId = explicitTargetIdFromArgs(input.args);
+  const expectedProcessId = exactDesktopProcessId(input.args);
   let current: ComputerApplicationTarget | undefined;
   if (requestedTargetId) {
     current = computerTargetAuthority.require(input.controllerHome, requestedTargetId);
   } else {
     const requested = stableIdentityFromArgs(input.args);
     const existing = computerTargetAuthority.listAllApplications(input.controllerHome)
-      .filter((target) => sameRequestedApplication(target, requested));
+      .filter((target) => sameRequestedApplication(target, requested)
+        && (expectedProcessId === undefined || target.providerBinding?.processId === expectedProcessId));
     if (existing.length > 1) {
       throw new AssistantPluginError(
         'PLUGIN_COMPUTER_TARGET_IDENTITY_AMBIGUOUS',
@@ -1005,6 +1037,13 @@ async function openDesktopTarget(
     return computerTargetAuthority.withLease(input.controllerHome, current.targetId, async (lease) => {
       const target = lease.current();
       const binding = target.providerBinding;
+      if (expectedProcessId !== undefined && binding?.processId !== undefined && binding.processId !== expectedProcessId) {
+        throw new AssistantPluginError(
+          'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH',
+          'Existing target is bound to a different process; a requested exact PID cannot silently replace its identity.',
+          { retryable: false, details: { targetId: target.targetId, expectedProcessId, boundProcessId: binding.processId } },
+        );
+      }
       if (binding && binding.providerId !== DESKTOP_PROVIDER_ID) {
         throw new AssistantPluginError(
           'PLUGIN_COMPUTER_TARGET_PROVIDER_MISMATCH',
@@ -1012,29 +1051,64 @@ async function openDesktopTarget(
           { retryable: false, details: { targetId: target.targetId, providerId: binding.providerId } },
         );
       }
-      if (binding && input.args.activate !== true) {
+      // A durable target can represent one of several copies of the same bundle,
+      // even when reopened by bundle_id. Never trust a provider session to keep
+      // its original process identity without reading back the bound PID.
+      const boundProcessId = input.args.launch !== true ? binding?.processId : undefined;
+      if (requestedTargetId && input.args.launch !== true && expectedProcessId === undefined && boundProcessId === undefined) {
+        throw new AssistantPluginError(
+          'PLUGIN_COMPUTER_TARGET_PROCESS_ID_REQUIRED',
+          'This historical target has no verified process binding; provide the exact live process_id to attach safely.',
+          { retryable: false, details: { targetId: target.targetId } },
+        );
+      }
+      if (binding && input.args.activate !== true && expectedProcessId === undefined) {
         try {
-          await provider.executeAction(providerInput(input, 'desktop_observe', {
-            interaction_id: binding.providerSessionId,
-            max_depth: 1,
-            max_nodes: 1,
-          }, 'target-open-verify-binding'));
+          const exactRead = boundProcessId !== undefined;
+          const observed = await provider.executeAction(providerInput(input, exactRead ? 'observe_elements' : 'desktop_observe',
+            exactRead
+              ? { interactionId: binding.providerSessionId, maxDepth: 1, maxNodes: 1 }
+              : { interaction_id: binding.providerSessionId, max_depth: 1, max_nodes: 1 },
+            'target-open-verify-binding'));
+          if (exactRead && (observed.pid !== boundProcessId || observed.interactionId !== binding.providerSessionId)) {
+            throw new AssistantPluginError(
+              'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH',
+              'The existing Desktop provider session no longer proves the durable target process identity.',
+              { retryable: false, details: { targetId: target.targetId, boundProcessId } },
+            );
+          }
           return desktopTargetSummary(target);
         } catch (error) {
           if (!isMissingProviderSessionFailure(error)) throw error;
         }
       }
-      await rebindProviderSession(input, lease, provider);
+      await rebindProviderSession(
+        boundProcessId !== undefined && expectedProcessId === undefined
+          ? { ...input, args: { ...input.args, process_id: boundProcessId } }
+          : input,
+        lease,
+        provider,
+      );
       return desktopTargetSummary(lease.current());
     });
   }
 
   const requested = stableIdentityFromArgs(input.args);
-  const opened = await provider.executeAction(providerInput(input, 'desktop_session_open', input.args, 'target-open'));
+  const opened = await provider.executeAction(providerInput(input, 'desktop_session_open', {
+    ...input.args,
+    ...(expectedProcessId !== undefined ? { reuse_existing: false } : {}),
+  }, 'target-open'));
   const interactionId = providerSessionId(opened);
   let stableIdentity: ComputerApplicationStableIdentity;
   try {
     stableIdentity = stableIdentityFromProviderResult(opened, requested);
+    if (!exactDesktopSelectorVerified(opened, input.args)) {
+      throw new AssistantPluginError(
+        'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH',
+        'Native provider did not prove that it selected the exact requested process and bundle path.',
+        { retryable: false },
+      );
+    }
   } catch (error) {
     try {
       await provider.executeAction(providerInput(input, 'desktop_session_close', { interaction_id: interactionId }, 'target-open-identity-compensate'));

@@ -2864,6 +2864,7 @@ async function rebindStartAndVerifyPrimaryRuntime(input: {
   beforeStart?: () => void;
   afterRuntimeReady?: () => Promise<{ ok: boolean; detail: string }>;
   contractFailureContext?: string;
+  stopLocallyReadyRuntimeOnFailure?: boolean;
   timeoutMs: number;
   successDetail: string;
 }): Promise<PrimaryRuntimeRebindStartResult> {
@@ -2937,18 +2938,30 @@ async function rebindStartAndVerifyPrimaryRuntime(input: {
   if (input.afterRuntimeReady) {
     const postReady = await input.afterRuntimeReady();
     if (!postReady.ok) {
-      await stopPrimaryRuntimeServiceOwner(input.service, input.runCommand);
-      return { ok: false, detail: postReady.detail, verify: await input.verifyLocal(input.config) };
+      if (input.stopLocallyReadyRuntimeOnFailure !== false) {
+        await stopPrimaryRuntimeServiceOwner(input.service, input.runCommand);
+      }
+      return {
+        ok: false,
+        detail: input.stopLocallyReadyRuntimeOnFailure === false
+          ? `${postReady.detail}; locally ready restored Runtime left running for bounded Connector recovery`
+          : postReady.detail,
+        verify: await input.verifyLocal(input.config),
+      };
     }
   }
   // Readiness has converged and any Connector rebind has completed. Strict
   // acceptance runs once here; there is no second readiness polling phase.
   const verify = await input.verifyLocal(input.config);
   if (verify.ok) return { ok: true, detail: input.successDetail, verify };
-  await stopPrimaryRuntimeServiceOwner(input.service, input.runCommand);
+  if (input.stopLocallyReadyRuntimeOnFailure !== false) {
+    await stopPrimaryRuntimeServiceOwner(input.service, input.runCommand);
+  }
   return {
     ok: false,
-    detail: 'release transition started a Runtime that failed whole-Runtime verification; service was stopped to prevent a restart loop',
+    detail: input.stopLocallyReadyRuntimeOnFailure === false
+      ? 'restored known-good Runtime reached local readiness but failed whole-Runtime verification; service remains running for bounded Connector recovery'
+      : 'release transition started a Runtime that failed whole-Runtime verification; service was stopped to prevent a restart loop',
     verify,
   };
 }
@@ -3736,6 +3749,10 @@ async function activateRuntimeReleaseInternal(
           verifyLocal,
           observeLocal,
           contractFailureContext: 'after rollback',
+          // Stable A is already a known-good release and has crossed local
+          // readiness. A transient Connector/public verification failure must
+          // not turn a failed cutover into a complete local Runtime outage.
+          stopLocallyReadyRuntimeOnFailure: false,
           timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
           successDetail: rollbackDatabaseDisposition === 'restored_backup'
             ? 'previous whole-Runtime release and unchanged SQLite backup restored, restarted, rebound, and verified'

@@ -39,6 +39,8 @@ import {
   readStoredJobs,
 } from "../../runtime/local-bridge/read-model";
 import type { LocalBridgeJobOutputResult } from "../../runtime/local-bridge/read-model";
+import { projectedExecutionJobId, reconcileLocalBridgeJobs as reconcileLocalBridgeJobsInRuntime, refreshLocalBridgeJob as refreshLocalBridgeJobInRuntime } from "../../runtime/local-bridge/lifecycle";
+export { projectAgentRunToLocalBridgeStatus } from "../../runtime/local-bridge/lifecycle";
 import type {
   LocalBridgeApproval,
   LocalBridgeConfig,
@@ -308,37 +310,6 @@ function cleanupEphemeralJob(repoRoot: string, job: LocalBridgeJob): void {
   });
 }
 
-function runningJobTimedOut(job: LocalBridgeJob, configuredTimeoutMs: number): boolean {
-  const deadlineAt = job.deadlineAt ? Date.parse(job.deadlineAt) : Number.NaN;
-  const startedAt = Date.parse(job.startedAt ?? job.updatedAt);
-  const explicitDeadlineReached = job.deadlineAt !== undefined && Number.isFinite(deadlineAt) && deadlineAt <= Date.now();
-  const legacyDeadlineReached = job.deadlineAt === undefined && Number.isFinite(startedAt) && startedAt + configuredTimeoutMs + 30_000 <= Date.now();
-  return explicitDeadlineReached || legacyDeadlineReached;
-}
-
-function runningJobOrphaned(job: LocalBridgeJob): boolean {
-  if (job.ownerPid === undefined || job.ownerPid === process.pid) return false;
-  if (isPidAlive(job.ownerPid)) return false;
-  // Owner died, but a still-live detached worker means the job is not lost —
-  // controller restart must reattach rather than incorrectly orphan it.
-  if (isPidAlive(job.workerPid)) return false;
-  return true;
-}
-
-function reattachLiveDetachedWorker(repoRoot: string, job: LocalBridgeJob): LocalBridgeJob | undefined {
-  if (job.ownerPid === undefined || job.ownerPid === process.pid) return undefined;
-  if (isPidAlive(job.ownerPid)) return undefined;
-  if (!isPidAlive(job.workerPid)) return undefined;
-  job.ownerPid = process.pid;
-  job.heartbeatAt = now();
-  appendEvent(repoRoot, job.jobId, {
-    type: "job_progress",
-    message: `Reattached still-live detached worker ${String(job.workerPid)} after Controller restart.`,
-    data: { workerPid: job.workerPid, reattachedOwnerPid: process.pid },
-  });
-  return saveJob(repoRoot, job);
-}
-
 function markJobTerminal(
   repoRoot: string,
   job: LocalBridgeJob,
@@ -356,11 +327,6 @@ function markJobTerminal(
     data,
   });
   return saveJob(repoRoot, job);
-}
-
-function projectedExecutionJobId(job: LocalBridgeJob): string | undefined {
-  const result = job.result;
-  return result && typeof result.executionJobId === "string" ? result.executionJobId : undefined;
 }
 
 function projectedExecutionControllerHome(
@@ -483,139 +449,25 @@ function syncProjectedExecutionJob(repoRoot: string, job: LocalBridgeJob): Local
   return saveJob(repoRoot, job);
 }
 
-function refreshLongRunningJob(repoRoot: string, job: LocalBridgeJob): LocalBridgeJob {
-  const payload = job.payload as VerifyEditSessionPayload | RepositoryCommandPayload;
-  const configuredTimeout = resolvedJobTimeout(
-    repoRoot,
-    "timeoutMs" in payload ? payload.timeoutMs : undefined,
-  );
-  if (runningJobTimedOut(job, configuredTimeout)) {
-    if (job.action === "verify-edit-session") releaseControllerCheckSubscription(checkSubscriberId(job.jobId));
-    else signalWorker(job.workerPid, "SIGTERM");
-    return markJobTerminal(
-      repoRoot,
-      job,
-      "timed_out",
-      `${job.action} exceeded its persisted execution deadline.`,
-      { timedOut: true },
-    );
-  }
-  const reattached = reattachLiveDetachedWorker(repoRoot, job);
-  if (reattached) return reattached;
-  if (runningJobOrphaned(job)) {
-    return markJobTerminal(
-      repoRoot,
-      job,
-      "orphaned",
-      `${job.action} was orphaned when Controller process ${String(job.ownerPid)} exited.`,
-      { orphaned: true },
-    );
-  }
-  return job;
-}
-
-export function projectAgentRunToLocalBridgeStatus(
-  status: import("../agent-jobs/types").AgentJobStatus,
-): LocalBridgeJob["status"] {
-  if (status === "queued") return "dispatched";
-  if (["starting", "running", "waiting_for_user"].includes(status)) return "running";
-  if (status === "succeeded") return "succeeded";
-  if (status === "cancelled") return "cancelled";
-  return "failed";
-}
-
 function refreshLocalBridgeJob(
   repoRoot: string,
   job: LocalBridgeJob,
   checkRevision?: string,
 ): LocalBridgeJob {
-  if (projectedExecutionJobId(job) && ["dispatched", "running"].includes(job.status)) {
-    const synced = syncProjectedExecutionJob(repoRoot, job);
-    if (!["dispatched", "running"].includes(synced.status)) return synced;
-    job = synced;
-  }
-  if (job.action === "run-check" && job.status === "running") {
-    const startedAt = Date.parse(job.startedAt ?? job.updatedAt);
-    const configuredTimeout = resolvedJobTimeout(repoRoot, (job.payload as RunCheckPayload).timeoutMs);
-    const deadlineAt = job.deadlineAt ? Date.parse(job.deadlineAt) : Number.NaN;
-    const timedOut = job.deadlineAt !== undefined && Number.isFinite(deadlineAt) && deadlineAt <= Date.now();
-    const ownerOrphaned = job.ownerPid !== undefined && job.ownerPid !== process.pid && !isPidAlive(job.ownerPid);
-    const legacyOrphaned = job.ownerPid === undefined && Number.isFinite(startedAt) && startedAt + configuredTimeout + 30_000 <= Date.now();
-    const revisionChanged = job.revision !== undefined &&
-      job.revision !== (checkRevision ?? currentControllerCheckRevision(repoRoot));
-    if (timedOut || ownerOrphaned || legacyOrphaned || revisionChanged) {
-      job.status = timedOut || legacyOrphaned
-        ? "timed_out"
-        : revisionChanged
-          ? "stale"
-          : "orphaned";
-      job.finishedAt = now();
-      job.error = timedOut || legacyOrphaned
-        ? `Check ${(job.payload as RunCheckPayload).checkId} exceeded its persisted execution deadline.`
-        : revisionChanged
-          ? `Check ${(job.payload as RunCheckPayload).checkId} became stale after the repository revision changed.`
-        : `Check ${(job.payload as RunCheckPayload).checkId} was orphaned when Controller process ${String(job.ownerPid)} exited.`;
-      releaseControllerCheckSubscription(checkSubscriberId(job.jobId));
-      appendEvent(repoRoot, job.jobId, {
-        type: "job_failed",
-        message: job.error,
-        data: {
-          timedOut: timedOut || legacyOrphaned,
-          orphaned: ownerOrphaned,
-          stale: revisionChanged,
-        },
-      });
-      return saveJob(repoRoot, job);
-    }
-    return job;
-  }
-  if ((job.action === "verify-edit-session" || job.action === "repository-command") && job.status === "running") {
-    return refreshLongRunningJob(repoRoot, job);
-  }
-  if (!job.runId || !["dispatched", "running"].includes(job.status)) return job;
-  try {
-    const run = getAgentJob(repoRoot, job.runId);
-    const previous = job.status;
-    if (["queued", "starting", "running", "waiting_for_user"].includes(run.status)) {
-      job.status = projectAgentRunToLocalBridgeStatus(run.status);
-      delete job.finishedAt;
-    } else {
-      job.status = projectAgentRunToLocalBridgeStatus(run.status);
-      job.finishedAt = run.finishedAt ?? now();
-      job.error = run.status === "succeeded" ? undefined : run.error ?? `Run ended as ${run.status}`;
-      job.result = {
-        ...(job.result ?? {}),
-        runId: run.runId,
-        runStatus: run.status,
-        exitCode: run.exitCode,
-        integratedSessionId: run.integratedSessionId,
-        changeOutcome: run.changeOutcome,
-        changedFiles: run.changedFiles,
-      };
-      job.outcome = {
-        process: { exitCode: run.exitCode },
-        infrastructureError: run.status === "succeeded" ? undefined : {
-          code: `AGENT_RUN_${run.status.toUpperCase()}`,
-          message: run.error ?? `Run ended as ${run.status}`,
-        },
-      };
-      cleanupEphemeralJob(repoRoot, job);
-    }
-    if (previous !== job.status) {
-      appendEvent(repoRoot, job.jobId, {
-        type: job.status === "succeeded" ? "job_succeeded" : job.status === "cancelled" ? "job_cancelled" : job.status === "failed" ? "job_failed" : "job_started",
-        message: `Linked Run ${run.runId} moved Local Job to ${job.status}.`,
-        data: { runStatus: run.status },
-      });
-    }
-    return saveJob(repoRoot, job);
-  } catch (error) {
-    job.status = "failed";
-    job.error = error instanceof Error ? error.message : String(error);
-    job.finishedAt = now();
-    cleanupEphemeralJob(repoRoot, job);
-    return saveJob(repoRoot, job);
-  }
+  return refreshLocalBridgeJobInRuntime(repoRoot, job, checkRevision, {
+    currentPid: process.pid,
+    now,
+    resolveJobTimeout: resolvedJobTimeout,
+    currentCheckRevision: currentControllerCheckRevision,
+    isPidAlive,
+    signalWorker,
+    releaseCheckSubscription: releaseControllerCheckSubscription,
+    syncProjectedExecutionJob,
+    getAgentRun: getAgentJob,
+    cleanupEphemeralJob,
+    appendEvent,
+    saveJob,
+  });
 }
 
 export function getLocalBridgeJob(repoRoot: string, jobId: string): LocalBridgeJob {
@@ -657,21 +509,11 @@ export function reconcileLocalBridgeJobs(repoRoot: string): {
   active: number;
   terminalized: number;
 } {
-  const jobs = readActiveLocalBridgeJobs(repoRoot);
-  const hasActiveCheck = jobs.some((entry) =>
-    entry.action === "run-check" && entry.status === "running"
-  );
-  const checkRevision = hasActiveCheck ? currentControllerCheckRevision(repoRoot) : undefined;
-  let active = 0;
-  let terminalized = 0;
-  for (const job of jobs) {
-    if (!["approved", "running", "dispatched"].includes(job.status)) continue;
-    active += 1;
-    const previous = job.status;
-    const refreshed = refreshLocalBridgeJob(repoRoot, job, checkRevision);
-    if (previous !== refreshed.status && ["succeeded", "failed", "timed_out", "orphaned", "stale", "cancelled"].includes(refreshed.status)) terminalized += 1;
-  }
-  return { scanned: jobs.length, active, terminalized };
+  return reconcileLocalBridgeJobsInRuntime(repoRoot, {
+    listActiveJobs: readActiveLocalBridgeJobs,
+    currentCheckRevision: currentControllerCheckRevision,
+    refreshJob: refreshLocalBridgeJob,
+  });
 }
 
 export function getLocalBridgeJobEvents(

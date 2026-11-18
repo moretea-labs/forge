@@ -683,14 +683,13 @@ const required = [
   'src/runtime/control-plane/global-scheduler/worker-attachment.ts',
   'src/runtime/control-plane/global-scheduler/worker-lifecycle-store.ts',
   'src/runtime/control-plane/global-scheduler/maintenance.ts',
-  'src/runtime/control-plane/global-scheduler/source-scan.ts',
   'src/runtime/control-plane/global-scheduler/worker-exit-decision.ts',
   'src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts',
   'src/runtime/control-plane/global-scheduler/worker-process.ts',
   'src/runtime/execution/jobs/store.ts',
   'src/runtime/execution/jobs/timeouts.ts',
   'src/runtime/execution/jobs/receipt-store.ts',
-  'src/runtime/execution/workers/worker-entry.ts',
+  'src/cli/execution/worker-entry.ts',
   'src/runtime/execution/thin-harness/index.ts',
   'src/runtime/execution/thin-harness/execution-router.ts',
   'src/runtime/control-plane/facade/requirement-authority.ts',
@@ -1225,7 +1224,9 @@ requireText('src/runtime/plugins/browser-runtime.ts', 'options.providers.length 
 forbid('src/runtime/plugins/browser-runtime.ts', /excludedProviderIds|BrowserProviderUnavailableBeforeActionError/, 'Browser Runtime must not retry an action through another provider');
 requireMissing('adapters/chatgpt/controller-round-host.ts');
 forbid('src/runtime/plugins/browser-macos-bridge.ts', /PLUGIN_BROWSER_NATIVE_PROCESS_AMBIGUOUS|pids\.length\s*!==\s*1/, 'Chrome GUI PID selection has one authority: Desktop Operator');
-requireText('src/runtime/plugins/browser-macos-bridge.ts', 'await assertMacOsBrowserApplicationRunning(request.product, timeoutMs)');
+requireText('src/runtime/plugins/browser-macos-bridge.ts', '() => assertMacOsBrowserApplicationRunning(request.product, timeoutMs)');
+requireText('src/runtime/plugins/browser-macos-bridge.ts', 'await precondition?.()');
+requireText('src/runtime/plugins/browser-macos-bridge.ts', 'await precondition()');
 requireText('src/runtime/plugins/browser-adapter.ts', "browserMode: browserMode(raw.browserMode) ?? 'attach_preferred'");
 requireText('src/runtime/plugins/browser-adapter.ts', "nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'auto'");
 requireText('docs/architecture/CURRENT.md', 'A STOPPED bootstrap draft may be replaced only from the canonical Supervisor ledger');
@@ -1289,7 +1290,7 @@ forbid(
   'derive Worker validity from Canonical Runtime ownership/release fencing, never Daemon projection state',
 );
 forbid(
-  'src/runtime/execution/workers/worker-entry.ts',
+  'src/cli/execution/worker-entry.ts',
   /--controller-started-at|controllerStartedAt/,
   'inherit only the immutable Canonical Runtime/release claim and owner PID',
 );
@@ -1551,10 +1552,14 @@ forbid(
   /\bacceptTaskJob\b|\bexecuteLaunchTask\b|\bexecuteQuickSession\b/,
   'Historical Local Bridge records must not retain an Agent dispatch path',
 );
-requireText(
+forbid(
   'src/runtime/execution/workers/executor.ts',
-  'dispatchLocalBridgeJob(repoRoot, jobId)',
+  /from\s+['"][^'"]*cli\/local-bridge\/job-store/,
+  'Runtime Executor must not import the CLI LocalBridge store directly',
 );
+requireText('src/runtime/execution/workers/executor.ts', 'localBridge.dispatchJob(repoRoot, jobId)');
+requireText('src/runtime/execution/workers/executor.ts', 'localBridge.getJob(repoRoot, jobId)');
+requireText('src/cli/execution/worker-entry.ts', 'dispatchJob: dispatchLocalBridgeJob');
 requireText('src/cli/controller/legacy-issue-cutover.ts', 'findRegisteredRepositoryByCheckoutRoot(repoRoot, controllerHome)');
 forbid(
   'src/cli/controller/issue-store.ts',
@@ -1674,8 +1679,7 @@ requireText('src/runtime/control-plane/release-retention.ts', "releasePaths.add(
 requireText('src/runtime/control-plane/release-retention.ts', 'const connectorRelease = loadPackageConnectorReleaseProtection(controllerHome, releasesRoot);');
 requireText('src/runtime/control-plane/release-retention.ts', 'const databaseBackup = (previous as Record<string, unknown>).databaseBackup;');
 requireText('src/runtime/root/scheduler.ts', 'isolatePeriodicCleanup: true');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'planSchedulerSourceSampling');
-requireText('src/runtime/control-plane/global-scheduler/source-scan.ts', 'selectSchedulerSourceScanRepositories');
+forbid('src/runtime/control-plane/global-scheduler/scheduler.ts', /planSchedulerSourceSampling|lastGitStatusSampleAt/, 'Scheduler must not restore periodic Git polling');
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'persistSchedulerTerminalWorkerLifecycle');
 requireText('src/runtime/control-plane/global-scheduler/worker-lifecycle-store.ts', 'TERMINAL_JOB_STATUSES');
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'evaluateSchedulerWorkerExitCandidate');
@@ -1704,13 +1708,13 @@ requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occu
 requireText('src/runtime/projections/git-status-sampler.ts', 'writeRepositoryGitStatusSample');
 requireText('src/runtime/projections/git-status-sampler.ts', 'readRepositoryGitStatusSample');
 requireText('src/runtime/control-plane/facade/repository-tool-dispatch.ts', 'readRepositoryGitStatusSample');
-requireText('src/runtime/control-plane/facade/repository-tool-dispatch.ts', 'args.refresh === true');
+requireText('src/runtime/control-plane/facade/repository-tool-dispatch.ts', 'args.refresh !== false');
 forbidBetween(
   'src/runtime/control-plane/facade/repository-tool-dispatch.ts',
   "case 'repository_git_status':",
   "case 'repository_git_diff':",
   /repositoryGitStatus\s*\(/,
-  'repository_git_status must default to daemon samples; live refresh must be explicit and sampled',
+  'repository_git_status must use its bounded async on-demand snapshot writer',
 );
 requireText('src/runtime/control-plane/execution/session-store.ts', 'lastValidatedAt: now');
 requireText('src/runtime/control-plane/execution/session-repository-binding.ts', 'currentPermissionSnapshotVersion');
@@ -2242,7 +2246,8 @@ requireText('src/runtime/root/types.ts', 'forgeInstanceId: string');
 requireText('src/runtime/root/types.ts', 'runtimeInstanceId: string');
 requireText('src/runtime/root/runtime.ts', 'readonly forgeInstanceId: string');
 requireText('src/runtime/root/runtime.ts', 'ensureForgeInstanceIdentity');
-requireText('src/runtime/root/entry.ts', 'forgeInstanceId: runtime.forgeInstanceId');
+requireText('src/cli/runtime/entry.ts', 'forgeInstanceId: runtime.forgeInstanceId');
+requireText('src/cli/runtime/entry.ts', 'startLocalBridge: startConfiguredRuntimeLocalBridge');
 requireText('adapters/mcp/transports/http.ts', 'forgeInstanceId: forgeInstance.instanceId');
 requireText('adapters/mcp/transports/http-observation.ts', 'controllerInstanceId: process.env.FORGE_MCP_INSTANCE_ID');
 forbid('adapters/mcp/transports/http.ts', /\{\s*instanceId:\s*process\.env\.FORGE_MCP_INSTANCE_ID/, 'MCP process identity must not be exposed as semantic Forge instanceId');

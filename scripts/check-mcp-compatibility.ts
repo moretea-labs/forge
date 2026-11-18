@@ -34,7 +34,7 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // 2026-11-08: managed generic API credentials add one metadata-only rh_credential facade.
 // It owns only credential-use AuthorizationGrant lifecycle; macOS Keychain/provider stores remain secret authorities.
 // Preferred facade names stay stable; any further complete-registry drift fails closed.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = '78c48cae45a994ba';
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'a49ea0cf84a8d20c';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a
@@ -50,7 +50,7 @@ const EXPECTED_PREFERRED_CONTROLLER_TOOL_NAMES = [
 // already shipped on main. V3 Work objective relations intentionally extend only
 // the existing rh_work input schema; both changes must invalidate stale Connector
 // schema snapshots without adding a parallel execution or graph authority.
-const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
+const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // Every public object-schema tool carries shared transport metadata only through
 // the final tools/list materialization path. Tool schema revisions
 // intentionally invalidate stale Connector schema snapshots.
@@ -82,9 +82,17 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // unchanged. Refresh the exact combined schema fingerprint.
 // 2026-11-14 integration: #607 describes model-selected retrieval and optional
 // semantic context; #650 adds the fixed supervisor_healthcheck schedule type.
-// Compared every preferred definition against origin/main: only those two
-// descriptions and that explicit enum/description changed; tool names stay fixed.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '9650b66ae3bafefd';
+// 2026-11-15 #648 extends canonical Project/Requirement membership for tasks
+// without Repository placement. 2026-11-16 adds Project-scoped Requirement
+// filters, stable sort keys, offset pagination, and case-insensitive Project/Requirement search.
+// Schema v20 adds Project-scoped Requirement get/revise protection; v21 exposes
+// Project-only creation of repository-backed tasks through canonical placement.
+// Schema v22 adds canonical dependency-blocker filtering to the task list.
+// Each canonical fingerprint fences stale Connector snapshots.
+// 2026-11-16 #648: optional assigned/unassigned task triage filter; existing
+// Requirement storage, assignment writer and revision CAS remain unchanged.
+// Schema v23 documents Project-scoped Plan identity and the project_id == scope_key rule.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '1b2d21b836c0fcde';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

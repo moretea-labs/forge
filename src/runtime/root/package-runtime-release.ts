@@ -413,7 +413,7 @@ function launcherSource(input: {
   entryRelativePath?: string;
   managerSignalsProcessGroup?: boolean;
 }): string {
-  const entryRelativePath = input.entryRelativePath ?? 'src/runtime/root/entry.ts';
+  const entryRelativePath = input.entryRelativePath ?? 'src/cli/runtime/entry.ts';
   return `#!${process.execPath}\n`
     + `import { createHash } from 'node:crypto';\n`
     + `import { existsSync, readFileSync } from 'node:fs';\n`
@@ -577,7 +577,7 @@ export function materializePackageRuntimeRelease(input: {
   const pluginActionSidecarPath = join(releaseRoot, pluginActionSidecarEntrypoint);
   const pluginActionSidecarLauncher = launcherSource({
     indexSha256,
-    entryRelativePath: 'src/runtime/plugins/plugin-action-sidecar.ts',
+    entryRelativePath: 'src/cli/github/plugin-action-sidecar.ts',
   });
   const pluginActionSidecarArtifactIdentity = `sha256:${sha256(Buffer.from(pluginActionSidecarLauncher))}`;
   const expectedManifest: Omit<RuntimeReleaseManifest, 'createdAt'> = {

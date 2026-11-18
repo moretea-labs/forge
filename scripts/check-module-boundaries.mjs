@@ -129,4 +129,5 @@ if (failures.length) {
   process.exitCode = 1;
 } else {
   console.log(`Module boundaries passed: ${allowedDebt.size} kernel legacy edges, ${allowedRuntimeCliDebt.size} runtime->cli legacy edges; no new edge permitted`);
+  for (const edge of runtimeCliSorted) console.log(`Remaining runtime->cli debt: ${edge}`);
 }

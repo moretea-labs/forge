@@ -312,7 +312,8 @@ export function applySafePatch(repository: RepositoryRecord, input: {
   recoverStaleSession?: unknown;
   binding?: EditSessionBinding;
 }): SafePatchApplyResult {
-  const editStorage = ensureRepositoryRuntimeStorageBinding(repository, 'edit-sessions');
+  const controllerHome = input.controllerHome?.trim() || resolveRepoPreferredControllerHome(repository.canonicalRoot);
+  const editStorage = ensureRepositoryRuntimeStorageBinding(repository, 'edit-sessions', controllerHome);
   if (editStorage.status === 'legacy-active' || editStorage.status === 'conflict') {
     throw new Error(`SAFE_PATCH_EDIT_SESSION_STORAGE_NOT_READY: ${editStorage.message ?? editStorage.status}`);
   }
@@ -321,7 +322,6 @@ export function applySafePatch(repository: RepositoryRecord, input: {
   const size = chunkSize(input.chunkSize);
   const refresh = input.refreshFingerprints !== false;
   const continueOnError = input.continueOnError === true;
-  const controllerHome = input.controllerHome?.trim() || resolveRepoPreferredControllerHome(repository.canonicalRoot);
   const policy = getToolPolicy('controller', { repoRoot: repository.canonicalRoot });
   const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
   const allowedPaths = Array.isArray(input.allowedPaths) ? input.allowedPaths.map((item) => String(item).trim()).filter(Boolean) : undefined;

@@ -96,16 +96,32 @@ async function execute(raw) {
 
   if (input.tool === 'process_status' || input.tool === 'process_cancel') {
     const processId = requireId(args.process_id, 'PROCESS');
-    if (!processId.startsWith('proc_')) throw Error('LOCAL_FORGE_PROCESS_INVALID');
+    if (!processId.startsWith('proc_') && !processId.startsWith('lightweight:')) {
+      throw Error('LOCAL_FORGE_PROCESS_INVALID');
+    }
     const waitMs = input.tool === 'process_status' ? args.wait_ms : undefined;
     if (waitMs !== undefined && (!Number.isSafeInteger(waitMs) || waitMs < 1 || waitMs > 15000)) {
       throw Error('LOCAL_FORGE_PROCESS_WAIT_INVALID');
     }
     if (!checkoutId) throw Error('LOCAL_FORGE_PROCESS_CHECKOUT_REQUIRED');
-    const runtimeEntry = join(sourceRoot, 'src/runtime/execution/process-runtime/runtime.ts');
-    const { getManagedProcessExecutionBinding } = await import(pathToFileURL(runtimeEntry).href);
-    const binding = getManagedProcessExecutionBinding(controllerHome, repoId, processId);
-    if (!binding) throw Error('LOCAL_FORGE_PROCESS_NOT_MANAGED');
+    let binding;
+    if (processId.startsWith('lightweight:')) {
+      // The canonical Process index locates a lightweight handle; the Process
+      // dispatcher below still enforces its recorded principal before attachment.
+      const indexEntry = join(sourceRoot, 'src/runtime/execution/process-runtime/handle-index.ts');
+      const { readProcessHandleIndexEntry } = await import(pathToFileURL(indexEntry).href);
+      const record = readProcessHandleIndexEntry(controllerHome, processId);
+      if (record?.lane !== 'lightweight' || record.target?.scope !== 'repository'
+          || record.target.repositoryId !== repoId) {
+        throw Error('LOCAL_FORGE_PROCESS_NOT_MANAGED');
+      }
+      binding = { checkoutId: record.target.checkoutId };
+    } else {
+      const runtimeEntry = join(sourceRoot, 'src/runtime/execution/process-runtime/runtime.ts');
+      const { getManagedProcessExecutionBinding } = await import(pathToFileURL(runtimeEntry).href);
+      binding = getManagedProcessExecutionBinding(controllerHome, repoId, processId);
+      if (!binding) throw Error('LOCAL_FORGE_PROCESS_NOT_MANAGED');
+    }
     if (binding.checkoutId !== checkoutId) throw Error('LOCAL_FORGE_PROCESS_CHECKOUT_MISMATCH');
     const entry = join(sourceRoot, 'src/runtime/execution/process-runtime/tool-dispatch.ts');
     const { callProcessTool } = await import(pathToFileURL(entry).href);
