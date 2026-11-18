@@ -639,7 +639,11 @@ describe('rh_work Requirement bootstrap', () => {
     }));
     expect(detailed.data.plan.assumptions).toHaveLength(30);
     expect(detailed.data.plan.resolvedDecisions).toHaveLength(30);
-    expect(detailed.data.plan.items).toHaveLength(50);
+    // Explicit detail retrieval preserves the complete semantic Plan; only discovery rows are compact.
+    expect(detailed.data.plan.items).toHaveLength(60);
+    expect(detailed.data.plan.items[59]).toMatchObject({
+      id: 'item-59', objective: `objective-59-${detail}`, dependencies: ['item-58'],
+    });
   });
 
   test('get_contract exposes the complete canonical WorkContract read-only, separate from the thin semantic view', async () => {
