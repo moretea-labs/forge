@@ -79,6 +79,12 @@ function forgeBridgeError(code, message, recovery) {
   return error;
 }
 
+function forgeLoginRequiredError() {
+  return forgeBridgeError('CHATGPT_BRIDGE_LOGIN_REQUIRED',
+    'Sign in to ChatGPT in the Forge-controlled ChromeAutomation profile before using the Bridge.',
+    'Open the same Forge ChromeAutomation profile, complete ChatGPT sign-in, and retry. No message was sent.');
+}
+
 async function forgePost(path, payload) {
   const response = await fetch(FORGE_CHATGPT_BRIDGE_URL + path, {
     method: 'POST',
@@ -115,10 +121,12 @@ async function forgeHeartbeat() {
 async function forgeWaitForComposer(timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (forgeLoginRequired()) throw forgeLoginRequiredError();
     const composer = forgeComposer();
     if (composer) return composer;
     await forgeSleep(500);
   }
+  if (forgeLoginRequired()) throw forgeLoginRequiredError();
   return null;
 }
 

@@ -17,7 +17,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function bridgeHarness(options: { loginLinkVisible?: boolean } = {}) {
+function bridgeHarness(options: { loginLinkVisible?: boolean; composerVisible?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-bridge-extension-'));
   roots.push(root);
   const extension = writeChatgptBridgeExtension(root, 'http://127.0.0.1:17651', 'bridge-token');
@@ -65,7 +65,7 @@ function bridgeHarness(options: { loginLinkVisible?: boolean } = {}) {
     querySelector: (selector: string) => {
       if (selector === 'form[data-logged-out]') return null;
       if (selector === 'a[href*="/auth/login"]') return options.loginLinkVisible ? loginLink : null;
-      if (selector.includes('composer') || selector === '#prompt-textarea' || selector.includes('textarea') || selector.includes('textbox')) return composer;
+      if (selector.includes('composer') || selector === '#prompt-textarea' || selector.includes('textarea') || selector.includes('textbox')) return options.composerVisible === false ? null : composer;
       if (selector.includes('Stop')) return null;
       if (selector.includes('send') || selector.includes('Send') || selector.includes('发送')) return button;
       return null;
@@ -149,6 +149,15 @@ describe('ChatGPT Bridge composer dispatch guard', () => {
   test('rejects the visible ChatGPT login link before mutating the composer', async () => {
     const bridge = bridgeHarness({ loginLinkVisible: true });
 
+    const receipt = await bridge.result;
+    expect(receipt.error?.code).toBe('CHATGPT_BRIDGE_LOGIN_REQUIRED');
+    expect(bridge.composer.textContent).toBe('');
+    expect(bridge.clicks()).toBe(0);
+    expect(bridge.submits()).toBe(0);
+  });
+
+  test('detects the login link before waiting when the landing page has no composer', async () => {
+    const bridge = bridgeHarness({ loginLinkVisible: true, composerVisible: false });
     const receipt = await bridge.result;
     expect(receipt.error?.code).toBe('CHATGPT_BRIDGE_LOGIN_REQUIRED');
     expect(bridge.composer.textContent).toBe('');
