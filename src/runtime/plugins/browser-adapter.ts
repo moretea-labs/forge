@@ -1674,6 +1674,9 @@ function cdpDiscoveryTimeout(config: BrowserPluginConfig): number {
   return Math.min(config.cdpDiscoveryTimeoutMs ?? DEFAULT_CDP_DISCOVERY_TIMEOUT_MS, MAX_CDP_DISCOVERY_TIMEOUT_MS);
 }
 
+/** Probe browser metadata, but keep the configured endpoint as Playwright's connection input.
+ * Playwright must negotiate HTTP-to-WebSocket itself; the discovered URL is for raw CDP consumers.
+ */
 async function discoverCdpEndpoint(endpoint: string, timeoutMs: number): Promise<CdpAttachAttempt> {
   const parsed = new URL(endpoint);
   if (parsed.protocol === 'ws:' || parsed.protocol === 'wss:') return { endpoint, discoveredEndpoint: endpoint };
@@ -2323,14 +2326,14 @@ async function browserLevelCdp(
   for (const endpoint of cdpEndpoints(config)) {
     try {
       const discovered = await discoverCdpEndpoint(endpoint, cdpDiscoveryTimeout(config));
-      const browser = await connectOverCDP.call(runtime.chromium, discovered.discoveredEndpoint ?? endpoint);
+      const browser = await connectOverCDP.call(runtime.chromium, endpoint);
       if (typeof browser.newBrowserCDPSession !== 'function') {
         if (browser.disconnect) await Promise.resolve(browser.disconnect()).catch(() => undefined);
         else if (browser.close) await browser.close().catch(() => undefined);
         continue;
       }
       const session = await browser.newBrowserCDPSession();
-      return { browser, session, endpoint: discovered.discoveredEndpoint ?? endpoint };
+      return { browser, session, endpoint };
     } catch { /* Pre-dispatch endpoint discovery/attach failure; try the next configured endpoint. */ }
   }
   return undefined;
@@ -2557,7 +2560,7 @@ async function openAttachedContext(
     try {
       const discovered = await discoverCdpEndpoint(endpoint, cdpDiscoveryTimeout(config));
       Object.assign(attempt, discovered);
-      const browser = await connectOverCDP.call(runtime.chromium, discovered.discoveredEndpoint ?? endpoint);
+      const browser = await connectOverCDP.call(runtime.chromium, endpoint);
       try {
         const context = browser.contexts()[0] ?? (browser.newContext ? await browser.newContext() : undefined);
         if (!context) throw new Error('CDP connection did not expose a browser context.');
@@ -2606,7 +2609,7 @@ async function openAttachedContext(
         mode: 'attach_preferred',
         provider: 'playwright-cdp',
         attached: true,
-        endpoint: discovered.discoveredEndpoint ?? endpoint,
+        endpoint,
         browserVersion: discovered.browserVersion,
         profile: {
           profileMode: config.profileMode,
