@@ -85,8 +85,21 @@ function forgeLoginRequiredError() {
     'Open the same Forge ChromeAutomation profile, complete ChatGPT sign-in, and retry. No message was sent.');
 }
 
+async function forgeLoopbackAllowed() {
+  // Chromium LNA requires explicit user permission to reach loopback from
+  // public pages. An unattended poll must not trigger the browser prompt.
+  try {
+    const status = await globalThis.navigator?.permissions?.query?.({name: 'loopback-network'});
+    return !status || status.state === 'granted';
+  } catch {
+    // Older Chromium versions do not recognize the granular permission.
+    return true;
+  }
+}
+
 async function forgePost(path, payload) {
   const response = await fetch(FORGE_CHATGPT_BRIDGE_URL + path, {
+    targetAddressSpace: 'loopback',
     method: 'POST',
     headers: forgeAuthHeaders({'content-type': 'application/json'}),
     body: JSON.stringify(payload),
@@ -96,6 +109,7 @@ async function forgePost(path, payload) {
 
 async function forgeJson(path) {
   const response = await fetch(FORGE_CHATGPT_BRIDGE_URL + path, {
+    targetAddressSpace: 'loopback',
     headers: forgeAuthHeaders({'accept': 'application/json'}),
   });
   if (!response.ok) return {};
@@ -347,6 +361,7 @@ async function forgeRunTask(task) {
 }
 
 async function forgePoll() {
+  if (!await forgeLoopbackAllowed()) return;
   await forgeHeartbeat();
   const task = await forgeJson('/api/extension/task?pageUrl=' + encodeURIComponent(location.href));
   if (task && task.kind === 'consult' && task.id && task.prompt) {
