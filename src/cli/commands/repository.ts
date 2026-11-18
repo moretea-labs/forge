@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { createMobileIntentDevice } from '../local-bridge/mobile-intents';
 import { executeRepositoryCommand } from '../../runtime/repositories/command-executor';
 import { bindRepositoryEntities } from '../../runtime/repositories/entity-migration';
 import { withControllerLock } from '../../effects/controller-locks';
@@ -41,6 +42,30 @@ function initializeRepository(repository: RepositoryRecord, controllerHome?: str
 
 export function buildRepositoryCommand(): Command {
   const command = new Command('repo').description('Register and inspect repositories managed by the global Controller');
+
+  common(command.command('agentmail-watch-device')
+    .description('Issue a single AgentMail Watch device credential through the existing device registry')
+    .argument('<repo-id>', 'Exact registered repository whose Local Bridge will receive the events')
+    .requiredOption('--confirm-authorization', 'Explicitly authorize issuing the scoped device secret'))
+    .action((repoId: string, opts: { controllerHome?: string; json?: boolean }) => {
+      const repository = resolveRepositorySelection({
+        repoId,
+        controllerHome: opts.controllerHome,
+        allowSoleRepository: false,
+      });
+      const credential = withControllerLock(
+        opts.controllerHome ?? '',
+        { scope: 'repository', repoId: repository.repoId },
+        'cli:agentmail-watch-device',
+        () => createMobileIntentDevice(repository.canonicalRoot, {
+          name: 'AgentMail Mac Watch',
+          deviceId: 'agentmail-mac-watch',
+          scopes: ['workflow:agentmail.mail-watch-event:execute'],
+          rateLimitPerMinute: 12,
+        }),
+      );
+      output(credential, opts.json === true);
+    });
 
   common(command.command('register')
     .description('Register a Git repository without relying on the Controller startup directory')

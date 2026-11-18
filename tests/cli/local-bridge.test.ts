@@ -47,6 +47,7 @@ import { acquireControllerLock, releaseControllerLock } from "../../src/effects/
 import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { createMcpToolContext, callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
 import { createSchedule, saveOccurrence, saveSchedule } from "../../src/runtime/workflow/schedules/store";
+import { readWorkflowRun, writeWorkflowRunCheckpoint } from "../../src/runtime/control-plane/persistence/workflow-run-store";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
 
 const roots: string[] = [];
@@ -1036,6 +1037,190 @@ describe("Local Execution Bridge", () => {
     expect(afterRevoke.body.error).toContain("MOBILE_INTENT_DEVICE_REVOKED");
   });
 
+
+  test("persists signed AgentMail events as one canonical WorkflowRun receipt and rejects replay conflicts", async () => {
+    const root = repo();
+    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
+    servers.push(handle);
+    const localHeaders = { "x-forge-local-token": handle.token, "content-type": "application/json" };
+    const created = await fetch(new URL("/api/mobile/devices", handle.url), {
+      method: "POST",
+      headers: localHeaders,
+      body: JSON.stringify({
+        name: "AgentMail macOS",
+        deviceId: "agentmail-macos",
+        scopes: ["workflow:agentmail.mail-watch-event:execute"],
+        rateLimitPerMinute: 120,
+      }),
+    }).then((response) => response.json());
+    expect(created.device.scopes).toEqual(["workflow:agentmail.mail-watch-event:execute"]);
+
+    function signedHeaders(body: string, nonce: string) {
+      const timestamp = new Date().toISOString();
+      const signature = createHmac("sha256", created.token).update(`${timestamp}.${nonce}.${body}`).digest("hex");
+      return {
+        "content-type": "application/json",
+        authorization: `Bearer ${created.token}`,
+        "x-forge-device-id": created.device.deviceId,
+        "x-forge-timestamp": timestamp,
+        "x-forge-nonce": nonce,
+        "x-forge-signature": signature,
+      };
+    }
+
+    const ruleId = "11111111-1111-4111-8111-111111111111";
+    const accountId = "22222222-2222-4222-8222-222222222222";
+    const providerMessageId = "provider-message-" + "m".repeat(700);
+    const event = {
+      source: "mail.watch.matched",
+      event_id: ruleId + ":" + accountId + ":" + providerMessageId,
+      observed_at: "2026-11-16T16:00:00.000Z",
+      ref: {
+        provider: "agentmail",
+        account_id: accountId,
+        provider_message_id: providerMessageId,
+      },
+      summary: {
+        rule_id: ruleId,
+        sender_email: "apple@example.com",
+      },
+    };
+    expect(event.event_id.length).toBeGreaterThan(512);
+    const body = JSON.stringify({ intent: "workflow_event", event });
+    const first = await fetch(new URL("/mobile/intent", handle.url), {
+      method: "POST",
+      headers: signedHeaders(body, "agentmail-event-0001"),
+      body,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(first.status).toBe(202);
+    expect(first.body).toMatchObject({
+      accepted: true,
+      durable: true,
+      deduplicated: false,
+      workflowId: "agentmail.mail-watch-event",
+      status: "succeeded",
+    });
+    expect(first.body.workflowRunId).toBeString();
+
+    // Simulate a process restart after the script Process succeeded but before the
+    // WorkflowRun success checkpoint/HTTP ACK was persisted.
+    const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
+    const registeredRepository = resolveRepositorySelection({ explicitPath: root, controllerHome });
+    const scopeId = `repository:${registeredRepository!.repoId}:checkout:${registeredRepository!.activeCheckoutId}:workflow:agentmail.mail-watch-event`;
+    const stored = readWorkflowRun(controllerHome, scopeId, first.body.workflowRunId);
+    expect(stored?.value.status).toBe("succeeded");
+    writeWorkflowRunCheckpoint({
+      controllerHome,
+      expectedRevision: stored!.revision,
+      inputs: event,
+      checkpoint: {
+        schemaVersion: 1,
+        binding: { scopeId, runId: first.body.workflowRunId },
+        workflowId: stored!.value.workflowId,
+        version: stored!.value.version,
+        contentDigest: stored!.value.contentDigest,
+        status: "running",
+        nextStepIndex: 0,
+        receipts: [],
+        outputs: {},
+        inFlightStepId: "validate-event",
+      },
+    });
+    await handle.close();
+    servers.splice(servers.indexOf(handle), 1);
+    const restarted = await startLocalBridgeServer({ repoRoot: root, port: 0 });
+    servers.push(restarted);
+
+    const replay = await fetch(new URL("/mobile/intent", restarted.url), {
+      method: "POST",
+      headers: signedHeaders(body, "agentmail-event-0002"),
+      body,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(replay.status).toBe(202);
+    expect(replay.body).toMatchObject({
+      accepted: true,
+      durable: true,
+      deduplicated: true,
+      workflowId: "agentmail.mail-watch-event",
+      status: "succeeded",
+    });
+    expect(replay.body.workflowRunId).toBe(first.body.workflowRunId);
+    expect(readWorkflowRun(controllerHome, scopeId, first.body.workflowRunId)?.value.status).toBe("succeeded");
+
+    const duplicate = await fetch(new URL("/mobile/intent", restarted.url), {
+      method: "POST",
+      headers: signedHeaders(body, "agentmail-event-0003"),
+      body,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(duplicate.status).toBe(202);
+    expect(duplicate.body).toMatchObject({ accepted: true, durable: true, deduplicated: true, status: "succeeded" });
+    expect(duplicate.body.workflowRunId).toBe(first.body.workflowRunId);
+
+    const changedPayload = JSON.stringify({
+      intent: "workflow_event",
+      event: { ...event, summary: { ...event.summary, sender_email: "different@example.com" } },
+    });
+    const conflict = await fetch(new URL("/mobile/intent", restarted.url), {
+      method: "POST",
+      headers: signedHeaders(changedPayload, "agentmail-event-0004"),
+      body: changedPayload,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(conflict.status).toBe(409);
+    expect(conflict.body).toMatchObject({ accepted: false, error: "WORKFLOW_RUN_IDENTITY_CONFLICT" });
+
+    const succeededRun = readWorkflowRun(controllerHome, scopeId, first.body.workflowRunId);
+    expect(succeededRun?.value.status).toBe("succeeded");
+    writeWorkflowRunCheckpoint({
+      controllerHome,
+      expectedRevision: succeededRun!.revision,
+      inputs: event,
+      checkpoint: {
+        schemaVersion: 1,
+        binding: { scopeId, runId: first.body.workflowRunId },
+        workflowId: succeededRun!.value.workflowId,
+        version: succeededRun!.value.version,
+        contentDigest: succeededRun!.value.contentDigest,
+        status: "failed",
+        nextStepIndex: 0,
+        receipts: [],
+        outputs: {},
+      },
+    });
+    const failedReplay = await fetch(new URL("/mobile/intent", restarted.url), {
+      method: "POST",
+      headers: signedHeaders(body, "agentmail-event-0007"),
+      body,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(failedReplay.status).toBe(503);
+    expect(failedReplay.body).toMatchObject({
+      accepted: false,
+      durable: true,
+      signatureVerified: true,
+      status: "WORKFLOW_RUN_FAILED_RESTART_REQUIRES_NEW_RUN_ID",
+      workflowRunId: first.body.workflowRunId,
+    });
+
+    const unsafePayload = JSON.stringify({
+      intent: "workflow_event",
+      event: { ...event, summary: { ...event.summary, body_text: "OTP 123456" } },
+    });
+    const unsafe = await fetch(new URL("/mobile/intent", restarted.url), {
+      method: "POST",
+      headers: signedHeaders(unsafePayload, "agentmail-event-0005"),
+      body: unsafePayload,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(unsafe.status).toBe(400);
+    expect(unsafe.body.error).toContain("MOBILE_INTENT_EVENT_FIELD_UNSUPPORTED");
+
+    const oversizedPayload = JSON.stringify({ intent: "workflow_event", event: { ...event, event_id: "x".repeat(4097) } });
+    const oversized = await fetch(new URL("/mobile/intent", restarted.url), {
+      method: "POST",
+      headers: signedHeaders(oversizedPayload, "agentmail-event-0006"),
+      body: oversizedPayload,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(oversized.status).toBe(400);
+    expect(oversized.body.error).toContain("MOBILE_INTENT_EVENT_ID_INVALID");
+  });
 
   test("shows direct edits as first-class file changes and completes them through the local API", async () => {
     const root = repo();
