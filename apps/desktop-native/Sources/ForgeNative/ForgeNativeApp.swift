@@ -1508,6 +1508,23 @@ private enum AgentSemanticContextInspector: String, Identifiable {
     var id: String { rawValue }
 }
 
+private struct AgentScrollMetrics: Equatable {
+    let offset: CGFloat
+    let contentHeight: CGFloat
+    let viewportHeight: CGFloat
+
+    var distanceToBottom: CGFloat { max(0, contentHeight - offset - viewportHeight) }
+    var isNearBottom: Bool { viewportHeight > 0 && distanceToBottom <= 72 }
+}
+
+private struct AgentScrollMetricsPreferenceKey: PreferenceKey {
+    static var defaultValue = AgentScrollMetrics(offset:0, contentHeight:0, viewportHeight:0)
+
+    static func reduce(value: inout AgentScrollMetrics, nextValue: () -> AgentScrollMetrics) {
+        value = nextValue()
+    }
+}
+
 private struct AgentPane: View {
     @ObservedObject var model: NativeWorkspace
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1518,6 +1535,9 @@ private struct AgentPane: View {
     @State private var pendingAgentCommand: String?
     @State private var showProviderThinking = false
     @State private var isComposerDropTarget = false
+    @State private var conversationScrollMetrics: AgentScrollMetrics?
+    @State private var conversationViewportHeight: CGFloat = 0
+    @State private var followsLatestConversation = true
     @StateObject private var voiceDictation = AgentVoiceDictation()
     @State private var voiceBaseDraft = ""
     @State private var semanticInspector: AgentSemanticContextInspector?
@@ -1896,10 +1916,62 @@ private struct AgentPane: View {
                     .frame(maxWidth:1320,alignment:.leading)
                     .frame(maxWidth:.infinity)
                     .padding(.horizontal,28).padding(.top,18).padding(.bottom,22)
-                }.scrollIndicators(.automatic)
+                    .background {
+                        GeometryReader { content in
+                            Color.clear.preference(
+                                key:AgentScrollMetricsPreferenceKey.self,
+                                value:AgentScrollMetrics(
+                                    offset:max(0,-content.frame(in:.named("agent.conversation")).minY),
+                                    contentHeight:content.size.height,
+                                    viewportHeight:conversationViewportHeight
+                                )
+                            )
+                        }
+                    }
+                }
+                .coordinateSpace(name:"agent.conversation")
+                .onPreferenceChange(AgentScrollMetricsPreferenceKey.self) { metrics in
+                    let previous = conversationScrollMetrics
+                    guard previous != metrics else { return }
+                    conversationScrollMetrics = metrics
+                    guard let previous else {
+                        followsLatestConversation = metrics.isNearBottom
+                        return
+                    }
+                    if metrics.isNearBottom {
+                        followsLatestConversation = true
+                        return
+                    }
+                    if metrics.offset < previous.offset - 2 {
+                        followsLatestConversation = false
+                        return
+                    }
+                    let contentGrew = metrics.contentHeight > previous.contentHeight + 1
+                    if contentGrew && previous.isNearBottom {
+                        followsLatestConversation = true
+                        Task { @MainActor in
+                            await Task.yield()
+                            guard followsLatestConversation else { return }
+                            withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
+                                reader.scrollTo("pending",anchor:.bottom)
+                            }
+                        }
+                    }
+                }
+                .scrollIndicators(.automatic)
+                .background {
+                    GeometryReader { viewport in
+                        Color.clear
+                            .onAppear { conversationViewportHeight = viewport.size.height }
+                            .onChange(of:viewport.size.height) { height in
+                                conversationViewportHeight = height
+                            }
+                    }
+                }
                 .overlay(alignment:.bottomTrailing) {
-                    if model.busy || model.zenRefinementActive {
+                    if (model.busy || model.zenRefinementActive) && !followsLatestConversation {
                         Button {
+                            followsLatestConversation = true
                             withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
                                 reader.scrollTo("pending",anchor:.bottom)
                             }
@@ -1921,20 +1993,23 @@ private struct AgentPane: View {
                           model.selectedThreadId == request.threadId else { return }
                     withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
                         if let messageId = request.messageId {
+                            followsLatestConversation = false
                             reader.scrollTo(messageId,anchor:.center)
                         } else if let last = model.thread?.messages.last {
+                            followsLatestConversation = true
                             reader.scrollTo(last.id,anchor:.bottom)
                         }
                     }
                     model.consumeConversationScrollRequest(request)
                 }
                 .onChange(of:model.thread?.messages.count) { _ in
-                    if let last = model.thread?.messages.last {
+                    if followsLatestConversation, let last = model.thread?.messages.last {
                         withAnimation(reduceMotion ? nil : .easeOut(duration:0.2)) { reader.scrollTo(last.id,anchor:.bottom) }
                     }
                 }
                 .onChange(of:model.busy) { busy in
                     guard busy else { return }
+                    followsLatestConversation = true
                     Task { @MainActor in
                         await Task.yield()
                         withAnimation(reduceMotion ? nil : .easeOut(duration:0.2)) { reader.scrollTo("pending",anchor:.bottom) }
