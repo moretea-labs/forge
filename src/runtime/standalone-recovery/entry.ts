@@ -1,6 +1,6 @@
 import { spawnSync } from 'child_process';
 import { createHash, randomUUID } from 'crypto';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { basename, join, resolve } from 'path';
 import { pathToFileURL } from 'url';
@@ -64,6 +64,9 @@ import {
 import { RECOVERY_MUTATION_IDENTITY_CONTRACT, RECOVERY_MUTATION_IDENTITY_FIELDS } from './mutation-identity-contract';
 import { readReleaseSession } from '../release/release-session';
 import { migrateRuntimeIncarnationProcessIdentity, readRuntimeOwner } from '../root/ownership';
+import { forgeRuntimeServicePaths } from '../root/service';
+import { readRuntimeReleaseAuthority } from '../root/release-store';
+import { systemdUserUnitName } from '../platform/systemd-user';
 import { observeRuntimeStatus } from '../root/status';
 import { migrateReleaseDurableState } from '../release/release-state-migration';
 import {
@@ -77,8 +80,83 @@ import { runBoundedChild } from '../shared/bounded-child-supervisor';
 import { readRecoveryOperationLock, recoveryOperationLockOwnerAlive } from './operation-lock';
 import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
 
+function verifyLegacyRuntimeProcessOwnership(
+  config: RecoveryConfig,
+  input: { pid: number; observedCommand: string },
+): boolean {
+  if (process.platform !== 'linux' || config.primaryRuntimeService?.platform === 'launchd') return false;
+  const unitName = systemdUserUnitName(forgeRuntimeServicePaths(config.controllerHome).label);
+  const shown = spawnSync('systemctl', [
+    '--user', 'show', unitName,
+    '--property=ActiveState',
+    '--property=MainPID',
+    '--property=ControlGroup',
+  ], {
+    encoding: 'utf8',
+    timeout: 5_000,
+    maxBuffer: 8_192,
+    env: runtimeAuthorityFreeEnvironment(process.env),
+  });
+  if (shown.status !== 0 || shown.error) return false;
+  const properties = Object.fromEntries(shown.stdout.split(/\r?\n/)
+    .map((line) => {
+      const separator = line.indexOf('=');
+      return separator > 0 ? [line.slice(0, separator), line.slice(separator + 1)] : undefined;
+    })
+    .filter((entry): entry is [string, string] => Boolean(entry)));
+  const mainPid = Number(properties.MainPID);
+  const controlGroup = properties.ControlGroup;
+  if (properties.ActiveState !== 'active' || !Number.isInteger(mainPid) || mainPid <= 0
+    || !controlGroup?.startsWith('/')) return false;
+
+  const activeReleaseId = readRuntimeReleaseAuthority(config.controllerHome)?.active.releaseId;
+  if (!activeReleaseId) return false;
+  const activeReleaseRoot = join(config.controllerHome, 'runtime', 'releases', activeReleaseId) + '/';
+  if (!input.observedCommand.includes(activeReleaseRoot)
+    || !input.observedCommand.includes(`--controller-home ${config.controllerHome}`)) return false;
+
+  const processInServiceCgroup = (pid: number): boolean => {
+    try {
+      const unified = readFileSync(`/proc/${pid}/cgroup`, 'utf8')
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('0::'))
+        ?.slice(3);
+      return unified === controlGroup;
+    } catch {
+      return false;
+    }
+  };
+  if (!processInServiceCgroup(input.pid) || !processInServiceCgroup(mainPid)) return false;
+
+  try {
+    const mainCommand = readFileSync(`/proc/${mainPid}/cmdline`, 'utf8').replace(/\0/g, ' ').trim();
+    if (!mainCommand.includes(activeReleaseRoot)) return false;
+    let currentPid = input.pid;
+    const visited = new Set<number>();
+    for (let depth = 0; depth < 32 && currentPid > 1 && !visited.has(currentPid); depth += 1) {
+      if (currentPid === mainPid) return true;
+      visited.add(currentPid);
+      const stat = readFileSync(`/proc/${currentPid}/stat`, 'utf8');
+      const commandEnd = stat.lastIndexOf(')');
+      if (commandEnd < 0) return false;
+      const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+      const parentPid = Number(fields[1]); // field 4 (ppid), after state (field 3)
+      if (!Number.isInteger(parentPid) || parentPid <= 1) return false;
+      currentPid = parentPid;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 async function prepareRuntimeReleaseSession(config: RecoveryConfig, requestId?: string) {
-  const migration = migrateRuntimeIncarnationProcessIdentity(config.controllerHome);
+  const migration = migrateRuntimeIncarnationProcessIdentity(config.controllerHome, {
+    verifyLegacyProcessOwnership: ({ owner, incarnation, observedCommand }) => (
+      owner.runtimeInstanceId === incarnation.runtimeInstanceId
+      && verifyLegacyRuntimeProcessOwnership(config, { pid: incarnation.pid, observedCommand })
+    ),
+  });
   if (!migration.ok) return { ok: false, attempted: false, noOp: true, detail: migration.detail };
   return prepareConfiguredRuntimeReleaseSession(config, {}, requestId);
 }

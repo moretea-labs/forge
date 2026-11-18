@@ -1,8 +1,8 @@
 import { randomUUID } from 'crypto';
-import { spawnSync } from 'child_process';
 import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { isProcessAlive } from '../shared/process-tree';
+import { defaultProcessIdentityProbe, LINUX_PROCESS_START_TIME_PREFIX } from '../shared/process-identity';
 
 export interface RecoveryOperationLockRecord {
   schemaVersion?: 1;
@@ -35,13 +35,7 @@ export class RecoveryOperationLockRaceError extends Error {
 }
 
 function processStartTime(pid: number): string | undefined {
-  const result = spawnSync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], {
-    encoding: 'utf8',
-    timeout: 2_000,
-    maxBuffer: 4_096,
-  });
-  if (result.status !== 0 || typeof result.stdout !== 'string') return undefined;
-  return result.stdout.trim() || undefined;
+  return defaultProcessIdentityProbe.inspect?.(pid)?.startTime;
 }
 
 function readRecoveryOperationLockPath(path: string): RecoveryOperationLockRecord | undefined {
@@ -81,8 +75,12 @@ export function readRecoveryOperationLock(controllerHome: string): RecoveryOpera
 export function recoveryOperationLockOwnerAlive(lock: RecoveryOperationLockRecord): boolean {
   if (!isProcessAlive(lock.pid)) return false;
   if (!lock.processStartTime) return true;
+  // Linux locks written before /proc start ticks used wall-clock `ps lstart`.
+  // A WSL clock correction can change that string while the same PID is live;
+  // without a monotonic identity, retain the legacy lock rather than steal it.
+  if (process.platform === 'linux' && !lock.processStartTime.startsWith(LINUX_PROCESS_START_TIME_PREFIX)) return true;
   const observed = processStartTime(lock.pid);
-  return observed === lock.processStartTime;
+  return !observed || observed === lock.processStartTime;
 }
 
 export function acquireRecoveryOperationLock(input: {

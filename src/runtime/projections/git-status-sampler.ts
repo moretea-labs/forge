@@ -1,14 +1,14 @@
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../effects/controller-home';
 import { selectRepositoryCheckout } from '../repositories/registry';
-import { splitRepositoryGitStatus, type RepositoryGitStatusSnapshot } from '../repositories/structured-git';
+import { porcelainBranchIdentity, splitRepositoryGitStatus, type RepositoryGitStatusSnapshot } from '../repositories/structured-git';
 import type { RepositoryRecord } from '../../core/repository/types';
 import { runBoundedGit } from '../execution/thin-harness/async-process';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 
 export interface RepositoryGitStatusSample extends RepositoryGitStatusSnapshot {
-  sampleSource: 'daemon-sample';
-  sampledBy: 'scheduler';
+  sampleSource: 'live' | 'daemon-sample';
+  sampledBy: 'scheduler' | 'caller';
 }
 
 function samplePath(controllerHome: string, repoId: string, checkoutId: string): string {
@@ -33,32 +33,43 @@ async function gitSample(repository: RepositoryRecord, args: readonly string[], 
 export async function writeRepositoryGitStatusSample(
   controllerHome: string,
   repository: RepositoryRecord,
+  sampledBy: RepositoryGitStatusSample['sampledBy'] = 'caller',
 ): Promise<RepositoryGitStatusSample> {
   const observedAt = new Date().toISOString();
-  const [porcelainResult, shortResult, branchResult, headResult, upstreamResult] = await Promise.all([
+  const [porcelainResult, headResult] = await Promise.all([
     gitSample(repository, ['status', '--porcelain=v1', '--branch', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**']),
-    gitSample(repository, ['status', '--short', '--branch', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**']),
-    gitSample(repository, ['branch', '--show-current'], 64 * 1024),
     gitSample(repository, ['rev-parse', '--verify', 'HEAD'], 64 * 1024),
-    gitSample(repository, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], 64 * 1024),
   ]);
   if (!porcelainResult.ok) {
     throw new Error(`GIT_STATUS_SAMPLE_FAILED: ${porcelainResult.stderr || `exit ${porcelainResult.exitCode}`}`);
   }
   const porcelain = porcelainResult.stdout;
   const split = splitRepositoryGitStatus(porcelain);
+  // Reuse the live-status parser and layout: only one worktree scan per
+  // scheduler sample. Unknown headers still resolve identity through Git.
+  let identity = porcelainBranchIdentity(porcelain);
+  if (!identity) {
+    const [branchResult, upstreamResult] = await Promise.all([
+      gitSample(repository, ['branch', '--show-current'], 64 * 1024),
+      gitSample(repository, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], 64 * 1024),
+    ]);
+    identity = {
+      branch: branchResult.ok ? branchResult.stdout.trim() || null : null,
+      upstream: upstreamResult.ok ? upstreamResult.stdout.trim() || null : null,
+    };
+  }
   const sample: RepositoryGitStatusSample = {
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
     observedAt,
     staleAgeMs: 0,
-    sampleSource: 'daemon-sample',
-    sampledBy: 'scheduler',
-    branch: branchResult.ok && branchResult.stdout.trim() ? branchResult.stdout.trim() : null,
+    sampleSource: sampledBy === 'scheduler' ? 'daemon-sample' : 'live',
+    sampledBy,
+    branch: identity.branch,
     head: headResult.ok && headResult.stdout.trim() ? headResult.stdout.trim() : null,
-    upstream: upstreamResult.ok && upstreamResult.stdout.trim() ? upstreamResult.stdout.trim() : null,
+    upstream: identity.upstream,
     porcelain,
-    shortStatus: shortResult.ok ? shortResult.stdout : porcelain,
+    shortStatus: porcelain,
     ...split,
     clean: split.staged.length === 0 && split.unstaged.length === 0 && split.untracked.length === 0,
   };
@@ -76,9 +87,7 @@ export function readRepositoryGitStatusSample(
     const observedMs = Date.parse(sample.observedAt);
     return {
       ...sample,
-      sampleSource: 'daemon-sample',
       staleAgeMs: Number.isFinite(observedMs) ? Math.max(0, Date.now() - observedMs) : Number.POSITIVE_INFINITY,
-      sampledBy: 'scheduler',
     };
   } catch {
     return undefined;
@@ -97,6 +106,7 @@ export async function sampleRepositoryGitStatusForRepositories(
       await writeRepositoryGitStatusSample(
         controllerHome,
         selectRepositoryCheckout(repository, repository.activeCheckoutId),
+        'scheduler',
       );
       return { ok: true as const, repository };
     } catch (error) {

@@ -1,9 +1,4 @@
 import {
-  closeIssueWithGitHubPlugin,
-  publishIssueWithGitHubPlugin,
-  refreshIssueWithGitHubPlugin,
-} from '../../cli/github/plugin';
-import {
   getGitHubPluginStatus,
   loadGitHubPluginConfig,
   saveGitHubPluginConfig,
@@ -13,6 +8,8 @@ import {
   listGitHubWorkflowRuns,
   listGitHubWorkflows,
   readGitHubProjectItems,
+  readGitHubProjectIssue,
+  readGitHubProjectIssueTimeline,
 } from './github-client';
 import type {
   AssistantPluginActionDescriptor,
@@ -36,6 +33,13 @@ function githubPermissions(ready: boolean, projectConfigured: boolean): Assistan
       description: 'Create, refresh, and close linked GitHub issues.',
       granted: ready,
       required: true,
+    },
+    {
+      scope: 'github:issues:read',
+      mode: 'read',
+      description: 'Read complete current Issue content and returned comments for selected Project items.',
+      granted: ready,
+      required: false,
     },
     {
       scope: 'github:projects:read',
@@ -88,8 +92,8 @@ function githubCapabilities(): AssistantPluginCapability[] {
       capabilityId: 'project-sync',
       title: 'Project Sync',
       description: 'Attach published issues to a configured GitHub Project when project settings exist.',
-      scopes: ['github:projects:read', 'github:projects:write'],
-      actions: ['configure', 'publish_issue', 'list_project_items'],
+      scopes: ['github:projects:read', 'github:projects:write', 'github:issues:read'],
+      actions: ['configure', 'publish_issue', 'list_project_items', 'read_project_issue'],
     },
     {
       capabilityId: 'actions-ci',
@@ -182,7 +186,7 @@ function githubActions(projectConfigured: boolean): AssistantPluginActionDescrip
     {
       actionId: 'list_project_items',
       title: 'Read GitHub Project items',
-      description: 'Read-only GitHub Project item status projection, using Repository Registry project configuration.',
+      description: 'Read-only GitHub Project inventory across all repositories; optional repository filter.',
       readOnly: true,
       risk: 'readonly',
       confirmation: 'none',
@@ -195,7 +199,27 @@ function githubActions(projectConfigured: boolean): AssistantPluginActionDescrip
         type: 'object',
         properties: {
           limit: { type: 'number', minimum: 1, maximum: 100 },
+          repository: { type: 'string', maxLength: 160, description: 'Optional repository filter; omitted returns items from every repository in the Project.' },
         },
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'read_project_issue',
+      title: 'Read GitHub Project Issue detail',
+      description: 'Read the exact linked Issue body, metadata and returned comments without changing the GitHub or Forge progress authorities.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: 60_000,
+      cancellable: true,
+      idempotent: true,
+      scopes: ['github:issues:read'],
+      resourceClaims: [{ resource: 'remote', mode: 'read' }],
+      argumentsSchema: {
+        type: 'object',
+        properties: { issue_url: { type: 'string', maxLength: 512 }, include_timeline: { type: 'boolean' } },
+        required: ['issue_url'],
         additionalProperties: false,
       },
     },
@@ -356,6 +380,18 @@ export function buildGitHubPluginManifest(previousRevision = 0, previousUpdatedA
   };
 }
 
+function requiredIssueId(value: unknown): string {
+  const issueId = typeof value === 'string' ? value.trim() : '';
+  if (!issueId) throw new Error('GITHUB_PLUGIN_ISSUE_ID_REQUIRED');
+  return issueId;
+}
+
+function requireGitHubIssueSyncPort(input: AssistantPluginActionExecutionInput) {
+  const port = input.executionPorts?.githubIssueSync;
+  if (!port) throw new Error('GITHUB_ISSUE_SYNC_PORT_REQUIRED');
+  return port;
+}
+
 export async function executeGitHubPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
   switch (input.actionId) {
     case 'configure': {
@@ -371,25 +407,33 @@ export async function executeGitHubPluginAction(input: AssistantPluginActionExec
       });
       return { config, status: getGitHubPluginStatus(input.repoRoot) };
     }
-    case 'publish_issue':
-      return { issue: publishIssueWithGitHubPlugin(input.repoRoot, String(input.args.issue_id ?? '').trim()) };
-    case 'refresh_issue':
-      return refreshIssueWithGitHubPlugin(input.repoRoot, String(input.args.issue_id ?? '').trim()) as Record<string, unknown>;
+    case 'publish_issue': {
+      const issueId = requiredIssueId(input.args.issue_id);
+      return { issue: await requireGitHubIssueSyncPort(input).publishIssue(input.repoRoot, issueId) };
+    }
+    case 'refresh_issue': {
+      const issueId = requiredIssueId(input.args.issue_id);
+      return await requireGitHubIssueSyncPort(input).refreshIssue(input.repoRoot, issueId) as Record<string, unknown>;
+    }
     case 'list_project_items': {
       const config = loadGitHubPluginConfig(input.repoRoot);
       if (!config.projectOwner || !config.projectNumber) {
         return { configured: false, items: [], truncated: false };
       }
-      if (!config.repository) {
-        return { configured: false, items: [], truncated: false };
-      }
       const limit = typeof input.args.limit === 'number' ? input.args.limit : 100;
+      const repositoryFilter = typeof input.args.repository === 'string' ? input.args.repository : undefined;
       return {
         configured: true,
         owner: config.projectOwner,
         projectNumber: config.projectNumber,
-        ...readGitHubProjectItems(input.repoRoot, config.repository, config.projectOwner, config.projectNumber, limit),
+        ...readGitHubProjectItems(input.repoRoot, config.projectOwner, config.projectNumber, limit, repositoryFilter),
       };
+    }
+    case 'read_project_issue': {
+      const issueUrl = typeof input.args.issue_url === 'string' ? input.args.issue_url : '';
+      const issue = readGitHubProjectIssue(input.repoRoot, issueUrl);
+      return { issue, ...(input.args.include_timeline === true
+        ? { timeline: readGitHubProjectIssueTimeline(input.repoRoot, issueUrl) } : {}) };
     }
     case 'list_workflows': {
       const config = loadGitHubPluginConfig(input.repoRoot);
@@ -422,8 +466,10 @@ export async function executeGitHubPluginAction(input: AssistantPluginActionExec
           : undefined,
       });
     }
-    case 'close_issue':
-      return { issue: closeIssueWithGitHubPlugin(input.repoRoot, String(input.args.issue_id ?? '').trim()) };
+    case 'close_issue': {
+      const issueId = requiredIssueId(input.args.issue_id);
+      return { issue: await requireGitHubIssueSyncPort(input).closeIssue(input.repoRoot, issueId) };
+    }
     default:
       throw new Error(`PLUGIN_ACTION_NOT_SUPPORTED: github/${input.actionId}`);
   }

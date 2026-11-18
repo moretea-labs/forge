@@ -1,12 +1,17 @@
 import { createHash } from 'crypto';
+import { readFileSync } from 'fs';
 import { runProcess } from '../../effects/process-runner';
 import { isProcessAlive } from './process-tree';
+
+export const LINUX_PROCESS_START_TIME_PREFIX = 'linux-proc-start:';
 
 export interface ProcessIdentityProbe {
   isAlive(pid: number): boolean;
   command(pid: number): string | undefined;
   startTime(pid: number): string | undefined;
   inspect?(pid: number): { command?: string; startTime?: string };
+  /** Legacy wall-clock identity reader for records written before Linux proc-ticks were used. */
+  legacyInspect?(pid: number): { command?: string; startTime?: string };
   listProcesses?(): Array<{ pid: number; command: string }>;
 }
 
@@ -23,17 +28,42 @@ function inspectProcess(pid: number): { command?: string; startTime?: string } {
   return match ? { startTime: match[1], command: match[2] } : {};
 }
 
+/** Linux /proc stat field 22 is monotonic process start time in clock ticks since boot. */
+export function parseLinuxProcessStartTime(stat: string, bootId: string): string | undefined {
+  if (!/^[0-9a-f-]{36}$/i.test(bootId)) return undefined;
+  const commandEnd = stat.lastIndexOf(')');
+  if (commandEnd < 0) return undefined;
+  const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+  const startTimeTicks = fields[19]; // Field 22; field 3 (state) is the first token after comm.
+  if (!startTimeTicks || !/^\d+$/.test(startTimeTicks)) return undefined;
+  return LINUX_PROCESS_START_TIME_PREFIX + bootId + ':' + startTimeTicks;
+}
+
+function inspectLinuxProcess(pid: number): { command?: string; startTime?: string } {
+  try {
+    const bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    const startTime = parseLinuxProcessStartTime(readFileSync('/proc/' + pid + '/stat', 'utf8'), bootId);
+    if (!startTime) return {};
+    const command = readFileSync('/proc/' + pid + '/cmdline')
+      .toString('utf8')
+      .replace(/\0/g, ' ')
+      .trim();
+    return { command: command || undefined, startTime };
+  } catch {
+    return {};
+  }
+}
+
+function inspectDefaultProcess(pid: number): { command?: string; startTime?: string } {
+  return process.platform === 'linux' ? inspectLinuxProcess(pid) : inspectProcess(pid);
+}
+
 const defaultProbe: ProcessIdentityProbe = {
   isAlive: (pid) => isProcessAlive(pid),
-  inspect: inspectProcess,
-  command: (pid) => {
-    const result = runProcess('ps', ['-o', 'command=', '-p', String(pid)], { timeoutMs: 1_000, maxOutputBytes: 32 * 1024 });
-    return result.ok ? result.stdout.trim() || undefined : undefined;
-  },
-  startTime: (pid) => {
-    const result = runProcess('ps', ['-o', 'lstart=', '-p', String(pid)], { timeoutMs: 1_000, maxOutputBytes: 4 * 1024 });
-    return result.ok ? result.stdout.trim() || undefined : undefined;
-  },
+  inspect: inspectDefaultProcess,
+  legacyInspect: process.platform === 'linux' ? inspectProcess : undefined,
+  command: (pid) => inspectDefaultProcess(pid).command ?? inspectProcess(pid).command,
+  startTime: (pid) => inspectDefaultProcess(pid).startTime ?? inspectProcess(pid).startTime,
   listProcesses: () => {
     const result = runProcess('ps', ['-axo', 'pid=,command='], { timeoutMs: 2_000, maxOutputBytes: 1024 * 1024 });
     if (!result.ok) return [];
@@ -58,14 +88,17 @@ export function processIdentityMatches(
   if (!expected || !actualPid) return { matches: false, reason: 'identity_missing' };
   if (expected.pid !== actualPid) return { matches: false, reason: 'pid_changed' };
   if (!probe.isAlive(actualPid)) return { matches: false, reason: 'process_dead' };
-  const inspected = probe.inspect?.(actualPid);
+  const isLegacyLinuxIdentity = process.platform === 'linux'
+    && !expected.processStartTime.startsWith(LINUX_PROCESS_START_TIME_PREFIX);
+  const inspected = (isLegacyLinuxIdentity ? probe.legacyInspect?.(actualPid) : undefined)
+    ?? probe.inspect?.(actualPid);
   const command = inspected?.command ?? probe.command(actualPid);
   const startTime = inspected?.startTime ?? probe.startTime(actualPid);
   if (!command || !startTime) return { matches: false, reason: 'identity_probe_unavailable' };
-  if (startTime !== expected.processStartTime) return { matches: false, reason: 'process_start_time_changed' };
   if (executableFingerprint(command) !== expected.executableFingerprint) {
     return { matches: false, reason: 'executable_fingerprint_changed' };
   }
+  if (startTime !== expected.processStartTime) return { matches: false, reason: 'process_start_time_changed' };
   return { matches: true };
 }
 

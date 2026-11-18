@@ -507,6 +507,49 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(routed).toBeUndefined();
   });
 
+  test('cleanup apply leaves the retired Job route and deduplicates real maintenance writes', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const projection = join(fx.repoRoot, '.ai/harness/controller/runtime-projection.json');
+    mkdirSync(join(fx.repoRoot, '.ai/harness/controller'), { recursive: true });
+    writeFileSync(projection, JSON.stringify({ attention: [{ status: 'orphaned', jobId: 'old-job' }] }));
+    const args = {
+      repo_id: fx.repository.repoId, request_id: 'cleanup-apply-once', apply_mode: 'async',
+      confirm_cleanup: true, include_temp_dirs: false, include_historical_attention: true,
+      interactive_wait_ms: 5_000,
+    };
+    expect(classifyGatewayExecutionPath('runtime_cleanup_apply', args).path).toBe('fast');
+    const call = async () => {
+      const routed = await routeDurableMcpCall(fx.ctx, 'runtime_cleanup_apply', args);
+      return routed ?? await callRuntimeTool(fx.ctx, 'runtime_cleanup_apply', args);
+    };
+    const first = await call();
+    expect(first?.isError).not.toBe(true);
+    const payload = first?.structuredContent as Record<string, unknown>;
+    expect(JSON.stringify(payload)).not.toContain('EXECUTION_JOB_RETIRED');
+    const execution = (payload.diagnosticExecution ?? payload) as { processId: string };
+    expect((payload.result as { reason?: string }).reason).toBe('caller_requested_async');
+    const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, execution.processId, { timeoutMs: 10_000 });
+    expect(terminal.ok).toBe(true);
+    const acknowledgement = join(fx.repoRoot, '.ai/harness/controller/acknowledged-attention.jsonl');
+    expect(readFileSync(acknowledgement, 'utf8').trim().split('\n')).toHaveLength(1);
+    const second = await call();
+    const replay = second?.structuredContent as Record<string, unknown>;
+    expect(((replay.diagnosticExecution ?? replay) as { processId: string }).processId).toBe(execution.processId);
+    expect(readFileSync(acknowledgement, 'utf8').trim().split('\n')).toHaveLength(1);
+    const denied = await callRuntimeTool(fx.ctx, 'runtime_cleanup_apply', { ...args, request_id: 'cleanup-denied', confirm_cleanup: false });
+    expect(denied?.isError).toBe(true);
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId)).toHaveLength(1);
+    expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId)).toHaveLength(0);
+    const readEntry = spawnSync(process.execPath, [
+      join(import.meta.dir, '../../src/cli/diagnostic-entry.ts'), 'runtime', 'diagnostic-read',
+      '--controller-home', fx.controllerHome, '--repo-id', fx.repository.repoId,
+      '--tool', 'runtime_cleanup_apply', '--args-base64', Buffer.from(JSON.stringify(args)).toString('base64url'),
+    ], { encoding: 'utf8', timeout: 5_000 });
+    expect(readEntry.status).not.toBe(0);
+    expect(readEntry.stderr).toContain('DIAGNOSTIC_TOOL_UNSUPPORTED');
+  });
+
   test('registered read-only isolated tools use Process Runtime without durable side effects', async () => {
     const fx = fixture();
     roots.push(fx.root);

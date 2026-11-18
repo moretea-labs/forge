@@ -113,8 +113,9 @@ import {
   scheduleRecoveryControllerHomeMigration,
 } from '../../src/runtime/standalone-recovery/controller-home-migration';
 import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } from '../../adapters/mcp/auth';
-import { acquireRecoveryReleaseLock, installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, RECOVERY_DAEMON_LABEL, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
-import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
+import { acquireRecoveryReleaseLock, installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, RECOVERY_DAEMON_LABEL, recoveryPlist, recoverySystemdUserUnitInput, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
+import { acquireRecoveryOperationLock, recoveryOperationLockOwnerAlive, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
+import { LINUX_PROCESS_START_TIME_PREFIX } from '../../src/runtime/shared/process-identity';
 import { publishRecoveryRelease, readCurrentRecoveryRelease, recoveryGatewayIsDraining, writeRecoveryReleaseManifest } from '../../src/runtime/standalone-recovery/release';
 import { createRecoveryHttpTransport } from '../../src/runtime/standalone-recovery/http-transport';
 
@@ -536,6 +537,52 @@ test('verifyStableRuntime uses stabilized active gateway probing by default', as
 
   expect(readyCalls).toBe(2);
   expect(verified.probes.active_gateway).toEqual({ ok: true, detail: 'HTTP 200', status: 200 });
+});
+
+test('standalone Recovery launchd preserves tunnel proxy connectivity in its isolated service environment', () => {
+  const env = {
+    HOME: '/Users/recovery-fixture',
+    HTTP_PROXY: 'http://127.0.0.1:7890',
+    HTTPS_PROXY: 'http://127.0.0.1:7890',
+    NO_PROXY: 'localhost,127.0.0.1,::1',
+    https_proxy: 'http://127.0.0.1:7891',
+    FORGE_RUNTIME_ID: 'must-not-inherit',
+    PRIVATE_TOKEN: 'must-not-inherit',
+  };
+  const plist = recoveryPlist({
+    label: RECOVERY_DAEMON_LABEL,
+    executable: '/fixture/forge-recovery',
+    command: 'daemon',
+    controllerHome: '/fixture/controller',
+    logPath: '/fixture/daemon.log',
+    productVersion: '1.8.2',
+  }, env);
+  const array = plist.match(/<array>([\s\S]*?)<\/array>/)?.[1] ?? '';
+  const args = [...array.matchAll(/<string>([^<]*)<\/string>/g)].map((match) => match[1]!);
+  const boundary = args.indexOf('/fixture/forge-recovery');
+  const childEnvironment = JSON.parse(execFileSync(args[0]!, [
+    ...args.slice(1, boundary), process.execPath, '-e', 'process.stdout.write(JSON.stringify(process.env))',
+  ], { encoding: 'utf8' }));
+  expect(childEnvironment).toMatchObject({
+    HOME: env.HOME, HTTP_PROXY: env.HTTP_PROXY, HTTPS_PROXY: env.HTTPS_PROXY,
+    NO_PROXY: env.NO_PROXY, https_proxy: env.https_proxy,
+  });
+  expect(childEnvironment.FORGE_RUNTIME_ID).toBeUndefined();
+  expect(childEnvironment.PRIVATE_TOKEN).toBeUndefined();
+});
+
+test('standalone Recovery systemd preserves only configured proxy variables alongside its service contract', () => {
+  const unit = recoverySystemdUserUnitInput('/fixture/controller', 'daemon', {
+    PATH: '/usr/bin', HTTP_PROXY: 'http://127.0.0.1:7890',
+    https_proxy: 'http://127.0.0.1:7891', ALL_PROXY: 'socks5://127.0.0.1:7892',
+    NO_PROXY: 'localhost,127.0.0.1,::1', http_proxy: '', PRIVATE_TOKEN: 'must-not-inherit',
+  });
+  expect(unit.environment).toMatchObject({
+    HTTP_PROXY: 'http://127.0.0.1:7890', https_proxy: 'http://127.0.0.1:7891',
+    ALL_PROXY: 'socks5://127.0.0.1:7892', NO_PROXY: 'localhost,127.0.0.1,::1',
+  });
+  expect(unit.environment).not.toHaveProperty('http_proxy');
+  expect(unit.environment).not.toHaveProperty('PRIVATE_TOKEN');
 });
 
 test('standalone Recovery compiler resolves account Bun when compiled Runtime PATH omits Bun', () => {
@@ -1472,6 +1519,47 @@ test('shared Recovery operation locks synthesize core-compatible request attribu
   } finally {
     shared.handle.close();
   }
+});
+
+test('shared Recovery operation locks use stable Linux process start identity', () => {
+  const home = controllerHome();
+  const acquired = acquireRecoveryOperationLock({ controllerHome: home, action: 'release_session_cutover', requestId: 'test-stable-process-identity' });
+  expect(acquired.acquired).toBe(true);
+  if (!acquired.acquired) throw new Error('stable Recovery operation lock was not acquired');
+  try {
+    if (process.platform === 'linux') {
+      expect(acquired.handle.record.processStartTime?.startsWith(LINUX_PROCESS_START_TIME_PREFIX)).toBe(true);
+    }
+    expect(recoveryOperationLockOwnerAlive(acquired.handle.record)).toBe(true);
+  } finally {
+    acquired.handle.close();
+  }
+});
+
+test('live legacy Linux Recovery locks remain owned across wall-clock correction', () => {
+  if (process.platform !== 'linux') return;
+  expect(recoveryOperationLockOwnerAlive({
+    schemaVersion: 1,
+    pid: process.pid,
+    instanceId: 'legacy-clock-adjusted',
+    processStartTime: 'Wed Nov 18 10:49:49 2026',
+    acquiredAt: new Date().toISOString(),
+    action: 'release_session_cutover',
+    requestId: 'test-legacy-clock-shift',
+  })).toBe(true);
+});
+
+test('Linux Recovery operation locks reject a reused PID with a different monotonic identity', () => {
+  if (process.platform !== 'linux') return;
+  expect(recoveryOperationLockOwnerAlive({
+    schemaVersion: 1,
+    pid: process.pid,
+    instanceId: 'reused-pid',
+    processStartTime: `${LINUX_PROCESS_START_TIME_PREFIX}00000000-0000-0000-0000-000000000000:1`,
+    acquiredAt: new Date().toISOString(),
+    action: 'release_session_cutover',
+    requestId: 'test-reused-pid',
+  })).toBe(false);
 });
 
 test('shared Recovery operation lock removes a malformed file when record persistence fails', () => {
@@ -5894,6 +5982,7 @@ describe('standalone recovery on canonical Runtime', () => {
       let candidateStrictProbes = 0;
       let readinessProbes = 0;
       let launchdLoaded = true;
+      let stableStrictHealthy = true;
       const currentAuthorityVerify = (ok = true): VerifyResult => {
         const authority = readRuntimeReleaseAuthority(home)!;
         const verify = healthyVerify();
@@ -5907,7 +5996,7 @@ describe('standalone recovery on canonical Runtime', () => {
           probes: ok ? verify.probes : { ...verify.probes, mcp_initialize: { ok: false, detail: 'strict MCP acceptance failed' } },
         };
       };
-      const result = await activateRuntimeRelease(config, candidateManifestPath, {
+      const activate = () => activateRuntimeRelease(config, candidateManifestPath, {
         platform: 'darwin',
         currentUid: async () => 501,
         runCommand: async (_command, args) => {
@@ -5934,7 +6023,7 @@ describe('standalone recovery on canonical Runtime', () => {
             candidateStrictProbes += 1;
             return currentAuthorityVerify(false);
           }
-          return currentAuthorityVerify(true);
+          return currentAuthorityVerify(stableStrictHealthy);
         },
         observeLocal: async () => {
           readinessProbes += 1;
@@ -5943,6 +6032,7 @@ describe('standalone recovery on canonical Runtime', () => {
         now: (() => { let value = 0; return () => value += 250; })(),
         sleep: async () => undefined,
       });
+      const result = await activate();
       expect(result.ok).toBe(false);
       expect(result.rollback).toMatchObject({ ok: true });
       const restoredAuthority = readRuntimeReleaseAuthority(home);
@@ -5956,6 +6046,18 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(strictProbes).toBe(2);
       expect(candidateStrictProbes).toBe(1);
       expect(readinessProbes).toBeGreaterThan(candidateStrictProbes);
+      expect(connectorBindingStates).toEqual(['release-failed-activation:runtime-started', 'release-a:runtime-started']);
+
+      // A transient strict Connector/public failure after Stable A has reached
+      // local readiness must report incomplete rollback verification without
+      // stopping the restored known-good Runtime.
+      stableStrictHealthy = false;
+      connectorBindingStates.length = 0;
+      const degradedRollback = await activate();
+      expect(degradedRollback).toMatchObject({ ok: false, rollback: { ok: false } });
+      expect(degradedRollback.rollback?.detail).toContain('service remains running');
+      expect(launchdLoaded).toBe(true);
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
       expect(connectorBindingStates).toEqual(['release-failed-activation:runtime-started', 'release-a:runtime-started']);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;

@@ -18,10 +18,10 @@ export function selectSchedulerDirtyProjectionRepositories(
 
 export function selectSchedulerProjectionRefreshTargets(
   repositories: readonly RepositoryRecord[],
-  sourceScanRepositories: readonly RepositoryRecord[],
+  dirtyRepositories: readonly RepositoryRecord[],
   projectionRefreshRepoIds: Iterable<string>,
 ): SchedulerProjectionRefreshTargets {
-  const candidates = new Map(sourceScanRepositories.map((repository) => [repository.repoId, repository]));
+  const candidates = new Map(dirtyRepositories.map((repository) => [repository.repoId, repository]));
   const repositoryById = new Map(repositories.map((repository) => [repository.repoId, repository]));
   const rebuildRepoIds: string[] = [];
   const rebuildSeen = new Set<string>();
@@ -45,13 +45,13 @@ export function selectSchedulerProjectionRefreshTargets(
 export function refreshSchedulerRepositoryProjections(input: {
   controllerHome: string;
   repositories: readonly RepositoryRecord[];
-  sourceScanRepositories: readonly RepositoryRecord[];
+  dirtyRepositories: readonly RepositoryRecord[];
   projectionRefreshRepoIds: Iterable<string>;
   controllerPid: number;
 }): void {
   const targets = selectSchedulerProjectionRefreshTargets(
     input.repositories,
-    input.sourceScanRepositories,
+    input.dirtyRepositories,
     input.projectionRefreshRepoIds,
   );
   for (const repoId of targets.rebuildRepoIds) {
@@ -71,7 +71,7 @@ export function refreshSchedulerRepositoryProjections(input: {
       const runtimeInstanceId = getRuntimeWriteClaim()?.runtimeInstanceId;
       refreshRepositoryProjectionForRepository(input.controllerHome, repository, {
         sourceRevision: sample?.head ?? undefined,
-        reason: 'scheduler-source-scan',
+        reason: 'scheduler-invalidation',
         owner: {
           pid: input.controllerPid,
           ...(runtimeInstanceId ? { runtimeInstanceId } : {}),

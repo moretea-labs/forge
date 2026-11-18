@@ -2,6 +2,7 @@ import {
   REQUIREMENT_STATES,
   isLegacyMachineRequirementWait,
   type Requirement,
+  type RequirementPriority,
   type RequirementState,
 } from '../persistence/requirement-store';
 import { listRequirementsForRepository } from './requirement-authority';
@@ -21,6 +22,8 @@ export interface RequirementBoardItem {
   requirementId: string;
   title: string;
   outcome: string;
+  priority?: RequirementPriority;
+  assignee?: string;
   state: RequirementState;
   persistedState: RequirementState;
   needsAttention: boolean;
@@ -75,6 +78,8 @@ function projectRequirement(requirement: Requirement, plans: readonly PlanContra
     requirementId: requirement.requirementId,
     title: boundedText(requirement.title, 240),
     outcome: boundedText(requirement.outcomeStatement, 500),
+    ...(requirement.priority ? { priority: requirement.priority } : {}),
+    ...(requirement.assignee ? { assignee: requirement.assignee } : {}),
     state,
     persistedState: requirement.state,
     needsAttention: requirement.needsAttention,

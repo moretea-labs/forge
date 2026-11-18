@@ -4,10 +4,27 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { createWindowsHostRecoveryRegistrationInput } from '../../src/runtime/plugins/windows-host-recovery-registration';
 import { installWindowsHostRecoveryPlugin } from '../../src/runtime/plugins/windows-host-recovery-install';
+import { parseTaskStatus } from '../../scripts/forge-windows-host-recovery-helper.mjs';
 
 const TEST_LINUX_HOME = '/home' + '/forge-test';
 
 describe('Windows host Recovery plugin registration', () => {
+  test('exposes native Windows startup verification as typed status, not only a successful shell result', () => {
+    expect(parseTaskStatus(JSON.stringify({ installed: true, method: 'hkcu_run', identityMatches: true })))
+      .toEqual({ installed: true, method: 'hkcu_run', identityMatches: true });
+    expect(parseTaskStatus(JSON.stringify({ installed: false, method: 'none', identityMatches: false })))
+      .toEqual({ installed: false, method: 'none', identityMatches: false });
+    expect(parseTaskStatus(JSON.stringify({ installed: true, method: 'scheduled_task', state: 'Ready' })))
+      .toEqual({ installed: true, method: 'scheduled_task' });
+  });
+
+  test('rejects malformed or inconsistent task receipts instead of inferring installation from exit code 0', () => {
+    for (const output of ['not json', '{}', '[]', '{"installed":"true","method":"hkcu_run"}',
+      '{"installed":true,"method":"none"}', '{"installed":true,"method":"hkcu_run","identityMatches":false}']) {
+      expect(() => parseTaskStatus(output)).toThrow('Windows Recovery task_status');
+    }
+  });
+
   test('exposes only fixed no-argument host recovery actions', () => {
     const registration = createWindowsHostRecoveryRegistrationInput({
       runtimeExecutable: '/usr/bin/node',

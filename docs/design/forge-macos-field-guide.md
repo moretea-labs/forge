@@ -15,7 +15,7 @@ Reviewed: 2026-11-06 · [ForgeClient Issue #592](https://github.com/moretea-labs
 
 ## Single source and reuse
 
-- `.design-harness/tokens.json` is the canonical **design-token** document, owned by the Forge repository. `apps/desktop/src/design-tokens.ts` imports it directly and passes CSS variables to the app shell. Do not create another theme store.
+- `.design-harness/theme.json` is the canonical **design-token** document, owned by the Forge repository. `apps/desktop/src/design-tokens.ts` imports it directly and passes CSS variables to the app shell. Do not create another theme store.
 - `.design-harness/components.json` and `screens/` contain reviewable proposed component/interaction contracts; the running code in `apps/desktop/src` is authoritative for shipped behavior.
 - Forge Design registers, validates, reads and exports the one repository design project. Better Design is a research/review reference, not another persistence owner.
 - For other Mac apps, reuse the research → token/interaction contract → real render/keyboard QA method; do not copy this client's purple accent, project names or feature hierarchy.

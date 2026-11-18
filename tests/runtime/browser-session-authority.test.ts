@@ -234,7 +234,7 @@ describe('Browser vs Chrome environment boundary', () => {
           throw new AssistantPluginError(
             'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
             'Process-bound Chrome Apple Event failed: The operation couldn’t be completed. (OSStatus error -1712.)',
-            { retryable: false, effectOutcome: 'outcome_unknown' },
+            { retryable: false, effectOutcome: 'outcome_unknown', details: { causeCode: 'EXTERNAL_PLUGIN_TIMEOUT', stage: 'response_read' } },
           );
         }
         return metadata;
@@ -250,6 +250,7 @@ describe('Browser vs Chrome environment boundary', () => {
       code: 'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
       retryable: false,
       effectOutcome: 'outcome_unknown',
+      details: { causeDetails: { causeCode: 'EXTERNAL_PLUGIN_TIMEOUT', stage: 'response_read' } },
     });
   });
 });
@@ -896,10 +897,14 @@ describe('browser session compatibility on Computer target authority', () => {
     const fieldSeparator = String.fromCharCode(31);
     const url = 'https://example.com/native-foreground';
     let frontmost = false;
+    let nativeLoading = false;
+    let metadataReads = 0;
+    let identityEvaluations = 0;
+    let metadataTitle = 'Native Foreground';
     const activations: string[] = [];
     const trustedRefs: Array<{ product?: string; windowId?: string; tabId?: string }> = [];
     const metadata = () => [
-      frontmost ? 'true' : 'false', url, 'Native Foreground', '0', '0', '1200', '800', '7', '9', 'true', 'false',
+      frontmost ? 'true' : 'false', url, metadataTitle, '0', '0', '1200', '800', '7', '9', 'true', nativeLoading ? 'true' : 'false',
     ].join(separator);
     const inventory = () => `false${separator}7${fieldSeparator}9${fieldSeparator}true${fieldSeparator}${url}${fieldSeparator}Native Foreground`;
 
@@ -918,8 +923,10 @@ describe('browser session compatibility on Computer target authority', () => {
         if (script.includes('set outputText to "false"')) return inventory();
         if (script.includes('set active tab index of targetWindow')) return '';
         if (script.includes('execute targetTab javascript')) {
+          identityEvaluations += 1;
           return JSON.stringify({ ok: true, value: { url, title: 'Native Foreground' } });
         }
+        metadataReads += 1;
         return metadata();
       },
       trustedInput: async (request) => {
@@ -959,7 +966,56 @@ describe('browser session compatibility on Computer target authority', () => {
     });
     expect((activated.action as { summary?: string }).summary).toContain('authoritative foreground');
     expect(activations).toEqual(['chrome']);
+    // Native metadata can report perpetual loading on an already verified
+    // user-owned tab. That must not stall unrelated foreground/read operations.
+    nativeLoading = true;
 
+    // Already-authoritative foreground is a verified fast path, not a fixed
+    // wait. The caller's settling budget applies only when state is not ready.
+    const metadataBeforeFast = metadataReads;
+    const identityBeforeFast = identityEvaluations;
+    const fastStart = performance.now();
+    const alreadyActive = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'native-foreground-already-active',
+      actionId: 'activate_page',
+      args: { session_id: 'native-foreground', post_action_wait_ms: 5_000, timeout_ms: 250 },
+    });
+    expect((alreadyActive.action as { summary?: string }).summary).toContain('authoritative foreground');
+    expect(activations).toEqual(['chrome']);
+    expect(performance.now() - fastStart).toBeLessThan(2_000);
+    // One post-activation native metadata read is sufficient; no second
+    // foregroundState roundtrip when the same proof is already authoritative.
+    expect(metadataReads - metadataBeforeFast).toBe(1);
+    expect(identityEvaluations - identityBeforeFast).toBe(0);
+
+    // Production Chrome's exact metadata may omit the title entirely.
+    // Keep foreground proof, but read live identity rather than persisting
+    // an omitted title as if the observation had established an empty title.
+    metadataTitle = '';
+    const beforeTitleRead = identityEvaluations;
+    await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'native-foreground-title-omitted',
+      actionId: 'activate_page',
+      args: { session_id: 'native-foreground', post_action_wait_ms: 1 },
+    });
+    expect(identityEvaluations - beforeTitleRead).toBe(1);
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'native-foreground')?.title)
+      .toBe('Native Foreground');
+
+    // A later action is never allowed to reuse the activation's URL receipt.
+
+
+    // An explicit load-state request must still honor its requested deadline.
+    await expect(executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'native-foreground-explicit-load-state',
+      actionId: 'wait_for_load_state',
+      args: { session_id: 'native-foreground', timeout_ms: 250 },
+    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_LOAD_STATE_TIMEOUT' });
+
+    const identityBeforeMutation = identityEvaluations;
     await executeBrowserPluginAction({
       ...baseInput,
       requestId: 'native-foreground-trusted-input',
@@ -967,6 +1023,7 @@ describe('browser session compatibility on Computer target authority', () => {
       args: { session_id: 'native-foreground', kind: 'click', x: 10, y: 20, post_action_wait_ms: 1 },
     });
     expect(trustedRefs).toEqual([{ product: 'chrome', windowId: '7', tabId: '9' }]);
+    expect(identityEvaluations).toBeGreaterThan(identityBeforeMutation);
   });
 
   test('lists saved metadata without inventory and explicitly reconciles native liveness before close', async () => {
@@ -1323,6 +1380,175 @@ describe('browser session compatibility on Computer target authority', () => {
     });
   });
 
+  test('CDP attach creates a dedicated Forge-owned page without adopting or replacing user tabs', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const url = 'https://example.com/cdp-owned-session';
+    writeControllerPluginConfig(controllerHome, 'browser', {
+      schemaVersion: 2,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      profileMode: 'repo_local',
+      cdpEndpoint: 'http://127.0.0.1:9222',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'disabled',
+    });
+
+    function fakePage(initialUrl: string, initialTitle: string) {
+      let currentUrl = initialUrl;
+      let currentTitle = initialTitle;
+      let windowName = '';
+      let closed = false;
+      return {
+        url: () => currentUrl,
+        title: async () => currentTitle,
+        goto: async (nextUrl: string) => {
+          const previousOrigin = new URL(currentUrl).origin;
+          const nextOrigin = new URL(nextUrl).origin;
+          if (previousOrigin !== nextOrigin) windowName = '';
+          currentUrl = nextUrl;
+          currentTitle = 'CDP Owned Session';
+          return { status: () => 200 };
+        },
+        evaluate: async (expression: string | ((...args: unknown[]) => unknown), arg?: unknown) => {
+          if (typeof expression === 'function') {
+            windowName = String(arg ?? '');
+            return undefined;
+          }
+          if (expression.includes('window.name')) return windowName;
+          if (expression.includes('document.querySelector')) return 'CDP page body';
+          if (expression.includes('document.readyState')) return 'complete';
+          return '';
+        },
+        on: () => undefined,
+        close: async () => { closed = true; },
+        isClosed: () => closed,
+      };
+    }
+
+    const userPage = fakePage(url, 'Existing User Tab');
+    const ownedPage = fakePage('about:blank', 'New Tab');
+    const pages: ReturnType<typeof fakePage>[] = [userPage];
+    const context = {
+      pages: () => pages.filter((page) => !page.isClosed()),
+      newPage: async () => {
+        pages.push(ownedPage);
+        return ownedPage;
+      },
+      close: async () => undefined,
+    };
+    let disconnects = 0;
+    let connectedEndpoint = '';
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      fetchJson: async () => ({
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/test',
+        Browser: 'Chrome/157',
+      }),
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async () => { throw new Error('managed launch must not run'); },
+          connectOverCDP: async (endpoint: string) => {
+            connectedEndpoint = endpoint;
+            return {
+              contexts: () => [context],
+              newBrowserCDPSession: async () => ({ detach: async () => undefined }),
+              disconnect: () => { disconnects += 1; },
+            };
+          },
+        },
+      } as never),
+    });
+
+    const baseInput = {
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      origin: { surface: 'mcp' as const, actor: 'test' },
+    };
+    const opened = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'cdp-owned-create',
+      actionId: 'create_session',
+      args: { url },
+    });
+    const sessionId = String((opened.session as { sessionId: string }).sessionId);
+    const ownerToken = browserSessionOwnerToken(sessionId);
+    expect(connectedEndpoint).toBe('http://127.0.0.1:9222');
+    expect(opened.session).toMatchObject({
+      browser: { provider: 'playwright-cdp', tab: { ownership: 'plugin_owned', ownerToken, url } },
+    });
+    expect(pages).toHaveLength(2);
+    expect(userPage.url()).toBe(url);
+    expect(ownedPage.url()).toBe(url);
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab)
+      .toMatchObject({ ownership: 'plugin_owned', ownerToken });
+
+    const resumed = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'cdp-owned-read',
+      actionId: 'get_text',
+      args: { session_id: sessionId, selector: 'body' },
+    });
+    expect(resumed.text).toBe('CDP page body');
+    expect(pages).toHaveLength(2);
+    expect(disconnects).toBe(2);
+
+    // A cross-origin navigation clears window.name in Chromium. The same saved
+    // session must restore its exact owner marker before the next action.
+    const nextUrl = 'https://other.example.org/cdp-owned-session';
+    const navigated = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'cdp-owned-cross-origin-navigation',
+      actionId: 'navigate',
+      args: { session_id: sessionId, url: nextUrl },
+    });
+    expect((navigated.session as { url: string }).url).toBe(nextUrl);
+    expect(ownedPage.url()).toBe(nextUrl);
+    expect(pages).toHaveLength(2);
+    expect(disconnects).toBe(3);
+
+    const resumedAfterNavigation = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'cdp-owned-cross-origin-read',
+      actionId: 'get_text',
+      args: { session_id: sessionId, selector: 'body' },
+    });
+    expect(resumedAfterNavigation.text).toBe('CDP page body');
+    const savedAfterNavigation = findBrowserSession(controllerHome, 'repo-a', repoA, sessionId);
+    expect(savedAfterNavigation?.url).toBe(nextUrl);
+    expect(savedAfterNavigation?.browser?.tab)
+      .toMatchObject({ ownership: 'plugin_owned', ownerToken, url: nextUrl });
+    expect(disconnects).toBe(4);
+
+    // A missing owned page must not be replaced by the user's exact-URL tab.
+    pages.splice(pages.indexOf(ownedPage), 1);
+    await expect(executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'cdp-owned-stale-read',
+      actionId: 'get_text',
+      args: { session_id: sessionId, selector: 'body' },
+    })).rejects.toThrow('PLUGIN_BROWSER_ATTACH_UNAVAILABLE');
+    expect(context.pages()).toHaveLength(1);
+    expect(userPage.url()).toBe(url);
+    expect(disconnects).toBe(5);
+
+    // Closing a CDP-attached session closes only the page carrying its exact owner marker.
+    pages.push(ownedPage);
+    const closed = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'cdp-owned-close',
+      actionId: 'close_session',
+      args: { session_id: sessionId },
+    });
+    expect(closed).toMatchObject({ closed: true, resourceClosed: true });
+    expect(context.pages()).toHaveLength(1);
+    expect(userPage.url()).toBe(url);
+    expect(disconnects).toBe(6);
+  });
+
   test('installs unpacked extension through browser-level CDP and verifies exact id/path before success', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
@@ -1335,29 +1561,33 @@ describe('browser session compatibility on Computer target authority', () => {
     const canonicalExtensionPath = realpathSync(extensionPath);
     const methods: string[] = [];
     let disconnected = 0;
+    let connectedEndpoint = '';
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
       fetchJson: async () => ({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/test', Browser: 'Chrome/153' }),
       loadPlaywright: () => ({
         chromium: {
           launchPersistentContext: async () => { throw new Error('managed launch must not run'); },
-          connectOverCDP: async () => ({
-            contexts: () => [],
-            newBrowserCDPSession: async () => ({
-              send: async (method: string, params?: Record<string, unknown>) => {
-                methods.push(method);
-                if (method === 'Extensions.loadUnpacked') {
-                  expect(params).toEqual({ path: canonicalExtensionPath });
-                  return { id: SUPERVISOR_EXTENSION_ID };
-                }
-                if (method === 'Extensions.getExtensions') {
-                  return { extensions: [{ id: SUPERVISOR_EXTENSION_ID, name: 'Forge extension fixture', version: '1.0.0', path: canonicalExtensionPath, enabled: true }] };
-                }
-                throw new Error('unexpected method ' + method);
-              },
-            }),
-            disconnect: () => { disconnected += 1; },
-          }),
+          connectOverCDP: async (endpoint: string) => {
+            connectedEndpoint = endpoint;
+            return {
+              contexts: () => [],
+              newBrowserCDPSession: async () => ({
+                send: async (method: string, params?: Record<string, unknown>) => {
+                  methods.push(method);
+                  if (method === 'Extensions.loadUnpacked') {
+                    expect(params).toEqual({ path: canonicalExtensionPath });
+                    return { id: SUPERVISOR_EXTENSION_ID };
+                  }
+                  if (method === 'Extensions.getExtensions') {
+                    return { extensions: [{ id: SUPERVISOR_EXTENSION_ID, name: 'Forge extension fixture', version: '1.0.0', path: canonicalExtensionPath, enabled: true }] };
+                  }
+                  throw new Error('unexpected method ' + method);
+                },
+              }),
+              disconnect: () => { disconnected += 1; },
+            };
+          },
         },
       }),
     });
@@ -1366,6 +1596,7 @@ describe('browser session compatibility on Computer target authority', () => {
       requestId: 'extension-cdp-install', actionId: 'install_unpacked_extension',
       args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
     });
+    expect(connectedEndpoint).toBe('http://127.0.0.1:9222');
     expect(methods).toEqual(['Extensions.loadUnpacked', 'Extensions.getExtensions']);
     expect(disconnected).toBe(1);
     expect(result).toMatchObject({ provider: 'playwright-cdp', extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true }, verified: true });

@@ -5,11 +5,15 @@ export interface WorkspaceIdentity {
   title: string;
 }
 
+export type ProjectStatus = 'active' | 'archived';
+
 export interface ProjectIdentity {
   schemaVersion: 1;
   projectId: string;
   workspaceId: string;
   displayName: string;
+  /** Existing rows without status are interpreted as active. */
+  status?: ProjectStatus;
   /** Stable digest of a portable source identity (for example a normalized Git remote), never a local path. */
   sourceFingerprint?: string;
 }
@@ -41,9 +45,11 @@ export function projectIdentity(input: Omit<ProjectIdentity, 'schemaVersion'>): 
   const workspaceId = boundedId(input.workspaceId, 'WORKSPACE_ID_INVALID');
   const displayName = input.displayName.trim();
   if (!displayName || displayName.length > 512) throw new Error('PROJECT_DISPLAY_NAME_INVALID');
+  const status = input.status ?? 'active';
+  if (status !== 'active' && status !== 'archived') throw new Error('PROJECT_STATUS_INVALID');
   const sourceFingerprint = input.sourceFingerprint?.trim();
   if (sourceFingerprint && !/^[a-f0-9]{64}$/i.test(sourceFingerprint)) throw new Error('PROJECT_SOURCE_FINGERPRINT_INVALID');
-  return { schemaVersion: 1, projectId, workspaceId, displayName, ...(sourceFingerprint ? { sourceFingerprint: sourceFingerprint.toLowerCase() } : {}) };
+  return { schemaVersion: 1, projectId, workspaceId, displayName, status, ...(sourceFingerprint ? { sourceFingerprint: sourceFingerprint.toLowerCase() } : {}) };
 }
 
 export function projectPlacement(input: Omit<ProjectPlacement, 'schemaVersion'>): ProjectPlacement {

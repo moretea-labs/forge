@@ -363,10 +363,19 @@ async function captureBrowserAutomation(
   region: { x: number; y: number; width: number; height: number },
   path: string,
   timeoutMs: number,
+  target?: { product: MacOsBrowserProduct; ref?: MacOsBrowserTabRef },
 ): Promise<Buffer> {
-  if (runtimeHooks.captureRegion) return await runtimeHooks.captureRegion(region, path, timeoutMs);
-  const bytes = await captureBrowserAutomationRegion(region, timeoutMs);
-  writeFileSync(path, bytes);
+  const useTestHook = Boolean(runtimeHooks.captureRegion);
+  const bytes = await timeMacOsBrowserAutomation(
+    { action: 'capture_region', region },
+    useTestHook ? 'test_hook' : 'broker',
+    undefined,
+    async () => useTestHook
+      ? await runtimeHooks.captureRegion!(region, path, timeoutMs)
+      : await captureBrowserAutomationRegion(region, timeoutMs),
+    target,
+  );
+  if (!useTestHook) writeFileSync(path, bytes);
   return bytes;
 }
 
@@ -374,14 +383,27 @@ async function sendBrowserTrustedInput(
   request: BrowserAutomationTrustedInputRequest,
   timeoutMs: number,
 ): Promise<void> {
-  await assertMacOsBrowserApplicationRunning(request.product, timeoutMs);
-  if (runtimeHooks.trustedInput) {
-    await runtimeHooks.trustedInput(request, timeoutMs);
-    return;
-  }
-  let result: Record<string, unknown>;
+  const useTestHook = Boolean(runtimeHooks.trustedInput);
   try {
-    result = await callBrowserAutomationBroker(request, timeoutMs);
+    await timeMacOsBrowserAutomation(
+      request,
+      useTestHook ? 'test_hook' : 'broker',
+      () => assertMacOsBrowserApplicationRunning(request.product, timeoutMs),
+      async () => {
+        if (useTestHook) {
+          await runtimeHooks.trustedInput!(request, timeoutMs);
+          return;
+        }
+        const result = await callBrowserAutomationBroker(request, timeoutMs);
+        if (result.performed !== true) {
+          throw new AssistantPluginError(
+            'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
+            'Stable Forge macOS capability broker did not confirm trusted browser input.',
+            { retryable: true },
+          );
+        }
+      },
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error ?? '');
     if ((error instanceof AssistantPluginError && error.code === 'BROWSER_AUTOMATION_ACTION_UNSUPPORTED')
@@ -393,13 +415,6 @@ async function sendBrowserTrustedInput(
       );
     }
     throw error;
-  }
-  if (result.performed !== true) {
-    throw new AssistantPluginError(
-      'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
-      'Stable Forge macOS capability broker did not confirm trusted browser input.',
-      { retryable: true },
-    );
   }
 }
 
@@ -419,6 +434,7 @@ async function timeMacOsBrowserAutomation<T>(
   requestedDispatchKind: Exclude<MacOsBrowserAutomationTiming['dispatchKind'], 'not_dispatched'>,
   precondition: (() => Promise<void>) | undefined,
   dispatch: () => Promise<T>,
+  timingTarget?: { product?: MacOsBrowserProduct; ref?: MacOsBrowserTabRef },
 ): Promise<T> {
   const observer = runtimeHooks.onAutomationTiming;
   if (!observer) {
@@ -458,11 +474,12 @@ async function timeMacOsBrowserAutomation<T>(
     errorCode = error instanceof AssistantPluginError ? error.code : undefined;
     throw error;
   } finally {
-    const ref = 'ref' in request ? request.ref : resultRef;
+    const ref = 'ref' in request ? request.ref : resultRef ?? timingTarget?.ref;
+    const product = 'product' in request ? request.product : timingTarget?.product;
     try {
       observer({
         action: request.action,
-        ...('product' in request ? { product: request.product } : {}),
+        ...(product ? { product } : {}),
         ...(ref?.windowId ? { windowId: ref.windowId } : {}),
         ...(ref?.tabId ? { tabId: ref.tabId } : {}),
         dispatchKind,
@@ -1107,6 +1124,7 @@ export class MacOsAppleEventsPage {
   private timeoutMs: number;
   private targetRef?: MacOsBrowserTabRef;
   private domIdentityFromCurrentAction = false;
+  private verifiedActivationIdentityFromCurrentAction = false;
   private readonly createTabEvidence?: MacOsBrowserCreateTabEvidence;
 
   constructor(attachment: MacOsBrowserAttachment, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS, targetRef?: MacOsBrowserTabRef, createTabEvidence?: MacOsBrowserCreateTabEvidence) {
@@ -1178,6 +1196,7 @@ export class MacOsAppleEventsPage {
         effectOutcome: outcomeUnknown ? 'outcome_unknown' : 'failed',
         details: {
           browserProduct: this.browser.product, bundleId: this.browser.bundleId,
+          ...(error instanceof AssistantPluginError && error.details ? { causeDetails: error.details } : {}),
           ...(message.includes('OSStatus error -1712') ? { appleEventTimedOut: true } : {}),
         },
       });
@@ -1332,9 +1351,20 @@ export class MacOsAppleEventsPage {
 
   beginAction(): void {
     this.domIdentityFromCurrentAction = false;
+    this.verifiedActivationIdentityFromCurrentAction = false;
   }
 
-  async identity(options: { preferObservedDom?: boolean } = {}): Promise<{ url: string; title: string }> {
+  async identity(options: { preferObservedDom?: boolean; preferVerifiedActivation?: boolean } = {}): Promise<{ url: string; title: string }> {
+    // This result belongs to the exact native tab activation just completed.
+    // Never reuse it for click/fill/navigation or a later action: those must
+    // re-read page identity because the mutation may change the URL.
+    // Exact Chrome metadata intentionally omits the title. It can prove
+    // foreground authority but cannot replace a complete page identity read.
+    if (options.preferVerifiedActivation && this.verifiedActivationIdentityFromCurrentAction && this.metadata.url && this.metadata.title) {
+      this.verifiedActivationIdentityFromCurrentAction = false;
+      return { url: this.metadata.url, title: this.metadata.title };
+    }
+    this.verifiedActivationIdentityFromCurrentAction = false;
     if (options.preferObservedDom && this.domIdentityFromCurrentAction && this.metadata.url) {
       this.domIdentityFromCurrentAction = false;
       return { url: this.metadata.url, title: this.metadata.title };
@@ -1600,7 +1630,10 @@ export class MacOsAppleEventsPage {
         details: { browserProduct: this.browser.product, windowId: this.targetRef.windowId, tabId: this.targetRef.tabId },
       });
     }
-    return await captureBrowserAutomation(metadata.bounds, path, this.timeoutMs);
+    return await captureBrowserAutomation(metadata.bounds, path, this.timeoutMs, {
+      product: this.browser.product,
+      ref: this.targetRef,
+    });
   }
 
   async click(selector: string): Promise<void> {
@@ -1797,13 +1830,18 @@ export class MacOsAppleEventsPage {
     // Apple Events does not expose Playwright console/network event streams.
   }
 
-  async bringToFront(): Promise<void> {
+  async bringToFront(): Promise<void | { frontmost: boolean; active: boolean }> {
     if (this.targetRef) {
       this.metadata = await activateMacOsBrowserOwnedTab(this.browser.product, this.targetRef, this.timeoutMs);
       if (this.metadata.windowId && this.metadata.tabId) {
         this.targetRef = { windowId: this.metadata.windowId, tabId: this.metadata.tabId };
       }
-      return;
+      // The activation read the exact tab's authoritative postcondition and
+      // URL/title. Reuse that identity only if the caller is finalizing this
+      // activate_page action, never across later mutations or actions.
+      this.verifiedActivationIdentityFromCurrentAction =
+        this.metadata.frontmost === true && this.metadata.active === true && Boolean(this.metadata.url);
+      return { frontmost: this.metadata.frontmost, active: this.metadata.active === true };
     }
     await this.runAutomation(
       { action: 'activate', product: this.browser.product },
@@ -1963,17 +2001,37 @@ export async function activateMacOsBrowserOwnedTab(
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<MacOsBrowserMetadata> {
   const browser = browserDefinition(product);
+  const deadline = performance.now() + timeoutMs;
+  // Keep the complete, unique live-tab proof for activation. Its cost, the
+  // activation event, and the postcondition share one caller-owned budget,
+  // rather than each restarting the full timeout.
   const resolvedRef = await resolveCurrentMacOsBrowserTabRef(product, ref, timeoutMs);
+  const dispatchBudget = Math.ceil(deadline - performance.now());
+  if (dispatchBudget <= 0) {
+    throw new AssistantPluginError(
+      'BROWSER_AUTOMATION_TIMEOUT',
+      'Native activation preflight exhausted the action budget before dispatch.',
+      { retryable: true, effectOutcome: 'failed' },
+    );
+  }
   await runBrowserAutomationText(
     { action: 'activate', product, ref: resolvedRef },
     activateTargetTabScript(browser, resolvedRef),
     [],
-    timeoutMs,
+    dispatchBudget,
   );
-  // This exact tab was resolved immediately before activation. Re-read its
-  // targeted metadata for the postcondition instead of enumerating every tab
-  // again; the provider still rejects missing/stale tab identity fail-closed.
-  const metadata = await readResolvedMacOsBrowserOwnedTabMetadata(product, resolvedRef, timeoutMs);
+  const verificationBudget = Math.ceil(deadline - performance.now());
+  if (verificationBudget <= 0) {
+    // The event has already been sent. Do not automatically replay it or
+    // claim a verified foreground postcondition after the deadline.
+    throw new AssistantPluginError(
+      'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
+      'Native activation was dispatched but exhausted its action budget before foreground verification.',
+      { retryable: false, effectOutcome: 'outcome_unknown' },
+    );
+  }
+  // Verify the exact target, without a second global inventory.
+  const metadata = await readResolvedMacOsBrowserOwnedTabMetadata(product, resolvedRef, verificationBudget);
   if (metadata.tabId !== resolvedRef.tabId || metadata.active !== true) {
     throw new AssistantPluginError(
       'PLUGIN_BROWSER_NATIVE_ACTIVATION_POSTCONDITION_FAILED',
@@ -2062,7 +2120,10 @@ export async function reattachMacOsBrowserOwnedPage(
 ): Promise<{ page: MacOsAppleEventsPage; attachment: MacOsBrowserAttachment }> {
   const cacheKey = nativePageHandleKey(product, ref);
   const cached = warmNativePageHandles.get(cacheKey);
-  if (cached) {
+  // A transient blank observation must not prevent the exact tab's later
+  // navigation from being observed. Re-read metadata, without replaying DOM
+  // actions or adopting another tab. Healthy warm handles retain the fast path.
+  if (cached && cached.url().trim().toLowerCase() !== 'about:blank' && cached.url().trim() !== '') {
     cached.updateTimeout(timeoutMs);
     // Refresh insertion order so bounded eviction behaves as a small LRU.
     warmNativePageHandles.delete(cacheKey);

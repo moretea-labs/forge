@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'crypto';
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -31,9 +32,10 @@ import {
   waitForProcess,
 } from '../../src/runtime/execution/process-runtime';
 import type { ProcessHandle } from '../../src/runtime/execution/process-runtime/types';
-import { createProcessRecord, listProcessRecords, updateProcessRecord } from '../../src/runtime/execution/process-runtime/store';
+import { createProcessRecord, deleteProcessRecord, listProcessRecords, updateProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import { resolveProcessRunnerEntryPath, resolveProcessRunnerInvocation } from '../../src/runtime/execution/process-runtime/runtime';
 import { forgeInstanceExecutionTarget, recordProcessHandleIndexEntry } from '../../src/runtime/execution/process-runtime/handle-index';
+import { readControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
   claimRunnerStarted,
   runProcessRunnerFromDescriptor,
@@ -78,7 +80,7 @@ import {
   clearRuntimeWriteClaimForTests,
   currentRuntimeWriteClaimEnvironment,
 } from '../../src/runtime/root/write-fence';
-import { defaultProcessIdentityProbe, executableFingerprint } from '../../src/runtime/shared/process-identity';
+import { defaultProcessIdentityProbe, executableFingerprint, parseLinuxProcessStartTime, processIdentityMatches } from '../../src/runtime/shared/process-identity';
 import { ensureRepositoryRuntimeStorage } from '../../src/runtime/repositories/runtime-storage';
 import { resolveEphemeralWorkspaceTarget } from '../../src/runtime/repositories/ephemeral-workspace';
 import { sanitizeFileComponent } from '../../src/runtime/shared/json-files';
@@ -191,6 +193,10 @@ function fixture() {
   ensureControllerHome(controllerHome);
   const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'process-rt' });
   return { root, controllerHome, repoRoot, repository };
+}
+
+function processBindingKey(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
 describe('Unified Process Runtime', () => {
@@ -315,6 +321,44 @@ describe('Unified Process Runtime', () => {
 
   test('default process identity probe reads command and start time together', () => {
     if (process.platform !== 'win32') expect(defaultProcessIdentityProbe.inspect?.(process.pid)).toMatchObject({ command: expect.any(String), startTime: expect.any(String) });
+  });
+
+  test('Linux process identity uses stable /proc start ticks and keeps legacy records readable', () => {
+    if (process.platform !== 'linux') return;
+
+    const fields: string[] = Array.from({ length: 20 }, (_, index) => index === 0 ? 'S' : '0');
+    fields[19] = '987654';
+    expect(parseLinuxProcessStartTime('42 (worker ) with spaces) ' + fields.join(' '), '01234567-89ab-cdef-0123-456789abcdef'))
+      .toBe('linux-proc-start:01234567-89ab-cdef-0123-456789abcdef:987654');
+
+    const inspected = defaultProcessIdentityProbe.inspect?.(process.pid);
+    const command = defaultProcessIdentityProbe.command(process.pid);
+    expect(inspected?.startTime).toMatch(/^linux-proc-start:[0-9a-f-]{36}:\d+$/);
+    expect(command).toBe(inspected?.command);
+    expect(processIdentityMatches({
+      pid: process.pid,
+      processStartTime: inspected!.startTime!,
+      executableFingerprint: executableFingerprint(command!),
+    }, process.pid)).toEqual({ matches: true });
+
+    const legacy = defaultProcessIdentityProbe.legacyInspect?.(process.pid);
+    expect(legacy?.command && legacy.startTime).toBeTruthy();
+    expect(processIdentityMatches({
+      pid: process.pid,
+      processStartTime: legacy!.startTime!,
+      executableFingerprint: executableFingerprint(legacy!.command!),
+    }, process.pid)).toEqual({ matches: true });
+  });
+
+  test('executable fingerprint mismatch is rejected before a legacy start-time mismatch can be bridged', () => {
+    if (process.platform !== 'linux') return;
+    const legacy = defaultProcessIdentityProbe.legacyInspect?.(process.pid);
+    expect(legacy?.command).toBeTruthy();
+    expect(processIdentityMatches({
+      pid: process.pid,
+      processStartTime: 'legacy-start-time-before-clock-correction',
+      executableFingerprint: 'wrong-executable-fingerprint',
+    }, process.pid).reason).toBe('executable_fingerprint_changed');
   });
 
   test('ephemeral Process leases enforce conflicts without polluting durable projection readiness', () => {
@@ -689,6 +733,17 @@ describe('Unified Process Runtime', () => {
       processId,
     });
     expect(source.status).toBe('claimed');
+    const bindingKey = processBindingKey({
+      repoId: fx.repository.repoId,
+      scopeKey: 'repository',
+      cacheKey: 'cache-cross-checkout',
+    });
+    const claimedRevision = readControlPlaneRecord(
+      fx.controllerHome,
+      'process_check_execution_binding',
+      fx.repository.repoId,
+      bindingKey,
+    )?.revision;
     createProcessRecord({
       schemaVersion: 1,
       processId,
@@ -720,6 +775,12 @@ describe('Unified Process Runtime', () => {
     });
     expect(sameSemantic.status).toBe('existing');
     expect(sameSemantic.binding.processId).toBe(processId);
+    expect(readControlPlaneRecord(
+      fx.controllerHome,
+      'process_check_execution_binding',
+      fx.repository.repoId,
+      bindingKey,
+    )?.revision).toBe(claimedRevision);
   });
 
   test('retains successful semantic Check evidence past age cutoff but still enforces terminal record budget', () => {
@@ -1248,7 +1309,24 @@ describe('Unified Process Runtime', () => {
       invocationFingerprint: 'fingerprint-a',
     };
     expect(claimProcessInvocation(input).status).toBe('claimed');
+    const bindingKey = processBindingKey({
+      repoId: input.repoId,
+      checkoutId: input.checkoutId,
+      requestId: input.requestId,
+    });
+    const claimedRevision = readControlPlaneRecord(
+      fx.controllerHome,
+      'process_invocation_binding',
+      fx.repository.repoId,
+      bindingKey,
+    )?.revision;
     expect(claimProcessInvocation(input).status).toBe('existing');
+    expect(readControlPlaneRecord(
+      fx.controllerHome,
+      'process_invocation_binding',
+      fx.repository.repoId,
+      bindingKey,
+    )?.revision).toBe(claimedRevision);
     expect(() => claimProcessInvocation({ ...input, invocationFingerprint: 'fingerprint-b' }))
       .toThrow('PROCESS_REQUEST_ID_CONFLICT');
   });
@@ -1298,14 +1376,33 @@ describe('Unified Process Runtime', () => {
       args: ['-e', 'process.exit(0)'],
       cwd: fx.repoRoot,
     };
-    claimProcessRequest({
+    const claimInput = {
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       requestId,
       commandFingerprint: fingerprintProcessCommand(command),
       processId: 'proc_missing_record',
+    };
+    expect(claimProcessRequest(claimInput).status).toBe('claimed');
+    const bindingKey = processBindingKey({
+      repoId: claimInput.repoId,
+      checkoutId: claimInput.checkoutId,
+      requestId: claimInput.requestId,
     });
+    const claimedRevision = readControlPlaneRecord(
+      fx.controllerHome,
+      'process_request_binding',
+      fx.repository.repoId,
+      bindingKey,
+    )?.revision;
+    expect(claimProcessRequest(claimInput).status).toBe('existing');
+    expect(readControlPlaneRecord(
+      fx.controllerHome,
+      'process_request_binding',
+      fx.repository.repoId,
+      bindingKey,
+    )?.revision).toBe(claimedRevision);
     await expect(spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
@@ -1361,6 +1458,62 @@ describe('Unified Process Runtime', () => {
     expect(handle.completed).toBe(false);
     const cancelled = await cancelProcess(fx.controllerHome, fx.repository.repoId, handle.processId);
     expect(cancelled.cancelled === true || cancelled.status === 'cancelled' || cancelled.completed).toBe(true);
+  });
+
+  test('Native Agent resolves lightweight Process receipts without dropping checkout or principal fences', async () => {
+    const fx = fixture();
+    const checkoutId = fx.repository.activeCheckoutId;
+    const process = await startLightweightRepositoryCommand({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      execution: {
+        command: ['git', 'status', '--short'],
+        cwd: fx.repoRoot,
+        timeoutMs: 10_000,
+        maxOutputBytes: 4_096,
+      },
+      readonlyDirect: true,
+      interactiveWaitMs: 0,
+      timeoutMs: 10_000,
+      principalId: 'forge-desktop-local-harness',
+    });
+    expect(process.handle.processId.startsWith('lightweight:')).toBe(true);
+    // Settle the producing Runtime first; a synchronous child inspection must
+    // not block its exit-observation callback and manufacture an unknown outcome.
+    const settled = await waitForLightweightProcess(
+      fx.controllerHome, fx.repository.repoId, process.handle.processId, { timeoutMs: 5_000 },
+    );
+    expect(settled).toMatchObject({ completed: true, ok: true, exitCode: 0 });
+
+    const script = join(FORGE_ROOT, 'apps/desktop/src-tauri/resources/forge-local-tool.mjs');
+    const inspect = (selectedCheckoutId: string) => {
+      const child = spawnSync(globalThis.process.execPath, [script], {
+        input: JSON.stringify({
+          tool: 'process_status', repoId: fx.repository.repoId,
+          checkoutId: selectedCheckoutId, conversationId: 'lightweight-receipt',
+          controllerHome: fx.controllerHome, sourceRoot: FORGE_ROOT,
+          allowEffects: false, arguments: { process_id: process.handle.processId, wait_ms: 5_000 },
+        }),
+        encoding: 'utf8', timeout: 12_000,
+      });
+      expect(child.status, child.stderr).toBe(0);
+      return JSON.parse(child.stdout);
+    };
+    expect(inspect('checkout_foreign')).toEqual({
+      ok: false, error: 'LOCAL_FORGE_PROCESS_CHECKOUT_MISMATCH',
+    });
+    const observed = inspect(checkoutId);
+    expect(observed).toMatchObject({
+      ok: true, result: { processId: process.handle.processId, completed: true, status: 'succeeded', exitCode: 0 },
+    });
+    const foreign = await callProcessTool({
+      controllerHome: fx.controllerHome, principalId: 'other-principal',
+    }, 'process_get', {
+      repo_id: fx.repository.repoId, process_id: process.handle.processId,
+    });
+    expect(foreign?.isError).toBe(true);
+    expect((foreign?.structuredContent?.error as { code?: string } | undefined)?.code)
+      .toBe('PROCESS_HANDLE_PRINCIPAL_MISMATCH');
   });
 
   test('Native Agent local tool cancels a live managed Process through the canonical Process Runtime', async () => {
@@ -3693,6 +3846,20 @@ describe('Process Runtime real lease contention', () => {
     }, { allowTerminal: true });
     expect(listRecoverableProcessRecords(fx.controllerHome, fx.repository.repoId)).toEqual([]);
 
+    const settledIndex = readControlPlaneRecord(
+      fx.controllerHome,
+      'process_recovery_index',
+      fx.repository.repoId,
+      'v2',
+    );
+    expect(deleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId)).toBe(true);
+    expect(readControlPlaneRecord(
+      fx.controllerHome,
+      'process_recovery_index',
+      fx.repository.repoId,
+      'v2',
+    )?.revision).toBe(settledIndex?.revision);
+
     const projectionPath = join(processLogDir(fx.controllerHome, fx.repository.repoId), '..', 'active-index.json');
     // SQLite is recovery authority. Ordinary lifecycle writes must not create
     // or refresh the historical readability projection.
@@ -3882,6 +4049,81 @@ describe('Process Runtime real lease contention', () => {
     });
     await cancelProcess(fx.controllerHome, fx.repository.repoId, handle.processId);
   });
+});
+
+test('recovered cancellation preserves real receipts and does not claim an unverified stop', async () => {
+  for (const scenario of ['receipt', 'dead', 'untrusted', 'historical-unknown']) {
+    const fx = fixture();
+    const processId = `proc_cancel_evidence_${scenario}`;
+    const exitReceiptPath = join(fx.root, `${processId}.exit.json`);
+    const startedAt = new Date(Date.now() - 60_000).toISOString();
+    createProcessRecord({
+      schemaVersion: 1, processId, repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome, status: scenario === 'historical-unknown' ? 'completed_unknown' : 'running', route: 'managed',
+      ...(scenario === 'historical-unknown' ? { terminalWritten: true, cancelled: true } : {}),
+      command: { kind: 'argv', executable: 'node', args: ['--version'], cwd: fx.repoRoot },
+      resourceClaims: [], interactiveWaitMs: 0, timeoutMs: 30_000, maxOutputBytes: 4096,
+      startedAt, updatedAt: startedAt, terminalFenceToken: 1,
+      identity: { pid: 999_999, processStartTime: scenario === 'untrusted' ? 'untrusted:fixture' : 'Mon Jan  1 00:00:00 2001', executableFingerprint: 'missing-runner' },
+      identityUntrusted: scenario === 'untrusted', exitReceiptPath,
+    });
+    if (scenario === 'receipt') writeFileSync(exitReceiptPath, JSON.stringify({
+      schemaVersion: 1, processId, exitCode: 0, finishedAt: new Date().toISOString(), commandExecutedOnce: true,
+    }));
+    const cancelled = await cancelProcess(fx.controllerHome, fx.repository.repoId, processId);
+    expect(cancelled.status, scenario).toBe(scenario === 'receipt' ? 'succeeded' : 'completed_unknown');
+    expect(cancelled.cancelled, scenario).not.toBe(true);
+    if (scenario === 'receipt') expect(cancelled.exitCode).toBe(0);
+    else expect(existsSync(exitReceiptPath)).toBe(false);
+    const response = await callProcessTool({ controllerHome: fx.controllerHome }, 'process_cancel', {
+      repo_id: fx.repository.repoId, process_id: processId,
+    });
+    expect(response?.structuredContent?.cancelled, scenario).toBe(false);
+    expect((response?.structuredContent?.process as { cancelled?: boolean })?.cancelled, scenario).not.toBe(true);
+    if (scenario === 'historical-unknown') expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.cancelled).toBe(true);
+  }
+});
+
+test('recovered cancellation requires a delivered signal and confirmed termination', () => {
+  for (const outcome of ['still-running', 'already-gone', 'stopped']) {
+    const fx = fixture();
+    const child = spawnSync(process.execPath, ['-e', `
+      import { mock } from 'bun:test';
+      import * as tree from ${JSON.stringify(join(import.meta.dir, '../../src/runtime/shared/process-tree.ts'))};
+      import * as identity from ${JSON.stringify(join(import.meta.dir, '../../src/runtime/shared/process-identity.ts'))};
+      let signals = 0;
+      mock.module(${JSON.stringify(join(import.meta.dir, '../../src/runtime/shared/process-tree.ts'))}, () => ({
+        ...tree, isProcessAlive: () => true,
+        terminateProcessTree: async () => { signals += 1; return {
+          signaled: ${outcome !== 'already-gone'}, exited: ${outcome !== 'still-running'}, remainingPids: [], escalated: false,
+        }; },
+      }));
+      mock.module(${JSON.stringify(join(import.meta.dir, '../../src/runtime/shared/process-identity.ts'))}, () => ({
+        ...identity, defaultProcessIdentityProbe: { inspect: () => ({ command: 'fixture', startTime: 'fixture-start' }) },
+      }));
+      const { createProcessRecord, getProcessRecord } = await import(${JSON.stringify(join(import.meta.dir, '../../src/runtime/execution/process-runtime/store.ts'))});
+      const { cancelProcess } = await import(${JSON.stringify(join(import.meta.dir, '../../src/runtime/execution/process-runtime/runtime.ts'))});
+      const startedAt = new Date().toISOString();
+      const processId = 'proc_cancel_termination_fixture';
+      createProcessRecord({
+        schemaVersion: 1, processId, repoId: ${JSON.stringify(fx.repository.repoId)}, controllerHome: ${JSON.stringify(fx.controllerHome)},
+        status: 'running', route: 'managed', command: { kind: 'argv', executable: 'fixture', args: [], cwd: ${JSON.stringify(fx.repoRoot)} },
+        resourceClaims: [], interactiveWaitMs: 0, timeoutMs: 30_000, maxOutputBytes: 4096,
+        startedAt, updatedAt: startedAt, terminalFenceToken: 1,
+        identity: { pid: 999999, processStartTime: 'fixture-start', executableFingerprint: identity.executableFingerprint('fixture') },
+      });
+      const handle = await cancelProcess(${JSON.stringify(fx.controllerHome)}, ${JSON.stringify(fx.repository.repoId)}, processId);
+      const record = getProcessRecord(${JSON.stringify(fx.controllerHome)}, ${JSON.stringify(fx.repository.repoId)}, processId);
+      console.log(JSON.stringify({ handle, terminalWritten: record.terminalWritten, signals }));
+    `], { encoding: 'utf8', timeout: 5_000 });
+    expect(child.status, child.stderr).toBe(0);
+    const result = JSON.parse(child.stdout);
+    expect(result.signals).toBe(1);
+    expect(result.handle.status, outcome).toBe(outcome === 'still-running' ? 'running' : outcome === 'stopped' ? 'cancelled' : 'completed_unknown');
+    expect(result.handle.completed).toBe(outcome !== 'still-running');
+    expect(result.handle.cancelled === true).toBe(outcome === 'stopped');
+    if (outcome === 'still-running') expect(result.terminalWritten).not.toBe(true);
+  }
 });
 
 describe('Process Runner exactly-once semantics', () => {

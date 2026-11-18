@@ -4,6 +4,7 @@ import {
   refreshGitHubIssue,
 } from "./issue-sync";
 import type { ControllerIssue } from "../controller/types";
+import type { GitHubIssueSyncPort } from "../../runtime/plugins/types";
 import { tryAppendControllerWorklogEvent } from "../../runtime/evidence/controller-worklog";
 import {
   invalidateGitHubPluginStatus,
@@ -36,6 +37,12 @@ export function publishIssueWithGitHubPlugin(repoRoot: string, issueId: string):
   });
   return issue;
 }
+
+export const githubIssueSyncPort: GitHubIssueSyncPort = Object.freeze({
+  publishIssue: publishIssueWithGitHubPlugin,
+  refreshIssue: refreshIssueWithGitHubPlugin,
+  closeIssue: closeIssueWithGitHubPlugin,
+});
 
 export function refreshIssueWithGitHubPlugin(repoRoot: string, issueId: string) {
   requireEnabled(repoRoot);

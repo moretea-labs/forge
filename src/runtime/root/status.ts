@@ -147,7 +147,7 @@ export function observeRuntimeStatus(
   const owner = readRuntimeOwner(controllerHome);
   const ownerAlive = Boolean(owner && (
     owner.processStartTime && owner.executableFingerprint
-      ? runtimeOwnerProcessIdentityMatches(owner)
+      ? runtimeOwnerProcessIdentityMatches(owner, controllerHome)
       : isProcessAlive(owner.pid)
   ));
   if (!snapshot) {

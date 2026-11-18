@@ -28,6 +28,7 @@ import {
   invalidateMacOsBrowserPageHandle,
   invalidateMacOsBrowserPageHandles,
   createMacOsBrowserOwnedPageForProduct,
+  activateMacOsBrowserOwnedTab,
   listMacOsBrowserTabs,
   nativeDomLoadStateSatisfied,
   type MacOsBrowserAutomationTiming,
@@ -679,6 +680,25 @@ describe('Browser Runtime V3 routing', () => {
     expect(inventoryReads).toBe(0);
   });
 
+  test('reattaches exact native tab after transient about blank metadata without replaying an action', async () => {
+    let reads = 0;
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin', appExists: () => true, processRunning: async () => true,
+      runAppleScript: async () => {
+        reads += 1;
+        return ['false', reads === 1 ? 'about:blank' : 'https://chatgpt.com/',
+          'ChatGPT', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(nativeSeparator);
+      },
+    });
+    const ref = { windowId: '7', tabId: '9' };
+    const first = await reattachMacOsBrowserOwnedPage('chrome', ref, 1_000);
+    expect(first.page.url()).toBe('about:blank');
+    const next = await reattachMacOsBrowserOwnedPage('chrome', ref, 1_000);
+    expect(next.page.url()).toBe('https://chatgpt.com/');
+    expect(next.attachment.metadata.tabId).toBe(ref.tabId);
+    expect(reads).toBe(2);
+  });
+
   test('reuses one stable native tab handle without metadata or foreground preflight on the warm path', async () => {
     const metadataUrl = 'https://example.com/native-warm';
     const driftUrl = 'https://example.com/native-warm/drifted';
@@ -939,6 +959,63 @@ describe('Browser Runtime V3 routing', () => {
     expect(activationScripts[0]).toContain('set targetTabId to "9"');
     expect(activationScripts[0]).not.toContain('first window whose id is');
     expect(attached.page.tabRef()).toEqual({ windowId: '99', tabId: '9' });
+  });
+
+  test('native activation shares its timeout across unique-tab preflight, dispatch and verification', async () => {
+    const url = 'https://example.com/bounded-native-activation';
+    let preflightWait = 0;
+    let dispatchWait = 0;
+    let activations = 0;
+    let metadataReads = 0;
+    const eventBudgets: number[] = [];
+    const metadata = [
+      'true', url, 'Bounded activation', '0', '0', '1200', '800', '7', '9', 'true', 'false',
+    ].join(nativeSeparator);
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      tabInventory: async () => {
+        if (preflightWait) await new Promise((resolve) => setTimeout(resolve, preflightWait));
+        return { product: 'chrome', truncated: false, tabs: [
+          { windowId: '7', tabId: '9', active: true, url, title: 'Bounded activation' },
+        ] };
+      },
+      runAppleScript: async (script, _args, budget) => {
+        eventBudgets.push(budget);
+        if (script.includes('set active tab index of targetWindow')) {
+          activations += 1;
+          if (dispatchWait) await new Promise((resolve) => setTimeout(resolve, dispatchWait));
+          return '';
+        }
+        metadataReads += 1;
+        return metadata;
+      },
+    });
+    const ref = { windowId: '7', tabId: '9' };
+    preflightWait = 40;
+    await expect(activateMacOsBrowserOwnedTab('chrome', ref, 10)).rejects.toMatchObject({
+      code: 'BROWSER_AUTOMATION_TIMEOUT', effectOutcome: 'failed', retryable: true,
+    });
+    expect(activations).toBe(0);
+    expect(metadataReads).toBe(0);
+    preflightWait = 0;
+    dispatchWait = 40;
+    await expect(activateMacOsBrowserOwnedTab('chrome', ref, 10)).rejects.toMatchObject({
+      code: 'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN', effectOutcome: 'outcome_unknown', retryable: false,
+    });
+    expect(activations).toBe(1);
+    expect(metadataReads).toBe(0);
+    preflightWait = 25;
+    dispatchWait = 25;
+    eventBudgets.length = 0;
+    const observed = await activateMacOsBrowserOwnedTab('chrome', ref, 1_000);
+    expect(observed).toMatchObject({ tabId: '9', active: true, frontmost: true });
+    expect(eventBudgets).toHaveLength(2);
+    expect(eventBudgets[0]).toBeLessThan(1_000);
+    expect(eventBudgets[1]).toBeLessThan(eventBudgets[0]!);
+    expect(activations).toBe(2);
+    expect(metadataReads).toBe(1);
   });
 
   test('trusted native input preserves one preflight inventory and exact targeted post-input metadata', async () => {

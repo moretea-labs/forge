@@ -2,12 +2,22 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { resolvePlatformServiceManager } from '../../src/runtime/platform/service-manager';
+import { systemdCgroupContainsPid } from '../../src/runtime/platform/systemd-user';
 
 describe('platform service manager selection', () => {
   test('selects persistent adapters only when the host capability is actually available', () => {
     expect(resolvePlatformServiceManager({ platform: 'darwin' })).toMatchObject({ kind: 'launchd', persistent: true });
     expect(resolvePlatformServiceManager({ platform: 'linux', systemdUserAvailable: true })).toMatchObject({ kind: 'systemd-user', persistent: true });
     expect(resolvePlatformServiceManager({ platform: 'linux', systemdUserAvailable: false })).toMatchObject({ kind: 'portable', persistent: false, reason: 'linux_systemd_user_unavailable' });
+  });
+
+  test('matches only processes inside the exact systemd service cgroup', () => {
+    const service = '/user.slice/user-1001.slice/user@1001.service/app.slice/com.moretea.forge.runtime.f24d2fcb7df7.service';
+    expect(systemdCgroupContainsPid(service, `0::${service}\n`)).toBe(true);
+    expect(systemdCgroupContainsPid(service, `0::${service}/child.scope\n`)).toBe(true);
+    expect(systemdCgroupContainsPid(service, `0::${service}-other.service\n`)).toBe(false);
+    expect(systemdCgroupContainsPid(service, '0::/user.slice/other.service\n')).toBe(false);
+    expect(systemdCgroupContainsPid('relative/path', `0::${service}\n`)).toBe(false);
   });
 
   test('keeps explicit portable mode and native Windows preview truthful', () => {

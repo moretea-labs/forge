@@ -73,16 +73,24 @@ function normalizeOptions(options: RuntimeCleanupOptions): Required<Omit<Runtime
 }
 
 function processCommands(): Array<{ pid: number; command: string }> {
+  let output: string;
   try {
-    return execFileSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', maxBuffer: 1024 * 1024 })
-      .split('\n')
-      .flatMap((line) => {
-        const match = line.trim().match(/^(\d+)\s+(.+)$/);
-        return match ? [{ pid: Number(match[1]), command: match[2] }] : [];
-      });
+    output = execFileSync('ps', ['-axo', 'pid=,command='], {
+      encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 2_000, killSignal: 'SIGKILL',
+    });
   } catch {
-    return [];
+    throw new Error('RUNTIME_CLEANUP_PROCESS_INVENTORY_UNAVAILABLE: bounded process scan failed');
   }
+  const rows = output.split('\n').filter((line) => line.trim());
+  if (rows.length === 0) throw new Error('RUNTIME_CLEANUP_PROCESS_INVENTORY_UNAVAILABLE: empty process scan');
+  return rows.map((line) => {
+    const match = line.trim().match(/^(\d+)\s+(.+)$/);
+    const pid = Number(match?.[1]);
+    if (!match || !Number.isSafeInteger(pid) || pid <= 0) {
+      throw new Error('RUNTIME_CLEANUP_PROCESS_INVENTORY_UNAVAILABLE: malformed process scan');
+    }
+    return { pid, command: match[2] };
+  });
 }
 
 function isSafeForgeTemp(path: string): boolean {
@@ -129,6 +137,14 @@ function scanTempDirs(minAgeMinutes: number, limit: number): RuntimeCleanupCandi
     }
   }
   return candidates.sort((a, b) => (b.ageMinutes ?? 0) - (a.ageMinutes ?? 0)).slice(0, limit);
+}
+
+function assertCleanupDirectoryCurrent(path: string, minAgeMinutes: number): void {
+  const stat = lstatSync(path);
+  const ageMinutes = Math.max(0, Math.round((Date.now() - stat.mtimeMs) / 60_000));
+  if (!stat.isDirectory() || ageMinutes < minAgeMinutes) {
+    throw new Error('RUNTIME_CLEANUP_DIRECTORY_CHANGED: candidate is no longer an aged directory');
+  }
 }
 
 function readJson(path: string): unknown {
@@ -382,6 +398,9 @@ export function applyRuntimeCleanup(repoRoot: string, options: RuntimeCleanupOpt
         const relativePath = relative(join(repoRoot, '.ai/harness/local-jobs'), candidate.path);
         if (relativePath && !relativePath.startsWith('..')) {
           if (!relocatedRuntimeStorageRoot(repoRoot, 'local-jobs')) throw new Error('RUNTIME_CLEANUP_STORAGE_NOT_RELOCATED');
+          assertCleanupDirectoryCurrent(candidate.path, normalized.minAgeMinutes);
+          const job = readJson(join(candidate.path, 'job.json')) as Record<string, unknown> | undefined;
+          if (!terminalStatus(job?.status)) throw new Error('RUNTIME_CLEANUP_LOCAL_JOB_STATE_CHANGED');
           rmSync(candidate.path, { recursive: true, force: true });
           return { ...candidate, applied: true };
         }
@@ -390,6 +409,14 @@ export function applyRuntimeCleanup(repoRoot: string, options: RuntimeCleanupOpt
         const relativePath = relative(join(repoRoot, '.ai/harness/jobs'), candidate.path);
         if (relativePath && !relativePath.startsWith('..') && basename(candidate.path).startsWith('RUN-')) {
           if (!relocatedRuntimeStorageRoot(repoRoot, 'jobs')) throw new Error('RUNTIME_CLEANUP_STORAGE_NOT_RELOCATED');
+          assertCleanupDirectoryCurrent(candidate.path, normalized.minAgeMinutes);
+          const state = findRunState(candidate.path);
+          if (state?.status !== 'waiting_for_user' || !textIncludesNoOpIntegrate(state)) {
+            throw new Error('RUNTIME_CLEANUP_LEGACY_RUN_STATE_CHANGED');
+          }
+          if (processCommands().some((process) => process.command.includes(basename(candidate.path!)) || process.command.includes(candidate.path!))) {
+            throw new Error('RUNTIME_CLEANUP_LEGACY_RUN_PROCESS_OCCUPIED');
+          }
           rmSync(candidate.path, { recursive: true, force: true });
           return { ...candidate, applied: true };
         }
@@ -437,4 +464,19 @@ export function applyRuntimeCleanup(repoRoot: string, options: RuntimeCleanupOpt
     applied,
     cycle,
   };
+}
+
+/** Fixed internal CLI entry; the existing cleanup owner retains all path and liveness checks. */
+export function applyRuntimeCleanupArguments(controllerHome: string, repoRoot: string, args: Record<string, unknown>): RuntimeCleanupApplyResult {
+  const fence = assertRuntimeMayWrite('cleanup', controllerHome);
+  if (!fence.allowed) throw new Error(`RUNTIME_CLEANUP_WRITER_FENCED: ${fence.reason}`);
+  return applyRuntimeCleanup(repoRoot, {
+    minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
+    includeTempDirs: args.include_temp_dirs !== false,
+    includeTerminalLocalJobs: args.include_terminal_local_jobs === true,
+    includeLegacyRuns: args.include_legacy_runs === true,
+    includeHistoricalAttention: args.include_historical_attention === true,
+    maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
+    confirmCleanup: args.confirm_cleanup === true,
+  });
 }

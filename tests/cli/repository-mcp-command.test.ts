@@ -1,3 +1,5 @@
+import { applySafePatch } from '../../src/runtime/repositories/safe-patch';
+import { applyConsoleSafePatch } from '../../src/cli/local-bridge/facade-api';
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -26,6 +28,62 @@ import { applyExternalFilesystemGrant, previewExternalFilesystemGrant } from "..
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
 import { clearGitIdentityCacheForTest, clearGitSnapshotCacheForTest, gitSnapshot, gitSnapshotPerformanceSnapshot, searchRepositoryMany } from "../../src/runtime/repositories/inspector";
 import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
+
+test('registry reads never cache old contents under a replacement file identity', () => {
+  for (const scenario of ['two-replacements', 'creation', 'deletion', 'stable']) {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-registry-snapshot-race-'));
+    try {
+      const child = spawnSync(process.execPath, ['-e', `
+        import { mock } from 'bun:test';
+        import * as fs from 'fs';
+        const read = fs.readFileSync, exists = fs.existsSync, write = fs.writeFileSync, rename = fs.renameSync, remove = fs.rmSync;
+        const path = ${JSON.stringify(join(controllerHome, 'repositories.json'))};
+        let reads = 0, created = false;
+        function replace(label) {
+          write(path + '.next', JSON.stringify({ schemaVersion: 1, repositories: [
+            { repoId: 'repo-snapshot-race', displayName: label, checkouts: [],
+              ...(label === 'B' ? { removedAt: new Date().toISOString() } : {}) },
+          ], updatedAt: new Date().toISOString() }));
+          rename(path + '.next', path);
+        }
+        if (${JSON.stringify(scenario)} !== 'creation') replace('A');
+        mock.module('fs', () => ({ ...fs,
+          readFileSync(file, ...args) {
+            const value = read(file, ...args);
+            if (String(file) === path) {
+              reads += 1;
+              if (${JSON.stringify(scenario)} === 'two-replacements' && reads <= 2) replace(reads === 1 ? 'B' : 'C');
+              if (${JSON.stringify(scenario)} === 'deletion' && reads === 1) remove(path);
+            }
+            return value;
+          },
+          existsSync(file) {
+            const present = exists(file);
+            if (${JSON.stringify(scenario)} === 'creation' && String(file) === path && !present && !created) { created = true; replace('C'); }
+            return present;
+          },
+        }));
+        const { listRepositories, getRepository } = await import(${JSON.stringify(join(import.meta.dir, '../../src/runtime/repositories/registry.ts'))});
+        const first = listRepositories(${JSON.stringify(controllerHome)}).map(r => r.displayName);
+        const second = listRepositories(${JSON.stringify(controllerHome)}).map(r => r.displayName);
+        let exact;
+        try { exact = getRepository('repo-snapshot-race', ${JSON.stringify(controllerHome)}).displayName; }
+        catch (error) { exact = error.message; }
+        console.log(JSON.stringify({ first, second, exact, reads }));
+      `], { encoding: 'utf8', timeout: 5_000 });
+      expect(child.status, child.stderr).toBe(0);
+      const result = JSON.parse(child.stdout);
+      const expectedName = scenario === 'stable' ? 'A' : 'C';
+      expect(result.second, scenario).toEqual(scenario === 'deletion' ? [] : [expectedName]);
+      if (scenario === 'deletion') {
+        expect(result.first).toEqual([]);
+        expect(result.exact).toContain('repository not found');
+      } else expect(result.exact, JSON.stringify(result)).toBe(expectedName);
+      expect(result.reads).toBeLessThanOrEqual(3);
+      if (scenario === 'stable') expect(result.reads).toBe(1);
+    } finally { rmSync(controllerHome, { recursive: true, force: true }); }
+  }
+});
 
 test('oversized direct MCP values externalize through the existing paginated Result Store', () => {
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-direct-result-'));
@@ -1246,10 +1304,42 @@ describe("repository MCP command tools", () => {
     }
   });
 
+  test("SafePatch direct and Console entrypoints retain the explicit caller home", async () => {
+    for (const entrypoint of ['direct', 'console'] as const) {
+      const workspace = mkdtempSync(join(tmpdir(), 'forge-safe-patch-caller-home-'));
+      const controllerHome = join(workspace, 'caller-home');
+      const repoRoot = join(workspace, 'repo');
+      const priorHome = process.env.FORGE_CONTROLLER_HOME;
+      process.env.FORGE_CONTROLLER_HOME = join(workspace, 'ambient-home');
+      try {
+        mkdirSync(repoRoot);
+        git(repoRoot, ['init', '-b', 'main']);
+        git(repoRoot, ['config', 'user.name', 'Forge Test']);
+        git(repoRoot, ['config', 'user.email', 'forge-test@example.com']);
+        writeFileSync(join(repoRoot, 'app.txt'), 'before\n');
+        git(repoRoot, ['add', 'app.txt']);
+        git(repoRoot, ['commit', '-m', 'init']);
+        const repository = registerRepository({ path: repoRoot, controllerHome });
+        const input = { operations: [{ type: 'replace', path: 'app.txt', replacements: [{ old_text: 'before', new_text: 'after' }] }] };
+        if (entrypoint === 'direct') applySafePatch(repository, { ...input, controllerHome });
+        else applyConsoleSafePatch({ repository, controllerHome }, input);
+        expect(readFileSync(join(repoRoot, 'app.txt'), 'utf8')).toBe('after\n');
+        expect(realpathSync(join(repoRoot, '.ai/harness/edit-sessions')).startsWith(`${realpathSync(controllerHome)}/`)).toBe(true);
+      } finally {
+        if (priorHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+        else process.env.FORGE_CONTROLLER_HOME = priorHome;
+        await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    }
+  });
+
   test("safe patch apply splits repeated paths, refreshes fingerprints, and returns actionable failures", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-safe-patch-complete-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
+    const priorHome = process.env.FORGE_CONTROLLER_HOME;
+    process.env.FORGE_CONTROLLER_HOME = join(workspace, "ambient-home");
     try {
       mkdirSync(controllerHome, { recursive: true });
       mkdirSync(repoRoot, { recursive: true });
@@ -1272,6 +1362,7 @@ describe("repository MCP command tools", () => {
       }));
       expect(applied.status).toBe("applied");
       expect(applied.appliedChunks.length).toBe(2);
+      expect(realpathSync(join(repoRoot, '.ai/harness/edit-sessions')).startsWith(`${realpathSync(controllerHome)}/`)).toBe(true);
       expect(applied.session.currentRevision).toBe(2);
       expect(applied.reviewEvidence).toMatchObject({
         source: "edit_session",
@@ -1296,6 +1387,8 @@ describe("repository MCP command tools", () => {
       expect(failed.failures[0].code).toBe("REPLACEMENT_TEXT_NOT_FOUND");
       expect(failed.failures[0].context.focus).toContain("alpha-1");
     } finally {
+      if (priorHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+      else process.env.FORGE_CONTROLLER_HOME = priorHome;
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });
     }

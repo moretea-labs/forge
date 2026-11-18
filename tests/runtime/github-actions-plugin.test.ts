@@ -15,8 +15,12 @@ import {
   buildGitHubWorkflowRunListArgs,
   buildGitHubProjectItemListArgs,
   parseGitHubProjectItems,
+  buildGitHubProjectIssueDetailArgs,
+  parseGitHubProjectIssueDetail,
+  buildGitHubProjectIssueTimelineArgs,
+  parseGitHubProjectIssueTimeline,
 } from '../../src/runtime/plugins/github-client';
-import { buildGitHubPluginManifest } from '../../src/runtime/plugins/github-adapter';
+import { buildGitHubPluginManifest, executeGitHubPluginAction } from '../../src/runtime/plugins/github-adapter';
 
 describe('GitHub Actions plugin surface', () => {
   test('builds bounded fixed GitHub CLI argv for workflow discovery and dispatch', () => {
@@ -57,11 +61,33 @@ describe('GitHub Actions plugin surface', () => {
         readOnly: true, risk: 'readonly', confirmation: 'none', idempotent: true,
         scopes: ['github:projects:read'],
       });
+      expect(actions.read_project_issue).toMatchObject({
+        readOnly: true, risk: 'readonly', confirmation: 'none', idempotent: true,
+        scopes: ['github:issues:read'],
+        argumentsSchema: { required: ['issue_url'] },
+      });
       expect(manifest.capabilities.find((capability) => capability.capabilityId === 'actions-ci')?.actions).toEqual([
         'list_workflows', 'list_workflow_runs', 'dispatch_workflow',
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('GitHub issue plugin mutation boundary', () => {
+  test('rejects missing issue identity before any remote sync or controller write', async () => {
+    for (const actionId of ['publish_issue', 'refresh_issue', 'close_issue']) {
+      await expect(executeGitHubPluginAction({
+        controllerHome: '/nonexistent-controller-home',
+        repoId: 'test-repo',
+        repoRoot: '/nonexistent-repository',
+        pluginId: 'github',
+        actionId,
+        requestId: `empty-issue-${actionId}`,
+        origin: { surface: 'system' },
+        args: { issue_id: '  ' },
+      })).rejects.toThrow('GITHUB_PLUGIN_ISSUE_ID_REQUIRED');
     }
   });
 });
@@ -141,23 +167,28 @@ describe('GitHub Project items read-only projection', () => {
     expect(() => buildGitHubProjectItemListArgs('moretea-labs', 3, 101)).toThrow();
   });
 
-  test('keeps exact GitHub statuses and filters other repository items without synthesizing statuses', () => {
-    const result = parseGitHubProjectItems({
+  test('returns every Project repository by default and preserves bounded item metadata', () => {
+    const payload = {
       totalCount: 4,
       items: [
-        { id: 'a', title: 'Zen', status: 'In Progress', content: { number: 644, repository: 'moretea-labs/forge', url: 'https://github.com/moretea-labs/forge/issues/644' } },
-        { id: 'b', title: 'Other repo', status: 'Done', content: { number: 9, repository: 'someone/else' } },
+        { id: 'a', title: 'Zen', status: 'In Progress', assignees: ['greysonOuyang'], fieldValues: [{ name: 'Priority', value: 'P1' }], content: { type: 'Issue', number: 644, repository: 'moretea-labs/forge', url: 'https://github.com/moretea-labs/forge/issues/644', body: 'Acceptance details', labels: [{ name: 'P1' }] } },
+        { id: 'b', title: 'Other repo', status: 'Done', assignees: [], content: { type: 'Issue', number: 9, repository: 'someone/else', url: 'https://github.com/someone/else/issues/9', body: 'Other project task', labels: [{ name: 'P2' }] } },
         { id: 'c', title: 'Draft', status: 'Backlog' },
-        { id: 'd', title: 'No status', content: { number: 15, repository: 'moretea-labs/forge' } },
+        { id: 'd', title: 'No status', content: { type: 'Issue', number: 15, repository: 'moretea-labs/forge' } },
       ],
-    }, 'moretea-labs/forge', 4);
-    expect(result.items).toEqual([
-      { id: 'a', title: 'Zen', status: 'In Progress', number: 644,
+    };
+    const all = parseGitHubProjectItems(payload, undefined, 4);
+    expect(all.items).toEqual([
+      { id: 'a', title: 'Zen', status: 'In Progress', contentType: 'Issue', assignees: ['greysonOuyang'], labels: ['P1'], bodyLength: 18, bodyPreview: 'Acceptance details', projectFields: { Priority: 'P1' }, priority: 'P1', number: 644,
         repository: 'moretea-labs/forge', url: 'https://github.com/moretea-labs/forge/issues/644', isDraft: false },
-      { id: 'c', title: 'Draft', status: 'Backlog', isDraft: true },
-      { id: 'd', title: 'No status', status: 'Unassigned', number: 15, repository: 'moretea-labs/forge', isDraft: false },
+      { id: 'b', title: 'Other repo', status: 'Done', contentType: 'Issue', assignees: [], labels: ['P2'], bodyLength: 18, bodyPreview: 'Other project task', number: 9,
+        repository: 'someone/else', url: 'https://github.com/someone/else/issues/9', isDraft: false },
+      { id: 'c', title: 'Draft', status: 'Backlog', contentType: 'DraftIssue', assignees: [], labels: [], isDraft: true },
+      { id: 'd', title: 'No status', status: 'Unassigned', contentType: 'Issue', assignees: [], labels: [], number: 15, repository: 'moretea-labs/forge', isDraft: false },
     ]);
-    expect(result.truncated).toBe(false);
+    expect(all.truncated).toBe(false);
+    const forgeOnly = parseGitHubProjectItems(payload, 'moretea-labs/forge', 4);
+    expect(forgeOnly.items.map((item) => item.id)).toEqual(['a', 'c', 'd']);
   });
 
   test('rejects untrusted/project shape and boundedly signals truncation', () => {
@@ -168,5 +199,73 @@ describe('GitHub Project items read-only projection', () => {
     }, 'moretea-labs/forge', 1);
     expect(result.truncated).toBe(true);
     expect(result.items[0].url).toBeUndefined();
+  });
+});
+
+describe('GitHub Project Issue detail for migration', () => {
+  const url = 'https://github.com/moretea-labs/forge/issues/648';
+
+  test('resolves only exact Issue URLs and keeps repository identity across projects', () => {
+    expect(buildGitHubProjectIssueDetailArgs(url)).toEqual([
+      'issue', 'view', '648', '--repo', 'moretea-labs/forge', '--json',
+      'number,title,body,url,state,stateReason,assignees,labels,createdAt,updatedAt,closedAt,comments',
+    ]);
+    expect(buildGitHubProjectIssueDetailArgs('https://github.com/moretea-labs/personal-knowledge-assistant/issues/37')[4]).toBe('moretea-labs/personal-knowledge-assistant');
+    for (const invalid of [
+      'https://github.com/moretea-labs/forge/pull/648',
+      'https://github.com/moretea-labs/forge/issues/648?state=closed',
+      'https://github.com/moretea-labs/forge/issues/0',
+      'https://example.com/moretea-labs/forge/issues/648',
+      'https://github.com/moretea-labs/forge/issues/648\n--foo',
+    ]) expect(() => buildGitHubProjectIssueDetailArgs(invalid)).toThrow(/GITHUB_PROJECT_ISSUE_URL_INVALID/);
+  });
+
+  test('preserves full body, assignees, labels, comment bodies, timestamps and provenance', () => {
+    const body = 'A requirement that must not be truncated. '.repeat(60);
+    const raw = {
+      number: 648, title: 'Migration', body, url, state: 'OPEN', stateReason: null,
+      createdAt: '2026-11-12T00:00:00Z', updatedAt: '2026-11-15T00:00:00Z', closedAt: null,
+      assignees: [{ login: 'greysonOuyang' }], labels: [{ name: 'P0' }],
+      comments: [{ body: 'Exact history text', createdAt: '2026-11-13T00:00:00Z',
+        url: url + '#issuecomment-1', author: { login: 'reviewer' } }],
+    };
+    const detail = parseGitHubProjectIssueDetail(raw, url);
+    expect(detail).toMatchObject({
+      repository: 'moretea-labs/forge', number: 648, title: 'Migration', body,
+      state: 'OPEN', assignees: ['greysonOuyang'], labels: ['P0'],
+      commentsReturned: 1, historyCoverage: 'comments_snapshot_only',
+      comments: [{ body: 'Exact history text', createdAt: '2026-11-13T00:00:00Z',
+        author: 'reviewer', url: url + '#issuecomment-1' }],
+    });
+    expect(detail.body.length).toBeGreaterThan(500);
+    expect(() => parseGitHubProjectIssueDetail({ ...raw, number: 649 }, url)).toThrow(/SHAPE_INVALID/);
+    expect(() => parseGitHubProjectIssueDetail({ ...raw, comments: [{}] }, url)).toThrow(/COMMENT_INVALID/);
+  });
+});
+
+describe('GitHub Project Issue paginated timeline', () => {
+  const url = 'https://github.com/moretea-labs/forge/issues/648';
+
+  test('uses the source Issue identity and paginates the existing REST timeline', () => {
+    expect(buildGitHubProjectIssueTimelineArgs(url)).toEqual([
+      'api', '-H', 'Accept: application/vnd.github+json',
+      'repos/moretea-labs/forge/issues/648/timeline?per_page=100',
+      '--paginate', '--jq', '.[] | @json',
+    ]);
+    expect(buildGitHubProjectIssueTimelineArgs('https://github.com/moretea-labs/personal-knowledge-assistant/issues/37')[3])
+      .toBe('repos/moretea-labs/personal-knowledge-assistant/issues/37/timeline?per_page=100');
+  });
+
+  test('preserves each event including unknown properties without dropping page boundaries', () => {
+    const first = { event: 'renamed', created_at: '2026-11-01T00:00:00Z',
+      rename: { from: 'old title', to: 'new title' }, id: 1 };
+    const second = { event: 'cross-referenced', created_at: '2026-11-02T00:00:00Z',
+      source: { issue: { number: 8 } }, id: null };
+    const result = parseGitHubProjectIssueTimeline(JSON.stringify(first) + '\n' + JSON.stringify(second) + '\n');
+    expect(result).toEqual([first, second]);
+    expect(parseGitHubProjectIssueTimeline('')).toEqual([]);
+    expect(() => parseGitHubProjectIssueTimeline('{"event":"assigned"}\n'))
+      .toThrow('GITHUB_PROJECT_ISSUE_TIMELINE_EVENT_INVALID');
+    expect(() => parseGitHubProjectIssueTimeline('not JSON\n')).toThrow('gh issue timeline returned invalid JSON');
   });
 });

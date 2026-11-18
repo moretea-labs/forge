@@ -98,7 +98,7 @@ describe('runtime command surface', () => {
     const toolsetNames = readFileSync(join(ROOT, 'adapters/mcp/toolset-names.ts'), 'utf8');
     const processGc = readFileSync(join(ROOT, 'src/runtime/execution/process-runtime/gc.ts'), 'utf8');
     const workerOwnership = readFileSync(join(ROOT, 'src/runtime/execution/workers/ownership.ts'), 'utf8');
-    const workerEntry = readFileSync(join(ROOT, 'src/runtime/execution/workers/worker-entry.ts'), 'utf8');
+    const workerEntry = readFileSync(join(ROOT, 'src/cli/execution/worker-entry.ts'), 'utf8');
     const projectionInvalidation = readFileSync(join(ROOT, 'src/runtime/projections/invalidation.ts'), 'utf8');
     const materializedView = readFileSync(join(ROOT, 'src/runtime/projections/materialized-view.ts'), 'utf8');
     const controllerContextProjection = readFileSync(join(ROOT, 'src/runtime/projections/controller-context.ts'), 'utf8');
@@ -202,7 +202,14 @@ describe('runtime command surface', () => {
     const contextHandlerStart = runtimeObservation.indexOf("case 'controller_context':");
     const contextHandlerEnd = runtimeObservation.indexOf("case 'controller_ready':", contextHandlerStart);
     const contextHandlerBlock = runtimeObservation.slice(contextHandlerStart, contextHandlerEnd);
-    expect(contextHandlerBlock).toContain('await controllerReadiness(ctx, repository)');
+    expect(contextHandlerBlock).toContain('await controllerReadiness(ctx, repository, {}, {');
+    expect(contextHandlerBlock).toContain('taskLedger,');
+    expect(contextHandlerBlock).toContain('projectionSnapshot: runtimeSnapshot');
+    expect(contextHandlerBlock).toContain('runtimeStorageInspection: storageInspection');
+    expect(contextHandlerBlock).toContain('buildControllerOperationalPlan(repository.canonicalRoot, taskLedger, liveGit)');
+    expect(contextHandlerBlock).toContain("markPhase('build.operational_plan', operationalPlanStartedAt)");
+    expect(contextHandlerBlock).toContain("markPhase('build.task_board', taskBoardStartedAt)");
+    expect(contextHandlerBlock).toContain("markPhase('build.task_ledger', taskLedgerStartedAt)");
     expect(contextHandlerBlock).not.toContain('await controllerReadinessEvidence(ctx, repository)');
     expect(contextHandlerBlock).not.toContain('operationalView: readiness.operationalView');
     expect(contextHandlerBlock).toContain('fallbackToLive: false');

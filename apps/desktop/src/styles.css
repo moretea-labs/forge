@@ -945,7 +945,7 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
   color: #574e91; background: rgba(102,90,173,.10); }
 
 /* Approved reference composition (A: PLATFORM Minimal Agent, C: ShioriCode rail).
- * Design tokens in .design-harness/tokens.json are the only palette authority.
+ * Design tokens in .design-harness/theme.json are the only palette authority.
  * This block adapts proportions to actual Forge Agent/Work/Requirement/Plan views.
  * No duplicate navigation, third-party brand assets, or permanent code inspector. */
 :root, html, body, #root { background: #fff; }

@@ -315,7 +315,7 @@ type PageLike = {
   goBack?(options?: Record<string, unknown>): Promise<unknown>;
   title(): Promise<string>;
   url(): string;
-  identity?(options?: { preferObservedDom?: boolean }): Promise<{ url: string; title: string }>;
+  identity?(options?: { preferObservedDom?: boolean; preferVerifiedActivation?: boolean }): Promise<{ url: string; title: string }>;
   beginAction?(): void;
   content?(): Promise<string>;
   evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T>;
@@ -342,7 +342,7 @@ type PageLike = {
   mainFrame?(): FrameLike;
   locator?(selector: string): { screenshot(options?: Record<string, unknown>): Promise<Buffer> };
   on?(event: string, handler: (...args: unknown[]) => void): void;
-  bringToFront?(): Promise<void>;
+  bringToFront?(): Promise<void | { frontmost: boolean; active: boolean }>;
   foregroundState?(): Promise<{ frontmost: boolean; active: boolean }>;
   trustedInput?(input: Record<string, unknown>): Promise<void>;
   mouse?: {
@@ -1241,9 +1241,23 @@ async function establishAuthoritativeNativeForeground(
     );
   }
 
-  await page.bringToFront();
-  await delay(waitMs);
-  let state = await page.foregroundState();
+  // The verification budget is a maximum settling window, not a mandatory
+  // sleep. An exact native tab that is already foreground needs no delay.
+  const verifiedState = async (): Promise<{ frontmost: boolean; active: boolean }> => {
+    const immediate = await page.foregroundState!();
+    if ((immediate.frontmost && immediate.active) || waitMs <= 0) return immediate;
+    await delay(waitMs);
+    return page.foregroundState!();
+  };
+  // The native activate-tab provider already returns verified post-activation
+  // metadata. Reuse that exact observation instead of issuing a redundant
+  // Apple Events metadata request. Other providers still take the fresh probe.
+  const activateAndVerify = async (): Promise<{ frontmost: boolean; active: boolean }> => {
+    const observed = await page.bringToFront!();
+    if (observed?.frontmost && observed.active) return observed;
+    return verifiedState();
+  };
+  let state = await activateAndVerify();
   if (state.frontmost && state.active) return state;
 
   const product = connection.browserProduct;
@@ -1269,9 +1283,7 @@ async function establishAuthoritativeNativeForeground(
 
   // App-level activation is intentionally separate from tab selection. Re-assert the exact
   // saved tab after the app becomes frontmost, then verify both authorities together.
-  await page.bringToFront();
-  await delay(waitMs);
-  state = await page.foregroundState();
+  state = await activateAndVerify();
   if (!state.frontmost || !state.active) {
     throw new AssistantPluginError(
       'PLUGIN_BROWSER_ACTIVATION_FAILED',
@@ -1662,6 +1674,9 @@ function cdpDiscoveryTimeout(config: BrowserPluginConfig): number {
   return Math.min(config.cdpDiscoveryTimeoutMs ?? DEFAULT_CDP_DISCOVERY_TIMEOUT_MS, MAX_CDP_DISCOVERY_TIMEOUT_MS);
 }
 
+/** Probe browser metadata, but keep the configured endpoint as Playwright's connection input.
+ * Playwright must negotiate HTTP-to-WebSocket itself; the discovered URL is for raw CDP consumers.
+ */
 async function discoverCdpEndpoint(endpoint: string, timeoutMs: number): Promise<CdpAttachAttempt> {
   const parsed = new URL(endpoint);
   if (parsed.protocol === 'ws:' || parsed.protocol === 'wss:') return { endpoint, discoveredEndpoint: endpoint };
@@ -2051,6 +2066,35 @@ async function closeManagedSessionPage(repoRoot: string, config: BrowserPluginCo
   return true;
 }
 
+async function closeAttachedCdpSessionPage(
+  repoRoot: string,
+  config: BrowserPluginConfig,
+  session: BrowserSessionState,
+): Promise<boolean> {
+  const tab = session.browser?.tab;
+  if (session.browser?.provider !== 'playwright-cdp' || tab?.ownership !== 'plugin_owned' || !tab.ownerToken) return false;
+  const handle = await browserLevelCdp(repoRoot, config);
+  if (!handle) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_ATTACH_UNAVAILABLE', 'The attached browser could not be reconnected to close the exact Forge-owned tab.', { retryable: true });
+  }
+  try {
+    const context = handle.browser.contexts()[0];
+    if (!context) return false;
+    const matches = (await inventoryTabs(context)).filter((entry) => entry.ownerToken === tab.ownerToken);
+    if (matches.length > 1) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_REUSABLE_TAB_AMBIGUOUS', 'Multiple browser tabs report the same owned marker; refusing to close an ambiguous target.', { retryable: false });
+    }
+    const match = matches[0];
+    if (!match) return false;
+    const page = context.pages()[match.index];
+    if (!page || typeof page.close !== 'function') return false;
+    await page.close();
+    return true;
+  } finally {
+    await closeBrowserLevelCdp(handle);
+  }
+}
+
 async function openManagedContext(
   runtime: PlaywrightRuntime,
   repoRoot: string,
@@ -2282,14 +2326,14 @@ async function browserLevelCdp(
   for (const endpoint of cdpEndpoints(config)) {
     try {
       const discovered = await discoverCdpEndpoint(endpoint, cdpDiscoveryTimeout(config));
-      const browser = await connectOverCDP.call(runtime.chromium, discovered.discoveredEndpoint ?? endpoint);
+      const browser = await connectOverCDP.call(runtime.chromium, endpoint);
       if (typeof browser.newBrowserCDPSession !== 'function') {
         if (browser.disconnect) await Promise.resolve(browser.disconnect()).catch(() => undefined);
         else if (browser.close) await browser.close().catch(() => undefined);
         continue;
       }
       const session = await browser.newBrowserCDPSession();
-      return { browser, session, endpoint: discovered.discoveredEndpoint ?? endpoint };
+      return { browser, session, endpoint };
     } catch { /* Pre-dispatch endpoint discovery/attach failure; try the next configured endpoint. */ }
   }
   return undefined;
@@ -2516,17 +2560,45 @@ async function openAttachedContext(
     try {
       const discovered = await discoverCdpEndpoint(endpoint, cdpDiscoveryTimeout(config));
       Object.assign(attempt, discovered);
-      const browser = await connectOverCDP.call(runtime.chromium, discovered.discoveredEndpoint ?? endpoint);
+      const browser = await connectOverCDP.call(runtime.chromium, endpoint);
       try {
         const context = browser.contexts()[0] ?? (browser.newContext ? await browser.newContext() : undefined);
         if (!context) throw new Error('CDP connection did not expose a browser context.');
-        const selected = await selectPage(context, target, { allowBlank: false, allowNewPage: false, requireOwnedToken: true });
-      const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
-      let response: { status?: () => number } | null | undefined;
-      if (selected.matchedBy === 'new_page' || selected.matchedBy === 'blank' || comparableUrl(selected.page.url()) !== comparableUrl(target.url)) {
-        response = await selected.page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout }) as { status?: () => number } | null | undefined;
-      }
-      const diagnostics = attachDiagnostics(selected.page);
+        const selected = await selectPage(context, target, {
+          allowBlank: false,
+          allowNewPage: !target.existingSession && args.__forge_require_existing_resource !== true,
+          requireOwnedToken: true,
+        });
+        const ownerToken = browserSessionOwnerToken(target.sessionId);
+        const createdPage = selected.matchedBy === 'new_page';
+        const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
+        let response: { status?: () => number } | null | undefined;
+        try {
+          if (createdPage) await markManagedPageOwner(selected.page, ownerToken);
+          if (selected.matchedBy === 'new_page' || selected.matchedBy === 'blank' || comparableUrl(selected.page.url()) !== comparableUrl(target.url)) {
+            response = await selected.page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout }) as { status?: () => number } | null | undefined;
+          }
+          if (selected.matchedBy === 'new_page' || selected.matchedBy === 'owned_token') {
+            // Cross-origin navigation can clear window.name. Re-assert the exact
+            // session marker after navigation before persisting or reusing this tab.
+            await markManagedPageOwner(selected.page, ownerToken);
+            const inventory = await inventoryTabs(context);
+            const ownedEntries = inventory.filter((entry) => entry.ownerToken === ownerToken);
+            if (ownedEntries.length !== 1) {
+              throw new AssistantPluginError(
+                'PLUGIN_BROWSER_SESSION_OWNERSHIP_UNVERIFIED',
+                'CDP browser page did not retain one exact Forge owner marker after navigation.',
+                { retryable: true, details: { sessionId: target.sessionId, ownerMatchCount: ownedEntries.length } },
+              );
+            }
+            selected.inventory = inventory;
+            selected.selectedEntry = ownedEntries[0];
+          }
+        } catch (error) {
+          if (createdPage) await selected.page.close?.().catch(() => undefined);
+          throw error;
+        }
+        const diagnostics = attachDiagnostics(selected.page);
       diagnostics.navigation = {
         url: target.url,
         status: response && typeof response.status === 'function' ? response.status() : undefined,
@@ -2537,7 +2609,7 @@ async function openAttachedContext(
         mode: 'attach_preferred',
         provider: 'playwright-cdp',
         attached: true,
-        endpoint: discovered.discoveredEndpoint ?? endpoint,
+        endpoint,
         browserVersion: discovered.browserVersion,
         profile: {
           profileMode: config.profileMode,
@@ -2988,7 +3060,12 @@ async function openNativeAttachedContext(
       && isExplicitNativeUserOwnedSession(target.existingSession)
       && browserInternalUrlProduct(target.url) === savedProduct,
     );
-    if (matchedBy !== 'owned_token' && page.waitForLoadState && !explicitInternalUserSession) {
+    // Both matching states are an exact stable-tab reattach without navigation.
+    // A user-owned tab may stream or report "loading" indefinitely; requiring
+    // full load completion before every read/foreground action creates 30-60s
+    // timeouts. Navigation/reload/explicit wait_for_load_state keep their own
+    // post-action load checks and the strict live URL/identity checks below.
+    if (matchedBy !== 'owned_token' && matchedBy !== 'saved_url' && page.waitForLoadState && !explicitInternalUserSession) {
       await page.waitForLoadState(waitUntil(args.wait_until), { timeout });
     }
     const observedPageUrl = page.url();
@@ -3170,7 +3247,7 @@ async function withPage<T>(
       if (error instanceof AssistantPluginError && error.effectOutcome === 'failed') throw error;
       if (actionDispatched && !postDispatchReplaySafe) {
         const causeDetails = error instanceof AssistantPluginError
-          ? { causeCode: error.code, causeRetryable: error.retryable, causeEffectOutcome: error.effectOutcome ?? null }
+          ? { causeCode: error.code, causeRetryable: error.retryable, causeEffectOutcome: error.effectOutcome ?? null, ...(error.details ? { causeDetails: error.details } : {}) }
           : { causeName: error instanceof Error ? error.name : 'UnknownError' };
         throw new AssistantPluginError(
           'PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN',
@@ -3749,7 +3826,7 @@ function verifyStateObservationScript(selector: string | undefined, textContains
   })()`;
 }
 
-async function readPageIdentity(page: PageLike, connection?: BrowserConnectionSummary, expectedUrl?: string, preferObservedDom = false): Promise<{ url: string; title: string }> {
+async function readPageIdentity(page: PageLike, connection?: BrowserConnectionSummary, expectedUrl?: string, preferObservedDom = false, preferVerifiedActivation = false): Promise<{ url: string; title: string }> {
   const normalizeObservedUrl = (value: unknown): string => {
     const internalProduct = browserInternalUrlProduct(value);
     if (connection?.provider === 'macos-apple-events' && connection.tab?.ownership === 'user_owned') {
@@ -3763,7 +3840,7 @@ async function readPageIdentity(page: PageLike, connection?: BrowserConnectionSu
     return normalizedUrl(value);
   };
   if (connection?.provider === 'macos-apple-events' && typeof page.identity === 'function') {
-    const identity = await page.identity({ preferObservedDom });
+    const identity = await page.identity({ preferObservedDom, preferVerifiedActivation });
     return { url: normalizeObservedUrl(identity.url), title: identity.title };
   }
   return { url: normalizeObservedUrl(page.url()), title: await page.title() };
@@ -3780,7 +3857,7 @@ async function finalizeInteractiveAction(
   extra: Record<string, unknown> = {},
 ): Promise<Record<string, unknown>> {
   const warnings: string[] = [];
-  const identity = await readPageIdentity(page, connection, target.url);
+  const identity = await readPageIdentity(page, connection, target.url, false, actionId === 'activate_page');
   const title = identity.title;
   const pageUrl = identity.url;
   const session = saveBrowserSession(repoRoot, sessionFromPage(target, pageUrl, title, connection));
@@ -4234,13 +4311,14 @@ async function executeBrowserPluginActionInternal(
         assertBrowserSessionAvailable(input.repoRoot, sessionId);
         const session = findBrowserSession(input.repoRoot, sessionId);
         const tab = session?.browser?.tab;
+        const attachedClosed = session ? await closeAttachedCdpSessionPage(input.repoRoot, current, session) : false;
         const managedClosed = session ? await closeManagedSessionPage(input.repoRoot, current, session) : false;
         const nativeClose = session ? await closeTrackedNativeOwnedSession(session, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) : { resourceClosed: false, resourceAlreadyMissing: false };
         const closedSessionIds = session ? nativeOwnedAliasSessionIds(input.repoRoot, session) : [sessionId];
         for (const closedSessionId of closedSessionIds) removeBrowserSession(input.repoRoot, closedSessionId);
         return {
           closed: true, sessionId,
-          resourceClosed: managedClosed || nativeClose.resourceClosed,
+          resourceClosed: attachedClosed || managedClosed || nativeClose.resourceClosed,
           ...(closedSessionIds.length > 1 ? { closedSessionIds } : {}),
           ...(nativeClose.resourceAlreadyMissing ? { resourceAlreadyMissing: true } : {}),
           ...(tab?.ownership === 'user_owned' ? { preservedUserOwnedTab: true } : {}),

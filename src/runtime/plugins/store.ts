@@ -30,6 +30,7 @@ import type {
   AssistantPluginAdapter,
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
+  AssistantPluginActionExecutionPorts,
   AssistantPluginActionRequest,
   AssistantPluginAuthorizationContext,
   AssistantPluginManifest,
@@ -229,7 +230,8 @@ function ensureControllerPluginStateMigrated(controllerHome: string, force = fal
     return value as object;
   }, repositories);
   const changedGrantIds = migrateControllerPluginCapabilityAuthorizations(controllerHome, pluginIds);
-  const changedReceiptIds = migrateControllerPluginActionReceipts(controllerHome, pluginIds);
+  const receiptMigrationFingerprint = createHash('sha256').update(fingerprint).digest('hex');
+  const changedReceiptIds = migrateControllerPluginActionReceipts(controllerHome, pluginIds, receiptMigrationFingerprint, force);
   // Adapters that keep a repository surface also keep their per-repository
   // manifest projections; retiring them would orphan the repository-bound
   // action surface (for example computer's physical_device_* actions).
@@ -353,7 +355,7 @@ export function syncControllerPluginRegistry(controllerHome: string) {
 
 export function syncControllerPluginManifest(controllerHome: string, pluginId: string) {
   reconcileFirstPartyExternalPluginRegistration(controllerHome, pluginId);
-  ensureControllerPluginStateMigrated(controllerHome, true);
+  ensureControllerPluginStateMigrated(controllerHome);
   invalidateAssistantPluginManifestCache(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE, pluginId);
   const manifest = computeControllerManifest(controllerHome, pluginId);
   writeJsonAtomic(controllerManifestPath(controllerHome, pluginId), manifest);
@@ -1140,7 +1142,7 @@ export function syncAssistantPluginManifest(
   repository: RepositoryRecord,
   pluginId: string,
 ): { manifest: AssistantPluginManifest; index: AssistantPluginRegistryIndex } {
-  ensureControllerPluginStateMigrated(controllerHome, true);
+  ensureControllerPluginStateMigrated(controllerHome);
   invalidateAssistantPluginManifestCache(controllerHome, repository.repoId, pluginId);
   const manifest = computeManifest(controllerHome, repository, pluginId);
   writeJsonAtomic(manifestPath(controllerHome, repository.repoId, manifest.pluginId), manifest);
@@ -1612,13 +1614,44 @@ function samePluginReceiptOutcome(left: PluginActionReceipt, right: PluginAction
     && JSON.stringify(canonical(left.authorization ?? null)) === JSON.stringify(canonical(right.authorization ?? null));
 }
 
+interface ControllerPluginActionReceiptMigrationMarker {
+  schemaVersion: 1;
+  fingerprint: string;
+  migratedAt: string;
+}
+
+function controllerPluginActionReceiptMigrationMarkerPath(controllerHome: string): string {
+  return join(controllerSystemRoot(controllerHome), 'plugin-action-receipts-migration.json');
+}
+
+function readControllerPluginActionReceiptMigrationMarker(
+  controllerHome: string,
+): ControllerPluginActionReceiptMigrationMarker | undefined {
+  try {
+    const raw = readJsonFile<Record<string, unknown>>(controllerPluginActionReceiptMigrationMarkerPath(controllerHome));
+    if (raw?.schemaVersion !== 1 || typeof raw.fingerprint !== 'string' || typeof raw.migratedAt !== 'string') return undefined;
+    return raw as unknown as ControllerPluginActionReceiptMigrationMarker;
+  } catch {
+    // This marker is only a performance receipt. A missing/corrupt marker is safe
+    // to rebuild because the legacy receipt migration is idempotent.
+    return undefined;
+  }
+}
+
 /**
  * Moves already-recorded user-plugin effects into the Controller receipt scope.
  * The provider is never called here: receipt bytes and the request index move
  * atomically in authority order so retries still deduplicate and unknown effects
  * are never replayed.
  */
-function migrateControllerPluginActionReceipts(controllerHome: string, pluginIds: readonly string[]): string[] {
+function migrateControllerPluginActionReceipts(
+  controllerHome: string,
+  pluginIds: readonly string[],
+  fingerprint: string,
+  force = false,
+): string[] {
+  const marker = readControllerPluginActionReceiptMigrationMarker(controllerHome);
+  if (!force && marker?.fingerprint === fingerprint) return [];
   const controllerPluginIds = new Set(pluginIds);
   const changed = new Set<string>();
   const requestRoot = join(ensureControllerHome(controllerHome), 'indexes', 'plugin-actions', 'requests');
@@ -1742,6 +1775,11 @@ function migrateControllerPluginActionReceipts(controllerHome: string, pluginIds
     }
   }
 
+  writeJsonAtomic(controllerPluginActionReceiptMigrationMarkerPath(controllerHome), {
+    schemaVersion: 1,
+    fingerprint,
+    migratedAt: now(),
+  } satisfies ControllerPluginActionReceiptMigrationMarker);
   return [...changed];
 }
 
@@ -1867,6 +1905,7 @@ async function submitPluginAction(
   controllerHome: string,
   scope: PluginActionScopeContext,
   request: AssistantPluginActionRequest,
+  executionPorts?: AssistantPluginActionExecutionPorts,
 ): Promise<{
   manifest: AssistantPluginManifest;
   action: AssistantPluginActionDescriptor;
@@ -2077,6 +2116,7 @@ async function submitPluginAction(
           timeoutMs: request.timeoutMs,
           signal: request.signal,
           authorizationGrantRefs: request.authorizationGrantRefs,
+          executionPorts,
           deadlineAtMs: typeof request.timeoutMs === 'number'
             ? Date.now() + Math.max(1, Math.trunc(request.timeoutMs))
             : undefined,
@@ -2238,6 +2278,7 @@ export function submitAssistantPluginAction(
   controllerHome: string,
   repository: RepositoryRecord,
   request: AssistantPluginActionRequest,
+  executionPorts?: AssistantPluginActionExecutionPorts,
 ) {
   const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
   // Keep Controller migration for every other action; phone receipts, grants and
@@ -2247,17 +2288,18 @@ export function submitAssistantPluginAction(
   // bound actions (computer physical_device_*) on the repository action
   // scope; diverting them to the controller scope hides those actions.
   if (adapter && adapterMatchesController(adapter) && adapter.repositorySurface !== true) {
-    return submitPluginAction(controllerHome, controllerPluginActionScope(controllerHome), request);
+    return submitPluginAction(controllerHome, controllerPluginActionScope(controllerHome), request, executionPorts);
   }
-  return submitPluginAction(controllerHome, repositoryPluginActionScope(repository), request);
+  return submitPluginAction(controllerHome, repositoryPluginActionScope(repository), request, executionPorts);
 }
 
 export function submitControllerPluginAction(
   controllerHome: string,
   request: AssistantPluginActionRequest,
+  executionPorts?: AssistantPluginActionExecutionPorts,
 ) {
   ensureControllerPluginStateMigrated(controllerHome);
-  return submitPluginAction(controllerHome, controllerPluginActionScope(controllerHome), request);
+  return submitPluginAction(controllerHome, controllerPluginActionScope(controllerHome), request, executionPorts);
 }
 
 async function executePluginActionInScope(

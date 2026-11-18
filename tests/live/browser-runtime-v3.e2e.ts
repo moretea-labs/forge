@@ -853,7 +853,7 @@ try {
         providerBatchP95Ms: percentile(nativeProviderBatchDurations, 0.95),
         stepDurationByActionMs: nativeBatchStepDurationByAction,
         stepTimingSamples: nativeBatchStepTimings,
-        nativeAutomationPhaseBoundary: 'process precondition and Computer provider broker round-trip; broker timing includes Runtime-to-sidecar dispatch and is not an inner Apple Event span',
+        nativeAutomationPhaseBoundary: 'native Browser timing includes process precondition where required and Computer provider broker/test-hook round-trips for lifecycle, DOM automation, capture_region and trusted_input; broker timing includes Runtime-to-sidecar dispatch and is not an inner Apple Event span',
         nativeAutomationPhaseByAction: nativeAutomationPhaseByAction(),
         computerActionWallByAction: computerActionWallByAction(),
         lifecycleRequestTrace: { create: computerLifecycleRequestTrace, close: computerCleanupRequestTrace },

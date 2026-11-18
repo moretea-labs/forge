@@ -357,6 +357,114 @@ describe('abandoned in-flight provider requests keep the provider alive', () => 
     }
   });
 
+  test('expired or aborted queued calls do not dispatch or release later calls ahead of the active RPC', async () => {
+    const { socketPath } = socketFixture();
+    const { waitFor, open } = gate();
+    const writes: Array<{ id: string; error?: Error }> = [];
+    const received: string[] = [];
+    let firstReceived!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { firstReceived = resolve; });
+    const server = createServer((socket) => {
+      let buffer = '';
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString('utf8');
+        let newline = buffer.indexOf('\n');
+        while (newline >= 0) {
+          const request = JSON.parse(buffer.slice(0, newline)) as { id: string };
+          buffer = buffer.slice(newline + 1);
+          received.push(request.id);
+          if (request.id === 'active') firstReceived();
+          void waitFor.then(() => {
+            socket.write(JSON.stringify({ id: request.id, ok: true, result: { late: true } }) + '\n',
+              (error) => { writes.push({ id: request.id, ...(error ? { error } : {}) }); });
+          });
+          newline = buffer.indexOf('\n');
+        }
+      });
+      socket.on('error', () => undefined);
+    });
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => server.once('error', reject).listen(socketPath, resolve));
+    const channel = new ExternalUnixJsonlChannel(socketPath);
+    try {
+      const active = channel.call({ requestId: 'active', method: 'execute', timeoutMs: 2_000 });
+      await firstStarted;
+      const started = performance.now();
+      const expired = channel.call({ requestId: 'expired', method: 'execute', timeoutMs: 100 })
+        .then((value) => ({ value }), (error: unknown) => ({ error }));
+      const abort = new AbortController();
+      const cancelled = channel.call({ requestId: 'cancelled', method: 'execute', timeoutMs: 2_000, signal: abort.signal })
+        .then((value) => ({ value }), (error: unknown) => ({ error }));
+      const successor = channel.call({ requestId: 'successor', method: 'execute', timeoutMs: 2_000 });
+      abort.abort();
+      const [expiredResult, cancelledResult] = await Promise.all([expired, cancelled]);
+      expect(cancelledResult).toMatchObject({ error: { code: 'EXTERNAL_PLUGIN_ABORTED', effectOutcome: 'failed' } });
+      expect(expiredResult).toMatchObject({
+        error: { code: 'EXTERNAL_PLUGIN_TIMEOUT', effectOutcome: 'failed', details: { stage: 'queue' } },
+      });
+      expect(performance.now() - started).toBeLessThan(600);
+      expect(received).toEqual(['active']);
+      open();
+      await expect(active).resolves.toEqual({ late: true });
+      await expect(successor).resolves.toEqual({ late: true });
+      expect(received).toEqual(['active', 'successor']);
+    } finally {
+      open();
+      channel.close();
+    }
+  });
+
+  test('a queued RPC receives only the remaining execution budget', async () => {
+    const { socketPath } = socketFixture();
+    const first = gate();
+    const late = gate();
+    const received: string[] = [];
+    let firstReceived!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { firstReceived = resolve; });
+    let secondReceived!: () => void;
+    const secondStarted = new Promise<void>((resolve) => { secondReceived = resolve; });
+    const server = createServer((socket) => {
+      let buffer = '';
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString('utf8');
+        const newline = buffer.indexOf('\n');
+        if (newline < 0) return;
+        const request = JSON.parse(buffer.slice(0, newline)) as { id: string };
+        buffer = buffer.slice(newline + 1);
+        received.push(request.id);
+        const barrier = request.id === 'first' ? first.waitFor : late.waitFor;
+        if (request.id === 'first') firstReceived();
+        else secondReceived();
+        void barrier.then(() => socket.write(JSON.stringify({ id: request.id, ok: true, result: { ok: true } }) + '\n'));
+      });
+      socket.on('error', () => undefined);
+    });
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => server.once('error', reject).listen(socketPath, resolve));
+    const channel = new ExternalUnixJsonlChannel(socketPath);
+    try {
+      const active = channel.call({ requestId: 'first', method: 'execute', timeoutMs: 2_000 });
+      await firstStarted;
+      const start = performance.now();
+      const queued = channel.call({ requestId: 'second', method: 'execute', timeoutMs: 500 })
+        .then((value) => ({ value }), (error: unknown) => ({ error }));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      first.open();
+      await active;
+      await secondStarted;
+      const outcome = await queued;
+      // The active RPC used roughly 300ms of the 500ms budget. The dispatched
+      // second call may have effects, and must not wait a fresh 500ms.
+      expect(outcome).toMatchObject({ error: { code: 'EXTERNAL_PLUGIN_TIMEOUT', effectOutcome: 'outcome_unknown' } });
+      expect(performance.now() - start).toBeLessThan(725);
+      expect(received).toEqual(['first', 'second']);
+    } finally {
+      first.open();
+      late.open();
+      channel.close();
+    }
+  });
+
   test('channel disposal during an in-flight request neither kills the provider nor strands the caller', async () => {
     const { socketPath } = socketFixture();
     const { waitFor, open } = gate();
