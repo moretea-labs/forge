@@ -679,6 +679,22 @@ describe('Process Runtime fine-grained resource claims', () => {
       expect(action, `Computer read ${actionId}`).toBeDefined();
       expect(claimsForAssistantPluginAction(action!, repository, 'computer')).toEqual([]);
     }
+
+    for (const actionId of ['chatgpt_target_inventory', 'chatgpt_target_observe']) {
+      const action = computer.find((candidate) => candidate.actionId === actionId);
+      expect(action, `Computer ChatGPT read ${actionId}`).toBeDefined();
+      expect(action!.readOnly).toBe(true);
+      expect(action!.risk).toBe('readonly');
+      expect(action!.executionMode).toBeUndefined();
+    }
+    for (const actionId of ['chatgpt_target_prepare', 'chatgpt_target_dispatch']) {
+      const action = computer.find((candidate) => candidate.actionId === actionId);
+      expect(action, `Computer ChatGPT remote write ${actionId}`).toBeDefined();
+      expect(action!.readOnly).toBe(false);
+      expect(action!.risk).toBe('remote_write');
+      expect(action!.executionMode).toBeUndefined();
+      expect(action!.resourceClaims.length).toBeGreaterThan(0);
+    }
   });
 
   test('Browser remote claims are exact-session scoped while provider state remains global (#619)', () => {
