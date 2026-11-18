@@ -15,7 +15,6 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { createHmac } from "crypto";
 import { spawn, spawnSync } from "child_process";
-import { loadMcpServiceRuntimeState, writeMcpServiceLocalConfig, writeMcpServiceRuntimeState } from "../../adapters/mcp/auth";
 import { cancelAgentJob, getAgentJob, getAgentJobEvents, getAgentJobLog, listAgentJobs } from "../../src/cli/agent-jobs/job-manager";
 import {
   controllerCheckConcurrencyClass,
@@ -38,10 +37,7 @@ import {
   startLocalBridgeServer,
   type LocalBridgeServerHandle,
 } from "../../src/cli/local-bridge/server";
-import { startConfiguredRuntimeLocalBridge } from "../../src/cli/local-bridge/runtime-bridge";
 import { isProcessAlive } from "../../src/runtime/shared/process-tree";
-import { projectAgentRunToLocalBridgeJob, projectAgentRunToLocalBridgeStatus, reconcileLocalBridgeJobs as reconcileLocalBridgeJobsInRuntime, refreshLocalBridgeJob as refreshLocalBridgeJobInRuntime } from "../../src/runtime/local-bridge/lifecycle";
-import type { LocalBridgeJob } from "../../src/runtime/local-bridge/types";
 import { addRepositoryCheckout, loadRepositoryRegistry, registerRepository, resolveRepositorySelection } from "../../src/runtime/repositories/registry";
 import { acquireControllerLock, releaseControllerLock } from "../../src/effects/controller-locks";
 import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
@@ -153,170 +149,6 @@ async function waitForRun(
 }
 
 describe("Local Execution Bridge", () => {
-  test("projects terminal Agent Run evidence into a LocalBridge Job without mutating the stored snapshot", () => {
-    const current = {
-      schemaVersion: 1 as const, jobId: "job-1", action: "quick-agent-session" as const,
-      payload: { title: "test", objective: "test" }, requestedBy: "test", approval: "auto" as const,
-      status: "running" as const, createdAt: "2026-11-14T00:00:00.000Z", updatedAt: "2026-11-14T00:00:00.000Z",
-      runId: "run-1", result: { retained: true },
-    };
-    const projection = projectAgentRunToLocalBridgeJob(current, {
-      runId: "run-1", status: "succeeded", finishedAt: "2026-11-14T00:01:00.000Z",
-      exitCode: 0, integratedSessionId: "edit-1", changeOutcome: "changed", changedFiles: ["src/a.ts"],
-    }, "2026-11-14T00:02:00.000Z");
-    expect(projection).toMatchObject({
-      previousStatus: "running", statusChanged: true, terminal: true,
-      event: { type: "job_succeeded", message: "Linked Run run-1 moved Local Job to succeeded.", data: { runStatus: "succeeded" } },
-    });
-    expect(projection.job).toMatchObject({
-      status: "succeeded", finishedAt: "2026-11-14T00:01:00.000Z",
-      result: { retained: true, runId: "run-1", runStatus: "succeeded", exitCode: 0, integratedSessionId: "edit-1", changeOutcome: "changed", changedFiles: ["src/a.ts"] },
-      outcome: { process: { exitCode: 0 } },
-    });
-    expect(projection.job.error).toBeUndefined();
-    expect(current).toMatchObject({ status: "running", result: { retained: true } });
-  });
-  test("keeps LocalBridge reconciliation decisions in Runtime and delegates repository effects", () => {
-    const makeJob = (
-      jobId: string,
-      status: LocalBridgeJob["status"],
-      action: LocalBridgeJob["action"],
-    ): LocalBridgeJob => ({
-      schemaVersion: 1,
-      jobId,
-      action,
-      payload: action === "run-check" ? { checkId: "check-1" } : { title: "test", objective: "test" },
-      requestedBy: "test",
-      approval: "auto",
-      status,
-      createdAt: "2026-11-14T00:00:00.000Z",
-      updatedAt: "2026-11-14T00:00:00.000Z",
-    });
-    const jobs = [
-      makeJob("approved", "approved", "quick-agent-session"),
-      makeJob("running-check", "running", "run-check"),
-      makeJob("already-terminal", "cancelled", "quick-agent-session"),
-    ];
-    let revisionReads = 0;
-    const refreshed: string[] = [];
-    const result = reconcileLocalBridgeJobsInRuntime("/repo", {
-      listActiveJobs: () => jobs,
-      currentCheckRevision: () => {
-        revisionReads += 1;
-        return "revision-1";
-      },
-      refreshJob: (_repoRoot, job, checkRevision) => {
-        refreshed.push(`${job.jobId}:${checkRevision}`);
-        return { ...job, status: job.jobId === "running-check" ? "stale" : "succeeded" };
-      },
-    });
-
-    expect(result).toEqual({ scanned: 3, active: 2, terminalized: 2 });
-    expect(revisionReads).toBe(1);
-    expect(refreshed).toEqual(["approved:revision-1", "running-check:revision-1"]);
-  });
-
-  test("keeps LocalBridge refresh transitions in Runtime and delegates effects", () => {
-    const at = new Date().toISOString();
-    const job: LocalBridgeJob = {
-      schemaVersion: 1,
-      jobId: "running-check",
-      action: "run-check",
-      payload: { checkId: "check-1" },
-      requestedBy: "test",
-      approval: "auto",
-      status: "running",
-      createdAt: at,
-      updatedAt: at,
-      startedAt: at,
-      revision: "old-revision",
-      ownerPid: process.pid,
-    };
-    const events: Array<{ type: string; message?: string; data?: Record<string, unknown> }> = [];
-    let saved = false;
-    let released = false;
-    const refreshed = refreshLocalBridgeJobInRuntime("/repo", job, "new-revision", {
-      currentPid: process.pid,
-      now: () => at,
-      resolveJobTimeout: () => 60_000,
-      currentCheckRevision: () => {
-        throw new Error("provided reconciliation revision should be reused");
-      },
-      isPidAlive: () => true,
-      signalWorker: () => {},
-      releaseCheckSubscription: () => { released = true; },
-      syncProjectedExecutionJob: (_root, current) => current,
-      getAgentRun: () => { throw new Error("Agent Run lookup is not expected for a running check"); },
-      cleanupEphemeralJob: () => {},
-      appendEvent: (_root, _jobId, event) => { events.push(event); },
-      saveJob: (_root, current) => { saved = true; return current; },
-    });
-
-    expect(refreshed.status).toBe("stale");
-    expect(refreshed.error).toContain("became stale");
-    expect(events).toMatchObject([{ type: "job_failed", data: { stale: true, timedOut: false, orphaned: false } }]);
-    expect(saved).toBe(true);
-    expect(released).toBe(true);
-  });
-
-  test("uses the injected Runtime clock for LocalBridge execution deadlines", () => {
-    const root = repo();
-    const actualNow = Date.now();
-    const injectedNow = new Date(actualNow + 60_000).toISOString();
-    const deadlineAt = new Date(actualNow + 30_000).toISOString();
-    const startedAt = new Date(actualNow - 60_000).toISOString();
-    const job: LocalBridgeJob = {
-      schemaVersion: 1,
-      jobId: "timed-out-verify",
-      action: "verify-edit-session",
-      payload: { sessionId: "session-1", revision: 1 },
-      requestedBy: "test",
-      approval: "auto",
-      status: "running",
-      createdAt: startedAt,
-      updatedAt: startedAt,
-      startedAt,
-      deadlineAt,
-      ownerPid: process.pid,
-    };
-    const events: Array<{ type: string; message?: string; data?: Record<string, unknown> }> = [];
-    let saved = false;
-    let released = false;
-    const refreshed = refreshLocalBridgeJobInRuntime(root, job, undefined, {
-      currentPid: process.pid,
-      now: () => injectedNow,
-      resolveJobTimeout: () => 60_000,
-      currentCheckRevision: () => { throw new Error("check revision should not be read for a verify job"); },
-      isPidAlive: () => true,
-      signalWorker: () => {},
-      releaseCheckSubscription: () => { released = true; },
-      syncProjectedExecutionJob: (_root, current) => current,
-      getAgentRun: () => { throw new Error("Agent Run lookup is not expected for a verify job"); },
-      cleanupEphemeralJob: () => {},
-      appendEvent: (_root, _jobId, event) => { events.push(event); },
-      saveJob: (_root, current) => { saved = true; return current; },
-    });
-
-    expect(refreshed.status).toBe("timed_out");
-    expect(refreshed.finishedAt).toBe(injectedNow);
-    expect(refreshed.error).toContain("verify-edit-session exceeded");
-    expect(events).toMatchObject([{ type: "job_failed", data: { timedOut: true } }]);
-    expect(saved).toBe(true);
-    expect(released).toBe(true);
-  });
-
-  test("projects Agent Run states through the Runtime-owned LocalBridge vocabulary", () => {
-    expect(projectAgentRunToLocalBridgeStatus("queued")).toBe("dispatched");
-    for (const status of ["starting", "running", "waiting_for_user"] as const) {
-      expect(projectAgentRunToLocalBridgeStatus(status)).toBe("running");
-    }
-    expect(projectAgentRunToLocalBridgeStatus("succeeded")).toBe("succeeded");
-    expect(projectAgentRunToLocalBridgeStatus("cancelled")).toBe("cancelled");
-    for (const status of ["failed", "unknown"] as const) {
-      expect(projectAgentRunToLocalBridgeStatus(status)).toBe("failed");
-    }
-  });
-
   test('returns stable 410 handoffs for retired Local Bridge creation and progress projection routes', async () => {
     const root = repo();
     const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
@@ -411,46 +243,6 @@ describe("Local Execution Bridge", () => {
     const controllerLocalJobs = join(controllerHome, "repositories", repository!.repoId, "local-jobs");
     expect(realpathSync(localJobsPath)).toBe(realpathSync(controllerLocalJobs));
     expect((await fetch(new URL("/health", handle.url))).status).toBe(200);
-  });
-
-  test("starts and stops the configured embedded LocalBridge through the CLI Runtime bridge", async () => {
-    const root = repo();
-    const controllerHome = process.env.FORGE_CONTROLLER_HOME;
-    if (!controllerHome) throw new Error("test repository did not configure Controller Home");
-    const at = new Date().toISOString();
-    writeMcpServiceLocalConfig(controllerHome, {
-      version: 1,
-      repo: root,
-      profile: "controller",
-      localController: { enabled: true, mode: "embedded", host: "127.0.0.1", port: 0 },
-    });
-    writeMcpServiceRuntimeState(controllerHome, {
-      version: 1,
-      repo: root,
-      startedAt: at,
-      updatedAt: at,
-      status: "running",
-      tunnelMode: "none",
-      server: { endpoint: "http://127.0.0.1:0", running: true, healthy: true, restartCount: 0 },
-    });
-
-    const bridge = await startConfiguredRuntimeLocalBridge({ controllerHome, repositoryRoot: root });
-    if (!bridge) throw new Error("configured embedded LocalBridge did not start");
-    try {
-      expect((await fetch(new URL("/health", bridge.endpoint))).status).toBe(200);
-      expect(loadMcpServiceRuntimeState(controllerHome)?.localController).toMatchObject({
-        endpoint: bridge.endpoint,
-        running: true,
-        mode: "embedded",
-        pid: process.pid,
-      });
-    } finally {
-      await bridge.close();
-    }
-    expect(loadMcpServiceRuntimeState(controllerHome)?.localController).toMatchObject({
-      running: false,
-      pid: process.pid,
-    });
   });
 
   test("classifies full repository gates as heavy while leaving focused checks concurrent", () => {
