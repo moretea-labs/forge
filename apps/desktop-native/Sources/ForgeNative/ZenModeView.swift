@@ -500,7 +500,9 @@ struct ZenWorkspacePane: View {
                     Text("先刷新核对，勿重复提交")
                         .font(.system(size:10.5,weight:.medium))
                         .foregroundStyle(status.color)
-                        .lineLimit(1)
+                        .fixedSize(horizontal:false,vertical:true)
+                        .frame(maxWidth:.infinity,alignment:.leading)
+                        .multilineTextAlignment(.leading)
                 }
             }
             .help(status.label == "操作结果未确认"
