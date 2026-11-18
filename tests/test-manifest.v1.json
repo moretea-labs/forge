@@ -209,6 +209,10 @@
       "module": "controller",
       "resource": "pure"
     },
+    "tests/cli/agentmail-device-command.test.ts": {
+      "module": "repository",
+      "resource": "temp-isolated"
+    },
     "tests/cli/instruction-context.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
@@ -216,6 +220,14 @@
     "tests/cli/mcp-doctor-runtime-status.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
+    },
+    "tests/runtime/agentmail-event-workflow.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/agentmail-external-policy.test.ts": {
+      "module": "controller",
+      "resource": "pure"
     },
     "tests/runtime/desktop-native-cognition.test.ts": {
       "module": "controller",
