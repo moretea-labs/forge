@@ -3263,12 +3263,48 @@ describe('standalone recovery on canonical Runtime', () => {
       }
       expect(dispatches).toBe(1);
       expect(failure).toBeInstanceOf(Error);
-      expect((failure as Error).message).not.toMatch(/^RECOVERY_GATEWAY_UNAVAILABLE:/);
+      expect((failure as Error).message).not.toMatch(/^RECOVERY_GATEWAY_(?:UNAVAILABLE|AUTH_REJECTED|ACCESS_DENIED):/);
     } finally {
       await recovery.close();
       await new Promise<void>((resolveClose, reject) => {
         server.close((error) => error ? reject(error) : resolveClose());
       });
+    }
+  });
+
+  test('classifies standalone Recovery Gateway authentication and access rejection before dispatch', async () => {
+    for (const status of [401, 403] as const) {
+      const home = controllerHome();
+      let toolCalls = 0;
+      const probe = createServer(async (request, response) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        const rawBody = Buffer.concat(chunks).toString('utf8');
+        if (rawBody) {
+          try {
+            const body = JSON.parse(rawBody) as { method?: string };
+            if (body.method === 'tools/call') toolCalls += 1;
+          } catch { /* the transport response below remains the access evidence */ }
+        }
+        response.statusCode = status;
+        if (status === 401) response.setHeader('www-authenticate', 'Bearer error="invalid_token"');
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ error: status === 401 ? 'invalid_token' : 'forbidden' }));
+      });
+      await new Promise<void>((resolveListen, reject) => {
+        probe.once('error', reject);
+        probe.listen(0, '127.0.0.1', resolveListen);
+      });
+      const address = probe.address();
+      if (!address || typeof address === 'string') throw new Error('TEST_RECOVERY_GATEWAY_ADDRESS_MISSING');
+      servers.push(probe);
+      initializeStandaloneRecovery(home, address.port);
+
+      const expected = status === 401
+        ? 'RECOVERY_GATEWAY_AUTH_REJECTED: HTTP 401 Unauthorized'
+        : 'RECOVERY_GATEWAY_ACCESS_DENIED: HTTP 403 Forbidden';
+      await expect(callStandaloneRecoveryTool(home, 'runtime_status', {})).rejects.toThrow(expected);
+      expect(toolCalls).toBe(0);
     }
   });
 
