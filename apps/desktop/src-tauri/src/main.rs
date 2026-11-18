@@ -504,6 +504,180 @@ fn semantic_facade_data(result: Value) -> Value {
     result.get("data").cloned().unwrap_or(result)
 }
 
+fn optional_project_text(args: &Value, field: &str, max_len: usize) -> Result<Option<String>, String> {
+    match args.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => {
+            let normalized = value.trim();
+            if normalized.is_empty() {
+                Ok(None)
+            } else if normalized.encode_utf16().count() <= max_len {
+                Ok(Some(normalized.to_owned()))
+            } else {
+                Err(format!("FORGE_DESKTOP_{field}_TOO_LONG"))
+            }
+        },
+        Some(_) => Err(format!("FORGE_DESKTOP_{field}_INVALID")),
+    }
+}
+
+fn required_project_text(args: &Value, field: &str, max_len: usize) -> Result<String, String> {
+    optional_project_text(args, field, max_len)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("FORGE_DESKTOP_{field}_REQUIRED"))
+}
+
+fn project_pagination_value(
+    args: &Value,
+    field: &str,
+    default: u64,
+    minimum: u64,
+    maximum: u64,
+) -> Result<u64, String> {
+    let value = match args.get(field) {
+        None => default,
+        Some(value) => value.as_u64().ok_or_else(|| format!("FORGE_DESKTOP_{field}_INVALID"))?,
+    };
+    if value < minimum || value > maximum {
+        return Err(format!("FORGE_DESKTOP_{field}_INVALID"));
+    }
+    Ok(value)
+}
+
+/// Native bridge for the existing semantic Project identity API. Repository
+/// Registry operations remain separate; this never creates a second Project owner.
+async fn semantic_project_operation(operation: &str, args: &Value) -> Result<Value, String> {
+    let mut request = json!({ "operation": operation });
+    match operation {
+        "project_list" => {
+            let workspace_id = optional_project_text(args, "workspaceId", 512)?;
+            let status = optional_project_text(args, "projectStatus", 32)?;
+            let sort_by = optional_project_text(args, "projectSortBy", 32)?.unwrap_or_else(|| "updated_at".into());
+            let sort_order = optional_project_text(args, "sortOrder", 8)?.unwrap_or_else(|| "desc".into());
+            let search_query = optional_project_text(args, "searchQuery", 512)?;
+            if status.as_deref().is_some_and(|value| value != "active" && value != "archived")
+                || !matches!(sort_by.as_str(), "updated_at" | "display_name" | "status")
+                || !matches!(sort_order.as_str(), "asc" | "desc") {
+                return Err("FORGE_DESKTOP_PROJECT_LIST_FILTER_INVALID".into());
+            }
+            request["limit"] = json!(project_pagination_value(args, "limit", 50, 1, 100)?);
+            request["offset"] = json!(project_pagination_value(args, "offset", 0, 0, 100_000)?);
+            request["project_sort_by"] = json!(sort_by);
+            request["sort_order"] = json!(sort_order);
+            if let Some(value) = workspace_id { request["workspace_id"] = json!(value); }
+            if let Some(value) = status { request["project_status"] = json!(value); }
+            if let Some(value) = search_query { request["search_query"] = json!(value); }
+        }
+        "project_create" => {
+            let project_id = optional_project_text(args, "projectId", 512)?;
+            let repo_id = optional_project_text(args, "repoId", 256)?;
+            if project_id.is_none() && repo_id.is_none() {
+                return Err("FORGE_DESKTOP_PROJECT_ID_OR_REPOSITORY_REQUIRED".into());
+            }
+            request["project_display_name"] = json!(required_project_text(args, "displayName", 512)?);
+            if let Some(value) = project_id { request["project_id"] = json!(value); }
+            if let Some(value) = repo_id { request["repo_id"] = json!(value); }
+            if let Some(value) = optional_project_text(args, "workspaceId", 512)? {
+                request["workspace_id"] = json!(value);
+            }
+        }
+        "project_get" => {
+            request["project_id"] = json!(required_project_text(args, "projectId", 512)?);
+            let detail = optional_project_text(args, "detailLevel", 16)?.unwrap_or_else(|| "summary".into());
+            if detail != "summary" && detail != "detail" {
+                return Err("FORGE_DESKTOP_PROJECT_DETAIL_LEVEL_INVALID".into());
+            }
+            request["detail_level"] = json!(detail);
+            request["limit"] = json!(project_pagination_value(args, "limit", 100, 1, 100)?);
+            request["offset"] = json!(project_pagination_value(args, "offset", 0, 0, 100_000)?);
+            if let Some(value) = optional_project_text(args, "workspaceId", 512)? {
+                request["workspace_id"] = json!(value);
+            }
+        }
+        "project_revise" => {
+            request["project_id"] = json!(required_project_text(args, "projectId", 512)?);
+            let expected_revision = args.get("expectedRevision").and_then(Value::as_u64)
+                .filter(|revision| *revision > 0)
+                .ok_or("FORGE_DESKTOP_PROJECT_EXPECTED_REVISION_REQUIRED")?;
+            request["expected_revision"] = json!(expected_revision);
+            let display_name = optional_project_text(args, "displayName", 512)?;
+            let status = optional_project_text(args, "projectStatus", 32)?;
+            if display_name.as_deref().is_none_or(|value| value.trim().is_empty()) && status.is_none() {
+                return Err("FORGE_DESKTOP_PROJECT_REVISION_EMPTY".into());
+            }
+            if status.as_deref().is_some_and(|value| value != "active" && value != "archived") {
+                return Err("FORGE_DESKTOP_PROJECT_STATUS_INVALID".into());
+            }
+            if let Some(value) = display_name { request["project_display_name"] = json!(value); }
+            if let Some(value) = status { request["project_status"] = json!(value); }
+            if let Some(value) = optional_project_text(args, "workspaceId", 512)? {
+                request["workspace_id"] = json!(value);
+            }
+        }
+        "project_attach_requirement" => {
+            request["project_id"] = json!(required_project_text(args, "projectId", 512)?);
+            request["requirement_id"] = json!(required_project_text(args, "requirementId", 160)?);
+            if let Some(value) = optional_project_text(args, "workspaceId", 512)? {
+                request["workspace_id"] = json!(value);
+            }
+            if let Some(value) = optional_project_text(args, "repoId", 256)? {
+                request["repo_id"] = json!(value);
+            }
+        }
+        _ => return Err("FORGE_DESKTOP_PROJECT_OPERATION_UNSUPPORTED".into()),
+    }
+    request["request_id"] = json!(request_id(match operation {
+        "project_list" => "project-list",
+        "project_create" => "project-create",
+        "project_get" => "project-get",
+        "project_revise" => "project-revise",
+        _ => "project-attach-requirement",
+    }));
+    let result = call_runtime_tool("rh_work", request).await?;
+    let data = semantic_facade_data(result);
+    let project_id = optional_project_text(args, "projectId", 512)?;
+    match operation {
+        "project_list" if !data.get("projects").is_some_and(Value::is_array) => {
+            return Err("FORGE_DESKTOP_PROJECT_LIST_READBACK_INVALID".into());
+        }
+        "project_create" => {
+            let project = data.get("project").ok_or("FORGE_DESKTOP_PROJECT_CREATE_READBACK_INVALID")?;
+            if project.pointer("/projectId").and_then(Value::as_str).is_none()
+                || project.pointer("/displayName").and_then(Value::as_str)
+                    != optional_project_text(args, "displayName", 512)?.as_deref() {
+                return Err("FORGE_DESKTOP_PROJECT_CREATE_NOT_CONFIRMED".into());
+            }
+            if let Some(expected_id) = project_id.as_deref() {
+                if project.pointer("/projectId").and_then(Value::as_str) != Some(expected_id) {
+                    return Err("FORGE_DESKTOP_PROJECT_CREATE_ID_MISMATCH".into());
+                }
+            }
+        }
+        "project_get" => {
+            if data.pointer("/project/projectId").and_then(Value::as_str) != project_id.as_deref() {
+                return Err("FORGE_DESKTOP_PROJECT_DETAIL_NOT_CONFIRMED".into());
+            }
+        }
+        "project_revise" => {
+            let expected = args.get("expectedRevision").and_then(Value::as_u64)
+                .ok_or("FORGE_DESKTOP_PROJECT_EXPECTED_REVISION_REQUIRED")?;
+            if data.pointer("/project/projectId").and_then(Value::as_str) != project_id.as_deref()
+                || data.pointer("/project/revision").and_then(Value::as_u64) != expected.checked_add(1) {
+                return Err("FORGE_DESKTOP_PROJECT_REVISE_NOT_CONFIRMED: refresh before retrying".into());
+            }
+        }
+        "project_attach_requirement" => {
+            let requirement_id = optional_project_text(args, "requirementId", 160)?;
+            if data.pointer("/project/projectId").and_then(Value::as_str) != project_id.as_deref()
+                || data.pointer("/requirement/requirementId").and_then(Value::as_str) != requirement_id.as_deref() {
+                return Err("FORGE_DESKTOP_PROJECT_ATTACHMENT_NOT_CONFIRMED".into());
+            }
+        }
+        _ => {}
+    }
+    Ok(data)
+}
+
 #[tauri::command]
 async fn read_project_requirement_list(repo_id: String) -> Result<Value, String> {
     if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string()); }
@@ -783,13 +957,26 @@ async fn control_user_request(
     })).await
 }
 
+fn has_requirement_scope(repo_id: Option<&String>, project_id: Option<&String>) -> bool {
+    repo_id.is_some_and(|value| !value.trim().is_empty())
+        || project_id.is_some_and(|value| !value.trim().is_empty())
+}
+
 #[tauri::command]
-async fn read_requirement_detail(repo_id: String, requirement_id: String) -> Result<Value, String> {
-    if repo_id.trim().is_empty() || requirement_id.trim().is_empty() {
+async fn read_requirement_detail(
+    repo_id: Option<String>,
+    project_id: Option<String>,
+    requirement_id: String,
+) -> Result<Value, String> {
+    if !has_requirement_scope(repo_id.as_ref(), project_id.as_ref()) {
+        return Err("FORGE_DESKTOP_REQUIREMENT_DETAIL_SCOPE_REQUIRED".to_string());
+    }
+    if requirement_id.trim().is_empty() {
         return Err("FORGE_DESKTOP_REQUIREMENT_DETAIL_ARGUMENT_REQUIRED".to_string());
     }
     let result = call_runtime_tool("rh_work", json!({
         "repo_id": repo_id,
+        "project_id": project_id,
         "operation": "requirement_get",
         "requirement_id": requirement_id,
         "detail_level": "detail",
@@ -815,22 +1002,41 @@ async fn read_plan_detail(repo_id: String, plan_id: String) -> Result<Value, Str
 
 #[tauri::command]
 async fn create_requirement(
-    repo_id: String,
+    repo_id: Option<String>,
+    project_id: Option<String>,
     requirement_id: String,
     title: String,
     outcome: String,
     acceptance_criteria: Vec<String>,
+    dependencies: Option<Vec<String>>,
+    task_status: Option<String>,
+    priority: Option<String>,
+    assignee: Option<String>,
 ) -> Result<Value, String> {
-    if repo_id.trim().is_empty() || requirement_id.trim().is_empty() || title.trim().is_empty() || outcome.trim().is_empty() {
+    if !has_requirement_scope(repo_id.as_ref(), project_id.as_ref()) {
+        return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_SCOPE_REQUIRED".to_string());
+    }
+    if requirement_id.trim().is_empty() || title.trim().is_empty() || outcome.trim().is_empty() {
         return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_ARGUMENT_REQUIRED".to_string());
+    }
+    if task_status.as_deref().is_some_and(|value| !matches!(value, "planned" | "active" | "waiting_for_user"))
+        || priority.as_deref().is_some_and(|value| !matches!(value, "urgent" | "high" | "normal" | "low"))
+        || assignee.as_ref().is_some_and(|value| value.len() > 160)
+        || dependencies.as_ref().is_some_and(|items| items.len() > 50 || items.iter().any(|id| id.len() > 160)) {
+        return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_METADATA_INVALID".to_string());
     }
     let result = call_runtime_tool("rh_work", json!({
         "repo_id": repo_id,
+        "project_id": project_id,
         "operation": "requirement_create",
         "requirement_id": requirement_id,
         "requirement_title": title,
         "requirement_outcome": outcome,
         "requirement_acceptance_criteria": acceptance_criteria,
+        "requirement_status": task_status,
+        "requirement_priority": priority,
+        "requirement_assignee": assignee,
+        "requirement_dependencies": dependencies,
         "request_id": request_id("requirement-create")
     })).await?;
     Ok(semantic_facade_data(result))
@@ -839,7 +1045,8 @@ async fn create_requirement(
 
 #[tauri::command]
 async fn revise_requirement(
-    repo_id: String,
+    repo_id: Option<String>,
+    project_id: Option<String>,
     requirement_id: String,
     expected_revision: u64,
     title: String,
@@ -847,16 +1054,30 @@ async fn revise_requirement(
     acceptance_criteria: Vec<String>,
     state: Option<String>,
     accepted_evidence_refs: Option<Vec<String>>,
+    remaining_work: Option<Vec<String>>,
+    dependencies: Option<Vec<String>>,
+    task_status: Option<String>,
+    priority: Option<String>,
+    assignee: Option<String>,
 ) -> Result<Value, String> {
-    if repo_id.trim().is_empty() || requirement_id.trim().is_empty()
+    if !has_requirement_scope(repo_id.as_ref(), project_id.as_ref()) {
+        return Err("FORGE_DESKTOP_REQUIREMENT_REVISE_SCOPE_REQUIRED".to_string());
+    }
+    if requirement_id.trim().is_empty()
         || expected_revision == 0 || title.trim().is_empty() || outcome.trim().is_empty()
         || acceptance_criteria.len() > 50
         || state.as_deref().is_some_and(|value| !matches!(value, "open" | "completed" | "cancelled"))
+        || task_status.as_deref().is_some_and(|value| !matches!(value, "planned" | "active" | "waiting_for_user" | "done" | "cancelled"))
+        || priority.as_deref().is_some_and(|value| !matches!(value, "urgent" | "high" | "normal" | "low"))
+        || assignee.as_ref().is_some_and(|value| value.len() > 160)
+        || remaining_work.as_ref().is_some_and(|items| items.len() > 50 || items.iter().any(|item| item.len() > 500))
+        || dependencies.as_ref().is_some_and(|items| items.len() > 50 || items.iter().any(|id| id.len() > 160))
         || accepted_evidence_refs.as_ref().is_some_and(|refs| refs.len() > 100 || refs.iter().any(|reference| reference.len() > 512)) {
         return Err("FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID".to_string());
     }
     let result = call_runtime_tool("rh_work", json!({
         "repo_id": repo_id,
+        "project_id": project_id,
         "operation": "requirement_revise",
         "requirement_id": requirement_id,
         "expected_revision": expected_revision,
@@ -864,7 +1085,12 @@ async fn revise_requirement(
         "requirement_outcome": outcome,
         "requirement_acceptance_criteria": acceptance_criteria,
         "requirement_state": state,
+        "requirement_status": task_status,
+        "requirement_priority": priority,
+        "requirement_assignee": assignee,
         "requirement_accepted_evidence_refs": accepted_evidence_refs,
+        "requirement_remaining_work": remaining_work,
+        "requirement_dependencies": dependencies,
         "request_id": request_id("requirement-revise")
     })).await?;
     let data = semantic_facade_data(result);
@@ -2548,9 +2774,58 @@ fn local_running_process_id(receipt: &Value) -> Option<&str> {
         return None;
     }
     let id = receipt.pointer("/result/processId").and_then(Value::as_str)?;
-    (id.starts_with("proc_") && id.len() <= 128
-        && id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
+    let lightweight = id.strip_prefix("lightweight:").is_some_and(|uuid|
+        uuid.len() == 36 && uuid.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) { byte == b'-' }
+            else { byte.is_ascii_hexdigit() }
+        })
+    );
+    (lightweight || (id.starts_with("proc_") && id.len() <= 128
+        && id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')))
         .then_some(id)
+}
+
+// Live activity output has a smaller budget than the model's tool result.
+fn local_api_tool_output(name: &str, receipt: &Value) -> String {
+    const LIMIT: usize = 2_000;
+    let serialized = receipt.to_string();
+    if serialized.chars().count() <= LIMIT {
+        return serialized;
+    }
+    if !matches!(name, "run_command" | "process_status" | "process_cancel")
+        || !receipt.get("result").is_some_and(Value::is_object) {
+        return serialized.chars().take(LIMIT).collect();
+    }
+    // Project before serializing: slicing JSON can destroy the terminal fields
+    // and even its syntax. Keep the canonical receipt/model result unchanged.
+    let result = &receipt["result"];
+    let mut display = json!({"outputTruncated":true});
+    for key in ["accepted", "completed", "ok", "timedOut", "cancelled"] {
+        if result.get(key).is_some_and(Value::is_boolean) {
+            display[key] = result[key].clone();
+        }
+    }
+    if result.get("exitCode").is_some_and(|value| value.is_number() || value.is_null()) {
+        display["exitCode"] = result["exitCode"].clone();
+    }
+    for (key, max_chars) in [("processId", 128), ("status", 64)] {
+        if let Some(text) = result.get(key).and_then(Value::as_str) {
+            if text.chars().count() <= max_chars { display[key] = json!(text); }
+        }
+    }
+    let mut text_limit = 600;
+    loop {
+        for key in ["stdout", "stderr", "stdoutTail", "stderrTail"] {
+            if let Some(text) = result.get(key).and_then(Value::as_str) {
+                display[key] = json!(text.chars().take(text_limit).collect::<String>());
+            }
+        }
+        let output = json!({"ok":receipt.get("ok").and_then(Value::as_bool),"result":display}).to_string();
+        if output.chars().count() <= LIMIT { return output; }
+        // Account for JSON escaping (quotes, control characters, etc.), not
+        // just the number of source characters. Bounded metadata fits alone.
+        text_limit /= 2;
+    }
 }
 
 fn local_api_process_pause(process_id: &str, total_calls: usize, events: &[Value]) -> Value {
@@ -3169,6 +3444,12 @@ impl StreamedModelRound {
         }
         match protocol {
             "openai" => {
+                // A transport terminator cannot turn truncated/filtered output
+                // into an authoritative answer or executable tool request.
+                if matches!(value.pointer("/choices/0/finish_reason").and_then(Value::as_str),
+                    Some("length" | "content_filter")) {
+                    return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
+                }
                 let delta = &value["choices"][0]["delta"];
                 if let Some(text) = delta.get("content").and_then(Value::as_str) {
                     self.text.push_str(text);
@@ -3259,6 +3540,12 @@ impl StreamedModelRound {
                             }
                         }
                         _ => {}
+                    }
+                }
+                Some("message_delta") => {
+                    if matches!(value.pointer("/delta/stop_reason").and_then(Value::as_str),
+                        Some("max_tokens" | "model_context_window_exceeded")) {
+                        return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
                     }
                 }
                 Some("message_stop") => self.finished = true,
@@ -3774,7 +4061,7 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
             if verification_attempt && ok {
                 patch_needs_verification = false;
             }
-            // The same bounded receipt shown to the model is available in the live tool row.
+            // Bound model context separately from the Process display projection.
             let serialized = result.to_string();
             let bounded = if serialized.chars().count() > LOCAL_API_TOOL_RESULT_MAX_CHARS {
                 format!("{}...[truncated; re-read from Forge if needed]",
@@ -3782,7 +4069,7 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
             } else { serialized };
             host.emit_tool_progress(json!({
                 "conversationId":conversation_id, "name":name, "phase":"output",
-                "output":bounded.chars().take(2_000).collect::<String>(),
+                "output":local_api_tool_output(&name, &result),
                 "processId":process_id, "requestId":effect_request_id, "toolCallId":id,
             }));
             let progress_phase = match effect_outcome {
@@ -3973,7 +4260,8 @@ mod tests {
                     assert!(local_verification_command(&payload["arguments"]));
                     json!({"ok":true,"result":{
                         "accepted":true,"status":"succeeded","exitCode":0,"ok":true,
-                        "timedOut":false,"stdoutTail":"tests passed","stderrTail":""
+                        "timedOut":false,"stdoutTail":"tests passed\n".repeat(400),
+                        "stderrTail":"diagnostic output"
                     }})
                 }
                 _ => json!({"ok":false,"error":"LOCAL_FORGE_TOOL_NOT_ALLOWED"}),
@@ -4165,7 +4453,7 @@ mod tests {
         }
     }
     fn spawn_scripted_agent_provider(
-        protocol: &'static str, bun_executable: &str,
+        protocol: &'static str, bun_executable: &str, stop_reason: Option<&'static str>,
     ) -> (String, std::thread::JoinHandle<Vec<Value>>) {
         use std::{io::{Read, Write}, net::TcpListener, thread, time::Duration};
         let listener = TcpListener::bind("127.0.0.1:0").expect("mock provider socket");
@@ -4271,12 +4559,24 @@ mod tests {
                     frames.push(json!({"choices":[{"delta":{"content":"Read, edited and verified."}}]}).to_string());
                     frames.push("[DONE]".into());
                 }
+                if protocol != "responses" {
+                    let reason = stop_reason.unwrap_or(if round < 3 {
+                        if protocol == "anthropic" { "tool_use" } else { "tool_calls" }
+                    } else if protocol == "anthropic" { "end_turn" } else { "stop" });
+                    let terminal = if protocol == "anthropic" {
+                        json!({"type":"message_delta","delta":{"stop_reason":reason}})
+                    } else {
+                        json!({"choices":[{"delta":{},"finish_reason":reason}]})
+                    };
+                    frames.insert(frames.len() - 1, terminal.to_string());
+                }
                 let payload = frames.into_iter().map(|frame| format!("data: {frame}\r\n\r\n")).collect::<String>();
                 socket.write_all(format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     payload.len()
                 ).as_bytes()).unwrap();
                 socket.write_all(payload.as_bytes()).unwrap();
+                if stop_reason.is_some() { break; }
             }
             requests
         });
@@ -4287,7 +4587,7 @@ mod tests {
     fn native_provider_loop_executes_real_adapter_for_all_api_protocols() {
         for (profile_id, protocol) in [("openai-real-adapter", "openai"), ("anthropic-real-adapter", "anthropic"), ("responses-real-adapter", "responses")] {
             let fixture = native_provider_tool_fixture();
-            let (endpoint, server) = spawn_scripted_agent_provider(protocol, fixture.bun.to_str().unwrap());
+            let (endpoint, server) = spawn_scripted_agent_provider(protocol, fixture.bun.to_str().unwrap(), None);
             let host = NativeProviderToolHost::new(&fixture);
             let config = json!({"defaultProvider":format!("api:{profile_id}"),"apiProfiles":[{"id":profile_id,"endpoint":endpoint,"model":"test-model","apiProtocol":protocol}]});
             let (_cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
@@ -4313,7 +4613,7 @@ mod tests {
     #[test]
     fn same_native_agent_loop_runs_read_edit_and_test_for_openai_and_anthropic() {
         for (profile_id, protocol) in [("openai-test", "openai"), ("anthropic-test", "anthropic")] {
-            let (endpoint, server) = spawn_scripted_agent_provider(protocol, "bun");
+            let (endpoint, server) = spawn_scripted_agent_provider(protocol, "bun", None);
             let host = ScriptedAgentLoopHost::default();
             let config = json!({
                 "defaultProvider":format!("api:{profile_id}"),
@@ -4345,12 +4645,69 @@ mod tests {
                 assert_eq!(phases, vec!["started", "output", "completed"],
                     "one stable tool-call identity must reconcile its complete visible lifecycle");
             }
+            let command_output = events.iter().find(|event| event["channel"] == "tool"
+                && event["payload"]["toolCallId"] == "call-test"
+                && event["payload"]["phase"] == "output").unwrap();
+            let output = command_output["payload"]["output"].as_str().unwrap();
+            assert!(output.chars().count() <= 2_000);
+            let display: Value = serde_json::from_str(output).expect("live Process output JSON");
+            assert_eq!(display["result"]["status"], "succeeded");
+            assert_eq!(display["result"]["exitCode"], 0);
+            assert_eq!(display["result"]["outputTruncated"], true);
+            assert!(display["result"]["stderrTail"].as_str().unwrap().contains("diagnostic output"));
             let requests = server.join().expect("provider server joined");
             assert_eq!(requests.len(), 4);
             assert!(requests.iter().all(|body| body["tools"].as_array().is_some_and(|tools| tools.len() >= 3)));
             assert!(requests[1].to_string().contains("before"), "read receipt must return to the same model loop");
             assert!(requests[2].to_string().contains("applied"), "edit receipt must return to the same model loop");
             assert!(requests[3].to_string().contains("tests passed"), "test receipt must return to the same model loop");
+        }
+    }
+
+    #[test]
+    fn truncated_provider_round_never_dispatches_tools() {
+        for (protocol, reason) in [
+            ("openai", "length"), ("openai", "content_filter"),
+            ("anthropic", "max_tokens"), ("anthropic", "model_context_window_exceeded"),
+        ] {
+            let (endpoint, server) = spawn_scripted_agent_provider(protocol, "bun", Some(reason));
+            let host = ScriptedAgentLoopHost::default();
+            let config = json!({"apiProfiles":[{
+                "id":"truncated-test","endpoint":endpoint,"model":"test-model","apiProtocol":protocol
+            }]});
+            let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+            let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+                &host, config, vec![json!({"role":"user","content":"Read fixture.txt"})],
+                Some("repo_test".into()), Some("checkout_test".into()), "conv-truncated".into(),
+                Some("api:truncated-test".into()), None, true, &mut cancellation,
+            ));
+            assert!(host.tool_calls.lock().unwrap().is_empty(),
+                "{protocol}/{reason}: truncated tool requests must never execute");
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+            assert_eq!(server.join().unwrap().len(), 1, "no automatic retry");
+        }
+    }
+
+    #[test]
+    fn truncated_provider_text_is_not_a_completed_answer() {
+        for (protocol, reason) in [("openai", "length"), ("anthropic", "max_tokens")] {
+            let host = RecordingStreamHost::default();
+            let mut round = StreamedModelRound::default();
+            let frames = if protocol == "openai" {
+                vec![json!({"choices":[{"delta":{"content":"Partial answer"}}]}).to_string(),
+                    json!({"choices":[{"delta":{},"finish_reason":reason}]}).to_string(),
+                    "[DONE]".to_string()]
+            } else {
+                vec![json!({"type":"content_block_delta","index":0,
+                    "delta":{"type":"text_delta","text":"Partial answer"}}).to_string(),
+                    json!({"type":"message_delta","delta":{"stop_reason":reason}}).to_string(),
+                    json!({"type":"message_stop"}).to_string()]
+            };
+            let result = frames.iter().try_for_each(|frame| round.consume(protocol, frame, &host, "conv-text"))
+                .and_then(|()| round.finish(protocol));
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+            assert!(host.events.lock().unwrap().iter().any(|event| event["delta"] == "Partial answer"),
+                "text previews remain visible without becoming completion receipts");
         }
     }
 
@@ -4865,6 +5222,119 @@ mod tests {
         assert_eq!(local_effect_outcome("apply_patch", &json!({"ok":false,"result":{
             "status":"failed","terminal":true
         }})), LocalEffectOutcome::TerminalFailure);
+    }
+
+    #[test]
+    fn lightweight_process_receipts_preserve_join_and_pause_identity() {
+        let id = "lightweight:12345678-1234-4abc-8def-1234567890ab";
+        for status in ["starting", "running", "running_recovered"] {
+            let pending = json!({"ok":true,"result":{
+                "accepted":true,"status":status,"processId":id
+            }});
+            assert_eq!(local_running_process_id(&pending), Some(id));
+        }
+        for invalid in ["lightweight:", "lightweight:abc", "lightweight:1234567812344abc8def1234567890ab",
+            "lightweight:12345678-1234-4abc-8def-1234567890ag",
+            "lightweight:12345678-1234-4abc-8def-1234567890ab/other"] {
+            assert!(local_running_process_id(&json!({"ok":true,"result":{
+                "accepted":true,"status":"running","processId":invalid
+            }})).is_none());
+        }
+        for receipt in [
+            json!({"ok":false,"result":{"accepted":true,"status":"running","processId":id}}),
+            json!({"ok":true,"result":{"accepted":false,"status":"running","processId":id}}),
+            json!({"ok":true,"result":{"accepted":true,"status":"succeeded","processId":id}}),
+        ] {
+            assert!(local_running_process_id(&receipt).is_none());
+        }
+        let events = [json!({"name":"run_command","status":"running","processId":id})];
+        let paused = local_api_process_pause(id, 1, &events);
+        assert_eq!(paused["incomplete"], true);
+        assert_eq!(paused["toolEvents"][0]["processId"], id);
+        assert!(paused["output"].as_str().unwrap().contains(id));
+        for (status, exit_code, outcome) in [
+            ("succeeded", json!(0), LocalEffectOutcome::Succeeded),
+            ("failed", json!(1), LocalEffectOutcome::TerminalFailure),
+            ("completed_unknown", Value::Null, LocalEffectOutcome::Unknown),
+        ] {
+            let query = json!({"ok":true,"result":{
+                "processId":id,"completed":true,"status":status,"exitCode":exit_code
+            }});
+            let terminal = local_terminal_process_receipt(id, &query).unwrap();
+            assert_eq!(terminal["result"]["processId"], id);
+            assert_eq!(local_effect_outcome("run_command", &terminal), outcome);
+            assert!(local_terminal_process_receipt("proc_other", &query).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn lightweight_process_wait_queries_only_the_original_bound_handle() {
+        struct ProcessHost {
+            query: Value,
+            calls: std::sync::Mutex<Vec<Value>>,
+        }
+        impl LocalApiHost for ProcessHost {
+            fn packaged_tool_script(&self) -> Result<PathBuf, String> { panic!("test executor only") }
+            fn emit_tool_progress(&self, _: Value) {}
+            fn emit_model_progress(&self, _: Value) {}
+            fn execute_test_tool(&self, payload: &Value) -> Option<Result<Value, String>> {
+                self.calls.lock().unwrap().push(payload.clone());
+                Some(Ok(self.query.clone()))
+            }
+        }
+        let id = "lightweight:12345678-1234-4abc-8def-1234567890ab";
+        let (_, cancel) = tokio::sync::watch::channel(false);
+        for (query, expected) in [
+            (json!({"ok":true,"result":{"processId":id,"completed":true,
+                "status":"succeeded","exitCode":0,"stdoutTail":"done"}}), true),
+            (json!({"ok":false,"error":"PROCESS_HANDLE_PRINCIPAL_MISMATCH"}), false),
+            (json!({"ok":false,"error":"LOCAL_FORGE_PROCESS_CHECKOUT_MISMATCH"}), false),
+            (json!({"ok":true,"result":{"processId":"proc_other","completed":true,
+                "status":"succeeded","exitCode":0}}), false),
+        ] {
+            let host = ProcessHost { query, calls: Default::default() };
+            let result = local_wait_running_process(&host, &mut None, "repo_test",
+                Some("checkout_test"), "conversation_test", id, 1_000, &cancel).await;
+            assert_eq!(result.is_some(), expected);
+            if let Some(receipt) = result {
+                assert_eq!(receipt["result"]["processId"], id);
+                assert_eq!(receipt["result"]["stdoutTail"], "done");
+            }
+            let calls = host.calls.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0]["tool"], "process_status");
+            assert_eq!(calls[0]["arguments"]["process_id"], id);
+            assert_eq!(calls[0]["repoId"], "repo_test");
+            assert_eq!(calls[0]["checkoutId"], "checkout_test");
+            assert_eq!(calls[0]["conversationId"], "conversation_test");
+            assert_eq!(calls[0]["allowEffects"], false);
+        }
+    }
+
+    #[test]
+    fn process_output_preserves_json_and_terminal_diagnostics_under_budget() {
+        for name in ["run_command", "process_status", "process_cancel"] {
+            for text in ["long output".repeat(1_000), "\"\\\n\t\u{0001}中文🫖".repeat(1_000)] {
+                let receipt = json!({"ok":true,"result":{
+                    "processId":"lightweight:12345678-1234-4abc-8def-1234567890ab",
+                    "status":"failed","completed":true,"accepted":true,"ok":false,
+                    "exitCode":17,"timedOut":true,"cancelled":false,
+                    "stdoutTail":text,"stderrTail":format!("stderr: {text}")
+                }});
+                let output = local_api_tool_output(name, &receipt);
+                assert!(output.chars().count() <= 2_000);
+                let parsed: Value = serde_json::from_str(&output).expect("bounded output remains valid JSON");
+                for key in ["processId", "status", "completed", "accepted", "ok", "exitCode", "timedOut", "cancelled"] {
+                    assert_eq!(parsed["result"][key], receipt["result"][key], "{key}");
+                }
+                assert_eq!(parsed["ok"], true);
+                assert_eq!(parsed["result"]["outputTruncated"], true);
+                assert!(!parsed["result"]["stdoutTail"].as_str().unwrap().is_empty());
+                assert!(parsed["result"]["stderrTail"].as_str().unwrap().starts_with("stderr: "));
+            }
+        }
+        let small = json!({"ok":true,"result":{"status":"succeeded","exitCode":0,"stdout":"done","stderr":""}});
+        assert_eq!(local_api_tool_output("run_command", &small), small.to_string());
     }
 
     #[test]

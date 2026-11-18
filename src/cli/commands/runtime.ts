@@ -1,3 +1,4 @@
+import { applyRuntimeCleanupArguments } from '../../runtime/maintenance/cleanup';
 import { Command } from 'commander';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
@@ -263,6 +264,23 @@ export function buildRuntimeCommand(): Command {
       const home = resolveRuntimeStateControllerHome(opts.controllerHome);
       if (opts.repoId) return output({ jobs: listExecutionJobs(home, opts.repoId, Number(opts.limit ?? 100)) });
       output({ jobs: listActiveExecutionJobs(home) });
+    });
+
+  command.command('maintenance-apply', { hidden: true })
+    .description('Internal isolated runtime cleanup entry')
+    .requiredOption('--controller-home <path>', 'Controller state root')
+    .requiredOption('--repo-id <id>', 'Repository id')
+    .requiredOption('--tool <name>', 'Maintenance tool name')
+    .requiredOption('--args-base64 <payload>', 'Base64url JSON arguments')
+    .action(async (opts: { controllerHome: string; repoId: string; tool: string; argsBase64: string }) => {
+      if (opts.tool !== 'runtime_cleanup_apply') throw new Error(`MAINTENANCE_TOOL_UNSUPPORTED: ${opts.tool}`);
+      const home = resolveControllerHome(opts.controllerHome);
+      const args = JSON.parse(Buffer.from(opts.argsBase64, 'base64url').toString('utf8'));
+      if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('MAINTENANCE_ARGUMENTS_INVALID');
+      const { resolveRepositorySelection } = await import('../../runtime/repositories/registry');
+      const repository = resolveRepositorySelection({ controllerHome: home, repoId: opts.repoId, checkoutId: args.checkout_id });
+      if (!repository) throw new Error(`REPOSITORY_NOT_FOUND: ${opts.repoId}`);
+      process.stdout.write(JSON.stringify(applyRuntimeCleanupArguments(home, repository.canonicalRoot, args)));
     });
 
   command.command('diagnostic-read', { hidden: true })

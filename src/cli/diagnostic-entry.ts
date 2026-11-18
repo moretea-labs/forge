@@ -1,5 +1,6 @@
+import { applyRuntimeCleanupArguments } from '../runtime/maintenance/cleanup';
 import { resolve } from 'path';
-import { getRepository } from '../runtime/repositories/registry';
+import { getRepository, resolveRepositorySelection } from '../runtime/repositories/registry';
 import { executeReadOnlyDiagnostic, isReadOnlyDiagnosticTool } from '../runtime/diagnostics/read-only-tool';
 
 function requiredOption(argv: string[], name: string): string {
@@ -11,14 +12,15 @@ function requiredOption(argv: string[], name: string): string {
 
 export async function runImmutableDiagnosticCli(argv = process.argv.slice(1)): Promise<void> {
   const commandIndex = argv.indexOf('runtime');
-  if (commandIndex < 0 || argv[commandIndex + 1] !== 'diagnostic-read') {
+  if (commandIndex < 0 || !['diagnostic-read', 'maintenance-apply'].includes(argv[commandIndex + 1] ?? '')) {
     throw new Error('DIAGNOSTIC_USAGE: runtime diagnostic-read --controller-home <path> --repo-id <id> --tool <name> --args-base64 <payload>');
   }
   const controllerHome = resolve(requiredOption(argv, '--controller-home'));
   const repoId = requiredOption(argv, '--repo-id');
   const tool = requiredOption(argv, '--tool');
   const argsBase64 = requiredOption(argv, '--args-base64');
-  if (!isReadOnlyDiagnosticTool(tool)) throw new Error(`DIAGNOSTIC_TOOL_UNSUPPORTED: ${tool}`);
+  const cleanup = argv[commandIndex + 1] === 'maintenance-apply';
+  if (cleanup ? tool !== 'runtime_cleanup_apply' : !isReadOnlyDiagnosticTool(tool)) throw new Error(`DIAGNOSTIC_TOOL_UNSUPPORTED: ${tool}`);
   const repository = getRepository(repoId, controllerHome);
   if (!repository) throw new Error(`REPOSITORY_NOT_FOUND: ${repoId}`);
   let args: Record<string, unknown>;
@@ -30,7 +32,11 @@ export async function runImmutableDiagnosticCli(argv = process.argv.slice(1)): P
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(`DIAGNOSTIC_ARGUMENTS_INVALID: ${detail}`);
   }
-  process.stdout.write(JSON.stringify(await executeReadOnlyDiagnostic(tool, controllerHome, repository, args)));
+  const selected = cleanup ? resolveRepositorySelection({ controllerHome, repoId, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined }) : repository;
+  if (!selected) throw new Error(`REPOSITORY_NOT_FOUND: ${repoId}`);
+  process.stdout.write(JSON.stringify(cleanup
+    ? applyRuntimeCleanupArguments(controllerHome, selected.canonicalRoot, args)
+    : await executeReadOnlyDiagnostic(tool as import('../runtime/diagnostics/read-only-tool').ReadOnlyDiagnosticTool, controllerHome, selected, args)));
 }
 
 void runImmutableDiagnosticCli().catch((error) => {

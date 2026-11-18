@@ -37,6 +37,40 @@ export function createSupervisorHealthSchedule(
   return { schedule };
 }
 
+const UNRESOLVED_SUPERVISOR_ACTIONS = new Set([
+  'last_tick_failed_pending_receipt',
+  'last_tick_failed_needs_observation',
+  'progress_stalled_recovery_not_verified',
+  'provider_error_no_pending_receipt_needs_observation',
+  'deferred_requirement_unavailable',
+  'active_writer_or_process_no_forced_restart',
+  'missing_plist',
+  'deferred_launchd_policy_unavailable',
+  'deferred_github_progress_unavailable',
+  'progress_review_deferred_github_or_supervisor_unavailable',
+  'owned_tab_missing_guarded_recovery_needed',
+  'execution_active_issue_review_required',
+]);
+
+type SupervisorHealthLane = {
+  action?: string;
+  last_exit?: number;
+  pending_effect?: boolean;
+  kickstart_ok?: boolean;
+  restore_ok?: boolean;
+};
+
+export function summarizeSupervisorHealthcheckLanes(lanes: SupervisorHealthLane[]) {
+  return {
+    laneCount: lanes.length,
+    failedTicks: lanes.filter(l => typeof l.last_exit === 'number' && l.last_exit !== 0).length,
+    pendingEffects: lanes.filter(l => l.pending_effect === true).length,
+    attemptedRecoveries: lanes.filter(l => ['kickstart', 'wake_provider_recovery', 'restoring_unloaded'].includes(l.action ?? '')).length,
+    unhealthy: lanes.filter(l => UNRESOLVED_SUPERVISOR_ACTIONS.has(l.action ?? '')
+      || l.kickstart_ok === false || l.restore_ok === false).length,
+  };
+}
+
 export async function executeSupervisorHealthcheck(): Promise<{
   laneCount: number; failedTicks: number; pendingEffects: number; attemptedRecoveries: number; unhealthy: number;
 }> {
@@ -70,15 +104,5 @@ export async function executeSupervisorHealthcheck(): Promise<{
     action?: string; last_exit?: number; pending_effect?: boolean; kickstart_ok?: boolean; restore_ok?: boolean;
   }> };
   if (!Array.isArray(result.lanes)) throw new Error('SUPERVISOR_HEALTH_RECEIPT_INVALID');
-  const lanes = result.lanes;
-  return {
-    laneCount: lanes.length,
-    failedTicks: lanes.filter(l => typeof l.last_exit === 'number' && l.last_exit !== 0).length,
-    pendingEffects: lanes.filter(l => l.pending_effect === true).length,
-    attemptedRecoveries: lanes.filter(l => ['kickstart', 'wake_provider_recovery', 'restoring_unloaded'].includes(l.action ?? '')).length,
-    unhealthy: lanes.filter(l => ['last_tick_failed_pending_receipt', 'last_tick_failed_needs_observation',
-      'progress_stalled_recovery_not_verified', 'provider_error_no_pending_receipt_needs_observation',
-      'deferred_requirement_unavailable', 'active_writer_or_process_no_forced_restart', 'missing_plist'].includes(l.action ?? '')
-      || l.kickstart_ok === false || l.restore_ok === false).length,
-  };
+  return summarizeSupervisorHealthcheckLanes(result.lanes);
 }

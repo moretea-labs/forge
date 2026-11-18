@@ -855,6 +855,32 @@ export function listControlPlaneRecords<T>(
     listControlPlaneRecordsWithinTransaction<T>(database, input));
 }
 
+export interface ControlPlaneAuditEvent {
+  eventId: number;
+  action: string;
+  revision: number;
+  occurredAt: string;
+}
+
+export function listControlPlaneAuditEvents(
+  controllerHome: string,
+  input: { namespace: string; scope: string; key: string; limit?: number },
+): ControlPlaneAuditEvent[] {
+  const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 100), 1_000));
+  return withDatabaseForRead(controllerHome, (database) =>
+    withSqliteStatement(database, `
+      SELECT event_id, action, revision, occurred_at
+      FROM control_plane_audit
+      WHERE namespace = ? AND scope = ? AND record_key = ?
+      ORDER BY revision DESC, event_id DESC
+      LIMIT ?
+    `, (statement) => (statement.all(input.namespace, input.scope, input.key, limit) as Array<{
+      event_id: number; action: string; revision: number; occurred_at: string;
+    }>).map((row) => ({
+      eventId: row.event_id, action: row.action, revision: row.revision, occurredAt: row.occurred_at,
+    }))));
+}
+
 /** Exact stable-key lookup across scopes. This is a read of the existing Control Plane authority, not a second id registry. */
 export function findControlPlaneRecordsByKey<T>(
   controllerHome: string,
@@ -1545,6 +1571,8 @@ export function mutateControlPlaneRecord<T>(
     readLegacy?: () => T | undefined;
     action: string;
     mutate: (current: ControlPlaneRecord<T> | undefined) => T;
+    /** Preserve the current revision when mutate explicitly returns the current value object. */
+    skipWriteWhenMutationReturnsCurrent?: boolean;
   },
 ): ControlPlaneRecord<T> {
   return withControlPlaneTransaction(controllerHome, (database) => {
@@ -1562,12 +1590,20 @@ export function mutateControlPlaneRecord<T>(
         });
       }
     }
+    const next = input.mutate(current);
+    if (
+      input.skipWriteWhenMutationReturnsCurrent === true
+      && current?.schemaVersion === input.schemaVersion
+      && next === current.value
+    ) {
+      return current;
+    }
     return writeRecord(database, {
       namespace: input.namespace,
       scope: input.scope,
       key: input.key,
       schemaVersion: input.schemaVersion,
-      value: input.mutate(current),
+      value: next,
       action: input.action,
     }, current);
   });

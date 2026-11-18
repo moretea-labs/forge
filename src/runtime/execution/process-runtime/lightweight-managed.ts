@@ -862,7 +862,8 @@ export async function startLightweightRepositoryCommand(
     recordProcessHandleIndexEntry(input.controllerHome, {
       processId,
       lane: 'lightweight',
-      target: processScopeExecutionTarget(input.controllerHome, processScopeFromKey(entry.scopeKey)),
+      target: processScopeExecutionTarget(input.controllerHome,
+        scope.kind === 'repository' ? { ...scope, checkoutId: input.repository.activeCheckoutId } : scope),
       principalId: entry.principalId,
       commandId: entry.commandId,
     });

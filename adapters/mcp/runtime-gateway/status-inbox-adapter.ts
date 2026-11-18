@@ -484,6 +484,15 @@ export async function callStatusInboxAdapter(
       const activeProcessRecords = processRuntimeResourceDiagnostics().activeProcessIds
         .map((processId) => getProcessRecord(ctx.controllerHome, repository.repoId, processId))
         .filter((process): process is NonNullable<typeof process> => Boolean(process && isManagedProcessActive(process)));
+      const activeProcessScopes = { checkoutCounts: {} as Record<string, number>, unscopedCount: 0 };
+      for (const process of activeProcessRecords) {
+        if (process.checkoutId) {
+          const count = activeProcessScopes.checkoutCounts[process.checkoutId] ?? 0;
+          activeProcessScopes.checkoutCounts[process.checkoutId] = count + 1;
+        } else {
+          activeProcessScopes.unscopedCount += 1;
+        }
+      }
       markDetailPhase('process_state');
       const latencyBuckets = gatewayLatencySummaries(repository.repoId);
       const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute'] as const;
@@ -525,6 +534,7 @@ export async function callStatusInboxAdapter(
           },
           pendingHandoffCount,
           activeProcessCount: activeProcessRecords.length,
+          activeProcessScopes,
           ...(detailLevel === 'detail' ? { repositoryDelivery: {
             observation: 'git_snapshot' as const,
             diagnosticOnly: true,

@@ -28,7 +28,6 @@ import { createSchedule, getOccurrence, getSchedule, reclaimStaleCreatedOccurren
 import {
   buildSchedulerHealthSnapshot,
   normalizeSchedulerConfig,
-  restoreSchedulerState,
 } from '../../src/runtime/control-plane/global-scheduler/scheduler';
 import { selectSchedulerProjectionRefreshTargets } from '../../src/runtime/control-plane/global-scheduler/projection-refresh';
 import { evaluateSchedulerWorkerExitCandidate } from '../../src/runtime/control-plane/global-scheduler/worker-exit-decision';
@@ -121,20 +120,7 @@ describe('control-plane hardening', () => {
     });
   });
 
-  test('isolates Scheduler state restoration and snapshot serialization from lifecycle mutation', () => {
-    const sourceScanAt = Date.parse('2026-08-20T12:34:56.000Z');
-    expect(restoreSchedulerState({
-      schemaVersion: 1,
-      updatedAt: '2026-08-20T13:00:00.000Z',
-      lastSourceScanAt: '2026-08-20T12:34:56.000Z',
-      lastSourceScanRepoCount: 3,
-      sourceScansAvoided: 5,
-    })).toEqual({
-      lastSourceScanAt: sourceScanAt,
-      lastSourceScanRepoCount: 3,
-      sourceScansAvoided: 5,
-    });
-
+  test('serializes Scheduler health without retired Git polling state', () => {
     expect(buildSchedulerHealthSnapshot({
       loopStartedAt: '2026-08-20T12:00:00.000Z',
       lastHeartbeatAt: '2026-08-20T12:59:58.000Z',
@@ -142,9 +128,6 @@ describe('control-plane hardening', () => {
       lastTickAt: '2026-08-20T12:59:58.000Z',
       lastDispatchAt: '2026-08-20T12:59:00.000Z',
       lastReconcileAt: undefined,
-      lastSourceScanAt: sourceScanAt,
-      lastSourceScanRepoCount: 3,
-      sourceScansAvoided: 5,
     }, Date.parse('2026-08-20T13:00:00.000Z'))).toEqual({
       schemaVersion: 1,
       updatedAt: '2026-08-20T13:00:00.000Z',
@@ -154,9 +137,6 @@ describe('control-plane hardening', () => {
       lastTickAt: '2026-08-20T12:59:58.000Z',
       lastDispatchAt: '2026-08-20T12:59:00.000Z',
       lastReconcileAt: undefined,
-      lastSourceScanAt: '2026-08-20T12:34:56.000Z',
-      lastSourceScanRepoCount: 3,
-      sourceScansAvoided: 5,
     });
   });
 

@@ -157,12 +157,24 @@ export interface AssistantPluginActionRequest {
   origin: ExecutionJobOrigin;
 }
 
+export interface GitHubIssueSyncPort {
+  publishIssue(repoRoot: string, issueId: string): object | Promise<object>;
+  refreshIssue(repoRoot: string, issueId: string): object | Promise<object>;
+  closeIssue(repoRoot: string, issueId: string): object | Promise<object>;
+}
+
+/** In-memory effect dependencies supplied by the CLI composition root; never persisted in requests or receipts. */
+export interface AssistantPluginActionExecutionPorts {
+  githubIssueSync?: GitHubIssueSyncPort;
+}
+
 export interface AssistantPluginActionExecutionInput {
   controllerHome: string;
   /** Explicit per-invocation authorization for protected plugin actions. */
   confirmAuthorization?: boolean;
   repoId: string;
   repoRoot: string;
+  executionPorts?: AssistantPluginActionExecutionPorts;
   pluginId: string;
   actionId: string;
   requestId: string;

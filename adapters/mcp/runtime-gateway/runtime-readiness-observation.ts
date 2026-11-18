@@ -12,6 +12,7 @@ import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION } from "../
 import { inspectRepositoryRuntimeStorage } from "../../../src/runtime/repositories/runtime-storage";
 import { resolveLocalBridgeSurface } from "../../../src/runtime/shared/local-bridge-surface";
 import { listHandoffItems } from "../../../src/runtime/control-plane/facade";
+import type { TaskLedgerProjection } from "../../../src/runtime/projections/task-ledger-types";
 
 export function ageMs(value: string | undefined): number | undefined {
   if (!value) return undefined;
@@ -55,18 +56,27 @@ export interface ControllerReadinessSignals {
   sessionContinuity?: GradedObservation;
 }
 
+export interface ControllerReadinessPrecomputed {
+  projectionSnapshot?: ReturnType<typeof readRepositoryProjectionSnapshot>;
+  taskLedger?: TaskLedgerProjection;
+  runtimeStorageInspection?: ReturnType<typeof inspectRepositoryRuntimeStorage>;
+}
+
 export async function controllerReadinessEvidence(
   ctx: MultiRepositoryMcpToolContext,
   repository = ctx.explicitRepository,
   signals: ControllerReadinessSignals = {},
+  precomputed: ControllerReadinessPrecomputed = {},
 ) {
   const daemon = readForgeRuntimeStatus(ctx.controllerHome);
   const scheduler = readSchedulerHealthSnapshot(ctx.controllerHome);
-  const projectionSnapshot = repository ? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId) : undefined;
+  const projectionSnapshot = precomputed.projectionSnapshot
+    ?? (repository ? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId) : undefined);
   const projection = projectionSnapshot?.projection;
-  const taskLedger = repository && !legacyIssueAuthorityRetired(repository.canonicalRoot)
-    ? buildControllerTaskLedgerProjection(repository.canonicalRoot)
-    : undefined;
+  const taskLedger = precomputed.taskLedger
+    ?? (repository && !legacyIssueAuthorityRetired(repository.canonicalRoot)
+      ? buildControllerTaskLedgerProjection(repository.canonicalRoot)
+      : undefined);
   const projectionReconciliation = projectionSnapshot
     ? reconcileReadinessProjectionSource(projectionSnapshot, taskLedger)
     : undefined;
@@ -135,7 +145,8 @@ export async function controllerReadinessEvidence(
         // Read-only counterpart of the status path: never creates or migrates
         // storage during a readiness probe. Legitimately lazy binding stays
         // benign; real legacy blockers and unusable paths stop readiness.
-        const inspection = inspectRepositoryRuntimeStorage(repository, ctx.controllerHome);
+        const inspection = precomputed.runtimeStorageInspection
+          ?? inspectRepositoryRuntimeStorage(repository, ctx.controllerHome);
         return { readable: true, ready: inspection.readyForExecution, warnings: inspection.warnings };
       })()
       : { readable: true, ready: true },

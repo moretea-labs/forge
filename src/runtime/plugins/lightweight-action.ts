@@ -65,7 +65,7 @@ export interface LightweightPluginActionRuntimeInvocation {
 function trustedNodeExecutable(explicit?: string): string {
   const executable = explicit?.trim() || resolveTrustedNodeExecutable().executable;
   if (!executable) {
-    throw new Error('NODE_EXECUTABLE_UNAVAILABLE: typed plugin sidecar requires a bundled Runtime sidecar or trusted Node executable');
+    throw new Error('NODE_EXECUTABLE_UNAVAILABLE: plugin sidecar requires a bundled sidecar or trusted Node executable');
   }
   return executable;
 }
@@ -83,7 +83,7 @@ export function resolveLightweightPluginActionRuntimeInvocation(options: {
     if (existsSync(compiledSidecar)) {
       return { executable: compiledSidecar, argsPrefix: [], identity: 'compiled_release_sidecar' };
     }
-    const packageSidecar = join(releaseRoot, 'package', 'src', 'runtime', 'plugins', 'plugin-action-sidecar.ts');
+    const packageSidecar = join(releaseRoot, 'package', 'src', 'cli', 'github', 'plugin-action-sidecar.ts');
     const packageLoader = join(releaseRoot, 'package', 'src', 'runtime', 'shared', 'node-ts-loader.mjs');
     if (existsSync(packageSidecar) && existsSync(packageLoader)) {
       return {
@@ -102,7 +102,7 @@ export function resolveLightweightPluginActionRuntimeInvocation(options: {
   }
 
   const sourceDir = options.sourceDir ?? import.meta.dir;
-  const sourceSidecar = resolve(sourceDir, 'plugin-action-sidecar.ts');
+  const sourceSidecar = resolve(sourceDir, '../../cli/github/plugin-action-sidecar.ts');
   const sourceLoader = resolve(sourceDir, '../shared/node-ts-loader.mjs');
   if (existsSync(sourceSidecar) && existsSync(sourceLoader)) {
     return {
@@ -111,7 +111,7 @@ export function resolveLightweightPluginActionRuntimeInvocation(options: {
       identity: 'source_node',
     };
   }
-  throw new Error(`RUNTIME_PLUGIN_ACTION_SIDECAR_UNAVAILABLE: no runtime-owned plugin action sidecar or loader is available from ${sourceDir}`);
+  throw new Error(`RUNTIME_PLUGIN_ACTION_SIDECAR_UNAVAILABLE: no CLI-composed plugin action sidecar or loader is available from ${sourceDir}`);
 }
 
 export async function startLightweightPluginAction(input: {

@@ -3,6 +3,8 @@ import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { spawnManagedProcess, cancelProcess, updateProcessRecord } from '../../src/runtime/execution/process-runtime';
+import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
@@ -805,6 +807,54 @@ printf '{"ok":true}\\n'
     }
   });
 
+
+  test('rh_status partitions active processes by exact checkout and excludes terminal processes', async () => {
+    const business = tempRoot('forge-status-process-scope-');
+    const controllerHome = tempRoot('forge-home-process-scope-');
+    initGitRepo(business, 'status-process-scope');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: business, controllerHome });
+    const worktree = join(controllerHome, 'other-checkout');
+    git(business, 'worktree', 'add', '-q', '-b', 'other-checkout', worktree);
+    const registry = addRepositoryCheckout({ repoId: repository.repoId, path: worktree, controllerHome });
+    const otherCheckout = registry.checkouts.find(item => item.canonicalRoot === realpathSync(worktree))!;
+    const otherRepository = resolveRepositorySelection({ repoId: repository.repoId, checkoutId: otherCheckout.checkoutId, controllerHome });
+    const otherHandle = await spawnManagedProcess({
+      controllerHome, repoId: repository.repoId, checkoutId: otherCheckout.checkoutId,
+      executionIdentity: executionIdentityForRepository(otherRepository),
+      command: { kind: 'argv', executable: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], cwd: worktree },
+      timeoutMs: 15000, returnHandleImmediately: true,
+    });
+    const handle = await spawnManagedProcess({
+      controllerHome, repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(repository),
+      command: { kind: 'argv', executable: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], cwd: business },
+      timeoutMs: 15000, returnHandleImmediately: true,
+    });
+    try {
+      const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
+        repo_id: repository.repoId, detail_level: 'detail',
+      }));
+      const data = payload.data as { activeProcessCount: number; activeProcessScopes: { checkoutCounts: Record<string, number>; unscopedCount: number } };
+      expect(data.activeProcessCount).toBe(2);
+      expect(data.activeProcessScopes).toEqual({ checkoutCounts: { [repository.activeCheckoutId!]: 1, [otherCheckout.checkoutId]: 1 }, unscopedCount: 0 });
+      updateProcessRecord(controllerHome, repository.repoId, otherHandle.processId, { checkoutId: undefined });
+      const unknownPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
+        repo_id: repository.repoId, detail_level: 'detail',
+      }));
+      expect((unknownPayload.data as Record<string, unknown>).activeProcessScopes).toEqual({
+        checkoutCounts: { [repository.activeCheckoutId!]: 1 }, unscopedCount: 1,
+      });
+    } finally {
+      await cancelProcess(controllerHome, repository.repoId, handle.processId);
+      await cancelProcess(controllerHome, repository.repoId, otherHandle.processId);
+    }
+    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
+      repo_id: repository.repoId, detail_level: 'detail',
+    }));
+    expect((payload.data as Record<string, unknown>).activeProcessScopes).toEqual({ checkoutCounts: {}, unscopedCount: 0 });
+  });
 
   test('rh_status keeps maintenance diagnostic opt-in on a clean Controller', async () => {
     const business = tempRoot('forge-status-maintenance-business-');

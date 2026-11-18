@@ -22,7 +22,7 @@ import {
   type CanonicalRuntimeDependencies,
 } from '../../src/runtime/root/runtime';
 import type { CanonicalRuntimeConfig } from '../../src/runtime/root/types';
-import { startConfiguredRuntimeLocalBridge } from '../../src/runtime/root/local-bridge';
+import { startConfiguredRuntimeLocalBridge } from '../../src/cli/local-bridge/runtime-bridge';
 import { closeRuntimeMcpTransportResources } from '../../src/runtime/root/mcp-transport';
 import {
   loadMcpServiceRuntimeState,

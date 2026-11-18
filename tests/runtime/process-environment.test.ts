@@ -122,7 +122,7 @@ describe('repository child process environment', () => {
   test('resolves and validates Scheduler worker command paths outside GlobalScheduler', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-worker-command-'));
     homes.push(root);
-    const workerDir = join(root, 'src', 'runtime', 'execution', 'workers');
+    const workerDir = join(root, 'src', 'cli', 'execution');
     const sharedDir = join(root, 'src', 'runtime', 'shared');
     mkdirSync(workerDir, { recursive: true });
     mkdirSync(sharedDir, { recursive: true });

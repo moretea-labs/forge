@@ -2,8 +2,9 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { pathToFileURL } from 'url';
 import { Command } from 'commander';
-import { CanonicalForgeRuntime } from './runtime';
-import { parseRuntimeDeploymentTopologyArgument } from './deployment-topology';
+import { CanonicalForgeRuntime } from '../../runtime/root/runtime';
+import { parseRuntimeDeploymentTopologyArgument } from '../../runtime/root/deployment-topology';
+import { startConfiguredRuntimeLocalBridge } from '../local-bridge/runtime-bridge';
 
 interface CliOptions {
   controllerHome: string;
@@ -43,6 +44,8 @@ export async function runCanonicalRuntimeCli(argv = process.argv): Promise<void>
     port,
     topology: parseRuntimeDeploymentTopologyArgument(options.deploymentTopology),
     authToken: readAuthToken(options.authTokenFile),
+  }, {
+    startLocalBridge: startConfiguredRuntimeLocalBridge,
   });
   await runtime.start();
   process.stderr.write(`${JSON.stringify({

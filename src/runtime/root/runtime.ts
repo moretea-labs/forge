@@ -26,7 +26,6 @@ import { migrateReleaseDurableState } from '../release/release-state-migration';
 import { normalizeLegacyRequirementAcceptance } from '../control-plane/persistence/requirement-store';
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaim } from './write-fence';
 import { startInProcessScheduler, type RuntimeSchedulerHandle } from './scheduler';
-import { startConfiguredRuntimeLocalBridge, type RuntimeLocalBridgeHandle } from './local-bridge';
 import { startActiveExecutionPowerAssertion, type RuntimePowerAssertionHandle } from './active-execution-power-assertion';
 import { normalizeRuntimeDeploymentTopology, type RuntimeDeploymentTopology } from './deployment-topology';
 import { removeRuntimeStartupFailureEvidence, removeRuntimeStatusSnapshot, writeRuntimeStartupFailureEvidence, writeRuntimeStatusSnapshot } from './status';
@@ -40,6 +39,11 @@ import type {
 
 export interface RuntimeReleaseAuthorityMonitor {
   stop(): void;
+}
+
+export interface RuntimeLocalBridgeHandle {
+  endpoint: string;
+  close(): Promise<void>;
 }
 
 export interface CanonicalRuntimeDependencies {
@@ -186,7 +190,7 @@ const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   acquireOwnership: acquireRuntimeOwnership,
   inspectDatabase: inspectControlPlaneDatabase,
   startScheduler: startInProcessScheduler,
-  startLocalBridge: startConfiguredRuntimeLocalBridge,
+  startLocalBridge: async () => undefined,
   startPowerAssertion: startActiveExecutionPowerAssertion,
   startTransport: startRuntimeMcpTransport,
   runMcpProbe: defaultMcpProbe,

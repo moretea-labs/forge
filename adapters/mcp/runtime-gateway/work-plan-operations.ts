@@ -14,7 +14,8 @@ import {
   type CheckDefinitionLike,
   type PlanContractStoreOptions,
 } from '../../../src/runtime/control-plane/facade';
-import { readRequirement } from '../../../src/runtime/control-plane/persistence/requirement-store';
+import { readRequirement, type Requirement } from '../../../src/runtime/control-plane/persistence/requirement-store';
+import { listRequirementsForProject } from '../../../src/runtime/control-plane/facade/requirement-authority';
 import { listRepositories } from '../../../src/runtime/repositories/registry';
 import { SEMANTIC_SCOPE_KEY } from '../../../src/effects/controller-home';
 import { result } from './result-adapter';
@@ -29,16 +30,42 @@ export function isRhWorkLightweightPlanOperation(operation: string): boolean {
   return RH_WORK_LIGHTWEIGHT_PLAN_OPERATIONS.has(operation);
 }
 
+function requirementBelongsToProject(
+  controllerHome: string,
+  requirement: Requirement,
+  projectId: string,
+  repoId?: string,
+): boolean {
+  if (repoId ? requirement.repoId !== repoId : Boolean(requirement.repoId)) return false;
+  return listRequirementsForProject({ controllerHome }, projectId, 1_000)
+    .some((record) => record.value.requirementId === requirement.requirementId);
+}
+
+function planBelongsToProject(
+  store: PlanContractStoreOptions,
+  plan: NonNullable<ReturnType<typeof getPlanContract>>,
+  projectId: string,
+): boolean {
+  if (plan.scopeKey !== projectId || !plan.requirementId) return false;
+  const requirement = readRequirement({ controllerHome: store.controllerHome }, plan.requirementId)?.value;
+  return Boolean(requirement && requirementBelongsToProject(store.controllerHome, requirement, projectId, store.repoId));
+}
+
 export async function callRhWorkPlanOperation(
   store: PlanContractStoreOptions,
   operation: string,
   args: Record<string, unknown>,
 ): Promise<CallToolResult | undefined> {
   if (!isRhWorkLightweightPlanOperation(operation)) return undefined;
+  const projectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
+  const belongsToRequestedProject = (plan: NonNullable<ReturnType<typeof getPlanContract>>) =>
+    !projectId || planBelongsToProject(store, plan, projectId);
 
   if (operation === 'plan_list') {
     const limit = Math.max(1, Math.min(Math.trunc(typeof args.limit === 'number' ? args.limit : 20), 100));
-    const plans = listPlanContracts({ ...store, status: 'active', limit });
+    const plans = listPlanContracts({ ...store, status: 'active', limit: 100 })
+      .filter(belongsToRequestedProject)
+      .slice(0, limit);
     const summaries = plans.map((plan) => {
       const semantic = planSemanticView(plan);
       return {
@@ -55,14 +82,15 @@ export async function callRhWorkPlanOperation(
       };
     });
     const facade = buildFacadeResult({
-      summary: `${plans.length} current semantic Plan(s) in this repository; use plan_get for detailed assumptions, decisions, conditions and items.`,
+      summary: `${plans.length} current semantic Plan(s)${projectId ? ' in this Project' : ' in this repository'}; use plan_get for detailed assumptions, decisions, conditions and items.`,
       data: { plans: summaries, bounded: true, limit, detailOperation: 'plan_get' },
     });
     return result(facade as unknown as Record<string, unknown>);
   }
 
   if (operation === 'plan_get') {
-    const plan = getPlanContract(store, String(args.plan_id ?? ''));
+    const candidate = getPlanContract(store, String(args.plan_id ?? ''));
+    const plan = candidate && belongsToRequestedProject(candidate) ? candidate : undefined;
     const facade = plan
       ? buildFacadeResult({
           summary: `Plan ${plan.planId} current head retrieved at semantic revision ${planSemanticView(plan).revision}.`,
@@ -85,6 +113,12 @@ export async function callRhWorkPlanOperation(
     if (operation === 'plan_revise') {
       const planId = String(args.plan_id ?? '').trim();
       const expectedRevision = Number(args.expected_revision);
+      if (projectId) {
+        const current = getPlanContract(store, planId);
+        if (!current || !belongsToRequestedProject(current)) {
+          throw new Error(`PLAN_PROJECT_SCOPE_CONFLICT:${projectId}:${planId}`);
+        }
+      }
       const plan = revisePlanSemanticContext(store, planId, {
         expectedRevision,
         ...(typeof args.superseded_by === 'string' ? { supersededBy: args.superseded_by } : {}),
@@ -114,7 +148,8 @@ export async function callRhWorkPlanOperation(
     return undefined;
   } catch (error) {
     const currentPlanId = String(args.plan_id ?? '').trim();
-    const currentPlan = operation === 'plan_revise' && currentPlanId ? getPlanContract(store, currentPlanId) : undefined;
+    const candidatePlan = operation === 'plan_revise' && currentPlanId ? getPlanContract(store, currentPlanId) : undefined;
+    const currentPlan = candidatePlan && belongsToRequestedProject(candidatePlan) ? candidatePlan : undefined;
     const facade = buildFacadeResult({
       status: 'blocked',
       summary: error instanceof Error ? error.message : 'PlanContract operation failed.',
@@ -161,7 +196,59 @@ export async function callRhWorkPlanCreateWithoutRepository(
 ): Promise<CallToolResult | undefined> {
   if (operation !== 'plan_create') return undefined;
   const explicitRepoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
-  if (explicitRepoId || ctx.explicitRepository) return undefined;
+  if (explicitRepoId) return undefined;
+  const projectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
+  if (projectId) {
+    const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
+    const requirement = requirementId
+      ? readRequirement({ controllerHome: ctx.controllerHome }, requirementId)?.value
+      : undefined;
+    if (!requirement) {
+      return result(buildFacadeResult({
+        status: 'blocked',
+        summary: `PLAN_PROJECT_REQUIREMENT_SCOPE_CONFLICT:${projectId}:${requirementId}`,
+        data: { projectId, requirementId, planContractCreated: false, executionStarted: false },
+      }) as unknown as Record<string, unknown>, true);
+    }
+    if (typeof args.scope_key === 'string' && args.scope_key.trim() && args.scope_key.trim() !== projectId) {
+      return result(buildFacadeResult({
+        status: 'blocked',
+        summary: `PLAN_PROJECT_SCOPE_KEY_CONFLICT:${projectId}`,
+        data: { projectId, scopeKey: args.scope_key, planContractCreated: false, executionStarted: false },
+      }) as unknown as Record<string, unknown>, true);
+    }
+    if (requirement.repoId) {
+      const repository = listRepositories(ctx.controllerHome).find((record) =>
+        record.repoId === requirement.repoId && record.enabled && !record.removedAt);
+      if (!repository || !requirementBelongsToProject(ctx.controllerHome, requirement, projectId, repository.repoId)) {
+        return result(buildFacadeResult({
+          status: 'blocked',
+          summary: `PLAN_PROJECT_REQUIREMENT_SCOPE_CONFLICT:${projectId}:${requirementId}`,
+          data: { projectId, requirementId, repoId: requirement.repoId, planContractCreated: false, executionStarted: false },
+        }) as unknown as Record<string, unknown>, true);
+      }
+      return callRhWorkPlanCreateOperation(
+        { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+        operation,
+        { ...args, repo_id: repository.repoId, scope_key: projectId },
+        { controllerHome: ctx.controllerHome, repoId: repository.repoId, checks: [] },
+      );
+    }
+    if (!requirementBelongsToProject(ctx.controllerHome, requirement, projectId)) {
+      return result(buildFacadeResult({
+        status: 'blocked',
+        summary: `PLAN_PROJECT_REQUIREMENT_SCOPE_CONFLICT:${projectId}:${requirementId}`,
+        data: { projectId, requirementId, planContractCreated: false, executionStarted: false },
+      }) as unknown as Record<string, unknown>, true);
+    }
+    return callRhWorkPlanCreateOperation(
+      { controllerHome: ctx.controllerHome, scopeKey: SEMANTIC_SCOPE_KEY },
+      operation,
+      { ...args, scope_key: projectId },
+      { controllerHome: ctx.controllerHome, checks: [] },
+    );
+  }
+  if (ctx.explicitRepository) return undefined;
   const enabled = listRepositories(ctx.controllerHome).filter((record) => record.enabled && !record.removedAt);
   // Zero repositories means "ForgeInstance-scoped Plan". One means the sole
   // repository stays authoritative; several keep the explicit disambiguation
@@ -182,6 +269,23 @@ export async function callRhWorkPlanCreateOperation(
   context: RhWorkPlanCreateContext,
 ): Promise<CallToolResult | undefined> {
   if (operation !== 'plan_create') return undefined;
+  const projectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
+  if (projectId) {
+    const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
+    const requirement = requirementId
+      ? readRequirement({ controllerHome: context.controllerHome }, requirementId)?.value
+      : undefined;
+    const validScope = Boolean(requirement
+      && requirementBelongsToProject(context.controllerHome, requirement, projectId, store.repoId)
+      && args.scope_key === projectId);
+    if (!validScope) {
+      return result(buildFacadeResult({
+        status: 'blocked',
+        summary: `PLAN_PROJECT_REQUIREMENT_SCOPE_CONFLICT:${projectId}:${requirementId}`,
+        data: { projectId, requirementId, planContractCreated: false, executionStarted: false },
+      }) as unknown as Record<string, unknown>, true);
+    }
+  }
 
   if (!Array.isArray(args.plan_steps)) {
     try {

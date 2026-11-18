@@ -184,6 +184,13 @@ export interface GitHubProjectBoardItem {
   id: string;
   title: string;
   status: string;
+  contentType: string;
+  assignees: string[];
+  labels: string[];
+  bodyLength?: number;
+  bodyPreview?: string;
+  projectFields?: Record<string, string>;
+  priority?: string;
   number?: number;
   url?: string;
   repository?: string;
@@ -204,10 +211,10 @@ export function buildGitHubProjectItemListArgs(owner: string, projectNumber: num
 
 export function parseGitHubProjectItems(
   payload: unknown,
-  repository: string,
+  repositoryFilter?: string,
   limit = 100,
 ): { items: GitHubProjectBoardItem[]; truncated: boolean } {
-  const target = repositoryName(repository).toLowerCase();
+  const target = repositoryFilter?.trim() ? repositoryName(repositoryFilter).toLowerCase() : undefined;
   const value = payload && typeof payload === 'object' && !Array.isArray(payload)
     ? payload as Record<string, unknown> : {};
   if (!Array.isArray(value.items)) throw new Error('GITHUB_PROJECT_ITEMS_SHAPE_INVALID');
@@ -217,11 +224,13 @@ export function parseGitHubProjectItems(
     const row = candidate as Record<string, unknown>;
     const content = row.content && typeof row.content === 'object' && !Array.isArray(row.content)
       ? row.content as Record<string, unknown> : {};
-    const repositoryNameValue = typeof content.repository === 'string'
+    const repositoryValue = typeof content.repository === 'string'
       ? content.repository
-      : typeof content.repositoryNameWithOwner === 'string'
-        ? content.repositoryNameWithOwner : undefined;
-    if (repositoryNameValue && repositoryNameValue.toLowerCase() !== target) return [];
+      : content.repository && typeof content.repository === 'object' && !Array.isArray(content.repository)
+        ? (content.repository as Record<string, unknown>).nameWithOwner
+        : content.repositoryNameWithOwner;
+    const repositoryNameValue = typeof repositoryValue === 'string' ? repositoryValue : undefined;
+    if (target && repositoryNameValue && repositoryNameValue.toLowerCase() !== target) return [];
     const itemId = typeof row.id === 'string' ? row.id : '';
     const title = typeof row.title === 'string' ? row.title.trim() : '';
     if (!itemId || !title) return [];
@@ -230,12 +239,47 @@ export function parseGitHubProjectItems(
     const number = typeof content.number === 'number' && Number.isSafeInteger(content.number) && content.number >= 1
       ? content.number : undefined;
     const url = typeof content.url === 'string' && /^https:\/\/github\.com\//.test(content.url) ? content.url : undefined;
+    const contentType = typeof content.type === 'string' ? content.type : number ? 'Issue' : 'DraftIssue';
+    const assignees = Array.isArray(row.assignees)
+      ? row.assignees.flatMap((value) => typeof value === 'string' ? [value.slice(0, 160)] : [])
+      : [];
+    const rawLabels = Array.isArray(content.labels) ? content.labels : Array.isArray(row.labels) ? row.labels : [];
+    const labels = rawLabels.flatMap((value) => {
+      if (typeof value === 'string') return [value.slice(0, 120)];
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+      const name = (value as Record<string, unknown>).name;
+      return typeof name === 'string' && name.trim() ? [name.trim().slice(0, 120)] : [];
+    }).slice(0, 100);
+    const rawBody = typeof content.body === 'string' ? content.body : undefined;
+    const rawFields = Array.isArray(row.fieldValues) ? row.fieldValues : [];
+    const projectFields: Record<string, string> = {};
+    for (const candidate of rawFields) {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+      const field = candidate as Record<string, unknown>;
+      const nestedField = field.field && typeof field.field === 'object' && !Array.isArray(field.field)
+        ? field.field as Record<string, unknown> : undefined;
+      const name = typeof field.name === 'string' ? field.name : nestedField?.name;
+      const rawValue = field.value;
+      const value = typeof rawValue === 'string'
+        ? rawValue
+        : rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)
+          ? (rawValue as Record<string, unknown>).name ?? (rawValue as Record<string, unknown>).text
+          : rawValue;
+      if (typeof name === 'string' && name.trim() && typeof value === 'string' && value.trim()) {
+        projectFields[name.trim().slice(0, 80)] = value.trim().slice(0, 240);
+      }
+    }
+    const priority = projectFields.Priority;
     return [{
-      id: itemId.slice(0, 200), title: title.slice(0, 240), status: status.slice(0, 80),
+      id: itemId.slice(0, 200), title: title.slice(0, 240), status: status.slice(0, 80), contentType,
+      assignees, labels,
+      ...(rawBody !== undefined ? { bodyLength: rawBody.length, bodyPreview: rawBody.slice(0, 500) } : {}),
+      ...(Object.keys(projectFields).length ? { projectFields } : {}),
+      ...(priority ? { priority } : {}),
       ...(number ? { number } : {}),
       ...(url ? { url } : {}),
       ...(repositoryNameValue ? { repository: repositoryNameValue } : {}),
-      isDraft: !number,
+      isDraft: contentType === 'DraftIssue' || !number,
     }];
   });
   const count = typeof value.totalCount === 'number' ? value.totalCount : value.items.length;
@@ -243,12 +287,12 @@ export function parseGitHubProjectItems(
 }
 
 export function readGitHubProjectItems(
-  repoRoot: string, repository: string, owner: string, projectNumber: number, limit = 100,
+  repoRoot: string, owner: string, projectNumber: number, limit = 100, repositoryFilter?: string,
 ) {
   const result = gh(repoRoot, buildGitHubProjectItemListArgs(owner, projectNumber, limit));
   if (!result.ok) throw new Error('failed to read GitHub Project: ' + (result.error || result.stderr));
   const data = parseJson<unknown>(result.stdout, 'gh project item-list');
-  return parseGitHubProjectItems(data, repository, limit);
+  return parseGitHubProjectItems(data, repositoryFilter, limit);
 }
 
 export function listGitHubWorkflows(
@@ -289,5 +333,123 @@ export function dispatchGitHubWorkflow(
     inputs: input.inputs ?? {},
     ...(output ? { output } : {}),
     ...(/^https:\/\//i.test(output) ? { runUrl: output } : {}),
+  };
+}
+
+/** Read one GitHub Project Issue by its immutable source URL, not title matching. */
+export function parseGitHubProjectIssueUrl(issueUrl: string): { repository: string; number: number; url: string } {
+  const url = issueUrl.trim();
+  const match = /^https:\/\/github\.com\/([A-Za-z0-9-]{1,80})\/([A-Za-z0-9_.-]{1,100})\/issues\/([1-9]\d*)\/?$/.exec(url);
+  if (!match) throw new Error('GITHUB_PROJECT_ISSUE_URL_INVALID');
+  const number = Number(match[3]);
+  if (!Number.isSafeInteger(number)) throw new Error('GITHUB_PROJECT_ISSUE_NUMBER_INVALID');
+  return { repository: match[1] + '/' + match[2], number, url: 'https://github.com/' + match[1] + '/' + match[2] + '/issues/' + number };
+}
+
+export function buildGitHubProjectIssueDetailArgs(issueUrl: string): string[] {
+  const reference = parseGitHubProjectIssueUrl(issueUrl);
+  return [
+    'issue', 'view', String(reference.number), '--repo', reference.repository, '--json',
+    'number,title,body,url,state,stateReason,assignees,labels,createdAt,updatedAt,closedAt,comments',
+  ];
+}
+
+export function parseGitHubProjectIssueDetail(payload: unknown, issueUrl: string) {
+  const expected = parseGitHubProjectIssueUrl(issueUrl);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('GITHUB_PROJECT_ISSUE_DETAIL_SHAPE_INVALID');
+  }
+  const row = payload as Record<string, unknown>;
+  if (row.url !== expected.url || row.number !== expected.number
+    || typeof row.title !== 'string' || typeof row.body !== 'string'
+    || (row.state !== 'OPEN' && row.state !== 'CLOSED')
+    || typeof row.createdAt !== 'string' || typeof row.updatedAt !== 'string'
+    || !Array.isArray(row.assignees) || !Array.isArray(row.labels) || !Array.isArray(row.comments)) {
+    throw new Error('GITHUB_PROJECT_ISSUE_DETAIL_SHAPE_INVALID');
+  }
+  const assignees = row.assignees.map((candidate: unknown) => {
+    const login = candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+      ? (candidate as Record<string, unknown>).login : undefined;
+    if (typeof login !== 'string' || !login.trim()) throw new Error('GITHUB_PROJECT_ISSUE_ASSIGNEE_INVALID');
+    return login;
+  });
+  const labels = row.labels.map((candidate: unknown) => {
+    const name = candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+      ? (candidate as Record<string, unknown>).name : undefined;
+    if (typeof name !== 'string' || !name.trim()) throw new Error('GITHUB_PROJECT_ISSUE_LABEL_INVALID');
+    return name;
+  });
+  const comments = row.comments.map((candidate: unknown) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      throw new Error('GITHUB_PROJECT_ISSUE_COMMENT_INVALID');
+    }
+    const comment = candidate as Record<string, unknown>;
+    if (typeof comment.body !== 'string' || typeof comment.createdAt !== 'string') {
+      throw new Error('GITHUB_PROJECT_ISSUE_COMMENT_INVALID');
+    }
+    const author = comment.author && typeof comment.author === 'object' && !Array.isArray(comment.author)
+      ? (comment.author as Record<string, unknown>).login : undefined;
+    return {
+      body: comment.body,
+      createdAt: comment.createdAt,
+      ...(typeof comment.url === 'string' ? { url: comment.url } : {}),
+      ...(typeof author === 'string' ? { author } : {}),
+    };
+  });
+  return {
+    repository: expected.repository,
+    number: expected.number,
+    url: expected.url,
+    title: row.title,
+    body: row.body,
+    state: row.state,
+    ...(typeof row.stateReason === 'string' ? { stateReason: row.stateReason } : {}),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    ...(typeof row.closedAt === 'string' ? { closedAt: row.closedAt } : {}),
+    assignees, labels, comments,
+    commentsReturned: comments.length,
+    // gh issue view returns a comment snapshot, not complete edit/project event history.
+    historyCoverage: 'comments_snapshot_only' as const,
+  };
+}
+
+export function readGitHubProjectIssue(repoRoot: string, issueUrl: string) {
+  const result = gh(repoRoot, buildGitHubProjectIssueDetailArgs(issueUrl), undefined, 4 * 1024 * 1024);
+  if (!result.ok) throw new Error('failed to read GitHub Project Issue: ' + (result.error || result.stderr));
+  return parseGitHubProjectIssueDetail(parseJson<unknown>(result.stdout, 'gh issue view'), issueUrl);
+}
+
+/** Read the paginated REST Issue timeline; no Project V2 field-change coverage is implied. */
+export function buildGitHubProjectIssueTimelineArgs(issueUrl: string): string[] {
+  const reference = parseGitHubProjectIssueUrl(issueUrl);
+  return [
+    'api', '-H', 'Accept: application/vnd.github+json',
+    'repos/' + reference.repository + '/issues/' + reference.number + '/timeline?per_page=100',
+    '--paginate', '--jq', '.[] | @json',
+  ];
+}
+
+export function parseGitHubProjectIssueTimeline(stdout: string): Array<Record<string, unknown>> {
+  return stdout.split('\n').filter((line) => Boolean(line.trim())).map((line) => {
+    const event = parseJson<unknown>(line, 'gh issue timeline');
+    if (!event || typeof event !== 'object' || Array.isArray(event)
+      || typeof (event as Record<string, unknown>).event !== 'string'
+      || typeof (event as Record<string, unknown>).created_at !== 'string') {
+      throw new Error('GITHUB_PROJECT_ISSUE_TIMELINE_EVENT_INVALID');
+    }
+    return event as Record<string, unknown>;
+  });
+}
+
+export function readGitHubProjectIssueTimeline(repoRoot: string, issueUrl: string) {
+  const result = gh(repoRoot, buildGitHubProjectIssueTimelineArgs(issueUrl), undefined, 8 * 1024 * 1024);
+  if (!result.ok) throw new Error('failed to read GitHub Project Issue timeline: ' + (result.error || result.stderr));
+  const events = parseGitHubProjectIssueTimeline(result.stdout);
+  return {
+    events,
+    eventsReturned: events.length,
+    historyCoverage: 'github_issue_timeline_paginated' as const,
+    projectV2FieldHistory: 'not_verified' as const,
   };
 }

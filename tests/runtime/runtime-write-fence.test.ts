@@ -1,5 +1,6 @@
+import { runProcessRunnerFromDescriptor } from '../../src/runtime/execution/process-runtime/process-runner-entry';
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { ensureControllerHome } from '../../src/effects/controller-home';
@@ -204,4 +205,37 @@ describe('Canonical Runtime write fence', () => {
       else process.env[key] = previous;
     }
   });
+});
+
+test.skipIf(process.platform === 'win32')('cleanup authority reaches only the active immutable CLI and exact maintenance argv', async () => {
+  const fx = fixture();
+  try {
+    const executable = join(fx.home, 'forge-cli');
+    writeFileSync(executable, '#!/bin/sh\nif [ -n "$FORGE_RUNTIME_INSTANCE_ID" ]; then printf trusted; else printf untrusted; fi\n', { mode: 0o700 });
+    const run = async (id: string, tool: string, target = executable) => {
+      const stdoutPath = join(fx.home, `${id}.stdout`);
+      const stderrPath = join(fx.home, `${id}.stderr`);
+      const receipt = await runProcessRunnerFromDescriptor({
+        schemaVersion: 1, processId: id, repoId: 'repo-test', controllerHome: fx.home,
+        trustedRuntimeChild: 'runtime_cleanup',
+        command: { kind: 'argv', executable: target, cwd: fx.home, args: [
+          'runtime', 'maintenance-apply', '--controller-home', fx.home,
+          '--repo-id', 'repo-test', '--tool', tool, '--args-base64', 'e30',
+        ] },
+        timeoutMs: 5_000, maxStdoutBytes: 1024, maxStderrBytes: 1024,
+        stdoutPath, stderrPath, exitReceiptPath: join(fx.home, `${id}.exit.json`), startedAt: new Date().toISOString(),
+      });
+      return { receipt, stdout: readFileSync(stdoutPath, 'utf8'), stderr: readFileSync(stderrPath, 'utf8') };
+    };
+    const accepted = await run('cleanup-fixed', 'runtime_cleanup_apply');
+    expect(accepted.receipt.exitCode).toBe(0);
+    expect(accepted.stdout).toBe('trusted');
+    const wrongTool = await run('cleanup-wrong-tool', 'runtime_maintenance_apply');
+    expect(wrongTool.receipt.exitCode).not.toBe(0);
+    expect(wrongTool.stdout).toBe('');
+    expect(wrongTool.stderr).toContain('PROCESS_RUNNER_TRUSTED_RUNTIME_CHILD_INVALID');
+    const wrongExecutable = await run('cleanup-wrong-executable', 'runtime_cleanup_apply', process.execPath);
+    expect(wrongExecutable.receipt.exitCode).not.toBe(0);
+    expect(wrongExecutable.stdout).toBe('');
+  } finally { fx.owner.release(); }
 });

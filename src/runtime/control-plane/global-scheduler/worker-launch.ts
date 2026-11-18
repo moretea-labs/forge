@@ -51,8 +51,8 @@ export function resolveSchedulerWorkerCommand(input: {
   }
   const runtimeSourceRoot = input.runtimeSourceRoot ? resolve(input.runtimeSourceRoot) : undefined;
   const sourceEntry = runtimeSourceRoot
-    ? join(runtimeSourceRoot, 'src', 'runtime', 'execution', 'workers', 'worker-entry.ts')
-    : fileURLToPath(new URL('../../execution/workers/worker-entry.ts', import.meta.url));
+    ? join(runtimeSourceRoot, 'src', 'cli', 'execution', 'worker-entry.ts')
+    : fileURLToPath(new URL('../../../cli/execution/worker-entry.ts', import.meta.url));
   const loader = runtimeSourceRoot
     ? join(runtimeSourceRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs')
     : fileURLToPath(new URL('../../shared/node-ts-loader.mjs', import.meta.url));
