@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { AssistantPluginError } from './errors';
 import type { ExternalPluginRegistration } from './external-registration';
 import type { AssistantPluginActionExecutionInput, AssistantPluginAuthorizationContext } from './types';
-import type { ExternalProviderPolicyContext } from './external-provider-policy';
+import type { ExternalProviderPolicyContext } from './external-provider-policy-context';
 
 const ACCOUNT_ACTIONS = new Set([
   'recent_messages', 'search_messages', 'read_message', 'read_thread',
