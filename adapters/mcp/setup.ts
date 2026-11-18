@@ -580,14 +580,14 @@ export function runMcpDoctor(opts: {
   // runtime liveness source; the connector service state below only describes
   // the optional ChatGPT connector tunnel/server process.
   const runtimeObservation = observeRuntimeStatus(controllerHome);
-  const recentTransportEvents = readRecentMcpTransportEvents(controllerHome).filter((event) => {
-    const at = Date.parse(event.at);
-    return Number.isFinite(at) && at >= Date.now() - 30 * 60_000;
-  });
-  const lastSessionClose = recentTransportEvents.find((event) =>
+  const transportEvents = readRecentMcpTransportEvents(controllerHome);
+  const lastSessionClose = transportEvents.find((event) =>
     event.kind === "session_closed" || event.kind === "interruption",
   );
-  const reinitializedAfterLastClose = Boolean(lastSessionClose && recentTransportEvents.some((event) =>
+  const lastSessionCloseAgeMs = lastSessionClose
+    ? Math.max(0, Date.now() - Date.parse(lastSessionClose.at))
+    : undefined;
+  const reinitializedAfterLastClose = Boolean(lastSessionClose && transportEvents.some((event) =>
     event.kind === "session_initialized" && Date.parse(event.at) > Date.parse(lastSessionClose.at),
   ));
   const configuredServerName = localConfig?.chatgpt?.serverName;
@@ -675,6 +675,7 @@ export function runMcpDoctor(opts: {
         reason: lastSessionClose.reason ?? "unknown",
         route: lastSessionClose.route,
         sessionId: lastSessionClose.sessionId,
+        ageMs: lastSessionCloseAgeMs,
       } : null,
       reinitializedAfterLastClose,
     },

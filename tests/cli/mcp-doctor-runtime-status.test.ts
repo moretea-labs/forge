@@ -205,11 +205,11 @@ describe("forge mcp doctor runtime status", () => {
       }));
       const report = JSON.parse(json.lines[0] ?? "{}") as {
         transportEvidence?: {
-          lastSessionClose?: { kind?: string; at?: string; reason?: string; route?: string; sessionId?: string } | null;
+          lastSessionClose?: { kind?: string; at?: string; reason?: string; route?: string; sessionId?: string; ageMs?: number } | null;
           reinitializedAfterLastClose?: boolean;
         };
       };
-      expect(report.transportEvidence).toEqual({
+      expect(report.transportEvidence).toMatchObject({
         lastSessionClose: {
           kind: "session_closed",
           at: closedAt,
@@ -226,6 +226,39 @@ describe("forge mcp doctor runtime status", () => {
       }));
       expect(human.lines.some((line) => line.includes("Last MCP session close: idle_ttl"))).toBe(true);
       expect(human.repoRoot).toBeUndefined();
+    } finally {
+      rmSync(join(controllerHome, ".."), { recursive: true, force: true });
+    }
+  });
+
+  test("retains the last durable session-close diagnosis after the 30-minute display window", () => {
+    const { controllerHome } = makeFixture();
+    const closedAt = new Date(Date.now() - 45 * 60_000).toISOString();
+    try {
+      recordMcpTransportEvent(controllerHome, {
+        kind: "session_closed",
+        sessionId: "older-session",
+        connectionId: "connection-older",
+        route: "/mcp",
+        principalId: "oauth-client:fixture",
+        reason: "absolute_lifetime",
+        at: closedAt,
+      });
+
+      const json = runMcpDoctor({ userLevel: true, controllerHome, json: true });
+      const report = JSON.parse(json.lines[0] ?? "{}") as {
+        transportEvidence?: {
+          lastSessionClose?: { reason?: string; at?: string; sessionId?: string; ageMs?: number } | null;
+          reinitializedAfterLastClose?: boolean;
+        };
+      };
+      expect(report.transportEvidence?.lastSessionClose).toMatchObject({
+        reason: "absolute_lifetime",
+        at: closedAt,
+        sessionId: "older-session",
+      });
+      expect(report.transportEvidence?.lastSessionClose?.ageMs).toBeGreaterThanOrEqual(45 * 60_000);
+      expect(report.transportEvidence?.reinitializedAfterLastClose).toBe(false);
     } finally {
       rmSync(join(controllerHome, ".."), { recursive: true, force: true });
     }
