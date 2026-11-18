@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { createMobileIntentDevice } from '../local-bridge/mobile-intents';
+import { createMobileIntentDevice, listMobileIntentDevices } from '../local-bridge/mobile-intents';
 import { executeRepositoryCommand } from '../../runtime/repositories/command-executor';
 import { bindRepositoryEntities } from '../../runtime/repositories/entity-migration';
 import { withControllerLock } from '../../effects/controller-locks';
@@ -57,12 +57,22 @@ export function buildRepositoryCommand(): Command {
         opts.controllerHome ?? '',
         { scope: 'repository', repoId: repository.repoId },
         'cli:agentmail-watch-device',
-        () => createMobileIntentDevice(repository.canonicalRoot, {
-          name: 'AgentMail Mac Watch',
-          deviceId: 'agentmail-mac-watch',
-          scopes: ['workflow:agentmail.mail-watch-event:execute'],
-          rateLimitPerMinute: 12,
-        }),
+        () => {
+          const existing = listMobileIntentDevices(repository.canonicalRoot).devices.find((device) =>
+            device.name === 'AgentMail Mac Watch'
+            || device.deviceId === 'agentmail-mac-watch'
+            || device.deviceId.startsWith('agentmail-mac-watch-'),
+          );
+          if (existing) {
+            throw new Error(`AGENTMAIL_WATCH_DEVICE_ALREADY_EXISTS: ${existing.deviceId}; refusing to issue a second credential`);
+          }
+          return createMobileIntentDevice(repository.canonicalRoot, {
+            name: 'AgentMail Mac Watch',
+            deviceId: 'agentmail-mac-watch',
+            scopes: ['workflow:agentmail.mail-watch-event:execute'],
+            rateLimitPerMinute: 12,
+          });
+        },
       );
       output(credential, opts.json === true);
     });
