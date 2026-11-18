@@ -17,6 +17,7 @@ const PROVIDER_WAIT_MS = 4_000;
 const PROVIDER_POLL_MS = 100;
 const TARGET_CONTROL_TIMEOUT_MS = {
   inventory: 5_000,
+  ensure: 60_000,
   observe: 60_000,
   prepare: 60_000,
   dispatch: 60_000,
@@ -103,6 +104,14 @@ async function executeTargetControl(
       ...(exact.observation ? { observation: exact.observation } : {}),
     };
   }
+  if (method === 'computer_target_ensure') {
+    return {
+      state: 'ready',
+      targetId: exact.target.targetId,
+      identity,
+      ...(exact.observation ? { observation: exact.observation } : {}),
+    };
+  }
   if (method === 'computer_target_observe') {
     return {
       state: 'ready',
@@ -172,6 +181,7 @@ async function dispatch(
   const params = request.params;
   if (request.method === 'health') return { status: 'ready', owner: 'computer' };
   if (request.method === 'computer_target_inventory'
+    || request.method === 'computer_target_ensure'
     || request.method === 'computer_target_observe'
     || request.method === 'computer_target_prepare'
     || request.method === 'computer_target_dispatch') {
@@ -271,7 +281,7 @@ export async function ensureRuntimeComputerChatgptExtension(
 
 async function callComputerChatgptExtensionSocket(
   controllerHome: string,
-  method: 'computer_target_inventory' | 'computer_target_observe' | 'computer_target_prepare' | 'computer_target_dispatch',
+  method: 'computer_target_inventory' | 'computer_target_ensure' | 'computer_target_observe' | 'computer_target_prepare' | 'computer_target_dispatch',
   params: Record<string, unknown>,
   timeoutMs: number,
 ): Promise<Record<string, unknown>> {
@@ -337,13 +347,13 @@ async function callComputerChatgptExtensionSocket(
 
 export async function callRuntimeComputerChatgptTargetAction(
   controllerHome: string,
-  method: 'inventory' | 'observe' | 'prepare' | 'dispatch',
+  method: 'inventory' | 'ensure' | 'observe' | 'prepare' | 'dispatch',
   params: Record<string, unknown>,
   timeoutMs: number = TARGET_CONTROL_TIMEOUT_MS[method],
 ): Promise<Record<string, unknown>> {
   return await callComputerChatgptExtensionSocket(
     controllerHome,
-    `computer_target_${method}` as 'computer_target_inventory' | 'computer_target_observe' | 'computer_target_prepare' | 'computer_target_dispatch',
+    `computer_target_${method}` as 'computer_target_inventory' | 'computer_target_ensure' | 'computer_target_observe' | 'computer_target_prepare' | 'computer_target_dispatch',
     params,
     timeoutMs,
   );

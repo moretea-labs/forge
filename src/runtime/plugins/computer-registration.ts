@@ -47,11 +47,13 @@ import type {
 } from './types';
 
 const COMPUTER_CHATGPT_TARGET_INVENTORY_ACTION = 'chatgpt_target_inventory';
+const COMPUTER_CHATGPT_TARGET_ENSURE_ACTION = 'chatgpt_target_ensure';
 const COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION = 'chatgpt_target_observe';
 const COMPUTER_CHATGPT_TARGET_PREPARE_ACTION = 'chatgpt_target_prepare';
 const COMPUTER_CHATGPT_TARGET_DISPATCH_ACTION = 'chatgpt_target_dispatch';
 const COMPUTER_CHATGPT_TARGET_ACTION_IDS = new Set([
   COMPUTER_CHATGPT_TARGET_INVENTORY_ACTION,
+  COMPUTER_CHATGPT_TARGET_ENSURE_ACTION,
   COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION,
   COMPUTER_CHATGPT_TARGET_PREPARE_ACTION,
   COMPUTER_CHATGPT_TARGET_DISPATCH_ACTION,
@@ -257,6 +259,26 @@ function computerChatgptTargetActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
+      actionId: COMPUTER_CHATGPT_TARGET_ENSURE_ACTION,
+      title: 'Ensure exact ChatGPT target',
+      description: 'Create or reattach one dedicated Computer-owned tab for an exact existing ChatGPT conversation without changing the composer or clicking Send.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 15_000,
+      cancellable: true,
+      idempotent: true,
+      foregroundEffect: 'possible',
+      scopes: ['browser.interact', 'browser.profile'],
+      resourceClaims: [{ resource: 'provider-state', mode: 'write' }, { resource: 'remote', mode: 'read' }],
+      argumentsSchema: {
+        type: 'object',
+        properties: identitySchema,
+        required: ['canonical_url'],
+        additionalProperties: false,
+      },
+    },
+    {
       actionId: COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION,
       title: 'Observe exact ChatGPT target',
       description: 'Observe one exact existing ChatGPT conversation and composer state through Computer-owned provider binding. Never creates a conversation or clicks Send.',
@@ -369,6 +391,9 @@ async function executeComputerChatgptTargetAction(
     return await callRuntimeComputerChatgptTargetAction(input.controllerHome, 'inventory', {}, input.timeoutMs);
   }
   const identity = computerChatgptIdentity(input.args);
+  if (input.actionId === COMPUTER_CHATGPT_TARGET_ENSURE_ACTION) {
+    return await callRuntimeComputerChatgptTargetAction(input.controllerHome, 'ensure', { identity }, input.timeoutMs);
+  }
   if (input.actionId === COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION) {
     return await callRuntimeComputerChatgptTargetAction(input.controllerHome, 'observe', { identity }, input.timeoutMs);
   }
