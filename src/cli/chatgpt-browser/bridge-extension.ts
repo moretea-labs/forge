@@ -63,7 +63,13 @@ function forgeSendButton(composer) {
 
 function forgeLoginRequired(composer) {
   const form = composer?.closest('form');
-  return Boolean(form?.hasAttribute('data-logged-out') || document.querySelector('form[data-logged-out]'));
+  const loginForm = document.querySelector('form[data-logged-out]');
+  const loginLink = document.querySelector('a[href*="/auth/login"]');
+  return Boolean(
+    form?.hasAttribute('data-logged-out')
+    || loginForm
+    || forgeVisible(loginLink),
+  );
 }
 
 function forgeBridgeError(code, message, recovery) {
