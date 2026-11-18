@@ -151,6 +151,7 @@ private struct ForgeWorkspaceView: View {
     @State private var projectCheckoutsLoading = false
     @State private var projectCheckoutsRequestGeneration = 0
     @State private var projectCheckoutError: String?
+    @State private var sidebarCheckoutLabels: [String:String] = [:]
     @State private var inboxShown = false
     @State private var assetsSelectedRepoId = ""
     @State private var assetsShowLocalResources = true
@@ -538,6 +539,7 @@ private struct ForgeWorkspaceView: View {
                 }.padding(.horizontal,10)
             }
             .scrollIndicators(.hidden)
+            .task(id:sidebarCheckoutLookupKey) { await refreshSidebarCheckoutLabels() }
             .padding(.top,16)
             Spacer(minLength:5)
 
@@ -777,6 +779,10 @@ private struct ForgeWorkspaceView: View {
         let projectLabel = model.projects.first(where: { $0.repoId == thread.repoId })?.label
             ?? thread.repoId.map { String($0.prefix(16)) }
             ?? "未绑定项目"
+        let checkoutLabel = threadCheckoutLabel(thread)
+        let accessibilityContext = [projectLabel,checkoutLabel,thread.checkoutId.map { "Checkout \($0)" },
+                                    thread.hasUnsentContent ? "有未发送草稿" : nil,running ? "执行中" : nil]
+            .compactMap { $0 }.joined(separator:" · ")
 
         return HStack(spacing:4) {
             Button {
@@ -784,9 +790,19 @@ private struct ForgeWorkspaceView: View {
                 if model.showSearch { model.toggleConversationSearch() }
             } label: {
                 HStack(spacing:7) {
-                    Text(thread.title)
-                        .font(.system(size:12,weight:selected ? .medium : .regular))
-                        .lineLimit(1)
+                    VStack(alignment:.leading,spacing:1) {
+                        Text(thread.title)
+                            .font(.system(size:12,weight:selected ? .medium : .regular))
+                            .lineLimit(1)
+                        if let checkoutLabel {
+                            Text(checkoutLabel)
+                                .font(.system(size:9.5,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                    .frame(maxWidth:.infinity,alignment:.leading)
                     Spacer(minLength:0)
                     if thread.hasUnsentContent {
                         Text("草稿")
@@ -804,7 +820,11 @@ private struct ForgeWorkspaceView: View {
             }
             .buttonStyle(.plain)
             .disabled(model.busy && !running)
-            .help(projectLabel + " · " + thread.title + (thread.hasUnsentContent ? " · 有未发送草稿" : ""))
+            .help(accessibilityContext + " · " + thread.title)
+            .accessibilityLabel(thread.title)
+            .accessibilityValue(accessibilityContext)
+            .accessibilityHint("打开此会话")
+            .accessibilityIdentifier("sidebar.thread.\(thread.id)")
             .popover(isPresented:Binding(
                 get:{ renameThreadId == thread.id },
                 set:{ if !$0 && renameThreadId == thread.id { renameThreadId = nil } }
@@ -836,7 +856,7 @@ private struct ForgeWorkspaceView: View {
             }
         }
         .padding(.leading,9).padding(.trailing,5)
-        .frame(height:32)
+        .frame(height:checkoutLabel == nil ? 32 : 40)
         .background(selected ? ForgePalette.selection.opacity(0.75) : (hovered ? ForgePalette.softFill.opacity(0.5) : .clear),
                     in:RoundedRectangle(cornerRadius:7,style:.continuous))
         .contentShape(RoundedRectangle(cornerRadius:7,style:.continuous))
@@ -869,6 +889,68 @@ private struct ForgeWorkspaceView: View {
             .disabled(thread.messages.isEmpty)
             Button("删除会话…",role:.destructive) { deleteThreadId = thread.id }
                 .disabled(running)
+        }
+    }
+
+    private var sidebarCheckoutLookupTargets: [String:[String]] {
+        var contextsByRepo:[String:[String?]]=[:]
+        for thread in sidebarThreadSections.flatMap(\.threads) {
+            guard let repoId=thread.repoId else { continue }
+            contextsByRepo[repoId,default:[]].append(thread.checkoutId)
+        }
+        var targets:[String:[String]] = [:]
+        for (repoId,contexts) in contextsByRepo {
+            let checkoutIds=Set(contexts.compactMap { $0 })
+            let hasUnbound=contexts.contains { $0 == nil }
+            guard checkoutIds.count > 1 || (hasUnbound && !checkoutIds.isEmpty) else { continue }
+            targets[repoId]=checkoutIds.sorted()
+        }
+        return targets
+    }
+
+    private var sidebarCheckoutLookupKey: String {
+        let targets=sidebarCheckoutLookupTargets
+        return targets.keys.sorted().map { repoId in
+            "\(repoId):\((targets[repoId] ?? []).joined(separator:","))"
+        }.joined(separator:"|")
+    }
+
+    private func threadCheckoutLabel(_ thread:ChatThread) -> String? {
+        guard let repoId=thread.repoId else { return nil }
+        let peers=sidebarThreadSections.flatMap(\.threads).filter { $0.repoId == repoId }
+        let checkoutIds=Set(peers.compactMap { $0.checkoutId })
+        let hasUnbound=peers.contains { $0.checkoutId == nil }
+        guard checkoutIds.count > 1 || (hasUnbound && !checkoutIds.isEmpty) else { return nil }
+        guard let checkoutId=thread.checkoutId else { return "未绑定工作区" }
+        return sidebarCheckoutLabels["\(repoId)|\(checkoutId)"] ?? "工作区 · \(checkoutId.prefix(8))"
+    }
+
+    private func refreshSidebarCheckoutLabels() async {
+        let targets=sidebarCheckoutLookupTargets
+        sidebarCheckoutLabels=[:]
+        for repoId in targets.keys.sorted() {
+            guard !Task.isCancelled else { return }
+            let checkoutIds=targets[repoId] ?? []
+            do {
+                let result=try await ForgeBridge.request("read_project_repository",["repoId":repoId])
+                guard !Task.isCancelled else { return }
+                let labels=NativeWorkspace.repositoryCheckoutLabels(
+                    result,requestedCheckoutIds:checkoutIds
+                )
+                var updated=sidebarCheckoutLabels
+                for checkoutId in checkoutIds {
+                    updated["\(repoId)|\(checkoutId)"]=labels[checkoutId]
+                        ?? "工作区不可用 · \(checkoutId.prefix(8))"
+                }
+                sidebarCheckoutLabels=updated
+            } catch {
+                guard !Task.isCancelled else { return }
+                var updated=sidebarCheckoutLabels
+                for checkoutId in checkoutIds {
+                    updated["\(repoId)|\(checkoutId)"]="工作区信息不可用 · \(checkoutId.prefix(8))"
+                }
+                sidebarCheckoutLabels=updated
+            }
         }
     }
 

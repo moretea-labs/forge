@@ -2470,6 +2470,46 @@ final class NativeWorkspace: ObservableObject {
         )
     }
 
+    // Resolve labels from the canonical repository checkout projection. ChatThread keeps
+    // only the checkout identity; branch/path metadata is never copied into conversation state.
+    nonisolated static func repositoryCheckoutLabels(
+        _ result:[String:Any], requestedCheckoutIds:[String]
+    ) -> [String:String] {
+        let repository=result["repository"] as? [String:Any] ?? [:]
+        let rows=repository["checkouts"] as? [[String:Any]] ?? []
+        let requested=Set(requestedCheckoutIds)
+        let activeRows:[(id:String,path:String,branch:String?)] = rows.compactMap { row in
+            guard let id=row["checkoutId"] as? String,!id.isEmpty,
+                  let path=row["path"] as? String,!path.isEmpty,
+                  (row["lifecycle"] as? String ?? "active") == "active" else { return nil }
+            return (id,path,row["branch"] as? String)
+        }
+
+        func baseLabel(_ checkout:(id:String,path:String,branch:String?)) -> String {
+            let branch=(checkout.branch ?? "").trimmingCharacters(in:.whitespacesAndNewlines)
+            if !branch.isEmpty { return branch }
+            let directory=URL(fileURLWithPath:checkout.path).lastPathComponent
+            return directory.isEmpty ? String(checkout.id.prefix(8)) : directory
+        }
+
+        let baseCounts=Dictionary(grouping:activeRows,by:baseLabel).mapValues { $0.count }
+        var labels:[String:String]=[:]
+        for checkout in activeRows where requested.contains(checkout.id) {
+            var label=baseLabel(checkout)
+            if baseCounts[label,default:0] > 1 {
+                let directory=URL(fileURLWithPath:checkout.path).lastPathComponent
+                label += " · " + (directory.isEmpty || directory == label
+                    ? String(checkout.id.prefix(8))
+                    : directory)
+            }
+            if labels.values.contains(label) {
+                label += " · " + String(checkout.id.prefix(8))
+            }
+            labels[checkout.id]=label
+        }
+        return labels
+    }
+
     nonisolated static func repositoryAccessMode(_ result:[String:Any]) -> String {
         let policy = result["repositoryPolicy"] as? [String:Any] ?? [:]
         return policy["mode"] as? String == "full_access" ? "full_access" : "request"

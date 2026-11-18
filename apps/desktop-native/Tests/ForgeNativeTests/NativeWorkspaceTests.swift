@@ -3718,6 +3718,32 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertNil(removed.checkoutBranch)
     }
 
+    func testRepositoryCheckoutLabelsIdentifyBranchesAndDisambiguateSameBranchWorktrees() {
+        let result:[String:Any]=["repository":[
+            "checkouts":[
+                ["checkoutId":"checkout_main","path":"/tmp/main","branch":"main"],
+                ["checkoutId":"checkout_feature_a","path":"/tmp/worktree-a","branch":"feature/agent"],
+                ["checkoutId":"checkout_feature_b","path":"/tmp/worktree-b","branch":"feature/agent"],
+                ["checkoutId":"checkout_no_branch","path":"/tmp/review","branch":""],
+                ["checkoutId":"checkout_removed","path":"/tmp/removed","branch":"old","lifecycle":"removed"]
+            ]
+        ]]
+        let labels=NativeWorkspace.repositoryCheckoutLabels(
+            result,
+            requestedCheckoutIds:[
+                "checkout_main","checkout_feature_a","checkout_feature_b",
+                "checkout_no_branch","checkout_removed"
+            ]
+        )
+
+        XCTAssertEqual(labels["checkout_main"],"main")
+        XCTAssertEqual(labels["checkout_feature_a"],"feature/agent · worktree-a")
+        XCTAssertEqual(labels["checkout_feature_b"],"feature/agent · worktree-b")
+        XCTAssertEqual(labels["checkout_no_branch"],"review")
+        XCTAssertNil(labels["checkout_removed"])
+        XCTAssertEqual(labels.count,4)
+    }
+
     func testCheckoutPathValidationRequiresGitMetadata() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
