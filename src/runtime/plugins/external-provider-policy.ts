@@ -3,6 +3,7 @@ import {
   executeDesktopOperatorPolicyAction,
   resolveDesktopOperatorAuthorizationContext,
 } from './desktop-operator-external-policy';
+import { resolveAgentMailAuthorizationContext } from './agentmail-external-policy';
 import type { ExternalPluginRegistration } from './external-registration';
 import type { DesktopApplicationIdentity, VerifiedDesktopApplicationActivation } from './local-system-adapter';
 import type { AssistantPluginActionExecutionInput, AssistantPluginAuthorizationContext } from './types';
@@ -43,6 +44,10 @@ const DESKTOP_OPERATOR_EXTERNAL_POLICY: ExternalProviderPolicy = {
   executeAction: executeDesktopOperatorPolicyAction,
 };
 
+const AGENTMAIL_EXTERNAL_POLICY: ExternalProviderPolicy = { resolveAuthorizationContext: resolveAgentMailAuthorizationContext };
+
 export function resolveExternalProviderPolicy(registration: ExternalPluginRegistration): ExternalProviderPolicy | undefined {
-  return registration.pluginId === 'desktop_operator' ? DESKTOP_OPERATOR_EXTERNAL_POLICY : undefined;
+  if (registration.pluginId === 'desktop_operator') return DESKTOP_OPERATOR_EXTERNAL_POLICY;
+  if (registration.pluginId === 'agentmail') return AGENTMAIL_EXTERNAL_POLICY;
+  return undefined;
 }

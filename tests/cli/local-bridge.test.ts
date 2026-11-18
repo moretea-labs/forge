@@ -15,7 +15,6 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { createHmac } from "crypto";
 import { spawn, spawnSync } from "child_process";
-import { loadMcpServiceRuntimeState, writeMcpServiceLocalConfig, writeMcpServiceRuntimeState } from "../../adapters/mcp/auth";
 import { cancelAgentJob, getAgentJob, getAgentJobEvents, getAgentJobLog, listAgentJobs } from "../../src/cli/agent-jobs/job-manager";
 import {
   controllerCheckConcurrencyClass,
@@ -38,15 +37,13 @@ import {
   startLocalBridgeServer,
   type LocalBridgeServerHandle,
 } from "../../src/cli/local-bridge/server";
-import { startConfiguredRuntimeLocalBridge } from "../../src/cli/local-bridge/runtime-bridge";
 import { isProcessAlive } from "../../src/runtime/shared/process-tree";
-import { projectAgentRunToLocalBridgeJob, projectAgentRunToLocalBridgeStatus, reconcileLocalBridgeJobs as reconcileLocalBridgeJobsInRuntime, refreshLocalBridgeJob as refreshLocalBridgeJobInRuntime } from "../../src/runtime/local-bridge/lifecycle";
-import type { LocalBridgeJob } from "../../src/runtime/local-bridge/types";
 import { addRepositoryCheckout, loadRepositoryRegistry, registerRepository, resolveRepositorySelection } from "../../src/runtime/repositories/registry";
 import { acquireControllerLock, releaseControllerLock } from "../../src/effects/controller-locks";
 import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { createMcpToolContext, callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
 import { createSchedule, saveOccurrence, saveSchedule } from "../../src/runtime/workflow/schedules/store";
+import { readWorkflowRun, writeWorkflowRunCheckpoint } from "../../src/runtime/control-plane/persistence/workflow-run-store";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
 
 const roots: string[] = [];
@@ -152,170 +149,6 @@ async function waitForRun(
 }
 
 describe("Local Execution Bridge", () => {
-  test("projects terminal Agent Run evidence into a LocalBridge Job without mutating the stored snapshot", () => {
-    const current = {
-      schemaVersion: 1 as const, jobId: "job-1", action: "quick-agent-session" as const,
-      payload: { title: "test", objective: "test" }, requestedBy: "test", approval: "auto" as const,
-      status: "running" as const, createdAt: "2026-11-14T00:00:00.000Z", updatedAt: "2026-11-14T00:00:00.000Z",
-      runId: "run-1", result: { retained: true },
-    };
-    const projection = projectAgentRunToLocalBridgeJob(current, {
-      runId: "run-1", status: "succeeded", finishedAt: "2026-11-14T00:01:00.000Z",
-      exitCode: 0, integratedSessionId: "edit-1", changeOutcome: "changed", changedFiles: ["src/a.ts"],
-    }, "2026-11-14T00:02:00.000Z");
-    expect(projection).toMatchObject({
-      previousStatus: "running", statusChanged: true, terminal: true,
-      event: { type: "job_succeeded", message: "Linked Run run-1 moved Local Job to succeeded.", data: { runStatus: "succeeded" } },
-    });
-    expect(projection.job).toMatchObject({
-      status: "succeeded", finishedAt: "2026-11-14T00:01:00.000Z",
-      result: { retained: true, runId: "run-1", runStatus: "succeeded", exitCode: 0, integratedSessionId: "edit-1", changeOutcome: "changed", changedFiles: ["src/a.ts"] },
-      outcome: { process: { exitCode: 0 } },
-    });
-    expect(projection.job.error).toBeUndefined();
-    expect(current).toMatchObject({ status: "running", result: { retained: true } });
-  });
-  test("keeps LocalBridge reconciliation decisions in Runtime and delegates repository effects", () => {
-    const makeJob = (
-      jobId: string,
-      status: LocalBridgeJob["status"],
-      action: LocalBridgeJob["action"],
-    ): LocalBridgeJob => ({
-      schemaVersion: 1,
-      jobId,
-      action,
-      payload: action === "run-check" ? { checkId: "check-1" } : { title: "test", objective: "test" },
-      requestedBy: "test",
-      approval: "auto",
-      status,
-      createdAt: "2026-11-14T00:00:00.000Z",
-      updatedAt: "2026-11-14T00:00:00.000Z",
-    });
-    const jobs = [
-      makeJob("approved", "approved", "quick-agent-session"),
-      makeJob("running-check", "running", "run-check"),
-      makeJob("already-terminal", "cancelled", "quick-agent-session"),
-    ];
-    let revisionReads = 0;
-    const refreshed: string[] = [];
-    const result = reconcileLocalBridgeJobsInRuntime("/repo", {
-      listActiveJobs: () => jobs,
-      currentCheckRevision: () => {
-        revisionReads += 1;
-        return "revision-1";
-      },
-      refreshJob: (_repoRoot, job, checkRevision) => {
-        refreshed.push(`${job.jobId}:${checkRevision}`);
-        return { ...job, status: job.jobId === "running-check" ? "stale" : "succeeded" };
-      },
-    });
-
-    expect(result).toEqual({ scanned: 3, active: 2, terminalized: 2 });
-    expect(revisionReads).toBe(1);
-    expect(refreshed).toEqual(["approved:revision-1", "running-check:revision-1"]);
-  });
-
-  test("keeps LocalBridge refresh transitions in Runtime and delegates effects", () => {
-    const at = new Date().toISOString();
-    const job: LocalBridgeJob = {
-      schemaVersion: 1,
-      jobId: "running-check",
-      action: "run-check",
-      payload: { checkId: "check-1" },
-      requestedBy: "test",
-      approval: "auto",
-      status: "running",
-      createdAt: at,
-      updatedAt: at,
-      startedAt: at,
-      revision: "old-revision",
-      ownerPid: process.pid,
-    };
-    const events: Array<{ type: string; message?: string; data?: Record<string, unknown> }> = [];
-    let saved = false;
-    let released = false;
-    const refreshed = refreshLocalBridgeJobInRuntime("/repo", job, "new-revision", {
-      currentPid: process.pid,
-      now: () => at,
-      resolveJobTimeout: () => 60_000,
-      currentCheckRevision: () => {
-        throw new Error("provided reconciliation revision should be reused");
-      },
-      isPidAlive: () => true,
-      signalWorker: () => {},
-      releaseCheckSubscription: () => { released = true; },
-      syncProjectedExecutionJob: (_root, current) => current,
-      getAgentRun: () => { throw new Error("Agent Run lookup is not expected for a running check"); },
-      cleanupEphemeralJob: () => {},
-      appendEvent: (_root, _jobId, event) => { events.push(event); },
-      saveJob: (_root, current) => { saved = true; return current; },
-    });
-
-    expect(refreshed.status).toBe("stale");
-    expect(refreshed.error).toContain("became stale");
-    expect(events).toMatchObject([{ type: "job_failed", data: { stale: true, timedOut: false, orphaned: false } }]);
-    expect(saved).toBe(true);
-    expect(released).toBe(true);
-  });
-
-  test("uses the injected Runtime clock for LocalBridge execution deadlines", () => {
-    const root = repo();
-    const actualNow = Date.now();
-    const injectedNow = new Date(actualNow + 60_000).toISOString();
-    const deadlineAt = new Date(actualNow + 30_000).toISOString();
-    const startedAt = new Date(actualNow - 60_000).toISOString();
-    const job: LocalBridgeJob = {
-      schemaVersion: 1,
-      jobId: "timed-out-verify",
-      action: "verify-edit-session",
-      payload: { sessionId: "session-1", revision: 1 },
-      requestedBy: "test",
-      approval: "auto",
-      status: "running",
-      createdAt: startedAt,
-      updatedAt: startedAt,
-      startedAt,
-      deadlineAt,
-      ownerPid: process.pid,
-    };
-    const events: Array<{ type: string; message?: string; data?: Record<string, unknown> }> = [];
-    let saved = false;
-    let released = false;
-    const refreshed = refreshLocalBridgeJobInRuntime(root, job, undefined, {
-      currentPid: process.pid,
-      now: () => injectedNow,
-      resolveJobTimeout: () => 60_000,
-      currentCheckRevision: () => { throw new Error("check revision should not be read for a verify job"); },
-      isPidAlive: () => true,
-      signalWorker: () => {},
-      releaseCheckSubscription: () => { released = true; },
-      syncProjectedExecutionJob: (_root, current) => current,
-      getAgentRun: () => { throw new Error("Agent Run lookup is not expected for a verify job"); },
-      cleanupEphemeralJob: () => {},
-      appendEvent: (_root, _jobId, event) => { events.push(event); },
-      saveJob: (_root, current) => { saved = true; return current; },
-    });
-
-    expect(refreshed.status).toBe("timed_out");
-    expect(refreshed.finishedAt).toBe(injectedNow);
-    expect(refreshed.error).toContain("verify-edit-session exceeded");
-    expect(events).toMatchObject([{ type: "job_failed", data: { timedOut: true } }]);
-    expect(saved).toBe(true);
-    expect(released).toBe(true);
-  });
-
-  test("projects Agent Run states through the Runtime-owned LocalBridge vocabulary", () => {
-    expect(projectAgentRunToLocalBridgeStatus("queued")).toBe("dispatched");
-    for (const status of ["starting", "running", "waiting_for_user"] as const) {
-      expect(projectAgentRunToLocalBridgeStatus(status)).toBe("running");
-    }
-    expect(projectAgentRunToLocalBridgeStatus("succeeded")).toBe("succeeded");
-    expect(projectAgentRunToLocalBridgeStatus("cancelled")).toBe("cancelled");
-    for (const status of ["failed", "unknown"] as const) {
-      expect(projectAgentRunToLocalBridgeStatus(status)).toBe("failed");
-    }
-  });
-
   test('returns stable 410 handoffs for retired Local Bridge creation and progress projection routes', async () => {
     const root = repo();
     const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
@@ -410,46 +243,6 @@ describe("Local Execution Bridge", () => {
     const controllerLocalJobs = join(controllerHome, "repositories", repository!.repoId, "local-jobs");
     expect(realpathSync(localJobsPath)).toBe(realpathSync(controllerLocalJobs));
     expect((await fetch(new URL("/health", handle.url))).status).toBe(200);
-  });
-
-  test("starts and stops the configured embedded LocalBridge through the CLI Runtime bridge", async () => {
-    const root = repo();
-    const controllerHome = process.env.FORGE_CONTROLLER_HOME;
-    if (!controllerHome) throw new Error("test repository did not configure Controller Home");
-    const at = new Date().toISOString();
-    writeMcpServiceLocalConfig(controllerHome, {
-      version: 1,
-      repo: root,
-      profile: "controller",
-      localController: { enabled: true, mode: "embedded", host: "127.0.0.1", port: 0 },
-    });
-    writeMcpServiceRuntimeState(controllerHome, {
-      version: 1,
-      repo: root,
-      startedAt: at,
-      updatedAt: at,
-      status: "running",
-      tunnelMode: "none",
-      server: { endpoint: "http://127.0.0.1:0", running: true, healthy: true, restartCount: 0 },
-    });
-
-    const bridge = await startConfiguredRuntimeLocalBridge({ controllerHome, repositoryRoot: root });
-    if (!bridge) throw new Error("configured embedded LocalBridge did not start");
-    try {
-      expect((await fetch(new URL("/health", bridge.endpoint))).status).toBe(200);
-      expect(loadMcpServiceRuntimeState(controllerHome)?.localController).toMatchObject({
-        endpoint: bridge.endpoint,
-        running: true,
-        mode: "embedded",
-        pid: process.pid,
-      });
-    } finally {
-      await bridge.close();
-    }
-    expect(loadMcpServiceRuntimeState(controllerHome)?.localController).toMatchObject({
-      running: false,
-      pid: process.pid,
-    });
   });
 
   test("classifies full repository gates as heavy while leaving focused checks concurrent", () => {
@@ -1036,6 +829,190 @@ describe("Local Execution Bridge", () => {
     expect(afterRevoke.body.error).toContain("MOBILE_INTENT_DEVICE_REVOKED");
   });
 
+
+  test("persists signed AgentMail events as one canonical WorkflowRun receipt and rejects replay conflicts", async () => {
+    const root = repo();
+    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
+    servers.push(handle);
+    const localHeaders = { "x-forge-local-token": handle.token, "content-type": "application/json" };
+    const created = await fetch(new URL("/api/mobile/devices", handle.url), {
+      method: "POST",
+      headers: localHeaders,
+      body: JSON.stringify({
+        name: "AgentMail macOS",
+        deviceId: "agentmail-macos",
+        scopes: ["workflow:agentmail.mail-watch-event:execute"],
+        rateLimitPerMinute: 120,
+      }),
+    }).then((response) => response.json());
+    expect(created.device.scopes).toEqual(["workflow:agentmail.mail-watch-event:execute"]);
+
+    function signedHeaders(body: string, nonce: string) {
+      const timestamp = new Date().toISOString();
+      const signature = createHmac("sha256", created.token).update(`${timestamp}.${nonce}.${body}`).digest("hex");
+      return {
+        "content-type": "application/json",
+        authorization: `Bearer ${created.token}`,
+        "x-forge-device-id": created.device.deviceId,
+        "x-forge-timestamp": timestamp,
+        "x-forge-nonce": nonce,
+        "x-forge-signature": signature,
+      };
+    }
+
+    const ruleId = "11111111-1111-4111-8111-111111111111";
+    const accountId = "22222222-2222-4222-8222-222222222222";
+    const providerMessageId = "provider-message-" + "m".repeat(700);
+    const event = {
+      source: "mail.watch.matched",
+      event_id: ruleId + ":" + accountId + ":" + providerMessageId,
+      observed_at: "2026-11-16T16:00:00.000Z",
+      ref: {
+        provider: "agentmail",
+        account_id: accountId,
+        provider_message_id: providerMessageId,
+      },
+      summary: {
+        rule_id: ruleId,
+        sender_email: "apple@example.com",
+      },
+    };
+    expect(event.event_id.length).toBeGreaterThan(512);
+    const body = JSON.stringify({ intent: "workflow_event", event });
+    const first = await fetch(new URL("/mobile/intent", handle.url), {
+      method: "POST",
+      headers: signedHeaders(body, "agentmail-event-0001"),
+      body,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(first.status).toBe(202);
+    expect(first.body).toMatchObject({
+      accepted: true,
+      durable: true,
+      deduplicated: false,
+      workflowId: "agentmail.mail-watch-event",
+      status: "succeeded",
+    });
+    expect(first.body.workflowRunId).toBeString();
+
+    // Simulate a process restart after the script Process succeeded but before the
+    // WorkflowRun success checkpoint/HTTP ACK was persisted.
+    const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
+    const registeredRepository = resolveRepositorySelection({ explicitPath: root, controllerHome });
+    const scopeId = `repository:${registeredRepository!.repoId}:checkout:${registeredRepository!.activeCheckoutId}:workflow:agentmail.mail-watch-event`;
+    const stored = readWorkflowRun(controllerHome, scopeId, first.body.workflowRunId);
+    expect(stored?.value.status).toBe("succeeded");
+    writeWorkflowRunCheckpoint({
+      controllerHome,
+      expectedRevision: stored!.revision,
+      inputs: event,
+      checkpoint: {
+        schemaVersion: 1,
+        binding: { scopeId, runId: first.body.workflowRunId },
+        workflowId: stored!.value.workflowId,
+        version: stored!.value.version,
+        contentDigest: stored!.value.contentDigest,
+        status: "running",
+        nextStepIndex: 0,
+        receipts: [],
+        outputs: {},
+        inFlightStepId: "validate-event",
+      },
+    });
+    await handle.close();
+    servers.splice(servers.indexOf(handle), 1);
+    const restarted = await startLocalBridgeServer({ repoRoot: root, port: 0 });
+    servers.push(restarted);
+
+    const replay = await fetch(new URL("/mobile/intent", restarted.url), {
+      method: "POST",
+      headers: signedHeaders(body, "agentmail-event-0002"),
+      body,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(replay.status).toBe(202);
+    expect(replay.body).toMatchObject({
+      accepted: true,
+      durable: true,
+      deduplicated: true,
+      workflowId: "agentmail.mail-watch-event",
+      status: "succeeded",
+    });
+    expect(replay.body.workflowRunId).toBe(first.body.workflowRunId);
+    expect(readWorkflowRun(controllerHome, scopeId, first.body.workflowRunId)?.value.status).toBe("succeeded");
+
+    const duplicate = await fetch(new URL("/mobile/intent", restarted.url), {
+      method: "POST",
+      headers: signedHeaders(body, "agentmail-event-0003"),
+      body,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(duplicate.status).toBe(202);
+    expect(duplicate.body).toMatchObject({ accepted: true, durable: true, deduplicated: true, status: "succeeded" });
+    expect(duplicate.body.workflowRunId).toBe(first.body.workflowRunId);
+
+    const changedPayload = JSON.stringify({
+      intent: "workflow_event",
+      event: { ...event, summary: { ...event.summary, sender_email: "different@example.com" } },
+    });
+    const conflict = await fetch(new URL("/mobile/intent", restarted.url), {
+      method: "POST",
+      headers: signedHeaders(changedPayload, "agentmail-event-0004"),
+      body: changedPayload,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(conflict.status).toBe(409);
+    expect(conflict.body).toMatchObject({ accepted: false, error: "WORKFLOW_RUN_IDENTITY_CONFLICT" });
+
+    const succeededRun = readWorkflowRun(controllerHome, scopeId, first.body.workflowRunId);
+    expect(succeededRun?.value.status).toBe("succeeded");
+    writeWorkflowRunCheckpoint({
+      controllerHome,
+      expectedRevision: succeededRun!.revision,
+      inputs: event,
+      checkpoint: {
+        schemaVersion: 1,
+        binding: { scopeId, runId: first.body.workflowRunId },
+        workflowId: succeededRun!.value.workflowId,
+        version: succeededRun!.value.version,
+        contentDigest: succeededRun!.value.contentDigest,
+        status: "failed",
+        nextStepIndex: 0,
+        receipts: [],
+        outputs: {},
+      },
+    });
+    const failedReplay = await fetch(new URL("/mobile/intent", restarted.url), {
+      method: "POST",
+      headers: signedHeaders(body, "agentmail-event-0007"),
+      body,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(failedReplay.status).toBe(503);
+    expect(failedReplay.body).toMatchObject({
+      accepted: false,
+      durable: true,
+      signatureVerified: true,
+      status: "WORKFLOW_RUN_FAILED_RESTART_REQUIRES_NEW_RUN_ID",
+      workflowRunId: first.body.workflowRunId,
+    });
+
+    const unsafePayload = JSON.stringify({
+      intent: "workflow_event",
+      event: { ...event, summary: { ...event.summary, body_text: "OTP 123456" } },
+    });
+    const unsafe = await fetch(new URL("/mobile/intent", restarted.url), {
+      method: "POST",
+      headers: signedHeaders(unsafePayload, "agentmail-event-0005"),
+      body: unsafePayload,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(unsafe.status).toBe(400);
+    expect(unsafe.body.error).toContain("MOBILE_INTENT_EVENT_FIELD_UNSUPPORTED");
+
+    const oversizedPayload = JSON.stringify({ intent: "workflow_event", event: { ...event, event_id: "x".repeat(4097) } });
+    const oversized = await fetch(new URL("/mobile/intent", restarted.url), {
+      method: "POST",
+      headers: signedHeaders(oversizedPayload, "agentmail-event-0006"),
+      body: oversizedPayload,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(oversized.status).toBe(400);
+    expect(oversized.body.error).toContain("MOBILE_INTENT_EVENT_ID_INVALID");
+  });
 
   test("shows direct edits as first-class file changes and completes them through the local API", async () => {
     const root = repo();
