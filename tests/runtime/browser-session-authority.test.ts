@@ -1373,6 +1373,7 @@ describe('browser session compatibility on Computer target authority', () => {
       let currentUrl = initialUrl;
       let currentTitle = initialTitle;
       let windowName = '';
+      let closed = false;
       return {
         url: () => currentUrl,
         title: async () => currentTitle,
@@ -1395,7 +1396,8 @@ describe('browser session compatibility on Computer target authority', () => {
           return '';
         },
         on: () => undefined,
-        close: async () => undefined,
+        close: async () => { closed = true; },
+        isClosed: () => closed,
       };
     }
 
@@ -1403,7 +1405,7 @@ describe('browser session compatibility on Computer target authority', () => {
     const ownedPage = fakePage('about:blank', 'New Tab');
     const pages: ReturnType<typeof fakePage>[] = [userPage];
     const context = {
-      pages: () => pages,
+      pages: () => pages.filter((page) => !page.isClosed()),
       newPage: async () => {
         pages.push(ownedPage);
         return ownedPage;
@@ -1422,6 +1424,7 @@ describe('browser session compatibility on Computer target authority', () => {
           launchPersistentContext: async () => { throw new Error('managed launch must not run'); },
           connectOverCDP: async () => ({
             contexts: () => [context],
+            newBrowserCDPSession: async () => ({ detach: async () => undefined }),
             disconnect: () => { disconnects += 1; },
           }),
         },
@@ -1497,9 +1500,22 @@ describe('browser session compatibility on Computer target authority', () => {
       actionId: 'get_text',
       args: { session_id: sessionId, selector: 'body' },
     })).rejects.toThrow('PLUGIN_BROWSER_ATTACH_UNAVAILABLE');
-    expect(pages).toHaveLength(1);
+    expect(context.pages()).toHaveLength(1);
     expect(userPage.url()).toBe(url);
     expect(disconnects).toBe(5);
+
+    // Closing a CDP-attached session closes only the page carrying its exact owner marker.
+    pages.push(ownedPage);
+    const closed = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'cdp-owned-close',
+      actionId: 'close_session',
+      args: { session_id: sessionId },
+    });
+    expect(closed).toMatchObject({ closed: true, resourceClosed: true });
+    expect(context.pages()).toHaveLength(1);
+    expect(userPage.url()).toBe(url);
+    expect(disconnects).toBe(6);
   });
 
   test('installs unpacked extension through browser-level CDP and verifies exact id/path before success', async () => {

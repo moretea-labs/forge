@@ -2063,6 +2063,35 @@ async function closeManagedSessionPage(repoRoot: string, config: BrowserPluginCo
   return true;
 }
 
+async function closeAttachedCdpSessionPage(
+  repoRoot: string,
+  config: BrowserPluginConfig,
+  session: BrowserSessionState,
+): Promise<boolean> {
+  const tab = session.browser?.tab;
+  if (session.browser?.provider !== 'playwright-cdp' || tab?.ownership !== 'plugin_owned' || !tab.ownerToken) return false;
+  const handle = await browserLevelCdp(repoRoot, config);
+  if (!handle) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_ATTACH_UNAVAILABLE', 'The attached browser could not be reconnected to close the exact Forge-owned tab.', { retryable: true });
+  }
+  try {
+    const context = handle.browser.contexts()[0];
+    if (!context) return false;
+    const matches = (await inventoryTabs(context)).filter((entry) => entry.ownerToken === tab.ownerToken);
+    if (matches.length > 1) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_REUSABLE_TAB_AMBIGUOUS', 'Multiple browser tabs report the same owned marker; refusing to close an ambiguous target.', { retryable: false });
+    }
+    const match = matches[0];
+    if (!match) return false;
+    const page = context.pages()[match.index];
+    if (!page || typeof page.close !== 'function') return false;
+    await page.close();
+    return true;
+  } finally {
+    await closeBrowserLevelCdp(handle);
+  }
+}
+
 async function openManagedContext(
   runtime: PlaywrightRuntime,
   repoRoot: string,
@@ -4279,13 +4308,14 @@ async function executeBrowserPluginActionInternal(
         assertBrowserSessionAvailable(input.repoRoot, sessionId);
         const session = findBrowserSession(input.repoRoot, sessionId);
         const tab = session?.browser?.tab;
+        const attachedClosed = session ? await closeAttachedCdpSessionPage(input.repoRoot, current, session) : false;
         const managedClosed = session ? await closeManagedSessionPage(input.repoRoot, current, session) : false;
         const nativeClose = session ? await closeTrackedNativeOwnedSession(session, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) : { resourceClosed: false, resourceAlreadyMissing: false };
         const closedSessionIds = session ? nativeOwnedAliasSessionIds(input.repoRoot, session) : [sessionId];
         for (const closedSessionId of closedSessionIds) removeBrowserSession(input.repoRoot, closedSessionId);
         return {
           closed: true, sessionId,
-          resourceClosed: managedClosed || nativeClose.resourceClosed,
+          resourceClosed: attachedClosed || managedClosed || nativeClose.resourceClosed,
           ...(closedSessionIds.length > 1 ? { closedSessionIds } : {}),
           ...(nativeClose.resourceAlreadyMissing ? { resourceAlreadyMissing: true } : {}),
           ...(tab?.ownership === 'user_owned' ? { preservedUserOwnedTab: true } : {}),
