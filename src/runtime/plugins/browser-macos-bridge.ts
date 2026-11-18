@@ -1340,7 +1340,9 @@ export class MacOsAppleEventsPage {
     // This result belongs to the exact native tab activation just completed.
     // Never reuse it for click/fill/navigation or a later action: those must
     // re-read page identity because the mutation may change the URL.
-    if (options.preferVerifiedActivation && this.verifiedActivationIdentityFromCurrentAction && this.metadata.url) {
+    // Exact Chrome metadata intentionally omits the title. It can prove
+    // foreground authority but cannot replace a complete page identity read.
+    if (options.preferVerifiedActivation && this.verifiedActivationIdentityFromCurrentAction && this.metadata.url && this.metadata.title) {
       this.verifiedActivationIdentityFromCurrentAction = false;
       return { url: this.metadata.url, title: this.metadata.title };
     }
