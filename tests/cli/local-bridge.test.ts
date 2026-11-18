@@ -953,6 +953,24 @@ describe("Local Execution Bridge", () => {
     }
 
     const listBody = JSON.stringify({ intent: "list_plugins" });
+    const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
+    const registeredRepository = resolveRepositorySelection({ explicitPath: root, controllerHome });
+    const lockKey = { scope: "repository" as const, repoId: registeredRepository.repoId };
+    const heldStoreLock = acquireControllerLock(controllerHome, lockKey, "test:mobile-intent-store-rotation");
+    try {
+      const busy = await fetch(new URL("/mobile/intent", handle.url), {
+        method: "POST",
+        headers: signedHeaders(listBody, "nonce-list-0001"),
+        body: listBody,
+      });
+      expect(busy.status).toBe(503);
+      expect(busy.headers.get("retry-after")).toBe("1");
+      expect(await busy.json()).toEqual({ error: "MOBILE_INTENT_STORE_BUSY" });
+    } finally {
+      releaseControllerLock(controllerHome, lockKey, heldStoreLock.lockId);
+    }
+
+    // The contended request must not consume the nonce or mutate the device record.
     const listed = await fetch(new URL("/mobile/intent", handle.url), {
       method: "POST",
       headers: signedHeaders(listBody, "nonce-list-0001"),
