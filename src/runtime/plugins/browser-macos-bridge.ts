@@ -1107,6 +1107,7 @@ export class MacOsAppleEventsPage {
   private timeoutMs: number;
   private targetRef?: MacOsBrowserTabRef;
   private domIdentityFromCurrentAction = false;
+  private verifiedActivationIdentityFromCurrentAction = false;
   private readonly createTabEvidence?: MacOsBrowserCreateTabEvidence;
 
   constructor(attachment: MacOsBrowserAttachment, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS, targetRef?: MacOsBrowserTabRef, createTabEvidence?: MacOsBrowserCreateTabEvidence) {
@@ -1332,9 +1333,18 @@ export class MacOsAppleEventsPage {
 
   beginAction(): void {
     this.domIdentityFromCurrentAction = false;
+    this.verifiedActivationIdentityFromCurrentAction = false;
   }
 
-  async identity(options: { preferObservedDom?: boolean } = {}): Promise<{ url: string; title: string }> {
+  async identity(options: { preferObservedDom?: boolean; preferVerifiedActivation?: boolean } = {}): Promise<{ url: string; title: string }> {
+    // This result belongs to the exact native tab activation just completed.
+    // Never reuse it for click/fill/navigation or a later action: those must
+    // re-read page identity because the mutation may change the URL.
+    if (options.preferVerifiedActivation && this.verifiedActivationIdentityFromCurrentAction && this.metadata.url) {
+      this.verifiedActivationIdentityFromCurrentAction = false;
+      return { url: this.metadata.url, title: this.metadata.title };
+    }
+    this.verifiedActivationIdentityFromCurrentAction = false;
     if (options.preferObservedDom && this.domIdentityFromCurrentAction && this.metadata.url) {
       this.domIdentityFromCurrentAction = false;
       return { url: this.metadata.url, title: this.metadata.title };
@@ -1803,8 +1813,11 @@ export class MacOsAppleEventsPage {
       if (this.metadata.windowId && this.metadata.tabId) {
         this.targetRef = { windowId: this.metadata.windowId, tabId: this.metadata.tabId };
       }
-      // The activation already read authoritative postcondition metadata for
-      // this exact tab. Returning it avoids a second cross-process query.
+      // The activation read the exact tab's authoritative postcondition and
+      // URL/title. Reuse that identity only if the caller is finalizing this
+      // activate_page action, never across later mutations or actions.
+      this.verifiedActivationIdentityFromCurrentAction =
+        this.metadata.frontmost === true && this.metadata.active === true && Boolean(this.metadata.url);
       return { frontmost: this.metadata.frontmost, active: this.metadata.active === true };
     }
     await this.runAutomation(
@@ -1965,17 +1978,37 @@ export async function activateMacOsBrowserOwnedTab(
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<MacOsBrowserMetadata> {
   const browser = browserDefinition(product);
+  const deadline = performance.now() + timeoutMs;
+  // Keep the complete, unique live-tab proof for activation. Its cost, the
+  // activation event, and the postcondition share one caller-owned budget,
+  // rather than each restarting the full timeout.
   const resolvedRef = await resolveCurrentMacOsBrowserTabRef(product, ref, timeoutMs);
+  const dispatchBudget = Math.ceil(deadline - performance.now());
+  if (dispatchBudget <= 0) {
+    throw new AssistantPluginError(
+      'BROWSER_AUTOMATION_TIMEOUT',
+      'Native activation preflight exhausted the action budget before dispatch.',
+      { retryable: true, effectOutcome: 'failed' },
+    );
+  }
   await runBrowserAutomationText(
     { action: 'activate', product, ref: resolvedRef },
     activateTargetTabScript(browser, resolvedRef),
     [],
-    timeoutMs,
+    dispatchBudget,
   );
-  // This exact tab was resolved immediately before activation. Re-read its
-  // targeted metadata for the postcondition instead of enumerating every tab
-  // again; the provider still rejects missing/stale tab identity fail-closed.
-  const metadata = await readResolvedMacOsBrowserOwnedTabMetadata(product, resolvedRef, timeoutMs);
+  const verificationBudget = Math.ceil(deadline - performance.now());
+  if (verificationBudget <= 0) {
+    // The event has already been sent. Do not automatically replay it or
+    // claim a verified foreground postcondition after the deadline.
+    throw new AssistantPluginError(
+      'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
+      'Native activation was dispatched but exhausted its action budget before foreground verification.',
+      { retryable: false, effectOutcome: 'outcome_unknown' },
+    );
+  }
+  // Verify the exact target, without a second global inventory.
+  const metadata = await readResolvedMacOsBrowserOwnedTabMetadata(product, resolvedRef, verificationBudget);
   if (metadata.tabId !== resolvedRef.tabId || metadata.active !== true) {
     throw new AssistantPluginError(
       'PLUGIN_BROWSER_NATIVE_ACTIVATION_POSTCONDITION_FAILED',

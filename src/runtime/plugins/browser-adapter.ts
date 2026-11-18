@@ -315,7 +315,7 @@ type PageLike = {
   goBack?(options?: Record<string, unknown>): Promise<unknown>;
   title(): Promise<string>;
   url(): string;
-  identity?(options?: { preferObservedDom?: boolean }): Promise<{ url: string; title: string }>;
+  identity?(options?: { preferObservedDom?: boolean; preferVerifiedActivation?: boolean }): Promise<{ url: string; title: string }>;
   beginAction?(): void;
   content?(): Promise<string>;
   evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T>;
@@ -3823,7 +3823,7 @@ function verifyStateObservationScript(selector: string | undefined, textContains
   })()`;
 }
 
-async function readPageIdentity(page: PageLike, connection?: BrowserConnectionSummary, expectedUrl?: string, preferObservedDom = false): Promise<{ url: string; title: string }> {
+async function readPageIdentity(page: PageLike, connection?: BrowserConnectionSummary, expectedUrl?: string, preferObservedDom = false, preferVerifiedActivation = false): Promise<{ url: string; title: string }> {
   const normalizeObservedUrl = (value: unknown): string => {
     const internalProduct = browserInternalUrlProduct(value);
     if (connection?.provider === 'macos-apple-events' && connection.tab?.ownership === 'user_owned') {
@@ -3837,7 +3837,7 @@ async function readPageIdentity(page: PageLike, connection?: BrowserConnectionSu
     return normalizedUrl(value);
   };
   if (connection?.provider === 'macos-apple-events' && typeof page.identity === 'function') {
-    const identity = await page.identity({ preferObservedDom });
+    const identity = await page.identity({ preferObservedDom, preferVerifiedActivation });
     return { url: normalizeObservedUrl(identity.url), title: identity.title };
   }
   return { url: normalizeObservedUrl(page.url()), title: await page.title() };
@@ -3854,7 +3854,7 @@ async function finalizeInteractiveAction(
   extra: Record<string, unknown> = {},
 ): Promise<Record<string, unknown>> {
   const warnings: string[] = [];
-  const identity = await readPageIdentity(page, connection, target.url);
+  const identity = await readPageIdentity(page, connection, target.url, false, actionId === 'activate_page');
   const title = identity.title;
   const pageUrl = identity.url;
   const session = saveBrowserSession(repoRoot, sessionFromPage(target, pageUrl, title, connection));
