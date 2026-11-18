@@ -17,6 +17,7 @@ const PROVIDER_WAIT_MS = 4_000;
 const PROVIDER_POLL_MS = 100;
 const TARGET_CONTROL_TIMEOUT_MS = {
   inventory: 5_000,
+  ensure: 60_000,
   observe: 60_000,
   prepare: 60_000,
   dispatch: 60_000,
