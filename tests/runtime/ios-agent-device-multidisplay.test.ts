@@ -85,12 +85,25 @@ describe('iOS agent-device multi-display screenshot routing', () => {
     expect(artifacts).toHaveLength(1);
     expect(existsSync(artifacts[0]!.path)).toBe(true);
 
+    const defaultCaptured = await executeIosAgentDeviceAction({
+      controllerHome, repoId: 'repo-duo-test', repoRoot,
+      pluginId: 'ios', actionId: 'agent_device_screenshot', requestId: 'capture-default',
+      args: { interaction_id: interactionId, label: 'duo-default' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(screenshots).toHaveLength(2);
+    expect(screenshots[1]?.slice(0, 5)).toEqual(['xcrun', 'simctl', 'io', udid, 'screenshot']);
+    expect(agentCalls.some((args) => args[0] === 'screenshot')).toBe(false);
+    const defaultArtifacts = defaultCaptured.artifactCandidates as Array<{ path: string }>;
+    expect(defaultArtifacts).toHaveLength(1);
+    expect(existsSync(defaultArtifacts[0]!.path)).toBe(true);
+
     await expect(executeIosAgentDeviceAction({
       controllerHome, repoId: 'repo-duo-test', repoRoot,
       pluginId: 'ios', actionId: 'agent_device_screenshot', requestId: 'reject-overlay',
       args: { interaction_id: interactionId, display: 3, overlay_refs: true },
       origin: { surface: 'local-ui', actor: 'test' },
     })).rejects.toMatchObject({ code: 'PLUGIN_ACTION_ARGUMENT_INVALID' });
-    expect(screenshots).toHaveLength(1);
+    expect(screenshots).toHaveLength(2);
   });
 });

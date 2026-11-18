@@ -2671,16 +2671,23 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
     }
     case 'agent_device_screenshot': {
       const label = sanitize(optionalString(input.args.label) ?? 'screenshot');
-      if (input.args.display !== undefined) {
-        if (record.provider !== SIMULATOR_PROVIDER || !Number.isInteger(input.args.display)
-          || (input.args.display as number) < 0 || (input.args.display as number) > 16) {
+      const simulatorCapture = record.provider === SIMULATOR_PROVIDER
+        && input.args.overlay_refs !== true
+        && input.args.max_size === undefined;
+      if (simulatorCapture || input.args.display !== undefined) {
+        if (record.provider !== SIMULATOR_PROVIDER) {
+          if (input.args.display !== undefined) {
+            throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'display is supported only for Simulator sessions.', { retryable: false });
+          }
+        } else if (input.args.display !== undefined && (!Number.isInteger(input.args.display)
+          || (input.args.display as number) < 0 || (input.args.display as number) > 16)) {
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'display must be a Simulator display ID from 0 to 16.', { retryable: false });
         }
-        if (input.args.overlay_refs === true || input.args.max_size !== undefined) {
+        if (input.args.display !== undefined && (input.args.overlay_refs === true || input.args.max_size !== undefined)) {
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'A display-addressed Simulator screenshot cannot use agent-device overlays or resizing.', { retryable: false });
         }
-        // Reuse the iOS Simulator screenshot authority; agent-device CLI cannot
-        // disambiguate the Duo's inner and outer displays.
+        // Simulator screenshots use the existing simctl authority by default.
+        // agent-device remains the opt-in path for overlay/resize features.
         const captured = iosSimulatorScreenshot({
           repoId: input.repoId,
           canonicalRoot: input.repoRoot,
@@ -2688,11 +2695,11 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
         } as RepositoryRecord, {
           udid: record.targetId,
           label,
-          display: input.args.display as number,
+          display: input.args.display as number | undefined,
           artifactRoot: artifactDir(input, record.interactionId),
         });
         if (!('absolutePath' in captured) || typeof captured.absolutePath !== 'string') {
-          throw new AssistantPluginError('AGENT_DEVICE_SCREENSHOT_FAILED', 'Simulator display screenshot failed.', { retryable: false });
+          throw new AssistantPluginError('AGENT_DEVICE_SCREENSHOT_FAILED', 'Simulator screenshot failed.', { retryable: false });
         }
         return {
           provider: 'agent-device', interaction: record, result: bounded(captured),

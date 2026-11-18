@@ -221,6 +221,10 @@
       "module": "controller",
       "resource": "process-tree"
     },
+    "tests/runtime/ios-agent-device-status.test.ts": {
+      "module": "ios",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/ios-agent-device-multidisplay.test.ts": {
       "module": "ios",
       "resource": "temp-isolated"

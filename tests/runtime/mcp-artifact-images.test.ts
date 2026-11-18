@@ -13,12 +13,14 @@ import { writeInteractionSession } from '../../src/runtime/plugins/interaction-s
 import { resetIosAgentDeviceRuntimeHooksForTest, setIosAgentDeviceRuntimeHooksForTest } from '../../src/runtime/plugins/ios-agent-device';
 import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 import { registerRepository } from '../../src/runtime/repositories/registry';
+import { resetIosDevelopmentHooksForTest, setIosDevelopmentHooksForTest } from '../../src/runtime/safe-tooling';
 
 const roots: string[] = [];
 // Decodeable fixture only; this is not Simulator visual acceptance evidence.
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=', 'base64');
 afterEach(() => {
   resetIosAgentDeviceRuntimeHooksForTest();
+  resetIosDevelopmentHooksForTest();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -159,6 +161,7 @@ test('deduplicated agent-device screenshot receipt replays its MCP image without
   });
 
   let screenshotInvocations = 0;
+  const screenshotCommands: string[][] = [];
   const commandResult = (command: string, args: string[], stdout: string) => ({
     ok: true,
     status: 0,
@@ -170,16 +173,17 @@ test('deduplicated agent-device screenshot receipt replays its MCP image without
     platform: () => 'darwin',
     now: () => now,
     runCommand: (command, args) => commandResult(command, args, args[0] === '--version' ? '0.19.3' : ''),
-    runCommandAsync: async (command, args) => {
-      if (args[0] === '--version') return commandResult(command, args, '0.19.3');
-      if (args[0] === 'screenshot') {
-        screenshotInvocations += 1;
-        const screenshotPath = args[1]!;
-        mkdirSync(join(screenshotPath, '..'), { recursive: true });
-        writeFileSync(screenshotPath, png);
-        return commandResult(command, args, JSON.stringify({ success: true, data: { captured: true } }));
-      }
-      return commandResult(command, args, JSON.stringify({ success: true, data: {} }));
+    runCommandAsync: async (command, args) => commandResult(command, args, args[0] === '--version' ? '0.19.3' : ''),
+  });
+  setIosDevelopmentHooksForTest({
+    platform: () => 'darwin',
+    runCommand: (command, args) => {
+      screenshotInvocations += 1;
+      screenshotCommands.push([command, ...args]);
+      const screenshotPath = args.at(-1)!;
+      mkdirSync(join(screenshotPath, '..'), { recursive: true });
+      writeFileSync(screenshotPath, png);
+      return commandResult(command, args, 'captured');
     },
   });
 
@@ -198,6 +202,8 @@ test('deduplicated agent-device screenshot receipt replays its MCP image without
   expect(replay.deduplicated).toBe(true);
   expect(replay.receipt.receiptId).toBe(first.receipt.receiptId);
   expect(screenshotInvocations).toBe(1);
+  expect(screenshotCommands).toHaveLength(1);
+  expect(screenshotCommands[0]?.slice(0, 5)).toEqual(['xcrun', 'simctl', 'io', 'SIMULATOR-IMAGE-REPLAY', 'screenshot']);
 
   for (const submitted of [first, replay]) {
     const output = resultWithSubmittedPluginActionImages(
