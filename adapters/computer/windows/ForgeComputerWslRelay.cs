@@ -8,7 +8,7 @@ public class ForgeComputerWslRelay {
     var wsl = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "wsl.exe");
     var process = new Process();
     process.StartInfo.FileName = wsl;
-    process.StartInfo.Arguments = "-d UbuntuDev -e /usr/local/bin/node /home/greyson/.forge/controller/computer/chatgpt-native-host.mjs";
+    process.StartInfo.Arguments = "-e /bin/sh -lc \"exec /usr/bin/env node \"$HOME/.forge/controller/computer/chatgpt-native-host.mjs\"\"";
     process.StartInfo.CreateNoWindow = true;
     process.StartInfo.UseShellExecute = false;
     process.StartInfo.RedirectStandardInput = true;
