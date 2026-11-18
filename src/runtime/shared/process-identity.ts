@@ -95,10 +95,10 @@ export function processIdentityMatches(
   const command = inspected?.command ?? probe.command(actualPid);
   const startTime = inspected?.startTime ?? probe.startTime(actualPid);
   if (!command || !startTime) return { matches: false, reason: 'identity_probe_unavailable' };
-  if (startTime !== expected.processStartTime) return { matches: false, reason: 'process_start_time_changed' };
   if (executableFingerprint(command) !== expected.executableFingerprint) {
     return { matches: false, reason: 'executable_fingerprint_changed' };
   }
+  if (startTime !== expected.processStartTime) return { matches: false, reason: 'process_start_time_changed' };
   return { matches: true };
 }
 
