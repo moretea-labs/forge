@@ -1439,6 +1439,7 @@ describe('browser session compatibility on Computer target authority', () => {
       close: async () => undefined,
     };
     let disconnects = 0;
+    let connectedEndpoint = '';
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
       fetchJson: async () => ({
@@ -1448,11 +1449,14 @@ describe('browser session compatibility on Computer target authority', () => {
       loadPlaywright: () => ({
         chromium: {
           launchPersistentContext: async () => { throw new Error('managed launch must not run'); },
-          connectOverCDP: async () => ({
-            contexts: () => [context],
-            newBrowserCDPSession: async () => ({ detach: async () => undefined }),
-            disconnect: () => { disconnects += 1; },
-          }),
+          connectOverCDP: async (endpoint: string) => {
+            connectedEndpoint = endpoint;
+            return {
+              contexts: () => [context],
+              newBrowserCDPSession: async () => ({ detach: async () => undefined }),
+              disconnect: () => { disconnects += 1; },
+            };
+          },
         },
       } as never),
     });
@@ -1472,6 +1476,7 @@ describe('browser session compatibility on Computer target authority', () => {
     });
     const sessionId = String((opened.session as { sessionId: string }).sessionId);
     const ownerToken = browserSessionOwnerToken(sessionId);
+    expect(connectedEndpoint).toBe('http://127.0.0.1:9222');
     expect(opened.session).toMatchObject({
       browser: { provider: 'playwright-cdp', tab: { ownership: 'plugin_owned', ownerToken, url } },
     });
@@ -1556,29 +1561,33 @@ describe('browser session compatibility on Computer target authority', () => {
     const canonicalExtensionPath = realpathSync(extensionPath);
     const methods: string[] = [];
     let disconnected = 0;
+    let connectedEndpoint = '';
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
       fetchJson: async () => ({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/test', Browser: 'Chrome/153' }),
       loadPlaywright: () => ({
         chromium: {
           launchPersistentContext: async () => { throw new Error('managed launch must not run'); },
-          connectOverCDP: async () => ({
-            contexts: () => [],
-            newBrowserCDPSession: async () => ({
-              send: async (method: string, params?: Record<string, unknown>) => {
-                methods.push(method);
-                if (method === 'Extensions.loadUnpacked') {
-                  expect(params).toEqual({ path: canonicalExtensionPath });
-                  return { id: SUPERVISOR_EXTENSION_ID };
-                }
-                if (method === 'Extensions.getExtensions') {
-                  return { extensions: [{ id: SUPERVISOR_EXTENSION_ID, name: 'Forge extension fixture', version: '1.0.0', path: canonicalExtensionPath, enabled: true }] };
-                }
-                throw new Error('unexpected method ' + method);
-              },
-            }),
-            disconnect: () => { disconnected += 1; },
-          }),
+          connectOverCDP: async (endpoint: string) => {
+            connectedEndpoint = endpoint;
+            return {
+              contexts: () => [],
+              newBrowserCDPSession: async () => ({
+                send: async (method: string, params?: Record<string, unknown>) => {
+                  methods.push(method);
+                  if (method === 'Extensions.loadUnpacked') {
+                    expect(params).toEqual({ path: canonicalExtensionPath });
+                    return { id: SUPERVISOR_EXTENSION_ID };
+                  }
+                  if (method === 'Extensions.getExtensions') {
+                    return { extensions: [{ id: SUPERVISOR_EXTENSION_ID, name: 'Forge extension fixture', version: '1.0.0', path: canonicalExtensionPath, enabled: true }] };
+                  }
+                  throw new Error('unexpected method ' + method);
+                },
+              }),
+              disconnect: () => { disconnected += 1; },
+            };
+          },
         },
       }),
     });
@@ -1587,6 +1596,7 @@ describe('browser session compatibility on Computer target authority', () => {
       requestId: 'extension-cdp-install', actionId: 'install_unpacked_extension',
       args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
     });
+    expect(connectedEndpoint).toBe('http://127.0.0.1:9222');
     expect(methods).toEqual(['Extensions.loadUnpacked', 'Extensions.getExtensions']);
     expect(disconnected).toBe(1);
     expect(result).toMatchObject({ provider: 'playwright-cdp', extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true }, verified: true });
