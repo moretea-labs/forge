@@ -240,6 +240,12 @@ describe('handoff and facade contracts', () => {
     expect(attached).toContain('known_paths=["AGENTS.md"]');
     expect(attached).toContain('relevant module guidance');
     expect(attached).toContain('explicit user corrections ahead of historical learning');
+    expect(attached).toContain('proven accepted/released design baseline');
+    expect(attached).toContain('retain working design unless real value justifies change');
+    expect(attached).toContain('glyph, visible surface, hit area, native container padding/material');
+    expect(attached).toContain('affected shared-component destinations and the standard viewport after adaptation');
+    expect(attached).toContain('final size bounds');
+    expect(attached).toContain('minimum hit target or newer native API is not proof');
     expect(attached).toContain('actual-rendered geometry');
     expect(attached).toContain('row/column spacing');
     expect(attached).toContain('failed or untested cases');
