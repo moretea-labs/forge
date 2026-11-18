@@ -92,10 +92,10 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // 2026-11-16 #648: optional assigned/unassigned task triage filter; existing
 // Requirement storage, assignment writer and revision CAS remain unchanged.
 // Schema v23 documents Project-scoped Plan identity and the project_id == scope_key rule.
-// 2026-11-18 #510: the combined integration retains the canonical schema-v16
-// definitions and current shared transport metadata; freeze that exact combined
-// contract. Tool names, schema version and runtime behavior are unchanged here.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '2a7545d73cc1dee8';
+// 2026-11-18 #313 adds task-bound ChatGPT continuation identity and one bounded
+// Prompt to the existing Launch Session action. Freeze the reviewed schema change;
+// preferred tool names and the rest of the facade contract remain unchanged.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '5406f2bb3b7715a0';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

@@ -533,6 +533,15 @@ describe('handoff and facade contracts', () => {
     expect(isRhWorkAcceptedOperation('review')).toBe(false);
   });
 
+  test('exposes task-bound launcher fields without restoring Work lifecycle operations', () => {
+    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
+    const properties = rhWork?.inputSchema.properties as Record<string, { type?: string; maxLength?: number }> | undefined;
+    expect(properties?.task_id).toMatchObject({ type: 'string', maxLength: 256 });
+    expect(properties?.continuation_prompt).toMatchObject({ type: 'string', maxLength: 9000 });
+    expect(properties?.issue_number?.type).toBe('number');
+    expect(isRhWorkAcceptedOperation('review')).toBe(false);
+  });
+
   test('exposes explicit Requirement bootstrap through rh_work without expanding the tool surface', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;

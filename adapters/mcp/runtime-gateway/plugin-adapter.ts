@@ -321,6 +321,7 @@ export async function callPluginAdapter(
         deduplicated: submitted.deduplicated,
         direct: true,
         durable: false,
+        effectOutcome: submitted.receipt.effectOutcome ?? submitted.receipt.status,
         plugin: summarizePluginActionReceipt(submitted.manifest),
         action: {
           actionId: submitted.action.actionId,

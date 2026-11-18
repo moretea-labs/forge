@@ -2,13 +2,25 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { chatgptLaunchSessionRequest } from '../../adapters/mcp/runtime-gateway/work-controller-operations';
+import {
+  chatgptLaunchSessionRequest,
+  chatgptTabCloseProven,
+} from '../../adapters/mcp/runtime-gateway/work-controller-operations';
 import {
   buildClaudeControllerInvocation,
   buildSuperControllerInvocation,
   resolveLauncherExecutable,
   type ExternalControllerInvocationRequest,
 } from '../../src/runtime/control-plane/launcher/thin-launcher';
+import {
+  beginChatgptTaskSessionReplacement,
+  bindInitialChatgptTaskSession,
+  commitChatgptTaskSessionTakeover,
+  confirmArchivedChatgptTabClosed,
+  readChatgptTaskSessionBinding,
+  reserveChatgptTaskSend,
+  settleChatgptTaskSend,
+} from '../../src/runtime/control-plane/launcher/chatgpt-task-session-store';
 
 describe('ChatGPT Launch Session without Work or Supervisor', () => {
   test('produces a stable one-shot Computer session for the same request ID', () => {
@@ -28,6 +40,14 @@ describe('ChatGPT Launch Session without Work or Supervisor', () => {
     expect(request.url).toBe('https://chatgpt.com/c/11111111-2222-3333-4444-555555555555');
   });
 
+  test('accepts a bounded Prompt only when it is attached to an existing task identity', () => {
+    const request = chatgptLaunchSessionRequest({
+      request_id: 'task-round-1', task_id: 'issue:313', continuation_prompt: 'Continue the existing task.',
+    }, 'repo-example');
+    expect(request.sessionId).toStartWith('forge-launch-');
+    expect(request.url).toBe('https://chatgpt.com/');
+  });
+
   test('rejects prompt auto-send, Supervisor enrollment, Work binding, and external origins', () => {
     for (const args of [
       { request_id: 'x', continuation_prompt: 'CONTINUE' },
@@ -45,6 +65,99 @@ describe('ChatGPT Launch Session without Work or Supervisor', () => {
       }
       expect(() => chatgptLaunchSessionRequest(args, 'repo-example')).toThrow();
     }
+  });
+});
+
+describe('task-bound ChatGPT continuation session lifecycle', () => {
+  test('requires exact resource-close evidence before completing old-tab cleanup', () => {
+    expect(chatgptTabCloseProven({
+      content: [], structuredContent: { resourceClosed: true },
+    })).toBe(true);
+    expect(chatgptTabCloseProven({
+      content: [], structuredContent: { resourceAlreadyMissing: true },
+    })).toBe(true);
+    expect(chatgptTabCloseProven({
+      content: [], structuredContent: { preservedUserOwnedTab: true, closed: true },
+    })).toBe(false);
+    expect(chatgptTabCloseProven({
+      content: [], structuredContent: { resourceClosed: true, effectOutcome: 'outcome_unknown' },
+    })).toBe(false);
+  });
+
+  test('reuses one active session and fences an outcome-unknown Send from replacement', () => {
+    const controllerHome = temp('forge-chatgpt-task-session-unknown-');
+    bindInitialChatgptTaskSession({
+      controllerHome, repoId: 'repo-example', taskId: 'issue:313', sessionId: 'session-original',
+      conversationUrl: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
+      now: '2026-11-18T00:00:00.000Z',
+    });
+    reserveChatgptTaskSend({
+      controllerHome, repoId: 'repo-example', taskId: 'issue:313', sessionId: 'session-original',
+      requestId: 'round-1', now: '2026-11-18T00:00:01.000Z',
+    });
+    settleChatgptTaskSend({
+      controllerHome, repoId: 'repo-example', taskId: 'issue:313', requestId: 'round-1',
+      outcome: 'outcome_unknown', receiptId: 'receipt-unknown', now: '2026-11-18T00:00:02.000Z',
+    });
+
+    expect(() => beginChatgptTaskSessionReplacement({
+      controllerHome, repoId: 'repo-example', taskId: 'issue:313', expectedSessionId: 'session-original',
+      candidateSessionId: 'session-replacement', reasonCode: 'original_unavailable',
+    })).toThrow('CHATGPT_TASK_REPLACEMENT_PENDING_SEND');
+    const binding = readChatgptTaskSessionBinding(controllerHome, 'repo-example', 'issue:313');
+    expect(binding).toMatchObject({
+      active: { sessionId: 'session-original' },
+      pendingSend: { requestId: 'round-1', outcome: 'outcome_unknown' },
+    });
+    expect(binding?.replacement).toBeUndefined();
+  });
+
+  test('commits takeover only after the replacement Send receipt and retains archival lineage until exact-tab cleanup', () => {
+    const controllerHome = temp('forge-chatgpt-task-session-takeover-');
+    bindInitialChatgptTaskSession({
+      controllerHome, repoId: 'repo-example', taskId: 'issue:313', sessionId: 'session-original',
+      conversationUrl: 'https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      now: '2026-11-18T00:00:00.000Z',
+    });
+    beginChatgptTaskSessionReplacement({
+      controllerHome, repoId: 'repo-example', taskId: 'issue:313', expectedSessionId: 'session-original',
+      candidateSessionId: 'session-replacement', reasonCode: 'original_conversation_failed',
+      now: '2026-11-18T00:00:01.000Z',
+    });
+    reserveChatgptTaskSend({
+      controllerHome, repoId: 'repo-example', taskId: 'issue:313', sessionId: 'session-replacement',
+      requestId: 'replacement-send', now: '2026-11-18T00:00:02.000Z',
+    });
+    expect(() => commitChatgptTaskSessionTakeover({
+      controllerHome, repoId: 'repo-example', taskId: 'issue:313', candidateSessionId: 'session-replacement',
+      conversationUrl: 'https://chatgpt.com/c/ffffffff-1111-2222-3333-444444444444',
+      sendRequestId: 'replacement-send', sendReceiptId: 'receipt-applied',
+    })).toThrow('CHATGPT_TASK_TAKEOVER_RECEIPT_REQUIRED');
+
+    const replacementSent = settleChatgptTaskSend({
+      controllerHome, repoId: 'repo-example', taskId: 'issue:313', requestId: 'replacement-send',
+      outcome: 'applied', receiptId: 'receipt-applied', now: '2026-11-18T00:00:03.000Z',
+    });
+    expect(replacementSent.active).toMatchObject({ sessionId: 'session-original' });
+    expect(replacementSent.active.sendRequestId).toBeUndefined();
+    const takeover = commitChatgptTaskSessionTakeover({
+      controllerHome, repoId: 'repo-example', taskId: 'issue:313', candidateSessionId: 'session-replacement',
+      conversationUrl: 'https://chatgpt.com/c/ffffffff-1111-2222-3333-444444444444',
+      sendRequestId: 'replacement-send', sendReceiptId: 'receipt-applied',
+      now: '2026-11-18T00:00:04.000Z',
+    });
+    expect(takeover).toMatchObject({
+      active: { sessionId: 'session-replacement', sendReceiptId: 'receipt-applied' },
+      history: [{ sessionId: 'session-original', tabCleanup: 'pending', replacedBySessionId: 'session-replacement' }],
+      replacement: undefined,
+    });
+
+    const cleaned = confirmArchivedChatgptTabClosed({
+      controllerHome, repoId: 'repo-example', taskId: 'issue:313', sessionId: 'session-original',
+      now: '2026-11-18T00:00:05.000Z',
+    });
+    expect(cleaned.history[0]?.tabCleanup).toBe('closed');
+    expect(cleaned.active.sessionId).toBe('session-replacement');
   });
 });
 
