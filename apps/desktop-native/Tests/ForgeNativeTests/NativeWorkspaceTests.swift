@@ -112,6 +112,25 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertThrowsError(try NativeWorkspace.decodeProjects(["repositories":[["repoId":"repo-a"]]]))
     }
 
+    func testForgeBridgeChildProcessCancellationTerminatesRunningHelperAndPreventsLateStart() throws {
+        let cancelledBeforeStart=ForgeBridgeChildProcess()
+        cancelledBeforeStart.cancel()
+        XCTAssertThrowsError(try cancelledBeforeStart.run()) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertFalse(cancelledBeforeStart.process.isRunning)
+
+        let running=ForgeBridgeChildProcess()
+        running.process.executableURL=URL(fileURLWithPath:"/bin/sleep")
+        running.process.arguments=["10"]
+        try running.run()
+        XCTAssertTrue(running.process.isRunning)
+        running.cancel()
+        running.process.waitUntilExit()
+        XCTAssertTrue(running.wasCancelled)
+        XCTAssertFalse(running.process.isRunning)
+    }
+
     func testBridgeAllowlistExcludesGenericCommandsAndRecoveryMutations() {
         XCTAssertTrue(ForgeBridge.allowed.contains("send_local_conversation"))
         XCTAssertTrue(ForgeBridge.allowed.contains("read_local_provider_models"))
@@ -244,6 +263,25 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(
             model.draft.components(separatedBy:memory.canonicalText).count - 1,
             1
+        )
+    }
+
+    func testInitialAgentActivitySeparatesProjectRecallFromProviderStartup() {
+        XCTAssertEqual(
+            NativeWorkspace.initialAgentActivityText(provider:"api:openai",requiresKnowledgeRecall:true),
+            "正在读取项目上下文"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.initialAgentActivityText(provider:"api:openai",requiresKnowledgeRecall:false),
+            "正在连接 API Provider"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.initialAgentActivityText(provider:"joycode",requiresKnowledgeRecall:false),
+            "正在连接 JoyCode"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.initialAgentActivityText(provider:"codex",requiresKnowledgeRecall:false),
+            "正在启动 Codex"
         )
     }
 

@@ -888,6 +888,7 @@ final class NativeWorkspace: ObservableObject {
     private var activeTurnProvider: String?
     private var conversationScrollRevision = 0
     private var knowledgeRecallPending = false
+    private var activeKnowledgeRecall: Task<KnowledgeRecallDetail,Error>?
     private var cancelRequestedBeforeTurn = false
     @Published var provider = "未检测"
     @Published private(set) var localProviderReady = false
@@ -1482,6 +1483,28 @@ final class NativeWorkspace: ObservableObject {
 
     nonisolated static func matchesExternalProvider(_ value:String) -> Bool {
         value == "joycode" || value == "api" || value.hasPrefix("api:")
+    }
+
+    nonisolated static func initialAgentActivityText(
+        provider:String,requiresKnowledgeRecall:Bool
+    ) -> String {
+        if requiresKnowledgeRecall { return "正在读取项目上下文" }
+        if provider == "joycode" { return "正在连接 JoyCode" }
+        return matchesExternalProvider(provider) ? "正在连接 API Provider" : "正在启动 Codex"
+    }
+
+    private func updateLiveActivityText(_ text:String) {
+        guard let activity=liveActivity else { return }
+        liveActivity=AgentLiveActivity(
+            conversationId:activity.conversationId,
+            status:activity.status,
+            phase:activity.phase,
+            toolActivityCount:activity.toolActivityCount,
+            lastActivity:text,
+            startedAt:activity.startedAt,
+            updatedAt:activity.updatedAt,
+            events:activity.events
+        )
     }
 
     nonisolated static func resolveReadOnlyAnalysisProvider(
@@ -4615,7 +4638,7 @@ final class NativeWorkspace: ObservableObject {
             "repoId":repoId,"query":String(query.prefix(160)),"recall":true
         ]
         if let checkoutId { args["checkoutId"] = checkoutId }
-        let result = try await ForgeBridge.request("read_project_knowledge",args)
+        let result = try await ForgeBridge.requestCancellableProjectKnowledge(args)
         guard JSONSerialization.isValidJSONObject(result),
               let bytes = try? JSONSerialization.data(withJSONObject:result),
               let recall = try? JSONDecoder().decode(KnowledgeRecallDetail.self,from:bytes),
@@ -5645,24 +5668,22 @@ final class NativeWorkspace: ObservableObject {
         persist()
 
         var activityMonitor: Task<Void,Never>?
+        let requiresKnowledgeRecall=item.messages.isEmpty && item.repoId != nil
+        let providerStartupActivity=Self.initialAgentActivityText(
+            provider:turnProvider,requiresKnowledgeRecall:false
+        )
         liveActivity = AgentLiveActivity(
             conversationId:id, status:"running", phase:"starting",
             toolActivityCount:0,
-            lastActivity:turnProvider == "joycode"
-                ? "正在连接 JoyCode"
-                : (Self.matchesExternalProvider(turnProvider) ? "正在连接 API Provider" : "正在启动 Codex"),
+            lastActivity:Self.initialAgentActivityText(
+                provider:turnProvider,requiresKnowledgeRecall:requiresKnowledgeRecall
+            ),
             startedAt:nil, updatedAt:nil, events:[]
         )
-        if turnProvider == "codex" {
-            activityMonitor = Task { [weak self] in
-                while !Task.isCancelled {
-                    await self?.refreshLiveActivity(conversationId:id,generation:activityGeneration)
-                    try? await Task.sleep(for:.milliseconds(350))
-                }
-            }
-        }
         defer {
             activityMonitor?.cancel()
+            activeKnowledgeRecall?.cancel()
+            activeKnowledgeRecall=nil
             activeApiTurn = nil
             activeTurnProvider = nil
             streamedAnswer = ""
@@ -5681,20 +5702,39 @@ final class NativeWorkspace: ObservableObject {
             var advisoryKnowledge: String?
             if item.messages.isEmpty, let sourceRepo = item.repoId {
                 knowledgeRecallPending = true
-                do {
-                    let recallQuery = [item.requirementId, prompt]
-                        .compactMap { $0 }.joined(separator:" ")
-                    let recall = try await recallKnowledge(
+                updateLiveActivityText("正在读取项目上下文")
+                let recallQuery=[item.requirementId,prompt]
+                    .compactMap { $0 }.joined(separator:" ")
+                let recallTask=Task {
+                    try await recallKnowledge(
                         repoId:sourceRepo,checkoutId:item.checkoutId,query:recallQuery
                     )
-                    advisoryKnowledge = Self.advisoryKnowledgeText(recall)
-                } catch {
-                    advisoryKnowledge = "[Forge knowledge unavailable] No project memory was verified for this turn. Read current repository rules and sources; do not assume remembered constraints."
                 }
-                knowledgeRecallPending = false
+                activeKnowledgeRecall=recallTask
+                do {
+                    let recall=try await withTaskCancellationHandler {
+                        try await recallTask.value
+                    } onCancel: {
+                        recallTask.cancel()
+                    }
+                    advisoryKnowledge=Self.advisoryKnowledgeText(recall)
+                } catch {
+                    advisoryKnowledge="[Forge knowledge unavailable] No project memory was verified for this turn. Read current repository rules and sources; do not assume remembered constraints."
+                }
+                activeKnowledgeRecall=nil
+                knowledgeRecallPending=false
             }
             if cancelRequestedBeforeTurn || Task.isCancelled {
                 throw ForgeBridgeError.remote("FORGE_DESKTOP_API_TURN_CANCELLED")
+            }
+            updateLiveActivityText(providerStartupActivity)
+            if turnProvider == "codex" {
+                activityMonitor = Task { [weak self] in
+                    while !Task.isCancelled {
+                        await self?.refreshLiveActivity(conversationId:id,generation:activityGeneration)
+                        try? await Task.sleep(for:.milliseconds(350))
+                    }
+                }
             }
             let response: [String:Any]
             if Self.matchesExternalProvider(turnProvider) {
@@ -5946,6 +5986,7 @@ final class NativeWorkspace: ObservableObject {
         guard busy, let id = activeConversationId else { return }
         if knowledgeRecallPending {
             cancelRequestedBeforeTurn = true
+            activeKnowledgeRecall?.cancel()
             return
         }
         if activeTurnProvider.map(Self.matchesExternalProvider) == true {

@@ -78,6 +78,36 @@ final class ForgeApiTurn: @unchecked Sendable {
     }
 }
 
+final class ForgeBridgeChildProcess: @unchecked Sendable {
+    let process: Process
+    private let lock=NSLock()
+    private var cancellationRequested=false
+
+    init(process:Process=Process()) {
+        self.process=process
+    }
+
+    var wasCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancellationRequested
+    }
+
+    func run() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancellationRequested else { throw CancellationError() }
+        try process.run()
+    }
+
+    func cancel() {
+        lock.lock()
+        defer { lock.unlock() }
+        cancellationRequested=true
+        if process.isRunning { process.terminate() }
+    }
+}
+
 /// IPC adapter, not a backend: each request launches the bundled Rust binary
 /// once, using a strict operation allowlist. No shell, daemon, or token copy.
 enum ForgeBridge {
@@ -165,4 +195,58 @@ enum ForgeBridge {
             return result
         }.value
     }
+
+    // Only the read-only knowledge lookup is cancellable at the process boundary.
+    // Generic bridge requests can contain writes whose outcome must never be guessed.
+    static func requestCancellableProjectKnowledge(_ arguments:[String:Any]) async throws -> [String:Any] {
+        let name="read_project_knowledge"
+        guard allowed.contains(name) else {
+            throw ForgeBridgeError.remote("FORGE_NATIVE_BRIDGE_OPERATION_UNSUPPORTED")
+        }
+        let data=try JSONSerialization.data(withJSONObject:[
+            "operation":name,"arguments":arguments
+        ])
+        guard data.count <= 1_048_576 else {
+            throw ForgeBridgeError.remote("FORGE_NATIVE_BRIDGE_REQUEST_TOO_LARGE")
+        }
+        let executable=Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/forge-desktop")
+        guard FileManager.default.isExecutableFile(atPath:executable.path) else {
+            throw ForgeBridgeError.missingHelper
+        }
+        let child=ForgeBridgeChildProcess()
+        child.process.executableURL=executable
+        child.process.arguments=["--native-bridge"]
+        let input=Pipe(),output=Pipe()
+        child.process.standardInput=input
+        child.process.standardOutput=output
+        child.process.standardError=FileHandle.nullDevice
+
+        return try await withTaskCancellationHandler {
+            try await Task.detached(priority:.userInitiated) {
+                try child.run()
+                input.fileHandleForWriting.write(data)
+                try? input.fileHandleForWriting.close()
+                let reply=output.fileHandleForReading.readDataToEndOfFile()
+                child.process.waitUntilExit()
+                if child.wasCancelled { throw CancellationError() }
+                guard child.process.terminationStatus == 0,
+                      let envelope=try JSONSerialization.jsonObject(with:reply) as? [String:Any],
+                      let ok=envelope["ok"] as? Bool else {
+                    throw ForgeBridgeError.invalidResponse
+                }
+                guard ok else {
+                    throw ForgeBridgeError.remote(
+                        envelope["error"] as? String ?? "FORGE_NATIVE_BRIDGE_ERROR"
+                    )
+                }
+                guard let result=envelope["data"] as? [String:Any] else {
+                    throw ForgeBridgeError.invalidResponse
+                }
+                return result
+            }.value
+        } onCancel: {
+            child.cancel()
+        }
+    }
+
 }
