@@ -39,6 +39,13 @@ test("AgentMail device CLI requires explicit approval and issues only its Watch 
     const registryOnDisk = readFileSync(storePath, "utf8");
     expect(registryOnDisk).toContain("agentmail-mac-watch");
     expect(registryOnDisk).not.toContain(result.token);
+
+    const repeated = spawnSync("bun", [...args, "--confirm-authorization"], { encoding: "utf8" });
+    expect(repeated.status).not.toBe(0);
+    expect(repeated.stderr).toContain("AGENTMAIL_WATCH_DEVICE_ALREADY_EXISTS");
+    const stored = JSON.parse(readFileSync(storePath, "utf8")) as { devices: Array<{ deviceId: string }> };
+    expect(stored.devices).toHaveLength(1);
+    expect(stored.devices[0]!.deviceId).toBe("agentmail-mac-watch");
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
