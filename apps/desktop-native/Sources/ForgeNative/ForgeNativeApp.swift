@@ -1877,6 +1877,7 @@ private struct AgentPane: View {
                                                 .font(.system(size:10.5,weight:.medium))
                                                 .disabled(model.checkoutId == nil)
                                                 Button {
+                                                    guard !voiceDictation.blocksSend else { return }
                                                     model.draft = NativeWorkspace.incompleteTurnContinuationPrompt
                                                     if !requiresReview { Task { await model.send() } }
                                                 } label: {
@@ -1891,7 +1892,7 @@ private struct AgentPane: View {
                                                 // Review only fills the composer; it is safe to prepare
                                                 // while the Provider is offline. One-click execution still
                                                 // requires a ready Provider and an empty composer.
-                                                .disabled(model.busy || model.zenRefinementActive
+                                                .disabled(model.busy || model.zenRefinementActive || voiceDictation.blocksSend
                                                     || !model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
                                                     || (!requiresReview && model.agentSendBlockReason != nil))
                                                 .accessibilityIdentifier("agent.continue-incomplete")
@@ -2191,6 +2192,8 @@ private struct AgentPane: View {
                         Text(voiceDictation.isStarting ? "正在请求麦克风…" : "正在听写…")
                             .font(.system(size:10.5,weight:.medium))
                             .foregroundStyle(ForgePalette.secondary)
+                            .accessibilityLabel(voiceDictation.isStarting ? "正在请求麦克风" : "正在听写")
+                            .accessibilityHint("完成或取消语音输入后才能发送消息")
                             .accessibilityIdentifier("agent.voice.recording")
                     } else if let issue = voiceDictation.error {
                         Text(issue)
@@ -2278,7 +2281,11 @@ private struct AgentPane: View {
                     } else {
                         let sendDisabled = model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
                             || model.agentSendBlockReason != nil
-                        Button { Task { await model.send() } } label: {
+                            || voiceDictation.blocksSend
+                        Button {
+                            guard !voiceDictation.blocksSend else { return }
+                            Task { await model.send() }
+                        } label: {
                             Image(systemName:"arrow.up")
                                 .font(.system(size:11,weight:.bold))
                                 .foregroundStyle(.white)
@@ -2289,10 +2296,14 @@ private struct AgentPane: View {
                         .buttonStyle(.plain)
                         .disabled(sendDisabled)
                         .keyboardShortcut(.return,modifiers:.command)
-                        .help(model.agentSendBlockReason ?? "发送消息（⌘↵）")
+                        .help(voiceDictation.blocksSend ? "请先完成或取消语音输入" : model.agentSendBlockReason ?? "发送消息（⌘↵）")
                         .accessibilityLabel("发送消息")
-                        .accessibilityValue(sendDisabled ? "不可发送" : "可发送")
-                        .accessibilityHint("按 Command Return 发送")
+                        .accessibilityValue(sendDisabled
+                            ? (voiceDictation.blocksSend ? "听写中，完成或取消后可发送" : "不可发送")
+                            : "可发送")
+                        .accessibilityHint(voiceDictation.blocksSend
+                            ? "请先完成或取消语音输入，再发送消息"
+                            : "按 Command Return 发送")
                         .accessibilityIdentifier("agent.send")
                     }
                 }.padding(.horizontal,13).padding(.bottom,11)
@@ -2365,11 +2376,13 @@ private struct AgentPane: View {
         ) {
             Button("发送执行请求") {
                 guard let command = pendingAgentCommand, !model.busy,
+                      !voiceDictation.blocksSend,
                       model.repoId != nil, model.checkoutId != nil else { return }
                 pendingAgentCommand = nil
                 model.draft = AgentMessageBlock.commandExecutionPrompt(command)
                 Task { await model.send() }
             }
+            .disabled(model.busy || voiceDictation.blocksSend)
             Button("取消",role:.cancel) { pendingAgentCommand = nil }
         } message: {
             Text("这会把命令发送给当前 Agent，可能修改项目文件。请先确认命令内容。")
@@ -2642,6 +2655,7 @@ private struct AgentPane: View {
         requiresCheckout: Bool = true
     ) -> some View {
         Button {
+            guard !voiceDictation.blocksSend else { return }
             model.draft = prompt
             composerFocused = true
         } label: {
@@ -2656,8 +2670,10 @@ private struct AgentPane: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(model.busy || (requiresCheckout && model.checkoutId == nil))
-        .help(requiresCheckout && model.checkoutId == nil ? "请先选择包含可用工作区的项目" : title)
+        .disabled(model.busy || voiceDictation.blocksSend || (requiresCheckout && model.checkoutId == nil))
+        .help(voiceDictation.blocksSend
+            ? "请先完成或取消语音输入"
+            : requiresCheckout && model.checkoutId == nil ? "请先选择包含可用工作区的项目" : title)
     }
 
     private func activityTrailRow(_ event: AgentLiveActivityEvent) -> some View {

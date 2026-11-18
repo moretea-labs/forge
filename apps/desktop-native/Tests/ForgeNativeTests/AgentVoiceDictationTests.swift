@@ -43,6 +43,25 @@ final class AgentVoiceDictationTests: XCTestCase {
         XCTAssertEqual(dictation.transcript, "")
     }
 
+    @MainActor
+    func testVoiceDictationBlocksSendingWhileStartingOrRecording() throws {
+        XCTAssertFalse(AgentVoiceDictation.sendIsBlocked(isStarting:false,isRecording:false))
+        XCTAssertTrue(AgentVoiceDictation.sendIsBlocked(isStarting:true,isRecording:false))
+        XCTAssertTrue(AgentVoiceDictation.sendIsBlocked(isStarting:false,isRecording:true))
+        XCTAssertTrue(AgentVoiceDictation.sendIsBlocked(isStarting:true,isRecording:true))
+
+        let dictation = AgentVoiceDictation()
+        let attempt = try XCTUnwrap(dictation.beginStart())
+        let blocksDuringStart = dictation.blocksSend
+        XCTAssertTrue(blocksDuringStart)
+        dictation.cancel()
+        let blocksAfterCancel = dictation.blocksSend
+        XCTAssertFalse(blocksAfterCancel)
+        dictation.finishStarting(attempt)
+        let blocksAfterStaleCompletion = dictation.blocksSend
+        XCTAssertFalse(blocksAfterStaleCompletion)
+    }
+
     func testVoiceDictationOnlyAppendsRecognizedTextToExistingDraft() {
         XCTAssertEqual(AgentVoiceDictation.mergedDraft("",transcript:"  修改 UI  "), "修改 UI")
         XCTAssertEqual(AgentVoiceDictation.mergedDraft("检查项目",transcript:"继续执行"),

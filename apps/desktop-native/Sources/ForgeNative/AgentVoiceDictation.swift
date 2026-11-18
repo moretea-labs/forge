@@ -10,6 +10,14 @@ final class AgentVoiceDictation: ObservableObject {
     @Published private(set) var transcript = ""
     @Published private(set) var error: String?
 
+    var blocksSend: Bool {
+        Self.sendIsBlocked(isStarting:isStarting,isRecording:isRecording)
+    }
+
+    nonisolated static func sendIsBlocked(isStarting: Bool, isRecording: Bool) -> Bool {
+        isStarting || isRecording
+    }
+
     private let engine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
