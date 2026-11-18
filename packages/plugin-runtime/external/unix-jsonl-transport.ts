@@ -289,17 +289,57 @@ export class ExternalUnixJsonlChannel {
     if (this.disposed) {
       throw transportError('EXTERNAL_PLUGIN_CHANNEL_CLOSED', 'External provider channel has been closed.', { retryable: false });
     }
+    const { expectedGeneration, ...callOptions } = options;
+    const normalized = normalizeExternalUnixJsonlCall(
+      { ...callOptions, socketPath: this.socketPath },
+      options.method === 'health' || options.method === 'handshake' || options.method === 'manifest',
+    );
+    const deadline = performance.now() + normalized.timeoutMs;
+    const queueTimeout = () => transportError(
+      'EXTERNAL_PLUGIN_TIMEOUT',
+      'External provider request exhausted its timeout while waiting for the ordered channel; no request was dispatched.',
+      { details: { stage: 'queue', timeoutMs: normalized.timeoutMs } },
+    );
     let resolveQueue!: () => void;
     const previous = this.queue;
-    this.queue = new Promise<void>((resolve) => { resolveQueue = resolve; });
-    await previous;
-    if (this.disposed) {
-      resolveQueue();
-      throw transportError('EXTERNAL_PLUGIN_CHANNEL_CLOSED', 'External provider channel has been closed.', { retryable: false });
-    }
-    const { expectedGeneration, ...callOptions } = options;
+    const turn = new Promise<void>((resolve) => { resolveQueue = resolve; });
+    // A cancelled/expired waiter must NOT release its successors before the
+    // preceding in-flight RPC settles. Preserve the chain even if this slot
+    // is abandoned and never writes to the socket.
+    this.queue = previous.then(() => turn);
     try {
-      return await this.callSerial({ ...callOptions, socketPath: this.socketPath }, expectedGeneration);
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const finish = (error?: unknown) => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          options.signal?.removeEventListener('abort', onAbort);
+          if (error) reject(error);
+          else resolve();
+        };
+        const onAbort = () => finish(transportError(
+          'EXTERNAL_PLUGIN_ABORTED', 'External provider request was cancelled before dispatch.',
+          { details: { stage: 'queue' } },
+        ));
+        const remaining = deadline - performance.now();
+        if (options.signal?.aborted) { onAbort(); return; }
+        if (remaining <= 0) { finish(queueTimeout()); return; }
+        timer = setTimeout(() => finish(queueTimeout()), remaining);
+        options.signal?.addEventListener('abort', onAbort, { once: true });
+        void previous.then(() => finish(), finish);
+      });
+      if (this.disposed) {
+        throw transportError('EXTERNAL_PLUGIN_CHANNEL_CLOSED', 'External provider channel has been closed.', { retryable: false });
+      }
+      const remaining = Math.ceil(deadline - performance.now());
+      if (remaining <= 0) throw queueTimeout();
+      return await this.callSerial(
+        { ...normalized, timeoutMs: remaining },
+        options.signal,
+        expectedGeneration,
+      );
     } finally {
       resolveQueue();
     }
@@ -378,12 +418,8 @@ export class ExternalUnixJsonlChannel {
     return await this.connecting;
   }
 
-  private async callSerial(options: ExternalUnixJsonlCallOptions, expectedGeneration?: number): Promise<Record<string, unknown>> {
-    const normalized = normalizeExternalUnixJsonlCall(
-      options,
-      options.method === 'health' || options.method === 'handshake' || options.method === 'manifest',
-    );
-    if (options.signal?.aborted) {
+  private async callSerial(normalized: NormalizedExternalUnixJsonlCall, signal?: AbortSignal, expectedGeneration?: number): Promise<Record<string, unknown>> {
+    if (signal?.aborted) {
       throw transportError('EXTERNAL_PLUGIN_ABORTED', 'External provider request was cancelled before connection.');
     }
 
@@ -397,7 +433,7 @@ export class ExternalUnixJsonlChannel {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
-        options.signal?.removeEventListener('abort', onAbort);
+        signal?.removeEventListener('abort', onAbort);
         socket?.removeListener('data', onData);
         socket?.removeListener('error', onError);
         socket?.removeListener('end', onEnd);
@@ -454,7 +490,7 @@ export class ExternalUnixJsonlChannel {
         normalized.timeoutMs,
       );
       timer.unref?.();
-      options.signal?.addEventListener('abort', onAbort, { once: true });
+      signal?.addEventListener('abort', onAbort, { once: true });
 
       try {
         await this.ensureConnected();

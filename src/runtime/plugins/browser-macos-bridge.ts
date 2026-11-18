@@ -1179,6 +1179,7 @@ export class MacOsAppleEventsPage {
         effectOutcome: outcomeUnknown ? 'outcome_unknown' : 'failed',
         details: {
           browserProduct: this.browser.product, bundleId: this.browser.bundleId,
+          ...(error instanceof AssistantPluginError && error.details ? { causeDetails: error.details } : {}),
           ...(message.includes('OSStatus error -1712') ? { appleEventTimedOut: true } : {}),
         },
       });
