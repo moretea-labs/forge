@@ -15,6 +15,7 @@ import { drainMcpPosts, terminateReclaimedMcpPost } from '../../adapters/mcp/tra
 import { describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'crypto';
 import { createServer } from 'net';
+import { spawnSync } from 'child_process';
 import { EventEmitter } from 'events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -1451,6 +1452,183 @@ describe('mcp http transport', () => {
       rmSync(repoRoot, { recursive: true, force: true });
     }
   });
+
+  test('preserves a running Process across HTTP MCP session deletion and reinitialization without replay', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-http-process-session-replacement-'));
+    const port = await freePort();
+    const startedPath = join(repoRoot, 'process-started');
+    const releasePath = join(repoRoot, 'process-release');
+    const invocationsPath = join(repoRoot, 'process-invocations');
+    let runtimeProc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    const clients: Client[] = [];
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        expect(spawnSync('git', ['init', repoRoot], { encoding: 'utf8' }).status).toBe(0);
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
+        const token = (JSON.parse(await Bun.file(mcpControllerHomeTokenPath(controllerHome)).text()) as { bearerToken: string }).bearerToken;
+        const localConfig = loadMcpServiceLocalConfig(controllerHome) ?? {};
+        writeMcpServiceLocalConfig(controllerHome, {
+          ...localConfig,
+          localController: { enabled: false, mode: 'disabled', host: '127.0.0.1', port: 8766 },
+        });
+        const runtimeTokenFile = join(controllerHome, 'mcp', 'runtime-token');
+        mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+        writeFileSync(runtimeTokenFile, token + '\n', { encoding: 'utf8', mode: 0o600 });
+        const releaseManifestPath = join(repoRoot, 'runtime-release.json');
+        writeFileSync(releaseManifestPath, JSON.stringify({
+          schemaVersion: 1,
+          releaseId: 'mcp-http-process-session-replacement',
+          artifactIdentity: 'sha256:mcp-http-process-session-replacement',
+          entrypoint: 'forge-runtime',
+          arguments: [],
+          configurationSchemaVersion: 1,
+          controllerHome,
+          databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+          workerProtocolVersion: 1,
+          createdAt: new Date().toISOString(),
+        }, null, 2) + '\n', 'utf8');
+        runtimeProc = Bun.spawn([
+          process.execPath,
+          join(process.cwd(), 'src/cli/runtime/entry.ts'),
+          '--controller-home', controllerHome,
+          '--repo', repoRoot,
+          '--release-manifest', releaseManifestPath,
+          '--host', '127.0.0.1',
+          '--port', String(port),
+          '--auth-token-file', runtimeTokenFile,
+        ], {
+          cwd: process.cwd(),
+          stdout: 'ignore',
+          stderr: 'pipe',
+          env: isolatedMcpProcessEnv(controllerHome, { FORGE_MCP_TOKEN: token }),
+        });
+        const runtimeProcess = runtimeProc;
+        if (!runtimeProcess) throw new Error('Canonical Runtime child process was not created');
+        let lastObservation = 'not observed';
+        let runtimeReady = false;
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          if (runtimeProcess.exitCode !== null) {
+            const stderr = await new Response(runtimeProcess.stderr).text();
+            throw new Error('Canonical Runtime exited before ready: ' + runtimeProcess.exitCode + ': ' + stderr);
+          }
+          try {
+            const response = await fetch('http://127.0.0.1:' + port + '/ready');
+            const readiness = await response.json() as { ready?: boolean; reasonCodes?: string[] };
+            lastObservation = 'HTTP ' + response.status + ': ' + JSON.stringify(readiness);
+            if (response.ok && readiness.ready === true) { runtimeReady = true; break; }
+          } catch (error) {
+            lastObservation = error instanceof Error ? error.message : String(error);
+          }
+          await Bun.sleep(50);
+        }
+        expect(runtimeReady).toBe(true);
+        if (!runtimeReady) throw new Error('Canonical Runtime did not become ready: ' + lastObservation);
+
+        const endpoint = new URL('http://127.0.0.1:' + port + '/mcp');
+        const headers = { authorization: 'Bearer ' + token };
+        const firstTransport = new StreamableHTTPClientTransport(endpoint, { requestInit: { headers } });
+        const firstClient = new Client({ name: 'forge-http-process-session-before-replacement', version: '1.0.0' });
+        clients.push(firstClient);
+        await firstClient.connect(firstTransport);
+        const firstSessionId = firstTransport.sessionId;
+        expect(firstSessionId).toBeTruthy();
+        const toolNames = (await firstClient.listTools()).tools.map((tool) => tool.name);
+        expect(toolNames).toContain('execute_command');
+        expect(toolNames).toContain('process_get');
+        expect(toolNames).toContain('process_wait');
+
+        writeFileSync(join(repoRoot, 'http-session-process.mjs'), [
+          "import { appendFileSync, existsSync, writeFileSync } from 'node:fs';",
+          "appendFileSync(" + JSON.stringify(invocationsPath) + ", 'x');",
+          "writeFileSync(" + JSON.stringify(startedPath) + ", 'x');",
+          "const releasePath = " + JSON.stringify(releasePath) + ";",
+          'const deadline = Date.now() + 10_000;',
+          'const finish = () => {',
+          "  if (existsSync(releasePath)) { console.log('http-session-replacement-ok'); process.exit(0); }",
+          "  if (Date.now() >= deadline) { console.error('release marker was not written'); process.exit(70); }",
+          '  setTimeout(finish, 10);',
+          '};',
+          'finish();',
+        ].join('\n') + '\n');
+        const registration = await firstClient.callTool({ name: 'repository_register', arguments: { path: repoRoot } });
+        const registrationPayload = registration.structuredContent as { repository?: { repoId?: string }; repoId?: string };
+        const repoId = String(registrationPayload.repository?.repoId ?? registrationPayload.repoId ?? '');
+        if (registration.isError || !repoId) throw new Error('repository_register failed: ' + JSON.stringify(registration.structuredContent ?? registration.content));
+        const args = {
+          repo_id: repoId,
+          command: [process.execPath, 'http-session-process.mjs'],
+          apply_mode: 'async',
+          timeout_ms: 15_000,
+          request_id: 'mcp-http-session-replacement-process',
+        };
+        const first = await firstClient.callTool({ name: 'execute_command', arguments: args });
+        if (first.isError) throw new Error('execute_command failed: ' + JSON.stringify(first.structuredContent ?? first.content));
+        const firstPayload = first.structuredContent as Record<string, unknown>;
+        expect(firstPayload).toMatchObject({ path: 'process_managed', status: 'running' });
+        const processId = String(firstPayload.processId ?? '');
+
+        const startDeadline = Date.now() + 5_000;
+        const markerExists = () => {
+          try { readFileSync(startedPath, 'utf8'); return true; } catch { return false; }
+        };
+        while (!markerExists() && Date.now() < startDeadline) await Bun.sleep(10);
+        expect(markerExists()).toBe(true);
+
+        const deletedSession = await fetch(endpoint, { method: 'DELETE', headers: { ...headers, 'mcp-session-id': firstSessionId! } });
+        expect(deletedSession.status).toBe(200);
+        await firstClient.close().catch(() => undefined);
+        const expiredSession = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            ...headers,
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'mcp-session-id': firstSessionId!,
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'deleted-process-session', method: 'ping' }),
+        });
+        expect(expiredSession.status).toBe(404);
+        expect(expiredSession.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
+        expect(await expiredSession.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+
+        const replacementTransport = new StreamableHTTPClientTransport(endpoint, { requestInit: { headers } });
+        const replacementClient = new Client({ name: 'forge-http-process-session-after-replacement', version: '1.0.0' });
+        clients.push(replacementClient);
+        await replacementClient.connect(replacementTransport);
+        expect(replacementTransport.sessionId).not.toBe(firstSessionId);
+
+        const attached = await replacementClient.callTool({
+          name: 'process_get',
+          arguments: { repo_id: repoId, process_id: processId },
+        });
+        expect(attached.isError).not.toBe(true);
+        const attachedProcess = (attached.structuredContent as { process?: Record<string, unknown> }).process;
+        expect(attachedProcess).toMatchObject({ processId, status: 'running', completed: false });
+
+        const retry = await replacementClient.callTool({ name: 'execute_command', arguments: args });
+        expect(retry.isError).not.toBe(true);
+        expect((retry.structuredContent as Record<string, unknown>).processId).toBe(processId);
+
+        writeFileSync(releasePath, 'x');
+        const waited = await replacementClient.callTool({
+          name: 'process_wait',
+          arguments: { repo_id: repoId, process_id: processId, timeout_ms: 5_000 },
+        });
+        expect(waited.isError).not.toBe(true);
+        const terminal = (waited.structuredContent as { process?: Record<string, unknown> }).process;
+        expect(terminal).toMatchObject({ processId, completed: true, ok: true });
+        expect(String(terminal?.stdout ?? '')).toContain('http-session-replacement-ok');
+        expect(readFileSync(invocationsPath, 'utf8')).toBe('x');
+      });
+    } finally {
+      writeFileSync(releasePath, 'x');
+      await Promise.all(clients.map(async (client) => await client.close().catch(() => undefined)));
+      await stopMcpServerProcess(runtimeProc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }, 45_000);
 
   test('reconnects the same MCP session through a restarted local tunnel endpoint process', async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-tunnel-process-restart-'));
