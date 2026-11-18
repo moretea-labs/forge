@@ -135,6 +135,8 @@ describe("forge mcp doctor runtime status", () => {
 
       const human = runMcpDoctor({ userLevel: true, controllerHome });
       expect(human.lines.some((line) => line.includes("Last MCP session close: no recorded close event in retained history"))).toBe(true);
+      expect(human.lines.some((line) => line.includes("MCP Gateway: unknown (no service state recorded)"))).toBe(true);
+      expect(human.lines.some((line) => line.includes("Public Tunnel: unknown (no service state recorded)"))).toBe(true);
     } finally {
       process.chdir(previousCwd);
       if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
@@ -288,7 +290,7 @@ describe("forge mcp doctor runtime status", () => {
     }
   });
 
-  test("preserves the ChatGPT connector service state on its own line when present", () => {
+  test("reports MCP Gateway and Public Tunnel health independently when present", () => {
     const { repoDir, controllerHome } = makeFixture();
     try {
       const mcpDir = join(controllerHome, "mcp");
@@ -302,17 +304,20 @@ describe("forge mcp doctor runtime status", () => {
             repo: repoDir,
             startedAt: observedAt,
             updatedAt: observedAt,
-            status: "stopped",
-            tunnelMode: "none",
-            server: { endpoint: "http://127.0.0.1:8765/mcp", running: false, healthy: false, restartCount: 0 },
+            status: "degraded",
+            tunnelMode: "named",
+            server: { endpoint: "http://127.0.0.1:8765/mcp", running: true, healthy: false, restartCount: 0 },
+            tunnel: { running: true, healthy: true, restartCount: 0, name: "forge-current", publicEndpoint: "https://forge.example.test/mcp" },
           },
           null,
           2,
         )}\n`,
       );
       const result = withControllerHome(controllerHome, () => runMcpDoctor({ repo: repoDir }));
-      const connectorLine = result.lines.find((line) => line.startsWith("[forge mcp] ChatGPT connector service:"));
-      expect(connectorLine).toContain("stopped");
+      const gatewayLine = result.lines.find((line) => line.startsWith("[forge mcp] MCP Gateway:"));
+      expect(gatewayLine).toContain("degraded (local=unhealthy)");
+      const tunnelLine = result.lines.find((line) => line.startsWith("[forge mcp] Public Tunnel:"));
+      expect(tunnelLine).toContain("named (running, public=ok)");
       const runtimeLine = result.lines.find((line) => line.startsWith("[forge mcp] Runtime:"));
       expect(runtimeLine).toContain("not running");
 
@@ -321,7 +326,7 @@ describe("forge mcp doctor runtime status", () => {
         runtime?: { status?: string };
         canonicalRuntime?: { running?: boolean };
       };
-      expect(report.runtime?.status).toBe("stopped");
+      expect(report.runtime?.status).toBe("degraded");
       expect(report.canonicalRuntime?.running).toBe(false);
     } finally {
       rmSync(join(controllerHome, ".."), { recursive: true, force: true });
