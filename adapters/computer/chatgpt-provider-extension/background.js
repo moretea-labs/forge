@@ -4,7 +4,8 @@ const NATIVE_HOST = 'com.moretea.forge.computer';
 const ALARM = 'forge-computer-chatgpt-provider';
 const ALARM_PERIOD_MINUTES = 0.5;
 const PROVIDER_ID = 'browser.chrome-extension';
-const PROVIDER_TICK_MS = 750;
+const PROVIDER_COMMAND_POLL_MS = 1_000;
+const PROVIDER_HEARTBEAT_REFRESH_MS = 8_000;
 const RPC_TIMEOUT_MS = 30_000;
 const HEARTBEAT_DEADLINE_MS = 10_000;
 const HEARTBEAT_RPC_TIMEOUT_MS = 6_000;
@@ -794,26 +795,35 @@ function heartbeatTick() {
     .finally(() => { providerHeartbeatInFlight = undefined; });
   return providerHeartbeatInFlight;
 }
-async function providerTick() {
-  // One claimed command retains the sole mutation lane; it must not also
-  // suppress profile heartbeat when a page/Chrome callback is slow or hangs.
-  if (providerTickInFlight) { await heartbeatTick(); return; }
-  providerTickInFlight = (async () => {
-    const instanceId = await heartbeatTick();
-    // One command per tick keeps heartbeats and other callers fair. The Computer broker
-    // remains the only physical-send authority for a claimed Send and its unknown outcome.
+async function runProviderPump() {
+  let instanceId = await heartbeatTick();
+  let nextHeartbeatAt = Date.now() + PROVIDER_HEARTBEAT_REFRESH_MS;
+  while (true) {
+    if (Date.now() >= nextHeartbeatAt) {
+      instanceId = await heartbeatTick();
+      nextHeartbeatAt = Date.now() + PROVIDER_HEARTBEAT_REFRESH_MS;
+    }
+    // Keep one NativeMessaging request cadence alive while this MV3 worker is active.
+    // Runtime remains the sole command/effect authority; this loop only claims its queue.
     const claim = await nativeRpc('computer_extension_claim', { provider_instance_id: instanceId });
     const command = claim?.command;
-    if (!command) return;
-    const result = await executeCommand(command, instanceId);
-    const completion = await nativeRpc('computer_extension_complete', { provider_instance_id: instanceId, command_id: command.commandId, result });
-    if (completion?.recorded !== true) {
-      console.warn('COMPUTER_CHATGPT_EXTENSION_COMMAND_COMPLETION_NOT_RECORDED', {
-        commandId: command.commandId, kind: command.kind, conversationId: command.identity?.conversationId,
-      });
+    if (command) {
+      const result = await executeCommand(command, instanceId);
+      const completion = await nativeRpc('computer_extension_complete', { provider_instance_id: instanceId, command_id: command.commandId, result });
+      if (completion?.recorded !== true) {
+        console.warn('COMPUTER_CHATGPT_EXTENSION_COMMAND_COMPLETION_NOT_RECORDED', {
+          commandId: command.commandId, kind: command.kind, conversationId: command.identity?.conversationId,
+        });
+      }
     }
-  })().finally(() => { providerTickInFlight = undefined; });
-  return await providerTickInFlight;
+    await sleep(PROVIDER_COMMAND_POLL_MS);
+  }
+}
+function providerTick() {
+  if (providerTickInFlight) return providerTickInFlight;
+  providerTickInFlight = runProviderPump()
+    .finally(() => { providerTickInFlight = undefined; });
+  return providerTickInFlight;
 }
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== 'forge-computer-chatgpt-page') return false;
@@ -829,5 +839,4 @@ chrome.tabs.onActivated.addListener(() => { void providerTick().catch(() => unde
 chrome.tabs.onRemoved.addListener((tabId) => { unreadableConversationTabs.delete(tabId); void chrome.storage.session.remove(ownedTabKey(tabId)).catch(() => undefined); void providerTick().catch(() => undefined); });
 chrome.windows.onFocusChanged.addListener(() => { void providerTick().catch(() => undefined); });
 chrome.alarms.create(ALARM, { periodInMinutes: ALARM_PERIOD_MINUTES });
-setInterval(() => { void providerTick().catch(() => undefined); }, PROVIDER_TICK_MS);
 void providerTick().catch(() => undefined);
