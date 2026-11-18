@@ -2378,7 +2378,9 @@ private struct AgentPane: View {
             if !model.busy && !model.zenRefinementActive { composerFocused = true }
         }
         .onChange(of:model.selectedThreadId) { _ in
-            cancelVoiceDictation()
+            // The draft binding already targets the newly selected thread here.
+            // Clear only transient recorder state; the old thread keeps its partial transcript.
+            voiceDictation.cancel()
             showChanges = false
             if !model.busy && !model.zenRefinementActive { composerFocused = true }
         }
