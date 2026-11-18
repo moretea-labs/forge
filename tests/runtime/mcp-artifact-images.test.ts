@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
+import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -8,11 +9,20 @@ import { resultWithPluginArtifactImages, resultWithSubmittedPluginActionImages }
 import { repositoryControllerRoot } from '../../src/effects/controller-home';
 import { writeExecutionArtifact } from '../../src/runtime/evidence/artifact-store';
 import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
+import { writeInteractionSession } from '../../src/runtime/plugins/interaction-session';
+import { resetIosAgentDeviceRuntimeHooksForTest, setIosAgentDeviceRuntimeHooksForTest } from '../../src/runtime/plugins/ios-agent-device';
+import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
+import { registerRepository } from '../../src/runtime/repositories/registry';
+import { resetIosDevelopmentHooksForTest, setIosDevelopmentHooksForTest } from '../../src/runtime/safe-tooling';
 
 const roots: string[] = [];
 // Decodeable fixture only; this is not Simulator visual acceptance evidence.
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=', 'base64');
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => {
+  resetIosAgentDeviceRuntimeHooksForTest();
+  resetIosDevelopmentHooksForTest();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 function fixture() {
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-mcp-images-'));
@@ -124,6 +134,90 @@ test('agent-device screenshot receipts redact nested command argv while preservi
   });
   expect(JSON.stringify(output.structuredContent)).not.toContain(screenshotPath);
   expect(JSON.stringify(output.structuredContent)).not.toContain('command');
+});
+
+test('deduplicated agent-device screenshot receipt replays its MCP image without recapturing', async () => {
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-mcp-image-replay-controller-'));
+  const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-image-replay-repo-'));
+  roots.push(controllerHome, repoRoot);
+  execFileSync('git', ['init', '-q', repoRoot], { stdio: 'ignore' });
+  const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'MCP image replay' });
+  const now = new Date();
+  const interactionId = 'ios_agent_device_image_replay';
+  writeInteractionSession(repoRoot, {
+    schemaVersion: 1,
+    interactionId,
+    provider: 'ios-simulator',
+    engine: 'agent-device',
+    sessionId: 'image-replay-session',
+    targetId: 'SIMULATOR-IMAGE-REPLAY',
+    status: 'waiting_for_user',
+    reason: 'ios_simulator_automation',
+    instructions: 'com.example.image-replay',
+    owner: { repoId: repository.repoId, requestId: 'image-replay-session-open' },
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+  });
+
+  let screenshotInvocations = 0;
+  const screenshotCommands: string[][] = [];
+  const commandResult = (command: string, args: string[], stdout: string) => ({
+    ok: true,
+    status: 0,
+    stdout,
+    stderr: '',
+    command: [command, ...args],
+  });
+  setIosAgentDeviceRuntimeHooksForTest({
+    platform: () => 'darwin',
+    now: () => now,
+    runCommand: (command, args) => commandResult(command, args, args[0] === '--version' ? '0.19.3' : ''),
+    runCommandAsync: async (command, args) => commandResult(command, args, args[0] === '--version' ? '0.19.3' : ''),
+  });
+  setIosDevelopmentHooksForTest({
+    platform: () => 'darwin',
+    runCommand: (command, args) => {
+      screenshotInvocations += 1;
+      screenshotCommands.push([command, ...args]);
+      const screenshotPath = args.at(-1)!;
+      mkdirSync(join(screenshotPath, '..'), { recursive: true });
+      writeFileSync(screenshotPath, png);
+      return commandResult(command, args, 'captured');
+    },
+  });
+
+  const request = {
+    pluginId: 'ios',
+    actionId: 'agent_device_screenshot',
+    requestId: 'deduplicated-agent-device-image-replay',
+    args: { interaction_id: interactionId, label: 'dedup-replay' },
+    origin: { surface: 'mcp' as const, actor: 'test' },
+    timeoutMs: 30_000,
+  };
+  const first = await submitAssistantPluginAction(controllerHome, repository, request);
+  const replay = await submitAssistantPluginAction(controllerHome, repository, request);
+
+  expect(first.deduplicated).toBe(false);
+  expect(replay.deduplicated).toBe(true);
+  expect(replay.receipt.receiptId).toBe(first.receipt.receiptId);
+  expect(screenshotInvocations).toBe(1);
+  expect(screenshotCommands).toHaveLength(1);
+  expect(screenshotCommands[0]?.slice(0, 5)).toEqual(['xcrun', 'simctl', 'io', 'SIMULATOR-IMAGE-REPLAY', 'screenshot']);
+
+  for (const submitted of [first, replay]) {
+    const output = resultWithSubmittedPluginActionImages(
+      { requestId: request.requestId, deduplicated: submitted.deduplicated },
+      controllerHome,
+      repository.repoId,
+      submitted.result,
+    );
+    expect(output.content as unknown[]).toContainEqual({
+      type: 'image',
+      mimeType: 'image/png',
+      data: png.toString('base64'),
+    });
+  }
 });
 
 test('non-evidence, truncated, missing and oversized image artifacts stay text-only', async () => {

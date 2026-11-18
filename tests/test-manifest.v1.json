@@ -233,9 +233,17 @@
       "module": "controller",
       "resource": "process-tree"
     },
+    "tests/runtime/ios-agent-device-status.test.ts": {
+      "module": "ios",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/ios-agent-device-multidisplay.test.ts": {
       "module": "ios",
       "resource": "temp-isolated"
+    },
+    "tests/runtime/mcp-artifact-images.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
     },
     "tests/runtime/release-growth-publish-workflows.test.ts": {
       "module": "workflow",

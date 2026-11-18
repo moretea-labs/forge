@@ -36,6 +36,7 @@ import {
   compileBatchCommand,
   compileSnapshotCommand,
   detectAgentDeviceCapabilities,
+  isSupportedAgentDeviceVersion,
   PREFERRED_AGENT_DEVICE_VERSION,
   type AgentDeviceCapabilityProfile,
   type AgentDeviceHelpContract,
@@ -238,6 +239,10 @@ function statusProbeCacheKey(repoRoot?: string): string {
   ].join('|');
 }
 
+function shouldInspectAgentDeviceHelp(version: string, profile: AgentDeviceCapabilityProfile): boolean {
+  return isSupportedAgentDeviceVersion(version) && profile.source !== 'known-version';
+}
+
 function probeStatus(repoRoot?: string) {
   const backendMode = configuredAgentDeviceBackendMode();
   const typedClient = typedAgentDeviceIdentity({ repoRoot });
@@ -257,10 +262,12 @@ function probeStatus(repoRoot?: string) {
     };
   }
   const runtimeEnv = withTrustedNodePath({ ...process.env });
-  const result = hooks.runCommand(executable(repoRoot), ['--version'], { cwd: repoRoot, env: runtimeEnv, timeoutMs: 3_000 });
+  const result = hooks.runCommand(executable(repoRoot), ['--version'], { cwd: repoRoot, env: runtimeEnv, timeoutMs: 8_000 });
   const detectedVersion = result.ok ? result.stdout.trim() : undefined;
+  const versionProfile = detectAgentDeviceCapabilities(detectedVersion ?? '', {});
+  const shouldProbeHelp = Boolean(result.ok && detectedVersion && shouldInspectAgentDeviceHelp(detectedVersion, versionProfile));
   const help: AgentDeviceHelpContract = {};
-  if (result.ok && detectedVersion) {
+  if (shouldProbeHelp) {
     const rootHelp = hooks.runCommand(executable(repoRoot), ['help'], { cwd: repoRoot, env: runtimeEnv, timeoutMs: 3_000 });
     if (rootHelp.ok) help.root = rootHelp.stdout || rootHelp.stderr;
     for (const topic of ['snapshot', 'press', 'fill', 'batch', 'keyboard'] as const) {
@@ -268,7 +275,9 @@ function probeStatus(repoRoot?: string) {
       if (topicResult.ok) help[topic] = topicResult.stdout || topicResult.stderr;
     }
   }
-  const capabilityProfile = detectAgentDeviceCapabilities(detectedVersion ?? '', help);
+  const capabilityProfile = shouldProbeHelp
+    ? detectAgentDeviceCapabilities(detectedVersion ?? '', help)
+    : versionProfile;
   const typedClientWithCompatibility = {
     ...typedClient,
     cliVersion: detectedVersion,
@@ -339,12 +348,14 @@ async function probeStatusAsync(input: Pick<AssistantPluginActionExecutionInput,
   const result = await hooks.runCommandAsync(executable(repoRoot), ['--version'], {
     cwd: repoRoot,
     env: runtimeEnv,
-    timeoutMs: 3_000,
+    timeoutMs: 8_000,
     signal: input.signal,
   });
   const detectedVersion = result.ok ? result.stdout.trim() : undefined;
+  const versionProfile = detectAgentDeviceCapabilities(detectedVersion ?? '', {});
+  const shouldProbeHelp = Boolean(result.ok && detectedVersion && shouldInspectAgentDeviceHelp(detectedVersion, versionProfile));
   const help: AgentDeviceHelpContract = {};
-  if (result.ok && detectedVersion) {
+  if (shouldProbeHelp) {
     const rootHelp = await hooks.runCommandAsync(executable(repoRoot), ['help'], {
       cwd: repoRoot, env: runtimeEnv, timeoutMs: 3_000, signal: input.signal,
     });
@@ -356,7 +367,9 @@ async function probeStatusAsync(input: Pick<AssistantPluginActionExecutionInput,
       if (topicResult.ok) help[topic] = topicResult.stdout || topicResult.stderr;
     }
   }
-  const capabilityProfile = detectAgentDeviceCapabilities(detectedVersion ?? '', help);
+  const capabilityProfile = shouldProbeHelp
+    ? detectAgentDeviceCapabilities(detectedVersion ?? '', help)
+    : versionProfile;
   const typedClientWithCompatibility = {
     ...typedClient,
     cliVersion: detectedVersion,
@@ -1145,7 +1158,7 @@ function fenceUnknownSession(
 }
 
 function isPotentiallyMutatingAgentDeviceCommand(args: string[]): boolean {
-  return ['press', 'fill', 'scroll', 'keyboard', 'back', 'batch'].includes(args[0] ?? '');
+  return ['press', 'fill', 'scroll', 'swipe', 'gesture', 'keyboard', 'back', 'batch'].includes(args[0] ?? '');
 }
 
 function failWorkflowSession(
@@ -2269,7 +2282,7 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'agent_device_status', title: 'agent-device status',
       description: 'Resolve the exact executable and verify a reviewed agent-device command contract.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 5_000, cancellable: true, idempotent: true,
+      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true,
       scopes: ['ios.discover'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
@@ -2371,6 +2384,13 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.simulator', 'ios.device'], resourceClaims: write,
       argumentsSchema: { type: 'object', properties: { ...interactionProperty, direction: { type: 'string', enum: ['up', 'down', 'left', 'right', 'top', 'bottom'] }, amount: { type: 'number' } }, required: ['interaction_id', 'direction'], additionalProperties: false },
+    },
+    {
+      actionId: 'agent_device_swipe', title: 'Swipe agent-device session',
+      description: 'Perform a coordinate-based pan in the active agent-device screenshot space; start inside the content viewport to avoid navigation docks or overlays.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
+      scopes: ['ios.simulator', 'ios.device'], resourceClaims: write,
+      argumentsSchema: { type: 'object', properties: { ...interactionProperty, x1: { type: 'number', minimum: 0, maximum: 16384 }, y1: { type: 'number', minimum: 0, maximum: 16384 }, x2: { type: 'number', minimum: 0, maximum: 16384 }, y2: { type: 'number', minimum: 0, maximum: 16384 }, duration_ms: { type: 'number', minimum: 1, maximum: 5000 } }, required: ['interaction_id', 'x1', 'y1', 'x2', 'y2'], additionalProperties: false },
     },
     {
       actionId: 'agent_device_screenshot', title: 'Capture agent-device screenshot',
@@ -2669,18 +2689,44 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       if (typeof input.args.amount === 'number') args.push(String(Math.max(1, Math.min(100, Math.trunc(input.args.amount)))));
       return { provider: 'agent-device', interaction: record, result: bounded(await runSessionCommand(input, record, args, 'AGENT_DEVICE_SCROLL_FAILED')) };
     }
+    case 'agent_device_swipe': {
+      const coordinate = (name: 'x1' | 'y1' | 'x2' | 'y2'): number => {
+        const value = input.args[name];
+        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 16_384) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `${name} must be an integer screen coordinate from 0 to 16384.`, { retryable: false });
+        }
+        return value;
+      };
+      const x1 = coordinate('x1'), y1 = coordinate('y1'), x2 = coordinate('x2'), y2 = coordinate('y2');
+      const args = ['gesture', 'pan', String(x1), String(y1), String(x2 - x1), String(y2 - y1)];
+      if (input.args.duration_ms !== undefined) {
+        const duration = input.args.duration_ms;
+        if (typeof duration !== 'number' || !Number.isSafeInteger(duration) || duration < 1 || duration > 5_000) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'duration_ms must be an integer from 1 to 5000.', { retryable: false });
+        }
+        args.push(String(duration));
+      }
+      return { provider: 'agent-device', interaction: record, result: bounded(await runSessionCommand(input, record, args, 'AGENT_DEVICE_SWIPE_FAILED')) };
+    }
     case 'agent_device_screenshot': {
       const label = sanitize(optionalString(input.args.label) ?? 'screenshot');
-      if (input.args.display !== undefined) {
-        if (record.provider !== SIMULATOR_PROVIDER || !Number.isInteger(input.args.display)
-          || (input.args.display as number) < 0 || (input.args.display as number) > 16) {
+      const simulatorCapture = record.provider === SIMULATOR_PROVIDER
+        && input.args.overlay_refs !== true
+        && input.args.max_size === undefined;
+      if (simulatorCapture || input.args.display !== undefined) {
+        if (record.provider !== SIMULATOR_PROVIDER) {
+          if (input.args.display !== undefined) {
+            throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'display is supported only for Simulator sessions.', { retryable: false });
+          }
+        } else if (input.args.display !== undefined && (!Number.isInteger(input.args.display)
+          || (input.args.display as number) < 0 || (input.args.display as number) > 16)) {
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'display must be a Simulator display ID from 0 to 16.', { retryable: false });
         }
-        if (input.args.overlay_refs === true || input.args.max_size !== undefined) {
+        if (input.args.display !== undefined && (input.args.overlay_refs === true || input.args.max_size !== undefined)) {
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'A display-addressed Simulator screenshot cannot use agent-device overlays or resizing.', { retryable: false });
         }
-        // Reuse the iOS Simulator screenshot authority; agent-device CLI cannot
-        // disambiguate the Duo's inner and outer displays.
+        // Simulator screenshots use the existing simctl authority by default.
+        // agent-device remains the opt-in path for overlay/resize features.
         const captured = iosSimulatorScreenshot({
           repoId: input.repoId,
           canonicalRoot: input.repoRoot,
@@ -2688,11 +2734,11 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
         } as RepositoryRecord, {
           udid: record.targetId,
           label,
-          display: input.args.display as number,
+          display: input.args.display as number | undefined,
           artifactRoot: artifactDir(input, record.interactionId),
         });
         if (!('absolutePath' in captured) || typeof captured.absolutePath !== 'string') {
-          throw new AssistantPluginError('AGENT_DEVICE_SCREENSHOT_FAILED', 'Simulator display screenshot failed.', { retryable: false });
+          throw new AssistantPluginError('AGENT_DEVICE_SCREENSHOT_FAILED', 'Simulator screenshot failed.', { retryable: false });
         }
         return {
           provider: 'agent-device', interaction: record, result: bounded(captured),
