@@ -435,6 +435,81 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore); expect(listLocalBridgeJobSnapshots(fx.repoRoot).length).toBe(localBefore);
   });
 
+  test('reattaches the same durable Process from a replacement MCP tool context without re-execution', async () => {
+    const fx = fixture(); roots.push(fx.root);
+    const startedPath = join(fx.root, 'mcp-process-started');
+    const releasePath = join(fx.root, 'mcp-process-release');
+    const invocationsPath = join(fx.root, 'mcp-process-invocations');
+    writeFileSync(join(fx.repoRoot, 'mcp-session-process.mjs'), [
+      "import { appendFileSync, existsSync, writeFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(invocationsPath)}, 'x');`,
+      `writeFileSync(${JSON.stringify(startedPath)}, 'x');`,
+      `const releasePath = ${JSON.stringify(releasePath)};`,
+      'const deadline = Date.now() + 5_000;',
+      'const finish = () => {',
+      "  if (existsSync(releasePath)) { console.log('session-replacement-ok'); process.exit(0); }",
+      "  if (Date.now() >= deadline) { console.error('release marker was not written'); process.exit(70); }",
+      '  setTimeout(finish, 10);',
+      '};',
+      'finish();',
+    ].join('\n') + '\n');
+    const principalId = 'mcp-session-replacement-principal';
+    const context = (sessionId: string) => createMcpToolContext({
+      controllerHome: fx.controllerHome,
+      profile: 'controller',
+      repo: fx.repoRoot,
+      sessionId,
+      principalId,
+      controllerInstanceId: 'mcp-session-replacement-controller',
+    });
+    const originalContext = context('transport-session-before-replacement');
+    const args = {
+      repo_id: fx.repository.repoId,
+      command: [process.execPath, 'mcp-session-process.mjs'],
+      apply_mode: 'async',
+      timeout_ms: 10_000,
+      request_id: 'mcp-session-replacement-process',
+    };
+    const first = await callRepositoryTool(fx.controllerHome, 'execute_command', args);
+    expect(first?.isError).not.toBe(true);
+    const firstPayload = first?.structuredContent as Record<string, unknown>;
+    expect(firstPayload).toMatchObject({ path: 'process_managed', status: 'running' });
+    const processId = String(firstPayload.processId ?? '');
+    expect(processId).toBeTruthy();
+
+    const startDeadline = Date.now() + 5_000;
+    while (!existsSync(startedPath) && Date.now() < startDeadline) await Bun.sleep(10);
+    expect(existsSync(startedPath)).toBe(true);
+
+    // A replacement MCP session gets a new tool context/session id but keeps the same durable Controller Home.
+    const replacementContext = context('transport-session-after-replacement');
+    expect(replacementContext.sessionId).not.toBe(originalContext.sessionId);
+    const attached = await callProcessTool(replacementContext, 'process_get', {
+      repo_id: fx.repository.repoId,
+      process_id: processId,
+    });
+    expect(attached?.isError).not.toBe(true);
+    const attachedProcess = (attached?.structuredContent as { process?: Record<string, unknown> }).process;
+    expect(attachedProcess).toMatchObject({ processId, status: 'running', completed: false });
+
+    const retry = await callRepositoryTool(fx.controllerHome, 'execute_command', args);
+    expect(retry?.isError).not.toBe(true);
+    expect((retry?.structuredContent as Record<string, unknown>).processId).toBe(processId);
+    expect(readFileSync(invocationsPath, 'utf8')).toHaveLength(1);
+
+    writeFileSync(releasePath, 'x');
+    const waited = await callProcessTool(replacementContext, 'process_wait', {
+      repo_id: fx.repository.repoId,
+      process_id: processId,
+      timeout_ms: 10_000,
+    });
+    expect(waited?.isError).not.toBe(true);
+    const terminal = (waited?.structuredContent as { process?: Record<string, unknown> }).process;
+    expect(terminal).toMatchObject({ processId, completed: true, ok: true });
+    expect(String(terminal?.stdout ?? '')).toContain('session-replacement-ok');
+    expect(readFileSync(invocationsPath, 'utf8')).toHaveLength(1);
+  });
+
   test('execute_command surfaces standalone Recovery lifecycle rejection without spawning work', async () => {
     const fx = fixture();
     roots.push(fx.root);
