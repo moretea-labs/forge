@@ -246,6 +246,10 @@ describe('handoff and facade contracts', () => {
     expect(attached).toContain('affected shared-component destinations and the standard viewport after adaptation');
     expect(attached).toContain('final size bounds');
     expect(attached).toContain('minimum hit target or newer native API is not proof');
+    expect(attached).toContain('challenge inherited UI assumptions');
+    expect(attached).toContain('materially different interaction paradigms');
+    expect(attached).toContain('actively falsify your preferred proposal');
+    expect(attached).toContain('whole-screen space budget, discoverability, extra steps, adverse states and accessibility');
     expect(attached).toContain('actual-rendered geometry');
     expect(attached).toContain('row/column spacing');
     expect(attached).toContain('failed or untested cases');
