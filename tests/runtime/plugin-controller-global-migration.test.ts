@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
+import { spawnSync } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -159,5 +160,58 @@ describe('Controller-global historical receipt migration', () => {
     const index = JSON.parse(readFileSync(requestPath, 'utf8'));
     expect(index).toMatchObject({ scopeKey: 'forge-instance', workRepoId: oldScope });
     expect(readPluginActionReceiptForRequest(home, requestId)).toEqual(migrated);
+
+    const markerPath = join(home, 'system', 'plugin-action-receipts-migration.json');
+    const markerBefore = readFileSync(markerPath, 'utf8');
+    const marker = JSON.parse(markerBefore);
+    expect(marker).toMatchObject({ schemaVersion: 1, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
+
+    // A new module instance models a Runtime restart: the process-local migration
+    // cache is empty, so only the durable marker can avoid the historical scan.
+    const lateRequestId = 'legacy-gmail-send-after-marker';
+    const lateReceiptId = 'PLG-legacy-mail-after-marker';
+    const lateSemantic = `plugin-action:${oldScope}:gmail:send:12346`;
+    const lateReceipt = { ...oldReceipt, receiptId: lateReceiptId, requestId: lateRequestId,
+      semanticKey: lateSemantic, createdAt: new Date().toISOString(), result: { providerId: 'sent-after-marker' } };
+    const lateSource = join(receiptRoot, `${lateReceiptId}.json`);
+    const lateIndex = join(indexRoot, `${createHash('sha256').update(lateRequestId).digest('hex')}.json`);
+    writeFileSync(lateSource, JSON.stringify(lateReceipt));
+    writeFileSync(lateIndex, JSON.stringify({
+      requestId: lateRequestId, scopeKey: oldScope, repoId: oldScope,
+      receiptId: lateReceiptId, semanticKey: lateSemantic, createdAt: lateReceipt.createdAt,
+    }));
+
+    const coldRead = (id: string, refresh = false) => {
+      const child = spawnSync(process.execPath, ['-e', `
+        import { readPluginActionReceiptForRequest, syncControllerPluginManifest } from ${JSON.stringify(new URL('../../src/runtime/plugins/store.ts', import.meta.url).href)};
+        const receipt = readPluginActionReceiptForRequest(${JSON.stringify(home)}, ${JSON.stringify(id)});
+        if (${refresh}) syncControllerPluginManifest(${JSON.stringify(home)}, 'gmail');
+        console.log(JSON.stringify(receipt));
+      `], { encoding: 'utf8', timeout: 10_000 });
+      expect(child.status, child.stderr).toBe(0);
+      return JSON.parse(child.stdout.trim());
+    };
+    expect(coldRead(requestId)).toEqual(migrated);
+    expect(existsSync(lateSource)).toBe(true);
+    expect(existsSync(join(home, 'system', 'plugin-action-receipts', `${lateReceiptId}.json`))).toBe(false);
+    expect(coldRead(requestId, true)).toEqual(migrated);
+    expect(existsSync(lateSource)).toBe(true);
+    expect(readFileSync(markerPath, 'utf8')).toBe(markerBefore);
+
+    // An invalid marker fails open to the idempotent migration, rather than
+    // treating a corrupt completion receipt as authority to skip old data.
+    writeFileSync(markerPath, JSON.stringify({ schemaVersion: 99 }));
+    expect(coldRead(lateRequestId)).toMatchObject({
+      receiptId: lateReceiptId,
+      requestId: lateRequestId,
+      scopeKey: 'forge-instance',
+      workRepoId: oldScope,
+      result: { providerId: 'sent-after-marker' },
+    });
+    expect(existsSync(lateSource)).toBe(false);
+    expect(JSON.parse(readFileSync(markerPath, 'utf8'))).toMatchObject({
+      schemaVersion: 1,
+      fingerprint: marker.fingerprint,
+    });
   });
 });
