@@ -2924,6 +2924,16 @@ private struct AgentPane: View {
                     Text("完全访问")
                 }
             }
+            Divider()
+            Button {
+                Task { await model.loadRepositoryAccess() }
+            } label: {
+                Label("重新读取权限",systemImage:"arrow.clockwise")
+            }
+            .help("从当前项目重新读取已保存的权限模式")
+            .accessibilityLabel("重新读取项目权限")
+            .accessibilityHint("重新读取当前项目的权限状态；读取期间暂停发送")
+            .accessibilityIdentifier("agent.repository-access.retry")
         } label: {
             quickControlLabel(
                 model.repositoryAccessMode == "full_access" ? "完全访问" : "请求权限",

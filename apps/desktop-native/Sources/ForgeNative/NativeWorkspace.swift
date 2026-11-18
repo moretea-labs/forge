@@ -2561,6 +2561,10 @@ final class NativeWorkspace: ObservableObject {
         return mode
     }
 
+    nonisolated static func isRepositoryAccessError(_ message:String?) -> Bool {
+        message?.hasPrefix("项目权限") == true
+    }
+
     private func invalidateRepositoryAccessRequests() {
         repositoryAccessRequestGeneration += 1
         repositoryAccessLoading = false
@@ -2599,6 +2603,7 @@ final class NativeWorkspace: ObservableObject {
                 return
             }
             repositoryAccessMode = mode
+            if Self.isRepositoryAccessError(self.error) { self.error = nil }
         } catch {
             guard repositoryAccessOperationIsCurrent(requestGeneration,repoId:targetRepoId) else { return }
             repositoryAccessMode = "request"

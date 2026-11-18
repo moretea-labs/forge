@@ -553,6 +553,9 @@ final class NativeWorkspaceTests: XCTestCase {
             "repository":["repoId":"repo-test"],
             "repositoryPolicy":["repoId":"repo-test","mode":"unknown"]
         ],repoId:"repo-test"))
+        XCTAssertTrue(NativeWorkspace.isRepositoryAccessError("项目权限读取失败，请重试。"))
+        XCTAssertTrue(NativeWorkspace.isRepositoryAccessError("项目权限切换未能确认。"))
+        XCTAssertFalse(NativeWorkspace.isRepositoryAccessError("API Provider 未就绪。"))
     }
 
     func testApiTurnHistoryExcludesIncompleteAssistantEvidence() {
