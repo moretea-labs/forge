@@ -1978,17 +1978,37 @@ export async function activateMacOsBrowserOwnedTab(
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<MacOsBrowserMetadata> {
   const browser = browserDefinition(product);
+  const deadline = performance.now() + timeoutMs;
+  // Keep the complete, unique live-tab proof for activation. Its cost, the
+  // activation event, and the postcondition share one caller-owned budget,
+  // rather than each restarting the full timeout.
   const resolvedRef = await resolveCurrentMacOsBrowserTabRef(product, ref, timeoutMs);
+  const dispatchBudget = Math.ceil(deadline - performance.now());
+  if (dispatchBudget <= 0) {
+    throw new AssistantPluginError(
+      'BROWSER_AUTOMATION_TIMEOUT',
+      'Native activation preflight exhausted the action budget before dispatch.',
+      { retryable: true, effectOutcome: 'failed' },
+    );
+  }
   await runBrowserAutomationText(
     { action: 'activate', product, ref: resolvedRef },
     activateTargetTabScript(browser, resolvedRef),
     [],
-    timeoutMs,
+    dispatchBudget,
   );
-  // This exact tab was resolved immediately before activation. Re-read its
-  // targeted metadata for the postcondition instead of enumerating every tab
-  // again; the provider still rejects missing/stale tab identity fail-closed.
-  const metadata = await readResolvedMacOsBrowserOwnedTabMetadata(product, resolvedRef, timeoutMs);
+  const verificationBudget = Math.ceil(deadline - performance.now());
+  if (verificationBudget <= 0) {
+    // The event has already been sent. Do not automatically replay it or
+    // claim a verified foreground postcondition after the deadline.
+    throw new AssistantPluginError(
+      'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
+      'Native activation was dispatched but exhausted its action budget before foreground verification.',
+      { retryable: false, effectOutcome: 'outcome_unknown' },
+    );
+  }
+  // Verify the exact target, without a second global inventory.
+  const metadata = await readResolvedMacOsBrowserOwnedTabMetadata(product, resolvedRef, verificationBudget);
   if (metadata.tabId !== resolvedRef.tabId || metadata.active !== true) {
     throw new AssistantPluginError(
       'PLUGIN_BROWSER_NATIVE_ACTIVATION_POSTCONDITION_FAILED',
