@@ -157,7 +157,7 @@
       "kind": "script",
       "scriptRef": "assertNoDuplicate",
       "input": {
-        "account": "{{input.account}}",
+        "account": "{{output.validate-post.account}}",
         "match_prefix": "{{output.validate-post.match_prefix}}",
         "articles": "{{output.read-existing-posts.matches}}",
         "links": "{{output.read-existing-links.matches}}"
@@ -319,7 +319,7 @@
       "kind": "script",
       "scriptRef": "derivePostCandidate",
       "input": {
-        "account": "{{input.account}}",
+        "account": "{{output.validate-post.account}}",
         "match_prefix": "{{output.validate-post.match_prefix}}",
         "articles": "{{output.read-published-posts.matches}}",
         "links": "{{output.read-published-links.matches}}"
@@ -376,7 +376,7 @@
       "kind": "script",
       "scriptRef": "finalizePublication",
       "input": {
-        "account": "{{input.account}}",
+        "account": "{{output.validate-post.account}}",
         "candidate_id": "{{output.derive-post-candidate.candidate_id}}",
         "candidate_url": "{{output.derive-post-candidate.candidate_url}}",
         "content_digest": "{{output.validate-post.content_digest}}",

@@ -26,3 +26,14 @@ test('X publish validator still rejects malformed multiple-prefix handles', () =
   expect(result.status).toBe(2);
   expect(result.stderr).toContain('X_ACCOUNT_INVALID');
 });
+
+test('all downstream account consumers use the normalized validator output', () => {
+  const scriptSteps = publishPostDraft.steps.filter((step: any) => step.kind === 'script');
+  const downstream = scriptSteps.filter((step: any) => step.stepId !== 'validate-post');
+  expect(downstream.map((step: any) => step.input?.account)).toEqual([
+    '{{output.validate-post.account}}',
+    '{{output.validate-post.account}}',
+    '{{output.validate-post.account}}',
+    '{{output.validate-post.account}}',
+  ]);
+});
