@@ -205,6 +205,7 @@ struct ZenWorkspacePane: View {
     @State private var goalDraft = ""
     @State private var showingRequirementSheet = false
     @State private var showingProjectDirectory = false
+    @State private var projectDirectoryRestoreContext:NativeProjectDetailReturnContext?
     @State private var showingPlanSheet = false
     @State private var pendingReviewRecord: ForgeRecord?
     @State private var pendingProposal: ZenChangeProposal?
@@ -518,14 +519,22 @@ struct ZenWorkspacePane: View {
             HStack(spacing:10) {
                 if screen == .canvas {
                     Button {
-                        navigate(.board)
-                        focusedRequirementId = nil
-                        model.clearRecordSelection()
+                        if let returnContext=model.restoreProjectDetailSource() {
+                            projectDirectoryRestoreContext=returnContext
+                            showingProjectDirectory=true
+                        } else {
+                            navigate(.board)
+                            focusedRequirementId = nil
+                            model.clearRecordSelection()
+                        }
                     } label: {
                         Image(systemName:"chevron.left").frame(width:28,height:28)
                     }
-                    .buttonStyle(.plain).help("返回看板")
-                    .accessibilityLabel("返回看板")
+                    .buttonStyle(.plain)
+                    .help(model.projectDetailReturnContext == nil ? "返回看板" : "返回项目详情")
+                    .accessibilityLabel(model.projectDetailReturnContext == nil ? "返回看板" : "返回项目详情")
+                    .accessibilityIdentifier(model.projectDetailReturnContext == nil
+                        ? "zen.canvas.back-to-board" : "zen.canvas.back-to-project-detail")
                 }
                 Text(screen == .board ? "工作台" :
                      (requirements.first(where:{$0.recordId == focusedRequirementId})?.title ?? "Requirement"))
@@ -534,6 +543,8 @@ struct ZenWorkspacePane: View {
                 Spacer(minLength:0)
                 if screen == .board {
                     Button {
+                        model.clearProjectDetailReturnContext()
+                        projectDirectoryRestoreContext=nil
                         showingProjectDirectory = true
                     } label: {
                         Label("项目",systemImage:"folder")
@@ -667,24 +678,27 @@ struct ZenWorkspacePane: View {
         .sheet(isPresented:$showingProjectDirectory) {
             ZenProjectDirectorySheet(
                 model:model,
+                initialDetailProjectId:projectDirectoryRestoreContext?.projectId,
+                restoreRepositoryId:projectDirectoryRestoreContext?.repositoryId,
+                restoreRequirementId:projectDirectoryRestoreContext?.requirementId,
                 onOpenTasks:{ projectId,repositoryId in
+                    projectDirectoryRestoreContext=nil
                     showingProjectDirectory=false
                     Task {
                         await model.openProjectTasks(projectId:projectId,repositoryId:repositoryId)
                     }
                 },
                 onOpenRequirement:{ projectId,repositoryId,requirementId in
+                    let failure=await model.openProjectRequirement(
+                        projectId:projectId,repositoryId:repositoryId,
+                        requirementId:requirementId,preserveSource:true
+                    )
+                    guard failure == nil else { return failure }
+                    projectDirectoryRestoreContext=nil
                     showingProjectDirectory=false
-                    Task {
-                        await model.openProjectRequirement(
-                            projectId:projectId,repositoryId:repositoryId,requirementId:requirementId)
-                        guard model.selectedProjectId == projectId,
-                              model.projectRepositoryId == repositoryId,
-                              case .requirement(let detail)=model.recordDetail,
-                              detail.requirementId == requirementId else { return }
-                        focusedRequirementId=requirementId
-                        navigate(.canvas)
-                    }
+                    focusedRequirementId=requirementId
+                    navigate(.canvas)
+                    return nil
                 }
             )
         }
@@ -2796,14 +2810,32 @@ struct ZenProjectDirectorySheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var model: NativeWorkspace
     let onOpenTasks: (String,String?) -> Void
-    let onOpenRequirement: (String,String?,String) -> Void
+    let onOpenRequirement: (String,String?,String) async -> String?
     @State private var query = ""
     @State private var editingProjectId: String?
     @State private var creating = false
     @State private var draftName = ""
     @State private var newProjectRepositoryId: String?
     @State private var detailProjectId: String?
+    @State private var restoreRepositoryId: String?
+    @State private var restoreRequirementId: String?
     @State private var saving = false
+
+    init(
+        model:NativeWorkspace,
+        initialDetailProjectId:String? = nil,
+        restoreRepositoryId:String? = nil,
+        restoreRequirementId:String? = nil,
+        onOpenTasks:@escaping (String,String?) -> Void,
+        onOpenRequirement:@escaping (String,String?,String) async -> String?
+    ) {
+        self.model=model
+        self.onOpenTasks=onOpenTasks
+        self.onOpenRequirement=onOpenRequirement
+        _detailProjectId=State(initialValue:initialDetailProjectId)
+        _restoreRepositoryId=State(initialValue:restoreRepositoryId)
+        _restoreRequirementId=State(initialValue:restoreRequirementId)
+    }
 
     private var availableRepositories: [ForgeProject] {
         NativeWorkspace.availableProjectPlacementRepositories(
@@ -2833,9 +2865,13 @@ struct ZenProjectDirectorySheet: View {
             if let detailProjectId {
                 ZenProjectDetailPane(
                     model:model,projectId:detailProjectId,
+                    restoreRepositoryId:restoreRepositoryId,
+                    restoreRequirementId:restoreRequirementId,
                     onOpenTasks:onOpenTasks,onOpenRequirement:onOpenRequirement
                 ) {
                     self.detailProjectId=nil
+                    self.restoreRepositoryId=nil
+                    self.restoreRequirementId=nil
                 }
                 .id(detailProjectId)
             } else {
@@ -2978,6 +3014,8 @@ struct ZenProjectDirectorySheet: View {
                         Menu {
                             Button {
                                 detailProjectId=project.projectId
+                                restoreRepositoryId=nil
+                                restoreRequirementId=nil
                             } label: { Label("查看详情",systemImage:"info.circle") }
                             Divider()
                             Button {
@@ -3117,23 +3155,43 @@ enum ZenProjectRevisionPresentation {
 struct ZenProjectDetailPane: View {
     @ObservedObject var model: NativeWorkspace
     let projectId: String
+    let restoreRepositoryId: String?
+    let restoreRequirementId: String?
     let onOpenTasks: (String,String?) -> Void
-    let onOpenRequirement: (String,String?,String) -> Void
+    let onOpenRequirement: (String,String?,String) async -> String?
     let onBack: () -> Void
     @State private var detail: ForgeSemanticProjectDetail?
     @State private var loading = false
     @State private var loadingMore = false
+    @State private var openingRequirementId: String?
     @State private var error: String?
+    @State private var openError: String?
 
     var body: some View {
+        ScrollViewReader { proxy in
         VStack(alignment:.leading,spacing:12) {
             HStack {
-                Button(action:onBack) { Label("返回项目",systemImage:"chevron.left") }.buttonStyle(.plain)
+                Button(action:onBack) { Label("返回项目",systemImage:"chevron.left") }
+                    .buttonStyle(.plain)
+                    .disabled(openingRequirementId != nil)
                 Spacer()
-                Button { Task { await load(reset:true) } } label: { Label("刷新",systemImage:"arrow.clockwise") }
-                    .disabled(loading || loadingMore)
+                Button {
+                    Task {
+                        openError=nil
+                        await load(reset:true)
+                        await restoreRequirementPosition(using:proxy)
+                    }
+                } label: { Label("刷新",systemImage:"arrow.clockwise") }
+                    .disabled(loading || loadingMore || openingRequirementId != nil)
             }
             if loading { ProgressView().controlSize(.small) }
+            if let openError {
+                Text(openError)
+                    .font(.system(size:11))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal:false,vertical:true)
+                    .accessibilityIdentifier("zen.projects.detail.open-error")
+            }
             if let detail {
                 ScrollView {
                     VStack(alignment:.leading,spacing:12) {
@@ -3191,7 +3249,16 @@ struct ZenProjectDetailPane: View {
                             Text("\(detail.requirements.count) / \(detail.requirementCount)").font(.system(size:10,design:.monospaced)).foregroundStyle(.secondary)
                         }
                         ForEach(detail.requirements) { task in
-                            Button { onOpenRequirement(projectId,task.repoId,task.requirementId) } label: {
+                            Button {
+                                guard openingRequirementId == nil else { return }
+                                openError=nil
+                                openingRequirementId=task.requirementId
+                                Task {
+                                    let failure=await onOpenRequirement(projectId,task.repoId,task.requirementId)
+                                    openingRequirementId=nil
+                                    openError=failure
+                                }
+                            } label: {
                                 VStack(alignment:.leading,spacing:4) {
                                 HStack {
                                     Text(task.title).font(.system(size:12,weight:.medium)).lineLimit(2)
@@ -3214,10 +3281,17 @@ struct ZenProjectDetailPane: View {
                             .padding(.trailing,14)
                             }
                             .buttonStyle(.plain)
-                            .disabled(detail.project.status != "active")
+                            .disabled(detail.project.status != "active" || openingRequirementId != nil)
                             .padding(.vertical,7)
-                            .overlay(alignment:.trailing) { Image(systemName:"chevron.right").font(.system(size:9,weight:.semibold)).foregroundStyle(.tertiary) }
+                            .overlay(alignment:.trailing) {
+                                if openingRequirementId == task.requirementId {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Image(systemName:"chevron.right").font(.system(size:9,weight:.semibold)).foregroundStyle(.tertiary)
+                                }
+                            }
                             .overlay(alignment:.bottom) { Rectangle().fill(Color.primary.opacity(0.055)).frame(height:1) }
+                            .id(projectTaskScrollId(task.requirementId,repositoryId:task.repoId))
                             .accessibilityIdentifier("zen.projects.detail.task.\(task.requirementId)")
                             .accessibilityLabel("打开任务 \(task.title)，\(taskScopeLabel(task))")
                         }
@@ -3257,8 +3331,41 @@ struct ZenProjectDetailPane: View {
         }
         .padding(22)
         .frame(minWidth:540,minHeight:470)
-        .task { await load(reset:true) }
+        .task {
+            await load(reset:true)
+            await restoreRequirementPosition(using:proxy)
+        }
         .accessibilityIdentifier("zen.projects.detail")
+        }
+    }
+
+    private func restoreRequirementPosition(using proxy:ScrollViewProxy) async {
+        guard let restoreRequirementId else { return }
+        openError=nil
+        while !Task.isCancelled,error == nil,
+              detail?.requirements.contains(where:{
+                  $0.requirementId == restoreRequirementId && $0.repoId == restoreRepositoryId
+              }) != true,
+              detail?.hasMore == true {
+            await load(reset:false)
+        }
+        guard !Task.isCancelled else { return }
+        if let error {
+            if detail != nil { openError="原任务位置恢复失败：\(error)" }
+            return
+        }
+        guard detail?.requirements.contains(where:{
+            $0.requirementId == restoreRequirementId && $0.repoId == restoreRepositoryId
+        }) == true else {
+            openError="原任务或所属仓库已不在当前项目的任务列表中，项目详情已恢复。"
+            return
+        }
+        await Task.yield()
+        proxy.scrollTo(projectTaskScrollId(restoreRequirementId,repositoryId:restoreRepositoryId),anchor:.center)
+    }
+
+    private func projectTaskScrollId(_ requirementId:String,repositoryId:String?) -> String {
+        "\(repositoryId ?? "project")|\(requirementId)"
     }
 
     private func load(reset:Bool) async {

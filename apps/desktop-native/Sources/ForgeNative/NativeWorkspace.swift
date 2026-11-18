@@ -814,6 +814,13 @@ struct NativeNavigationEntry: Equatable {
     }
 }
 
+struct NativeProjectDetailReturnContext: Equatable {
+    let projectId:String
+    let repositoryId:String?
+    let requirementId:String
+    let sourceEntry:NativeNavigationEntry
+}
+
 struct ConversationScrollRequest: Equatable {
     let revision: Int
     let threadId: String
@@ -835,6 +842,7 @@ final class NativeWorkspace: ObservableObject {
     @Published var zenScreen: ZenScreen = .board
     @Published var zenFocusedRequirementId: String?
     @Published private(set) var navigationBackStack: [NativeNavigationEntry] = []
+    @Published private(set) var projectDetailReturnContext:NativeProjectDetailReturnContext?
     @Published private(set) var projects: [ForgeProject] = []
     @Published private(set) var projectsLoading = true
     @Published private(set) var projectsError: String?
@@ -1045,6 +1053,21 @@ final class NativeWorkspace: ObservableObject {
     var canNavigateBack: Bool { !navigationBackStack.isEmpty }
     var navigationBackLabel: String? { navigationBackStack.last?.page.rawValue }
 
+    func clearProjectDetailReturnContext() {
+        guard let context=projectDetailReturnContext else { return }
+        projectDetailReturnContext=nil
+        if let index=navigationBackStack.lastIndex(of:context.sourceEntry) {
+            navigationBackStack.removeSubrange(index...)
+        }
+    }
+
+    func restoreProjectDetailSource() -> NativeProjectDetailReturnContext? {
+        guard let context=projectDetailReturnContext else { return nil }
+        clearProjectDetailReturnContext()
+        restoreNavigationEntry(context.sourceEntry)
+        return context
+    }
+
     private var currentNavigationEntry: NativeNavigationEntry {
         let isZenWorkbench = zenMode && [.requirement,.plan].contains(page)
         return NativeNavigationEntry(
@@ -1060,9 +1083,9 @@ final class NativeWorkspace: ObservableObject {
         )
     }
 
-    private func pushNavigationOrigin() {
+    private func pushNavigationOrigin(force:Bool = false) {
         let entry=currentNavigationEntry
-        guard navigationBackStack.last != entry else { return }
+        guard force || navigationBackStack.last != entry else { return }
         navigationBackStack.append(entry)
         if navigationBackStack.count > 24 {
             navigationBackStack.removeFirst(navigationBackStack.count - 24)
@@ -1804,6 +1827,10 @@ final class NativeWorkspace: ObservableObject {
 
     func goBack() {
         guard let target = navigationBackStack.popLast() else { return }
+        restoreNavigationEntry(target)
+    }
+
+    private func restoreNavigationEntry(_ target:NativeNavigationEntry) {
         let threadChanged = target.threadId != selectedThreadId
         let contextChangedBeforeActivation = selectedProjectId != target.projectId
             || repoId != target.repoId
@@ -1840,7 +1867,7 @@ final class NativeWorkspace: ObservableObject {
         zenMode = target.zenMode
         zenScreen = target.zenScreen
         zenFocusedRequirementId = target.focusedRequirementId
-        if target.recordId != nil { clearRecordSelection() }
+        clearRecordSelection()
         error = nil
         page = target.page
         persist()
@@ -4190,6 +4217,7 @@ final class NativeWorkspace: ObservableObject {
     func openRecord(_ selectionId: String) async {
         guard let projectId=selectedProjectId,
               let record=records.first(where:{$0.id == selectionId}) else { return }
+        clearProjectDetailReturnContext()
         let targetRepoId=projectRepositoryId
         let targetCheckoutId=checkoutId
         invalidateAutopilotRequests()
@@ -4282,12 +4310,13 @@ final class NativeWorkspace: ObservableObject {
     }
 
     nonisolated static func shouldPushNavigationOrigin(
-        currentPage:NativePage,targetPage:NativePage,contextChanged:Bool
+        currentPage:NativePage,targetPage:NativePage,contextChanged:Bool,preserveSource:Bool = false
     ) -> Bool {
-        currentPage != targetPage || contextChanged
+        preserveSource || currentPage != targetPage || contextChanged
     }
 
     func openProjectTasks(projectId:String,repositoryId:String? = nil) async {
+        clearProjectDetailReturnContext()
         guard !busy else {
             error="请先停止正在运行的会话，再切换项目。"
             return
@@ -4319,37 +4348,59 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func openProjectRequirement(
-        projectId:String,repositoryId:String?,requirementId:String
-    ) async {
+        projectId:String,repositoryId:String?,requirementId:String,preserveSource:Bool = false
+    ) async -> String? {
+        clearProjectDetailReturnContext()
+        let sourceEntry=currentNavigationEntry
         guard let project=semanticProjects.first(where:{$0.projectId == projectId}),
               Self.projectDetailRequirementScopeIsValid(project:project,repositoryId:repositoryId) else {
-            error="该任务不属于所选活动项目，或项目已归档。请刷新项目详情后重试。"
-            return
+            return "该任务不属于所选活动项目，或项目已归档。请刷新项目详情后重试。"
         }
         let contextChanged=Self.projectNavigationContextChanged(
             currentProjectId:selectedProjectId,currentRepoId:repoId,
             targetProjectId:projectId,targetRepoId:repositoryId
         )
-        if Self.shouldPushNavigationOrigin(
-            currentPage:page,targetPage:.requirement,contextChanged:contextChanged
-        ) {
-            pushNavigationOrigin()
+        let pushedOrigin=Self.shouldPushNavigationOrigin(
+            currentPage:page,targetPage:.requirement,contextChanged:contextChanged,
+            preserveSource:preserveSource
+        )
+        if pushedOrigin {
+            pushNavigationOrigin(force:preserveSource)
+        }
+        func fail(_ message:String) -> String {
+            if pushedOrigin { goBack() }
+            return message
         }
         if page != .requirement {
             page = .requirement
             error = nil
         }
         await selectSemanticProject(projectId,repositoryId:repositoryId,projectScope:repositoryId == nil)
-        guard selectedProjectId == projectId,projectRepositoryId == repositoryId else { return }
+        guard selectedProjectId == projectId,projectRepositoryId == repositoryId else {
+            return fail("项目或仓库范围切换未完成，请刷新项目详情后重试。")
+        }
         if !contextChanged && !records.contains(where:{$0.kind == .requirement && $0.recordId == requirementId}) {
             await loadPage()
         }
-        guard selectedProjectId == projectId,projectRepositoryId == repositoryId else { return }
+        guard selectedProjectId == projectId,projectRepositoryId == repositoryId else {
+            return fail("项目范围在读取期间发生变化，请刷新项目详情后重试。")
+        }
         guard let record=records.first(where:{$0.kind == .requirement && $0.recordId == requirementId}) else {
-            error="当前项目范围内暂时找不到该任务。请刷新项目详情后重试。"
-            return
+            return fail("当前项目范围内暂时找不到该任务。请刷新项目详情后重试。")
         }
         await openRecord(record.id)
+        guard selectedProjectId == projectId,projectRepositoryId == repositoryId,
+              selectedRecord == record.id,
+              case .requirement(let detail)=recordDetail,detail.requirementId == requirementId else {
+            return fail(error ?? "任务详情尚未成功读取。请保留项目详情并重试。")
+        }
+        if preserveSource {
+            projectDetailReturnContext=NativeProjectDetailReturnContext(
+                projectId:projectId,repositoryId:repositoryId,
+                requirementId:requirementId,sourceEntry:sourceEntry
+            )
+        }
+        return nil
     }
 
     func openRequirement(_ id: String) async {

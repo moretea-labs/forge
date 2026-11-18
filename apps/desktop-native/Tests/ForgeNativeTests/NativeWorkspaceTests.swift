@@ -2479,6 +2479,9 @@ final class NativeWorkspaceTests: XCTestCase {
             currentPage:.requirement,targetPage:.requirement,contextChanged:false
         ))
         XCTAssertTrue(NativeWorkspace.shouldPushNavigationOrigin(
+            currentPage:.requirement,targetPage:.requirement,contextChanged:false,preserveSource:true
+        ))
+        XCTAssertTrue(NativeWorkspace.shouldPushNavigationOrigin(
             currentPage:.agent,targetPage:.requirement,contextChanged:false
         ))
     }
@@ -2509,6 +2512,30 @@ final class NativeWorkspaceTests: XCTestCase {
         model.goBack()
         XCTAssertEqual(model.page,.agent)
         XCTAssertFalse(model.canNavigateBack)
+    }
+
+    @MainActor
+    func testBackToZenBoardClearsRequirementSelectionOpenedAfterSourceEntry() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let threadId=model.selectedThreadId
+
+        model.page = .requirement
+        model.zenMode = true
+        model.zenScreen = .board
+        model.selectedRecord = nil
+        model.show(.knowledge)
+        XCTAssertEqual(model.navigationBackStack.last,
+                       NativeNavigationEntry(page:.requirement,threadId:threadId,recordId:nil,
+                                             zenMode:true,zenScreen:.board,focusedRequirementId:nil))
+
+        model.selectedRecord="REQ-OPENED"
+        model.goBack()
+
+        XCTAssertEqual(model.page,.requirement)
+        XCTAssertEqual(model.zenScreen,.board)
+        XCTAssertNil(model.selectedRecord)
     }
 
     @MainActor
