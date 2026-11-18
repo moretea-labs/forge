@@ -117,7 +117,7 @@ function hasBrowserCdpEndpoint(repoRoot: string): boolean {
 }
 
 interface BridgeCdpConnection {
-  send(method: string, params?: Record<string, unknown>): Promise<any>;
+  send(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<any>;
   close(): void;
 }
 
@@ -180,7 +180,7 @@ async function connectBridgeCdp(endpoint: string): Promise<BridgeCdpConnection> 
   socket.onclose = () => rejectPending('CHATGPT_BRIDGE_CDP_CONNECTION_CLOSED');
 
   return {
-    send(method, params = {}) {
+    send(method, params = {}, sessionId) {
       if (socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error('CHATGPT_BRIDGE_CDP_NOT_OPEN'));
       const id = nextId++;
       return new Promise((resolveCommand, rejectCommand) => {
@@ -190,7 +190,7 @@ async function connectBridgeCdp(endpoint: string): Promise<BridgeCdpConnection> 
         }, 10000);
         pending.set(id, { resolve: resolveCommand, reject: rejectCommand, timer });
         try {
-          socket.send(JSON.stringify({ id, method, params }));
+          socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
         } catch (error) {
           clearTimeout(timer);
           pending.delete(id);
@@ -204,13 +204,46 @@ async function connectBridgeCdp(endpoint: string): Promise<BridgeCdpConnection> 
   };
 }
 
-function normalizeBridgeWindowsPath(value: string): string {
-  return value.trim().replace(/^"|"$/g, '').replace(/\//g, '\\').replace(/\\+$/g, '').toLowerCase();
+async function readBridgeBrowserProfilePath(cdp: BridgeCdpConnection): Promise<string> {
+  const target = await cdp.send('Target.createTarget', { url: 'chrome://version', background: true }) as { targetId?: string };
+  if (!target.targetId) throw new Error('CHATGPT_BRIDGE_CDP_PROFILE_TARGET_UNAVAILABLE');
+  let sessionId: string | undefined;
+  try {
+    const attached = await cdp.send('Target.attachToTarget', { targetId: target.targetId, flatten: true }) as { sessionId?: string };
+    sessionId = attached.sessionId;
+    if (!sessionId) throw new Error('CHATGPT_BRIDGE_CDP_PROFILE_SESSION_UNAVAILABLE');
+    await cdp.send('Runtime.enable', {}, sessionId);
+    await cdp.send('Page.enable', {}, sessionId);
+    await cdp.send('Page.navigate', { url: 'chrome://version' }, sessionId);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const evaluated = await cdp.send('Runtime.evaluate', {
+        expression: "document.querySelector('#profile_path')?.textContent?.trim() || ''",
+        returnByValue: true,
+      }, sessionId) as { result?: { value?: unknown } };
+      const profilePath = evaluated.result?.value;
+      if (typeof profilePath === 'string' && profilePath.trim()) return profilePath.trim();
+      await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    }
+    throw new Error('CHATGPT_BRIDGE_CDP_PROFILE_UNVERIFIED');
+  } finally {
+    if (sessionId) await cdp.send('Target.detachFromTarget', { sessionId }).catch(() => undefined);
+    await cdp.send('Target.closeTarget', { targetId: target.targetId }).catch(() => undefined);
+  }
 }
 
-async function installBridgeExtensionViaCdp(endpoint: string, extensionPath: string): Promise<void> {
+function normalizeBridgeWindowsPath(value: string): string {
+  let normalized = value.trim().replace(/^"|"$/g, '').replaceAll('/', '\\').toLowerCase();
+  while (normalized.endsWith('\\')) normalized = normalized.slice(0, -1);
+  return normalized;
+}
+
+async function installBridgeExtensionViaCdp(endpoint: string, extensionPath: string, expectedProfilePath: string): Promise<void> {
   const cdp = await connectBridgeCdp(endpoint);
   try {
+    const actualProfilePath = await readBridgeBrowserProfilePath(cdp);
+    if (normalizeBridgeWindowsPath(actualProfilePath) !== normalizeBridgeWindowsPath(expectedProfilePath)) {
+      throw new Error('CHATGPT_BRIDGE_CDP_PROFILE_MISMATCH');
+    }
     const before = await cdp.send('Extensions.getExtensions') as { extensions?: Array<{ id: string; path: string; enabled: boolean }> };
     const existing = (before.extensions ?? []).find((entry) => normalizeBridgeWindowsPath(entry.path) === normalizeBridgeWindowsPath(extensionPath));
     if (existing && !existing.enabled) throw new Error('CHATGPT_BRIDGE_EXTENSION_DISABLED');
@@ -356,7 +389,9 @@ function resolvedWslHost(options: { hostEnvironment?: WindowsHostEnvironment; ho
 }
 
 function installedBridgeExtensionPath(setting: any, bridgeUrl: string, token: string, host?: WindowsHostEnvironment): string | undefined {
-  if (setting?.state === 0 || setting?.disable_reasons !== undefined) return undefined;
+  const disableReasons = setting?.disable_reasons;
+  const enabled = setting?.state === 1 || (setting?.state === undefined && Array.isArray(disableReasons) && disableReasons.length === 0);
+  if (!enabled || (Array.isArray(disableReasons) && disableReasons.length > 0) || (disableReasons !== undefined && !Array.isArray(disableReasons))) return undefined;
   const rawPath = setting?.path ?? setting?.path_safe ?? setting?.location_path;
   if (typeof rawPath !== 'string') return undefined;
   const extensionDir = rawPath.startsWith('/') ? rawPath : host ? windowsPathToHostPath(rawPath, host.driveMounts) : undefined;
@@ -374,31 +409,20 @@ function installedBridgeExtensionPath(setting: any, bridgeUrl: string, token: st
 export function findInstalledWslWindowsBridgeBrowser(
   bridgeUrl: string,
   token: string,
-  options: { userName?: string; userRoot?: string; controlledProfileDir?: string; candidates?: readonly WslWindowsBridgeBrowserCandidate[]; hostEnvironment?: WindowsHostEnvironment; hostDiscovery?: () => WindowsHostEnvironment | undefined } = {},
+  options: { userName?: string; userRoot?: string; controlledProfileDir?: string; extensionDir?: string; candidates?: readonly WslWindowsBridgeBrowserCandidate[]; hostEnvironment?: WindowsHostEnvironment; hostDiscovery?: () => WindowsHostEnvironment | undefined } = {},
 ): WslWindowsBridgeBrowserBinding | undefined {
   const host = resolvedWslHost(options);
-  const userRoot = options.userRoot ?? host?.userProfile;
   const candidates = options.candidates ?? (host ? hostBrowserCandidates(host) : []);
-  const orderedCandidates = [...candidates.filter((candidate) => candidate.controlled), ...candidates.filter((candidate) => !candidate.controlled)];
+  const orderedCandidates = candidates.filter((candidate) => candidate.controlled);
   const controlledExtensionRoot = host?.localAppData ? join(host.localAppData, WSL_WINDOWS_CONTROLLED_EXTENSION_ROOT) : undefined;
   for (const candidate of orderedCandidates) {
     if (!existsSync(candidate.executable)) continue;
-    const profileRoot = candidate.controlled
-      ? (options.controlledProfileDir && candidate.profileRoot && resolve(options.controlledProfileDir) === resolve(candidate.profileRoot) ? options.controlledProfileDir : candidate.profileRoot)
-      : candidate.profileRoot ?? (userRoot && candidate.profileRelativeRoot ? join(userRoot, candidate.profileRelativeRoot) : undefined);
-    if (!profileRoot) continue;
-    if (candidate.controlled && candidate.supportsUnpackedExtensionManagement && controlledExtensionRoot) {
-      const extensionDir = installedBridgeExtensionPath(
-        { path: join(controlledExtensionRoot, CHATGPT_BRIDGE_EXTENSION_RELATIVE_PATH), state: 1 },
-        bridgeUrl,
-        token,
-        host,
-      );
-      if (extensionDir && bridgeProfileDirectories(profileRoot).includes('Default')) {
-        return { executable: candidate.executable, profileDirectory: 'Default', extensionDir, userDataDir: profileRoot };
-      }
-    }
-    for (const profileDirectory of bridgeProfileDirectories(profileRoot)) {
+    if (options.controlledProfileDir && candidate.profileRoot
+      && resolve(options.controlledProfileDir) !== resolve(candidate.profileRoot)) continue;
+    const profileRoot = candidate.profileRoot;
+    if (!profileRoot || !controlledExtensionRoot) continue;
+    const expectedExtensionDir = resolve(options.extensionDir ?? join(controlledExtensionRoot, CHATGPT_BRIDGE_EXTENSION_RELATIVE_PATH)).toLowerCase();
+    for (const profileDirectory of bridgeProfileDirectories(profileRoot).filter((name) => name === 'Default')) {
       for (const fileName of ['Preferences', 'Secure Preferences']) {
         const statePath = join(profileRoot, profileDirectory, fileName);
         if (!existsSync(statePath)) continue;
@@ -407,11 +431,11 @@ export function findInstalledWslWindowsBridgeBrowser(
           const settings = state?.extensions?.settings ?? {};
           for (const setting of Object.values(settings)) {
             const extensionDir = installedBridgeExtensionPath(setting, bridgeUrl, token, host);
-            if (extensionDir) return {
+            if (extensionDir && resolve(extensionDir).toLowerCase() === expectedExtensionDir) return {
               executable: candidate.executable,
               profileDirectory,
               extensionDir,
-              ...(candidate.controlled ? { userDataDir: profileRoot } : {}),
+              userDataDir: profileRoot,
             };
           }
         } catch {
@@ -461,11 +485,16 @@ export function observeWslWindowsBridgeBrowser(
   const bridgeUrl = chatgptBridgeUrl();
   if (current?.bridgeToken) {
     const binding = findInstalledWslWindowsBridgeBrowser(bridgeUrl, current.bridgeToken, { ...options, ...(host ? { hostEnvironment: host } : {}) });
-    if (binding) return { required: true, ready: true, automatic: hasBrowserCdpEndpoint(repoRoot), binding, summary: 'A Windows Chromium profile with the current Forge ChatGPT bridge is available.' };
+    if (binding) {
+      const cdpReady = hasBrowserCdpEndpoint(repoRoot);
+      return { required: true, ready: cdpReady, automatic: cdpReady, binding, summary: cdpReady
+        ? 'The Forge-controlled Windows Chrome profile has the current ChatGPT bridge installed.'
+        : 'The Bridge extension is installed in the Forge ChromeAutomation profile, but its configured loopback CDP endpoint is unavailable.' };
+    }
   }
   const fileExists = options.fileExists ?? existsSync;
   const candidates = options.candidates ?? (host ? hostBrowserCandidates(host) : []);
-  const automatic = hasBrowserCdpEndpoint(repoRoot) && candidates.some((candidate) => candidate.supportsUnpackedExtensionManagement === true && fileExists(candidate.executable));
+  const automatic = hasBrowserCdpEndpoint(repoRoot) && candidates.some((candidate) => candidate.controlled && candidate.supportsUnpackedExtensionManagement === true && fileExists(candidate.executable));
   return {
     required: true,
     ready: false,
@@ -503,7 +532,7 @@ export async function bootstrapWslWindowsBridgeBrowser(
   const host = resolvedWslHost(options);
   const candidates = options.candidates ?? (host ? hostBrowserCandidates(host) : []);
   const executable = Array.from(new Set(candidates
-    .filter((candidate) => candidate.supportsUnpackedExtensionManagement === true)
+    .filter((candidate) => candidate.controlled && candidate.supportsUnpackedExtensionManagement === true)
     .map((candidate) => candidate.executable)))
     .find((candidate) => fileExists(candidate));
   if (!executable) throw new Error('CHATGPT_BRIDGE_USER_ACTION_REQUIRED: no supported controlled Windows Chromium runtime is installed');
@@ -521,10 +550,11 @@ export async function bootstrapWslWindowsBridgeBrowser(
   const windowsUserDataDir = toWindowsPath(userDataDir);
   const windowsExtensionDir = toWindowsPath(extension.extensionDir);
   if (!windowsUserDataDir || !windowsExtensionDir) throw new Error('CHATGPT_BRIDGE_WINDOWS_PATH_TRANSLATION_FAILED');
-  await installBridgeExtensionViaCdp(resolveBrowserCdpEndpoint(repoRoot), windowsExtensionDir);
-  const binding: WslWindowsBridgeBrowserBinding = {
-    executable, profileDirectory: 'Default', extensionDir: extension.extensionDir, userDataDir,
-  };
+  await installBridgeExtensionViaCdp(resolveBrowserCdpEndpoint(repoRoot), windowsExtensionDir, windowsUserDataDir + '\\Default');
+  const binding = findInstalledWslWindowsBridgeBrowser(bridgeUrl, token, { controlledProfileDir: userDataDir, extensionDir: extension.extensionDir, hostEnvironment: host });
+  if (!binding?.userDataDir || resolve(binding.userDataDir) !== resolve(userDataDir)) {
+    throw new Error('CHATGPT_BRIDGE_PROFILE_INSTALL_NOT_PERSISTED');
+  }
   const launch = options.launch ?? spawn;
   await new Promise<void>((resolve, reject) => {
     const launched = launch(executable, [
@@ -752,7 +782,7 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
 
   try {
     if (isWslWindowsRuntime()) {
-      const browserBinding = findInstalledWslWindowsBridgeBrowser(bridgeUrl, token, { controlledProfileDir: input.profileDir });
+      const browserBinding = findInstalledWslWindowsBridgeBrowser(bridgeUrl, token, { controlledProfileDir: input.profileDir, extensionDir: extension.extensionDir });
       if (!browserBinding?.userDataDir) {
         throw new Error('No Forge-controlled Windows Chrome bridge profile is provisioned. Run the bridge bootstrap before starting a WSL Bridge consult.');
       }
@@ -762,9 +792,10 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
       if (input.profileDirectory && input.profileDirectory !== browserBinding.profileDirectory) {
         throw new Error('WSL Bridge consults must use the configured Forge-controlled Chrome profile directory.');
       }
+      const windowsUserDataDir = windowsHost ? hostPathToWindowsPath(browserBinding.userDataDir, windowsHost.driveMounts) : undefined;
       const windowsExtensionDir = windowsHost ? hostPathToWindowsPath(extension.extensionDir, windowsHost.driveMounts) : undefined;
-      if (!windowsExtensionDir) throw new Error('CHATGPT_BRIDGE_WINDOWS_PATH_TRANSLATION_FAILED');
-      await installBridgeExtensionViaCdp(resolveBrowserCdpEndpoint(input.repoRoot), windowsExtensionDir);
+      if (!windowsUserDataDir || !windowsExtensionDir) throw new Error('CHATGPT_BRIDGE_WINDOWS_PATH_TRANSLATION_FAILED');
+      await installBridgeExtensionViaCdp(resolveBrowserCdpEndpoint(input.repoRoot), windowsExtensionDir, windowsUserDataDir + '\\' + browserBinding.profileDirectory);
       await openWslWindowsBridgeTarget(input.chatgptUrl ?? DEFAULT_CHATGPT_URL, { browserBinding, hostEnvironment: windowsHost });
     } else if (input.profileDir) {
       openNativeBrowserPage(input.browserChannel ?? 'chrome', input.profileDir, input.chatgptUrl ?? DEFAULT_CHATGPT_URL, input.profileDirectory);
