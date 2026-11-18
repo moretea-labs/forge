@@ -5,20 +5,9 @@ import {
 } from './desktop-operator-external-policy';
 import { resolveAgentMailAuthorizationContext } from './agentmail-external-policy';
 import type { ExternalPluginRegistration } from './external-registration';
-import type { DesktopApplicationIdentity, VerifiedDesktopApplicationActivation } from './local-system-adapter';
+import type { ExternalProviderPolicyContext } from './external-provider-policy-context';
 import type { AssistantPluginActionExecutionInput, AssistantPluginAuthorizationContext } from './types';
-
-export interface ExternalProviderPolicyContext {
-  callProvider(
-    requestId: string,
-    actionId: string,
-    args: Record<string, unknown>,
-    timeoutMs?: number,
-    signal?: AbortSignal,
-  ): Promise<Record<string, unknown>>;
-  verifyProviderIdentity(requestId: string, signal?: AbortSignal): Promise<void>;
-  activateAndVerifyFrontmostApplication(identity: DesktopApplicationIdentity): Promise<VerifiedDesktopApplicationActivation>;
-}
+export type { ExternalProviderPolicyContext } from './external-provider-policy-context';
 
 export interface ExternalProviderPolicyExecutionResult {
   handled: boolean;

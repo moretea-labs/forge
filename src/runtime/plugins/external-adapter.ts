@@ -3,10 +3,8 @@ import { externalPluginRegistrationSetIdentity, listExternalPluginRegistrations,
 import { callExternalUnixSocket, probeExternalUnixSocketSync, type ExternalUnixSocketCallOptions } from './external-unix-socket';
 import { executeManagedPluginProcess, executeManagedPluginProcessSync, type ManagedPluginProcessSpec } from './managed-process-adapter';
 import { activateAndVerifyFrontmostApplication, restartVerifiedUserLaunchAgent, startVerifiedUserLaunchAgent, stopVerifiedUserLaunchAgent } from './local-system-adapter';
-import {
-  resolveExternalProviderPolicy,
-  type ExternalProviderPolicyContext,
-} from './external-provider-policy';
+import { resolveExternalProviderPolicy } from './external-provider-policy';
+import type { ExternalProviderPolicyContext } from './external-provider-policy-context';
 import type { AssistantPluginActionDescriptor, AssistantPluginAdapter, AssistantPluginAuthorizationContext, AssistantPluginCapability, AssistantPluginHealth, AssistantPluginManifest, AssistantPluginPermissionScope } from './types';
 
 interface ProviderManifest {
