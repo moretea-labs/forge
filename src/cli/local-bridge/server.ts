@@ -2474,7 +2474,10 @@ export async function startLocalBridgeServer(
           resolve();
           return;
         }
+        for (const client of streamClients.keys()) client.end();
+        streamClients.clear();
         server.close((error) => (error ? reject(error) : resolve()));
+        server.closeIdleConnections();
       }),
   };
 }
