@@ -1630,6 +1630,69 @@ describe('mcp http transport', () => {
     }
   }, 45_000);
 
+  test('reinitializes the same MCP SDK Client after an expired session using the deterministic reset path', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-sdk-session-reset-'));
+    const gatewayPort = await freePort();
+    let gatewayProc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    let client: Client | null = null;
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(gatewayPort) });
+        const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
+        gatewayProc = Bun.spawn(
+          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(gatewayPort), '--profile', 'planner', '--auth', 'bearer'],
+          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
+        );
+        await waitForHealth(gatewayPort);
+
+        const endpoint = 'http://127.0.0.1:' + gatewayPort + '/mcp-bearer';
+        const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+        const transport = new StreamableHTTPClientTransport(new URL(endpoint), { requestInit: { headers } });
+        client = new Client({ name: 'forge-sdk-session-reset-reconnect', version: '1.0.0' });
+        await client.connect(transport);
+        const expiredSessionId = transport.sessionId;
+        expect(expiredSessionId).toBeTruthy();
+        const initialTools = await client.listTools();
+        expect(initialTools.tools.map((tool) => tool.name)).toContain('harness_status');
+
+        const deleted = await fetch(endpoint, {
+          method: 'DELETE',
+          headers: { authorization: `Bearer ${token}`, 'mcp-session-id': expiredSessionId! },
+        });
+        expect(deleted.status).toBe(200);
+        await expect(client.listTools()).rejects.toThrow();
+
+        const reset = await fetch(endpoint, {
+          method: 'POST',
+          headers: { ...headers, 'mcp-session-id': expiredSessionId! },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'expired-sdk-session', method: 'ping' }),
+        });
+        expect(reset.status).toBe(404);
+        expect(reset.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
+        expect(reset.headers.get('x-forge-session-reset')).toBe('reinitialize');
+        expect(await reset.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+
+        await client.close().catch(() => undefined);
+        const replacementTransport = new StreamableHTTPClientTransport(new URL(endpoint), { requestInit: { headers } });
+        await client.connect(replacementTransport);
+        expect(replacementTransport.sessionId).toBeTruthy();
+        expect(replacementTransport.sessionId).not.toBe(expiredSessionId);
+        const recoveredTools = await client.listTools();
+        expect(recoveredTools.tools.map((tool) => tool.name)).toContain('harness_status');
+        const recoveredStatus = await client.callTool({ name: 'harness_status', arguments: {} });
+        expect(recoveredStatus.isError).not.toBe(true);
+        const health = await fetch('http://127.0.0.1:' + gatewayPort + '/health').then((response) => response.json());
+        expect(health.sessions.active).toBe(1);
+      });
+    } finally {
+      await client?.close().catch(() => undefined);
+      await stopMcpServerProcess(gatewayProc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   test('reuses the same MCP SDK client and live session after a tunnel endpoint restart', async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-tunnel-process-restart-'));
     const gatewayPort = await freePort();
