@@ -169,7 +169,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const repoRoot = root();
     await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
-    expect(manifest.pluginVersion).toBe('1.13.0');
+    expect(manifest.pluginVersion).toBe('1.14.0');
     expect(manifest.actions.find((action) => action.actionId === 'list_xcode_cloud_workflows')).toMatchObject({ readOnly: true, risk: 'readonly' });
     for (const actionId of ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles']) {
       expect(manifest.actions.find((action) => action.actionId === actionId)).toMatchObject({
@@ -454,6 +454,93 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
   });
 
 
+
+
+  test('Asset Library video upload streams two signed byte ranges without retaining a full file buffer', async () => {
+    const repoRoot=root(), keyPath=join(repoRoot,'AuthKey_VIDEO_UPLOAD.p8');
+    const {privateKey}=generateKeyPairSync('ec',{namedCurve:'P-256'});
+    writeFileSync(keyPath,privateKey.export({type:'pkcs8',format:'pem'}));
+    const video=Buffer.alloc(131072,0x66);
+    video.write('ftyp',4,'ascii');
+    writeFileSync(join(repoRoot,'video.mp4'),video);
+    const sha256=createHash('sha256').update(video).digest('hex');
+    await executeAppStoreConnectPluginAction(input(repoRoot,'configure',{
+      enabled:true,provider:'app-store-connect-api',issuer_id:'issuer-video-upload',
+      key_id:'key-video-upload',private_key_path:keyPath,
+    }));
+    const old=globalThis.fetch;
+    const uploadedParts: Buffer[] = [];
+    const calls:Array<{path:string;method:string;authorization:boolean}>=[];
+    globalThis.fetch=(async(request:string|URL|Request,init?:RequestInit)=>{
+      const url=new URL(String(request));
+      const method=init?.method??'GET';
+      calls.push({path:url.pathname,method,authorization:new Headers(init?.headers).has('authorization')});
+      if(url.pathname==='/v1/apps/app-1/assetLibrary')
+        return Response.json({data:{type:'appAssetLibraries',id:'library-1'}});
+      if(url.pathname==='/v1/appAssetLibraries/library-1/videos') {
+        expect(url.searchParams.get('filter[referenceName]')).toBe('Video preview');
+        return Response.json({data:[]});
+      }
+      if(url.pathname==='/v1/appAssetLibraryVideos' && method==='POST') {
+        const body=JSON.parse(String(init?.body));
+        expect(body.data).toMatchObject({type:'appAssetLibraryVideos',
+          attributes:{fileName:'video.mp4',fileSize:video.length,category:'APP_SCREENSHOTS_AND_PREVIEWS',
+            previewFrameTimeCode:'00:00:03:00',referenceName:'Video preview'},
+          relationships:{assetLibrary:{data:{type:'appAssetLibraries',id:'library-1'}}}});
+        const changed = Buffer.from(video);
+        changed[0] = 0x33;
+        writeFileSync(join(repoRoot, 'video.mp4'), changed);
+        return Response.json({data:{id:'video-1',type:'appAssetLibraryVideos',attributes:{uploadOperations:[
+          {method:'PUT',url:'https://store-030.blobstore.apple.com/videos/part1',offset:0,length:65536,
+            requestHeaders:[{name:'Content-Type',value:'video/mp4'}]},
+          {method:'PUT',url:'https://store-030.blobstore.apple.com/videos/part2',offset:65536,length:65536,
+            requestHeaders:[{name:'Content-Type',value:'video/mp4'}]},
+        ]}}});
+      }
+      if(url.pathname.startsWith('/videos/part')) {
+        expect(method).toBe('PUT');
+        expect(new Headers(init?.headers).get('content-length')).toBe('65536');
+        expect(new Headers(init?.headers).has('authorization')).toBe(false);
+        expect((init as RequestInit & {duplex?:string}).duplex).toBe('half');
+        const body=Buffer.from(await new Response(init?.body as BodyInit).arrayBuffer());
+        uploadedParts.push(body);
+        return new Response(null,{status:200});
+      }
+      if(url.pathname==='/v1/appAssetLibraryVideos/video-1' && method==='PATCH') {
+        expect(JSON.parse(String(init?.body))).toEqual({data:{type:'appAssetLibraryVideos',
+          id:'video-1',attributes:{uploaded:true}}});
+        return Response.json({data:{id:'video-1',type:'appAssetLibraryVideos'}});
+      }
+      if(url.pathname==='/v1/appAssetLibraryVideos/video-1' && method==='GET')
+        return Response.json({data:{id:'video-1',type:'appAssetLibraryVideos',
+          attributes:{state:'UPLOAD_COMPLETE',specId:null}}});
+      throw new Error('Unexpected request '+url.pathname);
+    }) as typeof fetch;
+    try {
+      const args={app_id:'app-1',file_path:'video.mp4',expected_sha256:sha256,
+        reference_name:'Video preview',category:'APP_SCREENSHOTS_AND_PREVIEWS',
+        preview_frame_time_code:'00:00:03:00'};
+      const preview=await executeAppStoreConnectPluginAction(input(repoRoot,'upload_asset_library_video',{
+        ...args,dry_run:true,
+      }));
+      expect(preview).toMatchObject({dryRun:true,libraryId:'library-1',
+        request:{path:'/v1/appAssetLibraryVideos'}});
+      expect(calls.map(v=>v.method)).toEqual(['GET','GET']);
+      calls.length=0;
+      const result=await executeAppStoreConnectPluginAction(input(repoRoot,'upload_asset_library_video',args));
+      expect(result).toMatchObject({applied:true,mediaKind:'video',assetId:'video-1',
+        state:'UPLOAD_COMPLETE',readyToPlace:false,sha256});
+      expect(calls.map(v=>v.method)).toEqual(['GET','GET','POST','PUT','PUT','PATCH','GET']);
+      expect(Buffer.concat(uploadedParts)).toEqual(video);
+      expect(calls.filter(v=>v.method==='PUT').every(v=>!v.authorization)).toBe(true);
+      calls.length=0;
+      writeFileSync(join(repoRoot,'invalid.mp4'),Buffer.from('not-an-mp4'));
+      await expect(executeAppStoreConnectPluginAction(input(repoRoot,'upload_asset_library_video',{
+        ...args,file_path:'invalid.mp4',
+      }))).rejects.toThrow('signature');
+      expect(calls).toHaveLength(0);
+    } finally {globalThis.fetch=old;}
+  });
 
   test('Asset Library video metadata and preview frames use official resources with strong confirmation', async () => {
     const repoRoot=root();
