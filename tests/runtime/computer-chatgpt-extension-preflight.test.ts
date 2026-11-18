@@ -22,6 +22,7 @@ function fixture(scenario: Scenario) {
   const messages: string[] = [];
   let submissions = 0;
   let draftWrites = 0;
+  const alarmPeriods: number[] = [];
   const ownerStorage = new Map([['forgeComputerOwnedTabV1:42', 'verified-conversation-owner']]);
   const providerBinding = { providerId: 'browser.chrome-extension', providerSessionId: 'test-profile',
     tabId: '42', windowId: '8', ownerToken: 'verified-conversation-owner' };
@@ -81,7 +82,7 @@ function fixture(scenario: Scenario) {
       onActivated: { addListener() {} },
       onRemoved: { addListener() {} },
     },
-    alarms: { create() {}, onAlarm: { addListener() {} } },
+    alarms: { create(_name: string, options: { periodInMinutes?: number }) { if (options.periodInMinutes !== undefined) alarmPeriods.push(options.periodInMinutes); }, onAlarm: { addListener() {} } },
     windows: { onFocusChanged: { addListener() {} } },
   };
   const testContext = {
@@ -122,7 +123,7 @@ function fixture(scenario: Scenario) {
       __testPrepare: (value: object, instanceId: string) => Promise<{ kind: string; ready: boolean; reasoningVerified?: string; reasonCode?: string }>;
     }).__testPrepare({ kind: 'prepare', identity, prompt: 'source delivery',
       ...(!scenario.unbound ? { providerBinding } : {}), ...(reasoning ? { reasoning } : {}) }, 'test-profile');
-  return { dispatch, prepare, messages, get submissions() { return submissions; }, get draftWrites() { return draftWrites; } };
+  return { dispatch, prepare, messages, alarmPeriods, get submissions() { return submissions; }, get draftWrites() { return draftWrites; } };
 }
 
 function runChromeContentScript(source: string, scope: Record<string, unknown>): unknown {
@@ -135,6 +136,11 @@ function runChromeContentScript(source: string, scope: Record<string, unknown>):
   scope.window = existing;
   return runInNewContext(source, scope, { filename: 'content.js' });
 }
+
+test('MV3 heartbeat alarm wakes the provider every 30 seconds', () => {
+  const f = fixture({});
+  expect(f.alarmPeriods).toContain(0.5);
+});
 
 test('exact conversation send requires no model-picker capability', async () => {
   const f = fixture({ capability: undefined });

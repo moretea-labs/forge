@@ -15,6 +15,12 @@ import { runtimeComputerInteractionTargetAuthority } from './computer-target-com
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const PROVIDER_WAIT_MS = 4_000;
 const PROVIDER_POLL_MS = 100;
+const TARGET_CONTROL_TIMEOUT_MS = {
+  inventory: 5_000,
+  observe: 60_000,
+  prepare: 60_000,
+  dispatch: 60_000,
+} as const;
 
 type RuntimeComputerChatgptExtension = {
   controllerHome: string;
@@ -333,7 +339,7 @@ export async function callRuntimeComputerChatgptTargetAction(
   controllerHome: string,
   method: 'inventory' | 'observe' | 'prepare' | 'dispatch',
   params: Record<string, unknown>,
-  timeoutMs = PROVIDER_WAIT_MS,
+  timeoutMs: number = TARGET_CONTROL_TIMEOUT_MS[method],
 ): Promise<Record<string, unknown>> {
   return await callComputerChatgptExtensionSocket(
     controllerHome,

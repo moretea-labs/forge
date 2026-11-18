@@ -22,9 +22,15 @@ import type {
 import { parseCanonicalChatgptConversationIdentity } from '../../packages/plugin-runtime/computer';
 
 const PROVIDER_ID = 'browser.chrome-extension';
-const HEARTBEAT_FRESH_MS = 15_000;
-// Bound both queue wait and claimed execution; claim re-arms the same single timer.
-const COMMAND_TIMEOUT_MS = 12_000;
+// MV3 service workers are not a reliable sub-second clock. The extension's
+// durable wake source is a 30-second chrome.alarms tick; retain one missed tick
+// plus bounded scheduling grace without treating a dead provider as durable.
+const HEARTBEAT_FRESH_MS = 75_000;
+// A queued command may wait for the next MV3 alarm. Once claimed, preserve the
+// tighter physical-operation bound so an uncertain browser effect still fails
+// closed quickly and is never blindly replayed.
+const COMMAND_QUEUE_TIMEOUT_MS = 45_000;
+const COMMAND_CLAIMED_TIMEOUT_MS = 12_000;
 
 type ProviderState = {
   receivedAtMs: number;
@@ -212,7 +218,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         if (!current) return;
         this.pending.delete(id);
         current.resolve({ claimed: current.claimed });
-      }, COMMAND_TIMEOUT_MS);
+      }, COMMAND_CLAIMED_TIMEOUT_MS);
       entry.timer.unref?.();
       return structuredClone(entry.command);
     }
@@ -277,7 +283,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         if (!current) return;
         this.pending.delete(commandId);
         resolve({ claimed: current.claimed });
-      }, COMMAND_TIMEOUT_MS);
+      }, COMMAND_QUEUE_TIMEOUT_MS);
       timer.unref?.();
       const full = { ...command, commandId } as ComputerChatgptExtensionCommand;
       this.pending.set(commandId, { providerInstanceId, command: full, claimed: false, resolve, timer });

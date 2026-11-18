@@ -686,6 +686,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       expect(action!.readOnly).toBe(true);
       expect(action!.risk).toBe('readonly');
       expect(action!.executionMode).toBeUndefined();
+      expect(action!.defaultTimeoutMs).toBe(actionId === 'chatgpt_target_inventory' ? 5_000 : 60_000);
     }
     for (const actionId of ['chatgpt_target_prepare', 'chatgpt_target_dispatch']) {
       const action = computer.find((candidate) => candidate.actionId === actionId);
@@ -693,6 +694,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       expect(action!.readOnly).toBe(false);
       expect(action!.risk).toBe('remote_write');
       expect(action!.executionMode).toBeUndefined();
+      expect(action!.defaultTimeoutMs).toBe(60_000);
       expect(action!.resourceClaims.length).toBeGreaterThan(0);
     }
   });
