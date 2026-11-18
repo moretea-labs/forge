@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs';
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
 import type {
+  ComputerChatgptConversationIdentity,
   ComputerChatgptConversationInventory,
   ComputerChatgptConversationTargetPort,
   ComputerChatgptExtensionCommandResult,
@@ -54,6 +56,76 @@ function requiredText(params: Record<string, unknown>, key: string): string {
   return value.trim();
 }
 
+function requiredConversationIdentity(params: Record<string, unknown>): ComputerChatgptConversationIdentity {
+  const raw = params.identity;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('COMPUTER_CHATGPT_EXTENSION_RPC_IDENTITY_REQUIRED');
+  }
+  const identity = raw as Record<string, unknown>;
+  const conversationId = typeof identity.conversationId === 'string' ? identity.conversationId.trim() : '';
+  const canonicalUrl = typeof identity.canonicalUrl === 'string' ? identity.canonicalUrl.trim() : '';
+  if (identity.namespace !== 'chatgpt.conversation' || !conversationId || !canonicalUrl) {
+    throw new Error('COMPUTER_CHATGPT_EXTENSION_RPC_IDENTITY_INVALID');
+  }
+  return { namespace: 'chatgpt.conversation', conversationId, canonicalUrl };
+}
+
+function normalizedMode(params: Record<string, unknown>): 'send' | 'resume' | 'recover' {
+  return params.mode === 'resume' || params.mode === 'recover' ? params.mode : 'send';
+}
+
+async function executeTargetControl(
+  port: ChromeExtensionChatgptConversationTargetPort,
+  method: string,
+  params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (method === 'computer_target_inventory') {
+    const inventory = await port.inventory();
+    return {
+      conversations: inventory.conversations,
+      complete: inventory.complete,
+      ...(inventory.providerInventoryReady === undefined ? {} : { providerInventoryReady: inventory.providerInventoryReady }),
+      unavailableProviders: inventory.unavailableProviders,
+    };
+  }
+  const identity = requiredConversationIdentity(params);
+  const exact = await port.ensureExact(identity, { createIfMissing: method !== 'computer_target_observe' });
+  if (exact.state !== 'ready') {
+    return {
+      state: exact.state,
+      failure: exact.failure,
+      ...(exact.observation ? { observation: exact.observation } : {}),
+    };
+  }
+  if (method === 'computer_target_observe') {
+    return {
+      state: 'ready',
+      targetId: exact.target.targetId,
+      identity,
+      observation: exact.observation ?? await exact.target.observe({ includeUserHistory: false, includePageText: false }),
+    };
+  }
+  const prompt = requiredText(params, 'prompt');
+  const mode = normalizedMode(params);
+  if (method === 'computer_target_prepare') {
+    return {
+      state: 'ready',
+      targetId: exact.target.targetId,
+      identity,
+      prepare: await exact.target.prepare(prompt, { mode }),
+    };
+  }
+  if (method === 'computer_target_dispatch') {
+    return {
+      state: 'ready',
+      targetId: exact.target.targetId,
+      identity,
+      dispatch: await exact.target.dispatch(prompt, { mode }),
+    };
+  }
+  throw new Error(`COMPUTER_CHATGPT_EXTENSION_RPC_METHOD_DENIED:${method}`);
+}
+
 function response(socket: Socket, id: string, result: unknown): void {
   socket.write(`${JSON.stringify({ id, ok: true, result })}\n`);
 }
@@ -93,6 +165,12 @@ async function dispatch(
 ): Promise<Record<string, unknown>> {
   const params = request.params;
   if (request.method === 'health') return { status: 'ready', owner: 'computer' };
+  if (request.method === 'computer_target_inventory'
+    || request.method === 'computer_target_observe'
+    || request.method === 'computer_target_prepare'
+    || request.method === 'computer_target_dispatch') {
+    return await executeTargetControl(port, request.method, params);
+  }
   if (request.method === 'computer_extension_heartbeat') {
     return { recorded: port.heartbeat(params as unknown as ComputerChatgptExtensionHeartbeat) };
   }
@@ -185,6 +263,86 @@ export async function ensureRuntimeComputerChatgptExtension(
   }
 }
 
+async function callComputerChatgptExtensionSocket(
+  controllerHome: string,
+  method: 'computer_target_inventory' | 'computer_target_observe' | 'computer_target_prepare' | 'computer_target_dispatch',
+  params: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
+  const socketPath = runtimeComputerChatgptExtensionSocketPath(controllerHome);
+  const id = `computer-target-${randomUUID()}`;
+  return await new Promise((resolve, reject) => {
+    const socket = createConnection(socketPath);
+    let buffer = Buffer.alloc(0);
+    let settled = false;
+    const finish = (error?: Error, result?: Record<string, unknown>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      if (error) reject(error); else resolve(result ?? {});
+    };
+    const timer = setTimeout(
+      () => finish(new Error(`COMPUTER_CHATGPT_EXTENSION_CONTROL_TIMEOUT:${method}`)),
+      Math.max(1_000, Math.min(timeoutMs, 60_000)),
+    );
+    socket.once('connect', () => {
+      socket.write(`${JSON.stringify({ id, method, params })}
+`);
+    });
+    socket.on('data', (chunk: Buffer) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      if (buffer.length > MAX_REQUEST_BYTES) {
+        finish(new Error('COMPUTER_CHATGPT_EXTENSION_CONTROL_RESPONSE_TOO_LARGE'));
+        return;
+      }
+      const newline = buffer.indexOf(0x0a);
+      if (newline < 0) return;
+      let envelope: { id?: unknown; ok?: unknown; result?: unknown; error?: { message?: unknown } };
+      try {
+        envelope = JSON.parse(buffer.subarray(0, newline).toString('utf8'));
+      } catch {
+        finish(new Error('COMPUTER_CHATGPT_EXTENSION_CONTROL_PROTOCOL_ERROR'));
+        return;
+      }
+      if (envelope.id !== id || typeof envelope.ok !== 'boolean') {
+        finish(new Error('COMPUTER_CHATGPT_EXTENSION_CONTROL_PROTOCOL_ERROR'));
+        return;
+      }
+      if (envelope.ok === false) {
+        finish(new Error(typeof envelope.error?.message === 'string'
+          ? envelope.error.message
+          : 'COMPUTER_CHATGPT_EXTENSION_CONTROL_REMOTE_ERROR'));
+        return;
+      }
+      const result = envelope.result;
+      if (!result || typeof result !== 'object' || Array.isArray(result)) {
+        finish(new Error('COMPUTER_CHATGPT_EXTENSION_CONTROL_RESULT_INVALID'));
+        return;
+      }
+      finish(undefined, result as Record<string, unknown>);
+    });
+    socket.once('error', (error) => finish(new Error(`COMPUTER_CHATGPT_EXTENSION_SOCKET_UNAVAILABLE:${error.message}`)));
+    socket.once('end', () => {
+      if (!settled) finish(new Error('COMPUTER_CHATGPT_EXTENSION_CONTROL_PROTOCOL_ERROR:socket_closed'));
+    });
+  });
+}
+
+export async function callRuntimeComputerChatgptTargetAction(
+  controllerHome: string,
+  method: 'inventory' | 'observe' | 'prepare' | 'dispatch',
+  params: Record<string, unknown>,
+  timeoutMs = PROVIDER_WAIT_MS,
+): Promise<Record<string, unknown>> {
+  return await callComputerChatgptExtensionSocket(
+    controllerHome,
+    `computer_target_${method}` as 'computer_target_inventory' | 'computer_target_observe' | 'computer_target_prepare' | 'computer_target_dispatch',
+    params,
+    timeoutMs,
+  );
+}
+
 export async function runtimeComputerChatgptTargetPort(
   controllerHome: string,
   options: { waitForProvider?: boolean; timeoutMs?: number } = {},
@@ -208,7 +366,7 @@ export async function runtimeComputerChatgptInventory(
   return await port.inventory();
 }
 
-export async function closeRuntimeComputerChatgptExtensionForTest(controllerHome: string): Promise<void> {
+export async function closeRuntimeComputerChatgptExtension(controllerHome: string): Promise<void> {
   const pending = runtimes.get(controllerHome);
   if (!pending) return;
   runtimes.delete(controllerHome);
@@ -216,3 +374,5 @@ export async function closeRuntimeComputerChatgptExtensionForTest(controllerHome
   await runtime.port.close();
   await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
 }
+
+export const closeRuntimeComputerChatgptExtensionForTest = closeRuntimeComputerChatgptExtension;

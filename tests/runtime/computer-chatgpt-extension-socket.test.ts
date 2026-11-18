@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import {
+  callRuntimeComputerChatgptTargetAction,
   closeRuntimeComputerChatgptExtensionForTest,
   ensureRuntimeComputerChatgptExtension,
   runtimeComputerChatgptInventory,
@@ -121,6 +122,99 @@ test('Computer exact-target socket owns heartbeat, claim, and completion without
     expect(exact.target.targetId).toBeTruthy();
     expect(exact.observation).toEqual(observation);
   }
+});
+
+
+test('control client delegates observe to the existing canonical Computer socket owner', async () => {
+  const controllerHome = home();
+  const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
+  const canonicalUrl = 'https://chatgpt.com/c/control-client-123';
+  const binding = {
+    providerId: 'browser.chrome-extension',
+    observedAt: new Date().toISOString(),
+    providerSessionId: 'centbrowser-control',
+    browserProduct: 'chrome',
+    windowId: '11',
+    tabId: '22',
+    ownerToken: ['owner', 'control', 'client'].join('-'),
+  };
+  const heartbeat = await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
+    providerId: 'browser.chrome-extension',
+    providerInstanceId: 'centbrowser-control',
+    observedAt: new Date().toISOString(),
+    conversations: [{
+      conversationId: 'control-client-123',
+      canonicalUrl,
+      title: 'Control client test',
+      isCurrent: true,
+      providerBinding: binding,
+    }],
+  });
+  expect(heartbeat).toMatchObject({ ok: true, result: { recorded: true } });
+
+  const controlPromise = callRuntimeComputerChatgptTargetAction(controllerHome, 'observe', {
+    identity: {
+      namespace: 'chatgpt.conversation',
+      conversationId: 'control-client-123',
+      canonicalUrl,
+    },
+  }, 3_000);
+
+  let claim: Record<string, unknown> | undefined;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', {
+      provider_instance_id: 'centbrowser-control',
+    });
+    if ((claim.result as { command?: unknown } | undefined)?.command) break;
+    await Bun.sleep(10);
+  }
+  const command = (claim!.result as { command: Record<string, unknown> }).command;
+  expect(command).toMatchObject({
+    kind: 'observe',
+    identity: { namespace: 'chatgpt.conversation', conversationId: 'control-client-123', canonicalUrl },
+  });
+
+  const observation = {
+    url: canonicalUrl,
+    title: 'Control client test',
+    latestUserText: '',
+    latestAssistantResponse: 'ready',
+    composerText: '',
+    providerActivityText: '',
+    providerFailureText: '',
+    isGenerating: false,
+  };
+  const completion = await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: 'centbrowser-control',
+    command_id: command.commandId,
+    result: { kind: 'observation', providerBinding: binding, observation },
+  });
+  expect(completion).toMatchObject({ ok: true, result: { recorded: true } });
+
+  const control = await controlPromise;
+  expect(control).toMatchObject({
+    state: 'ready',
+    identity: {
+      namespace: 'chatgpt.conversation',
+      conversationId: 'control-client-123',
+      canonicalUrl,
+    },
+    observation,
+  });
+
+  // A second owner was never created; the original canonical socket is still
+  // serving provider and control RPCs through the same Runtime-owned port.
+  const inventory = await jsonlRpc(runtime.socketPath, 'computer_target_inventory', {});
+  expect(inventory).toMatchObject({
+    ok: true,
+    result: {
+      complete: true,
+      conversations: [expect.objectContaining({
+        conversationId: 'control-client-123',
+        canonicalUrl,
+      })],
+    },
+  });
 });
 
 test('standalone native host forwards framed RPC only to Computer socket', async () => {

@@ -22,7 +22,7 @@ import {
   type ComputerSemanticSelector,
 } from '../../../packages/protocols/computer/index';
 import { executeRuntimeComputer, executeRuntimeComputerConsoleUnlock } from '../root/computer-composition';
-import { runtimeComputerChatgptInventory, runtimeComputerChatgptTargetPort } from '../root/computer-chatgpt-extension';
+import { callRuntimeComputerChatgptTargetAction } from '../root/computer-chatgpt-extension';
 import { runtimeComputerInteractionTargetAuthority } from '../root/computer-target-composition';
 import { currentComputerPlatform } from '../platform/computer-platform';
 import {
@@ -366,49 +366,19 @@ async function executeComputerChatgptTargetAction(
   input: AssistantPluginActionExecutionInput,
 ): Promise<Record<string, unknown>> {
   if (input.actionId === COMPUTER_CHATGPT_TARGET_INVENTORY_ACTION) {
-    const inventory = await runtimeComputerChatgptInventory(input.controllerHome, input.timeoutMs);
-    return {
-      conversations: inventory.conversations,
-      complete: inventory.complete,
-      ...(inventory.providerInventoryReady === undefined ? {} : { providerInventoryReady: inventory.providerInventoryReady }),
-      unavailableProviders: inventory.unavailableProviders,
-    };
+    return await callRuntimeComputerChatgptTargetAction(input.controllerHome, 'inventory', {}, input.timeoutMs);
   }
   const identity = computerChatgptIdentity(input.args);
-  const port = await runtimeComputerChatgptTargetPort(input.controllerHome, { timeoutMs: input.timeoutMs });
-  const exact = await port.ensureExact(identity, { createIfMissing: input.actionId !== COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION });
-  if (exact.state !== 'ready') {
-    return {
-      state: exact.state,
-      failure: exact.failure,
-      ...(exact.observation ? { observation: exact.observation } : {}),
-    };
-  }
   if (input.actionId === COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION) {
-    return {
-      state: 'ready',
-      targetId: exact.target.targetId,
-      identity,
-      observation: exact.observation ?? await exact.target.observe({ includeUserHistory: false, includePageText: false }),
-    };
+    return await callRuntimeComputerChatgptTargetAction(input.controllerHome, 'observe', { identity }, input.timeoutMs);
   }
   const prompt = computerChatgptPrompt(input.args);
   const mode = computerChatgptMode(input.args);
   if (input.actionId === COMPUTER_CHATGPT_TARGET_PREPARE_ACTION) {
-    return {
-      state: 'ready',
-      targetId: exact.target.targetId,
-      identity,
-      prepare: await exact.target.prepare(prompt, { mode }),
-    };
+    return await callRuntimeComputerChatgptTargetAction(input.controllerHome, 'prepare', { identity, prompt, mode }, input.timeoutMs);
   }
   if (input.actionId === COMPUTER_CHATGPT_TARGET_DISPATCH_ACTION) {
-    return {
-      state: 'ready',
-      targetId: exact.target.targetId,
-      identity,
-      dispatch: await exact.target.dispatch(prompt, { mode }),
-    };
+    return await callRuntimeComputerChatgptTargetAction(input.controllerHome, 'dispatch', { identity, prompt, mode }, input.timeoutMs);
   }
   throw new AssistantPluginError('PLUGIN_ACTION_UNKNOWN', `Unknown Computer ChatGPT target action: ${input.actionId}`, { retryable: false });
 }
