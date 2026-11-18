@@ -11,8 +11,30 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/lib/workflow-state.sh"
 
-FILE_PATH="$(hook_get_file_path "${1:-}")"
-WRITE_PAYLOAD="$(hook_get_write_payload "${1:-}")"
+# Batch extract both fields in one jq call; fall back to individual helpers
+# only when stdin JSON is unavailable.
+FILE_PATH=""
+WRITE_PAYLOAD=""
+if [[ -n "${HOOK_STDIN_JSON:-}" ]] && command -v jq >/dev/null 2>&1; then
+  # jq -j preserves newlines in proposed file content. Keep a terminal
+  # sentinel because command substitution otherwise strips trailing newlines.
+  _jq_batch="$(printf '%s' "$HOOK_STDIN_JSON" | jq -j '
+    (.file_path // .tool_input.file_path // .trigger_file_path // .parent_file_path // ""),
+    "\n",
+    (.tool_input.content // .tool_input.new_string // .tool_input.text // ""),
+    "\u001e"
+  ' 2>/dev/null)" || _jq_batch=""
+  if [[ "$_jq_batch" == *$'\036' && "$_jq_batch" == *$'\n'* ]]; then
+    _jq_batch="${_jq_batch%$'\036'}"
+    HOOK_STDIN_JSON_VALID="1"
+    export HOOK_STDIN_JSON_VALID
+    FILE_PATH="${_jq_batch%%$'\n'*}"
+    WRITE_PAYLOAD="${_jq_batch#*$'\n'}"
+    FILE_PATH="$(hook_normalize_file_path "$FILE_PATH")"
+  fi
+fi
+[[ -z "$FILE_PATH" ]] && FILE_PATH="$(hook_get_file_path "${1:-}")"
+[[ -z "$WRITE_PAYLOAD" ]] && WRITE_PAYLOAD="$(hook_get_write_payload "${1:-}")"
 [[ -z "$FILE_PATH" ]] && exit 0
 
 is_private_ops_path() {
