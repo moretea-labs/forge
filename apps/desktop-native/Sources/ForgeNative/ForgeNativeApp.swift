@@ -2709,16 +2709,6 @@ private struct AgentPane: View {
                             Text("工具输出")
                                 .font(.system(size:9,weight:.medium))
                                 .foregroundStyle(ForgePalette.secondary)
-                            if let truncationLabel=output.truncationLabel {
-                                Text(truncationLabel)
-                                    .font(.system(size:8.5,weight:.medium))
-                                    .foregroundStyle(Color.orange)
-                                    .lineLimit(1)
-                                    .help(truncationLabel)
-                                    .accessibilityLabel(truncationLabel)
-                                    .accessibilityHint("当前输出可能不完整，不应当作完整日志。")
-                                    .accessibilityIdentifier("agent.activity.output.truncation.\(event.id)")
-                            }
                             Spacer(minLength:4)
                             Button {
                                 if isExpanded { expandedActivityEventIDs.remove(event.id) }
@@ -2745,6 +2735,17 @@ private struct AgentPane: View {
                             .help(isCopied ? "已复制此条工具输出" : "复制此条工具输出")
                             .accessibilityLabel(isCopied ? "已复制此条工具输出" : "复制此条工具输出")
                             .accessibilityIdentifier("agent.activity.output.copy.\(event.id)")
+                        }
+                        if let truncationLabel=output.truncationLabel {
+                            Text(truncationLabel)
+                                .font(.system(size:10.5,weight:.medium))
+                                .foregroundStyle(Color.orange)
+                                .fixedSize(horizontal:false,vertical:true)
+                                .frame(maxWidth:.infinity,alignment:.leading)
+                                .help(truncationLabel)
+                                .accessibilityLabel(truncationLabel)
+                                .accessibilityHint("当前输出可能不完整，不应当作完整日志。")
+                                .accessibilityIdentifier("agent.activity.output.truncation.\(event.id)")
                         }
                         if isExpanded {
                             ScrollView {
