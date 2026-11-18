@@ -329,6 +329,20 @@ export async function terminateVerifiedRuntimeOwner(
       owner,
     };
   }
+  // A new Runtime may acquire the lease while the retained incarnation is
+  // being verified. Recheck immediately before signaling so an orphan
+  // candidate never supersedes a newly active owner.
+  if (incarnationOnly) {
+    const currentOwner = readRuntimeOwner(controllerHome);
+    if (currentOwner) {
+      return {
+        ok: false,
+        attempted: false,
+        detail: 'RUNTIME_OWNER_APPEARED_DURING_STOP',
+        owner: currentOwner,
+      };
+    }
+  }
   const termination = await terminateProcessTree(owner.pid, {
     gracePeriodMs: 1_500,
     killAfterMs: 5_000,
