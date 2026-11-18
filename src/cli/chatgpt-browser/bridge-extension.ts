@@ -26,13 +26,16 @@ function forgeAuthHeaders(base) {
 const FORGE_CHATGPT_COMPOSERS = [
   '[data-testid="composer-text-input"]',
   '#prompt-textarea',
+  '#mobile-composer-prompt',
   'textarea[name="prompt"]',
   'textarea[placeholder*="Message"]',
   'div[role="textbox"][contenteditable="true"]',
 ];
 const FORGE_CHATGPT_SEND_BUTTONS = [
   '[data-testid="send-button"]',
+  'button[data-composer-submit]',
   'button[aria-label*="Send"]',
+  'button[aria-label*="发送"]',
   'button[data-testid*="send"]',
 ];
 const FORGE_CHATGPT_ASSISTANT = '[data-message-author-role="assistant"]';
@@ -48,10 +51,26 @@ function forgeComposer() {
     .find(forgeVisible);
 }
 
-function forgeSendButton() {
-  return FORGE_CHATGPT_SEND_BUTTONS
-    .map((selector) => document.querySelector(selector))
-    .find((button) => forgeVisible(button) && !button.disabled);
+function forgeSendButton(composer) {
+  const form = composer?.closest('form');
+  const candidates = [
+    form?.querySelector('button[data-composer-submit]'),
+    form?.querySelector('button[type="submit"]'),
+    ...FORGE_CHATGPT_SEND_BUTTONS.map((selector) => document.querySelector(selector)),
+  ];
+  return candidates.find((button) => forgeVisible(button) && !button.disabled);
+}
+
+function forgeLoginRequired(composer) {
+  const form = composer?.closest('form');
+  return Boolean(form?.hasAttribute('data-logged-out') || document.querySelector('form[data-logged-out]'));
+}
+
+function forgeBridgeError(code, message, recovery) {
+  const error = new Error(message);
+  error.code = code;
+  error.recovery = recovery;
+  return error;
 }
 
 async function forgePost(path, payload) {
@@ -97,34 +116,73 @@ async function forgeWaitForComposer(timeoutMs) {
   return null;
 }
 
-async function forgeSubmitPrompt(prompt, markMutationAttempted) {
+async function forgeSubmitPrompt(task, markMutationAttempted) {
   const composer = await forgeWaitForComposer(30000);
   if (!composer) throw new Error('ChatGPT composer is not visible');
+  if (forgeLoginRequired(composer)) {
+    throw forgeBridgeError(
+      'CHATGPT_BRIDGE_LOGIN_REQUIRED',
+      'Sign in to ChatGPT in the Forge-controlled ChromeAutomation profile before using the Bridge.',
+      'Open the same Forge ChromeAutomation profile, complete ChatGPT sign-in, and retry. No message was sent.',
+    );
+  }
+  if (forgeComposerText(composer)) {
+    throw forgeBridgeError(
+      'CHATGPT_BRIDGE_DRAFT_PRESENT',
+      'The ChatGPT composer already contains an unsent draft; refusing to overwrite it.',
+      'Preserve or clear the existing draft manually, then retry. No message was sent.',
+    );
+  }
+
   composer.focus();
   if ('value' in composer) {
-    composer.value = '';
-    composer.dispatchEvent(new InputEvent('input', {inputType: 'deleteContentBackward', bubbles: true}));
-    composer.value = prompt;
-    composer.dispatchEvent(new InputEvent('input', {inputType: 'insertText', data: prompt, bubbles: true}));
+    const prototype = composer instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+    if (setter) setter.call(composer, task.prompt);
+    else composer.value = task.prompt;
+    composer.dispatchEvent(new InputEvent('input', {
+      inputType: 'insertText',
+      data: task.prompt,
+      bubbles: true,
+      composed: true,
+    }));
+    composer.dispatchEvent(new Event('change', {bubbles: true, composed: true}));
   } else {
-    composer.textContent = '';
-    composer.dispatchEvent(new InputEvent('input', {inputType: 'deleteContentBackward', bubbles: true}));
-    document.execCommand('insertText', false, prompt);
-    if (!composer.textContent || !composer.textContent.includes(prompt.slice(0, Math.min(prompt.length, 80)))) {
-      composer.textContent = prompt;
-      composer.dispatchEvent(new InputEvent('input', {inputType: 'insertText', data: prompt, bubbles: true}));
+    document.execCommand('insertText', false, task.prompt);
+    if (forgeNormalizeOutboundText(forgeComposerText(composer)) !== forgeNormalizeOutboundText(task.prompt)) {
+      composer.textContent = task.prompt;
+      composer.dispatchEvent(new InputEvent('input', {
+        inputType: 'insertText',
+        data: task.prompt,
+        bubbles: true,
+        composed: true,
+      }));
     }
   }
-  await forgeSleep(300);
-  const button = forgeSendButton();
-  if (button) {
-    markMutationAttempted();
-    button.click();
-    return;
+
+  await forgeSleep(150);
+  if (forgeNormalizeOutboundText(forgeComposerText(composer)) !== forgeNormalizeOutboundText(task.prompt)) {
+    throw new Error('ChatGPT composer did not accept the prompt; no send was attempted');
+  }
+
+  const form = composer.closest('form');
+  const submitControl = form?.querySelector('button[data-composer-submit], button[type="submit"], input[type="submit"]');
+  const button = forgeSendButton(composer);
+  if (!button && submitControl) {
+    throw new Error('ChatGPT submit control is disabled; no send was attempted');
+  }
+  if (!button && (!form || typeof form.requestSubmit !== 'function')) {
+    throw new Error('ChatGPT submit control is not available; no send was attempted');
+  }
+
+  // The server marks the task started only after the draft and submit control
+  // are both verified. From this point on, an interrupted click is ambiguous.
+  if (!await forgePost('/api/extension/task-started', {taskId: task.id, url: location.href})) {
+    throw new Error('Bridge server did not accept task start; no message was sent');
   }
   markMutationAttempted();
-  composer.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
-  composer.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
+  if (button) button.click();
+  else form.requestSubmit();
 }
 
 function forgeAssistantText() {
@@ -132,8 +190,7 @@ function forgeAssistantText() {
   return (nodes.at(-1)?.innerText || '').replace(/^ChatGPT said:\\s*/i, '').trim();
 }
 
-function forgeComposerText() {
-  const composer = forgeComposer();
+function forgeComposerText(composer = forgeComposer()) {
   if (!composer) return '';
   return ('value' in composer ? composer.value : composer.textContent || '').trim();
 }
@@ -163,7 +220,9 @@ function forgeOutboundMessageMatchesPrompt(messageText, prompt) {
 function forgeHasConversationIdentity(urlValue) {
   try {
     const pathParts = new URL(urlValue, location.href).pathname.split('/').filter(Boolean);
-    return pathParts.length >= 2 && pathParts[0] === 'c' && Boolean(pathParts[1]);
+    const directConversation = (pathParts[0] === 'c' || pathParts[0] === 'uc') && Boolean(pathParts[1]);
+    const gptConversation = pathParts[0] === 'g' && pathParts[2] === 'c' && Boolean(pathParts[3]);
+    return directConversation || gptConversation;
   } catch (_error) {
     return false;
   }
@@ -215,12 +274,10 @@ async function forgeWaitForAssistant(timeoutMs) {
 }
 
 async function forgeRunTask(task) {
-  // Do not click Send until the server knows this task may have mutated ChatGPT.
-  if (!await forgePost('/api/extension/task-started', {taskId: task.id, url: location.href})) return;
   let mutationAttempted = false;
   try {
     const initialUserMessageCount = document.querySelectorAll(FORGE_CHATGPT_USER).length;
-    await forgeSubmitPrompt(task.prompt, () => { mutationAttempted = true; });
+    await forgeSubmitPrompt(task, () => { mutationAttempted = true; });
     // A send attempt must be observed before either capture or dispatch-only acknowledgement.
     // Never re-click or synthesize Enter after an unconfirmed attempt.
     const confirmation = await forgeWaitForSubmission(Math.min(task.timeoutMs || 10000, 10000), location.href, task.prompt, initialUserMessageCount);
@@ -244,18 +301,18 @@ async function forgeRunTask(task) {
   } catch (error) {
     // A timed-out DOM fingerprint is not proof that the user message was not sent.
     // After physical submission, only observation can authorize a new dispatch.
+    const code = mutationAttempted
+      ? 'CHATGPT_BRIDGE_MUTATION_OUTCOME_UNKNOWN'
+      : (typeof error?.code === 'string' ? error.code : 'CHATGPT_BRIDGE_TASK_FAILED');
+    const recovery = mutationAttempted
+      ? 'Do not replay blindly; inspect the exact ChatGPT conversation and reconcile the outbound message.'
+      : (typeof error?.recovery === 'string' ? error.recovery : 'Open ChatGPT in the authorized profile and verify the composer is visible before retrying.');
     await forgePost('/api/extension/result', {
       taskId: task.id,
       status: 'failed',
       output: String(error),
       conversationUrl: location.href,
-      error: {
-        code: mutationAttempted ? 'CHATGPT_BRIDGE_MUTATION_OUTCOME_UNKNOWN' : 'CHATGPT_BRIDGE_TASK_FAILED',
-        message: String(error),
-        recovery: mutationAttempted
-          ? 'Do not replay blindly; inspect the exact ChatGPT conversation and reconcile the outbound message.'
-          : 'Open ChatGPT in the authorized profile and verify the composer is visible before retrying.',
-      },
+      error: {code, message: String(error), recovery},
     });
   }
 }
