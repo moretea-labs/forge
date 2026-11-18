@@ -12,7 +12,7 @@ import { dirname, join } from 'path';
 import { resolveControllerHome } from '../../effects/controller-home';
 import { isProcessAlive, terminateProcessTree, type ProcessTreeTerminationResult } from '../shared/process-tree';
 import { forgeRuntimePersistentServiceLabel } from '../platform/service-inventory';
-import { systemdUserServicePid } from '../platform/systemd-user';
+import { systemdUserServiceOwnsPid } from '../platform/systemd-user';
 import { defaultProcessIdentityProbe, executableFingerprint, LINUX_PROCESS_START_TIME_PREFIX, processIdentityMatches } from '../shared/process-identity';
 
 export interface RuntimeOwnerRecord {
@@ -114,13 +114,13 @@ export interface RuntimeOwnershipInspection {
   coherent: boolean;
 }
 
-type RuntimeSystemdServicePidProbe = (unitName: string) => number | undefined;
+type RuntimeSystemdServiceOwnsPidProbe = (unitName: string, pid: number) => boolean;
 
 function legacyRuntimeProcessIdentityMatchesWithSystemd(
   record: { pid: number; processStartTime?: string; executableFingerprint?: string },
   controllerHome: string,
   identity: ReturnType<typeof processIdentityMatches>,
-  systemdServicePidProbe: RuntimeSystemdServicePidProbe,
+  systemdServiceOwnsPidProbe: RuntimeSystemdServiceOwnsPidProbe,
 ): boolean {
   if (!record.processStartTime || !record.executableFingerprint) return false;
   // A legacy ps lstart value can shift when WSL adjusts its wall clock.
@@ -129,12 +129,12 @@ function legacyRuntimeProcessIdentityMatchesWithSystemd(
   return process.platform === 'linux'
     && !record.processStartTime.startsWith(LINUX_PROCESS_START_TIME_PREFIX)
     && identity.reason === 'process_start_time_changed'
-    && systemdServicePidProbe(forgeRuntimePersistentServiceLabel(controllerHome)) === record.pid;
+    && systemdServiceOwnsPidProbe(forgeRuntimePersistentServiceLabel(controllerHome), record.pid);
 }
 
 function runtimeIncarnationProcessAlive(
   record: RuntimeIncarnationRecord,
-  systemdServicePidProbe: RuntimeSystemdServicePidProbe,
+  systemdServiceOwnsPidProbe: RuntimeSystemdServiceOwnsPidProbe,
 ): boolean {
   if (!record.processStartTime || !record.executableFingerprint) return isProcessAlive(record.pid);
   const identity = processIdentityMatches({
@@ -144,12 +144,12 @@ function runtimeIncarnationProcessAlive(
   }, record.pid);
   return identity.matches
     || (identity.reason === 'identity_probe_unavailable' && isProcessAlive(record.pid))
-    || legacyRuntimeProcessIdentityMatchesWithSystemd(record, record.controllerHome, identity, systemdServicePidProbe);
+    || legacyRuntimeProcessIdentityMatchesWithSystemd(record, record.controllerHome, identity, systemdServiceOwnsPidProbe);
 }
 
 export function inspectRuntimeOwnership(
   controllerHome: string,
-  systemdServicePidProbe: RuntimeSystemdServicePidProbe = systemdUserServicePid,
+  systemdServiceOwnsPidProbe: RuntimeSystemdServiceOwnsPidProbe = systemdUserServiceOwnsPid,
 ): RuntimeOwnershipInspection {
   const owner = readRuntimeOwner(controllerHome);
   const incarnation = readRuntimeIncarnation(controllerHome);
@@ -165,7 +165,7 @@ export function inspectRuntimeOwnership(
   // process before Recovery reconciles durable ownership.
   const ownerAlive = Boolean(owner && (
     owner.processStartTime && owner.executableFingerprint
-      ? runtimeOwnerProcessIdentityMatches(owner, controllerHome, systemdServicePidProbe)
+      ? runtimeOwnerProcessIdentityMatches(owner, controllerHome, systemdServiceOwnsPidProbe)
       : isProcessAlive(owner.pid)
   ));
   // RuntimeOwner is the liveness authority whenever it exists. An incoherent
@@ -178,7 +178,7 @@ export function inspectRuntimeOwnership(
   const incarnationAlive = Boolean(incarnation && (
     owner
       ? coherent && ownerAlive
-      : runtimeIncarnationProcessAlive(incarnation, systemdServicePidProbe)
+      : runtimeIncarnationProcessAlive(incarnation, systemdServiceOwnsPidProbe)
   ));
   return { owner, incarnation, ownerAlive, incarnationAlive, coherent };
 }
@@ -186,7 +186,7 @@ export function inspectRuntimeOwnership(
 export function runtimeOwnerProcessIdentityMatches(
   record: RuntimeOwnerRecord | undefined,
   controllerHome: string,
-  systemdServicePidProbe: RuntimeSystemdServicePidProbe = systemdUserServicePid,
+  systemdServiceOwnsPidProbe: RuntimeSystemdServiceOwnsPidProbe = systemdUserServiceOwnsPid,
 ): boolean {
   if (!record?.processStartTime || !record.executableFingerprint) return false;
   const identity = processIdentityMatches({
@@ -194,13 +194,13 @@ export function runtimeOwnerProcessIdentityMatches(
     processStartTime: record.processStartTime,
     executableFingerprint: record.executableFingerprint,
   }, record.pid);
-  return identity.matches || legacyRuntimeProcessIdentityMatchesWithSystemd(record, controllerHome, identity, systemdServicePidProbe);
+  return identity.matches || legacyRuntimeProcessIdentityMatchesWithSystemd(record, controllerHome, identity, systemdServiceOwnsPidProbe);
 }
 
 /** Backfill a legacy incarnation only from its exact, currently live owner lease. */
 export function migrateRuntimeIncarnationProcessIdentity(
   controllerHome: string,
-  systemdServicePidProbe: RuntimeSystemdServicePidProbe = systemdUserServicePid,
+  systemdServiceOwnsPidProbe: RuntimeSystemdServiceOwnsPidProbe = systemdUserServiceOwnsPid,
 ): {
   ok: boolean;
   changed: boolean;
@@ -223,7 +223,7 @@ export function migrateRuntimeIncarnationProcessIdentity(
       && (owner.processStartTime !== incarnation.processStartTime || owner.executableFingerprint !== incarnation.executableFingerprint)) {
       return { ok: false, changed: false, detail: 'RUNTIME_INCARNATION_OWNER_IDENTITY_MISMATCH' };
     }
-    return runtimeIncarnationProcessAlive(incarnation, systemdServicePidProbe)
+    return runtimeIncarnationProcessAlive(incarnation, systemdServiceOwnsPidProbe)
       ? { ok: true, changed: false, detail: 'Runtime incarnation already has verified process identity' }
       : { ok: false, changed: false, detail: 'RUNTIME_INCARNATION_PROCESS_IDENTITY_NOT_LIVE' };
   }
@@ -233,7 +233,7 @@ export function migrateRuntimeIncarnationProcessIdentity(
   if (!owner.processStartTime || !owner.executableFingerprint) {
     return { ok: false, changed: false, detail: 'RUNTIME_OWNER_IDENTITY_EVIDENCE_MISSING' };
   }
-  if (!runtimeOwnerProcessIdentityMatches(owner, controllerHome, systemdServicePidProbe)) {
+  if (!runtimeOwnerProcessIdentityMatches(owner, controllerHome, systemdServiceOwnsPidProbe)) {
     return { ok: false, changed: false, detail: 'RUNTIME_OWNER_IDENTITY_CHANGED' };
   }
   writeRuntimeIncarnation({
