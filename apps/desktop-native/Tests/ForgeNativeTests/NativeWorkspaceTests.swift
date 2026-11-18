@@ -1317,11 +1317,15 @@ final class NativeWorkspaceTests: XCTestCase {
 
         let validRun:[String:Any] = ["data":[
             "requirementRevision":4,
-            "run":["repoId":"repo-a","checkoutId":"checkout-a","requirementId":"REQ-A","status":"running"]
+            "run":["repoId":"repo-a","checkoutId":"checkout-a","requirementId":"REQ-A","status":"running",
+                   "pendingProcessId":"proc-a","pendingCommandRequestId":"request-a"]
         ]]
-        XCTAssertNotNil(NativeWorkspace.autopilotStatusReadbackDetail(
+        let parsedRun=NativeWorkspace.autopilotStatusReadbackDetail(
             validRun,repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
-        ))
+        )
+        XCTAssertEqual(parsedRun?.pendingProcessId,"proc-a")
+        XCTAssertEqual(parsedRun?.pendingCommandRequestId,"request-a")
+        XCTAssertTrue(parsedRun?.hasPendingProcessRecovery == true)
         XCTAssertNil(NativeWorkspace.autopilotStatusReadbackDetail(
             ["data":["providerReady":true]],repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
         ))

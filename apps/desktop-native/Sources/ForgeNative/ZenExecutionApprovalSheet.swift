@@ -64,6 +64,8 @@ struct ZenExecutionApprovalSheet: View {
         return latest.requirementRevision == approval.status.requirementRevision
             && latest.runId == approval.status.runId && latest.runStatus == approval.status.runStatus
             && latest.authorized == approval.status.authorized && latest.requiresReapproval == approval.status.requiresReapproval
+            && latest.pendingProcessId == approval.status.pendingProcessId
+            && latest.pendingCommandRequestId == approval.status.pendingCommandRequestId
             && latest.maxTotalTokens == approval.status.maxTotalTokens && latest.maxTurns == approval.status.maxTurns
             && latest.maxToolCalls == approval.status.maxToolCalls && latest.checkpointPlanIds == approval.status.checkpointPlanIds
     }

@@ -20,13 +20,16 @@ final class ZenTreeNodeStatusTests: XCTestCase {
         runtimeActive:Bool = false,
         authorized:Bool = false,
         requiresReapproval:Bool = false,
-        stopReason:String? = nil
+        stopReason:String? = nil,
+        pendingProcessId:String? = nil,
+        pendingCommandRequestId:String? = nil
     ) -> AutopilotStatusDetail {
         AutopilotStatusDetail(
             authorized:authorized,provider:nil,providerReady:true,
             runtimeActive:runtimeActive,requiresReapproval:requiresReapproval,
             requirementRevision:nil,approvedRevision:nil,runStatus:runStatus,
-            runId:nil,stopReason:stopReason,currentPlanId:currentPlanId,
+            runId:nil,pendingProcessId:pendingProcessId,pendingCommandRequestId:pendingCommandRequestId,
+            stopReason:stopReason,currentPlanId:currentPlanId,
             lastSummary:nil,evidenceRefs:[],updatedAt:nil,model:nil,
             promptTokens:0,completionTokens:0,totalTokens:0,maxTotalTokens:nil,
             turns:0,maxTurns:nil,toolCalls:0,maxToolCalls:nil,checkpointPlanIds:[]
@@ -95,6 +98,25 @@ final class ZenTreeNodeStatusTests: XCTestCase {
         )
         XCTAssertNil(
             ZenWorkspacePane.nodeStatus(for:plan,root:root,executionStatuses:approval)
+        )
+    }
+
+    func testPendingProcessReceiptOverridesHumanCheckpointUntilReconciled() {
+        let root=record("REQ-A",kind:.requirement)
+        let plan=record("PLAN-A",kind:.plan,requirementId:root.recordId)
+        let pending=status(
+            runStatus:"paused",currentPlanId:plan.recordId,authorized:true,
+            stopReason:"human_checkpoint:\(plan.recordId)",
+            pendingProcessId:"proc-one",pendingCommandRequestId:"request-one"
+        )
+        let statuses=[root.recordId:pending]
+        XCTAssertEqual(
+            ZenWorkspacePane.nodeStatus(for:root,root:root,executionStatuses:statuses)?.label,
+            "等待 Process 回执"
+        )
+        XCTAssertEqual(
+            ZenWorkspacePane.nodeStatus(for:plan,root:root,executionStatuses:statuses)?.label,
+            "等待 Process 回执"
         )
     }
 

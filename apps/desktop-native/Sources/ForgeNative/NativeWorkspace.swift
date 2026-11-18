@@ -366,6 +366,8 @@ struct AutopilotStatusDetail {
     let approvedRevision: Int?
     let runStatus: String?
     let runId: String?
+    let pendingProcessId: String?
+    let pendingCommandRequestId: String?
     let stopReason: String?
     let currentPlanId: String?
     let lastSummary: String?
@@ -394,12 +396,21 @@ struct AutopilotStatusDetail {
         return planId.isEmpty ? nil : planId
     }
 
+    var hasPendingProcessRecovery: Bool {
+        pendingProcessId != nil || pendingCommandRequestId != nil
+    }
+
     // One status-derived decision shared by Zen and the traditional Planning view.
+    // A paused run with an unconsumed Process correlation resumes by joining the original
+    // Process receipt; it must not be offered as a new start or checkpoint acceptance.
     func nextExecutionOperation(outcomeUnknown:Bool = false) -> String? {
         guard !outcomeUnknown else { return nil }
         if !authorized || requiresReapproval || needsBudgetRenewal { return "authorize" }
         if runtimeActive { return "pause" }
         guard providerReady else { return nil }
+        if hasPendingProcessRecovery {
+            return ["running","paused","blocked","failed"].contains(runStatus ?? "") ? "resume" : nil
+        }
         if checkpointPlanId != nil { return "accept_checkpoint" }
         return ["running","paused","blocked","failed"].contains(runStatus ?? "") ? "resume" : "start"
     }
@@ -3623,6 +3634,8 @@ final class NativeWorkspace: ObservableObject {
             approvedRevision:data["approvedRevision"] as? Int,
             runStatus:run?["status"] as? String,
             runId:run?["runId"] as? String,
+            pendingProcessId:run?["pendingProcessId"] as? String,
+            pendingCommandRequestId:run?["pendingCommandRequestId"] as? String,
             stopReason:run?["stopReason"] as? String,
             currentPlanId:run?["currentPlanId"] as? String,
             lastSummary:run?["lastSummary"] as? String,

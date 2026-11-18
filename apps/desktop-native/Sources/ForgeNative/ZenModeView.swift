@@ -368,7 +368,11 @@ struct ZenWorkspacePane: View {
         status?.nextExecutionOperation(outcomeUnknown:outcomeUnknown)
     }
 
-    static func executionLabel(operation:String,runStatus:String?,needsBudgetRenewal:Bool=false) -> String {
+    static func executionLabel(
+        operation:String,runStatus:String?,needsBudgetRenewal:Bool=false,
+        hasPendingProcessRecovery:Bool=false
+    ) -> String {
+        if operation == "resume" && hasPendingProcessRecovery { return "核对并恢复" }
         switch operation {
         case "authorize": return needsBudgetRenewal ? "续期预算" : "批准执行"
         case "accept_checkpoint": return "验收检查点"
@@ -404,6 +408,9 @@ struct ZenWorkspacePane: View {
 
         if status.requiresReapproval {
             return ("需重新批准","lock.circle",.orange)
+        }
+        if status.hasPendingProcessRecovery {
+            return ("等待 Process 回执","hourglass",.orange)
         }
         if let checkpointPlanId=status.checkpointPlanId,
            item.kind == .requirement || checkpointPlanId == item.recordId {
@@ -1763,6 +1770,22 @@ struct ZenWorkspacePane: View {
                     Text(reason).font(.system(size:10))
                         .foregroundStyle(.secondary).textSelection(.enabled)
                 }
+                if let processId=status.pendingProcessId {
+                    Label("等待 Process 终态回执",systemImage:"hourglass")
+                        .font(.system(size:10)).foregroundStyle(.orange)
+                    Text(processId).font(.system(size:9.5,design:.monospaced))
+                        .foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                if let requestId=status.pendingCommandRequestId {
+                    Label(status.pendingProcessId == nil ? "命令受理结果待核对" : "原始请求 ID",systemImage:"arrow.triangle.2.circlepath")
+                        .font(.system(size:10)).foregroundStyle(.orange)
+                    Text(requestId).font(.system(size:9.5,design:.monospaced))
+                        .foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                if status.hasPendingProcessRecovery {
+                    Text("恢复会先核对原 Process 并读取终态回执，不会重放命令。")
+                        .font(.system(size:10)).foregroundStyle(.secondary)
+                }
                 if let plan=status.currentPlanId,!plan.isEmpty {
                     Text("当前 Plan · \(plan)").font(.system(size:10,design:.monospaced))
                         .foregroundStyle(.secondary)
@@ -1795,7 +1818,8 @@ struct ZenWorkspacePane: View {
                         Button(Self.executionLabel(
                             operation:operation,
                             runStatus:model.planningAutopilotStatuses[item.recordId]?.runStatus,
-                            needsBudgetRenewal:model.planningAutopilotStatuses[item.recordId]?.needsBudgetRenewal == true
+                            needsBudgetRenewal:model.planningAutopilotStatuses[item.recordId]?.needsBudgetRenewal == true,
+                            hasPendingProcessRecovery:model.planningAutopilotStatuses[item.recordId]?.hasPendingProcessRecovery == true
                         )) {
                             handleNodeAction(item,operation == "authorize" ? .executionSettings : .toggleExecution)
                         }
@@ -2340,7 +2364,8 @@ private struct ZenTreeCanvas: View {
                         Button(
                             ZenWorkspacePane.executionLabel(
                                 operation:operation,runStatus:status.runStatus,
-                                needsBudgetRenewal:status.needsBudgetRenewal
+                                needsBudgetRenewal:status.needsBudgetRenewal,
+                                 hasPendingProcessRecovery:status.hasPendingProcessRecovery
                             ),
                             systemImage:operation == "authorize" ? "lock.open" :
                                 operation == "accept_checkpoint" ? "checkmark.seal" :

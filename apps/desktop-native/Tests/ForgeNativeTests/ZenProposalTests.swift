@@ -321,8 +321,11 @@ final class ZenProposalTests: XCTestCase {
     @MainActor
     func testZenExecutionUsesResumeForDetachedRunningRunAndReconcilesUnknownOutcome() throws {
         func status(_ state:String,active:Bool=false,ready:Bool=true,authorized:Bool=true,
-                    reason:String?=nil,needsReapproval:Bool=false) throws -> AutopilotStatusDetail {
+                    reason:String?=nil,needsReapproval:Bool=false,
+                    pendingProcessId:String?=nil,pendingCommandRequestId:String?=nil) throws -> AutopilotStatusDetail {
             var run:[String:Any]=["status":state,"runId":"run-one","evidenceRefs":["commit:abc"]]
+            if let pendingProcessId { run["pendingProcessId"]=pendingProcessId }
+            if let pendingCommandRequestId { run["pendingCommandRequestId"]=pendingCommandRequestId }
             if let reason {
                 run["stopReason"]=reason
                 if reason.hasPrefix("human_checkpoint:") {
@@ -338,6 +341,16 @@ final class ZenProposalTests: XCTestCase {
         }
         let detached=try status("running")
         XCTAssertEqual(ZenWorkspacePane.executionOperation(status:detached,outcomeUnknown:false),"resume")
+        let processPending=try status("paused",pendingProcessId:"proc-one",pendingCommandRequestId:"request-one")
+        XCTAssertTrue(processPending.hasPendingProcessRecovery)
+        XCTAssertEqual(processPending.nextExecutionOperation(),"resume")
+        XCTAssertEqual(ZenWorkspacePane.executionLabel(
+            operation:"resume",runStatus:"paused",hasPendingProcessRecovery:true
+        ),"核对并恢复")
+        let requestPending=try status("paused",pendingCommandRequestId:"request-one")
+        XCTAssertEqual(requestPending.nextExecutionOperation(),"resume")
+        let checkpointPending=try status("paused",reason:"human_checkpoint:PLAN-a",pendingProcessId:"proc-one")
+        XCTAssertEqual(checkpointPending.nextExecutionOperation(),"resume")
         XCTAssertEqual(ZenWorkspacePane.executionLabel(operation:"resume",runStatus:"running"),"恢复执行")
         XCTAssertEqual(ZenWorkspacePane.executionOperation(status:try status("running",active:true),outcomeUnknown:false),"pause")
         XCTAssertEqual(ZenWorkspacePane.executionOperation(status:try status("paused"),outcomeUnknown:false),"resume")

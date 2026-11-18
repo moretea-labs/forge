@@ -5236,6 +5236,26 @@ private struct RecordsPane: View {
                             .foregroundStyle(ForgePalette.secondary)
                             .textSelection(.enabled)
                     }
+                    if let processId=status.pendingProcessId {
+                        HStack(spacing:6) {
+                            Label("等待 Process 终态回执",systemImage:"hourglass")
+                                .font(.system(size:9.5)).foregroundStyle(.orange)
+                            Text(processId).font(.system(size:9,design:.monospaced))
+                                .foregroundStyle(ForgePalette.secondary).textSelection(.enabled)
+                        }
+                    }
+                    if let requestId=status.pendingCommandRequestId {
+                        HStack(spacing:6) {
+                            Text(status.pendingProcessId == nil ? "命令受理结果待核对" : "原始请求 ID")
+                                .font(.system(size:9.5)).foregroundStyle(.orange)
+                            Text(requestId).font(.system(size:9,design:.monospaced))
+                                .foregroundStyle(ForgePalette.secondary).textSelection(.enabled)
+                        }
+                    }
+                    if status.hasPendingProcessRecovery {
+                        Text("恢复会先核对原 Process 并读取终态回执，不会重放命令。")
+                            .font(.system(size:9.5)).foregroundStyle(ForgePalette.secondary)
+                    }
                     if !status.providerReady {
                         Text("模型服务未就绪，连接恢复后才能执行。")
                             .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
@@ -5269,7 +5289,7 @@ private struct RecordsPane: View {
                         .disabled(autopilotSaving || model.autopilotLoading || model.autopilotControlPending)
                     } else if let operation {
                         Button(operation == "pause" ? "暂停" :
-                               operation == "resume" ? (status?.runStatus == "running" ? "恢复执行" : "继续") :
+                               operation == "resume" ? (status?.hasPendingProcessRecovery == true ? "核对并恢复" : (status?.runStatus == "running" ? "恢复执行" : "继续")) :
                                status?.runStatus == "completed" ? "再次运行" : "开始无人值守") {
                             runAutopilotAction(requirement.requirementId,operation)
                         }
@@ -5468,6 +5488,8 @@ private struct RecordsPane: View {
         return snapshot.requirementRevision == latest.requirementRevision
             && snapshot.runId == latest.runId && snapshot.runStatus == latest.runStatus
             && snapshot.authorized == latest.authorized && snapshot.requiresReapproval == latest.requiresReapproval
+            && snapshot.pendingProcessId == latest.pendingProcessId
+            && snapshot.pendingCommandRequestId == latest.pendingCommandRequestId
             && snapshot.maxTotalTokens == latest.maxTotalTokens && snapshot.maxTurns == latest.maxTurns
             && snapshot.maxToolCalls == latest.maxToolCalls && snapshot.checkpointPlanIds == latest.checkpointPlanIds
     }
