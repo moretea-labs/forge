@@ -492,12 +492,12 @@ struct ZenWorkspacePane: View {
         ) {
             VStack(alignment:.leading,spacing:2) {
                 Label(status.label,systemImage:status.symbol)
-                    .font(.system(size:9.5,weight:.medium))
+                    .font(.system(size:11.5,weight:.semibold))
                     .foregroundStyle(status.color)
                     .lineLimit(1)
                 if status.label == "操作结果未确认" {
                     Text("先刷新核对，勿重复提交")
-                        .font(.system(size:8.5,weight:.medium))
+                        .font(.system(size:10.5,weight:.medium))
                         .foregroundStyle(status.color)
                         .lineLimit(1)
                 }
@@ -3101,6 +3101,19 @@ struct ZenProjectDirectorySheet: View {
 }
 
 
+enum ZenProjectRevisionPresentation {
+    static let scopeDescription="记录项目创建、仓库关联与更新，不包含字段级变更内容。"
+
+    static func actionLabel(_ action:String) -> String {
+        switch action {
+        case "project_semantic_create": return "创建项目"
+        case "project_semantic_onboard": return "关联仓库"
+        case "project_semantic_write": return "更新项目"
+        default: return "其他操作"
+        }
+    }
+}
+
 struct ZenProjectDetailPane: View {
     @ObservedObject var model: NativeWorkspace
     let projectId: String
@@ -3216,13 +3229,22 @@ struct ZenProjectDetailPane: View {
                         }
                         if let error { Text(error).font(.system(size:10)).foregroundStyle(.orange) }
                         Divider()
-                        Text("项目历史").font(.system(size:12,weight:.semibold))
-                        ForEach(detail.revisionHistory) { record in
-                            HStack(spacing:8) {
-                                Text("v\(record.revision)").font(.system(size:10,design:.monospaced))
-                                Text(actionLabel(record.action)).font(.system(size:10))
-                                Spacer()
-                                Text(record.recordedAt).font(.system(size:9,design:.monospaced)).foregroundStyle(.tertiary)
+                        Text("操作记录").font(.system(size:12,weight:.semibold))
+                        if detail.revisionHistory.isEmpty {
+                            Text("暂无操作记录")
+                                .font(.system(size:10))
+                                .foregroundStyle(.tertiary)
+                                .accessibilityIdentifier("zen.projects.detail.history.empty")
+                        } else {
+                            ForEach(detail.revisionHistory) { record in
+                                HStack(spacing:8) {
+                                    Text("v\(record.revision)").font(.system(size:10,design:.monospaced))
+                                    Text(actionLabel(record.action)).font(.system(size:10))
+                                    Spacer()
+                                    Text(record.recordedAt).font(.system(size:9,design:.monospaced)).foregroundStyle(.tertiary)
+                                }
+                                .accessibilityElement(children:.combine)
+                                .accessibilityLabel("版本 \(record.revision)，\(actionLabel(record.action))，\(record.recordedAt)")
                             }
                         }
                     }
@@ -3276,7 +3298,7 @@ struct ZenProjectDetailPane: View {
         case "project_semantic_create": return "创建项目"
         case "project_semantic_onboard": return "关联仓库"
         case "project_semantic_write": return "更新项目"
-        default: return action
+        default: return "其他操作"
         }
     }
 }
