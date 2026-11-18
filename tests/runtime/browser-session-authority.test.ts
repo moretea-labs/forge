@@ -234,7 +234,7 @@ describe('Browser vs Chrome environment boundary', () => {
           throw new AssistantPluginError(
             'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
             'Process-bound Chrome Apple Event failed: The operation couldn’t be completed. (OSStatus error -1712.)',
-            { retryable: false, effectOutcome: 'outcome_unknown' },
+            { retryable: false, effectOutcome: 'outcome_unknown', details: { causeCode: 'EXTERNAL_PLUGIN_TIMEOUT', stage: 'response_read' } },
           );
         }
         return metadata;
@@ -250,6 +250,7 @@ describe('Browser vs Chrome environment boundary', () => {
       code: 'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
       retryable: false,
       effectOutcome: 'outcome_unknown',
+      details: { causeDetails: { causeCode: 'EXTERNAL_PLUGIN_TIMEOUT', stage: 'response_read' } },
     });
   });
 });
