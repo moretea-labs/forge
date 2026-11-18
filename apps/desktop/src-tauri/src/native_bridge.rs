@@ -313,6 +313,44 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 args.get("expiresInMinutes").and_then(Value::as_u64),
                 args.get("reason").and_then(Value::as_str).map(str::to_owned),
             ).await,
+        "record_user_knowledge" => {
+            let repo_id = required_bounded(args, "repoId", 256)?;
+            let checkout_id = required_bounded(args, "checkoutId", 256)?;
+            let request = required_bounded(args, "requestId", 160)?;
+            let scope = required_bounded(args, "scope", 16)?;
+            let summary = required_bounded(args, "summary", 8000)?;
+            let concept = required_bounded(args, "concept", 128)?;
+            let summary = summary.trim();
+            let concept = concept.trim();
+            if !matches!(scope.as_str(), "project" | "workspace")
+                || summary.chars().count() > 2000
+                || !concept.as_bytes().first().is_some_and(|c| c.is_ascii_lowercase())
+                || !concept.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'.' || c == b'-' || c == b'_') {
+                return Err("FORGE_NATIVE_KNOWLEDGE_INPUT_INVALID".to_string());
+            }
+            if !resolve_repository_effect_access(Some(&repo_id), Some(&checkout_id)).await? {
+                return Err("FORGE_NATIVE_KNOWLEDGE_WRITE_REQUIRES_FULL_ACCESS".to_string());
+            }
+            let response = call_runtime_tool("rh_work", json!({
+                "repo_id": repo_id, "checkout_id": checkout_id,
+                "operation": "learning_record", "request_id": request,
+                "learning_signals": [{
+                    "scope_kind": scope, "kind": "knowledge", "valence": "neutral",
+                    "summary": summary, "concepts": [concept],
+                    "admission_source": "explicit_human",
+                    "portability": if scope == "workspace" { "portable" } else { "local" },
+                    "salience": 0.9, "confidence": 1.0, "utility": 0.9
+                }]
+            })).await?;
+            let ids = response.pointer("/data/storedMemoryIds").and_then(Value::as_array)
+                .filter(|ids| !ids.is_empty())
+                .ok_or_else(|| "FORGE_NATIVE_KNOWLEDGE_WRITE_UNCONFIRMED".to_string())?;
+            if response.get("status").and_then(Value::as_str) != Some("ok")
+                || response.pointer("/data/recorded").and_then(Value::as_bool) != Some(true) {
+                return Err("FORGE_NATIVE_KNOWLEDGE_WRITE_UNCONFIRMED".to_string());
+            }
+            Ok(json!({"storedMemoryIds": ids}))
+        },
         "read_project_knowledge" =>
             read_project_knowledge(
                 required(args, "repoId")?,
@@ -854,6 +892,33 @@ mod tests {
         assert_eq!(legacy.get("knownCount").and_then(Value::as_u64), Some(1));
         assert_eq!(legacy.get("countExact").and_then(Value::as_bool), Some(false));
         assert_eq!(legacy.get("possiblyTruncated").and_then(Value::as_bool), Some(true));
+    }
+
+    #[test]
+    fn user_knowledge_rejects_invalid_scope_concept_and_missing_checkout_before_effect() {
+        let base = json!({
+            "repoId": "repo_1", "checkoutId": "checkout_1",
+            "requestId": "knowledge-test", "scope": "project",
+            "summary": "A human-authored correction", "concept": "engineering.root-cause"
+        });
+        let mut invalid_scope = base.clone();
+        invalid_scope["scope"] = json!("global");
+        assert_eq!(
+            tauri::async_runtime::block_on(dispatch("record_user_knowledge", &invalid_scope)).unwrap_err(),
+            "FORGE_NATIVE_KNOWLEDGE_INPUT_INVALID"
+        );
+        let mut invalid_concept = base.clone();
+        invalid_concept["concept"] = json!("invalid concept");
+        assert_eq!(
+            tauri::async_runtime::block_on(dispatch("record_user_knowledge", &invalid_concept)).unwrap_err(),
+            "FORGE_NATIVE_KNOWLEDGE_INPUT_INVALID"
+        );
+        let mut missing_checkout = base.clone();
+        missing_checkout.as_object_mut().unwrap().remove("checkoutId");
+        assert_eq!(
+            tauri::async_runtime::block_on(dispatch("record_user_knowledge", &missing_checkout)).unwrap_err(),
+            "FORGE_NATIVE_BRIDGE_checkoutId_REQUIRED"
+        );
     }
 
     #[test]

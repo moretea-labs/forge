@@ -6695,6 +6695,7 @@ private struct RuntimeSettingsSection: View {
 private struct KnowledgePane: View {
     @ObservedObject var model: NativeWorkspace
     @State private var selectedMemoryId: String?
+    @State private var authoringTarget: KnowledgeAuthoringTarget?
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -6746,6 +6747,18 @@ private struct KnowledgePane: View {
                     .disabled(model.knowledgeLoading || model.repoId == nil)
                     .accessibilityLabel("检索知识")
                     .accessibilityIdentifier("knowledge.search")
+
+                    Button {
+                        guard let repoId = model.repoId, let checkoutId = model.checkoutId else { return }
+                        authoringTarget = KnowledgeAuthoringTarget(
+                            repoId: repoId, checkoutId: checkoutId,
+                            projectLabel: model.project?.label ?? repoId
+                        )
+                    } label: {
+                        Label("新增记忆", systemImage: "plus")
+                    }
+                    .disabled(model.repoId == nil || model.checkoutId == nil)
+                    .accessibilityIdentifier("knowledge.add")
                 }
             }
             .padding(.horizontal,22).padding(.top,20).padding(.bottom,14)
@@ -6779,6 +6792,13 @@ private struct KnowledgePane: View {
             knowledgeStatusBar
         }
         .background(ForgePalette.canvas)
+        .sheet(item: $authoringTarget) { target in
+            KnowledgeAuthoringSheet(target: target) {
+                guard model.repoId == target.repoId, model.checkoutId == target.checkoutId else { return }
+                model.knowledgeQuery = ""
+                runSearch()
+            }
+        }
         .onChange(of:model.knowledgeResult?.items.map(\.memory.id) ?? []) { ids in
             if let selectedMemoryId,!ids.contains(selectedMemoryId) {
                 self.selectedMemoryId=nil
@@ -7024,6 +7044,124 @@ private struct KnowledgePane: View {
     private func runSearch() {
         selectedMemoryId=nil
         Task { await model.searchKnowledge() }
+    }
+}
+
+private struct KnowledgeAuthoringTarget: Identifiable {
+    let id = UUID()
+    let repoId: String
+    let checkoutId: String
+    let projectLabel: String
+}
+
+private struct KnowledgeAuthoringSheet: View {
+    let target: KnowledgeAuthoringTarget
+    let onSaved: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var scope = "project"
+    @State private var summary = ""
+    @State private var concept = "user.guidance"
+    @State private var saving = false
+    @State private var failure: String?
+
+    private var valid: Bool {
+        let text = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tag = concept.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !text.isEmpty && text.unicodeScalars.count <= 2000
+            && tag.range(of: "^[a-z][a-z0-9._-]{0,127}$", options: .regularExpression) != nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("新增记忆")
+                .font(.title2.weight(.semibold))
+            Text(target.projectLabel)
+                .foregroundStyle(.secondary)
+            Picker("适用范围", selection: $scope) {
+                Text("当前项目").tag("project")
+                Text("工作空间 · 跨项目").tag("workspace")
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("knowledge.add.scope")
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("主题标记")
+                    .font(.subheadline.weight(.medium))
+                TextField("例如 engineering.root-cause", text: $concept)
+                    .accessibilityIdentifier("knowledge.add.concept")
+                Text("使用小写英文、数字、点或连字符。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("记忆内容")
+                    .font(.subheadline.weight(.medium))
+                TextEditor(text: $summary)
+                    .font(.body)
+                    .frame(minHeight: 150)
+                    .padding(6)
+                    .border(Color.secondary.opacity(0.18))
+                    .accessibilityIdentifier("knowledge.add.summary")
+                Text("记忆用于相关任务的主动召回，不会覆盖当前指令或授权。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let failure {
+                Text(failure)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("knowledge.add.failure")
+            }
+
+            HStack {
+                Spacer()
+                Button(failure == nil ? "取消" : "关闭并核对") {
+                    dismiss()
+                    if failure != nil { onSaved() }
+                }
+                .keyboardShortcut(.cancelAction)
+                .disabled(saving)
+                Button {
+                    save()
+                } label: {
+                    if saving { ProgressView().controlSize(.small) }
+                    else { Text("保存") }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!valid || saving || failure != nil)
+                .accessibilityIdentifier("knowledge.add.save")
+            }
+        }
+        .padding(24)
+        .frame(width: 530)
+        .interactiveDismissDisabled(saving)
+    }
+
+    private func save() {
+        guard valid, !saving, failure == nil else { return }
+        saving = true
+        let arguments: [String: Any] = [
+            "repoId": target.repoId, "checkoutId": target.checkoutId,
+            "requestId": "native-user-knowledge-\(target.id.uuidString)",
+            "scope": scope, "summary": summary.trimmingCharacters(in: .whitespacesAndNewlines),
+            "concept": concept.trimmingCharacters(in: .whitespacesAndNewlines)
+        ]
+        Task {
+            defer { saving = false }
+            do {
+                let response = try await ForgeBridge.request("record_user_knowledge", arguments)
+                guard let ids = response["storedMemoryIds"] as? [String], !ids.isEmpty else {
+                    throw ForgeBridgeError.invalidResponse
+                }
+                dismiss()
+                onSaved()
+            } catch {
+                failure = "保存未确认：\(error.localizedDescription)。关闭后先刷新知识库核对，避免重复写入。"
+            }
+        }
     }
 }
 
