@@ -1,0 +1,179 @@
+import { afterEach, expect, test } from 'bun:test';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { createServer, createConnection } from 'node:net';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
+import {
+  closeRuntimeComputerChatgptExtensionForTest,
+  ensureRuntimeComputerChatgptExtension,
+  runtimeComputerChatgptInventory,
+} from '../../src/runtime/root/computer-chatgpt-extension';
+
+const homes: string[] = [];
+afterEach(async () => {
+  while (homes.length) {
+    const home = homes.pop()!;
+    await closeRuntimeComputerChatgptExtensionForTest(home).catch(() => undefined);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+function home(): string {
+  const value = mkdtempSync(join(tmpdir(), 'forge-computer-chatgpt-'));
+  homes.push(value);
+  return value;
+}
+
+function jsonlRpc(socketPath: string, method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const id = crypto.randomUUID();
+    const socket = createConnection(socketPath);
+    let buffer = '';
+    socket.once('error', reject);
+    socket.once('connect', () => socket.write(JSON.stringify({ id, method, params }) + '\n'));
+    socket.on('data', (chunk) => {
+      buffer += chunk.toString('utf8');
+      const newline = buffer.indexOf('\n');
+      if (newline < 0) return;
+      const value = JSON.parse(buffer.slice(0, newline)) as Record<string, unknown>;
+      socket.destroy();
+      resolve(value);
+    });
+  });
+}
+
+test('Computer exact-target socket owns heartbeat, claim, and completion without Supervisor state', async () => {
+  const controllerHome = home();
+  const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
+  expect(runtime.socketPath).toBe(join(controllerHome, 'computer', 'chatgpt-extension.sock'));
+
+  const canonicalUrl = 'https://chatgpt.com/c/socket-test-123';
+  const binding = {
+    providerId: 'browser.chrome-extension',
+    observedAt: new Date().toISOString(),
+    providerSessionId: 'centbrowser-default',
+    browserProduct: 'chrome',
+    windowId: '7',
+    tabId: '42',
+    ownerToken: ['owner', 'socket', 'test'].join('-')
+  };
+  const heartbeat = await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
+    providerId: 'browser.chrome-extension',
+    providerInstanceId: 'centbrowser-default',
+    observedAt: new Date().toISOString(),
+    conversations: [{
+      conversationId: 'socket-test-123',
+      canonicalUrl,
+      title: 'Socket test',
+      isCurrent: true,
+      providerBinding: binding,
+    }],
+  });
+  expect(heartbeat).toMatchObject({ ok: true, result: { recorded: true } });
+
+  const inventory = await runtimeComputerChatgptInventory(controllerHome, 100);
+  expect(inventory.conversations).toContainEqual(expect.objectContaining({
+    conversationId: 'socket-test-123',
+    canonicalUrl,
+  }));
+
+  const exactPromise = runtime.port.ensureExact({
+    namespace: 'chatgpt.conversation',
+    conversationId: 'socket-test-123',
+    canonicalUrl,
+  }, { createIfMissing: false });
+
+  let claim: Record<string, unknown> | undefined;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', {
+      provider_instance_id: 'centbrowser-default',
+    });
+    if ((claim.result as { command?: unknown } | undefined)?.command) break;
+    await Bun.sleep(10);
+  }
+  const command = (claim!.result as { command: Record<string, unknown> }).command;
+  expect(command).toMatchObject({
+    kind: 'observe',
+    identity: { namespace: 'chatgpt.conversation', conversationId: 'socket-test-123', canonicalUrl },
+  });
+
+  const observation = {
+    url: canonicalUrl,
+    title: 'Socket test',
+    latestUserText: '',
+    latestAssistantResponse: '',
+    composerText: '',
+    providerActivityText: '',
+    providerFailureText: '',
+    isGenerating: false,
+  };
+  const completion = await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: 'centbrowser-default',
+    command_id: command.commandId,
+    result: { kind: 'observation', providerBinding: binding, observation },
+  });
+  expect(completion).toMatchObject({ ok: true, result: { recorded: true } });
+
+  const exact = await exactPromise;
+  expect(exact.state).toBe('ready');
+  if (exact.state === 'ready') {
+    expect(exact.target.targetId).toBeTruthy();
+    expect(exact.observation).toEqual(observation);
+  }
+});
+
+test('standalone native host forwards framed RPC only to Computer socket', async () => {
+  const controllerHome = home();
+  const computerDir = join(controllerHome, 'computer');
+  mkdirSync(computerDir, { recursive: true });
+  const socketPath = join(computerDir, 'chatgpt-extension.sock');
+  const server = createServer((socket) => {
+    let buffer = '';
+    socket.on('data', (chunk) => {
+      buffer += chunk.toString('utf8');
+      const newline = buffer.indexOf('\n');
+      if (newline < 0) return;
+      const request = JSON.parse(buffer.slice(0, newline));
+      socket.end(JSON.stringify({ id: request.id, ok: true, result: { recorded: true, owner: 'computer' } }) + '\n');
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+
+  const child = spawn(process.execPath, ['adapters/computer/chatgpt-native-host.mjs'], {
+    cwd: process.cwd(),
+    env: { ...process.env, FORGE_CONTROLLER_HOME: controllerHome },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const request = Buffer.from(JSON.stringify({
+    id: 'native-heartbeat-test',
+    method: 'computer_extension_heartbeat',
+    params: { providerId: 'browser.chrome-extension' },
+  }));
+  const frame = Buffer.allocUnsafe(4 + request.length);
+  frame.writeUInt32LE(request.length, 0);
+  request.copy(frame, 4);
+  child.stdin.write(frame);
+
+  const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
+    let output = Buffer.alloc(0);
+    const timer = setTimeout(() => reject(new Error('native host timeout')), 3_000);
+    child.stdout.on('data', (chunk) => {
+      output = Buffer.concat([output, chunk]);
+      if (output.length < 4) return;
+      const length = output.readUInt32LE(0);
+      if (output.length < 4 + length) return;
+      clearTimeout(timer);
+      resolve(JSON.parse(output.subarray(4, 4 + length).toString('utf8')));
+    });
+    child.once('error', reject);
+  });
+  expect(response).toMatchObject({
+    id: 'native-heartbeat-test',
+    ok: true,
+    result: { recorded: true, owner: 'computer' },
+  });
+
+  child.kill('SIGTERM');
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+});

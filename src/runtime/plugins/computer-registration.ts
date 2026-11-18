@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
+import { parseCanonicalChatgptConversationIdentity, type ComputerChatgptConversationIdentity } from '../../../packages/plugin-runtime/computer';
 import type {
   ComputerApplicationLaunchProvenance,
   ComputerApplicationTarget,
@@ -21,6 +22,7 @@ import {
   type ComputerSemanticSelector,
 } from '../../../packages/protocols/computer/index';
 import { executeRuntimeComputer, executeRuntimeComputerConsoleUnlock } from '../root/computer-composition';
+import { runtimeComputerChatgptInventory, runtimeComputerChatgptTargetPort } from '../root/computer-chatgpt-extension';
 import { runtimeComputerInteractionTargetAuthority } from '../root/computer-target-composition';
 import { currentComputerPlatform } from '../platform/computer-platform';
 import {
@@ -43,6 +45,17 @@ import type {
   AssistantPluginManifest,
   AssistantPluginPermissionScope,
 } from './types';
+
+const COMPUTER_CHATGPT_TARGET_INVENTORY_ACTION = 'chatgpt_target_inventory';
+const COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION = 'chatgpt_target_observe';
+const COMPUTER_CHATGPT_TARGET_PREPARE_ACTION = 'chatgpt_target_prepare';
+const COMPUTER_CHATGPT_TARGET_DISPATCH_ACTION = 'chatgpt_target_dispatch';
+const COMPUTER_CHATGPT_TARGET_ACTION_IDS = new Set([
+  COMPUTER_CHATGPT_TARGET_INVENTORY_ACTION,
+  COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION,
+  COMPUTER_CHATGPT_TARGET_PREPARE_ACTION,
+  COMPUTER_CHATGPT_TARGET_DISPATCH_ACTION,
+]);
 
 const DESKTOP_PROVIDER_ID = 'desktop_operator';
 const computerTargetAuthority = runtimeComputerInteractionTargetAuthority();
@@ -215,6 +228,201 @@ export async function executeProtectedConsoleUnlockLifecycle(
     invocationId,
     ...providerResult,
   };
+}
+
+function computerChatgptTargetActions(): AssistantPluginActionDescriptor[] {
+  const identitySchema = {
+    canonical_url: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 2048,
+      description: 'Canonical existing ChatGPT conversation URL. Computer derives and verifies the conversation id.',
+    },
+  };
+  const modeSchema = { type: 'string', enum: ['send', 'resume', 'recover'] };
+  return [
+    {
+      actionId: COMPUTER_CHATGPT_TARGET_INVENTORY_ACTION,
+      title: 'List exact ChatGPT targets',
+      description: 'Read ChatGPT conversations observed by the signed-in Computer browser provider without exposing physical tab identifiers.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: 5_000,
+      cancellable: true,
+      idempotent: true,
+      executionMode: 'direct_non_persistent',
+      foregroundEffect: 'none',
+      scopes: ['browser.read', 'browser.profile'],
+      resourceClaims: [{ resource: 'provider-state', mode: 'read' }],
+      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      actionId: COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION,
+      title: 'Observe exact ChatGPT target',
+      description: 'Observe one exact existing ChatGPT conversation and composer state through Computer-owned provider binding. Never creates a conversation or clicks Send.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: 15_000,
+      cancellable: true,
+      idempotent: true,
+      executionMode: 'direct_non_persistent',
+      foregroundEffect: 'none',
+      scopes: ['browser.read', 'browser.profile'],
+      resourceClaims: [{ resource: 'provider-state', mode: 'write' }, { resource: 'remote', mode: 'read' }],
+      argumentsSchema: {
+        type: 'object',
+        properties: identitySchema,
+        required: ['canonical_url'],
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: COMPUTER_CHATGPT_TARGET_PREPARE_ACTION,
+      title: 'Prepare exact ChatGPT target',
+      description: 'Replace the composer draft for one exact Computer-owned ChatGPT target without clicking Send.',
+      readOnly: false,
+      risk: 'remote_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 15_000,
+      cancellable: true,
+      idempotent: false,
+      executionMode: 'direct_non_persistent',
+      foregroundEffect: 'possible',
+      scopes: ['browser.interact', 'browser.profile'],
+      resourceClaims: [{ resource: 'provider-state', mode: 'write' }, { resource: 'remote', mode: 'write' }],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          ...identitySchema,
+          prompt: { type: 'string', minLength: 1, maxLength: 60000 },
+          mode: modeSchema,
+        },
+        required: ['canonical_url', 'prompt'],
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: COMPUTER_CHATGPT_TARGET_DISPATCH_ACTION,
+      title: 'Dispatch exact ChatGPT target',
+      description: 'Send one prompt to one exact Computer-owned ChatGPT conversation. A claimed but unacknowledged Send remains outcome-unknown and is never automatically replayed.',
+      readOnly: false,
+      risk: 'remote_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 20_000,
+      cancellable: true,
+      idempotent: false,
+      executionMode: 'direct_non_persistent',
+      foregroundEffect: 'possible',
+      scopes: ['browser.interact', 'browser.profile'],
+      resourceClaims: [{ resource: 'provider-state', mode: 'write' }, { resource: 'remote', mode: 'write' }],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          ...identitySchema,
+          prompt: { type: 'string', minLength: 1, maxLength: 60000 },
+          mode: modeSchema,
+        },
+        required: ['canonical_url', 'prompt'],
+        additionalProperties: false,
+      },
+    },
+  ];
+}
+
+function computerChatgptIdentity(args: Record<string, unknown>): ComputerChatgptConversationIdentity {
+  const raw = typeof args.canonical_url === 'string' ? args.canonical_url.trim() : '';
+  if (!raw) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'canonical_url is required.', { retryable: false });
+  let parsed: ReturnType<typeof parseCanonicalChatgptConversationIdentity>;
+  try {
+    parsed = parseCanonicalChatgptConversationIdentity(raw);
+  } catch (error) {
+    throw new AssistantPluginError(
+      'PLUGIN_ACTION_ARGUMENT_INVALID',
+      error instanceof Error ? error.message : 'Invalid ChatGPT conversation URL.',
+      { retryable: false },
+    );
+  }
+  return {
+    namespace: 'chatgpt.conversation',
+    conversationId: parsed.conversationId,
+    canonicalUrl: parsed.conversationUrl,
+  };
+}
+
+function computerChatgptMode(args: Record<string, unknown>): 'send' | 'resume' | 'recover' {
+  const mode = args.mode;
+  return mode === 'resume' || mode === 'recover' ? mode : 'send';
+}
+
+function computerChatgptPrompt(args: Record<string, unknown>): string {
+  const prompt = typeof args.prompt === 'string' ? args.prompt : '';
+  if (!prompt.trim()) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'prompt is required.', { retryable: false });
+  return prompt;
+}
+
+function isComputerChatgptTargetAction(actionId: string): boolean {
+  return COMPUTER_CHATGPT_TARGET_ACTION_IDS.has(actionId);
+}
+
+async function executeComputerChatgptTargetAction(
+  input: AssistantPluginActionExecutionInput,
+): Promise<Record<string, unknown>> {
+  if (input.actionId === COMPUTER_CHATGPT_TARGET_INVENTORY_ACTION) {
+    const inventory = await runtimeComputerChatgptInventory(input.controllerHome, input.timeoutMs);
+    return {
+      conversations: inventory.conversations,
+      complete: inventory.complete,
+      ...(inventory.providerInventoryReady === undefined ? {} : { providerInventoryReady: inventory.providerInventoryReady }),
+      unavailableProviders: inventory.unavailableProviders,
+    };
+  }
+  const identity = computerChatgptIdentity(input.args);
+  const port = await runtimeComputerChatgptTargetPort(input.controllerHome, { timeoutMs: input.timeoutMs });
+  const exact = await port.ensureExact(identity, { createIfMissing: input.actionId !== COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION });
+  if (exact.state !== 'ready') {
+    return {
+      state: exact.state,
+      failure: exact.failure,
+      ...(exact.observation ? { observation: exact.observation } : {}),
+    };
+  }
+  if (input.actionId === COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION) {
+    return {
+      state: 'ready',
+      targetId: exact.target.targetId,
+      identity,
+      observation: exact.observation ?? await exact.target.observe({ includeUserHistory: false, includePageText: false }),
+    };
+  }
+  const prompt = computerChatgptPrompt(input.args);
+  const mode = computerChatgptMode(input.args);
+  if (input.actionId === COMPUTER_CHATGPT_TARGET_PREPARE_ACTION) {
+    return {
+      state: 'ready',
+      targetId: exact.target.targetId,
+      identity,
+      prepare: await exact.target.prepare(prompt, { mode }),
+    };
+  }
+  if (input.actionId === COMPUTER_CHATGPT_TARGET_DISPATCH_ACTION) {
+    return {
+      state: 'ready',
+      targetId: exact.target.targetId,
+      identity,
+      dispatch: await exact.target.dispatch(prompt, { mode }),
+    };
+  }
+  throw new AssistantPluginError('PLUGIN_ACTION_UNKNOWN', `Unknown Computer ChatGPT target action: ${input.actionId}`, { retryable: false });
+}
+
+function resolveComputerChatgptAuthorizationContext(
+  input: AssistantPluginActionExecutionInput,
+): AssistantPluginAuthorizationContext | undefined {
+  if (input.actionId === COMPUTER_CHATGPT_TARGET_INVENTORY_ACTION || input.actionId === COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION) return undefined;
+  const identity = computerChatgptIdentity(input.args);
+  return { target: { kind: 'chatgpt-conversation', id: identity.conversationId } };
 }
 
 function desktopProductActions(): AssistantPluginActionDescriptor[] {
@@ -589,8 +797,19 @@ function buildComputerManifest(
         { scope: 'ios.discover' as const, mode: 'read' as const, description: 'Discover paired physical iPhones through CoreDevice.', granted: physicalReady, required: false },
         { scope: 'ios.device' as const, mode: 'write' as const, description: 'Use one exact iPhone through the existing CoreDevice/RemoteXPC owner.', granted: physicalReady, required: false },
       ] : [])],
-    capabilities: [...browserCapabilities, ...desktopProductCapabilities(), ...(physicalRepository ? iosPhysicalDeviceCapabilities() : [])],
-    actions: [...browserActions, ...desktopProductActions(), ...(physicalRepository ? iosPhysicalDeviceActions() : [])],
+    capabilities: [
+      ...browserCapabilities,
+      {
+        capabilityId: 'computer.chatgpt_target.v1',
+        title: 'Exact ChatGPT targets',
+        description: 'Observe and operate exact ChatGPT conversations through the Computer-owned browser provider.',
+        scopes: ['browser.read', 'browser.interact', 'browser.profile'],
+        actions: [...COMPUTER_CHATGPT_TARGET_ACTION_IDS],
+      },
+      ...desktopProductCapabilities(),
+      ...(physicalRepository ? iosPhysicalDeviceCapabilities() : []),
+    ],
+    actions: [...browserActions, ...computerChatgptTargetActions(), ...desktopProductActions(), ...(physicalRepository ? iosPhysicalDeviceActions() : [])],
     updatedAt: previousUpdatedAt ?? checkedAt,
   };
 }
@@ -1315,6 +1534,7 @@ export const computerPluginAdapter: AssistantPluginAdapter = {
   buildManifest: buildComputerManifest,
   async resolveAuthorizationContext(input) {
     if (isIosPhysicalDeviceAction(input.actionId)) return resolveIosPhysicalDeviceAuthorizationContext(input);
+    if (isComputerChatgptTargetAction(input.actionId)) return resolveComputerChatgptAuthorizationContext(input);
     if (!isDesktopProductAction(input.actionId)) {
       return resolveBrowserPluginAuthorizationContext(computerNativeBrowserInput(input));
     }
@@ -1322,6 +1542,7 @@ export const computerPluginAdapter: AssistantPluginAdapter = {
   },
   async executeAction(input) {
     if (isIosPhysicalDeviceAction(input.actionId)) return executeIosPhysicalDeviceAction(input);
+    if (isComputerChatgptTargetAction(input.actionId)) return executeComputerChatgptTargetAction(input);
     if (!isDesktopProductAction(input.actionId)) {
       return executeBrowserPluginAction(computerNativeBrowserInput(input));
     }
