@@ -31,6 +31,7 @@ import { legacyIssueAuthorityRetired } from "../controller/legacy-issue-cutover"
 import { buildExecutionDiagnostics, buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";
 import {
   closeIssueWithGitHubPlugin,
+  githubIssueSyncPort,
   publishIssueWithGitHubPlugin,
   refreshIssueWithGitHubPlugin,
 } from "../github/plugin";
@@ -1250,7 +1251,7 @@ export async function startLocalBridgeServer(
         confirmAuthorization: body.confirmAuthorization === true,
         confirmationText: queryString(body.confirmationText),
         origin: { surface: "mobile-intent", actor: verified.principal.deviceId, correlationId: queryString(body.requestId) },
-      });
+      }, { githubIssueSync: githubIssueSyncPort });
       response.status(202).json({
         schemaVersion: 1,
         accepted: true,
@@ -2270,7 +2271,7 @@ export async function startLocalBridgeServer(
         confirmAuthorization: request.body?.confirmAuthorization === true,
         confirmationText: queryString(request.body?.confirmationText),
         origin: { surface: "local-ui", actor: "local-controller", correlationId: queryString(request.body?.requestId) },
-      });
+      }, { githubIssueSync: githubIssueSyncPort });
       response.status(202).json({
         accepted: true,
         deduplicated: submitted.deduplicated,
