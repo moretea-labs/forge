@@ -392,10 +392,13 @@ struct ZenWorkspacePane: View {
         if item.kind == .requirement && unresolvedOutcomeRequirementIds.contains(item.recordId) {
             return ("操作结果未确认","exclamationmark.triangle",.orange)
         }
-        if let lifecycle=inspectorLifecycleLabel(for:item),lifecycle != "未完成" {
-            return lifecycle == "已完成"
-                ? ("已完成","checkmark.circle.fill",.green)
-                : ("已取消","xmark.circle",.secondary)
+        if let lifecycle=inspectorLifecycleLabel(for:item) {
+            if lifecycle == "已完成" {
+                return ("已完成","checkmark.circle.fill",.green)
+            }
+            if lifecycle == "已取消" {
+                return ("已取消","xmark.circle",.secondary)
+            }
         }
 
         let requirementId=item.kind == .requirement ? item.recordId : root.recordId
@@ -440,6 +443,23 @@ struct ZenWorkspacePane: View {
         }
     }
 
+    static func requirementExecutionStatus(
+        for item:ForgeRecord,
+        executionStatuses:[String:AutopilotStatusDetail],
+        unresolvedOutcomeRequirementIds:Set<String> = []
+    ) -> (label:String,symbol:String,color:Color)? {
+        guard item.kind == .requirement else { return nil }
+        let unresolved=unresolvedOutcomeRequirementIds.contains(item.recordId)
+        if !unresolved,let lifecycle=inspectorLifecycleLabel(for:item),
+           lifecycle == "已完成" || lifecycle == "已取消" {
+            return nil
+        }
+        return nodeStatus(
+            for:item,root:item,executionStatuses:executionStatuses,
+            unresolvedOutcomeRequirementIds:unresolvedOutcomeRequirementIds
+        )
+    }
+
     private var executionOutcomeUnknownRequirementIds: Set<String> {
         model.unresolvedAutopilotRequirementIds
     }
@@ -462,6 +482,35 @@ struct ZenWorkspacePane: View {
             runtimeActive:model.planningAutopilotStatuses[item.recordId]?.runtimeActive == true,
             hasPlan:model.records.contains(where:{$0.kind == .plan && $0.requirementId == item.recordId})
         )
+    }
+
+    @ViewBuilder
+    private func requirementExecutionStatusView(for item:ForgeRecord) -> some View {
+        if let status=Self.requirementExecutionStatus(
+            for:item,executionStatuses:model.planningAutopilotStatuses,
+            unresolvedOutcomeRequirementIds:executionOutcomeUnknownRequirementIds
+        ) {
+            VStack(alignment:.leading,spacing:2) {
+                Label(status.label,systemImage:status.symbol)
+                    .font(.system(size:9.5,weight:.medium))
+                    .foregroundStyle(status.color)
+                    .lineLimit(1)
+                if status.label == "操作结果未确认" {
+                    Text("先刷新核对，勿重复提交")
+                        .font(.system(size:8.5,weight:.medium))
+                        .foregroundStyle(status.color)
+                        .lineLimit(1)
+                }
+            }
+            .help(status.label == "操作结果未确认"
+                ? "先刷新状态并核对原命令回执；不要重复提交。" : status.label)
+            .accessibilityElement(children:.combine)
+            .accessibilityLabel(status.label)
+            .accessibilityHint(status.label == "操作结果未确认"
+                ? "操作结果尚未确认。先刷新状态并核对原命令回执；不要重复提交。"
+                : "当前 Requirement 的 Autopilot 执行状态。")
+            .accessibilityIdentifier("zen.requirement.execution-status.\(item.recordId)")
+        }
     }
 
     var body: some View {
@@ -886,6 +935,7 @@ struct ZenWorkspacePane: View {
                                                             .multilineTextAlignment(.leading)
                                                             .frame(maxWidth:.infinity,alignment:.leading)
                                                             .lineLimit(3)
+                                                        requirementExecutionStatusView(for:item)
                                                         if let status=model.planningAutopilotStatuses[item.recordId],
                                                            let summary=status.lastSummary,!summary.isEmpty {
                                                             Text(summary)
@@ -921,11 +971,6 @@ struct ZenWorkspacePane: View {
                                                              }
                                                              .font(.system(size:9.5))
                                                          }
-                                                         if let status=model.planningAutopilotStatuses[item.recordId],
-                                                               stage == .running {
-                                                                Text(status.runStatus ?? "执行中")
-                                                                    .font(.system(size:9))
-                                                            }
                                                         }
                                                         .foregroundStyle(.secondary)
                                                     }
@@ -1015,6 +1060,7 @@ struct ZenWorkspacePane: View {
                         .font(.system(size:12,weight:.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(2)
+                    requirementExecutionStatusView(for:item)
                     if let summary=model.planningAutopilotStatuses[item.recordId]?.lastSummary,
                        !summary.isEmpty {
                         Text(summary).font(.system(size:10)).foregroundStyle(.secondary).lineLimit(1)
