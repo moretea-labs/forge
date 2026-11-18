@@ -1,10 +1,9 @@
 importScripts('core.js');
 const core = globalThis.ForgeComputerChatgptCore;
-const NATIVE_HOST = 'com.moretea.forge.workflow_supervisor';
+const NATIVE_HOST = 'com.moretea.forge.computer';
 const ALARM = 'forge-computer-chatgpt-provider';
 const PROVIDER_ID = 'browser.chrome-extension';
 const PROVIDER_TICK_MS = 750;
-const DISCOVERY_MIN_INTERVAL_MS = 2_000;
 const RPC_TIMEOUT_MS = 30_000;
 const HEARTBEAT_DEADLINE_MS = 10_000;
 const HEARTBEAT_RPC_TIMEOUT_MS = 6_000;
@@ -13,7 +12,7 @@ const TABS_QUERY_TIMEOUT_MS = 5_000;
 // callback must settle earlier without claiming a Send never happened.
 const TAB_MESSAGE_TIMEOUT_MS = 7_000;
 const bootstrapTabs = new Map();
-// Transient per-tab hydration retry spacing, not a Supervisor effect state.
+// Transient per-tab hydration retry spacing, not an orchestrator effect state.
 const unreadableConversationTabs = new Map();
 const UNREADABLE_CHAT_GRACE_MS = 60_000;
 const UNREADABLE_CHAT_RELOAD_INTERVAL_MS = 5 * 60_000;
@@ -242,7 +241,7 @@ function receiverMatchesIdentity(tab, identity) {
   return bootstrapTabBelongsToProject(tab, identity)
     && !core.parseConversation(tab.url ?? '');
 }
-async function restoreExactContentReceiver(tabId, identity, files = ['core.js', 'provider-turn-readback.js', 'content.js']) {
+async function restoreExactContentReceiver(tabId, identity, files = ['core.js', 'content.js']) {
   // The physical tab is already resolved by the one Computer target authority.
   // A missing MV3 message receiver is not permission to reload/navigate that tab,
   // replace its draft, or create another tab. Inject only read-only listeners on
@@ -278,39 +277,6 @@ function markerReconciliationReadIdentity(tab, bootstrapIdentity) {
   return { namespace: 'chatgpt.conversation', conversationId: conversation.conversationId,
     canonicalUrl: conversation.canonicalUrl };
 }
-async function invokeProviderReadbackFromSnapshot(tabId, identity, userText) {
-  const expectedUrl = new URL(identity.canonicalUrl);
-  const injections = await new Promise((resolve, reject) => chrome.scripting.executeScript({
-    target: { tabId },
-    world: 'ISOLATED',
-    func: (text, expectedOrigin, expectedPath) => {
-      if (location.origin !== expectedOrigin || location.pathname !== expectedPath) return false;
-      const readback = globalThis.__forgeProviderReadbackFromSnapshot;
-      if (typeof readback !== 'function') return false;
-      readback(text);
-      return true;
-    },
-    args: [userText, expectedUrl.origin, expectedUrl.pathname],
-  }, (results) => {
-    const error = chrome.runtime.lastError;
-    if (error) reject(new Error(error.message)); else resolve(results ?? []);
-  }));
-  return Array.isArray(injections) && injections.some((injection) => injection?.result === true);
-}
-async function triggerProviderReadbackFromSnapshot(tabId, identity, userText) {
-  if (identity?.namespace !== 'chatgpt.conversation' || typeof userText !== 'string'
-    || !userText.startsWith('<<<FORGE_WORKFLOW_EFFECT_V1:')
-    || !userText.includes('provider_turn:conversation-readback-v1')) return;
-  const current = await tabGet(tabId);
-  if (!current || current.discarded || !receiverMatchesIdentity(current, identity))
-    throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
-  // A stale content listener may still answer snapshot without the newer
-  // readback helper. Trigger that helper directly in the same isolated world.
-  if (await invokeProviderReadbackFromSnapshot(tabId, identity, userText)) return;
-  await restoreExactContentReceiver(tabId, identity, ['provider-turn-readback.js']);
-  if (!(await invokeProviderReadbackFromSnapshot(tabId, identity, userText)))
-    throw new Error('COMPUTER_CHATGPT_PROVIDER_READBACK_UNAVAILABLE');
-}
 async function snapshotWithExactReceiverRecovery(tabId, identity, options = {}) {
   let observed;
   try { observed = await snapshot(tabId, options); }
@@ -320,14 +286,13 @@ async function snapshotWithExactReceiverRecovery(tabId, identity, options = {}) 
     await restoreExactContentReceiver(tabId, identity);
     observed = await snapshot(tabId, options);
   }
-  await triggerProviderReadbackFromSnapshot(tabId, identity, observed?.latestUserText);
   return observed;
 }
 async function waitForContent(tabId, requireBootstrapUi = false, recoverReceiver) {
   let lastError;
   let recoveryAttempted = false;
   // Bootstrap is a new provider page: seeing its URL proves location, not
-  // that the React composer is hydrated. The Supervisor uses the user's
+  // that the React composer is hydrated. The external orchestrator uses the user's
   // exact target page readiness. Bound this wait below the
   // broker's 12-second timeout; missing composer never authorizes Send.
   const attempts = requireBootstrapUi ? 20 : 40;
@@ -622,7 +587,7 @@ async function executePrepare(command, instanceId) {
     return { kind: 'prepared', ready: true, ...(requiresRecoveryCapability ? { recoveryCapability: result.recoveryCapability } : {}) };
   } catch (error) {
     // Prepare has not clicked Send. Preserve the transport reason for the
-    // Supervisor's exact-effect recovery instead of masking a receiver loss
+    // external orchestrator's exact-effect recovery instead of masking a receiver loss
     // or a timed-out content script as a generic infrastructure failure.
     const reasonCode = String(error?.message ?? error) === 'COMPUTER_CHATGPT_EXTENSION_TAB_MESSAGE_TIMEOUT'
       ? 'COMPUTER_CHATGPT_EXTENSION_TAB_MESSAGE_TIMEOUT'
@@ -831,12 +796,11 @@ function heartbeatTick() {
 async function providerTick() {
   // One claimed command retains the sole mutation lane; it must not also
   // suppress profile heartbeat when a page/Chrome callback is slow or hangs.
-  if (providerTickInFlight) { void flushProviderTurnEvents().catch(() => undefined); await heartbeatTick(); return; }
+  if (providerTickInFlight) { await heartbeatTick(); return; }
   providerTickInFlight = (async () => {
     const instanceId = await heartbeatTick();
-    void flushProviderTurnEvents().catch(() => undefined);
-    // One command per tick keeps heartbeats and other tasks fair. The broker
-    // remains the only authority for a claimed Send and its unknown outcome.
+    // One command per tick keeps heartbeats and other callers fair. The Computer broker
+    // remains the only physical-send authority for a claimed Send and its unknown outcome.
     const claim = await nativeRpc('computer_extension_claim', { provider_instance_id: instanceId });
     const command = claim?.command;
     if (!command) return;
@@ -850,259 +814,19 @@ async function providerTick() {
   })().finally(() => { providerTickInFlight = undefined; });
   return await providerTickInFlight;
 }
-async function discoveryScan(tabId, projectTitles) {
-  try { return await tabMessage(tabId, { type: 'forge-computer-chatgpt-discovery-scan', projectTitles }); }
-  catch { return {}; }
-}
-async function refreshDiscovery() {
-  const tabs = await chatgptTabs();
-  const [current] = await boundedTabsQuery({ active: true, lastFocusedWindow: true, url: 'https://chatgpt.com/*' });
-  const scopeResult = await nativeRpc('browser_project_scopes').catch(() => ({ projects: [] }));
-  const projectScopes = Array.isArray(scopeResult?.projects) ? scopeResult.projects.filter((entry) => typeof entry?.title === 'string' && entry.title.trim()) : [];
-  const projectTitles = [...new Set(projectScopes.map((entry) => entry.title.trim()))];
-  const projectLinks = new Map();
-  const scans = [];
-  for (const tab of tabs) if (tab.id) scans.push({ tab, scan: await discoveryScan(tab.id, projectTitles) });
-  for (const { scan } of scans) for (const project of Array.isArray(scan?.projects) ? scan.projects : []) {
-    const title = String(project?.title ?? '').trim();
-    const url = String(project?.url ?? '').trim();
-    if (title && url) projectLinks.set(title.toLocaleLowerCase(), { title, url });
-  }
-  const projectByConversation = new Map();
-  for (const scope of projectScopes) {
-    const project = projectLinks.get(scope.title.trim().toLocaleLowerCase());
-    if (!project) continue;
-    const projectId = core.projectId(project.url);
-    if (!projectId) continue;
-    const projectTab = tabs.find((tab) => String(tab.url ?? '') === project.url);
-    if (!projectTab?.id) continue;
-    const scan = await discoveryScan(projectTab.id, projectTitles);
-    for (const conversation of Array.isArray(scan?.conversations) ? scan.conversations : []) {
-      const identity = core.parseConversation(conversation?.canonicalUrl ?? '');
-      if (!identity || core.projectId(identity.canonicalUrl) !== projectId) continue;
-      projectByConversation.set(identity.conversationId, { project_title: scope.title.trim(), project_url: project.url });
-    }
-  }
-  const conversations = [];
-  const seen = new Set();
-  for (const tab of tabs) {
-    const identity = core.parseConversation(tab.url ?? '');
-    if (!identity || seen.has(identity.conversationId)) continue;
-    seen.add(identity.conversationId);
-    const title = String(tab.title ?? '').trim();
-    conversations.push({ conversation_id: identity.conversationId, canonical_url: identity.canonicalUrl, ...projectByConversation.get(identity.conversationId), ...(title ? { title: title.slice(0, 512) } : {}), ...(tab.id === current?.id ? { is_current: true } : {}) });
-  }
-  // Discovery and command routing share one persisted Chrome-profile identity.
-  const instanceId = await providerInstanceId();
-  await nativeRpc('browser_discovery_update', { source: `chrome-extension:${instanceId}`, conversations }).catch(() => undefined);
-}
-let discoveryInFlight;
-let discoveryTimer;
-let lastDiscoveryAt = 0;
-function scheduleDiscovery() {
-  if (discoveryInFlight || discoveryTimer !== undefined) return;
-  const delay = Math.max(0, DISCOVERY_MIN_INTERVAL_MS - (Date.now() - lastDiscoveryAt));
-  discoveryTimer = setTimeout(() => {
-    discoveryTimer = undefined;
-    discoveryInFlight = refreshDiscovery().catch(() => undefined).finally(() => { lastDiscoveryAt = Date.now(); discoveryInFlight = undefined; });
-  }, delay);
-}
-const PROVIDER_TURN_EVENT_PREFIX = 'forgeComputerProviderTurnEventV2:';
-const PROVIDER_TURN_BINDING_PREFIX = 'forgeComputerProviderTurnBindingV2:';
-let providerTurnFlushInFlight;
-function providerTurnEventText(value, maxLength) {
-  if (typeof value !== 'string') return undefined;
-  const normalized = value.trim();
-  return normalized && normalized.length <= maxLength ? normalized : undefined;
-}
-function providerTurnEventRequestId(value) {
-  const normalized = providerTurnEventText(value, 64);
-  return normalized && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized)
-    ? normalized : undefined;
-}
-async function persistProviderTurnEvent(input, sender) {
-  if (!input || typeof input !== 'object' || sender?.frameId !== 0) return { accepted: false, reason: 'provider_turn_sender_invalid' };
-  const tab = sender.tab;
-  const tabId = Number.isSafeInteger(tab?.id) ? tab.id : undefined;
-  const windowId = Number.isSafeInteger(tab?.windowId) ? tab.windowId : undefined;
-  if (tabId === undefined || windowId === undefined || !String(tab.url ?? '').startsWith('https://chatgpt.com/')) {
-    return { accepted: false, reason: 'provider_turn_tab_unavailable' };
-  }
-  const taskId = providerTurnEventText(input.task_id, 256);
-  const conversationId = providerTurnEventText(input.conversation_id, 256);
-  const effectId = providerTurnEventText(input.effect_id, 256);
-  const receiptChallenge = providerTurnEventText(input.receipt_challenge, 7);
-  const turnId = providerTurnEventText(input.turn_id, 256);
-  const requestId = providerTurnEventRequestId(input.request_id);
-  const startedAtMs = input.started_at_ms;
-  const outcome = input.outcome;
-  const statusCode = input.status_code;
-  const contentType = providerTurnEventText(input.content_type, 256) ?? '';
-  const proofSource = providerTurnEventText(input.proof_source, 64);
-  const assistantMessageId = providerTurnEventText(input.assistant_message_id, 256);
-  const assistantStatus = providerTurnEventText(input.assistant_status, 64);
-  const assistantEndTurn = typeof input.assistant_end_turn === 'boolean' ? input.assistant_end_turn : undefined;
-  const streamDone = typeof input.stream_done === 'boolean' ? input.stream_done : undefined;
-  const failureCode = providerTurnEventText(input.failure_code, 128);
-  const retryAfterMs = input.retry_after_ms;
-  if (!taskId || !conversationId || !effectId || !receiptChallenge || !turnId || !requestId
-    || !/^[0-9a-f]{7}$/.test(receiptChallenge)
-    || !Number.isSafeInteger(startedAtMs) || startedAtMs < 0
-    || !Number.isSafeInteger(statusCode) || statusCode < 0 || statusCode > 599
-    || !['completed', 'failed', 'unknown'].includes(outcome)) {
-    return { accepted: false, reason: 'provider_turn_event_invalid' };
-  }
-  if (retryAfterMs !== undefined && (!Number.isSafeInteger(retryAfterMs) || retryAfterMs < 0 || retryAfterMs > 86_400_000)) {
-    return { accepted: false, reason: 'provider_turn_retry_after_invalid' };
-  }
-  if (outcome === 'completed' && (proofSource !== 'chatgpt-conversation-readback-v1'
-    || statusCode !== 200 || !contentType.toLowerCase().includes('application/json') || !assistantMessageId
-    || assistantStatus !== 'finished_successfully' || assistantEndTurn !== true || streamDone !== undefined || failureCode)) {
-    return { accepted: false, reason: 'provider_turn_completion_evidence_invalid' };
-  }
-  const trustedReadbackFailure = proofSource === 'chatgpt-conversation-readback-v1'
-    && statusCode === 200 && contentType.toLowerCase().includes('application/json')
-    && (assistantStatus === 'failed' || assistantStatus === 'cancelled') && streamDone === true;
-  if (outcome === 'failed' && !failureCode) {
-    return { accepted: false, reason: 'provider_turn_failure_evidence_invalid' };
-  }
-  if (outcome === 'failed' && !trustedReadbackFailure) {
-    return { accepted: false, reason: 'provider_turn_page_origin_untrusted' };
-  }
-  if (outcome === 'unknown' && !failureCode) return { accepted: false, reason: 'provider_turn_unknown_reason_missing' };
-
-  const canonicalUrl = 'https://chatgpt.com/c/' + encodeURIComponent(conversationId);
-  if (!core.parseConversation(canonicalUrl)
-    || core.parseConversation(tab.url)?.conversationId !== conversationId) {
-    return { accepted: false, reason: 'provider_turn_conversation_invalid' };
-  }
-  // Page-origin signals cannot create terminal receipts. Failed outcomes are accepted
-  // only from authenticated conversation readback, never a provisional HTTP request error.
-  if ((outcome === 'completed' && proofSource !== 'chatgpt-conversation-readback-v1')
-    || (outcome === 'failed' && !trustedReadbackFailure)) {
-    return { accepted: false, reason: 'provider_turn_page_origin_untrusted' };
-  }
-  const ownerKey = ownedTabKey(tabId);
-  let owner;
-  try { owner = await chrome.storage.session.get(ownerKey); } catch { return { accepted: false, reason: 'provider_turn_owner_unavailable' }; }
-  const ownerToken = owner?.[ownerKey];
-  if (typeof ownerToken !== 'string' || !ownerToken.trim()) return { accepted: false, reason: 'provider_turn_tab_not_owned' };
-  const instanceId = await providerInstanceId();
-  const providerBinding = binding(tab, instanceId, ownerToken);
-  if (!providerBinding?.ownerToken) return { accepted: false, reason: 'provider_turn_binding_unavailable' };
-
-  const eventKey = PROVIDER_TURN_EVENT_PREFIX + requestId;
-  const bindingKey = PROVIDER_TURN_BINDING_PREFIX + requestId;
-  const existing = await chrome.storage.local.get(eventKey).catch(() => ({}));
-  if (existing?.[eventKey]) {
-    const prior = existing[eventKey];
-    if (prior.task_id !== taskId || prior.effect_id !== effectId || prior.turn_id !== turnId) {
-      return { accepted: false, reason: 'provider_turn_request_conflict' };
-    }
-    void flushProviderTurnEvents().catch(() => undefined);
-    return { accepted: true, duplicate: true };
-  }
-  const event = {
-    provider_id: PROVIDER_ID,
-    provider_instance_id: instanceId,
-    task_id: taskId,
-    conversation_id: conversationId,
-    conversation_url: canonicalUrl,
-    effect_id: effectId,
-    receipt_challenge: receiptChallenge,
-    turn_id: turnId,
-    request_id: requestId,
-    started_at_ms: startedAtMs,
-    observed_at_ms: Date.now(),
-    outcome,
-    status_code: statusCode,
-    ...(proofSource ? { proof_source: proofSource } : {}),
-    ...(contentType ? { content_type: contentType } : {}),
-    ...(assistantMessageId ? { assistant_message_id: assistantMessageId } : {}),
-    ...(assistantStatus ? { assistant_status: assistantStatus } : {}),
-    ...(assistantEndTurn === undefined ? {} : { assistant_end_turn: assistantEndTurn }),
-    ...(streamDone === undefined ? {} : { stream_done: streamDone }),
-    ...(failureCode ? { failure_code: failureCode } : {}),
-    ...(retryAfterMs === undefined ? {} : { retry_after_ms: retryAfterMs }),
-    tab_id: String(tabId),
-    window_id: String(windowId),
-  };
-  await chrome.storage.session.set({ [bindingKey]: providerBinding });
-  try {
-    await chrome.storage.local.set({ [eventKey]: event });
-  } catch (error) {
-    await chrome.storage.session.remove(bindingKey).catch(() => undefined);
-    throw error;
-  }
-  void flushProviderTurnEvents().catch(() => undefined);
-  return { accepted: true, duplicate: false };
-}
-async function flushProviderTurnEvents() {
-  if (providerTurnFlushInFlight) return await providerTurnFlushInFlight;
-  providerTurnFlushInFlight = (async () => {
-    const stored = await chrome.storage.local.get(null);
-    const pending = Object.entries(stored ?? {})
-      .filter(([key, value]) => key.startsWith(PROVIDER_TURN_EVENT_PREFIX) && value && typeof value === 'object')
-      .sort(([left], [right]) => left.localeCompare(right));
-    for (const [key, event] of pending.slice(0, 8)) {
-      const requestId = String(event.request_id ?? '');
-      const bindingKey = PROVIDER_TURN_BINDING_PREFIX + requestId;
-      let session;
-      try { session = await chrome.storage.session.get(bindingKey); } catch { return; }
-      const pinned = session?.[bindingKey];
-      if (!pinned || typeof pinned.ownerToken !== 'string' || !pinned.ownerToken
-        || pinned.providerSessionId !== event.provider_instance_id
-        || pinned.tabId !== String(event.tab_id) || pinned.windowId !== String(event.window_id)) {
-        await chrome.storage.local.remove(key).catch(() => undefined);
-        await chrome.storage.session.remove(bindingKey).catch(() => undefined);
-        continue;
-      }
-      const params = {
-        ...event,
-        provider_binding: {
-          provider_id: pinned.providerId,
-          provider_session_id: pinned.providerSessionId,
-          observed_at: pinned.observedAt,
-          browser_product: pinned.browserProduct,
-          window_id: pinned.windowId,
-          tab_id: pinned.tabId,
-          owner_token: pinned.ownerToken,
-        },
-      };
-      let result;
-      try { result = await nativeRpc('computer_extension_turn_event', params, 5_000); }
-      catch { return; }
-      if (result?.accepted === true || result?.retryable === false) {
-        await chrome.storage.local.remove(key).catch(() => undefined);
-        await chrome.storage.session.remove(bindingKey).catch(() => undefined);
-        continue;
-      }
-      return;
-    }
-  })().finally(() => { providerTurnFlushInFlight = undefined; });
-  return await providerTurnFlushInFlight;
-}
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type === 'forge-computer-provider-turn-event') {
-    void persistProviderTurnEvent(message.event, sender).then(sendResponse, (error) => {
-      sendResponse({ accepted: false, reason: String(error?.message ?? error).slice(0, 256) });
-    });
-    return true;
-  }
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== 'forge-computer-chatgpt-page') return false;
   void providerTick().catch(() => undefined);
-  scheduleDiscovery();
   sendResponse({ ok: true });
   return false;
 });
-chrome.runtime.onInstalled.addListener(() => { chrome.alarms.create(ALARM, { periodInMinutes: 1 }); void providerTick().catch(() => undefined); scheduleDiscovery(); });
-chrome.runtime.onStartup.addListener(() => { chrome.alarms.create(ALARM, { periodInMinutes: 1 }); void providerTick().catch(() => undefined); scheduleDiscovery(); });
-chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === ALARM) { void providerTick().catch(() => undefined); scheduleDiscovery(); } });
-chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => { if (changeInfo.status === 'complete' && String(tab.url ?? '').startsWith('https://chatgpt.com/')) { void providerTick().catch(() => undefined); scheduleDiscovery(); } });
-chrome.tabs.onActivated.addListener(() => { void providerTick().catch(() => undefined); scheduleDiscovery(); });
-chrome.tabs.onRemoved.addListener((tabId) => { unreadableConversationTabs.delete(tabId); void chrome.storage.session.remove(ownedTabKey(tabId)).catch(() => undefined); void providerTick().catch(() => undefined); scheduleDiscovery(); });
-chrome.windows.onFocusChanged.addListener(() => { void providerTick().catch(() => undefined); scheduleDiscovery(); });
+chrome.runtime.onInstalled.addListener(() => { chrome.alarms.create(ALARM, { periodInMinutes: 1 }); void providerTick().catch(() => undefined); });
+chrome.runtime.onStartup.addListener(() => { chrome.alarms.create(ALARM, { periodInMinutes: 1 }); void providerTick().catch(() => undefined); });
+chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === ALARM) void providerTick().catch(() => undefined); });
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => { if (changeInfo.status === 'complete' && String(tab.url ?? '').startsWith('https://chatgpt.com/')) void providerTick().catch(() => undefined); });
+chrome.tabs.onActivated.addListener(() => { void providerTick().catch(() => undefined); });
+chrome.tabs.onRemoved.addListener((tabId) => { unreadableConversationTabs.delete(tabId); void chrome.storage.session.remove(ownedTabKey(tabId)).catch(() => undefined); void providerTick().catch(() => undefined); });
+chrome.windows.onFocusChanged.addListener(() => { void providerTick().catch(() => undefined); });
 chrome.alarms.create(ALARM, { periodInMinutes: 1 });
 setInterval(() => { void providerTick().catch(() => undefined); }, PROVIDER_TICK_MS);
 void providerTick().catch(() => undefined);
-scheduleDiscovery();

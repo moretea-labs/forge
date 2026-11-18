@@ -112,13 +112,6 @@ async function dispatch(
       ),
     };
   }
-  // Compatibility-only observations from the existing extension. Computer
-  // never promotes these into task/effect/turn authority.
-  if (request.method === 'computer_extension_turn_event') {
-    return { accepted: false, retryable: false, reason: 'COMPUTER_CHATGPT_EXTENSION_TURN_EVENT_NOT_OWNED' };
-  }
-  if (request.method === 'browser_project_scopes') return { projects: [] };
-  if (request.method === 'browser_discovery_update') return { recorded: false, owner: 'computer-exact-target-only' };
   throw new Error(`COMPUTER_CHATGPT_EXTENSION_RPC_METHOD_DENIED:${request.method}`);
 }
 

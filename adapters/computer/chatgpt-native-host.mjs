@@ -8,12 +8,9 @@ const HEARTBEAT_TIMEOUT_MS = 4_000;
 const RPC_TIMEOUT_MS = 30_000;
 const ALLOWED_METHODS = new Set([
   'health',
-  'browser_discovery_update',
-  'browser_project_scopes',
   'computer_extension_heartbeat',
   'computer_extension_claim',
   'computer_extension_complete',
-  'computer_extension_turn_event',
 ]);
 
 const controllerHome = process.env.FORGE_CONTROLLER_HOME?.trim()

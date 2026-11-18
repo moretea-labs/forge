@@ -59,7 +59,7 @@
   const messageText = (node) => {
     if (!node) return '';
     const semanticContent = node.querySelector?.('[data-chatgpt-selection-message-id]');
-    // Message line boundaries carry the final Supervisor receipt. Normalizing
+    // Message line boundaries carry the final external-orchestrator receipt. Normalizing
     // them like UI labels destroys the protocol before the owner can parse it.
     return String(semanticContent?.innerText ?? semanticContent?.textContent ?? node.innerText ?? node.textContent ?? '').trim();
   };
@@ -102,7 +102,7 @@
     return Boolean(current && Array.from(current.querySelectorAll('[aria-busy="true"]')).some(visible));
   };
   // Ordinary sends remain conservative when the final visible role is user.
-  // An explicitly authorized Supervisor recovery may disregard that *historical*
+  // An explicitly authorized external-orchestrator recovery may disregard that *historical*
   // role only after confirming that no live stream/stop/busy signal remains.
   const isGenerating = () => hasLiveGenerationSignal() || latestTurnRole() === 'user';
   // Recovery must never terminate a provider turn. A visible Stop button is
@@ -267,8 +267,8 @@
         : true;
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     if (typeof prompt !== 'string' || !prompt.trim()) return { dispatched: false, reason: 'prompt_required' };
-    // This bounded prepare-only envelope is produced by the canonical
-    // Supervisor only after an exact 0600 on-device backup and operator marker.
+    // This bounded prepare-only envelope is produced by the external orchestrator
+    // only after an exact local backup and operator marker.
     // It is never part of a sent effect and never authorizes another provider.
     const replacement = /^<<<FORGE_DRAFT_REPLACE_V1:([a-f0-9]{24}):([a-f0-9]{32})>>>\n/.exec(prompt);
     if (replacement && (!prepareOnly || !expectedProjectId || mode !== 'send')) {
@@ -298,10 +298,10 @@
     const node = composer();
     if (!node) return { dispatched: false, reason: 'composer_missing' };
     // Project instructions select tools. No @forge UI mention is needed.
-    const supervisor = /^(?:@forge\s+)?<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>/.test(actualPrompt);
-    if (supervisor && !expectedConversationId && !expectedProjectId) return { dispatched: false, reason: 'target_identity_unavailable' };
+    const managedEffect = /^(?:@forge\s+)?<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>/.test(actualPrompt);
+    if (managedEffect && !expectedConversationId && !expectedProjectId) return { dispatched: false, reason: 'target_identity_unavailable' };
     // Strip only the exact legacy prefix on already-durable effects.
-    const payload = supervisor ? actualPrompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>)/, '') : actualPrompt;
+    const payload = managedEffect ? actualPrompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>)/, '') : actualPrompt;
     const expected = exactComposerText(payload);
     const existing = composerText();
     // A draft belongs to this exact conversation/effect, not to every Forge
@@ -309,16 +309,16 @@
     // only authority for replacing a different effect or a human draft.
     const effectPrefix = /^<<<FORGE_WORKFLOW_EFFECT_V1:((?:fx|crpe)_[a-zA-Z0-9_-]{8,120})>>>(?:\n|$)/;
     const currentEffectId = effectPrefix.exec(payload)?.[1];
-    const restoredSameEffectPrefix = Boolean(supervisor && !replacement && !retired
+    const restoredSameEffectPrefix = Boolean(managedEffect && !replacement && !retired
       && currentEffectId && effectPrefix.exec(existing)?.[1] === currentEffectId
       && expected.startsWith(existing));
     // Only the exact canonical bytes (plus ProseMirror's generated final
     // newline) are owner-attested. Historical app-mention typing artifacts are
     // indistinguishable from human edits and must never be overwritten.
-    const ownedDrafts = supervisor ? [expected, expected + '\n'] : [expected];
+    const ownedDrafts = managedEffect ? [expected, expected + '\n'] : [expected];
     if (node.querySelector('[plugin-mention-name], [app-mention-name]')) return { dispatched: false, reason: 'composer_has_app_mention' };
     const unowned = Boolean(existing && !ownedDrafts.includes(existing) && !restoredSameEffectPrefix);
-    if (unowned && ((!replacement && !retired) || !supervisor)) return { dispatched: false, reason: 'composer_not_empty' };
+    if (unowned && ((!replacement && !retired) || !managedEffect)) return { dispatched: false, reason: 'composer_not_empty' };
     if (retired && (!unowned || !existing.startsWith(`<<<FORGE_WORKFLOW_EFFECT_V1:${retired[1]}>>>`))) {
       return { dispatched: false, reason: 'composer_not_empty' };
     }
@@ -429,9 +429,6 @@
     }
     if (message.type === 'forge-computer-chatgpt-snapshot') {
       const observed = pageSnapshot(message.options ?? {});
-      // Existing Supervisor exact-tab observation is the only re-arm cadence;
-      // this text is merely a hint for the isolated authenticated readback.
-      try { globalThis.__forgeProviderReadbackFromSnapshot?.(observed.latestUserText); } catch {}
       sendResponse(observed);
       return false;
     }

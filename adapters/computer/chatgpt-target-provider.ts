@@ -257,7 +257,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     }
     // Foreground tab is not a durable browser-principal binding. If more
     // than one Extension instance is connected, require a known pin instead
-    // of guessing which profile should receive a new Supervisor effect.
+    // of guessing which profile should receive a new external-orchestrator operation.
     if (fresh.length === 1) return { instanceId: fresh[0]![0], ambiguous: false };
     return { ambiguous: fresh.length > 1 };
   }
