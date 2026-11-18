@@ -114,23 +114,26 @@ describe('agent-device coordinate swipe contract', () => {
     const calls: string[][] = [];
     const probe = (command: string, args: string[]) => {
       calls.push(args);
-      const stdout = args[0] === '--version' ? '0.19.3' : args[0] === 'swipe' ? '{"success":true}' : 'agent-device <command> --json';
+      const stdout = args[0] === '--version' ? '0.20.2' : args[0] === 'gesture' ? '{"success":true}' : 'agent-device <command> --json';
       return { ok: true, status: 0, stdout, stderr: '', command: [command, ...args] };
     };
     setIosAgentDeviceRuntimeHooksForTest({ platform: () => 'darwin', now: () => now, runCommand: probe,
       runCommandAsync: async (command, args) => probe(command, args) });
-    await executeIosAgentDeviceAction({ controllerHome, repoId: 'repo-ios-swipe-test', repoRoot, pluginId: 'ios',
-      actionId: 'agent_device_swipe', requestId: 'content-swipe',
-      args: { interaction_id: interactionId, x1: 200, y1: 650, x2: 200, y2: 220, duration_ms: 280 },
-      origin: { surface: 'local-ui', actor: 'test' } });
-    expect(calls.find((args) => args[0] === 'swipe')).toEqual([
-      'swipe', '200', '650', '200', '220', '280', '--session', 'forge-swipe-test', '--platform', 'ios', '--json',
+    const executeSwipe = (requestId: string, args: Record<string, unknown>) => executeIosAgentDeviceAction({
+      controllerHome, repoId: 'repo-ios-swipe-test', repoRoot, pluginId: 'ios', actionId: 'agent_device_swipe', requestId,
+      args: { interaction_id: interactionId, ...args }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    await executeSwipe('content-swipe', { x1: 200, y1: 650, x2: 200, y2: 220, duration_ms: 280 });
+    expect(calls.find((args) => args[0] === 'gesture')).toEqual([
+      'gesture', 'pan', '200', '650', '0', '-430', '280', '--session', 'forge-swipe-test', '--platform', 'ios', '--json',
     ]);
-    await expect(executeIosAgentDeviceAction({ controllerHome, repoId: 'repo-ios-swipe-test', repoRoot, pluginId: 'ios',
-      actionId: 'agent_device_swipe', requestId: 'invalid-swipe',
-      args: { interaction_id: interactionId, x1: -1, y1: 650, x2: 200, y2: 220 },
-      origin: { surface: 'local-ui', actor: 'test' } })).rejects.toMatchObject({ code: 'PLUGIN_ACTION_ARGUMENT_INVALID' });
-    expect(calls.filter((args) => args[0] === 'swipe')).toHaveLength(1);
+    await executeSwipe('content-swipe-default', { x1: 200, y1: 650, x2: 200, y2: 220 });
+    expect(calls.filter((args) => args[0] === 'gesture')[1]).toEqual([
+      'gesture', 'pan', '200', '650', '0', '-430', '--session', 'forge-swipe-test', '--platform', 'ios', '--json',
+    ]);
+    await expect(executeSwipe('invalid-swipe', { x1: -1, y1: 650, x2: 200, y2: 220 }))
+      .rejects.toMatchObject({ code: 'PLUGIN_ACTION_ARGUMENT_INVALID' });
+    expect(calls.filter((args) => args[0] === 'gesture')).toHaveLength(2);
   });
 });
 
