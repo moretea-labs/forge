@@ -4,11 +4,21 @@ using System.IO;
 using System.Threading.Tasks;
 
 public class ForgeComputerWslRelay {
+  private static void Pump(Stream source, Stream destination) {
+    var buffer = new byte[4096];
+    while (true) {
+      var count = source.Read(buffer, 0, buffer.Length);
+      if (count <= 0) return;
+      destination.Write(buffer, 0, count);
+      destination.Flush();
+    }
+  }
+
   public static int Main(string[] args) {
     var wsl = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "wsl.exe");
     var process = new Process();
     process.StartInfo.FileName = wsl;
-    process.StartInfo.Arguments = "-e /bin/sh -lc \"exec /usr/bin/env node \"$HOME/.forge/controller/computer/chatgpt-native-host.mjs\"\"";
+    process.StartInfo.Arguments = "-e /bin/sh -lc \"exec /usr/bin/env node \\\"$HOME/.forge/controller/computer/chatgpt-native-host.mjs\\\"\"";
     process.StartInfo.CreateNoWindow = true;
     process.StartInfo.UseShellExecute = false;
     process.StartInfo.RedirectStandardInput = true;
@@ -17,12 +27,12 @@ public class ForgeComputerWslRelay {
     try {
       process.Start();
       var input = Task.Run(() => {
-        try { Console.OpenStandardInput().CopyTo(process.StandardInput.BaseStream); }
+        try { Pump(Console.OpenStandardInput(), process.StandardInput.BaseStream); }
         catch (IOException) {}
         finally { try { process.StandardInput.Close(); } catch {} }
       });
       var output = Task.Run(() => {
-        try { process.StandardOutput.BaseStream.CopyTo(Console.OpenStandardOutput()); }
+        try { Pump(process.StandardOutput.BaseStream, Console.OpenStandardOutput()); }
         catch (IOException) {}
       });
       var errors = Task.Run(() => {
