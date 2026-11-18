@@ -176,7 +176,7 @@
   "dependencies": {
     "commander": "^14.0.3",
     "express": "^5.2.1",
-    "playwright": "^1.54.1",
+    "playwright": "^1.65.0",
     "typescript": "^6.0.3",
     "@modelcontextprotocol/client": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
