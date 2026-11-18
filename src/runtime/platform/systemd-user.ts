@@ -1,6 +1,6 @@
 import { writeAtomicTextFile } from '../shared/atomic-text-file';
 import { spawnSync, type SpawnSyncReturns } from 'child_process';
-import { existsSync, rmSync } from 'fs';
+import { existsSync, readFileSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -101,6 +101,39 @@ export function systemdUserServicePid(unitName: string, env: NodeJS.ProcessEnv =
   if (result.status !== 0) return undefined;
   const pid = Number(result.stdout.trim());
   return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+export function systemdCgroupContainsPid(serviceCgroup: string, processCgroupContent: string): boolean {
+  const servicePath = serviceCgroup.trim().replace(/\/+$/, '');
+  if (!servicePath.startsWith('/') || servicePath === '/') return false;
+  return processCgroupContent.split(/\r?\n/).some((line) => {
+    const separator = line.lastIndexOf(':');
+    if (separator < 0) return false;
+    const processPath = line.slice(separator + 1).trim().replace(/\/+$/, '');
+    return processPath === servicePath || processPath.startsWith(`${servicePath}/`);
+  });
+}
+
+/** True only when the active user unit's cgroup contains this exact live PID. */
+export function systemdUserServiceOwnsPid(unitName: string, pid: number, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (process.platform !== 'linux' || !Number.isInteger(pid) || pid <= 0) return false;
+  const result = commandSucceeded('systemctl', [
+    '--user', 'show', '--property', 'ActiveState', '--property', 'MainPID', '--property', 'ControlGroup', systemdUserUnitName(unitName),
+  ], env);
+  if (result.status !== 0) return false;
+  const properties = new Map<string, string>();
+  for (const line of result.stdout.split(/\r?\n/)) {
+    const separator = line.indexOf('=');
+    if (separator > 0) properties.set(line.slice(0, separator), line.slice(separator + 1).trim());
+  }
+  const mainPid = Number(properties.get('MainPID'));
+  const serviceCgroup = properties.get('ControlGroup') ?? '';
+  if (properties.get('ActiveState') !== 'active' || !Number.isInteger(mainPid) || mainPid <= 0 || !serviceCgroup) return false;
+  try {
+    return systemdCgroupContainsPid(serviceCgroup, readFileSync(`/proc/${pid}/cgroup`, 'utf8'));
+  } catch {
+    return false;
+  }
 }
 
 export interface ExactSystemdUserUnitRetirementResult {

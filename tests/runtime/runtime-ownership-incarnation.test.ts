@@ -118,7 +118,7 @@ test('legacy incarnation cannot be migrated after its owner lease disappears', (
   expect(unchanged.executableFingerprint).toBeUndefined();
 });
 
-test('legacy Linux Runtime identity survives WSL clock correction only when the exact systemd MainPID still owns it', () => {
+test('legacy Linux Runtime identity survives WSL clock correction only when the exact systemd service cgroup owns it', () => {
   if (process.platform !== 'linux') return;
   const home = createControllerHome('forge-runtime-incarnation-wsl-clock-correction-');
   const legacy = defaultProcessIdentityProbe.legacyInspect?.(process.pid);
@@ -152,17 +152,18 @@ test('legacy Linux Runtime identity survives WSL clock correction only when the 
   }, null, 2));
 
   const expectedUnit = forgeRuntimePersistentServiceLabel(home);
-  const matchingSystemdPid = (unitName: string) => {
+  const matchingSystemdOwner = (unitName: string, pid: number) => {
     expect(unitName).toBe(expectedUnit);
-    return process.pid;
+    expect(pid).toBe(process.pid);
+    return true;
   };
-  expect(inspectRuntimeOwnership(home, matchingSystemdPid)).toMatchObject({ coherent: true, ownerAlive: true, incarnationAlive: true });
-  expect(migrateRuntimeIncarnationProcessIdentity(home, matchingSystemdPid)).toMatchObject({ ok: true, changed: false });
-  expect(inspectRuntimeOwnership(home, () => process.pid + 1)).toMatchObject({ ownerAlive: false, incarnationAlive: false });
-  expect(runtimeOwnerProcessIdentityMatches({ ...owner, executableFingerprint: 'wrong-executable' }, home, () => process.pid)).toBe(false);
+  expect(inspectRuntimeOwnership(home, matchingSystemdOwner)).toMatchObject({ coherent: true, ownerAlive: true, incarnationAlive: true });
+  expect(migrateRuntimeIncarnationProcessIdentity(home, matchingSystemdOwner)).toMatchObject({ ok: true, changed: false });
+  expect(inspectRuntimeOwnership(home, () => false)).toMatchObject({ ownerAlive: false, incarnationAlive: false });
+  expect(runtimeOwnerProcessIdentityMatches({ ...owner, executableFingerprint: 'wrong-executable' }, home, () => true)).toBe(false);
 
   rmSync(runtimeOwnerPath(home), { force: true });
-  expect(inspectRuntimeOwnership(home, matchingSystemdPid)).toMatchObject({ ownerAlive: false, incarnationAlive: true });
+  expect(inspectRuntimeOwnership(home, matchingSystemdOwner)).toMatchObject({ ownerAlive: false, incarnationAlive: true });
 });
 
 test('new incarnation preserves exact live process identity after the owner lease disappears', () => {
