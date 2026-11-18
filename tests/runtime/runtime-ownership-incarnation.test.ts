@@ -336,6 +336,54 @@ test('orphan termination refuses legacy incarnation and changed OS identity', as
 });
 
 
+test('orphan termination rechecks owner lease after incarnation verification', async () => {
+  const home = createControllerHome('forge-runtime-incarnation-owner-race-');
+  const child = Bun.spawn([process.execPath, '-e', 'setInterval(() => {}, 1000)'], { stdout: 'ignore', stderr: 'ignore' });
+  const originalKill = process.kill;
+  let leaseCreated = false;
+  try {
+    const { defaultProcessIdentityProbe, executableFingerprint } = await import('../../src/runtime/shared/process-identity');
+    const childStart = defaultProcessIdentityProbe.startTime(child.pid);
+    const childCommand = defaultProcessIdentityProbe.command(child.pid);
+    const currentStart = defaultProcessIdentityProbe.startTime(process.pid);
+    const currentCommand = defaultProcessIdentityProbe.command(process.pid);
+    expect(childStart).toBeTruthy();
+    expect(childCommand).toBeTruthy();
+    expect(currentStart).toBeTruthy();
+    expect(currentCommand).toBeTruthy();
+    writeFileSync(runtimeIncarnationPath(home), JSON.stringify({
+      schemaVersion: 1, controllerHome: home, runtimeInstanceId: 'orphan',
+      pid: child.pid, fencingGeneration: 1, activatedAt: new Date().toISOString(),
+      processStartTime: childStart, executableFingerprint: executableFingerprint(childCommand!),
+    }));
+    process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+      if (pid === child.pid && signal === 0 && !leaseCreated) {
+        leaseCreated = true;
+        writeFileSync(runtimeOwnerPath(home), JSON.stringify({
+          schemaVersion: 2, runtimeInstanceId: 'new-owner', pid: process.pid,
+          acquiredAt: new Date().toISOString(), fencingGeneration: 2,
+          processStartTime: currentStart, executableFingerprint: executableFingerprint(currentCommand!),
+        }));
+      }
+      return originalKill.call(process, pid, signal);
+    }) as typeof process.kill;
+
+    const result = await terminateVerifiedRuntimeOwner(home);
+    expect(leaseCreated).toBe(true);
+    expect(result).toMatchObject({
+      ok: false, attempted: false, detail: 'RUNTIME_OWNER_APPEARED_DURING_STOP',
+      owner: { runtimeInstanceId: 'new-owner', pid: process.pid },
+    });
+    expect(child.exitCode).toBeNull();
+    expect(inspectRuntimeOwnership(home)).toMatchObject({ ownerAlive: true, incarnationAlive: false, coherent: false });
+    expect(defaultProcessIdentityProbe.startTime(child.pid)).toBe(childStart);
+  } finally {
+    process.kill = originalKill;
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    await child.exited;
+  }
+});
+
 test('orphan termination refuses to supersede a still-present owner lease', async () => {
   const home = createControllerHome('forge-runtime-incarnation-active-owner-');
   const ownership = acquireRuntimeOwnership(home, 'runtime-active-owner');
