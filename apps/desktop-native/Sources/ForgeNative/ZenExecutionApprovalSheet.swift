@@ -1,5 +1,57 @@
 import SwiftUI
 
+struct ZenExecutionAuthorizationSnapshot: Equatable {
+    let authorized: Bool
+    let provider: String?
+    let providerReady: Bool
+    let model: String?
+    let runtimeActive: Bool
+    let requiresReapproval: Bool
+    let requirementRevision: Int?
+    let approvedRevision: Int?
+    let runStatus: String?
+    let runId: String?
+    let pendingProcessId: String?
+    let pendingCommandRequestId: String?
+    let stopReason: String?
+    let currentPlanId: String?
+    let promptTokens: Int
+    let completionTokens: Int
+    let totalTokens: Int
+    let maxTotalTokens: Int?
+    let turns: Int
+    let maxTurns: Int?
+    let toolCalls: Int
+    let maxToolCalls: Int?
+    let checkpointPlanIds: [String]
+
+    init(_ status: AutopilotStatusDetail) {
+        authorized = status.authorized
+        provider = status.provider
+        providerReady = status.providerReady
+        model = status.model
+        runtimeActive = status.runtimeActive
+        requiresReapproval = status.requiresReapproval
+        requirementRevision = status.requirementRevision
+        approvedRevision = status.approvedRevision
+        runStatus = status.runStatus
+        runId = status.runId
+        pendingProcessId = status.pendingProcessId
+        pendingCommandRequestId = status.pendingCommandRequestId
+        stopReason = status.stopReason
+        currentPlanId = status.currentPlanId
+        promptTokens = status.promptTokens
+        completionTokens = status.completionTokens
+        totalTokens = status.totalTokens
+        maxTotalTokens = status.maxTotalTokens
+        turns = status.turns
+        maxTurns = status.maxTurns
+        toolCalls = status.toolCalls
+        maxToolCalls = status.maxToolCalls
+        checkpointPlanIds = status.checkpointPlanIds
+    }
+}
+
 struct ZenExecutionApproval: Identifiable {
     let projectId: String
     let contextGeneration: Int
@@ -7,12 +59,21 @@ struct ZenExecutionApproval: Identifiable {
     let checkoutId: String
     let projectLabel: String
     let checkoutLabel: String
+    let repositoryAccessMode: String
     let requirement: RequirementRecordDetail
     let status: AutopilotStatusDetail
     let plans: [ForgeRecord]
 
+    var repositoryAccessLabel: String {
+        repositoryAccessMode == "full_access" ? "完全访问" : "请求权限"
+    }
+
+    func matchesRepositoryAccessMode(_ currentMode:String) -> Bool {
+        repositoryAccessMode == currentMode
+    }
+
     var id: String {
-        "\(projectId)|\(contextGeneration)|\(repoId)|\(checkoutId)|\(requirement.requirementId)|\(requirement.revision)"
+        "\(projectId)|\(contextGeneration)|\(repoId)|\(checkoutId)|\(requirement.requirementId)|\(requirement.revision)|\(repositoryAccessMode)"
     }
 
     func matchesCurrentContext(
@@ -20,6 +81,24 @@ struct ZenExecutionApproval: Identifiable {
     ) -> Bool {
         self.projectId == projectId && self.repoId == repoId
             && self.checkoutId == checkoutId && self.contextGeneration == contextGeneration
+    }
+
+    func matchesAuthorizationStatus(_ current: AutopilotStatusDetail) -> Bool {
+        ZenExecutionAuthorizationSnapshot(status) == ZenExecutionAuthorizationSnapshot(current)
+    }
+
+    var budgetRefreshOnly: Bool {
+        !status.requiresReapproval && status.needsBudgetRenewal
+    }
+
+    var stalePausedRun: Bool {
+        status.requiresReapproval && status.runStatus == "paused"
+    }
+
+    var runAllowsAuthorization: Bool {
+        guard !status.runtimeActive, status.runStatus != "running" else { return false }
+        if status.runStatus == "paused" { return budgetRefreshOnly || stalePausedRun }
+        return true
     }
 }
 
@@ -59,36 +138,25 @@ struct ZenExecutionApprovalSheet: View {
         )
     }
 
+    private var repositoryAccessIsCurrent: Bool {
+        !model.repositoryAccessLoading
+            && approval.matchesRepositoryAccessMode(model.repositoryAccessMode)
+    }
+
     private var statusIsCurrent: Bool {
-        guard let latest=model.planningAutopilotStatuses[approval.requirement.requirementId] else { return false }
-        return latest.requirementRevision == approval.status.requirementRevision
-            && latest.runId == approval.status.runId && latest.runStatus == approval.status.runStatus
-            && latest.authorized == approval.status.authorized && latest.requiresReapproval == approval.status.requiresReapproval
-            && latest.pendingProcessId == approval.status.pendingProcessId
-            && latest.pendingCommandRequestId == approval.status.pendingCommandRequestId
-            && latest.maxTotalTokens == approval.status.maxTotalTokens && latest.maxTurns == approval.status.maxTurns
-            && latest.maxToolCalls == approval.status.maxToolCalls && latest.checkpointPlanIds == approval.status.checkpointPlanIds
+        guard let latest = model.planningAutopilotStatuses[approval.requirement.requirementId] else { return false }
+        return approval.matchesAuthorizationStatus(latest)
     }
 
     private var outcomeUnknown: Bool {
         model.autopilotOutcomeUnknown(for:approval.requirement.requirementId)
     }
 
-    private var budgetRefreshOnly: Bool {
-        !approval.status.requiresReapproval
-            && approval.status.runStatus == "paused"
-            && ["max_total_tokens_reached", "max_turns_reached", "max_tool_calls_reached"].contains(approval.status.stopReason ?? "")
-    }
+    private var budgetRefreshOnly: Bool { approval.budgetRefreshOnly }
 
-    private var stalePausedRun: Bool {
-        approval.status.requiresReapproval && approval.status.runStatus == "paused"
-    }
+    private var stalePausedRun: Bool { approval.stalePausedRun }
 
-    private var runAllowsAuthorization: Bool {
-        if approval.status.runStatus == "running" { return false }
-        if approval.status.runStatus == "paused" { return budgetRefreshOnly || stalePausedRun }
-        return true
-    }
+    private var runAllowsAuthorization: Bool { approval.runAllowsAuthorization }
 
     private var tokenMinimum: Int {
         budgetRefreshOnly ? min(500_000, max(1_000, approval.status.maxTotalTokens ?? 50_000)) : 1_000
@@ -109,7 +177,9 @@ struct ZenExecutionApprovalSheet: View {
     }
 
     private var canApprove: Bool {
-        revisionIsCurrent && scopeIsCurrent && statusIsCurrent && approval.status.providerReady && runAllowsAuthorization
+        revisionIsCurrent && scopeIsCurrent && repositoryAccessIsCurrent && statusIsCurrent
+            && approval.status.providerReady && runAllowsAuthorization
+            && !model.autopilotLoading && !model.autopilotControlPending
             && acknowledged && !saving && !outcomeUnknown && !staleRevision
     }
 
@@ -175,6 +245,7 @@ struct ZenExecutionApprovalSheet: View {
                     ForgeClientFormSection(title: "执行范围") {
                         ForgeClientMetadataRow(label: "项目", value: approval.projectLabel)
                         ForgeClientMetadataRow(label: "Checkout", value: approval.checkoutLabel)
+                        ForgeClientMetadataRow(label: "仓库权限", value: approval.repositoryAccessLabel)
                         ForgeClientMetadataRow(label: "Provider", value: "\(providerLabel) · \(approval.status.model ?? "默认模型")")
                     }
 
@@ -239,11 +310,17 @@ struct ZenExecutionApprovalSheet: View {
                     } else if !scopeIsCurrent {
                         Label("项目或 Checkout 已切换，请重新打开批准面板。", systemImage: "exclamationmark.triangle")
                             .font(ForgeClientDesign.Typography.supporting).foregroundStyle(.orange)
+                    } else if model.repositoryAccessLoading {
+                        Label("正在读取仓库权限，请稍候。",systemImage:"hourglass")
+                            .font(ForgeClientDesign.Typography.supporting).foregroundStyle(.orange)
+                    } else if !repositoryAccessIsCurrent {
+                        Label("仓库权限已变化，请关闭并重新打开批准面板。",systemImage:"exclamationmark.triangle")
+                            .font(ForgeClientDesign.Typography.supporting).foregroundStyle(.orange)
                     } else if !approval.status.providerReady {
                         Label("当前 Provider 凭据未就绪，暂时无法批准执行。", systemImage: "exclamationmark.triangle")
                             .font(ForgeClientDesign.Typography.supporting).foregroundStyle(.orange)
-                    } else if approval.status.runStatus == "running" {
-                        Label("当前执行仍在运行，请先暂停后再重新批准。", systemImage: "pause.circle")
+                    } else if approval.status.runtimeActive || approval.status.runStatus == "running" {
+                        Label("当前执行尚未结束，请等待运行结束后再重新批准。", systemImage: "pause.circle")
                             .font(ForgeClientDesign.Typography.supporting).foregroundStyle(.orange)
                     } else if approval.status.runStatus == "paused" && !runAllowsAuthorization {
                         Label("当前运行正在等待人工验收，请先处理该节点。", systemImage: "exclamationmark.triangle")
@@ -301,6 +378,19 @@ struct ZenExecutionApprovalSheet: View {
         model.error = nil
         model.planningAutopilotStatusError = nil
         Task {
+            let refreshed = await model.loadAutopilotStatus(approval.requirement.requirementId)
+            guard refreshed else {
+                saving = false
+                errorMessage = model.error ?? model.planningAutopilotStatusError ?? "执行状态刷新失败，请稍后重试。"
+                return
+            }
+            guard revisionIsCurrent,scopeIsCurrent,repositoryAccessIsCurrent,
+                  statusIsCurrent,approval.status.providerReady,runAllowsAuthorization,
+                  !outcomeUnknown else {
+                saving = false
+                errorMessage = "执行状态、Provider 或权限范围已变化，请关闭并重新打开批准面板。"
+                return
+            }
             let succeeded = await model.controlAutopilot(
                 requirementId: approval.requirement.requirementId,
                 operation: "authorize",

@@ -414,6 +414,7 @@ final class ZenProposalTests: XCTestCase {
             projectId:"project-one",contextGeneration:7,
             repoId:"repo-one",checkoutId:"checkout-one",
             projectLabel:"Project one",checkoutLabel:"main",
+            repositoryAccessMode:"request",
             requirement:requirement,status:status,plans:[]
         )
         XCTAssertTrue(approval.matchesCurrentContext(
@@ -428,6 +429,119 @@ final class ZenProposalTests: XCTestCase {
         XCTAssertFalse(approval.matchesCurrentContext(
             projectId:"project-one",repoId:"repo-two",checkoutId:"checkout-one",contextGeneration:7
         ))
+        XCTAssertTrue(approval.matchesRepositoryAccessMode("request"))
+        XCTAssertFalse(approval.matchesRepositoryAccessMode("full_access"))
+        XCTAssertEqual(approval.repositoryAccessLabel,"请求权限")
+    }
+
+    func testZenExecutionApprovalAuthorizationSnapshotInvalidatesEveryDecisionInput() throws {
+        func status(
+            providerReady: Bool = true, provider: String = "deepseek", model: String = "deepseek-chat",
+            runtimeActive: Bool = false, authorized: Bool = true, requiresReapproval: Bool = false,
+            requirementRevision: Int = 3, approvedRevision: Int = 3,
+            runStatus: String = "paused", runId: String = "run-one",
+            pendingProcessId: String? = nil, pendingCommandRequestId: String? = nil,
+            stopReason: String = "max_total_tokens_reached", currentPlanId: String = "PLAN-a",
+            promptTokens: Int = 100, completionTokens: Int = 50, totalTokens: Int = 150,
+            maxTotalTokens: Int = 50_000, turns: Int = 2, maxTurns: Int = 12,
+            toolCalls: Int = 3, maxToolCalls: Int = 32, checkpointPlanIds: [String] = ["PLAN-a"],
+            lastSummary: String = "summary", evidenceRefs: [String] = ["commit:abc"],
+            updatedAt: String = "2026-11-18T09:00:00Z"
+        ) throws -> AutopilotStatusDetail {
+            var run: [String: Any] = [
+                "runId": runId, "status": runStatus, "stopReason": stopReason,
+                "currentPlanId": currentPlanId, "lastSummary": lastSummary,
+                "evidenceRefs": evidenceRefs, "updatedAt": updatedAt,
+                "usage": [
+                    "promptTokens": promptTokens, "completionTokens": completionTokens,
+                    "totalTokens": totalTokens, "turns": turns, "toolCalls": toolCalls
+                ]
+            ]
+            if let pendingProcessId { run["pendingProcessId"] = pendingProcessId }
+            if let pendingCommandRequestId { run["pendingCommandRequestId"] = pendingCommandRequestId }
+            var data: [String: Any] = [
+                "providerReady": providerReady, "runtimeActive": runtimeActive,
+                "requiresReapproval": requiresReapproval,
+                "requirementRevision": requirementRevision, "approvedRevision": approvedRevision,
+                "policy": [
+                    "provider": provider, "model": model, "maxTotalTokens": maxTotalTokens,
+                    "maxTurns": maxTurns, "maxToolCalls": maxToolCalls,
+                    "checkpointPlanIds": checkpointPlanIds
+                ],
+                "run": run
+            ]
+            if authorized { data["grant"] = ["grantId": "grant-one"] }
+            return try XCTUnwrap(NativeWorkspace.autopilotStatusDetail(["data": data]))
+        }
+
+        let requirement = RequirementRecordDetail(
+            requirementId: "REQ-one", revision: 3, title: "Requirement", outcomeStatement: "Ship safely",
+            state: "open", acceptanceCriteria: ["Works"], progressSummary: "", remainingWork: [],
+            acceptedEvidenceRefs: [], taskStatus: nil, priority: nil, assignee: nil,
+            dependencyRequirementIds: [], dependencyRequirements: [], blockingDependencyIds: [],
+            dependentRequirements: nil, dependentRequirementsTruncated: nil, dependentRequirementCount: nil
+        )
+        let baseline = try status()
+        let approval = ZenExecutionApproval(
+            projectId: "project-one", contextGeneration: 7,
+            repoId: "repo-one", checkoutId: "checkout-one",
+            projectLabel: "Project one", checkoutLabel: "main",
+            repositoryAccessMode: "request",
+            requirement: requirement, status: baseline, plans: []
+        )
+
+        XCTAssertTrue(approval.matchesAuthorizationStatus(baseline))
+        let changed: [(String, AutopilotStatusDetail)] = [
+            ("provider readiness", try status(providerReady: false)),
+            ("provider", try status(provider: "openai")),
+            ("model", try status(model: "other-model")),
+            ("runtime activity", try status(runtimeActive: true)),
+            ("grant presence", try status(authorized: false)),
+            ("reapproval requirement", try status(requiresReapproval: true)),
+            ("Requirement revision", try status(requirementRevision: 4)),
+            ("approved revision", try status(approvedRevision: 2)),
+            ("run status", try status(runStatus: "running")),
+            ("run identity", try status(runId: "run-two")),
+            ("pending Process", try status(pendingProcessId: "proc-one")),
+            ("pending command", try status(pendingCommandRequestId: "request-one")),
+            ("stop reason", try status(stopReason: "human_checkpoint:PLAN-a")),
+            ("current Plan", try status(currentPlanId: "PLAN-b")),
+            ("prompt usage", try status(promptTokens: 101)),
+            ("completion usage", try status(completionTokens: 51)),
+            ("total usage", try status(totalTokens: 151)),
+            ("token limit", try status(maxTotalTokens: 60_000)),
+            ("turn usage", try status(turns: 3)),
+            ("turn limit", try status(maxTurns: 13)),
+            ("tool usage", try status(toolCalls: 4)),
+            ("tool limit", try status(maxToolCalls: 33)),
+            ("checkpoint Plans", try status(checkpointPlanIds: ["PLAN-b"]))
+        ]
+        for (field, current) in changed {
+            XCTAssertFalse(approval.matchesAuthorizationStatus(current), "\(field) changes must invalidate approval")
+        }
+
+        XCTAssertTrue(approval.matchesAuthorizationStatus(try status(
+            lastSummary: "new summary", evidenceRefs: ["commit:def"], updatedAt: "2026-11-18T10:00:00Z"
+        )), "Non-authorization display metadata must not stale an otherwise identical approval")
+
+        XCTAssertTrue(approval.runAllowsAuthorization, "A budget-paused run may renew its budget")
+        let active = ZenExecutionApproval(
+            projectId: "project-one", contextGeneration: 7,
+            repoId: "repo-one", checkoutId: "checkout-one",
+            projectLabel: "Project one", checkoutLabel: "main",
+            repositoryAccessMode: "request",
+            requirement: requirement, status: try status(runtimeActive: true), plans: []
+        )
+        XCTAssertFalse(active.runAllowsAuthorization, "An active runtime must never be re-authorized")
+
+        let checkpoint = ZenExecutionApproval(
+            projectId: "project-one", contextGeneration: 7,
+            repoId: "repo-one", checkoutId: "checkout-one",
+            projectLabel: "Project one", checkoutLabel: "main",
+            repositoryAccessMode: "request",
+            requirement: requirement, status: try status(stopReason: "human_checkpoint:PLAN-a"), plans: []
+        )
+        XCTAssertFalse(checkpoint.runAllowsAuthorization, "A human checkpoint must be reviewed, not re-authorized")
     }
 
     @MainActor

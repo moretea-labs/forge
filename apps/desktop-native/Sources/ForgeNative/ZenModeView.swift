@@ -1330,8 +1330,9 @@ struct ZenWorkspacePane: View {
                   model.selectedRecord == item.id,
                   case .requirement(let detail)=model.recordDetail,
                   detail.requirementId == item.recordId,Self.requirementAllowsActions(detail.state) else { return }
-            await model.loadAutopilotStatus(item.recordId)
-            guard model.selectedProjectId == activeProjectId,
+            let statusLoaded = await model.loadAutopilotStatus(item.recordId)
+            guard statusLoaded,
+                  model.selectedProjectId == activeProjectId,
                   model.projectContextGeneration == activeContextGeneration,
                   model.repoId == activeRepoId,model.checkoutId == activeCheckoutId,
                   model.selectedRecord == item.id,
@@ -1339,6 +1340,10 @@ struct ZenWorkspacePane: View {
                   let status=model.autopilotStatus else { return }
             guard status.requirementRevision == detail.revision else {
                 model.error="需求已变化，请刷新后重新批准。"
+                return
+            }
+            guard !model.repositoryAccessLoading else {
+                model.error="正在读取仓库权限，请稍后重新打开批准面板。"
                 return
             }
             let plans=model.records.filter {
@@ -1351,6 +1356,7 @@ struct ZenWorkspacePane: View {
                 checkoutId:activeCheckoutId,
                 projectLabel:model.project?.displayName ?? activeRepoId,
                 checkoutLabel:model.checkoutBranch ?? activeCheckoutId,
+                repositoryAccessMode:model.repositoryAccessMode,
                 requirement:detail,
                 status:status,
                 plans:plans

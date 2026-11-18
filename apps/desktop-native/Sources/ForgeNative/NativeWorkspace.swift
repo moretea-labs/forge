@@ -3946,15 +3946,15 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
-    func loadAutopilotStatus(_ requirementId:String) async {
+    func loadAutopilotStatus(_ requirementId:String) async -> Bool {
         guard let repoId,let checkoutId,
               let selectionId=selectedRecord,
               let selected=records.first(where:{$0.id == selectionId}),
               selected.kind == .requirement,selected.recordId == requirementId else {
             invalidateAutopilotRequests()
-            return
+            return false
         }
-        guard !autopilotLoading,!autopilotControlPending else { return }
+        guard !autopilotLoading,!autopilotControlPending else { return false }
         let projectId=selectedProjectId
         let requestGeneration=beginAutopilotRequest()
         let contextGeneration=projectContextGeneration
@@ -3980,19 +3980,21 @@ final class NativeWorkspace: ObservableObject {
             clearAutopilotOutcomeUnknownMessage(for:requirementId)
             guard autopilotRequestIsCurrent(
                 requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
-            ),self.selectedRecord == selectionId else { return }
+            ),self.selectedRecord == selectionId else { return false }
             autopilotStatus=parsed
             planningAutopilotStatuses[requirementId]=parsed
             planningAutopilotStatusError=nil
+            return true
         } catch {
             guard autopilotRequestIsCurrent(
                 requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
-            ),self.selectedRecord == selectionId else { return }
+            ),self.selectedRecord == selectionId else { return false }
             autopilotStatus=nil
             planningAutopilotStatuses.removeValue(forKey:requirementId)
             self.error=autopilotOutcomeUnknown(for:requirementId)
                 ? "操作结果未确认（\(requirementId)）。状态读回仍失败：\(error.localizedDescription)。请勿重复提交。"
                 : error.localizedDescription
+            return false
         }
     }
 
@@ -4172,9 +4174,10 @@ final class NativeWorkspace: ObservableObject {
                 guard let parsed=Self.requirementDetail(result) else { throw ForgeBridgeError.invalidResponse }
                 recordDetail = .requirement(parsed)
                 if targetRepoId != nil,targetCheckoutId != nil {
-                    await loadAutopilotStatus(record.recordId)
+                    let statusLoaded = await loadAutopilotStatus(record.recordId)
                     guard self.selectedProjectId == projectId,self.projectRepositoryId == targetRepoId,
                           self.checkoutId == targetCheckoutId,self.selectedRecord == selectionId else { return }
+                    guard statusLoaded else { return }
                 }
             }
             error=nil
