@@ -177,6 +177,7 @@ struct AgentLiveActivityEvent: Codable, Identifiable {
     let completedAt: String?
     let toolCallId: String?
     var output: String? = nil
+    var outputTruncated: Bool? = nil
     var id: String { toolCallId ?? "\(startedAt)|\(phase)|\(label)|\(detail ?? "")" }
 }
 
@@ -5323,12 +5324,21 @@ final class NativeWorkspace: ObservableObject {
             || receiptCoverageUnverified
     }
 
-    nonisolated static func activityOutputText(for event:AgentLiveActivityEvent) -> String? {
-        guard let output=event.output, !output.isEmpty else { return nil }
+    nonisolated static func activityOutputPresentation(
+        for event:AgentLiveActivityEvent
+    ) -> (text:String,truncationLabel:String?)? {
+        guard let output=event.output,!output.isEmpty else { return nil }
+        let knownTruncated=event.outputTruncated == true
+        let mayBeTruncatedAtLimit=event.outputTruncated != true && output.count == 2_000
+        let truncationLabel=knownTruncated
+            ? "输出已截断 · 仅保留前 2,000 字符"
+            : mayBeTruncatedAtLimit ? "输出达到 2,000 字符上限，可能已截断" : nil
         guard event.label == "run_command",
               let data=output.data(using:.utf8),
               let payload=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any],
-              let result=payload["result"] as? [String:Any] else { return output }
+              let result=payload["result"] as? [String:Any] else {
+            return (output,truncationLabel)
+        }
 
         var sections:[String] = []
         if let stdout=result["stdoutTail"] as? String, !stdout.isEmpty {
@@ -5345,8 +5355,23 @@ final class NativeWorkspace: ObservableObject {
         }
         if result["timedOut"] as? Bool == true { sections.append("Timed out") }
         if result["cancelled"] as? Bool == true { sections.append("Cancelled") }
-        guard !sections.isEmpty else { return output }
-        return String(sections.joined(separator:"\n\n").prefix(2_000))
+        guard !sections.isEmpty else { return (output,truncationLabel) }
+        let combined=sections.joined(separator:"\n\n")
+        let transformedTruncated=combined.count > 2_000
+        let transformedMayBeTruncated=combined.count == 2_000
+        let label=(knownTruncated || transformedTruncated)
+            ? "输出已截断 · 仅保留前 2,000 字符"
+            : (mayBeTruncatedAtLimit || transformedMayBeTruncated)
+                ? "输出达到 2,000 字符上限，可能已截断" : nil
+        return (String(combined.prefix(2_000)),label)
+    }
+
+    nonisolated static func activityOutputText(for event:AgentLiveActivityEvent) -> String? {
+        activityOutputPresentation(for:event)?.text
+    }
+
+    nonisolated static func activityOutputTruncationLabel(for event:AgentLiveActivityEvent) -> String? {
+        activityOutputPresentation(for:event)?.truncationLabel
     }
 
     nonisolated static func apiActivityEvents(_ raw: Any?) -> [AgentLiveActivityEvent]? {
@@ -5358,13 +5383,15 @@ final class NativeWorkspace: ObservableObject {
             let receiptStatus = row["status"] as? String
             let status = ["running","unknown"].contains(receiptStatus ?? "")
                 ? (receiptStatus ?? "unknown") : (ok ? "completed" : "failed")
+            let rawOutput=row["output"] as? String
             return AgentLiveActivityEvent(
                 phase:"tool", label:name,
                 detail:row["processId"] as? String ?? row["requestId"] as? String,
                 status:status,
                 startedAt:now, completedAt:["running","output"].contains(status) ? nil : now,
                 toolCallId:row["toolCallId"] as? String,
-                output:(row["output"] as? String).map { String($0.prefix(2_000)) }
+                output:rawOutput.map { String($0.prefix(2_000)) },
+                outputTruncated:rawOutput.map { $0.count > 2_000 }
             )
         }
         return events.isEmpty ? nil : events
@@ -5380,7 +5407,9 @@ final class NativeWorkspace: ObservableObject {
         let status = transportPhase == "started" ? "running" : transportPhase
         let toolCallId = payload["toolCallId"] as? String
         let detail = payload["processId"] as? String ?? payload["requestId"] as? String
-        let output = (payload["output"] as? String).map { String($0.prefix(2_000)) }
+        let rawOutput=payload["output"] as? String
+        let output=rawOutput.map { String($0.prefix(2_000)) }
+        let outputTruncated=rawOutput.map { $0.count > 2_000 }
         var events = existing
         let matchingIndex = events.lastIndex { event in
             if let toolCallId {
@@ -5397,7 +5426,8 @@ final class NativeWorkspace: ObservableObject {
                 status:status, startedAt:started.startedAt,
                 completedAt:["running","output"].contains(status) ? nil : now,
                 toolCallId:toolCallId ?? started.toolCallId,
-                output:output ?? started.output
+                output:output ?? started.output,
+                outputTruncated:outputTruncated ?? started.outputTruncated
             )
             return events
         }
@@ -5409,7 +5439,7 @@ final class NativeWorkspace: ObservableObject {
             phase:"tool", label:name,
             detail:detail, status:status,
             startedAt:now, completedAt:["running","output"].contains(status) ? nil : now,
-            toolCallId:toolCallId, output:output
+            toolCallId:toolCallId, output:output, outputTruncated:outputTruncated
         ))
         return events
     }
@@ -5423,7 +5453,8 @@ final class NativeWorkspace: ObservableObject {
             return AgentLiveActivityEvent(
                 phase:event.phase, label:event.label, detail:event.detail,
                 status:"unknown", startedAt:event.startedAt, completedAt:now,
-                toolCallId:event.toolCallId, output:event.output
+                toolCallId:event.toolCallId, output:event.output,
+                outputTruncated:event.outputTruncated
             )
         }
     }
@@ -5532,7 +5563,8 @@ final class NativeWorkspace: ObservableObject {
                     detail:processId ?? receipt.detail,
                     status:receipt.status,startedAt:event.startedAt,
                     completedAt:receipt.completedAt,toolCallId:receipt.toolCallId,
-                    output:event.output ?? receipt.output
+                    output:event.output ?? receipt.output,
+                    outputTruncated:event.outputTruncated ?? receipt.outputTruncated
                 ))
             } else {
                 // Missing canonical receipt is an unknown outcome, never
@@ -5541,7 +5573,7 @@ final class NativeWorkspace: ObservableObject {
                     phase:event.phase,label:event.label,detail:event.detail,
                     status:"unknown",startedAt:event.startedAt,
                     completedAt:event.completedAt,toolCallId:event.toolCallId,
-                    output:event.output
+                    output:event.output,outputTruncated:event.outputTruncated
                 ))
             }
         }
