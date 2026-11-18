@@ -899,6 +899,18 @@
       "module": "browser",
       "resource": "pure"
     },
+    "tests/runtime/computer-chatgpt-extension-preflight.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
+    "tests/runtime/computer-chatgpt-extension-socket.test.ts": {
+      "module": "browser",
+      "resource": "process-tree"
+    },
+    "tests/runtime/computer-chatgpt-extension-worker.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
     "tests/runtime/computer-interaction-target.test.ts": {
       "module": "browser",
       "resource": "controller-home-isolated"
