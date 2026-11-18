@@ -270,6 +270,10 @@
       "module": "controller",
       "resource": "controller-home-isolated"
     },
+    "tests/cli/chatgpt-browser-bridge-provider.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
     "tests/cli/local-bridge.test.ts": {
       "module": "controller",
       "resource": "fixed-port"
