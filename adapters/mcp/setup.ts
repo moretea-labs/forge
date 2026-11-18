@@ -727,15 +727,18 @@ export function runMcpDoctor(opts: {
                   })`
                 : `not running (${runtimeObservation.reasonCodes.join(", ") || "no runtime status published"})`
             }`,
-            ...(runtimeState
-              ? [
-                  `[forge mcp] ChatGPT connector service: ${runtimeState.status} (local=${runtimeState.server.healthy ? "ok" : "down"}${
-                    runtimeState.tunnelMode !== "none"
-                      ? `, public=${runtimeState.tunnel?.healthy ? "ok" : "down"} via ${runtimeState.tunnelMode}`
-                      : ""
-                  })`,
-                ]
-              : []),
+            `[forge mcp] MCP Gateway: ${runtimeState
+              ? `${runtimeState.status} (local=${runtimeState.server.healthy ? "healthy" : runtimeState.server.running ? "unhealthy" : "stopped"})`
+              : "unknown (no service state recorded)"
+            }`,
+            `[forge mcp] Public Tunnel: ${!runtimeState
+              ? "unknown (no service state recorded)"
+              : runtimeState.tunnelMode === "none"
+                ? "not configured"
+                : !runtimeState.tunnel
+                  ? `${runtimeState.tunnelMode} (state unavailable)`
+                  : `${runtimeState.tunnelMode} (${runtimeState.tunnel.running ? "running" : "stopped"}, public=${runtimeState.tunnel.healthy === true ? "ok" : runtimeState.tunnel.healthy === false ? "down" : "unknown"})`
+            }`,
             ...(report.runtime?.connectorNeedsReconnect === true
               ? [
                   "[forge mcp] Runtime note: public quick tunnel URL changed; update the ChatGPT connector or switch to a named tunnel",
