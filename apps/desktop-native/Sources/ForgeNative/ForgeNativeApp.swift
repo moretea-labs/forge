@@ -1938,17 +1938,16 @@ private struct AgentPane: View {
                         followsLatestConversation = metrics.isNearBottom
                         return
                     }
-                    if metrics.isNearBottom {
-                        followsLatestConversation = true
-                        return
-                    }
                     if metrics.offset < previous.offset - 2 {
                         followsLatestConversation = false
                         return
                     }
-                    let contentGrew = metrics.contentHeight > previous.contentHeight + 1
-                    if contentGrew && previous.isNearBottom {
+                    if metrics.offset > previous.offset + 2 && metrics.isNearBottom {
                         followsLatestConversation = true
+                    }
+                    let contentGrew = metrics.contentHeight > previous.contentHeight + 1
+                    if contentGrew {
+                        guard followsLatestConversation else { return }
                         Task { @MainActor in
                             await Task.yield()
                             guard followsLatestConversation else { return }
@@ -1956,6 +1955,10 @@ private struct AgentPane: View {
                                 reader.scrollTo("pending",anchor:.bottom)
                             }
                         }
+                        return
+                    }
+                    if metrics.isNearBottom {
+                        followsLatestConversation = true
                     }
                 }
                 .scrollIndicators(.automatic)
