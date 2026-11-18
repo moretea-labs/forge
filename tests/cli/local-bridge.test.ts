@@ -47,6 +47,7 @@ import { acquireControllerLock, releaseControllerLock } from "../../src/effects/
 import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { createMcpToolContext, callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
 import { createSchedule, saveOccurrence, saveSchedule } from "../../src/runtime/workflow/schedules/store";
+import { readWorkflowRun, writeWorkflowRunCheckpoint } from "../../src/runtime/control-plane/persistence/workflow-run-store";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
 
 const roots: string[] = [];
@@ -1101,43 +1102,120 @@ describe("Local Execution Bridge", () => {
     });
     expect(first.body.workflowRunId).toBeString();
 
-    const replay = await fetch(new URL("/mobile/intent", handle.url), {
+    // Simulate a process restart after the script Process succeeded but before the
+    // WorkflowRun success checkpoint/HTTP ACK was persisted.
+    const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
+    const registeredRepository = resolveRepositorySelection({ explicitPath: root, controllerHome });
+    const scopeId = `repository:${registeredRepository!.repoId}:checkout:${registeredRepository!.activeCheckoutId}:workflow:agentmail.mail-watch-event`;
+    const stored = readWorkflowRun(controllerHome, scopeId, first.body.workflowRunId);
+    expect(stored?.value.status).toBe("succeeded");
+    writeWorkflowRunCheckpoint({
+      controllerHome,
+      expectedRevision: stored!.revision,
+      inputs: event,
+      checkpoint: {
+        schemaVersion: 1,
+        binding: { scopeId, runId: first.body.workflowRunId },
+        workflowId: stored!.value.workflowId,
+        version: stored!.value.version,
+        contentDigest: stored!.value.contentDigest,
+        status: "running",
+        nextStepIndex: 0,
+        receipts: [],
+        outputs: {},
+        inFlightStepId: "validate-event",
+      },
+    });
+    await handle.close();
+    servers.splice(servers.indexOf(handle), 1);
+    const restarted = await startLocalBridgeServer({ repoRoot: root, port: 0 });
+    servers.push(restarted);
+
+    const replay = await fetch(new URL("/mobile/intent", restarted.url), {
       method: "POST",
       headers: signedHeaders(body, "agentmail-event-0002"),
       body,
     }).then(async (response) => ({ status: response.status, body: await response.json() }));
     expect(replay.status).toBe(202);
-    expect(replay.body).toMatchObject({ accepted: true, durable: true, deduplicated: true });
+    expect(replay.body).toMatchObject({
+      accepted: true,
+      durable: true,
+      deduplicated: true,
+      workflowId: "agentmail.mail-watch-event",
+      status: "succeeded",
+    });
     expect(replay.body.workflowRunId).toBe(first.body.workflowRunId);
+    expect(readWorkflowRun(controllerHome, scopeId, first.body.workflowRunId)?.value.status).toBe("succeeded");
+
+    const duplicate = await fetch(new URL("/mobile/intent", restarted.url), {
+      method: "POST",
+      headers: signedHeaders(body, "agentmail-event-0003"),
+      body,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(duplicate.status).toBe(202);
+    expect(duplicate.body).toMatchObject({ accepted: true, durable: true, deduplicated: true, status: "succeeded" });
+    expect(duplicate.body.workflowRunId).toBe(first.body.workflowRunId);
 
     const changedPayload = JSON.stringify({
       intent: "workflow_event",
       event: { ...event, summary: { ...event.summary, sender_email: "different@example.com" } },
     });
-    const conflict = await fetch(new URL("/mobile/intent", handle.url), {
+    const conflict = await fetch(new URL("/mobile/intent", restarted.url), {
       method: "POST",
-      headers: signedHeaders(changedPayload, "agentmail-event-0003"),
+      headers: signedHeaders(changedPayload, "agentmail-event-0004"),
       body: changedPayload,
     }).then(async (response) => ({ status: response.status, body: await response.json() }));
     expect(conflict.status).toBe(409);
-    expect(conflict.body.error).toBe("WORKFLOW_RUN_IDENTITY_CONFLICT");
+    expect(conflict.body).toMatchObject({ accepted: false, error: "WORKFLOW_RUN_IDENTITY_CONFLICT" });
+
+    const succeededRun = readWorkflowRun(controllerHome, scopeId, first.body.workflowRunId);
+    expect(succeededRun?.value.status).toBe("succeeded");
+    writeWorkflowRunCheckpoint({
+      controllerHome,
+      expectedRevision: succeededRun!.revision,
+      inputs: event,
+      checkpoint: {
+        schemaVersion: 1,
+        binding: { scopeId, runId: first.body.workflowRunId },
+        workflowId: succeededRun!.value.workflowId,
+        version: succeededRun!.value.version,
+        contentDigest: succeededRun!.value.contentDigest,
+        status: "failed",
+        nextStepIndex: 0,
+        receipts: [],
+        outputs: {},
+      },
+    });
+    const failedReplay = await fetch(new URL("/mobile/intent", restarted.url), {
+      method: "POST",
+      headers: signedHeaders(body, "agentmail-event-0007"),
+      body,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(failedReplay.status).toBe(503);
+    expect(failedReplay.body).toMatchObject({
+      accepted: false,
+      durable: true,
+      signatureVerified: true,
+      status: "WORKFLOW_RUN_FAILED_RESTART_REQUIRES_NEW_RUN_ID",
+      workflowRunId: first.body.workflowRunId,
+    });
 
     const unsafePayload = JSON.stringify({
       intent: "workflow_event",
       event: { ...event, summary: { ...event.summary, body_text: "OTP 123456" } },
     });
-    const unsafe = await fetch(new URL("/mobile/intent", handle.url), {
+    const unsafe = await fetch(new URL("/mobile/intent", restarted.url), {
       method: "POST",
-      headers: signedHeaders(unsafePayload, "agentmail-event-0004"),
+      headers: signedHeaders(unsafePayload, "agentmail-event-0005"),
       body: unsafePayload,
     }).then(async (response) => ({ status: response.status, body: await response.json() }));
     expect(unsafe.status).toBe(400);
     expect(unsafe.body.error).toContain("MOBILE_INTENT_EVENT_FIELD_UNSUPPORTED");
 
     const oversizedPayload = JSON.stringify({ intent: "workflow_event", event: { ...event, event_id: "x".repeat(4097) } });
-    const oversized = await fetch(new URL("/mobile/intent", handle.url), {
+    const oversized = await fetch(new URL("/mobile/intent", restarted.url), {
       method: "POST",
-      headers: signedHeaders(oversizedPayload, "agentmail-event-0005"),
+      headers: signedHeaders(oversizedPayload, "agentmail-event-0006"),
       body: oversizedPayload,
     }).then(async (response) => ({ status: response.status, body: await response.json() }));
     expect(oversized.status).toBe(400);
