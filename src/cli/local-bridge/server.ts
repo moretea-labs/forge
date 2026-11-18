@@ -7,6 +7,7 @@ import express, {
   type Response,
 } from "express";
 import { describeFailure } from "../../../packages/protocols/failure";
+import { ControllerLockContentionError, withControllerLock } from "../../effects/controller-locks";
 import {
   cancelAgentJob,
   getAgentJob,
@@ -195,11 +196,33 @@ function errorMessage(error: unknown): string {
 }
 
 function mobileIntentFailureResponse(error: unknown): { message: string; status: number } {
+  if (error instanceof ControllerLockContentionError) {
+    return { message: "MOBILE_INTENT_STORE_BUSY", status: 503 };
+  }
   const failure = describeFailure(error, {
     fallbackCode: 'MOBILE_INTENT_REQUEST_FAILED',
     fallbackHttpStatus: 400,
   });
   return { message: failure.message, status: failure.httpStatus ?? 400 };
+}
+
+function sendMobileIntentFailure(response: Response, error: unknown): void {
+  const failure = mobileIntentFailureResponse(error);
+  if (failure.status === 503) response.setHeader("Retry-After", "1");
+  response.status(failure.status).json({ error: failure.message });
+}
+
+function withMobileIntentStoreLock<T>(
+  controllerHome: string,
+  repoId: string,
+  operation: () => T,
+): T {
+  return withControllerLock(
+    controllerHome,
+    { scope: "repository", repoId },
+    "local-bridge:mobile-intent-store",
+    operation,
+  );
 }
 
 function localBridgeExecutionRetiredPayload(): Record<string, unknown> {
@@ -950,11 +973,13 @@ export async function startLocalBridgeServer(
 
   app.post("/mobile/v1/monitor/snapshot", (request, response) => {
     try {
-      const verified = verifyMobileIntentRequest(repoRoot, request);
+      const selected = repository;
+      const verified = withMobileIntentStoreLock(controllerHome, selected.repoId, () =>
+        verifyMobileIntentRequest(selected.canonicalRoot, request),
+      );
       if (!mobileIntentHasScope(verified.principal.scopes, "monitor:read")) {
         throw new Error("MOBILE_INTENT_SCOPE_DENIED: monitor:read is required");
       }
-      const selected = registerRepository({ path: repoRoot, controllerHome });
       response.setHeader("Cache-Control", "no-store");
       response.json({
         ...buildMobileMonitorSnapshot({
@@ -967,14 +992,16 @@ export async function startLocalBridgeServer(
         signatureVerified: verified.signatureVerified,
       });
     } catch (error) {
-      const failure = mobileIntentFailureResponse(error);
-      response.status(failure.status).json({ error: failure.message });
+      sendMobileIntentFailure(response, error);
     }
   });
 
   app.get("/mobile/v1/monitor/events", (request, response) => {
     try {
-      const verified = verifyMobileIntentRequest(repoRoot, request);
+      const selected = repository;
+      const verified = withMobileIntentStoreLock(controllerHome, selected.repoId, () =>
+        verifyMobileIntentRequest(selected.canonicalRoot, request),
+      );
       if (!mobileIntentHasScope(verified.principal.scopes, "monitor:read")) {
         throw new Error("MOBILE_INTENT_SCOPE_DENIED: monitor:read is required");
       }
@@ -987,19 +1014,19 @@ export async function startLocalBridgeServer(
       sendStreamEvent(response, "ready");
       request.on("close", () => streamClients.delete(response));
     } catch (error) {
-      const failure = mobileIntentFailureResponse(error);
-      response.status(failure.status).json({ error: failure.message });
+      sendMobileIntentFailure(response, error);
     }
   });
 
   app.post("/mobile/intent", async (request, response) => {
     try {
-      const verified = verifyMobileIntentRequest(repoRoot, request);
+      const verified = withMobileIntentStoreLock(controllerHome, repository.repoId, () =>
+        verifyMobileIntentRequest(repository.canonicalRoot, request),
+      );
       const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
         ? request.body as Record<string, unknown>
         : {};
       const intent = queryString(body.intent) ?? "plugin_action";
-      const repository = registerRepository({ path: repoRoot, controllerHome });
       if (intent === "list_plugins") {
         if (!mobileIntentHasScope(verified.principal.scopes, "plugins:read")) throw new Error("MOBILE_INTENT_SCOPE_DENIED: plugins:read is required");
         response.json({
@@ -1264,8 +1291,7 @@ export async function startLocalBridgeServer(
         job: submitted.job,
       });
     } catch (error) {
-      const failure = mobileIntentFailureResponse(error);
-      response.status(failure.status).json({ error: failure.message });
+      sendMobileIntentFailure(response, error);
     }
   });
 
@@ -1908,27 +1934,41 @@ export async function startLocalBridgeServer(
 
   app.get("/api/mobile/devices", (request, response) => {
     try {
-      response.json(listMobileIntentDevices(requestRepositoryRoot(request, options, controllerHome)));
+      const repository = requestRepositorySelection(request, options, controllerHome);
+      response.json(withMobileIntentStoreLock(controllerHome, repository.repoId, () =>
+        listMobileIntentDevices(repository.canonicalRoot),
+      ));
     } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
+      sendMobileIntentFailure(response, error);
     }
   });
   app.post("/api/mobile/devices", (request, response) => {
     try {
-      response.status(201).json(createMobileIntentDevice(requestRepositoryRoot(request, options, controllerHome), {
-        name: queryString(request.body?.name),
-        deviceId: queryString(request.body?.deviceId),
-        scopes: request.body?.scopes,
-        rateLimitPerMinute: request.body?.rateLimitPerMinute,
-      }));
+      const repository = requestRepositorySelection(request, options, controllerHome);
+      const created = withMobileIntentStoreLock(controllerHome, repository.repoId, () =>
+        createMobileIntentDevice(repository.canonicalRoot, {
+          name: queryString(request.body?.name),
+          deviceId: queryString(request.body?.deviceId),
+          scopes: request.body?.scopes,
+          rateLimitPerMinute: request.body?.rateLimitPerMinute,
+        }),
+      );
+      response.status(201).json(created);
     } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
+      sendMobileIntentFailure(response, error);
     }
   });
   app.post("/api/mobile/devices/:deviceId/revoke", (request, response) => {
     try {
-      response.json(revokeMobileIntentDevice(requestRepositoryRoot(request, options, controllerHome), request.params.deviceId));
+      const repository = requestRepositorySelection(request, options, controllerHome);
+      response.json(withMobileIntentStoreLock(controllerHome, repository.repoId, () =>
+        revokeMobileIntentDevice(repository.canonicalRoot, request.params.deviceId),
+      ));
     } catch (error) {
+      if (error instanceof ControllerLockContentionError) {
+        sendMobileIntentFailure(response, error);
+        return;
+      }
       response.status(404).json({ error: errorMessage(error) });
     }
   });
