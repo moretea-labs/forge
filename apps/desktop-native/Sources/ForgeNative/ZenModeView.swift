@@ -3219,7 +3219,7 @@ struct ZenProjectDetailPane: View {
                             .overlay(alignment:.trailing) { Image(systemName:"chevron.right").font(.system(size:9,weight:.semibold)).foregroundStyle(.tertiary) }
                             .overlay(alignment:.bottom) { Rectangle().fill(Color.primary.opacity(0.055)).frame(height:1) }
                             .accessibilityIdentifier("zen.projects.detail.task.\(task.requirementId)")
-                            .accessibilityLabel("打开任务 \(task.title)")
+                            .accessibilityLabel("打开任务 \(task.title)，\(taskScopeLabel(task))")
                         }
                         if loadingMore { ProgressView("正在读取更多任务…").controlSize(.small) }
                         if detail.hasMore {
@@ -3281,6 +3281,12 @@ struct ZenProjectDetailPane: View {
     private func placementSummary(_ project:ForgeSemanticProject) -> String {
         let names=project.repositoryIds.map { id in model.projects.first(where:{$0.repoId == id})?.label ?? id }
         return names.isEmpty ? "仅项目级" : "关联仓库 · " + names.joined(separator:"、")
+    }
+
+    private func taskScopeLabel(_ task:ForgeProjectRequirementSummary) -> String {
+        guard let repoId=task.repoId else { return "项目级任务" }
+        let label=model.projects.first(where:{$0.repoId == repoId})?.label ?? repoId
+        return "仓库 \(label)"
     }
 
     private func taskPriorityLabel(_ priority:String) -> String {
