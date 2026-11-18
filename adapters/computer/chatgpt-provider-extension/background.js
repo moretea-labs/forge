@@ -242,6 +242,23 @@ function receiverMatchesIdentity(tab, identity) {
   return bootstrapTabBelongsToProject(tab, identity)
     && !core.parseConversation(tab.url ?? '');
 }
+async function waitForCreatedTargetIdentity(tabId, identity) {
+  // chrome.tabs.create() returns before navigation/content-script attachment is
+  // guaranteed. Only a tab minted and owner-token attested by this provider may
+  // wait through that transition; existing/pinned tabs keep strict identity
+  // checks and are never navigated or adopted here.
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const tab = await tabGet(tabId);
+    if (receiverMatchesIdentity(tab, identity)) return tab;
+    if (tab?.status === 'complete') break;
+    await sleep(250);
+  }
+  throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
+}
+async function restoreCreatedExactContentReceiver(tabId, identity) {
+  await waitForCreatedTargetIdentity(tabId, identity);
+  await restoreExactContentReceiver(tabId, identity);
+}
 async function restoreExactContentReceiver(tabId, identity, files = ['core.js', 'content.js']) {
   // The physical tab is already resolved by the one Computer target authority.
   // A missing MV3 message receiver is not permission to reload/navigate that tab,
@@ -502,7 +519,9 @@ async function executeEnsure(command, instanceId) {
     // The editor must hydrate before 'ensured'; on failure the existing typed
     // failed receipt still carries this tab's binding without permitting Send.
     let observation = await waitForContent(target.tab.id, command.identity.namespace === 'chatgpt.bootstrap',
-      () => restoreExactContentReceiver(target.tab.id, command.identity));
+      () => target.created
+        ? restoreCreatedExactContentReceiver(target.tab.id, command.identity)
+        : restoreExactContentReceiver(target.tab.id, command.identity));
     if (shouldReloadUnreadableConversation(target.tab.id, command.identity, observation)) {
       // Reload ONLY the already-attested exact physical tab, after the same
       // error has remained visible for a minute. No new tab, Send or effect

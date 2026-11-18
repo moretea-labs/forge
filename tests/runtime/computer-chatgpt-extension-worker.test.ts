@@ -64,6 +64,14 @@ test('content context stops observing when runtime is absent after reload', () =
 });
 
 
+test('new owned exact tab waits for navigation identity before receiver recovery', () => {
+  const source = readFileSync(new URL('../../adapters/computer/chatgpt-provider-extension/background.js', import.meta.url), 'utf8');
+  expect(source).toContain('async function waitForCreatedTargetIdentity(tabId, identity)');
+  expect(source).toContain("if (tab?.status === 'complete') break;");
+  expect(source).toContain('? restoreCreatedExactContentReceiver(target.tab.id, command.identity)');
+  expect(source).toContain(': restoreExactContentReceiver(target.tab.id, command.identity)');
+});
+
 test('MV3 provider keeps a native command pump alive between alarm wakes', () => {
   const source = readFileSync(new URL('../../adapters/computer/chatgpt-provider-extension/background.js', import.meta.url), 'utf8');
   expect(source).toContain('const PROVIDER_COMMAND_POLL_MS = 1_000;');
