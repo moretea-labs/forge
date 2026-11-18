@@ -123,6 +123,94 @@ test('Computer exact-target socket owns heartbeat, claim, and completion without
   }
 });
 
+test('durable worker proxies observe through the Runtime-owned Computer socket', async () => {
+  const controllerHome = home();
+  const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
+  const canonicalUrl = 'https://chatgpt.com/c/socket-worker-456';
+  const binding = {
+    providerId: 'browser.chrome-extension',
+    observedAt: new Date().toISOString(),
+    providerSessionId: 'centbrowser-worker',
+    browserProduct: 'chrome',
+    windowId: '8',
+    tabId: '43',
+    ownerToken: 'worker-socket-test-owner-token',
+  };
+  await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
+    providerId: 'browser.chrome-extension',
+    providerInstanceId: 'centbrowser-worker',
+    observedAt: new Date().toISOString(),
+    conversations: [{
+      conversationId: 'socket-worker-456',
+      canonicalUrl,
+      title: 'Worker socket test',
+      isCurrent: true,
+      providerBinding: binding,
+    }],
+  });
+
+  const childCode = `
+    import { runtimeComputerChatgptAction } from './src/runtime/root/computer-chatgpt-extension.ts';
+    const result = await runtimeComputerChatgptAction(process.env.FORGE_CONTROLLER_HOME, {
+      kind: 'observe',
+      identity: {
+        namespace: 'chatgpt.conversation',
+        conversationId: 'socket-worker-456',
+        canonicalUrl: 'https://chatgpt.com/c/socket-worker-456',
+      },
+    }, 5000);
+    process.stdout.write(JSON.stringify(result));
+  `;
+  const child = spawn(process.execPath, ['-e', childCode], {
+    cwd: process.cwd(),
+    env: { ...process.env, FORGE_CONTROLLER_HOME: controllerHome },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  let claim: Record<string, unknown> | undefined;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', {
+      provider_instance_id: 'centbrowser-worker',
+    });
+    if ((claim.result as { command?: unknown } | undefined)?.command) break;
+    await Bun.sleep(10);
+  }
+  const command = (claim!.result as { command: Record<string, unknown> }).command;
+  expect(command).toMatchObject({ kind: 'observe' });
+  const observation = {
+    url: canonicalUrl,
+    title: 'Worker socket test',
+    latestUserText: '',
+    latestAssistantResponse: '',
+    composerText: '',
+    providerActivityText: '',
+    providerFailureText: '',
+    isGenerating: false,
+  };
+  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: 'centbrowser-worker',
+    command_id: command.commandId,
+    result: { kind: 'observation', providerBinding: binding, observation },
+  });
+
+  const childResult = await new Promise<Record<string, unknown>>((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code !== 0) { reject(new Error(stderr || 'child exited ' + code)); return; }
+      resolve(JSON.parse(stdout));
+    });
+  });
+  expect(childResult).toMatchObject({
+    state: 'ready',
+    identity: { namespace: 'chatgpt.conversation', conversationId: 'socket-worker-456', canonicalUrl },
+    observation,
+  });
+});
+
 test('standalone native host forwards framed RPC only to Computer socket', async () => {
   const controllerHome = home();
   const computerDir = join(controllerHome, 'computer');
