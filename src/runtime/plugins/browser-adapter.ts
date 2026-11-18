@@ -3244,7 +3244,7 @@ async function withPage<T>(
       if (error instanceof AssistantPluginError && error.effectOutcome === 'failed') throw error;
       if (actionDispatched && !postDispatchReplaySafe) {
         const causeDetails = error instanceof AssistantPluginError
-          ? { causeCode: error.code, causeRetryable: error.retryable, causeEffectOutcome: error.effectOutcome ?? null }
+          ? { causeCode: error.code, causeRetryable: error.retryable, causeEffectOutcome: error.effectOutcome ?? null, ...(error.details ? { causeDetails: error.details } : {}) }
           : { causeName: error instanceof Error ? error.name : 'UnknownError' };
         throw new AssistantPluginError(
           'PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN',
