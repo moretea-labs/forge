@@ -180,6 +180,21 @@ async function forgeSubmitPrompt(task, markMutationAttempted) {
   if (!await forgePost('/api/extension/task-started', {taskId: task.id, url: location.href})) {
     throw new Error('Bridge server did not accept task start; no message was sent');
   }
+
+  // The start receipt crosses an async boundary. Recheck the exact composer
+  // and submit control before making a synchronous dispatch.
+  const currentSubmitControl = form?.querySelector('button[data-composer-submit], button[type="submit"], input[type="submit"]');
+  if (forgeComposer() !== composer || forgeLoginRequired(composer)
+    || composer.closest('form') !== form
+    || forgeNormalizeOutboundText(forgeComposerText(composer)) !== forgeNormalizeOutboundText(task.prompt)
+    || forgeSendButton(composer) !== button || currentSubmitControl !== submitControl) {
+    throw forgeBridgeError(
+      'CHATGPT_BRIDGE_COMPOSER_CHANGED',
+      'The ChatGPT composer or its submit control changed while awaiting the start receipt.',
+      'Review the current draft in this conversation before retrying. No message was sent.',
+    );
+  }
+
   markMutationAttempted();
   if (button) button.click();
   else form.requestSubmit();

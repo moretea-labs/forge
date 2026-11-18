@@ -458,6 +458,10 @@
       "module": "browser",
       "resource": "pure"
     },
+    "tests/runtime/chatgpt-browser-bridge-extension.test.ts": {
+      "module": "browser",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/computer-provider-registry.test.ts": {
       "module": "browser",
       "resource": "pure"
