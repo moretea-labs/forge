@@ -78,7 +78,7 @@ import {
   clearRuntimeWriteClaimForTests,
   currentRuntimeWriteClaimEnvironment,
 } from '../../src/runtime/root/write-fence';
-import { defaultProcessIdentityProbe, executableFingerprint } from '../../src/runtime/shared/process-identity';
+import { defaultProcessIdentityProbe, executableFingerprint, parseLinuxProcessStartTime, processIdentityMatches } from '../../src/runtime/shared/process-identity';
 import { ensureRepositoryRuntimeStorage } from '../../src/runtime/repositories/runtime-storage';
 import { resolveEphemeralWorkspaceTarget } from '../../src/runtime/repositories/ephemeral-workspace';
 import { sanitizeFileComponent } from '../../src/runtime/shared/json-files';
@@ -315,6 +315,33 @@ describe('Unified Process Runtime', () => {
 
   test('default process identity probe reads command and start time together', () => {
     if (process.platform !== 'win32') expect(defaultProcessIdentityProbe.inspect?.(process.pid)).toMatchObject({ command: expect.any(String), startTime: expect.any(String) });
+  });
+
+  test('Linux process identity uses stable /proc start ticks and keeps legacy records readable', () => {
+    if (process.platform !== 'linux') return;
+
+    const fields: string[] = Array.from({ length: 20 }, (_, index) => index === 0 ? 'S' : '0');
+    fields[19] = '987654';
+    expect(parseLinuxProcessStartTime('42 (worker ) with spaces) ' + fields.join(' '), '01234567-89ab-cdef-0123-456789abcdef'))
+      .toBe('linux-proc-start:01234567-89ab-cdef-0123-456789abcdef:987654');
+
+    const inspected = defaultProcessIdentityProbe.inspect?.(process.pid);
+    const command = defaultProcessIdentityProbe.command(process.pid);
+    expect(inspected?.startTime).toMatch(/^linux-proc-start:[0-9a-f-]{36}:\d+$/);
+    expect(command).toBe(inspected?.command);
+    expect(processIdentityMatches({
+      pid: process.pid,
+      processStartTime: inspected!.startTime!,
+      executableFingerprint: executableFingerprint(command!),
+    }, process.pid)).toEqual({ matches: true });
+
+    const legacy = defaultProcessIdentityProbe.legacyInspect?.(process.pid);
+    expect(legacy?.command && legacy.startTime).toBeTruthy();
+    expect(processIdentityMatches({
+      pid: process.pid,
+      processStartTime: legacy!.startTime!,
+      executableFingerprint: executableFingerprint(legacy!.command!),
+    }, process.pid)).toEqual({ matches: true });
   });
 
   test('ephemeral Process leases enforce conflicts without polluting durable projection readiness', () => {
