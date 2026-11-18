@@ -314,13 +314,14 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
   app.get('/transport-ready', (_req, res) => {
     const sessionSnapshot = sessionRegistry.snapshot();
     reconcileRuntimePosts();
-    const sessionCapacityReady = sessionSnapshot.acceptingNewSessions
-      && runtimeStats.initializing < maxInitializingSessions
-      && runtimeStats.activePostStartedAt.size < maxActivePosts;
-    res.status(sessionCapacityReady ? 200 : 503).json({
-      ready: sessionCapacityReady,
+    const statefulSessionCapacityReady = sessionSnapshot.acceptingNewSessions
+      && runtimeStats.initializing < maxInitializingSessions;
+    const runtimeCapacityReady = runtimeStats.activePostStartedAt.size < maxActivePosts;
+    res.status(runtimeCapacityReady ? 200 : 503).json({
+      ready: runtimeCapacityReady,
       profile: toolContext.policy.profile,
-      gateway: sessionCapacityReady ? 'ready' : 'saturated',
+      gateway: runtimeCapacityReady ? 'ready' : 'saturated',
+      statefulSessionCapacityReady,
       sessionCapacity: sessionSnapshot,
       runtimeCapacity: {
         initializing: runtimeStats.initializing,
@@ -335,15 +336,16 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
     const runtimeGeneration = runtimeControllerHome ? readRuntimeGeneration(runtimeControllerHome) : undefined;
     const sessionSnapshot = sessionRegistry.snapshot();
     reconcileRuntimePosts();
-    const sessionCapacityReady = sessionSnapshot.acceptingNewSessions
-      && runtimeStats.initializing < maxInitializingSessions
-      && runtimeStats.activePostStartedAt.size < maxActivePosts;
+    const statefulSessionCapacityReady = sessionSnapshot.acceptingNewSessions
+      && runtimeStats.initializing < maxInitializingSessions;
+    const runtimeCapacityReady = runtimeStats.activePostStartedAt.size < maxActivePosts;
     if (!runtimeControllerHome) {
-      res.status(sessionCapacityReady ? 200 : 503).json({
-        ready: sessionCapacityReady,
+      res.status(runtimeCapacityReady ? 200 : 503).json({
+        ready: runtimeCapacityReady,
         profile: toolContext.policy.profile,
-        gateway: sessionCapacityReady ? 'ready' : 'saturated',
+        gateway: runtimeCapacityReady ? 'ready' : 'saturated',
         controllerDaemon: 'not-required',
+        statefulSessionCapacityReady,
         sessionCapacity: sessionSnapshot,
       });
       return;
@@ -376,7 +378,7 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
     const publicConfigured = Boolean(runtimeState?.tunnel?.publicEndpoint);
     const publicReady = !publicConfigured || runtimeState?.tunnel?.healthy === true;
     const connectorReady = !publicConfigured || (publicReady && runtimeState?.tunnel?.connectorNeedsReconnect !== true);
-    const ready = daemonReady && projectionReady && localBridgeReady && sessionCapacityReady;
+    const ready = daemonReady && projectionReady && localBridgeReady && runtimeCapacityReady;
     res.status(ready ? 200 : 503).json({
       ready,
       generation: runtimeGeneration?.generation,
@@ -405,6 +407,7 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
         ready: connectorReady,
         connectorNeedsReconnect: runtimeState?.tunnel?.connectorNeedsReconnect === true,
       },
+      statefulSessionCapacityReady,
       sessionCapacity: sessionSnapshot,
     });
   });
