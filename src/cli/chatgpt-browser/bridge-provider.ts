@@ -849,7 +849,7 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
         error: {
           code: 'CHATGPT_BRIDGE_EXTENSION_NOT_CONNECTED',
           message: 'ChatGPT bridge extension did not connect before timeout',
-          recovery: `Load the unpacked extension from ${extension.extensionDir} in the selected Chrome profile, open ChatGPT, verify the composer is visible, then retry.`,
+          recovery: `Load the unpacked extension from ${extension.extensionDir} in the selected Chrome profile, open ChatGPT, grant chatgpt.com loopback-network access in browser Site settings if requested, verify the composer is visible, then retry.`,
         },
       };
     }

@@ -36,6 +36,7 @@ function bridgeHarness(options: { loginLinkVisible?: boolean; composerVisible?: 
   let taskFetched = false;
   let clicks = 0;
   let submits = 0;
+  const loopbackRequests: string[] = [];
   let userMessages: Array<{ innerText: string; textContent: string }> = [];
 
   const button = {
@@ -76,8 +77,9 @@ function bridgeHarness(options: { loginLinkVisible?: boolean; composerVisible?: 
       return true;
     },
   };
-  const fetch = async (input: string, init?: { body?: string }) => {
+  const fetch = async (input: string, init?: { body?: string; method?: string; targetAddressSpace?: string }) => {
     const url = String(input);
+    loopbackRequests.push((init?.method ?? 'GET') + ':' + (init?.targetAddressSpace ?? 'unset'));
     if (url.endsWith('/api/extension/heartbeat')) return { ok: true };
     if (url.includes('/api/extension/task?pageUrl=')) {
       if (taskFetched) return { ok: true, json: async () => ({}) };
@@ -117,8 +119,35 @@ function bridgeHarness(options: { loginLinkVisible?: boolean; composerVisible?: 
     button,
     clicks: () => clicks,
     submits: () => submits,
+    loopbackRequests: () => loopbackRequests,
   };
 }
+
+describe('ChatGPT Bridge loopback permissions', () => {
+  test('declares loopback address space on heartbeat and task polling', async () => {
+    const bridge = bridgeHarness();
+    await bridge.started;
+    expect(bridge.loopbackRequests()).toContain('POST:loopback');
+    expect(bridge.loopbackRequests()).toContain('GET:loopback');
+    bridge.acknowledgeStart({ ok: true });
+    await bridge.dispatched;
+  });
+
+  test('does not silently request loopback permission from a page-load poll', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-loopback-permission-'));
+    roots.push(root);
+    const extension = writeChatgptBridgeExtension(root, 'http://127.0.0.1:17651', 'bridge-token');
+    const script = readFileSync(extension.contentScriptPath, 'utf8');
+    let fetches = 0;
+    runInNewContext(script, {
+      navigator: { permissions: { query: async () => ({ state: 'prompt' }) } },
+      fetch: () => { fetches += 1; throw new Error('permission not granted'); },
+      setInterval: () => 0,
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    expect(fetches).toBe(0);
+  });
+});
 
 describe('ChatGPT Bridge composer dispatch guard', () => {
   test('rejects a draft changed while awaiting the task-started acknowledgement', async () => {
