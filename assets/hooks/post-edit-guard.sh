@@ -96,7 +96,19 @@ run_brain_doc_sync() {
   fi
 }
 
-FILE_PATH="$(hook_get_file_path "${1:-}")"
+# Single jq call for the one field this guard needs.
+FILE_PATH=""
+if [[ -n "${HOOK_STDIN_JSON:-}" ]] && command -v jq >/dev/null 2>&1; then
+  _fp="$(printf '%s' "$HOOK_STDIN_JSON" | jq -r '
+    .file_path // .tool_input.file_path // .trigger_file_path // .parent_file_path // ""
+  ' 2>/dev/null)" || _fp=""
+  if [[ -n "$_fp" ]]; then
+    HOOK_STDIN_JSON_VALID="1"
+    export HOOK_STDIN_JSON_VALID
+    FILE_PATH="$(hook_normalize_file_path "$_fp")"
+  fi
+fi
+[[ -z "$FILE_PATH" ]] && FILE_PATH="$(hook_get_file_path "${1:-}")"
 [[ -z "$FILE_PATH" ]] && exit 0
 
 BASENAME=$(basename "$FILE_PATH")
