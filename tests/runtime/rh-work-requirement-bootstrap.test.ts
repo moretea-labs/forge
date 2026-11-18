@@ -322,7 +322,8 @@ describe('rh_work Requirement bootstrap', () => {
     expect(properties.sort_order).toMatchObject({ type: 'string', enum: ['asc', 'desc'] });
     expect(properties.offset).toMatchObject({ type: 'number', minimum: 0 });
     expect(properties.search_query).toMatchObject({ type: 'string', maxLength: 256 });
-    expect(properties.project_id.description).toContain('requirement_get/requirement_revise');
+    expect(properties.operation.enum).toContain('requirement_get');
+    expect(properties.operation.enum).toContain('requirement_revise');
 
     const projectList = structured(await callRuntimeTool(globalContext, 'rh_work', {
       operation: 'requirement_list',
