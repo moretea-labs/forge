@@ -104,8 +104,10 @@ fi
 MAX_TRACE_LINES=10000
 KEEP_TRACE_LINES=5000
 if [[ -f "$TRACE_FILE" ]]; then
-  _fsize="$(stat -f '%z' "$TRACE_FILE" 2>/dev/null || stat -c '%s' "$TRACE_FILE" 2>/dev/null || printf '0')"
-  if [[ "${_fsize:-0}" -gt "$((MAX_TRACE_LINES))" ]]; then
+  if ! _fsize="$(stat -f '%z' "$TRACE_FILE" 2>/dev/null)"; then
+    _fsize="$(stat -c '%s' "$TRACE_FILE" 2>/dev/null)" || _fsize=""
+  fi
+  if [[ ! "$_fsize" =~ ^[0-9]+$ || "$_fsize" -gt "$MAX_TRACE_LINES" ]]; then
     line_count="$(wc -l < "$TRACE_FILE" | tr -d ' ')"
     if [[ "$line_count" -gt "$MAX_TRACE_LINES" ]]; then
       tmp_trace="$(mktemp)"

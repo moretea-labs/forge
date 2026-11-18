@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readdirSync,
   realpathSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "fs";
@@ -84,6 +85,39 @@ function writeActivePlan(cwd: string, planPath: string) {
 }
 
 describe("Claude Code hook protocol compliance", () => {
+  test("post-tool observer rotates a trace when the BSD stat probe emits output and fails", () => {
+    const cwd = tmpWorkspace("hook-trace-rotation");
+    try {
+      installHooks(cwd);
+      const bin = join(cwd, "bin");
+      const state = join(cwd, "state");
+      mkdirSync(bin);
+      mkdirSync(state);
+      const trace = join(state, "trace.jsonl");
+      const oldEvent = '{"marker":"old"}\n';
+      writeFileSync(trace, oldEvent.repeat(10001));
+      writeFileSync(join(bin, "stat"), `#!/bin/sh
+case "$1" in
+  -f) printf 'filesystem information\n'; exit 1 ;;
+  -c) wc -c < "$3" | tr -d ' ' ;;
+esac
+`, { mode: 0o755 });
+
+      const result = runHook("post-tool-observer.sh", cwd, {
+        stdin: JSON.stringify({ hook_event_name: "PostToolUse", tool_name: "Read" }),
+        env: { PATH: `${bin}:${process.env.PATH}`, FORGE_HOOK_STATE_ROOT: state },
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      const lines = readFileSync(trace, "utf8").trimEnd().split("\n");
+      expect(lines).toHaveLength(5001);
+      expect(JSON.parse(lines[5000]).tool_name).toBe("Read");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test("semantic Plan state never authorizes ordinary implementation", () => {
     const states: PromptGuardState[] = [
       { spec: "missing", plan: "none", pending: "none", worktree: "current", contract: "missing", contractPath: "missing", evidence: "unchecked" },
