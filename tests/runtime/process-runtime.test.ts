@@ -344,6 +344,17 @@ describe('Unified Process Runtime', () => {
     }, process.pid)).toEqual({ matches: true });
   });
 
+  test('executable fingerprint mismatch is rejected before a legacy start-time mismatch can be bridged', () => {
+    if (process.platform !== 'linux') return;
+    const legacy = defaultProcessIdentityProbe.legacyInspect?.(process.pid);
+    expect(legacy?.command).toBeTruthy();
+    expect(processIdentityMatches({
+      pid: process.pid,
+      processStartTime: 'legacy-start-time-before-clock-correction',
+      executableFingerprint: 'wrong-executable-fingerprint',
+    }, process.pid).reason).toBe('executable_fingerprint_changed');
+  });
+
   test('ephemeral Process leases enforce conflicts without polluting durable projection readiness', () => {
     const fx = fixture();
     bindCanonicalRuntime(fx.controllerHome);

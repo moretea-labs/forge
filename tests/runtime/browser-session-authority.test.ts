@@ -234,7 +234,7 @@ describe('Browser vs Chrome environment boundary', () => {
           throw new AssistantPluginError(
             'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
             'Process-bound Chrome Apple Event failed: The operation couldn’t be completed. (OSStatus error -1712.)',
-            { retryable: false, effectOutcome: 'outcome_unknown' },
+            { retryable: false, effectOutcome: 'outcome_unknown', details: { causeCode: 'EXTERNAL_PLUGIN_TIMEOUT', stage: 'response_read' } },
           );
         }
         return metadata;
@@ -250,6 +250,7 @@ describe('Browser vs Chrome environment boundary', () => {
       code: 'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
       retryable: false,
       effectOutcome: 'outcome_unknown',
+      details: { causeDetails: { causeCode: 'EXTERNAL_PLUGIN_TIMEOUT', stage: 'response_read' } },
     });
   });
 });
@@ -899,10 +900,11 @@ describe('browser session compatibility on Computer target authority', () => {
     let nativeLoading = false;
     let metadataReads = 0;
     let identityEvaluations = 0;
+    let metadataTitle = 'Native Foreground';
     const activations: string[] = [];
     const trustedRefs: Array<{ product?: string; windowId?: string; tabId?: string }> = [];
     const metadata = () => [
-      frontmost ? 'true' : 'false', url, 'Native Foreground', '0', '0', '1200', '800', '7', '9', 'true', nativeLoading ? 'true' : 'false',
+      frontmost ? 'true' : 'false', url, metadataTitle, '0', '0', '1200', '800', '7', '9', 'true', nativeLoading ? 'true' : 'false',
     ].join(separator);
     const inventory = () => `false${separator}7${fieldSeparator}9${fieldSeparator}true${fieldSeparator}${url}${fieldSeparator}Native Foreground`;
 
@@ -986,6 +988,22 @@ describe('browser session compatibility on Computer target authority', () => {
     // foregroundState roundtrip when the same proof is already authoritative.
     expect(metadataReads - metadataBeforeFast).toBe(1);
     expect(identityEvaluations - identityBeforeFast).toBe(0);
+
+    // Production Chrome's exact metadata may omit the title entirely.
+    // Keep foreground proof, but read live identity rather than persisting
+    // an omitted title as if the observation had established an empty title.
+    metadataTitle = '';
+    const beforeTitleRead = identityEvaluations;
+    await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'native-foreground-title-omitted',
+      actionId: 'activate_page',
+      args: { session_id: 'native-foreground', post_action_wait_ms: 1 },
+    });
+    expect(identityEvaluations - beforeTitleRead).toBe(1);
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'native-foreground')?.title)
+      .toBe('Native Foreground');
+
     // A later action is never allowed to reuse the activation's URL receipt.
 
 

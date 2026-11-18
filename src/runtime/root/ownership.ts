@@ -11,6 +11,8 @@ import {
 import { dirname, join } from 'path';
 import { resolveControllerHome } from '../../effects/controller-home';
 import { isProcessAlive, terminateProcessTree, type ProcessTreeTerminationResult } from '../shared/process-tree';
+import { forgeRuntimePersistentServiceLabel } from '../platform/service-inventory';
+import { systemdUserServiceOwnsPid } from '../platform/systemd-user';
 import { defaultProcessIdentityProbe, executableFingerprint, LINUX_PROCESS_START_TIME_PREFIX, processIdentityMatches, type ProcessIdentityProbe } from '../shared/process-identity';
 
 export interface RuntimeOwnerRecord {
@@ -122,7 +124,43 @@ function runtimeIncarnationProcessAlive(record: RuntimeIncarnationRecord, probe:
   return identity.matches || (identity.reason === 'identity_probe_unavailable' && probe.isAlive(record.pid));
 }
 
-export function inspectRuntimeOwnership(controllerHome: string): RuntimeOwnershipInspection {
+type RuntimeSystemdServiceOwnsPidProbe = (unitName: string, pid: number) => boolean;
+
+function legacyRuntimeProcessIdentityMatchesWithSystemd(
+  record: { pid: number; processStartTime?: string; executableFingerprint?: string },
+  controllerHome: string,
+  identity: ReturnType<typeof processIdentityMatches>,
+  systemdServiceOwnsPidProbe: RuntimeSystemdServiceOwnsPidProbe,
+): boolean {
+  if (!record.processStartTime || !record.executableFingerprint) return false;
+  // A legacy ps lstart value can shift when WSL adjusts its wall clock.
+  // Bridge only that legacy format when the exact Controller-Home systemd
+  // unit still owns the same live PID and the executable fingerprint matched.
+  return process.platform === 'linux'
+    && !record.processStartTime.startsWith(LINUX_PROCESS_START_TIME_PREFIX)
+    && identity.reason === 'process_start_time_changed'
+    && systemdServiceOwnsPidProbe(forgeRuntimePersistentServiceLabel(controllerHome), record.pid);
+}
+
+function runtimeIncarnationProcessAliveWithSystemd(
+  record: RuntimeIncarnationRecord,
+  systemdServiceOwnsPidProbe: RuntimeSystemdServiceOwnsPidProbe,
+): boolean {
+  if (!record.processStartTime || !record.executableFingerprint) return isProcessAlive(record.pid);
+  const identity = processIdentityMatches({
+    pid: record.pid,
+    processStartTime: record.processStartTime,
+    executableFingerprint: record.executableFingerprint,
+  }, record.pid);
+  return identity.matches
+    || (identity.reason === 'identity_probe_unavailable' && isProcessAlive(record.pid))
+    || legacyRuntimeProcessIdentityMatchesWithSystemd(record, record.controllerHome, identity, systemdServiceOwnsPidProbe);
+}
+
+export function inspectRuntimeOwnership(
+  controllerHome: string,
+  systemdServiceOwnsPidProbe: RuntimeSystemdServiceOwnsPidProbe = systemdUserServiceOwnsPid,
+): RuntimeOwnershipInspection {
   const owner = readRuntimeOwner(controllerHome);
   const incarnation = readRuntimeIncarnation(controllerHome);
   const coherent = Boolean(
@@ -132,29 +170,26 @@ export function inspectRuntimeOwnership(controllerHome: string): RuntimeOwnershi
     && owner.pid === incarnation.pid
     && (owner.fencingGeneration ?? incarnation.fencingGeneration) === incarnation.fencingGeneration,
   );
-  // Schema-v2 owners carry OS-process identity. Once present, raw PID liveness
-  // is insufficient because a stopped Runtime PID may be reused by another
-  // process before Recovery reconciles durable ownership.
+  // RuntimeOwner remains the sole liveness authority when present. Legacy
+  // wall-clock start times are accepted only while the exact systemd unit
+  // still owns the same PID and the executable fingerprint matches.
   const ownerAlive = Boolean(owner && (
     owner.processStartTime && owner.executableFingerprint
-      ? runtimeOwnerProcessIdentityMatches(owner)
+      ? runtimeOwnerProcessIdentityMatches(owner, controllerHome, systemdServiceOwnsPidProbe)
       : isProcessAlive(owner.pid)
   ));
-  // RuntimeOwner is the liveness authority whenever it exists. An incoherent
-  // incarnation is historical fencing evidence, not a second process-liveness
-  // authority: its PID may already have been reused by an unrelated process.
-  // New incarnation records retain the same OS-process identity as the
-  // owner lease, so PID reuse cannot keep a stopped Runtime falsely alive.
-  // Legacy records remain conservative because they have no identity fields.
+  // An incoherent incarnation is historical fencing evidence, not a second
+  // process-liveness authority. When no owner exists, its legacy identity can
+  // be bridged only through the exact configured systemd service.
   const incarnationAlive = Boolean(incarnation && (
     owner
       ? coherent && ownerAlive
-      : runtimeIncarnationProcessAlive(incarnation)
+      : runtimeIncarnationProcessAliveWithSystemd(incarnation, systemdServiceOwnsPidProbe)
   ));
   return { owner, incarnation, ownerAlive, incarnationAlive, coherent };
 }
 
-export function runtimeOwnerProcessIdentityMatches(
+function runtimeOwnerProcessIdentityMatchesWithProbe(
   record: RuntimeOwnerRecord | undefined,
   probe: ProcessIdentityProbe = defaultProcessIdentityProbe,
 ): boolean {
@@ -164,6 +199,20 @@ export function runtimeOwnerProcessIdentityMatches(
     processStartTime: record.processStartTime,
     executableFingerprint: record.executableFingerprint,
   }, record.pid, probe).matches;
+}
+
+export function runtimeOwnerProcessIdentityMatches(
+  record: RuntimeOwnerRecord | undefined,
+  controllerHome: string,
+  systemdServiceOwnsPidProbe: RuntimeSystemdServiceOwnsPidProbe = systemdUserServiceOwnsPid,
+): boolean {
+  if (!record?.processStartTime || !record.executableFingerprint) return false;
+  const identity = processIdentityMatches({
+    pid: record.pid,
+    processStartTime: record.processStartTime,
+    executableFingerprint: record.executableFingerprint,
+  }, record.pid);
+  return identity.matches || legacyRuntimeProcessIdentityMatchesWithSystemd(record, controllerHome, identity, systemdServiceOwnsPidProbe);
 }
 
 export interface RuntimeIncarnationIdentityMigrationDependencies {
@@ -220,7 +269,7 @@ export function migrateRuntimeIncarnationProcessIdentity(
     if (owner!.executableFingerprint === incarnation.executableFingerprint
       && owner!.processStartTime!.startsWith(LINUX_PROCESS_START_TIME_PREFIX)
       && !incarnation.processStartTime!.startsWith(LINUX_PROCESS_START_TIME_PREFIX)
-      && runtimeOwnerProcessIdentityMatches(owner, probe)) {
+      && runtimeOwnerProcessIdentityMatchesWithProbe(owner, probe)) {
       writeRuntimeIncarnation({
         ...incarnation,
         processStartTime: owner!.processStartTime,
@@ -307,7 +356,7 @@ export function migrateRuntimeIncarnationProcessIdentity(
     if (!ownerHasIdentity) {
       return { ok: false, changed: false, detail: 'RUNTIME_OWNER_IDENTITY_EVIDENCE_MISSING' };
     }
-    if (!runtimeOwnerProcessIdentityMatches(owner, probe)) {
+    if (!runtimeOwnerProcessIdentityMatchesWithProbe(owner, probe)) {
       return { ok: false, changed: false, detail: 'RUNTIME_OWNER_IDENTITY_CHANGED' };
     }
     writeRuntimeIncarnation({
@@ -417,7 +466,7 @@ export async function terminateVerifiedRuntimeOwner(
       owner,
     };
   }
-  if (!runtimeOwnerProcessIdentityMatches(owner)) {
+  if (!runtimeOwnerProcessIdentityMatches(owner, controllerHome)) {
     return {
       ok: false,
       attempted: false,
@@ -503,7 +552,7 @@ export function acquireRuntimeOwnership(
       const current = readOwnerPath(path);
       const currentAlive = Boolean(current && (
         current.processStartTime && current.executableFingerprint
-          ? runtimeOwnerProcessIdentityMatches(current)
+          ? runtimeOwnerProcessIdentityMatches(current, controllerHome)
           : isProcessAlive(current.pid)
       ));
       if (currentAlive) {
