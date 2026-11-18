@@ -4,6 +4,8 @@ import { createServer, createConnection } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
+import { ChromeExtensionChatgptConversationTargetPort } from '../../adapters/computer/chatgpt-target-provider';
+import { runtimeComputerInteractionTargetAuthority } from '../../src/runtime/root/computer-target-composition';
 import {
   callRuntimeComputerChatgptTargetAction,
   closeRuntimeComputerChatgptExtensionForTest,
@@ -43,6 +45,100 @@ function jsonlRpc(socketPath: string, method: string, params: Record<string, unk
     });
   });
 }
+
+test('provider lease spans MV3 alarm cadence but still expires boundedly', async () => {
+  const controllerHome = home();
+  let now = Date.parse('2026-11-19T00:00:00.000Z');
+  const port = new ChromeExtensionChatgptConversationTargetPort(
+    controllerHome,
+    runtimeComputerInteractionTargetAuthority(),
+    () => now,
+  );
+  expect(port.heartbeat({
+    providerId: 'browser.chrome-extension',
+    providerInstanceId: 'centbrowser-mv3',
+    observedAt: new Date(now).toISOString(),
+    conversations: [],
+  })).toBe(true);
+
+  now += 60_001;
+  expect(await port.inventory()).toMatchObject({ complete: true, unavailableProviders: [] });
+
+  now += 15_000;
+  expect(await port.inventory()).toMatchObject({
+    complete: false,
+    unavailableProviders: ['browser.chrome-extension'],
+  });
+});
+
+test('queued command waits for an MV3 alarm while claimed execution stays tightly bounded', async () => {
+  const controllerHome = home();
+  const delays: number[] = [];
+  const timerApi = {
+    setTimeout: ((_callback: (...args: unknown[]) => void, ms?: number) => {
+      delays.push(Number(ms));
+      return { unref() {} } as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout,
+    clearTimeout: ((_timer?: ReturnType<typeof setTimeout>) => undefined) as typeof clearTimeout,
+  };
+  const now = Date.parse('2026-11-19T00:00:00.000Z');
+  const port = new ChromeExtensionChatgptConversationTargetPort(
+    controllerHome,
+    runtimeComputerInteractionTargetAuthority(),
+    () => now,
+    timerApi,
+  );
+  const canonicalUrl = 'https://chatgpt.com/c/mv3-queue-123';
+  const binding = {
+    providerId: 'browser.chrome-extension',
+    observedAt: new Date(now).toISOString(),
+    providerSessionId: 'centbrowser-mv3',
+    browserProduct: 'chrome',
+    windowId: '17',
+    tabId: '27',
+    ownerToken: ['owner', 'mv3', 'queue'].join('-'),
+  };
+  expect(port.heartbeat({
+    providerId: 'browser.chrome-extension',
+    providerInstanceId: 'centbrowser-mv3',
+    observedAt: new Date(now).toISOString(),
+    conversations: [{
+      conversationId: 'mv3-queue-123',
+      canonicalUrl,
+      isCurrent: true,
+      providerBinding: binding,
+    }],
+  })).toBe(true);
+
+  const exactPromise = port.ensureExact({
+    namespace: 'chatgpt.conversation',
+    conversationId: 'mv3-queue-123',
+    canonicalUrl,
+  }, { createIfMissing: false });
+
+  for (let attempt = 0; attempt < 20 && delays.length === 0; attempt += 1) await Bun.sleep(1);
+  expect(delays[0]).toBe(45_000);
+
+  const command = port.claim('centbrowser-mv3');
+  expect(command).toMatchObject({ kind: 'observe' });
+  expect(delays.at(-1)).toBe(12_000);
+
+  expect(port.complete('centbrowser-mv3', command!.commandId, {
+    kind: 'observation',
+    providerBinding: binding,
+    observation: {
+      url: canonicalUrl,
+      title: 'MV3 queue',
+      latestUserText: '',
+      latestAssistantResponse: '',
+      composerText: '',
+      providerActivityText: '',
+      providerFailureText: '',
+      isGenerating: false,
+    },
+  })).toBe(true);
+  expect((await exactPromise).state).toBe('ready');
+});
 
 test('Computer exact-target socket owns heartbeat, claim, and completion without Supervisor state', async () => {
   const controllerHome = home();

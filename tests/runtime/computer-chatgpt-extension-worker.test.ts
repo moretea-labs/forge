@@ -64,6 +64,17 @@ test('content context stops observing when runtime is absent after reload', () =
 });
 
 
+test('MV3 provider keeps a native command pump alive between alarm wakes', () => {
+  const source = readFileSync(new URL('../../adapters/computer/chatgpt-provider-extension/background.js', import.meta.url), 'utf8');
+  expect(source).toContain('const PROVIDER_COMMAND_POLL_MS = 1_000;');
+  expect(source).toContain('const PROVIDER_HEARTBEAT_REFRESH_MS = 8_000;');
+  expect(source).toContain('async function runProviderPump()');
+  expect(source).toContain("await nativeRpc('computer_extension_claim', { provider_instance_id: instanceId });");
+  expect(source).toContain('await sleep(PROVIDER_COMMAND_POLL_MS);');
+  expect(source).toContain('if (providerTickInFlight) return providerTickInFlight;');
+  expect(source).not.toContain('setInterval(() => { void providerTick()');
+});
+
 test('new bootstrap tab requires its hydrated editor, not a model picker, before preflight', async () => {
   const src = readFileSync(new URL('../../adapters/computer/chatgpt-provider-extension/background.js', import.meta.url), 'utf8');
   const worker = src.slice(0, src.indexOf('chrome.runtime.onMessage.addListener('))
