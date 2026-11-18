@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'bun:test';
-import { iosAgentDeviceActions } from '../../src/runtime/plugins/ios-agent-device';
+import { afterEach, describe, expect, it } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { executeIosAgentDeviceAction, iosAgentDeviceActions, resetIosAgentDeviceRuntimeHooksForTest, setIosAgentDeviceRuntimeHooksForTest } from '../../src/runtime/plugins/ios-agent-device';
+import { writeInteractionSession } from '../../src/runtime/plugins/interaction-session';
 import {
   appendSettleFlag,
   compileBatchCommand,
@@ -9,6 +13,12 @@ import {
 } from '../../src/runtime/plugins/ios/agent-device-capabilities';
 import { findSemanticRef, JD_IOS_APP_ADAPTER, normalizedSemanticRef } from '../../src/runtime/plugins/ios/app-adapters';
 import jdHome from '../fixtures/ios/jd-home-depth20.json';
+
+const swipeTestRoots: string[] = [];
+afterEach(() => {
+  resetIosAgentDeviceRuntimeHooksForTest();
+  for (const root of swipeTestRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 const help = {
   root: 'agent-device <command> [--cost] [--json]',
@@ -83,6 +93,44 @@ describe('agent-device multi-display screenshot contract', () => {
     expect(properties.display).toEqual({ type: 'number', minimum: 0, maximum: 16 });
     expect(properties).toHaveProperty('overlay_refs');
     expect(properties).toHaveProperty('max_size');
+  });
+});
+
+describe('agent-device coordinate swipe contract', () => {
+  it('dispatches explicit content-area coordinates through the owned session', async () => {
+    const swipe = iosAgentDeviceActions().find((action) => action.actionId === 'agent_device_swipe');
+    expect(swipe).toMatchObject({ readOnly: false, risk: 'workspace_write', idempotent: false });
+    const schema = swipe?.argumentsSchema as { required?: string[] };
+    expect(schema.required).toEqual(['interaction_id', 'x1', 'y1', 'x2', 'y2']);
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-ios-swipe-repo-'));
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-ios-swipe-home-'));
+    swipeTestRoots.push(repoRoot, controllerHome);
+    const now = new Date('2026-11-18T08:00:00Z'), interactionId = 'ios_agent_device_coordinate_swipe';
+    const targetId = '96EDA0C4-D3A9-407C-8692-BE28234C5F43';
+    writeInteractionSession(repoRoot, { schemaVersion: 1, interactionId, provider: 'ios-simulator', engine: 'agent-device',
+      sessionId: 'forge-swipe-test', targetId, targetAliases: [targetId], status: 'waiting_for_user',
+      reason: 'ios_simulator_automation', instructions: 'com.example.test', owner: { repoId: 'repo-ios-swipe-test', requestId: 'open' },
+      createdAt: now.toISOString(), updatedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 600_000).toISOString() });
+    const calls: string[][] = [];
+    const probe = (command: string, args: string[]) => {
+      calls.push(args);
+      const stdout = args[0] === '--version' ? '0.19.3' : args[0] === 'swipe' ? '{"success":true}' : 'agent-device <command> --json';
+      return { ok: true, status: 0, stdout, stderr: '', command: [command, ...args] };
+    };
+    setIosAgentDeviceRuntimeHooksForTest({ platform: () => 'darwin', now: () => now, runCommand: probe,
+      runCommandAsync: async (command, args) => probe(command, args) });
+    await executeIosAgentDeviceAction({ controllerHome, repoId: 'repo-ios-swipe-test', repoRoot, pluginId: 'ios',
+      actionId: 'agent_device_swipe', requestId: 'content-swipe',
+      args: { interaction_id: interactionId, x1: 200, y1: 650, x2: 200, y2: 220, duration_ms: 280 },
+      origin: { surface: 'local-ui', actor: 'test' } });
+    expect(calls.find((args) => args[0] === 'swipe')).toEqual([
+      'swipe', '200', '650', '200', '220', '280', '--session', 'forge-swipe-test', '--platform', 'ios', '--json',
+    ]);
+    await expect(executeIosAgentDeviceAction({ controllerHome, repoId: 'repo-ios-swipe-test', repoRoot, pluginId: 'ios',
+      actionId: 'agent_device_swipe', requestId: 'invalid-swipe',
+      args: { interaction_id: interactionId, x1: -1, y1: 650, x2: 200, y2: 220 },
+      origin: { surface: 'local-ui', actor: 'test' } })).rejects.toMatchObject({ code: 'PLUGIN_ACTION_ARGUMENT_INVALID' });
+    expect(calls.filter((args) => args[0] === 'swipe')).toHaveLength(1);
   });
 });
 

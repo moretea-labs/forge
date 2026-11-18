@@ -1145,7 +1145,7 @@ function fenceUnknownSession(
 }
 
 function isPotentiallyMutatingAgentDeviceCommand(args: string[]): boolean {
-  return ['press', 'fill', 'scroll', 'keyboard', 'back', 'batch'].includes(args[0] ?? '');
+  return ['press', 'fill', 'scroll', 'swipe', 'keyboard', 'back', 'batch'].includes(args[0] ?? '');
 }
 
 function failWorkflowSession(
@@ -2373,6 +2373,13 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: { type: 'object', properties: { ...interactionProperty, direction: { type: 'string', enum: ['up', 'down', 'left', 'right', 'top', 'bottom'] }, amount: { type: 'number' } }, required: ['interaction_id', 'direction'], additionalProperties: false },
     },
     {
+      actionId: 'agent_device_swipe', title: 'Swipe agent-device session',
+      description: 'Swipe between explicit screen coordinates in the active agent-device screenshot space; start inside the content viewport to avoid navigation docks or overlays.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
+      scopes: ['ios.simulator', 'ios.device'], resourceClaims: write,
+      argumentsSchema: { type: 'object', properties: { ...interactionProperty, x1: { type: 'number', minimum: 0, maximum: 16384 }, y1: { type: 'number', minimum: 0, maximum: 16384 }, x2: { type: 'number', minimum: 0, maximum: 16384 }, y2: { type: 'number', minimum: 0, maximum: 16384 }, duration_ms: { type: 'number', minimum: 1, maximum: 5000 } }, required: ['interaction_id', 'x1', 'y1', 'x2', 'y2'], additionalProperties: false },
+    },
+    {
       actionId: 'agent_device_screenshot', title: 'Capture agent-device screenshot',
       description: 'Capture a bounded PNG into Controller-owned iOS artifact storage. On multi-display Simulators, specify the exact display ID.',
       readOnly: false, risk: 'workspace_write', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
@@ -2668,6 +2675,24 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       const args = ['scroll', direction];
       if (typeof input.args.amount === 'number') args.push(String(Math.max(1, Math.min(100, Math.trunc(input.args.amount)))));
       return { provider: 'agent-device', interaction: record, result: bounded(await runSessionCommand(input, record, args, 'AGENT_DEVICE_SCROLL_FAILED')) };
+    }
+    case 'agent_device_swipe': {
+      const coordinate = (name: 'x1' | 'y1' | 'x2' | 'y2'): string => {
+        const value = input.args[name];
+        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 16_384) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `${name} must be an integer screen coordinate from 0 to 16384.`, { retryable: false });
+        }
+        return String(value);
+      };
+      const args = ['swipe', coordinate('x1'), coordinate('y1'), coordinate('x2'), coordinate('y2')];
+      if (input.args.duration_ms !== undefined) {
+        const duration = input.args.duration_ms;
+        if (typeof duration !== 'number' || !Number.isSafeInteger(duration) || duration < 1 || duration > 5_000) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'duration_ms must be an integer from 1 to 5000.', { retryable: false });
+        }
+        args.push(String(duration));
+      }
+      return { provider: 'agent-device', interaction: record, result: bounded(await runSessionCommand(input, record, args, 'AGENT_DEVICE_SWIPE_FAILED')) };
     }
     case 'agent_device_screenshot': {
       const label = sanitize(optionalString(input.args.label) ?? 'screenshot');
