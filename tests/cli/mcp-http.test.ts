@@ -1630,12 +1630,13 @@ describe('mcp http transport', () => {
     }
   }, 45_000);
 
-  test('reconnects the same MCP session through a restarted local tunnel endpoint process', async () => {
+  test('reuses the same MCP SDK client and live session after a tunnel endpoint restart', async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-tunnel-process-restart-'));
     const gatewayPort = await freePort();
     const tunnelPort = await freePort();
     let gatewayProc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
     let tunnelProc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    let client: Client | null = null;
     try {
       await withTestControllerHome(repoRoot, async (controllerHome) => {
         mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
@@ -1669,46 +1670,36 @@ describe('mcp http transport', () => {
           { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
         );
         const endpoint = 'http://127.0.0.1:' + tunnelPort + '/mcp-bearer';
-        const headers = { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
-        const initialize = async () => {
-          const response = await fetch(endpoint, { method: 'POST', headers, body: initializeBody('tunnel-process-restart') });
-          expect(response.status).toBe(200);
-          const sessionId = response.headers.get('mcp-session-id');
-          expect(sessionId).toBeTruthy();
-          await response.text();
-          return sessionId!;
-        };
-        const toolsList = async (sessionId: string) => {
-          const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { ...headers, 'mcp-session-id': sessionId },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 'tunnel-restarted-tools', method: 'tools/list' }),
-          });
-          expect(response.status).toBe(200);
-          const raw = await response.text();
-          const data = raw.split(/\r?\n/).find((line) => line.startsWith('data:'));
-          const payload = JSON.parse(data ? data.slice(5).trim() : raw) as { result?: { tools?: unknown[] } };
-          expect(payload.result?.tools?.length).toBeGreaterThan(0);
-        };
+        const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
 
         tunnelProc = startTunnel();
         await waitForHealth(tunnelPort);
-        const sessionId = await initialize();
-        await toolsList(sessionId);
+        const transport = new StreamableHTTPClientTransport(new URL(endpoint), { requestInit: { headers } });
+        client = new Client({ name: 'forge-http-client-after-tunnel-restart', version: '1.0.0' });
+        await client.connect(transport);
+        const sessionId = transport.sessionId;
+        expect(sessionId).toBeTruthy();
+        const initialTools = await client.listTools();
+        expect(initialTools.tools.map((tool) => tool.name)).toContain('harness_status');
+
         const previousTunnelPid = tunnelProc.pid;
         await stopMcpServerProcess(tunnelProc);
         tunnelProc = null;
+        await expect(client.listTools()).rejects.toThrow();
 
         tunnelProc = startTunnel();
         expect(tunnelProc.pid).not.toBe(previousTunnelPid);
         await waitForHealth(tunnelPort);
-        await toolsList(sessionId);
+        const toolsAfterRestart = await client.listTools();
+        expect(toolsAfterRestart.tools.map((tool) => tool.name)).toContain('harness_status');
+        expect(transport.sessionId).toBe(sessionId);
+        const readyAfterRestart = await client.callTool({ name: 'harness_status', arguments: {} });
+        expect(readyAfterRestart.isError).not.toBe(true);
         const health = await fetch('http://127.0.0.1:' + gatewayPort + '/health').then((response) => response.json());
         expect(health.sessions.active).toBe(1);
-        const deleted = await fetch(endpoint, { method: 'DELETE', headers: { authorization: 'Bearer ' + token, 'mcp-session-id': sessionId } });
-        expect(deleted.status).toBe(200);
       });
     } finally {
+      await client?.close().catch(() => undefined);
       await stopMcpServerProcess(tunnelProc);
       await stopMcpServerProcess(gatewayProc);
       rmSync(repoRoot, { recursive: true, force: true });
