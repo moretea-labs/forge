@@ -25,11 +25,33 @@ import { reconcileActiveMcpPosts } from './http-post-lifecycle';
 type McpToolContext = ReturnType<typeof createMcpToolContext>;
 type HttpSessionRegistry = McpSessionRegistry<NodeStreamableHTTPServerTransport, McpToolContext>;
 
+export type McpAuthFailureMode = 'bearer' | 'oauth';
+export type McpAuthFailureReason =
+  | 'credentials_unavailable'
+  | 'missing_authorization'
+  | 'invalid_authorization'
+  | 'invalid_token';
+
+export interface McpAuthFailureEvent {
+  mode: McpAuthFailureMode;
+  reason: McpAuthFailureReason;
+  route: string;
+  at: string;
+}
+
+export interface McpAuthFailureSnapshot {
+  total: number;
+  bearer: number;
+  oauth: number;
+  last?: McpAuthFailureEvent;
+}
+
 interface McpRuntimeStats {
   initializing: number;
   activePostStartedAt: Map<Response, number>;
   rejectedOverload: number;
   reclaimedStalePosts?: number;
+  authFailures: McpAuthFailureSnapshot;
 }
 
 export interface McpHttpObservationRouteOptions {
@@ -260,6 +282,12 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
         : authMode === 'bearer'
           ? (authTokenConfigured ? 'required' : 'missing')
           : 'none',
+      authFailures: {
+        total: runtimeStats.authFailures.total,
+        bearer: runtimeStats.authFailures.bearer,
+        oauth: runtimeStats.authFailures.oauth,
+        ...(runtimeStats.authFailures.last ? { last: { ...runtimeStats.authFailures.last } } : {}),
+      },
       ...(oauthAuthorizationCodeDiagnostics ? { oauthAuthorizationCodes: oauthAuthorizationCodeDiagnostics() } : {}),
       mcpEndpoint: `${advertisedOrigin}/mcp`,
       grokEndpoint: `${advertisedOrigin}/mcp`,

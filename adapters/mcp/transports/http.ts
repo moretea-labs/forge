@@ -39,7 +39,7 @@ import {
 } from '../../../src/runtime/shared/runtime-config';
 import { McpSessionRegistry, type ClosableMcpTransport, type McpSessionRegistryOptions, type McpSessionRoute } from './session-registry';
 import { getConfiguredPublicOrigin, getPublicOrigin, registerMcpOAuthHttpRoutes } from './oauth-http';
-import { registerMcpHttpObservationRoutes } from './http-observation';
+import { registerMcpHttpObservationRoutes, type McpAuthFailureEvent, type McpAuthFailureSnapshot } from './http-observation';
 import { reconcileActiveMcpPosts } from './http-post-lifecycle';
 import { RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN } from '../../../src/runtime/root/mcp-transport';
 import { packageConnectorCutoverDrainIsActive } from '../../../src/runtime/root/package-connector-service';
@@ -252,6 +252,7 @@ function requireMcpHttpAuth(
   provider: ReturnType<typeof createMcpOAuthProvider> | null,
   configuredOrigin: string | undefined,
   resourcePath = '/mcp',
+  onAuthFailure?: (failure: Omit<McpAuthFailureEvent, 'at'>) => void,
 ) {
   return (req: Request, res: Response, next: NextFunction) => {
     if (mode === 'none') {
@@ -261,6 +262,15 @@ function requireMcpHttpAuth(
 
     if (mode === 'bearer') {
       if (!isAuthorizedMcpHttpRequest(req, bearerToken)) {
+        onAuthFailure?.({
+          mode: 'bearer',
+          reason: !bearerToken
+            ? 'credentials_unavailable'
+            : typeof req.headers.authorization === 'string'
+              ? 'invalid_authorization'
+              : 'missing_authorization',
+          route: resourcePath,
+        });
         sendBearerUnauthorized(res, bearerToken ? 'Missing or invalid Authorization header' : 'Bearer token is not configured', Boolean(bearerToken));
         return;
       }
@@ -275,6 +285,11 @@ function requireMcpHttpAuth(
 
     const token = bearerFromRequest(req);
     if (!token || !provider) {
+      onAuthFailure?.({
+        mode: 'oauth',
+        reason: token ? 'credentials_unavailable' : 'missing_authorization',
+        route: resourcePath,
+      });
       sendOAuthUnauthorized(req, res, token ? 'OAuth is not configured' : 'Missing Authorization header', configuredOrigin, resourcePath);
       return;
     }
@@ -285,6 +300,7 @@ function requireMcpHttpAuth(
       })
       .catch((error: unknown) => {
         if (error instanceof InvalidTokenError) {
+          onAuthFailure?.({ mode: 'oauth', reason: 'invalid_token', route: resourcePath });
           sendOAuthUnauthorized(req, res, error.message, configuredOrigin, resourcePath);
         } else {
           res.status(500).json({ error: 'server_error', message: 'Internal Server Error' });
@@ -298,6 +314,8 @@ interface McpRuntimeStats {
   /** Canonical HTTP POST admission owner; one entry per unfinished response. */
   activePostStartedAt: Map<Response, number>;
   rejectedOverload: number;
+  /** Authentication rejections observed by this Gateway process. */
+  authFailures: McpAuthFailureSnapshot;
   /** Bounded stale responses removed from admission because no terminal event arrived. */
   reclaimedStalePosts?: number;
 }
@@ -742,7 +760,18 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
       });
     },
   });
-  const runtimeStats: McpRuntimeStats = { initializing: 0, activePostStartedAt: new Map(), rejectedOverload: 0 };
+  const runtimeStats: McpRuntimeStats = {
+    initializing: 0,
+    activePostStartedAt: new Map(),
+    rejectedOverload: 0,
+    authFailures: { total: 0, bearer: 0, oauth: 0 },
+  };
+  const recordAuthFailure = (failure: Omit<McpAuthFailureEvent, 'at'>): void => {
+    const evidence = runtimeStats.authFailures;
+    evidence.total += 1;
+    evidence[failure.mode] += 1;
+    evidence.last = { ...failure, at: new Date().toISOString() };
+  };
   const toolContext = createMcpToolContext({ ...opts, repo: repoRoot, controllerHome, profile });
   const baseOptions: McpServerOptions = {
     repo: repoRoot,
@@ -842,17 +871,17 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
 
   // Primary MCP path: OAuth (or bearer when --auth bearer).
   app.use('/mcp', setMcpResponseHeaders);
-  app.post('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
+  app.post('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp', recordAuthFailure), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
     handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy, modernMcp.nodeHandler).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
-  app.get('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin), (req, res) => {
+  app.get('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp', recordAuthFailure), (req, res) => {
     handleMcpGet(req, res, sessionRegistry, '/mcp', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, controllerHome).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
-  app.delete('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin), (req, res) => {
+  app.delete('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp', recordAuthFailure), (req, res) => {
     handleMcpDelete(req, res, sessionRegistry, '/mcp').catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
@@ -860,17 +889,17 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
 
   // Legacy Grok OAuth resource. New Grok connectors should use canonical /mcp.
   app.use('/mcp-grok', setMcpResponseHeaders);
-  app.post('/mcp-grok', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok'), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
+  app.post('/mcp-grok', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok', recordAuthFailure), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
     handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-grok', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy, modernMcp.nodeHandler).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
-  app.get('/mcp-grok', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok'), (req, res) => {
+  app.get('/mcp-grok', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok', recordAuthFailure), (req, res) => {
     handleMcpGet(req, res, sessionRegistry, '/mcp-grok', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, controllerHome).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
-  app.delete('/mcp-grok', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok'), (req, res) => {
+  app.delete('/mcp-grok', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok', recordAuthFailure), (req, res) => {
     handleMcpDelete(req, res, sessionRegistry, '/mcp-grok').catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
@@ -878,17 +907,17 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
 
   // Bearer-only MCP path for clients that can send Authorization headers. Never advertises OAuth resource_metadata.
   app.use('/mcp-bearer', setMcpResponseHeaders);
-  app.post('/mcp-bearer', requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
+  app.post('/mcp-bearer', requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin, '/mcp-bearer', recordAuthFailure), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
     handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-bearer', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy, modernMcp.nodeHandler).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
-  app.get('/mcp-bearer', requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin), (req, res) => {
+  app.get('/mcp-bearer', requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin, '/mcp-bearer', recordAuthFailure), (req, res) => {
     handleMcpGet(req, res, sessionRegistry, '/mcp-bearer', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, controllerHome).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
-  app.delete('/mcp-bearer', requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin), (req, res) => {
+  app.delete('/mcp-bearer', requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin, '/mcp-bearer', recordAuthFailure), (req, res) => {
     handleMcpDelete(req, res, sessionRegistry, '/mcp-bearer').catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });

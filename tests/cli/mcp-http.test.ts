@@ -7,7 +7,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY } from '@modelcontextprotocol/server';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { loadMcpServiceLocalConfig, mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath, writeMcpServiceLocalConfig } from '../../adapters/mcp/auth';
+import { loadMcpServiceLocalConfig, mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath, writeMcpServiceLocalConfig, writeMcpServiceRuntimeState } from '../../adapters/mcp/auth';
 import { runMcpSetupChatgpt } from '../../adapters/mcp/setup';
 import { mergeNoProxy, withDirectNetworkProxyBypass } from '../../adapters/mcp/proxy-env';
 import { McpSessionRegistry } from '../../adapters/mcp/transports/session-registry';
@@ -132,7 +132,7 @@ describe('mcp http transport', () => {
   });
 
   test('bounds MCP POST ingress with one shared capacity authority', () => {
-    const stats = { initializing: 0, activePostStartedAt: new Map<import('express').Response, number>(), rejectedOverload: 0 };
+    const stats = { initializing: 0, activePostStartedAt: new Map<import('express').Response, number>(), rejectedOverload: 0, authFailures: { total: 0, bearer: 0, oauth: 0 } };
     for (let i = 0; i < 31; i++) stats.activePostStartedAt.set({} as import('express').Response, Date.now() - 1_000);
     const response = () => {
       const emitter = new EventEmitter();
@@ -240,6 +240,7 @@ describe('mcp http transport', () => {
       activePostStartedAt: new Map<import('express').Response, number>(),
       rejectedOverload: 0,
       reclaimedStalePosts: 0,
+      authFailures: { total: 0, bearer: 0, oauth: 0 },
     };
     const mockResponse = (startedAt: number, streaming = false) => {
       let statusCode = 0;
@@ -648,6 +649,21 @@ describe('mcp http transport', () => {
           body: initializeBody(),
         });
         expect(noAuth.status).toBe(401);
+
+        const invalidAuth = await fetch('http://127.0.0.1:' + port + '/mcp', {
+          method: 'POST',
+          headers: { authorization: 'Bearer definitely-not-valid', 'content-type': 'application/json' },
+          body: initializeBody(),
+        });
+        expect(invalidAuth.status).toBe(401);
+        const bearerAuthEvidence = await fetch('http://127.0.0.1:' + port + '/health').then((response) => response.json());
+        expect(bearerAuthEvidence.authFailures).toMatchObject({
+          total: 2,
+          bearer: 2,
+          oauth: 0,
+          last: { mode: 'bearer', reason: 'invalid_authorization', route: '/mcp' },
+        });
+        expect(JSON.stringify(bearerAuthEvidence.authFailures)).not.toContain(token);
 
         const badJson = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
@@ -1680,6 +1696,97 @@ describe('mcp http transport', () => {
     }
   });
 
+  test('reports Gateway, Runtime, tunnel, and Repository readiness as separate diagnostic domains', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-readiness-matrix-'));
+    const port = await freePort();
+    let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
+        const localConfig = loadMcpServiceLocalConfig(controllerHome) ?? {};
+        writeMcpServiceLocalConfig(controllerHome, {
+          ...localConfig,
+          localController: { enabled: false, mode: 'disabled', host: '127.0.0.1', port: 8766 },
+        });
+        const now = new Date().toISOString();
+        writeMcpServiceRuntimeState(controllerHome, {
+          version: 1,
+          repo: repoRoot,
+          startedAt: now,
+          updatedAt: now,
+          status: 'running',
+          tunnelMode: 'named',
+          server: {
+            endpoint: 'http://127.0.0.1:8766/mcp',
+            running: true,
+            healthy: true,
+            restartCount: 0,
+          },
+          tunnel: {
+            running: false,
+            healthy: false,
+            restartCount: 1,
+            name: 'forge-test',
+            publicEndpoint: 'https://forge-test.example.invalid',
+            connectorNeedsReconnect: true,
+          },
+        });
+
+        proc = Bun.spawn(
+          [
+            'bun',
+            join(process.cwd(), 'src/cli/index.ts'),
+            'mcp',
+            'serve',
+            '--controller-home',
+            controllerHome,
+            '--transport',
+            'http',
+            '--host',
+            '127.0.0.1',
+            '--port',
+            String(port),
+            '--profile',
+            'controller',
+            '--auth',
+            'bearer',
+          ],
+          {
+            cwd: repoRoot,
+            stdout: 'ignore',
+            stderr: 'pipe',
+            env: isolatedMcpProcessEnv(controllerHome, { FORGE_CONTROLLER_LIFECYCLE_OWNER: '1' }),
+          },
+        );
+        await waitForHealth(port);
+
+        const transportReady = await fetch('http://127.0.0.1:' + port + '/transport-ready');
+        expect(transportReady.status).toBe(200);
+        expect(await transportReady.json()).toMatchObject({ ready: true, gateway: 'ready' });
+
+        const ready = await fetch('http://127.0.0.1:' + port + '/ready');
+        expect(ready.status).toBe(503);
+        const readiness = await ready.json();
+        expect(readiness).toMatchObject({
+          ready: false,
+          gateway: { status: 'degraded' },
+          localBridge: { enabled: false, ready: true },
+          projections: { ready: true, repositoryCount: 0, staleRepositories: [], blockingStaleRepositories: [] },
+          publicReadiness: { configured: true, ready: false, endpoint: 'https://forge-test.example.invalid' },
+          connectorReadiness: { configured: true, ready: false, connectorNeedsReconnect: true },
+        });
+        expect(readiness.controllerDaemon?.status).not.toBe('ready');
+
+        const missingRepository = await fetch('http://127.0.0.1:' + port + '/repos/not-registered/health');
+        expect(missingRepository.status).toBe(404);
+        expect((await missingRepository.json()).error).toBeTruthy();
+      });
+    } finally {
+      await stopMcpServerProcess(proc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   test('supports ChatGPT-compatible OAuth authorization flow', async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-oauth-'));
     const port = await freePort();
@@ -1725,6 +1832,20 @@ describe('mcp http transport', () => {
           mcpEndpoint: `http://127.0.0.1:${port}/mcp`,
           grokEndpoint: `http://127.0.0.1:${port}/mcp`,
           bearerEndpoint: `http://127.0.0.1:${port}/mcp-bearer`,
+        });
+
+        const invalidOAuth = await fetch('http://127.0.0.1:' + port + '/mcp', {
+          method: 'POST',
+          headers: { authorization: 'Bearer invalid-oauth-token', 'content-type': 'application/json' },
+          body: initializeBody(),
+        });
+        expect(invalidOAuth.status).toBe(401);
+        const oauthAuthEvidence = await fetch('http://127.0.0.1:' + port + '/health').then((response) => response.json());
+        expect(oauthAuthEvidence.authFailures).toMatchObject({
+          total: 1,
+          bearer: 0,
+          oauth: 1,
+          last: { mode: 'oauth', reason: 'invalid_token', route: '/mcp' },
         });
 
         const metadata = await fetch(`http://127.0.0.1:${port}/.well-known/oauth-protected-resource/mcp`, {
