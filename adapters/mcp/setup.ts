@@ -590,6 +590,16 @@ export function runMcpDoctor(opts: {
   const reinitializedAfterLastClose = Boolean(lastSessionClose && transportEvents.some((event) =>
     event.kind === "session_initialized" && Date.parse(event.at) > Date.parse(lastSessionClose.at),
   ));
+  const sessionCloseCounts = transportEvents.reduce(
+    (counts, event) => {
+      if (event.kind !== "session_closed") return counts;
+      const reason = event.reason ?? "unknown";
+      counts.total += 1;
+      counts.byReason[reason] = (counts.byReason[reason] ?? 0) + 1;
+      return counts;
+    },
+    { total: 0, byReason: {} as Record<string, number> },
+  );
   const configuredServerName = localConfig?.chatgpt?.serverName;
   const forgeInstanceId = localConfig?.identity?.forgeInstanceId?.trim()
     || readForgeInstanceIdentity(controllerHome)?.instanceId;
@@ -669,6 +679,7 @@ export function runMcpDoctor(opts: {
       observedAt: runtimeObservation.observedAt,
     },
     transportEvidence: {
+      sessionCloseCounts,
       lastSessionClose: lastSessionClose ? {
         kind: lastSessionClose.kind,
         at: lastSessionClose.at,
@@ -716,6 +727,7 @@ export function runMcpDoctor(opts: {
             `[forge mcp] Local Controller: ${report.mcp.localController.enabled ? report.chatgpt.localController : "disabled"}`,
             `[forge mcp] ChatGPT auth: ${report.mcp.authConfigured ? `${authMode} present` : "missing"}`,
             `[forge mcp] Credentials: Controller Home OAuth=${report.credentialBoundary.controllerHome.oauthFileConfigured ? "present" : "missing"}, bearer=${report.credentialBoundary.controllerHome.bearerTokenFileConfigured ? "present" : "missing"}; OpenAI Secure Tunnel CONTROL_PLANE_API_KEY is supplied by the external runtime environment and not persisted by Forge`,
+            `[forge mcp] MCP session closes (retained): ${report.transportEvidence.sessionCloseCounts.total}${Object.entries(report.transportEvidence.sessionCloseCounts.byReason).length > 0 ? ` (${Object.entries(report.transportEvidence.sessionCloseCounts.byReason).sort(([a], [b]) => a.localeCompare(b)).map(([reason, count]) => `${reason}=${count}`).join(", ")})` : ""}`,
             `[forge mcp] Last MCP session close: ${report.transportEvidence.lastSessionClose
               ? `${report.transportEvidence.lastSessionClose.reason} (${report.transportEvidence.lastSessionClose.kind}, ${report.transportEvidence.lastSessionClose.route}, ${report.transportEvidence.lastSessionClose.at}; ${Math.round((report.transportEvidence.lastSessionClose.ageMs ?? 0) / 60_000)}m ago; reinitialized afterward=${report.transportEvidence.reinitializedAfterLastClose ? "yes" : "no"})`
               : "no recorded close event in retained history"

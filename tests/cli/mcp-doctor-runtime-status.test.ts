@@ -195,6 +195,24 @@ describe("forge mcp doctor runtime status", () => {
         at: closedAt,
       });
       recordMcpTransportEvent(controllerHome, {
+        kind: "session_closed",
+        sessionId: "lease-expired-session",
+        connectionId: "connection-expired",
+        route: "/mcp",
+        principalId: "oauth-client:fixture",
+        reason: "stream_lease",
+        at: new Date(Date.parse(closedAt) - 1_000).toISOString(),
+      });
+      recordMcpTransportEvent(controllerHome, {
+        kind: "session_closed",
+        sessionId: "lifetime-expired-session",
+        connectionId: "connection-expired",
+        route: "/mcp",
+        principalId: "oauth-client:fixture",
+        reason: "absolute_lifetime",
+        at: new Date(Date.parse(closedAt) - 2_000).toISOString(),
+      });
+      recordMcpTransportEvent(controllerHome, {
         kind: "session_initialized",
         sessionId: "replacement-session",
         connectionId: "connection-expired",
@@ -215,6 +233,10 @@ describe("forge mcp doctor runtime status", () => {
         };
       };
       expect(report.transportEvidence).toMatchObject({
+        sessionCloseCounts: {
+          total: 3,
+          byReason: { absolute_lifetime: 1, idle_ttl: 1, stream_lease: 1 },
+        },
         lastSessionClose: {
           kind: "session_closed",
           at: closedAt,
@@ -229,6 +251,7 @@ describe("forge mcp doctor runtime status", () => {
         userLevel: true,
         controllerHome,
       }));
+      expect(human.lines.some((line) => line.includes("MCP session closes (retained): 3") && line.includes("absolute_lifetime=1") && line.includes("idle_ttl=1") && line.includes("stream_lease=1"))).toBe(true);
       expect(human.lines.some((line) => line.includes("Last MCP session close: idle_ttl"))).toBe(true);
       expect(human.repoRoot).toBeUndefined();
     } finally {
