@@ -150,8 +150,8 @@ interface WslWindowsBrowserProductFallback {
 
 /** Bounded adapter fallbacks only. Host discovery and explicit provider registration take precedence. */
 const WSL_WINDOWS_BROWSER_PRODUCT_FALLBACKS: readonly WslWindowsBrowserProductFallback[] = [
-  { productId: 'google-chrome', executableRelativePath: 'Google/Chrome/Application/chrome.exe', profileRelativeToLocalAppData: 'Google/Chrome/User Data', supportsUnpackedExtensionLaunch: true },
   { productId: 'centbrowser', executableRelativePath: 'CentBrowser/Application/chrome.exe', profileRelativeToLocalAppData: 'CentBrowser/User Data', supportsUnpackedExtensionLaunch: true },
+  { productId: 'google-chrome', executableRelativePath: 'Google/Chrome/Application/chrome.exe', profileRelativeToLocalAppData: 'Google/Chrome/User Data' },
 ] as const;
 
 export interface WslWindowsBridgeBrowserBinding {
