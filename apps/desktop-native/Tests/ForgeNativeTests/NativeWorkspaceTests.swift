@@ -538,11 +538,21 @@ final class NativeWorkspaceTests: XCTestCase {
             provider:"api",accessMode:"full_access",repoId:"repo",checkoutId:nil
         ))
         XCTAssertEqual(NativeWorkspace.repositoryAccessMode([
-            "repositoryPolicy":["mode":"full_access"]
-        ]),"full_access")
+            "repository":["repoId":"repo-test"],
+            "repositoryPolicy":["repoId":"repo-test","mode":"full_access"]
+        ],repoId:"repo-test"),"full_access")
         XCTAssertEqual(NativeWorkspace.repositoryAccessMode([
-            "repositoryPolicy":["mode":"request"]
-        ]),"request")
+            "repository":["repoId":"repo-test"],
+            "repositoryPolicy":["repoId":"repo-test","mode":"request"]
+        ],repoId:"repo-test"),"request")
+        XCTAssertNil(NativeWorkspace.repositoryAccessMode([
+            "repository":["repoId":"another-repo"],
+            "repositoryPolicy":["repoId":"another-repo","mode":"full_access"]
+        ],repoId:"repo-test"))
+        XCTAssertNil(NativeWorkspace.repositoryAccessMode([
+            "repository":["repoId":"repo-test"],
+            "repositoryPolicy":["repoId":"repo-test","mode":"unknown"]
+        ],repoId:"repo-test"))
     }
 
     func testApiTurnHistoryExcludesIncompleteAssistantEvidence() {
@@ -727,8 +737,16 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.agentSendBlockReason,"正在验证 checkout，完成后即可发送。")
 
         model.checkoutContextLoading = false
-        XCTAssertEqual(model.agentSendBlockReason,"checkout 不可用，请切换到有效的工作区。")
+        model.repositoryAccessLoading = true
+        XCTAssertEqual(model.agentSendBlockReason,"正在更新项目权限，完成后即可发送。")
         model.draft = "implement feature"
+        await model.send()
+        XCTAssertEqual(model.error,model.agentSendBlockReason)
+        XCTAssertEqual(model.draft,"implement feature")
+        XCTAssertTrue(model.threads[0].messages.isEmpty)
+
+        model.repositoryAccessLoading = false
+        XCTAssertEqual(model.agentSendBlockReason,"checkout 不可用，请切换到有效的工作区。")
         await model.send()
         XCTAssertEqual(model.error,model.agentSendBlockReason)
         XCTAssertEqual(model.draft,"implement feature")

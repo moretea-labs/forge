@@ -1176,6 +1176,7 @@ final class NativeWorkspace: ObservableObject {
             return "当前会话绑定了其他项目或工作区。请切回原项目，或从当前项目新建会话。"
         }
         if thread.repoId != nil {
+            if repositoryAccessLoading { return "正在更新项目权限，完成后即可发送。" }
             if thread.checkoutId == nil { return "当前会话缺少 checkout，请重新选择项目。" }
             if checkoutContextLoading { return "正在验证 checkout，完成后即可发送。" }
             if !checkoutIsAvailable { return "checkout 不可用，请切换到有效的工作区。" }
@@ -2550,9 +2551,14 @@ final class NativeWorkspace: ObservableObject {
         return labels
     }
 
-    nonisolated static func repositoryAccessMode(_ result:[String:Any]) -> String {
-        let policy = result["repositoryPolicy"] as? [String:Any] ?? [:]
-        return policy["mode"] as? String == "full_access" ? "full_access" : "request"
+    nonisolated static func repositoryAccessMode(_ result:[String:Any],repoId:String) -> String? {
+        guard let repository = result["repository"] as? [String:Any],
+              repository["repoId"] as? String == repoId,
+              let policy = result["repositoryPolicy"] as? [String:Any],
+              policy["repoId"] as? String == repoId,
+              let mode = policy["mode"] as? String,
+              mode == "request" || mode == "full_access" else { return nil }
+        return mode
     }
 
     private func invalidateRepositoryAccessRequests() {
@@ -2587,11 +2593,16 @@ final class NativeWorkspace: ObservableObject {
         do {
             let value = try await ForgeBridge.request("read_repository_access",["repoId":targetRepoId])
             guard repositoryAccessOperationIsCurrent(requestGeneration,repoId:targetRepoId) else { return }
-            repositoryAccessMode = Self.repositoryAccessMode(value)
+            guard let mode = Self.repositoryAccessMode(value,repoId:targetRepoId) else {
+                repositoryAccessMode = "request"
+                self.error = "项目权限状态无法确认，已按“请求权限”限制本地执行。请重试读取。"
+                return
+            }
+            repositoryAccessMode = mode
         } catch {
             guard repositoryAccessOperationIsCurrent(requestGeneration,repoId:targetRepoId) else { return }
             repositoryAccessMode = "request"
-            self.error = error.localizedDescription
+            self.error = "项目权限读取失败，已按“请求权限”限制本地执行。请重试读取。\(error.localizedDescription)"
         }
     }
 
@@ -2612,12 +2623,19 @@ final class NativeWorkspace: ObservableObject {
                 "repoId":repoId,"mode":mode
             ])
             guard repositoryAccessOperationIsCurrent(requestGeneration,repoId:repoId) else { return false }
-            repositoryAccessMode = Self.repositoryAccessMode(value)
+            guard let confirmedMode = Self.repositoryAccessMode(value,repoId:repoId),
+                  confirmedMode == mode else {
+                repositoryAccessMode = "request"
+                self.error = "项目权限切换未能确认，已按“请求权限”限制本地执行。请重试。"
+                return false
+            }
+            repositoryAccessMode = confirmedMode
             self.error = nil
-            return repositoryAccessMode == mode
+            return true
         } catch {
             guard repositoryAccessOperationIsCurrent(requestGeneration,repoId:repoId) else { return false }
-            self.error = error.localizedDescription
+            repositoryAccessMode = "request"
+            self.error = "项目权限切换失败，已按“请求权限”限制本地执行。请重试。\(error.localizedDescription)"
             return false
         }
     }
