@@ -114,7 +114,8 @@ import {
 } from '../../src/runtime/standalone-recovery/controller-home-migration';
 import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } from '../../adapters/mcp/auth';
 import { acquireRecoveryReleaseLock, installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, RECOVERY_DAEMON_LABEL, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
-import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
+import { acquireRecoveryOperationLock, recoveryOperationLockOwnerAlive, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
+import { LINUX_PROCESS_START_TIME_PREFIX } from '../../src/runtime/shared/process-identity';
 import { publishRecoveryRelease, readCurrentRecoveryRelease, recoveryGatewayIsDraining, writeRecoveryReleaseManifest } from '../../src/runtime/standalone-recovery/release';
 import { createRecoveryHttpTransport } from '../../src/runtime/standalone-recovery/http-transport';
 
@@ -1472,6 +1473,47 @@ test('shared Recovery operation locks synthesize core-compatible request attribu
   } finally {
     shared.handle.close();
   }
+});
+
+test('shared Recovery operation locks use stable Linux process start identity', () => {
+  const home = controllerHome();
+  const acquired = acquireRecoveryOperationLock({ controllerHome: home, action: 'release_session_cutover', requestId: 'test-stable-process-identity' });
+  expect(acquired.acquired).toBe(true);
+  if (!acquired.acquired) throw new Error('stable Recovery operation lock was not acquired');
+  try {
+    if (process.platform === 'linux') {
+      expect(acquired.handle.record.processStartTime?.startsWith(LINUX_PROCESS_START_TIME_PREFIX)).toBe(true);
+    }
+    expect(recoveryOperationLockOwnerAlive(acquired.handle.record)).toBe(true);
+  } finally {
+    acquired.handle.close();
+  }
+});
+
+test('live legacy Linux Recovery locks remain owned across wall-clock correction', () => {
+  if (process.platform !== 'linux') return;
+  expect(recoveryOperationLockOwnerAlive({
+    schemaVersion: 1,
+    pid: process.pid,
+    instanceId: 'legacy-clock-adjusted',
+    processStartTime: 'Wed Nov 18 10:49:49 2026',
+    acquiredAt: new Date().toISOString(),
+    action: 'release_session_cutover',
+    requestId: 'test-legacy-clock-shift',
+  })).toBe(true);
+});
+
+test('Linux Recovery operation locks reject a reused PID with a different monotonic identity', () => {
+  if (process.platform !== 'linux') return;
+  expect(recoveryOperationLockOwnerAlive({
+    schemaVersion: 1,
+    pid: process.pid,
+    instanceId: 'reused-pid',
+    processStartTime: `${LINUX_PROCESS_START_TIME_PREFIX}00000000-0000-0000-0000-000000000000:1`,
+    acquiredAt: new Date().toISOString(),
+    action: 'release_session_cutover',
+    requestId: 'test-reused-pid',
+  })).toBe(false);
 });
 
 test('shared Recovery operation lock removes a malformed file when record persistence fails', () => {
