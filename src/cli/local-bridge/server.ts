@@ -1119,37 +1119,68 @@ export async function startLocalBridgeServer(
           },
         };
         const workflowRunId = `agentmail-${createHash("sha256").update(eventId).digest("hex").slice(0, 40)}`;
-        const dispatched = await callRhWorkWorkflowOperation(mcpExposureContext, repository, "workflow_execute", {
+        const workflowArguments = {
           workflow_id: AGENTMAIL_EVENT_WORKFLOW_ID,
           workflow_run_id: workflowRunId,
           workflow_inputs: workflowInputs,
-        });
-        const dispatchResult = dispatched?.structuredContent as Record<string, unknown> | undefined;
-        const dispatchData = dispatchResult?.data && typeof dispatchResult.data === "object"
+        };
+        const reconciliationRequestId = `agentmail-reconcile-${createHash("sha256").update(eventId).digest("hex").slice(0, 40)}`;
+        let dispatched = await callRhWorkWorkflowOperation(mcpExposureContext, repository, "workflow_execute", workflowArguments);
+        let dispatchResult = dispatched?.structuredContent as Record<string, unknown> | undefined;
+        let dispatchData = dispatchResult?.data && typeof dispatchResult.data === "object"
           ? dispatchResult.data as Record<string, unknown>
           : {};
-        const workflow = dispatchData.workflow && typeof dispatchData.workflow === "object"
+        let workflow = dispatchData.workflow && typeof dispatchData.workflow === "object"
           ? dispatchData.workflow as Record<string, unknown>
           : undefined;
-        const summary = typeof dispatchResult?.summary === "string" ? dispatchResult.summary : "WORKFLOW_EVENT_RECEIPT_FAILED";
-        if (workflow && typeof workflow.status === "string") {
+        let summary = typeof dispatchResult?.summary === "string" ? dispatchResult.summary : "WORKFLOW_EVENT_RECEIPT_FAILED";
+        let durable = Boolean(workflow)
+          || summary.startsWith("WORKFLOW_RUN_RECONCILIATION_REQUIRED:")
+          || summary === "WORKFLOW_RUN_FAILED_RESTART_REQUIRES_NEW_RUN_ID"
+          || summary === "WORKFLOW_RUN_ALREADY_SUCCEEDED"
+          || summary === "WORKFLOW_RUN_IDENTITY_CONFLICT";
+        let recovered = false;
+
+        // A duplicate delivery can be the recovery signal after the Process finished but
+        // the WorkflowRun checkpoint/HTTP ACK was interrupted. Reconcile only from the
+        // canonical Process receipt; never dispatch the uncertain script a second time.
+        if (workflow?.status === "reconcile_required"
+          || (!workflow && summary.startsWith("WORKFLOW_RUN_RECONCILIATION_REQUIRED:"))) {
+          recovered = true;
+          dispatched = await callRhWorkWorkflowOperation(mcpExposureContext, repository, "workflow_reconcile", {
+            ...workflowArguments,
+            workflow_reconciliation_request_id: reconciliationRequestId,
+          });
+          dispatchResult = dispatched?.structuredContent as Record<string, unknown> | undefined;
+          dispatchData = dispatchResult?.data && typeof dispatchResult.data === "object"
+            ? dispatchResult.data as Record<string, unknown>
+            : {};
+          workflow = dispatchData.workflow && typeof dispatchData.workflow === "object"
+            ? dispatchData.workflow as Record<string, unknown>
+            : undefined;
+          summary = typeof dispatchResult?.summary === "string" ? dispatchResult.summary : "WORKFLOW_EVENT_RECONCILIATION_FAILED";
+          durable = durable || Boolean(workflow);
+        }
+
+        // AgentMail ACKs only after the exact event has a succeeded canonical WorkflowRun.
+        // A persisted failed/running/reconcile-required record remains unacknowledged in
+        // the source Outbox so it can retry or surface for recovery.
+        if (workflow?.status === "succeeded") {
           response.status(202).json({
             schemaVersion: 1,
             accepted: true,
             durable: true,
-            deduplicated: false,
+            deduplicated: recovered,
             device: verified.principal.device,
             signatureVerified: verified.signatureVerified,
             workflowId: AGENTMAIL_EVENT_WORKFLOW_ID,
             workflowRunId,
             eventId,
-            status: workflow.status,
+            status: "succeeded",
           });
           return;
         }
-        if (summary === "WORKFLOW_RUN_ALREADY_SUCCEEDED"
-          || summary.startsWith("WORKFLOW_RUN_RECONCILIATION_REQUIRED:")
-          || summary === "WORKFLOW_RUN_FAILED_RESTART_REQUIRES_NEW_RUN_ID") {
+        if (summary === "WORKFLOW_RUN_ALREADY_SUCCEEDED") {
           response.status(202).json({
             schemaVersion: 1,
             accepted: true,
@@ -1160,18 +1191,22 @@ export async function startLocalBridgeServer(
             workflowId: AGENTMAIL_EVENT_WORKFLOW_ID,
             workflowRunId,
             eventId,
-            status: summary,
+            status: "succeeded",
           });
           return;
         }
-        response.status(409).json({
+        const conflict = summary === "WORKFLOW_RUN_IDENTITY_CONFLICT";
+        response.status(conflict ? 409 : 503).json({
           schemaVersion: 1,
           accepted: false,
-          durable: false,
+          durable,
+          device: verified.principal.device,
+          signatureVerified: verified.signatureVerified,
           error: summary,
           workflowId: AGENTMAIL_EVENT_WORKFLOW_ID,
           workflowRunId,
           eventId,
+          status: typeof workflow?.status === "string" ? workflow.status : summary,
         });
         return;
       }
