@@ -406,11 +406,11 @@ struct ZenWorkspacePane: View {
             }
         }
 
+        if status.hasPendingProcessRecovery {
+            return ("等待原命令回执","hourglass",.orange)
+        }
         if status.requiresReapproval {
             return ("需重新批准","lock.circle",.orange)
-        }
-        if status.hasPendingProcessRecovery {
-            return ("等待 Process 回执","hourglass",.orange)
         }
         if let checkpointPlanId=status.checkpointPlanId,
            item.kind == .requirement || checkpointPlanId == item.recordId {
@@ -1782,15 +1782,15 @@ struct ZenWorkspacePane: View {
                     Text(requestId).font(.system(size:9.5,design:.monospaced))
                         .foregroundStyle(.secondary).textSelection(.enabled)
                 }
-                if status.hasPendingProcessRecovery {
-                    Text("恢复会先核对原 Process 并读取终态回执，不会重放命令。")
+                if let recoverySummary=status.pendingProcessRecoverySummary {
+                    Text(recoverySummary)
                         .font(.system(size:10)).foregroundStyle(.secondary)
                 }
                 if let plan=status.currentPlanId,!plan.isEmpty {
                     Text("当前 Plan · \(plan)").font(.system(size:10,design:.monospaced))
                         .foregroundStyle(.secondary)
                 }
-                if !status.authorized || status.requiresReapproval {
+                if !status.hasPendingProcessRecovery && (!status.authorized || status.requiresReapproval) {
                     Label("需要批准执行",systemImage:"lock")
                         .font(.system(size:10)).foregroundStyle(.secondary)
                 }

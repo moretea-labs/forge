@@ -400,17 +400,38 @@ struct AutopilotStatusDetail {
         pendingProcessId != nil || pendingCommandRequestId != nil
     }
 
+    var pendingProcessRecoverySummary: String? {
+        guard hasPendingProcessRecovery else { return nil }
+        if checkpointPlanId != nil {
+            return "原命令结果尚未确认，当前检查点暂不可验收。"
+        }
+        if !authorized || requiresReapproval || needsBudgetRenewal {
+            return "原命令结果尚未确认，暂不可重新批准或启动新的执行。"
+        }
+        if !providerReady {
+            return "原命令结果尚未确认，模型服务恢复后才能继续核对；不会重放命令。"
+        }
+        if pendingProcessId != nil {
+            return "恢复会先核对原 Process 并读取终态回执，不会重放命令。"
+        }
+        return "恢复会先按原始请求 ID 找回 Process 并核对结果，不会重放命令。"
+    }
+
     // One status-derived decision shared by Zen and the traditional Planning view.
-    // A paused run with an unconsumed Process correlation resumes by joining the original
-    // Process receipt; it must not be offered as a new start or checkpoint acceptance.
+    // An unconsumed Process correlation must be reconciled under the original authorization;
+    // never reauthorize or accept a checkpoint while its terminal receipt is still unknown.
     func nextExecutionOperation(outcomeUnknown:Bool = false) -> String? {
         guard !outcomeUnknown else { return nil }
+        if hasPendingProcessRecovery {
+            if runtimeActive { return "pause" }
+            guard checkpointPlanId == nil,
+                  authorized, !requiresReapproval, !needsBudgetRenewal,
+                  providerReady else { return nil }
+            return ["running","paused","blocked","failed"].contains(runStatus ?? "") ? "resume" : nil
+        }
         if !authorized || requiresReapproval || needsBudgetRenewal { return "authorize" }
         if runtimeActive { return "pause" }
         guard providerReady else { return nil }
-        if hasPendingProcessRecovery {
-            return ["running","paused","blocked","failed"].contains(runStatus ?? "") ? "resume" : nil
-        }
         if checkpointPlanId != nil { return "accept_checkpoint" }
         return ["running","paused","blocked","failed"].contains(runStatus ?? "") ? "resume" : "start"
     }

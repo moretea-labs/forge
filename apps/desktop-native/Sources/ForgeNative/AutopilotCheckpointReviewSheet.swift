@@ -78,13 +78,13 @@ struct AutopilotCheckpointReviewSheet: View {
                 }
                 .frame(maxHeight:135)
             }
-            if !current {
+            if !current && model.planningAutopilotStatuses[review.requirementId]?.hasPendingProcessRecovery != true {
                 Label("执行状态或工作区已变化，请刷新后重新验收。",systemImage:"exclamationmark.triangle")
                     .foregroundStyle(.orange)
                     .font(ForgeClientDesign.Typography.supporting)
             }
-            if model.planningAutopilotStatuses[review.requirementId]?.hasPendingProcessRecovery == true {
-                Label("原 Process 终态回执尚未确认，请先核对并恢复。",systemImage:"hourglass")
+            if let recoverySummary=model.planningAutopilotStatuses[review.requirementId]?.pendingProcessRecoverySummary {
+                Label(recoverySummary,systemImage:"hourglass")
                     .foregroundStyle(.orange)
                     .font(ForgeClientDesign.Typography.supporting)
             }

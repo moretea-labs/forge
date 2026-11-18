@@ -5252,8 +5252,8 @@ private struct RecordsPane: View {
                                 .foregroundStyle(ForgePalette.secondary).textSelection(.enabled)
                         }
                     }
-                    if status.hasPendingProcessRecovery {
-                        Text("恢复会先核对原 Process 并读取终态回执，不会重放命令。")
+                    if let recoverySummary=status.pendingProcessRecoverySummary {
+                        Text(recoverySummary)
                             .font(.system(size:9.5)).foregroundStyle(ForgePalette.secondary)
                     }
                     if !status.providerReady {
@@ -5300,13 +5300,13 @@ private struct RecordsPane: View {
                         Button("重新配置") { beginAutopilotApproval(requirement) }
                             .buttonStyle(.bordered)
                             .disabled(autopilotSaving || model.autopilotLoading || model.autopilotControlPending
-                                      || outcomeUnknown)
+                                      || outcomeUnknown || status?.hasPendingProcessRecovery == true)
                         Button("撤销授权",role:.destructive) {
                             runAutopilotAction(requirement.requirementId,"revoke")
                         }
                         .buttonStyle(.bordered)
                         .disabled(autopilotSaving || model.autopilotLoading || model.autopilotControlPending
-                                  || outcomeUnknown)
+                                  || outcomeUnknown || status?.hasPendingProcessRecovery == true)
                     }
                     Button { Task { await model.loadAutopilotStatus(requirement.requirementId) } } label: {
                         Image(systemName:"arrow.clockwise")
@@ -5358,6 +5358,10 @@ private struct RecordsPane: View {
         guard let status=model.planningAutopilotStatuses[requirement.requirementId],
               status.requirementRevision == requirement.revision else {
             model.error="执行状态尚未通过当前 Requirement 修订的有效读回确认，请先刷新。"
+            return
+        }
+        guard !status.hasPendingProcessRecovery else {
+            model.error=status.pendingProcessRecoverySummary ?? "原命令结果尚未确认，暂不可重新批准或启动新的执行。"
             return
         }
         guard let repoId=model.repoId,let checkoutId=model.checkoutId else {
