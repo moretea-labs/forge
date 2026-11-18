@@ -2305,12 +2305,12 @@ private struct AgentPane: View {
 
     private var agentActivityTitle: String {
         if model.zenRefinementActive { return "自动精化 · 第 \(model.zenRefinementRound)/\(ZenChangeProposal.refinementMaximumRounds) 轮" }
-        switch model.liveActivity?.phase {
-        case "thinking", "starting", "model": return "正在思考"
-        case "tool": return "正在执行工具"
-        case "responding": return "正在生成回复"
-        default: return model.streamedAnswer.isEmpty ? "正在等待模型" : "正在生成回复"
-        }
+        return NativeWorkspace.agentActivityTitle(
+            phase:model.liveActivity?.phase,
+            lastActivity:model.liveActivity?.lastActivity,
+            hasStreamedAnswer:!model.streamedAnswer.isEmpty,
+            hasStreamedReasoning:!model.streamedReasoning.isEmpty
+        )
     }
 
     private var agentEmptyStateDescription: String {

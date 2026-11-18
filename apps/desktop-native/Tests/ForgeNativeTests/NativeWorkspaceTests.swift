@@ -4068,6 +4068,51 @@ extension NativeWorkspaceTests {
 
 
 extension NativeWorkspaceTests {
+    func testAgentActivityPresentationSeparatesWaitingFromReasoningAndTools() {
+        XCTAssertEqual(
+            NativeWorkspace.agentActivityTitle(
+                phase:"starting", lastActivity:"正在连接 API Provider",
+                hasStreamedAnswer:false, hasStreamedReasoning:false
+            ),
+            "正在连接 API Provider"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.agentActivityTitle(
+                phase:"waiting", lastActivity:"等待模型响应",
+                hasStreamedAnswer:false, hasStreamedReasoning:false
+            ),
+            "等待模型响应"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.agentActivityTitle(
+                phase:"thinking", lastActivity:"正在等待模型响应",
+                hasStreamedAnswer:false, hasStreamedReasoning:false
+            ),
+            "模型处理中"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.agentActivityTitle(
+                phase:"thinking", lastActivity:nil,
+                hasStreamedAnswer:false, hasStreamedReasoning:true
+            ),
+            "正在接收 Provider 推理内容"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.agentActivityTitle(
+                phase:"tool", lastActivity:"run_command",
+                hasStreamedAnswer:false, hasStreamedReasoning:false
+            ),
+            "正在执行工具"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.agentActivityTitle(
+                phase:"responding", lastActivity:nil,
+                hasStreamedAnswer:true, hasStreamedReasoning:false
+            ),
+            "正在生成回复"
+        )
+    }
+
     func testProviderProcessNarrationDoesNotBecomeToolCompletionAuthority() {
         XCTAssertNil(NativeWorkspace.modelNarrativeEvent(" \n ",now:"start"))
         let narrative = NativeWorkspace.modelNarrativeEvent(

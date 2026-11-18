@@ -5336,8 +5336,8 @@ final class NativeWorkspace: ObservableObject {
             }
             streamedAnswer = ""
             streamedReasoning = ""
-            phase = "thinking"
-            title = "正在等待模型响应"
+            phase = "waiting"
+            title = "等待模型响应"
         case "text_delta":
             if let delta = payload["delta"] as? String {
                 streamedAnswer = Self.appendBoundedPreview(streamedAnswer,delta:delta,limit:32_000)
@@ -5371,6 +5371,29 @@ final class NativeWorkspace: ObservableObject {
             detail:String(summary.prefix(800)), status:"completed",
             startedAt:now, completedAt:now, toolCallId:nil
         )
+    }
+
+    /// Maps transport state to user-facing progress without claiming hidden reasoning when the provider is only waiting.
+    nonisolated static func agentActivityTitle(
+        phase:String?,
+        lastActivity:String?,
+        hasStreamedAnswer:Bool,
+        hasStreamedReasoning:Bool
+    ) -> String {
+        switch phase {
+        case "starting":
+            return lastActivity ?? "正在连接模型"
+        case "waiting":
+            return "等待模型响应"
+        case "thinking", "model":
+            return hasStreamedReasoning ? "正在接收 Provider 推理内容" : "模型处理中"
+        case "tool":
+            return "正在执行工具"
+        case "responding":
+            return "正在生成回复"
+        default:
+            return hasStreamedAnswer ? "正在生成回复" : (lastActivity ?? "正在等待模型")
+        }
     }
 
     nonisolated static func mergeActivityReceipts(
