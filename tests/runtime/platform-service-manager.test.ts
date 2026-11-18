@@ -3,6 +3,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { resolvePlatformServiceManager } from '../../src/runtime/platform/service-manager';
 import { systemdCgroupContainsPid } from '../../src/runtime/platform/systemd-user';
+import { safeLaunchdHandoff } from '../../src/runtime/platform/launch-agents';
 
 describe('platform service manager selection', () => {
   test('selects persistent adapters only when the host capability is actually available', () => {
@@ -18,6 +19,23 @@ describe('platform service manager selection', () => {
     expect(systemdCgroupContainsPid(service, `0::${service}-other.service\n`)).toBe(false);
     expect(systemdCgroupContainsPid(service, '0::/user.slice/other.service\n')).toBe(false);
     expect(systemdCgroupContainsPid('relative/path', `0::${service}\n`)).toBe(false);
+  });
+
+  test('refuses launchd enable/bootstrap while the prior PID or port remains active', async () => {
+    const scenarios = [
+      { oldPid: 123, port: undefined, pidAlive: true, portListening: false, pidWaitClean: false, portWaitClean: true },
+      { oldPid: undefined, port: 4321, pidAlive: false, portListening: true, pidWaitClean: true, portWaitClean: false },
+    ];
+    for (const scenario of scenarios) {
+      const commands: string[][] = [];
+      const result = await safeLaunchdHandoff({ label: 'com.moretea.forge.test-handoff', plistPath: '/tmp/test-handoff.plist', domain: 'gui/501', oldPid: scenario.oldPid, port: scenario.port, maxBootoutWaitMs: 1 }, {
+        run: (args) => { commands.push(args); return { ok: true, stdout: '', stderr: '', exitCode: 0 }; },
+        probe: { isServiceRegistered: () => false, isPidAlive: () => scenario.pidAlive, isPortListening: () => scenario.portListening },
+        wait: async () => undefined,
+      });
+      expect(result).toMatchObject({ bootstrapAttempts: 0, bootoutClean: true, pidWaitClean: scenario.pidWaitClean, portWaitClean: scenario.portWaitClean, plistInstalled: false, serviceRegistered: false });
+      expect(commands.map(([action]) => action)).toEqual(['bootout']);
+    }
   });
 
   test('keeps explicit portable mode and native Windows preview truthful', () => {
