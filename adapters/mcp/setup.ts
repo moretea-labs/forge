@@ -717,8 +717,8 @@ export function runMcpDoctor(opts: {
             `[forge mcp] ChatGPT auth: ${report.mcp.authConfigured ? `${authMode} present` : "missing"}`,
             `[forge mcp] Credentials: Controller Home OAuth=${report.credentialBoundary.controllerHome.oauthFileConfigured ? "present" : "missing"}, bearer=${report.credentialBoundary.controllerHome.bearerTokenFileConfigured ? "present" : "missing"}; OpenAI Secure Tunnel CONTROL_PLANE_API_KEY is supplied by the external runtime environment and not persisted by Forge`,
             `[forge mcp] Last MCP session close: ${report.transportEvidence.lastSessionClose
-              ? `${report.transportEvidence.lastSessionClose.reason} (${report.transportEvidence.lastSessionClose.kind}, ${report.transportEvidence.lastSessionClose.route}, ${report.transportEvidence.lastSessionClose.at}; reinitialized afterward=${report.transportEvidence.reinitializedAfterLastClose ? "yes" : "no"})`
-              : "no recent evidence"
+              ? `${report.transportEvidence.lastSessionClose.reason} (${report.transportEvidence.lastSessionClose.kind}, ${report.transportEvidence.lastSessionClose.route}, ${report.transportEvidence.lastSessionClose.at}; ${Math.round((report.transportEvidence.lastSessionClose.ageMs ?? 0) / 60_000)}m ago; reinitialized afterward=${report.transportEvidence.reinitializedAfterLastClose ? "yes" : "no"})`
+              : "no recorded close event in retained history"
             }`,
             `[forge mcp] Runtime: ${
               runtimeObservation.running

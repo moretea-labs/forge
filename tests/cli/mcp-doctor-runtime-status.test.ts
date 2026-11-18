@@ -132,6 +132,9 @@ describe("forge mcp doctor runtime status", () => {
         chatgpt: { setup: `forge mcp setup chatgpt --user-level --controller-home ${JSON.stringify(controllerHome)}` },
       });
       expect(report.repo).toBeUndefined();
+
+      const human = runMcpDoctor({ userLevel: true, controllerHome });
+      expect(human.lines.some((line) => line.includes("Last MCP session close: no recorded close event in retained history"))).toBe(true);
     } finally {
       process.chdir(previousCwd);
       if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
@@ -259,6 +262,9 @@ describe("forge mcp doctor runtime status", () => {
       });
       expect(report.transportEvidence?.lastSessionClose?.ageMs).toBeGreaterThanOrEqual(45 * 60_000);
       expect(report.transportEvidence?.reinitializedAfterLastClose).toBe(false);
+
+      const human = runMcpDoctor({ userLevel: true, controllerHome });
+      expect(human.lines.some((line) => line.includes("absolute_lifetime") && line.includes("45m ago"))).toBe(true);
     } finally {
       rmSync(join(controllerHome, ".."), { recursive: true, force: true });
     }
