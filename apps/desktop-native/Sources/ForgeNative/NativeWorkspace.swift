@@ -845,6 +845,7 @@ final class NativeWorkspace: ObservableObject {
     private(set) var projectListRequestGeneration = 0
     private(set) var workspaceRefreshRequestGeneration = 0
     private(set) var projectRepositoryRequestGeneration = 0
+    @Published private(set) var projectRepositoryRefreshRevision = 0
     private(set) var planningPageRequestGeneration = 0
     @Published var repoId: String?
     @Published var checkoutId: String?
@@ -2649,6 +2650,7 @@ final class NativeWorkspace: ObservableObject {
             checkoutRoot = context.checkoutRoot
             checkoutBranch = context.checkoutBranch
             checkoutContextLoading = false
+            projectRepositoryRefreshRevision &+= 1
             await loadRepositoryAccess(for:repoId)
             guard projectRepositoryRequestIsCurrent(
                 requestGeneration,repoId:repoId,requestedCheckoutId:context.checkoutId
@@ -2661,6 +2663,7 @@ final class NativeWorkspace: ObservableObject {
             checkoutRoot = nil
             checkoutBranch = nil
             checkoutContextLoading = false
+            projectRepositoryRefreshRevision &+= 1
             self.error = error.localizedDescription
         }
     }

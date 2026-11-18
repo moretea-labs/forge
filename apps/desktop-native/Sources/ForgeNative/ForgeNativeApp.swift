@@ -910,9 +910,11 @@ private struct ForgeWorkspaceView: View {
 
     private var sidebarCheckoutLookupKey: String {
         let targets=sidebarCheckoutLookupTargets
-        return targets.keys.sorted().map { repoId in
+        let revision=model.projectRepositoryRefreshRevision
+        let targetKey=targets.keys.sorted().map { repoId in
             "\(repoId):\((targets[repoId] ?? []).joined(separator:","))"
         }.joined(separator:"|")
+        return "\(revision)|\(targetKey)"
     }
 
     private func threadCheckoutLabel(_ thread:ChatThread) -> String? {
