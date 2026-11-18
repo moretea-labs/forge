@@ -1235,6 +1235,10 @@ private struct ForgeWorkspaceView: View {
                         VStack(spacing:3) {
                             HStack(spacing:6) {
                                 Button {
+                                    guard !model.zenMode || model.canSwitchZenProject else {
+                                        model.focusZenProject(project.repoId)
+                                        return
+                                    }
                                     if model.zenMode {
                                         model.focusZenProject(project.repoId)
                                     } else {
@@ -1306,7 +1310,11 @@ private struct ForgeWorkspaceView: View {
                                         HStack(spacing:4) {
                                             Button {
                                                 if model.zenMode {
-                                                    model.focusZenProject(project.repoId,requestedCheckoutId:checkout.id)
+                                                    guard model.canSwitchZenProject else {
+                                                         model.focusZenProject(project.repoId,requestedCheckoutId:checkout.id)
+                                                         return
+                                                     }
+                                                     model.focusZenProject(project.repoId,requestedCheckoutId:checkout.id)
                                                 } else {
                                                     model.openCheckout(inProject:project.repoId,checkoutId:checkout.id)
                                                 }
@@ -2261,8 +2269,11 @@ private struct AgentPane: View {
                         .buttonStyle(.plain)
                         .keyboardShortcut(.escape,modifiers:[])
                         .help(model.zenRefinementActive ? "停止自动精化（Esc）" : "停止 Agent（Esc）")
-                        .accessibilityLabel("停止 Agent")
-                        .accessibilityHint("停止当前正在进行的 Agent 请求")
+                        .accessibilityLabel(model.zenRefinementActive ? "停止自动精化" : "停止 Agent")
+                        .accessibilityHint(model.zenRefinementActive
+                            ? "停止自动精化，并保留已收到的消息和工具回执"
+                            : "停止当前正在进行的 Agent 请求"
+                        )
                         .accessibilityIdentifier("agent.cancel")
                     } else {
                         let sendDisabled = model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty

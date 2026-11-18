@@ -120,7 +120,7 @@ struct ZenSidebar: View {
                     } else {
                         ForEach(recent) { project in
                             Button {
-                                guard !model.busy else { return }
+                                guard model.canSwitchZenProject else { return }
                                 withAnimation(reduceMotion ? nil : .easeInOut(duration:0.18)) {
                                     model.focusZenProject(project.repoId)
                                 }
@@ -137,8 +137,9 @@ struct ZenSidebar: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(ZenPressStyle())
-                            .disabled(model.busy)
-                            .help(project.displayName)
+                            .disabled(!model.canSwitchZenProject)
+                            .help(model.zenProjectSwitchBlockReason ?? project.displayName)
+                            .accessibilityHint(model.zenProjectSwitchBlockReason ?? "切换到此项目")
                             .accessibilityIdentifier("zen.project.\(project.repoId)")
                         }
                     }

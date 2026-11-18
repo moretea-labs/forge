@@ -2,6 +2,14 @@ import XCTest
 @testable import ForgeNative
 
 final class ZenModeTests: XCTestCase {
+    @MainActor
+    func testZenProjectSwitchIsBlockedDuringAutomaticRefinementBetweenRounds() {
+        XCTAssertTrue(NativeWorkspace.zenProjectSwitchAllowed(busy:false,refinementActive:false))
+        XCTAssertFalse(NativeWorkspace.zenProjectSwitchAllowed(busy:false,refinementActive:true))
+        XCTAssertFalse(NativeWorkspace.zenProjectSwitchAllowed(busy:true,refinementActive:false))
+        XCTAssertFalse(NativeWorkspace.zenProjectSwitchAllowed(busy:true,refinementActive:true))
+    }
+
     func testZenBoardOnlyReportsRunningFromLiveRuntimeReceipt() {
         XCTAssertEqual(ZenBoardBucket.classify(requirementState:"open",runtimeActive:false),.todo)
         XCTAssertEqual(ZenBoardBucket.classify(requirementState:"open",runtimeActive:true),.running)

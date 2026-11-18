@@ -1618,11 +1618,27 @@ final class NativeWorkspace: ObservableObject {
         openProject(id)
     }
 
+    static func zenProjectSwitchAllowed(busy:Bool,refinementActive:Bool) -> Bool {
+        !busy && !refinementActive
+    }
+
+    var canSwitchZenProject: Bool {
+        Self.zenProjectSwitchAllowed(busy:busy,refinementActive:zenRefinementActive)
+    }
+
+    var zenProjectSwitchBlockReason: String? {
+        if zenRefinementActive { return "自动精化进行中，请先按 Esc 停止后再切换项目" }
+        if busy { return "Agent 正在运行，请先停止后再切换项目" }
+        return nil
+    }
+
     // Zen switches the Repository context without creating a conversation.
     // The existing thread remains untouched until the user enters Agent Mode.
     func focusZenProject(_ id:String,requestedCheckoutId:String? = nil) {
-        guard !busy else {
-            error = "请先停止正在运行的会话。"
+        guard canSwitchZenProject else {
+            error = zenRefinementActive
+                ? "请先停止自动精化，再切换项目。"
+                : "请先停止正在运行的会话。"
             return
         }
         guard let target = projects.first(where:{$0.repoId == id}) else { return }
