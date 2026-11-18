@@ -341,7 +341,7 @@ describe('runtime release materialization', () => {
       expect(existsSync(join(root, '.forge', 'runtime-release-source-snapshots'))).toBe(false);
       expect(realpathSync(join(snapshotRoot, 'node_modules'))).toBe(realpathSync(dependenciesRoot));
       expect(readFileSync(join(snapshotRoot, 'node_modules', '.forge-dependency-provider'), 'utf8')).toBe('fixture dependency tree\n');
-      expect(spawnSync('git', ['status', '--porcelain=v1'], { cwd: root, encoding: 'utf8' }).stdout.trim()).toBe('');
+      expect(spawnSync('git', ['status', '--porcelain=v1', '--untracked-files=no'], { cwd: root, encoding: 'utf8' }).stdout.trim()).toBe('');
       expect(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: snapshotRoot, encoding: 'utf8' }).stdout.trim()).toBe(frozenRevision);
       writeFileSync(join(root, 'README.md'), 'fixture advanced while candidate is staging\n');
       spawnSync('git', ['add', 'README.md'], { cwd: root, stdio: 'ignore' });
@@ -354,6 +354,33 @@ describe('runtime release materialization', () => {
     expect(observed).not.toBe(frozenRevision);
     expect(existsSync(snapshotPath)).toBe(false);
     expect(existsSync(snapshotContainer)).toBe(false);
+  });
+
+  test('rebuilds frozen dependencies from the snapshot lockfile instead of reusing mutable node_modules', () => {
+    const { root } = sourceFixture();
+    const dependenciesRoot = join(root, 'node_modules');
+    mkdirSync(dependenciesRoot, { recursive: true });
+    writeFileSync(join(root, '.git', 'info', 'exclude'), 'node_modules/\\n', { flag: 'a' });
+    writeFileSync(join(dependenciesRoot, '.forge-stale-dependency'), 'playwright-1.61.1\\n');
+    writeFileSync(join(root, 'package-lock.json'), JSON.stringify({
+      name: '@moretea-labs/forge',
+      version: '1.7.0-test',
+      lockfileVersion: 3,
+      requires: true,
+      packages: { '': { name: '@moretea-labs/forge', version: '1.7.0-test' } },
+    }, null, 2));
+    const frozenRevision = spawnSync('git', ['add', 'package-lock.json'], { cwd: root, stdio: 'ignore' });
+    expect(frozenRevision.status).toBe(0);
+    spawnSync('git', ['commit', '-m', 'add frozen dependency lock'], { cwd: root, stdio: 'ignore' });
+    const sourceRevision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+
+    withRuntimeReleaseSourceSnapshot({ sourceRoot: root, sourceRevision }, snapshotRoot => {
+      expect(existsSync(join(snapshotRoot, 'node_modules', '.forge-stale-dependency'))).toBe(false);
+      const snapshotDependencies = join(snapshotRoot, 'node_modules');
+      if (existsSync(snapshotDependencies)) expect(realpathSync(snapshotDependencies)).not.toBe(realpathSync(dependenciesRoot));
+      expect(spawnSync('git', ['status', '--porcelain=v1', '--untracked-files=no'], { cwd: root, encoding: 'utf8' }).stdout.trim()).toBe('');
+      expect(spawnSync('git', ['status', '--porcelain=v1', '--untracked-files=no'], { cwd: snapshotRoot, encoding: 'utf8' }).stdout.trim()).toBe('');
+    });
   });
 
   test('removes the external source snapshot container when the staging callback fails', () => {

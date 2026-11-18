@@ -254,6 +254,19 @@ export async function safeLaunchdHandoff(
     }
   }
 
+  // A still-live prior PID or listener forbids installing a competing service.
+  if (!pidWaitClean || !portWaitClean) {
+    return {
+      bootstrapAttempts: 0,
+      bootoutClean: true,
+      pidWaitClean,
+      portWaitClean,
+      plistInstalled: false,
+      serviceRegistered: false,
+      diagnostics,
+    };
+  }
+
   // Step 5: Enable the service
   const enableResult = run(['enable', target]);
   if (!enableResult.ok) {
