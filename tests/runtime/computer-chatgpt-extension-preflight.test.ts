@@ -301,6 +301,9 @@ test('receiver identity and unreadable-page recovery preserve the exact target w
   expect(await f.shouldReload(55, identity, { ...obs, url: 'https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }, 900_000)).toBe(false);
   expect(await f.shouldReload(55, identity, { ...obs, composerText: 'Unowned user draft' }, 900_000)).toBe(false);
   expect(await f.shouldReload(55, identity, { ...obs, isGenerating: true }, 900_000)).toBe(false);
+  const historyFailure = { ...obs, providerFailureText: '无法加载历史记录\n重试' };
+  expect(await f.shouldReload(50, identity, historyFailure, 950_000)).toBe(false);
+  expect(await f.shouldReload(50, identity, historyFailure, 1_010_000)).toBe(true);
   const loading = { ...obs, providerFailureText: '正在加载个人资料\n正在加载聊天…' };
   expect(await f.shouldReload(43, identity, loading, 1_000_000)).toBe(false);
   expect(await f.shouldReload(43, identity, loading, 1_059_999)).toBe(false);

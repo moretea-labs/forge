@@ -562,7 +562,7 @@ function dispatchTransportNotReached(error) {
 }
 async function shouldReloadUnreadableConversation(tabId, identity, observation, nowMs = Date.now()) {
   const failureText = String(observation?.providerFailureText ?? '').trim();
-  const knownUnreadable = /(?:无法加载此 ChatGPT 对话|Unable to load this (?:ChatGPT )?conversation|正在加载个人资料|正在加载聊天(?:…|\.\.\.)?|Loading (?:your )?profile(?:…|\.\.\.)?|Loading (?:the )?chat(?:…|\.\.\.)?)/i.test(failureText);
+  const knownUnreadable = /(?:无法加载此 ChatGPT 对话|无法加载历史记录|Unable to load this (?:ChatGPT )?conversation|Unable to load history|正在加载个人资料|正在加载聊天(?:…|\.\.\.)?|Loading (?:your )?profile(?:…|\.\.\.)?|Loading (?:the )?chat(?:…|\.\.\.)?)/i.test(failureText);
   const emptyShell = !failureText;
   const unreadable = identity?.namespace === 'chatgpt.conversation'
     && typeof observation?.url === 'string'
