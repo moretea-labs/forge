@@ -87,7 +87,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
   }, ['repo_id']),
   definition('repository_workbench', 'Return Workbench state or invoke one bounded Thin Harness operation without adding top-level MCP tools. Prefer batch_execute for multi-step status→search→read→diff or read→patch→check flows so ChatGPT pays one routing/receipt ownership cycle.', {
     repo_id: repoId,
-    checkout_id: { type: 'string', description: 'Optional checkout identity for repository-scoped operations.' },
+    checkout_id: { type: 'string', description: 'Optional exact checkout identity. For summary, includes live Git status for that checkout; for batch/lanes operations, scopes execution.' },
     include_removed: { type: 'boolean' },
     operation: {
       type: 'string',
