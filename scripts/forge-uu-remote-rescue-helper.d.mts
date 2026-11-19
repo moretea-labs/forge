@@ -16,6 +16,8 @@ export interface UuRemoteRescueConfig {
 
 export function validateConfig(value: unknown): UuRemoteRescueConfig;
 
+export function withJsonOutput(args: string[]): string[];
+
 export function serviceUnits(controllerHome: string): {
   runtime: string;
   connector: string;
