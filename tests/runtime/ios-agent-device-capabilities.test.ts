@@ -2,10 +2,12 @@ import { describe, expect, it } from 'bun:test';
 import {
   appendSettleFlag,
   compileBatchCommand,
+  compilePressCommand,
   compileSnapshotCommand,
   detectAgentDeviceCapabilities,
   isSupportedAgentDeviceVersion,
 } from '../../src/runtime/plugins/ios/agent-device-capabilities';
+import { iosAgentDeviceActions } from '../../src/runtime/plugins/ios-agent-device';
 import { findSemanticRef, JD_IOS_APP_ADAPTER, normalizedSemanticRef } from '../../src/runtime/plugins/ios/app-adapters';
 import jdHome from '../fixtures/ios/jd-home-depth20.json';
 
@@ -64,8 +66,30 @@ describe('agent-device capability contract', () => {
     expect(compileBatchCommand(profile, [], 20, { includeCost: true })).not.toContain('--cost');
   });
 
+  it('compiles VoiceOver double-tap only from a reviewed press contract', () => {
+    const helpProfile = detectAgentDeviceCapabilities('0.20.2', {
+      ...help,
+      pressCommand: 'agent-device press <@ref|selector|x y>\n  --double-tap',
+    });
+    expect(helpProfile.press.doubleTapFlag).toBe('--double-tap');
+    expect(compilePressCommand(helpProfile, ['press', '@e41'], { doubleTap: true, settle: true }))
+      .toEqual(['press', '@e41', '--double-tap', '--settle']);
+    expect(compilePressCommand(helpProfile, ['press', '@e41'], { settle: true }))
+      .toEqual(['press', '@e41', '--settle']);
+    expect(compilePressCommand(helpProfile, ['press', '120', '240'], { doubleTap: true }))
+      .toEqual(['press', '120', '240', '--double-tap']);
+
+    const unsupportedProfile = detectAgentDeviceCapabilities('0.20.2', help);
+    expect(unsupportedProfile.press.doubleTapFlag).toBeUndefined();
+    expect(() => compilePressCommand(unsupportedProfile, ['press', '@e41'], { doubleTap: true }))
+      .toThrow('double-tap is unsupported by the detected contract.');
+    expect(iosAgentDeviceActions().find((action) => action.actionId === 'agent_device_press')?.argumentsSchema)
+      .toMatchObject({ properties: { double_tap: { type: 'boolean' } } });
+  });
+
   it('accepts reviewed fallbacks but rejects unknown future pre-1.0 versions without help', () => {
     expect(detectAgentDeviceCapabilities('0.19.3').versionSupported).toBe(true);
+    expect(detectAgentDeviceCapabilities('0.19.3').press.doubleTapFlag).toBe('--double-tap');
     expect(detectAgentDeviceCapabilities('0.20.3').versionSupported).toBe(true);
     expect(detectAgentDeviceCapabilities('0.20.0').versionSupported).toBe(false);
     expect(detectAgentDeviceCapabilities('0.21.0').versionSupported).toBe(false);
