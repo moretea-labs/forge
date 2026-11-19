@@ -22,6 +22,7 @@ import {
   setMacOsBrowserRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-macos-bridge';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
+import { authorizeCredentialUse, revokeCredentialUse } from '../../src/runtime/safe-tooling/managed-credential-authorization';
 import {
   resolveBrowserHandoffHostPath,
   browserHandoffHostAvailable,
@@ -1035,13 +1036,32 @@ describe('browser session compatibility on Computer target authority', () => {
     })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PASSWORD_ORIGIN_MISMATCH' });
     expect(clicks).toHaveLength(0);
     expect(providerCalls).toBe(0); // A wrong origin cannot even attach/read the unrelated tab.
+    await expect(executeBrowserPluginAction({
+      ...base, requestId: 'password-without-credential-grant',
+      args: {
+        session_id: 'saved-login', expected_origin: 'https://login.example.com',
+        selector: 'input[type=password]', username_selector: 'input[type=email]',
+        credential_ref: 'cred_saved_login',
+      },
+    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PASSWORD_CREDENTIAL_NOT_AUTHORIZED' });
+    expect(clicks).toHaveLength(0);
+
+    authorizeCredentialUse({
+      controllerHome,
+      credentialRef: 'cred_saved_login',
+      endpoint: 'https://login.example.com',
+      provider: 'browser_password_manager',
+      account: 'authorized@example.com',
+      confirmAuthorization: true,
+    });
+
     visibleUsername = 'other@example.com';
     await expect(executeBrowserPluginAction({
       ...base, requestId: 'password-wrong-account',
       args: {
         session_id: 'saved-login', expected_origin: 'https://login.example.com',
         selector: 'input[type=password]', username_selector: 'input[type=email]',
-        expected_username: 'authorized@example.com',
+        credential_ref: 'cred_saved_login',
       },
     })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PASSWORD_ACCOUNT_MISMATCH' });
     expect(clicks).toHaveLength(0);
@@ -1052,7 +1072,7 @@ describe('browser session compatibility on Computer target authority', () => {
       args: {
         session_id: 'saved-login', expected_origin: 'https://login.example.com',
         selector: 'input[type=password]', username_selector: 'input[type=email]',
-        expected_username: 'authorized@example.com',
+        credential_ref: 'cred_saved_login',
       },
     });
     expect(outcome).toMatchObject({
@@ -1063,6 +1083,16 @@ describe('browser session compatibility on Computer target authority', () => {
     });
     expect(JSON.stringify(outcome)).not.toContain('password-value');
     expect(clicks).toEqual([{ x: 30, y: 40, windowId: '7', tabId: '9' }]);
+    revokeCredentialUse({ controllerHome, credentialRef: 'cred_saved_login' });
+    await expect(executeBrowserPluginAction({
+      ...base, requestId: 'password-after-revoke',
+      args: {
+        session_id: 'saved-login', expected_origin: 'https://login.example.com',
+        selector: 'input[type=password]', username_selector: 'input[type=email]',
+        credential_ref: 'cred_saved_login',
+      },
+    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PASSWORD_CREDENTIAL_NOT_AUTHORIZED' });
+    expect(clicks).toHaveLength(1);
   });
 
   test('lists saved metadata without inventory and explicitly reconciles native liveness before close', async () => {

@@ -30,11 +30,15 @@ export async function callCredentialAdapter(
       }));
     }
     const endpoint = required(args, 'endpoint', 'CREDENTIAL_ENDPOINT_REQUIRED');
+    const provider = typeof args.provider === 'string' ? args.provider : undefined;
+    const account = typeof args.account === 'string' ? args.account : undefined;
     if (operation === 'status') {
       return result(credentialUseStatus({
         controllerHome: ctx.controllerHome,
         credentialRef,
         endpoint,
+        provider,
+        account,
       }));
     }
     if (operation === 'authorize') {
@@ -43,6 +47,8 @@ export async function callCredentialAdapter(
         credentialRef,
         endpoint,
         principalId: ctx.principalId,
+        provider,
+        account,
         confirmAuthorization: args.confirm_authorization === true,
         expiresInMinutes: typeof args.expires_in_minutes === 'number' ? args.expires_in_minutes : undefined,
       });
@@ -51,6 +57,8 @@ export async function callCredentialAdapter(
         reused: enrolled.reused,
         credentialRef,
         endpoint,
+        provider: enrolled.grant.constraints?.provider,
+        accountBound: typeof enrolled.grant.constraints?.account === 'string',
         grantId: enrolled.grant.grantId,
         expiresAt: enrolled.grant.expiresAt,
         credentialMaterialReturned: false,

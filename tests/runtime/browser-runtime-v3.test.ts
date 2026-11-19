@@ -83,6 +83,7 @@ test('saved password autofill is an exact-session trusted-foreground action with
   expect(descriptor?.idempotent).toBe(false);
   const schema = descriptor?.argumentsSchema as { required?: string[]; properties?: Record<string, unknown> };
   expect(schema.required).toEqual(expect.arrayContaining(['session_id', 'expected_origin', 'selector']));
+  expect(Object.keys(schema.properties ?? {})).toEqual(expect.arrayContaining(['username_selector', 'credential_ref']));
   expect(schema.properties).not.toHaveProperty('text');
   expect(schema.properties).not.toHaveProperty('password');
   expect(browserCapabilities().find((cap) => cap.capabilityId === 'browser-interaction')?.actions)

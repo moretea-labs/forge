@@ -1,5 +1,4 @@
 import {
-  findActiveCanonicalGrant,
   listCanonicalGrants,
   recordCanonicalGrant,
   revokeCanonicalGrant,
@@ -7,7 +6,9 @@ import {
 } from '../../../packages/kernel/identity/api';
 
 const CAPABILITY = 'credential:use';
-const PROVIDER = 'api';
+export type CredentialUseProvider = 'api' | 'browser_password_manager';
+const DEFAULT_PROVIDER: CredentialUseProvider = 'api';
+const PROVIDERS = new Set<CredentialUseProvider>(['api', 'browser_password_manager']);
 
 function required(value: string, code: string): string {
   const normalized = value.trim();
@@ -20,37 +21,72 @@ function credentialTarget(credentialRef: string) {
 function ownerScope(credentialRef: string): string {
   return `forge-credential-use:${credentialRef}`;
 }
-function constraints(endpoint: string) {
-  return { provider: PROVIDER, endpoint };
+function provider(value?: string): CredentialUseProvider {
+  const normalized = value?.trim() || DEFAULT_PROVIDER;
+  if (!PROVIDERS.has(normalized as CredentialUseProvider)) throw new Error('CREDENTIAL_PROVIDER_UNSUPPORTED');
+  return normalized as CredentialUseProvider;
 }
-function activeOwnedGrant(controllerHome: string, credentialRef: string): Grant | undefined {
+function account(value?: string): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) return undefined;
+  if (normalized.length > 512) throw new Error('CREDENTIAL_ACCOUNT_INVALID');
+  return normalized;
+}
+function constraints(endpoint: string, selectedProvider: CredentialUseProvider, selectedAccount?: string) {
+  return { provider: selectedProvider, endpoint, ...(selectedAccount ? { account: selectedAccount } : {}) };
+}
+function matchingGrant(input: {
+  controllerHome: string;
+  credentialRef: string;
+  endpoint: string;
+  provider: CredentialUseProvider;
+  account?: string;
+  at?: Date;
+}): Grant | undefined {
+  const at = input.at?.getTime() ?? Date.now();
+  return listCanonicalGrants(input.controllerHome, { ownerScope: ownerScope(input.credentialRef) })
+    .filter((grant) => !grant.revokedAt && Date.parse(grant.expiresAt) > at)
+    .filter((grant) => grant.capabilities.includes(CAPABILITY))
+    .filter((grant) => (grant.riskCeiling ?? 'readonly') === 'readonly')
+    .filter((grant) => grant.target?.kind === 'credential' && grant.target.id === input.credentialRef)
+    .filter((grant) => grant.constraints?.provider === input.provider && grant.constraints?.endpoint === input.endpoint)
+    .filter((grant) => input.account === undefined || grant.constraints?.account === input.account)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+}
+function activeOwnedGrants(controllerHome: string, credentialRef: string): Grant[] {
   const now = Date.now();
   return listCanonicalGrants(controllerHome, { ownerScope: ownerScope(credentialRef) })
     .filter((grant) => !grant.revokedAt && Date.parse(grant.expiresAt) > now && grant.capabilities.includes(CAPABILITY))
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
 export function credentialUseStatus(input: {
   controllerHome: string;
   credentialRef: string;
   endpoint: string;
+  provider?: string;
+  account?: string;
   at?: Date;
 }) {
   const credentialRef = required(input.credentialRef, 'CREDENTIAL_REF_REQUIRED');
   const endpoint = required(input.endpoint, 'CREDENTIAL_ENDPOINT_REQUIRED');
-  const grant = findActiveCanonicalGrant(input.controllerHome, {
-    ownerScope: ownerScope(credentialRef),
-    capability: CAPABILITY,
-    target: credentialTarget(credentialRef),
-    constraints: constraints(endpoint),
-    risk: 'readonly',
+  const selectedProvider = provider(input.provider);
+  const selectedAccount = account(input.account);
+  if (selectedProvider === 'browser_password_manager' && !selectedAccount) throw new Error('CREDENTIAL_ACCOUNT_REQUIRED');
+  const grant = matchingGrant({
+    controllerHome: input.controllerHome,
+    credentialRef,
+    endpoint,
+    provider: selectedProvider,
+    account: selectedAccount,
     at: input.at,
   });
   return {
     authorized: Boolean(grant),
     credentialRef,
-    provider: PROVIDER,
+    provider: selectedProvider,
     endpoint,
+    accountBound: Boolean(selectedAccount),
     grantId: grant?.grantId,
     expiresAt: grant?.expiresAt,
   };
@@ -61,20 +97,36 @@ export function authorizeCredentialUse(input: {
   credentialRef: string;
   endpoint: string;
   principalId?: string;
+  provider?: string;
+  account?: string;
   confirmAuthorization: boolean;
   expiresInMinutes?: number;
 }) {
   if (!input.confirmAuthorization) throw new Error('CREDENTIAL_AUTHORIZATION_CONFIRMATION_REQUIRED');
   const credentialRef = required(input.credentialRef, 'CREDENTIAL_REF_REQUIRED');
   const endpoint = required(input.endpoint, 'CREDENTIAL_ENDPOINT_REQUIRED');
-  const current = credentialUseStatus({ controllerHome: input.controllerHome, credentialRef, endpoint });
+  const selectedProvider = provider(input.provider);
+  const selectedAccount = account(input.account);
+  if (selectedProvider === 'browser_password_manager' && !selectedAccount) throw new Error('CREDENTIAL_ACCOUNT_REQUIRED');
+  const current = credentialUseStatus({
+    controllerHome: input.controllerHome,
+    credentialRef,
+    endpoint,
+    provider: selectedProvider,
+    account: selectedAccount,
+  });
   if (current.authorized) {
-    const existing = activeOwnedGrant(input.controllerHome, credentialRef);
+    const existing = matchingGrant({
+      controllerHome: input.controllerHome,
+      credentialRef,
+      endpoint,
+      provider: selectedProvider,
+      account: selectedAccount,
+    });
     if (!existing) throw new Error('CREDENTIAL_AUTHORIZATION_INCONSISTENT');
     return { grant: existing, reused: true };
   }
-  const previous = activeOwnedGrant(input.controllerHome, credentialRef);
-  if (previous) {
+  for (const previous of activeOwnedGrants(input.controllerHome, credentialRef)) {
     revokeCanonicalGrant(input.controllerHome, {
       grantId: previous.grantId,
       ownerScope: ownerScope(credentialRef),
@@ -87,7 +139,7 @@ export function authorizeCredentialUse(input: {
     capabilities: [CAPABILITY],
     target: credentialTarget(credentialRef),
     riskCeiling: 'readonly',
-    constraints: constraints(endpoint),
+    constraints: constraints(endpoint, selectedProvider, selectedAccount),
     expiresInMinutes: input.expiresInMinutes,
   });
   return { grant, reused: false };
@@ -99,29 +151,38 @@ export function revokeCredentialUse(input: {
   reason?: string;
 }) {
   const credentialRef = required(input.credentialRef, 'CREDENTIAL_REF_REQUIRED');
-  const current = activeOwnedGrant(input.controllerHome, credentialRef);
-  if (!current) return { revoked: false, credentialRef };
-  const grant = revokeCanonicalGrant(input.controllerHome, {
-    grantId: current.grantId,
+  const current = activeOwnedGrants(input.controllerHome, credentialRef);
+  if (current.length === 0) return { revoked: false, credentialRef };
+  const revoked = current.map((grant) => revokeCanonicalGrant(input.controllerHome, {
+    grantId: grant.grantId,
     ownerScope: ownerScope(credentialRef),
     reason: input.reason?.trim() || 'credential authorization revoked',
-  });
-  return { revoked: true, credentialRef, grantId: grant.grantId };
+  }));
+  return {
+    revoked: true,
+    credentialRef,
+    grantId: revoked[0]!.grantId,
+    grantIds: revoked.map((grant) => grant.grantId),
+  };
 }
 
 export function assertCredentialUseAuthorized(input: {
   controllerHome: string;
   credentialRef: string;
   endpoint: string;
+  provider?: string;
+  account?: string;
 }): Grant {
   const credentialRef = required(input.credentialRef, 'CREDENTIAL_REF_REQUIRED');
   const endpoint = required(input.endpoint, 'CREDENTIAL_ENDPOINT_REQUIRED');
-  const grant = findActiveCanonicalGrant(input.controllerHome, {
-    ownerScope: ownerScope(credentialRef),
-    capability: CAPABILITY,
-    target: credentialTarget(credentialRef),
-    constraints: constraints(endpoint),
-    risk: 'readonly',
+  const selectedProvider = provider(input.provider);
+  const selectedAccount = account(input.account);
+  const grant = matchingGrant({
+    controllerHome: input.controllerHome,
+    credentialRef,
+    endpoint,
+    provider: selectedProvider,
+    account: selectedAccount,
   });
   if (!grant) throw new Error('CREDENTIAL_USE_NOT_AUTHORIZED');
   return grant;

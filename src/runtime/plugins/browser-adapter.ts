@@ -14,6 +14,7 @@ import type {
   AssistantPluginManifest,
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
+import { assertCredentialUseAuthorized } from '../safe-tooling/managed-credential-authorization';
 import { listCanonicalGrants } from '../../../packages/kernel/identity/api/index';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { readControllerPluginConfig, writeControllerPluginConfig, type PluginConfigAdapterContext } from './config-store';
@@ -5091,10 +5092,32 @@ async function executeBrowserPluginActionInternal(
         }
         const selector = requiredString(input.args.selector, 'selector');
         const usernameSelector = stringValue(input.args.username_selector);
-        const expectedUsername = stringValue(input.args.expected_username);
-        if ((usernameSelector && !expectedUsername) || (!usernameSelector && expectedUsername)) {
+        const credentialRef = stringValue(input.args.credential_ref);
+        if ((usernameSelector && !credentialRef) || (!usernameSelector && credentialRef)) {
           throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_ACCOUNT_BINDING_INVALID',
-            'username_selector and expected_username must be provided together.', { retryable: false });
+            'username_selector and credential_ref must be provided together.', { retryable: false });
+        }
+        let expectedUsername: string | undefined;
+        if (usernameSelector && credentialRef) {
+          let grant;
+          try {
+            grant = assertCredentialUseAuthorized({
+              controllerHome: input.controllerHome,
+              credentialRef,
+              endpoint: expectedOrigin,
+              provider: 'browser_password_manager',
+            });
+          } catch {
+            throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_CREDENTIAL_NOT_AUTHORIZED',
+              'Saved-password autofill requires an active exact website credential authorization.',
+              { retryable: false });
+          }
+          expectedUsername = typeof grant.constraints?.account === 'string' ? grant.constraints.account.trim() : '';
+          if (!expectedUsername) {
+            throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_CREDENTIAL_BINDING_INVALID',
+              'The active website credential authorization has no exact account binding.',
+              { retryable: false });
+          }
         }
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (new URL(page.url()).origin !== expectedOrigin) {
