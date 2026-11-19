@@ -22,15 +22,10 @@ import type {
 import { parseCanonicalChatgptConversationIdentity } from '../../packages/plugin-runtime/computer';
 
 const PROVIDER_ID = 'browser.chrome-extension';
-// MV3 service workers are not a reliable sub-second clock. The extension's
-// durable wake source is a 30-second chrome.alarms tick; retain one missed tick
-// plus bounded scheduling grace without treating a dead provider as durable.
-const HEARTBEAT_FRESH_MS = 75_000;
-// A queued command may wait for the next MV3 alarm. Once claimed, preserve the
-// tighter physical-operation bound so an uncertain browser effect still fails
-// closed quickly and is never blindly replayed.
-const COMMAND_QUEUE_TIMEOUT_MS = 45_000;
-const COMMAND_CLAIMED_TIMEOUT_MS = 12_000;
+const HEARTBEAT_FRESH_MS = 15_000;
+const HEARTBEAT_FUTURE_SKEW_MS = 5_000;
+// Bound both queue wait and claimed execution; claim re-arms the same single timer.
+const COMMAND_TIMEOUT_MS = 12_000;
 
 type ProviderState = {
   receivedAtMs: number;
@@ -148,19 +143,20 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     if (!instanceId) throw new Error('COMPUTER_CHATGPT_EXTENSION_PROVIDER_INSTANCE_REQUIRED');
     const receivedAtMs = this.nowMs();
     const inputObservedAtMs = typeof input.observedAt === 'string' ? Date.parse(input.observedAt) : Number.NaN;
-    // observedAt and receivedAt share the local host clock. Reject malformed,
-    // future, and already-expired snapshots before they can create fresh state.
-    // This also protects against a delayed socket request arriving after
-    // freshProviders() has pruned the previous provider state.
+    // Browser observedAt may come from the Windows host while Runtime receives
+    // it inside WSL. Accept only a small bounded positive skew, then clamp the
+    // stored timestamp to Runtime receive time so a future host clock can never
+    // extend provider freshness. Stale snapshots remain rejected.
     if (!Number.isFinite(inputObservedAtMs)
-      || inputObservedAtMs > receivedAtMs
+      || inputObservedAtMs - receivedAtMs > HEARTBEAT_FUTURE_SKEW_MS
       || receivedAtMs - inputObservedAtMs > HEARTBEAT_FRESH_MS) return false;
-    const observedAt = new Date(inputObservedAtMs).toISOString();
+    const normalizedObservedAtMs = Math.min(inputObservedAtMs, receivedAtMs);
+    const observedAt = new Date(normalizedObservedAtMs).toISOString();
     const previous = this.providerStates.get(instanceId);
     const previousObservedAtMs = previous ? Date.parse(previous.heartbeat.observedAt) : Number.NaN;
     // A timed-out older socket request can arrive after a newer heartbeat.
     // Never let that late arrival replace newer inventory or refresh freshness.
-    if (Number.isFinite(previousObservedAtMs) && inputObservedAtMs < previousObservedAtMs) return false;
+    if (Number.isFinite(previousObservedAtMs) && normalizedObservedAtMs < previousObservedAtMs) return false;
     const conversations = Array.isArray(input.conversations)
       ? input.conversations.flatMap((entry) => {
           if (!entry || typeof entry.conversationId !== 'string' || !entry.conversationId.trim() || typeof entry.canonicalUrl !== 'string' || !entry.canonicalUrl.trim()) return [];
@@ -218,7 +214,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         if (!current) return;
         this.pending.delete(id);
         current.resolve({ claimed: current.claimed });
-      }, COMMAND_CLAIMED_TIMEOUT_MS);
+      }, COMMAND_TIMEOUT_MS);
       entry.timer.unref?.();
       return structuredClone(entry.command);
     }
@@ -283,7 +279,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         if (!current) return;
         this.pending.delete(commandId);
         resolve({ claimed: current.claimed });
-      }, COMMAND_QUEUE_TIMEOUT_MS);
+      }, COMMAND_TIMEOUT_MS);
       timer.unref?.();
       const full = { ...command, commandId } as ComputerChatgptExtensionCommand;
       this.pending.set(commandId, { providerInstanceId, command: full, claimed: false, resolve, timer });
@@ -638,7 +634,8 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       // one durable target and lease/CAS-clear only its stale binding; never
       // recover from an unknown tab-create result or switch profiles/providers.
       if (recoverStalePin && (response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING'
-        || response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_IDENTITY_CHANGED')
+        || response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_IDENTITY_CHANGED'
+        || response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISMATCH')
         && previous && binding?.providerId === PROVIDER_ID
         && providerInstanceId(binding.providerSessionId) === selected.instanceId
         && binding.windowId && binding.tabId) {

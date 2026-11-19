@@ -64,6 +64,25 @@ test('content context stops observing when runtime is absent after reload', () =
 });
 
 
+test('new owned exact tab waits for navigation identity before receiver recovery', () => {
+  const source = readFileSync(new URL('../../adapters/computer/chatgpt-provider-extension/background.js', import.meta.url), 'utf8');
+  expect(source).toContain('async function waitForCreatedTargetIdentity(tabId, identity)');
+  expect(source).toContain("if (tab?.status === 'complete') break;");
+  expect(source).toContain('? restoreCreatedExactContentReceiver(target.tab.id, command.identity)');
+  expect(source).toContain(': restoreExactContentReceiver(target.tab.id, command.identity)');
+});
+
+test('MV3 provider re-arms its single command pump after transient failure without waiting for port disconnect', () => {
+  const source = readFileSync(new URL('../../adapters/computer/chatgpt-provider-extension/background.js', import.meta.url), 'utf8');
+  expect(source).toContain('const PROVIDER_RESTART_DELAY_MS = 1_000;');
+  expect(source).toContain('let providerRestartTimer;');
+  expect(source).toContain('function scheduleProviderPumpRestart()');
+  expect(source).toContain('if (providerRestartTimer !== undefined) return;');
+  expect(source).toContain("console.warn('COMPUTER_CHATGPT_EXTENSION_PROVIDER_PUMP_RESTART'");
+  expect(source).toContain('scheduleProviderPumpRestart();');
+  expect(source).not.toContain("setTimeout(() => { void providerTick().catch(() => undefined); }, 500);");
+});
+
 test('MV3 provider keeps a native command pump alive between alarm wakes', () => {
   const source = readFileSync(new URL('../../adapters/computer/chatgpt-provider-extension/background.js', import.meta.url), 'utf8');
   expect(source).toContain('const PROVIDER_COMMAND_POLL_MS = 1_000;');
@@ -73,6 +92,71 @@ test('MV3 provider keeps a native command pump alive between alarm wakes', () =>
   expect(source).toContain('await sleep(PROVIDER_COMMAND_POLL_MS);');
   expect(source).toContain('if (providerTickInFlight) return providerTickInFlight;');
   expect(source).not.toContain('setInterval(() => { void providerTick()');
+});
+
+test('heartbeat promotes only extension-owned conversation tabs with their session owner token', async () => {
+  const src = readFileSync(new URL('../../adapters/computer/chatgpt-provider-extension/background.js', import.meta.url), 'utf8');
+  const worker = src.slice(0, src.indexOf('chrome.runtime.onMessage.addListener('))
+    .replace("importScripts('core.js');", '')
+    + '\nglobalThis.__testPublishHeartbeat = publishHeartbeat;';
+  const ownedUrl = 'https://chatgpt.com/c/owned-heartbeat-1';
+  const userUrl = 'https://chatgpt.com/c/user-heartbeat-2';
+  const owned = { id: 71, windowId: 8, url: ownedUrl, title: 'Owned', active: true };
+  const user = { id: 72, windowId: 8, url: userUrl, title: 'User', active: false };
+  const ownerTokens = new Map<string, string>([['forgeComputerOwnedTabV1:71', 'owned-token-71']]);
+  let heartbeatParams: Record<string, unknown> | undefined;
+  let messageListener: ((value: unknown) => void) | undefined;
+  const port = {
+    onMessage: { addListener(listener: (value: unknown) => void) { messageListener = listener; } },
+    onDisconnect: { addListener() {} },
+    disconnect() {},
+    postMessage(message: { id: string; method: string; params: Record<string, unknown> }) {
+      if (message.method === 'computer_extension_heartbeat') heartbeatParams = message.params;
+      queueMicrotask(() => messageListener?.({ id: message.id, ok: true, result: { recorded: true } }));
+    },
+  };
+  const sandbox = {
+    ForgeComputerChatgptCore: {
+      parseConversation: (raw: string) => {
+        const match = raw.match(/^https:\/\/chatgpt\.com\/c\/(.+)$/);
+        return match ? { conversationId: match[1], canonicalUrl: raw } : null;
+      },
+      projectId: () => undefined,
+    },
+    navigator: { userAgent: 'Chrome' },
+    crypto: { randomUUID: () => 'heartbeat-rpc-id' },
+    chrome: {
+      runtime: { lastError: null, connectNative: () => port },
+      storage: {
+        local: {
+          async get() { return { forgeComputerProviderInstanceId: 'centbrowser-profile' }; },
+          async set() {},
+        },
+        session: {
+          async get(key: string) { return { [key]: ownerTokens.get(key) }; },
+        },
+      },
+      tabs: {
+        query: async (query: { active?: boolean }) => query.active ? [owned] : [owned, user],
+      },
+    },
+    URL, Date, Map, Promise,
+    setTimeout, clearTimeout, queueMicrotask,
+  };
+  runInNewContext(worker, sandbox);
+  await (sandbox as typeof sandbox & {
+    __testPublishHeartbeat: () => Promise<string>;
+  }).__testPublishHeartbeat();
+
+  const conversations = (heartbeatParams?.conversations as Array<{
+    conversationId: string;
+    providerBinding: { ownerToken?: string };
+  }>) ?? [];
+  expect(conversations).toHaveLength(2);
+  expect(conversations.find((entry) => entry.conversationId === 'owned-heartbeat-1')?.providerBinding.ownerToken)
+    .toBe('owned-token-71');
+  expect(conversations.find((entry) => entry.conversationId === 'user-heartbeat-2')?.providerBinding.ownerToken)
+    .toBeUndefined();
 });
 
 test('new bootstrap tab requires its hydrated editor, not a model picker, before preflight', async () => {
@@ -288,8 +372,18 @@ test('content snapshot reports only live provider status, not quoted historical 
     closest: (selector: string) => selector.includes('conversation-turn-') ? {} : null,
   };
   let statuses: Array<typeof historyStatus> = [historyStatus];
+  let unrelatedLayoutReads = 0;
+  const unrelatedBannerCandidate = {
+    innerText: 'ordinary conversation chrome', textContent: 'ordinary conversation chrome',
+    getClientRects: () => { unrelatedLayoutReads += 1; return [{}]; },
+    closest: () => null,
+  };
   const emptyNodes = Object.assign([], { item: () => undefined });
-  const main = { getClientRects: () => [{}], querySelectorAll: (_selector: string) => emptyNodes };
+  const main = {
+    getClientRects: () => [{}],
+    querySelectorAll: (selector: string) => selector === 'p, span, div'
+      ? [unrelatedBannerCandidate] : emptyNodes,
+  };
   const listeners: Array<(message: unknown, sender: unknown, respond: (value: Record<string, unknown>) => void) => void> = [];
   const scope = {
     ForgeComputerChatgptCore: {
@@ -319,8 +413,10 @@ test('content snapshot reports only live provider status, not quoted historical 
     return result!;
   };
   expect(snapshot().providerFailureText).toBe('');
+  expect(unrelatedLayoutReads).toBe(0);
   statuses = [historyStatus, { ...historyStatus, closest: () => null }];
   expect(snapshot().providerFailureText).toBe(capacityText);
+  expect(unrelatedLayoutReads).toBe(0);
 });
 
 test('read-only ChatGPT generation status ignores a historical user turn while send admission stays conservative', async () => {

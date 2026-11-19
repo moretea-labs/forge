@@ -22,7 +22,6 @@ function fixture(scenario: Scenario) {
   const messages: string[] = [];
   let submissions = 0;
   let draftWrites = 0;
-  const alarmPeriods: number[] = [];
   const ownerStorage = new Map([['forgeComputerOwnedTabV1:42', 'verified-conversation-owner']]);
   const providerBinding = { providerId: 'browser.chrome-extension', providerSessionId: 'test-profile',
     tabId: '42', windowId: '8', ownerToken: 'verified-conversation-owner' };
@@ -82,7 +81,7 @@ function fixture(scenario: Scenario) {
       onActivated: { addListener() {} },
       onRemoved: { addListener() {} },
     },
-    alarms: { create(_name: string, options: { periodInMinutes?: number }) { if (options.periodInMinutes !== undefined) alarmPeriods.push(options.periodInMinutes); }, onAlarm: { addListener() {} } },
+    alarms: { create() {}, onAlarm: { addListener() {} } },
     windows: { onFocusChanged: { addListener() {} } },
   };
   const testContext = {
@@ -123,7 +122,7 @@ function fixture(scenario: Scenario) {
       __testPrepare: (value: object, instanceId: string) => Promise<{ kind: string; ready: boolean; reasoningVerified?: string; reasonCode?: string }>;
     }).__testPrepare({ kind: 'prepare', identity, prompt: 'source delivery',
       ...(!scenario.unbound ? { providerBinding } : {}), ...(reasoning ? { reasoning } : {}) }, 'test-profile');
-  return { dispatch, prepare, messages, alarmPeriods, get submissions() { return submissions; }, get draftWrites() { return draftWrites; } };
+  return { dispatch, prepare, messages, get submissions() { return submissions; }, get draftWrites() { return draftWrites; } };
 }
 
 function runChromeContentScript(source: string, scope: Record<string, unknown>): unknown {
@@ -136,11 +135,6 @@ function runChromeContentScript(source: string, scope: Record<string, unknown>):
   scope.window = existing;
   return runInNewContext(source, scope, { filename: 'content.js' });
 }
-
-test('MV3 heartbeat alarm wakes the provider every 30 seconds', () => {
-  const f = fixture({});
-  expect(f.alarmPeriods).toContain(0.5);
-});
 
 test('exact conversation send requires no model-picker capability', async () => {
   const f = fixture({ capability: undefined });
@@ -178,21 +172,22 @@ test('preflight cannot retroactively declare a send not attempted when execution
 });
 
 function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url: string }> = [],
-  options: { ownerWriteFails?: boolean; ownerWriteDrops?: boolean; markerObservation?: boolean; validEnsureSnapshot?: boolean } = {}) {
+  options: { ownerWriteFails?: boolean; ownerWriteDrops?: boolean; markerObservation?: boolean; validEnsureSnapshot?: boolean; sessionStore?: Map<string, unknown> } = {}) {
   const tabs = [...initialTabs];
   let nextTabId = 200;
   let dispatchSends = 0;
   let snapshotReads = 0;
   let tabQueries = 0;
-  const ownerTokens = new Map<string, string>();
+  const ownerTokens = options.sessionStore ?? new Map<string, unknown>();
   const projectId = (value: string) => /\/g\/(g-p-[^/]+)/.exec(value)?.[1] ?? null;
   const chrome = {
     storage: { session: {
-      async get(key: string) { return { [key]: ownerTokens.get(key) }; },
-      async set(values: Record<string, string>) {
+      async get(key: string) { return ownerTokens.has(key) ? { [key]: ownerTokens.get(key) } : {}; },
+      async set(values: Record<string, unknown>) {
         if (options.ownerWriteFails) throw new Error('CHROME_STORAGE_SESSION_UNAVAILABLE');
-        if (!options.ownerWriteDrops) for (const [key, token] of Object.entries(values)) ownerTokens.set(key, token);
+        if (!options.ownerWriteDrops) for (const [key, value] of Object.entries(values)) ownerTokens.set(key, value);
       },
+      async remove(key: string) { ownerTokens.delete(key); },
     } },
     runtime: {
       lastError: undefined,
@@ -240,7 +235,7 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
     },
     setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; },
   };
-  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;globalThis.__markerReadIdentity = markerReconciliationReadIdentity;globalThis.__shouldReload = shouldReloadUnreadableConversation;globalThis.__testPrepare=executePrepare;globalThis.__testDispatch=executeDispatch;globalThis.__testFindMarker=executeFindMarker;globalThis.__testEnsure=executeEnsure;globalThis.__testObserve=executeObserve;', context);
+  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;globalThis.__markerReadIdentity = markerReconciliationReadIdentity;globalThis.__shouldReload = shouldReloadUnreadableConversation;globalThis.__shouldReplace = shouldReplaceUnreadableConversation;globalThis.__replacement = createOrReuseReplacementTarget;globalThis.__testPrepare=executePrepare;globalThis.__testDispatch=executeDispatch;globalThis.__testFindMarker=executeFindMarker;globalThis.__testEnsure=executeEnsure;globalThis.__testObserve=executeObserve;', context);
   return {
     tabs,
     get dispatchSends() { return dispatchSends; },
@@ -263,8 +258,14 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
     }).__testDispatch({ kind: 'dispatch', identity, providerBinding: pinned, prompt: 'test only' }, instanceId),
     attestOwner(tabId: number, token: string) { ownerTokens.set(`forgeComputerOwnedTabV1:${tabId}`, token); },
     shouldReload: (tabId: number, identity: object, observation: object, nowMs: number) =>
-      (context as typeof context & { __shouldReload: (tabId: number, identity: object, observation: object, nowMs: number) => boolean })
+      (context as typeof context & { __shouldReload: (tabId: number, identity: object, observation: object, nowMs: number) => Promise<boolean> })
         .__shouldReload(tabId, identity, observation, nowMs),
+    shouldReplace: (tabId: number, identity: object, observation: object, nowMs: number) =>
+      (context as typeof context & { __shouldReplace: (tabId: number, identity: object, observation: object, nowMs: number) => Promise<boolean> })
+        .__shouldReplace(tabId, identity, observation, nowMs),
+    replacement: (sourceTabId: number, identity: object, nowMs: number) =>
+      (context as typeof context & { __replacement: (sourceTabId: number, identity: object, nowMs: number) => Promise<{ tab: { id: number; windowId: number; url: string }; ownerToken: string }> })
+        .__replacement(sourceTabId, identity, nowMs),
     matchesReceiver: (tab: { id: number; windowId: number; url: string }, identity: object) =>
       (context as typeof context & { __matchesReceiver: (tab: object, identity: object) => boolean }).__matchesReceiver(tab, identity),
     markerReadIdentity: (tab: { id: number; windowId: number; url: string }, identity: object) =>
@@ -292,20 +293,56 @@ test('receiver identity and unreadable-page recovery preserve the exact target w
     url, providerFailureText: '无法加载此 ChatGPT 对话',
     latestUserText: '', latestAssistantResponse: '', composerText: undefined, isGenerating: false,
   };
-  expect(f.shouldReload(42, identity, obs, 10_000)).toBe(false);
-  expect(f.shouldReload(42, identity, obs, 69_999)).toBe(false);
-  expect(f.shouldReload(42, identity, obs, 70_000)).toBe(true);
-  expect(f.shouldReload(42, identity, obs, 80_000)).toBe(false);
-  expect(f.shouldReload(42, identity, obs, 369_999)).toBe(false);
-  expect(f.shouldReload(42, identity, obs, 370_000)).toBe(true);
-  expect(f.shouldReload(42, identity, { ...obs, latestUserText: 'Original effect already submitted' }, 380_000)).toBe(false);
-  expect(f.shouldReload(42, identity, obs, 440_000)).toBe(false);
-  expect(f.shouldReload(42, identity, obs, 500_000)).toBe(false);
-  expect(f.shouldReload(42, identity, obs, 670_000)).toBe(true);
-  expect(f.shouldReload(55, { namespace: 'chatgpt.bootstrap', projectUrl: 'https://chatgpt.com/g/g-p-abc/project' }, obs, 900_000)).toBe(false);
-  expect(f.shouldReload(55, identity, { ...obs, url: 'https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }, 900_000)).toBe(false);
-  expect(f.shouldReload(55, identity, { ...obs, composerText: 'Unowned user draft' }, 900_000)).toBe(false);
-  expect(f.shouldReload(55, identity, { ...obs, isGenerating: true }, 900_000)).toBe(false);
+  expect(await f.shouldReload(42, identity, obs, 10_000)).toBe(false);
+  expect(await f.shouldReload(42, identity, obs, 69_999)).toBe(false);
+  expect(await f.shouldReload(42, identity, obs, 70_000)).toBe(true);
+  expect(await f.shouldReload(42, identity, obs, 80_000)).toBe(false);
+  expect(await f.shouldReload(42, identity, obs, 369_999)).toBe(false);
+  expect(await f.shouldReload(42, identity, obs, 370_000)).toBe(true);
+  expect(await f.shouldReload(42, identity, { ...obs, latestUserText: 'Original effect already submitted' }, 380_000)).toBe(false);
+  expect(await f.shouldReload(42, identity, obs, 440_000)).toBe(false);
+  expect(await f.shouldReload(42, identity, obs, 500_000)).toBe(false);
+  expect(await f.shouldReload(42, identity, obs, 670_000)).toBe(true);
+  expect(await f.shouldReload(55, { namespace: 'chatgpt.bootstrap', projectUrl: 'https://chatgpt.com/g/g-p-abc/project' }, obs, 900_000)).toBe(false);
+  expect(await f.shouldReload(55, identity, { ...obs, url: 'https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }, 900_000)).toBe(false);
+  expect(await f.shouldReload(55, identity, { ...obs, composerText: 'Unowned user draft' }, 900_000)).toBe(false);
+  expect(await f.shouldReload(55, identity, { ...obs, isGenerating: true }, 900_000)).toBe(false);
+  const historyFailure = { ...obs, providerFailureText: '无法加载历史记录\n重试' };
+  expect(await f.shouldReload(50, identity, historyFailure, 950_000)).toBe(false);
+  expect(await f.shouldReload(50, identity, historyFailure, 1_010_000)).toBe(true);
+  const loading = { ...obs, providerFailureText: '正在加载个人资料\n正在加载聊天…' };
+  expect(await f.shouldReload(43, identity, loading, 1_000_000)).toBe(false);
+  expect(await f.shouldReload(43, identity, loading, 1_059_999)).toBe(false);
+  expect(await f.shouldReload(43, identity, loading, 1_060_000)).toBe(true);
+  expect(await f.shouldReload(44, identity, { ...loading, latestUserText: 'Submitted turn' }, 1_100_000)).toBe(false);
+  expect(await f.shouldReload(45, identity, { ...loading, isGenerating: true }, 1_100_000)).toBe(false);
+  const sharedSession = new Map<string, unknown>();
+  const beforeRestart = bootstrapFixture([], { sessionStore: sharedSession });
+  expect(await beforeRestart.shouldReload(49, identity, loading, 1_400_000)).toBe(false);
+  const afterRestart = bootstrapFixture([], { sessionStore: sharedSession });
+  expect(await afterRestart.shouldReload(49, identity, loading, 1_459_999)).toBe(false);
+  expect(await afterRestart.shouldReload(49, identity, loading, 1_460_000)).toBe(true);
+  const replacementSession = new Map<string, unknown>();
+  const replacementFixture = bootstrapFixture([{ id: 42, windowId: 8, url }], { sessionStore: replacementSession });
+  expect(await replacementFixture.shouldReload(42, identity, loading, 2_000_000)).toBe(false);
+  expect(await replacementFixture.shouldReload(42, identity, loading, 2_060_000)).toBe(true);
+  expect(await replacementFixture.shouldReplace(42, identity, loading, 2_119_999)).toBe(false);
+  expect(await replacementFixture.shouldReplace(42, identity, loading, 2_120_000)).toBe(true);
+  const replacement1 = await replacementFixture.replacement(42, identity, 2_120_000);
+  const replacement2 = await replacementFixture.replacement(42, identity, 2_120_100);
+  expect(replacement1.tab.id).toBe(200);
+  expect(replacement2.tab.id).toBe(200);
+  expect(replacementFixture.tabs.map((tab) => tab.id)).toEqual([42, 200]);
+  expect(replacementSession.get('forgeComputerOwnedTabV1:200')).toBe(replacement1.ownerToken);
+  replacementSession.set('forgeComputerOwnedTabV1:200', 'different-owner');
+  await expect(replacementFixture.replacement(42, identity, 2_120_200))
+    .rejects.toThrow('COMPUTER_CHATGPT_EXTENSION_REPLACEMENT_OWNER_TOKEN_MISMATCH');
+  const emptyShell = { ...obs, providerFailureText: '' };
+  expect(await f.shouldReload(46, identity, emptyShell, 1_200_000)).toBe(false);
+  expect(await f.shouldReload(46, identity, emptyShell, 1_259_999)).toBe(false);
+  expect(await f.shouldReload(46, identity, emptyShell, 1_260_000)).toBe(true);
+  expect(await f.shouldReload(47, identity, { ...emptyShell, composerText: 'Draft' }, 1_300_000)).toBe(false);
+  expect(await f.shouldReload(48, identity, { ...emptyShell, latestAssistantResponse: 'Loaded' }, 1_300_000)).toBe(false);
   }
   {
   const source = readFileSync(new URL('../../adapters/computer/chatgpt-provider-extension/background.js', import.meta.url), 'utf8');
@@ -313,7 +350,7 @@ test('receiver identity and unreadable-page recovery preserve the exact target w
   let nowMs = 10_000;
   let reloads = 0;
   let sends = 0;
-  const ownerStorage = new Map([['forgeComputerOwnedTabV1:76', 'unreadable-owner']]);
+  const ownerStorage = new Map<string, unknown>([['forgeComputerOwnedTabV1:76', 'unreadable-owner']]);
   const snapshot = { url, title: 'Unreadable conversation', latestUserText: '', latestAssistantResponse: '',
     providerFailureText: '无法加载此 ChatGPT 对话', providerActivityText: '', isGenerating: false };
   const idle = { addListener() {} };
@@ -321,9 +358,11 @@ test('receiver identity and unreadable-page recovery preserve the exact target w
     runtime: { lastError: undefined, connectNative() { return { onMessage: idle, onDisconnect: idle, postMessage() {} }; },
       onMessage: idle, onInstalled: idle, onStartup: idle },
     storage: { local: { async get() { return { forgeComputerProviderInstanceId: 'test-profile' }; },
-      async set() {} }, session: { async get(key: string) {
-        return ownerStorage.has(key) ? { [key]: ownerStorage.get(key) } : {};
-      } } },
+      async set() {} }, session: {
+        async get(key: string) { return ownerStorage.has(key) ? { [key]: ownerStorage.get(key) } : {}; },
+        async set(values: Record<string, unknown>) { for (const [key, value] of Object.entries(values)) ownerStorage.set(key, value); },
+        async remove(key: string) { ownerStorage.delete(key); },
+      } },
     tabs: {
       async query() { return [tab]; },
       get(_tabId: number, callback: (value: typeof tab) => void) { callback(tab); },

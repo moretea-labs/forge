@@ -4,12 +4,10 @@ import { createServer, createConnection } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
-import { ChromeExtensionChatgptConversationTargetPort } from '../../adapters/computer/chatgpt-target-provider';
-import { runtimeComputerInteractionTargetAuthority } from '../../src/runtime/root/computer-target-composition';
 import {
-  callRuntimeComputerChatgptTargetAction,
   closeRuntimeComputerChatgptExtensionForTest,
   ensureRuntimeComputerChatgptExtension,
+  runtimeComputerChatgptAction,
   runtimeComputerChatgptInventory,
 } from '../../src/runtime/root/computer-chatgpt-extension';
 
@@ -46,98 +44,26 @@ function jsonlRpc(socketPath: string, method: string, params: Record<string, unk
   });
 }
 
-test('provider lease spans MV3 alarm cadence but still expires boundedly', async () => {
+test('Computer heartbeat tolerates bounded Windows-to-WSL clock skew without trusting future freshness', async () => {
   const controllerHome = home();
-  let now = Date.parse('2026-11-19T00:00:00.000Z');
-  const port = new ChromeExtensionChatgptConversationTargetPort(
-    controllerHome,
-    runtimeComputerInteractionTargetAuthority(),
-    () => now,
-  );
-  expect(port.heartbeat({
+  const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
+  const base = Date.now();
+
+  const bounded = await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
     providerId: 'browser.chrome-extension',
-    providerInstanceId: 'centbrowser-mv3',
-    observedAt: new Date(now).toISOString(),
+    providerInstanceId: 'centbrowser-skew',
+    observedAt: new Date(base + 1_000).toISOString(),
     conversations: [],
-  })).toBe(true);
-
-  now += 60_001;
-  expect(await port.inventory()).toMatchObject({ complete: true, unavailableProviders: [] });
-
-  now += 15_000;
-  expect(await port.inventory()).toMatchObject({
-    complete: false,
-    unavailableProviders: ['browser.chrome-extension'],
   });
-});
+  expect(bounded).toMatchObject({ ok: true, result: { recorded: true } });
 
-test('queued command waits for an MV3 alarm while claimed execution stays tightly bounded', async () => {
-  const controllerHome = home();
-  const delays: number[] = [];
-  const timerApi = {
-    setTimeout: ((_callback: (...args: unknown[]) => void, ms?: number) => {
-      delays.push(Number(ms));
-      return { unref() {} } as unknown as ReturnType<typeof setTimeout>;
-    }) as typeof setTimeout,
-    clearTimeout: ((_timer?: ReturnType<typeof setTimeout>) => undefined) as typeof clearTimeout,
-  };
-  const now = Date.parse('2026-11-19T00:00:00.000Z');
-  const port = new ChromeExtensionChatgptConversationTargetPort(
-    controllerHome,
-    runtimeComputerInteractionTargetAuthority(),
-    () => now,
-    timerApi,
-  );
-  const canonicalUrl = 'https://chatgpt.com/c/mv3-queue-123';
-  const binding = {
+  const tooFarFuture = await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
     providerId: 'browser.chrome-extension',
-    observedAt: new Date(now).toISOString(),
-    providerSessionId: 'centbrowser-mv3',
-    browserProduct: 'chrome',
-    windowId: '17',
-    tabId: '27',
-    ownerToken: ['owner', 'mv3', 'queue'].join('-'),
-  };
-  expect(port.heartbeat({
-    providerId: 'browser.chrome-extension',
-    providerInstanceId: 'centbrowser-mv3',
-    observedAt: new Date(now).toISOString(),
-    conversations: [{
-      conversationId: 'mv3-queue-123',
-      canonicalUrl,
-      isCurrent: true,
-      providerBinding: binding,
-    }],
-  })).toBe(true);
-
-  const exactPromise = port.ensureExact({
-    namespace: 'chatgpt.conversation',
-    conversationId: 'mv3-queue-123',
-    canonicalUrl,
-  }, { createIfMissing: false });
-
-  for (let attempt = 0; attempt < 20 && delays.length === 0; attempt += 1) await Bun.sleep(1);
-  expect(delays[0]).toBe(45_000);
-
-  const command = port.claim('centbrowser-mv3');
-  expect(command).toMatchObject({ kind: 'observe' });
-  expect(delays.at(-1)).toBe(12_000);
-
-  expect(port.complete('centbrowser-mv3', command!.commandId, {
-    kind: 'observation',
-    providerBinding: binding,
-    observation: {
-      url: canonicalUrl,
-      title: 'MV3 queue',
-      latestUserText: '',
-      latestAssistantResponse: '',
-      composerText: '',
-      providerActivityText: '',
-      providerFailureText: '',
-      isGenerating: false,
-    },
-  })).toBe(true);
-  expect((await exactPromise).state).toBe('ready');
+    providerInstanceId: 'centbrowser-skew',
+    observedAt: new Date(base + 10_000).toISOString(),
+    conversations: [],
+  });
+  expect(tooFarFuture).toMatchObject({ ok: true, result: { recorded: false } });
 });
 
 test('Computer exact-target socket owns heartbeat, claim, and completion without Supervisor state', async () => {
@@ -220,96 +146,220 @@ test('Computer exact-target socket owns heartbeat, claim, and completion without
   }
 });
 
-
-test('control client delegates observe to the existing canonical Computer socket owner', async () => {
+test('durable worker proxies observe through the Runtime-owned Computer socket', async () => {
   const controllerHome = home();
   const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
-  const canonicalUrl = 'https://chatgpt.com/c/control-client-123';
+  const canonicalUrl = 'https://chatgpt.com/c/socket-worker-456';
   const binding = {
     providerId: 'browser.chrome-extension',
     observedAt: new Date().toISOString(),
-    providerSessionId: 'centbrowser-control',
+    providerSessionId: 'centbrowser-worker',
     browserProduct: 'chrome',
-    windowId: '11',
-    tabId: '22',
-    ownerToken: ['owner', 'control', 'client'].join('-'),
+    windowId: '8',
+    tabId: '43',
+    ownerToken: 'worker-socket-test-owner-token',
   };
-  const heartbeat = await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
+  await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
     providerId: 'browser.chrome-extension',
-    providerInstanceId: 'centbrowser-control',
+    providerInstanceId: 'centbrowser-worker',
     observedAt: new Date().toISOString(),
     conversations: [{
-      conversationId: 'control-client-123',
+      conversationId: 'socket-worker-456',
       canonicalUrl,
-      title: 'Control client test',
+      title: 'Worker socket test',
       isCurrent: true,
       providerBinding: binding,
     }],
   });
-  expect(heartbeat).toMatchObject({ ok: true, result: { recorded: true } });
 
-  const controlPromise = callRuntimeComputerChatgptTargetAction(controllerHome, 'observe', {
-    identity: {
-      namespace: 'chatgpt.conversation',
-      conversationId: 'control-client-123',
-      canonicalUrl,
-    },
-  }, 3_000);
+  const childCode = `
+    import { runtimeComputerChatgptAction } from './src/runtime/root/computer-chatgpt-extension.ts';
+    const result = await runtimeComputerChatgptAction(process.env.FORGE_CONTROLLER_HOME, {
+      kind: 'observe',
+      identity: {
+        namespace: 'chatgpt.conversation',
+        conversationId: 'socket-worker-456',
+        canonicalUrl: 'https://chatgpt.com/c/socket-worker-456',
+      },
+    }, 5000);
+    process.stdout.write(JSON.stringify(result));
+  `;
+  const child = spawn(process.execPath, ['-e', childCode], {
+    cwd: process.cwd(),
+    env: { ...process.env, FORGE_CONTROLLER_HOME: controllerHome },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
 
   let claim: Record<string, unknown> | undefined;
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
     claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', {
-      provider_instance_id: 'centbrowser-control',
+      provider_instance_id: 'centbrowser-worker',
     });
     if ((claim.result as { command?: unknown } | undefined)?.command) break;
     await Bun.sleep(10);
   }
   const command = (claim!.result as { command: Record<string, unknown> }).command;
-  expect(command).toMatchObject({
-    kind: 'observe',
-    identity: { namespace: 'chatgpt.conversation', conversationId: 'control-client-123', canonicalUrl },
-  });
-
+  expect(command).toMatchObject({ kind: 'observe' });
   const observation = {
     url: canonicalUrl,
-    title: 'Control client test',
+    title: 'Worker socket test',
     latestUserText: '',
-    latestAssistantResponse: 'ready',
+    latestAssistantResponse: '',
     composerText: '',
     providerActivityText: '',
     providerFailureText: '',
     isGenerating: false,
   };
-  const completion = await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
-    provider_instance_id: 'centbrowser-control',
+  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: 'centbrowser-worker',
     command_id: command.commandId,
     result: { kind: 'observation', providerBinding: binding, observation },
   });
-  expect(completion).toMatchObject({ ok: true, result: { recorded: true } });
 
-  const control = await controlPromise;
-  expect(control).toMatchObject({
+  const childResult = await new Promise<Record<string, unknown>>((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code !== 0) { reject(new Error(stderr || 'child exited ' + code)); return; }
+      resolve(JSON.parse(stdout));
+    });
+  });
+  expect(childResult).toMatchObject({
     state: 'ready',
-    identity: {
-      namespace: 'chatgpt.conversation',
-      conversationId: 'control-client-123',
-      canonicalUrl,
-    },
+    identity: { namespace: 'chatgpt.conversation', conversationId: 'socket-worker-456', canonicalUrl },
     observation,
   });
+});
 
-  // A second owner was never created; the original canonical socket is still
-  // serving provider and control RPCs through the same Runtime-owned port.
-  const inventory = await jsonlRpc(runtime.socketPath, 'computer_target_inventory', {});
-  expect(inventory).toMatchObject({
-    ok: true,
+test('canonical Computer socket opens one Project bootstrap and reconciles its submitted marker', async () => {
+  const controllerHome = home();
+  const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
+  const provider = 'centbrowser-bootstrap';
+  await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
+    providerId: 'browser.chrome-extension', providerInstanceId: provider,
+    observedAt: new Date().toISOString(), conversations: [],
+  });
+  const projectUrl = 'https://chatgpt.com/g/g-p-forge-test/project';
+  const bootstrapKey = 'supervisor:forge-source';
+  const binding = {
+    providerId: 'browser.chrome-extension', providerSessionId: provider, browserProduct: 'chrome',
+    observedAt: new Date().toISOString(), windowId: '31', tabId: '41', ownerToken: 'bootstrap-owner-token',
+  };
+  const ensurePromise = runtimeComputerChatgptAction(controllerHome, {
+    kind: 'ensure',
+    identity: { namespace: 'chatgpt.bootstrap', bootstrapKey, projectUrl },
+  }, 3_000);
+  let claim: Record<string, unknown> | undefined;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', { provider_instance_id: provider });
+    if ((claim.result as { command?: unknown })?.command) break;
+    await Bun.sleep(10);
+  }
+  let command = (claim!.result as { command: Record<string, unknown> }).command;
+  expect(command).toMatchObject({ kind: 'ensure', identity: { namespace: 'chatgpt.bootstrap', bootstrapKey, projectUrl } });
+  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: provider, command_id: command.commandId,
+    result: { kind: 'ensured', providerBinding: binding, observation: { url: projectUrl, title: 'Forge', latestUserText: '', latestAssistantResponse: '', composerText: '', providerActivityText: '', providerFailureText: '', isGenerating: false } },
+  });
+  expect(await ensurePromise).toMatchObject({ state: 'ready', identity: { namespace: 'chatgpt.bootstrap', bootstrapKey, projectUrl } });
+
+  const marker = '[forge-supervisor project=forge-source-wsl run=test]';
+  const findPromise = runtimeComputerChatgptAction(controllerHome, { kind: 'find_marker', marker, bootstrapKey }, 3_000);
+  claim = undefined;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', { provider_instance_id: provider });
+    if ((claim.result as { command?: unknown })?.command) break;
+    await Bun.sleep(10);
+  }
+  command = (claim!.result as { command: Record<string, unknown> }).command;
+  expect(command).toMatchObject({ kind: 'find_marker', marker, bootstrapKey });
+  const canonicalUrl = 'https://chatgpt.com/g/g-p-forge-test/c/successor-123';
+  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: provider, command_id: command.commandId,
+    result: { kind: 'marker_matches', matches: [{
+      identity: { namespace: 'chatgpt.conversation', conversationId: 'successor-123', canonicalUrl }, providerBinding: binding,
+      observation: { url: canonicalUrl, title: 'Forge successor', latestUserText: marker, latestAssistantResponse: '', composerText: '', providerActivityText: '', providerFailureText: '', isGenerating: true },
+    }] },
+  });
+  expect(await findPromise).toMatchObject({ matches: [{ state: 'ready', identity: { namespace: 'chatgpt.conversation', conversationId: 'successor-123', canonicalUrl } }] });
+});
+
+test('bootstrap Ensure CAS-clears a stale owner-token pin and accepts only a fresh attested binding', async () => {
+  const controllerHome = home();
+  const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
+  const provider = 'centbrowser-bootstrap-recovery';
+  await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
+    providerId: 'browser.chrome-extension', providerInstanceId: provider,
+    observedAt: new Date().toISOString(), conversations: [],
+  });
+  const projectUrl = 'https://chatgpt.com/g/g-p-forge-recovery/project';
+  const bootstrapKey = 'supervisor:forge-source';
+  const oldBinding = {
+    providerId: 'browser.chrome-extension', providerSessionId: provider, browserProduct: 'chrome',
+    observedAt: new Date().toISOString(), windowId: '51', tabId: '61', ownerToken: 'old-owner-token',
+  };
+  const newBinding = {
+    ...oldBinding,
+    observedAt: new Date().toISOString(), windowId: '52', tabId: '62', ownerToken: 'new-owner-token',
+  };
+  const bootstrapIdentity = { namespace: 'chatgpt.bootstrap' as const, bootstrapKey, projectUrl };
+  const first = runtimeComputerChatgptAction(controllerHome, { kind: 'ensure', identity: bootstrapIdentity }, 3_000);
+  let claim: Record<string, unknown> | undefined;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', { provider_instance_id: provider });
+    if ((claim.result as { command?: unknown })?.command) break;
+    await Bun.sleep(10);
+  }
+  let command = (claim!.result as { command: Record<string, unknown> }).command;
+  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: provider, command_id: command.commandId,
     result: {
-      complete: true,
-      conversations: [expect.objectContaining({
-        conversationId: 'control-client-123',
-        canonicalUrl,
-      })],
+      kind: 'ensured', providerBinding: oldBinding,
+      observation: { url: projectUrl, title: 'Forge', latestUserText: '', latestAssistantResponse: '', composerText: '', providerActivityText: '', providerFailureText: '', isGenerating: false },
     },
+  });
+  expect(await first).toMatchObject({ state: 'ready', targetId: expect.any(String) });
+
+  const recovered = runtimeComputerChatgptAction(controllerHome, { kind: 'ensure', identity: bootstrapIdentity }, 3_000);
+  claim = undefined;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', { provider_instance_id: provider });
+    if ((claim.result as { command?: unknown })?.command) break;
+    await Bun.sleep(10);
+  }
+  command = (claim!.result as { command: Record<string, unknown> }).command;
+  expect(command).toMatchObject({ kind: 'ensure', providerBinding: oldBinding });
+  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: provider, command_id: command.commandId,
+    result: {
+      kind: 'failed', code: 'COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISMATCH',
+      retryable: true, failoverSafe: false, providerBinding: oldBinding,
+    },
+  });
+
+  claim = undefined;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', { provider_instance_id: provider });
+    if ((claim.result as { command?: unknown })?.command) break;
+    await Bun.sleep(10);
+  }
+  command = (claim!.result as { command: Record<string, unknown> }).command;
+  expect(command).toMatchObject({ kind: 'ensure', identity: bootstrapIdentity });
+  expect(command).not.toHaveProperty('providerBinding');
+  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: provider, command_id: command.commandId,
+    result: {
+      kind: 'ensured', providerBinding: newBinding,
+      observation: { url: projectUrl, title: 'Forge recovered', latestUserText: '', latestAssistantResponse: '', composerText: '', providerActivityText: '', providerFailureText: '', isGenerating: false },
+    },
+  });
+  expect(await recovered).toMatchObject({
+    state: 'ready',
+    identity: bootstrapIdentity,
+    observation: { title: 'Forge recovered', composerText: '' },
   });
 });
 
