@@ -1,4 +1,3 @@
-import { spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { processToolDefinitions } from '../../adapters/mcp/runtime-gateway/process-tools';
@@ -7,9 +6,7 @@ import { routeDurableMcpCall } from '../../adapters/mcp/runtime-gateway/router';
 import { callProcessTool } from '../../src/runtime/execution/process-runtime/tool-dispatch';
 import { createCanonicalRuntimeProxy, createMcpToolContext, deriveCanonicalForwardingTiming } from '../../adapters/mcp/server';
 import { Server } from '@modelcontextprotocol/server';
-import { Client, SdkErrorCode, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { startRuntimeMcpTransport } from '../../src/runtime/root/mcp-transport';
-import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import express from 'express';
 import { drainMcpPosts, terminateReclaimedMcpPost } from '../../adapters/mcp/transports/http-post-lifecycle';
 import { describe, expect, test } from 'bun:test';
@@ -51,6 +48,10 @@ function freePort(): Promise<number> {
       server.close(() => resolve(address.port));
     });
   });
+}
+
+async function closeClient(client: Client | null | undefined): Promise<void> {
+  await client?.close().catch(() => undefined);
 }
 
 async function waitForHealth(port: number): Promise<void> {
@@ -1687,7 +1688,7 @@ describe('mcp http transport', () => {
         expect(health.sessions.active).toBe(1);
       });
     } finally {
-      await client?.close().catch(() => undefined);
+      await closeClient(client);
       await stopMcpServerProcess(gatewayProc);
       rmSync(repoRoot, { recursive: true, force: true });
     }
@@ -1762,7 +1763,7 @@ describe('mcp http transport', () => {
         expect(health.sessions.active).toBe(1);
       });
     } finally {
-      await client?.close().catch(() => undefined);
+      await closeClient(client);
       await stopMcpServerProcess(tunnelProc);
       await stopMcpServerProcess(gatewayProc);
       rmSync(repoRoot, { recursive: true, force: true });
@@ -2686,7 +2687,7 @@ describe('mcp http transport', () => {
 
 test('shutdown preserves admitted HTTP response before closing transport', async () => {
   const app = express();
-  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0 };
+  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0, authFailures: { total: 0, bearer: 0, oauth: 0 } };
   let release!: () => void;
   let admitted!: () => void;
   const admission = new Promise<void>(resolve => { admitted = resolve; });
@@ -2717,7 +2718,7 @@ test('shutdown preserves admitted HTTP response before closing transport', async
 });
 
 test('shutdown rejects unadmitted requests without consuming capacity', () => {
-  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0, draining: true };
+  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0, draining: true, authFailures: { total: 0, bearer: 0, oauth: 0 } };
   let body: unknown;
   let status: number;
   const res = {
@@ -2733,7 +2734,7 @@ test('shutdown rejects unadmitted requests without consuming capacity', () => {
 
 test('shutdown deadline reports observation unknown before transport closes', async () => {
   const app = express();
-  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0 };
+  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0, authFailures: { total: 0, bearer: 0, oauth: 0 } };
   let admitted!: () => void;
   const admission = new Promise<void>(resolve => { admitted = resolve; });
   let response!: express.Response;
@@ -3017,7 +3018,11 @@ test(`durable Process survives real Gateway process replacement (lost receipt=${
       releaseReceipt();
       const lost = await observation;
       expect(lost.failed).toBe(true);
-      expect(lost.error).toMatchObject({ code: SdkErrorCode.RequestTimeout });
+      expect('result' in lost).toBe(false);
+      // SIGKILL removes the only process capable of emitting an HTTP timeout
+      // response. The transport failure is intentionally outcome-unknown;
+      // the same durable request key below must reconcile it without replay.
+      expect(lost.error).toBeInstanceOf(Error);
     } else {
       const started = await first.client.callTool({ name: 'run_check', arguments: args });
       expect(started.isError).not.toBe(true);
