@@ -65,7 +65,7 @@ try {
   recordMcpTransportEvent(controllerHome, {
     kind: 'session_initialized',
     sessionId: 'mcp-after-outage',
-    connectionId: 'connection-after-outage',
+    connectionId: 'connection-before-outage',
     route: '/mcp',
     principalId: 'chatgpt-controller',
     at: recoveredAt,

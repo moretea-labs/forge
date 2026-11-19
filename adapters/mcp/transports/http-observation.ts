@@ -25,11 +25,33 @@ import { reconcileActiveMcpPosts } from './http-post-lifecycle';
 type McpToolContext = ReturnType<typeof createMcpToolContext>;
 type HttpSessionRegistry = McpSessionRegistry<NodeStreamableHTTPServerTransport, McpToolContext>;
 
+export type McpAuthFailureMode = 'bearer' | 'oauth';
+export type McpAuthFailureReason =
+  | 'credentials_unavailable'
+  | 'missing_authorization'
+  | 'invalid_authorization'
+  | 'invalid_token';
+
+export interface McpAuthFailureEvent {
+  mode: McpAuthFailureMode;
+  reason: McpAuthFailureReason;
+  route: string;
+  at: string;
+}
+
+export interface McpAuthFailureSnapshot {
+  total: number;
+  bearer: number;
+  oauth: number;
+  last?: McpAuthFailureEvent;
+}
+
 interface McpRuntimeStats {
   initializing: number;
   activePostStartedAt: Map<Response, number>;
   rejectedOverload: number;
   reclaimedStalePosts?: number;
+  authFailures: McpAuthFailureSnapshot;
 }
 
 export interface McpHttpObservationRouteOptions {
@@ -38,6 +60,7 @@ export interface McpHttpObservationRouteOptions {
   sessionRegistry: HttpSessionRegistry;
   runtimeStats: McpRuntimeStats;
   runtimeControllerHome?: string;
+  transportControllerHome: string;
   repoRoot?: string;
   forgeInstanceId: string;
   currentRuntimeToolSurfaceFingerprint: () => string | undefined;
@@ -106,6 +129,7 @@ export interface McpRecentTransportEvidence {
   gatewayStartedAt: string;
   gatewayPid: number;
   lastInterruption?: McpTransportEvent;
+  lastSessionClose?: McpTransportEvent;
   lastRecoveryAt?: string;
 }
 
@@ -119,17 +143,31 @@ export function recentMcpTransportEvidence(
     return Number.isFinite(at) && at >= nowMs - RECENT_TRANSPORT_EVIDENCE_WINDOW_MS && at <= nowMs + 60_000;
   });
   const lastInterruption = recent.find((event) => event.kind === 'interruption');
+  const lastSessionClose = recent.find((event) => event.kind === 'interruption' || event.kind === 'session_closed');
   if (!lastInterruption) {
-    return { current: 'healthy', recentStatus: 'stable', gatewayStartedAt: startedAt, gatewayPid: process.pid };
+    return {
+      current: 'healthy',
+      recentStatus: 'stable',
+      gatewayStartedAt: startedAt,
+      gatewayPid: process.pid,
+      ...(lastSessionClose ? { lastSessionClose } : {}),
+    };
   }
   const interruptionAt = Date.parse(lastInterruption.at);
-  const recovery = recent.find((event) => event.kind === 'session_initialized' && Date.parse(event.at) > interruptionAt);
+  const recovery = recent.find((event) =>
+    event.kind === 'session_initialized'
+    && event.connectionId === lastInterruption.connectionId
+    && event.route === lastInterruption.route
+    && event.principalId === lastInterruption.principalId
+    && Date.parse(event.at) > interruptionAt,
+  );
   return {
     current: 'healthy',
     recentStatus: recovery ? 'recovered' : 'recovering',
     gatewayStartedAt: startedAt,
     gatewayPid: process.pid,
     lastInterruption,
+    ...(lastSessionClose ? { lastSessionClose } : {}),
     ...(recovery ? { lastRecoveryAt: recovery.at } : {}),
   };
 }
@@ -141,6 +179,7 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
     sessionRegistry,
     runtimeStats,
     runtimeControllerHome,
+    transportControllerHome,
     repoRoot,
     forgeInstanceId,
     currentRuntimeToolSurfaceFingerprint,
@@ -209,9 +248,10 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
       ? Math.min(...runtimeStats.activePostStartedAt.values()) : undefined;
     const oldestActivePostAgeMs = oldestActivePostAt === undefined
       ? 0 : Math.max(0, Date.now() - oldestActivePostAt);
-    const transportEvidence = runtimeControllerHome
-      ? recentMcpTransportEvidence(readRecentMcpTransportEvents(runtimeControllerHome), startedAt)
-      : { current: 'healthy' as const, recentStatus: 'stable' as const, gatewayStartedAt: startedAt, gatewayPid: process.pid };
+    const transportEvidence = recentMcpTransportEvidence(
+      readRecentMcpTransportEvents(transportControllerHome),
+      startedAt,
+    );
     res.json({
       status: 'ok',
       server: 'forge-mcp',
@@ -248,6 +288,12 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
         : authMode === 'bearer'
           ? (authTokenConfigured ? 'required' : 'missing')
           : 'none',
+      authFailures: {
+        total: runtimeStats.authFailures.total,
+        bearer: runtimeStats.authFailures.bearer,
+        oauth: runtimeStats.authFailures.oauth,
+        ...(runtimeStats.authFailures.last ? { last: { ...runtimeStats.authFailures.last } } : {}),
+      },
       ...(oauthAuthorizationCodeDiagnostics ? { oauthAuthorizationCodes: oauthAuthorizationCodeDiagnostics() } : {}),
       mcpEndpoint: `${advertisedOrigin}/mcp`,
       grokEndpoint: `${advertisedOrigin}/mcp`,
@@ -268,13 +314,14 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
   app.get('/transport-ready', (_req, res) => {
     const sessionSnapshot = sessionRegistry.snapshot();
     reconcileRuntimePosts();
-    const sessionCapacityReady = sessionSnapshot.acceptingNewSessions
-      && runtimeStats.initializing < maxInitializingSessions
-      && runtimeStats.activePostStartedAt.size < maxActivePosts;
-    res.status(sessionCapacityReady ? 200 : 503).json({
-      ready: sessionCapacityReady,
+    const statefulSessionCapacityReady = sessionSnapshot.acceptingNewSessions
+      && runtimeStats.initializing < maxInitializingSessions;
+    const runtimeCapacityReady = runtimeStats.activePostStartedAt.size < maxActivePosts;
+    res.status(runtimeCapacityReady ? 200 : 503).json({
+      ready: runtimeCapacityReady,
       profile: toolContext.policy.profile,
-      gateway: sessionCapacityReady ? 'ready' : 'saturated',
+      gateway: runtimeCapacityReady ? 'ready' : 'saturated',
+      statefulSessionCapacityReady,
       sessionCapacity: sessionSnapshot,
       runtimeCapacity: {
         initializing: runtimeStats.initializing,
@@ -289,15 +336,16 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
     const runtimeGeneration = runtimeControllerHome ? readRuntimeGeneration(runtimeControllerHome) : undefined;
     const sessionSnapshot = sessionRegistry.snapshot();
     reconcileRuntimePosts();
-    const sessionCapacityReady = sessionSnapshot.acceptingNewSessions
-      && runtimeStats.initializing < maxInitializingSessions
-      && runtimeStats.activePostStartedAt.size < maxActivePosts;
+    const statefulSessionCapacityReady = sessionSnapshot.acceptingNewSessions
+      && runtimeStats.initializing < maxInitializingSessions;
+    const runtimeCapacityReady = runtimeStats.activePostStartedAt.size < maxActivePosts;
     if (!runtimeControllerHome) {
-      res.status(sessionCapacityReady ? 200 : 503).json({
-        ready: sessionCapacityReady,
+      res.status(runtimeCapacityReady ? 200 : 503).json({
+        ready: runtimeCapacityReady,
         profile: toolContext.policy.profile,
-        gateway: sessionCapacityReady ? 'ready' : 'saturated',
+        gateway: runtimeCapacityReady ? 'ready' : 'saturated',
         controllerDaemon: 'not-required',
+        statefulSessionCapacityReady,
         sessionCapacity: sessionSnapshot,
       });
       return;
@@ -330,7 +378,7 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
     const publicConfigured = Boolean(runtimeState?.tunnel?.publicEndpoint);
     const publicReady = !publicConfigured || runtimeState?.tunnel?.healthy === true;
     const connectorReady = !publicConfigured || (publicReady && runtimeState?.tunnel?.connectorNeedsReconnect !== true);
-    const ready = daemonReady && projectionReady && localBridgeReady && sessionCapacityReady;
+    const ready = daemonReady && projectionReady && localBridgeReady && runtimeCapacityReady;
     res.status(ready ? 200 : 503).json({
       ready,
       generation: runtimeGeneration?.generation,
@@ -359,6 +407,7 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
         ready: connectorReady,
         connectorNeedsReconnect: runtimeState?.tunnel?.connectorNeedsReconnect === true,
       },
+      statefulSessionCapacityReady,
       sessionCapacity: sessionSnapshot,
     });
   });

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildMcpCommand } from '../../src/cli/commands/mcp';
 
@@ -24,6 +25,46 @@ describe('runtime command surface', () => {
     expect(result.stdout).not.toMatch(/^\s+stop\b/m);
     expect(result.stdout).not.toMatch(/^\s+restart\b/m);
     expect(result.stdout).not.toMatch(/^\s+doctor\b/m);
+  });
+
+  test('controller-global Runtime and Recovery status work from a non-Git directory', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-controller-status-non-git-'));
+    const fakeBin = join(root, 'bin');
+    const controllerHome = join(root, 'controller-home');
+    const gitCalls = join(root, 'git-calls.log');
+    try {
+      mkdirSync(fakeBin, { recursive: true });
+      const fakeGit = join(fakeBin, 'git');
+      writeFileSync(fakeGit, '#!/bin/sh\nprintf "called\\n" >> "$FORGE_TEST_GIT_MARKER"\nexit 1\n');
+      chmodSync(fakeGit, 0o700);
+      const env = {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+        FORGE_TEST_GIT_MARKER: gitCalls,
+      };
+
+      const runtime = spawnSync(process.execPath, [CLI, 'runtime', 'status', '--controller-home', controllerHome, '--json'], {
+        cwd: root,
+        encoding: 'utf-8',
+        env,
+      });
+      expect(runtime.status).toBe(0);
+      expect(JSON.parse(runtime.stdout)).toMatchObject({ runtime: { running: false }, repositories: [] });
+
+      const recovery = spawnSync(process.execPath, [CLI, 'recovery', 'status', '--controller-home', controllerHome], {
+        cwd: root,
+        encoding: 'utf-8',
+        env,
+      });
+      expect(recovery.status).toBe(0);
+      expect(JSON.parse(recovery.stdout)).toMatchObject({
+        connector: { name: 'Forge Recovery' },
+        runtime: expect.any(Object),
+      });
+      expect(existsSync(gitCalls)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test('runtime service install is the single documented launchd owner surface', () => {

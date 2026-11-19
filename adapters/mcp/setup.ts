@@ -24,6 +24,7 @@ import {
 } from "../../src/runtime/shared/runtime-config";
 import { ensureControllerHome, ensureRepoPreferredControllerHome } from "../../src/effects/controller-home";
 import { observeRuntimeStatus } from "../../src/runtime/root/status";
+import { readRecentMcpTransportEvents } from "../../src/runtime/diagnostics/mcp-timing";
 import { configuredControllerAccessMode } from './access-mode';
 import { ensureForgeInstanceIdentity, normalizeConfiguredForgeInstanceId, readForgeInstanceIdentity } from "../../packages/kernel/identity/api/index";
 
@@ -564,16 +565,45 @@ export function runMcpPrintGuide(opts: {
 
 export function runMcpDoctor(opts: {
   repo?: string;
+  controllerHome?: string;
+  userLevel?: boolean;
   json?: boolean;
 }): McpSetupResult {
-  const repoRoot = resolveMcpRepoRoot(opts.repo ?? ".");
-  const controllerHome = ensureRepoPreferredControllerHome(repoRoot);
+  if (opts.userLevel && opts.repo) throw new Error('MCP_DOCTOR_SCOPE_CONFLICT: --user-level cannot be combined with --repo');
+  const repoRoot = opts.userLevel ? undefined : resolveMcpRepoRoot(opts.repo ?? ".");
+  const controllerHome = repoRoot
+    ? ensureRepoPreferredControllerHome(repoRoot, opts.controllerHome)
+    : ensureControllerHome(opts.controllerHome);
   const localConfig = loadMcpServiceLocalConfig(controllerHome);
   const runtimeState = loadMcpServiceRuntimeState(controllerHome);
   // The Canonical Runtime owner/status projection is the single authoritative
   // runtime liveness source; the connector service state below only describes
   // the optional ChatGPT connector tunnel/server process.
   const runtimeObservation = observeRuntimeStatus(controllerHome);
+  const transportEvents = readRecentMcpTransportEvents(controllerHome);
+  const lastSessionClose = transportEvents.find((event) =>
+    event.kind === "session_closed" || event.kind === "interruption",
+  );
+  const lastSessionCloseAgeMs = lastSessionClose
+    ? Math.max(0, Date.now() - Date.parse(lastSessionClose.at))
+    : undefined;
+  const reinitializedAfterLastClose = Boolean(lastSessionClose && transportEvents.some((event) =>
+    event.kind === "session_initialized"
+      && event.connectionId === lastSessionClose.connectionId
+      && event.route === lastSessionClose.route
+      && event.principalId === lastSessionClose.principalId
+      && Date.parse(event.at) > Date.parse(lastSessionClose.at),
+  ));
+  const sessionCloseCounts = transportEvents.reduce(
+    (counts, event) => {
+      if (event.kind !== "session_closed") return counts;
+      const reason = event.reason ?? "unknown";
+      counts.total += 1;
+      counts.byReason[reason] = (counts.byReason[reason] ?? 0) + 1;
+      return counts;
+    },
+    { total: 0, byReason: {} as Record<string, number> },
+  );
   const configuredServerName = localConfig?.chatgpt?.serverName;
   const forgeInstanceId = localConfig?.identity?.forgeInstanceId?.trim()
     || readForgeInstanceIdentity(controllerHome)?.instanceId;
@@ -585,21 +615,20 @@ export function runMcpDoctor(opts: {
   const port = localConfig?.server?.port ?? 8765;
   const authMode = localConfig?.auth?.mode ?? "missing";
   const report = {
-    status: existsSync(join(repoRoot, ".ai", "harness", "policy.json"))
-      ? "ready_local"
-      : "not_adopted",
-    repo: repoRoot,
+    scope: repoRoot ? "repository" : "user",
+    status: repoRoot
+      ? (existsSync(join(repoRoot, ".ai", "harness", "policy.json")) ? "ready_local" : "not_adopted")
+      : "user_level",
+    ...(repoRoot ? { repo: repoRoot } : {}),
     mcp: {
       toolset: 'full',
-      localConfig: existsSync(mcpControllerHomeLocalConfigPath(controllerHome)) || existsSync(
-        join(repoRoot, ".forge", "mcp.local.json"),
+      localConfig: existsSync(mcpControllerHomeLocalConfigPath(controllerHome)) || Boolean(
+        repoRoot && existsSync(join(repoRoot, ".forge", "mcp.local.json")),
       ),
-      guide: existsSync(
-        join(repoRoot, "docs", "forge-chatgpt-mcp-setup.md"),
-      ),
+      ...(repoRoot ? { guide: existsSync(join(repoRoot, "docs", "forge-chatgpt-mcp-setup.md")) } : {}),
       authConfigured:
-        (authMode === "oauth" && (existsSync(mcpControllerHomeOAuthPath(controllerHome)) || existsSync(mcpOAuthPath(repoRoot)))) ||
-        (authMode === "bearer" && (existsSync(mcpControllerHomeTokenPath(controllerHome)) || existsSync(mcpTokenPath(repoRoot)))),
+        (authMode === "oauth" && (existsSync(mcpControllerHomeOAuthPath(controllerHome)) || Boolean(repoRoot && existsSync(mcpOAuthPath(repoRoot))))) ||
+        (authMode === "bearer" && (existsSync(mcpControllerHomeTokenPath(controllerHome)) || Boolean(repoRoot && existsSync(mcpTokenPath(repoRoot))))),
       localController: {
         enabled: localConfig?.localController?.enabled ?? true,
         host: localConfig?.localController?.host ?? "127.0.0.1",
@@ -624,7 +653,9 @@ export function runMcpDoctor(opts: {
       publicEndpoint: localConfig?.chatgpt?.endpoint,
       authMode,
       manualStepsRequired: true,
-      setup: "forge mcp setup chatgpt --repo .",
+      setup: repoRoot
+        ? `forge mcp setup chatgpt --repo ${repoRoot}`
+        : `forge mcp setup chatgpt --user-level${opts.controllerHome ? ` --controller-home ${JSON.stringify(resolve(opts.controllerHome))}` : ""}`,
     },
     runtime: runtimeState
       ? {
@@ -651,26 +682,60 @@ export function runMcpDoctor(opts: {
       endpoint: runtimeObservation.snapshot?.endpoint,
       observedAt: runtimeObservation.observedAt,
     },
+    transportEvidence: {
+      sessionCloseCounts,
+      lastSessionClose: lastSessionClose ? {
+        kind: lastSessionClose.kind,
+        at: lastSessionClose.at,
+        reason: lastSessionClose.reason ?? "unknown",
+        route: lastSessionClose.route,
+        sessionId: lastSessionClose.sessionId,
+        ageMs: lastSessionCloseAgeMs,
+      } : null,
+      reinitializedAfterLastClose,
+    },
+    credentialBoundary: {
+      controllerHome: {
+        oauthFileConfigured: existsSync(mcpControllerHomeOAuthPath(controllerHome)),
+        bearerTokenFileConfigured: existsSync(mcpControllerHomeTokenPath(controllerHome)),
+        secretValuesExposed: false,
+      },
+      openAiSecureTunnel: {
+        credentialName: "CONTROL_PLANE_API_KEY",
+        credentialOwner: "external_runtime_environment",
+        persistedByForge: false,
+      },
+    },
   };
   return {
     status: "ok",
-    repoRoot,
+    ...(repoRoot ? { repoRoot } : {}),
     changed: [],
     lines:
       opts.json === true
         ? [JSON.stringify(report, null, 2)]
         : [
-            `[forge mcp] Repo: ${repoRoot}`,
+            ...(repoRoot
+              ? [`[forge mcp] Repo: ${repoRoot}`]
+              : [`[forge mcp] Scope: user Controller (${controllerHome})`]),
             `[forge mcp] Status: ${report.status}`,
+            ...(repoRoot ? [`[forge mcp] ChatGPT guide: ${report.mcp.guide ? "present" : "missing"}`] : [
+              `[forge mcp] User Controller config: ${report.mcp.localConfig ? "present" : "missing"}`,
+            ]),
             `[forge mcp] ChatGPT MCP server name: ${
               configuredServerName
                 ? `${configuredServerName}${serverNameNeedsMigration ? ' (legacy shared name; rerun setup to disambiguate this Forge instance)' : ''}`
                 : `missing (run setup; default is ${defaultServerName})`
             }`,
-            `[forge mcp] ChatGPT guide: ${report.mcp.guide ? "present" : "missing"}`,
             `[forge mcp] Toolset: ${report.mcp.toolset}`,
             `[forge mcp] Local Controller: ${report.mcp.localController.enabled ? report.chatgpt.localController : "disabled"}`,
             `[forge mcp] ChatGPT auth: ${report.mcp.authConfigured ? `${authMode} present` : "missing"}`,
+            `[forge mcp] Credentials: Controller Home OAuth=${report.credentialBoundary.controllerHome.oauthFileConfigured ? "present" : "missing"}, bearer=${report.credentialBoundary.controllerHome.bearerTokenFileConfigured ? "present" : "missing"}; OpenAI Secure Tunnel CONTROL_PLANE_API_KEY is supplied by the external runtime environment and not persisted by Forge`,
+            `[forge mcp] MCP session closes (retained): ${report.transportEvidence.sessionCloseCounts.total}${Object.entries(report.transportEvidence.sessionCloseCounts.byReason).length > 0 ? ` (${Object.entries(report.transportEvidence.sessionCloseCounts.byReason).sort(([a], [b]) => a.localeCompare(b)).map(([reason, count]) => `${reason}=${count}`).join(", ")})` : ""}`,
+            `[forge mcp] Last MCP session close: ${report.transportEvidence.lastSessionClose
+              ? `${report.transportEvidence.lastSessionClose.reason} (${report.transportEvidence.lastSessionClose.kind}, ${report.transportEvidence.lastSessionClose.route}, ${report.transportEvidence.lastSessionClose.at}; ${Math.round((report.transportEvidence.lastSessionClose.ageMs ?? 0) / 60_000)}m ago; reinitialized afterward=${report.transportEvidence.reinitializedAfterLastClose ? "yes" : "no"})`
+              : "no recorded close event in retained history"
+            }`,
             `[forge mcp] Runtime: ${
               runtimeObservation.running
                 ? `running (${runtimeObservation.ready ? "ready" : "not ready"}, pid=${runtimeObservation.snapshot?.pid ?? "unknown"}${
@@ -678,15 +743,18 @@ export function runMcpDoctor(opts: {
                   })`
                 : `not running (${runtimeObservation.reasonCodes.join(", ") || "no runtime status published"})`
             }`,
-            ...(runtimeState
-              ? [
-                  `[forge mcp] ChatGPT connector service: ${runtimeState.status} (local=${runtimeState.server.healthy ? "ok" : "down"}${
-                    runtimeState.tunnelMode !== "none"
-                      ? `, public=${runtimeState.tunnel?.healthy ? "ok" : "down"} via ${runtimeState.tunnelMode}`
-                      : ""
-                  })`,
-                ]
-              : []),
+            `[forge mcp] MCP Gateway: ${runtimeState
+              ? `${runtimeState.status} (local=${runtimeState.server.healthy ? "healthy" : runtimeState.server.running ? "unhealthy" : "stopped"})`
+              : "unknown (no service state recorded)"
+            }`,
+            `[forge mcp] Public Tunnel: ${!runtimeState
+              ? "unknown (no service state recorded)"
+              : runtimeState.tunnelMode === "none"
+                ? "not configured"
+                : !runtimeState.tunnel
+                  ? `${runtimeState.tunnelMode} (state unavailable)`
+                  : `${runtimeState.tunnelMode} (${runtimeState.tunnel.running ? "running" : "stopped"}, public=${runtimeState.tunnel.healthy === true ? "ok" : runtimeState.tunnel.healthy === false ? "down" : "unknown"})`
+            }`,
             ...(report.runtime?.connectorNeedsReconnect === true
               ? [
                   "[forge mcp] Runtime note: public quick tunnel URL changed; update the ChatGPT connector or switch to a named tunnel",
