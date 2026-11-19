@@ -1,13 +1,15 @@
-import { randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs';
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
-import type {
-  ComputerChatgptConversationIdentity,
-  ComputerChatgptConversationInventory,
-  ComputerChatgptConversationTargetPort,
-  ComputerChatgptExtensionCommandResult,
-  ComputerChatgptExtensionHeartbeat,
+import { randomUUID } from 'node:crypto';
+import {
+  parseCanonicalChatgptConversationIdentity,
+  type ComputerChatgptConversationIdentity,
+  type ComputerChatgptConversationInventory,
+  type ComputerChatgptConversationTargetPort,
+  type ComputerChatgptExtensionCommandResult,
+  type ComputerChatgptExtensionHeartbeat,
+  type ComputerChatgptTargetIdentity,
 } from '../../../packages/plugin-runtime/computer';
 import { ChromeExtensionChatgptConversationTargetPort } from '../../../adapters/computer/chatgpt-target-provider';
 import { runtimeComputerInteractionTargetAuthority } from './computer-target-composition';
@@ -15,13 +17,6 @@ import { runtimeComputerInteractionTargetAuthority } from './computer-target-com
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const PROVIDER_WAIT_MS = 4_000;
 const PROVIDER_POLL_MS = 100;
-const TARGET_CONTROL_TIMEOUT_MS = {
-  inventory: 5_000,
-  ensure: 60_000,
-  observe: 60_000,
-  prepare: 60_000,
-  dispatch: 60_000,
-} as const;
 
 type RuntimeComputerChatgptExtension = {
   controllerHome: string;
@@ -35,6 +30,12 @@ type RpcRequest = {
   method: string;
   params: Record<string, unknown>;
 };
+
+export type RuntimeComputerChatgptActionInput =
+  | { kind: 'ensure'; identity: ComputerChatgptTargetIdentity }
+  | { kind: 'observe'; identity: ComputerChatgptConversationIdentity }
+  | { kind: 'find_marker'; marker: string; bootstrapKey: string }
+  | { kind: 'prepare' | 'dispatch'; identity: ComputerChatgptTargetIdentity; prompt: string; mode?: 'send' | 'resume' | 'recover' };
 
 const runtimes = new Map<string, Promise<RuntimeComputerChatgptExtension>>();
 
@@ -63,82 +64,111 @@ function requiredText(params: Record<string, unknown>, key: string): string {
   return value.trim();
 }
 
-function requiredConversationIdentity(params: Record<string, unknown>): ComputerChatgptConversationIdentity {
-  const raw = params.identity;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new Error('COMPUTER_CHATGPT_EXTENSION_RPC_IDENTITY_REQUIRED');
+function runtimeConversationIdentity(rawIdentity: unknown): ComputerChatgptConversationIdentity {
+  if (!rawIdentity || typeof rawIdentity !== 'object' || Array.isArray(rawIdentity)) {
+    throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID');
   }
-  const identity = raw as Record<string, unknown>;
-  const conversationId = typeof identity.conversationId === 'string' ? identity.conversationId.trim() : '';
-  const canonicalUrl = typeof identity.canonicalUrl === 'string' ? identity.canonicalUrl.trim() : '';
-  if (identity.namespace !== 'chatgpt.conversation' || !conversationId || !canonicalUrl) {
-    throw new Error('COMPUTER_CHATGPT_EXTENSION_RPC_IDENTITY_INVALID');
+  const record = rawIdentity as Record<string, unknown>;
+  const conversationId = typeof record.conversationId === 'string' ? record.conversationId.trim() : '';
+  const canonicalUrl = typeof record.canonicalUrl === 'string' ? record.canonicalUrl.trim() : '';
+  let parsed: ReturnType<typeof parseCanonicalChatgptConversationIdentity>;
+  try { parsed = parseCanonicalChatgptConversationIdentity(canonicalUrl); }
+  catch { throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID'); }
+  if (record.namespace !== 'chatgpt.conversation' || !conversationId || conversationId !== parsed.conversationId) {
+    throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID');
   }
-  return { namespace: 'chatgpt.conversation', conversationId, canonicalUrl };
+  return { namespace: 'chatgpt.conversation', conversationId, canonicalUrl: parsed.conversationUrl };
 }
 
-function normalizedMode(params: Record<string, unknown>): 'send' | 'resume' | 'recover' {
-  return params.mode === 'resume' || params.mode === 'recover' ? params.mode : 'send';
+function runtimeTargetIdentity(rawIdentity: unknown): ComputerChatgptTargetIdentity {
+  if (!rawIdentity || typeof rawIdentity !== 'object' || Array.isArray(rawIdentity)) {
+    throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID');
+  }
+  const record = rawIdentity as Record<string, unknown>;
+  if (record.namespace === 'chatgpt.conversation') return runtimeConversationIdentity(record);
+  const bootstrapKey = typeof record.bootstrapKey === 'string' ? record.bootstrapKey.trim() : '';
+  const projectUrl = typeof record.projectUrl === 'string' ? record.projectUrl.trim() : '';
+  let parsed: URL;
+  try { parsed = new URL(projectUrl); }
+  catch { throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID'); }
+  if (record.namespace !== 'chatgpt.bootstrap' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(bootstrapKey)
+    || parsed.protocol !== 'https:' || parsed.hostname !== 'chatgpt.com' || parsed.username || parsed.password || parsed.search || parsed.hash
+    || !/^\/g\/g-p-[a-z0-9]+(?:-[^/]+)?\/project\/?$/i.test(parsed.pathname)) {
+    throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID');
+  }
+  return { namespace: 'chatgpt.bootstrap', bootstrapKey, projectUrl: `https://chatgpt.com${parsed.pathname.replace(/\/+$/, '')}` };
 }
 
-async function executeTargetControl(
-  port: ChromeExtensionChatgptConversationTargetPort,
-  method: string,
-  params: Record<string, unknown>,
+function runtimeActionInput(value: unknown): RuntimeComputerChatgptActionInput {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_INVALID');
+  }
+  const record = value as Record<string, unknown>;
+  const kind = record.kind;
+  if (kind === 'find_marker') {
+    const marker = typeof record.marker === 'string' ? record.marker.trim() : '';
+    const bootstrapKey = typeof record.bootstrapKey === 'string' ? record.bootstrapKey.trim() : '';
+    if (!marker || marker.length > 1024 || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(bootstrapKey)) {
+      throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_INVALID');
+    }
+    return { kind, marker, bootstrapKey };
+  }
+  if (kind === 'ensure') return { kind, identity: runtimeTargetIdentity(record.identity) };
+  if (kind === 'observe') return { kind, identity: runtimeConversationIdentity(record.identity) };
+  if (kind !== 'prepare' && kind !== 'dispatch') throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_INVALID');
+  const prompt = typeof record.prompt === 'string' ? record.prompt : '';
+  if (!prompt.trim()) throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_PROMPT_REQUIRED');
+  const mode = record.mode === 'resume' || record.mode === 'recover' ? record.mode : 'send';
+  return { kind, identity: runtimeTargetIdentity(record.identity), prompt, mode };
+}
+
+async function executeRuntimeAction(
+  port: ComputerChatgptConversationTargetPort,
+  action: RuntimeComputerChatgptActionInput,
 ): Promise<Record<string, unknown>> {
-  if (method === 'computer_target_inventory') {
-    const inventory = await port.inventory();
-    return {
-      conversations: inventory.conversations,
-      complete: inventory.complete,
-      ...(inventory.providerInventoryReady === undefined ? {} : { providerInventoryReady: inventory.providerInventoryReady }),
-      unavailableProviders: inventory.unavailableProviders,
-    };
+  if (action.kind === 'find_marker') {
+    const results = await port.findBySubmittedMarker(action.marker, action.bootstrapKey);
+    const matches: Array<Record<string, unknown>> = [];
+    for (const result of results) {
+      if (result.state !== 'ready') {
+        matches.push({ state: 'unavailable', failure: result.failure, ...(result.observation ? { observation: result.observation } : {}) });
+        continue;
+      }
+      if (!result.observation) continue;
+      try {
+        const parsed = parseCanonicalChatgptConversationIdentity(result.observation.url);
+        matches.push({
+          state: 'ready',
+          targetId: result.target.targetId,
+          identity: { namespace: 'chatgpt.conversation', conversationId: parsed.conversationId, canonicalUrl: parsed.conversationUrl },
+          observation: result.observation,
+        });
+      } catch { continue; }
+    }
+    return { matches };
   }
-  const identity = requiredConversationIdentity(params);
-  const exact = await port.ensureExact(identity, { createIfMissing: method !== 'computer_target_observe' });
+  const exact = action.identity.namespace === 'chatgpt.bootstrap'
+    ? await port.openBootstrap(action.identity.projectUrl, action.identity.bootstrapKey)
+    : await port.ensureExact(action.identity, { createIfMissing: action.kind !== 'observe' });
   if (exact.state !== 'ready') {
-    return {
-      state: exact.state,
-      failure: exact.failure,
-      ...(exact.observation ? { observation: exact.observation } : {}),
-    };
+    return { state: exact.state, failure: exact.failure, ...(exact.observation ? { observation: exact.observation } : {}) };
   }
-  if (method === 'computer_target_ensure') {
+  if (action.kind === 'ensure') {
     return {
-      state: 'ready',
-      targetId: exact.target.targetId,
-      identity,
-      ...(exact.observation ? { observation: exact.observation } : {}),
-    };
-  }
-  if (method === 'computer_target_observe') {
-    return {
-      state: 'ready',
-      targetId: exact.target.targetId,
-      identity,
+      state: 'ready', targetId: exact.target.targetId, identity: action.identity,
       observation: exact.observation ?? await exact.target.observe({ includeUserHistory: false, includePageText: false }),
     };
   }
-  const prompt = requiredText(params, 'prompt');
-  const mode = normalizedMode(params);
-  if (method === 'computer_target_prepare') {
+  if (action.kind === 'observe') {
     return {
-      state: 'ready',
-      targetId: exact.target.targetId,
-      identity,
-      prepare: await exact.target.prepare(prompt, { mode }),
+      state: 'ready', targetId: exact.target.targetId, identity: action.identity,
+      observation: exact.observation ?? await exact.target.observe({ includeUserHistory: false, includePageText: false }),
     };
   }
-  if (method === 'computer_target_dispatch') {
-    return {
-      state: 'ready',
-      targetId: exact.target.targetId,
-      identity,
-      dispatch: await exact.target.dispatch(prompt, { mode }),
-    };
+  if (action.kind === 'prepare') {
+    return { state: 'ready', targetId: exact.target.targetId, identity: action.identity, prepare: await exact.target.prepare(action.prompt, { mode: action.mode }) };
   }
-  throw new Error(`COMPUTER_CHATGPT_EXTENSION_RPC_METHOD_DENIED:${method}`);
+  return { state: 'ready', targetId: exact.target.targetId, identity: action.identity, dispatch: await exact.target.dispatch(action.prompt, { mode: action.mode }) };
 }
 
 function response(socket: Socket, id: string, result: unknown): void {
@@ -166,6 +196,60 @@ async function socketAcceptsConnections(socketPath: string): Promise<boolean> {
   });
 }
 
+async function callRuntimeOwnerAction(
+  socketPath: string,
+  action: RuntimeComputerChatgptActionInput,
+  timeoutMs?: number,
+): Promise<Record<string, unknown>> {
+  const boundedTimeoutMs = Math.max(1_000, Math.min((timeoutMs ?? 20_000) + 1_000, 31_000));
+  return await new Promise((resolve, reject) => {
+    const id = randomUUID();
+    const socket = createConnection(socketPath);
+    let buffer = Buffer.alloc(0);
+    let settled = false;
+    const finish = (error?: Error, result?: Record<string, unknown>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      if (error) reject(error); else resolve(result ?? {});
+    };
+    const timer = setTimeout(
+      () => finish(new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_TIMEOUT')),
+      boundedTimeoutMs,
+    );
+    socket.once('error', (error) => finish(error));
+    socket.once('connect', () => {
+      socket.write(JSON.stringify({ id, method: 'computer_runtime_action', params: { action } }) + '\n');
+    });
+    socket.on('data', (chunk: Buffer) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      if (buffer.length > MAX_REQUEST_BYTES) {
+        finish(new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_RESPONSE_TOO_LARGE'));
+        return;
+      }
+      const newline = buffer.indexOf(0x0a);
+      if (newline < 0) return;
+      try {
+        const envelope = JSON.parse(buffer.subarray(0, newline).toString('utf8')) as {
+          id?: string;
+          ok?: boolean;
+          result?: Record<string, unknown>;
+          error?: { message?: string };
+        };
+        if (envelope.id !== id || typeof envelope.ok !== 'boolean') {
+          finish(new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_PROTOCOL_ERROR'));
+          return;
+        }
+        if (envelope.ok) finish(undefined, envelope.result ?? {});
+        else finish(new Error(envelope.error?.message ?? 'COMPUTER_CHATGPT_RUNTIME_ACTION_FAILED'));
+      } catch {
+        finish(new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_PROTOCOL_ERROR'));
+      }
+    });
+  });
+}
+
 async function prepareSocketPath(socketPath: string): Promise<void> {
   mkdirSync(dirname(socketPath), { recursive: true, mode: 0o700 });
   if (!existsSync(socketPath)) return;
@@ -180,12 +264,8 @@ async function dispatch(
 ): Promise<Record<string, unknown>> {
   const params = request.params;
   if (request.method === 'health') return { status: 'ready', owner: 'computer' };
-  if (request.method === 'computer_target_inventory'
-    || request.method === 'computer_target_ensure'
-    || request.method === 'computer_target_observe'
-    || request.method === 'computer_target_prepare'
-    || request.method === 'computer_target_dispatch') {
-    return await executeTargetControl(port, request.method, params);
+  if (request.method === 'computer_runtime_action') {
+    return await executeRuntimeAction(port, runtimeActionInput(params.action));
   }
   if (request.method === 'computer_extension_heartbeat') {
     return { recorded: port.heartbeat(params as unknown as ComputerChatgptExtensionHeartbeat) };
@@ -279,86 +359,6 @@ export async function ensureRuntimeComputerChatgptExtension(
   }
 }
 
-async function callComputerChatgptExtensionSocket(
-  controllerHome: string,
-  method: 'computer_target_inventory' | 'computer_target_ensure' | 'computer_target_observe' | 'computer_target_prepare' | 'computer_target_dispatch',
-  params: Record<string, unknown>,
-  timeoutMs: number,
-): Promise<Record<string, unknown>> {
-  const socketPath = runtimeComputerChatgptExtensionSocketPath(controllerHome);
-  const id = `computer-target-${randomUUID()}`;
-  return await new Promise((resolve, reject) => {
-    const socket = createConnection(socketPath);
-    let buffer = Buffer.alloc(0);
-    let settled = false;
-    const finish = (error?: Error, result?: Record<string, unknown>) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      socket.destroy();
-      if (error) reject(error); else resolve(result ?? {});
-    };
-    const timer = setTimeout(
-      () => finish(new Error(`COMPUTER_CHATGPT_EXTENSION_CONTROL_TIMEOUT:${method}`)),
-      Math.max(1_000, Math.min(timeoutMs, 60_000)),
-    );
-    socket.once('connect', () => {
-      socket.write(`${JSON.stringify({ id, method, params })}
-`);
-    });
-    socket.on('data', (chunk: Buffer) => {
-      buffer = Buffer.concat([buffer, chunk]);
-      if (buffer.length > MAX_REQUEST_BYTES) {
-        finish(new Error('COMPUTER_CHATGPT_EXTENSION_CONTROL_RESPONSE_TOO_LARGE'));
-        return;
-      }
-      const newline = buffer.indexOf(0x0a);
-      if (newline < 0) return;
-      let envelope: { id?: unknown; ok?: unknown; result?: unknown; error?: { message?: unknown } };
-      try {
-        envelope = JSON.parse(buffer.subarray(0, newline).toString('utf8'));
-      } catch {
-        finish(new Error('COMPUTER_CHATGPT_EXTENSION_CONTROL_PROTOCOL_ERROR'));
-        return;
-      }
-      if (envelope.id !== id || typeof envelope.ok !== 'boolean') {
-        finish(new Error('COMPUTER_CHATGPT_EXTENSION_CONTROL_PROTOCOL_ERROR'));
-        return;
-      }
-      if (envelope.ok === false) {
-        finish(new Error(typeof envelope.error?.message === 'string'
-          ? envelope.error.message
-          : 'COMPUTER_CHATGPT_EXTENSION_CONTROL_REMOTE_ERROR'));
-        return;
-      }
-      const result = envelope.result;
-      if (!result || typeof result !== 'object' || Array.isArray(result)) {
-        finish(new Error('COMPUTER_CHATGPT_EXTENSION_CONTROL_RESULT_INVALID'));
-        return;
-      }
-      finish(undefined, result as Record<string, unknown>);
-    });
-    socket.once('error', (error) => finish(new Error(`COMPUTER_CHATGPT_EXTENSION_SOCKET_UNAVAILABLE:${error.message}`)));
-    socket.once('end', () => {
-      if (!settled) finish(new Error('COMPUTER_CHATGPT_EXTENSION_CONTROL_PROTOCOL_ERROR:socket_closed'));
-    });
-  });
-}
-
-export async function callRuntimeComputerChatgptTargetAction(
-  controllerHome: string,
-  method: 'inventory' | 'ensure' | 'observe' | 'prepare' | 'dispatch',
-  params: Record<string, unknown>,
-  timeoutMs: number = TARGET_CONTROL_TIMEOUT_MS[method],
-): Promise<Record<string, unknown>> {
-  return await callComputerChatgptExtensionSocket(
-    controllerHome,
-    `computer_target_${method}` as 'computer_target_inventory' | 'computer_target_ensure' | 'computer_target_observe' | 'computer_target_prepare' | 'computer_target_dispatch',
-    params,
-    timeoutMs,
-  );
-}
-
 export async function runtimeComputerChatgptTargetPort(
   controllerHome: string,
   options: { waitForProvider?: boolean; timeoutMs?: number } = {},
@@ -372,6 +372,24 @@ export async function runtimeComputerChatgptTargetPort(
     if (Date.now() >= deadline) return runtime.port;
     await new Promise((resolve) => setTimeout(resolve, PROVIDER_POLL_MS));
   }
+}
+
+export async function runtimeComputerChatgptAction(
+  controllerHome: string,
+  input: RuntimeComputerChatgptActionInput,
+  timeoutMs?: number,
+): Promise<Record<string, unknown>> {
+  const action = runtimeActionInput(input);
+  const existing = runtimes.get(controllerHome);
+  if (existing) return await executeRuntimeAction((await existing).port, action);
+  const socketPath = runtimeComputerChatgptExtensionSocketPath(controllerHome);
+  if (await socketAcceptsConnections(socketPath)) {
+    return await callRuntimeOwnerAction(socketPath, action, timeoutMs);
+  }
+  return await executeRuntimeAction(
+    (await ensureRuntimeComputerChatgptExtension(controllerHome)).port,
+    action,
+  );
 }
 
 export async function runtimeComputerChatgptInventory(

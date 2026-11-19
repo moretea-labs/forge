@@ -512,6 +512,7 @@ export class CanonicalForgeRuntime {
 
       stage = 'computerProvider';
       await ensureRuntimeComputerChatgptExtension(this.config.controllerHome);
+
       stage = 'scheduler';
       const standaloneReleaseRoot = this.release.executionMode === 'standalone-binary'
         ? dirname(this.config.releaseManifestPath)

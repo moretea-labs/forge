@@ -2,10 +2,10 @@ importScripts('core.js');
 const core = globalThis.ForgeComputerChatgptCore;
 const NATIVE_HOST = 'com.moretea.forge.computer';
 const ALARM = 'forge-computer-chatgpt-provider';
-const ALARM_PERIOD_MINUTES = 0.5;
 const PROVIDER_ID = 'browser.chrome-extension';
 const PROVIDER_COMMAND_POLL_MS = 1_000;
 const PROVIDER_HEARTBEAT_REFRESH_MS = 8_000;
+const PROVIDER_RESTART_DELAY_MS = 1_000;
 const RPC_TIMEOUT_MS = 30_000;
 const HEARTBEAT_DEADLINE_MS = 10_000;
 const HEARTBEAT_RPC_TIMEOUT_MS = 6_000;
@@ -14,10 +14,13 @@ const TABS_QUERY_TIMEOUT_MS = 5_000;
 // callback must settle earlier without claiming a Send never happened.
 const TAB_MESSAGE_TIMEOUT_MS = 7_000;
 const bootstrapTabs = new Map();
-// Transient per-tab hydration retry spacing, not an orchestrator effect state.
+// Browser-session hydration retry spacing, not an orchestrator/progress state.
+// chrome.storage.session carries the bounded timer across MV3 worker restarts.
 const unreadableConversationTabs = new Map();
 const UNREADABLE_CHAT_GRACE_MS = 60_000;
 const UNREADABLE_CHAT_RELOAD_INTERVAL_MS = 5 * 60_000;
+const UNREADABLE_CHAT_REPLACEMENT_GRACE_MS = 60_000;
+const UNREADABLE_CHAT_REPLACEMENT_INTERVAL_MS = 15 * 60_000;
 const randomId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 let providerInstancePromise;
 let providerInstanceCandidate;
@@ -71,7 +74,7 @@ function invalidateNativePort(port, error) {
   nativePort = undefined;
   rejectNativePending(error);
   try { port.disconnect(); } catch { /* already disconnected */ }
-  setTimeout(() => { void providerTick().catch(() => undefined); }, 500);
+  scheduleProviderPumpRestart();
 }
 function ensureNativePort() {
   if (nativePort) return nativePort;
@@ -188,6 +191,110 @@ async function chatgptTabs(deadlineAt) { return await boundedTabsQuery({ url: 'h
 // browser restarts invalidate it rather than permitting tab-id reuse to close
 // an unrelated restored/user tab.
 function ownedTabKey(tabId) { return `forgeComputerOwnedTabV1:${tabId}`; }
+function unreadableTabKey(tabId, identity) {
+  return `forgeComputerUnreadableChatV1:${tabId}:${identity?.conversationId ?? 'unknown'}`;
+}
+function validUnreadableState(value) {
+  return value && typeof value === 'object'
+    && (value.firstObservedAt === null || Number.isFinite(value.firstObservedAt))
+    && (value.lastReloadAt === null || Number.isFinite(value.lastReloadAt));
+}
+async function unreadableTabState(tabId, identity) {
+  const key = unreadableTabKey(tabId, identity);
+  const cached = unreadableConversationTabs.get(key);
+  if (validUnreadableState(cached)) return { key, state: cached };
+  try {
+    const stored = await chrome.storage.session.get(key);
+    if (validUnreadableState(stored?.[key])) {
+      const state = {
+        firstObservedAt: stored[key].firstObservedAt === null ? null : Number(stored[key].firstObservedAt),
+        lastReloadAt: stored[key].lastReloadAt === null ? null : Number(stored[key].lastReloadAt),
+      };
+      unreadableConversationTabs.set(key, state);
+      return { key, state };
+    }
+  } catch { /* fail closed to a fresh in-memory grace window */ }
+  return { key, state: undefined };
+}
+async function storeUnreadableTabState(key, state) {
+  unreadableConversationTabs.set(key, state);
+  try { await chrome.storage.session.set({ [key]: state }); } catch { /* memory grace still applies */ }
+}
+async function clearUnreadableTabState(tabId, identity) {
+  const loaded = await unreadableTabState(tabId, identity);
+  if (!loaded.state) {
+    unreadableConversationTabs.delete(loaded.key);
+    return;
+  }
+  await storeUnreadableTabState(loaded.key, {
+    firstObservedAt: null,
+    lastReloadAt: loaded.state.lastReloadAt,
+  });
+}
+function replacementTabKey(sourceTabId, identity) {
+  return 'forgeComputerReplacementTabV1:' + sourceTabId + ':' + (identity?.conversationId ?? 'unknown');
+}
+function replacementBudgetKey(identity) {
+  return 'forgeComputerReplacementBudgetV1:' + (identity?.conversationId ?? 'unknown');
+}
+async function existingReplacementTarget(sourceTabId, identity) {
+  if (identity?.namespace !== 'chatgpt.conversation') return undefined;
+  const key = replacementTabKey(sourceTabId, identity);
+  let record;
+  try { record = (await chrome.storage.session.get(key))?.[key]; }
+  catch { return undefined; }
+  if (!record || !Number.isFinite(Number(record.tabId)) || typeof record.ownerToken !== 'string' || !record.ownerToken) return undefined;
+  let tab;
+  try { tab = await tabGet(Number(record.tabId)); }
+  catch (error) {
+    if (!/No tab with id/i.test(String(error?.message ?? error))) throw error;
+  }
+  if (!tab) {
+    try { await chrome.storage.session.remove(key); } catch { /* stale replacement pointer only */ }
+    return undefined;
+  }
+  if (!receiverMatchesIdentity(tab, identity)) throw new Error('COMPUTER_CHATGPT_EXTENSION_REPLACEMENT_TARGET_CHANGED');
+  if (await storedOwnerToken(tab.id) !== record.ownerToken) {
+    throw new Error('COMPUTER_CHATGPT_EXTENSION_REPLACEMENT_OWNER_TOKEN_MISMATCH');
+  }
+  return { tab, created: true, ownerToken: record.ownerToken, replacement: true };
+}
+async function createOrReuseReplacementTarget(sourceTabId, identity, nowMs = Date.now()) {
+  const existing = await existingReplacementTarget(sourceTabId, identity);
+  if (existing) return existing;
+  if (identity?.namespace !== 'chatgpt.conversation') return undefined;
+  const budgetKey = replacementBudgetKey(identity);
+  let budget;
+  try { budget = (await chrome.storage.session.get(budgetKey))?.[budgetKey]; }
+  catch { throw new Error('COMPUTER_CHATGPT_EXTENSION_REPLACEMENT_STATE_UNAVAILABLE'); }
+  if (budget && Number.isFinite(Number(budget.lastReplacementAt))
+    && nowMs - Number(budget.lastReplacementAt) < UNREADABLE_CHAT_REPLACEMENT_INTERVAL_MS) {
+    throw new Error('COMPUTER_CHATGPT_EXTENSION_REPLACEMENT_RATE_LIMITED');
+  }
+  const tab = await tabCreate(identity.canonicalUrl);
+  const ownerToken = randomId();
+  const key = replacementTabKey(sourceTabId, identity);
+  const record = { tabId: tab.id, ownerToken, createdAt: nowMs };
+  try {
+    await chrome.storage.session.set({
+      [ownedTabKey(tab.id)]: ownerToken,
+      [key]: record,
+      [budgetKey]: { lastReplacementAt: nowMs },
+    });
+    const ownerStored = await chrome.storage.session.get(ownedTabKey(tab.id));
+    const pointerStored = await chrome.storage.session.get(key);
+    const budgetStored = await chrome.storage.session.get(budgetKey);
+    if (ownerStored?.[ownedTabKey(tab.id)] !== ownerToken
+      || pointerStored?.[key]?.tabId !== tab.id || pointerStored?.[key]?.ownerToken !== ownerToken
+      || Number(budgetStored?.[budgetKey]?.lastReplacementAt) !== nowMs) {
+      throw new Error('COMPUTER_CHATGPT_EXTENSION_REPLACEMENT_OWNER_TOKEN_UNAVAILABLE');
+    }
+  } catch (error) {
+    if (String(error?.message ?? error) === 'COMPUTER_CHATGPT_EXTENSION_REPLACEMENT_OWNER_TOKEN_UNAVAILABLE') throw error;
+    throw new Error('COMPUTER_CHATGPT_EXTENSION_REPLACEMENT_OWNER_TOKEN_UNAVAILABLE');
+  }
+  return { tab, created: true, ownerToken, replacement: true };
+}
 async function attestedOwnerToken(tab, pinnedBinding) {
   // Chrome preserves a tab ID across window moves, so the browser-session
   // token (not the mutable window ID) attests its physical identity.
@@ -225,6 +332,16 @@ function binding(tab, instanceId, ownerToken) {
     ...(ownerToken ? { ownerToken } : {}),
   };
 }
+async function storedOwnerToken(tabId) {
+  try {
+    const key = ownedTabKey(tabId);
+    const stored = await chrome.storage.session.get(key);
+    const token = stored[key];
+    return typeof token === 'string' && token ? token : undefined;
+  } catch {
+    return undefined;
+  }
+}
 async function snapshot(tabId, options = {}) {
   return await tabMessage(tabId, { type: 'forge-computer-chatgpt-snapshot', options });
 }
@@ -242,6 +359,23 @@ function receiverMatchesIdentity(tab, identity) {
   // an unsent bootstrap receiver and must never be rebound as one.
   return bootstrapTabBelongsToProject(tab, identity)
     && !core.parseConversation(tab.url ?? '');
+}
+async function waitForCreatedTargetIdentity(tabId, identity) {
+  // chrome.tabs.create() returns before navigation/content-script attachment is
+  // guaranteed. Only a tab minted and owner-token attested by this provider may
+  // wait through that transition; existing/pinned tabs keep strict identity
+  // checks and are never navigated or adopted here.
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const tab = await tabGet(tabId);
+    if (receiverMatchesIdentity(tab, identity)) return tab;
+    if (tab?.status === 'complete') break;
+    await sleep(250);
+  }
+  throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
+}
+async function restoreCreatedExactContentReceiver(tabId, identity) {
+  await waitForCreatedTargetIdentity(tabId, identity);
+  await restoreExactContentReceiver(tabId, identity);
 }
 async function restoreExactContentReceiver(tabId, identity, files = ['core.js', 'content.js']) {
   // The physical tab is already resolved by the one Computer target authority.
@@ -492,26 +626,42 @@ function dispatchTransportNotReached(error) {
   const text = String(error?.message ?? error);
   return /Receiving end does not exist|Could not establish connection|No tab with id/i.test(text);
 }
-function shouldReloadUnreadableConversation(tabId, identity, observation, nowMs = Date.now()) {
-  const unreadable = identity?.namespace === 'chatgpt.conversation'
+function unreadableConversationObservation(identity, observation) {
+  const failureText = String(observation?.providerFailureText ?? '').trim();
+  const knownUnreadable = /(?:无法加载此 ChatGPT 对话|无法加载历史记录|Unable to load this (?:ChatGPT )?conversation|Unable to load history|正在加载个人资料|正在加载聊天(?:…|\.\.\.)?|Loading (?:your )?profile(?:…|\.\.\.)?|Loading (?:the )?chat(?:…|\.\.\.)?)/i.test(failureText);
+  const emptyShell = !failureText;
+  return identity?.namespace === 'chatgpt.conversation'
     && typeof observation?.url === 'string'
     && core.parseConversation(observation.url)?.conversationId === identity.conversationId
-    && /(?:无法加载此 ChatGPT 对话|Unable to load this (?:ChatGPT )?conversation)/i.test(observation.providerFailureText ?? '')
+    && (knownUnreadable || emptyShell)
     && !observation.latestUserText?.trim() && !observation.latestAssistantResponse?.trim()
     && !observation.composerText?.trim() && observation.isGenerating !== true;
-  if (!unreadable) {
-    const prior = unreadableConversationTabs.get(tabId);
-    if (prior) prior.firstObservedAt = undefined;
+}
+async function shouldReloadUnreadableConversation(tabId, identity, observation, nowMs = Date.now()) {
+  if (!unreadableConversationObservation(identity, observation)) {
+    await clearUnreadableTabState(tabId, identity);
     return false;
   }
-  const prior = unreadableConversationTabs.get(tabId) ?? { firstObservedAt: nowMs, lastReloadAt: -Infinity };
-  prior.firstObservedAt ??= nowMs;
-  unreadableConversationTabs.set(tabId, prior);
+  const loaded = await unreadableTabState(tabId, identity);
+  let prior = loaded.state ?? { firstObservedAt: nowMs, lastReloadAt: null };
+  if (!loaded.state || prior.firstObservedAt === null) {
+    prior = { firstObservedAt: nowMs, lastReloadAt: prior.lastReloadAt };
+    await storeUnreadableTabState(loaded.key, prior);
+  }
   if (nowMs - prior.firstObservedAt < UNREADABLE_CHAT_GRACE_MS
-    || nowMs - prior.lastReloadAt < UNREADABLE_CHAT_RELOAD_INTERVAL_MS) return false;
-  prior.lastReloadAt = nowMs;
+    || (Number.isFinite(prior.lastReloadAt) && nowMs - prior.lastReloadAt < UNREADABLE_CHAT_RELOAD_INTERVAL_MS)) return false;
+  await storeUnreadableTabState(loaded.key, { firstObservedAt: prior.firstObservedAt, lastReloadAt: nowMs });
   return true;
 }
+async function shouldReplaceUnreadableConversation(tabId, identity, observation, nowMs = Date.now()) {
+  if (!unreadableConversationObservation(identity, observation)) return false;
+  const loaded = await unreadableTabState(tabId, identity);
+  const firstObservedAt = loaded.state?.firstObservedAt;
+  const lastReloadAt = loaded.state?.lastReloadAt;
+  return Number.isFinite(firstObservedAt) && Number.isFinite(lastReloadAt)
+    && nowMs - Math.max(firstObservedAt, lastReloadAt) >= UNREADABLE_CHAT_REPLACEMENT_GRACE_MS;
+}
+
 async function executeEnsure(command, instanceId) {
   let target;
   try {
@@ -520,8 +670,21 @@ async function executeEnsure(command, instanceId) {
     // The editor must hydrate before 'ensured'; on failure the existing typed
     // failed receipt still carries this tab's binding without permitting Send.
     let observation = await waitForContent(target.tab.id, command.identity.namespace === 'chatgpt.bootstrap',
-      () => restoreExactContentReceiver(target.tab.id, command.identity));
-    if (shouldReloadUnreadableConversation(target.tab.id, command.identity, observation)) {
+      () => target.created
+        ? restoreCreatedExactContentReceiver(target.tab.id, command.identity)
+        : restoreExactContentReceiver(target.tab.id, command.identity));
+    if (command.identity.namespace === 'chatgpt.conversation') {
+      let replacement = await existingReplacementTarget(target.tab.id, command.identity);
+      if (!replacement && await shouldReplaceUnreadableConversation(target.tab.id, command.identity, observation)) {
+        replacement = await createOrReuseReplacementTarget(target.tab.id, command.identity);
+      }
+      if (replacement) {
+        target = replacement;
+        observation = await waitForContent(target.tab.id, false,
+          () => restoreCreatedExactContentReceiver(target.tab.id, command.identity));
+      }
+    }
+    if (!target.replacement && await shouldReloadUnreadableConversation(target.tab.id, command.identity, observation)) {
       // Reload ONLY the already-attested exact physical tab, after the same
       // error has remained visible for a minute. No new tab, Send or effect
       // dispatch is permitted by this read-only page recovery.
@@ -791,12 +954,16 @@ async function publishHeartbeat() {
   for (const tab of tabs) {
     const identity = core.parseConversation(tab.url ?? '');
     if (!identity || !tab.id) continue;
+    // A bootstrap-owned tab can become /c/<conversation> after its first Send.
+    // Carry only the browser-session attestation this extension itself created;
+    // URL identity alone never grants ownership to an arbitrary user tab.
+    const ownerToken = await storedOwnerToken(tab.id);
     conversations.push({
       conversationId: identity.conversationId,
       canonicalUrl: identity.canonicalUrl,
       ...(String(tab.title ?? '').trim() ? { title: String(tab.title).trim().slice(0, 512) } : {}),
       ...(tab.id === current?.id ? { isCurrent: true } : {}),
-      providerBinding: binding(tab, instanceId),
+      providerBinding: binding(tab, instanceId, ownerToken),
     });
   }
   const remainingMs = deadlineAt - Date.now();
@@ -807,6 +974,14 @@ async function publishHeartbeat() {
 }
 let providerTickInFlight;
 let providerHeartbeatInFlight;
+let providerRestartTimer;
+function scheduleProviderPumpRestart() {
+  if (providerRestartTimer !== undefined) return;
+  providerRestartTimer = setTimeout(() => {
+    providerRestartTimer = undefined;
+    void providerTick().catch(() => undefined);
+  }, PROVIDER_RESTART_DELAY_MS);
+}
 function heartbeatTick() {
   providerHeartbeatInFlight ??= publishHeartbeat()
     .finally(() => { providerHeartbeatInFlight = undefined; });
@@ -839,6 +1014,14 @@ async function runProviderPump() {
 function providerTick() {
   if (providerTickInFlight) return providerTickInFlight;
   providerTickInFlight = runProviderPump()
+    .catch((error) => {
+      // A transient RPC/heartbeat failure may leave the NativeMessaging port
+      // connected while terminating this pump. Re-arm the same single pump;
+      // Runtime remains the sole queue/effect authority.
+      console.warn('COMPUTER_CHATGPT_EXTENSION_PROVIDER_PUMP_RESTART', String(error?.message ?? error));
+      scheduleProviderPumpRestart();
+      throw error;
+    })
     .finally(() => { providerTickInFlight = undefined; });
   return providerTickInFlight;
 }
@@ -848,12 +1031,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   sendResponse({ ok: true });
   return false;
 });
-chrome.runtime.onInstalled.addListener(() => { chrome.alarms.create(ALARM, { periodInMinutes: ALARM_PERIOD_MINUTES }); void providerTick().catch(() => undefined); });
-chrome.runtime.onStartup.addListener(() => { chrome.alarms.create(ALARM, { periodInMinutes: ALARM_PERIOD_MINUTES }); void providerTick().catch(() => undefined); });
+chrome.runtime.onInstalled.addListener(() => { chrome.alarms.create(ALARM, { periodInMinutes: 1 }); void providerTick().catch(() => undefined); });
+chrome.runtime.onStartup.addListener(() => { chrome.alarms.create(ALARM, { periodInMinutes: 1 }); void providerTick().catch(() => undefined); });
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === ALARM) void providerTick().catch(() => undefined); });
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => { if (changeInfo.status === 'complete' && String(tab.url ?? '').startsWith('https://chatgpt.com/')) void providerTick().catch(() => undefined); });
 chrome.tabs.onActivated.addListener(() => { void providerTick().catch(() => undefined); });
 chrome.tabs.onRemoved.addListener((tabId) => { unreadableConversationTabs.delete(tabId); void chrome.storage.session.remove(ownedTabKey(tabId)).catch(() => undefined); void providerTick().catch(() => undefined); });
 chrome.windows.onFocusChanged.addListener(() => { void providerTick().catch(() => undefined); });
-chrome.alarms.create(ALARM, { periodInMinutes: ALARM_PERIOD_MINUTES });
+chrome.alarms.create(ALARM, { periodInMinutes: 1 });
 void providerTick().catch(() => undefined);
