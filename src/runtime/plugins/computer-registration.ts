@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { parseCanonicalChatgptConversationIdentity, type ComputerChatgptConversationIdentity } from '../../../packages/plugin-runtime/computer';
+import { parseCanonicalChatgptConversationIdentity, type ComputerChatgptConversationIdentity, type ComputerChatgptTargetIdentity } from '../../../packages/plugin-runtime/computer';
 import type {
   ComputerApplicationLaunchProvenance,
   ComputerApplicationTarget,
@@ -49,12 +49,14 @@ import type {
 const COMPUTER_CHATGPT_TARGET_INVENTORY_ACTION = 'chatgpt_target_inventory';
 const COMPUTER_CHATGPT_TARGET_ENSURE_ACTION = 'chatgpt_target_ensure';
 const COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION = 'chatgpt_target_observe';
+const COMPUTER_CHATGPT_TARGET_FIND_MARKER_ACTION = 'chatgpt_target_find_marker';
 const COMPUTER_CHATGPT_TARGET_PREPARE_ACTION = 'chatgpt_target_prepare';
 const COMPUTER_CHATGPT_TARGET_DISPATCH_ACTION = 'chatgpt_target_dispatch';
 const COMPUTER_CHATGPT_TARGET_ACTION_IDS = new Set([
   COMPUTER_CHATGPT_TARGET_INVENTORY_ACTION,
   COMPUTER_CHATGPT_TARGET_ENSURE_ACTION,
   COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION,
+  COMPUTER_CHATGPT_TARGET_FIND_MARKER_ACTION,
   COMPUTER_CHATGPT_TARGET_PREPARE_ACTION,
   COMPUTER_CHATGPT_TARGET_DISPATCH_ACTION,
 ]);
@@ -233,7 +235,7 @@ export async function executeProtectedConsoleUnlockLifecycle(
 }
 
 function computerChatgptTargetActions(): AssistantPluginActionDescriptor[] {
-  const identitySchema = {
+  const conversationIdentitySchema = {
     canonical_url: {
       type: 'string',
       minLength: 1,
@@ -241,6 +243,22 @@ function computerChatgptTargetActions(): AssistantPluginActionDescriptor[] {
       description: 'Canonical existing ChatGPT conversation URL. Computer derives and verifies the conversation id.',
     },
   };
+  const bootstrapIdentitySchema = {
+    project_url: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 2048,
+      description: 'Existing ChatGPT Project URL used only for one Computer-owned successor bootstrap.',
+    },
+    bootstrap_key: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 256,
+      description: 'Stable external-orchestrator bootstrap identity within the exact ChatGPT Project.',
+    },
+  };
+  const targetIdentitySchema = { ...conversationIdentitySchema, ...bootstrapIdentitySchema };
+  const targetIdentityOneOf = [{ required: ['canonical_url'] }, { required: ['project_url', 'bootstrap_key'] }];
   const modeSchema = { type: 'string', enum: ['send', 'resume', 'recover'] };
   return [
     {
@@ -261,7 +279,7 @@ function computerChatgptTargetActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: COMPUTER_CHATGPT_TARGET_ENSURE_ACTION,
       title: 'Ensure exact ChatGPT target',
-      description: 'Create or reattach one dedicated Computer-owned tab for an exact existing ChatGPT conversation without changing the composer or clicking Send.',
+      description: 'Create or reattach one dedicated Computer-owned target for an existing conversation or one exact ChatGPT Project bootstrap without changing the composer or clicking Send.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -273,8 +291,8 @@ function computerChatgptTargetActions(): AssistantPluginActionDescriptor[] {
       resourceClaims: [{ resource: 'provider-state', mode: 'write' }, { resource: 'remote', mode: 'read' }],
       argumentsSchema: {
         type: 'object',
-        properties: identitySchema,
-        required: ['canonical_url'],
+        properties: targetIdentitySchema,
+        oneOf: targetIdentityOneOf,
         additionalProperties: false,
       },
     },
@@ -293,8 +311,31 @@ function computerChatgptTargetActions(): AssistantPluginActionDescriptor[] {
       resourceClaims: [{ resource: 'provider-state', mode: 'write' }, { resource: 'remote', mode: 'read' }],
       argumentsSchema: {
         type: 'object',
-        properties: identitySchema,
+        properties: conversationIdentitySchema,
         required: ['canonical_url'],
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: COMPUTER_CHATGPT_TARGET_FIND_MARKER_ACTION,
+      title: 'Find submitted ChatGPT marker',
+      description: 'Read provider-owned ChatGPT targets for one previously submitted bootstrap marker and return exact conversation identities without sending or changing the composer.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: 60_000,
+      cancellable: true,
+      idempotent: true,
+      foregroundEffect: 'none',
+      scopes: ['browser.read', 'browser.profile'],
+      resourceClaims: [{ resource: 'provider-state', mode: 'write' }, { resource: 'remote', mode: 'read' }],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          marker: { type: 'string', minLength: 1, maxLength: 1024 },
+          bootstrap_key: bootstrapIdentitySchema.bootstrap_key,
+        },
+        required: ['marker', 'bootstrap_key'],
         additionalProperties: false,
       },
     },
@@ -314,11 +355,12 @@ function computerChatgptTargetActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: {
         type: 'object',
         properties: {
-          ...identitySchema,
+          ...targetIdentitySchema,
           prompt: { type: 'string', minLength: 1, maxLength: 60000 },
           mode: modeSchema,
         },
-        required: ['canonical_url', 'prompt'],
+        required: ['prompt'],
+        oneOf: targetIdentityOneOf,
         additionalProperties: false,
       },
     },
@@ -338,18 +380,19 @@ function computerChatgptTargetActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: {
         type: 'object',
         properties: {
-          ...identitySchema,
+          ...targetIdentitySchema,
           prompt: { type: 'string', minLength: 1, maxLength: 60000 },
           mode: modeSchema,
         },
-        required: ['canonical_url', 'prompt'],
+        required: ['prompt'],
+        oneOf: targetIdentityOneOf,
         additionalProperties: false,
       },
     },
   ];
 }
 
-function computerChatgptIdentity(args: Record<string, unknown>): ComputerChatgptConversationIdentity {
+function computerChatgptConversationIdentity(args: Record<string, unknown>): ComputerChatgptConversationIdentity {
   const raw = typeof args.canonical_url === 'string' ? args.canonical_url.trim() : '';
   if (!raw) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'canonical_url is required.', { retryable: false });
   let parsed: ReturnType<typeof parseCanonicalChatgptConversationIdentity>;
@@ -362,11 +405,43 @@ function computerChatgptIdentity(args: Record<string, unknown>): ComputerChatgpt
       { retryable: false },
     );
   }
+  return { namespace: 'chatgpt.conversation', conversationId: parsed.conversationId, canonicalUrl: parsed.conversationUrl };
+}
+
+function computerChatgptBootstrapKey(args: Record<string, unknown>): string {
+  const value = typeof args.bootstrap_key === 'string' ? args.bootstrap_key.trim() : '';
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value)) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'bootstrap_key must be a stable 1-256 character identifier.', { retryable: false });
+  }
+  return value;
+}
+
+function computerChatgptTargetIdentity(args: Record<string, unknown>): ComputerChatgptTargetIdentity {
+  const canonicalUrl = typeof args.canonical_url === 'string' ? args.canonical_url.trim() : '';
+  const projectUrl = typeof args.project_url === 'string' ? args.project_url.trim() : '';
+  const bootstrapKey = typeof args.bootstrap_key === 'string' ? args.bootstrap_key.trim() : '';
+  if (canonicalUrl && !projectUrl && !bootstrapKey) return computerChatgptConversationIdentity(args);
+  if (canonicalUrl || !projectUrl || !bootstrapKey) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Use either canonical_url or project_url + bootstrap_key.', { retryable: false });
+  }
+  let parsed: URL;
+  try { parsed = new URL(projectUrl); }
+  catch { throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Invalid ChatGPT Project URL.', { retryable: false }); }
+  if (parsed.protocol !== 'https:' || parsed.hostname !== 'chatgpt.com' || parsed.username || parsed.password || parsed.search || parsed.hash
+    || !/^\/g\/g-p-[a-z0-9]+(?:-[^/]+)?\/project\/?$/i.test(parsed.pathname)) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'project_url must be an exact ChatGPT Project page.', { retryable: false });
+  }
   return {
-    namespace: 'chatgpt.conversation',
-    conversationId: parsed.conversationId,
-    canonicalUrl: parsed.conversationUrl,
+    namespace: 'chatgpt.bootstrap',
+    bootstrapKey: computerChatgptBootstrapKey(args),
+    projectUrl: `https://chatgpt.com${parsed.pathname.replace(/\/+$/, '')}`,
   };
+}
+
+function computerChatgptMarker(args: Record<string, unknown>): string {
+  const marker = typeof args.marker === 'string' ? args.marker.trim() : '';
+  if (!marker || marker.length > 1024) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'marker is required and must be at most 1024 characters.', { retryable: false });
+  return marker;
 }
 
 function computerChatgptMode(args: Record<string, unknown>): 'send' | 'resume' | 'recover' {
@@ -390,7 +465,15 @@ async function executeComputerChatgptTargetAction(
   if (input.actionId === COMPUTER_CHATGPT_TARGET_INVENTORY_ACTION) {
     return await callRuntimeComputerChatgptTargetAction(input.controllerHome, 'inventory', {}, input.timeoutMs);
   }
-  const identity = computerChatgptIdentity(input.args);
+  if (input.actionId === COMPUTER_CHATGPT_TARGET_FIND_MARKER_ACTION) {
+    return await callRuntimeComputerChatgptTargetAction(input.controllerHome, 'find_marker', {
+      marker: computerChatgptMarker(input.args),
+      bootstrapKey: computerChatgptBootstrapKey(input.args),
+    }, input.timeoutMs);
+  }
+  const identity = input.actionId === COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION
+    ? computerChatgptConversationIdentity(input.args)
+    : computerChatgptTargetIdentity(input.args);
   if (input.actionId === COMPUTER_CHATGPT_TARGET_ENSURE_ACTION) {
     return await callRuntimeComputerChatgptTargetAction(input.controllerHome, 'ensure', { identity }, input.timeoutMs);
   }
@@ -411,9 +494,17 @@ async function executeComputerChatgptTargetAction(
 function resolveComputerChatgptAuthorizationContext(
   input: AssistantPluginActionExecutionInput,
 ): AssistantPluginAuthorizationContext | undefined {
-  if (input.actionId === COMPUTER_CHATGPT_TARGET_INVENTORY_ACTION || input.actionId === COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION) return undefined;
-  const identity = computerChatgptIdentity(input.args);
-  return { target: { kind: 'chatgpt-conversation', id: identity.conversationId } };
+  if (input.actionId === COMPUTER_CHATGPT_TARGET_INVENTORY_ACTION
+    || input.actionId === COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION
+    || input.actionId === COMPUTER_CHATGPT_TARGET_FIND_MARKER_ACTION) return undefined;
+  const identity = computerChatgptTargetIdentity(input.args);
+  if (identity.namespace === 'chatgpt.conversation') return { target: { kind: 'chatgpt-conversation', id: identity.conversationId } };
+  return {
+    target: {
+      kind: 'chatgpt-project-bootstrap',
+      id: createHash('sha256').update(`${identity.projectUrl}\0${identity.bootstrapKey}`).digest('hex'),
+    },
+  };
 }
 
 function desktopProductActions(): AssistantPluginActionDescriptor[] {

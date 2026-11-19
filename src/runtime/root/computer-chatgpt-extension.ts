@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs';
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
-import type {
-  ComputerChatgptConversationIdentity,
+import {
+  parseCanonicalChatgptConversationIdentity,
+  type ComputerChatgptConversationIdentity,
   ComputerChatgptConversationInventory,
   ComputerChatgptConversationTargetPort,
+  ComputerChatgptTargetIdentity,
   ComputerChatgptExtensionCommandResult,
   ComputerChatgptExtensionHeartbeat,
 } from '../../../packages/plugin-runtime/computer';
@@ -19,6 +21,7 @@ const TARGET_CONTROL_TIMEOUT_MS = {
   inventory: 5_000,
   ensure: 60_000,
   observe: 60_000,
+  find_marker: 60_000,
   prepare: 60_000,
   dispatch: 60_000,
 } as const;
@@ -77,6 +80,26 @@ function requiredConversationIdentity(params: Record<string, unknown>): Computer
   return { namespace: 'chatgpt.conversation', conversationId, canonicalUrl };
 }
 
+function requiredTargetIdentity(params: Record<string, unknown>): ComputerChatgptTargetIdentity {
+  const raw = params.identity;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('COMPUTER_CHATGPT_EXTENSION_RPC_IDENTITY_REQUIRED');
+  }
+  const identity = raw as Record<string, unknown>;
+  if (identity.namespace === 'chatgpt.conversation') return requiredConversationIdentity(params);
+  const bootstrapKey = typeof identity.bootstrapKey === 'string' ? identity.bootstrapKey.trim() : '';
+  const projectUrl = typeof identity.projectUrl === 'string' ? identity.projectUrl.trim() : '';
+  let parsed: URL;
+  try { parsed = new URL(projectUrl); }
+  catch { throw new Error('COMPUTER_CHATGPT_EXTENSION_RPC_IDENTITY_INVALID'); }
+  if (identity.namespace !== 'chatgpt.bootstrap' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(bootstrapKey)
+    || parsed.protocol !== 'https:' || parsed.hostname !== 'chatgpt.com' || parsed.username || parsed.password || parsed.search || parsed.hash
+    || !/^\/g\/g-p-[a-z0-9]+(?:-[^/]+)?\/project\/?$/i.test(parsed.pathname)) {
+    throw new Error('COMPUTER_CHATGPT_EXTENSION_RPC_IDENTITY_INVALID');
+  }
+  return { namespace: 'chatgpt.bootstrap', bootstrapKey, projectUrl: `https://chatgpt.com${parsed.pathname.replace(/\/+$/, '')}` };
+}
+
 function normalizedMode(params: Record<string, unknown>): 'send' | 'resume' | 'recover' {
   return params.mode === 'resume' || params.mode === 'recover' ? params.mode : 'send';
 }
@@ -95,8 +118,35 @@ async function executeTargetControl(
       unavailableProviders: inventory.unavailableProviders,
     };
   }
-  const identity = requiredConversationIdentity(params);
-  const exact = await port.ensureExact(identity, { createIfMissing: method !== 'computer_target_observe' });
+  if (method === 'computer_target_find_marker') {
+    const bootstrapKey = requiredText(params, 'bootstrapKey');
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(bootstrapKey)) throw new Error('COMPUTER_CHATGPT_EXTENSION_RPC_BOOTSTRAP_KEY_INVALID');
+    const results = await port.findBySubmittedMarker(requiredText(params, 'marker'), bootstrapKey);
+    const matches: Array<Record<string, unknown>> = [];
+    for (const result of results) {
+      if (result.state !== 'ready') {
+        matches.push({ state: 'unavailable', failure: result.failure, ...(result.observation ? { observation: result.observation } : {}) });
+        continue;
+      }
+      if (!result.observation) continue;
+      try {
+        const parsed = parseCanonicalChatgptConversationIdentity(result.observation.url);
+        matches.push({
+          state: 'ready',
+          targetId: result.target.targetId,
+          identity: { namespace: 'chatgpt.conversation', conversationId: parsed.conversationId, canonicalUrl: parsed.conversationUrl },
+          observation: result.observation,
+        });
+      } catch {
+        continue;
+      }
+    }
+    return { matches };
+  }
+  const identity = method === 'computer_target_observe' ? requiredConversationIdentity(params) : requiredTargetIdentity(params);
+  const exact = identity.namespace === 'chatgpt.bootstrap'
+    ? await port.openBootstrap(identity.projectUrl, identity.bootstrapKey)
+    : await port.ensureExact(identity, { createIfMissing: method !== 'computer_target_observe' });
   if (exact.state !== 'ready') {
     return {
       state: exact.state,
@@ -183,6 +233,7 @@ async function dispatch(
   if (request.method === 'computer_target_inventory'
     || request.method === 'computer_target_ensure'
     || request.method === 'computer_target_observe'
+    || request.method === 'computer_target_find_marker'
     || request.method === 'computer_target_prepare'
     || request.method === 'computer_target_dispatch') {
     return await executeTargetControl(port, request.method, params);
@@ -281,7 +332,7 @@ export async function ensureRuntimeComputerChatgptExtension(
 
 async function callComputerChatgptExtensionSocket(
   controllerHome: string,
-  method: 'computer_target_inventory' | 'computer_target_ensure' | 'computer_target_observe' | 'computer_target_prepare' | 'computer_target_dispatch',
+  method: 'computer_target_inventory' | 'computer_target_ensure' | 'computer_target_observe' | 'computer_target_find_marker' | 'computer_target_prepare' | 'computer_target_dispatch',
   params: Record<string, unknown>,
   timeoutMs: number,
 ): Promise<Record<string, unknown>> {
@@ -347,13 +398,13 @@ async function callComputerChatgptExtensionSocket(
 
 export async function callRuntimeComputerChatgptTargetAction(
   controllerHome: string,
-  method: 'inventory' | 'ensure' | 'observe' | 'prepare' | 'dispatch',
+  method: 'inventory' | 'ensure' | 'observe' | 'find_marker' | 'prepare' | 'dispatch',
   params: Record<string, unknown>,
   timeoutMs: number = TARGET_CONTROL_TIMEOUT_MS[method],
 ): Promise<Record<string, unknown>> {
   return await callComputerChatgptExtensionSocket(
     controllerHome,
-    `computer_target_${method}` as 'computer_target_inventory' | 'computer_target_ensure' | 'computer_target_observe' | 'computer_target_prepare' | 'computer_target_dispatch',
+    `computer_target_${method}` as 'computer_target_inventory' | 'computer_target_ensure' | 'computer_target_observe' | 'computer_target_find_marker' | 'computer_target_prepare' | 'computer_target_dispatch',
     params,
     timeoutMs,
   );
