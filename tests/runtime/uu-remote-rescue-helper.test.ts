@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildWslStatusCommand, executeAction, serviceUnits, validateConfig } from '../../scripts/forge-uu-remote-rescue-helper.mjs';
+import { buildWslStatusCommand, executeAction, serviceUnits, validateConfig, withJsonOutput } from '../../scripts/forge-uu-remote-rescue-helper.mjs';
 
 const TEST_LINUX_HOME = '/home' + '/forge-test';
 
@@ -34,7 +34,7 @@ function fixture(options: {
   let terminalFocused = options.terminalInitiallyFocused ?? true;
   const runCli = async (_config: unknown, args: string[]) => {
     cliCalls.push(args);
-    if (args[0] === 'device') return { success: true, data: { isUniqueMatch: true, matchedItem: { deviceId: options.mismatch ? 'other' : config.device.id, deviceName: config.device.name, platform: 'windows', isOnline: !options.offline } } };
+    if (args[0] === 'device') return { success: true, data: { deviceId: options.mismatch ? 'other' : config.device.id, deviceName: config.device.name, platform: 'windows', isOnline: !options.offline } };
     return { success: true, data: { success: true } };
   };
   const elementObservation = () => ({
@@ -80,6 +80,10 @@ function fixture(options: {
       ],
     },
   });
+  const runCliText = async (_config: unknown, args: string[]) => {
+    cliCalls.push(args);
+    return { success: true, text: '' };
+  };
   const desktopCall = async (_config: unknown, _requestId: string, action: string, args: Record<string, unknown>) => {
     desktopCalls.push({ action, args });
     if (action === 'desktop_session_open') return { interaction_id: 'ix-1' };
@@ -110,7 +114,7 @@ function fixture(options: {
     }
     return { ok: true };
   };
-  return { cliCalls, desktopCalls, runCli, desktopCall, sleep: async () => undefined, getClipboard: () => clipboard, getCommand: () => command };
+  return { cliCalls, desktopCalls, runCli, runCliText, desktopCall, sleep: async () => undefined, getClipboard: () => clipboard, getCommand: () => command };
 }
 
 describe('UU Remote rescue helper', () => {
@@ -124,6 +128,22 @@ describe('UU Remote rescue helper', () => {
     expect(command).toContain('host_windows_identity');
     expect(command).toContain('host_run_key_exists');
     expect(command).not.toContain('Start-ScheduledTask');
+  });
+
+  test('requests stable JSON from every uuyc-cli invocation', () => {
+    expect(withJsonOutput(['device', 'info', 'device-1'])).toEqual([
+      'device', 'info', 'device-1', '--json',
+    ]);
+    expect(withJsonOutput(['device', 'info', 'device-1', '--json'])).toEqual([
+      'device', 'info', 'device-1', '--json',
+    ]);
+  });
+
+  test('accepts the current device info payload without a legacy matchedItem wrapper', async () => {
+    const fx = fixture();
+    await expect(executeAction('device_status', {}, config, { ...fx, requestId: 'device-status-1' })).resolves.toMatchObject({
+      device: { deviceId: config.device.id, deviceName: config.device.name, platform: 'windows', isOnline: true },
+    });
   });
 
   test('derives canonical service identities from the configured Controller Home', () => {
@@ -147,8 +167,9 @@ describe('UU Remote rescue helper', () => {
     });
     expect(JSON.stringify(result)).not.toContain('private-existing-clipboard');
     expect(fx.getClipboard()).toBe('private-existing-clipboard');
-    expect(fx.cliCalls.some((args) => args[0] === 'term' && args[1] === 'open' && args[2] === config.device.id)).toBe(true);
-    expect(fx.cliCalls.some((args) => args[0] === 'term' && args[1] === 'exit' && args.length === 3)).toBe(true);
+    expect(fx.cliCalls.some((args) => args[0] === 'term' && args[1] === 'new' && args.includes(config.device.id))).toBe(true);
+    expect(fx.cliCalls.some((args) => args[0] === 'term' && args[1] === 'kill' && args.includes(config.device.id))).toBe(true);
+    expect(fx.cliCalls.some((args) => ['open', 'exit'].includes(args[1]))).toBe(false);
   });
 
   test('focuses the exact configured device session through its Open Terminal control before pasting', async () => {

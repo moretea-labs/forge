@@ -93,14 +93,26 @@ function parseJson(text, code) {
   try { return JSON.parse(text); } catch { throw rescueError(code, 'Provider returned invalid JSON.', true); }
 }
 
+export function withJsonOutput(args) {
+  return args.includes('--json') ? args : [...args, '--json'];
+}
+
 function runCliDefault(config, args) {
   if (!existsSync(config.uuycCliPath)) throw rescueError('UU_RESCUE_UUYC_CLI_UNAVAILABLE', 'Configured uuyc-cli is unavailable.');
-  const result = spawnSync(config.uuycCliPath, args, { encoding: 'utf8', env: minimalEnv(), timeout: 15_000, maxBuffer: 256 * 1024, shell: false, windowsHide: true });
+  const result = spawnSync(config.uuycCliPath, withJsonOutput(args), { encoding: 'utf8', env: minimalEnv(), timeout: 15_000, maxBuffer: 256 * 1024, shell: false, windowsHide: true });
   if (result.error) throw rescueError('UU_RESCUE_UUYC_CLI_FAILED', result.error.message, true);
   if (result.status !== 0) throw rescueError('UU_RESCUE_UUYC_CLI_FAILED', String(result.stderr || result.stdout || 'uuyc-cli failed').slice(-1000), true);
   const parsed = parseJson(String(result.stdout || '').trim(), 'UU_RESCUE_UUYC_PROTOCOL_INVALID');
   if (parsed?.success !== true) throw rescueError('UU_RESCUE_UUYC_OPERATION_FAILED', 'uuyc-cli reported failure.', true);
   return parsed;
+}
+
+function runCliTextDefault(config, args) {
+  if (!existsSync(config.uuycCliPath)) throw rescueError('UU_RESCUE_UUYC_CLI_UNAVAILABLE', 'Configured uuyc-cli is unavailable.');
+  const result = spawnSync(config.uuycCliPath, args, { encoding: 'utf8', env: minimalEnv(), timeout: 15_000, maxBuffer: 256 * 1024, shell: false, windowsHide: true });
+  if (result.error) throw rescueError('UU_RESCUE_UUYC_CLI_FAILED', result.error.message, true);
+  if (result.status !== 0) throw rescueError('UU_RESCUE_UUYC_CLI_FAILED', String(result.stderr || result.stdout || 'uuyc-cli failed').slice(-1000), true);
+  return { success: true, text: String(result.stdout || '').trim() };
 }
 
 async function desktopCallDefault(config, requestId, action, args) {
@@ -343,8 +355,10 @@ export function parseRecords(text) {
 async function verifyDevice(config, deps, requireOnline) {
   const response = await deps.runCli(config, ['device', 'info', config.device.id]);
   const data = response?.data || {};
-  const item = data.matchedItem || {};
-  if (data.isUniqueMatch !== true || item.deviceId !== config.device.id || item.deviceName !== config.device.name || String(item.platform || '').toLowerCase() !== 'windows') {
+  // Current uuyc-cli returns the exact requested device directly in data.
+  // Keep the legacy matchedItem shape for older app/CLI builds.
+  const item = data.matchedItem || data;
+  if (data.isUniqueMatch === false || item.deviceId !== config.device.id || item.deviceName !== config.device.name || String(item.platform || '').toLowerCase() !== 'windows') {
     throw rescueError('UU_RESCUE_DEVICE_MISMATCH', 'UU Remote device identity did not match the registration-bound Windows target.');
   }
   if (requireOnline && item.isOnline !== true) throw rescueError('UU_RESCUE_DEVICE_OFFLINE', 'The registration-bound UU Remote device is offline.', true);
@@ -353,7 +367,9 @@ async function verifyDevice(config, deps, requireOnline) {
 
 async function runTerminalCommand(config, requestId, command, deps, options = {}) {
   await verifyDevice(config, deps, true);
-  await deps.runCli(config, ['term', 'open', config.device.id]);
+  const sessionName = `forge-rescue-${createHash('sha256').update(requestId).digest('hex').slice(0, 12)}`;
+  await deps.runCli(config, ['term', 'kill', '--device', config.device.id, sessionName]);
+  await deps.runCliText(config, ['term', 'new', '--device', config.device.id, sessionName]);
   await deps.sleep(700);
   let interactionId;
   let originalClipboard;
@@ -393,7 +409,7 @@ async function runTerminalCommand(config, requestId, command, deps, options = {}
     if (interactionId) {
       try { await deps.desktopCall(config, `${requestId}:session-close`, 'desktop_session_close', { interaction_id: interactionId }); } catch { /* best effort */ }
     }
-    try { await deps.runCli(config, ['term', 'exit', config.device.id]); } catch { /* best effort */ }
+    try { await deps.runCli(config, ['term', 'kill', '--device', config.device.id, sessionName]); } catch { /* best effort */ }
   }
 }
 
@@ -401,7 +417,13 @@ export async function executeAction(actionId, input, configInput, injected = {})
   const config = validateConfig(configInput);
   if (!ACTIONS.includes(actionId)) throw rescueError('UU_RESCUE_ACTION_UNSUPPORTED', 'Unsupported UU Remote rescue action.');
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 0) throw rescueError('UU_RESCUE_ARGUMENTS_FORBIDDEN', 'UU Remote rescue actions do not accept caller-provided commands, service names, devices, paths, or shell arguments.');
-  const deps = { runCli: runCliDefault, desktopCall: desktopCallDefault, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), ...injected };
+  const deps = {
+    runCli: runCliDefault,
+    runCliText: runCliTextDefault,
+    desktopCall: desktopCallDefault,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    ...injected,
+  };
   if (actionId === 'device_status') return { device: await verifyDevice(config, deps, false) };
   const effectiveRequestId = injected.requestId || `${actionId}:${Date.now()}`;
   if (HOST_RECOVERY_DISPATCH_ACTIONS.has(actionId)) {
