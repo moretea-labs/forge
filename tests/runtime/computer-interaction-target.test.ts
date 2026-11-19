@@ -153,7 +153,7 @@ async function providerFixture(): Promise<ProviderFixture> {
               { capabilityId: 'computer.console.unlock.v1', protocolVersion: 1, method: 'computer_execute', actions: ['prepare_unlock_console', 'unlock_console', 'console_unlock_enroll', 'console_unlock_status', 'console_unlock_recover', 'console_unlock_revoke'] },
               { capabilityId: 'computer.capture.v1', protocolVersion: 1, method: 'computer_execute', actions: ['desktop_screenshot'] },
               { capabilityId: 'computer.element.observe.v2', protocolVersion: 2, method: 'computer_execute', actions: ['observe_elements'] },
-              { capabilityId: 'computer.element.action.v2', protocolVersion: 2, method: 'computer_execute', actions: ['invoke', 'focus', 'set_value', 'toggle', 'expand', 'collapse', 'select', 'open', 'show_menu', 'scroll_page_down', 'scroll_page_up'] },
+              { capabilityId: 'computer.element.action.v2', protocolVersion: 2, method: 'computer_execute', actions: ['invoke', 'click', 'focus', 'set_value', 'toggle', 'expand', 'collapse', 'select', 'open', 'show_menu', 'scroll_page_down', 'scroll_page_up'] },
             ],
           };
         } else if (actionId === 'manifest') {
@@ -1220,6 +1220,24 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(refreshed.snapshotRevision).toBe(3);
     expect(fixture.state.elementObserveCount).toBe(2);
     expect(fixture.state.sessionOpenCount).toBe(1);
+
+    const refreshedRoot = refreshed.root as Record<string, unknown>;
+    const clicked = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_element_action',
+      { target_id: targetId, target: refreshedRoot.target, ref: refreshedRoot.ref, action: 'click' },
+      'element-click-v2',
+    ));
+    expect(clicked).toMatchObject({ acted: true, action: 'click', ref: refreshedRoot.ref });
+    expect(fixture.state.elementActionCount).toBe(2);
+
+    await expect(computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_element_action',
+      { target_id: targetId, target: refreshedRoot.target, ref: refreshedRoot.ref, action: 'click' },
+      'element-click-v2-stale-replay',
+    ))).rejects.toThrow('COMPUTER_ELEMENT_OBSERVATION_STALE');
+    expect(fixture.state.elementActionCount).toBe(2);
   });
 
   test('closes a preexisting bound target without terminating its application', async () => {
