@@ -205,16 +205,17 @@ function boundedText(value: string, maxBytes = 20_000): { content: string; trunc
 function probeIosXcodeStatus() {
   const unsupported = assertDarwin();
   if (unsupported) return unsupported;
-  // Bound each probe tightly: degraded local Xcode state must not monopolize hot MCP reads.
+  // Keep path-resolution probes fast; give only the xcodebuild version probe cold-start headroom.
   const probeTimeoutMs = 1_000;
+  const xcodebuildProbeTimeoutMs = 3_000;
   const xcodeSelect = runCommand('xcode-select', ['-p'], { timeoutMs: probeTimeoutMs });
   const xcodebuild = xcodeSelect.ok
-    ? runCommand('xcodebuild', ['-version'], { timeoutMs: probeTimeoutMs })
+    ? runCommand('xcodebuild', ['-version'], { timeoutMs: xcodebuildProbeTimeoutMs })
     : { ok: false, status: 1, stdout: '', stderr: 'Skipped because xcode-select is unavailable.', command: ['xcodebuild', '-version'] };
-  // `simctl help` is enough to prove the binary is wired; avoid heavier inventory probes on hot paths.
+  // Resolve the simctl executable without starting its slower CLI help or inventory path.
   const simctl = xcodeSelect.ok
-    ? runCommand('xcrun', ['simctl', 'help'], { timeoutMs: probeTimeoutMs })
-    : { ok: false, status: 1, stdout: '', stderr: 'Skipped because xcode-select is unavailable.', command: ['xcrun', 'simctl', 'help'] };
+    ? runCommand('xcrun', ['--find', 'simctl'], { timeoutMs: probeTimeoutMs })
+    : { ok: false, status: 1, stdout: '', stderr: 'Skipped because xcode-select is unavailable.', command: ['xcrun', '--find', 'simctl'] };
   return {
     ready: xcodeSelect.ok && xcodebuild.ok && simctl.ok,
     platform: platform(),
