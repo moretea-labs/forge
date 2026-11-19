@@ -634,7 +634,8 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       // one durable target and lease/CAS-clear only its stale binding; never
       // recover from an unknown tab-create result or switch profiles/providers.
       if (recoverStalePin && (response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING'
-        || response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_IDENTITY_CHANGED')
+        || response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_IDENTITY_CHANGED'
+        || response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISMATCH')
         && previous && binding?.providerId === PROVIDER_ID
         && providerInstanceId(binding.providerSessionId) === selected.instanceId
         && binding.windowId && binding.tabId) {
