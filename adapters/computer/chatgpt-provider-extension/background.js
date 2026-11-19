@@ -14,7 +14,8 @@ const TABS_QUERY_TIMEOUT_MS = 5_000;
 // callback must settle earlier without claiming a Send never happened.
 const TAB_MESSAGE_TIMEOUT_MS = 7_000;
 const bootstrapTabs = new Map();
-// Transient per-tab hydration retry spacing, not an orchestrator effect state.
+// Browser-session hydration retry spacing, not an orchestrator/progress state.
+// chrome.storage.session carries the bounded timer across MV3 worker restarts.
 const unreadableConversationTabs = new Map();
 const UNREADABLE_CHAT_GRACE_MS = 60_000;
 const UNREADABLE_CHAT_RELOAD_INTERVAL_MS = 5 * 60_000;
@@ -188,6 +189,46 @@ async function chatgptTabs(deadlineAt) { return await boundedTabsQuery({ url: 'h
 // browser restarts invalidate it rather than permitting tab-id reuse to close
 // an unrelated restored/user tab.
 function ownedTabKey(tabId) { return `forgeComputerOwnedTabV1:${tabId}`; }
+function unreadableTabKey(tabId, identity) {
+  return `forgeComputerUnreadableChatV1:${tabId}:${identity?.conversationId ?? 'unknown'}`;
+}
+function validUnreadableState(value) {
+  return value && typeof value === 'object'
+    && (value.firstObservedAt === null || Number.isFinite(value.firstObservedAt))
+    && (value.lastReloadAt === null || Number.isFinite(value.lastReloadAt));
+}
+async function unreadableTabState(tabId, identity) {
+  const key = unreadableTabKey(tabId, identity);
+  const cached = unreadableConversationTabs.get(key);
+  if (validUnreadableState(cached)) return { key, state: cached };
+  try {
+    const stored = await chrome.storage.session.get(key);
+    if (validUnreadableState(stored?.[key])) {
+      const state = {
+        firstObservedAt: stored[key].firstObservedAt === null ? null : Number(stored[key].firstObservedAt),
+        lastReloadAt: stored[key].lastReloadAt === null ? null : Number(stored[key].lastReloadAt),
+      };
+      unreadableConversationTabs.set(key, state);
+      return { key, state };
+    }
+  } catch { /* fail closed to a fresh in-memory grace window */ }
+  return { key, state: undefined };
+}
+async function storeUnreadableTabState(key, state) {
+  unreadableConversationTabs.set(key, state);
+  try { await chrome.storage.session.set({ [key]: state }); } catch { /* memory grace still applies */ }
+}
+async function clearUnreadableTabState(tabId, identity) {
+  const loaded = await unreadableTabState(tabId, identity);
+  if (!loaded.state) {
+    unreadableConversationTabs.delete(loaded.key);
+    return;
+  }
+  await storeUnreadableTabState(loaded.key, {
+    firstObservedAt: null,
+    lastReloadAt: loaded.state.lastReloadAt,
+  });
+}
 async function attestedOwnerToken(tab, pinnedBinding) {
   // Chrome preserves a tab ID across window moves, so the browser-session
   // token (not the mutable window ID) attests its physical identity.
@@ -519,13 +560,9 @@ function dispatchTransportNotReached(error) {
   const text = String(error?.message ?? error);
   return /Receiving end does not exist|Could not establish connection|No tab with id/i.test(text);
 }
-function shouldReloadUnreadableConversation(tabId, identity, observation, nowMs = Date.now()) {
+async function shouldReloadUnreadableConversation(tabId, identity, observation, nowMs = Date.now()) {
   const failureText = String(observation?.providerFailureText ?? '').trim();
   const knownUnreadable = /(?:无法加载此 ChatGPT 对话|Unable to load this (?:ChatGPT )?conversation|正在加载个人资料|正在加载聊天(?:…|\.\.\.)?|Loading (?:your )?profile(?:…|\.\.\.)?|Loading (?:the )?chat(?:…|\.\.\.)?)/i.test(failureText);
-  // An exact /c/<id> page that is fully empty (no messages, editor, generation
-  // signal or provider banner) is also an unreadable hydrated shell. A real
-  // conversation cannot safely be written in this state, so reuse the same
-  // grace/rate-limited exact-tab reload policy rather than inventing a fallback.
   const emptyShell = !failureText;
   const unreadable = identity?.namespace === 'chatgpt.conversation'
     && typeof observation?.url === 'string'
@@ -534,18 +571,21 @@ function shouldReloadUnreadableConversation(tabId, identity, observation, nowMs 
     && !observation.latestUserText?.trim() && !observation.latestAssistantResponse?.trim()
     && !observation.composerText?.trim() && observation.isGenerating !== true;
   if (!unreadable) {
-    const prior = unreadableConversationTabs.get(tabId);
-    if (prior) prior.firstObservedAt = undefined;
+    await clearUnreadableTabState(tabId, identity);
     return false;
   }
-  const prior = unreadableConversationTabs.get(tabId) ?? { firstObservedAt: nowMs, lastReloadAt: -Infinity };
-  prior.firstObservedAt ??= nowMs;
-  unreadableConversationTabs.set(tabId, prior);
+  const loaded = await unreadableTabState(tabId, identity);
+  let prior = loaded.state ?? { firstObservedAt: nowMs, lastReloadAt: null };
+  if (!loaded.state || prior.firstObservedAt === null) {
+    prior = { firstObservedAt: nowMs, lastReloadAt: prior.lastReloadAt };
+    await storeUnreadableTabState(loaded.key, prior);
+  }
   if (nowMs - prior.firstObservedAt < UNREADABLE_CHAT_GRACE_MS
-    || nowMs - prior.lastReloadAt < UNREADABLE_CHAT_RELOAD_INTERVAL_MS) return false;
-  prior.lastReloadAt = nowMs;
+    || (Number.isFinite(prior.lastReloadAt) && nowMs - prior.lastReloadAt < UNREADABLE_CHAT_RELOAD_INTERVAL_MS)) return false;
+  await storeUnreadableTabState(loaded.key, { firstObservedAt: prior.firstObservedAt, lastReloadAt: nowMs });
   return true;
 }
+
 async function executeEnsure(command, instanceId) {
   let target;
   try {
@@ -557,7 +597,7 @@ async function executeEnsure(command, instanceId) {
       () => target.created
         ? restoreCreatedExactContentReceiver(target.tab.id, command.identity)
         : restoreExactContentReceiver(target.tab.id, command.identity));
-    if (shouldReloadUnreadableConversation(target.tab.id, command.identity, observation)) {
+    if (await shouldReloadUnreadableConversation(target.tab.id, command.identity, observation)) {
       // Reload ONLY the already-attested exact physical tab, after the same
       // error has remained visible for a minute. No new tab, Send or effect
       // dispatch is permitted by this read-only page recovery.
