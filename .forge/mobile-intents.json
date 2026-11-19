@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-11-19T01:13:13.105Z",
+  "devices": [
+    {
+      "deviceId": "agentmail-mac-watch",
+      "name": "AgentMail Mac Watch",
+      "tokenHash": "a6c225e0d76fa4c7a550a53c2058060ebd2777959fd05c9f1c006f0573084574",
+      "scopes": [
+        "workflow:agentmail.mail-watch-event:execute"
+      ],
+      "createdAt": "2026-11-18T11:38:24.967Z",
+      "updatedAt": "2026-11-19T01:13:13.105Z",
+      "lastSeenAt": "2026-11-19T01:13:13.105Z",
+      "rateLimitPerMinute": 12,
+      "rateWindowStartedAt": "2026-11-19T01:13:13.103Z",
+      "rateWindowCount": 1,
+      "nonces": {
+        "1de39c32-4c9b-4a97-a41b-2d8cdd221964": "2026-11-19T01:13:13.103Z"
+      }
+    }
+  ]
+}

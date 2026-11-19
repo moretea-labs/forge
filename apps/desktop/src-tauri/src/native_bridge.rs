@@ -91,7 +91,11 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 required_bounded(args, "requirementId", 160)?,
             ).await,
         "read_plan_detail" =>
-            read_plan_detail(required(args, "repoId")?, required(args, "planId")?).await,
+            read_plan_detail(
+                optional_project_text(args, "repoId", 256)?,
+                optional_project_text(args, "projectId", 512)?,
+                required_bounded(args, "planId", 160)?,
+            ).await,
         "create_requirement" =>
             create_requirement(
                 optional_project_text(args, "repoId", 256)?,
@@ -115,8 +119,9 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             ).await,
         "create_plan" =>
             create_plan(
-                required(args,"repoId")?,
-                required(args,"planId")?,
+                optional_project_text(args, "repoId", 256)?,
+                optional_project_text(args, "projectId", 512)?,
+                required_bounded(args,"planId",160)?,
                 required_bounded(args,"objective",4000)?,
                 args.get("requirementId").and_then(Value::as_str).map(str::to_owned),
                 args.get("parentPlanId").and_then(Value::as_str).map(str::to_owned),
@@ -164,8 +169,9 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             ).await,
         "revise_plan" =>
             revise_plan(
-                required(args,"repoId")?,
-                required(args,"planId")?,
+                optional_project_text(args, "repoId", 256)?,
+                optional_project_text(args, "projectId", 512)?,
+                required_bounded(args,"planId",160)?,
                 args.get("expectedRevision").and_then(Value::as_u64)
                     .filter(|revision| *revision > 0)
                     .ok_or("FORGE_NATIVE_BRIDGE_EXPECTED_REVISION_REQUIRED")?,
@@ -594,9 +600,9 @@ mod tests {
 
     #[test]
     fn requirement_task_scope_accepts_repository_or_standalone_project_identity() {
-        assert!(has_requirement_scope(Some(&"repo-1".to_owned()), None));
-        assert!(has_requirement_scope(None, Some(&"project-standalone".to_owned())));
-        assert!(!has_requirement_scope(None, None));
+        assert!(has_repository_or_project_scope(Some(&"repo-1".to_owned()), None));
+        assert!(has_repository_or_project_scope(None, Some(&"project-standalone".to_owned())));
+        assert!(!has_repository_or_project_scope(None, None));
 
         let create = tauri::async_runtime::block_on(create_requirement(
             None, None, "REQ-NEW".into(), "Task".into(), "Outcome".into(), vec![],
@@ -612,6 +618,32 @@ mod tests {
 
         let detail = tauri::async_runtime::block_on(read_requirement_detail(None, None, "REQ-1".into()));
         assert_eq!(detail.unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_DETAIL_SCOPE_REQUIRED");
+    }
+
+    #[test]
+    fn standalone_project_plan_scope_requires_a_project_owned_requirement() {
+        assert!(has_repository_or_project_scope(None, Some(&"project-standalone".to_owned())));
+        assert!(!has_repository_or_project_scope(None, None));
+
+        let missing_scope = tauri::async_runtime::block_on(create_plan(
+            None, None, "PLAN-1".into(), "Goal".into(), None, None,
+        ));
+        assert_eq!(missing_scope.unwrap_err(), "FORGE_DESKTOP_PLAN_CREATE_SCOPE_REQUIRED");
+
+        let missing_requirement = tauri::async_runtime::block_on(create_plan(
+            None, Some("project-standalone".into()), "PLAN-1".into(), "Goal".into(), None, None,
+        ));
+        assert_eq!(missing_requirement.unwrap_err(), "FORGE_DESKTOP_PLAN_REQUIREMENT_REQUIRED");
+
+        let revise_without_scope = tauri::async_runtime::block_on(revise_plan(
+            None, None, "PLAN-1".into(), 1, "Goal".into(),
+        ));
+        assert_eq!(revise_without_scope.unwrap_err(), "FORGE_DESKTOP_PLAN_REVISE_SCOPE_REQUIRED");
+
+        let detail_without_scope = tauri::async_runtime::block_on(read_plan_detail(
+            None, None, "PLAN-1".into(),
+        ));
+        assert_eq!(detail_without_scope.unwrap_err(), "FORGE_DESKTOP_PLAN_DETAIL_SCOPE_REQUIRED");
     }
 
     #[test]

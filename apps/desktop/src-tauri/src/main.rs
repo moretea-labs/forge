@@ -957,7 +957,7 @@ async fn control_user_request(
     })).await
 }
 
-fn has_requirement_scope(repo_id: Option<&String>, project_id: Option<&String>) -> bool {
+fn has_repository_or_project_scope(repo_id: Option<&String>, project_id: Option<&String>) -> bool {
     repo_id.is_some_and(|value| !value.trim().is_empty())
         || project_id.is_some_and(|value| !value.trim().is_empty())
 }
@@ -968,7 +968,7 @@ async fn read_requirement_detail(
     project_id: Option<String>,
     requirement_id: String,
 ) -> Result<Value, String> {
-    if !has_requirement_scope(repo_id.as_ref(), project_id.as_ref()) {
+    if !has_repository_or_project_scope(repo_id.as_ref(), project_id.as_ref()) {
         return Err("FORGE_DESKTOP_REQUIREMENT_DETAIL_SCOPE_REQUIRED".to_string());
     }
     if requirement_id.trim().is_empty() {
@@ -986,12 +986,20 @@ async fn read_requirement_detail(
 }
 
 #[tauri::command]
-async fn read_plan_detail(repo_id: String, plan_id: String) -> Result<Value, String> {
-    if repo_id.trim().is_empty() || plan_id.trim().is_empty() {
+async fn read_plan_detail(
+    repo_id: Option<String>,
+    project_id: Option<String>,
+    plan_id: String,
+) -> Result<Value, String> {
+    if !has_repository_or_project_scope(repo_id.as_ref(), project_id.as_ref()) {
+        return Err("FORGE_DESKTOP_PLAN_DETAIL_SCOPE_REQUIRED".to_string());
+    }
+    if plan_id.trim().is_empty() {
         return Err("FORGE_DESKTOP_PLAN_DETAIL_ARGUMENT_REQUIRED".to_string());
     }
     let result = call_runtime_tool("rh_work", json!({
         "repo_id": repo_id,
+        "project_id": project_id,
         "operation": "plan_get",
         "plan_id": plan_id,
         "detail_level": "detail",
@@ -1013,7 +1021,7 @@ async fn create_requirement(
     priority: Option<String>,
     assignee: Option<String>,
 ) -> Result<Value, String> {
-    if !has_requirement_scope(repo_id.as_ref(), project_id.as_ref()) {
+    if !has_repository_or_project_scope(repo_id.as_ref(), project_id.as_ref()) {
         return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_SCOPE_REQUIRED".to_string());
     }
     if requirement_id.trim().is_empty() || title.trim().is_empty() || outcome.trim().is_empty() {
@@ -1060,7 +1068,7 @@ async fn revise_requirement(
     priority: Option<String>,
     assignee: Option<String>,
 ) -> Result<Value, String> {
-    if !has_requirement_scope(repo_id.as_ref(), project_id.as_ref()) {
+    if !has_repository_or_project_scope(repo_id.as_ref(), project_id.as_ref()) {
         return Err("FORGE_DESKTOP_REQUIREMENT_REVISE_SCOPE_REQUIRED".to_string());
     }
     if requirement_id.trim().is_empty()
@@ -1103,22 +1111,31 @@ async fn revise_requirement(
 
 #[tauri::command]
 async fn create_plan(
-    repo_id: String,
+    repo_id: Option<String>,
+    project_id: Option<String>,
     plan_id: String,
     objective: String,
     requirement_id: Option<String>,
     parent_plan_id: Option<String>,
 ) -> Result<Value, String> {
-    if repo_id.trim().is_empty() || plan_id.trim().is_empty() || objective.trim().is_empty() {
+    if !has_repository_or_project_scope(repo_id.as_ref(), project_id.as_ref()) {
+        return Err("FORGE_DESKTOP_PLAN_CREATE_SCOPE_REQUIRED".to_string());
+    }
+    if plan_id.trim().is_empty() || objective.trim().is_empty() {
         return Err("FORGE_DESKTOP_PLAN_CREATE_ARGUMENT_REQUIRED".to_string());
     }
+    if project_id.is_some() && requirement_id.as_ref().is_none_or(|value| value.trim().is_empty()) {
+        return Err("FORGE_DESKTOP_PLAN_REQUIREMENT_REQUIRED".to_string());
+    }
+    let scope_key = project_id.as_deref().unwrap_or(&plan_id);
     let result = call_runtime_tool("rh_work", json!({
         "repo_id": repo_id,
+        "project_id": project_id,
         "operation": "plan_create",
         "plan_id": plan_id,
         "requirement_id": requirement_id,
         "parent_plan_id": parent_plan_id,
-        "scope_key": plan_id,
+        "scope_key": scope_key,
         "objective": objective,
         "plan_items": [],
         "request_id": request_id("plan-create")
@@ -1129,17 +1146,21 @@ async fn create_plan(
 
 #[tauri::command]
 async fn revise_plan(
-    repo_id: String,
+    repo_id: Option<String>,
+    project_id: Option<String>,
     plan_id: String,
     expected_revision: u64,
     objective: String,
 ) -> Result<Value, String> {
-    if repo_id.trim().is_empty() || plan_id.trim().is_empty()
-        || expected_revision == 0 || objective.trim().is_empty() {
+    if !has_repository_or_project_scope(repo_id.as_ref(), project_id.as_ref()) {
+        return Err("FORGE_DESKTOP_PLAN_REVISE_SCOPE_REQUIRED".to_string());
+    }
+    if plan_id.trim().is_empty() || expected_revision == 0 || objective.trim().is_empty() {
         return Err("FORGE_DESKTOP_PLAN_REVISE_ARGUMENT_INVALID".to_string());
     }
     let result = call_runtime_tool("rh_work", json!({
         "repo_id": repo_id,
+        "project_id": project_id,
         "operation": "plan_revise",
         "plan_id": plan_id,
         "expected_revision": expected_revision,

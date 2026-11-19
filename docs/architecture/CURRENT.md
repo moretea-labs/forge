@@ -56,6 +56,10 @@ Git and the registered checkout/worktree identity own repository source and plac
 
 Ordinary worktree creation and source edits do not require semantic Work. Structured worktree retirement proves the exact registered checkout, source HEAD, physical identity, cleanliness, live Process/Lease state and Git containment before removal. Historical WorkHandle or OwnedResource evidence may cause an explicit legacy-cleanup path to preserve uncertain bytes, but it cannot authorize mutation or re-create Work ownership.
 
+### Late Runner outcome reconciliation (Refs #235)
+
+A persisted `completed_unknown` Process may acquire a known outcome only from a validated, same-Process Runner receipt that attests `commandExecutedOnce=true`. The existing terminal writer requires the unchanged terminal fence and allows only unknown-to-known refinement; ordinary terminal writes and all already-known outcomes remain immutable. Exact-handle attachment/wait/cancel and the existing bounded recovery read share this reconciliation path. Unknown outcomes retain Runner receipt/started-claim evidence until validation; after the canonical record stores the proven outcome, normal receipt cleanup applies. Refinement clears the obsolete observation error, preserves exactly-once lease release and never dispatches the command or adds a background scan/continuation owner.
+
 ### Recovered Process cancellation outcomes (Refs #235)
 
 Cancellation reconciles an existing validated Runner exit receipt before attempting a stop, and again after recovered-process signalling; it preserves that proven outcome. Without a live monitor, a cancellation needs a delivered signal and confirmed termination, or a known pre-spawn state, before it can record `cancelled`. Unverified identity/termination remains `completed_unknown`; a still-running process retains its nonterminal record. Public `process_cancel.cancelled` follows the canonical cancelled status. Historical unknown records with a legacy cancellation flag project as unconfirmed without rewriting their audit history. No cancellation result implies that prior external effects were rolled back.
