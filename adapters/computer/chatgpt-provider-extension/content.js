@@ -162,17 +162,26 @@
     // conversation was deleted or that its last provider Send failed.
     // Reuse the existing single short-banner scan; history remains excluded.
     const banners = Array.from(conversationRoot().querySelectorAll('p, span, div'))
-      .filter((node) => !node.closest(TURN) && !node.closest('[data-message-author-role]') && visible(node))
+      .filter((node) => !node.closest(TURN) && !node.closest('[data-message-author-role]'))
       .filter((node) => {
-        const text = core.normalizeText(node.innerText ?? node.textContent);
+        // Most ChatGPT conversation nodes are not provider banners. Reading
+        // getClientRects()/innerText for every div forces layout across a large
+        // virtualized conversation and can stall an otherwise synchronous
+        // snapshot long enough to trip the exact-target RPC timeout. Filter on
+        // layout-free textContent first; only a tiny matching set pays the
+        // visibility/layout cost below.
+        const raw = String(node.textContent ?? node.innerText ?? '');
+        if (raw.length > 300) return false;
+        const text = core.normalizeText(raw);
         return text.length <= 250 && (
           /(?:你已达到此对话的长度上限|此对话已达到长度上限|you(?:'ve| have) reached the (?:maximum length for this conversation|conversation length limit)|this conversation has reached its maximum length)/i.test(text)
           || /^(?:无法加载此 ChatGPT 对话|Unable to load this ChatGPT conversation|Unable to load this conversation)$/i.test(text)
           || /^(?:连接已中断，正在等待完整答复|Connection interrupted, waiting for the full response|分析已暂停|Analysis paused)[。.!]?$/.test(text)
         );
-      });
+      })
+      .filter(visible);
     return [...status, ...banners]
-      .map((node) => core.normalizeText(node.innerText ?? node.textContent))
+      .map((node) => core.normalizeText(node.textContent ?? node.innerText))
       .filter(Boolean).slice(-8).join('\n').slice(-PROVIDER_FAILURE_CHARS);
   };
   // Project pages can retain hidden SSR editors beside the live hydrated one.

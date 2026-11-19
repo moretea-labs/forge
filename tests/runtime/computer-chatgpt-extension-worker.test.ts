@@ -372,8 +372,18 @@ test('content snapshot reports only live provider status, not quoted historical 
     closest: (selector: string) => selector.includes('conversation-turn-') ? {} : null,
   };
   let statuses: Array<typeof historyStatus> = [historyStatus];
+  let unrelatedLayoutReads = 0;
+  const unrelatedBannerCandidate = {
+    innerText: 'ordinary conversation chrome', textContent: 'ordinary conversation chrome',
+    getClientRects: () => { unrelatedLayoutReads += 1; return [{}]; },
+    closest: () => null,
+  };
   const emptyNodes = Object.assign([], { item: () => undefined });
-  const main = { getClientRects: () => [{}], querySelectorAll: (_selector: string) => emptyNodes };
+  const main = {
+    getClientRects: () => [{}],
+    querySelectorAll: (selector: string) => selector === 'p, span, div'
+      ? [unrelatedBannerCandidate] : emptyNodes,
+  };
   const listeners: Array<(message: unknown, sender: unknown, respond: (value: Record<string, unknown>) => void) => void> = [];
   const scope = {
     ForgeComputerChatgptCore: {
@@ -403,8 +413,10 @@ test('content snapshot reports only live provider status, not quoted historical 
     return result!;
   };
   expect(snapshot().providerFailureText).toBe('');
+  expect(unrelatedLayoutReads).toBe(0);
   statuses = [historyStatus, { ...historyStatus, closest: () => null }];
   expect(snapshot().providerFailureText).toBe(capacityText);
+  expect(unrelatedLayoutReads).toBe(0);
 });
 
 test('read-only ChatGPT generation status ignores a historical user turn while send admission stays conservative', async () => {
