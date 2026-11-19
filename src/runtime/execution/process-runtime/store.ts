@@ -552,7 +552,8 @@ export function getProcessRecord(
 
 /**
  * CAS-style terminal write: only succeeds when terminalFenceToken matches and
- * terminalWritten is not already true. Prevents dual-monitor completion races.
+ * terminalWritten is not already true. A validated Runner receipt may only
+ * refine completed_unknown into a known outcome, preserving the same fence.
  */
 export function tryCompleteProcessRecord(
   controllerHome: string,
@@ -562,11 +563,15 @@ export function tryCompleteProcessRecord(
   patch: Partial<ManagedProcessRecord> & {
     status: ProcessRuntimeStatus;
   },
+  options: { validatedExitReceipt?: boolean } = {},
 ): { ok: boolean; record?: ManagedProcessRecord; reason?: string } {
   const path = processPath(controllerHome, repoId, processId);
   const current = readProcessRecord(path);
   if (!current) return { ok: false, reason: 'missing' };
-  if (current.terminalWritten) return { ok: false, reason: 'already_terminal', record: current };
+  const refineUnknown = options.validatedExitReceipt === true
+    && current.status === 'completed_unknown'
+    && ['succeeded', 'failed', 'timed_out', 'cancelled'].includes(patch.status);
+  if (current.terminalWritten && !refineUnknown) return { ok: false, reason: 'already_terminal', record: current };
   if (current.terminalFenceToken !== fenceToken) {
     return { ok: false, reason: 'fence_mismatch', record: current };
   }
@@ -575,6 +580,7 @@ export function tryCompleteProcessRecord(
   const next: ManagedProcessRecord = {
     ...current,
     ...patch,
+    terminalFenceToken: current.terminalFenceToken,
     terminalWritten: true,
     leaseReleaseState: leasesReleased ? 'released' : 'pending',
     leasesReleased,
