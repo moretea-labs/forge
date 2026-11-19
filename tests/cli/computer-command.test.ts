@@ -116,6 +116,25 @@ describe('Computer product facade', () => {
     expect(formatComputerStatus(status)).not.toContain('desktop_operator');
   });
 
+  test('does not recommend downgrading a provider newer than the catalog pin', () => {
+    const home = controllerHome();
+    registerProvider(home, { version: '0.4.14', enabled: true });
+    const status = readComputerStatus({ controllerHome: home });
+    expect(status.provider).toMatchObject({
+      installedVersion: '0.4.14',
+      catalogVersion: '0.4.5',
+      updateAvailable: false,
+    });
+    const report = runComputerDoctor({ controllerHome: home, platform: 'darwin' });
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'release',
+        state: 'pass',
+        message: expect.stringContaining('no downgrade is recommended'),
+      }),
+    ]));
+  });
+
   test('treats 0.4 element capabilities as native Computer surface without requiring Desktop to advertise Browser authority', () => {
     const home = controllerHome();
     registerProvider(home, { version: '0.4.0', enabled: true });
