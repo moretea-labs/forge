@@ -135,6 +135,8 @@ function safeProcessText(value: string): string {
 }
 
 function cleanupTerminalRunnerReceipts(record: ManagedProcessRecord): void {
+  // Unknown is an observation, not proof that the Runner can never finish.
+  if (record.status === 'completed_unknown') return;
   if (!isManagedProcessTerminal(record) || record.terminalWritten !== true || record.leasesReleased !== true) return;
   const exitReceiptPath = record.exitReceiptPath
     ?? receiptPathFor(record.controllerHome, record.repoId, record.processId);
@@ -632,10 +634,12 @@ export function completeProcessFromEvidence(
       logTruncated: evidence.logTruncated,
       stdoutTail: evidence.stdoutTail,
       stderrTail: evidence.stderrTail,
+      ...(options.authority === 'durable_exit_receipt' ? { error: undefined } : {}),
       ...(evidence.errorMessage
         ? { error: { code: evidence.status.toUpperCase(), message: evidence.errorMessage } }
         : {}),
     },
+    { validatedExitReceipt: options.authority === 'durable_exit_receipt' },
   );
 
   // Always attempt exactly-once lease release after terminal evidence, including
@@ -1764,6 +1768,7 @@ function applyReceiptIfPresent(
   if (receipt.processId !== processId) return undefined;
   if (!receipt.finishedAt || !Number.isFinite(Date.parse(receipt.finishedAt))) return undefined;
   if (receipt.commandExecutedOnce === false) return undefined;
+  if (record.status === 'completed_unknown' && record.terminalWritten === true && receipt.commandExecutedOnce !== true) return undefined;
   if (receipt.exitCode !== null && !Number.isInteger(receipt.exitCode)) return undefined;
   return completeProcessFromEvidence(controllerHome, repoId, processId, record.terminalFenceToken, {
     status: statusFromReceipt(receipt),
@@ -1786,7 +1791,11 @@ function reconcileObservedTerminalProcess(
   repoId: string,
   record: ManagedProcessRecord,
 ): ManagedProcessRecord {
-  if (record.terminalWritten !== true) return record;
+  if (!isManagedProcessTerminal(record)) return record;
+  if (record.status === 'completed_unknown') {
+    const fromReceipt = applyReceiptIfPresent(controllerHome, repoId, record.processId, record);
+    if (fromReceipt && fromReceipt.status !== 'completed_unknown') return fromReceipt;
+  }
   const reconciled = releaseProcessLeasesOnce(controllerHome, repoId, record.processId) ?? record;
   cleanupTerminalRunnerReceipts(reconciled);
   return reconciled;
@@ -1882,7 +1891,7 @@ export async function waitForProcess(
       }
       return recordToHandle(current, { completed: false, observationInterrupted: true });
     }
-    return recordToHandle(done, { completed: true });
+    return recordToHandle(reconcileObservedTerminalProcess(controllerHome, repoId, done), { completed: true });
   }
 
   // No live monitor — poll receipt / identity (Controller restart attach path).
@@ -1891,7 +1900,7 @@ export async function waitForProcess(
   while (Date.now() < deadline) {
     const current = getProcessRecord(controllerHome, repoId, processId);
     if (!current) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
-    if (current.terminalWritten) return recordToHandle(current, { completed: true });
+    if (current.terminalWritten) return recordToHandle(reconcileObservedTerminalProcess(controllerHome, repoId, current), { completed: true });
     const fromReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, current);
     if (fromReceipt) return recordToHandle(fromReceipt, { completed: true });
     if (options.signal?.aborted) return recordToHandle(current, { completed: false, observationInterrupted: true });
@@ -1910,7 +1919,7 @@ export async function waitForProcess(
         await new Promise((r) => setTimeout(r, PROCESS_RECOVERY_RECEIPT_POLL_MS));
         const latest = getProcessRecord(controllerHome, repoId, processId);
         if (!latest) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
-        if (latest.terminalWritten) return recordToHandle(latest, { completed: true });
+        if (latest.terminalWritten) return recordToHandle(reconcileObservedTerminalProcess(controllerHome, repoId, latest), { completed: true });
         const delayedReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, latest);
         if (delayedReceipt) return recordToHandle(delayedReceipt, { completed: true });
         if (options.signal?.aborted) return recordToHandle(latest, { completed: false, observationInterrupted: true });
@@ -1936,7 +1945,7 @@ export async function waitForProcess(
   }
   const finalRecord = getProcessRecord(controllerHome, repoId, processId);
   if (!finalRecord) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
-  if (finalRecord.terminalWritten) return recordToHandle(finalRecord, { completed: true });
+  if (finalRecord.terminalWritten) return recordToHandle(reconcileObservedTerminalProcess(controllerHome, repoId, finalRecord), { completed: true });
   const finalReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, finalRecord);
   if (finalReceipt) return recordToHandle(finalReceipt, { completed: true });
   return recordToHandle(finalRecord, {
@@ -2107,11 +2116,14 @@ export function recoverManagedProcesses(
       continue;
     }
     if (isManagedProcessTerminal(record)) {
-      sanitizeTerminalProcessArtifacts(record);
+      const reconciled = reconcileObservedTerminalProcess(controllerHome, repoId, record);
+      sanitizeTerminalProcessArtifacts(reconciled);
+      if (record.status === 'completed_unknown' && reconciled.status !== 'completed_unknown') {
+        completedFromReceipt.push(processId);
+      }
       // Cleanup leftover leases after crash between terminal write and release.
       if (record.leasesReleased !== true && (record.leaseRefs?.length ?? 0) > 0) {
-        const after = releaseProcessLeasesOnce(controllerHome, repoId, processId);
-        if (after?.leasesReleased) leasesReleased.push(processId);
+        if (reconciled.leasesReleased) leasesReleased.push(processId);
       }
       continue;
     }
