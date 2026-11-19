@@ -1265,6 +1265,7 @@ final class NativeWorkspace: ObservableObject {
         planId: String? = nil,
         readOnly: Bool = false
     ) {
+        guard !rejectConversationMutationDuringZenRefinement() else { return }
         guard !busy else {
             self.error = "请先停止正在运行的会话。"
             return
@@ -1305,6 +1306,7 @@ final class NativeWorkspace: ObservableObject {
     func bindCurrentThreadPlanningContext(
         requirementId:String?,planId:String?,projectId:String? = nil,repoId:String? = nil
     ) {
+        guard !rejectConversationMutationDuringZenRefinement() else { return }
         guard !busy else {
             self.error = "请先停止正在运行的会话，再更改规划上下文。"
             return
@@ -1333,6 +1335,7 @@ final class NativeWorkspace: ObservableObject {
             self.error = "当前会话已切换，请重新选择知识。"
             return
         }
+        guard !rejectConversationMutationDuringZenRefinement() else { return }
         guard !busy else {
             self.error = "请先停止正在运行的会话，再添加知识上下文。"
             return
@@ -1395,6 +1398,7 @@ final class NativeWorkspace: ObservableObject {
 
     @discardableResult
     func duplicateThread(_ id: String) -> String? {
+        guard !rejectConversationMutationDuringZenRefinement() else { return nil }
         guard !busy, let source=threads.first(where:{$0.id == id}) else {
             if busy { error="请先停止正在运行的会话。" }
             return nil
@@ -1423,6 +1427,14 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func selectThread(_ id: String, messageId: String? = nil) {
+        guard Self.zenRefinementAllowsThreadSelection(
+            refinementActive:zenRefinementActive,refinementThreadId:zenRefinementThreadId,
+            requestedThreadId:id
+        ) else {
+            _ = rejectConversationMutationDuringZenRefinement()
+            return
+        }
+        if zenRefinementActive { return }
         let isActiveConversation = Self.canNavigateToActiveConversation(
             requestedThreadId:id,selectedThreadId:selectedThreadId,
             activeConversationId:activeConversationId
@@ -1446,6 +1458,7 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func selectThreadProvider(_ value: String) {
+        guard !rejectConversationMutationDuringZenRefinement() else { return }
         guard !busy, matchesProvider(value),
               let index = threads.firstIndex(where:{$0.id == selectedThreadId}) else { return }
         if threads[index].readOnly == true && !Self.matchesExternalProvider(value) {
@@ -1518,6 +1531,7 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func selectAgentModel(_ slug: String) {
+        guard !rejectConversationMutationDuringZenRefinement() else { return }
         guard let index = threads.firstIndex(where: { $0.id == selectedThreadId }),
               let model = agentModels.first(where: { $0.slug == slug }) else { return }
         threads[index].model = model.slug
@@ -1528,6 +1542,7 @@ final class NativeWorkspace: ObservableObject {
         persist()
     }
     func selectReasoningEffort(_ effort: String) {
+        guard !rejectConversationMutationDuringZenRefinement() else { return }
         guard let index = threads.firstIndex(where: { $0.id == selectedThreadId }),
               selectedReasoningOptions.contains(where: { $0.effort == effort }) else { return }
         threads[index].reasoningEffort = effort
@@ -1542,6 +1557,13 @@ final class NativeWorkspace: ObservableObject {
         persist()
     }
     func deleteThread(_ id: String) {
+        guard Self.zenRefinementAllowsThreadDeletion(
+            refinementActive:zenRefinementActive,refinementThreadId:zenRefinementThreadId,
+            selectedThreadId:selectedThreadId,targetThreadId:id
+        ) else {
+            _ = rejectConversationMutationDuringZenRefinement()
+            return
+        }
         guard activeConversationId != id else {
             self.error = "请先停止正在运行的会话。"
             return
@@ -1559,6 +1581,7 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func reeditMessage(_ message: ChatMessage) {
+        guard !rejectConversationMutationDuringZenRefinement() else { return }
         guard !busy else {
             self.error = "请先停止正在运行的会话。"
             return
@@ -1601,6 +1624,7 @@ final class NativeWorkspace: ObservableObject {
         self.error = notes.isEmpty ? nil : Array(Set(notes)).sorted().joined(separator:" ")
     }
     func openProject(_ id: String) {
+        guard !rejectConversationMutationDuringZenRefinement() else { return }
         guard !busy else {
             self.error = "请先停止正在运行的会话。"
             return
@@ -1617,6 +1641,38 @@ final class NativeWorkspace: ObservableObject {
 
     func selectProject(_ id: String) {
         openProject(id)
+    }
+
+    nonisolated static func zenRefinementAllowsConversationContextMutation(refinementActive:Bool) -> Bool {
+        !refinementActive
+    }
+
+    nonisolated static func zenRefinementAllowsThreadSelection(
+        refinementActive:Bool,refinementThreadId:String?,requestedThreadId:String
+    ) -> Bool {
+        !refinementActive || (refinementThreadId != nil && requestedThreadId == refinementThreadId)
+    }
+
+    nonisolated static func zenRefinementAllowsThreadDeletion(
+        refinementActive:Bool,refinementThreadId:String?,selectedThreadId:String?,targetThreadId:String
+    ) -> Bool {
+        !refinementActive || (
+            refinementThreadId != nil
+                && targetThreadId != refinementThreadId
+                && targetThreadId != selectedThreadId
+        )
+    }
+
+    func isZenRefinementThread(_ id:String) -> Bool {
+        zenRefinementActive && zenRefinementThreadId == id
+    }
+
+    private func rejectConversationMutationDuringZenRefinement() -> Bool {
+        guard !Self.zenRefinementAllowsConversationContextMutation(refinementActive:zenRefinementActive) else {
+            return false
+        }
+        error = "自动精化进行中，请先按 Esc 停止后再操作会话。"
+        return true
     }
 
     static func zenProjectSwitchAllowed(busy:Bool,refinementActive:Bool) -> Bool {
@@ -1686,6 +1742,7 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func openCheckout(inProject id: String, checkoutId targetCheckoutId: String) {
+        guard !rejectConversationMutationDuringZenRefinement() else { return }
         guard !busy else {
             self.error = "请先停止正在运行的会话。"
             return
@@ -1700,6 +1757,7 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func newThread(inProject id: String, checkoutId requestedCheckoutId: String? = nil) {
+        guard !rejectConversationMutationDuringZenRefinement() else { return }
         guard !busy else {
             self.error = "请先停止正在运行的会话。"
             return
@@ -1719,6 +1777,7 @@ final class NativeWorkspace: ObservableObject {
                 guard projectContextRequestIsCurrent(
                     generation:requestGeneration,sourceThreadId:sourceThreadId
                 ) else { return }
+                guard !rejectConversationMutationDuringZenRefinement() else { return }
                 let context = Self.repositoryCheckoutContext(
                     result,requestedCheckoutId:requestedCheckoutId
                 )
@@ -1747,6 +1806,7 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func registerProject(path: String, openConversation: Bool = true) async -> Bool {
+        guard !rejectConversationMutationDuringZenRefinement() else { return false }
         guard !busy else {
             self.error = "请先停止正在运行的会话。"
             return false
@@ -1797,18 +1857,24 @@ final class NativeWorkspace: ObservableObject {
         if page != .requirement { zenMode = false }
         error = nil
         self.page = page
-        if page == .agent,let thread { activateThreadContext(thread) }
+        if page == .agent,let thread,!zenRefinementActive { activateThreadContext(thread) }
         else if page != .agent { Task { await loadPage() } }
     }
 
     func goBack() {
-        guard let target = navigationBackStack.popLast() else { return }
+        guard let target = navigationBackStack.last else { return }
         let threadChanged = target.threadId != selectedThreadId
         let contextChangedBeforeActivation = selectedProjectId != target.projectId
             || repoId != target.repoId
             || checkoutId != target.checkoutId
+        if zenRefinementActive && (threadChanged || contextChangedBeforeActivation) {
+            _ = rejectConversationMutationDuringZenRefinement()
+            return
+        }
+        navigationBackStack.removeLast()
         if let targetThreadId=target.threadId,
-           let targetThread=threads.first(where:{ $0.id == targetThreadId }) {
+           let targetThread=threads.first(where:{ $0.id == targetThreadId }),
+           !zenRefinementActive {
             activateThreadContext(targetThread,refreshProjectContext:false)
         }
         let contextChanged = selectedProjectId != target.projectId
@@ -2203,6 +2269,7 @@ final class NativeWorkspace: ObservableObject {
         let refreshLocalRepository = targetRepoId != nil && localRepository != nil
             && (repositoryContextChanged || checkoutId == nil)
         guard projectChanged || repositoryContextChanged || refreshLocalRepository else { return }
+        guard !rejectConversationMutationDuringZenRefinement() else { return }
         let targetCheckoutId = repositoryContextChanged ? localRepository?.checkoutId : checkoutId
         invalidateProjectContextRequests()
         if repositoryContextChanged || refreshLocalRepository {
@@ -4300,6 +4367,10 @@ final class NativeWorkspace: ObservableObject {
             currentProjectId:selectedProjectId,currentRepoId:repoId,
             targetProjectId:projectId,targetRepoId:repositoryId
         )
+        if zenRefinementActive && contextChanged {
+            _ = rejectConversationMutationDuringZenRefinement()
+            return
+        }
         let alreadyInTargetScope = !contextChanged
         if Self.shouldPushNavigationOrigin(
             currentPage:page,targetPage:.requirement,contextChanged:contextChanged
@@ -4320,15 +4391,19 @@ final class NativeWorkspace: ObservableObject {
     func openProjectRequirement(
         projectId:String,repositoryId:String?,requirementId:String
     ) async {
+        let contextChanged=Self.projectNavigationContextChanged(
+            currentProjectId:selectedProjectId,currentRepoId:repoId,
+            targetProjectId:projectId,targetRepoId:repositoryId
+        )
+        if zenRefinementActive && contextChanged {
+            _ = rejectConversationMutationDuringZenRefinement()
+            return
+        }
         guard let project=semanticProjects.first(where:{$0.projectId == projectId}),
               Self.projectDetailRequirementScopeIsValid(project:project,repositoryId:repositoryId) else {
             error="该任务不属于所选活动项目，或项目已归档。请刷新项目详情后重试。"
             return
         }
-        let contextChanged=Self.projectNavigationContextChanged(
-            currentProjectId:selectedProjectId,currentRepoId:repoId,
-            targetProjectId:projectId,targetRepoId:repositoryId
-        )
         if Self.shouldPushNavigationOrigin(
             currentPage:page,targetPage:.requirement,contextChanged:contextChanged
         ) {

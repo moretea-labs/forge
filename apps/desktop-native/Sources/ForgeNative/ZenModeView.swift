@@ -498,7 +498,8 @@ struct ZenWorkspacePane: View {
                         Label("描述目标",systemImage:"sparkles")
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.selectedProjectId == nil || model.busy)
+                    .disabled(model.selectedProjectId == nil || model.busy || model.zenRefinementActive)
+                    .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "描述并分析新的目标")
                     .accessibilityIdentifier("zen.goal.describe")
                     if reviewableProposals.count > 1 {
                         Menu {
@@ -1068,6 +1069,7 @@ struct ZenWorkspacePane: View {
                                 executionStatuses:model.planningAutopilotStatuses,
                                 hasRepository:model.projectRepositoryId != nil,
                                 executionBusy:model.autopilotLoading || model.autopilotControlPending,
+                                 refinementActive:model.zenRefinementActive,
                                 unresolvedOutcomeRequirementIds:executionOutcomeUnknownRequirementIds,
                                 onSelect:{ item in
                                     Task { await model.openRecord(item.id) }
@@ -1741,7 +1743,9 @@ struct ZenWorkspacePane: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("zen.goal.analyze")
-                .disabled(goalDraft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                .disabled(goalDraft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+                    || model.busy || model.zenRefinementActive)
+                .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "分析目标描述")
             }
         }
         .padding(22).frame(width:475)
@@ -2316,6 +2320,7 @@ private struct ZenTreeCanvas: View {
     let executionStatuses: [String:AutopilotStatusDetail]
     let hasRepository:Bool
     let executionBusy: Bool
+    let refinementActive: Bool
     let unresolvedOutcomeRequirementIds: Set<String>
     let onSelect: (ForgeRecord) -> Void
     let onAction: (ForgeRecord,ZenNodeAction) -> Void
@@ -2358,10 +2363,14 @@ private struct ZenTreeCanvas: View {
                     Button("使用 Agent 优化",systemImage:"sparkles") {
                         onAction(item,.optimize)
                     }
+                    .disabled(refinementActive)
+                    .help(refinementActive ? "自动精化进行中，请先按 Esc 停止" : "使用 Agent 优化")
                 }
                 Button("Review",systemImage:"checkmark.seal") {
                     onAction(item,.review)
                 }
+                .disabled(refinementActive)
+                .help(refinementActive ? "自动精化进行中，请先按 Esc 停止" : "审阅此节点")
                 if canChange && item.kind == .requirement {
                     Divider()
                     if let status=executionStatuses[item.recordId],
@@ -2704,6 +2713,7 @@ private struct ZenReviewSheet: View {
                 }
             }
             .pickerStyle(.menu)
+            .disabled(model.zenRefinementActive)
             Text("Agent Review 使用已配置的 API Provider / JoyCode，并以只读会话运行；需要执行修改时，请在普通 Agent 中单独发起。Zen 不自动应用审查建议。")
                 .font(.system(size:11)).foregroundStyle(.secondary)
             HStack {
@@ -2714,7 +2724,8 @@ private struct ZenReviewSheet: View {
                         reviewProviders=[effectiveReviewProvider] + (secondProvider.isEmpty || secondProvider == effectiveReviewProvider ? [] : [secondProvider])
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.repoId == nil || model.checkoutId == nil)
+                    .disabled(model.repoId == nil || model.checkoutId == nil || model.zenRefinementActive)
+                    .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "在 Zen 中只读审查")
                 }
                 Spacer()
                 Button("取消") { dismiss() }
@@ -2724,6 +2735,8 @@ private struct ZenReviewSheet: View {
                     onStart(instruction,provider.isEmpty ? nil : provider)
                 }
                 .buttonStyle(.bordered)
+                .disabled(model.zenRefinementActive)
+                .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "在只读 Agent 中审查")
             }
             }
         }

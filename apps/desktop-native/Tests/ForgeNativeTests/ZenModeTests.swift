@@ -10,6 +10,37 @@ final class ZenModeTests: XCTestCase {
         XCTAssertFalse(NativeWorkspace.zenProjectSwitchAllowed(busy:true,refinementActive:true))
     }
 
+    func testAutomaticRefinementProtectsConversationIdentityBetweenRounds() {
+        let refinementThreadId="thread-a"
+        XCTAssertFalse(NativeWorkspace.zenRefinementAllowsConversationContextMutation(refinementActive:true))
+        XCTAssertTrue(NativeWorkspace.zenRefinementAllowsConversationContextMutation(refinementActive:false))
+        XCTAssertTrue(NativeWorkspace.zenRefinementAllowsThreadSelection(
+            refinementActive:true,refinementThreadId:refinementThreadId,requestedThreadId:refinementThreadId
+        ))
+        XCTAssertFalse(NativeWorkspace.zenRefinementAllowsThreadSelection(
+            refinementActive:true,refinementThreadId:refinementThreadId,requestedThreadId:"thread-b"
+        ))
+        XCTAssertFalse(NativeWorkspace.zenRefinementAllowsThreadSelection(
+            refinementActive:true,refinementThreadId:nil,requestedThreadId:"thread-b"
+        ))
+        XCTAssertFalse(NativeWorkspace.zenRefinementAllowsThreadDeletion(
+            refinementActive:true,refinementThreadId:refinementThreadId,
+            selectedThreadId:refinementThreadId,targetThreadId:refinementThreadId
+        ))
+        XCTAssertFalse(NativeWorkspace.zenRefinementAllowsThreadDeletion(
+            refinementActive:true,refinementThreadId:refinementThreadId,
+            selectedThreadId:"thread-b",targetThreadId:"thread-b"
+        ))
+        XCTAssertTrue(NativeWorkspace.zenRefinementAllowsThreadDeletion(
+            refinementActive:true,refinementThreadId:refinementThreadId,
+            selectedThreadId:refinementThreadId,targetThreadId:"old-history"
+        ))
+        XCTAssertTrue(NativeWorkspace.zenRefinementAllowsThreadDeletion(
+            refinementActive:false,refinementThreadId:refinementThreadId,
+            selectedThreadId:refinementThreadId,targetThreadId:refinementThreadId
+        ))
+    }
+
     func testZenBoardOnlyReportsRunningFromLiveRuntimeReceipt() {
         XCTAssertEqual(ZenBoardBucket.classify(requirementState:"open",runtimeActive:false),.todo)
         XCTAssertEqual(ZenBoardBucket.classify(requirementState:"open",runtimeActive:true),.running)

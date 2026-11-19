@@ -41,9 +41,13 @@ struct ForgeNativeApp: App {
         .commands {
             CommandGroup(replacing:.newItem) {
                 Button("新会话") {
+                    guard !workspace.zenRefinementActive else { return }
                     workspace.show(.agent)
                     workspace.newThread()
-                }.keyboardShortcut("n")
+                }
+                .disabled(workspace.zenRefinementActive)
+                .help(workspace.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "新建会话")
+                .keyboardShortcut("n")
             }
             CommandMenu("导航") {
                 Button("搜索会话") {
@@ -177,6 +181,10 @@ private struct ForgeWorkspaceView: View {
                 ZenWorkspacePane(model:model,screen:$model.zenScreen,
                                  focusedRequirementId:$model.zenFocusedRequirementId,
                                  onDraftGoal:{ description in
+                    guard !model.zenRefinementActive else {
+                        model.error="自动精化进行中，请先按 Esc 停止后再创建新目标。"
+                        return
+                    }
                     guard model.selectedProjectId != nil else {
                         model.error="请先选择项目。"
                         return
@@ -216,6 +224,10 @@ private struct ForgeWorkspaceView: View {
                     inboxShown = true
                     Task { await model.loadUserRequests() }
                 }) { item, prompt, provider, wantsProposal in
+                    guard !model.zenRefinementActive else {
+                        model.error="自动精化进行中，请先按 Esc 停止后再打开其他会话。"
+                        return
+                    }
                     guard !model.busy else {
                         model.error="请先停止正在运行的会话。"
                         return
@@ -420,8 +432,8 @@ private struct ForgeWorkspaceView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(model.busy)
-                .help(model.repoId == nil ? "创建不绑定项目的会话 (⌘N)" : "在当前项目新建会话 (⌘N)")
+                .disabled(model.busy || model.zenRefinementActive)
+                .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : model.repoId == nil ? "创建不绑定项目的会话 (⌘N)" : "在当前项目新建会话 (⌘N)")
                 .accessibilityLabel("新会话")
                 .accessibilityIdentifier("sidebar.thread.new")
 
@@ -526,8 +538,8 @@ private struct ForgeWorkspaceView: View {
                                             .frame(width:20,height:20)
                                     }
                                     .buttonStyle(.plain)
-                                    .help("在此项目中新建会话")
-                                    .disabled(model.busy)
+                                    .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "在此项目中新建会话")
+                                    .disabled(model.busy || model.zenRefinementActive)
                                 }
                             }
                             .padding(.leading,10).padding(.trailing,5).padding(.top,8)
@@ -774,7 +786,10 @@ private struct ForgeWorkspaceView: View {
         let selected = model.selectedThreadId == thread.id && model.page == .agent
         let hovered = hoveredThreadId == thread.id
         let deleting = deleteThreadId == thread.id
-        let running = model.activeConversationId == thread.id
+        let refinementThread = model.isZenRefinementThread(thread.id)
+        let running = model.activeConversationId == thread.id || refinementThread
+        let protectedDuringRefinement = model.zenRefinementActive
+            && (refinementThread || model.selectedThreadId == thread.id)
         let showDelete = hovered || deleting
         let projectLabel = model.projects.first(where: { $0.repoId == thread.repoId })?.label
             ?? thread.repoId.map { String($0.prefix(16)) }
@@ -819,8 +834,10 @@ private struct ForgeWorkspaceView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(model.busy && !running)
-            .help(accessibilityContext + " · " + thread.title)
+            .disabled((model.busy && !running) || (model.zenRefinementActive && !refinementThread))
+            .help(model.zenRefinementActive && !refinementThread
+                ? "自动精化进行中，请先按 Esc 停止后再切换会话"
+                : refinementThread ? "自动精化进行中" : accessibilityContext + " · " + thread.title)
             .accessibilityLabel(thread.title)
             .accessibilityValue(accessibilityContext)
             .accessibilityHint("打开此会话")
@@ -842,12 +859,12 @@ private struct ForgeWorkspaceView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(running ? ForgePalette.secondary.opacity(0.35) : Color.red.opacity(0.78))
+            .foregroundStyle(protectedDuringRefinement || running ? ForgePalette.secondary.opacity(0.35) : Color.red.opacity(0.78))
             .opacity(showDelete ? 1 : 0)
-            .allowsHitTesting(showDelete && !running)
-            .accessibilityHidden(!showDelete)
+            .allowsHitTesting(showDelete && !protectedDuringRefinement && !running)
+            .accessibilityHidden(!showDelete || protectedDuringRefinement || running)
             .accessibilityLabel("删除会话 \(thread.title)")
-            .help(running ? "请先停止正在运行的会话" : "删除会话")
+            .help(protectedDuringRefinement ? "自动精化进行中，请先按 Esc 停止后再删除" : running ? "请先停止正在运行的会话" : "删除会话")
             .popover(isPresented:Binding(
                 get:{ deleteThreadId == thread.id },
                 set:{ if !$0 && deleteThreadId == thread.id { deleteThreadId = nil } }
@@ -880,7 +897,8 @@ private struct ForgeWorkspaceView: View {
             } label: {
                 Label("复制会话",systemImage:"plus.square.on.square")
             }
-            .disabled(running)
+            .disabled(running || model.zenRefinementActive)
+            .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止后再复制会话" : "复制会话")
             Button {
                 copyAgentText(thread.markdownTranscript)
             } label: {
@@ -888,7 +906,7 @@ private struct ForgeWorkspaceView: View {
             }
             .disabled(thread.messages.isEmpty)
             Button("删除会话…",role:.destructive) { deleteThreadId = thread.id }
-                .disabled(running)
+                .disabled(protectedDuringRefinement || running)
         }
     }
 
@@ -1036,6 +1054,11 @@ private struct ForgeWorkspaceView: View {
                     model.deleteThread(thread.id)
                     deleteThreadId = nil
                 }
+                .disabled(model.isZenRefinementThread(thread.id)
+                    || (model.zenRefinementActive && model.selectedThreadId == thread.id))
+                .help(model.isZenRefinementThread(thread.id)
+                    || (model.zenRefinementActive && model.selectedThreadId == thread.id)
+                    ? "自动精化进行中，请先按 Esc 停止后再删除会话" : "删除本地会话记录")
             }
         }
         .padding(14)
@@ -1268,6 +1291,8 @@ private struct ForgeWorkspaceView: View {
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
+                                .disabled(model.busy || model.zenRefinementActive)
+                                .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止后再切换项目" : "切换到此项目")
                                 if !model.zenMode {
                                     Button {
                                         model.newThread(inProject:project.repoId)
@@ -1280,8 +1305,8 @@ private struct ForgeWorkspaceView: View {
                                             .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
                                     }
                                     .buttonStyle(.plain)
-                                    .help("在当前项目新建会话")
-                                    .disabled(model.busy)
+                                    .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "在当前项目新建会话")
+                                    .disabled(model.busy || model.zenRefinementActive)
                                 }
                                 Button {
                                     toggleProjectCheckouts(project.repoId)
@@ -1346,6 +1371,8 @@ private struct ForgeWorkspaceView: View {
                                                 .contentShape(Rectangle())
                                             }
                                             .buttonStyle(.plain)
+                                            .disabled(model.busy || model.zenRefinementActive)
+                                            .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止后再切换工作区" : "切换到此工作区")
                                             if !model.zenMode {
                                                 Button {
                                                     model.newThread(inProject:project.repoId,checkoutId:checkout.id)
@@ -1357,8 +1384,8 @@ private struct ForgeWorkspaceView: View {
                                                         .frame(width:24,height:24)
                                                 }
                                                 .buttonStyle(.plain)
-                                                .help("在此工作区新建会话")
-                                                .disabled(model.busy)
+                                                .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "在此工作区新建会话")
+                                                .disabled(model.busy || model.zenRefinementActive)
                                             }
                                         }
                                         .padding(.leading,21).padding(.trailing,10)
@@ -5254,7 +5281,8 @@ private struct RecordsPane: View {
                             .background(.thinMaterial,in:RoundedRectangle(cornerRadius:7,style:.continuous))
                     }
                         .buttonStyle(.plain)
-                        .help("以此节点新建会话")
+                        .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "以此节点新建会话")
+                        .disabled(model.busy || model.zenRefinementActive)
                     }
                 }
                 .padding(7)
