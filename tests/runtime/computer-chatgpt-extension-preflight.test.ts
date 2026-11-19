@@ -306,6 +306,12 @@ test('receiver identity and unreadable-page recovery preserve the exact target w
   expect(f.shouldReload(43, identity, loading, 1_060_000)).toBe(true);
   expect(f.shouldReload(44, identity, { ...loading, latestUserText: 'Submitted turn' }, 1_100_000)).toBe(false);
   expect(f.shouldReload(45, identity, { ...loading, isGenerating: true }, 1_100_000)).toBe(false);
+  const emptyShell = { ...obs, providerFailureText: '' };
+  expect(f.shouldReload(46, identity, emptyShell, 1_200_000)).toBe(false);
+  expect(f.shouldReload(46, identity, emptyShell, 1_259_999)).toBe(false);
+  expect(f.shouldReload(46, identity, emptyShell, 1_260_000)).toBe(true);
+  expect(f.shouldReload(47, identity, { ...emptyShell, composerText: 'Draft' }, 1_300_000)).toBe(false);
+  expect(f.shouldReload(48, identity, { ...emptyShell, latestAssistantResponse: 'Loaded' }, 1_300_000)).toBe(false);
   }
   {
   const source = readFileSync(new URL('../../adapters/computer/chatgpt-provider-extension/background.js', import.meta.url), 'utf8');

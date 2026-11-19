@@ -520,10 +520,17 @@ function dispatchTransportNotReached(error) {
   return /Receiving end does not exist|Could not establish connection|No tab with id/i.test(text);
 }
 function shouldReloadUnreadableConversation(tabId, identity, observation, nowMs = Date.now()) {
+  const failureText = String(observation?.providerFailureText ?? '').trim();
+  const knownUnreadable = /(?:无法加载此 ChatGPT 对话|Unable to load this (?:ChatGPT )?conversation|正在加载个人资料|正在加载聊天(?:…|\.\.\.)?|Loading (?:your )?profile(?:…|\.\.\.)?|Loading (?:the )?chat(?:…|\.\.\.)?)/i.test(failureText);
+  // An exact /c/<id> page that is fully empty (no messages, editor, generation
+  // signal or provider banner) is also an unreadable hydrated shell. A real
+  // conversation cannot safely be written in this state, so reuse the same
+  // grace/rate-limited exact-tab reload policy rather than inventing a fallback.
+  const emptyShell = !failureText;
   const unreadable = identity?.namespace === 'chatgpt.conversation'
     && typeof observation?.url === 'string'
     && core.parseConversation(observation.url)?.conversationId === identity.conversationId
-    && /(?:无法加载此 ChatGPT 对话|Unable to load this (?:ChatGPT )?conversation|正在加载个人资料|正在加载聊天(?:…|\.\.\.)?|Loading (?:your )?profile(?:…|\.\.\.)?|Loading (?:the )?chat(?:…|\.\.\.)?)/i.test(observation.providerFailureText ?? '')
+    && (knownUnreadable || emptyShell)
     && !observation.latestUserText?.trim() && !observation.latestAssistantResponse?.trim()
     && !observation.composerText?.trim() && observation.isGenerating !== true;
   if (!unreadable) {
