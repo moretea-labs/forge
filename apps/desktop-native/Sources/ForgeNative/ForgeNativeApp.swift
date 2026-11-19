@@ -2703,6 +2703,9 @@ private struct AgentPane: View {
             : requiresCheckout && model.checkoutId == nil ? "请先选择包含可用工作区的项目" : title)
     }
 
+    @State private var expandedActivityEventIDs: Set<String> = []
+    @State private var copiedActivityEventID: String?
+
     private func activityTrailRow(_ event: AgentLiveActivityEvent) -> some View {
         HStack(alignment:.top,spacing:8) {
             ZStack {
@@ -2725,16 +2728,70 @@ private struct AgentPane: View {
                         .lineLimit(event.phase == "message" ? 7 : 2)
                         .textSelection(.enabled)
                 }
-                if let output = NativeWorkspace.activityOutputText(for:event) {
-                    VStack(alignment:.leading,spacing:3) {
-                        Text("工具输出")
-                            .font(.system(size:9,weight:.medium))
-                            .foregroundStyle(ForgePalette.secondary)
-                        Text(output)
-                            .font(.system(size:9,design:.monospaced))
-                            .foregroundStyle(ForgePalette.ink.opacity(0.82))
-                            .lineLimit(6)
-                            .textSelection(.enabled)
+                if let output=NativeWorkspace.activityOutputPresentation(for:event) {
+                    let isExpanded=expandedActivityEventIDs.contains(event.id)
+                    let isCopied=copiedActivityEventID == event.id
+                    VStack(alignment:.leading,spacing:5) {
+                        HStack(spacing:8) {
+                            Text("工具输出")
+                                .font(.system(size:9,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary)
+                            Spacer(minLength:4)
+                            Button {
+                                if isExpanded { expandedActivityEventIDs.remove(event.id) }
+                                else { expandedActivityEventIDs.insert(event.id) }
+                                if copiedActivityEventID == event.id { copiedActivityEventID=nil }
+                            } label: {
+                                Text(isExpanded ? "收起" : "展开")
+                                    .font(.system(size:9,weight:.medium))
+                            }
+                            .buttonStyle(.plain)
+                            .help(isExpanded ? "收起此条工具输出" : "展开查看此条保留的完整输出")
+                            .accessibilityLabel(isExpanded ? "收起此条工具输出" : "展开此条工具输出")
+                            .accessibilityHint("展开后可滚动查看当前保留的输出内容。")
+                            .accessibilityIdentifier("agent.activity.output.toggle.\(event.id)")
+                            Button {
+                                copyAgentText(output.text)
+                                copiedActivityEventID=event.id
+                            } label: {
+                                Image(systemName:isCopied ? "checkmark" : "doc.on.doc")
+                                    .font(.system(size:9,weight:.medium))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(isCopied ? Color.green : ForgePalette.secondary)
+                            .help(isCopied ? "已复制此条工具输出" : "复制此条工具输出")
+                            .accessibilityLabel(isCopied ? "已复制此条工具输出" : "复制此条工具输出")
+                            .accessibilityIdentifier("agent.activity.output.copy.\(event.id)")
+                        }
+                        if let truncationLabel=output.truncationLabel {
+                            Text(truncationLabel)
+                                .font(.system(size:10.5,weight:.medium))
+                                .foregroundStyle(Color.orange)
+                                .fixedSize(horizontal:false,vertical:true)
+                                .frame(maxWidth:.infinity,alignment:.leading)
+                                .help(truncationLabel)
+                                .accessibilityLabel(truncationLabel)
+                                .accessibilityHint("当前输出可能不完整，不应当作完整日志。")
+                                .accessibilityIdentifier("agent.activity.output.truncation.\(event.id)")
+                        }
+                        if isExpanded {
+                            ScrollView {
+                                Text(output.text)
+                                    .font(.system(size:9,design:.monospaced))
+                                    .foregroundStyle(ForgePalette.ink.opacity(0.82))
+                                    .frame(maxWidth:.infinity,alignment:.leading)
+                                    .fixedSize(horizontal:false,vertical:true)
+                                    .textSelection(.enabled)
+                            }
+                            .frame(maxHeight:220)
+                            .accessibilityIdentifier("agent.activity.output.detail.\(event.id)")
+                        } else {
+                            Text(output.text)
+                                .font(.system(size:9,design:.monospaced))
+                                .foregroundStyle(ForgePalette.ink.opacity(0.82))
+                                .lineLimit(6)
+                                .textSelection(.enabled)
+                        }
                     }
                     .padding(.top,2)
                 }

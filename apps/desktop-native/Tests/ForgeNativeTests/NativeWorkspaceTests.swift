@@ -2479,6 +2479,9 @@ final class NativeWorkspaceTests: XCTestCase {
             currentPage:.requirement,targetPage:.requirement,contextChanged:false
         ))
         XCTAssertTrue(NativeWorkspace.shouldPushNavigationOrigin(
+            currentPage:.requirement,targetPage:.requirement,contextChanged:false,preserveSource:true
+        ))
+        XCTAssertTrue(NativeWorkspace.shouldPushNavigationOrigin(
             currentPage:.agent,targetPage:.requirement,contextChanged:false
         ))
     }
@@ -2509,6 +2512,30 @@ final class NativeWorkspaceTests: XCTestCase {
         model.goBack()
         XCTAssertEqual(model.page,.agent)
         XCTAssertFalse(model.canNavigateBack)
+    }
+
+    @MainActor
+    func testBackToZenBoardClearsRequirementSelectionOpenedAfterSourceEntry() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let threadId=model.selectedThreadId
+
+        model.page = .requirement
+        model.zenMode = true
+        model.zenScreen = .board
+        model.selectedRecord = nil
+        model.show(.knowledge)
+        XCTAssertEqual(model.navigationBackStack.last,
+                       NativeNavigationEntry(page:.requirement,threadId:threadId,recordId:nil,
+                                             zenMode:true,zenScreen:.board,focusedRequirementId:nil))
+
+        model.selectedRecord="REQ-OPENED"
+        model.goBack()
+
+        XCTAssertEqual(model.page,.requirement)
+        XCTAssertEqual(model.zenScreen,.board)
+        XCTAssertNil(model.selectedRecord)
     }
 
     @MainActor
@@ -3370,6 +3397,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(output.first?.status,"output")
         XCTAssertNil(output.first?.completedAt)
         XCTAssertEqual(output.first?.output,"{\"stdoutTail\":\"Tests passed\"}")
+        XCTAssertEqual(output.first?.outputTruncated,false)
 
         let finished = NativeWorkspace.apiToolProgressEvents(
             output,
@@ -3401,6 +3429,21 @@ final class NativeWorkspaceTests: XCTestCase {
         )
         XCTAssertEqual(mergedReceipts.first?.output,"{\"stdoutTail\":\"Tests passed\"}")
 
+        let truncatedStreaming=AgentLiveActivityEvent(
+            phase:"tool",label:"read_file",detail:"README.md",status:"completed",
+            startedAt:"start",completedAt:"end",toolCallId:"call-truncated",
+            output:String(repeating:"x",count:2_000),outputTruncated:true
+        )
+        let canonicalReceipt=AgentLiveActivityEvent(
+            phase:"tool",label:"read_file",detail:"README.md",status:"completed",
+            startedAt:"receipt-start",completedAt:"receipt-end",toolCallId:"call-truncated",
+            output:"canonical output"
+        )
+        let mergedTruncation=NativeWorkspace.mergeActivityReceipts(
+            [truncatedStreaming],receipts:[canonicalReceipt]
+        )
+        XCTAssertEqual(mergedTruncation.first?.outputTruncated,true)
+
         let oversized = NativeWorkspace.apiToolProgressEvents(
             [],
             payload:[
@@ -3410,6 +3453,22 @@ final class NativeWorkspaceTests: XCTestCase {
             now:"large-output-at"
         )
         XCTAssertEqual(oversized.first?.output?.count,2_000)
+        XCTAssertEqual(oversized.first?.outputTruncated,true)
+        let atLimit=NativeWorkspace.apiToolProgressEvents(
+            [],payload:["name":"read_file","phase":"output","toolCallId":"call-limit",
+                        "output":String(repeating:"z",count:2_000)],now:"at-limit"
+        )
+        XCTAssertEqual(atLimit.first?.outputTruncated,false)
+        XCTAssertEqual(
+            NativeWorkspace.activityOutputTruncationLabel(for:try XCTUnwrap(atLimit.first)),
+            "输出达到 2,000 字符上限，可能已截断"
+        )
+
+        let canonicalOversized=NativeWorkspace.apiActivityEvents([[
+            "name":"read_file","ok":true,"output":String(repeating:"y",count:2_500)
+        ]] as [[String:Any]]) ?? []
+        XCTAssertEqual(canonicalOversized.first?.output?.count,2_000)
+        XCTAssertEqual(canonicalOversized.first?.outputTruncated,true)
 
         let distinct = NativeWorkspace.apiToolProgressEvents(
             finished,
@@ -3449,6 +3508,23 @@ final class NativeWorkspaceTests: XCTestCase {
             NativeWorkspace.activityOutputText(for:event),
             "stdout\nBuild started\n\nstderr\nCompiler error\n\nProcess: failed\n\nExit code: 2\n\nTimed out"
         )
+        XCTAssertNil(NativeWorkspace.activityOutputTruncationLabel(for:event))
+    }
+
+    func testCommandActivityOutputMarksTransformedTextTruncation() throws {
+        let payload:[String:Any] = [
+            "ok":true,"result":["stdoutTail":String(repeating:"x",count:2_100)]
+        ]
+        let data=try JSONSerialization.data(withJSONObject:payload)
+        let output=try XCTUnwrap(String(data:data,encoding:.utf8))
+        let event=AgentLiveActivityEvent(
+            phase:"tool",label:"run_command",detail:"proc-1",status:"completed",
+            startedAt:"start",completedAt:"end",toolCallId:"call-long",
+            output:output,outputTruncated:false
+        )
+        let presentation=try XCTUnwrap(NativeWorkspace.activityOutputPresentation(for:event))
+        XCTAssertEqual(presentation.text.count,2_000)
+        XCTAssertEqual(presentation.truncationLabel,"输出已截断 · 仅保留前 2,000 字符")
     }
 
     func testOtherToolActivityOutputRemainsUnchanged() {
@@ -3467,6 +3543,7 @@ final class NativeWorkspaceTests: XCTestCase {
         let data=Data(#"{"phase":"tool","label":"git_status","detail":null,"status":"completed","startedAt":"start","completedAt":null,"toolCallId":"legacy"}"#.utf8)
         let event=try JSONDecoder().decode(AgentLiveActivityEvent.self,from:data)
         XCTAssertNil(event.output)
+        XCTAssertNil(event.outputTruncated)
     }
 
     func testFailedToolProgressIsPersistableAsUnknown() {
@@ -3484,12 +3561,13 @@ final class NativeWorkspaceTests: XCTestCase {
         let output = AgentLiveActivityEvent(
             phase:"tool",label:"apply_patch",detail:"request-2",
             status:"output",startedAt:"started-at",completedAt:nil,toolCallId:"call-2",
-            output:"bounded tool result"
+            output:"bounded tool result",outputTruncated:true
         )
         let outputFinalized = NativeWorkspace.finalizeFailedToolEvents([output],now:"failed-at")
         XCTAssertEqual(outputFinalized.first?.status,"unknown")
         XCTAssertEqual(outputFinalized.first?.completedAt,"failed-at")
         XCTAssertEqual(outputFinalized.first?.output,"bounded tool result")
+        XCTAssertEqual(outputFinalized.first?.outputTruncated,true)
     }
 
     @MainActor

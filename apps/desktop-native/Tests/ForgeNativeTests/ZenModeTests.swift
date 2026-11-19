@@ -389,3 +389,120 @@ extension ZenModeTests {
         XCTAssertNil(ZenWorkspacePane.taskStatusLabel(nil))
     }
 }
+
+extension ZenModeTests {
+    private func autopilotStatus(
+        _ runStatus:String,runtimeActive:Bool=false,pendingProcessId:String?=nil
+    ) throws -> AutopilotStatusDetail {
+        var run:[String:Any] = ["status":runStatus]
+        if let pendingProcessId { run["pendingProcessId"]=pendingProcessId }
+        return try XCTUnwrap(NativeWorkspace.autopilotStatusDetail([
+            "data":["runtimeActive":runtimeActive,"run":run]
+        ]))
+    }
+
+    private func requirement(
+        _ id:String,state:String="open",taskStatus:String?="active"
+    ) -> ForgeRecord {
+        ForgeRecord(recordId:id,title:id,state:state,kind:.requirement,depth:0,
+                    requirementId:nil,parentPlanId:nil,taskStatus:taskStatus)
+    }
+
+    func testBoardAndListShareCanonicalPerRequirementAutopilotStatusProjection() throws {
+        let active=requirement("REQ-active")
+        let paused=try autopilotStatus("paused")
+        let blocked=try autopilotStatus("blocked")
+        let failed=try autopilotStatus("failed")
+
+        XCTAssertEqual(ZenWorkspacePane.requirementExecutionStatus(
+            for:active,executionStatuses:[active.recordId:paused]
+        )?.label,"已暂停")
+        XCTAssertEqual(ZenWorkspacePane.requirementExecutionStatus(
+            for:active,executionStatuses:[active.recordId:blocked]
+        )?.label,"受阻")
+        XCTAssertEqual(ZenWorkspacePane.requirementExecutionStatus(
+            for:active,executionStatuses:[active.recordId:failed]
+        )?.label,"执行失败")
+        XCTAssertEqual(ZenBoardBucket.classify(
+            requirementState:active.state,taskStatus:active.taskStatus,runtimeActive:paused.runtimeActive
+        ),.active)
+
+        let running=requirement("REQ-running")
+        let live=try autopilotStatus("running",runtimeActive:true)
+        XCTAssertEqual(ZenWorkspacePane.requirementExecutionStatus(
+            for:running,executionStatuses:[running.recordId:live]
+        )?.label,"执行中")
+        XCTAssertEqual(ZenBoardBucket.classify(
+            requirementState:running.state,taskStatus:running.taskStatus,runtimeActive:live.runtimeActive
+        ),.running)
+
+        let inactive=try autopilotStatus("running",runtimeActive:false)
+        XCTAssertEqual(ZenWorkspacePane.requirementExecutionStatus(
+            for:running,executionStatuses:[running.recordId:inactive]
+        )?.label,"运行未激活")
+        XCTAssertEqual(ZenBoardBucket.classify(
+            requirementState:running.state,taskStatus:running.taskStatus,runtimeActive:inactive.runtimeActive
+        ),.active)
+
+        let pending=try autopilotStatus("failed",pendingProcessId:"process-original")
+        XCTAssertEqual(ZenWorkspacePane.requirementExecutionStatus(
+            for:active,executionStatuses:[active.recordId:pending]
+        )?.label,"等待原命令回执")
+
+        let planned=requirement("REQ-planned",state:"planned",taskStatus:"planned")
+        XCTAssertEqual(ZenWorkspacePane.requirementExecutionStatus(
+            for:planned,executionStatuses:[planned.recordId:paused]
+        )?.label,"已暂停")
+    }
+
+    @MainActor
+    func testUnresolvedOutcomeOverridesTerminalRequirementUntilExactReadback() throws {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.selectedProjectId="project-a"
+        model.repoId="repo-a"
+        model.checkoutId="checkout-a"
+        let completed=requirement("REQ-completed",state:"completed",taskStatus:"done")
+        let cancelled=requirement("REQ-cancelled",state:"cancelled",taskStatus:"cancelled")
+        let stale=try autopilotStatus("paused")
+
+        XCTAssertEqual(ZenBoardBucket.classify(
+            requirementState:completed.state,taskStatus:completed.taskStatus,runtimeActive:stale.runtimeActive
+        ),.done)
+        XCTAssertEqual(ZenBoardBucket.classify(
+            requirementState:cancelled.state,taskStatus:cancelled.taskStatus,runtimeActive:stale.runtimeActive
+        ),.cancelled)
+        XCTAssertNil(ZenWorkspacePane.requirementExecutionStatus(
+            for:completed,executionStatuses:[completed.recordId:stale]
+        ))
+        XCTAssertNil(ZenWorkspacePane.requirementExecutionStatus(
+            for:cancelled,executionStatuses:[cancelled.recordId:stale]
+        ))
+
+        model.markAutopilotOutcomeUnknown(
+            projectId:"project-a",repoId:"repo-a",checkoutId:"checkout-a",requirementId:completed.recordId
+        )
+        model.markAutopilotOutcomeUnknown(
+            projectId:"project-a",repoId:"repo-a",checkoutId:"checkout-a",requirementId:cancelled.recordId
+        )
+        for item in [completed,cancelled] {
+            XCTAssertEqual(ZenWorkspacePane.requirementExecutionStatus(
+                for:item,executionStatuses:[item.recordId:stale],
+                unresolvedOutcomeRequirementIds:model.unresolvedAutopilotRequirementIds
+            )?.label,"操作结果未确认")
+        }
+
+        model.resolveAutopilotOutcomeUnknown(
+            projectId:"project-a",repoId:"repo-a",checkoutId:"checkout-a",requirementId:completed.recordId
+        )
+        XCTAssertNil(ZenWorkspacePane.requirementExecutionStatus(
+            for:completed,executionStatuses:[completed.recordId:stale],
+            unresolvedOutcomeRequirementIds:model.unresolvedAutopilotRequirementIds
+        ))
+        XCTAssertEqual(ZenWorkspacePane.requirementExecutionStatus(
+            for:cancelled,executionStatuses:[cancelled.recordId:stale],
+            unresolvedOutcomeRequirementIds:model.unresolvedAutopilotRequirementIds
+        )?.label,"操作结果未确认")
+    }
+}
