@@ -225,6 +225,16 @@ function binding(tab, instanceId, ownerToken) {
     ...(ownerToken ? { ownerToken } : {}),
   };
 }
+async function storedOwnerToken(tabId) {
+  try {
+    const key = ownedTabKey(tabId);
+    const stored = await chrome.storage.session.get(key);
+    const token = stored[key];
+    return typeof token === 'string' && token ? token : undefined;
+  } catch {
+    return undefined;
+  }
+}
 async function snapshot(tabId, options = {}) {
   return await tabMessage(tabId, { type: 'forge-computer-chatgpt-snapshot', options });
 }
@@ -793,12 +803,16 @@ async function publishHeartbeat() {
   for (const tab of tabs) {
     const identity = core.parseConversation(tab.url ?? '');
     if (!identity || !tab.id) continue;
+    // A bootstrap-owned tab can become /c/<conversation> after its first Send.
+    // Carry only the browser-session attestation this extension itself created;
+    // URL identity alone never grants ownership to an arbitrary user tab.
+    const ownerToken = await storedOwnerToken(tab.id);
     conversations.push({
       conversationId: identity.conversationId,
       canonicalUrl: identity.canonicalUrl,
       ...(String(tab.title ?? '').trim() ? { title: String(tab.title).trim().slice(0, 512) } : {}),
       ...(tab.id === current?.id ? { isCurrent: true } : {}),
-      providerBinding: binding(tab, instanceId),
+      providerBinding: binding(tab, instanceId, ownerToken),
     });
   }
   const remainingMs = deadlineAt - Date.now();

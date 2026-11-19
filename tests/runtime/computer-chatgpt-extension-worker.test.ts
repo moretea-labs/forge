@@ -94,6 +94,71 @@ test('MV3 provider keeps a native command pump alive between alarm wakes', () =>
   expect(source).not.toContain('setInterval(() => { void providerTick()');
 });
 
+test('heartbeat promotes only extension-owned conversation tabs with their session owner token', async () => {
+  const src = readFileSync(new URL('../../adapters/computer/chatgpt-provider-extension/background.js', import.meta.url), 'utf8');
+  const worker = src.slice(0, src.indexOf('chrome.runtime.onMessage.addListener('))
+    .replace("importScripts('core.js');", '')
+    + '\nglobalThis.__testPublishHeartbeat = publishHeartbeat;';
+  const ownedUrl = 'https://chatgpt.com/c/owned-heartbeat-1';
+  const userUrl = 'https://chatgpt.com/c/user-heartbeat-2';
+  const owned = { id: 71, windowId: 8, url: ownedUrl, title: 'Owned', active: true };
+  const user = { id: 72, windowId: 8, url: userUrl, title: 'User', active: false };
+  const ownerTokens = new Map<string, string>([['forgeComputerOwnedTabV1:71', 'owned-token-71']]);
+  let heartbeatParams: Record<string, unknown> | undefined;
+  let messageListener: ((value: unknown) => void) | undefined;
+  const port = {
+    onMessage: { addListener(listener: (value: unknown) => void) { messageListener = listener; } },
+    onDisconnect: { addListener() {} },
+    disconnect() {},
+    postMessage(message: { id: string; method: string; params: Record<string, unknown> }) {
+      if (message.method === 'computer_extension_heartbeat') heartbeatParams = message.params;
+      queueMicrotask(() => messageListener?.({ id: message.id, ok: true, result: { recorded: true } }));
+    },
+  };
+  const sandbox = {
+    ForgeComputerChatgptCore: {
+      parseConversation: (raw: string) => {
+        const match = raw.match(/^https:\/\/chatgpt\.com\/c\/(.+)$/);
+        return match ? { conversationId: match[1], canonicalUrl: raw } : null;
+      },
+      projectId: () => undefined,
+    },
+    navigator: { userAgent: 'Chrome' },
+    crypto: { randomUUID: () => 'heartbeat-rpc-id' },
+    chrome: {
+      runtime: { lastError: null, connectNative: () => port },
+      storage: {
+        local: {
+          async get() { return { forgeComputerProviderInstanceId: 'centbrowser-profile' }; },
+          async set() {},
+        },
+        session: {
+          async get(key: string) { return { [key]: ownerTokens.get(key) }; },
+        },
+      },
+      tabs: {
+        query: async (query: { active?: boolean }) => query.active ? [owned] : [owned, user],
+      },
+    },
+    URL, Date, Map, Promise,
+    setTimeout, clearTimeout, queueMicrotask,
+  };
+  runInNewContext(worker, sandbox);
+  await (sandbox as typeof sandbox & {
+    __testPublishHeartbeat: () => Promise<string>;
+  }).__testPublishHeartbeat();
+
+  const conversations = (heartbeatParams?.conversations as Array<{
+    conversationId: string;
+    providerBinding: { ownerToken?: string };
+  }>) ?? [];
+  expect(conversations).toHaveLength(2);
+  expect(conversations.find((entry) => entry.conversationId === 'owned-heartbeat-1')?.providerBinding.ownerToken)
+    .toBe('owned-token-71');
+  expect(conversations.find((entry) => entry.conversationId === 'user-heartbeat-2')?.providerBinding.ownerToken)
+    .toBeUndefined();
+});
+
 test('new bootstrap tab requires its hydrated editor, not a model picker, before preflight', async () => {
   const src = readFileSync(new URL('../../adapters/computer/chatgpt-provider-extension/background.js', import.meta.url), 'utf8');
   const worker = src.slice(0, src.indexOf('chrome.runtime.onMessage.addListener('))
