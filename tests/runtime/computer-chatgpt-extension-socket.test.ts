@@ -43,6 +43,28 @@ function jsonlRpc(socketPath: string, method: string, params: Record<string, unk
   });
 }
 
+test('Computer heartbeat tolerates bounded Windows-to-WSL clock skew without trusting future freshness', async () => {
+  const controllerHome = home();
+  const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
+  const base = Date.now();
+
+  const bounded = await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
+    providerId: 'browser.chrome-extension',
+    providerInstanceId: 'centbrowser-skew',
+    observedAt: new Date(base + 1_000).toISOString(),
+    conversations: [],
+  });
+  expect(bounded).toMatchObject({ ok: true, result: { recorded: true } });
+
+  const tooFarFuture = await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
+    providerId: 'browser.chrome-extension',
+    providerInstanceId: 'centbrowser-skew',
+    observedAt: new Date(base + 10_000).toISOString(),
+    conversations: [],
+  });
+  expect(tooFarFuture).toMatchObject({ ok: true, result: { recorded: false } });
+});
+
 test('Computer exact-target socket owns heartbeat, claim, and completion without Supervisor state', async () => {
   const controllerHome = home();
   const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);

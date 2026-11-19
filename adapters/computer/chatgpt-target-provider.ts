@@ -23,6 +23,7 @@ import { parseCanonicalChatgptConversationIdentity } from '../../packages/plugin
 
 const PROVIDER_ID = 'browser.chrome-extension';
 const HEARTBEAT_FRESH_MS = 15_000;
+const HEARTBEAT_FUTURE_SKEW_MS = 5_000;
 // Bound both queue wait and claimed execution; claim re-arms the same single timer.
 const COMMAND_TIMEOUT_MS = 12_000;
 
@@ -142,19 +143,20 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     if (!instanceId) throw new Error('COMPUTER_CHATGPT_EXTENSION_PROVIDER_INSTANCE_REQUIRED');
     const receivedAtMs = this.nowMs();
     const inputObservedAtMs = typeof input.observedAt === 'string' ? Date.parse(input.observedAt) : Number.NaN;
-    // observedAt and receivedAt share the local host clock. Reject malformed,
-    // future, and already-expired snapshots before they can create fresh state.
-    // This also protects against a delayed socket request arriving after
-    // freshProviders() has pruned the previous provider state.
+    // Browser observedAt may come from the Windows host while Runtime receives
+    // it inside WSL. Accept only a small bounded positive skew, then clamp the
+    // stored timestamp to Runtime receive time so a future host clock can never
+    // extend provider freshness. Stale snapshots remain rejected.
     if (!Number.isFinite(inputObservedAtMs)
-      || inputObservedAtMs > receivedAtMs
+      || inputObservedAtMs - receivedAtMs > HEARTBEAT_FUTURE_SKEW_MS
       || receivedAtMs - inputObservedAtMs > HEARTBEAT_FRESH_MS) return false;
-    const observedAt = new Date(inputObservedAtMs).toISOString();
+    const normalizedObservedAtMs = Math.min(inputObservedAtMs, receivedAtMs);
+    const observedAt = new Date(normalizedObservedAtMs).toISOString();
     const previous = this.providerStates.get(instanceId);
     const previousObservedAtMs = previous ? Date.parse(previous.heartbeat.observedAt) : Number.NaN;
     // A timed-out older socket request can arrive after a newer heartbeat.
     // Never let that late arrival replace newer inventory or refresh freshness.
-    if (Number.isFinite(previousObservedAtMs) && inputObservedAtMs < previousObservedAtMs) return false;
+    if (Number.isFinite(previousObservedAtMs) && normalizedObservedAtMs < previousObservedAtMs) return false;
     const conversations = Array.isArray(input.conversations)
       ? input.conversations.flatMap((entry) => {
           if (!entry || typeof entry.conversationId !== 'string' || !entry.conversationId.trim() || typeof entry.canonicalUrl !== 'string' || !entry.canonicalUrl.trim()) return [];
