@@ -7,7 +7,7 @@ import { isAbsolute, join } from 'path';
 import { pathToFileURL } from 'url';
 
 export const PLUGIN_ID = 'uu_remote_rescue';
-export const PLUGIN_VERSION = '0.1.1';
+export const PLUGIN_VERSION = '0.1.3';
 export const PROTOCOL_VERSION = 1;
 export const CAPABILITIES = [
   'uu_remote.device_identity.v1',
@@ -20,16 +20,16 @@ export const ACTIONS = [
   'device_status', 'wsl_status', 'forge_health',
   'runtime_start', 'runtime_restart', 'connector_start', 'connector_restart',
   'recovery_start', 'recovery_restart', 'runtime_recover',
-  'host_tunnel_restart_dispatch', 'host_full_recover_dispatch',
+  'host_task_install_dispatch', 'host_tunnel_restart_dispatch', 'host_full_recover_dispatch',
 ];
 
 const MUTATING_ACTIONS = new Set(['runtime_start', 'runtime_restart', 'connector_start', 'connector_restart', 'recovery_start', 'recovery_restart', 'runtime_recover']);
 const HOST_RECOVERY_DISPATCH_ACTIONS = new Map([
+  ['host_task_install_dispatch', 'task_install'],
   ['host_tunnel_restart_dispatch', 'tunnel_restart'],
   ['host_full_recover_dispatch', 'full_recover'],
 ]);
 const TERMINAL_ACTIONS = new Set(ACTIONS.filter((action) => action !== 'device_status'));
-const TERMINAL_WORD = /terminal|powershell|cmd|wsl|shell|终端/i;
 
 function rescueError(code, message, retryable = false, details) {
   const error = new Error(message);
@@ -75,6 +75,7 @@ export function serviceUnits(controllerHome) {
     connector: `com.moretea.forge.mcp-gateway.${suffix}.service`,
     recoveryGateway: 'com.moretea.forge-recovery-gateway.service',
     recoveryWatchdog: 'com.moretea.forge-recovery-watchdog.service',
+    independentRecovery: 'com.moretea.forge.independent-recovery.service',
   };
 }
 
@@ -92,9 +93,13 @@ function parseJson(text, code) {
   try { return JSON.parse(text); } catch { throw rescueError(code, 'Provider returned invalid JSON.', true); }
 }
 
+export function withJsonOutput(args) {
+  return args.includes('--json') ? args : [...args, '--json'];
+}
+
 function runCliDefault(config, args) {
   if (!existsSync(config.uuycCliPath)) throw rescueError('UU_RESCUE_UUYC_CLI_UNAVAILABLE', 'Configured uuyc-cli is unavailable.');
-  const result = spawnSync(config.uuycCliPath, args, { encoding: 'utf8', env: minimalEnv(), timeout: 15_000, maxBuffer: 256 * 1024, shell: false, windowsHide: true });
+  const result = spawnSync(config.uuycCliPath, withJsonOutput(args), { encoding: 'utf8', env: minimalEnv(), timeout: 15_000, maxBuffer: 256 * 1024, shell: false, windowsHide: true });
   if (result.error) throw rescueError('UU_RESCUE_UUYC_CLI_FAILED', result.error.message, true);
   if (result.status !== 0) throw rescueError('UU_RESCUE_UUYC_CLI_FAILED', String(result.stderr || result.stdout || 'uuyc-cli failed').slice(-1000), true);
   const parsed = parseJson(String(result.stdout || '').trim(), 'UU_RESCUE_UUYC_PROTOCOL_INVALID');
@@ -102,9 +107,25 @@ function runCliDefault(config, args) {
   return parsed;
 }
 
+function runCliTextDefault(config, args) {
+  if (!existsSync(config.uuycCliPath)) throw rescueError('UU_RESCUE_UUYC_CLI_UNAVAILABLE', 'Configured uuyc-cli is unavailable.');
+  const result = spawnSync(config.uuycCliPath, args, { encoding: 'utf8', env: minimalEnv(), timeout: 15_000, maxBuffer: 256 * 1024, shell: false, windowsHide: true });
+  if (result.error) throw rescueError('UU_RESCUE_UUYC_CLI_FAILED', result.error.message, true);
+  if (result.status !== 0) throw rescueError('UU_RESCUE_UUYC_CLI_FAILED', String(result.stderr || result.stdout || 'uuyc-cli failed').slice(-1000), true);
+  return { success: true, text: String(result.stdout || '').trim() };
+}
+
 async function desktopCallDefault(config, requestId, action, args) {
   const socketPath = config.desktopOperatorSocketPath;
-  const envelope = `${JSON.stringify({ id: requestId, method: 'execute', params: { action, arguments: args } })}\n`;
+  let request;
+  if (action === 'computer_element_observe') {
+    request = { id: requestId, method: 'computer_execute', params: { capability: 'computer.element.observe.v2', protocolVersion: 2, arguments: args } };
+  } else if (action === 'computer_element_action') {
+    request = { id: requestId, method: 'computer_execute', params: { capability: 'computer.element.action.v2', protocolVersion: 2, arguments: args } };
+  } else {
+    request = { id: requestId, method: 'execute', params: { action, arguments: args } };
+  }
+  const envelope = JSON.stringify(request) + '\n';
   return await new Promise((resolve, reject) => {
     let socket;
     let settled = false;
@@ -153,47 +174,102 @@ function findStringKey(value, keys) {
   return undefined;
 }
 
-function accessibilityWindows(value) {
-  const windows = [];
-  const visit = (node) => {
-    if (!node || typeof node !== 'object') return;
-    if (Array.isArray(node)) { node.forEach(visit); return; }
-    if (node.role === 'AXWindow') {
-      windows.push({
-        title: typeof node.title === 'string' ? node.title : '',
-        identifier: typeof node.identifier === 'string' ? node.identifier : '',
-        focused: node.focused === true,
-      });
-    }
-    Object.values(node).forEach(visit);
-  };
-  visit(value);
-  return windows;
+function accessibilityNodes(value, predicate, output = []) {
+  if (!value || typeof value !== 'object') return output;
+  if (Array.isArray(value)) {
+    value.forEach((entry) => accessibilityNodes(entry, predicate, output));
+    return output;
+  }
+  if (predicate(value)) output.push(value);
+  if (Array.isArray(value.children)) {
+    value.children.forEach((entry) => accessibilityNodes(entry, predicate, output));
+  }
+  return output;
+}
+
+function accessibilityNodeStrings(node, output = []) {
+  if (!node || typeof node !== 'object') return output;
+  for (const key of ['name', 'title', 'identifier', 'description', 'value']) {
+    if (typeof node[key] === 'string') output.push(node[key]);
+  }
+  if (Array.isArray(node.children)) {
+    node.children.forEach((child) => accessibilityNodeStrings(child, output));
+  }
+  return output;
+}
+
+function accessibilityWindows(observation) {
+  const root = observation?.root ?? observation;
+  return accessibilityNodes(root, (node) => node.role === 'AXWindow').map((node) => ({
+    title: typeof node.name === 'string' ? node.name : typeof node.title === 'string' ? node.title : '',
+    identifier: typeof node.identifier === 'string' ? node.identifier : '',
+    focused: node.state?.focused === true || node.focused === true,
+    strings: accessibilityNodeStrings(node),
+    node,
+  }));
 }
 
 function exactTerminalWindows(observation, config) {
   return accessibilityWindows(observation).filter((window) =>
-    window.title.includes(config.device.name) && TERMINAL_WORD.test(window.title));
+    window.identifier === 'TerminalWindow' && window.strings.includes(config.device.name));
+}
+
+function exactTerminalOpenButtons(observation, config) {
+  const listWindows = accessibilityWindows(observation).filter((window) =>
+    window.identifier === 'TerminalListWindow' && window.strings.includes(config.device.name));
+  if (listWindows.length !== 1) return [];
+  const rows = accessibilityNodes(listWindows[0].node, (node) => node.role === 'AXRow');
+  return rows.flatMap((row) => {
+    const sessionLabels = accessibilityNodes(row, (node) => node.role === 'AXStaticText')
+      .map((node) => node.value)
+      .filter((value) => typeof value === 'string' && value.trim());
+    if (sessionLabels.length === 0) return [];
+    return accessibilityNodes(row, (node) =>
+      node.role === 'AXButton'
+      && node.name === '打开终端'
+      && Array.isArray(node.actions)
+      && node.actions.includes('invoke')
+      && node.state?.enabled !== false);
+  });
 }
 
 async function ensureTerminalWindowFocused(config, requestId, interactionId, initialObservation, deps) {
-  let observation = initialObservation;
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    const terminals = exactTerminalWindows(observation, config);
-    if (terminals.length > 1) {
-      throw rescueError('UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS', 'More than one exact configured-device UU terminal window is visible; refusing remote input.');
-    }
-    if (terminals.length === 1 && terminals[0].focused) return observation;
-    if (attempt === 5) break;
-    if (terminals.length === 1) {
-      await deps.desktopCall(config, `${requestId}:focus-cycle:${attempt}`, 'desktop_key', { interaction_id: interactionId, keys: ['COMMAND', '`'] });
-    }
-    await deps.sleep(terminals.length === 0 ? 250 : 150);
-    observation = await deps.desktopCall(config, `${requestId}:focus-observe:${attempt}`, 'desktop_observe', { interaction_id: interactionId, max_depth: 8, max_nodes: 1200, include_values: true, include_actions: false, include_windows: true });
+  const terminals = exactTerminalWindows(initialObservation, config);
+  if (terminals.length > 1) {
+    throw rescueError('UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS', 'More than one exact configured-device UU terminal window is visible; refusing remote input.');
   }
-  throw rescueError('UU_RESCUE_TERMINAL_FOCUS_UNPROVEN', 'The exact configured-device UU terminal window could not be proven focused; refusing remote input.', true);
-}
+  if (terminals.length === 1 && terminals[0].focused) return initialObservation;
 
+  const buttons = exactTerminalOpenButtons(initialObservation, config);
+  if (buttons.length > 1) {
+    throw rescueError('UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS', 'More than one exact configured-device UU terminal session can be opened; refusing remote input.');
+  }
+  if (buttons.length !== 1 || typeof buttons[0].ref !== 'string' || !buttons[0].target) {
+    throw rescueError('UU_RESCUE_TERMINAL_FOCUS_UNPROVEN', 'The exact configured-device UU terminal session could not be bound to its Open Terminal control; refusing remote input.', true);
+  }
+
+  const button = buttons[0];
+  await deps.desktopCall(config, requestId + ':open-terminal', 'computer_element_action', {
+    target: button.target,
+    ref: button.ref,
+    action: 'invoke',
+  });
+  await deps.sleep(150);
+  const observation = await deps.desktopCall(config, requestId + ':focus-verify', 'computer_element_observe', {
+    interactionId,
+    maxDepth: 12,
+    maxNodes: 2500,
+    includeValues: true,
+  });
+  const focused = exactTerminalWindows(observation, config);
+  if (focused.length > 1) {
+    throw rescueError('UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS', 'More than one exact configured-device UU terminal window is visible; refusing remote input.');
+  }
+  if (focused.length !== 1 || !focused[0].focused) {
+    throw rescueError('UU_RESCUE_TERMINAL_FOCUS_UNPROVEN', 'The exact configured-device UU terminal window could not be proven focused after opening its bound session; refusing remote input.', true);
+  }
+  return observation;
+}
 function markerPair(requestId) {
   const suffix = createHash('sha256').update(requestId).digest('hex').slice(0, 16);
   return { begin: `__FORGE_UU_RESCUE_BEGIN_${suffix}__`, end: `__FORGE_UU_RESCUE_END_${suffix}__` };
@@ -216,7 +292,7 @@ function b64(value) { return Buffer.from(String(value), 'utf8').toString('base64
 function decodeB64(value) { try { return Buffer.from(value, 'base64').toString('utf8'); } catch { return ''; } }
 
 export function buildWslStatusCommand(markers) {
-  return `$ErrorActionPreference='Continue'; $d=@(wsl.exe --list --quiet 2>$null | ForEach-Object { ($_ -replace [char]0,'').Trim() } | Where-Object { $_ }); $s=(wsl.exe --status 2>&1 | Out-String).Trim(); Write-Output '${markers.begin}'; foreach($x in $d){ Write-Output ('distro_b64|'+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($x))) }; Write-Output ('status_b64|'+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($s))); Write-Output '${markers.end}'`;
+  return `$ErrorActionPreference='Continue'; $d=@(wsl.exe --list --quiet 2>$null | ForEach-Object { ($_ -replace [char]0,'').Trim() } | Where-Object { $_ }); $s=(wsl.exe --status 2>&1 | Out-String).Trim(); Write-Output '${markers.begin}'; foreach($x in $d){ Write-Output ('distro_b64|'+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($x))) }; Write-Output ('status_b64|'+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($s))); $vv=@(wsl.exe --list --verbose 2>$null | ForEach-Object { ($_ -replace [char]0,'').Trim() } | Where-Object { $_ } | Select-Object -First 6); foreach($line in $vv){ Write-Output ('distro_detail|'+$line) }; $t=Get-ScheduledTask -TaskName 'Forge Independent Recovery WSL' -ErrorAction SilentlyContinue; Write-Output ('host_task_state|'+$(if($null -ne $t){$t.State.ToString()}else{'missing'})); $ti=if($null -ne $t){Get-ScheduledTaskInfo -TaskName 'Forge Independent Recovery WSL' -ErrorAction SilentlyContinue}else{$null}; Write-Output ('host_task_last_result|'+$(if($null -ne $ti){[string]$ti.LastTaskResult}else{'unknown'})); $fallback=(Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'ForgeIndependentRecoveryWSL' -ErrorAction SilentlyContinue).ForgeIndependentRecoveryWSL; Write-Output ('host_logon_fallback|'+$(if($fallback){'present'}else{'missing'})); $ctx=[Security.Principal.WindowsIdentity]::GetCurrent(); Write-Output ('host_windows_identity|'+$ctx.Name); $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'; $literal=(Get-ItemProperty -LiteralPath $runKey -Name 'ForgeIndependentRecoveryWSL' -ErrorAction SilentlyContinue).ForgeIndependentRecoveryWSL; Write-Output ('host_logon_fallback_literal|'+$(if($literal){'present'}else{'missing'})); Write-Output ('host_run_key_exists|'+$(if(Test-Path -LiteralPath $runKey){'true'}else{'false'})); Write-Output '${markers.end}'`;
 }
 
 export function buildHostRecoveryDispatchCommand(action) {
@@ -224,7 +300,12 @@ export function buildHostRecoveryDispatchCommand(action) {
   if (!recoveryAction) throw rescueError('UU_RESCUE_ACTION_UNSUPPORTED', 'Unsupported fixed host Recovery dispatch action.');
   const recoveryScript = String.raw`C:\ProgramData\ForgeRecovery\ForgeRecovery.ps1`;
   const powershellSuffix = String.raw`System32\WindowsPowerShell\v1.0\powershell.exe`;
-  return `$recoveryScript='${recoveryScript}'; $powershell=Join-Path $env:SystemRoot '${powershellSuffix}'; if (-not (Test-Path -LiteralPath $recoveryScript -PathType Leaf)) { throw 'FORGE_RECOVERY_SCRIPT_MISSING' }; if (-not (Test-Path -LiteralPath $powershell -PathType Leaf)) { throw 'WINDOWS_POWERSHELL_MISSING' }; Start-Process -WindowStyle Hidden -FilePath $powershell -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$recoveryScript,'${recoveryAction}')`;
+  const prefix = `$recoveryScript='${recoveryScript}'; $powershell=Join-Path $env:SystemRoot '${powershellSuffix}'; if (-not (Test-Path -LiteralPath $recoveryScript -PathType Leaf)) { throw 'FORGE_RECOVERY_SCRIPT_MISSING' }; if (-not (Test-Path -LiteralPath $powershell -PathType Leaf)) { throw 'WINDOWS_POWERSHELL_MISSING' };`;
+  if (action === 'host_task_install_dispatch') {
+    // Keep the fixed Windows install action foreground-visible to expose real failures.
+    return prefix + `$parentSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; Write-Output ('FORGE_RECOVERY_PARENT_SID|' + $parentSid); & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $recoveryScript 'task_install'; Write-Output ('FORGE_RECOVERY_TASK_INSTALL_EXIT|' + [string]$LASTEXITCODE); $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'; $entry=(Get-ItemProperty -LiteralPath $runKey -Name 'ForgeIndependentRecoveryWSL' -ErrorAction SilentlyContinue).ForgeIndependentRecoveryWSL; Write-Output ('FORGE_RECOVERY_PARENT_RUN|' + $(if($entry){'present'}else{'missing'}))`;
+  }
+  return prefix + `Start-Process -WindowStyle Hidden -FilePath $powershell -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$recoveryScript,'${recoveryAction}')`;
 }
 
 export function buildForgeCommand(action, config, markers) {
@@ -240,7 +321,7 @@ export function buildForgeCommand(action, config, markers) {
     runtime_recover: `if command -v forge >/dev/null 2>&1; then recovery_out="$(forge recovery recover --controller-home "$CH" 2>&1)"; recovery_code="$?"; emit recovery_output_b64 "$(printf %s "$recovery_out" | base64 | tr -d '\\n')"; emit action_exit "$recovery_code"; else emit recovery_output_b64 "$(printf %s 'forge CLI unavailable' | base64 | tr -d '\\n')"; emit action_exit 127; fi`,
   }[action];
   if (operation === undefined) throw rescueError('UU_RESCUE_ACTION_UNSUPPORTED', 'Unsupported fixed Forge rescue action.');
-  const script = `set +e\nCH="$(printf %s '${b64(config.wsl.controllerHome)}' | base64 -d)"\nemit(){ printf '%s|%s\\n' "$1" "$2"; }\nstatus(){ unit="$2"; load="$(systemctl --user show "$unit" -p LoadState --value 2>/dev/null)"; active="$(systemctl --user show "$unit" -p ActiveState --value 2>/dev/null)"; sub="$(systemctl --user show "$unit" -p SubState --value 2>/dev/null)"; pid="$(systemctl --user show "$unit" -p MainPID --value 2>/dev/null)"; printf 'service|%s|%s|%s|%s|%s\\n' "$1" "\${load:-unknown}" "\${active:-unknown}" "\${sub:-unknown}" "\${pid:-0}"; }\nprintf '%s\\n' '${markers.begin}'\nemit distro_b64 "$(printf %s "\${WSL_DISTRO_NAME:-}" | base64 | tr -d '\\n')"\nemit controller_home_present "$([ -d "$CH" ] && echo 1 || echo 0)"\nemit control_plane_present "$([ -f "$CH/control-plane.sqlite" ] && echo 1 || echo 0)"\nemit runtime_owner_present "$([ -f "$CH/runtime/active-runtime-owner.json" ] && echo 1 || echo 0)"\nemit runtime_status_present "$([ -f "$CH/runtime/status.json" ] && echo 1 || echo 0)"\nemit connector_authority_present "$([ -f "$CH/runtime/connector-service/authority.json" ] && echo 1 || echo 0)"\nemit recovery_config_present "$([ -d "$CH/recovery/config" ] && echo 1 || echo 0)"\nif command -v sqlite3 >/dev/null 2>&1 && [ -f "$CH/control-plane.sqlite" ]; then migration="$(sqlite3 -json "$CH/control-plane.sqlite" \"select json_extract(payload,'$.status') as status,json_extract(payload,'$.sourceHome') as sourceHome,json_extract(payload,'$.destinationHome') as destinationHome,updated_at as updatedAt from control_plane_records where namespace='controller_home_migration' order by updated_at desc limit 1;\" 2>/dev/null)"; emit migration_json_b64 "$(printf %s "$migration" | base64 | tr -d '\\n')"; else emit migration_unavailable_b64 "$(printf %s 'sqlite3 unavailable or control-plane missing' | base64 | tr -d '\\n')"; fi\n${operation}\nstatus runtime '${units.runtime}'\nstatus connector '${units.connector}'\nstatus recoveryGateway '${units.recoveryGateway}'\nstatus recoveryWatchdog '${units.recoveryWatchdog}'\nprintf '%s\\n' '${markers.end}'`;
+  const script = `set +e\nCH="$(printf %s '${b64(config.wsl.controllerHome)}' | base64 -d)"\nemit(){ printf '%s|%s\\n' "$1" "$2"; }\nstatus(){ unit="$2"; load="$(systemctl --user show "$unit" -p LoadState --value 2>/dev/null)"; active="$(systemctl --user show "$unit" -p ActiveState --value 2>/dev/null)"; sub="$(systemctl --user show "$unit" -p SubState --value 2>/dev/null)"; pid="$(systemctl --user show "$unit" -p MainPID --value 2>/dev/null)"; printf 'service|%s|%s|%s|%s|%s\\n' "$1" "\${load:-unknown}" "\${active:-unknown}" "\${sub:-unknown}" "\${pid:-0}"; }\nprintf '%s\\n' '${markers.begin}'\nemit distro_b64 "$(printf %s "\${WSL_DISTRO_NAME:-}" | base64 | tr -d '\\n')"\nemit controller_home_present "$([ -d "$CH" ] && echo 1 || echo 0)"\nemit control_plane_present "$([ -f "$CH/control-plane.sqlite" ] && echo 1 || echo 0)"\nemit runtime_owner_present "$([ -f "$CH/runtime/active-runtime-owner.json" ] && echo 1 || echo 0)"\nemit runtime_status_present "$([ -f "$CH/runtime/status.json" ] && echo 1 || echo 0)"\nemit connector_authority_present "$([ -f "$CH/runtime/connector-service/authority.json" ] && echo 1 || echo 0)"\nemit recovery_config_present "$([ -d "$CH/recovery/config" ] && echo 1 || echo 0)"\nif command -v sqlite3 >/dev/null 2>&1 && [ -f "$CH/control-plane.sqlite" ]; then migration="$(sqlite3 -json "$CH/control-plane.sqlite" \"select json_extract(payload,'$.status') as status,json_extract(payload,'$.sourceHome') as sourceHome,json_extract(payload,'$.destinationHome') as destinationHome,updated_at as updatedAt from control_plane_records where namespace='controller_home_migration' order by updated_at desc limit 1;\" 2>/dev/null)"; emit migration_json_b64 "$(printf %s "$migration" | base64 | tr -d '\\n')"; else emit migration_unavailable_b64 "$(printf %s 'sqlite3 unavailable or control-plane missing' | base64 | tr -d '\\n')"; fi\n${operation}\nstatus runtime '${units.runtime}'\nstatus connector '${units.connector}'\nstatus recoveryGateway '${units.recoveryGateway}'\nstatus recoveryWatchdog '${units.recoveryWatchdog}'\nstatus independentRecovery '${units.independentRecovery}'\nprintf '%s\\n' '${markers.end}'`;
   const payload = b64(script);
   const distro = config.wsl.distro.replaceAll("'", "''");
   return `wsl.exe -d '${distro}' -- bash -lc "printf %s '${payload}' | base64 -d | bash"`;
@@ -274,8 +355,10 @@ export function parseRecords(text) {
 async function verifyDevice(config, deps, requireOnline) {
   const response = await deps.runCli(config, ['device', 'info', config.device.id]);
   const data = response?.data || {};
-  const item = data.matchedItem || {};
-  if (data.isUniqueMatch !== true || item.deviceId !== config.device.id || item.deviceName !== config.device.name || String(item.platform || '').toLowerCase() !== 'windows') {
+  // Current uuyc-cli returns the exact requested device directly in data.
+  // Keep the legacy matchedItem shape for older app/CLI builds.
+  const item = data.matchedItem || data;
+  if (data.isUniqueMatch === false || item.deviceId !== config.device.id || item.deviceName !== config.device.name || String(item.platform || '').toLowerCase() !== 'windows') {
     throw rescueError('UU_RESCUE_DEVICE_MISMATCH', 'UU Remote device identity did not match the registration-bound Windows target.');
   }
   if (requireOnline && item.isOnline !== true) throw rescueError('UU_RESCUE_DEVICE_OFFLINE', 'The registration-bound UU Remote device is offline.', true);
@@ -284,7 +367,9 @@ async function verifyDevice(config, deps, requireOnline) {
 
 async function runTerminalCommand(config, requestId, command, deps, options = {}) {
   await verifyDevice(config, deps, true);
-  await deps.runCli(config, ['term', 'open', config.device.id]);
+  const sessionName = `forge-rescue-${createHash('sha256').update(requestId).digest('hex').slice(0, 12)}`;
+  await deps.runCli(config, ['term', 'kill', '--device', config.device.id, sessionName]);
+  await deps.runCliText(config, ['term', 'new', '--device', config.device.id, sessionName]);
   await deps.sleep(700);
   let interactionId;
   let originalClipboard;
@@ -293,16 +378,20 @@ async function runTerminalCommand(config, requestId, command, deps, options = {}
     const opened = await deps.desktopCall(config, `${requestId}:session`, 'desktop_session_open', { bundle_id: config.uuBundleId, launch: false, activate: true });
     interactionId = findStringKey(opened, ['interaction_id', 'interactionId']);
     if (!interactionId) throw rescueError('UU_RESCUE_TERMINAL_SESSION_UNBOUND', 'Desktop Operator did not return a bound UURemote interaction session.');
-    const observed = await deps.desktopCall(config, `${requestId}:preflight`, 'desktop_observe', { interaction_id: interactionId, max_depth: 8, max_nodes: 1200, include_values: true, include_actions: false, include_windows: true });
+    const observed = await deps.desktopCall(config, requestId + ':preflight', 'computer_element_observe', { interactionId, maxDepth: 12, maxNodes: 2500, includeValues: true });
     await ensureTerminalWindowFocused(config, requestId, interactionId, observed, deps);
+    if (options.resetPendingInput === true) {
+      await deps.desktopCall(config, requestId + ':clear-pending-input', 'desktop_key', { interaction_id: interactionId, keys: ['ESCAPE'] });
+    }
     const clipboard = await deps.desktopCall(config, `${requestId}:clipboard-read`, 'desktop_clipboard_read', {});
     originalClipboard = findStringKey(clipboard, ['text', 'value']) ?? '';
     clipboardCaptured = true;
     await deps.desktopCall(config, `${requestId}:clipboard-command`, 'desktop_clipboard_write', { text: command });
     await deps.desktopCall(config, `${requestId}:paste`, 'desktop_paste', { interaction_id: interactionId });
+    if (options.awaitResult === false) await deps.sleep(900);
     await deps.desktopCall(config, `${requestId}:return`, 'desktop_key', { interaction_id: interactionId, keys: ['RETURN'] });
     if (options.awaitResult === false) {
-      await deps.sleep(300);
+      await deps.sleep(1800);
       return undefined;
     }
     const markers = markerPair(requestId);
@@ -320,7 +409,7 @@ async function runTerminalCommand(config, requestId, command, deps, options = {}
     if (interactionId) {
       try { await deps.desktopCall(config, `${requestId}:session-close`, 'desktop_session_close', { interaction_id: interactionId }); } catch { /* best effort */ }
     }
-    try { await deps.runCli(config, ['term', 'exit', config.device.id, '--clear']); } catch { /* best effort */ }
+    try { await deps.runCli(config, ['term', 'kill', '--device', config.device.id, sessionName]); } catch { /* best effort */ }
   }
 }
 
@@ -328,12 +417,18 @@ export async function executeAction(actionId, input, configInput, injected = {})
   const config = validateConfig(configInput);
   if (!ACTIONS.includes(actionId)) throw rescueError('UU_RESCUE_ACTION_UNSUPPORTED', 'Unsupported UU Remote rescue action.');
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 0) throw rescueError('UU_RESCUE_ARGUMENTS_FORBIDDEN', 'UU Remote rescue actions do not accept caller-provided commands, service names, devices, paths, or shell arguments.');
-  const deps = { runCli: runCliDefault, desktopCall: desktopCallDefault, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), ...injected };
+  const deps = {
+    runCli: runCliDefault,
+    runCliText: runCliTextDefault,
+    desktopCall: desktopCallDefault,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    ...injected,
+  };
   if (actionId === 'device_status') return { device: await verifyDevice(config, deps, false) };
   const effectiveRequestId = injected.requestId || `${actionId}:${Date.now()}`;
   if (HOST_RECOVERY_DISPATCH_ACTIONS.has(actionId)) {
     const command = buildHostRecoveryDispatchCommand(actionId);
-    await runTerminalCommand(config, effectiveRequestId, command, deps, { awaitResult: false });
+    await runTerminalCommand(config, effectiveRequestId, command, deps, { awaitResult: false, resetPendingInput: actionId === 'host_task_install_dispatch' });
     return {
       device: config.device,
       wsl: { configuredDistro: config.wsl.distro },

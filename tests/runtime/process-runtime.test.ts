@@ -4051,6 +4051,74 @@ describe('Process Runtime real lease contention', () => {
   });
 });
 
+test('late Runner receipts refine an unknown outcome without replaying the Process', async () => {
+  for (const status of ['succeeded', 'failed', 'timed_out', 'cancelled'] as const) {
+    const fx = fixture();
+    const processId = `proc_late_receipt_${status}`;
+    const exitReceiptPath = join(fx.root, `${processId}.exit.json`);
+    const marker = join(fx.root, 'must-not-reexecute');
+    const startedAt = new Date(Date.now() - 60_000).toISOString();
+    createProcessRecord({
+      schemaVersion: 1, processId, repoId: fx.repository.repoId, controllerHome: fx.controllerHome,
+      status: 'completed_unknown', route: 'managed', terminalWritten: true, terminalFenceToken: 7,
+      command: { kind: 'argv', executable: 'node', args: ['-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'replayed')`], cwd: fx.repoRoot },
+      resourceClaims: [], leasesReleased: true, interactiveWaitMs: 0, timeoutMs: 30_000, maxOutputBytes: 4096,
+      startedAt, updatedAt: startedAt, finishedAt: new Date().toISOString(), exitReceiptPath,
+      error: { code: 'COMPLETED_UNKNOWN', message: 'exit receipt was not yet visible' },
+    });
+    writeFileSync(`${exitReceiptPath}.started.json`, JSON.stringify({ processId }));
+    expect(getProcessHandle(fx.controllerHome, fx.repository.repoId, processId)?.status).toBe('completed_unknown');
+    expect(existsSync(`${exitReceiptPath}.started.json`)).toBe(true);
+    const finishedAt = new Date(Date.now() - 1_000).toISOString();
+    writeFileSync(exitReceiptPath, JSON.stringify({
+      schemaVersion: 1, processId, commandExecutedOnce: true, finishedAt,
+      exitCode: status === 'succeeded' ? 0 : 1, timedOut: status === 'timed_out', cancelled: status === 'cancelled',
+    }));
+    const handle = status === 'failed'
+      ? await waitForProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 1 })
+      : getProcessHandle(fx.controllerHome, fx.repository.repoId, processId);
+    expect(handle).toMatchObject({ processId, completed: true, status });
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)).toMatchObject({
+      status, terminalWritten: true, terminalFenceToken: 7, leasesReleased: true, finishedAt,
+    });
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.error).toBeUndefined();
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(exitReceiptPath)).toBe(false);
+    expect(getProcessHandle(fx.controllerHome, fx.repository.repoId, processId)?.status).toBe(status);
+  }
+});
+
+test('unknown outcome refinement retains receipt validation and terminal fencing', () => {
+  const fx = fixture();
+  const processId = 'proc_unknown_refinement_fence';
+  const exitReceiptPath = join(fx.root, `${processId}.exit.json`);
+  const startedAt = new Date().toISOString();
+  createProcessRecord({
+    schemaVersion: 1, processId, repoId: fx.repository.repoId, controllerHome: fx.controllerHome,
+    status: 'completed_unknown', route: 'managed', terminalWritten: true, terminalFenceToken: 7, leasesReleased: true,
+    command: { kind: 'argv', executable: 'node', args: ['--version'], cwd: fx.repoRoot },
+    resourceClaims: [], interactiveWaitMs: 0, timeoutMs: 30_000, maxOutputBytes: 4096,
+    startedAt, updatedAt: startedAt, exitReceiptPath,
+  });
+  const receipt = { schemaVersion: 1, processId, commandExecutedOnce: true, exitCode: 0, finishedAt: startedAt };
+  for (const invalid of [
+    { ...receipt, processId: 'another-process' }, { ...receipt, commandExecutedOnce: false },
+    { ...receipt, commandExecutedOnce: undefined },
+    { ...receipt, finishedAt: 'invalid' }, { ...receipt, exitCode: 'not-a-code' },
+  ]) {
+    writeFileSync(exitReceiptPath, JSON.stringify(invalid));
+    expect(getProcessHandle(fx.controllerHome, fx.repository.repoId, processId)?.status).toBe('completed_unknown');
+    expect(existsSync(exitReceiptPath)).toBe(true);
+  }
+  expect(tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 7, { status: 'succeeded' }).reason).toBe('already_terminal');
+  expect(tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 8, { status: 'succeeded' }, { validatedExitReceipt: true }).reason).toBe('fence_mismatch');
+  expect(tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 7, { status: 'completed_unknown' }, { validatedExitReceipt: true }).reason).toBe('already_terminal');
+  writeFileSync(exitReceiptPath, JSON.stringify(receipt));
+  expect(getProcessHandle(fx.controllerHome, fx.repository.repoId, processId)?.status).toBe('succeeded');
+  expect(tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 7, { status: 'failed' }, { validatedExitReceipt: true }).reason).toBe('already_terminal');
+  expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.terminalFenceToken).toBe(7);
+});
+
 test('recovered cancellation preserves real receipts and does not claim an unverified stop', async () => {
   for (const scenario of ['receipt', 'dead', 'untrusted', 'historical-unknown']) {
     const fx = fixture();

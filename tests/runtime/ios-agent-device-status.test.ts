@@ -87,7 +87,8 @@ describe('iOS agent-device readiness probe', () => {
     expect(status.capabilityProfile).toMatchObject({ version: '0.20.1', source: 'help', versionSupported: true });
     expect(calls.map((call) => call.args.join(' '))).toEqual([
       '--version', 'help', 'help snapshot', 'help press', 'help fill', 'help batch', 'help keyboard',
+      'press --help',
     ]);
-    expect(calls.map((call) => call.timeoutMs)).toEqual([8_000, 3_000, 3_000, 3_000, 3_000, 3_000, 3_000]);
+    expect(calls.map((call) => call.timeoutMs)).toEqual([8_000, 3_000, 3_000, 3_000, 3_000, 3_000, 3_000, 3_000]);
   });
 });

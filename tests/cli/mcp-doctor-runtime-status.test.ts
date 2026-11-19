@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { runMcpDoctor } from "../../adapters/mcp/setup";
+import { recordMcpTransportEvent } from "../../src/runtime/diagnostics/mcp-timing";
+import { mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath } from "../../adapters/mcp/auth";
 import type { RuntimeStatusSnapshot } from "../../src/runtime/root/types";
 
 function makeFixture(): { repoDir: string; controllerHome: string } {
@@ -96,6 +98,235 @@ describe("forge mcp doctor runtime status", () => {
     }
   });
 
+  test("user-level MCP doctor succeeds from a non-Git directory without invoking Git", () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-mcp-doctor-user-level-"));
+    const controllerHome = join(root, "controller-home");
+    const binDir = join(root, "bin");
+    const gitCalls = join(root, "git-calls.log");
+    const previousCwd = process.cwd();
+    const previousPath = process.env.PATH;
+    const previousControllerHome = process.env.FORGE_CONTROLLER_HOME;
+    try {
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(join(binDir, "git"), `#!/bin/sh\nprintf 'called\\n' >> "${gitCalls}"\nexit 1\n`);
+      chmodSync(join(binDir, "git"), 0o700);
+      process.env.PATH = binDir;
+      delete process.env.FORGE_CONTROLLER_HOME;
+      process.chdir(root);
+
+      const result = runMcpDoctor({ userLevel: true, controllerHome, json: true });
+      const report = JSON.parse(result.lines[0] ?? "{}") as {
+        scope?: string;
+        status?: string;
+        repo?: string;
+        mcp?: { localConfig?: boolean; authConfigured?: boolean };
+        chatgpt?: { setup?: string };
+      };
+
+      expect(existsSync(gitCalls)).toBe(false);
+      expect(result.repoRoot).toBeUndefined();
+      expect(report).toMatchObject({
+        scope: "user",
+        status: "user_level",
+        mcp: { localConfig: false, authConfigured: false },
+        chatgpt: { setup: `forge mcp setup chatgpt --user-level --controller-home ${JSON.stringify(controllerHome)}` },
+      });
+      expect(report.repo).toBeUndefined();
+
+      const human = runMcpDoctor({ userLevel: true, controllerHome });
+      expect(human.lines.some((line) => line.includes("Last MCP session close: no recorded close event in retained history"))).toBe(true);
+      expect(human.lines.some((line) => line.includes("MCP Gateway: unknown (no service state recorded)"))).toBe(true);
+      expect(human.lines.some((line) => line.includes("Public Tunnel: unknown (no service state recorded)"))).toBe(true);
+    } finally {
+      process.chdir(previousCwd);
+      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+      if (previousControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+      else process.env.FORGE_CONTROLLER_HOME = previousControllerHome;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("reports Controller Home credential presence without exposing values or claiming ownership of Secure Tunnel secrets", () => {
+    const { repoDir, controllerHome } = makeFixture();
+    const oauthSecret = "synthetic-oauth-secret-value";
+    const bearerSecret = "synthetic-bearer-secret-value";
+    try {
+      mkdirSync(join(controllerHome, "mcp"), { recursive: true });
+      writeFileSync(mcpControllerHomeOAuthPath(controllerHome), oauthSecret);
+      writeFileSync(mcpControllerHomeTokenPath(controllerHome), bearerSecret);
+      const result = withControllerHome(controllerHome, () => runMcpDoctor({ repo: repoDir, json: true }));
+      const report = JSON.parse(result.lines[0] ?? "{}") as {
+        credentialBoundary?: {
+          controllerHome?: { oauthFileConfigured?: boolean; bearerTokenFileConfigured?: boolean; secretValuesExposed?: boolean };
+          openAiSecureTunnel?: { credentialName?: string; credentialOwner?: string; persistedByForge?: boolean };
+        };
+      };
+      expect(report.credentialBoundary).toEqual({
+        controllerHome: {
+          oauthFileConfigured: true,
+          bearerTokenFileConfigured: true,
+          secretValuesExposed: false,
+        },
+        openAiSecureTunnel: {
+          credentialName: "CONTROL_PLANE_API_KEY",
+          credentialOwner: "external_runtime_environment",
+          persistedByForge: false,
+        },
+      });
+      expect(JSON.stringify(report)).not.toContain(oauthSecret);
+      expect(JSON.stringify(report)).not.toContain(bearerSecret);
+    } finally {
+      rmSync(join(controllerHome, ".."), { recursive: true, force: true });
+    }
+  });
+
+  test("reports the persisted last session-close reason when the Connector is no longer reachable", () => {
+    const { controllerHome } = makeFixture();
+    const closedAt = new Date(Date.now() - 1_000).toISOString();
+    const initializedAt = new Date().toISOString();
+    try {
+      recordMcpTransportEvent(controllerHome, {
+        kind: "session_closed",
+        sessionId: "expired-session",
+        connectionId: "connection-expired",
+        route: "/mcp",
+        principalId: "oauth-client:fixture",
+        reason: "idle_ttl",
+        at: closedAt,
+      });
+      recordMcpTransportEvent(controllerHome, {
+        kind: "session_closed",
+        sessionId: "lease-expired-session",
+        connectionId: "connection-expired",
+        route: "/mcp",
+        principalId: "oauth-client:fixture",
+        reason: "stream_lease",
+        at: new Date(Date.parse(closedAt) - 1_000).toISOString(),
+      });
+      recordMcpTransportEvent(controllerHome, {
+        kind: "session_closed",
+        sessionId: "lifetime-expired-session",
+        connectionId: "connection-expired",
+        route: "/mcp",
+        principalId: "oauth-client:fixture",
+        reason: "absolute_lifetime",
+        at: new Date(Date.parse(closedAt) - 2_000).toISOString(),
+      });
+      recordMcpTransportEvent(controllerHome, {
+        kind: "session_initialized",
+        sessionId: "replacement-session",
+        connectionId: "connection-expired",
+        route: "/mcp",
+        principalId: "oauth-client:fixture",
+        at: initializedAt,
+      });
+
+      const json = withControllerHome(controllerHome, () => runMcpDoctor({
+        userLevel: true,
+        controllerHome,
+        json: true,
+      }));
+      const report = JSON.parse(json.lines[0] ?? "{}") as {
+        transportEvidence?: {
+          lastSessionClose?: { kind?: string; at?: string; reason?: string; route?: string; sessionId?: string; ageMs?: number } | null;
+          reinitializedAfterLastClose?: boolean;
+        };
+      };
+      expect(report.transportEvidence).toMatchObject({
+        sessionCloseCounts: {
+          total: 3,
+          byReason: { absolute_lifetime: 1, idle_ttl: 1, stream_lease: 1 },
+        },
+        lastSessionClose: {
+          kind: "session_closed",
+          at: closedAt,
+          reason: "idle_ttl",
+          route: "/mcp",
+          sessionId: "expired-session",
+        },
+        reinitializedAfterLastClose: true,
+      });
+
+      const human = withControllerHome(controllerHome, () => runMcpDoctor({
+        userLevel: true,
+        controllerHome,
+      }));
+      expect(human.lines.some((line) => line.includes("MCP session closes (retained): 3") && line.includes("absolute_lifetime=1") && line.includes("idle_ttl=1") && line.includes("stream_lease=1"))).toBe(true);
+      expect(human.lines.some((line) => line.includes("Last MCP session close: idle_ttl"))).toBe(true);
+      expect(human.repoRoot).toBeUndefined();
+    } finally {
+      rmSync(join(controllerHome, ".."), { recursive: true, force: true });
+    }
+  });
+
+  test("does not attribute another MCP connection's initialization to the last closed connection", () => {
+    const { controllerHome } = makeFixture();
+    const closedAt = new Date(Date.now() - 1_000).toISOString();
+    try {
+      recordMcpTransportEvent(controllerHome, {
+        kind: "session_closed",
+        sessionId: "closed-session",
+        connectionId: "connection-a",
+        route: "/mcp",
+        principalId: "oauth-client:fixture",
+        reason: "idle_ttl",
+        at: closedAt,
+      });
+      recordMcpTransportEvent(controllerHome, {
+        kind: "session_initialized",
+        sessionId: "unrelated-session",
+        connectionId: "connection-b",
+        route: "/mcp",
+        principalId: "oauth-client:fixture",
+        at: new Date().toISOString(),
+      });
+
+      const result = runMcpDoctor({ userLevel: true, controllerHome, json: true });
+      const report = JSON.parse(result.lines[0] ?? "{}") as {
+        transportEvidence?: { reinitializedAfterLastClose?: boolean };
+      };
+      expect(report.transportEvidence?.reinitializedAfterLastClose).toBe(false);
+    } finally {
+      rmSync(join(controllerHome, ".."), { recursive: true, force: true });
+    }
+  });
+
+  test("retains the last durable session-close diagnosis after the 30-minute display window", () => {
+    const { controllerHome } = makeFixture();
+    const closedAt = new Date(Date.now() - 45 * 60_000).toISOString();
+    try {
+      recordMcpTransportEvent(controllerHome, {
+        kind: "session_closed",
+        sessionId: "older-session",
+        connectionId: "connection-older",
+        route: "/mcp",
+        principalId: "oauth-client:fixture",
+        reason: "absolute_lifetime",
+        at: closedAt,
+      });
+
+      const json = runMcpDoctor({ userLevel: true, controllerHome, json: true });
+      const report = JSON.parse(json.lines[0] ?? "{}") as {
+        transportEvidence?: {
+          lastSessionClose?: { reason?: string; at?: string; sessionId?: string; ageMs?: number } | null;
+          reinitializedAfterLastClose?: boolean;
+        };
+      };
+      expect(report.transportEvidence?.lastSessionClose).toMatchObject({
+        reason: "absolute_lifetime",
+        at: closedAt,
+        sessionId: "older-session",
+      });
+      expect(report.transportEvidence?.lastSessionClose?.ageMs).toBeGreaterThanOrEqual(45 * 60_000);
+      expect(report.transportEvidence?.reinitializedAfterLastClose).toBe(false);
+
+      const human = runMcpDoctor({ userLevel: true, controllerHome });
+      expect(human.lines.some((line) => line.includes("absolute_lifetime") && line.includes("45m ago"))).toBe(true);
+    } finally {
+      rmSync(join(controllerHome, ".."), { recursive: true, force: true });
+    }
+  });
+
   test("still reports not running when the canonical runtime is genuinely absent", () => {
     const { repoDir, controllerHome } = makeFixture();
     try {
@@ -114,7 +345,7 @@ describe("forge mcp doctor runtime status", () => {
     }
   });
 
-  test("preserves the ChatGPT connector service state on its own line when present", () => {
+  test("reports MCP Gateway and Public Tunnel health independently when present", () => {
     const { repoDir, controllerHome } = makeFixture();
     try {
       const mcpDir = join(controllerHome, "mcp");
@@ -128,17 +359,20 @@ describe("forge mcp doctor runtime status", () => {
             repo: repoDir,
             startedAt: observedAt,
             updatedAt: observedAt,
-            status: "stopped",
-            tunnelMode: "none",
-            server: { endpoint: "http://127.0.0.1:8765/mcp", running: false, healthy: false, restartCount: 0 },
+            status: "degraded",
+            tunnelMode: "named",
+            server: { endpoint: "http://127.0.0.1:8765/mcp", running: true, healthy: false, restartCount: 0 },
+            tunnel: { running: true, healthy: true, restartCount: 0, name: "forge-current", publicEndpoint: "https://forge.example.test/mcp" },
           },
           null,
           2,
         )}\n`,
       );
       const result = withControllerHome(controllerHome, () => runMcpDoctor({ repo: repoDir }));
-      const connectorLine = result.lines.find((line) => line.startsWith("[forge mcp] ChatGPT connector service:"));
-      expect(connectorLine).toContain("stopped");
+      const gatewayLine = result.lines.find((line) => line.startsWith("[forge mcp] MCP Gateway:"));
+      expect(gatewayLine).toContain("degraded (local=unhealthy)");
+      const tunnelLine = result.lines.find((line) => line.startsWith("[forge mcp] Public Tunnel:"));
+      expect(tunnelLine).toContain("named (running, public=ok)");
       const runtimeLine = result.lines.find((line) => line.startsWith("[forge mcp] Runtime:"));
       expect(runtimeLine).toContain("not running");
 
@@ -147,7 +381,7 @@ describe("forge mcp doctor runtime status", () => {
         runtime?: { status?: string };
         canonicalRuntime?: { running?: boolean };
       };
-      expect(report.runtime?.status).toBe("stopped");
+      expect(report.runtime?.status).toBe("degraded");
       expect(report.canonicalRuntime?.running).toBe(false);
     } finally {
       rmSync(join(controllerHome, ".."), { recursive: true, force: true });

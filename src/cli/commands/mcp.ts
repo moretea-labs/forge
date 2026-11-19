@@ -173,10 +173,12 @@ export function buildMcpCommand(): Command {
 
   mcp
     .command('doctor')
-    .description('Check forge MCP setup status')
-    .option('--repo <path>', 'Repository root to inspect', '.')
+    .description('Check Forge MCP setup status')
+    .option('--repo <path>', 'Repository root to inspect')
+    .option('--controller-home <path>', 'User Controller Home (used with --user-level)')
+    .option('--user-level', 'Inspect the user-level Controller without repository discovery')
     .option('--json', 'Output JSON instead of human-readable text')
-    .action((rawOpts: { repo?: string; json?: boolean }) => {
+    .action((rawOpts: { repo?: string; controllerHome?: string; userLevel?: boolean; json?: boolean }) => {
       void runMcpAction(() => {
         const result = runMcpDoctor(rawOpts);
         console.log(result.lines.join('\n'));

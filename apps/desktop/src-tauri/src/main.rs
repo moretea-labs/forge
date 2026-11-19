@@ -2868,7 +2868,7 @@ fn local_terminal_process_receipt(process_id: &str, query: &Value) -> Option<Val
     Some(json!({"ok":true,"result":{
         "accepted":true, "completed":true, "processId":process_id,
         "status":handle["status"], "exitCode":handle["exitCode"],
-        "ok":handle["ok"], "timedOut":handle["timedOut"],
+        "ok":handle["ok"], "timedOut":handle["timedOut"], "cancelled":handle["cancelled"],
         "stdoutTail":handle["stdoutTail"], "stderrTail":handle["stderrTail"]
     }}))
 }
@@ -2951,7 +2951,8 @@ fn local_effect_outcome(name: &str, receipt: &Value) -> LocalEffectOutcome {
         "run_command" => match result.get("status").and_then(Value::as_str) {
             Some("succeeded") if result.get("exitCode").and_then(Value::as_i64) == Some(0)
                 && result.get("ok").and_then(Value::as_bool) != Some(false)
-                && result.get("timedOut").and_then(Value::as_bool) != Some(true) => {
+                && result.get("timedOut").and_then(Value::as_bool) != Some(true)
+                && result.get("cancelled").and_then(Value::as_bool) != Some(true) => {
                 LocalEffectOutcome::Succeeded
             }
             Some("succeeded" | "failed" | "timed_out" | "cancelled" | "orphaned") =>
@@ -5376,6 +5377,22 @@ mod tests {
         assert_eq!(local_effect_outcome("process_cancel", &unknown), LocalEffectOutcome::Unknown);
         let still_running = json!({"ok":true,"result":{"status":"running","completed":false,"cancelled":false}});
         assert_eq!(local_effect_outcome("process_cancel", &still_running), LocalEffectOutcome::Unknown);
+    }
+
+    #[test]
+    fn cancelled_process_evidence_survives_terminal_projection() {
+        for id in ["proc_cancelled", "lightweight:12345678-1234-4abc-8def-1234567890ab"] {
+            let query = json!({"ok":true,"result":{
+                "processId":id,"completed":true,"status":"succeeded",
+                "exitCode":0,"ok":true,"cancelled":true
+            }});
+            assert_eq!(local_effect_outcome("run_command", &query),
+                LocalEffectOutcome::TerminalFailure);
+            let terminal = local_terminal_process_receipt(id, &query).unwrap();
+            assert_eq!(terminal["result"]["cancelled"], true);
+            assert_eq!(local_effect_outcome("run_command", &terminal),
+                LocalEffectOutcome::TerminalFailure);
+        }
     }
 
     #[test]

@@ -220,6 +220,10 @@ async function providerFixture(): Promise<ProviderFixture> {
           state.observeCount += 1;
           result = { observed: true, interactionId: params.interaction_id };
         } else if (actionId === 'observe_elements') {
+          if (request.method !== 'computer_execute' || computerCapability !== 'computer.element.observe.v2') {
+            fail('ACTION_NOT_FOUND', 'Unknown action observe_elements');
+            continue;
+          }
           const interactionId = typeof params.interactionId === 'string' ? params.interactionId : '';
           const session = sessions.get(interactionId);
           if (!session) {
@@ -414,6 +418,25 @@ describe('Computer durable InteractionTarget authority', () => {
       'target-list-filter-by-name',
     ));
     expect(byName).toMatchObject({ total: 1, returned: 1, truncated: false });
+  });
+
+  test('exact target open verifies a live PID-bound session through the element-observe capability', async () => {
+    const fixture = await providerFixture();
+    const targetId = await openTarget(fixture);
+    const before = targetAuthority.get(fixture.controllerHome, targetId);
+
+    const reopened = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_target_open',
+      { target_id: targetId, launch: false, activate: false },
+      'target-open-verify-exact-binding',
+    ));
+
+    expect(reopened).toMatchObject({ targetId, processId: 4242 });
+    expect(fixture.state.sessionOpenCount).toBe(1);
+    expect(fixture.state.elementObserveCount).toBe(1);
+    expect(fixture.state.observeCount).toBe(0);
+    expect(targetAuthority.get(fixture.controllerHome, targetId)).toEqual(before);
   });
 
   test('desktop observations fail closed on a stale binding until explicit target open reattaches it', async () => {

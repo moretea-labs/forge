@@ -1,4 +1,3 @@
-import { spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { processToolDefinitions } from '../../adapters/mcp/runtime-gateway/process-tools';
@@ -7,26 +6,28 @@ import { routeDurableMcpCall } from '../../adapters/mcp/runtime-gateway/router';
 import { callProcessTool } from '../../src/runtime/execution/process-runtime/tool-dispatch';
 import { createCanonicalRuntimeProxy, createMcpToolContext, deriveCanonicalForwardingTiming } from '../../adapters/mcp/server';
 import { Server } from '@modelcontextprotocol/server';
-import { Client, SdkErrorCode, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { startRuntimeMcpTransport } from '../../src/runtime/root/mcp-transport';
-import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import express from 'express';
 import { drainMcpPosts, terminateReclaimedMcpPost } from '../../adapters/mcp/transports/http-post-lifecycle';
 import { describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'crypto';
 import { createServer } from 'net';
+import { spawnSync } from 'child_process';
 import { EventEmitter } from 'events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY } from '@modelcontextprotocol/server';
-import { mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath } from '../../adapters/mcp/auth';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { loadMcpServiceLocalConfig, mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath, writeMcpServiceLocalConfig, writeMcpServiceRuntimeState } from '../../adapters/mcp/auth';
 import { runMcpSetupChatgpt } from '../../adapters/mcp/setup';
 import { mergeNoProxy, withDirectNetworkProxyBypass } from '../../adapters/mcp/proxy-env';
 import { McpSessionRegistry } from '../../adapters/mcp/transports/session-registry';
 import { admitMcpPost, createMcpHttpSessionRegistry, mcpRequestError } from '../../adapters/mcp/transports/http';
-import { recentMcpTransportEvidence } from '../../adapters/mcp/transports/http-observation';
+import { recentMcpTransportEvidence, registerMcpHttpObservationRoutes } from '../../adapters/mcp/transports/http-observation';
+import { flushMcpDiagnostics, readRecentMcpTransportEvents, recordMcpTransportEvent } from '../../src/runtime/diagnostics/mcp-timing';
 import { readExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
+import { readRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import {
   armPackageConnectorCutoverDrain,
   clearPackageConnectorCutoverDrain,
@@ -49,6 +50,10 @@ function freePort(): Promise<number> {
   });
 }
 
+async function closeClient(client: Client | null | undefined): Promise<void> {
+  await client?.close().catch(() => undefined);
+}
+
 async function waitForHealth(port: number): Promise<void> {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     try {
@@ -62,13 +67,13 @@ async function waitForHealth(port: number): Promise<void> {
   throw new Error('MCP HTTP server did not become healthy');
 }
 
-function initializeBody(clientName = 'forge-test'): string {
+function initializeBody(clientName = 'forge-test', protocolVersion = '2024-11-05'): string {
   return JSON.stringify({
     jsonrpc: '2.0',
     id: 1,
     method: 'initialize',
     params: {
-      protocolVersion: '2024-11-05',
+      protocolVersion,
       capabilities: {},
       clientInfo: { name: clientName, version: '0' },
     },
@@ -143,7 +148,7 @@ describe('mcp http transport', () => {
   });
 
   test('bounds MCP POST ingress with one shared capacity authority', () => {
-    const stats = { initializing: 0, activePostStartedAt: new Map<import('express').Response, number>(), rejectedOverload: 0 };
+    const stats = { initializing: 0, activePostStartedAt: new Map<import('express').Response, number>(), rejectedOverload: 0, authFailures: { total: 0, bearer: 0, oauth: 0 } };
     for (let i = 0; i < 31; i++) stats.activePostStartedAt.set({} as import('express').Response, Date.now() - 1_000);
     const response = () => {
       const emitter = new EventEmitter();
@@ -251,6 +256,7 @@ describe('mcp http transport', () => {
       activePostStartedAt: new Map<import('express').Response, number>(),
       rejectedOverload: 0,
       reclaimedStalePosts: 0,
+      authFailures: { total: 0, bearer: 0, oauth: 0 },
     };
     const mockResponse = (startedAt: number, streaming = false) => {
       let statusCode = 0;
@@ -386,6 +392,7 @@ describe('mcp http transport', () => {
       recentStatus: 'recovering',
       gatewayStartedAt: startedAt,
       lastInterruption: { sessionId: 'session-a' },
+      lastSessionClose: { sessionId: 'session-a', reason: 'transport_close' },
     });
 
     const recovered = recentMcpTransportEvidence([{
@@ -411,6 +418,80 @@ describe('mcp http transport', () => {
       recentStatus: 'recovered',
       lastRecoveryAt: '2026-09-22T10:00:05.000Z',
     });
+  });
+
+  test('does not attribute another connection initialization to an interrupted MCP connection', () => {
+    const startedAt = '2026-09-22T09:50:00.000Z';
+    const now = Date.parse('2026-09-22T10:10:00.000Z');
+    const evidence = recentMcpTransportEvidence([{
+      schemaVersion: 1,
+      at: '2026-09-22T10:00:05.000Z',
+      kind: 'session_initialized',
+      sessionId: 'other-session',
+      connectionId: 'connection-b',
+      route: '/mcp',
+      principalId: 'controller-http-client',
+    }, {
+      schemaVersion: 1,
+      at: '2026-09-22T10:00:00.000Z',
+      kind: 'interruption',
+      sessionId: 'session-a',
+      connectionId: 'connection-a',
+      route: '/mcp',
+      principalId: 'controller-http-client',
+      reason: 'transport_close',
+    }], startedAt, now);
+
+    expect(evidence).toMatchObject({ current: 'healthy', recentStatus: 'recovering' });
+    expect(evidence.lastRecoveryAt).toBeUndefined();
+  });
+
+  test('persists non-transport session close reasons in the durable controller ledger', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-mcp-session-close-evidence-'));
+    const restartedHome = mkdtempSync(join(tmpdir(), 'forge-mcp-session-close-restart-'));
+    try {
+      recordMcpTransportEvent(home, {
+        at: '2026-09-22T10:00:00.000Z',
+        kind: 'session_closed',
+        sessionId: 'session-idle',
+        connectionId: 'connection-a',
+        route: '/mcp',
+        principalId: 'controller-http-client',
+        reason: 'idle_ttl',
+      });
+      await flushMcpDiagnostics(home);
+
+      const ledger = readFileSync(join(home, 'audit', 'mcp-transport-events.jsonl'), 'utf8');
+      expect(ledger).toContain('"reason":"idle_ttl"');
+      mkdirSync(join(restartedHome, 'audit'), { recursive: true });
+      writeFileSync(join(restartedHome, 'audit', 'mcp-transport-events.jsonl'), ledger);
+
+      // Read through a fresh Controller Home so no process-local event cache can
+      // make this assertion pass; this is the same durable path after restart.
+      const events = readRecentMcpTransportEvents(restartedHome);
+      expect(events).toMatchObject([{
+        kind: 'session_closed',
+        sessionId: 'session-idle',
+        reason: 'idle_ttl',
+      }]);
+      expect(recentMcpTransportEvidence(
+        events,
+        '2026-09-22T09:50:00.000Z',
+        Date.parse('2026-09-22T10:10:00.000Z'),
+      )).toMatchObject({
+        current: 'healthy',
+        recentStatus: 'stable',
+        lastSessionClose: {
+          kind: 'session_closed',
+          sessionId: 'session-idle',
+          reason: 'idle_ttl',
+          route: '/mcp',
+        },
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(restartedHome, { recursive: true, force: true });
+    }
   });
 
   test('starts a controller Gateway without selecting or registering its launch directory as a repository', async () => {
@@ -478,11 +559,82 @@ describe('mcp http transport', () => {
             'content-type': 'application/json',
             accept: 'application/json, text/event-stream',
           },
-          body: initializeBody(),
+          body: initializeBody('forge-cloud-readiness', '2024-11-05'),
         });
         expect(initialized.status).toBe(200);
-        expect(initialized.headers.get('mcp-session-id')).toBeTruthy();
+        expect(initialized.headers.get('mcp-session-id')).toBeNull();
         expect(await initialized.text()).toContain('forge-mcp');
+
+        const initializedNotification = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-protocol-version': '2024-11-05' },
+          body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+        });
+        expect(initializedNotification.status).toBe(202);
+
+        const toolsList = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-protocol-version': '2024-11-05' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+        });
+        expect(toolsList.status).toBe(200);
+        expect(toolsList.headers.get('mcp-session-id')).toBeNull();
+        const toolsListText = await toolsList.text();
+        const toolsListData = toolsListText.split(/\r?\n/).find((line) => line.startsWith('data:'));
+        const toolsListBody = JSON.parse(toolsListData ? toolsListData.slice(5).trim() : toolsListText) as { result?: { tools?: unknown[] } };
+        expect(toolsListBody.result?.tools?.length).toBeGreaterThan(0);
+
+        for (let index = 0; index < 70; index += 1) {
+          const repeatedInitialize = await fetch(`http://127.0.0.1:${port}/mcp`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+            body: initializeBody(`forge-cloud-readiness-${index}`, '2025-11-25'),
+          });
+          expect(repeatedInitialize.status).toBe(200);
+          expect(repeatedInitialize.headers.get('mcp-session-id')).toBeNull();
+          await repeatedInitialize.body?.cancel().catch(() => undefined);
+        }
+        const statelessHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
+        expect(statelessHealth.sessions).toMatchObject({ active: 0, closed: { principalCapacity: 0 } });
+
+        const sessionfulInitialize = await fetch('http://127.0.0.1:' + port + '/mcp', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'mcp-session-id': 'expired-session-from-previous-gateway',
+          },
+          body: initializeBody('legacy-sessionful-client', '2025-11-25'),
+        });
+        expect(sessionfulInitialize.status).toBe(200);
+        expect(sessionfulInitialize.headers.get('mcp-session-reset')).toBe('reinitialized');
+        const legacySessionId = sessionfulInitialize.headers.get('mcp-session-id');
+        expect(legacySessionId).toBeTruthy();
+        await sessionfulInitialize.text();
+
+        const sessionfulToolsList = await fetch('http://127.0.0.1:' + port + '/mcp', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'mcp-protocol-version': '2025-11-25',
+            'mcp-session-id': legacySessionId!,
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list' }),
+        });
+        expect(sessionfulToolsList.status).toBe(200);
+        const sessionfulToolsText = await sessionfulToolsList.text();
+        const sessionfulToolsData = sessionfulToolsText.split(/\r?\n/).find((line) => line.startsWith('data:'));
+        const sessionfulToolsBody = JSON.parse(sessionfulToolsData ? sessionfulToolsData.slice(5).trim() : sessionfulToolsText) as { result?: { tools?: unknown[] } };
+        expect(sessionfulToolsBody.result?.tools?.length).toBeGreaterThan(0);
+
+        const sessionfulDelete = await fetch('http://127.0.0.1:' + port + '/mcp', {
+          method: 'DELETE',
+          headers: { 'mcp-session-id': legacySessionId! },
+        });
+        expect(sessionfulDelete.status).toBe(200);
+        const finalHealth = await fetch('http://127.0.0.1:' + port + '/health').then((response) => response.json());
+        expect(finalHealth.sessions.active).toBe(0);
       });
     } finally {
       await stopMcpServerProcess(proc);
@@ -503,10 +655,12 @@ describe('mcp http transport', () => {
     expect(authGate).toContain('/.well-known/oauth-authorization-server');
     expect(authGate).toContain('none)');
     expect(authGate).toContain('\"method\":\"initialize\"');
-    expect(authGate).toContain('mcp-session-id:');
+    expect(authGate).toContain('MCP_TOOLS_LIST_PAYLOAD');
     expect(authGate).toContain('\"http://127.0.0.1:${GATEWAY_PORT}/mcp\"');
     const noneGate = authGate.slice(authGate.indexOf('none)'), authGate.indexOf('bearer)'));
     expect(noneGate).not.toContain('/.well-known/oauth-authorization-server');
+    expect(noneGate).toContain('&& ! grep -Eiq');
+    expect(noneGate).toContain('tools/list');
   });
 
   test('cloud tunnel host bounds readiness races and cleanup teardown', () => {
@@ -611,6 +765,21 @@ describe('mcp http transport', () => {
         });
         expect(noAuth.status).toBe(401);
 
+        const invalidAuth = await fetch('http://127.0.0.1:' + port + '/mcp', {
+          method: 'POST',
+          headers: { authorization: 'Bearer definitely-not-valid', 'content-type': 'application/json' },
+          body: initializeBody(),
+        });
+        expect(invalidAuth.status).toBe(401);
+        const bearerAuthEvidence = await fetch('http://127.0.0.1:' + port + '/health').then((response) => response.json());
+        expect(bearerAuthEvidence.authFailures).toMatchObject({
+          total: 2,
+          bearer: 2,
+          oauth: 0,
+          last: { mode: 'bearer', reason: 'invalid_authorization', route: '/mcp' },
+        });
+        expect(JSON.stringify(bearerAuthEvidence.authFailures)).not.toContain(token);
+
         const badJson = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
           headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
@@ -653,7 +822,7 @@ describe('mcp http transport', () => {
         expect(postProbeHealth.sessions.activePosts).toBe(0);
         expect(postProbeHealth.sessions.oldestActivePostAgeMs).toBe(0);
 
-        const initialized = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        const initialized = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
           method: 'POST',
           headers: {
             authorization: `Bearer ${token}`,
@@ -668,7 +837,7 @@ describe('mcp http transport', () => {
         expect(await initialized.text()).toContain('forge-mcp');
 
         const streamController = new AbortController();
-        const stream = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        const stream = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
           headers: {
             authorization: `Bearer ${token}`,
             'mcp-session-id': sessionId!,
@@ -687,7 +856,19 @@ describe('mcp http transport', () => {
         const closedStreamHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
         expect(closedStreamHealth.sessions.activeStreams).toBe(0);
 
-        const deleted = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        // A tunnel/SSE stream interruption must not retire the MCP session.
+        const tunnelReconnectedTools = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
+          method: 'POST',
+          headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-session-id': sessionId! },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'tunnel-reconnected-tools', method: 'tools/list' }),
+        });
+        expect(tunnelReconnectedTools.status).toBe(200);
+        const tunnelToolsText = await tunnelReconnectedTools.text();
+        const tunnelToolsData = tunnelToolsText.split(/\r?\n/).find((line) => line.startsWith('data:'));
+        const tunnelToolsBody = JSON.parse(tunnelToolsData ? tunnelToolsData.slice(5).trim() : tunnelToolsText) as { result?: { tools?: unknown[] } };
+        expect(tunnelToolsBody.result?.tools?.length).toBeGreaterThan(0);
+
+        const deleted = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
           method: 'DELETE',
           headers: {
             authorization: `Bearer ${token}`,
@@ -695,17 +876,33 @@ describe('mcp http transport', () => {
           },
         });
         expect(deleted.status).toBe(200);
-        await Bun.sleep(25);
-        const deletedHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
+        let deletedHealth: { sessions?: unknown; transportEvidence?: { lastSessionClose?: { reason?: string } | null } } | undefined;
+        const closeDeadline = Date.now() + 2_000;
+        while (Date.now() < closeDeadline) {
+          deletedHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
+          if (deletedHealth?.transportEvidence?.lastSessionClose?.reason === 'client_delete') break;
+          await Bun.sleep(25);
+        }
+        if (!deletedHealth || deletedHealth.transportEvidence?.lastSessionClose?.reason !== 'client_delete') {
+          throw new Error('durable session-close evidence was not recorded after DELETE');
+        }
+        const lastSessionClose = deletedHealth.transportEvidence.lastSessionClose;
+        if (!lastSessionClose) throw new Error('last session-close evidence is missing');
         expect(deletedHealth.sessions).toMatchObject({
           active: 0,
           capacityAvailable: 64,
           acceptingNewSessions: true,
           closed: { clientDelete: 1 },
-          lastClosed: { reason: 'client_delete', route: '/mcp', closedAt: expect.any(String) },
+          lastClosed: { reason: 'client_delete', route: '/mcp-bearer', closedAt: expect.any(String) },
+        });
+        expect(lastSessionClose).toMatchObject({
+          kind: 'session_closed',
+          sessionId,
+          reason: 'client_delete',
+          route: '/mcp-bearer',
         });
 
-        const expiredSession = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        const expiredSession = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
           method: 'POST',
           headers: {
             authorization: `Bearer ${token}`,
@@ -720,7 +917,7 @@ describe('mcp http transport', () => {
         expect(expiredSession.headers.get('x-forge-session-reset')).toBe('reinitialize');
         expect(await expiredSession.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
 
-        const reinitialized = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        const reinitialized = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
           method: 'POST',
           headers: {
             authorization: `Bearer ${token}`,
@@ -733,7 +930,27 @@ describe('mcp http transport', () => {
         const reinitializedSessionId = reinitialized.headers.get('mcp-session-id');
         expect(reinitializedSessionId).toBeTruthy();
         expect(reinitializedSessionId).not.toBe(sessionId);
-        const reinitializedDelete = await fetch(`http://127.0.0.1:${port}/mcp`, {
+
+        const reinitializedTools = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer ' + token,
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'mcp-session-id': reinitializedSessionId!,
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'reinitialized-tools-list', method: 'tools/list' }),
+        });
+        expect(reinitializedTools.status).toBe(200);
+        const reinitializedToolsText = await reinitializedTools.text();
+        const reinitializedToolsData = reinitializedToolsText.split(/\r?\n/).find((line) => line.startsWith('data:'));
+        const reinitializedToolsBody = JSON.parse(reinitializedToolsData ? reinitializedToolsData.slice(5).trim() : reinitializedToolsText) as {
+          result?: { tools?: unknown[] };
+        };
+        expect(Array.isArray(reinitializedToolsBody.result?.tools)).toBe(true);
+        expect(reinitializedToolsBody.result?.tools?.length).toBeGreaterThan(0);
+
+        const reinitializedDelete = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
           method: 'DELETE',
           headers: { authorization: `Bearer ${token}`, 'mcp-session-id': reinitializedSessionId! },
         });
@@ -741,6 +958,814 @@ describe('mcp http transport', () => {
       });
     } finally {
       await stopMcpServerProcess(proc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps primary legacy MCP stateless and ready when stateful compatibility capacity is saturated', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-stateless-capacity-'));
+    const port = await freePort();
+    let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
+        const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
+        const url = (path: string) => 'http://127.0.0.1:' + port + path;
+
+        proc = Bun.spawn(
+          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'planner', '--auth', 'bearer'],
+          {
+            cwd: process.cwd(),
+            stdout: 'ignore',
+            stderr: 'pipe',
+            env: isolatedMcpProcessEnv(controllerHome, {
+              FORGE_MCP_MAX_SESSIONS: '1',
+              FORGE_MCP_MAX_SESSIONS_PER_PRINCIPAL: '1',
+            }),
+          },
+        );
+        await waitForHealth(port);
+        const headers = { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+        const statefulInitialize = await fetch(url('/mcp-bearer'), {
+          method: 'POST',
+          headers,
+          body: initializeBody('stateful-compatibility-client'),
+        });
+        expect(statefulInitialize.status).toBe(200);
+        const sessionId = statefulInitialize.headers.get('mcp-session-id');
+        expect(sessionId).toBeTruthy();
+        await statefulInitialize.text();
+
+        const saturatedHealth = await fetch(url('/health')).then((response) => response.json());
+        expect(saturatedHealth.sessions).toMatchObject({ active: 1, maximum: 1, capacityAvailable: 0 });
+
+        const transportReady = await fetch(url('/transport-ready'));
+        expect(transportReady.status).toBe(200);
+        expect(await transportReady.json()).toMatchObject({
+          ready: true,
+          statefulSessionCapacityReady: true,
+          sessionCapacity: { active: 1, maximum: 1, capacityAvailable: 0, acceptingNewSessions: true },
+        });
+        const gatewayReady = await fetch(url('/ready'));
+        expect(gatewayReady.status).toBe(200);
+        expect(await gatewayReady.json()).toMatchObject({ ready: true, statefulSessionCapacityReady: true });
+
+        for (let index = 0; index < 70; index += 1) {
+          const initialized = await fetch(url('/mcp'), {
+            method: 'POST',
+            headers,
+            body: initializeBody('chatgpt-stateless-' + index, '2025-11-25'),
+          });
+          expect(initialized.status).toBe(200);
+          expect(initialized.headers.get('mcp-session-id')).toBeNull();
+          await initialized.body?.cancel().catch(() => undefined);
+        }
+        const initializedNotification = await fetch(url('/mcp'), {
+          method: 'POST',
+          headers: { ...headers, 'mcp-protocol-version': '2025-11-25' },
+          body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+        });
+        expect(initializedNotification.status).toBe(202);
+        const toolsList = await fetch(url('/mcp'), {
+          method: 'POST',
+          headers: { ...headers, 'mcp-protocol-version': '2025-11-25' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'stateless-tools-list', method: 'tools/list' }),
+        });
+        expect(toolsList.status).toBe(200);
+        expect(toolsList.headers.get('mcp-session-id')).toBeNull();
+        const toolsListText = await toolsList.text();
+        const toolsListData = toolsListText.split(/\r?\n/).find((line) => line.startsWith('data:'));
+        const toolsListBody = JSON.parse(toolsListData ? toolsListData.slice(5).trim() : toolsListText) as { result?: { tools?: unknown[] } };
+        expect(toolsListBody.result?.tools?.length).toBeGreaterThan(0);
+
+        const afterStatelessCalls = await fetch(url('/health')).then((response) => response.json());
+        expect(afterStatelessCalls.sessions).toMatchObject({ active: 1, closed: { principalCapacity: 0, capacityEviction: 0 } });
+
+        const deleted = await fetch(url('/mcp-bearer'), {
+          method: 'DELETE',
+          headers: { authorization: 'Bearer ' + token, 'mcp-session-id': sessionId! },
+        });
+        expect(deleted.status).toBe(200);
+        const finalHealth = await fetch(url('/health')).then((response) => response.json());
+        expect(finalHealth.sessions.active).toBe(0);
+      });
+    } finally {
+      await stopMcpServerProcess(proc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('reinitializes over HTTP after idle TTL, stream lease and absolute lifetime expiry', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-session-expiry-matrix-'));
+    const port = await freePort();
+    let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
+        const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
+        proc = Bun.spawn(
+          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'planner', '--auth', 'bearer'],
+          {
+            cwd: process.cwd(),
+            stdout: 'ignore',
+            stderr: 'pipe',
+            env: isolatedMcpProcessEnv(controllerHome, {
+              FORGE_MCP_SESSION_IDLE_TTL_MS: '400',
+              FORGE_MCP_STREAM_LEASE_MS: '1000',
+              FORGE_MCP_SESSION_ABSOLUTE_LIFETIME_MS: '2200',
+            }),
+          },
+        );
+        await waitForHealth(port);
+        const endpoint = 'http://127.0.0.1:' + port + '/mcp-bearer';
+        const headers = { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+        const post = (body: Record<string, unknown>, sessionId?: string) => fetch(endpoint, {
+          method: 'POST',
+          headers: { ...headers, ...(sessionId ? { 'mcp-session-id': sessionId } : {}) },
+          body: JSON.stringify(body),
+        });
+        const initialize = async (clientName: string) => {
+          const response = await post(JSON.parse(initializeBody(clientName)) as Record<string, unknown>);
+          expect(response.status).toBe(200);
+          const sessionId = response.headers.get('mcp-session-id');
+          expect(sessionId).toBeTruthy();
+          await response.text();
+          return sessionId!;
+        };
+        const toolsList = async (sessionId: string) => {
+          const response = await post({ jsonrpc: '2.0', id: 'tools-' + sessionId, method: 'tools/list' }, sessionId);
+          expect(response.status).toBe(200);
+          const raw = await response.text();
+          const data = raw.split(/\r?\n/).find((line) => line.startsWith('data:'));
+          const payload = JSON.parse(data ? data.slice(5).trim() : raw) as { result?: { tools?: unknown[] } };
+          expect(Array.isArray(payload.result?.tools)).toBe(true);
+          expect(payload.result?.tools?.length).toBeGreaterThan(0);
+        };
+        const expectReset = async (sessionId: string) => {
+          const response = await post({ jsonrpc: '2.0', id: 'expired-' + sessionId, method: 'ping' }, sessionId);
+          expect(response.status).toBe(404);
+          expect(response.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
+          expect(response.headers.get('x-forge-session-reset')).toBe('reinitialize');
+          expect(await response.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+        };
+        const waitForClose = async (
+          counter: 'idleTtl' | 'streamLease' | 'absoluteLifetime',
+          sessionId: string,
+          expectedReason: 'idle_ttl' | 'stream_lease' | 'absolute_lifetime',
+        ) => {
+          const deadline = Date.now() + 5_000;
+          let latest: {
+            sessions?: { closed?: Record<string, number> };
+            transportEvidence?: { lastSessionClose?: { reason?: string; sessionId?: string; route?: string; kind?: string } | null };
+          } = {};
+          while (Date.now() < deadline) {
+            latest = await fetch('http://127.0.0.1:' + port + '/health').then((response) => response.json());
+            const close = latest.transportEvidence?.lastSessionClose;
+            if ((latest.sessions?.closed?.[counter] ?? 0) >= 1
+              && close?.reason === expectedReason
+              && close.sessionId === sessionId
+              && close.route === '/mcp-bearer'
+              && close.kind === 'session_closed') return;
+            await Bun.sleep(25);
+          }
+          throw new Error('session close evidence mismatch for ' + counter + ': ' + JSON.stringify({
+            counters: latest.sessions?.closed,
+            lastSessionClose: latest.transportEvidence?.lastSessionClose,
+          }));
+        };
+        const reinitializeAndVerify = async (clientName: string) => {
+          const nextSession = await initialize(clientName);
+          await toolsList(nextSession);
+          const deleted = await fetch(endpoint, { method: 'DELETE', headers: { authorization: 'Bearer ' + token, 'mcp-session-id': nextSession } });
+          expect(deleted.status).toBe(200);
+        };
+
+        const idleSession = await initialize('idle-ttl-client');
+        await waitForClose('idleTtl', idleSession, 'idle_ttl');
+        await expectReset(idleSession);
+        await reinitializeAndVerify('idle-ttl-reconnected');
+
+        const leasedSession = await initialize('stream-lease-client');
+        const streamController = new AbortController();
+        const stream = await fetch(endpoint, {
+          headers: { authorization: 'Bearer ' + token, 'mcp-session-id': leasedSession, accept: 'text/event-stream' },
+          signal: streamController.signal,
+        });
+        expect(stream.status).toBe(200);
+        await waitForClose('streamLease', leasedSession, 'stream_lease');
+        streamController.abort();
+        await stream.body?.cancel().catch(() => undefined);
+        await expectReset(leasedSession);
+        await reinitializeAndVerify('stream-lease-reconnected');
+
+        const absoluteSession = await initialize('absolute-lifetime-client');
+        const absoluteDeadline = Date.now() + 2_500;
+        while (Date.now() < absoluteDeadline) {
+          const response = await post({ jsonrpc: '2.0', id: 'keepalive-' + Date.now(), method: 'tools/list' }, absoluteSession);
+          if (response.status === 404) { await response.body?.cancel(); break; }
+          expect(response.status).toBe(200);
+          await response.body?.cancel();
+          await Bun.sleep(100);
+        }
+        await waitForClose('absoluteLifetime', absoluteSession, 'absolute_lifetime');
+        await expectReset(absoluteSession);
+        await reinitializeAndVerify('absolute-lifetime-reconnected');
+      });
+    } finally {
+      await stopMcpServerProcess(proc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('reinitializes the same Controller Gateway after its process restarts', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-gateway-restart-'));
+    const port = await freePort();
+    let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
+        const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
+        const startGateway = () => Bun.spawn(
+          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'planner', '--auth', 'bearer'],
+          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
+        );
+        const endpoint = 'http://127.0.0.1:' + port + '/mcp-bearer';
+        const headers = { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+        const initialize = async (clientName: string) => {
+          const response = await fetch(endpoint, { method: 'POST', headers, body: initializeBody(clientName) });
+          expect(response.status).toBe(200);
+          const sessionId = response.headers.get('mcp-session-id');
+          expect(sessionId).toBeTruthy();
+          await response.text();
+          return sessionId!;
+        };
+        const toolsList = async (sessionId: string) => {
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { ...headers, 'mcp-session-id': sessionId },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 'gateway-restarted-tools', method: 'tools/list' }),
+          });
+          expect(response.status).toBe(200);
+          const raw = await response.text();
+          const data = raw.split(/\r?\n/).find((line) => line.startsWith('data:'));
+          const payload = JSON.parse(data ? data.slice(5).trim() : raw) as { result?: { tools?: unknown[] } };
+          expect(payload.result?.tools?.length).toBeGreaterThan(0);
+        };
+
+        proc = startGateway();
+        await waitForHealth(port);
+        const oldSessionId = await initialize('gateway-before-restart');
+        await stopMcpServerProcess(proc);
+        proc = null;
+
+        proc = startGateway();
+        await waitForHealth(port);
+        const expired = await fetch(endpoint, {
+          method: 'POST',
+          headers: { ...headers, 'mcp-session-id': oldSessionId },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'old-gateway-session', method: 'ping' }),
+        });
+        expect(expired.status).toBe(404);
+        expect(expired.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
+        expect(expired.headers.get('x-forge-session-reset')).toBe('reinitialize');
+        expect(await expired.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+
+        const newSessionId = await initialize('gateway-after-restart');
+        expect(newSessionId).not.toBe(oldSessionId);
+        await toolsList(newSessionId);
+        const deleted = await fetch(endpoint, { method: 'DELETE', headers: { authorization: 'Bearer ' + token, 'mcp-session-id': newSessionId } });
+        expect(deleted.status).toBe(200);
+      });
+    } finally {
+      await stopMcpServerProcess(proc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('returns a deterministic session-reset path after the Canonical Runtime process restarts', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-runtime-process-restart-'));
+    const runtimePort = await freePort();
+    let runtimeProc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    const clients: Client[] = [];
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(runtimePort) });
+        const token = (JSON.parse(readFileSync(mcpControllerHomeTokenPath(controllerHome), 'utf8')) as { bearerToken: string }).bearerToken;
+        expect(token.length).toBeGreaterThan(0);
+        const localConfig = loadMcpServiceLocalConfig(controllerHome) ?? {};
+        writeMcpServiceLocalConfig(controllerHome, {
+          ...localConfig,
+          localController: { enabled: false, mode: 'disabled', host: '127.0.0.1', port: 8766 },
+        });
+
+        const runtimeTokenFile = join(controllerHome, 'mcp', 'runtime-token');
+        mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+        writeFileSync(runtimeTokenFile, `${token}\n`, { encoding: 'utf8', mode: 0o600 });
+        const releaseManifestPath = join(repoRoot, 'runtime-release.json');
+        writeFileSync(releaseManifestPath, `${JSON.stringify({
+          schemaVersion: 1,
+          releaseId: 'mcp-runtime-process-restart',
+          artifactIdentity: 'sha256:mcp-runtime-process-restart',
+          entrypoint: 'forge-runtime',
+          arguments: [],
+          configurationSchemaVersion: 1,
+          controllerHome,
+          databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+          workerProtocolVersion: 1,
+          createdAt: new Date().toISOString(),
+        }, null, 2)}\n`, 'utf8');
+
+        const childEnv = isolatedMcpProcessEnv(controllerHome, { FORGE_MCP_TOKEN: token });
+        const startRuntime = () => Bun.spawn([
+          process.execPath,
+          join(process.cwd(), 'src/cli/runtime/entry.ts'),
+          '--controller-home', controllerHome,
+          '--repo', repoRoot,
+          '--release-manifest', releaseManifestPath,
+          '--host', '127.0.0.1',
+          '--port', String(runtimePort),
+          '--auth-token-file', runtimeTokenFile,
+        ], { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: childEnv });
+        const waitForRuntimeReady = async (proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'>) => {
+          let lastObservation = 'not observed';
+          for (let attempt = 0; attempt < 400; attempt += 1) {
+            if (proc.exitCode !== null) throw new Error(`RUNTIME_EXITED_BEFORE_READY: ${proc.exitCode}; ${lastObservation}`);
+            try {
+              const response = await fetch(`http://127.0.0.1:${runtimePort}/ready`);
+              const readiness = await response.json() as { ready?: boolean; reasonCodes?: string[] };
+              lastObservation = `HTTP ${response.status}: ${JSON.stringify(readiness)}`;
+              if (response.ok && readiness.ready === true) return;
+            } catch (error) {
+              lastObservation = error instanceof Error ? error.message : String(error);
+            }
+            await Bun.sleep(50);
+          }
+          throw new Error(`RUNTIME_NOT_READY: ${lastObservation}`);
+        };
+
+        const firstRuntimeProc = startRuntime();
+        runtimeProc = firstRuntimeProc;
+        await waitForRuntimeReady(firstRuntimeProc);
+        const firstRuntime = readRuntimeStatusSnapshot(controllerHome);
+        expect(firstRuntime).toMatchObject({ pid: firstRuntimeProc.pid, readiness: { ready: true } });
+
+        const endpoint = `http://127.0.0.1:${runtimePort}/mcp`;
+        const firstTransport = new StreamableHTTPClientTransport(new URL(endpoint), {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+        });
+        const firstClient = new Client({ name: 'forge-runtime-process-restart-test', version: '1.0.0' });
+        clients.push(firstClient);
+        await firstClient.connect(firstTransport);
+        const firstSessionId = firstTransport.sessionId;
+        expect(firstSessionId).toBeTruthy();
+        const firstTools = await firstClient.listTools();
+        expect(firstTools.tools.map((tool) => tool.name)).toContain('controller_ready');
+        const beforeRestart = await firstClient.callTool({ name: 'controller_ready', arguments: {} });
+        expect(beforeRestart.isError).not.toBe(true);
+        expect(beforeRestart.structuredContent).toMatchObject({ ready: true });
+
+        const firstRuntimeInstanceId = firstRuntime?.runtimeInstanceId;
+        const firstRuntimePid = firstRuntime?.pid;
+        await stopMcpServerProcess(runtimeProc);
+        runtimeProc = null;
+
+        const secondRuntimeProc = startRuntime();
+        runtimeProc = secondRuntimeProc;
+        await waitForRuntimeReady(secondRuntimeProc);
+        const secondRuntime = readRuntimeStatusSnapshot(controllerHome);
+        expect(secondRuntime?.runtimeInstanceId).toBeTruthy();
+        expect(secondRuntime?.runtimeInstanceId).not.toBe(firstRuntimeInstanceId);
+        expect(secondRuntime?.pid).not.toBe(firstRuntimePid);
+        expect(secondRuntime?.pid).toBe(secondRuntimeProc.pid);
+
+        const expiredSession = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'mcp-session-id': firstSessionId!,
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'runtime-restarted-old-session', method: 'ping' }),
+        });
+        expect(expiredSession.status).toBe(404);
+        expect(expiredSession.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
+        expect(expiredSession.headers.get('x-forge-session-reset')).toBe('reinitialize');
+        expect(await expiredSession.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+        await firstClient.close().catch(() => undefined);
+
+        const reinitializedTransport = new StreamableHTTPClientTransport(new URL(endpoint), {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+        });
+        const reinitializedClient = new Client({ name: 'forge-runtime-process-reinitialized-test', version: '1.0.0' });
+        clients.push(reinitializedClient);
+        await reinitializedClient.connect(reinitializedTransport);
+        expect(reinitializedTransport.sessionId).toBeTruthy();
+        expect(reinitializedTransport.sessionId).not.toBe(firstSessionId);
+        const reinitializedTools = await reinitializedClient.listTools();
+        expect(reinitializedTools.tools.map((tool) => tool.name)).toContain('controller_ready');
+        const afterRestart = await reinitializedClient.callTool({ name: 'controller_ready', arguments: {} });
+        expect(afterRestart.isError).not.toBe(true);
+        expect(afterRestart.structuredContent).toMatchObject({ ready: true });
+      });
+    } finally {
+      await Promise.all(clients.map(async (client) => await client.close().catch(() => undefined)));
+      await stopMcpServerProcess(runtimeProc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }, 60_000);
+  test('keeps the existing transport session usable when Runtime identity changes', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-runtime-restart-session-'));
+    const port = await freePort();
+    let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
+        const now = new Date().toISOString();
+        const snapshot = (runtimeInstanceId: string, pid: number, toolSurfaceFingerprint: string) => ({
+          schemaVersion: 1 as const,
+          runtimeInstanceId,
+          pid,
+          releaseId: runtimeInstanceId,
+          artifactIdentity: runtimeInstanceId,
+          toolSurfaceFingerprint,
+          readiness: {
+            ready: true,
+            reasonCodes: [],
+            diagnostics: {
+              database: { outcome: 'pass' as const },
+              scheduler: { outcome: 'pass' as const },
+              releaseCoherence: { outcome: 'pass' as const },
+              mcpEndToEnd: { outcome: 'pass' as const },
+            },
+            observedAt: now,
+          },
+          startedAt: now,
+          updatedAt: now,
+        });
+        writeRuntimeStatusSnapshot(controllerHome, snapshot('runtime-before-restart', process.pid, 'surface-before'));
+        const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
+        proc = Bun.spawn(
+          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'planner', '--auth', 'bearer'],
+          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
+        );
+        await waitForHealth(port);
+        const endpoint = 'http://127.0.0.1:' + port + '/mcp-bearer';
+        const headers = { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+        const initialized = await fetch(endpoint, { method: 'POST', headers, body: initializeBody('runtime-restart-session') });
+        expect(initialized.status).toBe(200);
+        const sessionId = initialized.headers.get('mcp-session-id');
+        expect(sessionId).toBeTruthy();
+        await initialized.text();
+
+        const toolsList = async () => {
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { ...headers, 'mcp-session-id': sessionId! },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 'runtime-restart-tools', method: 'tools/list' }),
+          });
+          expect(response.status).toBe(200);
+          const raw = await response.text();
+          const data = raw.split(/\r?\n/).find((line) => line.startsWith('data:'));
+          const payload = JSON.parse(data ? data.slice(5).trim() : raw) as { result?: { tools?: unknown[] } };
+          expect(payload.result?.tools?.length).toBeGreaterThan(0);
+        };
+
+        await toolsList();
+        writeRuntimeStatusSnapshot(controllerHome, snapshot('runtime-after-restart', process.pid + 1, 'surface-after'));
+        await Bun.sleep(100);
+        await toolsList();
+        const health = await fetch('http://127.0.0.1:' + port + '/health').then((response) => response.json());
+        expect(health.sessions.active).toBe(1);
+      });
+    } finally {
+      await stopMcpServerProcess(proc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('preserves a running Process across HTTP MCP session deletion and reinitialization without replay', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-http-process-session-replacement-'));
+    const port = await freePort();
+    const startedPath = join(repoRoot, 'process-started');
+    const releasePath = join(repoRoot, 'process-release');
+    const invocationsPath = join(repoRoot, 'process-invocations');
+    let runtimeProc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    const clients: Client[] = [];
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        expect(spawnSync('git', ['init', repoRoot], { encoding: 'utf8' }).status).toBe(0);
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
+        const token = (JSON.parse(await Bun.file(mcpControllerHomeTokenPath(controllerHome)).text()) as { bearerToken: string }).bearerToken;
+        const localConfig = loadMcpServiceLocalConfig(controllerHome) ?? {};
+        writeMcpServiceLocalConfig(controllerHome, {
+          ...localConfig,
+          localController: { enabled: false, mode: 'disabled', host: '127.0.0.1', port: 8766 },
+        });
+        const runtimeTokenFile = join(controllerHome, 'mcp', 'runtime-token');
+        mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+        writeFileSync(runtimeTokenFile, token + '\n', { encoding: 'utf8', mode: 0o600 });
+        const releaseManifestPath = join(repoRoot, 'runtime-release.json');
+        writeFileSync(releaseManifestPath, JSON.stringify({
+          schemaVersion: 1,
+          releaseId: 'mcp-http-process-session-replacement',
+          artifactIdentity: 'sha256:mcp-http-process-session-replacement',
+          entrypoint: 'forge-runtime',
+          arguments: [],
+          configurationSchemaVersion: 1,
+          controllerHome,
+          databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+          workerProtocolVersion: 1,
+          createdAt: new Date().toISOString(),
+        }, null, 2) + '\n', 'utf8');
+        runtimeProc = Bun.spawn([
+          process.execPath,
+          join(process.cwd(), 'src/cli/runtime/entry.ts'),
+          '--controller-home', controllerHome,
+          '--repo', repoRoot,
+          '--release-manifest', releaseManifestPath,
+          '--host', '127.0.0.1',
+          '--port', String(port),
+          '--auth-token-file', runtimeTokenFile,
+        ], {
+          cwd: process.cwd(),
+          stdout: 'ignore',
+          stderr: 'pipe',
+          env: isolatedMcpProcessEnv(controllerHome, { FORGE_MCP_TOKEN: token }),
+        });
+        const runtimeProcess = runtimeProc;
+        if (!runtimeProcess) throw new Error('Canonical Runtime child process was not created');
+        let lastObservation = 'not observed';
+        let runtimeReady = false;
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          if (runtimeProcess.exitCode !== null) {
+            const stderr = await new Response(runtimeProcess.stderr).text();
+            throw new Error('Canonical Runtime exited before ready: ' + runtimeProcess.exitCode + ': ' + stderr);
+          }
+          try {
+            const response = await fetch('http://127.0.0.1:' + port + '/ready');
+            const readiness = await response.json() as { ready?: boolean; reasonCodes?: string[] };
+            lastObservation = 'HTTP ' + response.status + ': ' + JSON.stringify(readiness);
+            if (response.ok && readiness.ready === true) { runtimeReady = true; break; }
+          } catch (error) {
+            lastObservation = error instanceof Error ? error.message : String(error);
+          }
+          await Bun.sleep(50);
+        }
+        expect(runtimeReady).toBe(true);
+        if (!runtimeReady) throw new Error('Canonical Runtime did not become ready: ' + lastObservation);
+
+        const endpoint = new URL('http://127.0.0.1:' + port + '/mcp');
+        const headers = { authorization: 'Bearer ' + token };
+        const firstTransport = new StreamableHTTPClientTransport(endpoint, { requestInit: { headers } });
+        const firstClient = new Client({ name: 'forge-http-process-session-before-replacement', version: '1.0.0' });
+        clients.push(firstClient);
+        await firstClient.connect(firstTransport);
+        const firstSessionId = firstTransport.sessionId;
+        expect(firstSessionId).toBeTruthy();
+        const toolNames = (await firstClient.listTools()).tools.map((tool) => tool.name);
+        expect(toolNames).toContain('execute_command');
+        expect(toolNames).toContain('process_get');
+        expect(toolNames).toContain('process_wait');
+
+        writeFileSync(join(repoRoot, 'http-session-process.mjs'), [
+          "import { appendFileSync, existsSync, writeFileSync } from 'node:fs';",
+          "appendFileSync(" + JSON.stringify(invocationsPath) + ", 'x');",
+          "writeFileSync(" + JSON.stringify(startedPath) + ", 'x');",
+          "const releasePath = " + JSON.stringify(releasePath) + ";",
+          'const deadline = Date.now() + 10_000;',
+          'const finish = () => {',
+          "  if (existsSync(releasePath)) { console.log('http-session-replacement-ok'); process.exit(0); }",
+          "  if (Date.now() >= deadline) { console.error('release marker was not written'); process.exit(70); }",
+          '  setTimeout(finish, 10);',
+          '};',
+          'finish();',
+        ].join('\n') + '\n');
+        const registration = await firstClient.callTool({ name: 'repository_register', arguments: { path: repoRoot } });
+        const registrationPayload = registration.structuredContent as { repository?: { repoId?: string }; repoId?: string };
+        const repoId = String(registrationPayload.repository?.repoId ?? registrationPayload.repoId ?? '');
+        if (registration.isError || !repoId) throw new Error('repository_register failed: ' + JSON.stringify(registration.structuredContent ?? registration.content));
+        const args = {
+          repo_id: repoId,
+          command: [process.execPath, 'http-session-process.mjs'],
+          apply_mode: 'async',
+          timeout_ms: 15_000,
+          request_id: 'mcp-http-session-replacement-process',
+        };
+        const first = await firstClient.callTool({ name: 'execute_command', arguments: args });
+        if (first.isError) throw new Error('execute_command failed: ' + JSON.stringify(first.structuredContent ?? first.content));
+        const firstPayload = first.structuredContent as Record<string, unknown>;
+        expect(firstPayload).toMatchObject({ path: 'process_managed', status: 'running' });
+        const processId = String(firstPayload.processId ?? '');
+
+        const startDeadline = Date.now() + 5_000;
+        const markerExists = () => {
+          try { readFileSync(startedPath, 'utf8'); return true; } catch { return false; }
+        };
+        while (!markerExists() && Date.now() < startDeadline) await Bun.sleep(10);
+        expect(markerExists()).toBe(true);
+
+        const deletedSession = await fetch(endpoint, { method: 'DELETE', headers: { ...headers, 'mcp-session-id': firstSessionId! } });
+        expect(deletedSession.status).toBe(200);
+        await firstClient.close().catch(() => undefined);
+        const expiredSession = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            ...headers,
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'mcp-session-id': firstSessionId!,
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'deleted-process-session', method: 'ping' }),
+        });
+        expect(expiredSession.status).toBe(404);
+        expect(expiredSession.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
+        expect(await expiredSession.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+
+        const replacementTransport = new StreamableHTTPClientTransport(endpoint, { requestInit: { headers } });
+        const replacementClient = new Client({ name: 'forge-http-process-session-after-replacement', version: '1.0.0' });
+        clients.push(replacementClient);
+        await replacementClient.connect(replacementTransport);
+        expect(replacementTransport.sessionId).not.toBe(firstSessionId);
+
+        const attached = await replacementClient.callTool({
+          name: 'process_get',
+          arguments: { repo_id: repoId, process_id: processId },
+        });
+        expect(attached.isError).not.toBe(true);
+        const attachedProcess = (attached.structuredContent as { process?: Record<string, unknown> }).process;
+        expect(attachedProcess).toMatchObject({ processId, status: 'running', completed: false });
+
+        const retry = await replacementClient.callTool({ name: 'execute_command', arguments: args });
+        expect(retry.isError).not.toBe(true);
+        expect((retry.structuredContent as Record<string, unknown>).processId).toBe(processId);
+
+        writeFileSync(releasePath, 'x');
+        const waited = await replacementClient.callTool({
+          name: 'process_wait',
+          arguments: { repo_id: repoId, process_id: processId, timeout_ms: 5_000 },
+        });
+        expect(waited.isError).not.toBe(true);
+        const terminal = (waited.structuredContent as { process?: Record<string, unknown> }).process;
+        expect(terminal).toMatchObject({ processId, completed: true, ok: true });
+        expect(String(terminal?.stdout ?? '')).toContain('http-session-replacement-ok');
+        expect(readFileSync(invocationsPath, 'utf8')).toBe('x');
+      });
+    } finally {
+      writeFileSync(releasePath, 'x');
+      await Promise.all(clients.map(async (client) => await client.close().catch(() => undefined)));
+      await stopMcpServerProcess(runtimeProc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }, 45_000);
+
+  test('reinitializes the same MCP SDK Client after an expired session using the deterministic reset path', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-sdk-session-reset-'));
+    const gatewayPort = await freePort();
+    let gatewayProc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    let client: Client | null = null;
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(gatewayPort) });
+        const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
+        gatewayProc = Bun.spawn(
+          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(gatewayPort), '--profile', 'planner', '--auth', 'bearer'],
+          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
+        );
+        await waitForHealth(gatewayPort);
+
+        const endpoint = 'http://127.0.0.1:' + gatewayPort + '/mcp-bearer';
+        const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+        const transport = new StreamableHTTPClientTransport(new URL(endpoint), { requestInit: { headers } });
+        client = new Client({ name: 'forge-sdk-session-reset-reconnect', version: '1.0.0' });
+        await client.connect(transport);
+        const expiredSessionId = transport.sessionId;
+        expect(expiredSessionId).toBeTruthy();
+        const initialTools = await client.listTools();
+        expect(initialTools.tools.map((tool) => tool.name)).toContain('harness_status');
+
+        const deleted = await fetch(endpoint, {
+          method: 'DELETE',
+          headers: { authorization: `Bearer ${token}`, 'mcp-session-id': expiredSessionId! },
+        });
+        expect(deleted.status).toBe(200);
+        await expect(client.listTools()).rejects.toThrow();
+
+        const reset = await fetch(endpoint, {
+          method: 'POST',
+          headers: { ...headers, 'mcp-session-id': expiredSessionId! },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'expired-sdk-session', method: 'ping' }),
+        });
+        expect(reset.status).toBe(404);
+        expect(reset.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
+        expect(reset.headers.get('x-forge-session-reset')).toBe('reinitialize');
+        expect(await reset.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+
+        await client.close().catch(() => undefined);
+        const replacementTransport = new StreamableHTTPClientTransport(new URL(endpoint), { requestInit: { headers } });
+        await client.connect(replacementTransport);
+        expect(replacementTransport.sessionId).toBeTruthy();
+        expect(replacementTransport.sessionId).not.toBe(expiredSessionId);
+        const recoveredTools = await client.listTools();
+        expect(recoveredTools.tools.map((tool) => tool.name)).toContain('harness_status');
+        const recoveredStatus = await client.callTool({ name: 'harness_status', arguments: {} });
+        expect(recoveredStatus.isError).not.toBe(true);
+        const health = await fetch('http://127.0.0.1:' + gatewayPort + '/health').then((response) => response.json());
+        expect(health.sessions.active).toBe(1);
+      });
+    } finally {
+      await closeClient(client);
+      await stopMcpServerProcess(gatewayProc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('reuses the same MCP SDK client and live session after a tunnel endpoint restart', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-tunnel-process-restart-'));
+    const gatewayPort = await freePort();
+    const tunnelPort = await freePort();
+    let gatewayProc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    let tunnelProc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    let client: Client | null = null;
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(gatewayPort) });
+        const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
+        gatewayProc = Bun.spawn(
+          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(gatewayPort), '--profile', 'planner', '--auth', 'bearer'],
+          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
+        );
+        await waitForHealth(gatewayPort);
+        const tunnelSource = [
+          "Bun.serve({",
+          "  hostname: '127.0.0.1',",
+          '  port: ' + tunnelPort + ',',
+          '  async fetch(request) {',
+          '    const target = new URL(request.url);',
+          '    const headers = new Headers(request.headers);',
+          "    headers.delete('host');",
+          "    const body = request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.text();",
+          "    return fetch('http://127.0.0.1:" + gatewayPort + "' + target.pathname + target.search, {",
+          '      method: request.method,',
+          '      headers,',
+          '      ...(body === undefined ? {} : { body }),',
+          '    });',
+          '  },',
+          '});',
+        ].join('\n');
+        const startTunnel = () => Bun.spawn(
+          ['bun', '-e', tunnelSource],
+          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
+        );
+        const endpoint = 'http://127.0.0.1:' + tunnelPort + '/mcp-bearer';
+        const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+
+        tunnelProc = startTunnel();
+        await waitForHealth(tunnelPort);
+        const transport = new StreamableHTTPClientTransport(new URL(endpoint), { requestInit: { headers } });
+        client = new Client({ name: 'forge-http-client-after-tunnel-restart', version: '1.0.0' });
+        await client.connect(transport);
+        const sessionId = transport.sessionId;
+        expect(sessionId).toBeTruthy();
+        const initialTools = await client.listTools();
+        expect(initialTools.tools.map((tool) => tool.name)).toContain('harness_status');
+
+        const previousTunnelPid = tunnelProc.pid;
+        await stopMcpServerProcess(tunnelProc);
+        tunnelProc = null;
+        await expect(client.listTools()).rejects.toThrow();
+
+        tunnelProc = startTunnel();
+        expect(tunnelProc.pid).not.toBe(previousTunnelPid);
+        await waitForHealth(tunnelPort);
+        const toolsAfterRestart = await client.listTools();
+        expect(toolsAfterRestart.tools.map((tool) => tool.name)).toContain('harness_status');
+        expect(transport.sessionId).toBe(sessionId);
+        const readyAfterRestart = await client.callTool({ name: 'harness_status', arguments: {} });
+        expect(readyAfterRestart.isError).not.toBe(true);
+        const health = await fetch('http://127.0.0.1:' + gatewayPort + '/health').then((response) => response.json());
+        expect(health.sessions.active).toBe(1);
+      });
+    } finally {
+      await closeClient(client);
+      await stopMcpServerProcess(tunnelProc);
+      await stopMcpServerProcess(gatewayProc);
       rmSync(repoRoot, { recursive: true, force: true });
     }
   });
@@ -772,7 +1797,7 @@ describe('mcp http transport', () => {
         await waitForHealth(port);
 
         const burst = await Promise.all(Array.from({ length: 32 }, async (_, index) => {
-          const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          const response = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
             method: 'POST',
             headers: {
               authorization: `Bearer ${token}`,
@@ -791,7 +1816,7 @@ describe('mcp http transport', () => {
         expect(burstHealth.sessions.closed.principalCapacity).toBe(0);
 
         for (let cycle = 0; cycle < 500; cycle += 1) {
-          const initialized = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          const initialized = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
             method: 'POST',
             headers: {
               authorization: `Bearer ${token}`,
@@ -806,7 +1831,7 @@ describe('mcp http transport', () => {
           await initialized.body?.cancel().catch(() => undefined);
 
           const streamController = new AbortController();
-          const stream = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          const stream = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
             headers: {
               authorization: `Bearer ${token}`,
               'mcp-session-id': sessionId!,
@@ -825,7 +1850,7 @@ describe('mcp http transport', () => {
         expect(health.sessions.active).toBeLessThanOrEqual(16);
         expect(health.sessions.acceptingNewSessions).toBe(true);
 
-        const finalInitialize = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        const finalInitialize = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
           method: 'POST',
           headers: {
             authorization: `Bearer ${token}`,
@@ -843,7 +1868,7 @@ describe('mcp http transport', () => {
     }
   }, 60_000);
 
-  test('shares capacity across all MCP routes and evicts a stale session instead of rejecting reconnect', async () => {
+  test('keeps primary /mcp stateless while stateful compatibility routes share bounded capacity', async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-capacity-'));
     const port = await freePort();
     let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
@@ -885,7 +1910,7 @@ describe('mcp http transport', () => {
         );
         await waitForHealth(port);
 
-        const initialize = async (route: '/mcp' | '/mcp-grok' | '/mcp-bearer', clientName: string): Promise<string> => {
+        const initialize = async (route: '/mcp' | '/mcp-grok' | '/mcp-bearer', clientName: string): Promise<string | null> => {
           const response = await fetch(`http://127.0.0.1:${port}${route}`, {
             method: 'POST',
             headers: {
@@ -898,13 +1923,19 @@ describe('mcp http transport', () => {
           expect(response.status).toBe(200);
           await response.body?.cancel().catch(() => undefined);
           const sessionId = response.headers.get('mcp-session-id');
+          if (route === '/mcp') {
+            expect(sessionId).toBeNull();
+            return null;
+          }
           expect(sessionId).toBeTruthy();
           return sessionId!;
         };
 
-        const oldestSessionId = await initialize('/mcp', 'client-a');
-        await initialize('/mcp-grok', 'client-b');
+        const primaryStatelessSessionId = await initialize('/mcp', 'client-a');
+        expect(primaryStatelessSessionId).toBeNull();
+        const oldestSessionId = (await initialize('/mcp-grok', 'client-b'))!;
         await initialize('/mcp-bearer', 'client-c');
+        await initialize('/mcp-grok', 'client-d');
 
         const health = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
         expect(health.sessions).toMatchObject({
@@ -915,8 +1946,14 @@ describe('mcp http transport', () => {
           acceptingNewSessions: true,
         });
         expect(health.sessions.closed.principalCapacity + health.sessions.closed.capacityEviction).toBe(1);
+        expect(health.transportEvidence.lastSessionClose).toMatchObject({
+          kind: 'session_closed',
+          sessionId: oldestSessionId,
+          reason: 'capacity_eviction',
+          route: '/mcp-grok',
+        });
 
-        const evicted = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        const evicted = await fetch(`http://127.0.0.1:${port}/mcp-grok`, {
           method: 'POST',
           headers: {
             authorization: `Bearer ${token}`,
@@ -927,6 +1964,22 @@ describe('mcp http transport', () => {
           body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
         });
         expect(evicted.status).toBe(404);
+        expect(evicted.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
+        expect(evicted.headers.get('x-forge-session-reset')).toBe('reinitialize');
+        expect(await evicted.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+
+        const reconnectedSessionId = (await initialize('/mcp-grok', 'client-a-after-capacity-eviction'))!;
+        expect(reconnectedSessionId).not.toBe(oldestSessionId);
+        const reconnectedTools = await fetch(`http://127.0.0.1:${port}/mcp-grok`, {
+          method: 'POST',
+          headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-session-id': reconnectedSessionId },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'capacity-reconnected-tools', method: 'tools/list' }),
+        });
+        expect(reconnectedTools.status).toBe(200);
+        const reconnectedToolsText = await reconnectedTools.text();
+        const reconnectedToolsData = reconnectedToolsText.split(/\r?\n/).find((line) => line.startsWith('data:'));
+        const reconnectedToolsBody = JSON.parse(reconnectedToolsData ? reconnectedToolsData.slice(5).trim() : reconnectedToolsText) as { result?: { tools?: unknown[] } };
+        expect(reconnectedToolsBody.result?.tools?.length).toBeGreaterThan(0);
       });
     } finally {
       await stopMcpServerProcess(proc);
@@ -977,6 +2030,85 @@ describe('mcp http transport', () => {
     await Bun.sleep(0);
   });
 
+  test('keeps transport readiness true when every stateful session is protected by an active POST', async () => {
+    const registry = new McpSessionRegistry<{ close(): Promise<void> }, { id: string }>({
+      maximumSessions: 1,
+      maximumSessionsPerPrincipal: 1,
+      activePostStallMs: 60_000,
+    });
+    registry.register({
+      sessionId: 'active-post-session',
+      transport: { close: async () => undefined },
+      toolContext: { id: 'active-post' },
+      route: '/mcp-bearer',
+      principalId: 'principal-a',
+      connectionId: 'connection-a',
+      clientIdentity: 'client-a',
+      initialPost: true,
+    });
+    expect(registry.snapshot()).toMatchObject({
+      active: 1,
+      maximum: 1,
+      acceptingNewSessions: false,
+    });
+
+    const routes = new Map<string, (request: unknown, response: unknown) => void>();
+    const app = {
+      get(path: string, handler: (request: unknown, response: unknown) => void) {
+        routes.set(path, handler);
+        return this;
+      },
+    } as unknown as Parameters<typeof registerMcpHttpObservationRoutes>[0]['app'];
+    const options = {
+      app,
+      toolContext: { policy: { profile: 'planner' } },
+      sessionRegistry: registry,
+      runtimeStats: { initializing: 0, activePostStartedAt: new Map<string, number>() },
+      transportControllerHome: '/tmp/forge-controller-home',
+      forgeInstanceId: 'test-instance',
+      currentRuntimeToolSurfaceFingerprint: () => undefined,
+      toolSurface: 'test',
+      toolSurfaceSchemaVersion: 1,
+      forgeVersion: 'test',
+      authMode: 'none',
+      authTokenConfigured: false,
+      oauthPassphraseConfigured: false,
+      host: '127.0.0.1',
+      port: 0,
+      enableChatgptBrowser: false,
+      localController: { enabled: false, host: '127.0.0.1', port: 0 },
+      maxInitializingSessions: 1,
+      maxActivePosts: 1,
+      activePostStallMs: 60_000,
+      streamLeaseMs: 300_000,
+    } as unknown as Parameters<typeof registerMcpHttpObservationRoutes>[0];
+    registerMcpHttpObservationRoutes(options);
+
+    const response = {
+      statusCode: 0,
+      body: undefined as unknown,
+      status(statusCode: number) {
+        this.statusCode = statusCode;
+        return this;
+      },
+      json(body: unknown) {
+        this.body = body;
+        return this;
+      },
+    };
+    const handler = routes.get('/transport-ready');
+    expect(handler).toBeDefined();
+    handler?.({}, response);
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      ready: true,
+      statefulSessionCapacityReady: false,
+      sessionCapacity: { active: 1, maximum: 1, acceptingNewSessions: false },
+      runtimeCapacity: { activePosts: 0, maximumActivePosts: 1 },
+    });
+    await registry.closeAll('shutdown');
+  });
+
   test('reclaims the oldest stream-only session before returning capacity backpressure', async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-active-capacity-'));
     const port = await freePort();
@@ -1003,7 +2135,7 @@ describe('mcp http transport', () => {
         await waitForHealth(port);
 
         const initialize = async (clientName: string): Promise<string> => {
-          const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          const response = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
             method: 'POST',
             headers: {
               authorization: `Bearer ${token}`,
@@ -1023,7 +2155,7 @@ describe('mcp http transport', () => {
         const secondSessionId = await initialize('active-b');
         const firstController = new AbortController();
         const secondController = new AbortController();
-        const firstStream = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        const firstStream = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
           headers: {
             authorization: `Bearer ${token}`,
             'mcp-session-id': firstSessionId,
@@ -1031,7 +2163,7 @@ describe('mcp http transport', () => {
           },
           signal: firstController.signal,
         });
-        const secondStream = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        const secondStream = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
           headers: {
             authorization: `Bearer ${token}`,
             'mcp-session-id': secondSessionId,
@@ -1043,7 +2175,7 @@ describe('mcp http transport', () => {
         expect(secondStream.status).toBe(200);
         await Bun.sleep(25);
 
-        const overflow = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        const overflow = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
           method: 'POST',
           headers: {
             authorization: `Bearer ${token}`,
@@ -1067,7 +2199,7 @@ describe('mcp http transport', () => {
         });
         expect(afterOverflow.sessions.closed.capacityEviction).toBe(1);
 
-        const evicted = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        const evicted = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
           method: 'POST',
           headers: {
             authorization: `Bearer ${token}`,
@@ -1083,6 +2215,97 @@ describe('mcp http transport', () => {
         await firstStream.body?.cancel().catch(() => undefined);
         secondController.abort();
         await secondStream.body?.cancel().catch(() => undefined);
+      });
+    } finally {
+      await stopMcpServerProcess(proc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('reports Gateway, Runtime, tunnel, and Repository readiness as separate diagnostic domains', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-readiness-matrix-'));
+    const port = await freePort();
+    let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
+        const localConfig = loadMcpServiceLocalConfig(controllerHome) ?? {};
+        writeMcpServiceLocalConfig(controllerHome, {
+          ...localConfig,
+          localController: { enabled: false, mode: 'disabled', host: '127.0.0.1', port: 8766 },
+        });
+        const now = new Date().toISOString();
+        writeMcpServiceRuntimeState(controllerHome, {
+          version: 1,
+          repo: repoRoot,
+          startedAt: now,
+          updatedAt: now,
+          status: 'running',
+          tunnelMode: 'named',
+          server: {
+            endpoint: 'http://127.0.0.1:8766/mcp',
+            running: true,
+            healthy: true,
+            restartCount: 0,
+          },
+          tunnel: {
+            running: false,
+            healthy: false,
+            restartCount: 1,
+            name: 'forge-test',
+            publicEndpoint: 'https://forge-test.example.invalid',
+            connectorNeedsReconnect: true,
+          },
+        });
+
+        proc = Bun.spawn(
+          [
+            'bun',
+            join(process.cwd(), 'src/cli/index.ts'),
+            'mcp',
+            'serve',
+            '--controller-home',
+            controllerHome,
+            '--transport',
+            'http',
+            '--host',
+            '127.0.0.1',
+            '--port',
+            String(port),
+            '--profile',
+            'controller',
+            '--auth',
+            'bearer',
+          ],
+          {
+            cwd: repoRoot,
+            stdout: 'ignore',
+            stderr: 'pipe',
+            env: isolatedMcpProcessEnv(controllerHome, { FORGE_CONTROLLER_LIFECYCLE_OWNER: '1' }),
+          },
+        );
+        await waitForHealth(port);
+
+        const transportReady = await fetch('http://127.0.0.1:' + port + '/transport-ready');
+        expect(transportReady.status).toBe(200);
+        expect(await transportReady.json()).toMatchObject({ ready: true, gateway: 'ready' });
+
+        const ready = await fetch('http://127.0.0.1:' + port + '/ready');
+        expect(ready.status).toBe(503);
+        const readiness = await ready.json();
+        expect(readiness).toMatchObject({
+          ready: false,
+          gateway: { status: 'degraded' },
+          localBridge: { enabled: false, ready: true },
+          projections: { ready: true, repositoryCount: 0, staleRepositories: [], blockingStaleRepositories: [] },
+          publicReadiness: { configured: true, ready: false, endpoint: 'https://forge-test.example.invalid' },
+          connectorReadiness: { configured: true, ready: false, connectorNeedsReconnect: true },
+        });
+        expect(readiness.controllerDaemon?.status).not.toBe('ready');
+
+        const missingRepository = await fetch('http://127.0.0.1:' + port + '/repos/not-registered/health');
+        expect(missingRepository.status).toBe(404);
+        expect((await missingRepository.json()).error).toBeTruthy();
       });
     } finally {
       await stopMcpServerProcess(proc);
@@ -1135,6 +2358,20 @@ describe('mcp http transport', () => {
           mcpEndpoint: `http://127.0.0.1:${port}/mcp`,
           grokEndpoint: `http://127.0.0.1:${port}/mcp`,
           bearerEndpoint: `http://127.0.0.1:${port}/mcp-bearer`,
+        });
+
+        const invalidOAuth = await fetch('http://127.0.0.1:' + port + '/mcp', {
+          method: 'POST',
+          headers: { authorization: 'Bearer invalid-oauth-token', 'content-type': 'application/json' },
+          body: initializeBody(),
+        });
+        expect(invalidOAuth.status).toBe(401);
+        const oauthAuthEvidence = await fetch('http://127.0.0.1:' + port + '/health').then((response) => response.json());
+        expect(oauthAuthEvidence.authFailures).toMatchObject({
+          total: 1,
+          bearer: 0,
+          oauth: 1,
+          last: { mode: 'oauth', reason: 'invalid_token', route: '/mcp' },
         });
 
         const metadata = await fetch(`http://127.0.0.1:${port}/.well-known/oauth-protected-resource/mcp`, {
@@ -1205,10 +2442,9 @@ describe('mcp http transport', () => {
         const tokenJson = await token.json() as { access_token: string; token_type: string };
         expect(tokenJson.token_type).toBe('Bearer');
 
-        // A single authenticated developer may have many concurrent ChatGPT
-        // conversations. The default principal limit must therefore inherit the
-        // globally bounded session capacity instead of making the ninth client
-        // evict an otherwise healthy peer and trigger a reconnect feedback loop.
+        // A single authenticated ChatGPT OAuth client may open many independent
+        // conversations. New primary-endpoint requests must remain stateless and
+        // must not consume the bounded compatibility session pool.
         for (let index = 0; index < 10; index += 1) {
           const initialized = await fetch(`http://127.0.0.1:${port}/mcp`, {
             method: 'POST',
@@ -1217,14 +2453,30 @@ describe('mcp http transport', () => {
               'content-type': 'application/json',
               accept: 'application/json, text/event-stream',
             },
-            body: initializeBody(`parallel-chatgpt-${index}`),
+            body: initializeBody(`parallel-chatgpt-${index}`, '2025-11-25'),
           });
           expect(initialized.status).toBe(200);
-          expect(initialized.headers.get('mcp-session-id')).toBeTruthy();
-          await initialized.body?.cancel().catch(() => undefined);
+          expect(initialized.headers.get('mcp-session-id')).toBeNull();
+          expect(await initialized.text()).toContain('forge-mcp');
         }
+        const toolsList = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${tokenJson.access_token}`,
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'mcp-protocol-version': '2025-11-25',
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'oauth-tools-list', method: 'tools/list' }),
+        });
+        expect(toolsList.status).toBe(200);
+        expect(toolsList.headers.get('mcp-session-id')).toBeNull();
+        const toolsListText = await toolsList.text();
+        const toolsListData = toolsListText.split(/\r?\n/).find((line) => line.startsWith('data:'));
+        const toolsListBody = JSON.parse(toolsListData ? toolsListData.slice(5).trim() : toolsListText) as { result?: { tools?: unknown[] } };
+        expect(toolsListBody.result?.tools?.length).toBeGreaterThan(0);
         const parallelHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
-        expect(parallelHealth.sessions.active).toBe(10);
+        expect(parallelHealth.sessions.active).toBe(0);
         expect(parallelHealth.sessions.closed.principalCapacity).toBe(0);
 
         const noAuth = await fetch(`http://127.0.0.1:${port}/mcp`, {
@@ -1435,7 +2687,7 @@ describe('mcp http transport', () => {
 
 test('shutdown preserves admitted HTTP response before closing transport', async () => {
   const app = express();
-  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0 };
+  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0, authFailures: { total: 0, bearer: 0, oauth: 0 } };
   let release!: () => void;
   let admitted!: () => void;
   const admission = new Promise<void>(resolve => { admitted = resolve; });
@@ -1466,7 +2718,7 @@ test('shutdown preserves admitted HTTP response before closing transport', async
 });
 
 test('shutdown rejects unadmitted requests without consuming capacity', () => {
-  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0, draining: true };
+  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0, draining: true, authFailures: { total: 0, bearer: 0, oauth: 0 } };
   let body: unknown;
   let status: number;
   const res = {
@@ -1482,7 +2734,7 @@ test('shutdown rejects unadmitted requests without consuming capacity', () => {
 
 test('shutdown deadline reports observation unknown before transport closes', async () => {
   const app = express();
-  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0 };
+  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0, authFailures: { total: 0, bearer: 0, oauth: 0 } };
   let admitted!: () => void;
   const admission = new Promise<void>(resolve => { admitted = resolve; });
   let response!: express.Response;
@@ -1766,7 +3018,11 @@ test(`durable Process survives real Gateway process replacement (lost receipt=${
       releaseReceipt();
       const lost = await observation;
       expect(lost.failed).toBe(true);
-      expect(lost.error).toMatchObject({ code: SdkErrorCode.RequestTimeout });
+      expect('result' in lost).toBe(false);
+      // SIGKILL removes the only process capable of emitting an HTTP timeout
+      // response. The transport failure is intentionally outcome-unknown;
+      // the same durable request key below must reconcile it without replay.
+      expect(lost.error).toBeInstanceOf(Error);
     } else {
       const started = await first.client.callTool({ name: 'run_check', arguments: args });
       expect(started.isError).not.toBe(true);

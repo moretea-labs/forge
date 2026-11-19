@@ -42,6 +42,34 @@ export async function recoveryToolArguments(
   return hydrateRecoveryToolArguments({ toolName: name, inputSchema: descriptor.inputSchema, args, status });
 }
 
+function recoveryGatewayAccessFailure(error: unknown): Error | undefined {
+  const detail = error instanceof Error ? error.message : String(error);
+  const status = typeof error === 'object' && error !== null && 'status' in error
+    ? (error as { status?: unknown }).status
+    : undefined;
+  const statusMatch = detail.match(/\bHTTP\s+(401|403)\b/i)?.[1];
+  const rejectedStatus = status === 401 || status === 403
+    ? status
+    : statusMatch
+      ? Number(statusMatch)
+      : undefined;
+  if (rejectedStatus === 401 || (rejectedStatus === undefined && /invalid_token|unauthorized/i.test(detail))) {
+    return new Error('RECOVERY_GATEWAY_AUTH_REJECTED: HTTP 401 Unauthorized');
+  }
+  if (rejectedStatus === 403 || (rejectedStatus === undefined && /forbidden/i.test(detail))) {
+    return new Error('RECOVERY_GATEWAY_ACCESS_DENIED: HTTP 403 Forbidden');
+  }
+  return undefined;
+}
+
+function recoveryGatewayUnavailable(error: unknown): Error | undefined {
+  const detail = error instanceof Error ? error.message : String(error);
+  if (!/unable to connect|fetch failed|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|socket hang up/i.test(detail)) {
+    return undefined;
+  }
+  return new Error(`RECOVERY_GATEWAY_UNAVAILABLE: ${detail}`);
+}
+
 /** Transport-only bridge to the standalone Recovery Gateway. */
 export async function callStandaloneRecoveryTool(
   controllerHome: string,
@@ -60,8 +88,21 @@ export async function callStandaloneRecoveryTool(
   });
   const client = new Client({ name: 'forge-runtime-lifecycle-handoff', version: '1.0.0' });
   try {
-    await client.connect(transport);
-    const effectiveArgs = await recoveryToolArguments(client, name, args);
+    let effectiveArgs: Record<string, unknown>;
+    try {
+      await client.connect(transport);
+      effectiveArgs = await recoveryToolArguments(client, name, args);
+    } catch (error) {
+      const accessFailure = recoveryGatewayAccessFailure(error);
+      if (accessFailure) throw accessFailure;
+      const unavailable = recoveryGatewayUnavailable(error);
+      if (unavailable) throw unavailable;
+      throw error;
+    }
+
+    // Do not relabel a post-dispatch transport failure as Gateway unavailability:
+    // a mutation may have run before its response was lost. Its outcome remains
+    // owned by the existing request/Process authority; this adapter never replays it.
     const response = await client.callTool({ name, arguments: effectiveArgs });
     return recoveryStructuredPayload(response, name);
   } finally {

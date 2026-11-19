@@ -16,12 +16,17 @@ export interface UuRemoteRescueConfig {
 
 export function validateConfig(value: unknown): UuRemoteRescueConfig;
 
+export function withJsonOutput(args: string[]): string[];
+
 export function serviceUnits(controllerHome: string): {
   runtime: string;
   connector: string;
   recoveryGateway: string;
   recoveryWatchdog: string;
+  independentRecovery: string;
 };
+
+export function buildWslStatusCommand(markers: { begin: string; end: string }): string;
 
 export function executeAction(
   actionId: string,

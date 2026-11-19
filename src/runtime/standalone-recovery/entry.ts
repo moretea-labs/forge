@@ -888,7 +888,12 @@ function assertRecoveryGatewayMutationIdentity(config: RecoveryConfig, args: Rec
   return assertRecoveryMutationIdentity(config, args);
 }
 
-export async function dispatchRecoveryTool(config: RecoveryConfig, name: string, args: Record<string, unknown>): Promise<unknown> {
+export async function dispatchRecoveryTool(
+  config: RecoveryConfig,
+  name: string,
+  args: Record<string, unknown>,
+  dependencies: { recoverPrimaryRuntime?: typeof recoverPrimaryRuntime } = {},
+): Promise<unknown> {
   switch (name) {
     case 'runtime_status': return runtimeStatus(config);
     case 'list_recovery_history': return listRecoveryHistory(config, typeof args.limit === 'number' ? args.limit : 20);
@@ -943,7 +948,8 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
     case 'recover_primary_runtime': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      return mutationResponse(config, await recoverPrimaryRuntime(config, `recovery-gateway:${args.request_id}`));
+      const recover = dependencies.recoverPrimaryRuntime ?? recoverPrimaryRuntime;
+      return mutationResponse(config, await recover(config, `recovery-gateway:${args.request_id}`));
     }
     case 'stage_runtime_release': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');

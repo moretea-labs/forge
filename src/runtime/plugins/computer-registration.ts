@@ -1376,11 +1376,20 @@ async function openDesktopTarget(
       if (binding && input.args.activate !== true && expectedProcessId === undefined) {
         try {
           const exactRead = boundProcessId !== undefined;
-          const observed = await provider.executeAction(providerInput(input, exactRead ? 'observe_elements' : 'desktop_observe',
-            exactRead
-              ? { interactionId: binding.providerSessionId, maxDepth: 1, maxNodes: 1 }
-              : { interaction_id: binding.providerSessionId, max_depth: 1, max_nodes: 1 },
-            'target-open-verify-binding'));
+          const observed = exactRead
+            ? await executeRuntimeComputer({
+                capability: COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
+                action: 'observe_elements',
+                interactionId: binding.providerSessionId,
+                maxDepth: 1,
+                maxNodes: 1,
+                includeValues: false,
+              }, input.timeoutMs ?? 30_000, input.controllerHome)
+            : await provider.executeAction(providerInput(input, 'desktop_observe', {
+                interaction_id: binding.providerSessionId,
+                max_depth: 1,
+                max_nodes: 1,
+              }, 'target-open-verify-binding'));
           if (exactRead && (observed.pid !== boundProcessId || observed.interactionId !== binding.providerSessionId)) {
             throw new AssistantPluginError(
               'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH',

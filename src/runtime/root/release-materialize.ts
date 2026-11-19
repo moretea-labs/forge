@@ -3,7 +3,7 @@ import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdt
 import { tmpdir } from 'os';
 import { dirname, join, relative, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
-import { resolveBunExecutable } from '../shared/process-environment';
+import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../shared/process-environment';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlite-store';
 import { assertRuntimeReleaseExecutionSurface, loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest } from './release-manifest';
@@ -135,7 +135,13 @@ export function withRuntimeReleaseSourceSnapshot<T>(input: {
       const npmExecutable = process.platform === 'win32' ? 'npm.cmd' : 'npm';
       const installed = runProcess(npmExecutable, [
         'ci', '--ignore-scripts', '--no-audit', '--no-fund', '--include=dev', '--include=optional',
-      ], { cwd: snapshotRoot, timeoutMs: 600_000, maxOutputBytes: 512 * 1024 });
+      ], {
+        cwd: snapshotRoot,
+        env: repositoryChildProcessEnvironment(),
+        replaceEnv: true,
+        timeoutMs: 600_000,
+        maxOutputBytes: 512 * 1024,
+      });
       if (!installed.ok) {
         throw new Error(`RUNTIME_RELEASE_DEPENDENCY_INSTALL_FAILED: ${installed.stderr || installed.stdout || installed.error}`.slice(0, 2_000));
       }

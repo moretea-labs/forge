@@ -2,13 +2,13 @@
 
 ## Decision
 
-The operator has withdrawn authorization for Forge-native Supervisor Task/Effect/Turn autonomous continuation. Real release-bound evidence repeatedly showed applied effects without trusted completion receipts, followed by timeout-based migration and another applied effect. The system must not infer model acceptance from DOM, idle state, HTTP success, CI, or scheduler health.
+The operator has restored task-bound ChatGPT continuation with one strict session lifecycle. A task reuses its exact active conversation and browser tab for the next explicitly requested Prompt. A replacement conversation may be created only after read-only provider evidence proves the active session missing or the conversation unusable. The replacement reads the latest Issue/progress/confirmed deliveries and remains part of the same task.
 
-Retire Forge-native autonomous model-turn continuation instead of adding another completion observer, retry loop, provider, scheduler, or duplicate authority. Separately user-authorized external Python/launchd lanes remain callers of ordinary Computer/Process capabilities; they do not restore retired Runtime Task/Effect/Turn or own another progress ledger. This is a source migration decision, not authorization to activate/restart/cut over the current Runtime.
+Provider effect receipts, not DOM idle state, own Send outcomes. An outcome-unknown Send blocks replacement and replay. A replacement becomes active only after its own applied Send receipt and canonical conversation URL are proven; only then is the predecessor retained as archived lineage and its exact Forge-owned tab closed. This restores one active task → one active conversation → one tab without restoring Work, Supervisor Task/Turn, ControllerRound, a second scheduler, or another progress ledger. Source delivery does not authorize Runtime activation or restart.
 
 ## Kept capabilities
 
-1. **Launch Session** is an explicit bounded action. It opens or attaches one selected session (ChatGPT or supported external CLI); an explicitly requested prompt may be dispatched at most once using the existing delivery/authorization owner. Return exact session identity and an honest dispatched/not-applied/unknown delivery receipt, never a model task completion. A transport-unknown external mutation is not retried automatically.
+1. **Launch Session** is an explicit bounded action. It opens or attaches one selected session (ChatGPT or supported external CLI). With `task_id` and `continuation_prompt`, ChatGPT continuation resolves the task's one active session, performs a read-only usability preflight, and dispatches at most once through the existing plugin effect owner. Return exact session identity and an honest applied/not-applied/unknown receipt, never a model task-completion claim. A transport-unknown mutation is not retried or used to authorize replacement.
 2. **Schedule** retains canonical schedules, trigger admission, one occurrence identity, one bounded explicit action, and occurrence receipts. Work-free browser watch is observe-only; resolving a Handoff persists a decision without waking a retired autonomous-continuation path. Existing create/get/list/pause/resume/delete/manual trigger remain. Schedule reports whether its explicit dispatch occurred; it does not invent next-round CONTINUE, infer DONE or migrate the conversation.
 3. The model or user owns planning, results interpretation, additional manual launches and task acceptance. GitHub Issue and Project remain progress authority. Forge Process/Git/permission/release safety authorities remain unchanged.
 
@@ -28,7 +28,7 @@ Retire Forge-native autonomous model-turn continuation instead of adding another
 
 - Stop active autonomous Task through its sole owner before source retirement; do not cancel/replay an applied external Send or delete the user's conversation.
 - Migrate all direct and indirect callers; update architecture/build manifest and targeted tests; delete dead code rather than retaining disabled parallel paths.
-- Confirm Work-free manual session launch; Schedule create, trigger, receipt, pause/resume and restart safety; no auto CONTINUE/migration/second Writer; unknown dispatch not repeated.
+- Confirm Work-free manual session launch; exact task-bound same-tab continuation; safe replacement takeover/archive/old-tab cleanup; Schedule create, trigger, receipt, pause/resume and restart safety; no second Writer; unknown dispatch not repeated.
 - Require current executor exact-HEAD diff verification, focused type/architecture checks and CI; independent review only on explicit request. Current Runtime remains untouched until approval of a particular release activation.
 - Source merge records code integration only; GitHub Issue #313 remains OPEN until Work-free Launch Session and Schedule occurrence/receipt/restart/no-replay are verified on a specifically authorized Runtime release.
 
@@ -139,7 +139,7 @@ Development progress is read from the existing GitHub Issue and Project. Require
 
 The model owns interpretation, planning, trade-offs, validation strategy and verification of the user's acceptance criteria. GitHub Issue/Project is the only current development progress and completion authority; Requirement and Plan retain optional semantic context without another task lifecycle or completion gate. The future native project-management migration in #648 requires real acceptance and an explicit authority cutover before this ownership changes.
 
-`launcher_start` is a one-shot, Work-free session open/bind operation. It may create or attach the selected Computer/ChatGPT session but never auto-sends `CONTINUE`, enrolls a Supervisor, or claims that a model turn completed. Provider/session identity is transport state, not project progress.
+`launcher_start` is a Work-free session open/bind operation and the single task-bound ChatGPT continuation entrypoint. Without a Prompt it only opens or returns the active binding. With `task_id` plus an explicit `continuation_prompt`, it reuses the exact active session/tab and sends once through the durable plugin effect owner. It does not enroll a Supervisor or claim model-task completion. Replacement is a receipt-fenced recovery transaction, not a new task.
 
 Schedule owns independent trigger policy, one occurrence identity, admission and one explicitly authorized bounded action. Legacy `external_controller_wake`, `controller_progression`, `chatgpt_browser_prompt`, personal-assistant routines, and any Schedule carrying `work_id` are retired and fail closed before a new occurrence can replay a model turn. Historical records remain visible as read-only audit; they cannot be resumed or manually run.
 
@@ -473,7 +473,7 @@ Compatibility exists to preserve evidence while callers migrate, not to keep an 
 
 Issue #313 and the former Workflow Supervisor/browser-delivery implementation are historical regression evidence only. Their effect receipts remain useful for proving that an already-recorded provider mutation was applied, not applied, or outcome-unknown; those receipts must never be re-keyed or replayed simply because the current transport changed.
 
-Current source must not restore automatic `CONTINUE` sends, Work-bound Supervisor enrollment, ControllerRound progression, provider-delivery retry loops, or Work-owned conversation lifecycle. Computer/Browser may still preserve exact-target and unknown-outcome safety for ordinary explicitly requested provider actions.
+Current source supports only the task-bound `launcher_start` lifecycle above. It must not restore Work-bound Supervisor enrollment, ControllerRound progression, provider-delivery retry loops, or Work-owned conversation lifecycle. Every Prompt is explicit input to one bounded call; scheduling may invoke that same action but cannot infer DONE or manufacture another task. Computer/Browser exact-target and unknown-outcome receipts remain the sole provider mutation safety boundary.
 
 ## Module Boundaries and Language Evolution
 This policy applies to **all Forge source development**. `AGENTS.md` is the entry point. `docs/architecture/CURRENT.md` records active authorities and `docs/reference-configs/runtime-architecture-guardrails.md` defines existing correctness and release constraints. Reconcile any disagreement within the same reviewed delivery; never introduce a second authority.

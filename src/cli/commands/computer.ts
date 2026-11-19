@@ -25,6 +25,7 @@ import {
   pluginCatalogCompatibility,
   withOfficialPluginLifecycleLock,
 } from './plugin';
+import { compareVersions } from './version-compare';
 
 export const COMPUTER_PROVIDER_PLUGIN_ID = 'desktop_operator';
 const COMPUTER_PRODUCT_ID = 'computer';
@@ -195,6 +196,7 @@ export function readComputerStatus(options: { controllerHome?: string; platform?
   const registration = getExternalPluginRegistration(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID);
   const health = providerHealth(controllerHome);
   const installedVersion = registration?.pluginVersion;
+  const versionComparison = installedVersion ? compareVersions(installedVersion, entry.version) : null;
   const provider: ComputerProviderStatus = {
     implementation: 'Forge Desktop Operator',
     pluginId: COMPUTER_PROVIDER_PLUGIN_ID,
@@ -202,7 +204,7 @@ export function readComputerStatus(options: { controllerHome?: string; platform?
     protocolVersion: registration?.protocolVersion,
     catalogVersion: entry.version,
     enabled: registration?.enabled === true,
-    updateAvailable: Boolean(installedVersion && installedVersion !== entry.version),
+    updateAvailable: Boolean(installedVersion && (versionComparison ?? 1) < 0),
     releaseIndependent: true,
     transport: registration?.transport.kind,
     lifecycle: registration?.lifecycle?.kind,
@@ -295,6 +297,9 @@ export function runComputerDoctor(options: { controllerHome?: string; platform?:
       state: status.provider.updateAvailable ? 'warn' : 'pass',
       message: status.provider.updateAvailable
         ? `Computer provider ${status.provider.installedVersion ?? 'unknown'} differs from pinned ${status.provider.catalogVersion}; run forge computer update.`
+        : status.provider.installedVersion
+          && (compareVersions(status.provider.installedVersion, status.provider.catalogVersion) ?? 0) > 0
+          ? `Computer provider ${status.provider.installedVersion} is newer than pinned ${status.provider.catalogVersion}; no downgrade is recommended.`
         : `Computer provider matches pinned ${status.provider.catalogVersion}.`,
     });
     checks.push({
