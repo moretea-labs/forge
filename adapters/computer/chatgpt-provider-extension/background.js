@@ -523,7 +523,7 @@ function shouldReloadUnreadableConversation(tabId, identity, observation, nowMs 
   const unreadable = identity?.namespace === 'chatgpt.conversation'
     && typeof observation?.url === 'string'
     && core.parseConversation(observation.url)?.conversationId === identity.conversationId
-    && /(?:无法加载此 ChatGPT 对话|Unable to load this (?:ChatGPT )?conversation)/i.test(observation.providerFailureText ?? '')
+    && /(?:无法加载此 ChatGPT 对话|Unable to load this (?:ChatGPT )?conversation|正在加载个人资料|正在加载聊天(?:…|\.\.\.)?|Loading (?:your )?profile(?:…|\.\.\.)?|Loading (?:the )?chat(?:…|\.\.\.)?)/i.test(observation.providerFailureText ?? '')
     && !observation.latestUserText?.trim() && !observation.latestAssistantResponse?.trim()
     && !observation.composerText?.trim() && observation.isGenerating !== true;
   if (!unreadable) {

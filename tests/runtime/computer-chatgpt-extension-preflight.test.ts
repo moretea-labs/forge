@@ -300,6 +300,12 @@ test('receiver identity and unreadable-page recovery preserve the exact target w
   expect(f.shouldReload(55, identity, { ...obs, url: 'https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }, 900_000)).toBe(false);
   expect(f.shouldReload(55, identity, { ...obs, composerText: 'Unowned user draft' }, 900_000)).toBe(false);
   expect(f.shouldReload(55, identity, { ...obs, isGenerating: true }, 900_000)).toBe(false);
+  const loading = { ...obs, providerFailureText: '正在加载个人资料\n正在加载聊天…' };
+  expect(f.shouldReload(43, identity, loading, 1_000_000)).toBe(false);
+  expect(f.shouldReload(43, identity, loading, 1_059_999)).toBe(false);
+  expect(f.shouldReload(43, identity, loading, 1_060_000)).toBe(true);
+  expect(f.shouldReload(44, identity, { ...loading, latestUserText: 'Submitted turn' }, 1_100_000)).toBe(false);
+  expect(f.shouldReload(45, identity, { ...loading, isGenerating: true }, 1_100_000)).toBe(false);
   }
   {
   const source = readFileSync(new URL('../../adapters/computer/chatgpt-provider-extension/background.js', import.meta.url), 'utf8');
