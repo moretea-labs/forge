@@ -383,6 +383,55 @@ describe('runtime release materialization', () => {
     });
   });
 
+  test.skipIf(process.platform !== 'darwin')('resolves npm for a frozen release snapshot when Recovery starts with a minimal launchd PATH', () => {
+    const previous = {
+      home: process.env.HOME,
+      path: process.env.PATH,
+      marker: process.env.FORGE_NPM_MARKER,
+    };
+    const fakeHome = mkdtempSync(join(tmpdir(), 'forge-release-npm-home-'));
+    roots.push(fakeHome);
+    const npmDirectory = join(fakeHome, '.local', 'bin');
+    mkdirSync(npmDirectory, { recursive: true });
+    const npmExecutable = join(npmDirectory, 'npm');
+    const marker = join(fakeHome, 'npm-invocation.txt');
+    writeFileSync(npmExecutable, '#!/bin/sh\nprintf "%s\\n" "$*" > "$FORGE_NPM_MARKER"\nmkdir -p node_modules\n');
+    chmodSync(npmExecutable, 0o755);
+    process.env.HOME = fakeHome;
+    process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+    process.env.FORGE_NPM_MARKER = marker;
+    try {
+      const { root } = sourceFixture();
+      const dependenciesRoot = join(root, 'node_modules');
+      mkdirSync(dependenciesRoot, { recursive: true });
+      writeFileSync(join(root, '.git', 'info', 'exclude'), 'node_modules/\n', { flag: 'a' });
+      writeFileSync(join(dependenciesRoot, '.forge-stale-dependency'), 'stale\n');
+      writeFileSync(join(root, 'package-lock.json'), JSON.stringify({
+        name: '@moretea-labs/forge',
+        version: '1.8.2-test',
+        lockfileVersion: 3,
+        requires: true,
+        packages: { '': { name: '@moretea-labs/forge', version: '1.8.2-test' } },
+      }, null, 2));
+      expect(spawnSync('git', ['add', 'package-lock.json'], { cwd: root, stdio: 'ignore' }).status).toBe(0);
+      expect(spawnSync('git', ['commit', '-m', 'add frozen dependency lock'], { cwd: root, stdio: 'ignore' }).status).toBe(0);
+      const sourceRevision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+
+      withRuntimeReleaseSourceSnapshot({ sourceRoot: root, sourceRevision }, snapshotRoot => {
+        expect(existsSync(join(snapshotRoot, 'node_modules', '.forge-stale-dependency'))).toBe(false);
+        expect(existsSync(join(snapshotRoot, 'node_modules'))).toBe(true);
+      });
+      expect(readFileSync(marker, 'utf8')).toContain('ci --ignore-scripts --no-audit --no-fund --include=dev --include=optional');
+    } finally {
+      if (previous.home === undefined) delete process.env.HOME;
+      else process.env.HOME = previous.home;
+      if (previous.path === undefined) delete process.env.PATH;
+      else process.env.PATH = previous.path;
+      if (previous.marker === undefined) delete process.env.FORGE_NPM_MARKER;
+      else process.env.FORGE_NPM_MARKER = previous.marker;
+    }
+  });
+
   test('removes the external source snapshot container when the staging callback fails', () => {
     const { root } = sourceFixture();
     const frozenRevision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
