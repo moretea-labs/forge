@@ -4688,6 +4688,55 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
+  test('launchd kickstart missing-service race proceeds only when the exact target remains registered', async () => {
+    for (const registeredAfterKickstart of [true, false]) {
+      const home = controllerHome();
+      const previousHome = process.env.HOME;
+      process.env.HOME = home;
+      try {
+        const paths = forgeRuntimeServicePaths(home);
+        mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+        writeFileSync(paths.installedPlistPath, '<plist/>');
+        const config = createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 } });
+        let launchdLoaded = true;
+        let kickstartIssued = false;
+        const commands: string[][] = [];
+        const result = await restartPrimaryRuntime(config, {
+          forceHealthyRestart: true, platform: 'darwin', currentUid: async () => 501,
+          runCommand: async (_command, args) => {
+            commands.push(args);
+            if (args[0] === 'bootout') launchdLoaded = false;
+            if (args[0] === 'bootstrap') launchdLoaded = true;
+            if (args[0] === 'kickstart') {
+              kickstartIssued = true;
+              return { ok: false, status: 3, stdout: '', stderr: 'Could not find service "' + args[2] + '" in domain for user gui: 501' };
+            }
+            if (args[0] === 'print') return kickstartIssued
+              ? registeredAfterKickstart
+                ? { ok: true, status: 0, stdout: 'registered', stderr: '' }
+                : { ok: false, status: 3, stdout: '', stderr: 'service not found' }
+              : launchdLoaded
+                ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+                : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          runtimeRunning: () => launchdLoaded,
+          repairPrimaryConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'connector already bound' }),
+          verifyLocal: async () => healthyVerify(), observeLocal: async () => healthyVerify(),
+          now: (() => { let value = 0; return () => value += 250; })(), sleep: async () => undefined,
+        });
+        const kickstartIndex = commands.findIndex((args) => args[0] === 'kickstart');
+        const recheckIndex = commands.findIndex((args, index) => index > kickstartIndex && args[0] === 'print');
+        expect(commands[recheckIndex]).toEqual(['print', commands[kickstartIndex]?.[2]]);
+        expect(result).toMatchObject({ ok: registeredAfterKickstart, attempted: true });
+        if (!registeredAfterKickstart) expect(result.detail).toContain('exact service registration re-probe failed');
+      } finally {
+        if (previousHome === undefined) delete process.env.HOME;
+        else process.env.HOME = previousHome;
+      }
+    }
+  });
+
   test('explicit healthy Runtime restart recycles the service while default recovery semantics remain no-op', async () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
