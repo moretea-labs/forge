@@ -235,7 +235,7 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
     },
     setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; },
   };
-  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;globalThis.__markerReadIdentity = markerReconciliationReadIdentity;globalThis.__shouldReload = shouldReloadUnreadableConversation;globalThis.__testPrepare=executePrepare;globalThis.__testDispatch=executeDispatch;globalThis.__testFindMarker=executeFindMarker;globalThis.__testEnsure=executeEnsure;globalThis.__testObserve=executeObserve;', context);
+  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;globalThis.__markerReadIdentity = markerReconciliationReadIdentity;globalThis.__shouldReload = shouldReloadUnreadableConversation;globalThis.__shouldReplace = shouldReplaceUnreadableConversation;globalThis.__replacement = createOrReuseReplacementTarget;globalThis.__testPrepare=executePrepare;globalThis.__testDispatch=executeDispatch;globalThis.__testFindMarker=executeFindMarker;globalThis.__testEnsure=executeEnsure;globalThis.__testObserve=executeObserve;', context);
   return {
     tabs,
     get dispatchSends() { return dispatchSends; },
@@ -260,6 +260,12 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
     shouldReload: (tabId: number, identity: object, observation: object, nowMs: number) =>
       (context as typeof context & { __shouldReload: (tabId: number, identity: object, observation: object, nowMs: number) => Promise<boolean> })
         .__shouldReload(tabId, identity, observation, nowMs),
+    shouldReplace: (tabId: number, identity: object, observation: object, nowMs: number) =>
+      (context as typeof context & { __shouldReplace: (tabId: number, identity: object, observation: object, nowMs: number) => Promise<boolean> })
+        .__shouldReplace(tabId, identity, observation, nowMs),
+    replacement: (sourceTabId: number, identity: object, nowMs: number) =>
+      (context as typeof context & { __replacement: (sourceTabId: number, identity: object, nowMs: number) => Promise<{ tab: { id: number; windowId: number; url: string }; ownerToken: string }> })
+        .__replacement(sourceTabId, identity, nowMs),
     matchesReceiver: (tab: { id: number; windowId: number; url: string }, identity: object) =>
       (context as typeof context & { __matchesReceiver: (tab: object, identity: object) => boolean }).__matchesReceiver(tab, identity),
     markerReadIdentity: (tab: { id: number; windowId: number; url: string }, identity: object) =>
@@ -316,6 +322,21 @@ test('receiver identity and unreadable-page recovery preserve the exact target w
   const afterRestart = bootstrapFixture([], { sessionStore: sharedSession });
   expect(await afterRestart.shouldReload(49, identity, loading, 1_459_999)).toBe(false);
   expect(await afterRestart.shouldReload(49, identity, loading, 1_460_000)).toBe(true);
+  const replacementSession = new Map<string, unknown>();
+  const replacementFixture = bootstrapFixture([{ id: 42, windowId: 8, url }], { sessionStore: replacementSession });
+  expect(await replacementFixture.shouldReload(42, identity, loading, 2_000_000)).toBe(false);
+  expect(await replacementFixture.shouldReload(42, identity, loading, 2_060_000)).toBe(true);
+  expect(await replacementFixture.shouldReplace(42, identity, loading, 2_119_999)).toBe(false);
+  expect(await replacementFixture.shouldReplace(42, identity, loading, 2_120_000)).toBe(true);
+  const replacement1 = await replacementFixture.replacement(42, identity, 2_120_000);
+  const replacement2 = await replacementFixture.replacement(42, identity, 2_120_100);
+  expect(replacement1.tab.id).toBe(200);
+  expect(replacement2.tab.id).toBe(200);
+  expect(replacementFixture.tabs.map((tab) => tab.id)).toEqual([42, 200]);
+  expect(replacementSession.get('forgeComputerOwnedTabV1:200')).toBe(replacement1.ownerToken);
+  replacementSession.set('forgeComputerOwnedTabV1:200', 'different-owner');
+  await expect(replacementFixture.replacement(42, identity, 2_120_200))
+    .rejects.toThrow('COMPUTER_CHATGPT_EXTENSION_REPLACEMENT_OWNER_TOKEN_MISMATCH');
   const emptyShell = { ...obs, providerFailureText: '' };
   expect(await f.shouldReload(46, identity, emptyShell, 1_200_000)).toBe(false);
   expect(await f.shouldReload(46, identity, emptyShell, 1_259_999)).toBe(false);
