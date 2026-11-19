@@ -1,3 +1,4 @@
+import { StorageCleanupPanel } from './storage-cleanup-panel';
 import { useEffect, useMemo, useState } from 'react';
 import type { ApiProviderProfile, LocalApiSettings, LocalApiProtocol } from './local-api';
 import { managedApiCredentialControl } from './local-api';
@@ -37,7 +38,7 @@ function credentialRowState(profile: ApiProviderProfile | ProfileDraft, hasKey: 
 
 export function SettingsView({
   settings, loading, error, onRefresh, onSave,
-  codexStatus, codexError, onRefreshCodex, onOpenMcp, mcpReady,
+  codexStatus, codexError, onRefreshCodex, onOpenMcp, mcpReady, cleanupRepoId,
 }: {
   settings: LocalApiSettings | null; loading: boolean; error: string | null;
   onRefresh: () => Promise<void>; onSave: (input: SettingsSaveInput) => Promise<void>;
@@ -45,6 +46,7 @@ export function SettingsView({
   onRefreshCodex: () => Promise<void>;
   onOpenMcp: () => void;
   mcpReady: boolean | null;
+  cleanupRepoId?: string;
 }) {
   const [defaultProvider, setDefaultProvider] = useState(settings?.defaultProvider ?? 'codex');
   const [profiles, setProfiles] = useState<ProfileDraft[]>(() => (settings?.profiles ?? []).map(toDraft));
@@ -316,6 +318,7 @@ export function SettingsView({
         {saved && <span className="settings-saved" role="status">已保存</span>}
       </div>
     </section>
+    <StorageCleanupPanel repoId={cleanupRepoId} />
     <section className="settings-group settings-mcp-entry" aria-label="外部 MCP 连接">
       <div className="settings-group-heading"><strong>外部 MCP 服务</strong><span>连接状态</span></div>
       <div className="settings-mcp-card">

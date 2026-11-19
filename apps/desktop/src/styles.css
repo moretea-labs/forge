@@ -1203,3 +1203,32 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
 @media (prefers-reduced-transparency: reduce) {
   .sidebar { background: #eef0f1; -webkit-backdrop-filter: none; backdrop-filter: none; }
 }
+
+/* Storage cleanup: flat settings rows, no nested cards or decorative boxes. */
+.storage-topline,.storage-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; justify-content: space-between; }
+.storage-topline { color: var(--text-muted, #787878); font-size: 11px; }
+.storage-summary { font-size: 14px; font-weight: 640; margin: 16px 0 10px; }
+.storage-summary span { font-size: 11px; font-weight: 400; color: #888; }
+.storage-category { display: flex; align-items: center; gap: 10px; min-height: 37px; font-size: 12px; }
+.storage-category input { accent-color: #333; }
+.storage-category small { color: #888; margin-left: auto; }
+.storage-details { padding: 10px 0; font-size: 11px; }
+.storage-details summary { cursor: pointer; color: #666; }
+.storage-candidates { max-height: 180px; overflow: auto; padding-top: 6px; }
+.storage-candidate { padding: 7px 0; display: grid; gap: 3px; border-bottom: 1px solid var(--line); }
+.storage-candidate span { overflow-wrap: anywhere; color: #474747; }
+.storage-candidate small { color: #909090; }
+.storage-actions { justify-content: flex-start; margin-top: 12px; color: #555; font-size: 11px; }
+.storage-managed { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; padding: 20px 0 10px; }
+.storage-managed span { font-size: 12px; }
+.storage-managed strong { font-size: 13px; }
+.storage-managed small { color: #929292; font-size: 11px; width: 100%; }
+
+.storage-inventory { margin: 20px 0 8px; }
+.storage-inventory .settings-group-heading { margin-bottom: 6px; }
+.storage-inventory-row { min-width: 0; display: flex; justify-content: space-between; gap: 18px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.storage-inventory-row > span { color: #595959; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.storage-inventory-label { display: grid; gap: 4px; min-width: 0; }
+.storage-inventory-label strong { font-weight: 570; }
+.storage-inventory-label small { color: #929292; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.storage-inventory > .settings-hint { margin-top: 10px; }
