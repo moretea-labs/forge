@@ -21,7 +21,10 @@ export function serviceUnits(controllerHome: string): {
   connector: string;
   recoveryGateway: string;
   recoveryWatchdog: string;
+  independentRecovery: string;
 };
+
+export function buildWslStatusCommand(markers: { begin: string; end: string }): string;
 
 export function executeAction(
   actionId: string,
