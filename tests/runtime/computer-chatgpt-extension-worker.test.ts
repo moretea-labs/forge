@@ -288,8 +288,18 @@ test('content snapshot reports only live provider status, not quoted historical 
     closest: (selector: string) => selector.includes('conversation-turn-') ? {} : null,
   };
   let statuses: Array<typeof historyStatus> = [historyStatus];
+  let bannerVisibilityChecks = 0;
+  const bannerNodes = Array.from({ length: 2_000 }, (_value, index) => ({
+    innerText: index === 1_999 ? capacityText : `ordinary-${index}`,
+    textContent: index === 1_999 ? capacityText : `ordinary-${index}`,
+    getClientRects: () => { bannerVisibilityChecks += 1; return [{}]; },
+    closest: () => null,
+  }));
   const emptyNodes = Object.assign([], { item: () => undefined });
-  const main = { getClientRects: () => [{}], querySelectorAll: (_selector: string) => emptyNodes };
+  const main = {
+    getClientRects: () => [{}],
+    querySelectorAll: (selector: string) => selector === 'p, span, div' ? bannerNodes : emptyNodes,
+  };
   const listeners: Array<(message: unknown, sender: unknown, respond: (value: Record<string, unknown>) => void) => void> = [];
   const scope = {
     ForgeComputerChatgptCore: {
@@ -318,9 +328,12 @@ test('content snapshot reports only live provider status, not quoted historical 
     listeners[0]!({ type: 'forge-computer-chatgpt-snapshot' }, {}, (value) => { result = value; });
     return result!;
   };
-  expect(snapshot().providerFailureText).toBe('');
-  statuses = [historyStatus, { ...historyStatus, closest: () => null }];
   expect(snapshot().providerFailureText).toBe(capacityText);
+  expect(bannerVisibilityChecks).toBeLessThanOrEqual(512);
+  bannerVisibilityChecks = 0;
+  statuses = [historyStatus, { ...historyStatus, closest: () => null }];
+  expect(snapshot().providerFailureText).toContain(capacityText);
+  expect(bannerVisibilityChecks).toBeLessThanOrEqual(512);
 });
 
 test('read-only ChatGPT generation status ignores a historical user turn while send admission stays conservative', async () => {

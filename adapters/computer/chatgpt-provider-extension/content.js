@@ -16,6 +16,9 @@
   const TURN = '[data-testid^="conversation-turn-"], [data-talvt-turn-state]';
   const PROVIDER_ACTIVITY_CHARS = 64 * 1024;
   const PROVIDER_FAILURE_CHARS = 250_000;
+  // Provider banners live near the active conversation surface. Never force
+  // layout across an entire long history just to discover a short status.
+  const PROVIDER_FAILURE_SCAN_NODES = 512;
   const absoluteChatgptUrl = (href) => {
     try { const url = new URL(String(href ?? ''), location.href); return url.protocol === 'https:' && url.hostname === 'chatgpt.com' ? url.toString() : undefined; }
     catch { return undefined; }
@@ -156,23 +159,30 @@
     // The conversation-capacity banner is not always an ARIA alert.
     // Read visible, short, non-message status nodes only; ordinary conversation
     // history must never be interpreted as a current provider failure.
-    const status = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"]'))
-      .filter((node) => !node.closest(TURN) && !node.closest('[data-message-author-role]') && visible(node));
-    // A navigation/history error is a live empty page, not proof that a
-    // conversation was deleted or that its last provider Send failed.
-    // Reuse the existing single short-banner scan; history remains excluded.
-    const banners = Array.from(conversationRoot().querySelectorAll('p, span, div'))
+    const statusTexts = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"]'))
       .filter((node) => !node.closest(TURN) && !node.closest('[data-message-author-role]') && visible(node))
-      .filter((node) => {
-        const text = core.normalizeText(node.innerText ?? node.textContent);
-        return text.length <= 250 && (
-          /(?:你已达到此对话的长度上限|此对话已达到长度上限|you(?:'ve| have) reached the (?:maximum length for this conversation|conversation length limit)|this conversation has reached its maximum length)/i.test(text)
-          || /^(?:无法加载此 ChatGPT 对话|Unable to load this ChatGPT conversation|Unable to load this conversation)$/i.test(text)
-          || /^(?:连接已中断，正在等待完整答复|Connection interrupted, waiting for the full response|分析已暂停|Analysis paused)[。.!]?$/.test(text)
-        );
-      });
-    return [...status, ...banners]
       .map((node) => core.normalizeText(node.innerText ?? node.textContent))
+      .filter(Boolean);
+    // A navigation/history error is a live empty page, not proof that a
+    // conversation was deleted or that its last provider Send failed. Scan only
+    // the recent tail and reject large containers before any layout-forcing
+    // visibility/innerText read; long histories can contain thousands of divs.
+    const nodes = conversationRoot().querySelectorAll('p, span, div');
+    const bannerTexts = [];
+    for (let index = nodes.length - 1, scanned = 0;
+      index >= 0 && scanned < PROVIDER_FAILURE_SCAN_NODES; index -= 1, scanned += 1) {
+      const node = nodes[index];
+      if (node.closest(TURN) || node.closest('[data-message-author-role]')) continue;
+      const rawText = String(node.textContent ?? node.innerText ?? '');
+      if (!rawText || rawText.length > 500 || !visible(node)) continue;
+      const text = core.normalizeText(node.innerText ?? rawText);
+      if (text.length <= 250 && (
+        /(?:你已达到此对话的长度上限|此对话已达到长度上限|you(?:'ve| have) reached the (?:maximum length for this conversation|conversation length limit)|this conversation has reached its maximum length)/i.test(text)
+        || /^(?:无法加载此 ChatGPT 对话|Unable to load this ChatGPT conversation|Unable to load this conversation)$/i.test(text)
+        || /^(?:连接已中断，正在等待完整答复|Connection interrupted, waiting for the full response|分析已暂停|Analysis paused)[。.!]?$/.test(text)
+      )) bannerTexts.push(text);
+    }
+    return [...statusTexts, ...bannerTexts.reverse()]
       .filter(Boolean).slice(-8).join('\n').slice(-PROVIDER_FAILURE_CHARS);
   };
   // Project pages can retain hidden SSR editors beside the live hydrated one.
