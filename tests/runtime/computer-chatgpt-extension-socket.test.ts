@@ -287,6 +287,82 @@ test('canonical Computer socket opens one Project bootstrap and reconciles its s
   expect(await findPromise).toMatchObject({ matches: [{ state: 'ready', identity: { namespace: 'chatgpt.conversation', conversationId: 'successor-123', canonicalUrl } }] });
 });
 
+test('bootstrap Ensure CAS-clears a stale owner-token pin and accepts only a fresh attested binding', async () => {
+  const controllerHome = home();
+  const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
+  const provider = 'centbrowser-bootstrap-recovery';
+  await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
+    providerId: 'browser.chrome-extension', providerInstanceId: provider,
+    observedAt: new Date().toISOString(), conversations: [],
+  });
+  const projectUrl = 'https://chatgpt.com/g/g-p-forge-recovery/project';
+  const bootstrapKey = 'supervisor:forge-source';
+  const oldBinding = {
+    providerId: 'browser.chrome-extension', providerSessionId: provider, browserProduct: 'chrome',
+    observedAt: new Date().toISOString(), windowId: '51', tabId: '61', ownerToken: 'old-owner-token',
+  };
+  const newBinding = {
+    ...oldBinding,
+    observedAt: new Date().toISOString(), windowId: '52', tabId: '62', ownerToken: 'new-owner-token',
+  };
+  const bootstrapIdentity = { namespace: 'chatgpt.bootstrap' as const, bootstrapKey, projectUrl };
+  const first = runtimeComputerChatgptAction(controllerHome, { kind: 'ensure', identity: bootstrapIdentity }, 3_000);
+  let claim: Record<string, unknown> | undefined;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', { provider_instance_id: provider });
+    if ((claim.result as { command?: unknown })?.command) break;
+    await Bun.sleep(10);
+  }
+  let command = (claim!.result as { command: Record<string, unknown> }).command;
+  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: provider, command_id: command.commandId,
+    result: {
+      kind: 'ensured', providerBinding: oldBinding,
+      observation: { url: projectUrl, title: 'Forge', latestUserText: '', latestAssistantResponse: '', composerText: '', providerActivityText: '', providerFailureText: '', isGenerating: false },
+    },
+  });
+  expect(await first).toMatchObject({ state: 'ready', targetId: expect.any(String) });
+
+  const recovered = runtimeComputerChatgptAction(controllerHome, { kind: 'ensure', identity: bootstrapIdentity }, 3_000);
+  claim = undefined;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', { provider_instance_id: provider });
+    if ((claim.result as { command?: unknown })?.command) break;
+    await Bun.sleep(10);
+  }
+  command = (claim!.result as { command: Record<string, unknown> }).command;
+  expect(command).toMatchObject({ kind: 'ensure', providerBinding: oldBinding });
+  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: provider, command_id: command.commandId,
+    result: {
+      kind: 'failed', code: 'COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISMATCH',
+      retryable: true, failoverSafe: false, providerBinding: oldBinding,
+    },
+  });
+
+  claim = undefined;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', { provider_instance_id: provider });
+    if ((claim.result as { command?: unknown })?.command) break;
+    await Bun.sleep(10);
+  }
+  command = (claim!.result as { command: Record<string, unknown> }).command;
+  expect(command).toMatchObject({ kind: 'ensure', identity: bootstrapIdentity });
+  expect(command).not.toHaveProperty('providerBinding');
+  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: provider, command_id: command.commandId,
+    result: {
+      kind: 'ensured', providerBinding: newBinding,
+      observation: { url: projectUrl, title: 'Forge recovered', latestUserText: '', latestAssistantResponse: '', composerText: '', providerActivityText: '', providerFailureText: '', isGenerating: false },
+    },
+  });
+  expect(await recovered).toMatchObject({
+    state: 'ready',
+    identity: bootstrapIdentity,
+    observation: { title: 'Forge recovered', composerText: '' },
+  });
+});
+
 test('standalone native host forwards framed RPC only to Computer socket', async () => {
   const controllerHome = home();
   const computerDir = join(controllerHome, 'computer');
