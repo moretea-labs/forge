@@ -247,16 +247,15 @@ export interface VerifyStableRuntimeOptions extends RuntimeReleaseExecutionCanar
 
 /**
  * Remote tunnel control-plane lookup is weaker evidence than the live data plane.
- * Once the configured tunnel is locally healthy/ready with matching identities and
- * the public MCP protocol succeeds end-to-end, a degraded/unknown control-plane
- * lookup remains diagnostic instead of vetoing whole-Runtime verification.
- * Any local health, readiness, identity, endpoint, or MCP failure still gates.
+ * When the caller has a successful public data-plane probe, a locally healthy,
+ * identity-matched tunnel with degraded/unknown control-plane status is diagnostic
+ * rather than a repairable local Connector failure.
  */
 export function isPrimaryTunnelControlPlaneOnlyDegradation(
   probe: VerifyResult['probes'][string] | undefined,
-  mcpProtocolHealthy: boolean,
+  dataPlaneHealthy: boolean,
 ): boolean {
-  if (!mcpProtocolHealthy || !probe || probe.ok) return false;
+  if (!dataPlaneHealthy || !probe || probe.ok) return false;
   const observed = probe.value as Partial<OpenAiSecureTunnelRuntimeObservation> | undefined;
   return observed?.healthy === true
     && observed.ready === true

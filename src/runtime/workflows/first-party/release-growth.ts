@@ -55,7 +55,7 @@ function bindingsFor(asset: WorkflowAssetDefinition): WorkflowCapabilityBinding[
       const actionId = capabilityId.slice('browser.'.length);
       if (BROWSER_BASE_ACTIONS.has(actionId)
         || (X_WRITE_WORKFLOW_IDS.has(asset.workflowId) && BROWSER_X_WRITE_ACTIONS.has(actionId))) {
-        return { capabilityId, pluginId: 'browser', actionId };
+        return { capabilityId, pluginId: 'computer', actionId };
       }
     }
     throw new Error(`RELEASE_GROWTH_CAPABILITY_UNSUPPORTED: ${capabilityId}`);

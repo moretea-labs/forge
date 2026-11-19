@@ -1730,7 +1730,7 @@ test('standalone Recovery preserves a locally healthy tunnel as degraded when Op
   expect(observed.controlPlaneDetail).toContain('lookup api.openai.com');
 });
 
-test('stable Runtime gates on tunnel data-plane failures but not control-plane-only degradation after MCP proof', () => {
+test('stable Runtime and Watchdog treat tunnel control-plane-only degradation as diagnostic after public data-plane proof', () => {
   const controlPlaneOnly = {
     ok: false,
     detail: 'remote lookup failed: EOF',
@@ -5178,6 +5178,57 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(result).toMatchObject({ ok: false, attempted: true });
       expect(result.detail).toContain('launchd service remained loaded');
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+      expect(kickstarts).toBe(0);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('does not treat an ambiguous launchctl print failure as proof that the primary service is unloaded', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const first = manifest(home, 'release-a', 'artifact-a');
+      const candidate = verifiedManifest(home, 'release-ambiguous-launchd-print');
+      ensureActiveRuntimeRelease(home, first);
+      const runtime = await runtimeServer();
+      writeMainToken(home);
+      const ownership = startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
+      const config = createRecoveryConfig(home, {
+        publicMcpUrl: runtime.endpoint,
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      removeOwnership(ownership);
+      const paths = forgeRuntimeServicePaths(home);
+      runtimeServiceConfig(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+
+      let printAttempts = 0;
+      let kickstarts = 0;
+      const result = await activateRuntimeRelease(config, candidate.path, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (_command, args) => {
+          if (args[0] === 'print') {
+            printAttempts += 1;
+            return { ok: false, status: 1, stdout: '', stderr: 'launchctl: command not found' };
+          }
+          if (args[0] === 'kickstart') kickstarts += 1;
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => healthyVerify(),
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+
+      expect(result).toMatchObject({ ok: false, attempted: true });
+      expect(result.detail).toContain('absence could not be verified');
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+      expect(printAttempts).toBeGreaterThan(1);
       expect(kickstarts).toBe(0);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;

@@ -2465,6 +2465,12 @@ async function waitForPrimaryRuntimeState(input: {
   return input.runtimeRunning(input.config) === input.expectedRunning;
 }
 
+function launchdServiceIsAbsent(result: { ok: boolean; stdout: string; stderr: string }): boolean {
+  if (result.ok) return false;
+  return /no such process|could not be found|could not find service|service(?: is)? not loaded|service not found/i
+    .test(result.stderr + ' ' + result.stdout);
+}
+
 async function waitForLaunchdServiceUnloaded(input: {
   service: LaunchdService;
   timeoutMs: number;
@@ -2475,11 +2481,11 @@ async function waitForLaunchdServiceUnloaded(input: {
   const deadline = input.now() + input.timeoutMs;
   while (input.now() < deadline) {
     const printed = await input.runCommand('launchctl', ['print', input.service.target], 5_000);
-    if (!printed.ok) return true;
+    if (launchdServiceIsAbsent(printed)) return true;
     await input.wait(250);
   }
   const printed = await input.runCommand('launchctl', ['print', input.service.target], 5_000);
-  return !printed.ok;
+  return launchdServiceIsAbsent(printed);
 }
 
 interface PrimaryRuntimePortObservation {
@@ -2661,7 +2667,7 @@ async function stopPrimaryRuntimeForReleaseTransition(input: {
     return {
       ok: false,
       detail: input.service.platform === 'launchd'
-        ? 'primary Runtime launchd service remained loaded after bounded bootout'
+        ? 'primary Runtime launchd service remained loaded or its absence could not be verified after bounded bootout'
         : 'primary Runtime systemd-user service remained active after bounded stop',
     };
   }
@@ -6940,11 +6946,19 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   const primaryConnectorCapacityFailed = connectorCapacityRecoveryRecommended(verified);
   const primaryPublicTunnel = configuredPrimaryPublicTunnel(config);
   const primaryPublicTransportManaged = Boolean(primaryPublicTunnel);
+  const primaryTunnelControlPlaneOnlyDegradation = isPrimaryTunnelControlPlaneOnlyDegradation(
+    verified.probes.primary_tunnel_runtime,
+    verified.probes.external_mcp_http?.ok === true
+      && verified.probes.primary_connector_ready?.ok === true
+      && verified.probes.primary_connector_local?.ok === true,
+  );
   const primaryPublicTransportFailed = Boolean(
     primaryRuntimeHealthy
     && !primaryConnectorCapacityFailed
     && (
-      (primaryPublicTunnel?.platform === 'openai-secure-tunnel' && verified.probes.primary_tunnel_runtime?.ok === false)
+      (primaryPublicTunnel?.platform === 'openai-secure-tunnel'
+        && verified.probes.primary_tunnel_runtime?.ok === false
+        && !primaryTunnelControlPlaneOnlyDegradation)
       || (Boolean(config.publicMcpUrl) && (verified.probes.external_mcp_http?.ok === false || verified.probes.primary_connector_ready?.ok === false))
     ),
   );
