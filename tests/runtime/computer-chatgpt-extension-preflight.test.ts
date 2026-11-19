@@ -1045,6 +1045,44 @@ test('F11 legacy pinned Chrome binding without owner token fails closed', async 
     { ...legacy, tabId: '708', windowId: '19' })).rejects.toThrow('COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
 });
 
+test('F11 conversation Ensure can replace an exact legacy pin missing only its owner token', async () => {
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  const url = `https://chatgpt.com/c/${conversationId}`;
+  const original = { id: 708, windowId: 19, url };
+  const f = bootstrapFixture([original], { validEnsureSnapshot: true });
+  const identity = { namespace: 'chatgpt.conversation', conversationId, canonicalUrl: url };
+  const legacy = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-1', tabId: '708', windowId: '19' };
+
+  // Observe/Prepare/Dispatch retain the old fail-closed contract.
+  await expect(f.resolve(identity, false, legacy, 'profile-1'))
+    .rejects.toThrow('COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
+  expect(await f.prepare(identity, legacy, 'profile-1')).toMatchObject({
+    ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING',
+  });
+  expect(await f.dispatch(identity, legacy, 'profile-1')).toMatchObject({
+    mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING',
+  });
+
+  const recovered = await f.ensure(identity, legacy, 'profile-1');
+  expect(recovered).toMatchObject({ kind: 'ensured', providerBinding: {
+    providerId: 'browser.chrome-extension', providerSessionId: 'profile-1', ownerToken: expect.any(String),
+  } });
+  expect(recovered.providerBinding?.tabId).not.toBe('708');
+  expect(f.tabs).toHaveLength(2);
+  expect(f.tabs[0]).toEqual(original); // old user-visible tab is untouched
+  expect(f.tabs[1]).toMatchObject({ url, windowId: 8 });
+  expect(f.snapshotReads).toBe(1); // only the new attested tab is hydrated
+  expect(f.dispatchSends).toBe(0);
+
+  // Missing-token recovery never crosses a provider/profile boundary. Preserve
+  // the original fail-closed missing-owner contract before any tab lookup.
+  const foreign = { ...legacy, providerSessionId: 'other-profile' };
+  expect(await f.ensure(identity, foreign, 'profile-1')).toMatchObject({
+    kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING',
+  });
+  expect(f.tabs).toHaveLength(2);
+});
+
 // A successful tab.create is insufficient: failed OR dropped session writes
 // leave an unowned shell, never a Controller-pinned Send receiver.
 for (const options of [{ ownerWriteFails: true }, { ownerWriteDrops: true }]) {
