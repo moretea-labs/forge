@@ -34,6 +34,7 @@ import type {
 import {
   appendSettleFlag,
   compileBatchCommand,
+  compilePressCommand,
   compileSnapshotCommand,
   detectAgentDeviceCapabilities,
   isSupportedAgentDeviceVersion,
@@ -274,6 +275,12 @@ function probeStatus(repoRoot?: string) {
       const topicResult = hooks.runCommand(executable(repoRoot), ['help', topic], { cwd: repoRoot, env: runtimeEnv, timeoutMs: 3_000 });
       if (topicResult.ok) help[topic] = topicResult.stdout || topicResult.stderr;
     }
+    const pressCommandHelp = hooks.runCommand(executable(repoRoot), ['press', '--help'], {
+      cwd: repoRoot, env: runtimeEnv, timeoutMs: 3_000,
+    });
+    if (pressCommandHelp.stdout || pressCommandHelp.stderr) {
+      help.pressCommand = pressCommandHelp.stdout || pressCommandHelp.stderr;
+    }
   }
   const capabilityProfile = shouldProbeHelp
     ? detectAgentDeviceCapabilities(detectedVersion ?? '', help)
@@ -365,6 +372,12 @@ async function probeStatusAsync(input: Pick<AssistantPluginActionExecutionInput,
         cwd: repoRoot, env: runtimeEnv, timeoutMs: 3_000, signal: input.signal,
       });
       if (topicResult.ok) help[topic] = topicResult.stdout || topicResult.stderr;
+    }
+    const pressCommandHelp = await hooks.runCommandAsync(executable(repoRoot), ['press', '--help'], {
+      cwd: repoRoot, env: runtimeEnv, timeoutMs: 3_000, signal: input.signal,
+    });
+    if (pressCommandHelp.stdout || pressCommandHelp.stderr) {
+      help.pressCommand = pressCommandHelp.stdout || pressCommandHelp.stderr;
     }
   }
   const capabilityProfile = shouldProbeHelp
@@ -2401,10 +2414,10 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'agent_device_press', title: 'Press agent-device target',
-      description: 'Press one ref, selector, or explicit coordinate pair. Semantic targets return a settled bounded diff; explicit coordinates bypass accessibility settle for heavy-screen recovery.',
+      description: 'Press one ref, selector, or explicit coordinate pair. Set double_tap for VoiceOver activation. Semantic targets return a settled bounded diff; explicit coordinates bypass accessibility settle for heavy-screen recovery.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.simulator', 'ios.device'], resourceClaims: write,
-      argumentsSchema: { type: 'object', properties: { ...interactionProperty, target: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' } }, required: ['interaction_id'], additionalProperties: false },
+      argumentsSchema: { type: 'object', properties: { ...interactionProperty, target: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, double_tap: { type: 'boolean' } }, required: ['interaction_id'], additionalProperties: false },
     },
     {
       actionId: 'agent_device_fill', title: 'Fill agent-device target',
@@ -2687,14 +2700,23 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       if (record.provider === DEVICE_PROVIDER && target && SENSITIVE_SEMANTICS.test(target)) {
         throw new AssistantPluginError('IOS_DEVICE_SENSITIVE_ACTION_BLOCKED', 'Press targets involving credentials, verification, biometrics, checkout, purchase or payment require human interaction.', { retryable: false });
       }
+      const doubleTap = input.args.double_tap === true;
+      const profile = target || doubleTap ? capabilityProfile(input.repoRoot) : undefined;
+      if (doubleTap && !profile?.press.doubleTapFlag) {
+        throw new AssistantPluginError(
+          'PLUGIN_ACTION_NOT_SUPPORTED',
+          'The detected agent-device contract does not support VoiceOver double-tap.',
+          { retryable: false },
+        );
+      }
       const baseArgs = ['press', ...(target ? [target] : [String(input.args.x), String(input.args.y)])];
       // Explicit coordinate presses are the bounded fallback for screens whose
       // accessibility tree is too heavy or animated to snapshot reliably.
       // Settling forces an AX snapshot after the mutation, defeating that
       // fallback and can recycle/wedge the XCTest runner. Keep semantic target
       // presses settled, but let explicit points complete without AX capture.
-      const args = target
-        ? appendSettleFlag(capabilityProfile(input.repoRoot), baseArgs, 'press')
+      const args = profile
+        ? compilePressCommand(profile, baseArgs, { doubleTap, settle: Boolean(target) })
         : baseArgs;
       return { provider: 'agent-device', interaction: record, result: bounded(await runSessionCommand(input, record, args, 'AGENT_DEVICE_PRESS_FAILED')) };
     }

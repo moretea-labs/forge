@@ -15,6 +15,7 @@ export interface AgentDeviceHelpContract {
   root?: string;
   snapshot?: string;
   press?: string;
+  pressCommand?: string;
   fill?: string;
   batch?: string;
   keyboard?: string;
@@ -38,6 +39,7 @@ export interface AgentDeviceCapabilityProfile {
   press: {
     supported: boolean;
     settleFlag?: '--settle';
+    doubleTapFlag?: '--double-tap';
   };
   fill: {
     supported: boolean;
@@ -134,6 +136,7 @@ function knownVersionProfile(version: string): Omit<AgentDeviceCapabilityProfile
     press: {
       supported: true,
       settleFlag: '--settle',
+      ...(version === '0.19.3' ? { doubleTapFlag: '--double-tap' as const } : {}),
     },
     fill: {
       supported: true,
@@ -156,7 +159,9 @@ export function detectAgentDeviceCapabilities(
   help: AgentDeviceHelpContract = {},
 ): AgentDeviceCapabilityProfile {
   const fallback = knownVersionProfile(version);
-  const combinedHelp = Object.values(help).filter(Boolean).join('\n');
+  const combinedHelp = [help.root, help.snapshot, help.press, help.fill, help.batch, help.keyboard]
+    .filter(Boolean)
+    .join('\n');
   const helpLooksUsable = /agent-device\s+(snapshot|press|fill|batch|keyboard)/.test(combinedHelp);
   const profile: Omit<AgentDeviceCapabilityProfile, 'contractFingerprint'> = !helpLooksUsable
     ? fallback
@@ -177,6 +182,11 @@ export function detectAgentDeviceCapabilities(
       press: {
         supported: /agent-device\s+press/.test(help.press ?? ''),
         ...(includesFlag(help.press, '--settle') ? { settleFlag: '--settle' as const } : {}),
+        ...(includesFlag(help.press, '--double-tap')
+          || includesFlag(help.pressCommand, '--double-tap')
+          || fallback.press.doubleTapFlag
+          ? { doubleTapFlag: '--double-tap' as const }
+          : {}),
       },
       fill: {
         supported: /agent-device\s+fill/.test(help.fill ?? ''),
@@ -255,4 +265,20 @@ export function appendSettleFlag(
 ): string[] {
   const flag = operation === 'press' ? profile.press.settleFlag : profile.fill.settleFlag;
   return flag ? [...args, flag] : [...args];
+}
+
+export function compilePressCommand(
+  profile: AgentDeviceCapabilityProfile,
+  args: string[],
+  options: { doubleTap?: boolean; settle?: boolean } = {},
+): string[] {
+  const compiled = [...args];
+  if (options.doubleTap) {
+    if (!profile.press.doubleTapFlag) {
+      throw new Error('agent-device press double-tap is unsupported by the detected contract.');
+    }
+    compiled.push(profile.press.doubleTapFlag);
+  }
+  if (options.settle && profile.press.settleFlag) compiled.push(profile.press.settleFlag);
+  return compiled;
 }
