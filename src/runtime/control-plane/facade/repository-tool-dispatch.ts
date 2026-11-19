@@ -613,10 +613,29 @@ export async function callRepositoryTool(
       case 'repository_workbench': {
         const operation = typeof args.operation === 'string' ? args.operation : 'summary';
         if (operation === 'summary') {
-          return result({ workbench: buildControllerWorkbench(controllerHome, {
+          const workbench = buildControllerWorkbench(controllerHome, {
             repoId: repoIdValue || undefined,
             includeRemoved: args.include_removed === true,
-          }) });
+          });
+          const checkoutId = typeof args.checkout_id === 'string' ? args.checkout_id.trim() : '';
+          if (!checkoutId) return result({ workbench });
+          const selected = resolveRepositorySelection({
+            repoId: repoIdValue || undefined,
+            checkoutId,
+            controllerHome,
+            allowSoleRepository: true,
+          });
+          return result({
+            workbench: {
+              ...workbench,
+              selectedCheckout: {
+                repoId: selected.repoId,
+                checkoutId: selected.activeCheckoutId,
+                canonicalRoot: selected.canonicalRoot,
+                gitStatus: repositoryGitStatus(selected),
+              },
+            },
+          });
         }
         const payload = typeof args.payload === 'object' && args.payload !== null
           ? args.payload as Record<string, unknown>

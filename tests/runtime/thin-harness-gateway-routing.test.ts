@@ -1747,6 +1747,49 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     });
   });
 
+  test('workbench summary includes live Git status for an explicitly selected checkout', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const selectedRoot = join(fx.root, 'selected-checkout');
+    git(fx.repoRoot, ['worktree', 'add', '-b', 'selected-checkout', selectedRoot, 'main']);
+    const registered = addRepositoryCheckout({
+      repoId: fx.repository.repoId,
+      path: selectedRoot,
+      controllerHome: fx.controllerHome,
+      activate: false,
+    });
+    const selected = registered.checkouts.find((checkout) => checkout.canonicalRoot === realpathSync(selectedRoot));
+    expect(selected).toBeTruthy();
+    writeFileSync(join(selectedRoot, 'selected-only.txt'), 'selected checkout only\n');
+
+    const response = await callRepositoryTool(fx.controllerHome, 'repository_workbench', {
+      repo_id: fx.repository.repoId,
+      checkout_id: selected!.checkoutId,
+      operation: 'summary',
+    });
+    expect(response?.isError).not.toBe(true);
+    expect(response?.structuredContent).toMatchObject({
+      workbench: {
+        selectedCheckout: {
+          repoId: fx.repository.repoId,
+          checkoutId: selected!.checkoutId,
+          canonicalRoot: realpathSync(selectedRoot),
+          gitStatus: {
+            branch: 'selected-checkout',
+            clean: false,
+            untracked: ['selected-only.txt'],
+            sampleSource: 'live',
+          },
+        },
+      },
+    });
+    const payload = response?.structuredContent as {
+      workbench?: { repositories?: Array<{ repository?: { checkoutId?: string } }> };
+    };
+    expect(payload.workbench?.repositories?.[0]?.repository?.checkoutId).toBe(fx.repository.activeCheckoutId);
+    expect(git(fx.repoRoot, ['status', '--porcelain'])).toBe('');
+  });
+
   test('workbench batch_execute runs multi-step Fast Path with one parent receipt', async () => {
     const fx = fixture();
     roots.push(fx.root);
