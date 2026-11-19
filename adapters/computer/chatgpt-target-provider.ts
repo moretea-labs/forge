@@ -26,6 +26,11 @@ const PROVIDER_ID = 'browser.chrome-extension';
 // durable wake source is a 30-second chrome.alarms tick; retain one missed tick
 // plus bounded scheduling grace without treating a dead provider as durable.
 const HEARTBEAT_FRESH_MS = 75_000;
+// Windows and WSL use separate host clocks. Keep a small transport-only skew
+// allowance so a healthy Windows heartbeat is not rejected merely because its
+// wall clock is a few milliseconds ahead. Accepted future timestamps are
+// clamped to Runtime receive time and never extend provider freshness.
+const HEARTBEAT_CLOCK_SKEW_MS = 5_000;
 // A queued command may wait for the next MV3 alarm. Once claimed, preserve the
 // tighter physical-operation bound so an uncertain browser effect still fails
 // closed quickly and is never blindly replayed.
@@ -153,14 +158,15 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     // This also protects against a delayed socket request arriving after
     // freshProviders() has pruned the previous provider state.
     if (!Number.isFinite(inputObservedAtMs)
-      || inputObservedAtMs > receivedAtMs
+      || inputObservedAtMs - receivedAtMs > HEARTBEAT_CLOCK_SKEW_MS
       || receivedAtMs - inputObservedAtMs > HEARTBEAT_FRESH_MS) return false;
-    const observedAt = new Date(inputObservedAtMs).toISOString();
+    const effectiveObservedAtMs = Math.min(inputObservedAtMs, receivedAtMs);
+    const observedAt = new Date(effectiveObservedAtMs).toISOString();
     const previous = this.providerStates.get(instanceId);
     const previousObservedAtMs = previous ? Date.parse(previous.heartbeat.observedAt) : Number.NaN;
     // A timed-out older socket request can arrive after a newer heartbeat.
     // Never let that late arrival replace newer inventory or refresh freshness.
-    if (Number.isFinite(previousObservedAtMs) && inputObservedAtMs < previousObservedAtMs) return false;
+    if (Number.isFinite(previousObservedAtMs) && effectiveObservedAtMs < previousObservedAtMs) return false;
     const conversations = Array.isArray(input.conversations)
       ? input.conversations.flatMap((entry) => {
           if (!entry || typeof entry.conversationId !== 'string' || !entry.conversationId.trim() || typeof entry.canonicalUrl !== 'string' || !entry.canonicalUrl.trim()) return [];

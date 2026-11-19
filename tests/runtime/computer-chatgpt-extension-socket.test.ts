@@ -46,6 +46,36 @@ function jsonlRpc(socketPath: string, method: string, params: Record<string, unk
   });
 }
 
+test('heartbeat accepts bounded Windows-to-WSL clock skew without extending the provider lease', async () => {
+  const controllerHome = home();
+  let now = Date.parse('2026-11-19T00:00:00.000Z');
+  const port = new ChromeExtensionChatgptConversationTargetPort(
+    controllerHome,
+    runtimeComputerInteractionTargetAuthority(),
+    () => now,
+  );
+
+  expect(port.heartbeat({
+    providerId: 'browser.chrome-extension',
+    providerInstanceId: 'centbrowser-clock-skew',
+    observedAt: new Date(now + 500).toISOString(),
+    conversations: [],
+  })).toBe(true);
+
+  now += 75_001;
+  expect(await port.inventory()).toMatchObject({
+    complete: false,
+    unavailableProviders: ['browser.chrome-extension'],
+  });
+
+  expect(port.heartbeat({
+    providerId: 'browser.chrome-extension',
+    providerInstanceId: 'centbrowser-clock-skew-excessive',
+    observedAt: new Date(now + 5_001).toISOString(),
+    conversations: [],
+  })).toBe(false);
+});
+
 test('provider lease spans MV3 alarm cadence but still expires boundedly', async () => {
   const controllerHome = home();
   let now = Date.parse('2026-11-19T00:00:00.000Z');
