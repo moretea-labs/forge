@@ -17,6 +17,7 @@ import { isOptIn, resolveHooksDir, resolveRepoRoot } from '../hook/runtime';
 import { ROUTES } from '../hook/route-registry';
 import { resolveControllerHome } from '../../effects/controller-home';
 import { createSetupBootstrapControlApi } from './bootstrap-control';
+import { compareVersions } from './version-compare';
 
 const TRUST_STATE_LINE = /^\[hooks\.state\."[^"]+\/\.codex\/hooks\.json:/;
 const PACKAGE_NAME = '@moretea-labs/forge';
@@ -98,23 +99,6 @@ function checkPath(): DoctorCheckResult {
 
 function checkVersion(): DoctorCheckResult {
   return { id: 'cli-version', describe: 'Forge CLI version', status: 'ok', detail: CLI_VERSION };
-}
-
-function parseVersion(value: string): number[] | null {
-  const match = value.trim().replace(/^v/, '').match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
-  if (!match) return null;
-  return match.slice(1).map((part) => Number(part));
-}
-
-function compareVersions(a: string, b: string): number | null {
-  const left = parseVersion(a);
-  const right = parseVersion(b);
-  if (!left || !right) return null;
-  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
-    const diff = (left[index] ?? 0) - (right[index] ?? 0);
-    if (diff !== 0) return diff > 0 ? 1 : -1;
-  }
-  return 0;
 }
 
 function readLatestPackageVersion(): { version?: string; error?: string } {
