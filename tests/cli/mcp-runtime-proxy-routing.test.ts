@@ -738,7 +738,7 @@ describe('MCP canonical Runtime proxy routing', () => {
     }
   }, 15_000);
 
-  test('durable Process survives real MCP client Session replacement and is queryable from the new Session', async () => {
+  test('durable Process survives real MCP client Session and Canonical Runtime transport replacement', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-process-session-replacement-'));
     const controllerHome = join(root, 'controller');
     const repoRoot = join(root, 'repo');
@@ -912,6 +912,107 @@ describe('MCP canonical Runtime proxy routing', () => {
         arguments: { repo_id: repository.repoId, process_id: processId },
       });
       expect(terminalReadback.structuredContent).toMatchObject({ process: { processId, completed: true, ok: true } });
+      // Replace the inner Runtime HTTP listener at the same endpoint while keeping
+      // the outer Gateway and second MCP client Session alive. The proxy must notice
+      // the new Runtime identity, reconnect, and reconcile the same request_id.
+      const previousRuntimePort = runtimeTransport!.port;
+      const previousRuntimeEndpoint = runtimeTransport!.endpoint;
+      await runtimeTransport!.close();
+      runtimeTransport = undefined;
+      runtimeTransport = await startRuntimeMcpTransport({
+        host: '127.0.0.1',
+        port: previousRuntimePort,
+        authToken: runtimeToken,
+        readiness: () => ({
+          ready: true,
+          reasonCodes: [],
+          observedAt: new Date().toISOString(),
+          diagnostics: {
+            database: { outcome: 'pass' },
+            scheduler: { outcome: 'pass' },
+            releaseCoherence: { outcome: 'pass' },
+            mcpEndToEnd: { outcome: 'pass' },
+          },
+        }),
+        createServer: () => {
+          const replacementServer = new Server(
+            { name: 'fixture-runtime-process-session-replacement-v2', version: '1.0.0' },
+            { capabilities: { tools: { listChanged: false } } },
+          );
+          replacementServer.setRequestHandler('tools/list', async () => ({ tools: definitions.map(mcpToolDefinitionToSdk) }));
+          replacementServer.setRequestHandler('tools/call', async (request) => {
+            const name = request.params.name;
+            const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+            const result = name === 'run_check'
+              ? await routeDurableMcpCall(context, name, args)
+              : await callProcessTool(context, name, args);
+            if (!result) throw new Error('replacement Runtime did not handle ' + name);
+            return {
+              content: result.content,
+              ...(result.structuredContent ? { structuredContent: result.structuredContent } : {}),
+              ...(result.isError ? { isError: true } : {}),
+            };
+          });
+          return replacementServer;
+        },
+      });
+      expect(runtimeTransport.endpoint).toBe(previousRuntimeEndpoint);
+      const replacementObservedAt = new Date().toISOString();
+      writeRuntimeStatusSnapshot(controllerHome, {
+        schemaVersion: 1,
+        runtimeInstanceId: 'runtime-process-session-replacement-v2',
+        pid: process.pid,
+        releaseId: 'release-process-session-replacement-v2',
+        artifactIdentity: 'artifact-process-session-replacement-v2',
+        endpoint: runtimeTransport.endpoint,
+        readiness: {
+          ready: true,
+          reasonCodes: [],
+          observedAt: replacementObservedAt,
+          diagnostics: {
+            database: { outcome: 'pass' },
+            scheduler: { outcome: 'pass' },
+            releaseCoherence: { outcome: 'pass' },
+            mcpEndToEnd: { outcome: 'pass' },
+          },
+        },
+        startedAt: replacementObservedAt,
+        updatedAt: replacementObservedAt,
+      });
+      expect(context.controllerHome).toBe(controllerHome);
+      expect(JSON.parse(readFileSync(join(controllerHome, 'runtime', 'status.json'), 'utf8')).runtimeInstanceId).toBe('runtime-process-session-replacement-v2');
+      const runtimeObservation = (await import('../../src/runtime/root/status')).observeRuntimeStatus(context.controllerHome);
+      expect(runtimeObservation.snapshot?.runtimeInstanceId).toBe('runtime-process-session-replacement-v2');
+      const proxyTiming: Parameters<CanonicalRuntimeProxy['callTool']>[3] = {};
+      const proxyReadback = await proxy!.callTool(context, 'process_get', {
+        repo_id: repository.repoId,
+        process_id: processId,
+      }, proxyTiming).catch((error: unknown) => {
+        throw new Error(`DIRECT_PROXY_RECONNECT_FAILED state=${proxyTiming.gatewayProxyConnectionState ?? 'unset'} active=${runtimeTransport?.sessionSnapshot().active ?? -1} cause=${error instanceof Error ? error.stack : String(error)}`);
+      });
+      expect(proxyReadback.structuredContent).toMatchObject({ process: { processId, completed: true, ok: true } });
+      expect(proxyTiming.gatewayProxyConnectionState).toBe('identity_reconnect');
+      expect(runtimeTransport.sessionSnapshot().active).toBe(1);
+      const replayed = await second.client.callTool({
+        name: 'run_check',
+        arguments: {
+          repo_id: repository.repoId,
+          check_id: 'session_survival',
+          interactive_wait_ms: 25,
+          request_id: 'mcp-session-survival-process',
+        },
+      }).catch((error: unknown) => {
+        throw new Error(`OUTER_GATEWAY_CALL_FAILED active=${runtimeTransport?.sessionSnapshot().active ?? -1} cause=${error instanceof Error ? error.stack : String(error)}`);
+      });
+      expect(replayed.isError).not.toBe(true);
+      expect((replayed.structuredContent as Record<string, unknown>).processId).toBe(processId);
+      expect(readFileSync(marker, 'utf8')).toBe('1');
+      const afterRuntimeReplacement = await second.client.callTool({
+        name: 'process_get',
+        arguments: { repo_id: repository.repoId, process_id: processId },
+      });
+      expect(afterRuntimeReplacement.isError).not.toBe(true);
+      expect(afterRuntimeReplacement.structuredContent).toMatchObject({ process: { processId, completed: true, ok: true } });
     } finally {
       await first?.client.close().catch(() => undefined);
       await second?.client.close().catch(() => undefined);
