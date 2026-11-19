@@ -1827,9 +1827,22 @@ async function ensureLaunchdServiceStarted(service: LaunchdService, runCommand: 
     await runCommand('launchctl', ['enable', service.target], 5_000);
   }
   const started = await runCommand('launchctl', ['kickstart', '-k', service.target], 15_000);
-  const alreadyInProgress = started.status === 37 || /already|in progress/i.test(`${started.stderr}\n${started.stdout}`);
-  if (!started.ok && !alreadyInProgress) {
-    return { ok: false, detail: `launchd kickstart failed: ${started.stderr || started.stdout || started.status}` };
+  const kickstartDetail = started.stderr + '\n' + started.stdout;
+  const serviceNotFound = /could not find service|service could not be found/i.test(kickstartDetail);
+  const alreadyInProgress = !serviceNotFound
+    && (started.status === 37 || /already|in progress/i.test(kickstartDetail));
+  if (!started.ok && serviceNotFound) {
+    // A kickstart lookup race is benign only when this exact target remains registered.
+    const registered = await runCommand('launchctl', ['print', service.target], 5_000);
+    if (!registered.ok) {
+      return {
+        ok: false,
+        detail: 'launchd kickstart failed: ' + (started.stderr || started.stdout || started.status)
+          + '; exact service registration re-probe failed: ' + (registered.stderr || registered.stdout || registered.status),
+      };
+    }
+  } else if (!started.ok && !alreadyInProgress) {
+    return { ok: false, detail: 'launchd kickstart failed: ' + (started.stderr || started.stdout || started.status) };
   }
   return { ok: true, detail: service.target };
 }

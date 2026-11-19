@@ -209,6 +209,10 @@
       "module": "controller",
       "resource": "pure"
     },
+    "tests/cli/agentmail-device-command.test.ts": {
+      "module": "repository",
+      "resource": "temp-isolated"
+    },
     "tests/cli/instruction-context.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
@@ -217,13 +221,29 @@
       "module": "controller",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/agentmail-event-workflow.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/agentmail-external-policy.test.ts": {
+      "module": "controller",
+      "resource": "pure"
+    },
     "tests/runtime/desktop-native-cognition.test.ts": {
       "module": "controller",
       "resource": "process-tree"
     },
+    "tests/runtime/ios-agent-device-status.test.ts": {
+      "module": "ios",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/ios-agent-device-multidisplay.test.ts": {
       "module": "ios",
       "resource": "temp-isolated"
+    },
+    "tests/runtime/mcp-artifact-images.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
     },
     "tests/runtime/release-growth-publish-workflows.test.ts": {
       "module": "workflow",
@@ -457,6 +477,14 @@
     "tests/runtime/browser-runtime-v3.test.ts": {
       "module": "browser",
       "resource": "pure"
+    },
+    "tests/cli/chatgpt-browser-command-status.test.ts": {
+      "module": "browser",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/chatgpt-browser-bridge-extension.test.ts": {
+      "module": "browser",
+      "resource": "temp-isolated"
     },
     "tests/runtime/computer-provider-registry.test.ts": {
       "module": "browser",
@@ -868,6 +896,18 @@
       "resource": "pure"
     },
     "tests/runtime/browser-product-discovery.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
+    "tests/runtime/computer-chatgpt-extension-preflight.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
+    "tests/runtime/computer-chatgpt-extension-socket.test.ts": {
+      "module": "browser",
+      "resource": "process-tree"
+    },
+    "tests/runtime/computer-chatgpt-extension-worker.test.ts": {
       "module": "browser",
       "resource": "pure"
     },

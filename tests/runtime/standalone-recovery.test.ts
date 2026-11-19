@@ -4688,6 +4688,55 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
+  test('launchd kickstart missing-service race proceeds only when the exact target remains registered', async () => {
+    for (const registeredAfterKickstart of [true, false]) {
+      const home = controllerHome();
+      const previousHome = process.env.HOME;
+      process.env.HOME = home;
+      try {
+        const paths = forgeRuntimeServicePaths(home);
+        mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+        writeFileSync(paths.installedPlistPath, '<plist/>');
+        const config = createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 } });
+        let launchdLoaded = true;
+        let kickstartIssued = false;
+        const commands: string[][] = [];
+        const result = await restartPrimaryRuntime(config, {
+          forceHealthyRestart: true, platform: 'darwin', currentUid: async () => 501,
+          runCommand: async (_command, args) => {
+            commands.push(args);
+            if (args[0] === 'bootout') launchdLoaded = false;
+            if (args[0] === 'bootstrap') launchdLoaded = true;
+            if (args[0] === 'kickstart') {
+              kickstartIssued = true;
+              return { ok: false, status: 3, stdout: '', stderr: 'Could not find service "' + args[2] + '" in domain for user gui: 501' };
+            }
+            if (args[0] === 'print') return kickstartIssued
+              ? registeredAfterKickstart
+                ? { ok: true, status: 0, stdout: 'registered', stderr: '' }
+                : { ok: false, status: 3, stdout: '', stderr: 'service not found' }
+              : launchdLoaded
+                ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+                : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          runtimeRunning: () => launchdLoaded,
+          repairPrimaryConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'connector already bound' }),
+          verifyLocal: async () => healthyVerify(), observeLocal: async () => healthyVerify(),
+          now: (() => { let value = 0; return () => value += 250; })(), sleep: async () => undefined,
+        });
+        const kickstartIndex = commands.findIndex((args) => args[0] === 'kickstart');
+        const recheckIndex = commands.findIndex((args, index) => index > kickstartIndex && args[0] === 'print');
+        expect(commands[recheckIndex]).toEqual(['print', commands[kickstartIndex]?.[2]]);
+        expect(result).toMatchObject({ ok: registeredAfterKickstart, attempted: true });
+        if (!registeredAfterKickstart) expect(result.detail).toContain('exact service registration re-probe failed');
+      } finally {
+        if (previousHome === undefined) delete process.env.HOME;
+        else process.env.HOME = previousHome;
+      }
+    }
+  });
+
   test('explicit healthy Runtime restart recycles the service while default recovery semantics remain no-op', async () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
@@ -4732,6 +4781,75 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(bootoutIndex).toBeGreaterThanOrEqual(0);
       expect(kickstartIndex).toBeGreaterThan(bootoutIndex);
     } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('Recovery restart terminates a verified orphan incarnation when the owner lease is already absent', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    const child = Bun.spawn([process.execPath, '-e', 'setInterval(() => {}, 1000)'], { stdout: 'ignore', stderr: 'ignore' });
+    try {
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      ensureActiveRuntimeRelease(home, manifest(home, 'release-orphan-recovery', 'artifact-orphan-recovery'));
+
+      const { defaultProcessIdentityProbe, executableFingerprint } = await import('../../src/runtime/shared/process-identity');
+      const start = defaultProcessIdentityProbe.startTime(child.pid);
+      const command = defaultProcessIdentityProbe.command(child.pid);
+      expect(start).toBeTruthy();
+      expect(command).toBeTruthy();
+      writeFileSync(runtimeIncarnationPath(home), JSON.stringify({
+        schemaVersion: 1,
+        controllerHome: home,
+        runtimeInstanceId: 'runtime-orphan-before-recovery',
+        pid: child.pid,
+        fencingGeneration: 1,
+        activatedAt: new Date().toISOString(),
+        processStartTime: start,
+        executableFingerprint: executableFingerprint(command!),
+      }));
+      expect(inspectRuntimeOwnership(home)).toMatchObject({ ownerAlive: false, incarnationAlive: true });
+
+      const config = createRecoveryConfig(home, {
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      let launchdLoaded = true;
+      const commands: string[][] = [];
+      const restarted = await restartPrimaryRuntime(config, {
+        forceHealthyRestart: true,
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (_command, args) => {
+          commands.push(args);
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'bootstrap') launchdLoaded = true;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => inspectRuntimeOwnership(home).incarnationAlive,
+        repairPrimaryConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'connector already bound' }),
+        verifyLocal: async () => healthyVerify(),
+        observeLocal: async () => healthyVerify(),
+        now: (() => { let value = 0; return () => value += 250; })(),
+        sleep: async () => undefined,
+      });
+
+      expect(restarted).toMatchObject({ ok: true, attempted: true });
+      await child.exited;
+      expect(inspectRuntimeOwnership(home)).toMatchObject({ ownerAlive: false, incarnationAlive: false });
+      const bootoutIndex = commands.findIndex((args) => args.includes('bootout'));
+      const bootstrapIndex = commands.findIndex((args) => args.includes('bootstrap'));
+      expect(bootoutIndex).toBeGreaterThanOrEqual(0);
+      expect(bootstrapIndex).toBeGreaterThan(bootoutIndex);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await child.exited;
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
     }

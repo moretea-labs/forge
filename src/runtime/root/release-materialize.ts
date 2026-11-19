@@ -3,7 +3,7 @@ import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdt
 import { tmpdir } from 'os';
 import { dirname, join, relative, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
-import { resolveBunExecutable } from '../shared/process-environment';
+import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../shared/process-environment';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlite-store';
 import { assertRuntimeReleaseExecutionSurface, loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest } from './release-manifest';
@@ -130,10 +130,27 @@ export function withRuntimeReleaseSourceSnapshot<T>(input: {
     throw new Error(`RUNTIME_RELEASE_SOURCE_SNAPSHOT_FAILED: ${materialized.stderr || materialized.stdout || materialized.error}`.slice(0, 2_000));
   }
   try {
-    const sourceDependencies = join(sourceRoot, 'node_modules');
-    if (existsSync(sourceDependencies)) {
-      const snapshotDependencies = join(snapshotRoot, 'node_modules');
-      symlinkSync(realpathSync(sourceDependencies), snapshotDependencies, process.platform === 'win32' ? 'junction' : 'dir');
+    const packageLock = join(snapshotRoot, 'package-lock.json');
+    if (existsSync(packageLock)) {
+      const npmExecutable = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+      const installed = runProcess(npmExecutable, [
+        'ci', '--ignore-scripts', '--no-audit', '--no-fund', '--include=dev', '--include=optional',
+      ], {
+        cwd: snapshotRoot,
+        env: repositoryChildProcessEnvironment(),
+        replaceEnv: true,
+        timeoutMs: 600_000,
+        maxOutputBytes: 512 * 1024,
+      });
+      if (!installed.ok) {
+        throw new Error(`RUNTIME_RELEASE_DEPENDENCY_INSTALL_FAILED: ${installed.stderr || installed.stdout || installed.error}`.slice(0, 2_000));
+      }
+    } else {
+      const sourceDependencies = join(sourceRoot, 'node_modules');
+      if (existsSync(sourceDependencies)) {
+        const snapshotDependencies = join(snapshotRoot, 'node_modules');
+        symlinkSync(realpathSync(sourceDependencies), snapshotDependencies, process.platform === 'win32' ? 'junction' : 'dir');
+      }
     }
     if (gitText(snapshotRoot, ['rev-parse', '--verify', 'HEAD']) !== requestedRevision) {
       throw new Error('RUNTIME_RELEASE_SOURCE_SNAPSHOT_REVISION_MISMATCH');

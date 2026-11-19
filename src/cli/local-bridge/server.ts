@@ -1,4 +1,4 @@
-import { randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { readFileSync } from "fs";
 import { createServer, type Server } from "http";
 import express, {
@@ -7,6 +7,7 @@ import express, {
   type Response,
 } from "express";
 import { describeFailure } from "../../../packages/protocols/failure";
+import { ControllerLockContentionError, withControllerLock } from "../../effects/controller-locks";
 import {
   cancelAgentJob,
   getAgentJob,
@@ -91,6 +92,8 @@ import { applyStuckStateMigration, inspectStuckControllerStates } from "../contr
 import { getToolPolicy } from '../../runtime/control-plane/tool-policy';
 import type { MultiRepositoryMcpToolContext } from "../../../adapters/mcp/multi-repository";
 import { createMcpToolContext as createControllerMcpToolContext } from "../../../adapters/mcp/server";
+import { callRhWorkWorkflowOperation } from "../../../adapters/mcp/runtime-gateway/work-workflow-operations";
+import { AGENTMAIL_EVENT_WORKFLOW_ID } from "../../runtime/workflows/first-party/agentmail-event";
 import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from "../../../adapters/mcp/auth";
 import { loadRepositoryRegistry, registerRepository, removeRepository, resolveRepositorySelection } from "../../runtime/repositories/registry";
 import { withRepositoryMutationExclusion, withRepositoryMutationExclusionAsync } from '../../runtime/resources/leases/store';
@@ -193,11 +196,33 @@ function errorMessage(error: unknown): string {
 }
 
 function mobileIntentFailureResponse(error: unknown): { message: string; status: number } {
+  if (error instanceof ControllerLockContentionError) {
+    return { message: "MOBILE_INTENT_STORE_BUSY", status: 503 };
+  }
   const failure = describeFailure(error, {
     fallbackCode: 'MOBILE_INTENT_REQUEST_FAILED',
     fallbackHttpStatus: 400,
   });
   return { message: failure.message, status: failure.httpStatus ?? 400 };
+}
+
+function sendMobileIntentFailure(response: Response, error: unknown): void {
+  const failure = mobileIntentFailureResponse(error);
+  if (failure.status === 503) response.setHeader("Retry-After", "1");
+  response.status(failure.status).json({ error: failure.message });
+}
+
+function withMobileIntentStoreLock<T>(
+  controllerHome: string,
+  repoId: string,
+  operation: () => T,
+): T {
+  return withControllerLock(
+    controllerHome,
+    { scope: "repository", repoId },
+    "local-bridge:mobile-intent-store",
+    operation,
+  );
 }
 
 function localBridgeExecutionRetiredPayload(): Record<string, unknown> {
@@ -948,11 +973,13 @@ export async function startLocalBridgeServer(
 
   app.post("/mobile/v1/monitor/snapshot", (request, response) => {
     try {
-      const verified = verifyMobileIntentRequest(repoRoot, request);
+      const selected = repository;
+      const verified = withMobileIntentStoreLock(controllerHome, selected.repoId, () =>
+        verifyMobileIntentRequest(selected.canonicalRoot, request),
+      );
       if (!mobileIntentHasScope(verified.principal.scopes, "monitor:read")) {
         throw new Error("MOBILE_INTENT_SCOPE_DENIED: monitor:read is required");
       }
-      const selected = registerRepository({ path: repoRoot, controllerHome });
       response.setHeader("Cache-Control", "no-store");
       response.json({
         ...buildMobileMonitorSnapshot({
@@ -965,14 +992,16 @@ export async function startLocalBridgeServer(
         signatureVerified: verified.signatureVerified,
       });
     } catch (error) {
-      const failure = mobileIntentFailureResponse(error);
-      response.status(failure.status).json({ error: failure.message });
+      sendMobileIntentFailure(response, error);
     }
   });
 
   app.get("/mobile/v1/monitor/events", (request, response) => {
     try {
-      const verified = verifyMobileIntentRequest(repoRoot, request);
+      const selected = repository;
+      const verified = withMobileIntentStoreLock(controllerHome, selected.repoId, () =>
+        verifyMobileIntentRequest(selected.canonicalRoot, request),
+      );
       if (!mobileIntentHasScope(verified.principal.scopes, "monitor:read")) {
         throw new Error("MOBILE_INTENT_SCOPE_DENIED: monitor:read is required");
       }
@@ -985,19 +1014,19 @@ export async function startLocalBridgeServer(
       sendStreamEvent(response, "ready");
       request.on("close", () => streamClients.delete(response));
     } catch (error) {
-      const failure = mobileIntentFailureResponse(error);
-      response.status(failure.status).json({ error: failure.message });
+      sendMobileIntentFailure(response, error);
     }
   });
 
   app.post("/mobile/intent", async (request, response) => {
     try {
-      const verified = verifyMobileIntentRequest(repoRoot, request);
+      const verified = withMobileIntentStoreLock(controllerHome, repository.repoId, () =>
+        verifyMobileIntentRequest(repository.canonicalRoot, request),
+      );
       const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
         ? request.body as Record<string, unknown>
         : {};
       const intent = queryString(body.intent) ?? "plugin_action";
-      const repository = registerRepository({ path: repoRoot, controllerHome });
       if (intent === "list_plugins") {
         if (!mobileIntentHasScope(verified.principal.scopes, "plugins:read")) throw new Error("MOBILE_INTENT_SCOPE_DENIED: plugins:read is required");
         response.json({
@@ -1056,6 +1085,159 @@ export async function startLocalBridgeServer(
         response.json({ schemaVersion: 1, accepted: true, device: verified.principal.device, signatureVerified: verified.signatureVerified, job });
         return;
       }
+      if (intent === "workflow_event") {
+        if (!verified.signatureVerified) throw new Error("MOBILE_INTENT_SIGNATURE_REQUIRED: workflow events require an HMAC signature");
+        if (!mobileIntentHasScope(verified.principal.scopes, `workflow:${AGENTMAIL_EVENT_WORKFLOW_ID}:execute`)) {
+          throw new Error(`MOBILE_INTENT_SCOPE_DENIED: workflow:${AGENTMAIL_EVENT_WORKFLOW_ID}:execute is required`);
+        }
+        if (Object.keys(body).some((key) => !["intent", "event"].includes(key))) {
+          throw new Error("MOBILE_INTENT_EVENT_FIELDS_INVALID: only intent and event are accepted");
+        }
+        const event = body.event && typeof body.event === "object" && !Array.isArray(body.event)
+          ? body.event as Record<string, unknown>
+          : {};
+        const allowedEventFields = new Set(["source", "event_id", "observed_at", "ref", "summary"]);
+        const unknownFields = Object.keys(event).filter((key) => !allowedEventFields.has(key));
+        if (unknownFields.length > 0) throw new Error("MOBILE_INTENT_EVENT_FIELD_UNSUPPORTED: " + unknownFields.sort().join(","));
+        const isRecord = (value: unknown): value is Record<string, unknown> =>
+          value !== null && typeof value === "object" && !Array.isArray(value);
+        const isString = (value: unknown, maximum: number, allowEmpty = false): value is string =>
+          typeof value === "string" && value.length <= maximum && (allowEmpty || value.length > 0);
+        const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const ref = isRecord(event.ref) ? event.ref : {};
+        const eventSummary = isRecord(event.summary) ? event.summary : {};
+        const unknownRefFields = Object.keys(ref).filter((key) => !["provider", "account_id", "provider_message_id"].includes(key));
+        const unknownSummaryFields = Object.keys(eventSummary).filter((key) => !["rule_id", "sender_email"].includes(key));
+        if (unknownRefFields.length > 0 || unknownSummaryFields.length > 0) {
+          const unsupported = [
+            ...unknownRefFields.map((key) => "ref." + key),
+            ...unknownSummaryFields.map((key) => "summary." + key),
+          ];
+          throw new Error("MOBILE_INTENT_EVENT_FIELD_UNSUPPORTED: " + unsupported.sort().join(","));
+        }
+        const source = event.source;
+        const eventId = event.event_id;
+        const observedAt = event.observed_at;
+        const provider = ref.provider;
+        const accountId = ref.account_id;
+        const providerMessageId = ref.provider_message_id;
+        const ruleId = eventSummary.rule_id;
+        const senderEmail = eventSummary.sender_email;
+        if (source !== "mail.watch.matched") throw new Error("MOBILE_INTENT_EVENT_SOURCE_INVALID: only AgentMail Watch matches are accepted");
+        if (!isString(eventId, 4096)) throw new Error("MOBILE_INTENT_EVENT_ID_INVALID");
+        if (!isString(observedAt, 64) || !Number.isFinite(Date.parse(observedAt))) throw new Error("MOBILE_INTENT_EVENT_TIME_INVALID");
+        if (provider !== "agentmail" || !isString(accountId, 36) || !uuid.test(accountId)) {
+          throw new Error("MOBILE_INTENT_EVENT_ACCOUNT_INVALID");
+        }
+        if (!isString(providerMessageId, 1024)) throw new Error("MOBILE_INTENT_EVENT_MESSAGE_INVALID");
+        if (!isString(ruleId, 36) || !uuid.test(ruleId)) throw new Error("MOBILE_INTENT_EVENT_RULE_INVALID");
+        if (!isString(senderEmail, 320, true)) throw new Error("MOBILE_INTENT_EVENT_SENDER_INVALID");
+        const workflowInputs = {
+          source,
+          event_id: eventId,
+          observed_at: observedAt,
+          ref: {
+            provider,
+            account_id: accountId,
+            provider_message_id: providerMessageId,
+          },
+          summary: {
+            rule_id: ruleId,
+            sender_email: senderEmail,
+          },
+        };
+        const workflowRunId = `agentmail-${createHash("sha256").update(eventId).digest("hex").slice(0, 40)}`;
+        const workflowArguments = {
+          workflow_id: AGENTMAIL_EVENT_WORKFLOW_ID,
+          workflow_run_id: workflowRunId,
+          workflow_inputs: workflowInputs,
+        };
+        const reconciliationRequestId = `agentmail-reconcile-${createHash("sha256").update(eventId).digest("hex").slice(0, 40)}`;
+        let dispatched = await callRhWorkWorkflowOperation(mcpExposureContext, repository, "workflow_execute", workflowArguments);
+        let dispatchResult = dispatched?.structuredContent as Record<string, unknown> | undefined;
+        let dispatchData = dispatchResult?.data && typeof dispatchResult.data === "object"
+          ? dispatchResult.data as Record<string, unknown>
+          : {};
+        let workflow = dispatchData.workflow && typeof dispatchData.workflow === "object"
+          ? dispatchData.workflow as Record<string, unknown>
+          : undefined;
+        let summary = typeof dispatchResult?.summary === "string" ? dispatchResult.summary : "WORKFLOW_EVENT_RECEIPT_FAILED";
+        let durable = Boolean(workflow)
+          || summary.startsWith("WORKFLOW_RUN_RECONCILIATION_REQUIRED:")
+          || summary === "WORKFLOW_RUN_FAILED_RESTART_REQUIRES_NEW_RUN_ID"
+          || summary === "WORKFLOW_RUN_ALREADY_SUCCEEDED"
+          || summary === "WORKFLOW_RUN_IDENTITY_CONFLICT";
+        let recovered = false;
+
+        // A duplicate delivery can be the recovery signal after the Process finished but
+        // the WorkflowRun checkpoint/HTTP ACK was interrupted. Reconcile only from the
+        // canonical Process receipt; never dispatch the uncertain script a second time.
+        if (workflow?.status === "reconcile_required"
+          || (!workflow && summary.startsWith("WORKFLOW_RUN_RECONCILIATION_REQUIRED:"))) {
+          recovered = true;
+          dispatched = await callRhWorkWorkflowOperation(mcpExposureContext, repository, "workflow_reconcile", {
+            ...workflowArguments,
+            workflow_reconciliation_request_id: reconciliationRequestId,
+          });
+          dispatchResult = dispatched?.structuredContent as Record<string, unknown> | undefined;
+          dispatchData = dispatchResult?.data && typeof dispatchResult.data === "object"
+            ? dispatchResult.data as Record<string, unknown>
+            : {};
+          workflow = dispatchData.workflow && typeof dispatchData.workflow === "object"
+            ? dispatchData.workflow as Record<string, unknown>
+            : undefined;
+          summary = typeof dispatchResult?.summary === "string" ? dispatchResult.summary : "WORKFLOW_EVENT_RECONCILIATION_FAILED";
+          durable = durable || Boolean(workflow);
+        }
+
+        // AgentMail ACKs only after the exact event has a succeeded canonical WorkflowRun.
+        // A persisted failed/running/reconcile-required record remains unacknowledged in
+        // the source Outbox so it can retry or surface for recovery.
+        if (workflow?.status === "succeeded") {
+          response.status(202).json({
+            schemaVersion: 1,
+            accepted: true,
+            durable: true,
+            deduplicated: recovered,
+            device: verified.principal.device,
+            signatureVerified: verified.signatureVerified,
+            workflowId: AGENTMAIL_EVENT_WORKFLOW_ID,
+            workflowRunId,
+            eventId,
+            status: "succeeded",
+          });
+          return;
+        }
+        if (summary === "WORKFLOW_RUN_ALREADY_SUCCEEDED") {
+          response.status(202).json({
+            schemaVersion: 1,
+            accepted: true,
+            durable: true,
+            deduplicated: true,
+            device: verified.principal.device,
+            signatureVerified: verified.signatureVerified,
+            workflowId: AGENTMAIL_EVENT_WORKFLOW_ID,
+            workflowRunId,
+            eventId,
+            status: "succeeded",
+          });
+          return;
+        }
+        const conflict = summary === "WORKFLOW_RUN_IDENTITY_CONFLICT";
+        response.status(conflict ? 409 : 503).json({
+          schemaVersion: 1,
+          accepted: false,
+          durable,
+          device: verified.principal.device,
+          signatureVerified: verified.signatureVerified,
+          error: summary,
+          workflowId: AGENTMAIL_EVENT_WORKFLOW_ID,
+          workflowRunId,
+          eventId,
+          status: typeof workflow?.status === "string" ? workflow.status : summary,
+        });
+        return;
+      }
       if (intent !== "plugin_action") throw new Error(`MOBILE_INTENT_UNSUPPORTED: ${intent}`);
       const pluginId = queryString(body.pluginId);
       const actionId = queryString(body.actionId);
@@ -1109,8 +1291,7 @@ export async function startLocalBridgeServer(
         job: submitted.job,
       });
     } catch (error) {
-      const failure = mobileIntentFailureResponse(error);
-      response.status(failure.status).json({ error: failure.message });
+      sendMobileIntentFailure(response, error);
     }
   });
 
@@ -1753,27 +1934,41 @@ export async function startLocalBridgeServer(
 
   app.get("/api/mobile/devices", (request, response) => {
     try {
-      response.json(listMobileIntentDevices(requestRepositoryRoot(request, options, controllerHome)));
+      const repository = requestRepositorySelection(request, options, controllerHome);
+      response.json(withMobileIntentStoreLock(controllerHome, repository.repoId, () =>
+        listMobileIntentDevices(repository.canonicalRoot),
+      ));
     } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
+      sendMobileIntentFailure(response, error);
     }
   });
   app.post("/api/mobile/devices", (request, response) => {
     try {
-      response.status(201).json(createMobileIntentDevice(requestRepositoryRoot(request, options, controllerHome), {
-        name: queryString(request.body?.name),
-        deviceId: queryString(request.body?.deviceId),
-        scopes: request.body?.scopes,
-        rateLimitPerMinute: request.body?.rateLimitPerMinute,
-      }));
+      const repository = requestRepositorySelection(request, options, controllerHome);
+      const created = withMobileIntentStoreLock(controllerHome, repository.repoId, () =>
+        createMobileIntentDevice(repository.canonicalRoot, {
+          name: queryString(request.body?.name),
+          deviceId: queryString(request.body?.deviceId),
+          scopes: request.body?.scopes,
+          rateLimitPerMinute: request.body?.rateLimitPerMinute,
+        }),
+      );
+      response.status(201).json(created);
     } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
+      sendMobileIntentFailure(response, error);
     }
   });
   app.post("/api/mobile/devices/:deviceId/revoke", (request, response) => {
     try {
-      response.json(revokeMobileIntentDevice(requestRepositoryRoot(request, options, controllerHome), request.params.deviceId));
+      const repository = requestRepositorySelection(request, options, controllerHome);
+      response.json(withMobileIntentStoreLock(controllerHome, repository.repoId, () =>
+        revokeMobileIntentDevice(repository.canonicalRoot, request.params.deviceId),
+      ));
     } catch (error) {
+      if (error instanceof ControllerLockContentionError) {
+        sendMobileIntentFailure(response, error);
+        return;
+      }
       response.status(404).json({ error: errorMessage(error) });
     }
   });
@@ -2319,7 +2514,10 @@ export async function startLocalBridgeServer(
           resolve();
           return;
         }
+        for (const client of streamClients.keys()) client.end();
+        streamClients.clear();
         server.close((error) => (error ? reject(error) : resolve()));
+        server.closeIdleConnections();
       }),
   };
 }

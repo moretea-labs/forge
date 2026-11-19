@@ -289,6 +289,7 @@ export function buildChatgptCommand(): Command {
           dryRun: result.dryRun,
           error: result.error,
         }, null, 2));
+        if (result.status !== 'completed' && result.status !== 'dry_run') process.exitCode = 1;
       });
     });
 
@@ -361,6 +362,7 @@ export function buildChatgptCommand(): Command {
           dryRun: result.dryRun,
           error: result.error,
         }, null, 2));
+        if (result.status !== 'completed' && result.status !== 'dry_run') process.exitCode = 1;
       });
     });
 

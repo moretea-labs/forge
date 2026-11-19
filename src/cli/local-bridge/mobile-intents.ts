@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import type { Request } from "express";
 
@@ -103,7 +103,17 @@ function writeStore(repoRoot: string, store: MobileIntentStore): MobileIntentSto
   const path = configPath(repoRoot);
   mkdirSync(dirname(path), { recursive: true });
   const next = { ...store, updatedAt: now() };
-  writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
+  const temporaryPath = path + "." + process.pid + "." + randomBytes(6).toString("hex") + ".tmp";
+  try {
+    writeFileSync(temporaryPath, JSON.stringify(next, null, 2) + "\n", {
+      encoding: "utf-8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    renameSync(temporaryPath, path);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
   return next;
 }
 
@@ -293,6 +303,34 @@ export function createMobileIntentDevice(
       signaturePayload: "<timestamp>.<nonce>.<raw-json-body>",
     },
   };
+}
+
+export function rotateMobileIntentDevice(
+  repoRoot: string,
+  deviceId: string,
+  storeHandoff: (token: string) => () => void,
+): { device: MobileIntentDevicePublic; handoffStored: true } {
+  const store = readStore(repoRoot);
+  const device = store.devices.find((entry) => entry.deviceId === deviceId);
+  if (!device) throw new Error(`MOBILE_INTENT_DEVICE_NOT_FOUND: ${deviceId}`);
+  if (device.revokedAt) throw new Error(`MOBILE_INTENT_DEVICE_REVOKED: ${deviceId}`);
+
+  const token = `rhmi_${randomBytes(32).toString("base64url")}`;
+  const rollbackHandoff = storeHandoff(token);
+  try {
+    device.tokenHash = tokenHash(token);
+    device.updatedAt = now();
+    writeStore(repoRoot, store);
+  } catch (error) {
+    try {
+      rollbackHandoff();
+    } catch {
+      throw new Error("MOBILE_INTENT_CREDENTIAL_ROTATION_ROLLBACK_FAILED");
+    }
+    throw error;
+  }
+
+  return { device: publicDevice(device), handoffStored: true };
 }
 
 export function revokeMobileIntentDevice(repoRoot: string, deviceId: string): { device: MobileIntentDevicePublic } {

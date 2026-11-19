@@ -1,4 +1,6 @@
 import { Command } from 'commander';
+import { createMobileIntentDevice, listMobileIntentDevices, rotateMobileIntentDevice } from '../local-bridge/mobile-intents';
+import { storeAgentMailWatchCredentialHandoff } from '../local-bridge/agentmail-keychain-handoff';
 import { executeRepositoryCommand } from '../../runtime/repositories/command-executor';
 import { bindRepositoryEntities } from '../../runtime/repositories/entity-migration';
 import { withControllerLock } from '../../effects/controller-locks';
@@ -41,6 +43,67 @@ function initializeRepository(repository: RepositoryRecord, controllerHome?: str
 
 export function buildRepositoryCommand(): Command {
   const command = new Command('repo').description('Register and inspect repositories managed by the global Controller');
+
+  common(command.command('agentmail-watch-device')
+    .description('Issue the single AgentMail Watch credential or rotate it into this Mac\'s Keychain handoff')
+    .argument('<repo-id>', 'Exact registered repository whose Local Bridge will receive the events')
+    .requiredOption('--confirm-authorization', 'Explicitly authorize issuing or rotating the scoped device secret')
+    .option('--rotate-existing', 'Rotate the existing agentmail-mac-watch credential in place and store it in macOS Keychain'))
+    .action((repoId: string, opts: { controllerHome?: string; json?: boolean; rotateExisting?: boolean }) => {
+      const repository = resolveRepositorySelection({
+        repoId,
+        controllerHome: opts.controllerHome,
+        allowSoleRepository: false,
+      });
+      const credential = withControllerLock(
+        opts.controllerHome ?? '',
+        { scope: 'repository', repoId: repository.repoId },
+        'cli:agentmail-watch-device',
+        () => {
+          if (opts.rotateExisting) {
+            const matchingDevices = listMobileIntentDevices(repository.canonicalRoot).devices.filter((device) =>
+              device.name === 'AgentMail Mac Watch'
+              || device.deviceId === 'agentmail-mac-watch'
+              || device.deviceId.startsWith('agentmail-mac-watch-'),
+            );
+            if (matchingDevices.length !== 1) {
+              throw new Error(`AGENTMAIL_WATCH_DEVICE_ROTATION_REQUIRES_ONE_DEVICE: found ${matchingDevices.length}`);
+            }
+            const existing = matchingDevices[0]!;
+            if (
+              existing.deviceId !== 'agentmail-mac-watch'
+              || existing.name !== 'AgentMail Mac Watch'
+              || existing.revokedAt
+              || existing.rateLimitPerMinute !== 12
+              || existing.scopes.length !== 1
+              || existing.scopes[0] !== 'workflow:agentmail.mail-watch-event:execute'
+            ) {
+              throw new Error('AGENTMAIL_WATCH_DEVICE_CONFIGURATION_MISMATCH: refusing to rotate a different device or scope');
+            }
+            return rotateMobileIntentDevice(
+              repository.canonicalRoot,
+              existing.deviceId,
+              (token) => storeAgentMailWatchCredentialHandoff(existing.deviceId, token),
+            );
+          }
+          const existing = listMobileIntentDevices(repository.canonicalRoot).devices.find((device) =>
+            device.name === 'AgentMail Mac Watch'
+            || device.deviceId === 'agentmail-mac-watch'
+            || device.deviceId.startsWith('agentmail-mac-watch-'),
+          );
+          if (existing) {
+            throw new Error(`AGENTMAIL_WATCH_DEVICE_ALREADY_EXISTS: ${existing.deviceId}; refusing to issue a second credential`);
+          }
+          return createMobileIntentDevice(repository.canonicalRoot, {
+            name: 'AgentMail Mac Watch',
+            deviceId: 'agentmail-mac-watch',
+            scopes: ['workflow:agentmail.mail-watch-event:execute'],
+            rateLimitPerMinute: 12,
+          });
+        },
+      );
+      output(credential, opts.json === true);
+    });
 
   common(command.command('register')
     .description('Register a Git repository without relying on the Controller startup directory')
