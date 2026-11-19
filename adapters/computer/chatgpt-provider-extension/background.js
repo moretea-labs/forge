@@ -345,16 +345,24 @@ function matchingTabs(tabs, identity, pinnedBinding) {
   return [];
 }
 async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceId) {
+  // A conversation Ensure may recover only the narrow legacy case where the
+  // same live profile still has the exact pinned tab but its session owner
+  // token was lost. The old tab is never adopted, navigated, closed or sent to;
+  // all other missing-token paths remain fail-closed below.
+  const recoverMissingConversationOwner = identity?.namespace === 'chatgpt.conversation'
+    && createIfMissing === true && pinnedBinding?.providerId === PROVIDER_ID
+    && pinnedBinding.providerSessionId === instanceId
+    && Boolean(pinnedBinding.tabId) && !pinnedBinding.ownerToken;
   // A provider switch or incomplete legacy pin must not silently fall back
   // to the extension's cached Bootstrap tab, nor allocate a new Send target.
   if (pinnedBinding != null) {
     if (pinnedBinding.providerId !== PROVIDER_ID)
       throw new Error('COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH');
-    if (pinnedBinding.tabId && !pinnedBinding.ownerToken)
+    if (pinnedBinding.tabId && !pinnedBinding.ownerToken && !recoverMissingConversationOwner)
       throw new Error(identity?.namespace === 'chatgpt.bootstrap'
         ? 'COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISSING'
         : 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
-    if (!pinnedBinding.tabId || !pinnedBinding.windowId || !pinnedBinding.ownerToken)
+    if (!pinnedBinding.tabId || !pinnedBinding.windowId || (!pinnedBinding.ownerToken && !recoverMissingConversationOwner))
       throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE');
     // Tab ID and Token cannot authorize a different Chrome profile/session.
     // Reject before lookup, snapshot or any possible Send.
@@ -404,14 +412,19 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceI
     if (pinned) {
       if (core.parseConversation(pinned.url ?? '')?.conversationId !== identity.conversationId) {
         if (!createIfMissing) throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_TAB_IDENTITY_CHANGED');
+        // A missing owner token proves neither ownership nor safe identity drift.
+        // Only an already-attested stale pin may recover from navigation drift.
+        if (recoverMissingConversationOwner) throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
         staleUnattestedConversationPin = true;
       }
       if (!staleUnattestedConversationPin) {
         try {
           return { tab: pinned, created: false, ownerToken: await requirePinnedOwner(pinned, pinnedBinding, identity) };
         } catch (error) {
-          if (!createIfMissing || String(error?.message ?? error) !== 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH')
-            throw error;
+          const code = String(error?.message ?? error);
+          const recoverableOwnerFailure = code === 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH'
+            || (recoverMissingConversationOwner && code === 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
+          if (!createIfMissing || !recoverableOwnerFailure) throw error;
           // The old physical tab is NOT ours to observe, close or navigate.
           // Ensure alone may create a NEW owned tab for this exact conversation
           // and return its attested identity to the Controller's leased binder.
@@ -419,6 +432,10 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceI
           staleUnattestedConversationPin = true;
         }
       }
+    } else if (recoverMissingConversationOwner) {
+      // Preserve the existing P1 boundary: an ownerless pin with no surviving
+      // physical tab is not enough proof to allocate a replacement target.
+      throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
     }
   }
   // An exact Conversation URL proves page identity, not ownership of the
