@@ -2,12 +2,14 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type {
-  ComputerChatgptConversationIdentity,
-  ComputerChatgptConversationInventory,
-  ComputerChatgptConversationTargetPort,
-  ComputerChatgptExtensionCommandResult,
-  ComputerChatgptExtensionHeartbeat,
+import {
+  parseCanonicalChatgptConversationIdentity,
+  type ComputerChatgptConversationIdentity,
+  type ComputerChatgptConversationInventory,
+  type ComputerChatgptConversationTargetPort,
+  type ComputerChatgptExtensionCommandResult,
+  type ComputerChatgptExtensionHeartbeat,
+  type ComputerChatgptTargetIdentity,
 } from '../../../packages/plugin-runtime/computer';
 import { ChromeExtensionChatgptConversationTargetPort } from '../../../adapters/computer/chatgpt-target-provider';
 import { runtimeComputerInteractionTargetAuthority } from './computer-target-composition';
@@ -29,12 +31,11 @@ type RpcRequest = {
   params: Record<string, unknown>;
 };
 
-export type RuntimeComputerChatgptActionInput = {
-  kind: 'observe' | 'prepare' | 'dispatch';
-  identity: ComputerChatgptConversationIdentity;
-  prompt?: string;
-  mode?: 'send' | 'resume' | 'recover';
-};
+export type RuntimeComputerChatgptActionInput =
+  | { kind: 'ensure'; identity: ComputerChatgptTargetIdentity }
+  | { kind: 'observe'; identity: ComputerChatgptConversationIdentity }
+  | { kind: 'find_marker'; marker: string; bootstrapKey: string }
+  | { kind: 'prepare' | 'dispatch'; identity: ComputerChatgptTargetIdentity; prompt: string; mode?: 'send' | 'resume' | 'recover' };
 
 const runtimes = new Map<string, Promise<RuntimeComputerChatgptExtension>>();
 
@@ -63,70 +64,111 @@ function requiredText(params: Record<string, unknown>, key: string): string {
   return value.trim();
 }
 
+function runtimeConversationIdentity(rawIdentity: unknown): ComputerChatgptConversationIdentity {
+  if (!rawIdentity || typeof rawIdentity !== 'object' || Array.isArray(rawIdentity)) {
+    throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID');
+  }
+  const record = rawIdentity as Record<string, unknown>;
+  const conversationId = typeof record.conversationId === 'string' ? record.conversationId.trim() : '';
+  const canonicalUrl = typeof record.canonicalUrl === 'string' ? record.canonicalUrl.trim() : '';
+  let parsed: ReturnType<typeof parseCanonicalChatgptConversationIdentity>;
+  try { parsed = parseCanonicalChatgptConversationIdentity(canonicalUrl); }
+  catch { throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID'); }
+  if (record.namespace !== 'chatgpt.conversation' || !conversationId || conversationId !== parsed.conversationId) {
+    throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID');
+  }
+  return { namespace: 'chatgpt.conversation', conversationId, canonicalUrl: parsed.conversationUrl };
+}
+
+function runtimeTargetIdentity(rawIdentity: unknown): ComputerChatgptTargetIdentity {
+  if (!rawIdentity || typeof rawIdentity !== 'object' || Array.isArray(rawIdentity)) {
+    throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID');
+  }
+  const record = rawIdentity as Record<string, unknown>;
+  if (record.namespace === 'chatgpt.conversation') return runtimeConversationIdentity(record);
+  const bootstrapKey = typeof record.bootstrapKey === 'string' ? record.bootstrapKey.trim() : '';
+  const projectUrl = typeof record.projectUrl === 'string' ? record.projectUrl.trim() : '';
+  let parsed: URL;
+  try { parsed = new URL(projectUrl); }
+  catch { throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID'); }
+  if (record.namespace !== 'chatgpt.bootstrap' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(bootstrapKey)
+    || parsed.protocol !== 'https:' || parsed.hostname !== 'chatgpt.com' || parsed.username || parsed.password || parsed.search || parsed.hash
+    || !/^\/g\/g-p-[a-z0-9]+(?:-[^/]+)?\/project\/?$/i.test(parsed.pathname)) {
+    throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID');
+  }
+  return { namespace: 'chatgpt.bootstrap', bootstrapKey, projectUrl: `https://chatgpt.com${parsed.pathname.replace(/\/+$/, '')}` };
+}
+
 function runtimeActionInput(value: unknown): RuntimeComputerChatgptActionInput {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_INVALID');
   }
   const record = value as Record<string, unknown>;
   const kind = record.kind;
-  if (kind !== 'observe' && kind !== 'prepare' && kind !== 'dispatch') {
-    throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_INVALID');
+  if (kind === 'find_marker') {
+    const marker = typeof record.marker === 'string' ? record.marker.trim() : '';
+    const bootstrapKey = typeof record.bootstrapKey === 'string' ? record.bootstrapKey.trim() : '';
+    if (!marker || marker.length > 1024 || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(bootstrapKey)) {
+      throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_INVALID');
+    }
+    return { kind, marker, bootstrapKey };
   }
-  const rawIdentity = record.identity;
-  if (!rawIdentity || typeof rawIdentity !== 'object' || Array.isArray(rawIdentity)) {
-    throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID');
-  }
-  const identityRecord = rawIdentity as Record<string, unknown>;
-  const conversationId = typeof identityRecord.conversationId === 'string' ? identityRecord.conversationId.trim() : '';
-  const canonicalUrl = typeof identityRecord.canonicalUrl === 'string' ? identityRecord.canonicalUrl.trim() : '';
-  if (identityRecord.namespace !== 'chatgpt.conversation' || !conversationId || !canonicalUrl) {
-    throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID');
-  }
-  const prompt = typeof record.prompt === 'string' ? record.prompt : undefined;
-  if (kind !== 'observe' && !prompt?.trim()) throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_PROMPT_REQUIRED');
+  if (kind === 'ensure') return { kind, identity: runtimeTargetIdentity(record.identity) };
+  if (kind === 'observe') return { kind, identity: runtimeConversationIdentity(record.identity) };
+  if (kind !== 'prepare' && kind !== 'dispatch') throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_INVALID');
+  const prompt = typeof record.prompt === 'string' ? record.prompt : '';
+  if (!prompt.trim()) throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_PROMPT_REQUIRED');
   const mode = record.mode === 'resume' || record.mode === 'recover' ? record.mode : 'send';
-  return {
-    kind,
-    identity: { namespace: 'chatgpt.conversation', conversationId, canonicalUrl },
-    ...(prompt === undefined ? {} : { prompt }),
-    ...(kind === 'observe' ? {} : { mode }),
-  };
+  return { kind, identity: runtimeTargetIdentity(record.identity), prompt, mode };
 }
 
 async function executeRuntimeAction(
   port: ComputerChatgptConversationTargetPort,
   action: RuntimeComputerChatgptActionInput,
 ): Promise<Record<string, unknown>> {
-  const exact = await port.ensureExact(action.identity, { createIfMissing: action.kind !== 'observe' });
+  if (action.kind === 'find_marker') {
+    const results = await port.findBySubmittedMarker(action.marker, action.bootstrapKey);
+    const matches: Array<Record<string, unknown>> = [];
+    for (const result of results) {
+      if (result.state !== 'ready') {
+        matches.push({ state: 'unavailable', failure: result.failure, ...(result.observation ? { observation: result.observation } : {}) });
+        continue;
+      }
+      if (!result.observation) continue;
+      try {
+        const parsed = parseCanonicalChatgptConversationIdentity(result.observation.url);
+        matches.push({
+          state: 'ready',
+          targetId: result.target.targetId,
+          identity: { namespace: 'chatgpt.conversation', conversationId: parsed.conversationId, canonicalUrl: parsed.conversationUrl },
+          observation: result.observation,
+        });
+      } catch { continue; }
+    }
+    return { matches };
+  }
+  const exact = action.identity.namespace === 'chatgpt.bootstrap'
+    ? await port.openBootstrap(action.identity.projectUrl, action.identity.bootstrapKey)
+    : await port.ensureExact(action.identity, { createIfMissing: action.kind !== 'observe' });
   if (exact.state !== 'ready') {
+    return { state: exact.state, failure: exact.failure, ...(exact.observation ? { observation: exact.observation } : {}) };
+  }
+  if (action.kind === 'ensure') {
     return {
-      state: exact.state,
-      failure: exact.failure,
-      ...(exact.observation ? { observation: exact.observation } : {}),
+      state: 'ready', targetId: exact.target.targetId, identity: action.identity,
+      observation: exact.observation ?? await exact.target.observe({ includeUserHistory: false, includePageText: false }),
     };
   }
   if (action.kind === 'observe') {
     return {
-      state: 'ready',
-      targetId: exact.target.targetId,
-      identity: action.identity,
+      state: 'ready', targetId: exact.target.targetId, identity: action.identity,
       observation: exact.observation ?? await exact.target.observe({ includeUserHistory: false, includePageText: false }),
     };
   }
   if (action.kind === 'prepare') {
-    return {
-      state: 'ready',
-      targetId: exact.target.targetId,
-      identity: action.identity,
-      prepare: await exact.target.prepare(action.prompt!, { mode: action.mode }),
-    };
+    return { state: 'ready', targetId: exact.target.targetId, identity: action.identity, prepare: await exact.target.prepare(action.prompt, { mode: action.mode }) };
   }
-  return {
-    state: 'ready',
-    targetId: exact.target.targetId,
-    identity: action.identity,
-    dispatch: await exact.target.dispatch(action.prompt!, { mode: action.mode }),
-  };
+  return { state: 'ready', targetId: exact.target.targetId, identity: action.identity, dispatch: await exact.target.dispatch(action.prompt, { mode: action.mode }) };
 }
 
 function response(socket: Socket, id: string, result: unknown): void {

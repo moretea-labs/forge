@@ -2370,6 +2370,18 @@ describe('browser session compatibility on Computer target authority', () => {
 });
 
 
+test('Computer reuses exact-target actions for ChatGPT Project bootstrap and keeps observe conversation-only', () => {
+  const manifest = computerPluginAdapter.buildManifest(0);
+  const action = (id: string) => manifest.actions.find((entry) => entry.actionId === id)!;
+  expect(action('chatgpt_target_find_marker')).toMatchObject({ readOnly: true, risk: 'readonly', confirmation: 'none' });
+  expect(action('chatgpt_target_ensure').argumentsSchema.oneOf).toHaveLength(2);
+  expect(action('chatgpt_target_observe').argumentsSchema).toMatchObject({ required: ['canonical_url'] });
+  for (const id of ['chatgpt_target_prepare', 'chatgpt_target_dispatch']) {
+    expect(action(id).argumentsSchema).toMatchObject({ required: ['prompt'] });
+    expect(action(id).argumentsSchema.oneOf).toHaveLength(2);
+  }
+});
+
 test('Computer exposes native session reclamation through the existing Browser owner', () => {
   const manifest = computerPluginAdapter.buildManifest(0);
   expect(manifest.actions.some((action) => action.actionId === 'reconcile_sessions')).toBe(true);
