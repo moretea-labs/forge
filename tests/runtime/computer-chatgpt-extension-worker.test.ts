@@ -72,6 +72,17 @@ test('new owned exact tab waits for navigation identity before receiver recovery
   expect(source).toContain(': restoreExactContentReceiver(target.tab.id, command.identity)');
 });
 
+test('MV3 provider re-arms its single command pump after transient failure without waiting for port disconnect', () => {
+  const source = readFileSync(new URL('../../adapters/computer/chatgpt-provider-extension/background.js', import.meta.url), 'utf8');
+  expect(source).toContain('const PROVIDER_RESTART_DELAY_MS = 1_000;');
+  expect(source).toContain('let providerRestartTimer;');
+  expect(source).toContain('function scheduleProviderPumpRestart()');
+  expect(source).toContain('if (providerRestartTimer !== undefined) return;');
+  expect(source).toContain("console.warn('COMPUTER_CHATGPT_EXTENSION_PROVIDER_PUMP_RESTART'");
+  expect(source).toContain('scheduleProviderPumpRestart();');
+  expect(source).not.toContain("setTimeout(() => { void providerTick().catch(() => undefined); }, 500);");
+});
+
 test('MV3 provider keeps a native command pump alive between alarm wakes', () => {
   const source = readFileSync(new URL('../../adapters/computer/chatgpt-provider-extension/background.js', import.meta.url), 'utf8');
   expect(source).toContain('const PROVIDER_COMMAND_POLL_MS = 1_000;');

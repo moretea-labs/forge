@@ -5,6 +5,7 @@ const ALARM = 'forge-computer-chatgpt-provider';
 const PROVIDER_ID = 'browser.chrome-extension';
 const PROVIDER_COMMAND_POLL_MS = 1_000;
 const PROVIDER_HEARTBEAT_REFRESH_MS = 8_000;
+const PROVIDER_RESTART_DELAY_MS = 1_000;
 const RPC_TIMEOUT_MS = 30_000;
 const HEARTBEAT_DEADLINE_MS = 10_000;
 const HEARTBEAT_RPC_TIMEOUT_MS = 6_000;
@@ -70,7 +71,7 @@ function invalidateNativePort(port, error) {
   nativePort = undefined;
   rejectNativePending(error);
   try { port.disconnect(); } catch { /* already disconnected */ }
-  setTimeout(() => { void providerTick().catch(() => undefined); }, 500);
+  scheduleProviderPumpRestart();
 }
 function ensureNativePort() {
   if (nativePort) return nativePort;
@@ -808,6 +809,14 @@ async function publishHeartbeat() {
 }
 let providerTickInFlight;
 let providerHeartbeatInFlight;
+let providerRestartTimer;
+function scheduleProviderPumpRestart() {
+  if (providerRestartTimer !== undefined) return;
+  providerRestartTimer = setTimeout(() => {
+    providerRestartTimer = undefined;
+    void providerTick().catch(() => undefined);
+  }, PROVIDER_RESTART_DELAY_MS);
+}
 function heartbeatTick() {
   providerHeartbeatInFlight ??= publishHeartbeat()
     .finally(() => { providerHeartbeatInFlight = undefined; });
@@ -840,6 +849,14 @@ async function runProviderPump() {
 function providerTick() {
   if (providerTickInFlight) return providerTickInFlight;
   providerTickInFlight = runProviderPump()
+    .catch((error) => {
+      // A transient RPC/heartbeat failure may leave the NativeMessaging port
+      // connected while terminating this pump. Re-arm the same single pump;
+      // Runtime remains the sole queue/effect authority.
+      console.warn('COMPUTER_CHATGPT_EXTENSION_PROVIDER_PUMP_RESTART', String(error?.message ?? error));
+      scheduleProviderPumpRestart();
+      throw error;
+    })
     .finally(() => { providerTickInFlight = undefined; });
   return providerTickInFlight;
 }
