@@ -33,11 +33,13 @@ jobs:
         with:
           bun-version: "1.3.14"
 
-      - name: Install ripgrep source-search dependency
+      - name: Install repository quality toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install --yes ripgrep
+          sudo apt-get install --yes ripgrep shfmt shellcheck
           rg --version
+          shfmt --version
+          shellcheck --version
 
       - name: Install dependencies from the committed Bun lockfile
         run: bun install --frozen-lockfile
