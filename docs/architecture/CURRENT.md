@@ -651,7 +651,7 @@ A substantive code change is ready for integration only when:
 - formatting, lint, types, architecture checks, and behavior tests appropriate to the risk pass;
 - errors, concurrency, resource, authorization, and external-effect semantics remain correct;
 - docs are updated when contracts or ownership change;
-- every complexity trigger has an explicit disposition;
+- complexity signals are considered when they materially affect the changed area; crossing a numeric review trigger alone does not require refactoring or a written exception;
 - claims are limited to the evidence actually obtained.
 
 Passing checks does not excuse an incoherent design. A clean design does not excuse missing behavior or safety verification.
