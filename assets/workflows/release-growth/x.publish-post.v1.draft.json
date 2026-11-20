@@ -157,7 +157,7 @@
       "kind": "script",
       "scriptRef": "assertNoDuplicate",
       "input": {
-        "account": "{{input.account}}",
+        "account": "{{output.validate-post.account}}",
         "match_prefix": "{{output.validate-post.match_prefix}}",
         "articles": "{{output.read-existing-posts.matches}}",
         "links": "{{output.read-existing-links.matches}}"
@@ -319,7 +319,7 @@
       "kind": "script",
       "scriptRef": "derivePostCandidate",
       "input": {
-        "account": "{{input.account}}",
+        "account": "{{output.validate-post.account}}",
         "match_prefix": "{{output.validate-post.match_prefix}}",
         "articles": "{{output.read-published-posts.matches}}",
         "links": "{{output.read-published-links.matches}}"
@@ -376,7 +376,7 @@
       "kind": "script",
       "scriptRef": "finalizePublication",
       "input": {
-        "account": "{{input.account}}",
+        "account": "{{output.validate-post.account}}",
         "candidate_id": "{{output.derive-post-candidate.candidate_id}}",
         "candidate_url": "{{output.derive-post-candidate.candidate_url}}",
         "content_digest": "{{output.validate-post.content_digest}}",
@@ -403,7 +403,7 @@
       "runtime": "node",
       "deterministic": true,
       "outputFormat": "json",
-      "body": "const crypto=require('crypto');const a=JSON.parse(process.argv[1]||'{}');const account=String(a.account||'').trim();const text=String(a.text||'').replace(/\\r\\n?/g,'\\n').trim();if(!/^[A-Za-z0-9_]{1,15}$/.test(account)){process.stderr.write('X_ACCOUNT_INVALID');process.exit(2)}const length=Array.from(text).length;if(length<1||length>200||text.includes(String.fromCharCode(0))){process.stderr.write('X_POST_TEXT_INVALID');process.exit(3)}const content_digest='sha256:'+crypto.createHash('sha256').update(text,'utf8').digest('hex');const own_article_selector='article[data-testid=\"tweet\"]:has([data-testid=\"User-Name\"] a[href=\"/'+account+'\"])';const own_status_links_selector=own_article_selector+' a[href^=\"/'+account+'/status/\"]';const own_tweet_text_selector=own_article_selector+' [data-testid=\"tweetText\"]';process.stdout.write(JSON.stringify({account,profile_url:'https://x.com/'+account,text,content_digest,match_prefix:text.slice(0,Math.min(80,text.length)),account_label:'@'+account,own_article_selector,own_status_links_selector,own_tweet_text_selector}));"
+      "body": "const crypto=require('crypto');const a=JSON.parse(process.argv[1]||'{}');const account=String(a.account||'').trim().replace(/^@/,'');const text=String(a.text||'').replace(/\\r\\n?/g,'\\n').trim();if(!/^[A-Za-z0-9_]{1,15}$/.test(account)){process.stderr.write('X_ACCOUNT_INVALID');process.exit(2)}const length=Array.from(text).length;if(length<1||length>200||text.includes(String.fromCharCode(0))){process.stderr.write('X_POST_TEXT_INVALID');process.exit(3)}const content_digest='sha256:'+crypto.createHash('sha256').update(text,'utf8').digest('hex');const own_article_selector='article[data-testid=\"tweet\"]:has([data-testid=\"User-Name\"] a[href=\"/'+account+'\"])';const own_status_links_selector=own_article_selector+' a[href^=\"/'+account+'/status/\"]';const own_tweet_text_selector=own_article_selector+' [data-testid=\"tweetText\"]';process.stdout.write(JSON.stringify({account,profile_url:'https://x.com/'+account,text,content_digest,match_prefix:text.slice(0,Math.min(80,text.length)),account_label:'@'+account,own_article_selector,own_status_links_selector,own_tweet_text_selector}));"
     },
     "assertAccount": {
       "runtime": "node",

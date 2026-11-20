@@ -344,7 +344,7 @@ export async function observeOpenAiTunnelRuntime(
   }
   const status = await runCommand('tunnel-client', args, 15_000);
   if (!status.stdout.trim()) {
-    const local = await observeOpenAiTunnelLocalHealthFallback(configured);
+    const local = await observeOpenAiTunnelLocalHealthFallback(configured, { runCommand });
     if (local) return local;
     return {
       ok: false, running: false, healthy: false, ready: false, tunnelMatches: false, endpointMatches: false,
@@ -370,6 +370,8 @@ export async function observeOpenAiTunnelLocalHealthFallback(
   configured: OpenAiSecureTunnelServiceConfig,
   options: {
     request?: (url: string, init: { signal: AbortSignal }) => Promise<{ ok: boolean; status: number }>;
+    runCommand?: CommandRunner;
+    now?: () => number;
   } = {},
 ): Promise<OpenAiSecureTunnelRuntimeObservation | undefined> {
   if (!configured.profile?.trim() || !configured.profileDir?.trim()) return undefined;
@@ -380,32 +382,74 @@ export async function observeOpenAiTunnelLocalHealthFallback(
   const endpointMatches = profile.includes(configured.mcpServerUrl);
   const urlFileMatch = profile.match(/["']?url_file["']?\s*:\s*["']([^"']+)["']/i);
   if (!urlFileMatch) return undefined;
+  const healthUrlFile = urlFileMatch[1].trim();
   let base: URL;
   try {
-    base = new URL(readFileSync(urlFileMatch[1].trim(), 'utf8').trim());
+    base = new URL(readFileSync(healthUrlFile, 'utf8').trim());
     if (base.protocol !== 'http:' || !['127.0.0.1', 'localhost', '::1'].includes(base.hostname)) return undefined;
   } catch { return undefined; }
-  const request = options.request ?? ((url: string, init: { signal: AbortSignal }) => fetch(url, init));
-  const probe = async (pathname: '/healthz' | '/readyz'): Promise<boolean> => {
-    const url = new URL(base);
-    url.pathname = pathname;
-    url.search = '';
-    url.hash = '';
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort('RECOVERY_TUNNEL_HEALTH_TIMEOUT'), 4_000);
-    try { return (await request(url.toString(), { signal: controller.signal })).ok; } catch { return false; } finally { clearTimeout(timer); }
-  };
-  const [healthy, ready] = await Promise.all([probe('/healthz'), probe('/readyz')]);
+  let healthy = false;
+  let ready = false;
+  let controlPlaneState: OpenAiSecureTunnelRuntimeObservation['controlPlaneState'] = 'unknown';
+  let controlPlaneDetail = 'tunnel-client health did not report a successful control-plane poll';
+  if (options.runCommand) {
+    const health = await options.runCommand(
+      'tunnel-client',
+      ['health', '--json', '--url-file', healthUrlFile, '--require-control-plane-poll'],
+      5_000,
+    );
+    let payload: {
+      result?: string;
+      healthz?: { ok?: boolean };
+      readyz?: { ok?: boolean };
+      control_plane_poll?: { ok?: boolean; value?: number };
+    } = {};
+    try { payload = JSON.parse(health.stdout || '{}') as typeof payload; } catch { /* Keep the observation unknown. */ }
+    healthy = payload.healthz?.ok === true;
+    ready = payload.readyz?.ok === true;
+    const poll = payload.control_plane_poll;
+    if (poll?.ok === true && typeof poll.value === 'number' && Number.isFinite(poll.value)) {
+      const ageMs = (options.now ?? Date.now)() - poll.value * 1_000;
+      if (health.ok && payload.result === 'ok' && ageMs >= -30_000 && ageMs <= 180_000) {
+        controlPlaneState = 'ready';
+        controlPlaneDetail = 'fresh successful control-plane poll observed ' + Math.max(0, Math.round(ageMs / 1_000)) + 's ago';
+      } else {
+        controlPlaneState = 'degraded';
+        controlPlaneDetail = ageMs > 180_000
+          ? 'last successful control-plane poll is stale (' + Math.round(ageMs / 1_000) + 's ago)'
+          : ageMs < -30_000
+            ? 'control-plane poll timestamp is in the future'
+            : health.stderr.trim() || 'tunnel-client health check did not pass';
+      }
+    } else if (poll) {
+      controlPlaneState = 'degraded';
+      controlPlaneDetail = health.stderr.trim() || 'tunnel-client reports no healthy control-plane poll';
+    } else if (health.stderr.trim()) {
+      controlPlaneDetail = health.stderr.trim();
+    }
+  } else {
+    const request = options.request ?? ((url: string, init: { signal: AbortSignal }) => fetch(url, init));
+    const probe = async (pathname: '/healthz' | '/readyz'): Promise<boolean> => {
+      const url = new URL(base);
+      url.pathname = pathname;
+      url.search = '';
+      url.hash = '';
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort('RECOVERY_TUNNEL_HEALTH_TIMEOUT'), 4_000);
+      try { return (await request(url.toString(), { signal: controller.signal })).ok; } catch { return false; } finally { clearTimeout(timer); }
+    };
+    [healthy, ready] = await Promise.all([probe('/healthz'), probe('/readyz')]);
+  }
   const localReady = healthy && ready && identityMatches && endpointMatches;
-  // Loopback health proves only that the local tunnel process and MCP binding are
-  // alive. It must never stand in for the remote OpenAI control plane when the
-  // status command itself could not establish that path.
-  const ok = false;
+  // Loopback health alone proves only local transport. The healthy path above
+  // additionally requires a fresh tunnel-client control-plane poll receipt.
+  const ok = localReady && controlPlaneState === 'ready';
   const failures: string[] = [];
   if (!identityMatches) failures.push('profile tunnel id does not match');
   if (!endpointMatches) failures.push('profile MCP endpoint does not match');
   if (!healthy) failures.push('local healthz failed');
   if (!ready) failures.push('local readyz failed');
+  if (controlPlaneState !== 'ready') failures.push('control plane is unverified (' + controlPlaneState + '): ' + controlPlaneDetail);
   return {
     ok,
     running: healthy,
@@ -413,13 +457,13 @@ export async function observeOpenAiTunnelLocalHealthFallback(
     ready,
     tunnelMatches: identityMatches,
     endpointMatches,
-    controlPlaneState: 'unknown',
-    controlPlaneDetail: 'tunnel-client status was unavailable; only loopback health was observed',
+    controlPlaneState,
+    controlPlaneDetail,
     alias: configured.alias,
     tunnelId: configured.tunnelId,
     ...(identityMatches ? { observedTunnelId: configured.tunnelId } : {}),
-    detail: localReady
-      ? `managed runtime ${configured.alias} is locally healthy and ready for ${configured.tunnelId}, but the OpenAI control plane is unverified because status is unavailable`
+    detail: localReady && controlPlaneState === 'ready'
+      ? 'managed runtime ' + configured.alias + ' is locally healthy and its OpenAI control-plane poll is fresh for ' + configured.tunnelId
       : failures.join('; ') || 'OpenAI tunnel local health fallback failed',
     profilePath,
   };

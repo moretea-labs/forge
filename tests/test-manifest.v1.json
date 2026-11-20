@@ -818,6 +818,10 @@
       "module": "process-runtime",
       "resource": "pure"
     },
+    "tests/runtime/standalone-recovery-tunnel-observation.test.ts": {
+      "module": "process-runtime",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/standalone-recovery.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"
