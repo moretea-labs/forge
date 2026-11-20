@@ -185,6 +185,7 @@ export interface ComputerElementObserveRequest {
 
 export type ComputerElementSemanticAction =
   | 'invoke'
+  | 'click'
   | 'focus'
   | 'set_value'
   | 'toggle'

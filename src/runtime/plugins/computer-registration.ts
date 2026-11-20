@@ -77,7 +77,7 @@ export const COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION = 'console_unlock_revoke';
 const DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS = 15_000;
 const MAX_CONSOLE_UNLOCK_TIMEOUT_MS = 30_000;
 const CONSOLE_CREDENTIAL_HANDLE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const COMPUTER_ELEMENT_SEMANTIC_ACTIONS = ['invoke', 'focus', 'set_value', 'toggle', 'expand', 'collapse', 'select', 'open', 'show_menu', 'scroll_page_down', 'scroll_page_up'] as const;
+const COMPUTER_ELEMENT_SEMANTIC_ACTIONS = ['invoke', 'click', 'focus', 'set_value', 'toggle', 'expand', 'collapse', 'select', 'open', 'show_menu', 'scroll_page_down', 'scroll_page_up'] as const;
 const DESKTOP_SEMANTIC_ACTION_IDS = new Set([
   'desktop_observe',
   'desktop_press',
@@ -714,7 +714,7 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: DESKTOP_ELEMENT_ACTION_ACTION,
       title: 'Act on observed Computer element',
-      description: 'Perform one provider-neutral semantic action against an exact element ref and observation target returned by desktop_element_observe. Stale or rebound observations fail closed.',
+      description: 'Perform one provider-neutral semantic action against an exact element ref and observation target returned by desktop_element_observe. Click uses only the observed element bounds when its exact window is already system-frontmost; stale or rebound observations fail closed.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
