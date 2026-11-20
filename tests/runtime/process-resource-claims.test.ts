@@ -669,7 +669,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims).toContainEqual({ resourceKey: 'heavy-check:repo1', mode: 'exclusive' });
   });
 
-  test('Computer and Desktop Operator mutations share one provider-state lease while reads remain unclaimed (#638)', () => {
+  test('Computer and Desktop Operator actions declare only their required provider-state claims (#638)', () => {
     const registration = createDesktopOperatorRegistrationInput({
       socketPath: '/tmp/forge-desktop-operator.sock',
       pluginVersion: '0.4.7',
@@ -700,21 +700,30 @@ describe('Process Runtime fine-grained resource claims', () => {
       expect(claimsForAssistantPluginAction(action!, repository, 'computer')).toEqual([]);
     }
 
-    for (const actionId of ['chatgpt_target_inventory', 'chatgpt_target_observe']) {
-      const action = computer.find((candidate) => candidate.actionId === actionId);
-      expect(action, `Computer ChatGPT read ${actionId}`).toBeDefined();
-      expect(action!.readOnly).toBe(true);
-      expect(action!.risk).toBe('readonly');
-      expect(action!.executionMode).toBeUndefined();
-      expect(action!.defaultTimeoutMs).toBe(actionId === 'chatgpt_target_inventory' ? 5_000 : 60_000);
-    }
+    const inventory = computer.find((candidate) => candidate.actionId === 'chatgpt_target_inventory');
+    expect(inventory, 'Computer ChatGPT target inventory').toBeDefined();
+    expect(inventory!.readOnly).toBe(true);
+    expect(inventory!.risk).toBe('readonly');
+    expect(inventory!.executionMode).toBeUndefined();
+    expect(inventory!.defaultTimeoutMs).toBe(5_000);
+    expect(claimsForAssistantPluginAction(inventory!, repository, 'computer')).toEqual([]);
+
+    const observe = computer.find((candidate) => candidate.actionId === 'chatgpt_target_observe');
+    expect(observe, 'Computer ChatGPT target observe').toBeDefined();
+    expect(observe!.readOnly).toBe(false);
+    expect(observe!.risk).toBe('workspace_write');
+    expect(observe!.defaultTimeoutMs).toBe(15_000);
+    expect(claimsForAssistantPluginAction(observe!, repository, 'computer')).toEqual([
+      ...canonicalClaim,
+      { resourceKey: 'provider-state:browser', mode: 'read' },
+    ]);
     for (const actionId of ['chatgpt_target_prepare', 'chatgpt_target_dispatch']) {
       const action = computer.find((candidate) => candidate.actionId === actionId);
       expect(action, `Computer ChatGPT remote write ${actionId}`).toBeDefined();
       expect(action!.readOnly).toBe(false);
       expect(action!.risk).toBe('remote_write');
       expect(action!.executionMode).toBeUndefined();
-      expect(action!.defaultTimeoutMs).toBe(60_000);
+      expect(action!.defaultTimeoutMs).toBe(actionId === 'chatgpt_target_prepare' ? 15_000 : 20_000);
       expect(action!.resourceClaims.length).toBeGreaterThan(0);
     }
   });
