@@ -377,20 +377,47 @@ function assertManagedBranchCreationOnly(command: CanonicalRepositoryCommand, de
     if (parsed.subcommand === 'fetch') {
       const positional = args.filter((arg) => !arg.startsWith('-'));
       const refspecs = positional.slice(1);
-      const targets = refspecs.map((refspec) => (refspec.split(':').at(-1) ?? '').replace(/^\+/, '').replace(/^refs\/heads\//, ''));
-      if (refspecs.length === 0 || targets.some((target) => target !== defaultBranch)) {
-        throw denied('fetch must explicitly target only the canonical default branch');
+      const remote = positional[0];
+      const forbiddenFlags = args.some((arg) => ['--all', '--multiple', '--prune', '-p'].includes(arg));
+      const invalidRefspec = refspecs.some((refspec) => {
+        const [sourceRef = '', destinationRef] = refspec.split(':');
+        const source = sourceRef.replace(/^\+/, '').replace(/^refs\/heads\//, '');
+        const destination = destinationRef?.replace(/^\+/, '');
+        const allowedDestination = destination === undefined
+          || destination === 'refs/remotes/' + remote + '/' + defaultBranch;
+        return source !== defaultBranch || !allowedDestination;
+      });
+      if (forbiddenFlags || !remote || refspecs.length !== 1 || invalidRefspec) {
+        throw denied('fetch must explicitly target only the canonical default branch and its remote-tracking ref');
       }
+    }
+    if (parsed.subcommand === 'config') {
+      const positional = args.filter((arg) => !arg.startsWith('-'));
+      if (positional[0]?.startsWith('alias.')) {
+        throw denied('Git alias mutation is disabled for managed repositories');
+      }
+    }
+    if (parsed.subcommand === 'remote' && ['update', 'prune', 'set-url', 'add', 'remove', 'rename'].includes(args[0] ?? '')) {
+      throw denied('Git remote mutation is disabled for managed repositories');
+    }
+    if (parsed.subcommand === 'symbolic-ref' || (parsed.subcommand === 'stash' && args[0] === 'branch')) {
+      throw denied('direct Git branch-ref mutation must use the managed API');
     }
     if (parsed.subcommand === 'push') {
       const positional = args.filter((arg) => !arg.startsWith('-'));
       const refspecs = positional.slice(1);
-      const targets = refspecs.map((refspec) => (refspec.split(':').at(-1) ?? '').replace(/^\+/, '').replace(/^refs\/heads\//, ''));
-      const force = args.some((arg) => ['-f', '--force', '--mirror', '--all'].includes(arg)
+      const forbiddenFlags = args.some((arg) => ['--all', '--multiple', '--prune', '-p'].includes(arg));
+      const invalidRefspec = refspecs.some((refspec) => {
+        const [sourceRef = '', destinationRef] = refspec.split(':');
+        const source = sourceRef.replace(/^\+/, '').replace(/^refs\/heads\//, '');
+        const destination = (destinationRef ?? sourceRef).replace(/^\+/, '').replace(/^refs\/heads\//, '');
+        return source !== defaultBranch || destination !== defaultBranch;
+      });
+      const force = args.some((arg) => ['-f', '--force', '--mirror', '--all', '--delete'].includes(arg)
         || arg === '--force-with-lease' || arg.startsWith('--force-with-lease='))
         || refspecs.some((refspec) => refspec.startsWith('+'));
-      if (force || refspecs.length === 0 || targets.some((target) => target !== defaultBranch)) {
-        throw denied('push must explicitly target only the canonical default branch without force or mirror');
+      if (force || !positional[0] || refspecs.length !== 1 || invalidRefspec) {
+        throw denied('push must explicitly source and target only the canonical default branch without force or mirror');
       }
     }
   }

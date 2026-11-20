@@ -72,6 +72,12 @@ describe('repository command managed-worktree authority', () => {
       'git push origin feature/parallel:main',
       'git fetch origin feature/parallel',
       'git fetch origin',
+      'git fetch origin main --prune',
+      'git config alias.new !git-branch',
+      'git remote update',
+      'git remote set-url origin https://example.invalid/repo.git',
+      'git symbolic-ref refs/heads/feature/parallel refs/heads/main',
+      'git stash branch feature/parallel',
       'git fetch origin main:refs/heads/main',
       'git pull origin main',
       'git remote update',
@@ -105,6 +111,30 @@ describe('repository command managed-worktree authority', () => {
     expect(() => assertRepositoryCommandInputAllowed('git remote -v', policy)).not.toThrow();
     expect(() => assertRepositoryCommandInputAllowed('git config --get remote.origin.url', policy)).not.toThrow();
     expect(() => assertRepositoryCommandInputAllowed(['bash', '-lc', 'git branch --show-current'], policy)).not.toThrow();
+  });
+
+  test('managed repository commands cannot bypass branch policy through wrappers, aliases, or refspecs', () => {
+    const policy = { managedBranchCreationOnly: true, defaultBranch: 'main' };
+    for (const command of [
+      'git branch feature/parallel',
+      ['bash', '-lc', 'git switch -c feature/parallel'],
+      ['env', 'GIT_OPTIONAL_LOCKS=0', 'git', 'worktree', 'add', '_ref/parallel', 'main'],
+      'sudo git checkout -b feature/parallel',
+      ['timeout', '5s', 'git', 'branch', 'feature/parallel'],
+      'git -c alias.new=!git-branch feature/parallel new',
+      'git push origin feature/parallel:main',
+      'git push origin main:feature/parallel',
+      'git fetch origin feature/parallel:refs/remotes/origin/main',
+      'git fetch origin main:refs/heads/feature/parallel',
+      'git fetch origin',
+    ]) {
+      expect(() => assertRepositoryCommandInputAllowed(command, policy)).toThrow('GIT_BRANCH_CREATION_REQUIRES_MANAGED_API');
+    }
+    expect(() => assertRepositoryCommandInputAllowed('git status --short', policy)).not.toThrow();
+    expect(() => assertRepositoryCommandInputAllowed('git branch --show-current', policy)).not.toThrow();
+    expect(() => assertRepositoryCommandInputAllowed('git fetch origin main', policy)).not.toThrow();
+    expect(() => assertRepositoryCommandInputAllowed('git push origin main', policy)).not.toThrow();
+    expect(() => assertRepositoryCommandInputAllowed('git push origin main:main', policy)).not.toThrow();
   });
 
   test('normal Git worktree creation has no Work prerequisite but keeps repository path policy', () => {
