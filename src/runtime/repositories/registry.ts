@@ -1107,7 +1107,7 @@ export function refreshRepository(repoId: string, controllerHome?: string): Repo
     remoteUrl: rawRemote,
     canonicalRemote,
     github: defaultGitHubMapping(canonicalRemote, record.github, record.canonicalRemote, readLegacyGitHubPluginConfig(canonicalRoot)),
-    defaultBranch: defaultBranch(canonicalRoot) ?? record.defaultBranch,
+    defaultBranch: record.defaultBranch ?? defaultBranch(canonicalRoot),
     repositoryType: repositoryType(canonicalRoot, rawRemote),
     updatedAt: timestamp,
     lastSeenAt: timestamp,
