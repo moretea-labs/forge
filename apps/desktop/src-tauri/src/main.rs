@@ -2919,7 +2919,8 @@ async fn local_wait_running_process<H: LocalApiHost + Sync>(
         }
         if query.get("ok").and_then(Value::as_bool) != Some(true)
             || query.pointer("/result/processId").and_then(Value::as_str) != Some(process_id)
-            || query.pointer("/result/completed").and_then(Value::as_bool) != Some(false) {
+            || query.pointer("/result/completed").and_then(Value::as_bool) != Some(false)
+            || query.pointer("/result/observationInterrupted").and_then(Value::as_bool) == Some(true) {
             return None;
         }
     }
@@ -2965,7 +2966,7 @@ fn local_effect_outcome(name: &str, receipt: &Value) -> LocalEffectOutcome {
         "process_cancel" => {
             let status = result.get("status").and_then(Value::as_str);
             match result.get("completed").and_then(Value::as_bool) {
-                Some(true) if !matches!(status, Some("completed_unknown" | "orphaned")) => LocalEffectOutcome::Succeeded,
+                Some(true) if matches!(status, Some("succeeded" | "failed" | "timed_out" | "cancelled")) => LocalEffectOutcome::Succeeded,
                 _ => LocalEffectOutcome::Unknown,
             }
         }
@@ -3226,9 +3227,10 @@ fn responses_assistant_message(output: &Value) -> Result<Value, String> {
             }
             Some("function_call") => {
                 let call_id = item.get("call_id").and_then(Value::as_str)
-                    .or_else(|| item.get("id").and_then(Value::as_str)).unwrap_or("");
+                    .unwrap_or("");
                 let name = item.get("name").and_then(Value::as_str).unwrap_or("");
-                let arguments = item.get("arguments").and_then(Value::as_str).unwrap_or("{}");
+                let arguments = item.get("arguments").and_then(Value::as_str)
+                    .ok_or("FORGE_DESKTOP_API_TOOL_ARGUMENTS_INVALID")?;
                 if arguments.len() > 64 * 1024 {
                     return Err("FORGE_DESKTOP_API_TOOL_ARGUMENTS_TOO_LARGE".into());
                 }
@@ -3249,6 +3251,9 @@ fn responses_assistant_message(output: &Value) -> Result<Value, String> {
         "content":if texts.is_empty(){Value::Null}else{Value::String(texts.join("\n"))}
     });
     if !calls.is_empty() { message["tool_calls"] = Value::Array(calls); }
+    // Keep provider context and item identity intact across tool rounds. The
+    // normalized fields above serve dispatch/presentation, not reconstruction.
+    message["responses_output"] = Value::Array(items.clone());
     Ok(message)
 }
 
@@ -3257,6 +3262,12 @@ fn responses_input(history: &[Value]) -> Result<Vec<Value>, String> {
     for item in history {
         match item.get("role").and_then(Value::as_str) {
             Some(role @ ("user" | "assistant")) => {
+                if role == "assistant" {
+                    if let Some(output) = item.get("responses_output").and_then(Value::as_array) {
+                        input.extend(output.iter().cloned());
+                        continue;
+                    }
+                }
                 if let Some(content) = item.get("content").and_then(Value::as_str)
                     .filter(|value| !value.trim().is_empty()) {
                     input.push(json!({"role":role,"content":content}));
@@ -3308,7 +3319,8 @@ fn provider_tool_calls(protocol: &str, output: &Value) -> Result<Vec<(String, St
         };
         if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
             for call in calls {
-                let arguments = call.pointer("/function/arguments").and_then(Value::as_str).unwrap_or("{}");
+                let arguments = call.pointer("/function/arguments").and_then(Value::as_str)
+                    .ok_or("FORGE_DESKTOP_API_TOOL_ARGUMENTS_INVALID")?;
                 if arguments.len() > 64 * 1024 { return Err("FORGE_DESKTOP_API_TOOL_ARGUMENTS_TOO_LARGE".into()); }
                 requests.push((
                     call.get("id").and_then(Value::as_str).unwrap_or("").to_string(),
@@ -3317,6 +3329,14 @@ fn provider_tool_calls(protocol: &str, output: &Value) -> Result<Vec<(String, St
                         .map_err(|_| "FORGE_DESKTOP_API_TOOL_ARGUMENTS_INVALID")?,
                 ));
             }
+        }
+    }
+    // Validate the whole round before dispatch: each provider call must have
+    // one unambiguous receipt identity, including across distinct output items.
+    let mut ids = std::collections::HashSet::new();
+    for (id, _, _) in &requests {
+        if id.trim().is_empty() || !ids.insert(id.as_str()) {
+            return Err("FORGE_DESKTOP_API_TOOL_CALL_ID_INVALID".into());
         }
     }
     Ok(requests)
@@ -3440,6 +3460,8 @@ struct StreamedModelRound {
     anthropic_blocks: std::collections::BTreeMap<usize, Value>,
     anthropic_json: std::collections::BTreeMap<usize, String>,
     completed_response: Option<Value>,
+    openai_finish_reason: Option<String>,
+    anthropic_stop_reason: Option<String>,
     finished: bool,
 }
 
@@ -3455,7 +3477,17 @@ impl StreamedModelRound {
     fn consume<H: LocalApiHost + Sync>(
         &mut self, protocol: &str, data: &str, host: &H, conversation_id: &str,
     ) -> Result<(), String> {
+        // A terminal receipt freezes this round, independent of HTTP chunking.
+        if self.finished { return Ok(()); }
         if data == "[DONE]" {
+            // This sentinel belongs to Chat Completions only. In particular,
+            // it cannot promote an unfinished Anthropic tool preview to authority.
+            if protocol != "openai" {
+                return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
+            }
+            if !matches!(self.openai_finish_reason.as_deref(), Some("stop" | "tool_calls")) {
+                return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
+            }
             self.finished = true;
             return Ok(());
         }
@@ -3468,9 +3500,11 @@ impl StreamedModelRound {
             "openai" => {
                 // A transport terminator cannot turn truncated/filtered output
                 // into an authoritative answer or executable tool request.
-                if matches!(value.pointer("/choices/0/finish_reason").and_then(Value::as_str),
-                    Some("length" | "content_filter")) {
-                    return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
+                if let Some(reason) = value.pointer("/choices/0/finish_reason").and_then(Value::as_str) {
+                    if !matches!(reason, "stop" | "tool_calls") {
+                        return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
+                    }
+                    self.openai_finish_reason = Some(reason.to_string());
                 }
                 let delta = &value["choices"][0]["delta"];
                 if let Some(text) = delta.get("content").and_then(Value::as_str) {
@@ -3524,6 +3558,11 @@ impl StreamedModelRound {
                     let index = value.get("index").and_then(Value::as_u64)
                         .ok_or("FORGE_DESKTOP_API_STREAM_EVENT_INVALID")? as usize;
                     if index >= 128 { return Err("FORGE_DESKTOP_API_STREAM_EVENT_INVALID".into()); }
+                    // An index identifies one content block for the entire round.
+                    // Reuse must not replace a call's identity or accumulated input.
+                    if self.anthropic_blocks.contains_key(&index) {
+                        return Err("FORGE_DESKTOP_API_STREAM_EVENT_INVALID".into());
+                    }
                     if let Some(block) = value.get("content_block") {
                         self.anthropic_blocks.insert(index, block.clone());
                     }
@@ -3542,8 +3581,17 @@ impl StreamedModelRound {
                                 Self::emit_delta(host, conversation_id, "text_delta", text);
                             }
                         }
-                        // Anthropic thinking_delta is private reasoning, not a summary.
-                        Some("thinking_delta") => {}
+                        // Keep signed provider context intact for tool continuation,
+                        // without forwarding this private channel as UI progress.
+                        Some("thinking_delta") => {
+                            if let Some(thinking) = delta.get("thinking").and_then(Value::as_str) {
+                                let block = self.anthropic_blocks.get_mut(&index)
+                                    .filter(|block| block.get("type").and_then(Value::as_str) == Some("thinking"))
+                                    .ok_or("FORGE_DESKTOP_API_STREAM_EVENT_INVALID")?;
+                                let previous = block.get("thinking").and_then(Value::as_str).unwrap_or("");
+                                block["thinking"] = Value::String(format!("{previous}{thinking}"));
+                            }
+                        }
                         Some("signature_delta") => {
                             if let Some(signature) = delta.get("signature").and_then(Value::as_str) {
                                 let block = self.anthropic_blocks.get_mut(&index)
@@ -3553,6 +3601,11 @@ impl StreamedModelRound {
                             }
                         }
                         Some("input_json_delta") => {
+                            // Input belongs to an already identified tool block,
+                            // never to a future block or another content type.
+                            self.anthropic_blocks.get(&index)
+                                .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+                                .ok_or("FORGE_DESKTOP_API_STREAM_EVENT_INVALID")?;
                             if let Some(partial) = delta.get("partial_json").and_then(Value::as_str) {
                                 let json = self.anthropic_json.entry(index).or_default();
                                 json.push_str(partial);
@@ -3565,12 +3618,19 @@ impl StreamedModelRound {
                     }
                 }
                 Some("message_delta") => {
-                    if matches!(value.pointer("/delta/stop_reason").and_then(Value::as_str),
-                        Some("max_tokens" | "model_context_window_exceeded")) {
-                        return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
+                    if let Some(reason) = value.pointer("/delta/stop_reason").and_then(Value::as_str) {
+                        if !matches!(reason, "end_turn" | "stop_sequence" | "tool_use") {
+                            return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
+                        }
+                        self.anthropic_stop_reason = Some(reason.to_string());
                     }
                 }
-                Some("message_stop") => self.finished = true,
+                Some("message_stop") => {
+                    if self.anthropic_stop_reason.is_none() {
+                        return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into());
+                    }
+                    self.finished = true;
+                }
                 _ => {}
             },
             _ => return Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into()),
@@ -3647,6 +3707,7 @@ async fn request_local_api_round_stream<H: LocalApiHost + Sync>(
             if line.is_empty() {
                 if !data.is_empty() {
                     stream.consume(protocol, &data.join("\n"), host, conversation_id)?;
+                    if stream.finished { return stream.finish(protocol); }
                     data.clear();
                 }
             } else if let Some(value) = line.strip_prefix("data:") {
@@ -3656,7 +3717,6 @@ async fn request_local_api_round_stream<H: LocalApiHost + Sync>(
         if buffer.len() > 256 * 1024 {
             return Err("FORGE_DESKTOP_API_STREAM_EVENT_TOO_LARGE".into());
         }
-        if stream.finished { break; }
     }
     if !data.is_empty() {
         stream.consume(protocol, &data.join("\n"), host, conversation_id)?;
@@ -3882,6 +3942,7 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
                 "model":model,
                 "instructions":system_instruction,
                 "input":responses_input(&history)?,
+                "include":["reasoning.encrypted_content"],
                 "stream":true,
             });
             if !tools.is_empty() { body["tools"] = Value::Array(tools); }
@@ -3908,6 +3969,15 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
         let requests = provider_tool_calls(protocol, &output).map_err(|error| {
             contextualize_api_turn_error(error, last_effect_request_id.as_deref())
         })?;
+        // Reject the complete batch before any effect: a later malformed or
+        // unavailable call must not leave an earlier command partially applied.
+        if requests.iter().any(|(_, name, args)| name.is_empty() || !args.is_object()
+            || !available_tools.iter().any(|tool|
+                tool.pointer("/function/name").and_then(Value::as_str) == Some(name.as_str()))) {
+            return Err(contextualize_api_turn_error(
+                "FORGE_DESKTOP_API_TOOL_NOT_AUTHORIZED".into(), last_effect_request_id.as_deref()
+            ));
+        }
         if protocol == "anthropic" {
             let blocks = output.get("content").and_then(Value::as_array)
                 .ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")
@@ -3985,12 +4055,6 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
             if *cancel_receiver.borrow() {
                 return Err(contextualize_api_turn_error(
                     "FORGE_DESKTOP_API_TURN_CANCELLED".into(), last_effect_request_id.as_deref()
-                ));
-            }
-            if id.is_empty() || name.is_empty() || !args.is_object()
-                || !available_tools.iter().any(|tool| tool.pointer("/function/name").and_then(Value::as_str) == Some(&name)) {
-                return Err(contextualize_api_turn_error(
-                    "FORGE_DESKTOP_API_TOOL_NOT_AUTHORIZED".into(), last_effect_request_id.as_deref()
                 ));
             }
             let effectful = matches!(name.as_str(), "apply_patch" | "run_command" | "git_commit" | "process_cancel" | "record_learning" | "memory_feedback");
@@ -4534,7 +4598,10 @@ mod tests {
                                 "command":[bun_executable.as_str(),"test","tests/fixture.test.ts"],"timeout_ms":1000
                             })),
                         };
-                        json!({"output":[{"type":"function_call","status":"completed","call_id":id,"name":name,"arguments":arguments.to_string()}]})
+                        json!({"output":[
+                            {"type":"reasoning","id":format!("reasoning-{round}"),"summary":[],"encrypted_content":"opaque-fixture-context"},
+                            {"type":"function_call","id":format!("function-{round}"),"status":"completed","call_id":id,"name":name,"arguments":arguments.to_string()}
+                        ]})
                     } else {
                         json!({"output":[{"type":"message","content":[{"type":"output_text","text":"Read, edited and verified."}]}]})
                     };
@@ -4556,9 +4623,20 @@ mod tests {
                     };
                     if protocol == "anthropic" {
                         frames.push(json!({"type":"content_block_start","index":0,"content_block":{
+                            "type":"thinking","thinking":"","signature":""
+                        }}).to_string());
+                        for thinking in ["Private ", "provider context."] {
+                            frames.push(json!({"type":"content_block_delta","index":0,"delta":{
+                                "type":"thinking_delta","thinking":thinking
+                            }}).to_string());
+                        }
+                        frames.push(json!({"type":"content_block_delta","index":0,"delta":{
+                            "type":"signature_delta","signature":"fixture-signature"
+                        }}).to_string());
+                        frames.push(json!({"type":"content_block_start","index":1,"content_block":{
                             "type":"tool_use","id":id,"name":name,"input":{}
                         }}).to_string());
-                        frames.push(json!({"type":"content_block_delta","index":0,"delta":{
+                        frames.push(json!({"type":"content_block_delta","index":1,"delta":{
                             "type":"input_json_delta","partial_json":arguments.to_string()
                         }}).to_string());
                         frames.push(json!({"type":"message_stop"}).to_string());
@@ -4581,8 +4659,89 @@ mod tests {
                     frames.push(json!({"choices":[{"delta":{"content":"Read, edited and verified."}}]}).to_string());
                     frames.push("[DONE]".into());
                 }
-                if protocol != "responses" {
-                    let reason = stop_reason.unwrap_or(if round < 3 {
+                if matches!(stop_reason, Some("duplicate-tools" | "invalid-tool-name" | "invalid-tool-args")) {
+                    let args = json!({"command":["bun","test","tests/fixture.test.ts"],"timeout_ms":1000});
+                    let calls = (0..2).map(|index| {
+                        let id = if stop_reason == Some("duplicate-tools") { "duplicate".into() }
+                            else { format!("call-{index}") };
+                        let name = if index == 1 && stop_reason == Some("invalid-tool-name") {
+                            "unavailable_tool"
+                        } else { "run_command" };
+                        let arguments = if index == 1 && stop_reason == Some("invalid-tool-args") {
+                            json!([])
+                        } else { args.clone() };
+                        (id, name, arguments)
+                    }).collect::<Vec<_>>();
+                    frames = match protocol {
+                        "responses" => vec![json!({"type":"response.completed","response":{"output":(0..2)
+                            .map(|index| json!({"type":"function_call","id":format!("item-{index}"),
+                                "call_id":calls[index].0,"name":calls[index].1,"arguments":calls[index].2.to_string()}))
+                            .collect::<Vec<_>>()}}).to_string()],
+                        "anthropic" => (0..2).map(|index| json!({"type":"content_block_start","index":index,
+                            "content_block":{"type":"tool_use","id":calls[index].0,"name":calls[index].1,"input":calls[index].2}}).to_string())
+                            .chain(std::iter::once(json!({"type":"message_stop"}).to_string())).collect(),
+                        _ => vec![json!({"choices":[{"delta":{"tool_calls":(0..2)
+                            .map(|index| json!({"index":index,"id":calls[index].0,"function":{
+                                "name":calls[index].1,"arguments":calls[index].2.to_string()}})).collect::<Vec<_>>()}}]}).to_string(), "[DONE]".into()],
+                    };
+                }
+                if matches!(stop_reason, Some("missing-wire-args" | "null-wire-args" | "object-wire-args"
+                    | "missing-call-id" | "null-call-id" | "object-call-id" | "number-call-id")) {
+                    let args = json!({"command":["bun","test","tests/fixture.test.ts"],"timeout_ms":1000});
+                    let malformed = match stop_reason {
+                        Some("object-wire-args") => json!({}),
+                        _ => Value::Null,
+                    };
+                    let mut calls = (0..2).map(|index| json!({
+                        "type":"function_call", "id":format!("item-{index}"),
+                        "call_id":format!("call-{index}"), "name":if index == 0 { "run_command" } else { "git_status" },
+                        "arguments":args.to_string(),
+                    })).collect::<Vec<_>>();
+                    if stop_reason == Some("missing-wire-args") {
+                        calls[1].as_object_mut().unwrap().remove("arguments");
+                    } else if stop_reason == Some("missing-call-id") {
+                        calls[1].as_object_mut().unwrap().remove("call_id");
+                    } else if matches!(stop_reason, Some("null-call-id" | "object-call-id" | "number-call-id")) {
+                        calls[1]["call_id"] = match stop_reason {
+                            Some("object-call-id") => json!({}),
+                            Some("number-call-id") => json!(42),
+                            _ => Value::Null,
+                        };
+                    } else { calls[1]["arguments"] = malformed; }
+                    frames = vec![json!({"type":"response.completed","response":{"output":calls}}).to_string()];
+                }
+                if stop_reason == Some("duplicate-block-index") {
+                    // A second start silently replaces the original tool block.
+                    frames = vec![
+                        json!({"type":"content_block_start","index":0,
+                            "content_block":{"type":"tool_use","id":"original-call",
+                                "name":"git_status","input":{}}}).to_string(),
+                        json!({"type":"content_block_start","index":0,
+                            "content_block":{"type":"tool_use","id":"replacement-call",
+                                "name":"run_command","input":{"command":["bun","test","tests/fixture.test.ts"],"timeout_ms":1000}}}).to_string(),
+                        json!({"type":"message_stop"}).to_string(),
+                    ];
+                }
+                if stop_reason == Some("orphan-tool-input") {
+                    // Arguments arriving before the tool block must never be
+                    // attached retroactively to a later command at that index.
+                    frames = vec![
+                        json!({"type":"content_block_delta","index":0,
+                            "delta":{"type":"input_json_delta","partial_json":json!({
+                                "command":["bun","test","tests/fixture.test.ts"],"timeout_ms":1000
+                            }).to_string()}}).to_string(),
+                        json!({"type":"content_block_start","index":0,
+                            "content_block":{"type":"tool_use","id":"late-call",
+                                "name":"run_command","input":{}}}).to_string(),
+                        json!({"type":"message_stop"}).to_string(),
+                    ];
+                }
+                if stop_reason == Some("foreign-done") {
+                    // A proxy terminates an Anthropic preview using OpenAI's sentinel.
+                    frames.pop();
+                    frames.push("[DONE]".into());
+                } else if protocol != "responses" && stop_reason != Some("missing-finish") {
+                    let reason = stop_reason.filter(|reason| !matches!(*reason, "duplicate-tools" | "invalid-tool-name" | "invalid-tool-args" | "duplicate-block-index" | "orphan-tool-input")).unwrap_or(if round < 3 {
                         if protocol == "anthropic" { "tool_use" } else { "tool_calls" }
                     } else if protocol == "anthropic" { "end_turn" } else { "stop" });
                     let terminal = if protocol == "anthropic" {
@@ -4617,6 +4776,10 @@ mod tests {
             assert_eq!(result["output"], "Read, edited and verified.");
             assert_eq!(result["toolActivityCount"], 3);
             assert_eq!(std::fs::read_to_string(fixture.repo_root.join("fixture.txt")).unwrap(), "after\n");
+            let edit_storage = fixture.repo_root.join(".ai/harness/edit-sessions")
+                .canonicalize().expect("bound edit storage");
+            assert!(edit_storage.starts_with(fixture.controller_home.canonicalize().unwrap()),
+                "native provider edits must keep caller Controller Home: {}", edit_storage.display());
             let calls = host.tool_calls.lock().unwrap();
             assert_eq!(calls.iter().take(3).map(|call| call["tool"].as_str().unwrap()).collect::<Vec<_>>(), vec!["read_file", "apply_patch", "run_command"]);
             assert!(calls.iter().take(3).all(|call| call["repoId"] == fixture.repo_id && call["checkoutId"] == fixture.checkout_id && call["allowEffects"] == true));
@@ -4629,6 +4792,38 @@ mod tests {
             assert!(requests[1].to_string().contains("before"));
             assert!(requests[2].to_string().contains("applied"));
             assert!(requests[3].to_string().contains("1 pass"));
+            if protocol == "responses" {
+                for (round, request) in requests[1..].iter().enumerate() {
+                    let input = request["input"].as_array().unwrap();
+                    let index = input.iter().position(|item| item["id"] == format!("reasoning-{round}"))
+                        .expect("tool continuation must retain its original reasoning item");
+                    assert_eq!(input[index], json!({
+                        "type":"reasoning", "id":format!("reasoning-{round}"),
+                        "summary":[], "encrypted_content":"opaque-fixture-context"
+                    }));
+                    assert_eq!(input[index + 1]["id"], format!("function-{round}"));
+                    assert_eq!(input[index + 1]["status"], "completed");
+                    assert_eq!(input[index + 2]["type"], "function_call_output");
+                    assert_eq!(input[index + 1]["call_id"], input[index + 2]["call_id"]);
+                    assert_eq!(request["include"], json!(["reasoning.encrypted_content"]));
+                }
+                assert!(!events.iter().any(|event| event["payload"].to_string().contains("opaque-fixture-context")));
+            }
+            if protocol == "anthropic" {
+                for request in &requests[1..] {
+                    let assistant = request["messages"].as_array().unwrap().iter().rev()
+                        .find(|message| message["role"] == "assistant").unwrap();
+                    assert_eq!(assistant["content"][0], json!({
+                        "type":"thinking", "thinking":"Private provider context.",
+                        "signature":"fixture-signature"
+                    }), "tool continuation must preserve the signed provider block");
+                    assert_eq!(assistant["content"][1]["type"], "tool_use");
+                }
+                assert!(!events.iter().any(|event| event["channel"] == "model"
+                    && event["payload"].to_string().contains("Private provider context.")),
+                    "internal thinking must never become visible model progress");
+                assert!(!result["output"].as_str().unwrap().contains("Private provider context."));
+            }
         }
     }
 
@@ -4687,6 +4882,192 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_tool_call_ids_never_dispatch_commands() {
+        for protocol in ["openai", "anthropic", "responses"] {
+            let (endpoint, server) = spawn_scripted_agent_provider(protocol, "bun", Some("duplicate-tools"));
+            let host = ScriptedAgentLoopHost::default();
+            let config = json!({"apiProfiles":[{
+                "id":"duplicate-test","endpoint":endpoint,"model":"test-model","apiProtocol":protocol
+            }]});
+            let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+            let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+                &host, config, vec![json!({"role":"user","content":"Run the focused test"})],
+                Some("repo_test".into()), Some("checkout_test".into()), "conv-duplicate".into(),
+                Some("api:duplicate-test".into()), None, true, &mut cancellation,
+            ));
+            let requests = server.join().unwrap();
+            assert!(host.tool_calls.lock().unwrap().is_empty(),
+                "{protocol}: ambiguous call identity must be rejected before either command dispatch");
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_CALL_ID_INVALID");
+            assert_eq!(requests.len(), 1, "no automatic retry");
+        }
+    }
+
+    #[test]
+    fn invalid_tool_batch_never_dispatches_commands() {
+        for protocol in ["openai", "anthropic", "responses"] {
+            for fault in ["invalid-tool-name", "invalid-tool-args"] {
+                let (endpoint, server) = spawn_scripted_agent_provider(protocol, "bun", Some(fault));
+                let host = ScriptedAgentLoopHost::default();
+                let config = json!({"apiProfiles":[{
+                    "id":"invalid-batch-test","endpoint":endpoint,"model":"test-model","apiProtocol":protocol
+                }]});
+                let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+                let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+                    &host, config, vec![json!({"role":"user","content":"Run the focused test"})],
+                    Some("repo_test".into()), Some("checkout_test".into()), "conv-invalid-batch".into(),
+                    Some("api:invalid-batch-test".into()), None, true, &mut cancellation,
+                ));
+                let requests = server.join().unwrap();
+                assert!(host.tool_calls.lock().unwrap().is_empty(),
+                    "{protocol}: invalid batch must be rejected before the first command dispatch");
+                assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_NOT_AUTHORIZED");
+                assert_eq!(requests.len(), 1, "no automatic retry");
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_wire_arguments_never_dispatch_commands() {
+        for fault in ["missing-wire-args", "null-wire-args", "object-wire-args"] {
+            let (endpoint, server) = spawn_scripted_agent_provider("responses", "bun", Some(fault));
+            let host = ScriptedAgentLoopHost::default();
+            let config = json!({"apiProfiles":[{
+                "id":"wire-test","endpoint":endpoint,"model":"test-model","apiProtocol":"responses"
+            }]});
+            let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+            let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+                &host, config, vec![json!({"role":"user","content":"Run the focused test"})],
+                Some("repo_test".into()), Some("checkout_test".into()), "conv-wire".into(),
+                Some("api:wire-test".into()), None, true, &mut cancellation,
+            ));
+            let requests = server.join().unwrap();
+            assert!(host.tool_calls.lock().unwrap().is_empty(),
+                "{fault}: malformed wire arguments must reject the batch before any dispatch");
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_ARGUMENTS_INVALID");
+            assert_eq!(requests.len(), 1, "no automatic retry");
+        }
+    }
+
+    #[test]
+    fn anthropic_duplicate_block_index_never_dispatches_commands() {
+        let (endpoint, server) = spawn_scripted_agent_provider("anthropic", "bun", Some("duplicate-block-index"));
+        let host = ScriptedAgentLoopHost::default();
+        let config = json!({"apiProfiles":[{
+            "id":"block-index-test","endpoint":endpoint,"model":"test-model","apiProtocol":"anthropic"
+        }]});
+        let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+        let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+            &host, config, vec![json!({"role":"user","content":"Run the focused test"})],
+            Some("repo_test".into()), Some("checkout_test".into()), "conv-block-index".into(),
+            Some("api:block-index-test".into()), None, true, &mut cancellation,
+        ));
+        let requests = server.join().unwrap();
+        assert!(host.tool_calls.lock().unwrap().is_empty(),
+            "a reused content-block index must not overwrite identity and authorize a command");
+        assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_EVENT_INVALID");
+        assert_eq!(requests.len(), 1, "no automatic retry");
+    }
+
+    #[test]
+    fn anthropic_orphan_tool_input_never_dispatches_commands() {
+        let (endpoint, server) = spawn_scripted_agent_provider("anthropic", "bun", Some("orphan-tool-input"));
+        let host = ScriptedAgentLoopHost::default();
+        let config = json!({"apiProfiles":[{
+            "id":"orphan-input-test","endpoint":endpoint,"model":"test-model","apiProtocol":"anthropic"
+        }]});
+        let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+        let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+            &host, config, vec![json!({"role":"user","content":"Run the focused test"})],
+            Some("repo_test".into()), Some("checkout_test".into()), "conv-orphan-input".into(),
+            Some("api:orphan-input-test".into()), None, true, &mut cancellation,
+        ));
+        let requests = server.join().unwrap();
+        assert!(host.tool_calls.lock().unwrap().is_empty(),
+            "orphan arguments must not bind retroactively and authorize a command");
+        assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_EVENT_INVALID");
+        assert_eq!(requests.len(), 1, "no automatic retry");
+    }
+
+    #[test]
+    fn anthropic_input_deltas_require_an_existing_tool_block() {
+        for block in [None, Some(json!({"type":"text","text":""})),
+            Some(json!({"type":"thinking","thinking":"","signature":""}))] {
+            let host = RecordingStreamHost::default();
+            let mut round = StreamedModelRound::default();
+            if let Some(block) = block {
+                round.consume("anthropic", &json!({"type":"content_block_start","index":0,
+                    "content_block":block}).to_string(), &host, "conv-input").unwrap();
+            }
+            let result = round.consume("anthropic", &json!({"type":"content_block_delta","index":0,
+                "delta":{"type":"input_json_delta","partial_json":"{}"}}).to_string(), &host, "conv-input");
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_EVENT_INVALID");
+            assert!(round.anthropic_json.is_empty(), "invalid input must not enter round context");
+        }
+    }
+
+    #[test]
+    fn responses_item_id_cannot_authorize_a_tool_call() {
+        for fault in ["missing-call-id", "null-call-id", "object-call-id", "number-call-id"] {
+            let (endpoint, server) = spawn_scripted_agent_provider("responses", "bun", Some(fault));
+            let host = ScriptedAgentLoopHost::default();
+            let config = json!({"apiProfiles":[{
+                "id":"call-id-test","endpoint":endpoint,"model":"test-model","apiProtocol":"responses"
+            }]});
+            let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+            let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+                &host, config, vec![json!({"role":"user","content":"Run the focused test"})],
+                Some("repo_test".into()), Some("checkout_test".into()), "conv-call-id".into(),
+                Some("api:call-id-test".into()), None, true, &mut cancellation,
+            ));
+            let requests = server.join().unwrap();
+            assert!(host.tool_calls.lock().unwrap().is_empty(),
+                "{fault}: an item ID cannot substitute for call identity or admit earlier commands");
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_CALL_ID_INVALID");
+            assert_eq!(requests.len(), 1, "no automatic retry");
+        }
+    }
+
+    #[test]
+    fn responses_tool_identity_requires_explicit_call_id() {
+        for call_id in [None, Some(Value::Null), Some(json!({})), Some(json!(42)),
+            Some(json!("")), Some(json!("  ")), Some(json!("call-1"))] {
+            let mut item = json!({"type":"function_call","id":"item-1",
+                "name":"git_status","arguments":"{}"});
+            if let Some(value) = &call_id { item["call_id"] = value.clone(); }
+            let result = provider_tool_calls("responses", &json!({"output":[item]}));
+            if call_id == Some(json!("call-1")) {
+                assert_eq!(result.unwrap(), vec![("call-1".into(), "git_status".into(), json!({}))]);
+            } else {
+                assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_CALL_ID_INVALID", "{call_id:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn tool_arguments_require_explicit_json_strings() {
+        for protocol in ["openai", "responses"] {
+            for arguments in [None, Some(Value::Null), Some(json!({})), Some(json!([])), Some(json!(42)), Some(json!(true)), Some(json!("{}"))] {
+                let mut call = json!({"id":"call-1","type":"function","function":{"name":"git_status"}});
+                let mut item = json!({"id":"item-1","type":"function_call","call_id":"call-1","name":"git_status"});
+                if let Some(value) = &arguments {
+                    call["function"]["arguments"] = value.clone();
+                    item["arguments"] = value.clone();
+                }
+                let output = if protocol == "responses" { json!({"output":[item]}) }
+                    else { json!({"choices":[{"message":{"tool_calls":[call]}}]}) };
+                let result = provider_tool_calls(protocol, &output);
+                if arguments == Some(json!("{}")) {
+                    assert_eq!(result.unwrap(), vec![("call-1".into(), "git_status".into(), json!({}))]);
+                } else {
+                    assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_ARGUMENTS_INVALID",
+                        "{protocol}: {arguments:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn truncated_provider_round_never_dispatches_tools() {
         for (protocol, reason) in [
             ("openai", "length"), ("openai", "content_filter"),
@@ -4708,6 +5089,117 @@ mod tests {
             assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
             assert_eq!(server.join().unwrap().len(), 1, "no automatic retry");
         }
+    }
+
+    #[test]
+    fn anthropic_unfinished_round_never_dispatches_tools() {
+        for reason in ["missing-finish", "pause_turn", "refusal", "unknown"] {
+            let (endpoint, server) = spawn_scripted_agent_provider("anthropic", "bun", Some(reason));
+            let host = ScriptedAgentLoopHost::default();
+            let config = json!({"apiProfiles":[{
+                "id":"unfinished-test","endpoint":endpoint,"model":"test-model","apiProtocol":"anthropic"
+            }]});
+            let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+            let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+                &host, config, vec![json!({"role":"user","content":"Read fixture.txt"})],
+                Some("repo_test".into()), Some("checkout_test".into()), "conv-unfinished".into(),
+                Some("api:unfinished-test".into()), None, true, &mut cancellation,
+            ));
+            let requests = server.join().unwrap();
+            assert!(host.tool_calls.lock().unwrap().is_empty(),
+                "Anthropic {reason} must not authorize tool previews");
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+            assert_eq!(requests.len(), 1, "no automatic retry");
+        }
+    }
+
+    #[test]
+    fn anthropic_text_requires_supported_model_stop_evidence() {
+        for reason in [Value::Null, json!("pause_turn"), json!("refusal"), json!("unknown"),
+            json!("end_turn"), json!("stop_sequence")] {
+            let host = RecordingStreamHost::default();
+            let mut round = StreamedModelRound::default();
+            round.consume("anthropic", &json!({"type":"content_block_delta","index":0,
+                "delta":{"type":"text_delta","text":"Preview"}}).to_string(), &host, "conv-stop").unwrap();
+            let result = round.consume("anthropic", &json!({"type":"message_delta",
+                "delta":{"stop_reason":reason}}).to_string(), &host, "conv-stop")
+                .and_then(|()| round.consume("anthropic", &json!({"type":"message_stop"}).to_string(), &host, "conv-stop"))
+                .and_then(|()| round.finish("anthropic"));
+            if matches!(reason.as_str(), Some("end_turn" | "stop_sequence")) {
+                assert_eq!(result.unwrap()["content"][0]["text"], "Preview");
+            } else {
+                assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+            }
+            assert!(host.events.lock().unwrap().iter().any(|event| event["delta"] == "Preview"));
+        }
+    }
+
+    #[test]
+    fn openai_missing_finish_reason_never_dispatches_tools() {
+        let (endpoint, server) = spawn_scripted_agent_provider("openai", "bun", Some("missing-finish"));
+        let host = ScriptedAgentLoopHost::default();
+        let config = json!({"apiProfiles":[{
+            "id":"missing-finish-test","endpoint":endpoint,"model":"test-model","apiProtocol":"openai"
+        }]});
+        let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+        let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+            &host, config, vec![json!({"role":"user","content":"Read fixture.txt"})],
+            Some("repo_test".into()), Some("checkout_test".into()), "conv-missing-finish".into(),
+            Some("api:missing-finish-test".into()), None, true, &mut cancellation,
+        ));
+        assert!(host.tool_calls.lock().unwrap().is_empty(),
+            "a transport sentinel must not authorize tools without model finish evidence");
+        assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+        assert_eq!(server.join().unwrap().len(), 1, "no automatic retry");
+    }
+
+    #[test]
+    fn openai_transport_end_does_not_complete_unfinished_text() {
+        for reason in [Value::Null, json!("unknown"), json!("function_call")] {
+            let host = RecordingStreamHost::default();
+            let mut round = StreamedModelRound::default();
+            round.consume("openai", &json!({"choices":[{"delta":{"content":"Preview"}}]})
+                .to_string(), &host, "conv-unfinished").unwrap();
+            let result = round.consume("openai", &json!({"choices":[{"delta":{},"finish_reason":reason}]})
+                .to_string(), &host, "conv-unfinished")
+                .and_then(|()| round.consume("openai", "[DONE]", &host, "conv-unfinished"));
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+            assert_eq!(round.finish("openai").unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+            assert!(host.events.lock().unwrap().iter().any(|event| event["delta"] == "Preview"));
+        }
+    }
+
+    #[test]
+    fn anthropic_foreign_terminator_never_dispatches_tools() {
+        let (endpoint, server) = spawn_scripted_agent_provider("anthropic", "bun", Some("foreign-done"));
+        let host = ScriptedAgentLoopHost::default();
+        let config = json!({"apiProfiles":[{
+            "id":"foreign-done-test","endpoint":endpoint,"model":"test-model","apiProtocol":"anthropic"
+        }]});
+        let (_sender, mut cancellation) = tokio::sync::watch::channel(false);
+        let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+            &host, config, vec![json!({"role":"user","content":"Read fixture.txt"})],
+            Some("repo_test".into()), Some("checkout_test".into()), "conv-foreign-done".into(),
+            Some("api:foreign-done-test".into()), None, true, &mut cancellation,
+        ));
+        assert!(host.tool_calls.lock().unwrap().is_empty(),
+            "OpenAI's sentinel must not authorize an unfinished Anthropic tool preview");
+        assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+        assert_eq!(server.join().unwrap().len(), 1, "no automatic retry");
+    }
+
+    #[test]
+    fn anthropic_foreign_terminator_does_not_complete_text_preview() {
+        let host = RecordingStreamHost::default();
+        let mut round = StreamedModelRound::default();
+        round.consume("anthropic", &json!({
+            "type":"content_block_delta","index":0,
+            "delta":{"type":"text_delta","text":"Partial answer"}
+        }).to_string(), &host, "conv-foreign-text").unwrap();
+        assert_eq!(round.consume("anthropic", "[DONE]", &host, "conv-foreign-text").unwrap_err(),
+            "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+        assert_eq!(round.finish("anthropic").unwrap_err(), "FORGE_DESKTOP_API_STREAM_INCOMPLETE");
+        assert!(host.events.lock().unwrap().iter().any(|event| event["delta"] == "Partial answer"));
     }
 
     #[test]
@@ -4734,6 +5226,55 @@ mod tests {
     }
 
     #[test]
+    fn completed_stream_round_ignores_trailing_frames() {
+        for protocol in ["openai", "anthropic", "responses"] {
+            let host = RecordingStreamHost::default();
+            let mut round = StreamedModelRound::default();
+            let initial = match protocol {
+                "openai" => vec![
+                    json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"original",
+                        "function":{"name":"git_status","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}).to_string(),
+                    "[DONE]".into(),
+                ],
+                "anthropic" => vec![
+                    json!({"type":"content_block_start","index":0,"content_block":{
+                        "type":"tool_use","id":"original","name":"git_status","input":{}}}).to_string(),
+                    json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}).to_string(),
+                    json!({"type":"message_stop"}).to_string(),
+                ],
+                _ => vec![json!({"type":"response.completed","response":{"output":[{
+                    "type":"function_call","call_id":"original","name":"git_status","arguments":"{}"
+                }]}}).to_string()],
+            };
+            for frame in initial { round.consume(protocol, &frame, &host, "conv-terminal").unwrap(); }
+            let late_tool = match protocol {
+                "openai" => json!({"choices":[{"delta":{"tool_calls":[{"index":1,"id":"late",
+                    "function":{"name":"run_command","arguments":"{}"}}]}}]}),
+                "anthropic" => json!({"type":"content_block_start","index":1,"content_block":{
+                    "type":"tool_use","id":"late","name":"run_command","input":{}}}),
+                _ => json!({"type":"response.completed","response":{"output":[{
+                    "type":"function_call","call_id":"late","name":"run_command","arguments":"{}"
+                }]}}),
+            };
+            round.consume(protocol, &late_tool.to_string(), &host, "conv-terminal").unwrap();
+            let late_text = match protocol {
+                "openai" => json!({"choices":[{"delta":{"content":"late text"}}]}),
+                "anthropic" => json!({"type":"content_block_delta","index":2,
+                    "delta":{"type":"text_delta","text":"late text"}}),
+                _ => json!({"type":"response.output_text.delta","delta":"late text"}),
+            }.to_string();
+            for frame in ["not-json", r#"{"error":{"message":"late error"}}"#, &late_text] {
+                round.consume(protocol, frame, &host, "conv-terminal").unwrap();
+            }
+            let output = round.finish(protocol).unwrap();
+            let calls = provider_tool_calls(protocol, &output).unwrap();
+            assert_eq!(calls.len(), 1, "{protocol}: terminal output is immutable");
+            assert_eq!(calls[0].0, "original", "{protocol}: late frames cannot replace tools");
+            assert!(host.events.lock().unwrap().is_empty(), "no progress after terminal");
+        }
+    }
+
+    #[test]
     fn streamed_openai_reassembles_answer_and_tool_arguments_without_leaking_private_reasoning() {
         let host = RecordingStreamHost::default();
         let mut round = StreamedModelRound::default();
@@ -4745,6 +5286,8 @@ mod tests {
             json!({"choices":[{"delta":{"content":"inspect.","tool_calls":[{
                 "index":0,"function":{"name":"file","arguments":r#""AGENTS.md"}"#}
             }]}}]}).to_string(),
+            json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}).to_string(),
+            json!({"choices":[],"usage":{"total_tokens":10}}).to_string(),
             "[DONE]".to_string(),
         ];
         for data in frames {
@@ -4796,7 +5339,7 @@ mod tests {
             let first = format!("data: {}\r\n\r\n",
                 json!({"choices":[{"delta":{"content":"first "}}]}));
             let rest = format!("data: {}\r\n\r\ndata: [DONE]\r\n\r\n",
-                json!({"choices":[{"delta":{"content":"second"}}]}));
+                json!({"choices":[{"delta":{"content":"second"},"finish_reason":"stop"}]}));
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 first.len() + rest.len()
@@ -4840,12 +5383,17 @@ mod tests {
                 "content_block":{"type":"text","text":""}}).to_string(),
             json!({"type":"content_block_delta","index":0,
                 "delta":{"type":"text_delta","text":"Checking"}}).to_string(),
-            json!({"type":"content_block_delta","index":0,
+            json!({"type":"content_block_start","index":2,
+                "content_block":{"type":"thinking","thinking":"","signature":""}}).to_string(),
+            json!({"type":"content_block_delta","index":2,
                 "delta":{"type":"thinking_delta","thinking":"private thought"}}).to_string(),
+            json!({"type":"content_block_delta","index":2,
+                "delta":{"type":"signature_delta","signature":"opaque-signature"}}).to_string(),
             json!({"type":"content_block_start","index":1,
                 "content_block":{"type":"tool_use","id":"tool-1","name":"git_status","input":{}}}).to_string(),
             json!({"type":"content_block_delta","index":1,
                 "delta":{"type":"input_json_delta","partial_json":"{}"}}).to_string(),
+            json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}).to_string(),
             json!({"type":"message_stop"}).to_string(),
         ];
         for data in frames {
@@ -4853,6 +5401,8 @@ mod tests {
         }
         let output = claude.finish("anthropic").expect("Anthropic finished");
         assert_eq!(output["content"][0]["text"],"Checking");
+        assert_eq!(output["content"][2], json!({"type":"thinking",
+            "thinking":"private thought","signature":"opaque-signature"}));
         assert_eq!(provider_tool_calls("anthropic",&output).unwrap()[0].1,"git_status");
         assert!(!host.events.lock().unwrap().iter().any(|event| event["kind"] == "reasoning_summary_delta"),
             "Anthropic thinking_delta must remain private");
@@ -5055,20 +5605,31 @@ mod tests {
     #[test]
     fn streamed_provider_http_paths_and_tools_use_one_streaming_transport() {
         use std::{io::{Read, Write}, net::TcpListener, thread, time::Duration};
-        for (protocol, expected_path, frames, expected_tool) in [
+        for (protocol, expected_path, mut frames, expected_tool) in [
             ("openai", "/v1/chat/completions", vec![
                 json!({"choices":[{"delta":{"tool_calls":[{
                     "index":0,"id":"tool-1","function":{"name":"git_status","arguments":"{}"}
                 }]}}]}).to_string(),
+                json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}).to_string(),
                 "[DONE]".to_string()
             ], "git_status"),
             ("anthropic", "/v1/messages", vec![
                 json!({"type":"content_block_start","index":0,"content_block":{
                     "type":"tool_use","id":"toolu-1","name":"read_file","input":{"path":"README.md"}
                 }}).to_string(),
+                json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}).to_string(),
                 json!({"type":"message_stop"}).to_string()
             ], "read_file"),
         ] {
+            // One HTTP write can coalesce terminal and late frames into one chunk.
+            frames.push(if protocol == "openai" {
+                json!({"choices":[{"delta":{"tool_calls":[{"index":1,"id":"late",
+                    "function":{"name":"run_command","arguments":"{}"}}]}}]}).to_string()
+            } else {
+                json!({"type":"content_block_start","index":1,"content_block":{
+                    "type":"tool_use","id":"late","name":"run_command","input":{}}}).to_string()
+            });
+            frames.push("not-json".into());
             let listener = TcpListener::bind("127.0.0.1:0").expect("mock SSE socket");
             let port = listener.local_addr().unwrap().port();
             let expected_path = expected_path.to_string();
@@ -5148,6 +5709,31 @@ mod tests {
         let broken = json!({"choices":[{"message":{"tool_calls":[{"id":"bad",
             "function":{"name":"read_file","arguments":"{"}}]}}]});
         assert!(provider_tool_calls("openai", &broken).is_err());
+    }
+
+    #[test]
+    fn tool_call_identity_validation_preserves_distinct_calls_and_rejects_blank_ids() {
+        for protocol in ["openai", "anthropic", "responses"] {
+            for second_id in ["second", "", "   "] {
+                let calls = ["first", second_id].into_iter().map(|id| match protocol {
+                    "anthropic" => json!({"type":"tool_use","id":id,"name":"git_status","input":{}}),
+                    "responses" => json!({"type":"function_call","call_id":id,"name":"git_status","arguments":"{}"}),
+                    _ => json!({"id":id,"type":"function","function":{"name":"git_status","arguments":"{}"}}),
+                }).collect::<Vec<_>>();
+                let output = match protocol {
+                    "anthropic" => json!({"content":calls}),
+                    "responses" => json!({"output":calls}),
+                    _ => json!({"choices":[{"message":{"tool_calls":calls}}]}),
+                };
+                let result = provider_tool_calls(protocol, &output);
+                if second_id == "second" {
+                    assert_eq!(result.unwrap().iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
+                        vec!["first", "second"]);
+                } else {
+                    assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TOOL_CALL_ID_INVALID");
+                }
+            }
+        }
     }
 
     #[test]
@@ -5309,6 +5895,8 @@ mod tests {
         for (query, expected) in [
             (json!({"ok":true,"result":{"processId":id,"completed":true,
                 "status":"succeeded","exitCode":0,"stdoutTail":"done"}}), true),
+            (json!({"ok":true,"result":{"processId":id,"completed":true,
+                "observationInterrupted":true,"status":"succeeded","exitCode":0,"stdoutTail":"done"}}), true),
             (json!({"ok":false,"error":"PROCESS_HANDLE_PRINCIPAL_MISMATCH"}), false),
             (json!({"ok":false,"error":"LOCAL_FORGE_PROCESS_CHECKOUT_MISMATCH"}), false),
             (json!({"ok":true,"result":{"processId":"proc_other","completed":true,
@@ -5330,6 +5918,42 @@ mod tests {
             assert_eq!(calls[0]["checkoutId"], "checkout_test");
             assert_eq!(calls[0]["conversationId"], "conversation_test");
             assert_eq!(calls[0]["allowEffects"], false);
+        }
+    }
+
+    #[tokio::test]
+    async fn interrupted_process_observation_pauses_without_reattaching() {
+        struct InterruptedHost(std::sync::Mutex<Vec<Value>>);
+        impl LocalApiHost for InterruptedHost {
+            fn packaged_tool_script(&self) -> Result<PathBuf, String> { panic!("test executor only") }
+            fn emit_tool_progress(&self, _: Value) {}
+            fn emit_model_progress(&self, _: Value) {}
+            fn execute_test_tool(&self, payload: &Value) -> Option<Result<Value, String>> {
+                let mut calls = self.0.lock().unwrap();
+                calls.push(payload.clone());
+                // Bound the RED fixture: an unwanted reattach returns a terminal
+                // result immediately instead of spinning until the wait budget.
+                Some(Ok(json!({"ok":true,"result":{
+                    "processId":payload["arguments"]["process_id"],
+                    "completed":calls.len() > 1,"observationInterrupted":true,
+                    "status":if calls.len() > 1 { "succeeded" } else { "running" },
+                    "exitCode":0
+                }})))
+            }
+        }
+        for id in ["proc_interrupted_123", "lightweight:12345678-1234-4abc-8def-1234567890ab"] {
+            let host = InterruptedHost(Default::default());
+            let (_sender, cancel) = tokio::sync::watch::channel(false);
+            let result = local_wait_running_process(&host, &mut None, "repo_test",
+                Some("checkout_test"), "conversation_test", id, 1_000, &cancel).await;
+            let calls = host.0.lock().unwrap();
+            assert_eq!(calls.len(), 1, "interrupted observation must not silently reattach");
+            assert!(result.is_none(), "caller must pause with the original Process identity");
+            assert_eq!(calls[0]["tool"], "process_status");
+            assert_eq!(calls[0]["arguments"]["process_id"], id);
+            let paused = local_api_process_pause(id, 1, &[]);
+            assert_eq!(paused["incomplete"], true);
+            assert!(paused["output"].as_str().unwrap().contains(id));
         }
     }
 
@@ -5386,6 +6010,31 @@ mod tests {
         assert!(local_tool_catalog(false).iter().any(|tool|
             tool.pointer("/function/name").and_then(Value::as_str)==Some("process_status")
         ));
+    }
+
+    #[test]
+    fn process_cancel_unknown_terminal_status_never_succeeds() {
+        // `unknown` is a canonical terminal Process status, not proof that
+        // cancellation succeeded. Missing/future/active statuses fail closed too.
+        for status in [json!("unknown"), json!("completed_unknown"), json!("orphaned"),
+            Value::Null, json!("future_status"), json!("starting"), json!("running"),
+            json!("running_recovered")] {
+            let receipt = json!({"ok":true,"result":{
+                "processId":"proc_cancel_123","status":status,
+                "completed":true,"cancelled":true
+            }});
+            assert_eq!(local_effect_outcome("process_cancel", &receipt),
+                LocalEffectOutcome::Unknown, "ambiguous cancellation: {receipt}");
+        }
+        for status in ["succeeded", "failed", "timed_out", "cancelled"] {
+            for completed in [false, true] {
+                let receipt = json!({"ok":true,"result":{
+                    "status":status,"completed":completed,"cancelled":false
+                }});
+                assert_eq!(local_effect_outcome("process_cancel", &receipt),
+                    if completed { LocalEffectOutcome::Succeeded } else { LocalEffectOutcome::Unknown });
+            }
+        }
     }
 
     #[test]
@@ -5514,6 +6163,33 @@ mod tests {
                 && assistant["tool_calls"][0]["id"] == id));
         }
         assert_eq!(history.last().unwrap()["tool_call_id"], "call-11");
+    }
+
+    #[test]
+    fn responses_compaction_keeps_provider_items_with_tool_results() {
+        let mut history = vec![json!({"role":"user","content":"inspect files"})];
+        for round in 0..12 {
+            let output = json!({"output":[
+                {"type":"reasoning","id":format!("reasoning-{round}"),"summary":[],"encrypted_content":"opaque"},
+                {"type":"function_call","id":format!("function-{round}"),"call_id":format!("call-{round}"),
+                    "name":"read_file","arguments":"{}","status":"completed"}
+            ]});
+            history.push(responses_assistant_message(&output).unwrap());
+            history.push(json!({"role":"tool","tool_call_id":format!("call-{round}"),"content":"receipt"}));
+        }
+        assert!(compact_local_api_history(&mut history));
+        let input = responses_input(&history).unwrap();
+        let retained = input.iter().filter(|item| item["type"] == "function_call_output").count();
+        assert_eq!(retained, 2);
+        for round in 10..12 {
+            let index = input.iter().position(|item| item["id"] == format!("reasoning-{round}")).unwrap();
+            assert_eq!(input[index]["encrypted_content"], "opaque");
+            assert_eq!(input[index + 1]["id"], format!("function-{round}"));
+            assert_eq!(input[index + 2]["call_id"], format!("call-{round}"));
+        }
+        assert_eq!(input.iter().filter(|item| item["type"] == "function_call").count(), retained,
+            "normalized tool calls must not duplicate the original provider items");
+        assert!(!input.iter().any(|item| item["id"] == "reasoning-9"));
     }
 
     #[test]
