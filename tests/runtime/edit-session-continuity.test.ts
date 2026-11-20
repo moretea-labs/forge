@@ -573,6 +573,92 @@ test('rejects successor HEAD adoption after a non-descendant branch rewrite', ()
     expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
   });
 
+test('two independent sessions preserve same-file edits after stale feedback and model re-read', () => {
+  const fx = fixture();
+  const initial = 'export const alpha = 1;\nexport const beta = 1;\n';
+  writeFileSync(join(fx.repoRoot, 'multi.ts'), initial);
+  spawnSync('git', ['add', 'multi.ts'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'add shared model target'], { cwd: fx.repoRoot });
+
+  const bindingA = durableBinding({ principalId: 'writer-a' });
+  const bindingB = durableBinding({ principalId: 'writer-b' });
+  const sessionA = beginEditSession(fx.repoRoot, {
+    purpose: 'Writer A updates alpha', allowedPaths: ['multi.ts'], binding: bindingA,
+  });
+  const sessionB = beginEditSession(fx.repoRoot, {
+    purpose: 'Writer B updates beta', allowedPaths: ['multi.ts'], binding: bindingB,
+  });
+
+  const appliedA = applyEditOperations(fx.repoRoot, fx.policy, sessionA.sessionId, [{
+    type: 'replace', path: 'multi.ts', expectedSha256: sha256(initial),
+    replacements: [{ oldText: 'alpha = 1', newText: 'alpha = 2' }],
+  }], { binding: bindingA });
+  expect(appliedA.status).toBe('dirty');
+
+  const staleB = applySafePatch(fx.repository, {
+    controllerHome: fx.controllerHome, sessionId: sessionB.sessionId,
+    expectedRevision: sessionB.currentRevision, binding: bindingB,
+    operations: [{ type: 'replace', path: 'multi.ts', expected_sha256: sha256(initial),
+      old_text: 'beta = 1', new_text: 'beta = 2' }],
+  });
+  expect(staleB.status).toBe('failed');
+  expect(staleB.failures[0]).toMatchObject({ code: 'STALE_FILE_SHA', path: 'multi.ts' });
+  expect(staleB.failures[0]?.context).toMatchObject({ line: 2, focus: 'export const beta = 1;' });
+  expect(readFileSync(join(fx.repoRoot, 'multi.ts'), 'utf8')).toBe('export const alpha = 2;\nexport const beta = 1;\n');
+
+  const latest = readFileSync(join(fx.repoRoot, 'multi.ts'), 'utf8');
+  const appliedB = applySafePatch(fx.repository, {
+    controllerHome: fx.controllerHome, sessionId: sessionB.sessionId,
+    expectedRevision: sessionB.currentRevision, binding: bindingB,
+    operations: [{ type: 'replace', path: 'multi.ts', expected_sha256: sha256(latest),
+      old_text: 'beta = 1', new_text: 'beta = 2' }],
+  });
+  expect(appliedB.status).toBe('applied');
+  expect(readFileSync(join(fx.repoRoot, 'multi.ts'), 'utf8')).toBe('export const alpha = 2;\nexport const beta = 2;\n');
+  expect(getEditSession(fx.repoRoot, sessionA.sessionId).status).toBe('dirty');
+  expect(getEditSession(fx.repoRoot, sessionB.sessionId).status).toBe('dirty');
+});
+
+test('same-region stale edits expose latest source and require an explicit semantic merge', () => {
+  const fx = fixture();
+  const initial = 'export const timeoutMs = 1000;\n';
+  writeFileSync(join(fx.repoRoot, 'policy.ts'), initial);
+  spawnSync('git', ['add', 'policy.ts'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'add shared policy target'], { cwd: fx.repoRoot });
+
+  const bindingA = durableBinding({ principalId: 'writer-a' });
+  const bindingB = durableBinding({ principalId: 'writer-b' });
+  const sessionA = beginEditSession(fx.repoRoot, { purpose: 'A requests 2000ms', allowedPaths: ['policy.ts'], binding: bindingA });
+  const sessionB = beginEditSession(fx.repoRoot, { purpose: 'B requests 5000ms', allowedPaths: ['policy.ts'], binding: bindingB });
+
+  applyEditOperations(fx.repoRoot, fx.policy, sessionA.sessionId, [{
+    type: 'replace', path: 'policy.ts', expectedSha256: sha256(initial),
+    replacements: [{ oldText: 'timeoutMs = 1000', newText: 'timeoutMs = 2000' }],
+  }], { binding: bindingA });
+
+  const staleB = applySafePatch(fx.repository, {
+    controllerHome: fx.controllerHome, sessionId: sessionB.sessionId,
+    expectedRevision: sessionB.currentRevision, binding: bindingB,
+    operations: [{ type: 'replace', path: 'policy.ts', expected_sha256: sha256(initial),
+      old_text: 'timeoutMs = 1000', new_text: 'timeoutMs = 5000' }],
+  });
+  expect(staleB.status).toBe('failed');
+  expect(staleB.failures[0]).toMatchObject({ code: 'STALE_FILE_SHA', path: 'policy.ts' });
+  expect(staleB.failures[0]?.context).toMatchObject({ line: 1, focus: 'export const timeoutMs = 2000;' });
+  const latest = readFileSync(join(fx.repoRoot, 'policy.ts'), 'utf8');
+  expect(latest).toBe('export const timeoutMs = 2000;\n');
+
+  const merged = 'export const timeoutMs = Math.max(2000, 5000);\n';
+  const appliedB = applySafePatch(fx.repository, {
+    controllerHome: fx.controllerHome, sessionId: sessionB.sessionId,
+    expectedRevision: sessionB.currentRevision, binding: bindingB,
+    operations: [{ type: 'replace', path: 'policy.ts', expected_sha256: sha256(latest),
+      old_text: latest.trimEnd(), new_text: merged.trimEnd() }],
+  });
+  expect(appliedB.status).toBe('applied');
+  expect(readFileSync(join(fx.repoRoot, 'policy.ts'), 'utf8')).toBe(merged);
+});
+
 test('stale safe patch returns latest context around the requested edit target', () => {
   const fx = fixture();
   const latest = 'export const first = 1;\nexport const value = 2;\nexport const last = 3;\n';
