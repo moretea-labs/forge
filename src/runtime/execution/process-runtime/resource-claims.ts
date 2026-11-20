@@ -62,6 +62,15 @@ export function claimWorkspaceRead(checkoutId?: string, repoId?: string): Resour
   return { resourceKey: `workspace:${checkoutScope(checkoutId, repoId)}`, mode: 'read' };
 }
 
+/**
+ * Validation reads a candidate source tree but must not own or lock it.
+ * Governed gates verify the source digest before accepting their receipt; if a
+ * concurrent edit changes that digest, the result is stale and must be rerun.
+ */
+export function claimValidationObservation(checkoutId?: string, repoId?: string): ResourceClaimSpec {
+  return { resourceKey: `validation-input:${checkoutScope(checkoutId, repoId)}`, mode: 'read' };
+}
+
 export function claimPathRead(path: string, checkoutId?: string, repoId?: string): ResourceClaimSpec {
   if (path === '.') return claimWorkspaceRead(checkoutId, repoId);
   const normalized = normalizeClaimPath(path);
@@ -679,6 +688,19 @@ function repositoryCommandClaims(
 ): ResourceClaimSpec[] {
   const classification = classifyRepositoryCommand(command, defaultBranch);
   const canonical = normalizeRepositoryCommand(command);
+  const commandProgram = canonical.kind === 'argv'
+    ? (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase()
+    : undefined;
+  const commandArgs = canonical.kind === 'argv' ? canonical.args ?? [] : [];
+  if (commandProgram === 'bun'
+    && String(commandArgs[0] ?? '').replace(/^\.\//, '') === 'scripts/run-governed-gate.ts'
+    && ['task', 'main', 'release'].includes(String(commandArgs[1] ?? '').toLowerCase())) {
+    return normalizeClaims([
+      claimValidationObservation(checkoutId, repoId),
+      claimBuildCacheWrite(repoId),
+      claimHeavyCheck(repoId),
+    ]);
+  }
   const focused = isFocusedCheckCommand(command);
   const explicitXcodeCache = xcodeBuildCacheClaims(command, repoId, executionCwd);
   const cacheClaims = explicitXcodeCache ?? [claimBuildCacheWrite(repoId)];

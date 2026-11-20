@@ -337,6 +337,16 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims).toEqual([{ resourceKey: 'workspace:co1', mode: 'read' }]);
   });
 
+  test('governed source gates observe candidate content without owning the workspace', () => {
+    const claims = claimsForRepositoryCommand(['bun', 'scripts/run-governed-gate.ts', 'main'], 'repo1', 'co1');
+    expect(claims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
+    expect(claims).toContainEqual({ resourceKey: 'heavy-check:repo1', mode: 'exclusive' });
+    expect(claims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
+    expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+    expect(claimsConflict({ resourceKey: 'path:co1:src/runtime/example.ts', mode: 'write' }, lease('validation-input:co1', 'read'))).toBe(false);
+    expect(claimsConflict({ resourceKey: 'heavy-check:repo1', mode: 'exclusive' }, lease('heavy-check:repo1', 'exclusive'))).toBe(true);
+  });
+
   test('ordinary xcodebuild log redirection does not acquire unrelated Git-ref ownership', () => {
     const command = "cd /worktrees/ocr && xcodebuild -project ios/App.xcodeproj -derivedDataPath .forge/ios/ocr -jobs 2 build > .forge/ios/build.log 2>&1; rc=$?; grep 'BUILD' .forge/ios/build.log | tail -2; exit $rc";
     expect(shellCommandHasUnsafeConstructs(command).unsafe).toBe(false);
