@@ -99,7 +99,7 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // expected-revision and approved-checkpoint identity fields. This is an
 // intentional public input-schema revision; refresh the exact fingerprint so
 // stale Connector schema snapshots are invalidated.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '349a61ade2b299a1';
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'a251b10ffbc0959a';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
