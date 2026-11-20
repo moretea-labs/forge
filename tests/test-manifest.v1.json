@@ -718,6 +718,10 @@
       "module": "process-runtime",
       "resource": "process-tree"
     },
+    "tests/runtime/runtime-release-resource-claims.test.ts": {
+      "module": "process-runtime",
+      "resource": "process-tree"
+    },
     "tests/runtime/process-runtime.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"

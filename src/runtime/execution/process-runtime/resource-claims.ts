@@ -711,6 +711,19 @@ function repositoryCommandClaims(
   if (portablePackageCheck) {
     return normalizeClaims([claimValidationObservation(checkoutId, repoId), claimHeavyCheck(repoId)]);
   }
+  const stageOnlyRuntimeRelease = commandProgram === 'bun'
+    && String(commandArgs[0] ?? '').replace(/^[.][/]/, '') === 'bin/forge.mjs'
+    && commandArgs[1] === 'runtime'
+    && commandArgs[2] === 'service'
+    && commandArgs[3] === 'install'
+    && commandArgs.includes('--stage-only');
+  if (stageOnlyRuntimeRelease) {
+    return normalizeClaims([
+      claimValidationObservation(checkoutId, repoId),
+      claimBuildCacheWrite(repoId),
+      claimHeavyCheck(repoId),
+    ]);
+  }
   const focused = isFocusedCheckCommand(command);
   const explicitXcodeCache = xcodeBuildCacheClaims(command, repoId, executionCwd);
   const cacheClaims = explicitXcodeCache ?? [claimBuildCacheWrite(repoId)];
