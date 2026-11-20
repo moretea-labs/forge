@@ -181,7 +181,7 @@ function snippetAround(content: string, needle: string): SafePatchFailureContext
   let lineIndex = 0;
   if (index >= 0) lineIndex = content.slice(0, index).split(/\r?\n/).length - 1;
   else {
-    const trimmed = needle.trim().split(/\r?\n/).find(Boolean)?.slice(0, 40) ?? '';
+    const trimmed = needle.trim().split(/\r?\n/).find(Boolean)?.slice(0, 21) ?? '';
     const found = trimmed ? lines.findIndex((line) => line.includes(trimmed)) : -1;
     lineIndex = found >= 0 ? found : 0;
   }
@@ -240,7 +240,19 @@ function preflightChunk(repository: RepositoryRecord, chunk: NormalizedOperation
       continue;
     }
     if (operation.expectedSha256 && current.sha256 && operation.expectedSha256 !== current.sha256) {
-      failures.push({ ...base, code: 'STALE_FILE_SHA', message: `stale file version for ${current.path}: expected ${operation.expectedSha256}, got ${current.sha256}`, expectedSha256: operation.expectedSha256, currentSha256: current.sha256, context: snippetAround(current.content, '') });
+      const conflictNeedle = operation.type === 'replace'
+        ? operation.replacements[0]?.oldText ?? ''
+        : operation.type === 'insert_before' || operation.type === 'insert_after'
+          ? operation.anchor
+          : '';
+      failures.push({
+        ...base,
+        code: 'STALE_FILE_SHA',
+        message: `stale file version for ${current.path}: expected ${operation.expectedSha256}, got ${current.sha256}`,
+        expectedSha256: operation.expectedSha256,
+        currentSha256: current.sha256,
+        context: snippetAround(current.content, conflictNeedle),
+      });
       continue;
     }
     if (operation.type === 'delete') continue;

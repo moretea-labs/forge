@@ -553,6 +553,21 @@ test('rejects successor HEAD adoption after a non-descendant branch rewrite', ()
     expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
   });
 
+test('stale safe patch returns latest context around the requested edit target', () => {
+  const fx = fixture();
+  const latest = 'export const first = 1;\nexport const value = 2;\nexport const last = 3;\n';
+  writeFileSync(join(fx.repoRoot, 'source.ts'), latest);
+  const result = applySafePatch(fx.repository, {
+    controllerHome: fx.controllerHome, purpose: 'Stale patch context',
+    allowedPaths: ['source.ts'], refreshFingerprints: false,
+    operations: [{ type: 'replace', path: 'source.ts', expected_sha256: sha256(fx.initial),
+      old_text: 'export const value = 1;', new_text: 'export const value = 3;' }],
+  });
+  expect(result.status).toBe('failed');
+  expect(result.failures[0]).toMatchObject({ code: 'STALE_FILE_SHA', path: 'source.ts' });
+  expect(result.failures[0]?.context).toMatchObject({ line: 2, focus: 'export const value = 2;' });
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(latest);
+});
 test('Swift-only medium edit does not inject unavailable Forge package checks', () => {
   const fx = fixture();
   const session = beginEditSession(fx.repoRoot, {
