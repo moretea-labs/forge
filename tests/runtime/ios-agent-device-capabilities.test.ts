@@ -12,7 +12,6 @@ import {
   detectAgentDeviceCapabilities,
   isSupportedAgentDeviceVersion,
 } from '../../src/runtime/plugins/ios/agent-device-capabilities';
-import { iosAgentDeviceActions } from '../../src/runtime/plugins/ios-agent-device';
 import { findSemanticRef, JD_IOS_APP_ADAPTER, normalizedSemanticRef } from '../../src/runtime/plugins/ios/app-adapters';
 import jdHome from '../fixtures/ios/jd-home-depth20.json';
 

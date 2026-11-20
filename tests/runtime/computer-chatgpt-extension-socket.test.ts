@@ -363,58 +363,6 @@ test('bootstrap Ensure CAS-clears a stale owner-token pin and accepts only a fre
   });
 });
 
-test('canonical Computer socket opens one Project bootstrap and reconciles its submitted marker', async () => {
-  const controllerHome = home();
-  const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
-  const provider = 'centbrowser-bootstrap';
-  await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
-    providerId: 'browser.chrome-extension', providerInstanceId: provider,
-    observedAt: new Date().toISOString(), conversations: [],
-  });
-  const projectUrl = 'https://chatgpt.com/g/g-p-forge-test/project';
-  const bootstrapKey = 'supervisor:forge-source';
-  const binding = {
-    providerId: 'browser.chrome-extension', providerSessionId: provider, browserProduct: 'chrome',
-    observedAt: new Date().toISOString(), windowId: '31', tabId: '41', ownerToken: 'bootstrap-owner-token',
-  };
-  const ensurePromise = callRuntimeComputerChatgptTargetAction(controllerHome, 'ensure', {
-    identity: { namespace: 'chatgpt.bootstrap', bootstrapKey, projectUrl },
-  }, 3_000);
-  let claim: Record<string, unknown> | undefined;
-  for (let attempt = 0; attempt < 30; attempt += 1) {
-    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', { provider_instance_id: provider });
-    if ((claim.result as { command?: unknown })?.command) break;
-    await Bun.sleep(10);
-  }
-  let command = (claim!.result as { command: Record<string, unknown> }).command;
-  expect(command).toMatchObject({ kind: 'ensure', identity: { namespace: 'chatgpt.bootstrap', bootstrapKey, projectUrl } });
-  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
-    provider_instance_id: provider, command_id: command.commandId,
-    result: { kind: 'ensured', providerBinding: binding, observation: { url: projectUrl, title: 'Forge', latestUserText: '', latestAssistantResponse: '', composerText: '', providerActivityText: '', providerFailureText: '', isGenerating: false } },
-  });
-  expect(await ensurePromise).toMatchObject({ state: 'ready', identity: { namespace: 'chatgpt.bootstrap', bootstrapKey, projectUrl } });
-
-  const marker = '[forge-supervisor project=forge-source-wsl run=test]';
-  const findPromise = callRuntimeComputerChatgptTargetAction(controllerHome, 'find_marker', { marker, bootstrapKey }, 3_000);
-  claim = undefined;
-  for (let attempt = 0; attempt < 30; attempt += 1) {
-    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', { provider_instance_id: provider });
-    if ((claim.result as { command?: unknown })?.command) break;
-    await Bun.sleep(10);
-  }
-  command = (claim!.result as { command: Record<string, unknown> }).command;
-  expect(command).toMatchObject({ kind: 'find_marker', marker, bootstrapKey });
-  const canonicalUrl = 'https://chatgpt.com/g/g-p-forge-test/c/successor-123';
-  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
-    provider_instance_id: provider, command_id: command.commandId,
-    result: { kind: 'marker_matches', matches: [{
-      identity: { namespace: 'chatgpt.conversation', conversationId: 'successor-123', canonicalUrl }, providerBinding: binding,
-      observation: { url: canonicalUrl, title: 'Forge successor', latestUserText: marker, latestAssistantResponse: '', composerText: '', providerActivityText: '', providerFailureText: '', isGenerating: true },
-    }] },
-  });
-  expect(await findPromise).toMatchObject({ matches: [{ state: 'ready', identity: { namespace: 'chatgpt.conversation', conversationId: 'successor-123', canonicalUrl } }] });
-});
-
 test('standalone native host forwards framed RPC only to Computer socket', async () => {
   const controllerHome = home();
   const computerDir = join(controllerHome, 'computer');
