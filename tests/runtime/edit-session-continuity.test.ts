@@ -579,7 +579,7 @@ test('stale safe patch returns latest context around the requested edit target',
   writeFileSync(join(fx.repoRoot, 'source.ts'), latest);
   const result = applySafePatch(fx.repository, {
     controllerHome: fx.controllerHome, purpose: 'Stale patch context',
-    allowedPaths: ['source.ts'], refreshFingerprints: false,
+    allowedPaths: ['source.ts'],
     operations: [{ type: 'replace', path: 'source.ts', expected_sha256: sha256(fx.initial),
       old_text: 'export const value = 1;', new_text: 'export const value = 3;' }],
   });

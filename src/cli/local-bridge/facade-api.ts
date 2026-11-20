@@ -1193,7 +1193,7 @@ export function applyConsoleSafePatch(
       purpose: input.purpose ?? 'Console interactive edit',
       operations: input.operations,
       allowedPaths: input.allowedPaths,
-      refreshFingerprints: true,
+      refreshFingerprints: false,
       recoverStaleSession: true,
     }),
     60_000,

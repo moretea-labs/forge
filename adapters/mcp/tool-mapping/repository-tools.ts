@@ -181,7 +181,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     expected_revision: { type: 'number', description: 'Expected starting edit-session revision.' },
     allowed_paths: { type: 'array', items: { type: 'string' }, description: 'Optional allowed path globs for a newly created session.' },
     continue_on_error: { type: 'boolean', description: 'Continue applying later independent chunks after a failed chunk. Defaults to false.' },
-    refresh_fingerprints: { type: 'boolean', description: 'Refresh file fingerprints before every chunk. Defaults to true.' },
+    refresh_fingerprints: { type: 'boolean', description: 'Explicitly refresh caller-supplied file fingerprints before every chunk. Defaults to false so stale SHA values return a conflict for model reconciliation; operations without a SHA still bind to the latest file.' },
     recover_stale_session: { type: 'boolean', description: 'For new sessions, recover stale edit-session fingerprints into a fresh session. Defaults to true.' },
     check_ids: { type: 'array', items: { type: 'string' }, description: 'Optional focused validation for this stable coherent edit batch. Omit to edit without running tests.' },
     check_timeout_ms: { type: 'number', description: 'Per-check execution budget. Long checks still return managed handles immediately.' },

@@ -740,7 +740,7 @@ export async function executeFast(
             expectedRevision: request.input.expected_revision,
             allowedPaths: allowed,
             continueOnError: false,
-            refreshFingerprints: request.input.refresh_fingerprints !== false,
+            refreshFingerprints: request.input.refresh_fingerprints === true,
             recoverStaleSession: request.input.recover_stale_session !== false,
             leaseOwnerJobId: helpers?.getGate().ownerJobId,
           }));

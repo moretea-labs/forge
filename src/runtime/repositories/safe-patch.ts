@@ -332,7 +332,7 @@ export function applySafePatch(repository: RepositoryRecord, input: {
   const operations = normalizedSafePatchOperations(input.operations);
   if (operations.length === 0) throw new Error('SAFE_PATCH_OPERATIONS_REQUIRED: provide at least one operation');
   const size = chunkSize(input.chunkSize);
-  const refresh = input.refreshFingerprints !== false;
+  const refresh = input.refreshFingerprints === true;
   const continueOnError = input.continueOnError === true;
   const policy = getToolPolicy('controller', { repoRoot: repository.canonicalRoot });
   const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
