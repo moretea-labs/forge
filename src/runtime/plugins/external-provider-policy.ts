@@ -32,7 +32,6 @@ const DESKTOP_OPERATOR_EXTERNAL_POLICY: ExternalProviderPolicy = {
   resolveAuthorizationContext: resolveDesktopOperatorAuthorizationContext,
   executeAction: executeDesktopOperatorPolicyAction,
 };
-
 const AGENTMAIL_EXTERNAL_POLICY: ExternalProviderPolicy = { resolveAuthorizationContext: resolveAgentMailAuthorizationContext };
 
 export function resolveExternalProviderPolicy(registration: ExternalPluginRegistration): ExternalProviderPolicy | undefined {

@@ -24,6 +24,7 @@ import {
 } from "../../src/runtime/execution/process-runtime/check-runner";
 import { FORGE_TOOL_SURFACE } from "../../src/runtime/shared/runtime-config";
 import { createIssue, getIssue, updateTask } from "../../src/cli/controller/issue-store";
+import { readWorkflowRun, writeWorkflowRunCheckpoint } from "../../src/runtime/control-plane/persistence/workflow-run-store";
 import { beginEditSession, applyEditOperations } from "../../src/runtime/editing/edit-session";
 import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import {
@@ -47,7 +48,6 @@ import { acquireControllerLock, releaseControllerLock } from "../../src/effects/
 import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { createMcpToolContext, callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
 import { createSchedule, saveOccurrence, saveSchedule } from "../../src/runtime/workflow/schedules/store";
-import { readWorkflowRun, writeWorkflowRunCheckpoint } from "../../src/runtime/control-plane/persistence/workflow-run-store";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
 
 const roots: string[] = [];

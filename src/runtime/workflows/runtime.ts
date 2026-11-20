@@ -481,10 +481,10 @@ function reconciliationArguments(
 }
 
 /**
- * Reconcile from canonical Process/provider evidence under the same workflow-scope lock.
- * Deterministic script steps use their existing Process request binding and receipt;
- * capability steps use one exact read-only provider observation. Neither path replays
- * an uncertain effect. A retry with the same reconciliationRequestId reuses its receipt.
+ * Produce one exact read-only reconciliation observation through the capability
+ * declared by the asset, then consume that durable receipt under the same workflow scope
+ * lock. A retry with the same reconciliationRequestId reuses the same receipt;
+ * a later observation needs a new caller-issued id.
  */
 export async function observeAndReconcileRegisteredWorkflow(
   input: ExecuteRegisteredWorkflowInput & { reconciliationRequestId: string },
@@ -506,9 +506,7 @@ export async function observeAndReconcileRegisteredWorkflow(
       if (asset.workflowId !== stored.value.workflowId || asset.version !== stored.value.version || asset.contentDigest !== stored.value.contentDigest
         || workflowInputDigest(input.inputs) !== stored.value.inputDigest) throw new Error('WORKFLOW_RUN_IDENTITY_CONFLICT');
       const step = asset.steps[stored.value.nextStepIndex];
-      if (!step) throw new Error('WORKFLOW_RECONCILIATION_STEP_REQUIRED');
-      if (step.kind === 'script') return reconcileRegisteredWorkflowLocked(input, dependencies);
-      if (!step.reconcileWithCapabilityId) throw new Error('WORKFLOW_RECONCILIATION_CAPABILITY_REQUIRED');
+      if (!step || step.kind === 'script' || !step.reconcileWithCapabilityId) throw new Error('WORKFLOW_RECONCILIATION_CAPABILITY_REQUIRED');
       const originalRequestId = requestId(input, step.stepId, asset.contentDigest);
       const binding = capabilityBinding(registry.value.bindings, step.reconcileWithCapabilityId);
       const submitPluginAction = dependencies.submitPluginAction ?? submitAssistantPluginAction;
