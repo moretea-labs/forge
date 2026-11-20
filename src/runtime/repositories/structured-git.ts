@@ -4,8 +4,9 @@ import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
 import { isAbsolute, resolve } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
 import { executeRepositoryGitCommand, type RepositoryGitExecution } from './git-command-executor';
-import { branchRef, isProtectedRemoteBranchDeletionTarget, validateBranchName } from '../../core/git-branch-policy';
+import { branchRef, isForgeSourceRemote, isProtectedRemoteBranchDeletionTarget, validateBranchName } from '../../core/git-branch-policy';
 import type { RepositoryRecord } from '../../core/repository/types';
+import { withRepositoryBranchCreation } from './branch-governance';
 import type { AuthorizationDecision } from '../control-plane/governance/authorization';
 
 const MAX_GIT_OUTPUT_BYTES = 512 * 1024;
@@ -328,11 +329,21 @@ export function repositoryGitCreateBranch(controllerHome: string, repository: Re
   const branch = assertSafeBranchName(input.branch);
   const startPoint = typeof input.startPoint === 'string' && input.startPoint.trim() ? input.startPoint.trim() : undefined;
   const args = [input.switchTo === false ? 'branch' : 'switch', ...(input.switchTo === false ? [] : ['-c']), branch, ...(startPoint ? [startPoint] : [])];
-  return { branch, execution: executeRepositoryGitCommand(controllerHome, repository, { args, authorization: 'explicit_user_request' }) };
+  const execution = withRepositoryBranchCreation(
+    controllerHome,
+    repository,
+    branch,
+    'repository-git-create-branch:' + branch,
+    () => executeRepositoryGitCommand(controllerHome, repository, { args, authorization: 'explicit_user_request' }),
+  );
+  return { branch, execution };
 }
 
 export function repositoryGitSwitchBranch(controllerHome: string, repository: RepositoryRecord, input: { branch: unknown }): { branch: string; execution: RepositoryGitExecution } {
   const branch = assertSafeBranchName(input.branch);
+  if (isForgeSourceRemote(repository.canonicalRemote ?? repository.remoteUrl) && branch !== (repository.defaultBranch?.trim() || 'main')) {
+    throw new Error('SOURCE_BRANCH_POLICY_MAIN_ONLY: Forge source checkouts may only switch to protected main.');
+  }
   return { branch, execution: executeRepositoryGitCommand(controllerHome, repository, { args: ['switch', branch], authorization: 'explicit_user_request' }) };
 }
 
@@ -351,6 +362,12 @@ export function repositoryGitMergeBranch(
 ): { branch: string; before: RepositoryGitStatusSnapshot; execution: RepositoryGitExecution; abort?: RepositoryGitExecution; after: RepositoryGitStatusSnapshot } {
   const branch = assertSafeBranchName(input.branch);
   const before = repositoryGitStatus(repository);
+  if (isForgeSourceRemote(repository.canonicalRemote ?? repository.remoteUrl)) {
+    const main = repository.defaultBranch?.trim() || 'main';
+    if (before.branch !== main || branch === main || input.noFf === true || !before.clean) {
+      throw new Error('SOURCE_BRANCH_POLICY_MAIN_ONLY: legacy branch integration is allowed only as a clean fast-forward into protected main.');
+    }
+  }
   const args = ['merge', ...(input.noFf === true ? ['--no-ff'] : ['--ff-only']), branch];
   const execution = executeRepositoryGitCommand(controllerHome, repository, { args, authorization: 'explicit_user_request', ...input });
   let abort: RepositoryGitExecution | undefined;
@@ -603,6 +620,12 @@ export function repositoryGitFinishWorkflow(controllerHome: string, repository: 
   const before = repositoryGitStatus(repository);
   const featureBranch = assertSafeBranchName(input.featureBranch ?? before.branch);
   const targetBranch = assertSafeBranchName(input.targetBranch ?? repository.defaultBranch ?? 'main');
+  if (isForgeSourceRemote(repository.canonicalRemote ?? repository.remoteUrl)) {
+    const main = repository.defaultBranch?.trim() || 'main';
+    if (targetBranch !== main || featureBranch === main || input.noFf === true || !before.clean) {
+      return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps: [], after: before, completed: false, error: { code: 'SOURCE_BRANCH_POLICY_MAIN_ONLY', message: 'Legacy branches may be retired only by a clean fast-forward into protected main; dirty source is preserved.' } };
+    }
+  }
   const steps: RepositoryGitFinishResult['steps'] = [];
   const alreadyOnTarget = before.branch === targetBranch;
   const requestedPreservedDirtyPaths = normalizePaths(input.preserveDirtyTargetPaths);

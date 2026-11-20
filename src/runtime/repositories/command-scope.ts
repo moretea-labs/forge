@@ -46,6 +46,8 @@ export interface RepositoryCommandScopeTarget {
   workspaceScopeKey?: string;
   activeCheckoutId?: string;
   defaultBranch?: string;
+  canonicalRemote?: string;
+  remoteUrl?: string;
   enabled?: boolean;
 }
 
@@ -76,6 +78,12 @@ export function resolveRepositoryCommandCwd(
 interface RepositoryCommandInputPolicyOptions {
   /** Internal lane hint: preserve repository policy while allowing an already-classified local script shape. */
   allowOpaqueLocalScript?: boolean;
+  /** Enforce protected-main-only source topology for the canonical Forge repository. */
+  singleCanonicalBranchOnly?: boolean;
+  /** Require branch/worktree mutations to use the typed Forge APIs for every managed repository. */
+  managedBranchCreationOnly?: boolean;
+  /** The canonical remote integration branch for this repository. */
+  defaultBranch?: string;
 }
 
 export function assertRepositoryCommandAllowed(
@@ -182,6 +190,8 @@ export function assertRepositoryCommandInputAllowed(
   options: RepositoryCommandInputPolicyOptions = {},
 ): CanonicalRepositoryCommand {
   const command = assertRepositoryCommandStableHostIdentity(input);
+  if (options.managedBranchCreationOnly) assertManagedBranchCreationOnly(command, options.defaultBranch?.trim() || 'main');
+  if (options.singleCanonicalBranchOnly) assertSingleCanonicalBranchGitCommand(command);
   if (command.kind === 'shell') {
     assertRepositoryCommandAllowed(command.shellCommand!, options);
   }
@@ -225,6 +235,259 @@ function shellWords(segment: string): string[] {
 
 function stripTrailingPunctuation(token: string): string {
   return token.replace(/[,*?]+$/g, '');
+}
+
+
+function gitInvocation(words: string[]): { subcommand: string; args: string[] } | undefined {
+  const executable = words[0]?.split(/[\\\\/]/).at(-1)?.toLowerCase();
+  if (executable !== 'git' && executable !== 'git.exe') return undefined;
+  let index = 1;
+  const valueOptions = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--exec-path', '--super-prefix']);
+  const flagOptions = new Set(['--no-pager', '--no-optional-locks', '--literal-pathspecs', '--no-replace-objects', '--bare']);
+  while (index < words.length) {
+    const token = words[index]!;
+    if (valueOptions.has(token)) { index += 2; continue; }
+    if (['--git-dir=', '--work-tree=', '--namespace=', '--exec-path='].some((prefix) => token.startsWith(prefix))) { index += 1; continue; }
+    if (flagOptions.has(token)) { index += 1; continue; }
+    break;
+  }
+  const subcommand = words[index]?.toLowerCase();
+  return subcommand ? { subcommand, args: words.slice(index + 1) } : undefined;
+}
+
+function nestedGitInvocations(words: string[], depth = 0): string[][] {
+  if (depth > 8 || words.length === 0) return [];
+  let index = 0;
+  while (index < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!)) index += 1;
+  if (index >= words.length) return [];
+  const executable = words[index]!.split(/[\\/]/).at(-1)?.toLowerCase() ?? '';
+  const args = words.slice(index + 1);
+  const descend = (nested: string[]) => nestedGitInvocations(nested, depth + 1);
+
+  if (executable === 'env') {
+    let cursor = 0;
+    while (cursor < args.length) {
+      const value = args[cursor]!;
+      if (value === '--') { cursor += 1; break; }
+      if (value === '-S' || value === '--split-string') {
+        const payload = args[cursor + 1];
+        return typeof payload === 'string' ? shellSegments(payload).flatMap((segment) => descend(shellWords(segment))) : [];
+      }
+      if (['-i', '--ignore-environment', '-0'].includes(value)) { cursor += 1; continue; }
+      if (['-u', '--unset', '-C', '--chdir', '--argv0'].includes(value)) { cursor += 2; continue; }
+      if (value.startsWith('--unset=') || value.startsWith('--chdir=') || value.startsWith('--argv0=')) { cursor += 1; continue; }
+      if (value.startsWith('-')) { cursor += 1; continue; }
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(value)) { cursor += 1; continue; }
+      break;
+    }
+    return descend(args.slice(cursor));
+  }
+
+  if (['command', 'exec', 'nohup'].includes(executable)) {
+    let cursor = 0;
+    if (executable === 'command') {
+      if (args[0] === '-v' || args[0] === '-V') return [];
+      while (args[cursor] === '-p' || args[cursor] === '--') cursor += 1;
+    } else if (executable === 'exec') {
+      while (cursor < args.length && ['-c', '-l'].includes(args[cursor]!)) cursor += 1;
+      if (args[cursor] === '-a') cursor += 2;
+    } else if (args[cursor] === '--') cursor += 1;
+    return descend(args.slice(cursor));
+  }
+
+  if (executable === 'sudo') {
+    const valueOptions = new Set(['-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt', '-C', '--close-from', '-T', '--command-timeout', '-r', '--role', '-t', '--type', '-D', '--chdir']);
+    let cursor = 0;
+    while (cursor < args.length) {
+      const value = args[cursor]!;
+      if (value === '--') { cursor += 1; break; }
+      if (valueOptions.has(value)) { cursor += 2; continue; }
+      if (value.startsWith('-')) { cursor += 1; continue; }
+      break;
+    }
+    return descend(args.slice(cursor));
+  }
+
+  if (['timeout', 'nice', 'time'].includes(executable)) {
+    let cursor = 0;
+    if (executable === 'timeout') {
+      while (cursor < args.length && args[cursor]!.startsWith('-')) {
+        const flag = args[cursor]!;
+        cursor += ['--signal', '-s', '--kill-after', '-k'].includes(flag) ? 2 : 1;
+      }
+      if (cursor < args.length) cursor += 1;
+    } else if (executable === 'nice') {
+      if (args[cursor] === '-n' || args[cursor] === '--adjustment') cursor += 2;
+    } else if (args[cursor] === '-p' || args[cursor] === '-f') cursor += 1;
+    return descend(args.slice(cursor));
+  }
+
+  const shell = ['bash', 'sh', 'zsh', 'fish', 'dash', 'cmd', 'cmd.exe', 'powershell', 'pwsh'].includes(executable);
+  if (shell) {
+    const commandIndex = executable === 'cmd' || executable === 'cmd.exe'
+      ? args.findIndex((arg) => /^\/c$/i.test(arg))
+      : args.findIndex((arg) => /^(?:-[^-]*c[^-]*|--command|-command)$/i.test(arg));
+    if (commandIndex >= 0) {
+      const payload = args[commandIndex + 1];
+      return typeof payload === 'string'
+        ? shellSegments(payload).flatMap((segment) => descend(shellWords(segment)))
+        : [];
+    }
+  }
+
+  return [[...words.slice(index)]];
+}
+
+function assertManagedBranchCreationOnly(command: CanonicalRepositoryCommand, defaultBranch: string): void {
+  const invocations = command.kind === 'argv'
+    ? nestedGitInvocations([command.executable!, ...(command.args ?? [])])
+    : shellSegments(command.shellCommand!).flatMap((segment) => nestedGitInvocations(shellWords(segment)));
+  const denied = (detail: string) => new Error('GIT_BRANCH_CREATION_REQUIRES_MANAGED_API: ' + detail);
+  const readOnlyBranchFlags = new Set([
+    '-l', '--list', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose',
+    '--show-current', '--contains', '--merged', '--no-merged', '--points-at', '--format', '--sort',
+    '--column', '--no-column',
+  ]);
+  const mutationBranchFlags = new Set(['-c', '-C', '-m', '-M', '-d', '-D', '-f', '--copy', '--move', '--delete', '--force']);
+  for (const words of invocations) {
+    const parsed = gitInvocation(words);
+    if (!parsed) continue;
+    const deniedAlias = words.some((arg, index) => (arg === '-c' || arg === '--config-env') && (words[index + 1] ?? '').startsWith('alias.'))
+      || words.some((arg) => arg.startsWith('--config-env=alias.'));
+    if (deniedAlias) throw denied('Git command aliases cannot override protected branch policy');
+    const args = parsed.args;
+    if (parsed.subcommand === 'branch') {
+      const mutating = args.some((arg) => mutationBranchFlags.has(arg));
+      const positional = args.filter((arg) => !arg.startsWith('-') && !arg.includes('='));
+      const readOnly = args.length === 0 || args.some((arg) => readOnlyBranchFlags.has(arg));
+      if (mutating || (positional.length > 0 && !readOnly)) throw denied('branch creation, rename and deletion must use the typed branch API');
+    }
+    if (parsed.subcommand === 'switch' && args.some((arg) => ['-c', '-C', '--create', '--force-create', '--orphan', '--detach', '--discard-changes', '-f'].includes(arg))) {
+      throw denied('branch creation and detached switching must use the typed branch API');
+    }
+    if (parsed.subcommand === 'checkout' && args.some((arg) => ['-b', '-B', '--orphan', '--detach', '-f', '--force'].includes(arg))) {
+      throw denied('branch creation and detached checkout must use the typed branch API');
+    }
+    if (parsed.subcommand === 'worktree' && ['add', 'remove', 'move', 'prune', 'repair'].includes(args[0] ?? '')) {
+      throw denied('worktree lifecycle must use the managed workspace API');
+    }
+    if (parsed.subcommand === 'update-ref') {
+      throw denied('direct Git ref mutation must use the typed branch API');
+    }
+    if (parsed.subcommand === 'fetch') {
+      const positional = args.filter((arg) => !arg.startsWith('-'));
+      const refspecs = positional.slice(1);
+      const targets = refspecs.map((refspec) => (refspec.split(':').at(-1) ?? '').replace(/^\+/, '').replace(/^refs\/heads\//, ''));
+      if (refspecs.length === 0 || targets.some((target) => target !== defaultBranch)) {
+        throw denied('fetch must explicitly target only the canonical default branch');
+      }
+    }
+    if (parsed.subcommand === 'push') {
+      const positional = args.filter((arg) => !arg.startsWith('-'));
+      const refspecs = positional.slice(1);
+      const targets = refspecs.map((refspec) => (refspec.split(':').at(-1) ?? '').replace(/^\+/, '').replace(/^refs\/heads\//, ''));
+      const force = args.some((arg) => ['-f', '--force', '--mirror', '--all'].includes(arg)
+        || arg === '--force-with-lease' || arg.startsWith('--force-with-lease='))
+        || refspecs.some((refspec) => refspec.startsWith('+'));
+      if (force || refspecs.length === 0 || targets.some((target) => target !== defaultBranch)) {
+        throw denied('push must explicitly target only the canonical default branch without force or mirror');
+      }
+    }
+  }
+}
+
+function assertSingleCanonicalBranchGitCommand(command: CanonicalRepositoryCommand): void {
+  const invocations = command.kind === 'argv'
+    ? nestedGitInvocations([command.executable!, ...(command.args ?? [])])
+    : shellSegments(command.shellCommand!).flatMap((segment) => nestedGitInvocations(shellWords(segment)));
+  const denied = (detail: string) => new Error(`SOURCE_BRANCH_POLICY_MAIN_ONLY: ${detail}; use the canonical main checkout`);
+  const readOnlyBranchFlags = new Set([
+    '-l', '--list', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose',
+    '--show-current', '--contains', '--merged', '--no-merged', '--points-at', '--format', '--sort',
+    '--column', '--no-column',
+  ]);
+  const mutationBranchFlags = new Set(['-c', '-C', '-m', '-M', '-d', '-D', '-f', '--copy', '--move', '--delete', '--force']);
+  for (const words of invocations) {
+    const parsed = gitInvocation(words);
+    if (!parsed) continue;
+    const deniedAlias = words.some((arg, index) => (arg === '-c' || arg === '--config-env') && (words[index + 1] ?? '').startsWith('alias.'))
+      || words.some((arg) => arg.startsWith('--config-env=alias.'));
+    if (deniedAlias) throw denied('Git command aliases cannot override protected branch policy');
+    const args = parsed.args;
+    if (parsed.subcommand === 'branch') {
+      const mutating = args.some((arg) => mutationBranchFlags.has(arg));
+      const positional = args.filter((arg) => !arg.startsWith('-') && !arg.includes('='));
+      const readOnly = args.length === 0 || args.some((arg) => readOnlyBranchFlags.has(arg));
+      if (mutating || (positional.length > 0 && !readOnly)) throw denied('branch ref creation, rename and deletion through shell commands are disabled');
+    }
+    if (parsed.subcommand === 'switch') {
+      if (args.some((arg) => ['-c', '-C', '--create', '--force-create', '--detach', '--orphan', '--discard-changes', '-f'].includes(arg))) {
+        throw denied('branch creation or detached checkout is disabled');
+      }
+      const target = args.find((arg) => !arg.startsWith('-'));
+      if (target && target !== 'main') throw denied(`checkout of non-main branch '${target}' is disabled`);
+    }
+    if (parsed.subcommand === 'checkout') {
+      if (args.some((arg) => ['-b', '-B', '--orphan', '--detach', '-f', '--force'].includes(arg))) {
+        throw denied('branch creation or detached checkout is disabled');
+      }
+      if (!args.includes('--')) {
+        const target = args.find((arg) => !arg.startsWith('-'));
+        if (target && target !== 'main') throw denied(`checkout of non-main branch '${target}' is disabled`);
+      }
+    }
+    if (parsed.subcommand === 'worktree' && ['add', 'remove', 'prune', 'move'].includes(args[0] ?? '')) {
+      throw denied('writable worktree creation and direct worktree cleanup are disabled');
+    }
+    if (parsed.subcommand === 'fetch') {
+      const positional = args.filter((arg) => !arg.startsWith('-'));
+      const refspecs = positional.slice(1);
+      const refspec = refspecs[0] ?? '';
+      const [sourceRef = '', destinationRef] = refspec.split(':');
+      const source = sourceRef.replace(/^\+/, '').replace(/^refs\/heads\//, '');
+      const destination = destinationRef?.replace(/^\+/, '');
+      const forbiddenFlags = args.some((arg) => ['--all', '--multiple', '--prune', '-p'].includes(arg));
+      const writesNonCanonicalDestination = destination !== undefined && destination !== 'refs/remotes/origin/main';
+      if (forbiddenFlags || positional[0] !== 'origin' || refspecs.length !== 1 || source !== 'main' || writesNonCanonicalDestination) {
+        throw denied('fetch must explicitly target only origin/main without pruning or writing local branch refs');
+      }
+    }
+    if (parsed.subcommand === 'rebase' && !['--abort', '--continue', '--skip'].includes(args[0] ?? '')) {
+      throw denied('rebase is disabled');
+    }
+
+    if (parsed.subcommand === 'update-ref' || parsed.subcommand === 'symbolic-ref') {
+      throw denied('direct Git branch-ref mutation is disabled');
+    }
+    if (parsed.subcommand === 'stash' && args[0] === 'branch') {
+      throw denied('stash branch creation is disabled');
+    }
+    if (parsed.subcommand === 'config') {
+      const readOnlyFlags = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '-l']);
+      if (!args.some((arg) => readOnlyFlags.has(arg))) {
+        throw denied('Git config mutation is disabled for protected source');
+      }
+    }
+    if (parsed.subcommand === 'remote') {
+      const readOnly = args.length === 0 || ['-v', '--verbose', 'show', 'get-url'].includes(args[0] ?? '');
+      if (!readOnly) throw denied('Git remote mutation is disabled for protected source');
+    }
+    if (parsed.subcommand === 'pull') {
+      throw denied('pull is disabled; fetch origin main then merge --ff-only');
+    }
+    if (parsed.subcommand === 'push') {
+      const positional = args.filter((arg) => !arg.startsWith('-'));
+      const refspecs = positional.slice(1);
+      const sources = refspecs.map((refspec) => (refspec.split(':')[0] ?? '').replace(/^\+/, '').replace(/^refs\/heads\//, ''));
+      const targets = refspecs.map((refspec) => (refspec.split(':').at(-1) ?? '').replace(/^\+/, '').replace(/^refs\/heads\//, ''));
+      const force = args.some((arg) => ['-f', '--force', '--mirror', '--all', '--delete'].includes(arg)
+        || arg === '--force-with-lease' || arg.startsWith('--force-with-lease='))
+        || refspecs.some((refspec) => refspec.startsWith('+'));
+      if (force || refspecs.length === 0 || sources.some((source) => source !== 'main') || targets.some((target) => target !== 'main')) {
+        throw denied('push must explicitly target protected main without force or mirror');
+      }
+    }
+  }
 }
 
 function sensitivePathDenied(canonicalPath: string): boolean {

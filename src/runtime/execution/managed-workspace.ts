@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { repositoryControllerRoot } from '../../effects/controller-home';
+import { isForgeSourceRemote } from '../../core/git-branch-policy';
 import type { RepositoryRecord } from '../../core/repository/types';
 import {
   addRepositoryCheckout,
@@ -12,6 +13,7 @@ import {
 import { managedWorktreePath } from '../../effects/managed-worktree-storage';
 import { branchSlugSegment, validateBranchName } from '../../core/git-branch-policy';
 import { withControllerLock } from '../../effects/controller-locks';
+import { withRepositoryBranchCreation } from '../repositories/branch-governance';
 import { resolveGitExecutable } from '../../effects/git-executable';
 import { runProcess } from '../../effects/process-runner';
 import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../shared/process-environment';
@@ -390,6 +392,14 @@ export function ensureManagedWorkspace(
 ): ManagedWorkspace {
   const requestId = input.requestId.trim();
   if (!requestId) throw new Error('MANAGED_WORKSPACE_REQUEST_ID_REQUIRED');
+  if (isForgeSourceRemote(repository.canonicalRemote ?? repository.remoteUrl)) {
+    const main = repository.defaultBranch?.trim() || 'main';
+    const requested = input.branchName?.trim();
+    if (requested && requested !== main) {
+      throw new Error('SOURCE_BRANCH_POLICY_MAIN_ONLY: Forge source Work must use the canonical main checkout, not a branch-specific worktree.');
+    }
+    return currentManagedWorkspace(repository);
+  }
   const identity = suffix(repository.repoId, requestId);
   const sourceRoot = repository.canonicalRoot;
   const requestedBranch = assertBranch(
@@ -443,17 +453,25 @@ export function ensureManagedWorkspace(
 
       if (!existingWorkspace(path, branch)) {
         mkdirSync(dirname(path), { recursive: true });
-        const branchExists = gitSucceeds(sourceRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
-        if (branchExists) {
-          // A daemon crash may leave stale worktree administration behind even after the directory is gone.
-          git(sourceRoot, ['worktree', 'prune', '--expire', 'now'], 120_000);
-          git(sourceRoot, ['worktree', 'add', path, branch], 120_000);
-          workspaceOwnedByForge = true;
-        } else {
-          git(sourceRoot, ['worktree', 'add', '-b', branch, path, baseRevision], 120_000);
-          workspaceOwnedByForge = true;
-          branchOwnedByForge = true;
-        }
+        withRepositoryBranchCreation(
+          controllerHome,
+          repository,
+          branch,
+          'managed-workspace:' + requestId,
+          () => {
+            const branchExists = gitSucceeds(sourceRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
+            if (branchExists) {
+              // A daemon crash may leave stale worktree administration behind even after the directory is gone.
+              git(sourceRoot, ['worktree', 'prune', '--expire', 'now'], 120_000);
+              git(sourceRoot, ['worktree', 'add', path, branch], 120_000);
+              workspaceOwnedByForge = true;
+            } else {
+              git(sourceRoot, ['worktree', 'add', '-b', branch, path, baseRevision], 120_000);
+              workspaceOwnedByForge = true;
+              branchOwnedByForge = true;
+            }
+          },
+        );
       }
       if (!repositoryCheckoutRootMatches(repository, path)) {
         throw new Error(`MANAGED_WORKSPACE_REPOSITORY_MISMATCH: ${path}`);

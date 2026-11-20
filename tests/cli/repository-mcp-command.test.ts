@@ -10,7 +10,7 @@ import { addRepositoryCheckout, getRepository, listRepositories, refreshReposito
 import { callMcpTool } from "../../adapters/mcp/tool-mapping/tools";
 import { callRepositoryTool } from "../../src/runtime/control-plane/facade/repository-tool-dispatch";
 import { repositoryToolDefinitions } from "../../adapters/mcp/tool-mapping/repository-tools";
-import { repositoryGitCommit, repositoryGitMergeBranch, repositoryGitRebaseOnto, repositoryGitStatus } from "../../src/runtime/repositories/structured-git";
+import { repositoryGitCommit, repositoryGitCreateBranch, repositoryGitMergeBranch, repositoryGitRebaseOnto, repositoryGitStatus, repositoryGitSwitchBranch } from "../../src/runtime/repositories/structured-git";
 import { callRuntimeTool, runtimeToolDefinitions } from "../../adapters/mcp/runtime-gateway/runtime-tools";
 import { createMcpToolContext } from "../../adapters/mcp/multi-repository";
 import { controllerExposureSnapshot } from '../../adapters/mcp/toolset';
@@ -1394,7 +1394,32 @@ describe("repository MCP command tools", () => {
     }
   });
 
-  test("structured git diff, commit, and finish workflow complete a feature branch", async () => {
+  test('Forge source branch governance permits only the canonical main checkout', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'forge-main-only-branch-policy-'));
+  const controllerHome = join(workspace, 'controller-home');
+  const repoRoot = join(workspace, 'sample-repo');
+  try {
+    mkdirSync(controllerHome, { recursive: true });
+    mkdirSync(repoRoot, { recursive: true });
+    const run = (args: string[]) => spawnSync('git', ['-C', repoRoot, ...args], { encoding: 'utf8' });
+    expect(run(['init', '-b', 'main']).status).toBe(0);
+    expect(run(['config', 'user.name', 'Forge Test']).status).toBe(0);
+    expect(run(['config', 'user.email', 'forge-test@example.com']).status).toBe(0);
+    writeFileSync(join(repoRoot, 'README.md'), 'main only\\n');
+    expect(run(['add', 'README.md']).status).toBe(0);
+    expect(run(['commit', '-m', 'init']).status).toBe(0);
+    expect(run(['remote', 'add', 'origin', 'git@github.com:moretea-labs/forge.git']).status).toBe(0);
+    const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+    expect(repository.canonicalRemote).toBe('github.com/moretea-labs/forge');
+    expect(() => repositoryGitCreateBranch(controllerHome, repository, { branch: 'feature/parallel' })).toThrow('GIT_BRANCH_POLICY_MAIN_ONLY');
+    expect(() => repositoryGitSwitchBranch(controllerHome, repository, { branch: 'feature/parallel' })).toThrow('SOURCE_BRANCH_POLICY_MAIN_ONLY');
+    expect(run(['branch', '--show-current']).stdout.trim()).toBe('main');
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("structured git diff, commit, and finish workflow complete a feature branch", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-structured-git-complete-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");

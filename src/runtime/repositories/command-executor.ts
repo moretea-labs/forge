@@ -21,6 +21,7 @@ import {
 import { commandValue, type CanonicalRepositoryCommand, type RepositoryCommandValue } from '../../core/repository-command/normalization';
 import { loadExternalFilesystemGrants } from '../safe-tooling/external-filesystem';
 import type { RepositoryRecord } from '../../core/repository/types';
+import { isForgeSourceRemote } from '../../core/git-branch-policy';
 import { readRepositoryAccessPolicy } from '../control-plane/governance/access-policy';
 import { invalidateRepositoryReadCaches } from './inspector';
 import { assertResolvedAuthorization, decideAuthorization, type AuthorizationDecision } from '../control-plane/governance/authorization';
@@ -296,6 +297,9 @@ function prepareRepositoryCommandExecution(
   const { root, cwd, relativeCwd } = resolveRepositoryCommandCwd(repository, input.cwd);
   const command = assertRepositoryCommandInputAllowed(input.command, {
     allowOpaqueLocalScript: input.allowOpaqueLocalScript,
+    managedBranchCreationOnly: true,
+    defaultBranch: repository.defaultBranch?.trim() || 'main',
+    singleCanonicalBranchOnly: isForgeSourceRemote(repository.canonicalRemote ?? repository.remoteUrl),
   });
   const externalGrants = loadExternalFilesystemGrants(root).grants;
   const externalPathUsages = assertCommandPathOperandsStayInRepository(command, cwd, root, externalGrants, {
@@ -337,6 +341,9 @@ async function prepareRepositoryCommandExecutionAsync(
   const { root, cwd, relativeCwd } = resolveRepositoryCommandCwd(repository, input.cwd);
   const command = assertRepositoryCommandInputAllowed(input.command, {
     allowOpaqueLocalScript: input.allowOpaqueLocalScript,
+    managedBranchCreationOnly: true,
+    defaultBranch: repository.defaultBranch?.trim() || 'main',
+    singleCanonicalBranchOnly: isForgeSourceRemote(repository.canonicalRemote ?? repository.remoteUrl),
   });
   const externalGrants = loadExternalFilesystemGrants(root).grants;
   const externalPathUsages = assertCommandPathOperandsStayInRepository(command, cwd, root, externalGrants, {

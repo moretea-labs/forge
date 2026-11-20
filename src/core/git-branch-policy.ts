@@ -60,3 +60,16 @@ export function isProtectedRemoteBranchDeletionTarget(raw: unknown, defaultBranc
   if (defaultBranch?.trim() && branch === defaultBranch.trim()) return true;
   return /(?:^|\/)(?:main|master|develop|integration|release|gh-pages)(?:$|\/)/i.test(branch);
 }
+
+/** True only for the canonical Forge source repository governed by protected-main-only source topology. */
+export function isForgeSourceRemote(raw: unknown): boolean {
+  const value = String(raw ?? '').trim().toLowerCase();
+  const normalized = value
+    .replace(/^git@github\.com:/, '')
+    .replace(/^ssh:\/\/git@github\.com\//, '')
+    .replace(/^https?:\/\/github\.com\//, '')
+    .replace(/^github\.com\//, '')
+    .replace(/\.git$/, '')
+    .replace(/\/+$/, '');
+  return normalized === 'moretea-labs/forge';
+}

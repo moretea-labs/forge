@@ -13,6 +13,8 @@ import {
 import { resolveGitExecutable } from '../../src/effects/git-executable';
 import { getOwnedResource } from '../../packages/kernel/identity/api/index';
 import { managedWorkspaceOwnedResourceId } from '../../src/runtime/execution/managed-workspace';
+import { assertRepositoryBranchCapacity, repositoryBranchNamesFromRefs } from '../../src/runtime/repositories/branch-governance';
+import { repositoryGitCreateBranch } from '../../src/runtime/repositories/structured-git';
 import {
   assertExecutionIdentity,
   executionIdentityForRepository,
@@ -108,9 +110,9 @@ describe('Git executable and managed workspace guards', () => {
 
     let unexpectedInstall = false;
     ensureManagedWorkspace(controllerHome, repository, {
-      requestId: 'git-runtime-no-deps-workspace',
-      title: 'Git Runtime No Dependency Workspace',
-      branchName: 'work/git-runtime-no-deps-workspace',
+      requestId: 'git-runtime-deps-workspace',
+      title: 'Git Runtime Dependency Workspace',
+      branchName: 'work/git-runtime-deps-workspace',
       prepareDependencies: false,
     }, {
       materializeDependencies: () => { unexpectedInstall = true; },
@@ -148,6 +150,85 @@ describe('Git executable and managed workspace guards', () => {
     expect(prepared.root).toBeTruthy();
     expect(existsSync(join(prepared.root!, 'node_modules', 'commander', 'package.json'))).toBe(true);
     expect(realpathSync(join(prepared.root!, 'node_modules'))).toBe(realpathSync(join(repositoryRoot, 'node_modules')));
+  });
+
+
+  test('enforces the two-branch repository cap before managed or typed branch creation', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-branch-cap-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+    const repositoryRoot = join(root, 'repository');
+    initGitRepo(repositoryRoot);
+    const repository = registerRepository({ path: repositoryRoot, controllerHome, displayName: 'branch-cap-fixture' });
+    const git = resolveGitExecutable();
+    expect(spawnSync(git, ['-C', repositoryRoot, 'branch', 'work/existing']).status).toBe(0);
+
+    const refsResult = spawnSync(git, [
+      '-C', repositoryRoot, 'for-each-ref', '--format=%(refname)',
+      'refs/heads', 'refs/remotes/origin',
+    ], { encoding: 'utf-8' });
+    expect(refsResult.status).toBe(0);
+    const refs = refsResult.stdout.trim().split(/\r?\n/).filter(Boolean);
+    expect(repositoryBranchNamesFromRefs([
+      'refs/heads/main',
+      'refs/remotes/origin/main',
+      'refs/heads/work/existing',
+    ])).toEqual(['main', 'work/existing']);
+    expect(assertRepositoryBranchCapacity(refs, 'work/existing')).toEqual(['main', 'work/existing']);
+    expect(() => assertRepositoryBranchCapacity(refs, 'work/next')).toThrow(/GIT_BRANCH_LIMIT_REACHED/);
+
+    expect(() => ensureManagedWorkspace(controllerHome, repository, {
+      requestId: 'branch-cap-denied-worktree',
+      title: 'Branch Cap Denied Worktree',
+      branchName: 'work/next',
+    })).toThrow(/GIT_BRANCH_LIMIT_REACHED/);
+    expect(() => repositoryGitCreateBranch(controllerHome, repository, {
+      branch: 'work/next',
+    })).toThrow(/GIT_BRANCH_LIMIT_REACHED/);
+
+    const branchList = spawnSync(git, ['-C', repositoryRoot, 'branch', '--format=%(refname:short)'], { encoding: 'utf-8' });
+    expect(branchList.status).toBe(0);
+    expect(branchList.stdout.trim().split(/\r?\n/).sort()).toEqual(['main', 'work/existing']);
+    const worktrees = spawnSync(git, ['-C', repositoryRoot, 'worktree', 'list', '--porcelain'], { encoding: 'utf-8' });
+    expect(worktrees.status).toBe(0);
+    expect(worktrees.stdout).not.toContain('branch-cap-denied-worktree');
+  });
+
+  test('Forge source Work reuses canonical main and rejects per-task branches', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-source-main-only-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+    const repositoryRoot = join(root, 'repository');
+    initGitRepo(repositoryRoot);
+    const git = resolveGitExecutable();
+    expect(spawnSync(git, ['-C', repositoryRoot, 'remote', 'add', 'origin', 'git@github.com:moretea-labs/forge.git']).status).toBe(0);
+    const repository = registerRepository({ path: repositoryRoot, controllerHome, displayName: 'forge-source-main-only' });
+
+    expect(assertRepositoryBranchCapacity(['refs/heads/main', 'refs/remotes/origin/main'], 'main', 1, 'main')).toEqual(['main']);
+    expect(() => assertRepositoryBranchCapacity(['refs/heads/main'], 'work/task', 1, 'main')).toThrow(/GIT_BRANCH_POLICY_MAIN_ONLY/);
+
+    const current = ensureManagedWorkspace(controllerHome, repository, {
+      requestId: 'forge-source-main-only-current',
+      title: 'Forge Source Main Only',
+      branchName: 'main',
+      prepareDependencies: false,
+    });
+    expect(current.mode).toBe('current');
+    expect(current.managed).toBe(false);
+    expect(current.root).toBe(repository.canonicalRoot);
+    expect(current.branch).toBe('main');
+    expect(() => ensureManagedWorkspace(controllerHome, repository, {
+      requestId: 'forge-source-main-only-denied',
+      title: 'Forge Source Must Not Create a Work Branch',
+      branchName: 'work/task',
+    })).toThrow(/SOURCE_BRANCH_POLICY_MAIN_ONLY/);
+    expect(() => repositoryGitCreateBranch(controllerHome, repository, { branch: 'work/task' })).toThrow(/GIT_BRANCH_POLICY_MAIN_ONLY/);
+
+    const worktrees = spawnSync(git, ['-C', repositoryRoot, 'worktree', 'list', '--porcelain'], { encoding: 'utf-8' });
+    expect(worktrees.status).toBe(0);
+    expect(worktrees.stdout.trim().split(/\r?\n/).filter((line) => line.startsWith('worktree '))).toHaveLength(1);
   });
 
   test('creates and validates a same-repository managed worktree', () => {

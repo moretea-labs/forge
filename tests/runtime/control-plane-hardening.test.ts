@@ -59,6 +59,54 @@ function passingDiagnostics() {
 describe('repository command managed-worktree authority', () => {
 
 
+  test('Forge source topology rejects branch and writable worktree creation while allowing main inspection', () => {
+    const policy = { singleCanonicalBranchOnly: true };
+    for (const command of [
+      ['git', 'switch', '-c', 'feature/parallel'],
+      ['git', 'checkout', '-b', 'feature/parallel'],
+      ['git', 'branch', 'feature/parallel'],
+      ['git', 'worktree', 'add', '-b', 'feature/parallel', '_ref/parallel', 'HEAD'],
+      'git switch feature/parallel',
+      'git worktree add --detach _ref/read-only HEAD',
+      'git push origin feature/parallel',
+      'git push origin feature/parallel:main',
+      'git fetch origin feature/parallel',
+      'git fetch origin',
+      'git fetch origin main:refs/heads/main',
+      'git pull origin main',
+      'git remote update',
+      'git remote prune origin',
+      'git remote set-url origin https://example.invalid/moretea-labs/forge.git',
+      'git config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*',
+      'git config alias.bad !git-branch',
+      'git symbolic-ref refs/heads/feature/parallel refs/heads/main',
+      'git stash branch feature/parallel',
+      ['bash', '-lc', 'git branch feature/parallel'],
+      ['env', 'GIT_OPTIONAL_LOCKS=0', 'git', 'worktree', 'add', '_ref/parallel', 'main'],
+      'GIT_DIR=/tmp/foreign/.git git switch -c feature/parallel',
+      'sudo git checkout -b feature/parallel',
+      ['timeout', '5s', 'git', 'branch', 'feature/parallel'],
+      ['powershell', '-Command', 'git branch feature/parallel'],
+      ['git', '-c', 'alias.bad=!git branch feature/parallel', 'bad'],
+      'git update-ref refs/heads/feature/parallel 0123456789abcdef',
+    ]) {
+      expect(() => assertRepositoryCommandInputAllowed(command, policy)).toThrow('SOURCE_BRANCH_POLICY_MAIN_ONLY');
+    }
+    expect(() => assertRepositoryCommandInputAllowed('git switch main', policy)).not.toThrow();
+    expect(() => assertRepositoryCommandInputAllowed('git branch --show-current', policy)).not.toThrow();
+    expect(() => assertRepositoryCommandInputAllowed('git worktree list --porcelain', policy)).not.toThrow();
+    expect(() => assertRepositoryCommandInputAllowed('git push origin main', policy)).not.toThrow();
+    expect(() => assertRepositoryCommandInputAllowed('git push origin main:main', policy)).not.toThrow();
+    expect(() => assertRepositoryCommandInputAllowed('git push origin refs/heads/main', policy)).not.toThrow();
+    expect(() => assertRepositoryCommandInputAllowed('git push origin +refs/heads/main', policy)).toThrow('SOURCE_BRANCH_POLICY_MAIN_ONLY');
+    expect(() => assertRepositoryCommandInputAllowed('git push origin --force-with-lease=refs/heads/main +refs/heads/main', policy)).toThrow('SOURCE_BRANCH_POLICY_MAIN_ONLY');
+    expect(() => assertRepositoryCommandInputAllowed('git fetch origin main', policy)).not.toThrow();
+    expect(() => assertRepositoryCommandInputAllowed('git fetch origin +refs/heads/main:refs/remotes/origin/main', policy)).not.toThrow();
+    expect(() => assertRepositoryCommandInputAllowed('git remote -v', policy)).not.toThrow();
+    expect(() => assertRepositoryCommandInputAllowed('git config --get remote.origin.url', policy)).not.toThrow();
+    expect(() => assertRepositoryCommandInputAllowed(['bash', '-lc', 'git branch --show-current'], policy)).not.toThrow();
+  });
+
   test('normal Git worktree creation has no Work prerequisite but keeps repository path policy', () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'forge-requirement-git-')));
     try {
