@@ -18,6 +18,7 @@ import type { ToolPolicy } from '../control-plane/tool-policy';
 import type { ProcessCheckCompletionReceipt, ProcessCheckReceiptStatus } from '../execution/process-runtime/check-receipt';
 import { invalidateRepositoryReadCaches } from '../repositories/inspector';
 import type { EditOperation } from './edit-operation-contract';
+import { claimsConflict } from '../resources/claims/conflicts';
 import { listActiveLeases } from '../resources/leases/store';
 export type { EditOperation } from './edit-operation-contract';
 
@@ -740,17 +741,28 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
   }
 
   const controllerHome = input.controllerHome?.trim() || resolveRepoPreferredControllerHome(repoRoot);
+  const trackedPathClaims = sessionTrackedPaths(session).map((path) => ({
+    resourceKey: `path:${session.checkoutId}:${path}`,
+    mode: 'write' as const,
+  }));
   const checkoutLeases = listActiveLeases(controllerHome, session.repoId).filter((lease) => {
     const leaseCheckoutId = lease.checkoutId ?? lease.ownerIdentity?.checkoutId;
     return !leaseCheckoutId || leaseCheckoutId === 'unscoped' || leaseCheckoutId === session.checkoutId;
   });
+  const conflictsWithSession = (lease: ReturnType<typeof listActiveLeases>[number]) => {
+    const leaseCheckoutId = lease.checkoutId ?? lease.ownerIdentity?.checkoutId;
+    return !leaseCheckoutId || leaseCheckoutId === 'unscoped'
+      || trackedPathClaims.some((claim) => claimsConflict(claim, lease));
+  };
   const ownedWriteLease = input.leaseOwnerJobId
-    ? checkoutLeases.find((lease) => lease.ownerJobId === input.leaseOwnerJobId && lease.mode !== 'read')
+    ? checkoutLeases.find((lease) => lease.ownerJobId === input.leaseOwnerJobId
+      && lease.mode !== 'read' && conflictsWithSession(lease))
     : undefined;
   if (input.leaseOwnerJobId && !ownedWriteLease) {
     throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_OWNER_LEASE_MISSING: ${input.leaseOwnerJobId}`);
   }
-  const activeLease = checkoutLeases.find((lease) => lease.ownerJobId !== input.leaseOwnerJobId);
+  const activeLease = checkoutLeases.find((lease) =>
+    lease.ownerJobId !== input.leaseOwnerJobId && conflictsWithSession(lease));
   if (activeLease) {
     throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_ACTIVE_LEASE: ${activeLease.leaseId}:${activeLease.resourceKey}`);
   }

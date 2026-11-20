@@ -475,6 +475,26 @@ test('adopts a non-overlapping successor HEAD in the same durable edit session a
   expect(releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'unscoped-owner')).toBe(1);
 });
 
+test('does not block successor adoption for an unrelated same-checkout path lease', () => {
+  const fx = fixture();
+  const binding = durableBinding();
+  const session = beginEditSession(fx.repoRoot, { purpose: 'Unrelated path lease', allowedPaths: ['source.ts'], binding });
+  const applied = applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+    type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial),
+    replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+  }], { expectedRevision: session.currentRevision, binding });
+  spawnSync('git', ['add', 'source.ts'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'integrate before unrelated path lease'], { cwd: fx.repoRoot });
+  const successor = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).stdout.trim();
+  const held = acquireExecutionLeases(fx.controllerHome, fx.repository.repoId, 'other-path-owner', [{
+    resourceKey: `path:${session.checkoutId}:other.ts`, mode: 'write',
+    repoId: fx.repository.repoId, checkoutId: session.checkoutId,
+  }], { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false });
+  expect(held.acquired).toBe(true);
+  const adopted = adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, { binding, controllerHome: fx.controllerHome, expectedRevision: applied.currentRevision });
+  expect(adopted.baseRevision).toBe(successor);
+  expect(releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'other-path-owner')).toBe(1);
+});
 test('does not block successor adoption for a different checkout lease', () => {
   const fx = fixture();
   const binding = durableBinding();
