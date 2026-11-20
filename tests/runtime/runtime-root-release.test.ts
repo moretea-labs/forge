@@ -448,13 +448,19 @@ describe('runtime release materialization', () => {
     expect(spawnSync('git', ['status', '--porcelain=v1'], { cwd: root, encoding: 'utf8' }).stdout.trim()).toBe('');
   });
 
-  test('accepts a first-generation candidate release with a parent-unknown sidecar', () => {
+  test('stages a committed snapshot despite unrelated dirty source checkout changes', () => {
     const { root, controllerHome } = sourceFixture();
     const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+    const dirtyWriterContent = 'concurrent Writer change\n';
+    writeFileSync(join(root, 'README.md'), dirtyWriterContent);
     const canaries: string[] = [];
     const staged = stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, { platform: 'linux', runCandidateStager: (request) => {
-      expect([request.scriptPath, request.sourceRoot, request.expectedHead]).toEqual([join(root, 'scripts', 'stage-runtime-release.ts'), root, sourceCommit]);
-      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
+      expect([request.scriptPath, request.expectedHead]).toEqual([join(request.sourceRoot, 'scripts', 'stage-runtime-release.ts'), sourceCommit]);
+      expect(request.sourceRoot).not.toBe(root);
+      expect(request.dependencyRoot).toBe(request.sourceRoot);
+      expect(spawnSync('git', ['status', '--porcelain=v1'], { cwd: request.sourceRoot, encoding: 'utf8' }).stdout.trim()).toBe('');
+      expect(readFileSync(join(request.sourceRoot, 'README.md'), 'utf8')).toBe('fixture\n');
+      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: request.sourceRoot, dependencyRoot: request.dependencyRoot, sourceRepositoryId: 'repo_source_fixture' }, {
         platform: 'linux',
         now: () => 1_700_000_000_100,
         uuid: () => 'future-candidate',
@@ -484,6 +490,8 @@ describe('runtime release materialization', () => {
     expect(canaries).toEqual(['runtime_interpreter', 'process_runner', 'check_runner', 'typescript_navigation', 'context_pack', 'plugin_action_sidecar', 'scheduler_worker', 'periodic_cleanup']);
     expect(existsSync(join(staged.releasePath, 'future-sidecar-v2'))).toBe(true);
     expect(loadRuntimeReleaseManifest(staged.manifestPath, controllerHome).releaseId).toBe(staged.releaseId);
+    expect(readFileSync(join(root, 'README.md'), 'utf8')).toBe(dirtyWriterContent);
+    expect(spawnSync('git', ['status', '--porcelain=v1'], { cwd: root, encoding: 'utf8' }).stdout.trim()).toContain('README.md');
   });
 
   test('rejects a compiled candidate whose manifest omits the Process Runner authority pair', () => {

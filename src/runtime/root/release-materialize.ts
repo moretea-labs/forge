@@ -344,15 +344,18 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
 }, dependencies: CandidateRuntimeReleaseStagerDependencies = {}): StagedRuntimeRelease {
   const controllerHome = resolve(input.controllerHome);
   const sourceRoot = resolve(input.sourceRoot);
-  const dependencyRoot = resolve(input.dependencyRoot ?? input.sourceRoot);
+  const configuredDependencyRoot = input.dependencyRoot ? resolve(input.dependencyRoot) : undefined;
   const sourceRepositoryId = input.sourceRepositoryId.trim();
   if (!sourceRepositoryId) throw new Error('RUNTIME_RELEASE_SOURCE_REPOSITORY_ID_REQUIRED');
   const expectedHead = gitText(sourceRoot, ['rev-parse', '--verify', 'HEAD']);
   if (!/^[a-f0-9]{40}$/i.test(expectedHead)) throw new Error('RUNTIME_RELEASE_SOURCE_COMMIT_INVALID');
-  const dirtyBefore = gitText(sourceRoot, ['status', '--porcelain=v1', '--untracked-files=no']);
-  if (dirtyBefore) throw new Error(`RUNTIME_RELEASE_DIRTY_SOURCE: ${dirtyBefore.split(/\r?\n/).slice(0, 20).join(', ')}`);
 
-  const scriptPath = join(sourceRoot, 'scripts', 'stage-runtime-release.ts');
+  // Build from an immutable snapshot of the exact committed revision. The
+  // caller's checkout may contain unrelated concurrent Writer changes; those
+  // changes are neither packaged nor blocked, and remain untouched.
+  return withRuntimeReleaseSourceSnapshot({ sourceRoot, sourceRevision: expectedHead }, (snapshotRoot) => {
+  const dependencyRoot = configuredDependencyRoot ?? snapshotRoot;
+  const scriptPath = join(snapshotRoot, 'scripts', 'stage-runtime-release.ts');
   if (!existsSync(scriptPath) || lstatSync(scriptPath).isSymbolicLink() || !lstatSync(scriptPath).isFile()) {
     throw new Error(`RUNTIME_RELEASE_CANDIDATE_STAGER_MISSING: ${scriptPath}`);
   }
@@ -366,7 +369,7 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
     '--expected-head', request.expectedHead,
     '--source-repository-id', request.sourceRepositoryId,
   ], { cwd: request.sourceRoot, timeoutMs: 600_000, maxOutputBytes: 512 * 1024 }));
-  const executed = runCandidateStager({ bunExecutable, scriptPath, sourceRoot, dependencyRoot, controllerHome, expectedHead, sourceRepositoryId });
+  const executed = runCandidateStager({ bunExecutable, scriptPath, sourceRoot: snapshotRoot, dependencyRoot, controllerHome, expectedHead, sourceRepositoryId });
   if (!executed.ok) {
     throw new Error(`RUNTIME_RELEASE_CANDIDATE_STAGE_FAILED: ${executed.stderr || executed.stdout || executed.error}`.slice(0, 2_000));
   }
@@ -378,8 +381,8 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
     throw new Error(`RUNTIME_RELEASE_CANDIDATE_SOURCE_REPOSITORY_MISMATCH: expected ${sourceRepositoryId}, got ${receipt.sourceRepositoryId}`);
   }
 
-  const headAfter = gitText(sourceRoot, ['rev-parse', '--verify', 'HEAD']);
-  const dirtyAfter = gitText(sourceRoot, ['status', '--porcelain=v1', '--untracked-files=no']);
+  const headAfter = gitText(snapshotRoot, ['rev-parse', '--verify', 'HEAD']);
+  const dirtyAfter = gitText(snapshotRoot, ['status', '--porcelain=v1', '--untracked-files=no']);
   if (headAfter !== expectedHead || dirtyAfter) {
     throw new Error('RUNTIME_RELEASE_CANDIDATE_SOURCE_CHANGED_DURING_STAGE');
   }
@@ -465,6 +468,7 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
   assertRuntimeReleaseFiles(staged, dependencies);
   assertRuntimeReleaseExecutionCanaries(manifestPath, controllerHome, dependencies);
   return staged;
+  });
 }
 
 function defaultCompileBinary(input: { sourceRoot: string; outputPath: string; entryPath?: string }): { ok: boolean; stderr?: string; stdout?: string; error?: string } {
