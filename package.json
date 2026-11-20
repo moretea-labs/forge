@@ -166,7 +166,7 @@
     "test:node-smoke": "node --test tests/node/*.test.mjs",
     "check:ci:portable": "FORGE_ALLOW_NODE_ONLY=1 bash scripts/check-ci.sh",
     "prepack": "node scripts/sync-generated-authority.mjs --check",
-    "check:portable-package": "node --test tests/node/*.test.mjs && npm run smoke:tarball-install"
+    "check:portable-package": "node scripts/run-portable-package-check.mjs"
   },
   "devDependencies": {
     "@types/bun": "latest",
