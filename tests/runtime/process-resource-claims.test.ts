@@ -345,6 +345,16 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
     expect(claimsConflict({ resourceKey: 'path:co1:src/runtime/example.ts', mode: 'write' }, lease('validation-input:co1', 'read'))).toBe(false);
     expect(claimsConflict({ resourceKey: 'heavy-check:repo1', mode: 'exclusive' }, lease('heavy-check:repo1', 'exclusive'))).toBe(true);
+    for (const command of [
+      ['bun', 'run', 'check:main'],
+      ['npm', 'run', 'check:main'],
+      ['npm', 'run', 'check:portable-package'],
+    ]) {
+      const wrapped = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(wrapped).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
+      expect(wrapped.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+      expect(claimsConflict({ resourceKey: 'path:co1:src/runtime/example.ts', mode: 'write' }, lease('validation-input:co1', 'read'))).toBe(false);
+    }
   });
 
   test('ordinary xcodebuild log redirection does not acquire unrelated Git-ref ownership', () => {
