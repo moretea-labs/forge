@@ -61,6 +61,75 @@ describe('credential use authorization', () => {
     }).authorized).toBe(false);
   });
 
+  test('binds browser password manager authorization to exact origin and account without secret material', () => {
+    const controllerHome = home();
+    const first = authorizeCredentialUse({
+      controllerHome,
+      credentialRef: 'cred_browser_mail',
+      endpoint: 'https://accounts.example.com',
+      provider: 'browser_password_manager',
+      account: 'user@example.com',
+      confirmAuthorization: true,
+    });
+    expect(first.reused).toBe(false);
+    expect(credentialUseStatus({
+      controllerHome,
+      credentialRef: 'cred_browser_mail',
+      endpoint: 'https://accounts.example.com',
+      provider: 'browser_password_manager',
+      account: 'user@example.com',
+    })).toMatchObject({ authorized: true, provider: 'browser_password_manager', accountBound: true });
+    expect(credentialUseStatus({
+      controllerHome,
+      credentialRef: 'cred_browser_mail',
+      endpoint: 'https://accounts.example.com',
+      provider: 'browser_password_manager',
+      account: 'other@example.com',
+    }).authorized).toBe(false);
+    const changed = authorizeCredentialUse({
+      controllerHome,
+      credentialRef: 'cred_browser_mail',
+      endpoint: 'https://accounts.example.com',
+      provider: 'browser_password_manager',
+      account: 'other@example.com',
+      confirmAuthorization: true,
+    });
+    expect(changed.reused).toBe(false);
+    expect(credentialUseStatus({
+      controllerHome,
+      credentialRef: 'cred_browser_mail',
+      endpoint: 'https://accounts.example.com',
+      provider: 'browser_password_manager',
+      account: 'user@example.com',
+    }).authorized).toBe(false);
+    expect(credentialUseStatus({
+      controllerHome,
+      credentialRef: 'cred_browser_mail',
+      endpoint: 'https://accounts.example.com',
+      provider: 'browser_password_manager',
+      account: 'other@example.com',
+    }).authorized).toBe(true);
+    const grant = assertCredentialUseAuthorized({
+      controllerHome,
+      credentialRef: 'cred_browser_mail',
+      endpoint: 'https://accounts.example.com',
+      provider: 'browser_password_manager',
+    });
+    expect(grant.constraints).toMatchObject({
+      provider: 'browser_password_manager',
+      endpoint: 'https://accounts.example.com',
+      account: 'other@example.com',
+    });
+    expect(JSON.stringify(grant)).not.toContain('password-value');
+    expect(revokeCredentialUse({ controllerHome, credentialRef: 'cred_browser_mail' }).revoked).toBe(true);
+    expect(() => assertCredentialUseAuthorized({
+      controllerHome,
+      credentialRef: 'cred_browser_mail',
+      endpoint: 'https://accounts.example.com',
+      provider: 'browser_password_manager',
+    })).toThrow('CREDENTIAL_USE_NOT_AUTHORIZED');
+  });
+
   test('status is metadata-only', () => {
     const controllerHome = home();
     const status = credentialUseStatus({
