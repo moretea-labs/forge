@@ -1,7 +1,136 @@
 import XCTest
+import AppKit
 @testable import ForgeNative
 
 final class NativeWorkspaceTests: XCTestCase {
+    func testAgentMarkdownTranscriptExportsMessagesWithoutLocalPathsOrDrafts() {
+        var thread = ChatThread(title:"Review Notes")
+        thread.pendingDraft = "Private unsent work"
+        thread.messages = [
+            ChatMessage(role:"user",text:"Check this",attachmentPaths:["/Users/example/secret/diagram.png"],contextPaths:["src/Main.swift"]),
+            ChatMessage(role:"assistant",text:"Needs another pass",activityEvents:[
+                AgentLiveActivityEvent(phase:"tool",label:"apply_patch",detail:"Updated settings",status:"completed",startedAt:"2026-11-16T00:00:00Z",completedAt:nil,toolCallId:"tool-a"),
+                AgentLiveActivityEvent(phase:"tool",label:"swift test",detail:"One test failed",status:"failed",startedAt:"2026-11-16T00:01:00Z",completedAt:nil,toolCallId:"tool-b")
+            ],incomplete:true)
+        ]
+        let markdown = thread.markdownTranscript
+        XCTAssertTrue(markdown.contains("# Review Notes"))
+        XCTAssertTrue(markdown.contains("## 用户\n\nCheck this"))
+        XCTAssertTrue(markdown.contains("附件：Main.swift、diagram.png"))
+        XCTAssertTrue(markdown.contains("## Agent\n\nNeeds another pass"))
+        XCTAssertTrue(markdown.contains("### 执行记录"))
+        XCTAssertTrue(markdown.contains("[completed] apply_patch — Updated settings"))
+        XCTAssertTrue(markdown.contains("[failed] swift test — One test failed"))
+        XCTAssertTrue(markdown.contains("（回复未完成）"))
+        XCTAssertFalse(markdown.contains("Private unsent work"))
+        XCTAssertFalse(markdown.contains("/Users/example"))
+    }
+
+    @MainActor
+    func testAgentSearchFindsFileAttachmentsAndToolReceiptsAfterRestart() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let model = NativeWorkspace(store: store)
+        let id = model.threads[0].id
+        model.threads[0].messages = [ChatMessage(
+            role:"assistant",text:"Task processed",
+            attachmentPaths:["/private/qa/Sketch.png"],contextPaths:["Sources/Feature.swift"],
+            activityEvents:[AgentLiveActivityEvent(
+                phase:"tool",label:"apply_patch",detail:"Updated settings",status:"completed",
+                startedAt:"2026-11-16T00:00:00Z",completedAt:nil,toolCallId:"tool-a"
+            )]
+        )]
+        model.persist()
+        let restored = NativeWorkspace(store: store)
+        for term in ["sketch.png","feature.swift","APPLY_PATCH","updated settings"] {
+            restored.search = term
+            XCTAssertEqual(restored.visibleThreads.map(\.id),[id],"Search term: \(term)")
+        }
+        restored.search = "not-present"
+        XCTAssertTrue(restored.visibleThreads.isEmpty)
+    }
+
+    @MainActor
+    func testDuplicateAgentThreadCreatesIndependentConversationAndClearsProviderSession() throws {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store=folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:store)
+        let sourceId=model.threads[0].id
+        model.threads[0].title="Release review"
+        model.threads[0].repoId="repo-a"
+        model.threads[0].checkoutId="checkout-a"
+        model.threads[0].provider="codex"
+        model.threads[0].providerSessionId="session-original"
+        model.threads[0].messages=[ChatMessage(role:"user",text:"Review this change")]
+        model.threads[0].pendingDraft="Continue with edge cases"
+        model.threads[0].pendingContextPaths=["Sources/App.swift"]
+        model.persist()
+
+        let duplicateId=try XCTUnwrap(model.duplicateThread(sourceId))
+        XCTAssertNotEqual(duplicateId,sourceId)
+        XCTAssertEqual(model.selectedThreadId,duplicateId)
+        XCTAssertEqual(model.threads.first?.title,"Release review（副本）")
+        XCTAssertTrue(model.threads.first?.title.hasSuffix("（副本）") == true)
+        XCTAssertLessThanOrEqual(model.threads.first?.title.count ?? 0,80)
+        XCTAssertEqual(model.thread?.providerSessionId,nil)
+        XCTAssertEqual(model.thread?.provider,"codex")
+        XCTAssertEqual(model.thread?.repoId,"repo-a")
+        XCTAssertEqual(model.thread?.messages.map(\.text),["Review this change"])
+        XCTAssertEqual(model.thread?.pendingDraft,"Continue with edge cases")
+        XCTAssertEqual(model.thread?.pendingContextPaths,["Sources/App.swift"])
+        XCTAssertEqual(model.threads.first(where:{$0.id == sourceId})?.providerSessionId,"session-original")
+
+        let restored=NativeWorkspace(store:store)
+        XCTAssertEqual(restored.threads.count,2)
+        XCTAssertNotEqual(restored.threads[0].id,restored.threads[1].id)
+        XCTAssertNil(restored.threads[0].providerSessionId)
+    }
+
+    @MainActor
+    func testDuplicateLongAgentTitleKeepsCopyMarkerWithinTitleLimit() throws {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let sourceId=model.threads[0].id
+        model.threads[0].title=String(repeating:"A",count:80)
+        let duplicateId=try XCTUnwrap(model.duplicateThread(sourceId))
+        let title=try XCTUnwrap(model.threads.first(where:{$0.id == duplicateId})?.title)
+        XCTAssertEqual(title.count,80)
+        XCTAssertTrue(title.hasSuffix("（副本）"))
+    }
+
+    func testProjectListResponseDistinguishesValidEmptyFromMalformedPayloads() throws {
+        XCTAssertTrue(try NativeWorkspace.decodeProjects(["repositories": [[String:Any]]()]).isEmpty)
+        let projects = try NativeWorkspace.decodeProjects([
+            "repositories": [["repoId":"repo-a","displayName":"Repository A"] as [String:Any]]
+        ])
+        XCTAssertEqual(projects.map(\.repoId),["repo-a"])
+        XCTAssertThrowsError(try NativeWorkspace.decodeProjects([:]))
+        XCTAssertThrowsError(try NativeWorkspace.decodeProjects(["repositories":"not-an-array"]))
+        XCTAssertThrowsError(try NativeWorkspace.decodeProjects(["repositories":[["repoId":"repo-a"]]]))
+    }
+
+    func testForgeBridgeChildProcessCancellationTerminatesRunningHelperAndPreventsLateStart() throws {
+        let cancelledBeforeStart=ForgeBridgeChildProcess()
+        cancelledBeforeStart.cancel()
+        XCTAssertThrowsError(try cancelledBeforeStart.run()) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertFalse(cancelledBeforeStart.process.isRunning)
+
+        let running=ForgeBridgeChildProcess()
+        running.process.executableURL=URL(fileURLWithPath:"/bin/sleep")
+        running.process.arguments=["10"]
+        try running.run()
+        XCTAssertTrue(running.process.isRunning)
+        running.cancel()
+        running.process.waitUntilExit()
+        XCTAssertTrue(running.wasCancelled)
+        XCTAssertFalse(running.process.isRunning)
+    }
+
     func testBridgeAllowlistExcludesGenericCommandsAndRecoveryMutations() {
         XCTAssertTrue(ForgeBridge.allowed.contains("send_local_conversation"))
         XCTAssertTrue(ForgeBridge.allowed.contains("read_local_provider_models"))
@@ -137,6 +266,25 @@ final class NativeWorkspaceTests: XCTestCase {
         )
     }
 
+    func testInitialAgentActivitySeparatesProjectRecallFromProviderStartup() {
+        XCTAssertEqual(
+            NativeWorkspace.initialAgentActivityText(provider:"api:openai",requiresKnowledgeRecall:true),
+            "正在读取项目上下文"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.initialAgentActivityText(provider:"api:openai",requiresKnowledgeRecall:false),
+            "正在连接 API Provider"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.initialAgentActivityText(provider:"joycode",requiresKnowledgeRecall:false),
+            "正在连接 JoyCode"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.initialAgentActivityText(provider:"codex",requiresKnowledgeRecall:false),
+            "正在启动 Codex"
+        )
+    }
+
     func testInitialAgentRecallIsAdvisoryAndAvailableToBothProviderPrompts() {
         let recall = KnowledgeRecallDetail(
             advisoryOnly:true,
@@ -171,8 +319,9 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(context?.contains("earlier rejection recorded") == true)
         let codex = NativeWorkspace.providerPrompt(
             "Continue implementation",contextPaths:[],
-            requirementId:"REQ-1",advisoryKnowledge:context
+            projectId:"project-a",requirementId:"REQ-1",advisoryKnowledge:context
         )
+        XCTAssertTrue(codex.contains("Project: project-a"))
         XCTAssertTrue(codex.contains("Forge project knowledge"))
         XCTAssertTrue(codex.contains("repository contracts"))
         XCTAssertTrue(codex.contains("project:old"))
@@ -180,12 +329,14 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(codex.contains("Do not add decorative shadows"))
         XCTAssertTrue(codex.contains("partial: read full source before editing"))
         var thread = ChatThread(provider:"api")
+        thread.projectId = "project-a"
         thread.requirementId = "REQ-1"
         let messages = NativeWorkspace.apiTurnMessages(
             thread,prompt:"Continue implementation",contextPaths:[],advisoryKnowledge:context
         )
         XCTAssertEqual(messages.count,1)
         XCTAssertTrue(messages[0]["content"]?.contains("project:new") == true)
+        XCTAssertTrue(messages[0]["content"]?.contains("Project: project-a") == true)
         XCTAssertFalse(NativeWorkspace.providerPrompt("Continue",contextPaths:[]).contains("Forge project knowledge"))
         XCTAssertNil(NativeWorkspace.advisoryKnowledgeText(KnowledgeRecallDetail(
             advisoryOnly:true,items:[],gaps:[]
@@ -256,6 +407,97 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(restored.selectedProvider,"codex")
     }
 
+    @MainActor
+    func testZenReadOnlyThreadPersistsAndCapsApiEffects() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:store)
+        model.localApiSettings = LocalApiSettingsDetail(
+            provider:"api",endpoint:"https://api.example.com/v1",model:"model-a",
+            apiProtocol:"openai",hasKey:true,endpointReady:true
+        )
+        model.repoId = "repo_a"
+        model.checkoutId = "checkout_a"
+        let provider = try XCTUnwrap(model.readOnlyAnalysisProvider)
+        XCTAssertTrue(NativeWorkspace.matchesExternalProvider(provider))
+
+        model.newThread(provider:provider,readOnly:true)
+        let thread = try XCTUnwrap(model.thread)
+        XCTAssertEqual(thread.readOnly,true)
+        XCTAssertEqual(thread.readOnlyRepoId,"repo_a")
+        XCTAssertEqual(thread.readOnlyCheckoutId,"checkout_a")
+        XCTAssertTrue(NativeWorkspace.readOnlyThreadMatchesContext(
+            thread,repoId:"repo_a",checkoutId:"checkout_a"
+        ))
+        XCTAssertFalse(NativeWorkspace.readOnlyThreadMatchesContext(
+            thread,repoId:"repo_b",checkoutId:"checkout_a"
+        ))
+        XCTAssertFalse(NativeWorkspace.readOnlyThreadMatchesContext(
+            thread,repoId:"repo_a",checkoutId:"checkout_b"
+        ))
+        XCTAssertFalse(NativeWorkspace.apiTurnAllowsEffects(
+            provider:model.selectedProvider,thread:thread,accessMode:"full_access"
+        ))
+
+        var ordinaryThread = ChatThread()
+        ordinaryThread.repoId = "repo_a"
+        ordinaryThread.checkoutId = "checkout_a"
+        ordinaryThread.provider = "api"
+        XCTAssertFalse(NativeWorkspace.readOnlyThreadMatchesContext(
+            ordinaryThread,repoId:"repo_a",checkoutId:"checkout_a"
+        ))
+        XCTAssertTrue(NativeWorkspace.apiTurnAllowsEffects(
+            provider:"api",thread:ordinaryThread,accessMode:"full_access"
+        ))
+
+        model.persist()
+        let restored = NativeWorkspace(store:store)
+        let restoredThread = try XCTUnwrap(restored.thread)
+        XCTAssertEqual(restoredThread.readOnly,true)
+        XCTAssertEqual(restoredThread.readOnlyRepoId,"repo_a")
+        XCTAssertEqual(restoredThread.readOnlyCheckoutId,"checkout_a")
+        XCTAssertFalse(NativeWorkspace.apiTurnAllowsEffects(
+            provider:"api:legacy-api",thread:restoredThread,accessMode:"full_access"
+        ))
+        restored.threads[0].checkoutId="checkout_b"
+        XCTAssertEqual(restored.agentSendBlockReason,"分析工作区已变更，请重新开始分析。")
+        restored.threads[0].checkoutId="checkout_a"
+        restored.checkoutId="checkout_b"
+        XCTAssertEqual(restored.agentSendBlockReason,"分析工作区已变更，请重新开始分析。")
+        restored.checkoutId="checkout_a"
+
+        restored.selectThreadProvider("codex")
+        XCTAssertEqual(restored.thread?.provider,"api:legacy-api")
+        XCTAssertEqual(restored.error,"只读分析会话只能使用 API Provider。")
+
+        var codexThread = ChatThread()
+        codexThread.repoId="repo_a"
+        codexThread.checkoutId="checkout_a"
+        codexThread.readOnly = true
+        codexThread.readOnlyRepoId="repo_a"
+        codexThread.readOnlyCheckoutId="checkout_a"
+        codexThread.provider = "codex"
+        restored.threads = [codexThread]
+        restored.selectedThreadId = codexThread.id
+        XCTAssertEqual(restored.agentSendBlockReason,"只读分析会话需要可用的 API Provider。")
+    }
+
+    func testReadOnlyAnalysisProviderFallsBackFromCodex() {
+        XCTAssertEqual(NativeWorkspace.resolveReadOnlyAnalysisProvider(
+            preferred:"codex",fallback:"api:review"
+        ),"api:review")
+        XCTAssertEqual(NativeWorkspace.resolveReadOnlyAnalysisProvider(
+            preferred:"joycode",fallback:"api:review"
+        ),"joycode")
+        XCTAssertEqual(NativeWorkspace.resolveReadOnlyAnalysisProvider(
+            preferred:nil,fallback:"api:review"
+        ),"api:review")
+        XCTAssertNil(NativeWorkspace.resolveReadOnlyAnalysisProvider(
+            preferred:"codex",fallback:"codex"
+        ))
+    }
+
     func testApiTurnHistoryAndEffectAuthorizationAreBounded() {
         var thread = ChatThread(provider:"api")
         thread.messages = [
@@ -296,11 +538,24 @@ final class NativeWorkspaceTests: XCTestCase {
             provider:"api",accessMode:"full_access",repoId:"repo",checkoutId:nil
         ))
         XCTAssertEqual(NativeWorkspace.repositoryAccessMode([
-            "repositoryPolicy":["mode":"full_access"]
-        ]),"full_access")
+            "repository":["repoId":"repo-test"],
+            "repositoryPolicy":["repoId":"repo-test","mode":"full_access"]
+        ],repoId:"repo-test"),"full_access")
         XCTAssertEqual(NativeWorkspace.repositoryAccessMode([
-            "repositoryPolicy":["mode":"request"]
-        ]),"request")
+            "repository":["repoId":"repo-test"],
+            "repositoryPolicy":["repoId":"repo-test","mode":"request"]
+        ],repoId:"repo-test"),"request")
+        XCTAssertNil(NativeWorkspace.repositoryAccessMode([
+            "repository":["repoId":"another-repo"],
+            "repositoryPolicy":["repoId":"another-repo","mode":"full_access"]
+        ],repoId:"repo-test"))
+        XCTAssertNil(NativeWorkspace.repositoryAccessMode([
+            "repository":["repoId":"repo-test"],
+            "repositoryPolicy":["repoId":"repo-test","mode":"unknown"]
+        ],repoId:"repo-test"))
+        XCTAssertTrue(NativeWorkspace.isRepositoryAccessError("项目权限读取失败，请重试。"))
+        XCTAssertTrue(NativeWorkspace.isRepositoryAccessError("项目权限切换未能确认。"))
+        XCTAssertFalse(NativeWorkspace.isRepositoryAccessError("API Provider 未就绪。"))
     }
 
     func testApiTurnHistoryExcludesIncompleteAssistantEvidence() {
@@ -310,7 +565,7 @@ final class NativeWorkspaceTests: XCTestCase {
             ChatMessage(role:"assistant",text:"工具结果需要核对",incomplete:true),
             ChatMessage(role:"user",text:"continue after inspecting the changes"),
             ChatMessage(role:"assistant",text:"Checked the current repository status."),
-            ChatMessage(role:"assistant",text:"partial output",incomplete:true)
+            ChatMessage(role:"assistant",text:"partial output",toolActivityCount:0,incomplete:true)
         ]
         let messages = NativeWorkspace.apiTurnMessages(
             thread,prompt:"finish verification",contextPaths:[]
@@ -327,23 +582,141 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(thread.messages[1].incomplete,true)
     }
 
+    func testIncompleteWriteToolOutcomeRequiresExplicitRecoveryReview() {
+        let failedCommand = AgentLiveActivityEvent(
+            phase:"tool",label:"run_command",detail:"proc_example",
+            status:"failed",startedAt:"2026-11-15T00:00:00Z",
+            completedAt:"2026-11-15T00:00:01Z",toolCallId:"call-1"
+        )
+        let success = AgentLiveActivityEvent(
+            phase:"tool",label:"git_status",detail:nil,
+            status:"completed",startedAt:"2026-11-15T00:00:00Z",
+            completedAt:"2026-11-15T00:00:01Z",toolCallId:"call-2"
+        )
+        XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"Unconfirmed process",activityEvents:[failedCommand],incomplete:true
+        )))
+        XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"Process ID: proc_unknown",incomplete:true
+        )))
+        XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"Interrupted with no aggregate count or receipts",incomplete:true
+        )))
+        XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"Interrupted with only partial receipt metadata",
+            activityEvents:[success],incomplete:true
+        )))
+        XCTAssertFalse(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"Known zero tool calls",toolActivityCount:0,incomplete:true
+        )))
+        XCTAssertFalse(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"Interrupted before the next step",
+            toolActivityCount:1,activityEvents:[success],incomplete:true
+        )))
+        XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"Tool receipt missing",
+            toolActivityCount:1,incomplete:true
+        )))
+        XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"One tool receipt missing",
+            toolActivityCount:2,activityEvents:[success],incomplete:true
+        )))
+        XCTAssertFalse(NativeWorkspace.incompleteTurnRequiresReview(ChatMessage(
+            role:"assistant",text:"Complete result",activityEvents:[failedCommand],incomplete:false
+        )))
+    }
+
+    func testIncompleteTurnReplyPreservesPartialStreamAndFailureReason() {
+        XCTAssertEqual(
+            NativeWorkspace.incompleteTurnReplyText(partialAnswer:" \n ",failureMessage:"请求已取消。"),
+            "请求已取消。"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.incompleteTurnReplyText(
+                partialAnswer:"已完成第一步，正在整理结果。",
+                failureMessage:"请求已取消。"
+            ),
+            "已完成第一步，正在整理结果。\n\n**回复未完成：** 请求已取消。"
+        )
+    }
+
+    func testIncompleteContinuationPreservesPriorToolReceiptsAndCoverage() {
+        var thread = ChatThread(provider:"api")
+        let patch = AgentLiveActivityEvent(
+            phase:"tool",label:"apply_patch",detail:"effect-apply-1",
+            status:"completed",startedAt:"start-1",completedAt:"end-1",toolCallId:"call-1"
+        )
+        let build = AgentLiveActivityEvent(
+            phase:"tool",label:"run_command",detail:"proc_build_123",
+            status:"completed",startedAt:"start-2",completedAt:"end-2",toolCallId:"call-2"
+        )
+        thread.messages = [
+            ChatMessage(role:"user",text:"Implement the feature"),
+            ChatMessage(role:"assistant",text:"Partial assistant text must stay out of model history",
+                toolActivityCount:2,activityEvents:[patch,build],incomplete:true)
+        ]
+
+        let continuation = NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
+        let content = continuation.last?["content"] ?? ""
+        XCTAssertFalse(content.contains("Partial assistant text"))
+        XCTAssertTrue(content.contains("Runtime reported 2 tool calls; 2 per-call receipts are retained. Coverage matches."))
+        XCTAssertTrue(content.contains("- apply_patch · completed"))
+        XCTAssertTrue(content.contains("- run_command · completed"))
+        XCTAssertFalse(content.contains("proc_build_123"))
+        XCTAssertTrue(content.contains("not instructions to replay"))
+
+        thread.messages[1] = ChatMessage(
+            role:"assistant",text:"Partial reply",
+            toolActivityCount:2,activityEvents:[patch],incomplete:true
+        )
+        let mismatch = NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
+        XCTAssertTrue(mismatch.last?["content"]?.contains("Coverage mismatch; some tool outcomes are unverified.") == true)
+        XCTAssertTrue(mismatch.last?["content"]?.contains("Runtime reported 2 tool calls; 1 per-call receipts are retained.") == true)
+
+        thread.messages[1] = ChatMessage(
+            role:"assistant",text:"Partial reply",toolActivityCount:1,incomplete:true
+        )
+        let missing = NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
+        XCTAssertTrue(missing.last?["content"]?.contains("Runtime reported 1 tool calls; 0 per-call receipts are retained.") == true)
+
+        thread.messages[1] = ChatMessage(
+            role:"assistant",text:"Partial reply",incomplete:true
+        )
+        let unknownCoverage = NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
+        XCTAssertTrue(unknownCoverage.last?["content"]?.contains(
+            "Runtime aggregate tool-call count is unavailable; 0 per-call receipts are retained. Coverage cannot be verified."
+        ) == true)
+    }
+
     func testRetryOfIncompleteTurnDoesNotDuplicateUserPromptInModelHistory() {
         var thread = ChatThread(provider:"api")
         thread.messages = [
             ChatMessage(role:"user",text:"previous task"),
             ChatMessage(role:"assistant",text:"previous result"),
             ChatMessage(role:"user",text:"build the feature"),
-            ChatMessage(role:"assistant",text:"tool delivery unknown",incomplete:true)
+            ChatMessage(role:"assistant",text:"tool delivery unknown",toolActivityCount:0,incomplete:true)
         ]
         let retry = NativeWorkspace.apiTurnMessages(thread,prompt:"build the feature",contextPaths:[])
         XCTAssertEqual(retry.map { $0["role"] },["user","assistant","user"])
         XCTAssertEqual(retry.map { $0["content"] },[
             "previous task","previous result","build the feature"
         ])
-        let continuation = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        let continuation = NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
         XCTAssertEqual(continuation.map { $0["content"] },[
-            "previous task","previous result","build the feature","继续"
+            "previous task","previous result","build the feature",
+            NativeWorkspace.incompleteTurnContinuationPrompt
         ])
+        XCTAssertFalse(continuation.contains { $0["content"]?.contains("tool delivery unknown") == true })
         // The source of audit evidence is unchanged, even when history is compacted.
         XCTAssertEqual(thread.messages.count,4)
         XCTAssertEqual(thread.messages[3].incomplete,true)
@@ -357,21 +730,214 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.agentSendBlockReason,"Codex 未就绪，请刷新 Provider 状态。")
 
         model.threads[0].repoId = "repo-test"
+        model.repoId = "repo-test"
         model.threads[0].checkoutId = nil
+        model.checkoutId = nil
         XCTAssertEqual(model.agentSendBlockReason,"当前会话缺少 checkout，请重新选择项目。")
         model.threads[0].checkoutId = "checkout-test"
+        model.checkoutId = "checkout-test"
         model.checkoutContextLoading = true
         XCTAssertEqual(model.agentSendBlockReason,"正在验证 checkout，完成后即可发送。")
 
         model.checkoutContextLoading = false
-        XCTAssertEqual(model.agentSendBlockReason,"checkout 不可用，请切换到有效的工作区。")
+        model.repositoryAccessLoading = true
+        XCTAssertEqual(model.agentSendBlockReason,"正在更新项目权限，完成后即可发送。")
         model.draft = "implement feature"
+        await model.send()
+        XCTAssertEqual(model.error,model.agentSendBlockReason)
+        XCTAssertEqual(model.draft,"implement feature")
+        XCTAssertTrue(model.threads[0].messages.isEmpty)
+
+        model.repositoryAccessLoading = false
+        XCTAssertEqual(model.agentSendBlockReason,"checkout 不可用，请切换到有效的工作区。")
         await model.send()
         XCTAssertEqual(model.error,model.agentSendBlockReason)
         XCTAssertEqual(model.draft,"implement feature")
         XCTAssertTrue(model.threads[0].messages.isEmpty)
         model.busy = true
         XCTAssertEqual(model.agentSendBlockReason,"Agent 正在执行当前任务。")
+    }
+
+    @MainActor
+    func testRestoredAgentDraftDoesNotSendMovedAttachmentsOrLoseUnsentWork() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let checkout = folder.appendingPathComponent("checkout")
+        let sources = checkout.appendingPathComponent("Sources")
+        let source = sources.appendingPathComponent("Plan.swift")
+        let image = folder.appendingPathComponent("screenshot.png")
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        try FileManager.default.createDirectory(at:sources,withIntermediateDirectories:true)
+        try Data("source".utf8).write(to:source)
+        try Data("image".utf8).write(to:image)
+
+        let original = NativeWorkspace(store:store)
+        let first = try XCTUnwrap(original.selectedThreadId)
+        original.checkoutRoot = checkout
+        original.imageInputAvailable = true
+        original.draft = "Review the attached plan and screenshot"
+        original.addPendingImages([image])
+        original.addPendingContextFiles([source])
+        XCTAssertEqual(original.pendingContextPaths,["Sources/Plan.swift"])
+        XCTAssertEqual(original.pendingImageURLs,[image])
+        original.newThread()
+
+        let restored = NativeWorkspace(store:store)
+        restored.selectThread(first)
+        restored.checkoutRoot = checkout
+        restored.imageInputAvailable = true
+        XCTAssertEqual(restored.draft,"Review the attached plan and screenshot")
+        XCTAssertEqual(restored.pendingContextPaths,["Sources/Plan.swift"])
+        XCTAssertEqual(restored.pendingImageURLs,[image])
+        XCTAssertEqual(restored.agentSendBlockReason,"Codex 未就绪，请刷新 Provider 状态。")
+
+        try FileManager.default.removeItem(at:image)
+        let imageIssue = try XCTUnwrap(restored.agentSendBlockReason)
+        XCTAssertTrue(imageIssue.contains("图片已移动或删除"))
+        XCTAssertTrue(imageIssue.contains("screenshot.png"))
+        await restored.send()
+        XCTAssertEqual(restored.error,imageIssue)
+        XCTAssertEqual(restored.draft,"Review the attached plan and screenshot")
+        XCTAssertEqual(restored.pendingImageURLs,[image])
+        XCTAssertTrue(restored.thread?.messages.isEmpty == true)
+
+        restored.removePendingImage(image)
+        try FileManager.default.removeItem(at:source)
+        let fileIssue = try XCTUnwrap(restored.agentSendBlockReason)
+        XCTAssertTrue(fileIssue.contains("项目文件已移动"))
+        XCTAssertTrue(fileIssue.contains("Plan.swift"))
+        await restored.send()
+        XCTAssertEqual(restored.error,fileIssue)
+        XCTAssertEqual(restored.pendingContextPaths,["Sources/Plan.swift"])
+        XCTAssertEqual(restored.draft,"Review the attached plan and screenshot")
+        XCTAssertTrue(restored.thread?.messages.isEmpty == true)
+
+        restored.removePendingContextPath("Sources/Plan.swift")
+        XCTAssertEqual(restored.agentSendBlockReason,"Codex 未就绪，请刷新 Provider 状态。")
+    }
+
+    func testInterruptedLightweightProcessCarriesCanonicalHandleIntoRecovery() {
+        let handle = "lightweight:41905731-25b7-491f-bb78-f4bccf85ed21"
+        XCTAssertTrue(NativeWorkspace.isCanonicalProcessId(handle))
+        XCTAssertTrue(NativeWorkspace.isCanonicalProcessId("proc_example_123"))
+        for invalid in [
+            "lightweight:41905731-25b7-491f-bb78-f4bccf85ed21;rm",
+            "lightweight:41905731-25b7-491f-bb78-f4bccf85ed2x",
+            "lightweight:41905731-25b7-491f-bb78-f4bccf85ed21/other",
+            "lightweight:not-a-uuid",
+            "proc_bad;rm"
+        ] {
+            XCTAssertFalse(NativeWorkspace.isCanonicalProcessId(invalid), invalid)
+        }
+
+        let stream = AgentLiveActivityEvent(
+            phase:"tool",label:"run_command",detail:handle,status:"running",
+            startedAt:"start",completedAt:nil,toolCallId:"call-lightweight"
+        )
+        let final = AgentLiveActivityEvent(
+            phase:"tool",label:"run_command",detail:"request-not-handle",status:"unknown",
+            startedAt:"start",completedAt:"end",toolCallId:"call-lightweight"
+        )
+        let merged = NativeWorkspace.mergeActivityReceipts([stream],receipts:[final])
+        XCTAssertEqual(merged.first?.detail,handle)
+        XCTAssertEqual(merged.first?.status,"unknown")
+
+        var thread = ChatThread(provider:"api")
+        thread.messages = [
+            ChatMessage(role:"user",text:"run the build"),
+            ChatMessage(role:"assistant",text:"Process accepted; do not run again",
+                toolActivityCount:1,activityEvents:merged,incomplete:true)
+        ]
+        let continuation = NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
+        let content = continuation.last?["content"] ?? ""
+        XCTAssertTrue(content.contains("Prior incomplete run_command Process IDs"))
+        XCTAssertTrue(content.contains(handle))
+        XCTAssertTrue(content.contains("process_status"))
+        XCTAssertTrue(content.contains("do not reissue the command"))
+        XCTAssertFalse(content.contains("Process accepted; do not run again"))
+        XCTAssertEqual(content.components(separatedBy:handle).count,2)
+        XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(thread.messages[1]))
+
+        thread.messages[1] = ChatMessage(
+            role:"assistant",text:"Process ID: \(handle)。等待同一进程终态。",
+            toolActivityCount:0,activityEvents:[],incomplete:true
+        )
+        let textOnly = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        XCTAssertTrue(textOnly.last?["content"]?.contains(handle) == true)
+
+        thread.messages[1] = ChatMessage(
+            role:"assistant",text:"Process ID: \(handle);rm",
+            toolActivityCount:0,activityEvents:[],incomplete:true
+        )
+        let poisoned = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        XCTAssertFalse(poisoned.last?["content"]?.contains(handle) == true)
+    }
+
+    @MainActor
+    func testZenReadOnlyAnalysisSendIsBoundToNewConversation() async throws {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId="repo-a"
+        model.checkoutId="checkout-a"
+        model.selectedProjectId="project-a"
+        model.newThread(provider:"api:review",requirementId:"REQ-A",planId:"PLAN-A",readOnly:true)
+        let launchId=try XCTUnwrap(model.selectedThreadId)
+        XCTAssertEqual(model.thread?.id,launchId)
+        XCTAssertEqual(model.thread?.requirementId,"REQ-A")
+        XCTAssertEqual(model.thread?.planId,"PLAN-A")
+        XCTAssertEqual(model.thread?.readOnly,true)
+        model.draft="只读分析此任务"
+        model.newThread(provider:"api:review",requirementId:"REQ-B",readOnly:true)
+        let activeId=try XCTUnwrap(model.selectedThreadId)
+        XCTAssertNotEqual(activeId,launchId)
+        XCTAssertEqual(model.threads.first(where:{$0.id==launchId})?.pendingDraft,"只读分析此任务")
+        model.draft="另一个会话自己的草稿"
+        let originalMessageCount=model.threads.first(where:{$0.id==launchId})?.messages.count
+        await model.send(expectedThreadId:launchId)
+        XCTAssertEqual(model.selectedThreadId,activeId)
+        XCTAssertEqual(model.draft,"另一个会话自己的草稿")
+        XCTAssertEqual(model.threads.first(where:{$0.id==launchId})?.pendingDraft,"只读分析此任务")
+        XCTAssertFalse(model.busy)
+        XCTAssertEqual(model.thread?.messages.count,0)
+        XCTAssertEqual(model.threads.first(where:{$0.id==launchId})?.messages.count,originalMessageCount)
+    }
+
+    @MainActor
+    func testProjectOnlyZenAnalysisIsAllowedWithoutRepositoryCheckout() throws {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.selectedProjectId="project-only"
+        model.localApiSettings=LocalApiSettingsDetail(
+            provider:"api",endpoint:"https://api.example.com/v1",model:"model-a",
+            apiProtocol:"openai",hasKey:true,endpointReady:true
+        )
+        let provider=try XCTUnwrap(model.readOnlyAnalysisProvider)
+        model.newThread(provider:provider,requirementId:"REQ-ONLY",readOnly:true)
+        let thread=try XCTUnwrap(model.thread)
+        XCTAssertEqual(thread.projectId,"project-only")
+        XCTAssertNil(thread.repoId)
+        XCTAssertNil(thread.checkoutId)
+        XCTAssertTrue(NativeWorkspace.readOnlyThreadMatchesContext(
+            thread,repoId:nil,checkoutId:nil,projectId:"project-only"
+        ))
+        XCTAssertNil(model.agentSendBlockReason)
+        XCTAssertTrue(model.isProjectOnlyConversation)
+        XCTAssertEqual(model.agentWorkspaceStatusLabel,"仅项目上下文")
+        XCTAssertTrue(model.agentWorkspaceStatusDetail.contains("需求与计划对话"))
+        XCTAssertTrue(model.agentWorkspaceStatusDetail.contains("无法执行代码操作"))
+        XCTAssertFalse(NativeWorkspace.apiTurnAllowsEffects(
+            provider:provider,thread:thread,accessMode:"full_access"
+        ))
+
+        let unbound=NativeWorkspace(store:folder.appendingPathComponent("unbound-conversations.json"))
+        unbound.localApiSettings=model.localApiSettings
+        unbound.newThread(provider:provider)
+        XCTAssertFalse(unbound.isProjectOnlyConversation)
+        XCTAssertEqual(unbound.agentWorkspaceStatusLabel,"未绑定项目")
     }
 
     func testIncompleteManagedProcessIsAvailableToOrdinaryFollowUpWithoutReplaying() {
@@ -395,10 +961,14 @@ final class NativeWorkspaceTests: XCTestCase {
                 ],incomplete:true
             )
         ]
-        let resumed = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        let resumed = NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
         XCTAssertEqual(resumed.count,2)
         XCTAssertTrue(resumed[1]["content"]?.contains("proc_abc_123") == true)
         XCTAssertTrue(resumed[1]["content"]?.contains("process_status") == true)
+        XCTAssertTrue(resumed[1]["content"]?.contains("LOCAL_FORGE_PROCESS_NOT_MANAGED") == true)
+        XCTAssertTrue(resumed[1]["content"]?.contains("do not reissue the command or call process_cancel") == true)
         XCTAssertEqual(resumed[1]["content"]?.components(separatedBy:"proc_abc_123").count,2)
         XCTAssertFalse(resumed[1]["content"]?.contains("proc_not_ours") == true)
         XCTAssertFalse(resumed[1]["content"]?.contains("Process accepted") == true)
@@ -411,6 +981,64 @@ final class NativeWorkspaceTests: XCTestCase {
         ]
         let invalid = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
         XCTAssertFalse(invalid[1]["content"]?.contains("process_status") == true)
+    }
+
+    func testIncompleteFailedCommandRetainsVerifiedProcessRecoveryContext() {
+        var thread=ChatThread(provider:"api")
+        thread.messages = [
+            ChatMessage(role:"user",text:"Run the build"),
+            ChatMessage(role:"assistant",text:"Command unconfirmed. Process ID: proc_live_123. Do not retry.",
+                activityEvents:[
+                    AgentLiveActivityEvent(phase:"tool",label:"run_command",detail:"request_not_process",
+                        status:"failed",startedAt:"now",completedAt:"later",toolCallId:"call-1")
+                ],incomplete:true)
+        ]
+        let followUp=NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
+        XCTAssertTrue(followUp.last?["content"]?.contains("proc_live_123") == true)
+        XCTAssertTrue(followUp.last?["content"]?.contains("process_status") == true)
+        XCTAssertFalse(followUp.last?["content"]?.contains("request_not_process") == true)
+        thread.messages[1]=ChatMessage(role:"assistant",text:"Process ID: proc_bad;rm",
+            activityEvents:[
+                AgentLiveActivityEvent(phase:"tool",label:"run_command",detail:"proc_failed_42",
+                    status:"failed",startedAt:"now",completedAt:"later",toolCallId:"call-2")
+            ],incomplete:true)
+        let receipt=NativeWorkspace.apiTurnMessages(
+            thread,prompt:NativeWorkspace.incompleteTurnContinuationPrompt,contextPaths:[]
+        )
+        XCTAssertTrue(receipt.last?["content"]?.contains("proc_failed_42") == true)
+        XCTAssertFalse(receipt.last?["content"]?.contains("proc_bad") == true)
+    }
+
+    func testFinalToolReceiptsPreserveUnknownStatusAndStreamedProcessHandle() {
+        let receipts = NativeWorkspace.apiActivityEvents([[
+            "name":"run_command","ok":false,"status":"unknown",
+            "requestId":"effect-123","toolCallId":"call-123"
+        ]])
+        XCTAssertEqual(receipts?.first?.status,"unknown")
+        let progress = AgentLiveActivityEvent(
+            phase:"tool",label:"run_command",detail:"proc_real_123",
+            status:"running",startedAt:"start",completedAt:nil,toolCallId:"call-123"
+        )
+        let merged = NativeWorkspace.mergeActivityReceipts([progress],receipts:receipts ?? [])
+        XCTAssertEqual(merged.count,1)
+        XCTAssertEqual(merged[0].status,"unknown")
+        XCTAssertEqual(merged[0].detail,"proc_real_123")
+        XCTAssertEqual(merged[0].toolCallId,"call-123")
+        let verified = NativeWorkspace.apiActivityEvents([[
+            "name":"run_command","ok":true,"status":"completed",
+            "processId":"proc_authoritative_9","toolCallId":"call-123"
+        ]]) ?? []
+        let completed = NativeWorkspace.mergeActivityReceipts([progress],receipts:verified)
+        XCTAssertEqual(completed[0].detail,"proc_authoritative_9")
+        XCTAssertEqual(completed[0].status,"completed")
+        let other = AgentLiveActivityEvent(
+            phase:"tool",label:"read_file",detail:"proc_misleading",
+            status:"running",startedAt:"start",completedAt:nil,toolCallId:"call-123"
+        )
+        XCTAssertEqual(NativeWorkspace.mergeActivityReceipts([other],receipts:receipts ?? [])[0].detail,
+                       "effect-123")
     }
 
     func testManagedProcessActivityRemainsRunningUntilTerminalReceipt() {
@@ -435,6 +1063,21 @@ final class NativeWorkspaceTests: XCTestCase {
         let progress = #"{"type":"progress","data":{"name":"read_file","phase":"started"}}"#.data(using:.utf8)!
         XCTAssertEqual(ForgeApiTurn.decodeEvent(progress)?["type"] as? String,"progress")
         XCTAssertNil(ForgeApiTurn.decodeEvent(Data("{}".utf8)))
+    }
+
+    func testAgentGitDiffReviewScopeFileCountExcludesUntrackedFromStagedScope() {
+        let unstaged = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"abcdef",
+            staged:false, paths:[], nameOnly:["tracked.txt"], stat:"", patch:"", truncated:false,
+            untracked:["new.txt"]
+        )
+        let staged = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"abcdef",
+            staged:true, paths:[], nameOnly:["staged.txt"], stat:"", patch:"", truncated:false,
+            untracked:["new.txt"]
+        )
+        XCTAssertEqual(unstaged.reviewScopeFileCount,2)
+        XCTAssertEqual(staged.reviewScopeFileCount,1)
     }
 
     @MainActor
@@ -500,6 +1143,129 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(NativeWorkspace.reviewedChangesMatchPaths(truncated,paths:["a"]))
     }
 
+    func testReviewedChangesRequestRequiresExactRepositoryCheckoutAndStageScope() {
+        let snapshot = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"abcdef",
+            staged:true, paths:["a"], nameOnly:["a"], stat:"1 file changed",
+            patch:"diff --git a/a b/a\n", truncated:false
+        )
+        let differentHead = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"fedcba",
+            staged:true, paths:["a"], nameOnly:["a"], stat:"1 file changed",
+            patch:"diff --git a/a b/a\n", truncated:false
+        )
+        let differentBranch = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/b", head:"abcdef",
+            staged:true, paths:["a"], nameOnly:["a"], stat:"1 file changed",
+            patch:"diff --git a/a b/a\n", truncated:false
+        )
+        XCTAssertTrue(NativeWorkspace.reviewedChangesMatchSnapshot(snapshot,current:snapshot))
+        XCTAssertFalse(NativeWorkspace.reviewedChangesMatchSnapshot(differentHead,current:snapshot))
+        XCTAssertFalse(NativeWorkspace.reviewedChangesMatchSnapshot(differentBranch,current:snapshot))
+        XCTAssertTrue(NativeWorkspace.reviewedChangesMatchRequest(
+            snapshot, repoId:"repo_a", checkoutId:"checkout_a", staged:true, paths:["a"]
+        ))
+        XCTAssertTrue(NativeWorkspace.agentChangesMatchContext(
+            snapshot, repoId:"repo_a", checkoutId:"checkout_a", staged:true
+        ))
+        XCTAssertFalse(NativeWorkspace.agentChangesMatchContext(
+            snapshot, repoId:"repo_b", checkoutId:"checkout_a", staged:true
+        ))
+        XCTAssertFalse(NativeWorkspace.agentChangesMatchContext(
+            snapshot, repoId:"repo_a", checkoutId:"checkout_b", staged:true
+        ))
+        XCTAssertFalse(NativeWorkspace.agentChangesMatchContext(
+            snapshot, repoId:"repo_a", checkoutId:"checkout_a", staged:false
+        ))
+
+        XCTAssertFalse(NativeWorkspace.reviewedChangesMatchRequest(
+            snapshot, repoId:"repo_b", checkoutId:"checkout_a", staged:true, paths:["a"]
+        ))
+        XCTAssertFalse(NativeWorkspace.reviewedChangesMatchRequest(
+            snapshot, repoId:"repo_a", checkoutId:"checkout_b", staged:true, paths:["a"]
+        ))
+        XCTAssertFalse(NativeWorkspace.reviewedChangesMatchRequest(
+            snapshot, repoId:"repo_a", checkoutId:"checkout_a", staged:false, paths:["a"]
+        ))
+    }
+
+    @MainActor
+    func testAgentChangesContextInvalidationClearsPendingSnapshotAndLoading() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let snapshot = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"abcdef",
+            staged:false, paths:["a"], nameOnly:["a"], stat:"1 file changed",
+            patch:"diff --git a/a b/a\n", truncated:false
+        )
+
+        model.agentChanges = snapshot
+        model.changesLoading = true
+        model.invalidateAgentChangesRequests(clearSnapshot:true)
+        XCTAssertNil(model.agentChanges)
+        XCTAssertFalse(model.changesLoading)
+
+        model.agentChanges = snapshot
+        model.changesLoading = true
+        model.invalidateAgentChangesRequests(clearSnapshot:false)
+        XCTAssertEqual(model.agentChanges?.head,"abcdef")
+        XCTAssertFalse(model.changesLoading)
+    }
+
+    @MainActor
+    func testAgentChangesMutationCompletionRequiresCurrentGenerationAndWorkspace() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId = "repo_a"
+        model.checkoutId = "checkout_a"
+        let originalGeneration = model.agentChangesRequestGeneration
+
+        XCTAssertTrue(model.agentChangesRequestIsCurrent(
+            generation:originalGeneration,repoId:"repo_a",checkoutId:"checkout_a"
+        ))
+
+        model.agentChanges = AgentGitDiff(
+            repoId:"repo_a",checkoutId:"checkout_a",branch:"work/a",head:"abcdef",
+            staged:false,paths:["a"],nameOnly:["a"],stat:"1 file changed",
+            patch:"diff --git a/a b/a\n",truncated:false
+        )
+        model.changesLoading = true
+        model.invalidateAgentChangesRequests(clearSnapshot:true)
+        model.repoId = "repo_b"
+        model.checkoutId = "checkout_b"
+        let currentGeneration = model.agentChangesRequestGeneration
+        model.agentChanges = AgentGitDiff(
+            repoId:"repo_b",checkoutId:"checkout_b",branch:"work/b",head:"123456",
+            staged:false,paths:["b"],nameOnly:["b"],stat:"1 file changed",
+            patch:"diff --git a/b b/b\n",truncated:false
+        )
+        model.changesLoading = true
+        model.error = "new workspace error"
+
+        XCTAssertNotEqual(currentGeneration,originalGeneration)
+        XCTAssertFalse(model.agentChangesRequestIsCurrent(
+            generation:originalGeneration,repoId:"repo_a",checkoutId:"checkout_a"
+        ))
+        XCTAssertTrue(model.agentChangesRequestIsCurrent(
+            generation:currentGeneration,repoId:"repo_b",checkoutId:"checkout_b"
+        ))
+        XCTAssertFalse(model.finishAgentChangesMutation(
+            generation:originalGeneration,repoId:"repo_a",checkoutId:"checkout_a"
+        ))
+        XCTAssertEqual(model.agentChanges?.head,"123456")
+        XCTAssertTrue(model.changesLoading)
+        XCTAssertEqual(model.error,"new workspace error")
+
+        XCTAssertTrue(model.finishAgentChangesMutation(
+            generation:currentGeneration,repoId:"repo_b",checkoutId:"checkout_b"
+        ))
+        XCTAssertNil(model.agentChanges)
+        XCTAssertFalse(model.changesLoading)
+        XCTAssertNil(model.error)
+    }
+
     func testRetiredWorkIsNotANativeNavigationOrBridgeCapability() {
         XCTAssertFalse(NativePage.allCases.contains { $0.rawValue == "Work" })
         XCTAssertFalse(ForgeBridge.allowed.contains("read_project_work_list"))
@@ -510,6 +1276,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(NativePage.allCases.contains { $0.rawValue.lowercased().contains("runtime") })
         XCTAssertTrue(NativePage.allCases.contains(.schedule))
         XCTAssertTrue(NativePage.allCases.contains(.plugins))
+        XCTAssertEqual(NativePage.plugins.rawValue,"项目插件")
         XCTAssertTrue(NativePage.allCases.contains(.knowledge))
         XCTAssertTrue(NativePage.allCases.contains(.settings))
     }
@@ -531,6 +1298,7 @@ final class NativeWorkspaceTests: XCTestCase {
         let plan = NativeWorkspace.planDetail([
             "data":["plan":[
                 "planId":"PLAN-a","revision":8,"requirementId":"REQ-a","parentPlanId":"PLAN-root",
+                "requirementBasisRevision":7,
                 "sourceBasisRevision":"abcdef123456","goal":"Ship client",
                 "items":[["id":"p1","objective":"Polish UI"]],
                 "resolvedDecisions":["One native app"],"nonGoals":["No Work lifecycle"],
@@ -539,12 +1307,18 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(plan?.planId,"PLAN-a")
         XCTAssertEqual(plan?.requirementId,"REQ-a")
         XCTAssertEqual(plan?.parentPlanId,"PLAN-root")
+        XCTAssertEqual(plan?.requirementBasisRevision,7)
         XCTAssertEqual(plan?.items.first?.objective,"Polish UI")
         XCTAssertEqual(plan?.resolvedDecisions,["One native app"])
         XCTAssertEqual(plan?.nonGoals,["No Work lifecycle"])
 
         let autopilot = NativeWorkspace.autopilotStatusDetail([
             "data":[
+                "policy":[
+                    "provider":"deepseek","model":"deepseek-chat",
+                    "maxTotalTokens":50000,"maxTurns":12,"maxToolCalls":32,
+                    "checkpointPlanIds":["PLAN-a"],
+                ],
                 "grant":[
                     "grantId":"grant-a",
                     "constraints":[
@@ -563,6 +1337,8 @@ final class NativeWorkspaceTests: XCTestCase {
             ]
         ])
         XCTAssertEqual(autopilot?.authorized,true)
+        XCTAssertEqual(autopilot?.provider,"deepseek")
+        XCTAssertEqual(autopilot?.checkpointPlanIds,["PLAN-a"])
         XCTAssertEqual(autopilot?.providerReady,true)
         XCTAssertEqual(autopilot?.runStatus,"paused")
         XCTAssertEqual(autopilot?.stopReason,"human_checkpoint:PLAN-a")
@@ -589,26 +1365,521 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertNil(map["REQ-b"])
     }
 
+    func testAutopilotStatusReadbackRequiresExactRequirementCheckoutAndRevision() {
+        let bareStatus:[String:Any] = ["data":["requirementRevision":3,"providerReady":true]]
+        XCTAssertEqual(
+            NativeWorkspace.autopilotStatusReadbackDetail(
+                bareStatus,repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+            )?.requirementRevision,
+            3
+        )
+
+        let validRun:[String:Any] = ["data":[
+            "requirementRevision":4,
+            "run":["repoId":"repo-a","checkoutId":"checkout-a","requirementId":"REQ-A","status":"running",
+                   "pendingProcessId":"proc-a","pendingCommandRequestId":"request-a"]
+        ]]
+        let parsedRun=NativeWorkspace.autopilotStatusReadbackDetail(
+            validRun,repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        )
+        XCTAssertEqual(parsedRun?.pendingProcessId,"proc-a")
+        XCTAssertEqual(parsedRun?.pendingCommandRequestId,"request-a")
+        XCTAssertTrue(parsedRun?.hasPendingProcessRecovery == true)
+        XCTAssertNil(NativeWorkspace.autopilotStatusReadbackDetail(
+            ["data":["providerReady":true]],repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        ))
+        XCTAssertNil(NativeWorkspace.autopilotStatusReadbackDetail(
+            ["data":["requirementRevision":4,"run":["repoId":"repo-a","checkoutId":"checkout-b","requirementId":"REQ-A"]]],
+            repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        ))
+        XCTAssertNil(NativeWorkspace.autopilotStatusReadbackDetail(
+            ["data":["requirementRevision":4,"run":["repoId":"repo-b","checkoutId":"checkout-a","requirementId":"REQ-A"]]],
+            repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        ))
+        XCTAssertNil(NativeWorkspace.autopilotStatusReadbackDetail(
+            ["data":["requirementRevision":4,"run":["repoId":"repo-a","checkoutId":"checkout-a","requirementId":"REQ-B"]]],
+            repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        ))
+        let grantStatus:[String:Any] = ["data":[
+            "requirementRevision":4,"grant":["grantId":"grant-a","constraints":["checkoutId":"checkout-a"]]
+        ]]
+        XCTAssertNotNil(NativeWorkspace.autopilotStatusReadbackDetail(
+            grantStatus,repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        ))
+        XCTAssertNil(NativeWorkspace.autopilotStatusReadbackDetail(
+            ["data":["requirementRevision":4,"grant":["grantId":"grant-a","constraints":["checkoutId":"checkout-b"]]]],
+            repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        ))
+    }
+
+    func testSemanticProjectDetailParsesTaskSummaryAndRevisionHistory() throws {
+        let detail=try NativeWorkspace.decodeSemanticProjectDetail([
+            "data":[
+                "project":[
+                    "projectId":"PROJECT-a","workspaceId":"workspace-a","displayName":"Alpha",
+                    "status":"active","revision":3,"updatedAt":"2026-11-17T00:00:00Z",
+                    "placements":[["repositoryId":"repo-a"]]
+                ],
+                "requirementCount":2,
+                "taskStatusCounts":["planned":1,"active":1,"waiting_for_user":0,"done":0,"cancelled":0],
+                "taskPriorityCounts":["urgent":1,"high":0,"normal":1,"low":0,"unset":0],
+                "blockedTaskCount":1,
+                "requirements":[[
+                    "requirementId":"REQ-a","revision":4,"projectId":"PROJECT-a","repoId":"repo-a",
+                    "title":"Task A","status":"active","priority":"urgent","assignee":"owner",
+                    "progressSummary":"Implementation in progress","remainingWorkCount":1,
+                    "acceptedEvidenceCount":2,"dependencyCount":1,"linkedPlanCount":1,
+                    "blockingDependencyIds":["REQ-pre"],"updatedAt":"2026-11-17T00:00:00Z"
+                ]],
+                "limit":100,"offset":0,"hasMore":true,"requirementsTruncated":true,
+                "revisionHistory":[[
+                    "projectId":"PROJECT-a","revision":3,"recordedAt":"2026-11-17T00:00:00Z",
+                    "action":"project_semantic_write"
+                ]]
+            ]
+        ])
+
+        XCTAssertEqual(detail.project.projectId,"PROJECT-a")
+        XCTAssertEqual(detail.project.workspaceId,"workspace-a")
+        XCTAssertEqual(detail.project.repositoryIds,["repo-a"])
+        XCTAssertEqual(detail.requirementCount,2)
+        XCTAssertEqual(detail.taskStatusCounts["planned"],1)
+        XCTAssertEqual(detail.taskStatusCounts["active"],1)
+        XCTAssertEqual(detail.requirements.first?.status,"active")
+        XCTAssertEqual(detail.blockedTaskCount,1)
+        XCTAssertEqual(detail.requirements.first?.requirementId,"REQ-a")
+        XCTAssertEqual(detail.requirements.first?.blockingDependencyIds,["REQ-pre"])
+        XCTAssertEqual(detail.revisionHistory.first?.revision,3)
+        XCTAssertEqual(detail.revisionHistory.first?.action,"project_semantic_write")
+    }
+
+    func testSemanticProjectDetailPagingAppendsUniqueRequirements() throws {
+        func page(_ offset:Int,_ rows:[[String:Any]],hasMore:Bool) throws -> ForgeSemanticProjectDetail {
+            try NativeWorkspace.decodeSemanticProjectDetail([
+                "data":[
+                    "project":[
+                        "projectId":"PROJECT-a","workspaceId":"workspace-a","displayName":"Alpha",
+                        "status":"active","revision":3,"placements":[]
+                    ],
+                    "requirementCount":250,
+                    "taskStatusCounts":["planned":0,"active":2,"waiting_for_user":0,"done":0,"cancelled":0],
+                    "taskPriorityCounts":["urgent":0,"high":0,"normal":2,"low":0,"unset":0],
+                    "blockedTaskCount":0,
+                    "requirements":rows,
+                    "limit":100,"offset":offset,"hasMore":hasMore,"requirementsTruncated":hasMore,
+                    "revisionHistory":[[
+                        "revision":3,"recordedAt":"2026-11-17T00:00:00Z","action":"project_semantic_create"
+                    ]]
+                ]
+            ])
+        }
+        func row(_ id:String) -> [String:Any] {
+            [
+                "requirementId":id,"revision":1,"projectId":"PROJECT-a","title":id,"status":"active",
+                "progressSummary":"","remainingWorkCount":0,"acceptedEvidenceCount":0,
+                "dependencyCount":0,"linkedPlanCount":0,"blockingDependencyIds":[],
+                "updatedAt":"2026-11-17T00:00:00Z"
+            ]
+        }
+
+        let first=try page(0,[row("REQ-a")],hasMore:true)
+        let second=try page(100,[row("REQ-a"),row("REQ-b")],hasMore:true)
+        let merged=first.appending(second)
+
+        XCTAssertEqual(merged.requirements.map(\.requirementId),["REQ-a","REQ-b"])
+        XCTAssertEqual(merged.offset,100)
+        XCTAssertEqual(merged.nextRequirementOffset,200)
+        XCTAssertTrue(merged.hasMore)
+    }
+
+    func testRequirementDetailDistinguishesUnavailableAndEmptyDownstreamProjection() {
+        let requirement = ["requirementId":"REQ-prerequisite","revision":3,"title":"Prerequisite"] as [String:Any]
+        let unavailable = NativeWorkspace.requirementDetail([
+            "data":["requirement":requirement]
+        ])
+        XCTAssertNil(unavailable?.dependentRequirements)
+
+        let empty = NativeWorkspace.requirementDetail([
+            "data":[
+                "requirement":requirement,
+                "dependentRequirements":[],
+                "dependentRequirementsTruncated":false
+            ]
+        ])
+        XCTAssertNotNil(empty?.dependentRequirements)
+        XCTAssertEqual(empty?.dependentRequirements?.count,0)
+
+        let malformed = NativeWorkspace.requirementDetail([
+            "data":[
+                "requirement":requirement,
+                "dependentRequirements":[["title":"missing requirement id"]]
+            ]
+        ])
+        XCTAssertNil(malformed?.dependentRequirements)
+    }
+
+    func testRequirementDetailParsesCanonicalDownstreamDependencyProjection() {
+        let detail=NativeWorkspace.requirementDetail([
+            "data":[
+                "requirement":["requirementId":"REQ-prerequisite","revision":3,"title":"Prerequisite"],
+                "dependentRequirements":[[
+                    "requirementId":"REQ-downstream","title":"Downstream task","status":"planned",
+                    "revision":5,"repoId":"repo-b","projectId":"project-a","priority":"high",
+                    "assignee":"owner","blocksDependent":true
+                ]],
+                "dependentRequirementsTruncated":true,
+                "dependentRequirementCount":24
+            ]
+        ])
+
+        XCTAssertEqual(detail?.dependentRequirements?.count,1)
+        XCTAssertEqual(detail?.dependentRequirements?.first?.requirementId,"REQ-downstream")
+        XCTAssertEqual(detail?.dependentRequirements?.first?.title,"Downstream task")
+        XCTAssertEqual(detail?.dependentRequirements?.first?.status,"planned")
+        XCTAssertEqual(detail?.dependentRequirements?.first?.repoId,"repo-b")
+        XCTAssertEqual(detail?.dependentRequirements?.first?.projectId,"project-a")
+        XCTAssertEqual(detail?.dependentRequirements?.first?.priority,"high")
+        XCTAssertEqual(detail?.dependentRequirements?.first?.assignee,"owner")
+        XCTAssertEqual(detail?.dependentRequirements?.first?.blocksDependent,true)
+        XCTAssertEqual(detail?.dependentRequirementsTruncated,true)
+        XCTAssertEqual(detail?.dependentRequirementCount,24)
+    }
+
+    func testSemanticRecordRefreshSupportsOnlyTheOriginalPlanningPage() {
+        XCTAssertTrue(NativeWorkspace.semanticRecordRefreshPageIsCurrent(.requirement,currentPage:.requirement))
+        XCTAssertTrue(NativeWorkspace.semanticRecordRefreshPageIsCurrent(.plan,currentPage:.plan))
+        XCTAssertFalse(NativeWorkspace.semanticRecordRefreshPageIsCurrent(.agent,currentPage:.agent))
+        XCTAssertFalse(NativeWorkspace.semanticRecordRefreshPageIsCurrent(.plan,currentPage:.requirement))
+        XCTAssertFalse(NativeWorkspace.semanticRecordRefreshPageIsCurrent(.requirement,currentPage:.plan))
+    }
+
+    func testSemanticRecordMutationKeepsEditorOpenUntilCurrentContextReadback() {
+        XCTAssertFalse(NativeWorkspace.semanticRecordMutationShouldCloseEditor(
+            contextStillCurrent:true,readbackConfirmed:false
+        ))
+        XCTAssertTrue(NativeWorkspace.semanticRecordMutationShouldCloseEditor(
+            contextStillCurrent:true,readbackConfirmed:true
+        ))
+        XCTAssertTrue(NativeWorkspace.semanticRecordMutationShouldCloseEditor(
+            contextStillCurrent:false,readbackConfirmed:false
+        ))
+    }
+
+    func testSemanticRecordCreationNavigationRequiresOriginalPageSelectionAndContext() {
+        XCTAssertTrue(NativeWorkspace.semanticRecordCreationNavigationIsCurrent(
+            targetPage:.plan,currentPage:.plan,targetRecordId:"PLAN-a",currentRecordId:"PLAN-a",
+            targetContextGeneration:4,currentContextGeneration:4,
+            targetPlanningPageRequestGeneration:2,currentPlanningPageRequestGeneration:2
+        ))
+        XCTAssertFalse(NativeWorkspace.semanticRecordCreationNavigationIsCurrent(
+            targetPage:.plan,currentPage:.agent,targetRecordId:"PLAN-a",currentRecordId:"PLAN-a",
+            targetContextGeneration:4,currentContextGeneration:4,
+            targetPlanningPageRequestGeneration:2,currentPlanningPageRequestGeneration:2
+        ))
+        XCTAssertFalse(NativeWorkspace.semanticRecordCreationNavigationIsCurrent(
+            targetPage:.plan,currentPage:.plan,targetRecordId:"PLAN-a",currentRecordId:"PLAN-b",
+            targetContextGeneration:4,currentContextGeneration:4,
+            targetPlanningPageRequestGeneration:2,currentPlanningPageRequestGeneration:2
+        ))
+        XCTAssertFalse(NativeWorkspace.semanticRecordCreationNavigationIsCurrent(
+            targetPage:.plan,currentPage:.plan,targetRecordId:"PLAN-a",currentRecordId:"PLAN-a",
+            targetContextGeneration:4,currentContextGeneration:5,
+            targetPlanningPageRequestGeneration:2,currentPlanningPageRequestGeneration:2
+        ))
+        XCTAssertFalse(NativeWorkspace.semanticRecordCreationNavigationIsCurrent(
+            targetPage:.agent,currentPage:.agent,targetRecordId:nil,currentRecordId:nil,
+            targetContextGeneration:4,currentContextGeneration:4,
+            targetPlanningPageRequestGeneration:2,currentPlanningPageRequestGeneration:2
+        ))
+        XCTAssertFalse(NativeWorkspace.semanticRecordCreationNavigationIsCurrent(
+            targetPage:.plan,currentPage:.plan,targetRecordId:nil,currentRecordId:nil,
+            targetContextGeneration:4,currentContextGeneration:4,
+            targetPlanningPageRequestGeneration:2,currentPlanningPageRequestGeneration:3
+        ))
+    }
+
+    func testSemanticRecordMutationReadbackRequiresCurrentRevisionAndProjection() {
+        let row = ForgeRecord(recordId:"REQ-a",title:"Desktop",state:"completed",kind:.requirement,
+                              depth:0,requirementId:"REQ-a",parentPlanId:nil,
+                              taskStatus:"done",priority:"urgent",assignee:"owner")
+        let detail = RequirementRecordDetail(
+            requirementId:"REQ-a",revision:4,title:"Desktop",outcomeStatement:"Useful client",
+            state:"completed",acceptanceCriteria:["Ship"],progressSummary:"Verified",
+            remainingWork:[],acceptedEvidenceRefs:["git:commit:abc"],taskStatus:"done",
+            priority:"urgent",assignee:"owner",dependencyRequirementIds:[],
+            dependencyRequirements:[],blockingDependencyIds:[],dependentRequirements:[],
+            dependentRequirementsTruncated:false,dependentRequirementCount:nil
+        )
+        XCTAssertTrue(NativeWorkspace.semanticRecordReadbackConfirmed(
+            record:row,detail:.requirement(detail),kind:.requirement,id:"REQ-a",revision:4,state:"completed"))
+        XCTAssertFalse(NativeWorkspace.semanticRecordReadbackConfirmed(
+            record:row,detail:.requirement(detail),kind:.requirement,id:"REQ-a",revision:3,state:"completed"))
+        XCTAssertFalse(NativeWorkspace.semanticRecordReadbackConfirmed(
+            record:row,detail:.requirement(detail),kind:.requirement,id:"REQ-a",revision:4,state:"open"))
+        let staleRow = ForgeRecord(recordId:"REQ-a",title:"Old",state:"completed",kind:.requirement,
+                                   depth:0,requirementId:"REQ-a",parentPlanId:nil,
+                                   taskStatus:"done",priority:"urgent",assignee:"owner")
+        XCTAssertFalse(NativeWorkspace.semanticRecordReadbackConfirmed(
+            record:staleRow,detail:.requirement(detail),kind:.requirement,id:"REQ-a",revision:4,state:"completed"))
+        let planRow = ForgeRecord(recordId:"PLAN-a",title:"Ship",state:"Plan",kind:.plan,
+                                  depth:1,requirementId:"REQ-a",parentPlanId:"PLAN-root")
+        let plan = PlanRecordDetail(planId:"PLAN-a",revision:8,requirementId:"REQ-a",
+                                    parentPlanId:"PLAN-root",requirementBasisRevision:nil,
+                                    sourceBasisRevision:nil,goal:"Ship",
+                                    items:[],resolvedDecisions:[],nonGoals:[])
+        XCTAssertTrue(NativeWorkspace.semanticRecordReadbackConfirmed(
+            record:planRow,detail:.plan(plan),kind:.plan,id:"PLAN-a",revision:8))
+    }
+
     func testSemanticRecordIdsAreBoundedAndTyped() {
         let uuid = UUID(uuidString:"01234567-89AB-CDEF-0123-456789ABCDEF")!
         XCTAssertEqual(NativeWorkspace.semanticRecordId(prefix:"REQ",uuid:uuid),"REQ-0123456789ab")
         XCTAssertEqual(NativeWorkspace.semanticRecordId(prefix:"PLAN",uuid:uuid),"PLAN-0123456789ab")
     }
 
-    func testProjectRequirementRowsExcludeForeignGlobalRequirementsWithoutGuessing() {
-        let rows = NativeWorkspace.projectRequirementRows(
-            requirementRows:[
-                ["requirementId":"REQ-linked","title":"Linked"],
-                ["requirementId":"REQ-local","repoId":"repo-forge","title":"Local standalone"],
-                ["requirementId":"REQ-foreign","repoId":"repo-other","title":"Foreign"],
-                ["requirementId":"REQ-global","title":"Unscoped global"]
-            ],
-            planRows:[
-                ["planId":"PLAN-a","requirementId":"REQ-linked","goal":"Plan A"]
-            ],
-            repoId:"repo-forge"
+    func testProjectRepositorySelectionAndAgentContextRemainBoundToOneProject() {
+        XCTAssertEqual(NativeWorkspace.projectRepositorySelection(
+            currentRepoId:"repo-a",requestedRepoId:nil,availableRepoIds:["repo-a","repo-b"]
+        ),"repo-a")
+        XCTAssertEqual(NativeWorkspace.projectRepositorySelection(
+            currentRepoId:"repo-old",requestedRepoId:nil,availableRepoIds:["repo-a","repo-b"]
+        ),nil)
+        XCTAssertNil(NativeWorkspace.projectRepositorySelection(
+            currentRepoId:"repo-a",requestedRepoId:nil,availableRepoIds:["repo-a","repo-b"],projectScope:true
+        ))
+        XCTAssertEqual(NativeWorkspace.projectRepositorySelection(
+            currentRepoId:"repo-old",requestedRepoId:"repo-b",availableRepoIds:["repo-a","repo-b"]
+        ),"repo-b")
+        XCTAssertNil(NativeWorkspace.projectRepositorySelection(
+            currentRepoId:"repo-old",requestedRepoId:"repo-c",availableRepoIds:["repo-a","repo-b"]
+        ))
+
+        let thread=ChatThread(repoId:"repo-a",checkoutId:"checkout-a",projectId:"PROJECT-a")
+        XCTAssertTrue(NativeWorkspace.agentThreadMatchesContext(
+            thread,repoId:"repo-a",checkoutId:"checkout-a",projectId:"PROJECT-a"
+        ))
+        XCTAssertFalse(NativeWorkspace.agentThreadMatchesContext(
+            thread,repoId:nil,checkoutId:nil,projectId:"PROJECT-b"
+        ))
+        XCTAssertFalse(NativeWorkspace.agentThreadMatchesContext(
+            thread,repoId:"repo-b",checkoutId:"checkout-b",projectId:"PROJECT-a"
+        ))
+    }
+
+    func testProjectTaskPlacementCanBeBrowsedWithoutLocalCheckout() {
+        let project=ForgeSemanticProject(
+            projectId:"PROJECT-active",workspaceId:nil,displayName:"Active",status:"active",
+            revision:1,placements:[ForgeSemanticProjectPlacement(repositoryId:"repo-a")],requirementCount:0
         )
-        XCTAssertEqual(rows.compactMap { $0["requirementId"] as? String },["REQ-linked","REQ-local"])
+        let selectedRepository=NativeWorkspace.projectRepositorySelection(
+            currentRepoId:nil,requestedRepoId:"repo-a",availableRepoIds:project.repositoryIds
+        )
+        XCTAssertEqual(selectedRepository,"repo-a")
+        XCTAssertTrue(NativeWorkspace.projectDetailRequirementScopeIsValid(
+            project:project,repositoryId:selectedRepository
+        ))
+        XCTAssertNil(NativeWorkspace.registeredProjectRepository(for:selectedRepository,repositories:[]))
+
+        let registeredWithoutCheckout=ForgeProject(
+            repoId:"repo-a",displayName:"Repo A",localRoot:nil,checkoutId:nil,
+            remoteUrl:nil,defaultBranch:nil
+        )
+        XCTAssertNotNil(NativeWorkspace.registeredProjectRepository(
+            for:selectedRepository,repositories:[registeredWithoutCheckout]
+        ))
+        XCTAssertNil(NativeWorkspace.registeredProjectRepository(
+            for:selectedRepository,repositories:[registeredWithoutCheckout]
+        )?.checkoutId)
+    }
+
+    func testTaskWritesAndProjectDetailRequireAnActiveProjectAndValidPlacement() {
+        let active=ForgeSemanticProject(
+            projectId:"PROJECT-active",workspaceId:nil,displayName:"Active",status:"active",
+            revision:1,placements:[ForgeSemanticProjectPlacement(repositoryId:"repo-a")],requirementCount:0
+        )
+        let archived=ForgeSemanticProject(
+            projectId:"PROJECT-archived",workspaceId:nil,displayName:"Archived",status:"archived",
+            revision:2,placements:[ForgeSemanticProjectPlacement(repositoryId:"repo-a")],requirementCount:4
+        )
+        XCTAssertEqual(
+            NativeWorkspace.writableSemanticProjectId(
+                selectedProjectId:"PROJECT-active",projects:[active,archived]
+            ),
+            "PROJECT-active"
+        )
+        XCTAssertNil(
+            NativeWorkspace.writableSemanticProjectId(
+                selectedProjectId:"PROJECT-archived",projects:[active,archived]
+            )
+        )
+        XCTAssertNil(
+            NativeWorkspace.writableSemanticProjectId(
+                selectedProjectId:"PROJECT-missing",projects:[active,archived]
+            )
+        )
+        XCTAssertNil(
+            NativeWorkspace.writableSemanticProjectId(
+                selectedProjectId:nil,projects:[active,archived]
+            )
+        )
+        XCTAssertTrue(NativeWorkspace.projectDetailRequirementScopeIsValid(project:active,repositoryId:nil))
+        XCTAssertTrue(NativeWorkspace.projectDetailRequirementScopeIsValid(project:active,repositoryId:"repo-a"))
+        XCTAssertFalse(NativeWorkspace.projectDetailRequirementScopeIsValid(project:active,repositoryId:"repo-b"))
+        XCTAssertFalse(NativeWorkspace.projectDetailRequirementScopeIsValid(project:archived,repositoryId:nil))
+    }
+
+    func testPlanningScopeArgumentsKeepProjectAndOptionalRepositoryDistinct() {
+        XCTAssertTrue(NativeWorkspace.projectPlanningScopeMatches(
+            requestedProjectId:"PROJECT-standalone",currentProjectId:"PROJECT-standalone",
+            requestedRepoId:nil,currentRepoId:nil
+        ))
+        XCTAssertFalse(NativeWorkspace.projectPlanningScopeMatches(
+            requestedProjectId:"PROJECT-standalone",currentProjectId:"PROJECT-standalone",
+            requestedRepoId:nil,currentRepoId:"repo-previous"
+        ))
+        XCTAssertFalse(NativeWorkspace.projectPlanningScopeMatches(
+            requestedProjectId:"PROJECT-a",currentProjectId:"PROJECT-b",
+            requestedRepoId:"repo-a",currentRepoId:"repo-a"
+        ))
+        XCTAssertTrue(NativeWorkspace.projectPlanningScopeMatches(
+            requestedProjectId:"PROJECT-a",currentProjectId:"PROJECT-a",
+            requestedRepoId:"repo-a",currentRepoId:"repo-a"
+        ))
+
+        let standalone=NativeWorkspace.planningScopeArguments(projectId:"PROJECT-a",repoId:nil)
+        XCTAssertEqual(standalone["projectId"] as? String,"PROJECT-a")
+        XCTAssertNil(standalone["repoId"])
+
+        let placed=NativeWorkspace.planningScopeArguments(projectId:"PROJECT-b",repoId:"repo-b")
+        XCTAssertEqual(placed["projectId"] as? String,"PROJECT-b")
+        XCTAssertEqual(placed["repoId"] as? String,"repo-b")
+    }
+
+    func testProjectCreationCanExplicitlyAttachOnlyAnUnplacedRepository() {
+        let repositories=[
+            ForgeProject(repoId:"repo-b",displayName:"Beta",localRoot:nil,checkoutId:nil,remoteUrl:nil,defaultBranch:nil),
+            ForgeProject(repoId:"repo-a",displayName:"Alpha",localRoot:nil,checkoutId:nil,remoteUrl:nil,defaultBranch:nil)
+        ]
+        let projects=[ForgeSemanticProject(
+            projectId:"PROJECT-existing",workspaceId:nil,displayName:"Existing",status:"active",revision:1,
+            placements:[ForgeSemanticProjectPlacement(repositoryId:"repo-b")],requirementCount:0
+        )]
+        XCTAssertEqual(
+            NativeWorkspace.availableProjectPlacementRepositories(
+                repositories:repositories,semanticProjects:projects).map(\.repoId),
+            ["repo-a"]
+        )
+        let standalone=NativeWorkspace.semanticProjectCreationArguments(
+            projectId:"PROJECT-new",displayName:"Personal",repositoryId:nil
+        )
+        XCTAssertEqual(standalone["projectId"] as? String,"PROJECT-new")
+        XCTAssertNil(standalone["repoId"])
+        let placed=NativeWorkspace.semanticProjectCreationArguments(
+            projectId:"PROJECT-new",displayName:"Work",repositoryId:"repo-a"
+        )
+        XCTAssertEqual(placed["repoId"] as? String,"repo-a")
+    }
+
+    func testSemanticProjectCreationReadbackRequiresExactIdentityAndPlacement() {
+        let standalone=ForgeSemanticProject(
+            projectId:"PROJECT-standalone",workspaceId:"workspace-personal",
+            displayName:"Personal",status:"active",revision:1,placements:nil,requirementCount:0
+        )
+        XCTAssertTrue(NativeWorkspace.semanticProjectCreationReadbackMatches(
+            standalone,projectId:"PROJECT-standalone",displayName:"Personal",repositoryId:nil
+        ))
+        XCTAssertFalse(NativeWorkspace.semanticProjectCreationReadbackMatches(
+            standalone,projectId:"PROJECT-standalone",displayName:"Personal",repositoryId:"repo-a"
+        ))
+
+        let placed=ForgeSemanticProject(
+            projectId:"PROJECT-placed",workspaceId:"workspace-personal",
+            displayName:"Work",status:"active",revision:1,
+            placements:[ForgeSemanticProjectPlacement(repositoryId:"repo-a")],requirementCount:0
+        )
+        XCTAssertTrue(NativeWorkspace.semanticProjectCreationReadbackMatches(
+            placed,projectId:"PROJECT-placed",displayName:"Work",repositoryId:"repo-a"
+        ))
+        XCTAssertFalse(NativeWorkspace.semanticProjectCreationReadbackMatches(
+            placed,projectId:"PROJECT-placed",displayName:"Work",repositoryId:nil
+        ))
+        XCTAssertFalse(NativeWorkspace.semanticProjectCreationReadbackMatches(
+            placed,projectId:"PROJECT-placed",displayName:"Renamed",repositoryId:"repo-a"
+        ))
+
+        let extraPlacement=ForgeSemanticProject(
+            projectId:"PROJECT-placed",workspaceId:"workspace-personal",
+            displayName:"Work",status:"active",revision:1,
+            placements:[
+                ForgeSemanticProjectPlacement(repositoryId:"repo-a"),
+                ForgeSemanticProjectPlacement(repositoryId:"repo-b")
+            ],requirementCount:0
+        )
+        XCTAssertFalse(NativeWorkspace.semanticProjectCreationReadbackMatches(
+            extraPlacement,projectId:"PROJECT-placed",displayName:"Work",repositoryId:"repo-a"
+        ))
+    }
+
+    func testSemanticProjectDirectoryPreservesStandaloneAndRepositoryIdentity() throws {
+        let projects = try NativeWorkspace.decodeSemanticProjects([
+            "projects":[
+                ["projectId":"PROJECT-standalone","displayName":"Personal",
+                 "status":"active","revision":1,"requirementCount":2],
+                ["projectId":"PROJECT-repository","displayName":"Forge",
+                 "status":"archived","revision":3,"requirementCount":4,
+                 "placements":[["repositoryId":"repo-forge"]]]
+            ]
+        ])
+        XCTAssertEqual(projects.map(\.projectId),["PROJECT-standalone","PROJECT-repository"])
+        XCTAssertEqual(projects[0].repositoryIds,[])
+        XCTAssertEqual(projects[0].requirementCount,2)
+        XCTAssertEqual(projects[1].repositoryIds,["repo-forge"])
+        XCTAssertEqual(projects[1].status,"archived")
+    }
+
+    @MainActor
+    func testZenProjectSelectionSurvivesRestartWithoutRebindingAgentThread() throws {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let url=folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:url)
+        let originalThreadId=model.threads[0].id
+        model.threads[0].projectId="PROJECT-a"
+        model.threads[0].repoId="repo-a"
+        model.threads[0].checkoutId="checkout-a"
+        model.newThread()
+        model.selectThread(originalThreadId)
+        model.selectedProjectId="PROJECT-b"
+        model.repoId="repo-b"
+        model.checkoutId="checkout-b"
+        model.persist()
+
+        let restored=NativeWorkspace(store:url)
+        XCTAssertEqual(restored.selectedProjectId,"PROJECT-b")
+        XCTAssertEqual(restored.thread?.id,originalThreadId)
+        XCTAssertEqual(restored.threads.count,2)
+        XCTAssertEqual(restored.repoId,"repo-b")
+        XCTAssertEqual(restored.checkoutId,"checkout-b")
+        XCTAssertEqual(restored.thread?.projectId,"PROJECT-a")
+        XCTAssertEqual(restored.thread?.repoId,"repo-a")
+    }
+
+    func testWorkspaceStorePreservesExplicitNilAndMigratesLegacyConversationArray() throws {
+        let thread=ChatThread(repoId:"repo-a",checkoutId:"checkout-a",projectId:"PROJECT-a")
+        let current=NativeWorkspaceStore(
+            threads:[thread],selectedProjectId:nil,repoId:nil,checkoutId:nil
+        )
+        let restoredCurrent=try NativeWorkspaceStore.decode(JSONEncoder().encode(current))
+        XCTAssertNil(restoredCurrent.selectedProjectId)
+        XCTAssertNil(restoredCurrent.repoId)
+        XCTAssertNil(restoredCurrent.checkoutId)
+
+        let restoredLegacy=try NativeWorkspaceStore.decode(JSONEncoder().encode([thread]))
+        XCTAssertEqual(restoredLegacy.selectedThreadId,thread.id)
+        XCTAssertEqual(restoredLegacy.selectedProjectId,"PROJECT-a")
+        XCTAssertEqual(restoredLegacy.repoId,"repo-a")
+        XCTAssertEqual(restoredLegacy.checkoutId,"checkout-a")
+        XCTAssertEqual(restoredLegacy.threads.first?.id,thread.id)
     }
 
     func testPlanningTreeKeepsRequirementOptionalAndNestsChildPlans() {
@@ -697,7 +1968,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(connection?.setup?.summary,"Install Forge Runtime")
         XCTAssertEqual(connection?.setup?.risk,"workspace_write")
         XCTAssertEqual(connection?.setup?.requiresUser,false)
-        XCTAssertEqual(NativeWorkspace.connectionLabel(connection),"远程 MCP 未连接")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(connection),"远程连接未就绪")
         let configuredConnection = NativeWorkspace.controllerConnectionDetail([
             "connection":[
                 "configured":true,"ready":true,
@@ -705,7 +1976,7 @@ final class NativeWorkspaceTests: XCTestCase {
                 "tunnel":["ready":true,"title":"Transport configured","detail":"setup"]
             ]
         ])
-        XCTAssertEqual(NativeWorkspace.connectionLabel(configuredConnection),"MCP 配置就绪")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(configuredConnection),"配置已就绪")
         let unconfiguredConnection = NativeWorkspace.controllerConnectionDetail([
             "connection":[
                 "configured":false,"ready":false,
@@ -713,7 +1984,15 @@ final class NativeWorkspaceTests: XCTestCase {
                 "tunnel":["ready":false,"title":"No transport","detail":""]
             ]
         ])
-        XCTAssertEqual(NativeWorkspace.connectionLabel(unconfiguredConnection),"MCP 未配置")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(unconfiguredConnection),"尚未配置连接")
+        let localUnavailableConnection = NativeWorkspace.controllerConnectionDetail([
+            "connection":[
+                "configured":true,"ready":false,
+                "controller":["ready":false,"title":"Unavailable","detail":"local"],
+                "tunnel":["ready":true,"title":"Transport ready","detail":"remote"]
+            ]
+        ])
+        XCTAssertEqual(NativeWorkspace.connectionLabel(localUnavailableConnection),"本机连接未就绪")
         let authFailedConnection = NativeWorkspace.controllerConnectionDetail([
             "connection":[
                 "configured":true,"ready":false,
@@ -726,8 +2005,8 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(authFailedConnection?.tunnel.detail,"远程 MCP 凭据无效")
         XCTAssertEqual(authFailedConnection?.repairAvailable,true)
         XCTAssertEqual(authFailedConnection?.repairLabel,"重新连接")
-        XCTAssertEqual(NativeWorkspace.connectionLabel(authFailedConnection),"远程 MCP 未连接")
-        XCTAssertEqual(NativeWorkspace.connectionLabel(nil),"MCP 暂不可用")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(authFailedConnection),"远程连接未就绪")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(nil),"连接状态未知")
         XCTAssertEqual(NativeWorkspace.connectionLabel(nil,loading:true),"正在读取连接")
         XCTAssertEqual(NativeWorkspace.runtimeLabel(nil,loading:false),"Runtime 暂不可用")
         XCTAssertEqual(NativeWorkspace.runtimeLabel(nil,loading:true),"正在读取运行时")
@@ -742,7 +2021,7 @@ final class NativeWorkspaceTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at:folder) }
         let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
 
-        XCTAssertEqual(model.connection,"MCP 暂不可用")
+        XCTAssertEqual(model.connection,"连接状态未知")
         XCTAssertEqual(model.runtimeLabel,"Runtime 暂不可用")
         XCTAssertEqual(model.runtimeDescription,"暂时无法读取 Runtime 状态；可刷新或运行诊断。")
 
@@ -751,6 +2030,56 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.connection,"正在读取连接")
         XCTAssertEqual(model.runtimeLabel,"正在读取运行时")
         XCTAssertEqual(model.runtimeDescription,"正在读取主运行时状态。")
+    }
+
+    @MainActor
+    func testRuntimePageRefreshDoesNotOverlapDiagnosisOrConnectionOperation() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+
+        model.runtimeLoading = true
+        XCTAssertFalse(model.beginRuntimePageRefresh())
+        model.runtimeLoading = false
+        model.connectionLoading = true
+        XCTAssertFalse(model.beginRuntimePageRefresh())
+        model.connectionLoading = false
+
+        XCTAssertTrue(model.beginRuntimePageRefresh())
+        XCTAssertTrue(model.runtimeLoading)
+        XCTAssertTrue(model.connectionLoading)
+        model.finishRuntimePageRefresh()
+        XCTAssertFalse(model.runtimeLoading)
+        XCTAssertFalse(model.connectionLoading)
+    }
+
+    @MainActor
+    func testScheduleRefreshAndControlKeepProjectScopedLoadingIndependent() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.page = .schedule
+        model.repoId = "repo_a"
+
+        let older = model.beginSchedulePageRefresh(repoId:"repo_a")!
+        model.repoId = "repo_b"
+        let newer = model.beginSchedulePageRefresh(repoId:"repo_b")!
+        XCTAssertFalse(model.schedulePageRequestIsCurrent(older,repoId:"repo_a"))
+        XCTAssertTrue(model.schedulePageRequestIsCurrent(newer,repoId:"repo_b"))
+        model.finishSchedulePageRefresh(older)
+        XCTAssertTrue(model.schedulesLoading)
+        XCTAssertFalse(model.beginScheduleControl(repoId:"repo_b"))
+        model.finishSchedulePageRefresh(newer)
+        XCTAssertFalse(model.schedulesLoading)
+
+        XCTAssertTrue(model.beginScheduleControl(repoId:"repo_a"))
+        XCTAssertNil(model.beginSchedulePageRefresh(repoId:"repo_a"))
+        let otherProjectRead = model.beginSchedulePageRefresh(repoId:"repo_b")!
+        model.finishSchedulePageRefresh(otherProjectRead)
+        XCTAssertTrue(model.schedulesLoading)
+        model.finishScheduleControl(repoId:"repo_a")
+        XCTAssertFalse(model.schedulesLoading)
+        XCTAssertNil(model.scheduleActionRepoId)
     }
 
     func testKnowledgeProjectionDecodesCanonicalReadOnlyAudit() {
@@ -839,6 +2168,43 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(NativeWorkspace.repositoryAccessAllowsEffects(provider:"joycode", accessMode:"full_access", repoId:"repo", checkoutId:"checkout"))
     }
 
+    func testApiProfileConnectionProbeHasNoRepositoryOrEffectAuthority() {
+        let profile=ApiProviderProfileDetail(
+            id:"openai",providerId:"api:openai",label:"OpenAI",
+            endpoint:"https://api.openai.com/v1",model:"gpt-test",
+            apiProtocol:"responses",credentialRef:nil,hasKey:true,endpointReady:true
+        )
+        let payload=NativeWorkspace.apiProfileProbeArguments(profile:profile)
+        XCTAssertEqual(payload["provider"] as? String,"api:openai")
+        XCTAssertEqual(payload["model"] as? String,"gpt-test")
+        XCTAssertEqual(payload["allowEffects"] as? Bool,false)
+        XCTAssertNil(payload["repoId"])
+        XCTAssertNil(payload["checkoutId"])
+        let messages=payload["messages"] as? [[String:String]]
+        XCTAssertEqual(messages?.count,1)
+        XCTAssertEqual(messages?.first?["role"],"user")
+        XCTAssertEqual(messages?.first?["content"],"Reply with OK.")
+        XCTAssertTrue((payload["conversationId"] as? String)?.hasPrefix("profile-check-") == true)
+    }
+
+    func testApiProfileProbeRejectsIncompleteAndToolActivity() {
+        XCTAssertTrue(NativeWorkspace.apiProfileProbeSucceeded([
+            "output":"OK","toolActivityCount":0,"incomplete":false
+        ]))
+        XCTAssertFalse(NativeWorkspace.apiProfileProbeSucceeded([
+            "output":"partial reply","toolActivityCount":0,"incomplete":true
+        ]))
+        XCTAssertFalse(NativeWorkspace.apiProfileProbeSucceeded([
+            "output":"OK","toolActivityCount":1,"incomplete":false
+        ]))
+        XCTAssertFalse(NativeWorkspace.apiProfileProbeSucceeded([
+            "output":"  ","toolActivityCount":0
+        ]))
+        XCTAssertFalse(NativeWorkspace.apiProfileProbeSucceeded([
+            "toolActivityCount":0
+        ]))
+    }
+
     @MainActor
     func testApiThreadReadinessUsesThreadModelAndSharedEndpoint() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -902,6 +2268,124 @@ final class NativeWorkspaceTests: XCTestCase {
         )
         XCTAssertEqual(model.thread?.model,"model-a")
         XCTAssertEqual(model.selectedApiModel,"model-a")
+    }
+
+    @MainActor
+    func testAgentComposerDraftBelongsToConversationAndSurvivesRestart() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let model = NativeWorkspace(store: store)
+        let first = try XCTUnwrap(model.selectedThreadId)
+
+        model.draft = "First conversation, unsent"
+        model.newThread()
+        let second = try XCTUnwrap(model.selectedThreadId)
+        XCTAssertEqual(model.draft, "")
+        model.draft = "Second conversation, unsent"
+        model.selectThread(first)
+        XCTAssertEqual(model.draft, "First conversation, unsent")
+        model.selectThread(second)
+        XCTAssertEqual(model.draft, "Second conversation, unsent")
+
+        // The existing atomic conversation store also preserves drafts after restart.
+        try await Task.sleep(for: .milliseconds(650))
+        let restored = NativeWorkspace(store: store)
+        restored.selectThread(first)
+        XCTAssertEqual(restored.draft, "First conversation, unsent")
+        restored.selectThread(second)
+        XCTAssertEqual(restored.draft, "Second conversation, unsent")
+
+        restored.draft = ""
+        try await Task.sleep(for: .milliseconds(650))
+        let afterClearing = NativeWorkspace(store: store)
+        afterClearing.selectThread(second)
+        XCTAssertEqual(afterClearing.draft, "")
+    }
+
+    @MainActor
+    func testAgentUnsentAttachmentsStayWithConversationAcrossSwitchAndRestart() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:store)
+        let first = try XCTUnwrap(model.selectedThreadId)
+        let screenshot = folder.appendingPathComponent("first.png")
+        let secondImage = folder.appendingPathComponent("second.jpg")
+        model.draft = "First task"
+        model.pendingImageURLs = [screenshot]
+        model.pendingContextPaths = ["Sources/First.swift"]
+
+        model.newThread()
+        let second = try XCTUnwrap(model.selectedThreadId)
+        XCTAssertEqual(model.draft, "")
+        XCTAssertTrue(model.pendingImageURLs.isEmpty)
+        XCTAssertTrue(model.pendingContextPaths.isEmpty)
+        model.draft = "Second task"
+        model.pendingImageURLs = [secondImage]
+        model.pendingContextPaths = ["Sources/Second.swift"]
+
+        model.selectThread(first)
+        XCTAssertEqual(model.draft, "First task")
+        XCTAssertEqual(model.pendingImageURLs, [screenshot])
+        XCTAssertEqual(model.pendingContextPaths, ["Sources/First.swift"])
+        model.selectThread(second)
+        XCTAssertEqual(model.draft, "Second task")
+        XCTAssertEqual(model.pendingImageURLs, [secondImage])
+        XCTAssertEqual(model.pendingContextPaths, ["Sources/Second.swift"])
+
+        try await Task.sleep(for: .milliseconds(650))
+        let restored = NativeWorkspace(store:store)
+        restored.selectThread(first)
+        XCTAssertEqual(restored.draft, "First task")
+        XCTAssertEqual(restored.pendingImageURLs, [screenshot])
+        XCTAssertEqual(restored.pendingContextPaths, ["Sources/First.swift"])
+        restored.selectThread(second)
+        XCTAssertEqual(restored.draft, "Second task")
+        XCTAssertEqual(restored.pendingImageURLs, [secondImage])
+        XCTAssertEqual(restored.pendingContextPaths, ["Sources/Second.swift"])
+
+        restored.pendingImageURLs = []
+        restored.pendingContextPaths = []
+        try await Task.sleep(for: .milliseconds(650))
+        let cleared = NativeWorkspace(store:store)
+        cleared.selectThread(second)
+        XCTAssertEqual(cleared.draft, "Second task")
+        XCTAssertTrue(cleared.pendingImageURLs.isEmpty)
+        XCTAssertTrue(cleared.pendingContextPaths.isEmpty)
+        cleared.selectThread(first)
+        XCTAssertEqual(cleared.pendingImageURLs, [screenshot])
+    }
+
+    @MainActor
+    func testUnsentAgentDraftIsSearchableAndMarkedAfterRestart() async throws {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store=folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:store)
+        let first=try XCTUnwrap(model.selectedThreadId)
+        model.draft="Review the medication schedule before leaving"
+        XCTAssertTrue(try XCTUnwrap(model.thread).hasUnsentContent)
+        model.newThread()
+        let second=try XCTUnwrap(model.selectedThreadId)
+        XCTAssertFalse(try XCTUnwrap(model.thread).hasUnsentContent)
+
+        model.search="MEDICATION SCHEDULE"
+        XCTAssertEqual(model.visibleThreads.map(\.id),[first])
+        try await Task.sleep(for:.milliseconds(650))
+        let restored=NativeWorkspace(store:store)
+        restored.search="medication schedule"
+        XCTAssertEqual(restored.visibleThreads.map(\.id),[first])
+        restored.selectThread(first)
+        XCTAssertTrue(try XCTUnwrap(restored.thread).hasUnsentContent)
+        restored.draft=""
+        XCTAssertFalse(try XCTUnwrap(restored.thread).hasUnsentContent)
+        restored.search="medication schedule"
+        XCTAssertTrue(restored.visibleThreads.isEmpty)
+        restored.pendingContextPaths=["Sources/Plan.swift"]
+        XCTAssertTrue(try XCTUnwrap(restored.thread).hasUnsentContent)
+        restored.selectThread(second)
+        XCTAssertFalse(try XCTUnwrap(restored.thread).hasUnsentContent)
     }
 
     @MainActor
@@ -971,6 +2455,37 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(model.error?.contains("停止正在运行") == true)
     }
 
+    func testProjectDetailNavigationCapturesOriginWhenProjectChangesOnSamePage() {
+        XCTAssertTrue(NativeWorkspace.projectNavigationContextChanged(
+            currentProjectId:"PROJECT-A",currentRepoId:"repo-a",
+            targetProjectId:"PROJECT-A",targetRepoId:nil
+        ))
+        XCTAssertTrue(NativeWorkspace.projectNavigationContextChanged(
+            currentProjectId:"PROJECT-A",currentRepoId:nil,
+            targetProjectId:"PROJECT-A",targetRepoId:"repo-a"
+        ))
+        XCTAssertTrue(NativeWorkspace.projectNavigationContextChanged(
+            currentProjectId:"PROJECT-A",currentRepoId:"repo-a",
+            targetProjectId:"PROJECT-A",targetRepoId:"repo-b"
+        ))
+        XCTAssertFalse(NativeWorkspace.projectNavigationContextChanged(
+            currentProjectId:"PROJECT-A",currentRepoId:nil,
+            targetProjectId:"PROJECT-A",targetRepoId:nil
+        ))
+        XCTAssertTrue(NativeWorkspace.shouldPushNavigationOrigin(
+            currentPage:.requirement,targetPage:.requirement,contextChanged:true
+        ))
+        XCTAssertFalse(NativeWorkspace.shouldPushNavigationOrigin(
+            currentPage:.requirement,targetPage:.requirement,contextChanged:false
+        ))
+        XCTAssertTrue(NativeWorkspace.shouldPushNavigationOrigin(
+            currentPage:.requirement,targetPage:.requirement,contextChanged:false,preserveSource:true
+        ))
+        XCTAssertTrue(NativeWorkspace.shouldPushNavigationOrigin(
+            currentPage:.agent,targetPage:.requirement,contextChanged:false
+        ))
+    }
+
     @MainActor
     func testContextNavigationKeepsOriginAndSupportsBack() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -997,6 +2512,30 @@ final class NativeWorkspaceTests: XCTestCase {
         model.goBack()
         XCTAssertEqual(model.page,.agent)
         XCTAssertFalse(model.canNavigateBack)
+    }
+
+    @MainActor
+    func testBackToZenBoardClearsRequirementSelectionOpenedAfterSourceEntry() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let threadId=model.selectedThreadId
+
+        model.page = .requirement
+        model.zenMode = true
+        model.zenScreen = .board
+        model.selectedRecord = nil
+        model.show(.knowledge)
+        XCTAssertEqual(model.navigationBackStack.last,
+                       NativeNavigationEntry(page:.requirement,threadId:threadId,recordId:nil,
+                                             zenMode:true,zenScreen:.board,focusedRequirementId:nil))
+
+        model.selectedRecord="REQ-OPENED"
+        model.goBack()
+
+        XCTAssertEqual(model.page,.requirement)
+        XCTAssertEqual(model.zenScreen,.board)
+        XCTAssertNil(model.selectedRecord)
     }
 
     @MainActor
@@ -1029,7 +2568,86 @@ final class NativeWorkspaceTests: XCTestCase {
         model.show(.knowledge)
 
         XCTAssertEqual(model.navigationBackStack.last,
-                       NativeNavigationEntry(page:.requirement,threadId:threadId,recordId:"plan:PLAN-123"))
+                       NativeNavigationEntry(page:.requirement,threadId:threadId,recordId:"plan:PLAN-123",
+                                             zenMode:true,zenScreen:.board,focusedRequirementId:nil))
+    }
+
+    @MainActor
+    func testBackRestoresZenPresentationAndCanvasTaskFocus() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.page = .requirement
+        model.zenMode = true
+        model.zenScreen = .canvas
+        model.zenFocusedRequirementId = "REQ-CURRENT"
+        model.selectedRecord = "requirement:REQ-CURRENT"
+
+        model.show(.knowledge)
+        XCTAssertFalse(model.zenMode)
+        XCTAssertEqual(model.navigationBackStack.last?.zenMode,true)
+        XCTAssertEqual(model.navigationBackStack.last?.zenScreen,.canvas)
+        XCTAssertEqual(model.navigationBackStack.last?.focusedRequirementId,"REQ-CURRENT")
+
+        model.goBack()
+
+        XCTAssertEqual(model.page,.requirement)
+        XCTAssertTrue(model.zenMode)
+        XCTAssertEqual(model.zenScreen,.canvas)
+        XCTAssertEqual(model.zenFocusedRequirementId,"REQ-CURRENT")
+        XCTAssertNil(model.selectedRecord)
+    }
+
+    @MainActor
+    func testShowAssetsFromZenCanvasPreservesWorkbenchPresentationOnBack() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.page = .requirement
+        model.zenMode = true
+        model.zenScreen = .canvas
+        model.zenFocusedRequirementId = "REQ-CURRENT"
+        model.selectedRecord = "requirement:REQ-CURRENT"
+
+        model.show(.assets)
+        XCTAssertFalse(model.zenMode)
+        XCTAssertEqual(model.navigationBackStack.last?.zenMode,true)
+        XCTAssertEqual(model.navigationBackStack.last?.zenScreen,.canvas)
+        XCTAssertEqual(model.navigationBackStack.last?.focusedRequirementId,"REQ-CURRENT")
+
+        model.goBack()
+        XCTAssertEqual(model.page,.requirement)
+        XCTAssertTrue(model.zenMode)
+        XCTAssertEqual(model.zenScreen,.canvas)
+        XCTAssertEqual(model.zenFocusedRequirementId,"REQ-CURRENT")
+    }
+
+    @MainActor
+    func testNewThreadFromZenCanvasPreservesWorkbenchPresentationOnBack() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.page = .requirement
+        model.zenMode = true
+        model.zenScreen = .canvas
+        model.zenFocusedRequirementId = "REQ-CURRENT"
+        model.selectedRecord = "requirement:REQ-CURRENT"
+
+        model.newThread()
+        XCTAssertEqual(model.page,.agent)
+        XCTAssertFalse(model.zenMode)
+        XCTAssertEqual(model.navigationBackStack.last?.zenMode,true)
+        XCTAssertEqual(model.navigationBackStack.last?.zenScreen,.canvas)
+        XCTAssertEqual(model.navigationBackStack.last?.focusedRequirementId,"REQ-CURRENT")
+        XCTAssertTrue(model.canNavigateBack)
+        XCTAssertEqual(model.navigationBackLabel,NativePage.requirement.rawValue)
+
+        model.goBack()
+        XCTAssertFalse(model.canNavigateBack)
+        XCTAssertEqual(model.page,.requirement)
+        XCTAssertTrue(model.zenMode)
+        XCTAssertEqual(model.zenScreen,.canvas)
+        XCTAssertEqual(model.zenFocusedRequirementId,"REQ-CURRENT")
     }
 
     @MainActor
@@ -1054,7 +2672,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.page,.agent)
         XCTAssertEqual(model.repoId,"repo_b")
         XCTAssertEqual(model.navigationBackStack.last,
-                       NativeNavigationEntry(page:.knowledge,threadId:threadA,recordId:nil))
+                       NativeNavigationEntry(page:.knowledge,threadId:threadA,recordId:nil,repoId:"repo_a",checkoutId:"checkout_a"))
 
         model.goBack()
 
@@ -1062,6 +2680,83 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.selectedThreadId,threadA)
         XCTAssertEqual(model.repoId,"repo_a")
         XCTAssertEqual(model.checkoutId,"checkout_a")
+    }
+
+    @MainActor
+    func testZenWorkspaceContextSurvivesAgentThreadSwitchAndAgentReentry() {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let threadA=model.threads[0].id
+        model.threads[0].projectId="PROJECT-A"
+        model.threads[0].repoId="repo-a"
+        model.threads[0].checkoutId="checkout-a"
+        let threadC=ChatThread(repoId:"repo-c",checkoutId:"checkout-c",projectId:"PROJECT-C")
+        model.threads.append(threadC)
+        model.selectedThreadId=threadA
+        model.selectedProjectId="PROJECT-B"
+        model.repoId="repo-b"
+        model.checkoutId="checkout-b"
+        model.page = .requirement
+        model.zenMode = true
+
+        model.show(.agent)
+        XCTAssertEqual(model.navigationBackStack.last,
+                       NativeNavigationEntry(page:.requirement,threadId:threadA,recordId:nil,
+                                             projectId:"PROJECT-B",repoId:"repo-b",checkoutId:"checkout-b",
+                                             zenMode:true,zenScreen:.board,focusedRequirementId:nil))
+        XCTAssertEqual(model.repoId,"repo-a")
+        XCTAssertEqual(model.selectedProjectId,"PROJECT-A")
+        model.selectThread(threadC.id)
+        model.goBack()
+
+        XCTAssertEqual(model.page,.requirement)
+        XCTAssertTrue(model.zenMode)
+        XCTAssertEqual(model.selectedThreadId,threadA)
+        XCTAssertEqual(model.selectedProjectId,"PROJECT-B")
+        XCTAssertEqual(model.repoId,"repo-b")
+        XCTAssertEqual(model.checkoutId,"checkout-b")
+        XCTAssertEqual(model.thread?.projectId,"PROJECT-A")
+        XCTAssertEqual(model.thread?.repoId,"repo-a")
+        XCTAssertEqual(model.thread?.checkoutId,"checkout-a")
+
+        model.show(.agent)
+        XCTAssertEqual(model.selectedProjectId,"PROJECT-A")
+        XCTAssertEqual(model.repoId,"repo-a")
+        XCTAssertEqual(model.checkoutId,"checkout-a")
+        XCTAssertTrue(NativeWorkspace.agentThreadMatchesContext(
+            model.thread,repoId:model.repoId,checkoutId:model.checkoutId,projectId:model.selectedProjectId
+        ))
+    }
+
+    @MainActor
+    func testBackToAgentRefreshesThreadCheckoutAfterZenProjectSwitch() {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let threadId=model.selectedThreadId!
+        model.threads[0].projectId="PROJECT-A"
+        model.threads[0].repoId="repo-a"
+        model.threads[0].checkoutId="checkout-a"
+        model.selectedProjectId="PROJECT-A"
+        model.repoId="repo-a"
+        model.checkoutId="checkout-a"
+        model.page = .agent
+        model.zenMode = false
+
+        model.openWorkbench()
+        model.selectedProjectId="PROJECT-B"
+        model.repoId="repo-b"
+        model.checkoutId="checkout-b"
+        model.invalidateProjectContextRequests()
+        model.goBack()
+
+        XCTAssertEqual(model.page,.agent)
+        XCTAssertEqual(model.selectedThreadId,threadId)
+        XCTAssertEqual(model.selectedProjectId,"PROJECT-A")
+        XCTAssertEqual(model.repoId,"repo-a")
+        XCTAssertEqual(model.checkoutId,"checkout-a")
+        XCTAssertTrue(model.checkoutContextLoading)
     }
 
     @MainActor
@@ -1128,6 +2823,416 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.threads.count,beforeCount + 1)
         XCTAssertEqual(model.thread?.repoId,"repo_a")
         XCTAssertEqual(model.thread?.checkoutId,"checkout_a")
+    }
+
+    @MainActor
+    func testStandaloneRequirementHandoffKeepsProjectWithoutRepository() {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.selectedProjectId="PROJECT-standalone"
+        model.repoId=nil; model.checkoutId=nil
+        model.page = .agent; model.zenMode = false
+        model.newThreadForRequirement("REQ-standalone")
+        XCTAssertEqual(model.thread?.projectId,"PROJECT-standalone")
+        XCTAssertEqual(model.thread?.requirementId,"REQ-standalone")
+        XCTAssertNil(model.thread?.repoId); XCTAssertNil(model.thread?.checkoutId)
+        XCTAssertTrue(NativeWorkspace.agentThreadMatchesContext(model.thread,repoId:nil,checkoutId:nil,projectId:"PROJECT-standalone"))
+    }
+
+    @MainActor
+    func testPlanningContextBindingRejectsMismatchedProjectAndRepository() {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let thread=ChatThread(repoId:"repo-a",checkoutId:"checkout-a",projectId:"PROJECT-A")
+        model.threads=[thread]
+        model.selectedThreadId=thread.id
+
+        model.selectedProjectId="PROJECT-B"
+        model.repoId="repo-b"
+        model.bindCurrentThreadPlanningContext(
+            requirementId:"REQ-b",planId:nil,projectId:"PROJECT-B",repoId:"repo-b"
+        )
+        XCTAssertNil(model.thread?.requirementId)
+        XCTAssertNotNil(model.error)
+
+        model.bindCurrentThreadPlanningContext(
+            requirementId:"REQ-b",planId:nil,projectId:"PROJECT-A",repoId:"repo-b"
+        )
+        XCTAssertNil(model.thread?.requirementId)
+        XCTAssertNotNil(model.error)
+
+        // The Agent inspector uses the conversation's own scope even while
+        // the global Project picker still points at another Project.
+        model.bindCurrentThreadPlanningContext(
+            requirementId:"REQ-a",planId:nil,projectId:"PROJECT-A",repoId:"repo-a"
+        )
+        XCTAssertEqual(model.thread?.requirementId,"REQ-a")
+        XCTAssertNil(model.error)
+    }
+
+    @MainActor
+    func testProjectContextSwitchInvalidatesPendingCheckoutResolutionWithoutChangingConversation() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let sourceThreadId = model.selectedThreadId
+        let requestGeneration = model.projectContextGeneration
+
+        XCTAssertTrue(model.projectContextRequestIsCurrent(
+            generation:requestGeneration,sourceThreadId:sourceThreadId
+        ))
+
+        // Zen can change repository/checkout context without changing the
+        // selected Agent conversation. A pending Agent checkout lookup must
+        // still become stale when that happens.
+        model.invalidateProjectContextRequests()
+
+        XCTAssertEqual(model.selectedThreadId,sourceThreadId)
+        XCTAssertFalse(model.projectContextRequestIsCurrent(
+            generation:requestGeneration,sourceThreadId:sourceThreadId
+        ))
+    }
+
+    @MainActor
+    func testProjectListRefreshGenerationRejectsStaleResponses() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let older = model.beginProjectListRefresh()
+        let newer = model.beginProjectListRefresh()
+        XCTAssertFalse(model.projectListRequestIsCurrent(older))
+        XCTAssertTrue(model.projectListRequestIsCurrent(newer))
+    }
+
+    @MainActor
+    func testWorkspaceRefreshGenerationRejectsStaleResponses() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let older = model.beginWorkspaceRefresh()
+        let newer = model.beginWorkspaceRefresh()
+        XCTAssertFalse(model.workspaceRefreshRequestIsCurrent(older))
+        XCTAssertTrue(model.workspaceRefreshRequestIsCurrent(newer))
+    }
+
+    @MainActor
+    func testSettingsOperationsInvalidatePendingWorkspaceRefreshes() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let pendingRefresh = model.beginWorkspaceRefresh()
+
+        model.invalidateWorkspaceRefreshRequests()
+        XCTAssertFalse(model.workspaceRefreshRequestIsCurrent(pendingRefresh))
+
+        let currentRefresh = model.beginWorkspaceRefresh()
+        XCTAssertTrue(model.workspaceRefreshRequestIsCurrent(currentRefresh))
+    }
+
+    @MainActor
+    func testAutopilotRequestsAreFencedByProjectCheckoutAndContextGeneration() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId = "repo_a"
+        model.checkoutId = "checkout_a"
+        let contextGeneration = model.projectContextGeneration
+        let older = model.beginAutopilotRequest()
+
+        XCTAssertTrue(NativeWorkspace.autopilotRequestIsCurrent(
+            requestRepoId:"repo_a",currentRepoId:model.repoId,
+            requestCheckoutId:"checkout_a",currentCheckoutId:model.checkoutId,
+            requestGeneration:older,currentGeneration:model.autopilotRequestGeneration,
+            requestContextGeneration:contextGeneration,currentContextGeneration:model.projectContextGeneration
+        ))
+
+        model.checkoutId = "checkout_b"
+        XCTAssertFalse(NativeWorkspace.autopilotRequestIsCurrent(
+            requestRepoId:"repo_a",currentRepoId:model.repoId,
+            requestCheckoutId:"checkout_a",currentCheckoutId:model.checkoutId,
+            requestGeneration:older,currentGeneration:model.autopilotRequestGeneration,
+            requestContextGeneration:contextGeneration,currentContextGeneration:model.projectContextGeneration
+        ))
+
+        model.checkoutId = "checkout_a"
+        model.clearRecordSelection()
+        XCTAssertFalse(NativeWorkspace.autopilotRequestIsCurrent(
+            requestRepoId:"repo_a",currentRepoId:model.repoId,
+            requestCheckoutId:"checkout_a",currentCheckoutId:model.checkoutId,
+            requestGeneration:older,currentGeneration:model.autopilotRequestGeneration,
+            requestContextGeneration:contextGeneration,currentContextGeneration:model.projectContextGeneration
+        ))
+
+        let current = model.beginAutopilotRequest()
+        model.invalidateProjectContextRequests()
+        XCTAssertFalse(NativeWorkspace.autopilotRequestIsCurrent(
+            requestRepoId:"repo_a",currentRepoId:model.repoId,
+            requestCheckoutId:"checkout_a",currentCheckoutId:model.checkoutId,
+            requestGeneration:current,currentGeneration:model.autopilotRequestGeneration,
+            requestContextGeneration:contextGeneration,currentContextGeneration:model.projectContextGeneration
+        ))
+    }
+
+    @MainActor
+    func testSupersededAutopilotControlCannotUnlockNewContextRequest() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId="repo_a"
+        model.checkoutId="checkout_a"
+        let oldContextGeneration=model.projectContextGeneration
+        let oldRequest=try XCTUnwrap(model.beginAutopilotControlRequest())
+        XCTAssertTrue(model.autopilotLoading)
+        XCTAssertTrue(model.autopilotControlPending)
+
+        model.repoId="repo_b"
+        model.checkoutId="checkout_b"
+        model.invalidateProjectContextRequests()
+        model.invalidateAutopilotRequests()
+        XCTAssertFalse(model.autopilotLoading)
+        XCTAssertFalse(model.autopilotControlPending)
+
+        let newContextGeneration=model.projectContextGeneration
+        let newRequest=try XCTUnwrap(model.beginAutopilotControlRequest())
+        XCTAssertTrue(model.autopilotLoading)
+        XCTAssertTrue(model.autopilotControlPending)
+
+        model.finishAutopilotControlRequest(
+            oldRequest,repoId:"repo_a",checkoutId:"checkout_a",contextGeneration:oldContextGeneration
+        )
+        XCTAssertTrue(model.autopilotLoading)
+        XCTAssertTrue(model.autopilotControlPending)
+
+        model.finishAutopilotControlRequest(
+            newRequest,repoId:"repo_b",checkoutId:"checkout_b",contextGeneration:newContextGeneration
+        )
+        XCTAssertFalse(model.autopilotLoading)
+        XCTAssertFalse(model.autopilotControlPending)
+    }
+
+    @MainActor
+    func testAutopilotUnknownOutcomeIsScopedToRequirementAndExecutionContext() throws {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.selectedProjectId="project-a"
+        model.repoId="repo-a"
+        model.checkoutId="checkout-a"
+
+        model.markAutopilotOutcomeUnknown(
+            projectId:"project-a",repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        )
+        model.markAutopilotOutcomeUnknown(
+            projectId:"project-a",repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-B"
+        )
+        XCTAssertTrue(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        XCTAssertFalse(model.autopilotOutcomeUnknown(for:"REQ-C"))
+        XCTAssertEqual(model.unresolvedAutopilotRequirementIds,Set(["REQ-A","REQ-B"]))
+
+        // A successful readback for another Requirement must not clear REQ-A.
+        model.resolveAutopilotOutcomeUnknown(
+            projectId:"project-a",repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-B"
+        )
+        XCTAssertTrue(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        XCTAssertEqual(model.unresolvedAutopilotRequirementIds,Set(["REQ-A"]))
+
+        // Selection and page/context request invalidation are not execution readbacks.
+        model.selectedRecord="requirement-b"
+        model.invalidateAutopilotRequests()
+        model.invalidateProjectContextRequests()
+        XCTAssertTrue(model.autopilotOutcomeUnknown(for:"REQ-A"))
+
+        // The marker is hidden in a different project context, but retained for return.
+        model.selectedProjectId="project-b"
+        XCTAssertFalse(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        XCTAssertTrue(model.unresolvedAutopilotRequirementIds.isEmpty)
+        model.selectedProjectId="project-a"
+        XCTAssertTrue(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        model.repoId="repo-b"
+        XCTAssertFalse(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        model.repoId="repo-a"
+        XCTAssertTrue(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        model.checkoutId="checkout-b"
+        XCTAssertFalse(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        model.checkoutId="checkout-a"
+        XCTAssertTrue(model.autopilotOutcomeUnknown(for:"REQ-A"))
+
+        // Only an exact context + Requirement readback resolves the marker.
+        model.resolveAutopilotOutcomeUnknown(
+            projectId:"project-b",repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        )
+        XCTAssertTrue(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        model.resolveAutopilotOutcomeUnknown(
+            projectId:"project-a",repoId:"repo-a",checkoutId:"checkout-a",requirementId:"REQ-A"
+        )
+        XCTAssertFalse(model.autopilotOutcomeUnknown(for:"REQ-A"))
+        XCTAssertTrue(model.unresolvedAutopilotRequirementIds.isEmpty)
+    }
+
+    @MainActor
+    func testKnowledgeSearchGenerationRejectsSupersededQueriesAndContextChanges() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId = "repo_a"
+        model.checkoutId = "checkout_a"
+        model.page = .knowledge
+        model.knowledgeQuery = "first"
+        let contextGeneration = model.projectContextGeneration
+        let older = model.beginKnowledgeSearch()
+
+        model.knowledgeQuery = "latest"
+        let latest = model.beginKnowledgeSearch()
+        XCTAssertFalse(model.knowledgeSearchRequestIsCurrent(
+            older,repoId:"repo_a",checkoutId:"checkout_a",query:"first",
+            contextGeneration:contextGeneration
+        ))
+        XCTAssertTrue(model.knowledgeSearchRequestIsCurrent(
+            latest,repoId:"repo_a",checkoutId:"checkout_a",query:"latest",
+            contextGeneration:contextGeneration
+        ))
+
+        model.checkoutId = "checkout_b"
+        XCTAssertFalse(model.knowledgeSearchRequestIsCurrent(
+            latest,repoId:"repo_a",checkoutId:"checkout_a",query:"latest",
+            contextGeneration:contextGeneration
+        ))
+        model.checkoutId = "checkout_a"
+        model.knowledgeLoading = true
+        model.invalidateProjectContextRequests()
+        XCTAssertFalse(model.knowledgeLoading)
+        XCTAssertFalse(model.knowledgeSearchRequestIsCurrent(
+            latest,repoId:"repo_a",checkoutId:"checkout_a",query:"latest",
+            contextGeneration:contextGeneration
+        ))
+
+        let currentContext = model.projectContextGeneration
+        let current = model.beginKnowledgeSearch()
+        XCTAssertTrue(model.knowledgeSearchRequestIsCurrent(
+            current,repoId:"repo_a",checkoutId:"checkout_a",query:"latest",
+            contextGeneration:currentContext
+        ))
+        model.page = .agent
+        XCTAssertFalse(model.knowledgeSearchRequestIsCurrent(
+            current,repoId:"repo_a",checkoutId:"checkout_a",query:"latest",
+            contextGeneration:currentContext
+        ))
+        model.repoId = "repo_b"
+        XCTAssertFalse(model.knowledgeSearchRequestIsCurrent(
+            current,repoId:"repo_a",checkoutId:"checkout_a",query:"latest",
+            contextGeneration:currentContext
+        ))
+    }
+
+    @MainActor
+    func testProjectAndPlanningRefreshFencesRejectStaleResponses() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId = "repo_a"
+        model.checkoutId = "checkout_a"
+        let oldRepository = model.beginProjectRepositoryRefresh()
+        let currentRepository = model.beginProjectRepositoryRefresh()
+        XCTAssertFalse(model.projectRepositoryRequestIsCurrent(
+            oldRepository,repoId:"repo_a",requestedCheckoutId:"checkout_a"
+        ))
+        XCTAssertTrue(model.projectRepositoryRequestIsCurrent(
+            currentRepository,repoId:"repo_a",requestedCheckoutId:"checkout_a"
+        ))
+        model.checkoutId = "checkout_b"
+        XCTAssertFalse(model.projectRepositoryRequestIsCurrent(
+            currentRepository,repoId:"repo_a",requestedCheckoutId:"checkout_a"
+        ))
+        let latestRepository = model.beginProjectRepositoryRefresh()
+        XCTAssertTrue(model.projectRepositoryRequestIsCurrent(
+            latestRepository,repoId:"repo_a",requestedCheckoutId:"checkout_b"
+        ))
+        model.repoId = "repo_b"
+        XCTAssertFalse(model.projectRepositoryRequestIsCurrent(
+            latestRepository,repoId:"repo_a",requestedCheckoutId:"checkout_b"
+        ))
+
+        model.repoId = "repo_a"
+        model.page = .requirement
+        let contextGeneration = model.projectContextGeneration
+        let oldPage = model.beginPlanningPageRefresh()
+        let currentPage = model.beginPlanningPageRefresh()
+        XCTAssertFalse(model.planningPageRequestIsCurrent(
+            oldPage,repoId:"repo_a",page:.requirement,contextGeneration:contextGeneration
+        ))
+        XCTAssertTrue(model.planningPageRequestIsCurrent(
+            currentPage,repoId:"repo_a",page:.requirement,contextGeneration:contextGeneration
+        ))
+        model.page = .plan
+        XCTAssertFalse(model.planningPageRequestIsCurrent(
+            currentPage,repoId:"repo_a",page:.requirement,contextGeneration:contextGeneration
+        ))
+        model.page = .requirement
+        model.invalidateProjectContextRequests()
+        XCTAssertFalse(model.planningPageRequestIsCurrent(
+            currentPage,repoId:"repo_a",page:.requirement,contextGeneration:contextGeneration
+        ))
+        let latestPage = model.beginPlanningPageRefresh()
+        XCTAssertTrue(model.planningPageRequestIsCurrent(
+            latestPage,repoId:"repo_a",page:.requirement,contextGeneration:model.projectContextGeneration
+        ))
+        model.repoId = "repo_b"
+        XCTAssertFalse(model.planningPageRequestIsCurrent(
+            latestPage,repoId:"repo_a",page:.requirement,contextGeneration:model.projectContextGeneration
+        ))
+    }
+
+    func testProjectCheckoutRequestFenceRejectsCollapsedAndReopenedSameRepository() {
+        XCTAssertTrue(NativeWorkspace.projectCheckoutRequestIsCurrent(
+            requestGeneration:7,currentGeneration:7,requestedRepoId:"repo_a",expandedRepoId:"repo_a"
+        ))
+        XCTAssertFalse(NativeWorkspace.projectCheckoutRequestIsCurrent(
+            requestGeneration:7,currentGeneration:8,requestedRepoId:"repo_a",expandedRepoId:"repo_a"
+        ))
+        XCTAssertFalse(NativeWorkspace.projectCheckoutRequestIsCurrent(
+            requestGeneration:7,currentGeneration:7,requestedRepoId:"repo_a",expandedRepoId:nil
+        ))
+    }
+
+    @MainActor
+    func testZenGitHubBoardRefreshGenerationRejectsStaleResultsAndCleanup() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId = "repo_a"
+        let older = model.beginZenGitHubBoardRefresh()
+        let newer = model.beginZenGitHubBoardRefresh()
+
+        XCTAssertFalse(model.zenGitHubBoardRequestIsCurrent(older,repoId:"repo_a"))
+        XCTAssertTrue(model.zenGitHubBoardRequestIsCurrent(newer,repoId:"repo_a"))
+        model.finishZenGitHubBoardRefresh(older)
+        XCTAssertTrue(model.zenGitHubBoardLoading)
+        model.repoId = "repo_b"
+        XCTAssertFalse(model.zenGitHubBoardRequestIsCurrent(newer,repoId:"repo_a"))
+        model.finishZenGitHubBoardRefresh(newer)
+        XCTAssertFalse(model.zenGitHubBoardLoading)
+    }
+
+    @MainActor
+    func testPluginsPageRefreshGenerationLoadsLatestProjectAndCleansStaleState() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.page = .plugins
+        model.repoId = "repo_a"
+        let older = model.beginPluginsPageRefresh()
+        let newer = model.beginPluginsPageRefresh()
+
+        XCTAssertFalse(model.pluginsPageRequestIsCurrent(older,repoId:"repo_a"))
+        XCTAssertTrue(model.pluginsPageRequestIsCurrent(newer,repoId:"repo_a"))
+        model.finishPluginsPageRefresh(older)
+        XCTAssertTrue(model.pluginsLoading)
+        model.repoId = "repo_b"
+        XCTAssertFalse(model.pluginsPageRequestIsCurrent(newer,repoId:"repo_a"))
+        model.finishPluginsPageRefresh(newer)
+        XCTAssertFalse(model.pluginsLoading)
     }
 
     @MainActor
@@ -1280,8 +3385,22 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(started.count,1)
         XCTAssertEqual(started.first?.status,"running")
 
-        let finished = NativeWorkspace.apiToolProgressEvents(
+        let output = NativeWorkspace.apiToolProgressEvents(
             started,
+            payload:[
+                "name":"git_status","phase":"output","toolCallId":"call-1",
+                "output":"{\"stdoutTail\":\"Tests passed\"}"
+            ],
+            now:"output-at"
+        )
+        XCTAssertEqual(output.count,1)
+        XCTAssertEqual(output.first?.status,"output")
+        XCTAssertNil(output.first?.completedAt)
+        XCTAssertEqual(output.first?.output,"{\"stdoutTail\":\"Tests passed\"}")
+        XCTAssertEqual(output.first?.outputTruncated,false)
+
+        let finished = NativeWorkspace.apiToolProgressEvents(
+            output,
             payload:["name":"git_status","phase":"unknown","toolCallId":"call-1"],
             now:"finished-at"
         )
@@ -1290,6 +3409,66 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(finished.first?.startedAt,"started-at")
         XCTAssertEqual(finished.first?.completedAt,"finished-at")
         XCTAssertEqual(finished.first?.toolCallId,"call-1")
+
+        let terminalReceipt = NativeWorkspace.apiToolProgressEvents(
+            output,
+            payload:["name":"git_status","phase":"completed","toolCallId":"call-1"],
+            now:"completed-at"
+        )
+        XCTAssertEqual(terminalReceipt.count,1)
+        XCTAssertEqual(terminalReceipt.first?.status,"completed")
+        XCTAssertEqual(terminalReceipt.first?.startedAt,"started-at")
+        XCTAssertEqual(terminalReceipt.first?.completedAt,"completed-at")
+        XCTAssertEqual(terminalReceipt.first?.output,"{\"stdoutTail\":\"Tests passed\"}")
+
+        let canonicalReceipts = NativeWorkspace.apiActivityEvents([
+            ["name":"git_status","ok":true,"toolCallId":"call-1"]
+        ] as [[String:Any]]) ?? []
+        let mergedReceipts = NativeWorkspace.mergeActivityReceipts(
+            terminalReceipt,receipts:canonicalReceipts
+        )
+        XCTAssertEqual(mergedReceipts.first?.output,"{\"stdoutTail\":\"Tests passed\"}")
+
+        let truncatedStreaming=AgentLiveActivityEvent(
+            phase:"tool",label:"read_file",detail:"README.md",status:"completed",
+            startedAt:"start",completedAt:"end",toolCallId:"call-truncated",
+            output:String(repeating:"x",count:2_000),outputTruncated:true
+        )
+        let canonicalReceipt=AgentLiveActivityEvent(
+            phase:"tool",label:"read_file",detail:"README.md",status:"completed",
+            startedAt:"receipt-start",completedAt:"receipt-end",toolCallId:"call-truncated",
+            output:"canonical output"
+        )
+        let mergedTruncation=NativeWorkspace.mergeActivityReceipts(
+            [truncatedStreaming],receipts:[canonicalReceipt]
+        )
+        XCTAssertEqual(mergedTruncation.first?.outputTruncated,true)
+
+        let oversized = NativeWorkspace.apiToolProgressEvents(
+            [],
+            payload:[
+                "name":"git_status","phase":"output","toolCallId":"call-large",
+                "output":String(repeating:"x",count:2_500)
+            ],
+            now:"large-output-at"
+        )
+        XCTAssertEqual(oversized.first?.output?.count,2_000)
+        XCTAssertEqual(oversized.first?.outputTruncated,true)
+        let atLimit=NativeWorkspace.apiToolProgressEvents(
+            [],payload:["name":"read_file","phase":"output","toolCallId":"call-limit",
+                        "output":String(repeating:"z",count:2_000)],now:"at-limit"
+        )
+        XCTAssertEqual(atLimit.first?.outputTruncated,false)
+        XCTAssertEqual(
+            NativeWorkspace.activityOutputTruncationLabel(for:try XCTUnwrap(atLimit.first)),
+            "输出达到 2,000 字符上限，可能已截断"
+        )
+
+        let canonicalOversized=NativeWorkspace.apiActivityEvents([[
+            "name":"read_file","ok":true,"output":String(repeating:"y",count:2_500)
+        ]] as [[String:Any]]) ?? []
+        XCTAssertEqual(canonicalOversized.first?.output?.count,2_000)
+        XCTAssertEqual(canonicalOversized.first?.outputTruncated,true)
 
         let distinct = NativeWorkspace.apiToolProgressEvents(
             finished,
@@ -1317,6 +3496,56 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(completed.first?.status,"completed")
     }
 
+    func testCommandActivityOutputSeparatesStdoutStderrAndProcessResult() {
+        let event=AgentLiveActivityEvent(
+            phase:"tool",label:"run_command",detail:"lightweight:process-id",
+            status:"completed",startedAt:"start",completedAt:"end",toolCallId:"call-1",
+            output:"""
+            {"ok":true,"result":{"status":"failed","exitCode":2,"timedOut":true,"cancelled":false,"stdoutTail":"Build started","stderrTail":"Compiler error"}}
+            """
+        )
+        XCTAssertEqual(
+            NativeWorkspace.activityOutputText(for:event),
+            "stdout\nBuild started\n\nstderr\nCompiler error\n\nProcess: failed\n\nExit code: 2\n\nTimed out"
+        )
+        XCTAssertNil(NativeWorkspace.activityOutputTruncationLabel(for:event))
+    }
+
+    func testCommandActivityOutputMarksTransformedTextTruncation() throws {
+        let payload:[String:Any] = [
+            "ok":true,"result":["stdoutTail":String(repeating:"x",count:2_100)]
+        ]
+        let data=try JSONSerialization.data(withJSONObject:payload)
+        let output=try XCTUnwrap(String(data:data,encoding:.utf8))
+        let event=AgentLiveActivityEvent(
+            phase:"tool",label:"run_command",detail:"proc-1",status:"completed",
+            startedAt:"start",completedAt:"end",toolCallId:"call-long",
+            output:output,outputTruncated:false
+        )
+        let presentation=try XCTUnwrap(NativeWorkspace.activityOutputPresentation(for:event))
+        XCTAssertEqual(presentation.text.count,2_000)
+        XCTAssertEqual(presentation.truncationLabel,"输出已截断 · 仅保留前 2,000 字符")
+    }
+
+    func testOtherToolActivityOutputRemainsUnchanged() {
+        let event=AgentLiveActivityEvent(
+            phase:"tool",label:"read_file",detail:"README.md",
+            status:"completed",startedAt:"start",completedAt:"end",toolCallId:"call-2",
+            output:"{\"ok\":true,\"result\":{\"content\":\"hello\"}}"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.activityOutputText(for:event),
+            "{\"ok\":true,\"result\":{\"content\":\"hello\"}}"
+        )
+    }
+
+    func testLegacyAgentActivityEventDecodesWithoutOutput() throws {
+        let data=Data(#"{"phase":"tool","label":"git_status","detail":null,"status":"completed","startedAt":"start","completedAt":null,"toolCallId":"legacy"}"#.utf8)
+        let event=try JSONDecoder().decode(AgentLiveActivityEvent.self,from:data)
+        XCTAssertNil(event.output)
+        XCTAssertNil(event.outputTruncated)
+    }
+
     func testFailedToolProgressIsPersistableAsUnknown() {
         let running = AgentLiveActivityEvent(
             phase:"tool", label:"apply_patch", detail:"request-1",
@@ -1328,6 +3557,61 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(finalized.first?.status,"unknown")
         XCTAssertEqual(finalized.first?.completedAt,"failed-at")
         XCTAssertEqual(finalized.first?.detail,"request-1")
+
+        let output = AgentLiveActivityEvent(
+            phase:"tool",label:"apply_patch",detail:"request-2",
+            status:"output",startedAt:"started-at",completedAt:nil,toolCallId:"call-2",
+            output:"bounded tool result",outputTruncated:true
+        )
+        let outputFinalized = NativeWorkspace.finalizeFailedToolEvents([output],now:"failed-at")
+        XCTAssertEqual(outputFinalized.first?.status,"unknown")
+        XCTAssertEqual(outputFinalized.first?.completedAt,"failed-at")
+        XCTAssertEqual(outputFinalized.first?.output,"bounded tool result")
+        XCTAssertEqual(outputFinalized.first?.outputTruncated,true)
+    }
+
+    @MainActor
+    func testInterruptedEffectDoesNotRefillOriginalExecutionPrompt() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let id = model.selectedThreadId!
+        let running = AgentLiveActivityEvent(
+            phase:"tool", label:"run_command", detail:"proc_example_123",
+            status:"running", startedAt:"t1", completedAt:nil, toolCallId:"call-1"
+        )
+        let unknown = NativeWorkspace.finalizeFailedToolEvents([running],now:"failed-at")
+        let incomplete = ChatMessage(role:"assistant",text:"Process ID: proc_example_123",
+                                     toolActivityCount:1,activityEvents:unknown,incomplete:true)
+        let requiresReview = NativeWorkspace.failedTurnNeedsReview(incomplete,effectReviewRequired:true)
+        XCTAssertTrue(requiresReview)
+        XCTAssertFalse(model.restoreFailedComposer(
+            conversationId:id, prompt:"run command again",imageURLs:[],
+            contextPaths:[],requiresReview:requiresReview
+        ))
+        XCTAssertEqual(model.draft,"")
+        XCTAssertEqual(model.pendingContextPaths,[])
+        XCTAssertEqual(model.pendingImageURLs,[])
+        XCTAssertTrue(NativeWorkspace.incompleteTurnRequiresReview(incomplete))
+        XCTAssertTrue(NativeWorkspace.incompleteTurnContinuationPrompt.contains("不要重放"))
+
+        // Even fully completed tool receipts may have already changed files;
+        // only a failed turn with verified no-tool coverage can be refilled.
+        let completed = AgentLiveActivityEvent(
+            phase:"tool",label:"apply_patch",detail:"request-1",status:"completed",
+            startedAt:"t1",completedAt:"t2",toolCallId:"call-2"
+        )
+        let finished = ChatMessage(role:"assistant",text:"interrupted",
+                                   toolActivityCount:1,activityEvents:[completed],incomplete:true)
+        XCTAssertTrue(NativeWorkspace.failedTurnNeedsReview(finished,effectReviewRequired:false))
+        let noTools = ChatMessage(role:"assistant",text:"no tools ran",
+                                  toolActivityCount:0,activityEvents:[],incomplete:true)
+        XCTAssertFalse(NativeWorkspace.failedTurnNeedsReview(noTools,effectReviewRequired:false))
+        XCTAssertTrue(model.restoreFailedComposer(
+            conversationId:id,prompt:"retry read-only",imageURLs:[],
+            contextPaths:[],requiresReview:false
+        ))
+        XCTAssertEqual(model.draft,"retry read-only")
     }
 
     @MainActor
@@ -1381,6 +3665,45 @@ final class NativeWorkspaceTests: XCTestCase {
         model.draft = "keep current"
         model.reeditMessage(ChatMessage(role:"user",text:"must not overwrite"))
         XCTAssertEqual(model.draft,"keep current")
+    }
+
+    @MainActor
+    func testReeditRestoresOnlyExistingExplicitImagePathsAndRespectsProviderCapability() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
+        let image = folder.appendingPathComponent("screen.png")
+        try Data("image".utf8).write(to:image)
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let message = ChatMessage(
+            role:"user",text:"inspect this image",
+            attachmentNames:["screen.png"],attachmentPaths:[image.path]
+        )
+
+        model.imageInputAvailable = false
+        model.reeditMessage(message)
+        XCTAssertEqual(model.pendingImageURLs,[image])
+        XCTAssertTrue(model.error?.contains("不支持图片输入") == true)
+
+        model.imageInputAvailable = true
+        model.reeditMessage(message)
+        XCTAssertEqual(model.pendingImageURLs,[image])
+        XCTAssertNil(model.error)
+    }
+
+    @MainActor
+    func testReeditReportsMissingExplicitImagePathsInsteadOfRestoringThem() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let missing = folder.appendingPathComponent("missing.png")
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.imageInputAvailable = true
+        model.reeditMessage(ChatMessage(
+            role:"user",text:"inspect this image",
+            attachmentNames:["missing.png"],attachmentPaths:[missing.path]
+        ))
+        XCTAssertTrue(model.pendingImageURLs.isEmpty)
+        XCTAssertTrue(model.error?.contains("已移动、删除") == true)
     }
 
     @MainActor
@@ -1441,9 +3764,11 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(prompt.contains("selected Work"))
         XCTAssertFalse(prompt.contains("Forge optional semantic planning context"))
         let planned = NativeWorkspace.providerPrompt(
-            "Continue",contextPaths:[],requirementId:"REQ-a",planId:"PLAN-child"
+            "Continue",contextPaths:[],projectId:"project-a",
+            requirementId:"REQ-a",planId:"PLAN-child"
         )
         XCTAssertTrue(planned.contains("Forge optional semantic planning context"))
+        XCTAssertTrue(planned.contains("Project: project-a"))
         XCTAssertTrue(planned.contains("REQ-a"))
         XCTAssertTrue(planned.contains("PLAN-child"))
     }
@@ -1530,6 +3855,32 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertNil(removed.checkoutBranch)
     }
 
+    func testRepositoryCheckoutLabelsIdentifyBranchesAndDisambiguateSameBranchWorktrees() {
+        let result:[String:Any]=["repository":[
+            "checkouts":[
+                ["checkoutId":"checkout_main","path":"/tmp/main","branch":"main"],
+                ["checkoutId":"checkout_feature_a","path":"/tmp/worktree-a","branch":"feature/agent"],
+                ["checkoutId":"checkout_feature_b","path":"/tmp/worktree-b","branch":"feature/agent"],
+                ["checkoutId":"checkout_no_branch","path":"/tmp/review","branch":""],
+                ["checkoutId":"checkout_removed","path":"/tmp/removed","branch":"old","lifecycle":"removed"]
+            ]
+        ]]
+        let labels=NativeWorkspace.repositoryCheckoutLabels(
+            result,
+            requestedCheckoutIds:[
+                "checkout_main","checkout_feature_a","checkout_feature_b",
+                "checkout_no_branch","checkout_removed"
+            ]
+        )
+
+        XCTAssertEqual(labels["checkout_main"],"main")
+        XCTAssertEqual(labels["checkout_feature_a"],"feature/agent · worktree-a")
+        XCTAssertEqual(labels["checkout_feature_b"],"feature/agent · worktree-b")
+        XCTAssertEqual(labels["checkout_no_branch"],"review")
+        XCTAssertNil(labels["checkout_removed"])
+        XCTAssertEqual(labels.count,4)
+    }
+
     func testCheckoutPathValidationRequiresGitMetadata() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
@@ -1614,6 +3965,59 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(rows[0].compatible)
         XCTAssertEqual(rows[0].authorizationCount,2)
         XCTAssertEqual(rows[0].authorizationExpiresAt,"2026-12-01T00:00:00Z")
+    }
+
+    func testPluginManagementMissingCatalogUsesActionableErrorCopy() {
+        XCTAssertEqual(NativeWorkspace.pluginManagementLoadErrorMessage("ENOENT"), "插件列表无法加载，请重试。")
+        XCTAssertEqual(NativeWorkspace.pluginManagementLoadErrorMessage("network unavailable"), "network unavailable")
+    }
+
+    func testPluginAuthorizationSnapshotDecodesOnlyRequestedPluginRows() {
+        let snapshot = NativeWorkspace.pluginAuthorizationSnapshot([
+            "result":[
+                "authorizations":[[
+                    "grantId":"grant-1","pluginId":"figma","capabilityId":"figma.read",
+                    "target":["kind":"workspace","id":"project-1"],
+                    "scopes":["figma.files.read"],"riskCeiling":"readonly",
+                    "expiresAt":"2026-12-01T00:00:00Z"
+                ]],
+                "totalCount":1,"truncated":false
+            ]
+        ],pluginId:"figma")
+        XCTAssertEqual(snapshot?.items.map(\.grantId),["grant-1"])
+        XCTAssertEqual(snapshot?.items.first?.targetId,"project-1")
+        XCTAssertEqual(snapshot?.items.first?.scopes,["figma.files.read"])
+        XCTAssertEqual(snapshot?.totalCount,1)
+        XCTAssertFalse(snapshot?.truncated ?? true)
+        XCTAssertNil(NativeWorkspace.pluginAuthorizationSnapshot([
+            "authorizations":[["grantId":"other","pluginId":"gmail"]]
+        ],pluginId:"figma"))
+    }
+
+    func testPluginAuthorizationRevocationRequiresCompleteRefreshedAbsence() {
+        let item = PluginAuthorizationItem(
+            grantId:"grant-1",pluginId:"figma",capabilityId:"figma.read",
+            targetKind:"workspace",targetId:"project-1",scopes:["figma.files.read"],
+            riskCeiling:"readonly",expiresAt:"2026-12-01T00:00:00Z"
+        )
+        let stillPresent = PluginAuthorizationSnapshot(pluginId:"figma",items:[item],totalCount:1,truncated:false)
+        let revoked = PluginAuthorizationSnapshot(pluginId:"figma",items:[],totalCount:0,truncated:false)
+        let truncatedMissing = PluginAuthorizationSnapshot(pluginId:"figma",items:[],totalCount:1,truncated:true)
+        let countMismatch = PluginAuthorizationSnapshot(pluginId:"figma",items:[],totalCount:1,truncated:false)
+
+        XCTAssertEqual(
+            NativeWorkspace.pluginAuthorizationRevocationWarning(grantId:"grant-1",refreshed:stillPresent),
+            "授权仍然有效，请刷新核对后再操作。"
+        )
+        XCTAssertNil(NativeWorkspace.pluginAuthorizationRevocationWarning(grantId:"grant-1",refreshed:revoked))
+        XCTAssertEqual(
+            NativeWorkspace.pluginAuthorizationRevocationWarning(grantId:"grant-1",refreshed:truncatedMissing),
+            "授权列表不完整，无法确认撤销结果；请刷新后核对。"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.pluginAuthorizationRevocationWarning(grantId:"grant-1",refreshed:countMismatch),
+            "授权列表不完整，无法确认撤销结果；请刷新后核对。"
+        )
     }
 
     func testPluginInstallationRequiresConfirmedVersionFromAuthority() {
@@ -1728,6 +4132,25 @@ final class NativeWorkspaceTests: XCTestCase {
         )
     }
 
+    func testProjectScopedAsyncResultsRequireMatchingProjectAndGeneration() {
+        XCTAssertTrue(NativeWorkspace.projectScopedRequestIsCurrent(
+            requestRepoId:"repo-a",currentRepoId:"repo-a",
+            requestGeneration:2,currentGeneration:2
+        ))
+        XCTAssertFalse(NativeWorkspace.projectScopedRequestIsCurrent(
+            requestRepoId:"repo-a",currentRepoId:"repo-b",
+            requestGeneration:2,currentGeneration:2
+        ))
+        XCTAssertFalse(NativeWorkspace.projectScopedRequestIsCurrent(
+            requestRepoId:"repo-a",currentRepoId:"repo-a",
+            requestGeneration:2,currentGeneration:3
+        ))
+        XCTAssertTrue(NativeWorkspace.projectScopedRequestIsCurrent(
+            requestRepoId:nil,currentRepoId:nil,
+            requestGeneration:4,currentGeneration:4
+        ))
+    }
+
     func testProjectPluginRowsDecodeBoundedPluginProjection() {
         let rows = NativeWorkspace.projectPluginRows([
             "plugins":[[
@@ -1769,6 +4192,25 @@ final class NativeWorkspaceTests: XCTestCase {
 
 
 extension NativeWorkspaceTests {
+    func testLiveActivityRefreshRequiresExactConversationTurnGeneration() {
+        XCTAssertTrue(NativeWorkspace.liveActivityRequestIsCurrent(
+            requestConversationId:"conversation-a",currentConversationId:"conversation-a",
+            requestGeneration:7,currentGeneration:7
+        ))
+        XCTAssertFalse(NativeWorkspace.liveActivityRequestIsCurrent(
+            requestConversationId:"conversation-a",currentConversationId:"conversation-a",
+            requestGeneration:6,currentGeneration:7
+        ))
+        XCTAssertFalse(NativeWorkspace.liveActivityRequestIsCurrent(
+            requestConversationId:"conversation-a",currentConversationId:"conversation-b",
+            requestGeneration:7,currentGeneration:7
+        ))
+        XCTAssertFalse(NativeWorkspace.liveActivityRequestIsCurrent(
+            requestConversationId:"conversation-a",currentConversationId:nil,
+            requestGeneration:7,currentGeneration:7
+        ))
+    }
+
     func testLiveActivityTimelineDecodesAndRemainsBackwardCompatible() throws {
         let current = Data("""
         {"conversationId":"c1","status":"running","phase":"tool","toolActivityCount":1,"lastActivity":"正在使用 forge.rh_status","events":[{"phase":"thinking","label":"正在推理","status":"completed","startedAt":"2026-11-07T00:00:00.000Z","completedAt":"2026-11-07T00:00:01.000Z"},{"phase":"tool","label":"正在使用 forge.rh_status","status":"active","startedAt":"2026-11-07T00:00:01.000Z"}]}
@@ -1789,6 +4231,51 @@ extension NativeWorkspaceTests {
 
 
 extension NativeWorkspaceTests {
+    func testAgentActivityPresentationSeparatesWaitingFromReasoningAndTools() {
+        XCTAssertEqual(
+            NativeWorkspace.agentActivityTitle(
+                phase:"starting", lastActivity:"正在连接 API Provider",
+                hasStreamedAnswer:false, hasStreamedReasoning:false
+            ),
+            "正在连接 API Provider"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.agentActivityTitle(
+                phase:"waiting", lastActivity:"等待模型响应",
+                hasStreamedAnswer:false, hasStreamedReasoning:false
+            ),
+            "等待模型响应"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.agentActivityTitle(
+                phase:"thinking", lastActivity:"正在等待模型响应",
+                hasStreamedAnswer:false, hasStreamedReasoning:false
+            ),
+            "模型处理中"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.agentActivityTitle(
+                phase:"thinking", lastActivity:nil,
+                hasStreamedAnswer:false, hasStreamedReasoning:true
+            ),
+            "正在接收 Provider 推理内容"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.agentActivityTitle(
+                phase:"tool", lastActivity:"run_command",
+                hasStreamedAnswer:false, hasStreamedReasoning:false
+            ),
+            "正在执行工具"
+        )
+        XCTAssertEqual(
+            NativeWorkspace.agentActivityTitle(
+                phase:"responding", lastActivity:nil,
+                hasStreamedAnswer:true, hasStreamedReasoning:false
+            ),
+            "正在生成回复"
+        )
+    }
+
     func testProviderProcessNarrationDoesNotBecomeToolCompletionAuthority() {
         XCTAssertNil(NativeWorkspace.modelNarrativeEvent(" \n ",now:"start"))
         let narrative = NativeWorkspace.modelNarrativeEvent(
@@ -1920,5 +4407,949 @@ extension NativeWorkspaceTests {
         model.addPendingImages(images)
         XCTAssertEqual(model.pendingImageURLs.count,4)
         XCTAssertTrue(model.threads[0].messages.isEmpty)
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    func testRemoteImageRedirectPolicyRejectsCredentialsAndHttpsDowngrades() throws {
+        let secureSource = try XCTUnwrap(URL(string: "https://example.com/image.png"))
+        let secureCDN = try XCTUnwrap(URL(string: "https://cdn.example.com/image.png"))
+        let downgrade = try XCTUnwrap(URL(string: "http://example.com/image.png"))
+        let credentialed = try XCTUnwrap(URL(string: "https://user:secret@example.com/image.png"))
+        let insecureSource = try XCTUnwrap(URL(string: "http://example.com/image.png"))
+
+        XCTAssertTrue(canFollowRemoteImageRedirect(from: secureSource, to: secureCDN))
+        XCTAssertFalse(canFollowRemoteImageRedirect(from: secureSource, to: downgrade))
+        XCTAssertFalse(canFollowRemoteImageRedirect(from: secureSource, to: credentialed))
+        XCTAssertTrue(canFollowRemoteImageRedirect(from: insecureSource, to: secureCDN))
+        XCTAssertFalse(canFollowRemoteImageRedirect(from: secureCDN, to: downgrade))
+    }
+
+    func testRemoteImageSessionDoesNotReuseAmbientCredentialsAndHasBoundedTimeouts() {
+        let configuration = makeRemoteImageSessionConfiguration()
+
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+        XCTAssertNil(configuration.urlCredentialStorage)
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertEqual(configuration.requestCachePolicy, .reloadIgnoringLocalCacheData)
+        XCTAssertEqual(configuration.timeoutIntervalForRequest, 20)
+        XCTAssertEqual(configuration.timeoutIntervalForResource, 60)
+    }
+
+    func testRemoteImageStreamingSaveEnforcesExactByteLimit() throws {
+        var data = Data()
+        try appendRemoteImageByte(0x89, to: &data, maximumBytes: 2)
+        try appendRemoteImageByte(0x50, to: &data, maximumBytes: 2)
+        XCTAssertEqual(data, Data([0x89, 0x50]))
+
+        XCTAssertThrowsError(try appendRemoteImageByte(0x4E, to: &data, maximumBytes: 2)) { error in
+            guard case RemoteImageSaveError.tooLarge = error else {
+                return XCTFail("Expected the bounded-download size error")
+            }
+        }
+        XCTAssertEqual(data, Data([0x89, 0x50]))
+    }
+
+    func testRemoteImageResponseRequiresCompleteSuccessfulImage() throws {
+        try validateRemoteImageResponse(
+            statusCode:200,mimeType:"IMAGE/PNG",expectedContentLength:2,maximumBytes:2
+        )
+        try validateRemoteImageResponse(
+            statusCode:200,mimeType:"image/jpeg",expectedContentLength:-1,maximumBytes:2
+        )
+
+        for statusCode in [204,206,302,404] {
+            XCTAssertThrowsError(try validateRemoteImageResponse(
+                statusCode:statusCode,mimeType:"image/png",
+                expectedContentLength:2,maximumBytes:2
+            )) { error in
+                guard case RemoteImageSaveError.invalidImage = error else {
+                    return XCTFail("Expected non-200 responses to be rejected")
+                }
+            }
+        }
+
+        XCTAssertThrowsError(try validateRemoteImageResponse(
+            statusCode:200,mimeType:"text/html",expectedContentLength:2,maximumBytes:2
+        )) { error in
+            guard case RemoteImageSaveError.invalidImage = error else {
+                return XCTFail("Expected non-image MIME types to be rejected")
+            }
+        }
+        XCTAssertThrowsError(try validateRemoteImageResponse(
+            statusCode:200,mimeType:"image/png",expectedContentLength:0,maximumBytes:2
+        )) { error in
+            guard case RemoteImageSaveError.invalidImage = error else {
+                return XCTFail("Expected empty responses to be rejected")
+            }
+        }
+        XCTAssertThrowsError(try validateRemoteImageResponse(
+            statusCode:200,mimeType:"image/png",expectedContentLength:3,maximumBytes:2
+        )) { error in
+            guard case RemoteImageSaveError.tooLarge = error else {
+                return XCTFail("Expected oversized responses to be rejected")
+            }
+        }
+    }
+
+    func testRemoteImageResourceParsingRequiresExplicitSafeMarkdown() {
+        let text = "Before\\n![Report](https://example.com/chart.png)\\nAfter"
+            .replacingOccurrences(of:"\\n",with:"\n")
+        XCTAssertEqual(AgentMessageBlock.parse(text), [
+            .markdown("Before"),
+            .image(label:"Report",url:"https://example.com/chart.png"),
+            .markdown("After")
+        ])
+        let localImage = AgentMessageBlock.parse("![secret](file:///Users/test/private.png)")
+        XCTAssertEqual(localImage, [.markdown("![secret](file:///Users/test/private.png)")])
+        let credentialedImage = AgentMessageBlock.parse("![secret](https://user:secret@example.com/private.png)")
+        XCTAssertEqual(credentialedImage, [.markdown("![secret](https://user:secret@example.com/private.png)")])
+        let emptyUserInfo = AgentMessageBlock.parse("![secret](https://@example.com/private.png)")
+        XCTAssertEqual(emptyUserInfo, [.markdown("![secret](https://@example.com/private.png)")])
+        XCTAssertNil(validatedRemoteImageURL("https://user:secret@example.com/private.png"))
+        XCTAssertEqual(validatedRemoteImageURL("https://example.com/chart.png")?.host, "example.com")
+        let fenced = AgentMessageBlock.parse("~~~md\n![chart](https://example.com/image.png)\n~~~")
+        XCTAssertEqual(fenced, [.code(language:"md",text:"![chart](https://example.com/image.png)")])
+    }
+
+    func testProviderUsageReceiptRejectsInvalidTokenTotalsAndCoverage() {
+        let valid: [String:Any] = [
+            "inputTokens":100, "outputTokens":78, "totalTokens":178,
+            "reportedRounds":2, "totalRounds":3
+        ]
+        XCTAssertEqual(
+            AgentTokenUsage.fromProviderReceipt(valid),
+            AgentTokenUsage(inputTokens:100,outputTokens:78,totalTokens:178,reportedRounds:2,totalRounds:3)
+        )
+        for key in ["inputTokens", "outputTokens", "totalTokens"] {
+            var invalid = valid
+            invalid[key] = -1
+            XCTAssertNil(AgentTokenUsage.fromProviderReceipt(invalid))
+        }
+        var inconsistent = valid
+        inconsistent["totalTokens"] = 179
+        XCTAssertNil(AgentTokenUsage.fromProviderReceipt(inconsistent))
+        var overflowing = valid
+        overflowing["inputTokens"] = Int.max
+        overflowing["outputTokens"] = 1
+        overflowing["totalTokens"] = Int.max
+        XCTAssertNil(AgentTokenUsage.fromProviderReceipt(overflowing))
+        var invalidCoverage = valid
+        invalidCoverage["reportedRounds"] = 4
+        XCTAssertNil(AgentTokenUsage.fromProviderReceipt(invalidCoverage))
+    }
+
+    func testUsageReceiptPreservesProviderTotalAndIdentity() throws {
+        let usage = AgentTokenUsage(inputTokens:120,outputTokens:30,totalTokens:178,
+                                    reportedRounds:2,totalRounds:2)
+        let message = ChatMessage(role:"assistant",text:"done",usage:usage,
+                                  providerUsed:"api:deepseek",modelUsed:"deepseek-chat")
+        let decoded = try JSONDecoder().decode(
+            ChatMessage.self,
+            from:JSONEncoder().encode(message)
+        )
+        XCTAssertEqual(decoded.usage?.totalTokens,178)
+        XCTAssertEqual(decoded.providerUsed,"api:deepseek")
+        XCTAssertEqual(decoded.modelUsed,"deepseek-chat")
+    }
+
+    func testUsageReceiptPersistsAndLegacyMessageRemainsUnknown() throws {
+        let usage = AgentTokenUsage(inputTokens:300,outputTokens:120,totalTokens:420,
+                                    reportedRounds:2,totalRounds:3)
+        let message = ChatMessage(role:"assistant",text:"done",usage:usage,
+                                  providerUsed:"api:test",modelUsed:"test-model")
+        let decoded = try JSONDecoder().decode(ChatMessage.self,from:JSONEncoder().encode(message))
+        XCTAssertEqual(decoded.usage,usage)
+        XCTAssertEqual(decoded.modelUsed,"test-model")
+        XCTAssertFalse(decoded.usage!.complete)
+        let legacy = try JSONDecoder().decode(
+            ChatMessage.self,
+            from:Data(#"{"id":"1","role":"assistant","text":"old","createdAt":0}"#.utf8)
+        )
+        XCTAssertNil(legacy.usage)
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    func testLocalAndRemoteImageThumbnailsAreBoundedAndRejectInvalidData() async throws {
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 4_800,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        let remoteResult = try await makeRemoteImageThumbnail(data)
+        let remoteThumbnail = try XCTUnwrap(remoteResult)
+
+        XCTAssertLessThanOrEqual(remoteThumbnail.width, 2_400)
+        XCTAssertLessThanOrEqual(remoteThumbnail.height, 2_400)
+        let invalidData = Data("not an image".utf8)
+        let invalidThumbnail = try await makeRemoteImageThumbnail(invalidData)
+        XCTAssertNil(invalidThumbnail)
+        let validatedData = try await validatedRemoteImageDataForSaving(data)
+        XCTAssertEqual(validatedData, data)
+        do {
+            _ = try await validatedRemoteImageDataForSaving(invalidData)
+            XCTFail("Expected direct Save to reject malformed image bytes")
+        } catch {
+            guard case RemoteImageSaveError.invalidImage = error else {
+                return XCTFail("Expected invalid-image error for malformed bytes")
+            }
+        }
+
+        let localURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
+        defer { try? FileManager.default.removeItem(at: localURL) }
+        try data.write(to: localURL)
+        let localResult = try await makeLocalImageThumbnail(at: localURL.path)
+        let localThumbnail = try XCTUnwrap(localResult)
+        XCTAssertLessThanOrEqual(localThumbnail.width, 2_400)
+        XCTAssertLessThanOrEqual(localThumbnail.height, 2_400)
+
+        let invalidLocalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
+        defer { try? FileManager.default.removeItem(at: invalidLocalURL) }
+        try Data("not an image".utf8).write(to: invalidLocalURL)
+        let invalidLocalThumbnail = try await makeLocalImageThumbnail(at: invalidLocalURL.path)
+        XCTAssertNil(invalidLocalThumbnail)
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    func testLocalImageSaveCopiesSourceAndReplacesExistingDestination() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: nil)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let source = folder.appendingPathComponent("source.img")
+        let destination = folder.appendingPathComponent("saved.img")
+        let sourceData = Data([0x89, 0x50, 0x4E, 0x47])
+        try sourceData.write(to: source)
+        try Data([0x00, 0x01, 0x02]).write(to: destination)
+
+        try await copyLocalFileAtomically(from: source, to: destination)
+
+        XCTAssertEqual(try Data(contentsOf: source), sourceData)
+        XCTAssertEqual(try Data(contentsOf: destination), sourceData)
+    }
+}
+
+extension NativeWorkspaceTests {
+    func testUsageProjectionIncludesIncompleteAssistantTurns() {
+        let cutoff = Date(timeIntervalSince1970: 100)
+        let completeWithoutReceipt = ChatMessage(role: "assistant", text: "done", createdAt: cutoff)
+        let recordedUsage = AgentTokenUsage(
+            inputTokens: 1, outputTokens: 1, totalTokens: 2,
+            reportedRounds: 1, totalRounds: 1
+        )
+        let interruptedWithoutReceipt = ChatMessage(
+            role: "assistant", text: "interrupted", incomplete: true, createdAt: cutoff
+        )
+        let interruptedWithReceipt = ChatMessage(
+            role: "assistant", text: "interrupted", incomplete: true,
+            usage: recordedUsage, createdAt: cutoff
+        )
+        let userMessage = ChatMessage(role: "user", text: "request", createdAt: cutoff)
+        let oldReply = ChatMessage(role: "assistant", text: "old", createdAt: cutoff.addingTimeInterval(-1))
+
+        XCTAssertTrue(AgentUsageDashboard.isUsageEligibleAssistantMessage(completeWithoutReceipt, since: cutoff))
+        XCTAssertTrue(AgentUsageDashboard.isUsageEligibleAssistantMessage(interruptedWithoutReceipt, since: cutoff))
+        XCTAssertTrue(AgentUsageDashboard.isUsageEligibleAssistantMessage(interruptedWithReceipt, since: cutoff))
+        XCTAssertFalse(AgentUsageDashboard.isUsageEligibleAssistantMessage(userMessage, since: cutoff))
+        XCTAssertFalse(AgentUsageDashboard.isUsageEligibleAssistantMessage(oldReply, since: cutoff))
+    }
+
+    func testUsageDistributionAggregatesRemainingCategoriesWithoutLosingTotals() {
+        let values = [
+            ("Model A", 90), ("Model B", 80), ("Model C", 70), ("Model D", 60),
+            ("Model E", 50), ("Model F", 40), ("Model G", 30), ("Model H", 20),
+            ("Model I", 10), ("Model J", 10), ("Model K", 10), ("Model L", 10)
+        ]
+
+        let displayed = AgentUsageDashboard.distributionRows(
+            values, remainderLabel: "其他模型"
+        )
+
+        XCTAssertEqual(displayed.count, 6)
+        XCTAssertEqual(displayed.map(\.0), [
+            "Model A", "Model B", "Model C", "Model D", "Model E", "其他模型"
+        ])
+        XCTAssertEqual(displayed.last?.1, 130)
+        XCTAssertGreaterThan(displayed.last?.1 ?? 0, displayed.first?.1 ?? 0)
+        XCTAssertEqual(displayed.reduce(0) { $0 + $1.1 }, values.reduce(0) { $0 + $1.1 })
+        XCTAssertEqual(
+            AgentUsageDashboard.distributionRows(Array(values.prefix(6)), remainderLabel: "其他模型").count,
+            6
+        )
+        XCTAssertTrue(AgentUsageDashboard.distributionRows([], remainderLabel: "其他模型").isEmpty)
+    }
+
+    func testUsageCoverageCaptionSeparatesMissingAndPartialReceipts() {
+        XCTAssertEqual(
+            AgentUsageDashboard.usageCoverageCaption(unreportedMessages: 2, partiallyReportedMessages: 1),
+            "无用量记录 2 条 · 用量不完整 1 条"
+        )
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    func testAssetAccessibilityIdentifiersAreUniquePerResource() {
+        let first = AgentAssetsDashboard.accessibilityIdentifier(
+            for: "thread-a:message-a:remote:0", control: "source-thread"
+        )
+        let second = AgentAssetsDashboard.accessibilityIdentifier(
+            for: "thread-a:message-a:remote:1", control: "source-thread"
+        )
+
+        XCTAssertEqual(first, "agent.assets.resource.thread-a:message-a:remote:0.source-thread")
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(
+            AgentAssetsDashboard.accessibilityIdentifier(for: "thread-a:message-a:remote:0"),
+            "agent.assets.resource.thread-a:message-a:remote:0"
+        )
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    func testRemoteImageSaveReusesPreviewOnlyForMatchingSource() {
+        let data = Data([0x89, 0x50, 0x4E, 0x47])
+        let source = "https://example.com/first.png"
+
+        XCTAssertEqual(
+            reusableRemoteImagePreviewData(data, previewSource: source, currentSource: source),
+            data
+        )
+        XCTAssertNil(reusableRemoteImagePreviewData(
+            data, previewSource: source, currentSource: "https://example.com/second.png"
+        ))
+        XCTAssertNil(reusableRemoteImagePreviewData(data, previewSource: nil, currentSource: source))
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    func testActiveTurnAllowsNavigationOnlyWithinItsSelectedConversation() {
+        XCTAssertTrue(NativeWorkspace.canNavigateToActiveConversation(
+            requestedThreadId:"thread-a",selectedThreadId:"thread-a",activeConversationId:"thread-a"
+        ))
+        XCTAssertFalse(NativeWorkspace.canNavigateToActiveConversation(
+            requestedThreadId:"thread-b",selectedThreadId:"thread-a",activeConversationId:"thread-a"
+        ))
+        XCTAssertFalse(NativeWorkspace.canNavigateToActiveConversation(
+            requestedThreadId:"thread-a",selectedThreadId:"thread-b",activeConversationId:"thread-a"
+        ))
+        XCTAssertFalse(NativeWorkspace.canNavigateToActiveConversation(
+            requestedThreadId:"thread-a",selectedThreadId:"thread-a",activeConversationId:nil
+        ))
+    }
+
+    @MainActor
+    func testAssetSourceSelectionRequestsExactMessageScrollAndCanReturnToAssets() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let model = NativeWorkspace(store: folder.appendingPathComponent("conversations.json"))
+        let originalThreadId = model.selectedThreadId
+        let imageMessage = ChatMessage(role: "assistant", text: "![chart](https://example.com/chart.png)")
+        var sourceThread = ChatThread()
+        sourceThread.messages = [ChatMessage(role: "user", text: "before"), imageMessage]
+        model.threads.append(sourceThread)
+        model.page = .assets
+
+        model.selectThread(sourceThread.id, messageId: imageMessage.id)
+        let first = try XCTUnwrap(model.conversationScrollRequest)
+        XCTAssertEqual(model.selectedThreadId, sourceThread.id)
+        XCTAssertEqual(first.threadId, sourceThread.id)
+        XCTAssertEqual(first.messageId, imageMessage.id)
+        XCTAssertTrue(model.canNavigateBack)
+        XCTAssertEqual(model.navigationBackLabel, NativePage.assets.rawValue)
+
+        model.consumeConversationScrollRequest(first)
+        XCTAssertNil(model.conversationScrollRequest)
+        model.selectThread(sourceThread.id, messageId: imageMessage.id)
+        let second = try XCTUnwrap(model.conversationScrollRequest)
+        XCTAssertNotEqual(second.revision, first.revision)
+        XCTAssertEqual(second.messageId, imageMessage.id)
+
+        model.selectThread(sourceThread.id, messageId: "missing-message")
+        XCTAssertNil(model.conversationScrollRequest?.messageId)
+
+        model.goBack()
+        XCTAssertEqual(model.page, .assets)
+        XCTAssertEqual(model.selectedThreadId, originalThreadId)
+        XCTAssertFalse(model.canNavigateBack)
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    func testImagePreviewIdentityMatchesOnlyCurrentSource() {
+        XCTAssertTrue(imagePreviewMatchesSource("/tmp/first.png", currentSource: "/tmp/first.png"))
+        XCTAssertFalse(imagePreviewMatchesSource("/tmp/first.png", currentSource: "/tmp/second.png"))
+        XCTAssertFalse(imagePreviewMatchesSource(nil, currentSource: "/tmp/first.png"))
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    func testAssistantMessageAccessibilityPrefixScopesMessageAndBlockControls() {
+        let first = AgentAssistantMessageBody.accessibilityPrefix(for: "message-a")
+        let second = AgentAssistantMessageBody.accessibilityPrefix(for: "message-b")
+        XCTAssertEqual(first, "agent.message.message-a")
+        XCTAssertNotEqual(first, second)
+        XCTAssertNotEqual("\(first).code.0.copy", "\(first).code.1.copy")
+        XCTAssertNotEqual("\(first).code.0.copy", "\(second).code.0.copy")
+        XCTAssertNotEqual("\(first).image.0.resource", "\(first).image.1.resource")
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    @MainActor
+    func testProviderUsageReceiptPersistsAndProjectsIntoUsageDashboard() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let completeUsage = try XCTUnwrap(AgentTokenUsage.fromProviderReceipt([
+            "inputTokens": 100, "outputTokens": 78, "totalTokens": 178,
+            "reportedRounds": 2, "totalRounds": 2
+        ]))
+        let partialUsage = try XCTUnwrap(AgentTokenUsage.fromProviderReceipt([
+            "inputTokens": 20, "outputTokens": 10, "totalTokens": 30,
+            "reportedRounds": 1, "totalRounds": 2
+        ]))
+        let cutoff = Date(timeIntervalSince1970: 90)
+        let completeMessage = ChatMessage(
+            role: "assistant", text: "complete", usage: completeUsage,
+            providerUsed: "api:openai", modelUsed: "gpt-6",
+            createdAt: Date(timeIntervalSince1970: 100)
+        )
+        let partialMessage = ChatMessage(
+            role: "assistant", text: "partial", usage: partialUsage,
+            providerUsed: "api:anthropic", modelUsed: "claude-sonnet",
+            createdAt: Date(timeIntervalSince1970: 200)
+        )
+        let unreportedMessage = ChatMessage(
+            role: "assistant", text: "missing receipt", incomplete: true,
+            providerUsed: "api:openai", modelUsed: "gpt-6",
+            createdAt: Date(timeIntervalSince1970: 300)
+        )
+        let oldMessage = ChatMessage(
+            role: "assistant", text: "outside range", usage: completeUsage,
+            createdAt: cutoff.addingTimeInterval(-1)
+        )
+        let userMessage = ChatMessage(
+            role: "user", text: "not an assistant receipt", usage: completeUsage,
+            createdAt: Date(timeIntervalSince1970: 400)
+        )
+        var thread = ChatThread()
+        thread.title = "Usage source conversation"
+        thread.repoId = "repo-usage"
+        thread.messages = [completeMessage, partialMessage, unreportedMessage, oldMessage, userMessage]
+
+        let model = NativeWorkspace(store: store)
+        model.threads = [thread]
+        model.persist()
+
+        let restored = NativeWorkspace(store: store)
+        let snapshot = AgentUsageDashboard.makeUsageSnapshot(
+            from: restored.threads,
+            projectLabels: [:], repositoryLabels: ["repo-usage": "Usage repository"],
+            since: cutoff
+        )
+
+        XCTAssertEqual(snapshot.entries.count, 2)
+        XCTAssertEqual(snapshot.entries.map(\.id), ["\(thread.id):\(partialMessage.id)", "\(thread.id):\(completeMessage.id)"])
+        XCTAssertEqual(snapshot.unreportedEntries.map(\.id), ["\(thread.id):\(unreportedMessage.id)"])
+        XCTAssertEqual(snapshot.unreportedEntries.first?.threadTitle, "Usage source conversation")
+        XCTAssertEqual(snapshot.unreportedEntries.first?.model, "gpt-6")
+        XCTAssertEqual(snapshot.unreportedEntries.first?.provider, "api:openai")
+        XCTAssertEqual(snapshot.unreportedEntries.first?.incomplete, true)
+        XCTAssertEqual(snapshot.entries.first?.threadId, thread.id)
+        XCTAssertEqual(snapshot.entries.first?.messageId, partialMessage.id)
+        XCTAssertEqual(snapshot.entries.first?.threadTitle, "Usage source conversation")
+        XCTAssertEqual(snapshot.unreportedEntries.count, 1)
+        XCTAssertEqual(snapshot.partiallyReported, 1)
+        XCTAssertEqual(snapshot.inputTotal, 120)
+        XCTAssertEqual(snapshot.outputTotal, 88)
+        XCTAssertEqual(snapshot.total, 208)
+        XCTAssertEqual(snapshot.entries.first?.project, "未绑定项目 · Usage repository")
+        XCTAssertEqual(snapshot.entries.first?.provider, "api:anthropic")
+        XCTAssertEqual(snapshot.entries.first?.model, "claude-sonnet")
+        XCTAssertEqual(snapshot.entries.first?.usage.reportedRounds, 1)
+        XCTAssertEqual(snapshot.entries.first?.usage.totalRounds, 2)
+
+        XCTAssertEqual(
+            AgentUsageDashboard.availableProviderIds(from: restored.threads),
+            ["api:anthropic", "api:openai", "未知"]
+        )
+        let unknown = AgentUsageDashboard.makeUsageSnapshot(
+            from: restored.threads, projectLabels: [:],
+            since: cutoff, providerId: "未知"
+        )
+        XCTAssertTrue(unknown.entries.isEmpty)
+        XCTAssertTrue(unknown.unreportedEntries.isEmpty)
+        XCTAssertEqual(unknown.total, 0)
+        let openai = AgentUsageDashboard.makeUsageSnapshot(
+            from: restored.threads, projectLabels: [:],
+            since: cutoff, providerId: "api:openai"
+        )
+        XCTAssertEqual(openai.entries.map(\.messageId), [completeMessage.id])
+        XCTAssertEqual(openai.unreportedEntries.map(\.messageId), [unreportedMessage.id])
+        XCTAssertEqual(openai.total, completeUsage.totalTokens)
+        XCTAssertEqual(openai.partiallyReported, 0)
+        let anthropic = AgentUsageDashboard.makeUsageSnapshot(
+            from: restored.threads, projectLabels: [:],
+            since: cutoff, providerId: "api:anthropic"
+        )
+        XCTAssertEqual(anthropic.entries.map(\.messageId), [partialMessage.id])
+        XCTAssertTrue(anthropic.unreportedEntries.isEmpty)
+        XCTAssertEqual(anthropic.total, partialUsage.totalTokens)
+        XCTAssertEqual(anthropic.partiallyReported, 1)
+
+        restored.page = .usage
+        let source = try XCTUnwrap(snapshot.entries.first)
+        restored.selectThread(source.threadId, messageId: source.messageId)
+        XCTAssertEqual(restored.page, .agent)
+        XCTAssertEqual(restored.selectedThreadId, thread.id)
+        XCTAssertEqual(restored.conversationScrollRequest?.threadId, thread.id)
+        XCTAssertEqual(restored.conversationScrollRequest?.messageId, partialMessage.id)
+        XCTAssertTrue(restored.canNavigateBack)
+        restored.goBack()
+        XCTAssertEqual(restored.page, .usage)
+        XCTAssertFalse(restored.canNavigateBack)
+
+        let unreported = try XCTUnwrap(snapshot.unreportedEntries.first)
+        restored.selectThread(unreported.threadId, messageId: unreported.messageId)
+        XCTAssertEqual(restored.page, .agent)
+        XCTAssertEqual(restored.selectedThreadId, thread.id)
+        XCTAssertEqual(restored.conversationScrollRequest?.threadId, thread.id)
+        XCTAssertEqual(restored.conversationScrollRequest?.messageId, unreportedMessage.id)
+        XCTAssertTrue(restored.canNavigateBack)
+        restored.goBack()
+        XCTAssertEqual(restored.page, .usage)
+        XCTAssertFalse(restored.canNavigateBack)
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    func testUsageDashboardAttributesAndFiltersBySemanticProjectIdentity() {
+        let cutoff = Date(timeIntervalSince1970: 0)
+        let usage = AgentTokenUsage(
+            inputTokens: 10, outputTokens: 5, totalTokens: 15,
+            reportedRounds: 1, totalRounds: 1
+        )
+        func thread(_ title: String, projectId: String?, repoId: String?, timestamp: TimeInterval) -> ChatThread {
+            var value = ChatThread()
+            value.title = title
+            value.projectId = projectId
+            value.repoId = repoId
+            value.messages = [ChatMessage(
+                role: "assistant", text: title, usage: usage,
+                createdAt: Date(timeIntervalSince1970: timestamp)
+            )]
+            return value
+        }
+
+        let projectA = thread("Project A conversation", projectId: "project-a", repoId: "repo-shared", timestamp: 10)
+        let projectB = thread("Project B conversation", projectId: "project-b", repoId: "repo-shared", timestamp: 20)
+        let standalone = thread("Standalone conversation", projectId: "project-c", repoId: nil, timestamp: 30)
+        let legacyRepository = thread("Legacy repository conversation", projectId: nil, repoId: "repo-legacy", timestamp: 40)
+        let unbound = thread("Unbound conversation", projectId: nil, repoId: nil, timestamp: 50)
+        let threads = [projectA, projectB, standalone, legacyRepository, unbound]
+        let projectLabels = ["project-a": "Project A", "project-b": "Project B", "project-c": "Standalone Project"]
+        let repositoryLabels = ["repo-shared": "Shared Repository", "repo-legacy": "Legacy Repository"]
+
+        let all = AgentUsageDashboard.makeUsageSnapshot(
+            from: threads, projectLabels: projectLabels, repositoryLabels: repositoryLabels, since: cutoff
+        )
+        XCTAssertEqual(all.entries.count, 5)
+        XCTAssertEqual(all.entries.first(where: { $0.threadId == projectA.id })?.project, "Project A")
+        XCTAssertEqual(all.entries.first(where: { $0.threadId == projectB.id })?.project, "Project B")
+        XCTAssertNotEqual(
+            all.entries.first(where: { $0.threadId == projectA.id })?.projectGroupId,
+            all.entries.first(where: { $0.threadId == projectB.id })?.projectGroupId
+        )
+        XCTAssertEqual(all.entries.first(where: { $0.threadId == standalone.id })?.project, "Standalone Project")
+        XCTAssertEqual(all.entries.first(where: { $0.threadId == legacyRepository.id })?.project,
+                       "未绑定项目 · Legacy Repository")
+        XCTAssertEqual(all.entries.first(where: { $0.threadId == unbound.id })?.project, "未关联项目")
+
+        let projectAOnly = AgentUsageDashboard.makeUsageSnapshot(
+            from: threads, projectLabels: projectLabels, repositoryLabels: repositoryLabels,
+            since: cutoff, projectFilter: "project-a"
+        )
+        XCTAssertEqual(projectAOnly.entries.map(\.threadId), [projectA.id])
+
+        let unassignedOnly = AgentUsageDashboard.makeUsageSnapshot(
+            from: threads, projectLabels: projectLabels, repositoryLabels: repositoryLabels,
+            since: cutoff, projectFilter: AgentUsageDashboard.unassignedProjectFilter
+        )
+        XCTAssertEqual(Set(unassignedOnly.entries.map(\.threadId)), Set([legacyRepository.id, unbound.id]))
+
+        let options = AgentUsageDashboard.projectOptions(from: [
+            ForgeSemanticProject(
+                projectId: "project-a", workspaceId: nil, displayName: "Project A",
+                status: "active", revision: 1, placements: [], requirementCount: 1
+            ),
+            ForgeSemanticProject(
+                projectId: "project-b", workspaceId: nil, displayName: "Project B",
+                status: "active", revision: 1, placements: [], requirementCount: 1
+            )
+        ], threads: threads)
+        XCTAssertEqual(Set(options.map(\.id)), Set(["project-a", "project-b", "project-c"]))
+        XCTAssertEqual(options.first(where: { $0.id == "project-a" })?.label, "Project A")
+        XCTAssertEqual(options.first(where: { $0.id == "project-c" })?.label, "project-c")
+    }
+
+    func testAssetsProjectionIndexesOnlyExplicitAssistantRemoteAndUserSelectedLocalImages() {
+        var projectA = ChatThread()
+        projectA.title = "Project A"
+        projectA.repoId = "repo-a"
+        let assistantRemoteA = ChatMessage(
+            role: "assistant", text: "![Chart](https://example.com/chart.png)",
+            createdAt: Date(timeIntervalSince1970: 300)
+        )
+        var userLocalA = ChatMessage(
+            role: "user", text: "Attached", createdAt: Date(timeIntervalSince1970: 200)
+        )
+        userLocalA.attachmentPaths = ["/tmp/local-a.png", "/tmp/local-b.png"]
+        let userMarkdownA = ChatMessage(
+            role: "user", text: "![Not an assistant resource](https://example.com/user.png)"
+        )
+        var assistantLocalA = ChatMessage(role: "assistant", text: "No user attachment")
+        assistantLocalA.attachmentPaths = ["/tmp/not-user-selected.png"]
+        projectA.messages = [assistantRemoteA, userLocalA, userMarkdownA, assistantLocalA]
+
+        var projectB = ChatThread()
+        projectB.title = "Project B"
+        projectB.repoId = "repo-b"
+        let assistantRemoteB = ChatMessage(
+            role: "assistant", text: "![Diagram](https://example.com/diagram.png)",
+            createdAt: Date(timeIntervalSince1970: 250)
+        )
+        var userLocalB = ChatMessage(
+            role: "user", text: "Attached", createdAt: Date(timeIntervalSince1970: 150)
+        )
+        userLocalB.attachmentPaths = ["/tmp/local-c.png"]
+        projectB.messages = [assistantRemoteB, userLocalB]
+
+        let all = AgentAssetsDashboard.makeResources(
+            from: [projectA, projectB], projects: [], selectedRepoId: "",
+            showLocalResources: true, showRemoteImages: true
+        )
+        XCTAssertEqual(all.count, 5)
+        XCTAssertEqual(all.map(\.date), all.map(\.date).sorted(by: >))
+        XCTAssertEqual(all.map(\.source), [
+            "https://example.com/chart.png",
+            "https://example.com/diagram.png",
+            "/tmp/local-a.png", "/tmp/local-b.png", "/tmp/local-c.png"
+        ])
+        XCTAssertEqual(all.filter(\.remote).count, 2)
+        XCTAssertEqual(all.filter { !$0.remote }.count, 3)
+        XCTAssertEqual(all.first?.title, "Chart")
+        XCTAssertEqual(all.first?.threadTitle, "Project A")
+        XCTAssertEqual(Set(all.map(\.threadTitle)), Set(["Project A", "Project B"]))
+        XCTAssertEqual(all.first?.threadId, projectA.id)
+        XCTAssertEqual(all.first?.messageId, assistantRemoteA.id)
+        XCTAssertEqual(all.first?.id, "\(projectA.id):\(assistantRemoteA.id):remote:0")
+
+        let projectAOnly = AgentAssetsDashboard.makeResources(
+            from: [projectA, projectB], projects: [], selectedRepoId: "repo-a",
+            showLocalResources: true, showRemoteImages: true
+        )
+        XCTAssertEqual(projectAOnly.count, 3)
+        XCTAssertTrue(projectAOnly.allSatisfy { $0.threadId == projectA.id })
+        XCTAssertEqual(projectAOnly.first?.id, all.first?.id)
+
+        let localOnly = AgentAssetsDashboard.makeResources(
+            from: [projectA, projectB], projects: [], selectedRepoId: "",
+            showLocalResources: true, showRemoteImages: false
+        )
+        XCTAssertEqual(localOnly.count, 3)
+        XCTAssertTrue(localOnly.allSatisfy { !$0.remote })
+
+        let remoteOnly = AgentAssetsDashboard.makeResources(
+            from: [projectA, projectB], projects: [], selectedRepoId: "",
+            showLocalResources: false, showRemoteImages: true
+        )
+        XCTAssertEqual(remoteOnly.count, 2)
+        XCTAssertTrue(remoteOnly.allSatisfy(\.remote))
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    func testAssetsProjectionIncludesContextFilesForExactCheckout() {
+        let project = ForgeProject(
+            repoId: "repo-a",
+            displayName: "Project A",
+            localRoot: "/tmp/forge-assets-project-a",
+            checkoutId: "checkout-a",
+            remoteUrl: nil,
+            defaultBranch: nil
+        )
+        var matching = ChatThread()
+        matching.title = "Project A"
+        matching.repoId = "repo-a"
+        matching.checkoutId = "checkout-a"
+        var matchingMessage = ChatMessage(
+            role: "user", text: "Use this file",
+            createdAt: Date(timeIntervalSince1970: 200)
+        )
+        matchingMessage.contextPaths = ["Docs/guide.pdf"]
+        matching.messages = [matchingMessage]
+
+        var stale = ChatThread()
+        stale.repoId = "repo-a"
+        stale.checkoutId = "checkout-old"
+        var staleMessage = ChatMessage(
+            role: "user", text: "Old context",
+            createdAt: Date(timeIntervalSince1970: 100)
+        )
+        staleMessage.contextPaths = ["Docs/old.pdf"]
+        stale.messages = [staleMessage]
+
+        let resources = AgentAssetsDashboard.makeResources(
+            from: [matching, stale],
+            projects: [project],
+            selectedRepoId: "",
+            showLocalResources: true,
+            showRemoteImages: false
+        )
+
+        XCTAssertEqual(resources.count, 2)
+        XCTAssertEqual(resources.map(\.title), ["guide.pdf", "old.pdf"])
+        XCTAssertEqual(resources[0].kind, .file)
+        XCTAssertEqual(resources[0].localRoot, project.localRoot)
+        XCTAssertEqual(resources[0].repoId, "repo-a")
+        XCTAssertEqual(resources[0].checkoutId, "checkout-a")
+        XCTAssertNil(resources[1].localRoot)
+        XCTAssertEqual(resources[1].repoId, "repo-a")
+        XCTAssertEqual(resources[1].checkoutId, "checkout-old")
+        XCTAssertEqual(resources[1].source, "Docs/old.pdf")
+
+        let hidden = AgentAssetsDashboard.makeResources(
+            from: [matching, stale],
+            projects: [project],
+            selectedRepoId: "",
+            showLocalResources: false,
+            showRemoteImages: false
+        )
+        XCTAssertTrue(hidden.isEmpty)
+    }
+
+    func testAssetsProjectFilterIncludesAllCheckoutsWithinRepository() {
+        var primaryCheckout = ChatThread()
+        primaryCheckout.repoId = "repo-a"
+        primaryCheckout.checkoutId = "checkout-primary"
+        primaryCheckout.messages = [
+            ChatMessage(role: "assistant", text: "![Primary](https://example.com/primary.png)")
+        ]
+
+        var worktree = ChatThread()
+        worktree.repoId = "repo-a"
+        worktree.checkoutId = "checkout-worktree"
+        worktree.messages = [
+            ChatMessage(role: "assistant", text: "![Worktree](https://example.com/worktree.png)")
+        ]
+
+        var otherProject = ChatThread()
+        otherProject.repoId = "repo-b"
+        otherProject.checkoutId = "checkout-other"
+        otherProject.messages = [
+            ChatMessage(role: "assistant", text: "![Other](https://example.com/other.png)")
+        ]
+
+        let resources = AgentAssetsDashboard.makeResources(
+            from: [primaryCheckout, worktree, otherProject],
+            projects: [],
+            selectedRepoId: "repo-a",
+            showLocalResources: false,
+            showRemoteImages: true
+        )
+
+        XCTAssertEqual(resources.count, 2)
+        XCTAssertEqual(Set(resources.map(\.threadId)), Set([primaryCheckout.id, worktree.id]))
+        XCTAssertTrue(resources.allSatisfy { $0.repoId == "repo-a" })
+        XCTAssertEqual(
+            resources.first(where: { $0.threadId == primaryCheckout.id })?.checkoutId,
+            "checkout-primary"
+        )
+        XCTAssertEqual(
+            resources.first(where: { $0.threadId == worktree.id })?.checkoutId,
+            "checkout-worktree"
+        )
+        XCTAssertEqual(Set(resources.map(\.source)), Set([
+            "https://example.com/primary.png",
+            "https://example.com/worktree.png"
+        ]))
+    }
+
+    func testAssetsSearchMatchesResourceNameSourceAndConversationWithoutBreakingProjectFilters() {
+        var thread=ChatThread()
+        thread.title="Release review"
+        thread.repoId="repo-a"
+        thread.checkoutId="checkout-a"
+        let assistant=ChatMessage(role:"assistant",text:"![Architecture diagram](https://cdn.example.com/forge/architecture.png)",createdAt:Date(timeIntervalSince1970:300))
+        var user=ChatMessage(role:"user",text:"Attached release notes",createdAt:Date(timeIntervalSince1970:200))
+        user.attachmentPaths=["/tmp/release-screenshot.png"]
+        user.contextPaths=["Docs/ReleaseChecklist.pdf"]
+        thread.messages=[assistant,user]
+
+        let all=AgentAssetsDashboard.makeResources(
+            from:[thread],projects:[],selectedRepoId:"",showLocalResources:true,showRemoteImages:true
+        )
+        XCTAssertEqual(all.count,3)
+        XCTAssertEqual(AgentAssetsDashboard.makeResources(
+            from:[thread],projects:[],selectedRepoId:"",showLocalResources:true,showRemoteImages:true,
+            searchQuery:"release-screenshot"
+        ).map { $0.title },["release-screenshot.png"])
+        XCTAssertEqual(AgentAssetsDashboard.makeResources(
+            from:[thread],projects:[],selectedRepoId:"",showLocalResources:true,showRemoteImages:true,
+            searchQuery:"architecture diagram"
+        ).map { $0.title },["Architecture diagram"])
+        XCTAssertEqual(AgentAssetsDashboard.makeResources(
+            from:[thread],projects:[],selectedRepoId:"",showLocalResources:true,showRemoteImages:true,
+            searchQuery:"ReleaseChecklist.pdf"
+        ).map { $0.title },["ReleaseChecklist.pdf"])
+        XCTAssertEqual(AgentAssetsDashboard.makeResources(
+            from:[thread],projects:[],selectedRepoId:"",showLocalResources:true,showRemoteImages:true,
+            searchQuery:"cdn.example.com"
+        ).map { $0.title },["Architecture diagram"])
+        XCTAssertEqual(AgentAssetsDashboard.makeResources(
+            from:[thread],projects:[],selectedRepoId:"",showLocalResources:true,showRemoteImages:true,
+            searchQuery:"RELEASE REVIEW"
+        ).count,3)
+        XCTAssertEqual(AgentAssetsDashboard.makeResources(
+            from:[thread],projects:[],selectedRepoId:"repo-other",showLocalResources:true,showRemoteImages:true,
+            searchQuery:"release"
+        ).count,0)
+        XCTAssertEqual(AgentAssetsDashboard.makeResources(
+            from:[thread],projects:[],selectedRepoId:"repo-a",showLocalResources:false,showRemoteImages:true,
+            searchQuery:"release-screenshot"
+        ).count,0)
+    }
+
+    func testContextFileResolutionRejectsCheckoutEscapeAndSymlinkEscape() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let checkout = folder.appendingPathComponent("checkout", isDirectory: true)
+        let docs = checkout.appendingPathComponent("Docs", isDirectory: true)
+        let outside = folder.appendingPathComponent("outside.txt")
+        try FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let source = docs.appendingPathComponent("guide.pdf")
+        try Data("guide".utf8).write(to: source)
+        try Data("outside".utf8).write(to: outside)
+        let link = checkout.appendingPathComponent("outside-link")
+        try FileManager.default.createSymbolicLink(
+            atPath: link.path,
+            withDestinationPath: outside.path
+        )
+
+        XCTAssertEqual(
+            resolveLocalContextFileURL(rootPath: checkout.path, relativePath: "Docs/guide.pdf"),
+            source.resolvingSymlinksInPath().standardizedFileURL
+        )
+        XCTAssertNil(resolveLocalContextFileURL(rootPath: checkout.path, relativePath: "../outside.txt"))
+        XCTAssertNil(resolveLocalContextFileURL(rootPath: checkout.path, relativePath: "outside-link"))
+        XCTAssertNil(resolveLocalContextFileURL(rootPath: nil, relativePath: "Docs/guide.pdf"))
+    }
+
+    func testCopyLocalContextFileCopiesAndAtomicallyReplacesDestination() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let source = folder.appendingPathComponent("source.txt")
+        let destination = folder.appendingPathComponent("exported.txt")
+        let bytes = Data("local context file".utf8)
+        try bytes.write(to: source)
+
+        try await copyLocalFileAtomically(from: source, to: destination)
+        XCTAssertEqual(try Data(contentsOf: destination), bytes)
+
+        try Data("previous destination".utf8).write(to: destination)
+        try await copyLocalFileAtomically(from: source, to: destination)
+        XCTAssertEqual(try Data(contentsOf: destination), bytes)
+
+        let remainingFiles = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+        XCTAssertEqual(Set(remainingFiles), Set(["source.txt", "exported.txt"]))
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    func testPlanningRecordsPreserveCanonicalRequirementTaskMetadata() {
+        let rows:[[String:Any]] = [[
+            "requirementId":"REQ-TASK-1",
+            "title":"完善项目任务",
+            "state":"open",
+            "status":"waiting_for_user",
+            "priority":"urgent",
+            "assignee":"Greyson"
+        ]]
+        let records=NativeWorkspace.planningRecords(requirementRows:rows,planRows:[])
+        XCTAssertEqual(records.count,1)
+        XCTAssertEqual(records[0].taskStatus,"waiting_for_user")
+        XCTAssertEqual(records[0].priority,"urgent")
+        XCTAssertEqual(records[0].assignee,"Greyson")
+    }
+
+    func testRequirementDetailParsesCanonicalTaskMetadata() {
+        let detail=NativeWorkspace.requirementDetail([
+            "data":[
+                "requirement":[
+                    "requirementId":"REQ-TASK-2",
+                    "revision":4,
+                    "title":"修正任务编辑",
+                    "outcomeStatement":"可以管理任务属性",
+                    "state":"open",
+                    "status":"active",
+                    "priority":"high",
+                    "assignee":"Greyson",
+                    "acceptanceCriteria":[],
+                    "progressSummary":"",
+                    "remainingWork":[],
+                    "acceptedEvidenceRefs":[]
+                ]
+            ]
+        ])
+        XCTAssertEqual(detail?.taskStatus,"active")
+        XCTAssertEqual(detail?.priority,"high")
+        XCTAssertEqual(detail?.assignee,"Greyson")
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    func testCanonicalTaskStatusSeparatesPlanningFromLiveExecution() {
+        XCTAssertEqual(ZenBoardBucket.classify(requirementState:"open",taskStatus:"planned",runtimeActive:false),.planned)
+        XCTAssertEqual(ZenBoardBucket.classify(requirementState:"open",taskStatus:"active",runtimeActive:false),.active)
+        XCTAssertEqual(ZenBoardBucket.classify(requirementState:"open",taskStatus:"active",runtimeActive:true),.running)
+        XCTAssertEqual(ZenBoardBucket.classify(requirementState:"open",taskStatus:"waiting_for_user",runtimeActive:false),.waitingForUser)
+        XCTAssertEqual(ZenWorkspacePane.editableTaskStatuses(from:nil),["unset","planned","active","waiting_for_user"])
+        XCTAssertEqual(ZenWorkspacePane.editableTaskStatuses(from:"planned"),["planned","active","waiting_for_user"])
+        XCTAssertEqual(ZenWorkspacePane.editableTaskStatuses(from:"active"),["active","waiting_for_user"])
+        XCTAssertEqual(ZenWorkspacePane.editableTaskStatuses(from:"waiting_for_user"),["waiting_for_user","planned","active"])
+        XCTAssertEqual(ZenWorkspacePane.editableTaskStatuses(from:"done"),["done"])
     }
 }

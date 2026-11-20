@@ -110,4 +110,6 @@ Native Agent streaming rejects explicit provider truncation before dispatching a
 
 SafePatch retains the explicit caller Controller Home through repository tool dispatch and Console entrypoints. The patch owner resolves that home before binding edit-session storage, so storage placement and edit execution use the same authority. The fast executor already passes that same context; ambient defaults are used only when the caller omitted an explicit home.
 
+Native Agent Process observation is evidence, not a retry: when a nonterminal `process_status` response reports `observationInterrupted`, the current turn pauses and preserves the Process ID for explicit recovery. A returned terminal receipt still wins over an interrupted observation. Cancellation is considered successful only for a completed `succeeded`, `failed`, `timed_out`, or `cancelled` terminal status; `unknown`, `completed_unknown`, `orphaned`, missing, and future statuses remain unresolved.
+
 Native Agent terminal Process projection preserves the canonical `cancelled` flag. Explicit cancellation evidence prevents `run_command` success even when status/exit-code fields look successful, for both immediate receipts and subsequent managed/lightweight Process observations. Cancellation settlement remains distinct from command success; this projection never authorizes replay.

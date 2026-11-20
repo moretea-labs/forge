@@ -93,9 +93,13 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // Requirement storage, assignment writer and revision CAS remain unchanged.
 // Schema v23 documents Project-scoped Plan identity and the project_id == scope_key rule.
 // 2026-11-18 #313 adds task-bound ChatGPT continuation identity and one bounded
-// Prompt to the existing Launch Session action. Freeze the reviewed schema change;
-// preferred tool names and the rest of the facade contract remain unchanged.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '5406f2bb3b7715a0';
+// Prompt to the existing Launch Session action.
+// 2026-11-20: revision-bound Autopilot authorization/checkpoint acceptance and
+// atomic parent-Requirement CAS for semantic Plan creation add explicit
+// expected-revision and approved-checkpoint identity fields. This is an
+// intentional public input-schema revision; refresh the exact fingerprint so
+// stale Connector schema snapshots are invalidated.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '349a61ade2b299a1';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

@@ -39,6 +39,7 @@ import { assertExecutionIdentity, type ResolvedExecutionIdentity } from '../../c
 import {
   cancelLightweightProcess,
   getLightweightProcessHandle,
+  getLightweightProcessHandleByCommandId,
   isLightweightProcessId,
   lightweightProcessScopeKey,
   readLightweightProcessLogs,
@@ -46,6 +47,7 @@ import {
   waitForLightweightProcess,
 } from './lightweight-managed';
 import { isForgeInstanceProcessScopeKey, processScopeKeyForHandle } from './process-scope';
+import { getProcessRequestBinding } from './store';
 
 export type RepositoryCommandRoute =
   | 'process_direct'
@@ -551,6 +553,33 @@ export function getRepositoryCommandProcess(
     return getProcessHandle(controllerHome, scopeKey, processId);
   }
   return getLightweightProcessHandle(controllerHome, scopeKey, processId);
+}
+
+/** Resolve a previously accepted execute_command by its original request ID.
+ * Durable Process bindings are checkout-scoped; lightweight receipts are scoped
+ * to the repository and command ID. Missing evidence never causes a replay.
+ */
+export function resolveRepositoryCommandProcessIdByRequestId(
+  controllerHome: string,
+  repoId: string,
+  checkoutId: string,
+  requestId: string,
+): string | undefined {
+  const normalizedRepoId = repoId.trim();
+  const normalizedCheckoutId = checkoutId.trim();
+  const normalizedRequestId = requestId.trim();
+  if (!normalizedRepoId || !normalizedCheckoutId || !normalizedRequestId) return undefined;
+  const binding = getProcessRequestBinding(controllerHome, normalizedRepoId, normalizedCheckoutId, normalizedRequestId);
+  if (binding) {
+    if (binding.repoId !== normalizedRepoId
+        || binding.checkoutId?.trim() !== normalizedCheckoutId
+        || binding.requestId !== normalizedRequestId
+        || typeof binding.processId !== 'string' || !binding.processId.trim()) {
+      throw new Error(`PROCESS_REQUEST_BINDING_SCOPE_MISMATCH: ${normalizedRequestId}`);
+    }
+    return binding.processId.trim();
+  }
+  return getLightweightProcessHandleByCommandId(controllerHome, normalizedRepoId, normalizedRequestId)?.processId;
 }
 
 export async function waitRepositoryCommandProcess(

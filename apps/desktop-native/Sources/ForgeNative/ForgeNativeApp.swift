@@ -41,9 +41,13 @@ struct ForgeNativeApp: App {
         .commands {
             CommandGroup(replacing:.newItem) {
                 Button("新会话") {
+                    guard !workspace.zenRefinementActive else { return }
                     workspace.show(.agent)
                     workspace.newThread()
-                }.keyboardShortcut("n")
+                }
+                .disabled(workspace.zenRefinementActive)
+                .help(workspace.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "新建会话")
+                .keyboardShortcut("n")
             }
             CommandMenu("导航") {
                 Button("搜索会话") {
@@ -51,9 +55,11 @@ struct ForgeNativeApp: App {
                 }.keyboardShortcut("k")
                 Divider()
                 Button("显示会话") { workspace.show(.agent) }.keyboardShortcut("1")
-                Button("显示 Requirement") { workspace.zenMode = true; workspace.show(.requirement) }.keyboardShortcut("2")
-                Button("显示 Plan") { workspace.show(.plan) }.keyboardShortcut("3")
-                Button("显示知识库") { workspace.show(.knowledge) }.keyboardShortcut("4")
+                Button("显示工作台") { workspace.openWorkbench() }.keyboardShortcut("2")
+                Button("显示自动任务") { workspace.show(.schedule) }.keyboardShortcut("3")
+                Button("显示资源") { workspace.show(.assets) }.keyboardShortcut("4")
+                Button("显示统计") { workspace.show(.usage) }.keyboardShortcut("5")
+                Button("显示设置") { workspace.show(.settings) }.keyboardShortcut("6")
                 Divider()
                 Button("刷新项目") { Task { await workspace.refresh() } }.keyboardShortcut("r")
             }
@@ -94,12 +100,49 @@ private struct ProjectCheckoutChoice: Identifiable {
     }
 }
 
+// The sidebar selection is derived from the single current workspace/page.
+enum ForgeSidebarDestination: String, CaseIterable {
+    case workbench, agent, automations, resources, analytics, settings
+
+    var title: String {
+        switch self {
+        case .workbench: return "工作台"
+        case .agent: return "Agent"
+        case .automations: return "自动任务"
+        case .resources: return "资源"
+        case .analytics: return "统计"
+        case .settings: return "设置"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .workbench: return "square.grid.2x2"
+        case .agent: return "bubble.left.and.bubble.right"
+        case .automations: return "clock.arrow.circlepath"
+        case .resources: return "folder"
+        case .analytics: return "chart.bar"
+        case .settings: return "gearshape"
+        }
+    }
+
+    static func resolve(zenMode: Bool, page: NativePage) -> Self {
+        if zenMode { return .workbench }
+        switch page {
+        case .agent: return .agent
+        case .schedule: return .automations
+        case .assets, .knowledge: return .resources
+        case .usage: return .analytics
+        case .settings, .plugins: return .settings
+        case .requirement, .plan: return .workbench
+        }
+    }
+}
+
 private struct ForgeWorkspaceView: View {
     @ObservedObject var model: NativeWorkspace
-    @State private var visibility: NavigationSplitViewVisibility = .all
-    @State private var zenScreen: ZenScreen = .board
-    @State private var zenFocusedRequirementId: String?
-    @State private var zenOpeningPlanning = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var visibility: NavigationSplitViewVisibility = .automatic
     @State private var renameThreadId: String?
     @State private var renameThreadTitle = ""
     @State private var hoveredThreadId: String?
@@ -110,8 +153,19 @@ private struct ForgeWorkspaceView: View {
     @State private var expandedProjectRepoId: String?
     @State private var expandedProjectCheckouts: [ProjectCheckoutChoice] = []
     @State private var projectCheckoutsLoading = false
+    @State private var projectCheckoutsRequestGeneration = 0
     @State private var projectCheckoutError: String?
+    @State private var sidebarCheckoutLabels: [String:String] = [:]
     @State private var inboxShown = false
+    @State private var assetsSelectedRepoId = ""
+    @State private var assetsShowLocalResources = true
+    @State private var assetsShowRemoteImages = true
+    @State private var assetsSearchQuery = ""
+    @State private var assetsReturnResourceID: String?
+    @State private var usageSelectedProjectId = ""
+    @State private var usageSelectedProviderId = ""
+    @State private var usageDays = 30
+    @State private var usageReturnEntryID: String?
     @State private var inboxDecisionRequestId: String?
     @State private var inboxDecision = ""
     @State private var inboxDismissRequestId: String?
@@ -120,108 +174,97 @@ private struct ForgeWorkspaceView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility:$visibility) {
-            HStack(spacing:0) {
-                if model.zenMode {
-                    ZenRail(screen:$zenScreen) {
-                        model.zenMode = false
-                        model.show(.settings)
-                    }
-                    ZenSidebar(model:model,screen:$zenScreen,
-                               focusedRequirementId:$zenFocusedRequirementId,
-                               decisionCount:model.relevantUserRequests.count,
-                               onInbox:{
-                        inboxShown = true
-                        Task { await model.loadUserRequests() }
-                    },onAddProject:{
-                        chooseProjectDirectory(keepZen:true)
-                    })
-                    .popover(isPresented:$inboxShown,arrowEdge:.trailing) {
-                        inboxPanel
-                    }
-                } else {
-                    navigationRail
-                    sidebar
-                }
-            }
-            .navigationSplitViewColumnWidth(min:296,ideal:318,max:352)
+            unifiedSidebar
+                .navigationSplitViewColumnWidth(min:250,ideal:278,max:310)
         } detail: {
             if model.zenMode {
-                ZenWorkspacePane(model:model,screen:$zenScreen,
-                                 focusedRequirementId:$zenFocusedRequirementId,
-                                 onOpenPlanning:{
-                    zenOpeningPlanning = true
-                    model.zenMode = false
-                },onDraftGoal:{ description in
-                    model.zenMode = false
-                    model.newThread()
+                ZenWorkspacePane(model:model,screen:$model.zenScreen,
+                                 focusedRequirementId:$model.zenFocusedRequirementId,
+                                 onDraftGoal:{ description in
+                    guard !model.zenRefinementActive else {
+                        model.error="自动精化进行中，请先按 Esc 停止后再创建新目标。"
+                        return
+                    }
+                    guard model.selectedProjectId != nil else {
+                        model.error="请先选择项目。"
+                        return
+                    }
+                    guard let provider=model.readOnlyAnalysisProvider else {
+                        model.error="请先配置一个可用的 API Provider，再进行需求分析。"
+                        return
+                    }
+                    if model.repoId != nil && model.projectRepositoryId == nil {
+                        model.error="当前仓库不属于所选项目，请重新选择项目或仓库。"
+                        return
+                    }
+                    if model.projectRepositoryId != nil {
+                        guard model.checkoutId != nil,model.checkoutIsAvailable else {
+                            model.error="当前项目工作区尚未就绪，请稍后重试。"
+                            return
+                        }
+                    }
+                    guard !model.busy else {
+                        model.error="请先停止正在运行的会话。"
+                        return
+                    }
+                    model.newThread(provider:provider,readOnly:true)
+                    guard let launchedThreadId=model.selectedThreadId else { return }
+                    let evidenceScope = model.projectRepositoryId == nil
+                        ? "当前项目没有关联仓库；只基于项目内现有 Requirement / Plan 和真实回执分析，不假设文件或命令可用。"
+                        : "先读取现有 Requirement / Plan 和当前 checkout 的只读工作区证据。"
                     model.draft = """
                     当前项目目标：\(description)
 
-                    请以 Requirement-first 方式分析。优先复用现有 Requirement / Plan，新增独立目标或方案时说明理由。仅输出经核查的一个提案，不进行写操作。
+                    请以 Requirement-first 方式分析。\(evidenceScope) 信息不足时通过本会话多轮澄清，不要猜测，也不要输出未确认提案。
 
                     \(ZenChangeProposal.outputContract)
                     """
+                    Task { await model.sendZenRefinement(expectedThreadId:launchedThreadId) }
                 },onOpenInbox:{
                     inboxShown = true
                     Task { await model.loadUserRequests() }
                 }) { item, prompt, provider, wantsProposal in
-                    model.zenMode = false
+                    guard !model.zenRefinementActive else {
+                        model.error="自动精化进行中，请先按 Esc 停止后再打开其他会话。"
+                        return
+                    }
+                    guard !model.busy else {
+                        model.error="请先停止正在运行的会话。"
+                        return
+                    }
+                    guard let selectedProvider = NativeWorkspace.resolveReadOnlyAnalysisProvider(
+                        preferred:provider,fallback:model.readOnlyAnalysisProvider
+                    ) else {
+                        model.error="请先配置一个可用的 API Provider，再进行只读审查或生成 Zen 提案。"
+                        return
+                    }
                     model.newThread(
-                        provider:provider,
+                        provider:selectedProvider,
                         requirementId:item.kind == .requirement ? item.recordId : item.requirementId,
-                        planId:item.kind == .plan ? item.recordId : nil
+                        planId:item.kind == .plan ? item.recordId : nil,
+                        readOnly:true
                     )
+                    guard let launchedThreadId=model.selectedThreadId else { return }
                     model.draft = wantsProposal
                         ? prompt + "\n\n" + ZenChangeProposal.outputContract
                         : prompt
+                    // "优化" and "在只读 Agent 中审查" are actions, not draft-only navigation.
+                    // Start their analysis immediately, bound to the new conversation.
+                    Task {
+                        if wantsProposal {
+                            await model.sendZenRefinement(expectedThreadId:launchedThreadId)
+                        } else {
+                            await model.send(expectedThreadId:launchedThreadId)
+                        }
+                    }
                 }
             } else {
                 main
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .toolbar {
-            ToolbarItem(placement:.principal) {
-                Picker("工作模式",selection:$model.zenMode) {
-                    Text("Zen").tag(true)
-                    Text("Agent").tag(false)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width:134)
-                .accessibilityIdentifier("forge.mode")
-            }
-            ToolbarItem(placement:.navigation) {
-                Text(model.project?.label ?? "Forge")
-                    .font(.system(size:12,weight:.semibold))
-                    .foregroundStyle(ForgePalette.ink)
-                    .lineLimit(1)
-            }
-            ToolbarItem(placement:.automatic) {
-                HStack(spacing:7) {
-                    Circle().fill(model.connection == "MCP 配置就绪" ? Color.green : Color.orange)
-                        .frame(width:6,height:6)
-                    Text(model.connection).font(.system(size:11))
-                }.foregroundStyle(ForgePalette.secondary)
-            }
-        }
         .task {
             if model.zenMode { model.show(.requirement) }
-        }
-        .onChange(of:model.zenMode) { active in
-            if zenOpeningPlanning {
-                zenOpeningPlanning = false
-                return
-            }
-            if active {
-                model.show(.requirement)
-            } else if model.page == .requirement {
-                if let repoId=model.repoId,model.thread?.repoId != repoId {
-                    model.openProject(repoId)
-                } else {
-                    model.show(.agent)
-                }
-            }
         }
         .onChange(of:model.showSearch) { visible in
             sidebarSearchFocused = visible
@@ -231,44 +274,146 @@ private struct ForgeWorkspaceView: View {
         }
     }
 
-    private var navigationRail: some View {
-        VStack(spacing:10) {
-            Image(systemName:"square.stack.3d.up.fill")
-                .symbolRenderingMode(.hierarchical)
-                .font(.system(size:18,weight:.medium))
-                .foregroundStyle(ForgePalette.ink)
-                .frame(width:40,height:40)
-                .padding(.bottom,12)
-                .accessibilityLabel("Forge")
-
-            ForEach([NativePage.agent,.requirement,.schedule,.plugins,.knowledge]) { section in
-                railButton(section)
-            }
-            Spacer(minLength:8)
-            railButton(.settings)
-        }
-        .padding(.top,14)
-        .padding(.bottom,14)
-        .frame(width:62)
-        .frame(maxHeight:.infinity)
-        .background(.regularMaterial)
+    private var activeSidebarDestination: ForgeSidebarDestination {
+        ForgeSidebarDestination.resolve(zenMode:model.zenMode,page:model.page)
     }
 
-    private func railButton(_ section:NativePage) -> some View {
-        Button { model.show(section) } label: {
-            Image(systemName:section.symbol)
-                .symbolRenderingMode(.hierarchical)
-                .font(.system(size:16,weight:model.page == section ? .semibold : .regular))
-                .foregroundStyle(model.page == section ? ForgePalette.ink : ForgePalette.secondary)
-                .frame(width:40,height:38)
-                .background(model.page == section ? ForgePalette.selectionStrong : .clear,
+    private func openSidebarDestination(_ destination:ForgeSidebarDestination) {
+        if destination == .workbench {
+            model.openWorkbench()
+            return
+        }
+        if destination == .agent {
+            // Route directly; exiting Zen must not depend on a later view callback.
+            model.show(.agent)
+            return
+        }
+        switch destination {
+        case .workbench, .agent: break
+        case .automations: model.show(.schedule)
+        case .resources: model.show(.assets)
+        case .analytics: model.show(.usage)
+        case .settings: model.show(.settings)
+        }
+    }
+
+    private func sidebarDestinationButton(_ destination:ForgeSidebarDestination) -> some View {
+        let selected = activeSidebarDestination == destination
+        return Button {
+            openSidebarDestination(destination)
+        } label: {
+            Image(systemName:destination.symbol)
+                .font(.system(size:16,weight:selected ? .semibold : .regular))
+                .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
+                .frame(width:42,height:40)
+                .background(selected ? ForgePalette.selectionStrong : .clear,
                             in:RoundedRectangle(cornerRadius:11,style:.continuous))
                 .contentShape(RoundedRectangle(cornerRadius:11,style:.continuous))
         }
         .buttonStyle(.plain)
-        .help(section.rawValue)
-        .accessibilityLabel(section.rawValue)
-        .accessibilityIdentifier(section.accessibilityId)
+        .help(destination.title)
+        .accessibilityLabel(destination.title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .accessibilityIdentifier("forge.nav.\(destination.rawValue)")
+    }
+
+    private func utilitySidebarButton(_ title:String,icon:String,page:NativePage) -> some View {
+        let selected = model.page == page
+        return Button { model.show(page) } label: {
+            HStack(spacing:10) {
+                Image(systemName:icon).frame(width:18)
+                Text(title)
+                Spacer(minLength:0)
+            }
+            .font(.system(size:11.5,weight:selected ? .semibold : .regular))
+            .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
+            .padding(.horizontal,11)
+            .frame(height:32)
+            .background(selected ? ForgePalette.selection : .clear,
+                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("forge.sidebar.\(page.rawValue)")
+    }
+
+    private var contextualSidebar: some View {
+        VStack(alignment:.leading,spacing:5) {
+            if activeSidebarDestination == .resources {
+                utilitySidebarButton("文件与图片",icon:"photo.on.rectangle",page:.assets)
+                utilitySidebarButton("知识库",icon:"books.vertical",page:.knowledge)
+            } else if activeSidebarDestination == .settings {
+                utilitySidebarButton("项目插件",icon:"puzzlepiece",page:.plugins)
+            }
+            Spacer(minLength:0)
+        }
+        .padding(.horizontal,10)
+        .padding(.top,14)
+    }
+
+    private var unifiedSidebar: some View {
+        HStack(alignment:.top,spacing:0) {
+            // Persistent icon rail: navigation never competes with the
+            // contextual conversation/project content for vertical space.
+            VStack(spacing:0) {
+                Image(systemName:"square.stack.3d.up.fill")
+                    .font(.system(size:19,weight:.medium))
+                    .foregroundStyle(ForgePalette.ink)
+                    .frame(height:58)
+                    .accessibilityLabel("Forge")
+
+                VStack(spacing:5) {
+                    ForEach(ForgeSidebarDestination.allCases.filter { $0 != .settings },id:\.self) { destination in
+                        sidebarDestinationButton(destination)
+                    }
+                }
+                Spacer(minLength:12)
+                sidebarDestinationButton(.settings)
+                    .padding(.bottom,14)
+            }
+            .frame(width:62)
+            .frame(maxHeight:.infinity)
+            .background(.ultraThinMaterial)
+
+            VStack(alignment:.leading,spacing:0) {
+                projectSwitcher
+                    .padding(.horizontal,10)
+                    .padding(.top,8)
+                    .padding(.bottom,8)
+
+                // Keep contextual panes mounted across destination changes so
+                // conversation search, thread scroll, and Zen state survive.
+                ZStack(alignment:.topLeading) {
+                    ZenSidebar(model:model,screen:$model.zenScreen,
+                               focusedRequirementId:$model.zenFocusedRequirementId,
+                               decisionCount:model.relevantUserRequests.count,
+                               onInbox:{
+                        inboxShown = true
+                        Task { await model.loadUserRequests() }
+                    })
+                    .opacity(model.zenMode ? 1 : 0)
+                    .allowsHitTesting(model.zenMode)
+                    .accessibilityHidden(!model.zenMode)
+                    .popover(isPresented:$inboxShown,arrowEdge:.trailing) {
+                        inboxPanel
+                    }
+
+                    sidebar
+                        .opacity(!model.zenMode && model.page == .agent ? 1 : 0)
+                        .allowsHitTesting(!model.zenMode && model.page == .agent)
+                        .accessibilityHidden(model.zenMode || model.page != .agent)
+
+                    contextualSidebar
+                        .opacity(!model.zenMode && model.page != .agent ? 1 : 0)
+                        .allowsHitTesting(!model.zenMode && model.page != .agent)
+                        .accessibilityHidden(model.zenMode || model.page == .agent)
+                }
+                .frame(maxWidth:.infinity,maxHeight:.infinity)
+            }
+            .frame(maxWidth:.infinity,maxHeight:.infinity)
+            .background(Color(nsColor:.windowBackgroundColor))
+        }
+        .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
     }
 
     private var sidebar: some View {
@@ -287,8 +432,8 @@ private struct ForgeWorkspaceView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(model.busy)
-                .help(model.repoId == nil ? "创建不绑定项目的会话 (⌘N)" : "在当前项目新建会话 (⌘N)")
+                .disabled(model.busy || model.zenRefinementActive)
+                .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : model.repoId == nil ? "创建不绑定项目的会话 (⌘N)" : "在当前项目新建会话 (⌘N)")
                 .accessibilityLabel("新会话")
                 .accessibilityIdentifier("sidebar.thread.new")
 
@@ -393,8 +538,8 @@ private struct ForgeWorkspaceView: View {
                                             .frame(width:20,height:20)
                                     }
                                     .buttonStyle(.plain)
-                                    .help("在此项目中新建会话")
-                                    .disabled(model.busy)
+                                    .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "在此项目中新建会话")
+                                    .disabled(model.busy || model.zenRefinementActive)
                                 }
                             }
                             .padding(.leading,10).padding(.trailing,5).padding(.top,8)
@@ -406,14 +551,12 @@ private struct ForgeWorkspaceView: View {
                 }.padding(.horizontal,10)
             }
             .scrollIndicators(.hidden)
+            .task(id:sidebarCheckoutLookupKey) { await refreshSidebarCheckoutLabels() }
             .padding(.top,16)
             Spacer(minLength:5)
 
-            projectSwitcher
-                .padding(.horizontal,10).padding(.top,5).padding(.bottom,11)
         }
         .foregroundStyle(ForgePalette.ink)
-        .background(.ultraThinMaterial)
     }
 
     private var inboxPanel: some View {
@@ -643,11 +786,18 @@ private struct ForgeWorkspaceView: View {
         let selected = model.selectedThreadId == thread.id && model.page == .agent
         let hovered = hoveredThreadId == thread.id
         let deleting = deleteThreadId == thread.id
-        let running = model.activeConversationId == thread.id
+        let refinementThread = model.isZenRefinementThread(thread.id)
+        let running = model.activeConversationId == thread.id || refinementThread
+        let protectedDuringRefinement = model.zenRefinementActive
+            && (refinementThread || model.selectedThreadId == thread.id)
         let showDelete = hovered || deleting
         let projectLabel = model.projects.first(where: { $0.repoId == thread.repoId })?.label
             ?? thread.repoId.map { String($0.prefix(16)) }
             ?? "未绑定项目"
+        let checkoutLabel = threadCheckoutLabel(thread)
+        let accessibilityContext = [projectLabel,checkoutLabel,thread.checkoutId.map { "Checkout \($0)" },
+                                    thread.hasUnsentContent ? "有未发送草稿" : nil,running ? "执行中" : nil]
+            .compactMap { $0 }.joined(separator:" · ")
 
         return HStack(spacing:4) {
             Button {
@@ -655,10 +805,26 @@ private struct ForgeWorkspaceView: View {
                 if model.showSearch { model.toggleConversationSearch() }
             } label: {
                 HStack(spacing:7) {
-                    Text(thread.title)
-                        .font(.system(size:12,weight:selected ? .medium : .regular))
-                        .lineLimit(1)
+                    VStack(alignment:.leading,spacing:1) {
+                        Text(thread.title)
+                            .font(.system(size:12,weight:selected ? .medium : .regular))
+                            .lineLimit(1)
+                        if let checkoutLabel {
+                            Text(checkoutLabel)
+                                .font(.system(size:9.5,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                    .frame(maxWidth:.infinity,alignment:.leading)
                     Spacer(minLength:0)
+                    if thread.hasUnsentContent {
+                        Text("草稿")
+                            .font(.system(size:10,weight:.medium))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .accessibilityLabel("有未发送草稿")
+                    }
                     if running {
                         ProgressView().controlSize(.mini)
                             .accessibilityLabel("执行中")
@@ -668,8 +834,14 @@ private struct ForgeWorkspaceView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(model.busy && !running)
-            .help(projectLabel + " · " + thread.title)
+            .disabled((model.busy && !running) || (model.zenRefinementActive && !refinementThread))
+            .help(model.zenRefinementActive && !refinementThread
+                ? "自动精化进行中，请先按 Esc 停止后再切换会话"
+                : refinementThread ? "自动精化进行中" : accessibilityContext + " · " + thread.title)
+            .accessibilityLabel(thread.title)
+            .accessibilityValue(accessibilityContext)
+            .accessibilityHint("打开此会话")
+            .accessibilityIdentifier("sidebar.thread.\(thread.id)")
             .popover(isPresented:Binding(
                 get:{ renameThreadId == thread.id },
                 set:{ if !$0 && renameThreadId == thread.id { renameThreadId = nil } }
@@ -687,12 +859,12 @@ private struct ForgeWorkspaceView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(running ? ForgePalette.secondary.opacity(0.35) : Color.red.opacity(0.78))
+            .foregroundStyle(protectedDuringRefinement || running ? ForgePalette.secondary.opacity(0.35) : Color.red.opacity(0.78))
             .opacity(showDelete ? 1 : 0)
-            .allowsHitTesting(showDelete && !running)
-            .accessibilityHidden(!showDelete)
+            .allowsHitTesting(showDelete && !protectedDuringRefinement && !running)
+            .accessibilityHidden(!showDelete || protectedDuringRefinement || running)
             .accessibilityLabel("删除会话 \(thread.title)")
-            .help(running ? "请先停止正在运行的会话" : "删除会话")
+            .help(protectedDuringRefinement ? "自动精化进行中，请先按 Esc 停止后再删除" : running ? "请先停止正在运行的会话" : "删除会话")
             .popover(isPresented:Binding(
                 get:{ deleteThreadId == thread.id },
                 set:{ if !$0 && deleteThreadId == thread.id { deleteThreadId = nil } }
@@ -701,7 +873,7 @@ private struct ForgeWorkspaceView: View {
             }
         }
         .padding(.leading,9).padding(.trailing,5)
-        .frame(height:32)
+        .frame(height:checkoutLabel == nil ? 32 : 40)
         .background(selected ? ForgePalette.selection.opacity(0.75) : (hovered ? ForgePalette.softFill.opacity(0.5) : .clear),
                     in:RoundedRectangle(cornerRadius:7,style:.continuous))
         .contentShape(RoundedRectangle(cornerRadius:7,style:.continuous))
@@ -712,7 +884,7 @@ private struct ForgeWorkspaceView: View {
                 hoveredThreadId = nil
             }
         }
-        .animation(.easeOut(duration:0.12),value:hovered)
+        .animation(reduceMotion ? nil : .easeOut(duration:0.12),value:hovered)
         .contextMenu {
             Button {
                 renameThreadId = thread.id
@@ -720,8 +892,85 @@ private struct ForgeWorkspaceView: View {
             } label: {
                 Label("重命名",systemImage:"pencil")
             }
+            Button {
+                model.duplicateThread(thread.id)
+            } label: {
+                Label("复制会话",systemImage:"plus.square.on.square")
+            }
+            .disabled(running || model.zenRefinementActive)
+            .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止后再复制会话" : "复制会话")
+            Button {
+                copyAgentText(thread.markdownTranscript)
+            } label: {
+                Label("复制会话为 Markdown",systemImage:"doc.on.doc")
+            }
+            .disabled(thread.messages.isEmpty)
             Button("删除会话…",role:.destructive) { deleteThreadId = thread.id }
-                .disabled(running)
+                .disabled(protectedDuringRefinement || running)
+        }
+    }
+
+    private var sidebarCheckoutLookupTargets: [String:[String]] {
+        var contextsByRepo:[String:[String?]]=[:]
+        for thread in sidebarThreadSections.flatMap(\.threads) {
+            guard let repoId=thread.repoId else { continue }
+            contextsByRepo[repoId,default:[]].append(thread.checkoutId)
+        }
+        var targets:[String:[String]] = [:]
+        for (repoId,contexts) in contextsByRepo {
+            let checkoutIds=Set(contexts.compactMap { $0 })
+            let hasUnbound=contexts.contains { $0 == nil }
+            guard checkoutIds.count > 1 || (hasUnbound && !checkoutIds.isEmpty) else { continue }
+            targets[repoId]=checkoutIds.sorted()
+        }
+        return targets
+    }
+
+    private var sidebarCheckoutLookupKey: String {
+        let targets=sidebarCheckoutLookupTargets
+        let revision=model.projectRepositoryRefreshRevision
+        let targetKey=targets.keys.sorted().map { repoId in
+            "\(repoId):\((targets[repoId] ?? []).joined(separator:","))"
+        }.joined(separator:"|")
+        return "\(revision)|\(targetKey)"
+    }
+
+    private func threadCheckoutLabel(_ thread:ChatThread) -> String? {
+        guard let repoId=thread.repoId else { return nil }
+        let peers=sidebarThreadSections.flatMap(\.threads).filter { $0.repoId == repoId }
+        let checkoutIds=Set(peers.compactMap { $0.checkoutId })
+        let hasUnbound=peers.contains { $0.checkoutId == nil }
+        guard checkoutIds.count > 1 || (hasUnbound && !checkoutIds.isEmpty) else { return nil }
+        guard let checkoutId=thread.checkoutId else { return "未绑定工作区" }
+        return sidebarCheckoutLabels["\(repoId)|\(checkoutId)"] ?? "工作区 · \(checkoutId.prefix(8))"
+    }
+
+    private func refreshSidebarCheckoutLabels() async {
+        let targets=sidebarCheckoutLookupTargets
+        sidebarCheckoutLabels=[:]
+        for repoId in targets.keys.sorted() {
+            guard !Task.isCancelled else { return }
+            let checkoutIds=targets[repoId] ?? []
+            do {
+                let result=try await ForgeBridge.request("read_project_repository",["repoId":repoId])
+                guard !Task.isCancelled else { return }
+                let labels=NativeWorkspace.repositoryCheckoutLabels(
+                    result,requestedCheckoutIds:checkoutIds
+                )
+                var updated=sidebarCheckoutLabels
+                for checkoutId in checkoutIds {
+                    updated["\(repoId)|\(checkoutId)"]=labels[checkoutId]
+                        ?? "工作区不可用 · \(checkoutId.prefix(8))"
+                }
+                sidebarCheckoutLabels=updated
+            } catch {
+                guard !Task.isCancelled else { return }
+                var updated=sidebarCheckoutLabels
+                for checkoutId in checkoutIds {
+                    updated["\(repoId)|\(checkoutId)"]="工作区信息不可用 · \(checkoutId.prefix(8))"
+                }
+                sidebarCheckoutLabels=updated
+            }
         }
     }
 
@@ -793,7 +1042,7 @@ private struct ForgeWorkspaceView: View {
             Text(thread.title)
                 .font(.system(size:12,weight:.medium))
                 .lineLimit(2)
-            Text("仅删除这条本地记录，不影响项目、Requirement / Plan 或 Provider 会话。")
+            Text("仅删除这条本地记录，不影响项目、需求与计划或模型会话。")
                 .font(.system(size:11))
                 .foregroundStyle(ForgePalette.secondary)
                 .fixedSize(horizontal:false,vertical:true)
@@ -805,6 +1054,11 @@ private struct ForgeWorkspaceView: View {
                     model.deleteThread(thread.id)
                     deleteThreadId = nil
                 }
+                .disabled(model.isZenRefinementThread(thread.id)
+                    || (model.zenRefinementActive && model.selectedThreadId == thread.id))
+                .help(model.isZenRefinementThread(thread.id)
+                    || (model.zenRefinementActive && model.selectedThreadId == thread.id)
+                    ? "自动精化进行中，请先按 Esc 停止后再删除会话" : "删除本地会话记录")
             }
         }
         .padding(14)
@@ -901,6 +1155,13 @@ private struct ForgeWorkspaceView: View {
         }
     }
 
+    private var projectSwitcherSummary: String {
+        if model.projectsLoading && model.projects.isEmpty { return "正在加载项目…" }
+        if model.projectsError != nil && model.projects.isEmpty { return "项目列表加载失败" }
+        if model.projects.isEmpty { return "暂无已注册项目" }
+        return model.checkoutBranch ?? "选择工作区"
+    }
+
     private var projectSwitcher: some View {
         Button {
             projectPickerShown.toggle()
@@ -916,7 +1177,7 @@ private struct ForgeWorkspaceView: View {
                     Text(model.project?.label ?? "选择项目")
                         .font(.system(size:12,weight:.semibold))
                         .lineLimit(1)
-                    Text("\(model.projects.count) 个仓库 · 当前 \(model.checkoutBranch ?? "无 Checkout")")
+                    Text(projectSwitcherSummary)
                         .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                         .lineLimit(1)
                 }
@@ -936,16 +1197,22 @@ private struct ForgeWorkspaceView: View {
         VStack(alignment:.leading,spacing:10) {
             HStack {
                 VStack(alignment:.leading,spacing:2) {
-                    Text("仓库与工作树").font(.system(size:14,weight:.semibold))
-                    Text("一个仓库可包含多个 Checkout；展开后选择工作树。")
+                    Text("项目与工作区").font(.system(size:14,weight:.semibold))
+                    Text("选择项目后，再选择要使用的工作区。")
                         .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                 }
                 Spacer()
                 Button { Task { await model.refresh() } } label: {
-                    Image(systemName:"arrow.clockwise")
+                    if model.projectsLoading {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName:"arrow.clockwise")
+                    }
                 }
                 .buttonStyle(.plain)
-                .help("刷新 Forge Registry")
+                .disabled(model.projectsLoading)
+                .accessibilityLabel(model.projectsLoading ? "正在加载项目" : "刷新项目列表")
+                .help(model.projectsLoading ? "正在加载项目列表" : "刷新项目列表")
             }
 
             HStack(spacing:7) {
@@ -959,11 +1226,47 @@ private struct ForgeWorkspaceView: View {
 
             ScrollView {
                 LazyVStack(spacing:4) {
+                    if let projectError = model.projectsError, !model.projects.isEmpty {
+                        Text("无法更新项目列表，仍显示上次加载的项目")
+                            .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
+                            .help(projectError)
+                            .accessibilityHint(projectError)
+                            .lineLimit(2)
+                            .frame(maxWidth:.infinity,alignment:.leading)
+                            .padding(.horizontal,8)
+                    }
+                    if model.projectsLoading && model.projects.isEmpty {
+                        HStack(spacing:8) {
+                            ProgressView().controlSize(.small)
+                            Text("正在加载项目…")
+                                .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
+                        }
+                        .frame(maxWidth:.infinity,minHeight:76)
+                    } else if model.projects.isEmpty, let projectError = model.projectsError {
+                        Text("无法加载项目列表，请重试")
+                            .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
+                            .help(projectError)
+                            .accessibilityHint(projectError)
+                            .frame(maxWidth:.infinity,minHeight:76)
+                            .padding(.horizontal,12)
+                    } else if filteredProjects.isEmpty {
+                        Text(model.projects.isEmpty ? "暂无已注册项目" : "没有匹配的项目")
+                            .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
+                            .frame(maxWidth:.infinity,minHeight:76)
+                    }
                     ForEach(filteredProjects) { project in
                         VStack(spacing:3) {
                             HStack(spacing:6) {
                                 Button {
-                                    model.openProject(project.repoId)
+                                    guard !model.zenMode || model.canSwitchZenProject else {
+                                        model.focusZenProject(project.repoId)
+                                        return
+                                    }
+                                    if model.zenMode {
+                                        model.focusZenProject(project.repoId)
+                                    } else {
+                                        model.openProject(project.repoId)
+                                    }
                                     projectPickerShown = false
                                     projectSearch = ""
                                 } label: {
@@ -988,19 +1291,23 @@ private struct ForgeWorkspaceView: View {
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
-                                Button {
-                                    model.newThread(inProject:project.repoId)
-                                    projectPickerShown = false
-                                    projectSearch = ""
-                                } label: {
-                                    Image(systemName:"plus")
-                                        .font(.system(size:10,weight:.semibold))
-                                        .frame(width:25,height:25)
-                                        .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                                .disabled(model.busy || model.zenRefinementActive)
+                                .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止后再切换项目" : "切换到此项目")
+                                if !model.zenMode {
+                                    Button {
+                                        model.newThread(inProject:project.repoId)
+                                        projectPickerShown = false
+                                        projectSearch = ""
+                                    } label: {
+                                        Image(systemName:"plus")
+                                            .font(.system(size:10,weight:.semibold))
+                                            .frame(width:25,height:25)
+                                            .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "在当前项目新建会话")
+                                    .disabled(model.busy || model.zenRefinementActive)
                                 }
-                                .buttonStyle(.plain)
-                                .help("在此仓库当前 Checkout 新建会话")
-                                .disabled(model.busy)
                                 Button {
                                     toggleProjectCheckouts(project.repoId)
                                 } label: {
@@ -1009,7 +1316,7 @@ private struct ForgeWorkspaceView: View {
                                         .frame(width:24,height:25)
                                 }
                                 .buttonStyle(.plain)
-                                .help("展开仓库的工作树 / Checkout")
+                                .help("展开项目的工作区")
                                 .accessibilityIdentifier("project.checkouts.\(project.repoId)")
                             }
                             .padding(.horizontal,8).frame(height:46)
@@ -1027,7 +1334,15 @@ private struct ForgeWorkspaceView: View {
                                     ForEach(expandedProjectCheckouts) { checkout in
                                         HStack(spacing:4) {
                                             Button {
-                                                model.openCheckout(inProject:project.repoId,checkoutId:checkout.id)
+                                                if model.zenMode {
+                                                    guard model.canSwitchZenProject else {
+                                                         model.focusZenProject(project.repoId,requestedCheckoutId:checkout.id)
+                                                         return
+                                                     }
+                                                     model.focusZenProject(project.repoId,requestedCheckoutId:checkout.id)
+                                                } else {
+                                                    model.openCheckout(inProject:project.repoId,checkoutId:checkout.id)
+                                                }
                                                 projectPickerShown = false
                                                 projectSearch = ""
                                             } label: {
@@ -1036,7 +1351,7 @@ private struct ForgeWorkspaceView: View {
                                                         .font(.system(size:10))
                                                     VStack(alignment:.leading,spacing:2) {
                                                         HStack(spacing:5) {
-                                                            Text(checkout.branch ?? "detached HEAD")
+                                                            Text(checkout.branch ?? "未关联分支")
                                                                 .font(.system(size:10.5,weight:.medium))
                                                             if checkout.active {
                                                                 Text("默认").font(.system(size:9))
@@ -1056,18 +1371,22 @@ private struct ForgeWorkspaceView: View {
                                                 .contentShape(Rectangle())
                                             }
                                             .buttonStyle(.plain)
-                                            Button {
-                                                model.newThread(inProject:project.repoId,checkoutId:checkout.id)
-                                                projectPickerShown = false
-                                                projectSearch = ""
-                                            } label: {
-                                                Image(systemName:"plus")
-                                                    .font(.system(size:10,weight:.medium))
-                                                    .frame(width:24,height:24)
+                                            .disabled(model.busy || model.zenRefinementActive)
+                                            .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止后再切换工作区" : "切换到此工作区")
+                                            if !model.zenMode {
+                                                Button {
+                                                    model.newThread(inProject:project.repoId,checkoutId:checkout.id)
+                                                    projectPickerShown = false
+                                                    projectSearch = ""
+                                                } label: {
+                                                    Image(systemName:"plus")
+                                                        .font(.system(size:10,weight:.medium))
+                                                        .frame(width:24,height:24)
+                                                }
+                                                .buttonStyle(.plain)
+                                                .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "在此工作区新建会话")
+                                                .disabled(model.busy || model.zenRefinementActive)
                                             }
-                                            .buttonStyle(.plain)
-                                            .help("在此 Checkout 创建会话")
-                                            .disabled(model.busy)
                                         }
                                         .padding(.leading,21).padding(.trailing,10)
                                         .frame(height:39)
@@ -1077,18 +1396,13 @@ private struct ForgeWorkspaceView: View {
                             }
                         }
                     }
-                    if filteredProjects.isEmpty {
-                        Text("没有匹配的已注册项目")
-                            .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
-                            .frame(maxWidth:.infinity).padding(.vertical,18)
-                    }
                 }
             }
             .frame(height:260)
 
             Divider()
             Button {
-                chooseProjectDirectory()
+                chooseProjectDirectory(keepZen:model.zenMode)
             } label: {
                 HStack(spacing:8) {
                     if registeringProject {
@@ -1096,43 +1410,62 @@ private struct ForgeWorkspaceView: View {
                     } else {
                         Image(systemName:"folder.badge.plus")
                     }
-                    Text(registeringProject ? "正在添加…" : "添加现有 Git 项目…")
+                    Text(registeringProject ? "正在添加…" : "添加本地项目…")
                     Spacer()
                 }
                 .font(.system(size:11.5,weight:.medium))
             }
             .buttonStyle(.plain)
             .disabled(registeringProject || model.busy)
-            Text("只写入 Forge Repository Registry；客户端不维护第二份项目列表。")
-                .font(.system(size:9.5)).foregroundStyle(ForgePalette.secondary)
         }
         .padding(14).frame(width:380)
     }
 
     private func toggleProjectCheckouts(_ targetRepoId:String) {
         if expandedProjectRepoId == targetRepoId {
+            projectCheckoutsRequestGeneration &+= 1
             expandedProjectRepoId = nil
             expandedProjectCheckouts = []
             projectCheckoutError = nil
+            projectCheckoutsLoading = false
             return
         }
+        projectCheckoutsRequestGeneration &+= 1
+        let requestGeneration = projectCheckoutsRequestGeneration
         expandedProjectRepoId = targetRepoId
         expandedProjectCheckouts = []
         projectCheckoutError = nil
         projectCheckoutsLoading = true
         Task {
+            defer {
+                if NativeWorkspace.projectCheckoutRequestIsCurrent(
+                    requestGeneration:requestGeneration,
+                    currentGeneration:projectCheckoutsRequestGeneration,
+                    requestedRepoId:targetRepoId,
+                    expandedRepoId:expandedProjectRepoId
+                ) { projectCheckoutsLoading = false }
+            }
             do {
                 let value = try await ForgeBridge.request("read_project_repository",["repoId":targetRepoId])
-                guard expandedProjectRepoId == targetRepoId else { return }
+                guard NativeWorkspace.projectCheckoutRequestIsCurrent(
+                    requestGeneration:requestGeneration,
+                    currentGeneration:projectCheckoutsRequestGeneration,
+                    requestedRepoId:targetRepoId,
+                    expandedRepoId:expandedProjectRepoId
+                ) else { return }
                 expandedProjectCheckouts = ProjectCheckoutChoice.fromRepository(value)
                 if expandedProjectCheckouts.isEmpty {
                     projectCheckoutError = "此仓库没有可用的 Checkout。"
                 }
             } catch {
-                guard expandedProjectRepoId == targetRepoId else { return }
+                guard NativeWorkspace.projectCheckoutRequestIsCurrent(
+                    requestGeneration:requestGeneration,
+                    currentGeneration:projectCheckoutsRequestGeneration,
+                    requestedRepoId:targetRepoId,
+                    expandedRepoId:expandedProjectRepoId
+                ) else { return }
                 projectCheckoutError = error.localizedDescription
             }
-            if expandedProjectRepoId == targetRepoId { projectCheckoutsLoading = false }
         }
     }
 
@@ -1152,12 +1485,47 @@ private struct ForgeWorkspaceView: View {
             if ok {
                 projectPickerShown = false
                 projectSearch = ""
-                if keepZen {
-                    model.zenMode = true
-                    zenScreen = .board
-                    zenFocusedRequirementId = nil
-                }
             }
+        }
+    }
+
+    private var pageRefreshIsLoading: Bool {
+        model.settingsLoading || model.schedulesLoading || model.pluginsLoading
+    }
+
+    private var pageRefreshIsDisabled: Bool {
+        pageRefreshIsLoading || ((model.page == .schedule || model.page == .plugins) && model.repoId == nil)
+    }
+
+    private var pageRefreshHelp: String {
+        switch model.page {
+        case .settings: return "刷新设置与服务状态"
+        case .schedule: return "刷新计划任务"
+        case .plugins: return "刷新插件"
+        default: return "刷新真实 Forge 状态"
+        }
+    }
+
+    private var pageRefreshAccessibilityLabel: String {
+        pageRefreshIsLoading ? "页面操作进行中" : pageRefreshHelp
+    }
+
+    private func refreshCurrentPage() {
+        let page = model.page
+        Task {
+            switch page {
+            case .settings: await model.loadSettingsPage()
+            case .schedule: await model.loadSchedulePage()
+            case .plugins: await model.loadPluginsPage()
+            default: await model.refresh()
+            }
+        }
+    }
+
+    private var pageUsesCenteredContentColumn: Bool {
+        switch model.page {
+        case .schedule, .plugins, .assets, .usage, .settings: return true
+        default: return false
         }
     }
 
@@ -1194,51 +1562,33 @@ private struct ForgeWorkspaceView: View {
                         .help("返回 \(model.navigationBackLabel ?? "上一页")")
                         .accessibilityLabel("返回 \(model.navigationBackLabel ?? "上一页")")
                     }
-                    Image(systemName:model.page.symbol)
-                        .symbolRenderingMode(.hierarchical)
-                        .font(.system(size:11.5,weight:.semibold))
-                        .foregroundStyle(ForgePalette.secondary)
-                        .frame(width:25,height:25)
-                        .background(ForgePalette.softFill,
-                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
-                    VStack(alignment:.leading,spacing:1) {
-                        HStack(spacing:5) {
-                            Text(model.project?.label ?? "未绑定项目")
-                                .foregroundStyle(ForgePalette.secondary)
-                            Image(systemName:"chevron.right")
-                                .font(.system(size:7.5,weight:.semibold))
-                                .foregroundStyle(ForgePalette.secondary.opacity(0.7))
-                            Text(model.page.rawValue)
-                                .foregroundStyle(ForgePalette.ink)
-                        }
-                        .font(.system(size:12.5,weight:.semibold))
-                        if let branch = model.checkoutBranch, !branch.isEmpty {
-                            Text("当前分支 · \(branch)")
-                                .font(.system(size:10.5,weight:.medium,design:.monospaced))
-                                .foregroundStyle(ForgePalette.secondary)
-                                .lineLimit(1)
-                        } else if let checkout = model.checkoutId {
-                            Text("Checkout · \(checkout.prefix(8))")
-                                .font(.system(size:10.5,design:.monospaced))
-                                .foregroundStyle(ForgePalette.secondary)
-                                .lineLimit(1)
-                        }
-                    }
+                    Text(model.page.rawValue)
+                        .font(.system(size:13,weight:.semibold))
+                        .foregroundStyle(ForgePalette.ink)
+                        .lineLimit(1)
+                        .accessibilityAddTraits(.isHeader)
                     Spacer()
-                    Button { Task { await model.refresh() } } label: {
-                        Image(systemName:"arrow.clockwise")
-                            .font(.system(size:11.5,weight:.medium))
-                            .frame(width:27,height:27)
-                            .background(ForgePalette.softFill,in:Circle())
+                    Button { refreshCurrentPage() } label: {
+                        if pageRefreshIsLoading {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName:"arrow.clockwise")
+                                .font(.system(size:11.5,weight:.medium))
+                        }
                     }
+                    .frame(width:27,height:27)
+                    .background(ForgePalette.softFill,in:Circle())
                     .buttonStyle(.plain)
-                    .help("刷新真实 Forge 状态")
-                    .accessibilityLabel("刷新当前页面")
+                    .disabled(pageRefreshIsDisabled)
+                    .help(pageRefreshIsLoading ? "页面操作进行中" : pageRefreshHelp)
+                    .accessibilityLabel(pageRefreshAccessibilityLabel)
                     .accessibilityIdentifier("app.refresh")
                 }
-                .padding(.horizontal,22).frame(height:48)
-                .background(.ultraThinMaterial)
-                .shadow(color:Color.black.opacity(0.025),radius:5,y:2)
+                .padding(.horizontal,pageUsesCenteredContentColumn ? 26 : 22)
+                .frame(maxWidth:pageUsesCenteredContentColumn ? 960 : .infinity,alignment:.leading)
+                .frame(maxWidth:.infinity,alignment:.center)
+                .frame(height:54)
+                .background(ForgePalette.canvas)
                 .zIndex(1)
             }
             switch model.page {
@@ -1247,6 +1597,23 @@ private struct ForgeWorkspaceView: View {
             case .schedule: SchedulePane(model:model)
             case .plugins: PluginsPane(model:model)
             case .knowledge: KnowledgePane(model:model)
+            case .assets:
+                AgentAssetsDashboard(
+                    model:model,
+                    selectedRepoId:$assetsSelectedRepoId,
+                    showLocalResources:$assetsShowLocalResources,
+                    showRemoteImages:$assetsShowRemoteImages,
+                    searchQuery:$assetsSearchQuery,
+                    selectedResourceID:$assetsReturnResourceID
+                )
+            case .usage:
+                AgentUsageDashboard(
+                    model:model,
+                    days:$usageDays,
+                    selectedProjectId:$usageSelectedProjectId,
+                    selectedProviderId:$usageSelectedProviderId,
+                    selectedEntryID:$usageReturnEntryID
+                )
             case .settings: SettingsPane(model:model)
             }
         }
@@ -1260,8 +1627,26 @@ private enum AgentSemanticContextInspector: String, Identifiable {
     var id: String { rawValue }
 }
 
+private struct AgentScrollMetrics: Equatable {
+    let offset: CGFloat
+    let contentHeight: CGFloat
+    let viewportHeight: CGFloat
+
+    var distanceToBottom: CGFloat { max(0, contentHeight - offset - viewportHeight) }
+    var isNearBottom: Bool { viewportHeight > 0 && distanceToBottom <= 72 }
+}
+
+private struct AgentScrollMetricsPreferenceKey: PreferenceKey {
+    static var defaultValue = AgentScrollMetrics(offset:0, contentHeight:0, viewportHeight:0)
+
+    static func reduce(value: inout AgentScrollMetrics, nextValue: () -> AgentScrollMetrics) {
+        value = nextValue()
+    }
+}
+
 private struct AgentPane: View {
     @ObservedObject var model: NativeWorkspace
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let onChooseProject: () -> Void
     @State private var showChanges = false
     @State private var showActivityDetails = false
@@ -1269,6 +1654,9 @@ private struct AgentPane: View {
     @State private var pendingAgentCommand: String?
     @State private var showProviderThinking = false
     @State private var isComposerDropTarget = false
+    @State private var conversationScrollMetrics: AgentScrollMetrics?
+    @State private var conversationViewportHeight: CGFloat = 0
+    @State private var followsLatestConversation = true
     @StateObject private var voiceDictation = AgentVoiceDictation()
     @State private var voiceBaseDraft = ""
     @State private var semanticInspector: AgentSemanticContextInspector?
@@ -1277,7 +1665,6 @@ private struct AgentPane: View {
     var body: some View {
         VStack(spacing:0) {
             agentWorkspaceBar
-            Divider().opacity(0.45)
             ScrollViewReader { reader in
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:20) {
@@ -1297,10 +1684,25 @@ private struct AgentPane: View {
                                         .lineSpacing(4)
                                         .frame(maxWidth:470)
                                 }
-                                if !model.checkoutIsAvailable || !model.selectedProviderReady {
+                                if model.isProjectOnlyConversation {
+                                    if model.agentSendBlockReason == nil {
+                                        HStack(spacing:8) {
+                                            starterPromptButton("梳理项目需求",systemImage:"list.bullet.clipboard",
+                                                                prompt:"读取当前项目的 Requirement 与 Plan，整理目标、约束和待确认事项。",
+                                                                requiresCheckout:false)
+                                            starterPromptButton("制定下一步",systemImage:"arrow.turn.down.right",
+                                                                prompt:"基于当前项目的 Requirement 与 Plan，提出一个最小可验收的下一步；只分析，不执行代码操作。",
+                                                                requiresCheckout:false)
+                                        }
+                                    } else if !model.selectedProviderReady {
+                                        Button("设置模型") { model.show(.settings) }
+                                            .buttonStyle(.bordered)
+                                            .accessibilityIdentifier("agent.onboarding.provider")
+                                    }
+                                } else if !model.checkoutIsAvailable || !model.selectedProviderReady {
                                     HStack(spacing:12) {
                                         if !model.checkoutIsAvailable {
-                                            Button("选择或添加项目",action:onChooseProject)
+                                            Button(model.thread?.repoId == nil ? "选择或添加项目" : "选择工作区",action:onChooseProject)
                                                 .buttonStyle(.borderedProminent)
                                                 .accessibilityIdentifier("agent.onboarding.project")
                                         }
@@ -1333,10 +1735,55 @@ private struct AgentPane: View {
                                             .lineSpacing(5)
                                             .textSelection(.enabled)
                                         if let contextPaths = message.contextPaths, !contextPaths.isEmpty {
-                                            Label(contextPaths.joined(separator:" · "),systemImage:"doc.text")
-                                                .font(.system(size:10.5,weight:.medium))
-                                                .foregroundStyle(ForgePalette.secondary)
-                                                .lineLimit(1)
+                                            HStack(alignment:.center,spacing:8) {
+                                                ForEach(Array(contextPaths.enumerated()),id:\.offset) { index,relativePath in
+                                                    let name = URL(fileURLWithPath:relativePath).lastPathComponent
+                                                    let fileURL = resolveLocalContextFileURL(
+                                                        rootPath:model.checkoutRoot?.path,
+                                                        relativePath:relativePath
+                                                    )
+                                                    Button {
+                                                        if let fileURL { NSWorkspace.shared.open(fileURL) }
+                                                    } label: {
+                                                        Label(name,systemImage:"doc.text")
+                                                            .font(.system(size:10.5,weight:.medium))
+                                                            .foregroundStyle(fileURL == nil ? ForgePalette.secondary.opacity(0.5) : ForgePalette.secondary)
+                                                            .lineLimit(1)
+                                                            .truncationMode(.middle)
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                    .help(fileURL == nil ? "原文件已移动或当前 checkout 不可用" : relativePath)
+                                                    .accessibilityLabel("打开上下文文件：\(name)")
+                                                    .accessibilityHint(fileURL == nil ? "当前 checkout 中找不到该文件" : "使用 macOS 默认应用打开")
+                                                    .accessibilityIdentifier("agent.message.\(message.id).context-file.\(index)")
+                                                    .disabled(fileURL == nil)
+                                                }
+                                            }
+                                        }
+                                        if let imagePaths = message.attachmentPaths, !imagePaths.isEmpty {
+                                            HStack(alignment:.center,spacing:8) {
+                                                ForEach(Array(imagePaths.enumerated()),id:\.offset) { index,path in
+                                                    let name = URL(fileURLWithPath:path).lastPathComponent
+                                                    Button {
+                                                        NSWorkspace.shared.open(URL(fileURLWithPath:path))
+                                                    } label: {
+                                                        AgentLocalImagePreview(
+                                                            path:path,
+                                                            accessibilityLabel:"图片附件：\(name)",
+                                                            width:82,
+                                                            height:82,
+                                                            maxWidth:82,
+                                                            maxHeight:82
+                                                        )
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                    .help("打开图片：\(name)")
+                                                    .accessibilityLabel("打开图片附件：\(name)")
+                                                    .accessibilityHint("使用 macOS 默认应用打开原图")
+                                                    .accessibilityIdentifier("agent.message.\(message.id).attachment.\(index)")
+                                                    .disabled(!FileManager.default.fileExists(atPath:path))
+                                                }
+                                            }
                                         }
                                         if let attachments = message.attachmentNames, !attachments.isEmpty {
                                             Label(attachments.joined(separator:" · "),systemImage:"photo")
@@ -1371,8 +1818,9 @@ private struct AgentPane: View {
                                     VStack(alignment:.leading,spacing:8) {
                                         AgentAssistantMessageBody(
                                             text:message.text,
+                                            accessibilityIdentifierPrefix: AgentAssistantMessageBody.accessibilityPrefix(for: message.id),
                                             onExecuteCommand: { command in
-                                                guard !model.busy else { return }
+                                                guard !model.busy,!model.zenRefinementActive else { return }
                                                 guard model.repoId != nil, model.checkoutId != nil else {
                                                     model.error = "执行命令前请先绑定项目与 checkout。"
                                                     return
@@ -1384,7 +1832,7 @@ private struct AgentPane: View {
                                                 pendingAgentCommand = command
                                             },
                                             onReplySelection: { reply in
-                                                guard !model.busy else { return }
+                                                guard !model.busy,!model.zenRefinementActive else { return }
                                                 model.draft += model.draft.isEmpty ? reply : "\n\n" + reply
                                                 composerFocused = true
                                             }
@@ -1410,6 +1858,13 @@ private struct AgentPane: View {
                                             } else if let count = message.toolActivityCount, count > 0 {
                                                 Label("\(count) 次工具调用",systemImage:"hammer")
                                             }
+                                            if let usage = message.usage {
+                                                Label(
+                                                    "\(usage.totalTokens.formatted()) tokens" + (usage.complete ? "" : " · 部分回合"),
+                                                    systemImage:"chart.bar"
+                                                )
+                                                .help("输入 \(usage.inputTokens.formatted()) · 输出 \(usage.outputTokens.formatted())")
+                                            }
                                             Spacer(minLength:0)
                                             Button {
                                                 copyAgentText(message.text)
@@ -1423,16 +1878,20 @@ private struct AgentPane: View {
                                         .foregroundStyle(ForgePalette.secondary)
                                         if message.incomplete == true,
                                            message.id == model.thread?.messages.last?.id {
+                                            let requiresReview = NativeWorkspace.incompleteTurnRequiresReview(message)
                                             HStack(alignment:.center,spacing:9) {
-                                                Image(systemName:"exclamationmark.arrow.triangle.2.circlepath")
+                                                Image(systemName:requiresReview
+                                                    ? "exclamationmark.arrow.triangle.2.circlepath" : "checkmark.circle")
                                                     .font(.system(size:15))
                                                     .foregroundStyle(ForgePalette.secondary)
                                                     .accessibilityHidden(true)
                                                 VStack(alignment:.leading,spacing:3) {
-                                                    Text("上次执行未完成")
+                                                    Text(requiresReview ? "上次执行未完成" : "可以继续执行")
                                                         .font(.system(size:11,weight:.semibold))
                                                         .foregroundStyle(ForgePalette.ink)
-                                                    Text("继续时先核对 Process 终态与当前改动。")
+                                                    Text(requiresReview
+                                                        ? "工具操作结果尚未完全核实。先查看改动并发送核对指令。"
+                                                        : "工具回执完整，没有待核对的操作。")
                                                         .font(.system(size:10))
                                                         .foregroundStyle(ForgePalette.secondary)
                                                 }
@@ -1445,15 +1904,24 @@ private struct AgentPane: View {
                                                 .font(.system(size:10.5,weight:.medium))
                                                 .disabled(model.checkoutId == nil)
                                                 Button {
-                                                    model.draft = "继续执行上一次未完成的开发任务。上次未完成回执（仅作线索）：\n\(String(message.text.prefix(1100)))\n若有 Process ID，先调用 process_status 获取终态；否则先核对 checkout 的 Git 状态和最近工具回执。不要重放未知或仍在运行的写操作，再继续实施和验证。"
-                                                    Task { await model.send() }
+                                                    guard !voiceDictation.blocksSend else { return }
+                                                    model.draft = NativeWorkspace.incompleteTurnContinuationPrompt
+                                                    if !requiresReview { Task { await model.send() } }
                                                 } label: {
-                                                    Label("继续执行",systemImage:"play.fill")
+                                                    Label(
+                                                        requiresReview ? "填入核对指令" : "继续执行",
+                                                        systemImage:requiresReview
+                                                            ? "doc.text.magnifyingglass" : "play.fill"
+                                                    )
                                                         .font(.system(size:10.5,weight:.medium))
                                                 }
                                                 .buttonStyle(.bordered)
-                                                .disabled(model.busy || !model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
-                                                    || model.agentSendBlockReason != nil)
+                                                // Review only fills the composer; it is safe to prepare
+                                                // while the Provider is offline. One-click execution still
+                                                // requires a ready Provider and an empty composer.
+                                                .disabled(model.busy || model.zenRefinementActive || voiceDictation.blocksSend
+                                                    || !model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+                                                    || (!requiresReview && model.agentSendBlockReason != nil))
                                                 .accessibilityIdentifier("agent.continue-incomplete")
                                             }
                                             .padding(10)
@@ -1479,7 +1947,7 @@ private struct AgentPane: View {
                                 .id(message.id)
                             }
                         }
-                        if model.busy {
+                        if model.busy || model.zenRefinementActive {
                             VStack(alignment:.leading,spacing:10) {
                                 HStack(spacing:10) {
                                     ZStack {
@@ -1491,7 +1959,8 @@ private struct AgentPane: View {
                                         Text(agentActivityTitle)
                                             .font(.system(size:11.5,weight:.semibold))
                                             .foregroundStyle(ForgePalette.ink)
-                                        Text(model.liveActivity?.lastActivity ?? "正在处理请求…")
+                                        Text(model.liveActivity?.lastActivity
+                                             ?? (model.zenRefinementActive ? "正在只读核对 Requirement / Plan…" : "正在处理请求…"))
                                             .font(.system(size:10.5))
                                             .foregroundStyle(ForgePalette.secondary)
                                             .lineLimit(1)
@@ -1504,7 +1973,7 @@ private struct AgentPane: View {
                                     }
                                     if let count = model.liveActivity?.events?.count, count > 4 {
                                         Button(showActivityDetails ? "收起" : "全部") {
-                                            withAnimation(.easeOut(duration:0.16)) {
+                                            withAnimation(reduceMotion ? nil : .easeOut(duration:0.16)) {
                                                 showActivityDetails.toggle()
                                             }
                                         }
@@ -1520,7 +1989,7 @@ private struct AgentPane: View {
                                         } label: {
                                             HStack(spacing:6) {
                                                 Image(systemName:"brain.head.profile")
-                                                Text("Provider 返回的思考内容")
+                                                Text("思考过程")
                                                 Image(systemName:showProviderThinking ? "chevron.up" : "chevron.down")
                                                     .font(.system(size:9))
                                             }
@@ -1538,7 +2007,10 @@ private struct AgentPane: View {
                                     .accessibilityIdentifier("agent.streaming-reasoning")
                                 }
                                 if !model.streamedAnswer.isEmpty {
-                                    AgentAssistantMessageBody(text:model.streamedAnswer)
+                                    AgentAssistantMessageBody(
+                                        text:model.streamedAnswer,
+                                        accessibilityIdentifierPrefix:"agent.streaming-response"
+                                    )
                                         .accessibilityIdentifier("agent.streaming-response")
                                 }
 
@@ -1564,11 +2036,66 @@ private struct AgentPane: View {
                     .frame(maxWidth:1320,alignment:.leading)
                     .frame(maxWidth:.infinity)
                     .padding(.horizontal,28).padding(.top,18).padding(.bottom,22)
-                }.scrollIndicators(.automatic)
+                    .background {
+                        GeometryReader { content in
+                            Color.clear.preference(
+                                key:AgentScrollMetricsPreferenceKey.self,
+                                value:AgentScrollMetrics(
+                                    offset:max(0,-content.frame(in:.named("agent.conversation")).minY),
+                                    contentHeight:content.size.height,
+                                    viewportHeight:conversationViewportHeight
+                                )
+                            )
+                        }
+                    }
+                }
+                .coordinateSpace(name:"agent.conversation")
+                .onPreferenceChange(AgentScrollMetricsPreferenceKey.self) { metrics in
+                    let previous = conversationScrollMetrics
+                    guard previous != metrics else { return }
+                    conversationScrollMetrics = metrics
+                    guard let previous else {
+                        followsLatestConversation = metrics.isNearBottom
+                        return
+                    }
+                    if metrics.offset < previous.offset - 2 {
+                        followsLatestConversation = false
+                        return
+                    }
+                    if metrics.offset > previous.offset + 2 && metrics.isNearBottom {
+                        followsLatestConversation = true
+                    }
+                    let contentGrew = metrics.contentHeight > previous.contentHeight + 1
+                    if contentGrew {
+                        guard followsLatestConversation else { return }
+                        Task { @MainActor in
+                            await Task.yield()
+                            guard followsLatestConversation else { return }
+                            withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
+                                reader.scrollTo("pending",anchor:.bottom)
+                            }
+                        }
+                        return
+                    }
+                    if metrics.isNearBottom {
+                        followsLatestConversation = true
+                    }
+                }
+                .scrollIndicators(.automatic)
+                .background {
+                    GeometryReader { viewport in
+                        Color.clear
+                            .onAppear { conversationViewportHeight = viewport.size.height }
+                            .onChange(of:viewport.size.height) { height in
+                                conversationViewportHeight = height
+                            }
+                    }
+                }
                 .overlay(alignment:.bottomTrailing) {
-                    if model.busy {
+                    if (model.busy || model.zenRefinementActive) && !followsLatestConversation {
                         Button {
-                            withAnimation(.easeOut(duration:0.18)) {
+                            followsLatestConversation = true
+                            withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
                                 reader.scrollTo("pending",anchor:.bottom)
                             }
                         } label: {
@@ -1581,24 +2108,34 @@ private struct AgentPane: View {
                         .accessibilityIdentifier("agent.scroll-to-progress")
                     }
                 }
-                .onChange(of:model.selectedThreadId) { _ in
-                    Task { @MainActor in
-                        await Task.yield()
-                        if let last = model.thread?.messages.last {
+                .task(id:model.conversationScrollRequest) {
+                    guard let request = model.conversationScrollRequest else { return }
+                    await Task.yield()
+                    guard !Task.isCancelled,
+                          model.conversationScrollRequest == request,
+                          model.selectedThreadId == request.threadId else { return }
+                    withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
+                        if let messageId = request.messageId {
+                            followsLatestConversation = false
+                            reader.scrollTo(messageId,anchor:.center)
+                        } else if let last = model.thread?.messages.last {
+                            followsLatestConversation = true
                             reader.scrollTo(last.id,anchor:.bottom)
                         }
                     }
+                    model.consumeConversationScrollRequest(request)
                 }
                 .onChange(of:model.thread?.messages.count) { _ in
-                    if let last = model.thread?.messages.last {
-                        withAnimation(.easeOut(duration:0.2)) { reader.scrollTo(last.id,anchor:.bottom) }
+                    if followsLatestConversation, let last = model.thread?.messages.last {
+                        withAnimation(reduceMotion ? nil : .easeOut(duration:0.2)) { reader.scrollTo(last.id,anchor:.bottom) }
                     }
                 }
                 .onChange(of:model.busy) { busy in
                     guard busy else { return }
+                    followsLatestConversation = true
                     Task { @MainActor in
                         await Task.yield()
-                        withAnimation(.easeOut(duration:0.2)) { reader.scrollTo("pending",anchor:.bottom) }
+                        withAnimation(reduceMotion ? nil : .easeOut(duration:0.2)) { reader.scrollTo("pending",anchor:.bottom) }
                     }
                 }
             }
@@ -1618,7 +2155,7 @@ private struct AgentPane: View {
                         .scrollContentBackground(.hidden)
                         .frame(minHeight:46,maxHeight:116)
                         .padding(.horizontal,10).padding(.top,7)
-                        .disabled(voiceDictation.isRecording)
+                        .disabled(voiceDictation.isRecording || voiceDictation.isStarting || model.zenRefinementActive)
                         .accessibilityLabel("Agent 消息")
                         .accessibilityHint("输入任务描述，按 Command Return 发送")
                         .accessibilityIdentifier("agent.composer")
@@ -1666,13 +2203,15 @@ private struct AgentPane: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .disabled(model.busy || (model.checkoutRoot == nil && !model.selectedProviderSupportsImages))
-                    .help("添加当前 checkout 文件上下文或图片")
+                    .disabled(model.busy || model.zenRefinementActive
+                        || (model.checkoutRoot == nil && !model.selectedProviderSupportsImages))
+                    .help("添加当前工作区文件或图片")
                     .accessibilityLabel("添加上下文")
-                    .accessibilityHint("添加当前 checkout 文件或当前 Provider 支持的图片")
+                    .accessibilityHint("添加当前工作区文件或当前模型服务支持的图片")
                     .accessibilityIdentifier("agent.attach")
 
                     composerQuickConfigurationControls
+                        .disabled(model.busy || model.zenRefinementActive)
 
                     Spacer(minLength:12)
 
@@ -1680,6 +2219,8 @@ private struct AgentPane: View {
                         Text(voiceDictation.isStarting ? "正在请求麦克风…" : "正在听写…")
                             .font(.system(size:10.5,weight:.medium))
                             .foregroundStyle(ForgePalette.secondary)
+                            .accessibilityLabel(voiceDictation.isStarting ? "正在请求麦克风" : "正在听写")
+                            .accessibilityHint("完成或取消语音输入后才能发送消息")
                             .accessibilityIdentifier("agent.voice.recording")
                     } else if let issue = voiceDictation.error {
                         Text(issue)
@@ -1688,28 +2229,67 @@ private struct AgentPane: View {
                             .lineLimit(1)
                             .help(issue)
                     }
-                    Button {
-                        if voiceDictation.isRecording || voiceDictation.isStarting {
+                    if voiceDictation.isRecording {
+                        Button {
                             voiceDictation.stop()
                             composerFocused = true
-                        } else {
+                        } label: {
+                            Label("完成",systemImage:"checkmark")
+                                .font(.system(size:10.5,weight:.medium))
+                                .foregroundStyle(ForgePalette.accent)
+                                .frame(height:30)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.busy)
+                        .help("完成语音输入并保留已识别文字")
+                        .accessibilityLabel("完成语音输入")
+                        .accessibilityHint("停止听写并保留已识别的文字")
+                        .accessibilityIdentifier("agent.voice.finish")
+
+                        Button { cancelVoiceDictation() } label: {
+                            Label("取消",systemImage:"xmark")
+                                .font(.system(size:10.5,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .frame(height:30)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.busy)
+                        .help("取消语音输入并恢复开始前的草稿")
+                        .accessibilityLabel("取消语音输入")
+                        .accessibilityHint("丢弃本次识别文字并恢复原草稿")
+                        .accessibilityIdentifier("agent.voice.cancel")
+                    } else if voiceDictation.isStarting {
+                        Button { cancelVoiceDictation() } label: {
+                            Label("取消",systemImage:"xmark")
+                                .font(.system(size:10.5,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .frame(height:30)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.busy)
+                        .help("取消语音输入并恢复开始前的草稿")
+                        .accessibilityLabel("取消语音输入")
+                        .accessibilityHint("取消权限请求，不会启动麦克风")
+                        .accessibilityIdentifier("agent.voice.cancel")
+                    } else {
+                        Button {
                             voiceBaseDraft = model.draft
                             Task { await voiceDictation.start() }
+                        } label: {
+                            Image(systemName:"mic")
+                                .font(.system(size:14,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .frame(width:30,height:30)
+                                .contentShape(Rectangle())
                         }
-                    } label: {
-                        Image(systemName:(voiceDictation.isRecording || voiceDictation.isStarting) ? "stop.circle.fill" : "mic")
-                            .font(.system(size:14,weight:.medium))
-                            .foregroundStyle((voiceDictation.isRecording || voiceDictation.isStarting) ? Color.red : ForgePalette.secondary)
-                            .frame(width:30,height:30)
-                            .contentShape(Rectangle())
+                        .buttonStyle(.plain)
+                        .disabled(model.busy || model.zenRefinementActive)
+                        .help("语音输入（只填入草稿，不自动发送）")
+                        .accessibilityLabel("开始语音输入")
+                        .accessibilityIdentifier("agent.voice.toggle")
                     }
-                    .buttonStyle(.plain)
-                    .disabled(model.busy)
-                    .help((voiceDictation.isRecording || voiceDictation.isStarting) ? "取消语音输入" : "语音输入（只填入草稿，不自动发送）")
-                    .accessibilityLabel((voiceDictation.isRecording || voiceDictation.isStarting) ? "停止语音输入" : "开始语音输入")
-                    .accessibilityIdentifier("agent.voice.toggle")
 
-                    if model.busy {
+                    if model.busy || model.zenRefinementActive {
                         Button { Task { await model.cancel() } } label: {
                             Image(systemName:"stop.fill")
                                 .font(.system(size:9,weight:.semibold))
@@ -1718,14 +2298,21 @@ private struct AgentPane: View {
                         }
                         .buttonStyle(.plain)
                         .keyboardShortcut(.escape,modifiers:[])
-                        .help("停止 Agent（Esc）")
-                        .accessibilityLabel("停止 Agent")
-                        .accessibilityHint("停止当前正在进行的 Agent 请求")
+                        .help(model.zenRefinementActive ? "停止自动精化（Esc）" : "停止 Agent（Esc）")
+                        .accessibilityLabel(model.zenRefinementActive ? "停止自动精化" : "停止 Agent")
+                        .accessibilityHint(model.zenRefinementActive
+                            ? "停止自动精化，并保留已收到的消息和工具回执"
+                            : "停止当前正在进行的 Agent 请求"
+                        )
                         .accessibilityIdentifier("agent.cancel")
                     } else {
                         let sendDisabled = model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
                             || model.agentSendBlockReason != nil
-                        Button { Task { await model.send() } } label: {
+                            || voiceDictation.blocksSend
+                        Button {
+                            guard !voiceDictation.blocksSend else { return }
+                            Task { await model.send() }
+                        } label: {
                             Image(systemName:"arrow.up")
                                 .font(.system(size:11,weight:.bold))
                                 .foregroundStyle(.white)
@@ -1736,14 +2323,18 @@ private struct AgentPane: View {
                         .buttonStyle(.plain)
                         .disabled(sendDisabled)
                         .keyboardShortcut(.return,modifiers:.command)
-                        .help(model.agentSendBlockReason ?? "发送消息（⌘↵）")
+                        .help(voiceDictation.blocksSend ? "请先完成或取消语音输入" : model.agentSendBlockReason ?? "发送消息（⌘↵）")
                         .accessibilityLabel("发送消息")
-                        .accessibilityValue(sendDisabled ? "不可发送" : "可发送")
-                        .accessibilityHint("按 Command Return 发送")
+                        .accessibilityValue(sendDisabled
+                            ? (voiceDictation.blocksSend ? "听写中，完成或取消后可发送" : "不可发送")
+                            : "可发送")
+                        .accessibilityHint(voiceDictation.blocksSend
+                            ? "请先完成或取消语音输入，再发送消息"
+                            : "按 Command Return 发送")
                         .accessibilityIdentifier("agent.send")
                     }
                 }.padding(.horizontal,13).padding(.bottom,11)
-                if !model.busy, let reason = model.agentSendBlockReason {
+                if !model.busy,!model.zenRefinementActive,let reason = model.agentSendBlockReason {
                     HStack(alignment:.firstTextBaseline,spacing:6) {
                         Image(systemName:"info.circle")
                             .accessibilityHidden(true)
@@ -1780,11 +2371,11 @@ private struct AgentPane: View {
                 }
             }
             .dropDestination(for:URL.self) { urls, _ in
-                guard !model.busy, !urls.isEmpty else { return false }
+                guard !model.busy,!model.zenRefinementActive,!urls.isEmpty else { return false }
                 model.addDroppedAttachments(urls)
                 return true
             } isTargeted: { targeted in
-                isComposerDropTarget = targeted && !model.busy
+                isComposerDropTarget = targeted && !model.busy && !model.zenRefinementActive
             }
             .frame(maxWidth:980)
             .padding(.horizontal,24).padding(.bottom,16)
@@ -1798,10 +2389,10 @@ private struct AgentPane: View {
                     AgentChangesPane(model:model,isPresented:$showChanges)
                         .frame(width:340)
                 }
-                .transition(.move(edge:.trailing).combined(with:.opacity))
+                .transition(reduceMotion ? .identity : .move(edge:.trailing).combined(with:.opacity))
             }
         }
-        .animation(.easeOut(duration:0.18),value:showChanges)
+        .animation(reduceMotion ? nil : .easeOut(duration:0.18),value:showChanges)
         .confirmationDialog(
             "将命令交给 Forge Agent？",
             isPresented:Binding(
@@ -1812,22 +2403,26 @@ private struct AgentPane: View {
         ) {
             Button("发送执行请求") {
                 guard let command = pendingAgentCommand, !model.busy,
+                      !voiceDictation.blocksSend,
                       model.repoId != nil, model.checkoutId != nil else { return }
                 pendingAgentCommand = nil
                 model.draft = AgentMessageBlock.commandExecutionPrompt(command)
                 Task { await model.send() }
             }
+            .disabled(model.busy || voiceDictation.blocksSend)
             Button("取消",role:.cancel) { pendingAgentCommand = nil }
         } message: {
-            Text("仅将这段命令作为请求提交给现有 Agent；执行必须经过 Forge Repository AccessPolicy 和 Process Runtime。可能产生文件改动，请先确认命令内容。")
+            Text("这会把命令发送给当前 Agent，可能修改项目文件。请先确认命令内容。")
         }
         .onAppear {
-            if !model.busy { composerFocused = true }
+            if !model.busy && !model.zenRefinementActive { composerFocused = true }
         }
         .onChange(of:model.selectedThreadId) { _ in
-            voiceDictation.stop()
+            // The draft binding already targets the newly selected thread here.
+            // Clear only transient recorder state; the old thread keeps its partial transcript.
+            voiceDictation.cancel()
             showChanges = false
-            if !model.busy { composerFocused = true }
+            if !model.busy && !model.zenRefinementActive { composerFocused = true }
         }
         .onChange(of:voiceDictation.transcript) { transcript in
             guard !transcript.isEmpty else { return }
@@ -1839,41 +2434,42 @@ private struct AgentPane: View {
         .onDisappear { voiceDictation.stop() }
     }
 
+    private func cancelVoiceDictation() {
+        voiceDictation.cancel()
+        model.draft = voiceBaseDraft
+        composerFocused = true
+    }
+
     private var agentActivityTitle: String {
-        switch model.liveActivity?.phase {
-        case "thinking", "starting", "model": return "正在思考"
-        case "tool": return "正在执行工具"
-        case "responding": return "正在生成回复"
-        default: return model.streamedAnswer.isEmpty ? "正在等待模型" : "正在生成回复"
-        }
+        if model.zenRefinementActive { return "自动精化 · 第 \(model.zenRefinementRound)/\(ZenChangeProposal.refinementMaximumRounds) 轮" }
+        return NativeWorkspace.agentActivityTitle(
+            phase:model.liveActivity?.phase,
+            lastActivity:model.liveActivity?.lastActivity,
+            hasStreamedAnswer:!model.streamedAnswer.isEmpty,
+            hasStreamedReasoning:!model.streamedReasoning.isEmpty
+        )
     }
 
     private var agentEmptyStateDescription: String {
-        if model.checkoutId == nil {
-            return model.projects.isEmpty
-                ? "添加本地 Git 项目后即可处理代码；不绑定项目也可以直接对话。"
-                : "选择项目与 checkout 后即可处理代码；不绑定项目也可以直接对话。"
+        if model.isProjectOnlyConversation {
+            if let reason = model.agentSendBlockReason { return reason }
+            return "当前项目可用于需求与计划对话；关联本地工作区后即可执行代码操作。"
         }
-        if !model.checkoutIsAvailable { return "当前 checkout 尚未就绪，请重新选择项目或 checkout。" }
+        if model.thread?.repoId != nil && model.thread?.checkoutId == nil {
+            return "当前会话关联了项目，但没有可用工作区；请选择工作区后即可执行代码操作。"
+        }
+        if model.thread?.repoId == nil {
+            return model.projects.isEmpty
+                ? "添加本地项目后即可处理代码；也可以不选项目直接对话。"
+                : "选择项目和工作区后即可处理代码；也可以不选项目直接对话。"
+        }
+        if !model.checkoutIsAvailable { return "当前工作区尚未就绪，请重新选择项目或工作区。" }
         if !model.selectedProviderReady { return "已选择项目。设置可用模型后即可开始任务。" }
         return "描述你想完成的工作，或选择下方的常用操作。"
     }
 
-    private var agentWorkspaceStatusLabel: String {
-        if model.busy { return "执行中" }
-        if !model.selectedProviderReady {
-            if model.selectedProvider == "joycode" { return "JoyCode 未就绪" }
-            return model.selectedProvider == "api" ? "API 未配置" : "Codex 未就绪"
-        }
-        if model.thread?.repoId != nil && model.thread?.checkoutId == nil { return "缺 checkout" }
-        if model.thread?.repoId == nil { return "未绑定项目" }
-        if model.checkoutContextLoading { return "验证 checkout" }
-        if !model.checkoutIsAvailable { return "checkout 不可用" }
-        return "本地可执行"
-    }
-
     private var agentWorkspaceStatusColor: Color {
-        if model.busy { return ForgePalette.accent }
+        if model.busy || model.zenRefinementActive { return ForgePalette.accent }
         if !model.selectedProviderReady
             || (model.thread?.repoId != nil && (
                 model.thread?.checkoutId == nil || model.checkoutContextLoading || !model.checkoutIsAvailable
@@ -1883,43 +2479,25 @@ private struct AgentPane: View {
         return model.thread?.repoId == nil ? Color.secondary : Color.green
     }
 
-    private var agentWorkspaceStatusDetail: String {
-        if model.busy { return model.liveActivity?.lastActivity ?? "Agent 正在执行" }
-        if !model.selectedProviderReady {
-            if model.selectedProvider == "joycode" {
-                return "JoyCode 尚未就绪；请先在本机 JoyCode 登录并确认模型配置。"
-            }
-            return model.selectedProvider == "api" ? "兼容 API 配置尚未就绪；请检查 Endpoint、必要的 API Key 与模型" : model.provider
-        }
-        if model.thread?.repoId != nil && model.thread?.checkoutId == nil {
-            return "当前会话绑定了项目，但没有有效 checkout；请选择项目后新建会话。"
-        }
-        if model.checkoutContextLoading { return "正在从 Forge Registry 验证当前会话绑定的 checkout。" }
-        if model.thread?.repoId != nil && !model.checkoutIsAvailable {
-            return "当前 checkout 路径不可用或缺少 Git 元数据；请切换到有效 checkout，避免在未验证的项目上执行。"
-        }
-        if model.thread?.repoId == nil { return "当前会话可以对话，但没有项目/checkout 执行上下文。" }
-        return "本地 Provider 与当前 Git checkout 可用于执行；远程 MCP 隧道状态单独显示。"
-    }
-
     private var agentWorkspaceBar: some View {
         HStack(spacing:10) {
-            HStack(spacing:7) {
-                workspaceProjectControl
-                if let context = checkoutContextLabel {
-                    Text(context)
-                        .font(.system(size:9.5,weight:.medium,design:.monospaced))
-                        .foregroundStyle(ForgePalette.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(maxWidth:170,alignment:.leading)
-                        .padding(.horizontal,7)
-                        .frame(height:21)
-                        .background(ForgePalette.softFill,
-                                    in:RoundedRectangle(cornerRadius:7,style:.continuous))
+            if model.canNavigateBack {
+                Button { model.goBack() } label: {
+                    Image(systemName:"chevron.left")
+                        .font(.system(size:10.5,weight:.semibold))
+                        .frame(width:27,height:27)
+                        .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
                 }
+                .buttonStyle(.plain)
+                .disabled(model.busy)
+                .help("返回 \(model.navigationBackLabel ?? "上一页")")
+                .accessibilityLabel("返回 \(model.navigationBackLabel ?? "上一页")")
+                .accessibilityIdentifier("agent.navigation.back")
             }
-            .help(model.checkoutId.map { "checkout: \($0)" } ?? "当前项目没有 checkout")
+
+            Text("Agent")
+                .font(.system(size:13,weight:.semibold))
+                .accessibilityAddTraits(.isHeader)
 
             Spacer(minLength:12)
 
@@ -1943,78 +2521,41 @@ private struct AgentPane: View {
                     Circle()
                         .fill(agentWorkspaceStatusColor)
                         .frame(width:6,height:6)
-                    Text(agentWorkspaceStatusLabel)
+                    Text(model.agentWorkspaceStatusLabel)
                         .font(.system(size:10.5,weight:.medium))
                         .foregroundStyle(ForgePalette.secondary)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("\(agentWorkspaceStatusDetail)\n点击刷新 Agent 上下文与 Provider 状态")
+            .help("\(model.agentWorkspaceStatusDetail)\n点击刷新会话状态和模型服务")
             .accessibilityLabel("Agent 状态")
-            .accessibilityValue(agentWorkspaceStatusLabel)
+            .accessibilityValue(model.agentWorkspaceStatusLabel)
             .accessibilityIdentifier("agent.workspace-refresh")
         }
-        .padding(.horizontal,18)
-        .frame(height:43)
-        .background(ForgePalette.raisedSurface.opacity(0.64))
+        .frame(maxWidth:1320)
+        .padding(.horizontal,28)
+        .frame(maxWidth:.infinity)
+        .frame(height:54)
+        .background(ForgePalette.canvas)
         .accessibilityElement(children:.contain)
         .accessibilityIdentifier("agent.workspace-context")
     }
 
-    private var checkoutContextLabel: String? {
-        if let branch = model.checkoutBranch, !branch.isEmpty { return branch }
-        if let checkout = model.checkoutId, !checkout.isEmpty { return String(checkout.prefix(8)) }
-        return nil
+    private var workspaceReviewFileCount: Int {
+        model.agentChanges?.reviewScopeFileCount ?? 0
     }
 
-    private var workspaceProjectControl: some View {
-        Menu {
-            ForEach(model.projects) { project in
-                Button {
-                    model.selectProject(project.repoId)
-                } label: {
-                    if model.project?.repoId == project.repoId {
-                        Label(project.label,systemImage:"checkmark")
-                    } else {
-                        Text(project.label)
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing:6) {
-                Image(systemName:"folder.fill")
-                    .symbolRenderingMode(.hierarchical)
-                    .font(.system(size:10.5,weight:.medium))
-                    .foregroundStyle(ForgePalette.secondary)
-                Text(model.project?.label ?? "选择项目")
-                    .font(.system(size:11.5,weight:.semibold))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth:185,alignment:.leading)
-                Image(systemName:"chevron.down")
-                    .font(.system(size:7,weight:.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize(horizontal:false,vertical:true)
-        .disabled(model.projects.isEmpty || model.busy)
-        .help("切换项目会打开该项目最近会话；没有历史会话时创建新会话")
-        .accessibilityLabel("项目")
-        .accessibilityValue(model.project?.label ?? "未选择")
-        .accessibilityIdentifier("agent.project")
-    }
-
-    private var workspaceWorkingChangeCount: Int {
-        guard let changes = model.agentChanges, !changes.staged else { return 0 }
-        return changes.nameOnly.count + changes.untrackedFiles.count
+    private var workspaceReviewSummary: String {
+        guard let changes = model.agentChanges else { return "尚未读取改动" }
+        let scope = changes.staged ? "已暂存" : "未暂存"
+        let count = changes.reviewScopeFileCount
+        return count > 0 ? "\(scope) \(count) 个文件" : "\(scope)范围无改动"
     }
 
     private var workspaceChangesControl: some View {
         Button {
-            withAnimation(.easeOut(duration:0.18)) { showChanges.toggle() }
+            withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) { showChanges.toggle() }
             if showChanges {
                 Task { await model.refreshAgentChanges() }
             }
@@ -2022,8 +2563,8 @@ private struct AgentPane: View {
             HStack(spacing:5) {
                 Image(systemName:"doc.text.magnifyingglass")
                     .font(.system(size:9.5,weight:.medium))
-                if workspaceWorkingChangeCount > 0 {
-                    Text("\(workspaceWorkingChangeCount)")
+                if workspaceReviewFileCount > 0 {
+                    Text("\(workspaceReviewFileCount)")
                         .font(.system(size:9.5,weight:.semibold))
                         .monospacedDigit()
                 }
@@ -2037,11 +2578,9 @@ private struct AgentPane: View {
         }
         .buttonStyle(.plain)
         .disabled(model.checkoutId == nil)
-        .help(workspaceWorkingChangeCount > 0
-              ? "查看当前 checkout 的 \(workspaceWorkingChangeCount) 个 Working Tree 文件"
-              : "查看当前 checkout 的未提交改动")
-        .accessibilityLabel("Git Changes")
-        .accessibilityValue(workspaceWorkingChangeCount > 0 ? "\(workspaceWorkingChangeCount) 个 Working Tree 文件" : "未加载 Working Tree 计数")
+        .help("查看当前工作区改动：\(workspaceReviewSummary)")
+        .accessibilityLabel("改动审查")
+        .accessibilityValue(workspaceReviewSummary)
         .accessibilityIdentifier("agent.changes")
     }
 
@@ -2070,9 +2609,9 @@ private struct AgentPane: View {
         let requirementId = model.thread?.requirementId
         let title: String
         if let planId, !planId.isEmpty {
-            title = compact ? "" : "Plan · \(String(planId.prefix(8)))"
+            title = compact ? "" : "计划 · \(String(planId.prefix(8)))"
         } else if let requirementId, !requirementId.isEmpty {
-            title = compact ? "" : "Req · \(String(requirementId.prefix(8)))"
+            title = compact ? "" : "需求 · \(String(requirementId.prefix(8)))"
         } else {
             title = compact ? "" : "规划"
         }
@@ -2093,16 +2632,16 @@ private struct AgentPane: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(model.repoId == nil)
+        .disabled(model.thread?.projectId == nil)
         .help(planId?.isEmpty == false
-              ? "当前会话已绑定 Plan；点击查看或更换"
+              ? "当前会话已关联计划；点击查看或更换"
               : (requirementId?.isEmpty == false
-                 ? "当前会话已绑定 Requirement；点击查看或更换"
+                 ? "当前会话已关联需求；点击查看或更换"
                  : "在当前会话中选择规划上下文"))
         .accessibilityLabel("规划")
         .accessibilityValue(planId?.isEmpty == false
-                            ? "已绑定 Plan"
-                            : (requirementId?.isEmpty == false ? "已绑定 Requirement" : "未绑定"))
+                            ? "已关联计划"
+                            : (requirementId?.isEmpty == false ? "已关联需求" : "未关联"))
         .accessibilityHint("在当前会话中打开规划上下文，不切换工作区页面")
         .accessibilityIdentifier("agent.semantic-context.planning")
         .popover(isPresented:semanticInspectorBinding(.planning),arrowEdge:.top) {
@@ -2136,8 +2675,14 @@ private struct AgentPane: View {
         }
     }
 
-    private func starterPromptButton(_ title: String, systemImage: String, prompt: String) -> some View {
+    private func starterPromptButton(
+        _ title: String,
+        systemImage: String,
+        prompt: String,
+        requiresCheckout: Bool = true
+    ) -> some View {
         Button {
+            guard !voiceDictation.blocksSend else { return }
             model.draft = prompt
             composerFocused = true
         } label: {
@@ -2152,9 +2697,14 @@ private struct AgentPane: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(model.busy || model.checkoutId == nil)
-        .help(model.checkoutId == nil ? "先选择带有 active checkout 的项目" : title)
+        .disabled(model.busy || voiceDictation.blocksSend || (requiresCheckout && model.checkoutId == nil))
+        .help(voiceDictation.blocksSend
+            ? "请先完成或取消语音输入"
+            : requiresCheckout && model.checkoutId == nil ? "请先选择包含可用工作区的项目" : title)
     }
+
+    @State private var expandedActivityEventIDs: Set<String> = []
+    @State private var copiedActivityEventID: String?
 
     private func activityTrailRow(_ event: AgentLiveActivityEvent) -> some View {
         HStack(alignment:.top,spacing:8) {
@@ -2177,6 +2727,73 @@ private struct AgentPane: View {
                         .foregroundStyle(.tertiary)
                         .lineLimit(event.phase == "message" ? 7 : 2)
                         .textSelection(.enabled)
+                }
+                if let output=NativeWorkspace.activityOutputPresentation(for:event) {
+                    let isExpanded=expandedActivityEventIDs.contains(event.id)
+                    let isCopied=copiedActivityEventID == event.id
+                    VStack(alignment:.leading,spacing:5) {
+                        HStack(spacing:8) {
+                            Text("工具输出")
+                                .font(.system(size:9,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary)
+                            Spacer(minLength:4)
+                            Button {
+                                if isExpanded { expandedActivityEventIDs.remove(event.id) }
+                                else { expandedActivityEventIDs.insert(event.id) }
+                                if copiedActivityEventID == event.id { copiedActivityEventID=nil }
+                            } label: {
+                                Text(isExpanded ? "收起" : "展开")
+                                    .font(.system(size:9,weight:.medium))
+                            }
+                            .buttonStyle(.plain)
+                            .help(isExpanded ? "收起此条工具输出" : "展开查看此条保留的完整输出")
+                            .accessibilityLabel(isExpanded ? "收起此条工具输出" : "展开此条工具输出")
+                            .accessibilityHint("展开后可滚动查看当前保留的输出内容。")
+                            .accessibilityIdentifier("agent.activity.output.toggle.\(event.id)")
+                            Button {
+                                copyAgentText(output.text)
+                                copiedActivityEventID=event.id
+                            } label: {
+                                Image(systemName:isCopied ? "checkmark" : "doc.on.doc")
+                                    .font(.system(size:9,weight:.medium))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(isCopied ? Color.green : ForgePalette.secondary)
+                            .help(isCopied ? "已复制此条工具输出" : "复制此条工具输出")
+                            .accessibilityLabel(isCopied ? "已复制此条工具输出" : "复制此条工具输出")
+                            .accessibilityIdentifier("agent.activity.output.copy.\(event.id)")
+                        }
+                        if let truncationLabel=output.truncationLabel {
+                            Text(truncationLabel)
+                                .font(.system(size:10.5,weight:.medium))
+                                .foregroundStyle(Color.orange)
+                                .fixedSize(horizontal:false,vertical:true)
+                                .frame(maxWidth:.infinity,alignment:.leading)
+                                .help(truncationLabel)
+                                .accessibilityLabel(truncationLabel)
+                                .accessibilityHint("当前输出可能不完整，不应当作完整日志。")
+                                .accessibilityIdentifier("agent.activity.output.truncation.\(event.id)")
+                        }
+                        if isExpanded {
+                            ScrollView {
+                                Text(output.text)
+                                    .font(.system(size:9,design:.monospaced))
+                                    .foregroundStyle(ForgePalette.ink.opacity(0.82))
+                                    .frame(maxWidth:.infinity,alignment:.leading)
+                                    .fixedSize(horizontal:false,vertical:true)
+                                    .textSelection(.enabled)
+                            }
+                            .frame(maxHeight:220)
+                            .accessibilityIdentifier("agent.activity.output.detail.\(event.id)")
+                        } else {
+                            Text(output.text)
+                                .font(.system(size:9,design:.monospaced))
+                                .foregroundStyle(ForgePalette.ink.opacity(0.82))
+                                .lineLimit(6)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .padding(.top,2)
                 }
             }
             Spacer(minLength:8)
@@ -2214,6 +2831,22 @@ private struct AgentPane: View {
 
     @ViewBuilder
     private var composerQuickConfigurationControls: some View {
+        if model.thread?.readOnly == true {
+            Label("只读",systemImage:"lock.fill")
+                .font(.system(size:10,weight:.medium))
+                .foregroundStyle(ForgePalette.secondary)
+                .accessibilityIdentifier("agent.read-only")
+            Button {
+                model.openWorkbench()
+            } label: {
+                Label("返回 Zen",systemImage:"arrow.uturn.backward")
+                    .font(.system(size:10,weight:.medium))
+            }
+            .buttonStyle(.plain)
+            .disabled(model.busy)
+            .help("返回 Zen 审阅提案")
+            .accessibilityIdentifier("agent.return-to-zen")
+        }
         if showsQuickProviderPicker {
             quickProviderMenu
         }
@@ -2221,7 +2854,9 @@ private struct AgentPane: View {
         if model.selectedProvider == "codex" && !model.selectedReasoningOptions.isEmpty {
             quickReasoningMenu
         }
-        if model.checkoutId != nil && NativeWorkspace.matchesExternalProvider(model.selectedProvider) {
+        if model.thread?.readOnly != true,
+           model.checkoutId != nil,
+           NativeWorkspace.matchesExternalProvider(model.selectedProvider) {
             quickRepositoryAccessMenu
         }
     }
@@ -2256,12 +2891,12 @@ private struct AgentPane: View {
                 model.selectThreadProvider("codex")
             } label: {
                 if model.selectedProvider == "codex" {
-                    Label("Codex CLI",systemImage:"checkmark")
+                    Label("Codex",systemImage:"checkmark")
                 } else {
-                    Text("Codex CLI")
+                    Text("Codex")
                 }
             }
-            .disabled(!model.localProviderReady && model.selectedProvider != "codex")
+            .disabled(model.thread?.readOnly == true || (!model.localProviderReady && model.selectedProvider != "codex"))
 
             if let profiles = model.localApiSettings?.profiles {
                 ForEach(profiles) { profile in
@@ -2300,8 +2935,8 @@ private struct AgentPane: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .disabled(providerSelectionLocked)
-        .help("切换当前会话的 Provider；已有消息保留，默认值只影响新会话")
-        .accessibilityLabel("Provider")
+        .help("切换当前会话的模型服务；已有消息保留，默认服务只影响新会话")
+        .accessibilityLabel("模型服务")
         .accessibilityValue(quickProviderLabel)
         .accessibilityIdentifier("agent.provider.quick")
     }
@@ -2326,7 +2961,7 @@ private struct AgentPane: View {
                 Button(label) {}
                     .disabled(true)
                 Divider()
-                Button("前往 Provider 设置…") {
+                Button("前往模型服务设置…") {
                     model.show(.settings)
                 }
                 .disabled(model.busy)
@@ -2337,7 +2972,7 @@ private struct AgentPane: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .disabled(model.busy || (model.selectedProvider == "codex" && model.agentModels.isEmpty))
-        .help(model.selectedProvider == "codex" ? "切换模型" : "当前外部 Provider 模型；模型配置在设置中管理")
+        .help(model.selectedProvider == "codex" ? "切换模型" : "当前模型由外部服务提供；配置可在设置中管理")
         .accessibilityLabel("模型")
         .accessibilityValue(quickModelLabel)
         .accessibilityIdentifier("agent.model.quick")
@@ -2376,9 +3011,9 @@ private struct AgentPane: View {
                 Task { _ = await model.setRepositoryAccessMode("request") }
             } label: {
                 if model.repositoryAccessMode == "request" {
-                    Label("Request",systemImage:"checkmark")
+                    Label("请求权限",systemImage:"checkmark")
                 } else {
-                    Text("Request")
+                    Text("请求权限")
                 }
             }
 
@@ -2386,23 +3021,33 @@ private struct AgentPane: View {
                 Task { _ = await model.setRepositoryAccessMode("full_access") }
             } label: {
                 if model.repositoryAccessMode == "full_access" {
-                    Label("Full Access",systemImage:"checkmark")
+                    Label("完全访问",systemImage:"checkmark")
                 } else {
-                    Text("Full Access")
+                    Text("完全访问")
                 }
             }
+            Divider()
+            Button {
+                Task { await model.loadRepositoryAccess() }
+            } label: {
+                Label("重新读取权限",systemImage:"arrow.clockwise")
+            }
+            .help("从当前项目重新读取已保存的权限模式")
+            .accessibilityLabel("重新读取项目权限")
+            .accessibilityHint("重新读取当前项目的权限状态；读取期间暂停发送")
+            .accessibilityIdentifier("agent.repository-access.retry")
         } label: {
             quickControlLabel(
-                model.repositoryAccessMode == "full_access" ? "Full Access" : "Request",
+                model.repositoryAccessMode == "full_access" ? "完全访问" : "请求权限",
                 systemImage:model.repositoryAccessMode == "full_access" ? "checkmark.shield" : "lock"
             )
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
         .disabled(model.busy || model.repositoryAccessLoading)
-        .help("当前外部 Provider 的仓库权限")
-        .accessibilityLabel("仓库权限")
-        .accessibilityValue(model.repositoryAccessMode == "full_access" ? "Full Access" : "Request")
+        .help("当前模型服务的项目权限")
+        .accessibilityLabel("项目权限")
+        .accessibilityValue(model.repositoryAccessMode == "full_access" ? "完全访问" : "请求权限")
         .accessibilityIdentifier("agent.repository-access.quick")
     }
 
@@ -2426,7 +3071,7 @@ private struct AgentPane: View {
     }
 
     private var quickProviderLabel: String {
-        if model.selectedProvider == "codex" { return "Codex CLI" }
+        if model.selectedProvider == "codex" { return "Codex" }
         if model.selectedProvider == "joycode" { return "JoyCode" }
         return model.localApiSettings?.profiles.first(where: { $0.providerId == model.selectedProvider })?.label ?? "API"
     }
@@ -2516,6 +3161,7 @@ private func copyAgentText(_ text: String) {
 
 private struct AgentChangesPane: View {
     @ObservedObject var model: NativeWorkspace
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var isPresented: Bool
     @State private var commitMessage = ""
     @State private var restoreSnapshot: AgentGitDiff?
@@ -2530,7 +3176,7 @@ private struct AgentChangesPane: View {
                 Image(systemName:"doc.text.magnifyingglass")
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(ForgePalette.accent)
-                Text("Changes")
+                Text("改动审查")
                     .font(.system(size:13,weight:.semibold))
                 if let changes = model.agentChanges, !changes.nameOnly.isEmpty {
                     Text("\(changes.nameOnly.count)")
@@ -2538,9 +3184,9 @@ private struct AgentChangesPane: View {
                         .padding(.horizontal,7).padding(.vertical,3)
                         .background(ForgePalette.selectionStrong,in:Capsule())
                 }
-                Picker("Review scope",selection:reviewScopeBinding) {
-                    Text("Working").tag(false)
-                    Text("Staged").tag(true)
+                Picker("审查范围",selection:reviewScopeBinding) {
+                    Text("未暂存").tag(false)
+                    Text("已暂存").tag(true)
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
@@ -2564,7 +3210,7 @@ private struct AgentChangesPane: View {
                 .help("刷新改动")
 
                 Button {
-                    withAnimation(.easeOut(duration:0.16)) { isPresented = false }
+                    withAnimation(reduceMotion ? nil : .easeOut(duration:0.16)) { isPresented = false }
                 } label: {
                     Image(systemName:"xmark")
                         .font(.system(size:10,weight:.semibold))
@@ -2573,14 +3219,14 @@ private struct AgentChangesPane: View {
                                     in:RoundedRectangle(cornerRadius:8,style:.continuous))
                 }
                 .buttonStyle(.plain)
-                .help("关闭 Changes")
+                .help("关闭改动审查")
             }
             .padding(14)
 
             if model.changesLoading {
                 VStack(spacing:9) {
                     ProgressView().controlSize(.small)
-                    Text("读取当前 checkout…")
+                    Text("读取当前工作区…")
                         .font(.system(size:11))
                         .foregroundStyle(ForgePalette.secondary)
                 }
@@ -2602,7 +3248,7 @@ private struct AgentChangesPane: View {
                                     .foregroundStyle(ForgePalette.secondary)
                                 Text(changes.untrackedFiles.isEmpty
                                      ? (changes.staged ? "暂存区没有改动" : "工作区没有未提交改动")
-                                     : "没有可审查的 tracked diff")
+                                     : "没有可审查的已跟踪文件改动")
                                     .font(.system(size:12,weight:.medium))
                                     .foregroundStyle(ForgePalette.secondary)
                             }
@@ -2617,7 +3263,7 @@ private struct AgentChangesPane: View {
                                     HStack(spacing:7) {
                                         Image(systemName:"rectangle.stack")
                                             .font(.system(size:10))
-                                        Text("All changes")
+                                        Text("全部改动")
                                             .font(.system(size:10.5,weight:.medium))
                                         Spacer(minLength:0)
                                         Text("\(changes.nameOnly.count)")
@@ -2634,13 +3280,16 @@ private struct AgentChangesPane: View {
 
                                 ForEach(changes.nameOnly,id:\.self) { path in
                                     Button {
+                                        focusedPath = path
+                                        focusedChanges = nil
+                                        focusedLoading = true
                                         Task {
-                                            focusedLoading = true
                                             let snapshot = await model.reviewAgentChanges(paths:[path],staged:reviewStaged)
                                             focusedLoading = false
                                             if let snapshot {
-                                                focusedPath = path
                                                 focusedChanges = snapshot
+                                            } else {
+                                                focusedPath = nil
                                             }
                                         }
                                     } label: {
@@ -2676,7 +3325,7 @@ private struct AgentChangesPane: View {
                             if focusedLoading {
                                 HStack(spacing:7) {
                                     ProgressView().controlSize(.small)
-                                    Text("读取文件 diff…")
+                                    Text("读取文件改动…")
                                         .font(.system(size:10.5))
                                         .foregroundStyle(ForgePalette.secondary)
                                 }
@@ -2694,12 +3343,12 @@ private struct AgentChangesPane: View {
                                         Button {
                                             copyAgentText(reviewed.patch)
                                         } label: {
-                                            Label("Copy patch",systemImage:"doc.on.doc")
+                                            Label("复制改动",systemImage:"doc.on.doc")
                                                 .font(.system(size:9.5,weight:.medium))
                                         }
                                         .buttonStyle(.plain)
                                         .foregroundStyle(ForgePalette.secondary)
-                                        .help("复制当前已审查 diff")
+                                        .help("复制当前已审查改动")
                                     }
                                 }
                             }
@@ -2709,21 +3358,21 @@ private struct AgentChangesPane: View {
                             }
 
                             if reviewed.truncated {
-                                Label("Diff 已按 20 KB 上限截断，不能提交",systemImage:"exclamationmark.triangle")
+                                Label("改动内容过多，无法提交。请缩小本次审查范围。",systemImage:"exclamationmark.triangle")
                                     .font(.system(size:10.5))
                                     .foregroundStyle(ForgePalette.secondary)
                             }
 
                             VStack(alignment:.leading,spacing:8) {
                                 HStack {
-                                    Label("Commit reviewed changes",systemImage:"checkmark.seal")
+                                    Label("提交已审查改动",systemImage:"checkmark.seal")
                                         .font(.system(size:11,weight:.semibold))
                                     Spacer()
-                                    Text(focusedPath ?? "\(reviewed.nameOnly.count) files")
+                                    Text(focusedPath ?? "\(reviewed.nameOnly.count) 个文件")
                                         .font(.system(size:10))
                                         .foregroundStyle(.tertiary)
                                 }
-                                TextField("Commit message",text:$commitMessage)
+                                TextField("提交说明",text:$commitMessage)
                                     .textFieldStyle(.plain)
                                     .font(.system(size:11.5))
                                     .padding(.horizontal,10)
@@ -2731,21 +3380,21 @@ private struct AgentChangesPane: View {
                                     .background(ForgePalette.canvas,
                                                 in:RoundedRectangle(cornerRadius:8,style:.continuous))
                                 HStack(spacing:8) {
-                                    Text("提交前会重新核对 patch / HEAD / branch / checkout")
+                                    Text("提交前会再次确认这些改动未变化。")
                                         .font(.system(size:9.5))
                                         .foregroundStyle(.tertiary)
                                         .lineLimit(2)
                                     Spacer(minLength:8)
                                     if reviewed.staged {
-                                        Text("Staged 仅支持提交")
+                                        Text("已暂存改动仅支持提交")
                                             .font(.system(size:9.5,weight:.medium))
                                             .foregroundStyle(.tertiary)
-                                            .help("不跨越 index 边界执行 Discard")
+                                            .help("不会跨越暂存区边界放弃改动")
                                     } else {
                                         Button(role:.destructive) {
                                             restoreSnapshot = reviewed
                                         } label: {
-                                            Label("Discard",systemImage:"arrow.uturn.backward.circle")
+                                            Label("放弃",systemImage:"arrow.uturn.backward.circle")
                                                 .font(.system(size:11,weight:.semibold))
                                                 .padding(.horizontal,9)
                                                 .frame(height:29)
@@ -2754,7 +3403,7 @@ private struct AgentChangesPane: View {
                                         .foregroundStyle(.red)
                                         .disabled(model.changesLoading || focusedLoading
                                                   || reviewed.truncated || reviewed.patch.isEmpty)
-                                        .help("放弃当前已复查的 tracked / unstaged 改动")
+                                        .help("放弃当前已复查的未暂存改动")
                                     }
                                     Button {
                                         let snapshot = reviewed
@@ -2767,7 +3416,7 @@ private struct AgentChangesPane: View {
                                             }
                                         }
                                     } label: {
-                                        Label("Commit",systemImage:"checkmark.circle.fill")
+                                        Label("提交",systemImage:"checkmark.circle.fill")
                                             .font(.system(size:11,weight:.semibold))
                                             .padding(.horizontal,10)
                                             .frame(height:29)
@@ -2792,7 +3441,7 @@ private struct AgentChangesPane: View {
                     Image(systemName:"doc.text.magnifyingglass")
                         .font(.system(size:24,weight:.light))
                         .foregroundStyle(ForgePalette.secondary)
-                    Text("打开 Changes 后读取当前 checkout")
+                    Text("打开改动审查后读取当前工作区。")
                         .font(.system(size:11))
                         .foregroundStyle(ForgePalette.secondary)
                 }
@@ -2801,6 +3450,13 @@ private struct AgentChangesPane: View {
         }
         .onChange(of:model.agentChanges?.staged) { staged in
             if let staged { reviewStaged = staged }
+        }
+        .onChange(of:model.changesLoading) { loading in
+            guard loading else { return }
+            focusedPath = nil
+            focusedChanges = nil
+            focusedLoading = false
+            restoreSnapshot = nil
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
         .background(ForgePalette.canvas.opacity(0.34))
@@ -2820,10 +3476,10 @@ private struct AgentChangesPane: View {
                 }
             }
         } message: {
-            Text("只恢复当前已审查的 tracked / unstaged 文件。staged、untracked 或已变化的 patch 会被拒绝。")
+            Text("仅恢复本次审查中的未暂存文件；已暂存、新文件或内容已变化的文件不会被恢复。")
         }
         .accessibilityElement(children:.contain)
-        .accessibilityLabel("Agent Changes")
+        .accessibilityLabel("改动审查")
     }
 
     private var reviewScopeBinding: Binding<Bool> {
@@ -2846,7 +3502,7 @@ private struct AgentChangesPane: View {
             HStack(spacing:7) {
                 Image(systemName:"questionmark.square.dashed")
                     .foregroundStyle(Color.orange)
-                Text("\(paths.count) 个未跟踪文件尚未进入可审查 patch")
+                Text("\(paths.count) 个新文件未纳入本次审查")
                     .font(.system(size:10.5,weight:.semibold))
             }
             ForEach(Array(paths.prefix(4)),id:\.self) { path in
@@ -2857,11 +3513,11 @@ private struct AgentChangesPane: View {
                     .truncationMode(.middle)
             }
             if paths.count > 4 {
-                Text("另有 \(paths.count - 4) 个未跟踪文件")
+                Text("另有 \(paths.count - 4) 个新文件")
                     .font(.system(size:9.5))
                     .foregroundStyle(.tertiary)
             }
-            Text("Git 在 add 前没有 tracked diff；Forge 不会把这些文件自动纳入 Commit 或 Discard。")
+            Text("这些文件不会自动纳入提交或放弃操作。")
                 .font(.system(size:9.5))
                 .foregroundStyle(.tertiary)
                 .lineSpacing(2)
@@ -2879,7 +3535,7 @@ private struct AgentChangesPane: View {
                     .font(.system(size:11,weight:.semibold))
                     .lineLimit(1)
                 Spacer(minLength:8)
-                Text(changes.staged ? "STAGED" : "WORKING TREE")
+                Text(changes.staged ? "已暂存" : "未暂存")
                     .font(.system(size:8.5,weight:.semibold))
                     .foregroundStyle(changes.staged ? ForgePalette.accent : ForgePalette.secondary)
                     .padding(.horizontal,7)
@@ -2887,28 +3543,16 @@ private struct AgentChangesPane: View {
                     .background(changes.staged ? ForgePalette.selectionStrong : ForgePalette.softFill,
                                 in:Capsule())
             }
-            HStack(spacing:7) {
-                Text(String(changes.head.prefix(10)))
-                    .font(.system(size:9.5,design:.monospaced))
-                    .foregroundStyle(.tertiary)
-                    .textSelection(.enabled)
-                Text("·")
-                    .foregroundStyle(.quaternary)
-                Text("\(changes.nameOnly.count) files")
+            HStack {
+                Text("\(changes.nameOnly.count) 个文件")
                     .font(.system(size:9.5,weight:.medium))
                     .foregroundStyle(ForgePalette.secondary)
                 Spacer(minLength:0)
-                Text("checkout \(String(changes.checkoutId.prefix(8)))")
-                    .font(.system(size:9,design:.monospaced))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
             }
         }
         .padding(10)
         .background(ForgePalette.raisedSurface,
                     in:RoundedRectangle(cornerRadius:11,style:.continuous))
-        .overlay(RoundedRectangle(cornerRadius:11,style:.continuous)
-            .stroke(Color.primary.opacity(0.05),lineWidth:0.7))
     }
 
     private func fileName(_ path: String) -> String {
@@ -2946,8 +3590,6 @@ private struct AgentDiffPatchView: View {
         .background(ForgePalette.softFill,
                     in:RoundedRectangle(cornerRadius:10,style:.continuous))
         .clipShape(RoundedRectangle(cornerRadius:10,style:.continuous))
-        .overlay(RoundedRectangle(cornerRadius:10,style:.continuous)
-            .stroke(Color.primary.opacity(0.05),lineWidth:0.5))
     }
 
     private func background(_ line: String) -> Color {
@@ -2974,8 +3616,11 @@ private struct PlanningAuthoringContext: Identifiable {
 }
 
 private struct AutopilotApprovalContext: Identifiable {
+    let repoId: String
+    let checkoutId: String
     let requirement: RequirementRecordDetail
-    var id: String { requirement.requirementId }
+    let status: AutopilotStatusDetail?
+    var id: String { "\(repoId)|\(checkoutId)|\(requirement.requirementId)|\(requirement.revision)" }
 }
 
 private struct AgentPlanningInspector: View {
@@ -2986,14 +3631,14 @@ private struct AgentPlanningInspector: View {
     @State private var error: String?
     @State private var query = ""
     @State private var loadToken = UUID()
-    @State private var loadedRepoId: String?
+    @State private var loadedScopeKey: String?
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
             HStack(alignment:.top,spacing:10) {
                 VStack(alignment:.leading,spacing:3) {
                     Text("规划上下文").font(.system(size:13,weight:.semibold))
-                    Text("选择只会绑定当前会话，不修改 Requirement / Plan。")
+                    Text("只关联当前会话，不会修改需求或计划。")
                         .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                 }
                 Spacer()
@@ -3056,7 +3701,7 @@ private struct AgentPlanningInspector: View {
             HStack(spacing:7) {
                 Image(systemName:"magnifyingglass")
                     .font(.system(size:9.5)).foregroundStyle(.tertiary)
-                TextField("筛选 Requirement / Plan",text:$query)
+                TextField("筛选需求和计划",text:$query)
                     .textFieldStyle(.plain)
                     .font(.system(size:11))
                 if !query.isEmpty {
@@ -3072,7 +3717,7 @@ private struct AgentPlanningInspector: View {
             .padding(.horizontal,14).padding(.top,9).padding(.bottom,7)
 
             HStack {
-                Text(query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty ? "可绑定规划" : "筛选结果")
+                Text(query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty ? "可关联规划" : "筛选结果")
                     .font(.system(size:9.5,weight:.semibold))
                     .foregroundStyle(ForgePalette.secondary)
                 Spacer()
@@ -3097,7 +3742,7 @@ private struct AgentPlanningInspector: View {
                 }
                 .padding(14).frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
             } else if availableRecords.isEmpty {
-                Text(query.isEmpty ? "当前没有其他可绑定的 Requirement / Plan。" : "没有匹配的规划记录。")
+                Text(query.isEmpty ? "没有其他可关联的需求或计划。" : "没有匹配的规划记录。")
                     .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
                     .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
                     .padding(14)
@@ -3115,7 +3760,7 @@ private struct AgentPlanningInspector: View {
 
             Divider()
             HStack {
-                Text("绑定只影响当前会话，不会修改 Requirement / Plan。")
+                Text("关联只影响当前会话，不会修改需求或计划。")
                     .font(.system(size:9.5)).foregroundStyle(.tertiary)
                 Spacer()
                 if loading { ProgressView().controlSize(.mini) }
@@ -3123,13 +3768,17 @@ private struct AgentPlanningInspector: View {
             .padding(.horizontal,14).frame(height:34)
         }
         .frame(width:390,height:455)
-        .task(id:model.repoId) { await reload() }
+        .task(id:planningScopeKey) { await reload() }
+    }
+
+    private var planningScopeKey:String {
+        "\(model.thread?.projectId ?? "")|\(model.thread?.repoId ?? "")"
     }
 
     private var currentContextLabel: String? {
-        if let planId=model.thread?.planId,!planId.isEmpty { return "Plan · \(String(planId.prefix(18)))" }
+        if let planId=model.thread?.planId,!planId.isEmpty { return "计划 · \(String(planId.prefix(18)))" }
         if let requirementId=model.thread?.requirementId,!requirementId.isEmpty {
-            return "Requirement · \(String(requirementId.prefix(18)))"
+            return "需求 · \(String(requirementId.prefix(18)))"
         }
         return nil
     }
@@ -3179,9 +3828,15 @@ private struct AgentPlanningInspector: View {
             : (model.thread?.planId == nil && model.thread?.requirementId == record.recordId)
         return Button {
             if record.kind == .plan {
-                model.bindCurrentThreadPlanningContext(requirementId:record.requirementId,planId:record.recordId)
+                model.bindCurrentThreadPlanningContext(
+                    requirementId:record.requirementId,planId:record.recordId,
+                    projectId:model.thread?.projectId,repoId:model.thread?.repoId
+                )
             } else {
-                model.bindCurrentThreadPlanningContext(requirementId:record.recordId,planId:nil)
+                model.bindCurrentThreadPlanningContext(
+                    requirementId:record.recordId,planId:nil,
+                    projectId:model.thread?.projectId,repoId:model.thread?.repoId
+                )
             }
         } label: {
             HStack(alignment:.top,spacing:9) {
@@ -3195,7 +3850,7 @@ private struct AgentPlanningInspector: View {
                         .foregroundStyle(ForgePalette.ink)
                         .lineLimit(2)
                     HStack(spacing:6) {
-                        Text(record.kind == .requirement ? "Requirement" : "Plan")
+                        Text(record.kind == .requirement ? "需求" : "计划")
                         if record.kind == .requirement { Text(record.state) }
                     }
                     .font(.system(size:9.5)).foregroundStyle(.tertiary)
@@ -3206,7 +3861,7 @@ private struct AgentPlanningInspector: View {
                         .font(.system(size:9.5,weight:.semibold))
                         .foregroundStyle(ForgePalette.secondary)
                 } else {
-                    Text("绑定")
+                    Text("关联")
                         .font(.system(size:9.5,weight:.semibold))
                         .foregroundStyle(ForgePalette.secondary)
                 }
@@ -3216,8 +3871,8 @@ private struct AgentPlanningInspector: View {
             .background(bound ? ForgePalette.selection.opacity(0.65) : .clear)
         }
         .buttonStyle(.plain)
-        .disabled(model.busy || loadedRepoId != model.repoId)
-        .accessibilityLabel(record.title + "，" + (bound ? "已绑定当前会话" : "绑定到当前会话"))
+        .disabled(model.busy || loadedScopeKey != planningScopeKey)
+        .accessibilityLabel(record.title + "，" + (bound ? "已关联当前会话" : "关联到当前会话"))
         .accessibilityIdentifier("agent.planning-inspector.bind.\(record.recordId)")
     }
 
@@ -3225,19 +3880,25 @@ private struct AgentPlanningInspector: View {
     private func reload() async {
         let token=UUID()
         loadToken=token
+        let scopeKey=planningScopeKey
+        let projectId=model.thread?.projectId
+        let repoId=model.thread?.repoId
         records=[]
-        loadedRepoId=nil
+        loadedScopeKey=nil
         error=nil
-        guard let repoId=model.repoId else { loading=false; return }
+        guard let projectId else {
+            loading=false
+            return
+        }
         loading=true
         defer { if loadToken == token { loading=false } }
         do {
-            let fresh=try await model.readPlanningRecordsForCurrentProject()
-            guard loadToken == token, model.repoId == repoId, !Task.isCancelled else { return }
+            let fresh=try await model.readPlanningRecords(projectId:projectId,repoId:repoId)
+            guard loadToken == token, planningScopeKey == scopeKey, !Task.isCancelled else { return }
             records=fresh
-            loadedRepoId=repoId
+            loadedScopeKey=scopeKey
         } catch {
-            guard loadToken == token, model.repoId == repoId, !Task.isCancelled else { return }
+            guard loadToken == token, planningScopeKey == scopeKey, !Task.isCancelled else { return }
             self.error=error.localizedDescription
         }
     }
@@ -3252,7 +3913,7 @@ private struct AgentKnowledgeInspector: View {
     @State private var error: String?
     @State private var loadToken = UUID()
     @State private var expandedMemoryIds: Set<String> = []
-    @State private var resultOrigin: (repoId: String, threadId: String)?
+    @State private var resultOrigin: (repoId: String, checkoutId: String?, threadId: String)?
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -3357,7 +4018,7 @@ private struct AgentKnowledgeInspector: View {
             .padding(.horizontal,14).frame(height:34)
         }
         .frame(width:410,height:455)
-        .task(id:[model.repoId ?? "", model.selectedThreadId ?? ""]) { await reload() }
+        .task(id:[model.repoId ?? "", model.checkoutId ?? "", model.selectedThreadId ?? ""]) { await reload() }
     }
 
     private var memories:[KnowledgeMemoryDetail] {
@@ -3380,6 +4041,7 @@ private struct AgentKnowledgeInspector: View {
                     guard !alreadyInDraft,
                           let origin=resultOrigin,
                           origin.repoId == model.repoId,
+                          origin.checkoutId == model.checkoutId,
                           origin.threadId == model.selectedThreadId else { return }
                     model.useKnowledgeInCurrentConversation(memory,expectedThreadId:origin.threadId)
                 }
@@ -3387,6 +4049,7 @@ private struct AgentKnowledgeInspector: View {
                 .font(.system(size:10,weight:.semibold))
                 .foregroundStyle(alreadyInDraft ? ForgePalette.secondary.opacity(0.55) : ForgePalette.secondary)
                 .disabled(alreadyInDraft || model.busy || resultOrigin?.repoId != model.repoId
+                          || resultOrigin?.checkoutId != model.checkoutId
                           || resultOrigin?.threadId != model.selectedThreadId)
                 .accessibilityIdentifier("agent.knowledge-inspector.use.\(memory.id)")
             }
@@ -3425,19 +4088,25 @@ private struct AgentKnowledgeInspector: View {
         error=nil
         guard let repoId=model.repoId,
               let threadId=model.selectedThreadId else { loading=false; return }
+        let checkoutId=model.checkoutId
+        let contextGeneration=model.projectContextGeneration
         let searchQuery=query.trimmingCharacters(in:.whitespacesAndNewlines)
         loading=true
         defer { if loadToken == token { loading=false } }
         do {
-            let fresh=try await model.readKnowledge(searchQuery)
-            guard loadToken == token, model.repoId == repoId,
+            let fresh=try await model.readKnowledge(
+                repoId:repoId,checkoutId:checkoutId,query:searchQuery
+            )
+            guard loadToken == token, model.repoId == repoId, model.checkoutId == checkoutId,
+                  model.projectContextGeneration == contextGeneration,
                   model.selectedThreadId == threadId,
                   query.trimmingCharacters(in:.whitespacesAndNewlines) == searchQuery,
                   !Task.isCancelled else { return }
             result=fresh
-            resultOrigin=(repoId,threadId)
+            resultOrigin=(repoId,checkoutId,threadId)
         } catch {
-            guard loadToken == token, model.repoId == repoId,
+            guard loadToken == token, model.repoId == repoId, model.checkoutId == checkoutId,
+                  model.projectContextGeneration == contextGeneration,
                   model.selectedThreadId == threadId,
                   query.trimmingCharacters(in:.whitespacesAndNewlines) == searchQuery,
                   !Task.isCancelled else { return }
@@ -3449,8 +4118,10 @@ private struct AgentKnowledgeInspector: View {
 private struct RecordsPane: View {
     @ObservedObject var model: NativeWorkspace
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var authoring: PlanningAuthoringContext?
     @State private var autopilotApproval: AutopilotApprovalContext?
+    @State private var checkpointReview: AutopilotCheckpointReview?
     @State private var draftTitle = ""
     @State private var draftOutcome = ""
     @State private var draftCriteria = ""
@@ -3538,7 +4209,7 @@ private struct RecordsPane: View {
                     }
                 }
                 .padding(.trailing,compact ? 8 : 12)
-                .transition(.move(edge:.trailing).combined(with:.opacity))
+                .transition(reduceMotion ? .identity : .move(edge:.trailing).combined(with:.opacity))
             }
             }
         }
@@ -3548,6 +4219,11 @@ private struct RecordsPane: View {
         }
         .sheet(item:$autopilotApproval) { context in
             autopilotApprovalSheet(context)
+        }
+        .sheet(item:$checkpointReview) { review in
+            AutopilotCheckpointReviewSheet(model:model,review:review) {
+                checkpointReview=nil
+            }
         }
         .task(id:planningOperationalRefreshKey) {
             guard scenePhase == .active,!model.planningRequirementIds.isEmpty else { return }
@@ -3562,7 +4238,7 @@ private struct RecordsPane: View {
     }
 
     private var planningOperationalRefreshKey: String {
-        "\(model.repoId ?? "none")|\(scenePhase == .active ? "active" : "inactive")|\(model.planningRequirementIds.joined(separator:"|"))"
+        "\(model.repoId ?? "none")|\(model.checkoutId ?? "none")|\(scenePhase == .active ? "active" : "inactive")|\(model.planningRequirementIds.joined(separator:"|"))"
     }
 
     private var planningOverview: some View {
@@ -3577,15 +4253,15 @@ private struct RecordsPane: View {
                 Text("当前项目")
                     .font(.system(size:9))
                     .foregroundStyle(ForgePalette.secondary)
-                Text(model.project?.label ?? model.repoId ?? "未选择项目")
+                Text(model.semanticProject?.displayName ?? model.project?.label ?? model.repoId ?? "未选择项目")
                     .font(.system(size:11,weight:.semibold))
                     .lineLimit(1)
             }
             Spacer(minLength:4)
             VStack(alignment:.trailing,spacing:3) {
-                Text("Requirement \(requirements.count)  ·  Plan \(plans.count)")
+                Text("需求 \(requirements.count)  ·  计划 \(plans.count)")
                     .font(.system(size:10,weight:.medium))
-                Text("开放 \(openCount)  ·  已完成 \(completedCount)  ·  执行进度以真实验收为准")
+                Text("开放 \(openCount)  ·  已完成 \(completedCount)")
                     .font(.system(size:9))
                     .foregroundStyle(ForgePalette.secondary)
                     .lineLimit(1)
@@ -3599,12 +4275,7 @@ private struct RecordsPane: View {
     private var planningNavigator: some View {
         VStack(alignment:.leading,spacing:0) {
             HStack(alignment:.top,spacing:8) {
-                VStack(alignment:.leading,spacing:4) {
-                    Text("规划结构")
-                        .font(.system(size:13,weight:.semibold))
-                    Text("从左到右表示语义层级；不是执行顺序")
-                        .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
-                }
+                Text("规划结构").font(.system(size:13,weight:.semibold))
                 Spacer(minLength:4)
                 Button { beginRequirement() } label: {
                     Image(systemName:"doc.badge.plus")
@@ -3612,16 +4283,16 @@ private struct RecordsPane: View {
                         .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
                 }
                 .buttonStyle(.plain)
-                .help("新建 Requirement（可选）")
-                .disabled(model.repoId == nil)
+                .help("新建需求")
+                .disabled(model.semanticProject?.status != "active")
                 Button { beginPlan(requirementId:nil,parentPlanId:nil) } label: {
                     Image(systemName:"plus")
                         .frame(width:25,height:25)
                         .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
                 }
                 .buttonStyle(.plain)
-                .help("直接新建独立 Plan；不要求 Requirement")
-                .disabled(model.repoId == nil)
+                .help("新建计划")
+                .disabled(model.semanticProject?.status != "active")
             }
             .padding(.horizontal,13).padding(.top,13).padding(.bottom,9)
 
@@ -3650,7 +4321,7 @@ private struct RecordsPane: View {
                     Image(systemName:"magnifyingglass")
                         .font(.system(size:9.5))
                         .foregroundStyle(ForgePalette.secondary)
-                    TextField("查找 Requirement / Plan",text:$planningSearch)
+                    TextField("搜索需求和计划",text:$planningSearch)
                         .textFieldStyle(.plain)
                         .font(.system(size:10.5))
                         .onSubmit {
@@ -3794,16 +4465,6 @@ private struct RecordsPane: View {
                 planningRelationLegend
                     .padding(.horizontal,13)
                     .padding(.top,4).padding(.bottom,7)
-            } else {
-                HStack(spacing:6) {
-                    Image(systemName:"list.bullet.indent")
-                    Text("列表显示全部规划节点；父级关系写在每一行标题上方")
-                    Spacer(minLength:0)
-                }
-                .font(.system(size:9.2,weight:.medium))
-                .foregroundStyle(ForgePalette.secondary)
-                .padding(.horizontal,13)
-                .padding(.top,6).padding(.bottom,9)
             }
 
             Divider().opacity(0.55)
@@ -3815,9 +4476,6 @@ private struct RecordsPane: View {
                         .foregroundStyle(ForgePalette.secondary)
                     Text("这个项目还没有规划树")
                         .font(.system(size:12,weight:.semibold))
-                    Text("普通 Agent 不依赖 Requirement。需要长期无人值守或可追踪拆解时，再创建 Requirement / Plan。")
-                        .font(.system(size:10.5)).lineSpacing(3)
-                        .foregroundStyle(ForgePalette.secondary)
                 }
                 .padding(15)
                 .frame(maxWidth:.infinity,alignment:.leading)
@@ -3830,10 +4488,6 @@ private struct RecordsPane: View {
                             .foregroundStyle(ForgePalette.secondary)
                         Text("当前没有父子关系可画")
                             .font(.system(size:12,weight:.semibold))
-                        Text("关系图只显示 Requirement → 根 Plan / Plan → 子 Plan。没有关系的节点仍可在列表、搜索或“未关联”中访问。")
-                            .font(.system(size:10.5))
-                            .foregroundStyle(ForgePalette.secondary)
-                            .fixedSize(horizontal:false,vertical:true)
                         if !planningUnlinkedRecords.isEmpty {
                             Button("显示 \(planningUnlinkedRecords.count) 个未关联节点") {
                                 planningShowUnlinked = true
@@ -3981,16 +4635,14 @@ private struct RecordsPane: View {
 
     private var planningRelationLegend: some View {
         HStack(spacing:7) {
-            Label("Requirement",systemImage:"scope")
+            Label("需求",systemImage:"scope")
             Image(systemName:"arrow.right")
                 .font(.system(size:8,weight:.bold))
-            Text("拥有根 Plan")
+            Text("根计划")
             Image(systemName:"arrow.right")
                 .font(.system(size:8,weight:.bold))
-            Text("细化为子 Plan")
+            Text("子计划")
             Spacer(minLength:4)
-            Text(planningShowUnlinked ? "包含未关联节点" : "默认隐藏无关系节点")
-                .foregroundStyle(ForgePalette.secondary.opacity(0.82))
         }
         .font(.system(size:9.2,weight:.medium))
         .foregroundStyle(ForgePalette.secondary)
@@ -4049,7 +4701,7 @@ private struct RecordsPane: View {
             .onChange(of:planningScrollTarget) { target in
                 guard planningViewMode == "list",let target else { return }
                 DispatchQueue.main.async {
-                    withAnimation(.easeInOut(duration:0.18)) {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration:0.18)) {
                         proxy.scrollTo(target,anchor:.center)
                     }
                     planningScrollTarget=nil
@@ -4293,7 +4945,7 @@ private struct RecordsPane: View {
                 .onChange(of:planningScrollTarget) { target in
                     guard let target else { return }
                     DispatchQueue.main.async {
-                        withAnimation(.easeInOut(duration:0.18)) {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration:0.18)) {
                             proxy.scrollTo(target,anchor:.center)
                         }
                         planningScrollTarget=nil
@@ -4558,11 +5210,8 @@ private struct RecordsPane: View {
         let collapsed=collapsedPlanningRecordIds.contains(item.id)
         let execution=planningExecutionStatus(item)
         let nodeBackground:Color = selected
-            ? ForgePalette.raisedSurface
+            ? ForgePalette.selectionStrong
             : (item.kind == .requirement ? ForgePalette.accent.opacity(0.075) : ForgePalette.raisedSurface.opacity(0.78))
-        let nodeBorder:Color = selected
-            ? ForgePalette.ink.opacity(0.34)
-            : (item.kind == .requirement ? ForgePalette.accent.opacity(0.22) : ForgePalette.secondary.opacity(0.13))
         return ZStack(alignment:.bottomTrailing) {
             Button {
                 Task { await model.openRecord(item.id) }
@@ -4613,10 +5262,6 @@ private struct RecordsPane: View {
                 .padding(11)
                 .frame(width:planningNodeWidth,height:planningNodeHeight,alignment:.topLeading)
                 .background(nodeBackground,in:RoundedRectangle(cornerRadius:13,style:.continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius:13,style:.continuous)
-                        .stroke(nodeBorder,lineWidth:selected ? 1.25 : 0.75)
-                )
                 .overlay(alignment:.leading) {
                     Capsule()
                         .fill(item.kind == .requirement ? ForgePalette.accent.opacity(0.72) : ForgePalette.secondary.opacity(0.28))
@@ -4624,7 +5269,6 @@ private struct RecordsPane: View {
                         .padding(.vertical,12)
                         .padding(.leading,2)
                 }
-                .shadow(color:Color.primary.opacity(selected ? 0.035 : 0),radius:4,y:1)
                 .contentShape(RoundedRectangle(cornerRadius:13,style:.continuous))
             }
             .buttonStyle(.plain)
@@ -4694,11 +5338,12 @@ private struct RecordsPane: View {
                             .background(.thinMaterial,in:RoundedRectangle(cornerRadius:7,style:.continuous))
                     }
                         .buttonStyle(.plain)
-                        .help("以此节点新建会话")
+                        .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "以此节点新建会话")
+                        .disabled(model.busy || model.zenRefinementActive)
                     }
                 }
                 .padding(7)
-                .transition(.opacity)
+                .transition(reduceMotion ? .identity : .opacity)
             }
         }
         .opacity(focused ? 1 : 0.52)
@@ -4706,8 +5351,8 @@ private struct RecordsPane: View {
             if inside { hoveredPlanningRecordId=item.id }
             else if hoveredPlanningRecordId == item.id { hoveredPlanningRecordId=nil }
         }
-        .animation(.easeOut(duration:0.12),value:hovered)
-        .animation(.easeOut(duration:0.16),value:focused)
+        .animation(reduceMotion ? nil : .easeOut(duration:0.12),value:hovered)
+        .animation(reduceMotion ? nil : .easeOut(duration:0.16),value:focused)
         .accessibilityElement(children:.contain)
     }
 
@@ -4729,12 +5374,7 @@ private struct RecordsPane: View {
     private func planningAuthoringSheet(_ context: PlanningAuthoringContext) -> some View {
         VStack(alignment:.leading,spacing:16) {
             HStack {
-                VStack(alignment:.leading,spacing:4) {
-                    Text(authoringTitle(context))
-                        .font(.system(size:18,weight:.semibold))
-                    Text(authoringSubtitle(context))
-                        .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
-                }
+                Text(authoringTitle(context)).font(.system(size:18,weight:.semibold))
                 Spacer()
                 Button { authoring = nil } label: { Image(systemName:"xmark") }
                     .buttonStyle(.plain).disabled(saving)
@@ -4749,9 +5389,11 @@ private struct RecordsPane: View {
             }
 
             VStack(alignment:.leading,spacing:6) {
-                Text(context.kind == .requirement ? "目标 / Outcome" : "Plan 目标")
+                Text("目标")
                     .font(.system(size:11,weight:.medium))
                 TextEditor(text:$draftOutcome)
+                    .accessibilityLabel("目标")
+                    .accessibilityIdentifier("planning.authoring.goal")
                     .font(.system(size:12))
                     .frame(height:92)
                     .padding(6)
@@ -4770,7 +5412,7 @@ private struct RecordsPane: View {
             }
 
             HStack {
-                Text("创建只写入 Forge canonical Requirement / Plan；不会启动执行。")
+                Text("只创建需求和计划，不会开始执行。")
                     .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                 Spacer()
                 Button("取消") { authoring = nil }.disabled(saving)
@@ -4786,25 +5428,10 @@ private struct RecordsPane: View {
     }
 
     private func authoringTitle(_ context: PlanningAuthoringContext) -> String {
-        if context.kind == .requirement { return "新建 Requirement" }
-        if context.parentPlanId != nil { return "细化子 Plan" }
-        if context.requirementId != nil { return "新建根 Plan" }
-        return "新建 Plan"
-    }
-
-    private func authoringSubtitle(_ context: PlanningAuthoringContext) -> String {
-        if context.kind == .requirement { return "Requirement 是可选的持久需求根，不是使用 Forge 的前置条件。" }
-        if let parentPlanId = context.parentPlanId {
-            let parentTitle = model.records.first(where: { $0.kind == .plan && $0.recordId == parentPlanId })?.title
-            return parentTitle.map { "在「\($0)」下继续细化子 Plan。" }
-                ?? "在父 Plan \(parentPlanId) 下继续细化。"
-        }
-        if let requirementId = context.requirementId {
-            let requirementTitle = model.records.first(where: { $0.kind == .requirement && $0.recordId == requirementId })?.title
-            return requirementTitle.map { "在 Requirement「\($0)」下创建根 Plan。" }
-                ?? "在 Requirement \(requirementId) 下创建根 Plan。"
-        }
-        return "独立 Plan；无需先创建 Requirement。"
+        if context.kind == .requirement { return "新建需求" }
+        if context.parentPlanId != nil { return "细化子计划" }
+        if context.requirementId != nil { return "新建根计划" }
+        return "新建计划"
     }
 
     private func submitAuthoring(_ context: PlanningAuthoringContext) {
@@ -4833,17 +5460,18 @@ private struct RecordsPane: View {
 
     @ViewBuilder
     private func autopilotSection(_ requirement:RequirementRecordDetail) -> some View {
-        semanticSection("Autopilot · 无人值守") {
+        semanticSection("无人值守") {
             VStack(alignment:.leading,spacing:11) {
+                let status=model.planningAutopilotStatuses[requirement.requirementId]
                 HStack(spacing:8) {
                     Circle()
-                        .fill(autopilotStatusColor(model.autopilotStatus))
+                        .fill(autopilotStatusColor(status))
                         .frame(width:7,height:7)
-                    Text(autopilotStatusLabel(model.autopilotStatus))
+                    Text(autopilotStatusLabel(status))
                         .font(.system(size:12,weight:.semibold))
-                    if let status=model.autopilotStatus,
+                    if let status,
                        let approved=status.approvedRevision {
-                        Text("批准 r\(approved)")
+                        Text("批准版本 r\(approved)")
                             .font(.system(size:9.5,design:.monospaced))
                             .foregroundStyle(ForgePalette.secondary)
                     }
@@ -4851,27 +5479,27 @@ private struct RecordsPane: View {
                     if model.autopilotLoading { ProgressView().controlSize(.small) }
                 }
 
-                if let status=model.autopilotStatus {
+                if let status {
                     if status.requiresReapproval {
-                        Label("Requirement 已修订到 r\(status.requirementRevision ?? requirement.revision)，旧授权失效，需要重新批准。",systemImage:"exclamationmark.triangle.fill")
+                        Label("需求已更新，原授权失效，请重新批准。",systemImage:"exclamationmark.triangle.fill")
                             .font(.system(size:10.5)).foregroundStyle(.orange)
                     }
                     HStack(spacing:14) {
                         autopilotMetric("Token","\(status.totalTokens) / \(status.maxTotalTokens.map(String.init) ?? "—")")
-                        autopilotMetric("Turns","\(status.turns) / \(status.maxTurns.map(String.init) ?? "—")")
-                        autopilotMetric("Tools","\(status.toolCalls) / \(status.maxToolCalls.map(String.init) ?? "—")")
-                        if let modelName=status.model { autopilotMetric("Model",modelName) }
+                        autopilotMetric("轮次","\(status.turns) / \(status.maxTurns.map(String.init) ?? "—")")
+                        autopilotMetric("工具调用","\(status.toolCalls) / \(status.maxToolCalls.map(String.init) ?? "—")")
+                        if let modelName=status.model { autopilotMetric("模型",modelName) }
                     }
                     if let currentPlanId=status.currentPlanId,!currentPlanId.isEmpty {
                         HStack(spacing:7) {
                             Image(systemName:"location.fill")
                                 .font(.system(size:9))
                                 .foregroundStyle(ForgePalette.accent)
-                            Text("当前 Plan")
+                            Text("当前计划")
                                 .font(.system(size:9.5,weight:.medium))
                                 .foregroundStyle(ForgePalette.secondary)
-                            Text(currentPlanId)
-                                .font(.system(size:9.5,design:.monospaced))
+                            Text(model.records.first(where:{ $0.kind == .plan && $0.recordId == currentPlanId })?.title ?? currentPlanId)
+                                .font(.system(size:9.5))
                                 .textSelection(.enabled)
                             Spacer()
                             if let plan=model.records.first(where:{ $0.kind == .plan && $0.recordId == currentPlanId }) {
@@ -4894,44 +5522,77 @@ private struct RecordsPane: View {
                             .foregroundStyle(ForgePalette.secondary)
                             .textSelection(.enabled)
                     }
+                    if let processId=status.pendingProcessId {
+                        HStack(spacing:6) {
+                            Label("等待 Process 终态回执",systemImage:"hourglass")
+                                .font(.system(size:9.5)).foregroundStyle(.orange)
+                            Text(processId).font(.system(size:9,design:.monospaced))
+                                .foregroundStyle(ForgePalette.secondary).textSelection(.enabled)
+                        }
+                    }
+                    if let requestId=status.pendingCommandRequestId {
+                        HStack(spacing:6) {
+                            Text(status.pendingProcessId == nil ? "命令受理结果待核对" : "原始请求 ID")
+                                .font(.system(size:9.5)).foregroundStyle(.orange)
+                            Text(requestId).font(.system(size:9,design:.monospaced))
+                                .foregroundStyle(ForgePalette.secondary).textSelection(.enabled)
+                        }
+                    }
+                    if let recoverySummary=status.pendingProcessRecoverySummary {
+                        Text(recoverySummary)
+                            .font(.system(size:9.5)).foregroundStyle(ForgePalette.secondary)
+                    }
                     if !status.providerReady {
-                        Text("Runtime 尚未检测到 DeepSeek 凭据；可以先批准，但开始执行前需要 Runtime provider 就绪。")
+                        Text("模型服务未就绪，连接恢复后才能执行。")
                             .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                     }
                 } else {
-                    Text("Requirement 才需要显式批准无人值守；普通会话与独立 Plan 不受影响。")
+                    Text("执行状态尚未确认，请先刷新后再批准或启动。")
                         .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                 }
 
+                if model.autopilotOutcomeUnknown(for:requirement.requirementId) {
+                    Text("操作结果未确认。请先刷新执行状态，不要重复提交。")
+                        .font(.system(size:10.5)).foregroundStyle(.orange)
+                }
                 HStack(spacing:8) {
-                    let status=model.autopilotStatus
-                    if status?.authorized != true || status?.requiresReapproval == true {
-                        Button(status?.requiresReapproval == true ? "重新配置并批准" : "配置并批准") {
+                    let outcomeUnknown=model.autopilotOutcomeUnknown(for:requirement.requirementId)
+                    let operation=status?.nextExecutionOperation(outcomeUnknown:outcomeUnknown)
+                    if operation == "authorize" {
+                        Button(status?.needsBudgetRenewal == true && status?.requiresReapproval == false
+                               ? "续期预算" : (status?.requiresReapproval == true ? "重新配置并批准" : "配置并批准")) {
                             beginAutopilotApproval(requirement)
                         }
                         .buttonStyle(.borderedProminent)
-                    } else {
-                        switch status?.runStatus {
-                        case "running":
-                            Button("暂停") { runAutopilotAction(requirement.requirementId,"pause") }
-                                .buttonStyle(.borderedProminent)
-                        case "paused", "blocked", "failed":
-                            Button("继续") { runAutopilotAction(requirement.requirementId,"resume") }
-                                .buttonStyle(.borderedProminent)
-                                .disabled(status?.providerReady != true)
-                        default:
-                            Button(status?.runStatus == "completed" ? "再次运行" : "开始无人值守") {
-                                runAutopilotAction(requirement.requirementId,"start")
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(status?.providerReady != true)
+                        .disabled(autopilotSaving || model.autopilotLoading || model.autopilotControlPending)
+                    } else if operation == "accept_checkpoint",let status {
+                        Button("验收检查点") {
+                            checkpointReview=AutopilotCheckpointReview(
+                                model:model,requirementId:requirement.requirementId,status:status
+                            )
                         }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(autopilotSaving || model.autopilotLoading || model.autopilotControlPending)
+                    } else if let operation {
+                        Button(operation == "pause" ? "暂停" :
+                               operation == "resume" ? (status?.hasPendingProcessRecovery == true ? "核对并恢复" : (status?.runStatus == "running" ? "恢复执行" : "继续")) :
+                               status?.runStatus == "completed" ? "再次运行" : "开始无人值守") {
+                            runAutopilotAction(requirement.requirementId,operation)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(autopilotSaving || model.autopilotLoading || model.autopilotControlPending)
+                    }
+                    if status?.authorized == true {
                         Button("重新配置") { beginAutopilotApproval(requirement) }
                             .buttonStyle(.bordered)
+                            .disabled(autopilotSaving || model.autopilotLoading || model.autopilotControlPending
+                                      || outcomeUnknown || status?.hasPendingProcessRecovery == true)
                         Button("撤销授权",role:.destructive) {
                             runAutopilotAction(requirement.requirementId,"revoke")
                         }
                         .buttonStyle(.bordered)
+                        .disabled(autopilotSaving || model.autopilotLoading || model.autopilotControlPending
+                                  || outcomeUnknown || status?.hasPendingProcessRecovery == true)
                     }
                     Button { Task { await model.loadAutopilotStatus(requirement.requirementId) } } label: {
                         Image(systemName:"arrow.clockwise")
@@ -4939,7 +5600,7 @@ private struct RecordsPane: View {
                     .buttonStyle(.plain)
                     .disabled(model.autopilotLoading)
                 }
-                Text("批准与开始执行是两个动作。Autopilot 只拥有 workspace-write 上限，不允许 push、发布、部署、Runtime 切换或破坏性操作。")
+                Text("批准不会立即运行；仅限当前工作区，不会推送、发布、部署、切换环境或执行破坏性操作。")
                     .font(.system(size:9.5)).foregroundStyle(ForgePalette.secondary)
             }
         }
@@ -4976,43 +5637,86 @@ private struct RecordsPane: View {
     }
 
     private func beginAutopilotApproval(_ requirement:RequirementRecordDetail) {
-        let status=model.autopilotStatus
-        autopilotModel=status?.model ?? "deepseek-chat"
-        autopilotTokenBudget=status?.maxTotalTokens.map(String.init) ?? "50000"
-        autopilotTurnBudget=status?.maxTurns.map(String.init) ?? "12"
-        autopilotToolBudget=status?.maxToolCalls.map(String.init) ?? "32"
-        autopilotCheckpoints=[]
-        autopilotApproval=AutopilotApprovalContext(requirement:requirement)
+        guard !model.autopilotOutcomeUnknown(for:requirement.requirementId) else {
+            model.error="操作结果未确认（\(requirement.requirementId)）。请先刷新执行状态，不要重复提交。"
+            return
+        }
+        guard let status=model.planningAutopilotStatuses[requirement.requirementId],
+              status.requirementRevision == requirement.revision else {
+            model.error="执行状态尚未通过当前 Requirement 修订的有效读回确认，请先刷新。"
+            return
+        }
+        guard !status.hasPendingProcessRecovery else {
+            model.error=status.pendingProcessRecoverySummary ?? "原命令结果尚未确认，暂不可重新批准或启动新的执行。"
+            return
+        }
+        guard let repoId=model.repoId,let checkoutId=model.checkoutId else {
+            model.error="请先选择有效的项目和 Checkout。"
+            return
+        }
+        autopilotModel=status.model ?? "deepseek-chat"
+        autopilotTokenBudget=status.maxTotalTokens.map(String.init) ?? "50000"
+        autopilotTurnBudget=status.maxTurns.map(String.init) ?? "12"
+        autopilotToolBudget=status.maxToolCalls.map(String.init) ?? "32"
+        autopilotCheckpoints=Set(status.checkpointPlanIds)
+        autopilotApproval=AutopilotApprovalContext(
+            repoId:repoId,checkoutId:checkoutId,requirement:requirement,status:status
+        )
     }
 
     @ViewBuilder
     private func autopilotApprovalSheet(_ context:AutopilotApprovalContext) -> some View {
+        let contextCurrent=model.repoId == context.repoId && model.checkoutId == context.checkoutId
+        let statusIsCurrent=autopilotApprovalStatusIsCurrent(context)
+        let outcomeUnknown=model.autopilotOutcomeUnknown(for:context.requirement.requirementId)
+        let budgetRenewal=context.status?.needsBudgetRenewal == true && context.status?.requiresReapproval == false
         VStack(alignment:.leading,spacing:16) {
             HStack {
                 VStack(alignment:.leading,spacing:4) {
-                    Text("批准无人值守执行").font(.system(size:18,weight:.semibold))
-                    Text("绑定 \(context.requirement.requirementId) · revision \(context.requirement.revision)")
-                        .font(.system(size:10.5,design:.monospaced)).foregroundStyle(ForgePalette.secondary)
+                    Text(budgetRenewal ? "续期执行预算" : "批准无人值守执行")
+                        .font(.system(size:18,weight:.semibold))
+                    Text(context.requirement.title).lineLimit(2)
+                        .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                    Text("版本 r\(context.requirement.revision)")
+                        .font(.system(size:9.5,design:.monospaced)).foregroundStyle(ForgePalette.secondary)
                 }
                 Spacer()
                 Button { autopilotApproval=nil } label:{ Image(systemName:"xmark") }
                     .buttonStyle(.plain).disabled(autopilotSaving)
             }
-            Text("Requirement 的任何后续语义修订都会使本次授权失效；普通 Forge 使用不需要此授权。")
+            Text(budgetRenewal
+                 ? "延续当前模型和人工检查点，按确认的上限开启新预算窗口；累计使用量仍保留。"
+                 : "需求更新后，原授权失效，需重新批准。")
                 .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
+            if !contextCurrent {
+                Text("工作区已变更，请重新打开批准面板。")
+                    .font(.system(size:11)).foregroundStyle(.orange)
+            }
+            if outcomeUnknown {
+                Text("操作结果未确认。请先刷新执行状态，不要重复提交。")
+                    .font(.system(size:11)).foregroundStyle(.orange)
+            }
+            if !statusIsCurrent {
+                Text("执行状态已变化，请关闭面板并刷新后重新批准。")
+                    .font(.system(size:11)).foregroundStyle(.orange)
+            }
             Grid(alignment:.leading,horizontalSpacing:12,verticalSpacing:10) {
-                GridRow { Text("模型"); TextField("deepseek-chat",text:$autopilotModel).textFieldStyle(.roundedBorder) }
+                GridRow {
+                    Text("模型")
+                    TextField("deepseek-chat",text:$autopilotModel)
+                        .textFieldStyle(.roundedBorder).disabled(budgetRenewal)
+                }
                 GridRow { Text("Token 上限"); TextField("50000",text:$autopilotTokenBudget).textFieldStyle(.roundedBorder) }
-                GridRow { Text("最大 turns"); TextField("12",text:$autopilotTurnBudget).textFieldStyle(.roundedBorder) }
-                GridRow { Text("最大 tool calls"); TextField("32",text:$autopilotToolBudget).textFieldStyle(.roundedBorder) }
+                GridRow { Text("最大轮次"); TextField("12",text:$autopilotTurnBudget).textFieldStyle(.roundedBorder) }
+                GridRow { Text("最大工具调用"); TextField("32",text:$autopilotToolBudget).textFieldStyle(.roundedBorder) }
             }
             .font(.system(size:11))
 
             let plans=model.records.filter { $0.kind == .plan && $0.requirementId == context.requirement.requirementId }
             if !plans.isEmpty {
                 VStack(alignment:.leading,spacing:7) {
-                    Text("人工验收检查点").font(.system(size:11,weight:.semibold))
-                    Text("模型推进到选中的 Plan 节点并报告阶段完成时会暂停。")
+                    Text("人工确认点").font(.system(size:11,weight:.semibold))
+                    Text("到达所选计划检查点后会暂停，等待你确认。")
                         .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                     ScrollView {
                         VStack(alignment:.leading,spacing:5) {
@@ -5027,6 +5731,7 @@ private struct RecordsPane: View {
                                     Text(plan.title).font(.system(size:11)).lineLimit(1)
                                 }
                                 .toggleStyle(.checkbox)
+                                .disabled(budgetRenewal)
                             }
                         }
                     }
@@ -5034,13 +5739,16 @@ private struct RecordsPane: View {
                 }
             }
             HStack {
-                Text("这里只授予 workspace-write；不会自动 push / release / deploy。")
+                Text("仅允许修改当前工作区；不会自动推送、发布或部署。")
                     .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                 Spacer()
                 Button("取消") { autopilotApproval=nil }.disabled(autopilotSaving)
-                Button(autopilotSaving ? "批准中…" : "批准") { submitAutopilotApproval(context) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(autopilotSaving || parsedAutopilotBudgets() == nil || autopilotModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                Button(autopilotSaving ? "处理中…" : (budgetRenewal ? "续期预算" : "批准")) {
+                    submitAutopilotApproval(context)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!contextCurrent || !statusIsCurrent || outcomeUnknown || autopilotSaving || !approvalBudgetsValid(context)
+                          || autopilotModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(20).frame(width:520)
@@ -5054,13 +5762,49 @@ private struct RecordsPane: View {
         return (tokens,turns,tools)
     }
 
+    private func approvalBudgetsValid(_ context:AutopilotApprovalContext) -> Bool {
+        guard let budgets=parsedAutopilotBudgets() else { return false }
+        guard let prior=context.status,prior.needsBudgetRenewal,!prior.requiresReapproval else { return true }
+        guard let tokens=prior.maxTotalTokens,let turns=prior.maxTurns,let tools=prior.maxToolCalls else {
+            return false
+        }
+        return budgets.0 >= tokens && budgets.1 >= turns && budgets.2 >= tools
+            && autopilotModel == prior.model && autopilotCheckpoints == Set(prior.checkpointPlanIds)
+    }
+
+    private func autopilotApprovalStatusIsCurrent(_ context:AutopilotApprovalContext) -> Bool {
+        guard let snapshot=context.status,
+              let latest=model.planningAutopilotStatuses[context.requirement.requirementId] else { return false }
+        return snapshot.requirementRevision == latest.requirementRevision
+            && snapshot.runId == latest.runId && snapshot.runStatus == latest.runStatus
+            && snapshot.authorized == latest.authorized && snapshot.requiresReapproval == latest.requiresReapproval
+            && snapshot.pendingProcessId == latest.pendingProcessId
+            && snapshot.pendingCommandRequestId == latest.pendingCommandRequestId
+            && snapshot.maxTotalTokens == latest.maxTotalTokens && snapshot.maxTurns == latest.maxTurns
+            && snapshot.maxToolCalls == latest.maxToolCalls && snapshot.checkpointPlanIds == latest.checkpointPlanIds
+    }
+
     private func submitAutopilotApproval(_ context:AutopilotApprovalContext) {
-        guard let budgets=parsedAutopilotBudgets(),!autopilotSaving else { return }
+        guard !model.autopilotOutcomeUnknown(for:context.requirement.requirementId) else {
+            model.error="操作结果未确认（\(context.requirement.requirementId)）。请先刷新执行状态，不要重复提交。"
+            return
+        }
+        guard autopilotApprovalStatusIsCurrent(context) else {
+            model.error="执行状态已变化，请刷新后重新批准。"
+            return
+        }
+        guard model.repoId == context.repoId,model.checkoutId == context.checkoutId else {
+            model.error="工作区已变更，请重新打开批准面板。"
+            return
+        }
+        guard approvalBudgetsValid(context),let budgets=parsedAutopilotBudgets(),
+              !autopilotSaving else { return }
         autopilotSaving=true
         Task {
             let ok=await model.controlAutopilot(
                 requirementId:context.requirement.requirementId,
                 operation:"authorize",confirmAuthorization:true,
+                expectedRequirementRevision:context.requirement.revision,
                 model:autopilotModel.trimmingCharacters(in:.whitespacesAndNewlines),
                 maxTotalTokens:budgets.0,maxTurns:budgets.1,maxToolCalls:budgets.2,
                 checkpointPlanIds:Array(autopilotCheckpoints).sorted()
@@ -5088,7 +5832,9 @@ private struct RecordsPane: View {
                     Button {
                         model.bindCurrentThreadPlanningContext(
                             requirementId:requirement.requirementId,
-                            planId:nil
+                            planId:nil,
+                            projectId:model.selectedProjectId,
+                            repoId:model.projectRepositoryId
                         )
                         if model.error == nil { model.show(.agent) }
                     } label: {
@@ -5096,7 +5842,7 @@ private struct RecordsPane: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.busy || model.thread == nil)
-                    .help("把此 Requirement 绑定到当前会话，不修改 Requirement 本身")
+                    .help("将此需求关联到当前会话，不会修改需求内容。")
                     .accessibilityIdentifier("planning.requirement.use-current")
 
                     Button {
@@ -5111,7 +5857,7 @@ private struct RecordsPane: View {
                         Button {
                             beginPlan(requirementId:requirement.requirementId,parentPlanId:nil)
                         } label: {
-                            Label("添加根 Plan",systemImage:"plus")
+                            Label("添加根计划",systemImage:"plus")
                         }
                     } label: {
                         Image(systemName:"ellipsis")
@@ -5122,7 +5868,7 @@ private struct RecordsPane: View {
                 }
 
                 semanticSection("目标") {
-                    Text(requirement.outcomeStatement.isEmpty ? "未提供 outcome。" : requirement.outcomeStatement)
+                    Text(requirement.outcomeStatement.isEmpty ? "尚未填写目标。" : requirement.outcomeStatement)
                         .font(.system(size:13,weight:.medium))
                         .lineSpacing(4)
                         .textSelection(.enabled)
@@ -5183,7 +5929,7 @@ private struct RecordsPane: View {
                     VStack(alignment:.leading,spacing:6) {
                         Text(requirement.requirementId)
                             .textSelection(.enabled)
-                        Text("revision \(requirement.revision) · \(requirement.state)")
+                        Text("版本 r\(requirement.revision) · \(requirement.state)")
                     }
                     .font(.system(size:9.5,design:.monospaced))
                     .foregroundStyle(.tertiary)
@@ -5199,7 +5945,9 @@ private struct RecordsPane: View {
                     Button {
                         model.bindCurrentThreadPlanningContext(
                             requirementId:plan.requirementId,
-                            planId:plan.planId
+                            planId:plan.planId,
+                            projectId:model.selectedProjectId,
+                            repoId:model.projectRepositoryId
                         )
                         if model.error == nil { model.show(.agent) }
                     } label: {
@@ -5207,7 +5955,7 @@ private struct RecordsPane: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.busy || model.thread == nil)
-                    .help("把此 Plan 绑定到当前会话，不修改 Plan 本身")
+                    .help("将此计划关联到当前会话，不会修改计划内容。")
                     .accessibilityIdentifier("planning.plan.use-current")
 
                     Button {
@@ -5222,7 +5970,7 @@ private struct RecordsPane: View {
                         Button {
                             beginPlan(requirementId:plan.requirementId,parentPlanId:plan.planId)
                         } label: {
-                            Label("细化子 Plan",systemImage:"arrow.turn.down.right")
+                            Label("细化子计划",systemImage:"arrow.turn.down.right")
                         }
                     } label: {
                         Image(systemName:"ellipsis")
@@ -5268,7 +6016,7 @@ private struct RecordsPane: View {
                         VStack(alignment:.leading,spacing:5) {
                             if let parentPlanId=plan.parentPlanId,!parentPlanId.isEmpty {
                                 semanticRelationButton(
-                                    title:"上级 Plan",
+                                    title:"上级计划",
                                     id:parentPlanId,
                                     systemImage:"arrow.turn.up.left"
                                 ) {
@@ -5277,7 +6025,7 @@ private struct RecordsPane: View {
                             }
                             if let requirementId=plan.requirementId,!requirementId.isEmpty {
                                 semanticRelationButton(
-                                    title:"所属 Requirement",
+                                    title:"所属需求",
                                     id:requirementId,
                                     systemImage:"doc.text"
                                 ) {
@@ -5399,22 +6147,6 @@ private struct SchedulePane: View {
     var body: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:18) {
-                HStack(alignment:.top) {
-                    VStack(alignment:.leading,spacing:5) {
-                        Text("计划任务").font(.system(size:22,weight:.medium))
-                        Text("查看定时与条件触发任务，检查执行状态，并管理暂停与恢复。")
-                            .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
-                    }
-                    Spacer()
-                    Button { Task { await model.loadSchedulePage() } } label: {
-                        if model.schedulesLoading { ProgressView().controlSize(.small) }
-                        else { Label("刷新",systemImage:"arrow.clockwise") }
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(model.schedulesLoading || model.repoId == nil)
-                    .accessibilityIdentifier("schedule.refresh")
-                }
-
                 if let error = model.error, model.repoId != nil {
                     HStack(alignment:.firstTextBaseline,spacing:9) {
                         Image(systemName:"exclamationmark.circle")
@@ -5430,9 +6162,9 @@ private struct SchedulePane: View {
                     .accessibilityIdentifier("schedule.error")
                 }
                 if model.repoId == nil {
-                    emptyState("先选择项目","计划任务按项目读取。")
+                    emptyState("先选择项目","选择项目以查看计划任务。")
                 } else if model.schedulesLoading && model.schedules.isEmpty {
-                    ProgressView("正在读取 Scheduler…").controlSize(.small)
+                    ProgressView("正在读取计划任务…").controlSize(.small)
                 } else if model.schedules.isEmpty && model.error == nil {
                     emptyState("暂无计划任务","当前项目尚未配置定时或条件触发任务。")
                 } else if !model.schedules.isEmpty {
@@ -5444,17 +6176,16 @@ private struct SchedulePane: View {
                     }
                 }
             }
+            .padding(26)
             .frame(maxWidth:960,alignment:.leading)
-            .frame(maxWidth:.infinity,alignment:.leading)
-            .padding(30)
+            .frame(maxWidth:.infinity,alignment:.center)
         }
-        .confirmationDialog("确认任务操作",isPresented:Binding(
+        .confirmationDialog("立即运行任务？",isPresented:Binding(
             get:{ pendingAction != nil },
             set:{ if !$0 { pendingAction = nil } }
         ),titleVisibility:.visible) {
             if let pending = pendingAction {
-                Button(pending.action == .pause ? "暂停任务" : (pending.action == .resume ? "恢复任务" : "立即运行"),
-                       role:pending.action == .pause ? .destructive : nil) {
+                Button("立即运行") {
                     let selected = pending
                     pendingAction = nil
                     Task { await model.controlSchedule(selected.item,action:selected.action) }
@@ -5463,7 +6194,7 @@ private struct SchedulePane: View {
             Button("取消",role:.cancel) { pendingAction = nil }
         } message: {
             if let pending = pendingAction {
-                Text("\(pending.item.name) · \(pending.item.trigger)\n\(pending.action == .trigger ? "将请求 Forge Scheduler 立即触发；是否产生执行实例以 Runtime 回执为准。" : "此操作将更新 Forge Scheduler 中的任务状态。")")
+                Text("\(pending.item.name) · \(pending.item.trigger)\n将立即运行此任务。")
             }
         }
     }
@@ -5505,7 +6236,7 @@ private struct SchedulePane: View {
                 .accessibilityIdentifier("schedule.\(item.scheduleId).details")
                 Menu {
                     Button(item.enabled ? "暂停" : "恢复") {
-                        pendingAction = (item,item.enabled ? .pause : .resume)
+                        Task { await model.controlSchedule(item,action:item.enabled ? .pause : .resume) }
                     }
                     Button("立即运行") {
                         pendingAction = (item,.trigger)
@@ -5589,20 +6320,11 @@ private struct PluginsPane: View {
     var body: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:18) {
-                HStack(alignment:.top) {
-                    VStack(alignment:.leading,spacing:5) {
-                        Text("插件").font(.system(size:22,weight:.medium))
-                        Text("查看当前项目可用的插件、连接状态与能力。")
-                            .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
-                    }
+                PluginSettingsSection(model:model)
+                Divider()
+                HStack {
+                    Text("当前项目").font(.system(size:13,weight:.semibold))
                     Spacer()
-                    Button { Task { await model.loadPluginsPage() } } label: {
-                        if model.pluginsLoading { ProgressView().controlSize(.small) }
-                        else { Label("刷新",systemImage:"arrow.clockwise") }
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(model.pluginsLoading || model.repoId == nil)
-                    .accessibilityIdentifier("plugins.refresh")
                     Button {
                         searchOpen.toggle()
                         if !searchOpen { query = "" }
@@ -5620,7 +6342,7 @@ private struct PluginsPane: View {
                     HStack(spacing:7) {
                         Image(systemName:"magnifyingglass")
                             .foregroundStyle(ForgePalette.secondary)
-                        TextField("搜索名称、Provider 或能力",text:$query)
+                        TextField("搜索名称、服务或能力",text:$query)
                             .textFieldStyle(.plain)
                             .focused($searchFocused)
                             .font(.system(size:12))
@@ -5651,14 +6373,14 @@ private struct PluginsPane: View {
                     .accessibilityIdentifier("plugins.error")
                 }
                 if model.repoId == nil {
-                    emptyState("先选择项目","插件能力会结合当前项目返回。")
+                    emptyState("先选择项目","选择项目后查看可用插件。")
                 } else if model.pluginsLoading && model.plugins.isEmpty {
                     ProgressView("正在读取插件…").controlSize(.small)
                 } else if model.plugins.isEmpty && model.error == nil {
-                    emptyState("没有可用插件","Runtime 当前没有为这个项目注册插件。")
+                    emptyState("暂无插件","当前项目没有可用插件。")
                 } else if !model.plugins.isEmpty {
                     if visiblePlugins.isEmpty {
-                        emptyState("无匹配插件","尝试其他名称、Provider 或能力关键词。")
+                        emptyState("无匹配插件","试试其他名称或能力关键词。")
                     } else {
                         VStack(alignment:.leading,spacing:0) {
                             Text("显示 \(visiblePlugins.count) / \(model.plugins.count) 项")
@@ -5672,9 +6394,9 @@ private struct PluginsPane: View {
                     }
                 }
             }
+            .padding(26)
             .frame(maxWidth:960,alignment:.leading)
-            .frame(maxWidth:.infinity,alignment:.leading)
-            .padding(30)
+            .frame(maxWidth:.infinity,alignment:.center)
         }
     }
 
@@ -5694,9 +6416,7 @@ private struct PluginsPane: View {
                                 Text("已禁用").font(.system(size:10)).foregroundStyle(.secondary)
                             }
                         }
-                        Text(item.pluginId).font(.system(size:10,design:.monospaced))
-                            .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                        Text("\(item.actionCount) 个动作 · \(item.ready ? "可用" : "未就绪")")
+                        Text("\(item.actionCount) 项操作 · \(item.ready ? "可用" : "未就绪")")
                             .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
                     }
                     Spacer(minLength:6)
@@ -5729,11 +6449,11 @@ private struct PluginsPane: View {
                             }
                         }
                         if item.capabilities.count < item.actionCount {
-                            Text("展示 \(item.capabilities.count) / \(item.actionCount) 项代表能力。")
+                            Text("显示 \(item.capabilities.count) / \(item.actionCount) 项能力。")
                                 .font(.system(size:10)).foregroundStyle(.tertiary)
                         }
                     } else {
-                        Text("当前没有可展示的能力摘要。")
+                        Text("暂无能力说明。")
                             .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
                     }
 
@@ -5746,7 +6466,7 @@ private struct PluginsPane: View {
                             meta("生命周期",item.lifecycle == "enabled" ? "已启用" : item.lifecycle)
                             meta("健康",item.health == "ready" ? "就绪" : item.health)
                             meta("启用状态",item.enabled ? "已启用" : "已禁用")
-                            meta("动作数","\(item.actionCount)")
+                            meta("操作数","\(item.actionCount)")
                         }
                         .padding(.top,7)
                     }
@@ -5778,13 +6498,15 @@ private struct PluginsPane: View {
 private struct PluginSettingsSection: View {
     @ObservedObject var model: NativeWorkspace
     @State private var pendingInstallation: PluginManagementItem?
+    @State private var expandedAuthorizationPluginId: String?
+    @State private var pendingAuthorizationRevocation: PluginAuthorizationItem?
 
     var body: some View {
         VStack(alignment:.leading,spacing:12) {
             HStack {
                 VStack(alignment:.leading,spacing:4) {
-                    Text("插件管理").font(.system(size:13,weight:.semibold))
-                    Text("管理官方插件版本；安装不会自动授予插件操作权限。")
+                    Text("官方插件").font(.system(size:13,weight:.semibold))
+                    Text("安装或更新不会自动授予操作权限。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary)
                 }
                 Spacer()
@@ -5794,7 +6516,7 @@ private struct PluginSettingsSection: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(model.pluginManagementLoading)
-                .accessibilityLabel("刷新插件管理")
+                .accessibilityLabel("刷新官方插件")
                 .accessibilityIdentifier("settings.plugins.refresh")
             }
 
@@ -5802,11 +6524,12 @@ private struct PluginSettingsSection: View {
                 HStack(alignment:.top,spacing:8) {
                     Image(systemName:"exclamationmark.circle")
                     Text(error.contains("controller.plugins") || error.contains("CORE_CAPABILITY")
-                         ? "当前运行时不支持插件管理；仍可在工作区查看已注册的插件。"
-                         : "插件状态无法确认：\(error)")
+                         ? "当前无法管理插件；工作区中的插件列表仍可查看。"
+                         : "插件状态暂时无法确认。")
                         .font(.system(size:11))
                         .fixedSize(horizontal:false,vertical:true)
                         .textSelection(.enabled)
+                        .help(error)
                     Spacer(minLength:6)
                     Button("重试") { Task { await model.loadPluginManagement() } }
                         .buttonStyle(.plain)
@@ -5818,7 +6541,7 @@ private struct PluginSettingsSection: View {
             }
             if model.pluginManagement.isEmpty {
                 if model.pluginManagementLoading {
-                    ProgressView("正在读取官方插件目录…").controlSize(.small)
+                    ProgressView("正在读取可安装插件…").controlSize(.small)
                 } else if model.pluginManagementError == nil {
                     Text("暂无可安装的官方插件。")
                         .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
@@ -5826,36 +6549,59 @@ private struct PluginSettingsSection: View {
             } else {
                 VStack(alignment:.leading,spacing:0) {
                     ForEach(Array(model.pluginManagement.enumerated()),id:\.element.id) { index,item in
-                        HStack(alignment:.top,spacing:11) {
-                            Circle()
-                                .fill(item.installedVersion == nil ? Color.secondary : (item.enabled == false ? Color.orange : Color.green))
-                                .frame(width:7,height:7).padding(.top,6)
-                            VStack(alignment:.leading,spacing:4) {
-                                HStack(spacing:7) {
-                                    Text(item.name).font(.system(size:11.5,weight:.semibold))
-                                    Text(item.version).font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary)
+                        VStack(alignment:.leading,spacing:8) {
+                            HStack(alignment:.top,spacing:11) {
+                                Circle()
+                                    .fill(item.installedVersion == nil ? Color.secondary : (item.enabled == false ? Color.orange : Color.green))
+                                    .frame(width:7,height:7).padding(.top,6)
+                                VStack(alignment:.leading,spacing:4) {
+                                    HStack(spacing:7) {
+                                        Text(item.name).font(.system(size:11.5,weight:.semibold))
+                                        Text(item.version).font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary)
+                                    }
+                                    Text(item.description).font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary).lineLimit(2)
+                                    HStack(spacing:10) {
+                                        Text(item.installedVersion.map { "已安装 \($0)" } ?? "未安装")
+                                        if item.enabled == false && item.installedVersion != nil { Text("已禁用") }
+                                        Button {
+                                            if expandedAuthorizationPluginId == item.pluginId {
+                                                expandedAuthorizationPluginId = nil
+                                            } else {
+                                                expandedAuthorizationPluginId = item.pluginId
+                                                Task { await model.loadPluginAuthorizations(for:item.pluginId) }
+                                            }
+                                        } label: {
+                                            HStack(spacing:3) {
+                                                Text("授权 \(item.authorizationCount)")
+                                                Image(systemName:expandedAuthorizationPluginId == item.pluginId ? "chevron.up" : "chevron.down")
+                                                    .font(.system(size:8,weight:.medium))
+                                            }
+                                        }
+                                        .buttonStyle(.plain)
+                                        .foregroundStyle(ForgePalette.accent)
+                                        .disabled(model.pluginAuthorizationLoading)
+                                        .accessibilityIdentifier("settings.plugins.\(item.pluginId).authorizations")
+                                    }
+                                    .font(.system(size:9.5)).foregroundStyle(.tertiary)
+                                    if !item.compatible {
+                                        Text(item.compatibilityReason ?? "当前平台不兼容")
+                                            .font(.system(size:10.5)).foregroundStyle(.orange)
+                                            .fixedSize(horizontal:false,vertical:true)
+                                    }
                                 }
-                                Text(item.description).font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary).lineLimit(2)
-                                HStack(spacing:10) {
-                                    Text(item.installedVersion.map { "已安装 \($0)" } ?? "未安装")
-                                    if item.enabled == false && item.installedVersion != nil { Text("已禁用") }
-                                    if item.authorizationCount > 0 { Text("授权 \(item.authorizationCount)") }
+                                Spacer(minLength:8)
+                                Button(item.installedVersion == item.version ? "已安装" : (item.installedVersion == nil ? "安装" : "更新")) {
+                                    pendingInstallation = item
                                 }
-                                .font(.system(size:9.5)).foregroundStyle(.tertiary)
-                                if !item.compatible {
-                                    Text(item.compatibilityReason ?? "当前平台不兼容")
-                                        .font(.system(size:10.5)).foregroundStyle(.orange)
-                                        .fixedSize(horizontal:false,vertical:true)
-                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(model.pluginManagementLoading || !item.compatible || item.installedVersion == item.version)
+                                .accessibilityIdentifier("settings.plugins.\(item.pluginId).install")
                             }
-                            Spacer(minLength:8)
-                            Button(item.installedVersion == item.version ? "已安装" : (item.installedVersion == nil ? "安装" : "更新")) {
-                                pendingInstallation = item
+                            if expandedAuthorizationPluginId == item.pluginId {
+                                pluginAuthorizationDetails(for:item)
+                                    .padding(.leading,18)
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .disabled(model.pluginManagementLoading || !item.compatible || item.installedVersion == item.version)
-                            .accessibilityIdentifier("settings.plugins.\(item.pluginId).install")
                         }
                         .padding(.vertical,9)
                         if index < model.pluginManagement.count - 1 { Divider() }
@@ -5864,21 +6610,97 @@ private struct PluginSettingsSection: View {
             }
         }
         .padding(.vertical,8)
-        .confirmationDialog("确认安装官方插件",isPresented:Binding(
-            get:{ pendingInstallation != nil },
-            set:{ if !$0 { pendingInstallation = nil } }
-        ),titleVisibility:.visible) {
-            if let item = pendingInstallation {
+        .confirmationDialog(
+            pendingAuthorizationRevocation == nil ? "确认安装官方插件" : "撤销此项授权？",
+            isPresented:Binding(
+                get:{ pendingInstallation != nil || pendingAuthorizationRevocation != nil },
+                set:{ if !$0 { pendingInstallation = nil; pendingAuthorizationRevocation = nil } }
+            ),titleVisibility:.visible
+        ) {
+            if let item = pendingAuthorizationRevocation {
+                Button("撤销授权",role:.destructive) {
+                    pendingAuthorizationRevocation = nil
+                    Task { await model.revokePluginAuthorization(item) }
+                }
+            } else if let item = pendingInstallation {
                 Button(item.installedVersion == nil ? "确认安装" : "确认更新") {
                     pendingInstallation = nil
                     Task { await model.installOfficialPlugin(item) }
                 }
             }
-            Button("取消",role:.cancel) { pendingInstallation = nil }
+            Button("取消",role:.cancel) { pendingInstallation = nil; pendingAuthorizationRevocation = nil }
         } message: {
-            if let item = pendingInstallation {
-                Text("\(item.name) · \(item.version)\n将更改 Forge 中的插件安装状态，不会自动授予操作权限。")
+            if let item = pendingAuthorizationRevocation {
+                Text("\(item.capabilityId) · \(item.targetId)\n撤销后，相关操作需要重新授权。")
+            } else if let item = pendingInstallation {
+                Text("\(item.name) · \(item.version)\n安装或更新不会自动授予操作权限。")
             }
+        }
+    }
+
+    @ViewBuilder
+    private func pluginAuthorizationDetails(for plugin:PluginManagementItem) -> some View {
+        VStack(alignment:.leading,spacing:8) {
+            if model.pluginAuthorizationLoading {
+                ProgressView("正在读取授权…").controlSize(.small)
+            }
+            if let error = model.pluginAuthorizationError {
+                HStack(alignment:.firstTextBaseline,spacing:8) {
+                    Text(model.pluginAuthorizationSnapshot?.pluginId == plugin.pluginId
+                         ? "无法更新授权，仍显示上次读取结果。"
+                         : "无法读取授权，请重试。")
+                        .font(.system(size:10.5)).foregroundStyle(.orange).help(error)
+                    Button("重试") { Task { await model.loadPluginAuthorizations(for:plugin.pluginId) } }
+                        .buttonStyle(.plain)
+                        .disabled(model.pluginAuthorizationLoading)
+                }
+            }
+            if let snapshot = model.pluginAuthorizationSnapshot, snapshot.pluginId == plugin.pluginId {
+                if snapshot.items.isEmpty {
+                    Text("暂无当前账户的有效授权。")
+                        .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                } else {
+                    if snapshot.truncated {
+                        Text("显示前 \(snapshot.items.count) 项，共 \(snapshot.totalCount) 项。")
+                            .font(.system(size:9.5)).foregroundStyle(.tertiary)
+                    }
+                    ForEach(snapshot.items) { item in pluginAuthorizationRow(item) }
+                }
+            }
+        }
+    }
+
+    private func pluginAuthorizationRow(_ item:PluginAuthorizationItem) -> some View {
+        HStack(alignment:.top,spacing:10) {
+            VStack(alignment:.leading,spacing:3) {
+                Text(item.capabilityId).font(.system(size:10.5,weight:.medium))
+                    .lineLimit(2).textSelection(.enabled)
+                Text("\(item.targetKind) · \(item.targetId)")
+                    .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
+                    .lineLimit(2).textSelection(.enabled)
+                Text(item.scopes.joined(separator:" · "))
+                    .font(.system(size:9.5)).foregroundStyle(ForgePalette.secondary)
+                    .lineLimit(2).textSelection(.enabled)
+                Text("到期 \(String(item.expiresAt.prefix(10))) · \(authorizationRiskLabel(item.riskCeiling))")
+                    .font(.system(size:9.5)).foregroundStyle(.tertiary)
+            }
+            Spacer(minLength:8)
+            Button("撤销") { pendingAuthorizationRevocation = item }
+                .buttonStyle(.plain)
+                .foregroundStyle(.red)
+                .disabled(model.pluginAuthorizationLoading)
+                .accessibilityIdentifier("settings.plugins.authorization.\(item.grantId).revoke")
+        }
+        .padding(.vertical,6)
+        .overlay(alignment:.bottom) { Divider().opacity(0.55) }
+    }
+
+    private func authorizationRiskLabel(_ value:String) -> String {
+        switch value {
+        case "readonly": return "只读"
+        case "workspace_write": return "工作区写入"
+        case "remote_write": return "远程写入"
+        default: return value
         }
     }
 }
@@ -5890,11 +6712,7 @@ private struct RuntimeSettingsSection: View {
 
     var body: some View {
         VStack(alignment:.leading,spacing:16) {
-            VStack(alignment:.leading,spacing:5) {
-                Text("连接").font(.system(size:13,weight:.semibold))
-                Text("连接配置和外部客户端接入；Runtime 细节按需展开。")
-                    .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
-            }
+            Text("连接").font(.system(size:13,weight:.semibold))
 
             connectionCard
 
@@ -5916,7 +6734,7 @@ private struct RuntimeSettingsSection: View {
             } label: {
                 HStack(spacing:8) {
                     Circle().fill(runtimeColor).frame(width:7,height:7)
-                    Text("Runtime 与诊断")
+                    Text("运行状态与诊断")
                         .font(.system(size:11.5,weight:.semibold))
                     Spacer()
                     Text(model.runtimeLabel)
@@ -5976,11 +6794,11 @@ private struct RuntimeSettingsSection: View {
                     Divider()
                     VStack(alignment:.leading,spacing:5) {
                         Text("其他支持 stdio 的 MCP 客户端").font(.system(size:11.5,weight:.semibold))
-                        Text("将命令配置为 MCP 服务启动命令。它会固定暴露当前选中的 Checkout。")
+                        Text("将命令设置为 MCP 服务启动命令；它只会开放当前选中的工作区。")
                         copyableMcpCommand("forge mcp serve --repo \(repoArgument) --transport stdio --profile controller")
                     }
                 } else {
-                    Text("先在左侧选择有效的项目与 Checkout，再显示绑定该工作区的本地客户端命令。")
+                    Text("请先选择项目和工作区，再查看对应的本地连接命令。")
                         .font(.system(size:11))
                         .foregroundStyle(ForgePalette.secondary)
                 }
@@ -6048,7 +6866,7 @@ private struct RuntimeSettingsSection: View {
                     .buttonStyle(.plain).disabled(model.connectionLoading)
                     .accessibilityIdentifier("connection.refresh")
                 if model.connectionStatus?.repairAvailable == true {
-                    Button(model.connectionStatus?.repairLabel ?? "刷新 Connector") {
+                    Button(model.connectionStatus?.repairLabel ?? "重新连接") {
                         Task { await model.repairControllerConnection() }
                     }
                     .buttonStyle(.bordered).disabled(model.connectionLoading)
@@ -6056,10 +6874,10 @@ private struct RuntimeSettingsSection: View {
                 }
             }
             if let status = model.connectionStatus {
-                connectionRow("控制器",status.controller)
-                connectionRow("传输",status.tunnel)
+                connectionRow("本机服务",status.controller)
+                connectionRow("远程连接",status.tunnel)
                 if status.ready {
-                    Text("Forge 连接配置已就绪。请在外部客户端调用 rh_status 确认实际可用。")
+                    Text("连接配置已就绪。请在对应客户端发送一条消息确认可用。")
                         .font(.system(size:11))
                         .foregroundStyle(ForgePalette.secondary)
                 }
@@ -6075,8 +6893,17 @@ private struct RuntimeSettingsSection: View {
                                 .disabled(model.connectionLoading)
                         }
                         Text(summary).font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
-                        if let risk = setup.risk, !risk.isEmpty {
-                            Text(risk).font(.system(size:10.5)).foregroundStyle(.tertiary)
+                        if let risk = setup.risk {
+                            let riskLabel: String? = switch risk {
+                            case "readonly": "只读操作"
+                            case "workspace_write": "将修改本机文件或配置"
+                            case "remote_write": "将修改远程服务中的数据"
+                            case "destructive": "可能删除或覆盖数据"
+                            default: nil
+                            }
+                            if let riskLabel {
+                                Text(riskLabel).font(.system(size:10.5)).foregroundStyle(.tertiary)
+                            }
                         }
                     }
                     .padding(.top,2)
@@ -6087,11 +6914,11 @@ private struct RuntimeSettingsSection: View {
                     VStack(alignment:.leading,spacing:8) {
                         Text("首次连接").font(.system(size:11.5,weight:.semibold))
                         HStack(spacing:10) {
-                            Picker("控制器",selection:$setupController) {
+                            Picker("客户端",selection:$setupController) {
                                 Text("ChatGPT").tag("chatgpt")
                                 Text("Codex").tag("codex")
                                 Text("Claude Code").tag("claude")
-                                Text("MCP Client").tag("mcp")
+                                Text("MCP 客户端").tag("mcp")
                             }
                             .pickerStyle(.menu)
                             .frame(width:220,alignment:.leading)
@@ -6105,16 +6932,16 @@ private struct RuntimeSettingsSection: View {
                             .accessibilityIdentifier("connection.setup.apply")
                         }
                         Text(setupController == "chatgpt" || setupController == "mcp"
-                             ? "使用 Forge 自动远程传输；不需要手工填写内部 MCP 状态。"
-                             : "使用本机控制器，不启用远程 tunnel。")
+                             ? "通过 Forge 远程连接。"
+                             : "直接连接本机服务。")
                             .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
-                        Text("保存后，请在对应客户端验证实际连接。")
+                        Text("保存后，在对应客户端发送一条消息确认可用。")
                             .font(.system(size:10.5)).foregroundStyle(.tertiary)
                     }
                     .padding(.top,2)
                 }
             } else {
-                Text(model.connectionLoading ? "正在读取连接状态。" : "暂时无法读取 MCP 连接状态。请刷新连接后重试。")
+                Text(model.connectionLoading ? "正在读取连接状态。" : "暂时无法读取连接状态。请刷新后重试。")
                     .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
             }
         }
@@ -6154,26 +6981,11 @@ private struct RuntimeSettingsSection: View {
 private struct KnowledgePane: View {
     @ObservedObject var model: NativeWorkspace
     @State private var selectedMemoryId: String?
+    @State private var authoringTarget: KnowledgeAuthoringTarget?
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
             VStack(alignment:.leading,spacing:11) {
-                HStack(alignment:.top) {
-                    VStack(alignment:.leading,spacing:4) {
-                        Text("知识库")
-                            .font(.system(size:20,weight:.medium))
-                        Text("先找可复用判断，再决定是否带回当前会话。Cognitive 记录保持只读、仅供参考。")
-                            .font(.system(size:11.5))
-                            .foregroundStyle(ForgePalette.secondary)
-                    }
-                    Spacer()
-                    if let result=model.knowledgeResult {
-                        Text("\(result.items.count) 条结果")
-                            .font(.system(size:10.5,weight:.medium))
-                            .foregroundStyle(ForgePalette.secondary)
-                    }
-                }
-
                 HStack(spacing:8) {
                     HStack(spacing:7) {
                         Image(systemName:"magnifyingglass")
@@ -6201,6 +7013,12 @@ private struct KnowledgePane: View {
                     .background(ForgePalette.softFill,
                                 in:RoundedRectangle(cornerRadius:9,style:.continuous))
 
+                    if let result=model.knowledgeResult {
+                        Text("\(result.items.count) 条结果")
+                            .font(.system(size:10.5,weight:.medium))
+                            .foregroundStyle(ForgePalette.secondary)
+                    }
+
                     Button { runSearch() } label: {
                         if model.knowledgeLoading {
                             ProgressView().controlSize(.small)
@@ -6215,6 +7033,18 @@ private struct KnowledgePane: View {
                     .disabled(model.knowledgeLoading || model.repoId == nil)
                     .accessibilityLabel("检索知识")
                     .accessibilityIdentifier("knowledge.search")
+
+                    Button {
+                        guard let repoId = model.repoId, let checkoutId = model.checkoutId else { return }
+                        authoringTarget = KnowledgeAuthoringTarget(
+                            repoId: repoId, checkoutId: checkoutId,
+                            projectLabel: model.project?.label ?? repoId
+                        )
+                    } label: {
+                        Label("新增记忆", systemImage: "plus")
+                    }
+                    .disabled(model.repoId == nil || model.checkoutId == nil)
+                    .accessibilityIdentifier("knowledge.add")
                 }
             }
             .padding(.horizontal,22).padding(.top,20).padding(.bottom,14)
@@ -6248,6 +7078,13 @@ private struct KnowledgePane: View {
             knowledgeStatusBar
         }
         .background(ForgePalette.canvas)
+        .sheet(item: $authoringTarget) { target in
+            KnowledgeAuthoringSheet(target: target) {
+                guard model.repoId == target.repoId, model.checkoutId == target.checkoutId else { return }
+                model.knowledgeQuery = ""
+                runSearch()
+            }
+        }
         .onChange(of:model.knowledgeResult?.items.map(\.memory.id) ?? []) { ids in
             if let selectedMemoryId,!ids.contains(selectedMemoryId) {
                 self.selectedMemoryId=nil
@@ -6496,6 +7333,124 @@ private struct KnowledgePane: View {
     }
 }
 
+private struct KnowledgeAuthoringTarget: Identifiable {
+    let id = UUID()
+    let repoId: String
+    let checkoutId: String
+    let projectLabel: String
+}
+
+private struct KnowledgeAuthoringSheet: View {
+    let target: KnowledgeAuthoringTarget
+    let onSaved: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var scope = "project"
+    @State private var summary = ""
+    @State private var concept = "user.guidance"
+    @State private var saving = false
+    @State private var failure: String?
+
+    private var valid: Bool {
+        let text = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tag = concept.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !text.isEmpty && text.unicodeScalars.count <= 2000
+            && tag.range(of: "^[a-z][a-z0-9._-]{0,127}$", options: .regularExpression) != nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("新增记忆")
+                .font(.title2.weight(.semibold))
+            Text(target.projectLabel)
+                .foregroundStyle(.secondary)
+            Picker("适用范围", selection: $scope) {
+                Text("当前项目").tag("project")
+                Text("工作空间 · 跨项目").tag("workspace")
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("knowledge.add.scope")
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("主题标记")
+                    .font(.subheadline.weight(.medium))
+                TextField("例如 engineering.root-cause", text: $concept)
+                    .accessibilityIdentifier("knowledge.add.concept")
+                Text("使用小写英文、数字、点或连字符。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("记忆内容")
+                    .font(.subheadline.weight(.medium))
+                TextEditor(text: $summary)
+                    .font(.body)
+                    .frame(minHeight: 150)
+                    .padding(6)
+                    .border(Color.secondary.opacity(0.18))
+                    .accessibilityIdentifier("knowledge.add.summary")
+                Text("记忆用于相关任务的主动召回，不会覆盖当前指令或授权。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let failure {
+                Text(failure)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("knowledge.add.failure")
+            }
+
+            HStack {
+                Spacer()
+                Button(failure == nil ? "取消" : "关闭并核对") {
+                    dismiss()
+                    if failure != nil { onSaved() }
+                }
+                .keyboardShortcut(.cancelAction)
+                .disabled(saving)
+                Button {
+                    save()
+                } label: {
+                    if saving { ProgressView().controlSize(.small) }
+                    else { Text("保存") }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!valid || saving || failure != nil)
+                .accessibilityIdentifier("knowledge.add.save")
+            }
+        }
+        .padding(24)
+        .frame(width: 530)
+        .interactiveDismissDisabled(saving)
+    }
+
+    private func save() {
+        guard valid, !saving, failure == nil else { return }
+        saving = true
+        let arguments: [String: Any] = [
+            "repoId": target.repoId, "checkoutId": target.checkoutId,
+            "requestId": "native-user-knowledge-\(target.id.uuidString)",
+            "scope": scope, "summary": summary.trimmingCharacters(in: .whitespacesAndNewlines),
+            "concept": concept.trimmingCharacters(in: .whitespacesAndNewlines)
+        ]
+        Task {
+            defer { saving = false }
+            do {
+                let response = try await ForgeBridge.request("record_user_knowledge", arguments)
+                guard let ids = response["storedMemoryIds"] as? [String], !ids.isEmpty else {
+                    throw ForgeBridgeError.invalidResponse
+                }
+                dismiss()
+                onSaved()
+            } catch {
+                failure = "保存未确认：\(error.localizedDescription)。关闭后先刷新知识库核对，避免重复写入。"
+            }
+        }
+    }
+}
+
 private struct ProviderProfileDraft: Identifiable, Equatable {
     let id:String
     var label:String
@@ -6541,27 +7496,13 @@ private struct SettingsPane: View {
     @State private var selectedProfileId = ""
     @State private var joyCodeModel = "JoyAI-Code-1.6"
     @State private var saving = false
+    @State private var credentialToDelete: String?
+    @State private var testingProfileId: String?
+    @State private var connectionFeedback: (profileId:String,passed:Bool,message:String)?
 
     var body: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:18) {
-                HStack(alignment:.top) {
-                    VStack(alignment:.leading,spacing:6) {
-                        Text("设置").font(.system(size:22,weight:.medium))
-                        Text("常用 Agent 与 Provider 配置优先；连接、插件与 Runtime 诊断集中在页面后半部分。")
-                            .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
-                    }
-                    Spacer()
-                    Button {
-                        Task { await model.loadSettingsPage() }
-                    } label: {
-                        if model.settingsLoading { ProgressView().controlSize(.small) }
-                        else { Label("刷新",systemImage:"arrow.clockwise") }
-                    }
-                    .buttonStyle(.bordered).disabled(model.settingsLoading)
-                    .accessibilityIdentifier("settings.refresh")
-                }
-
                 VStack(alignment:.leading,spacing:12) {
                     HStack(spacing:9) {
                         Circle().fill(model.selectedProviderReady ? Color.green : Color.orange)
@@ -6570,19 +7511,20 @@ private struct SettingsPane: View {
                             .font(.system(size:14,weight:.semibold))
                         Spacer()
                     }
-                    Text(currentProviderDescription)
-                        .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
+                    Text(model.selectedProviderReady ? "配置完整" : "待完善")
+                        .font(.system(size:11,weight:.medium))
+                        .foregroundStyle(model.selectedProviderReady ? ForgePalette.secondary : Color.orange)
                     LazyVGrid(columns:[GridItem(.adaptive(minimum:145,maximum:260),spacing:14,alignment:.leading)],
                               alignment:.leading,spacing:10) {
                         settingMeta("会话模型",NativeWorkspace.matchesExternalProvider(model.selectedProvider)
                                     ? (model.selectedApiModel.isEmpty ? "未配置" : model.selectedApiModel)
                                     : (model.selectedAgentModel?.displayName ?? "Codex 默认"))
-                        settingMeta("Reasoning",NativeWorkspace.matchesExternalProvider(model.selectedProvider)
-                                    ? (model.selectedProvider == "joycode" ? "JoyCode" : "API profile")
+                        settingMeta("推理强度",model.selectedProvider == "joycode" || NativeWorkspace.matchesExternalProvider(model.selectedProvider)
+                                    ? "默认"
                                     : (model.selectedReasoningEffort.isEmpty ? "默认" : model.selectedReasoningEffort))
                         settingMeta("图片输入",model.selectedProviderSupportsImages ? "可用" : "不可用")
                     }
-                    Text("Provider 与模型上下文按会话保存；已有历史不会被默认设置静默改写。")
+                    Text("默认服务仅用于新会话。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary)
                 }
                 .padding(.vertical,10)
@@ -6593,7 +7535,7 @@ private struct SettingsPane: View {
                     HStack {
                         VStack(alignment:.leading,spacing:4) {
                             Text("模型与 API").font(.system(size:17,weight:.semibold))
-                            Text("先选择左侧配置，再编辑右侧连接信息。保存后在会话中测试。")
+                            Text("保存 API 配置后，可直接测试模型连接。")
                                 .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                         }
                         Spacer()
@@ -6612,19 +7554,20 @@ private struct SettingsPane: View {
                             }
                             Divider()
                             Button("自定义兼容 API") {
-                                addProfile(label:"自定义 Provider",endpoint:"https://api.example.com/v1",model:"",apiProtocol:"openai")
+                                addProfile(label:"自定义服务",endpoint:"https://api.example.com/v1",model:"",apiProtocol:"openai")
                             }
                         } label: {
-                            Label("添加 Provider",systemImage:"plus")
+                            Label("添加模型服务",systemImage:"plus")
                         }
                         .menuStyle(.borderlessButton)
+                        .accessibilityIdentifier("settings.profile.add")
                     }
 
                     HStack(spacing:12) {
                         Text("新会话默认").font(.system(size:10.5,weight:.medium))
                             .foregroundStyle(ForgePalette.secondary).frame(width:82,alignment:.leading)
                         Picker("新会话默认",selection:$defaultProvider) {
-                            Text("Codex CLI").tag("codex")
+                            Text("Codex").tag("codex")
                             ForEach(profiles) { profile in
                                 Text(profile.label).tag(profile.providerId)
                             }
@@ -6639,14 +7582,14 @@ private struct SettingsPane: View {
                             Image(systemName:"server.rack").font(.system(size:24))
                                 .foregroundStyle(ForgePalette.secondary)
                             Text("还没有 API 配置").font(.system(size:14,weight:.semibold))
-                            Text("点击「添加 Provider」，选择 DeepSeek 或其他 API。")
+                            Text("点击「添加模型服务」，选择 DeepSeek 或其他服务。")
                                 .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                         }
                         .frame(maxWidth:.infinity,minHeight:190)
                     } else {
                         HStack(alignment:.top,spacing:22) {
                             VStack(alignment:.leading,spacing:5) {
-                                Text("API 配置")
+                                Text("模型服务")
                                     .font(.system(size:11,weight:.semibold))
                                     .foregroundStyle(ForgePalette.secondary)
                                     .padding(.bottom,7)
@@ -6709,6 +7652,7 @@ private struct SettingsPane: View {
                                             Button("删除配置",role:.destructive) {
                                                 deleteProfile(index)
                                             }
+                                            .accessibilityIdentifier("settings.profile.delete")
                                         } label: {
                                             Image(systemName:"ellipsis")
                                                 .frame(width:28,height:28)
@@ -6735,8 +7679,8 @@ private struct SettingsPane: View {
                         Circle().fill(model.localApiSettings?.joyCodeReady == true ? Color.green : Color.orange)
                             .frame(width:7,height:7)
                         Text(model.localApiSettings?.joyCodeReady == true
-                             ? "已检测到本机 JoyCode 登录态；凭据由 JoyCode 自己管理。"
-                             : "未检测到 JoyCode 登录态。")
+                             ? "已登录 JoyCode。"
+                             : "尚未登录 JoyCode。")
                             .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                     }
 
@@ -6754,24 +7698,36 @@ private struct SettingsPane: View {
                         .accessibilityIdentifier("settings.save")
                     }
 
-                    Text("API Key 保存在 macOS Keychain，不会写入普通配置文件。")
+                    Text("API Key 安全保存在 macOS 钥匙串中。")
                         .font(.system(size:11)).foregroundStyle(.tertiary)
                 }
                 .padding(.vertical,10)
 
                 Divider()
                 RuntimeSettingsSection(model:model)
-                DisclosureGroup("插件管理") {
-                    PluginSettingsSection(model:model)
-                        .padding(.top,12)
-                }
             }
+            .padding(26)
             .frame(maxWidth:960,alignment:.leading)
-            .frame(maxWidth:.infinity,alignment:.leading)
-            .padding(28)
+            .frame(maxWidth:.infinity,alignment:.center)
         }
         .task(id:settingsSignature) {
             syncSettingsDraft()
+            connectionFeedback=nil
+        }
+        .onChange(of:profiles) { _ in connectionFeedback=nil }
+        .alert("删除 API Key？", isPresented: Binding(
+            get: { credentialToDelete != nil },
+            set: { if !$0 { credentialToDelete=nil } }
+        )) {
+            Button("删除", role:.destructive) {
+                guard let credentialToDelete else { return }
+                deleteCredential(credentialToDelete)
+                self.credentialToDelete=nil
+            }
+            .accessibilityIdentifier("settings.credential.delete.confirm")
+            Button("取消", role:.cancel) { credentialToDelete=nil }
+        } message: {
+            Text("删除后，使用此 API Key 的模型服务将无法连接，直到重新配置密钥。")
         }
     }
 
@@ -6779,10 +7735,11 @@ private struct SettingsPane: View {
     private func providerEditor(index:Int) -> some View {
         VStack(alignment:.leading,spacing:11) {
             settingsField("名称") {
-                TextField("Provider 名称",text:$profiles[index].label)
+                TextField("服务名称",text:$profiles[index].label)
                     .textFieldStyle(.plain)
+                    .accessibilityIdentifier("settings.profile.name")
             }
-            settingsField("Endpoint") {
+            settingsField("服务地址") {
                 TextField("https://api.example.com",text:$profiles[index].endpoint)
                     .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
                     .accessibilityIdentifier("settings.endpoint")
@@ -6806,15 +7763,15 @@ private struct SettingsPane: View {
 
             let endpoint=profiles[index].endpoint.trimmingCharacters(in:.whitespacesAndNewlines)
             if endpoint == "https://zro.moonmath.ai/v1" {
-                Text("zro 凭据由 zro 本机配置管理，Forge 不复制 secret。")
+                Text("此配置使用 Zro 自己的登录信息，无需在 Forge 重复输入 API Key。")
                     .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
             } else if endpoint.lowercased().hasPrefix("http://localhost")
                         || endpoint.lowercased().hasPrefix("http://127.0.0.1") {
-                Text("本机 loopback Endpoint 不要求受管密钥。")
+                Text("本机服务不需要 API Key。")
                     .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
             } else {
-                settingsField("受管密钥") {
-                    Picker("受管密钥",selection:$profiles[index].credentialRef) {
+                settingsField("API Key") {
+                    Picker("API Key",selection:$profiles[index].credentialRef) {
                         Text("未选择").tag(nil as String?)
                         ForEach(model.managedApiCredentials.filter { $0.endpoint == endpoint }) { credential in
                             Text("\(credential.label) · \(credential.authorized ? "已授权" : "未授权")")
@@ -6825,26 +7782,51 @@ private struct SettingsPane: View {
                     .accessibilityIdentifier("settings.credential")
                 }
                 HStack(spacing:10) {
-                    Button("从剪贴板导入并授权") { importCredential(index:index) }
+                    Button("从剪贴板粘贴并授权") { importCredential(index:index) }
                         .buttonStyle(.bordered)
+                        .accessibilityIdentifier("settings.credential.import")
                         .disabled(saving || model.settingsLoading || endpoint.isEmpty)
                     if let credential=selectedCredential(index:index) {
-                        Button("从剪贴板轮换") { rotateCredential(credential.credentialRef) }
+                        Button("从剪贴板更新 API Key") { rotateCredential(credential.credentialRef) }
                             .buttonStyle(.plain)
-                        Button(credential.authorized ? "撤销使用授权" : "授权使用") {
+                            .accessibilityIdentifier("settings.credential.rotate")
+                        Button(credential.authorized ? "撤销授权" : "授权使用") {
                             setCredentialAuthorization(credential.credentialRef,!credential.authorized)
                         }
                         .buttonStyle(.plain)
-                        Button("删除密钥",role:.destructive) { deleteCredential(credential.credentialRef) }
-                            .buttonStyle(.plain).foregroundStyle(.red)
+                        .accessibilityIdentifier("settings.credential.authorization")
+                        Button("删除 API Key",role:.destructive) {
+                            credentialToDelete=credential.credentialRef
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.red)
+                        .accessibilityIdentifier("settings.credential.delete")
                     }
                 }
                 if let credential=selectedCredential(index:index) {
-                    Text("Ref \(credential.credentialRef) · Keychain \(credential.hasSecret ? "已存" : "缺失") · \(credential.authorized ? "授权可复用" : "未授权")")
-                        .font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary)
-                        .textSelection(.enabled)
+                    Text("\(credential.hasSecret ? "密钥已保存" : "密钥未找到") · \(credential.authorized ? "已授权使用" : "尚未授权")")
+                        .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                        .accessibilityIdentifier("settings.credential.status")
                 }
             }
+            HStack(spacing:9) {
+                Button(testingProfileId == profiles[index].id ? "验证中…" : "测试连接") {
+                    testConnection(profiles[index])
+                }
+                .buttonStyle(.bordered)
+                .disabled(testingProfileId != nil || saving || model.settingsLoading || !profileReady(profiles[index]))
+                .accessibilityIdentifier("settings.profile.test-connection")
+                if testingProfileId == profiles[index].id {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            if let feedback=connectionFeedback, feedback.profileId == profiles[index].id {
+                Text(feedback.message)
+                    .font(.system(size:11))
+                    .foregroundStyle(feedback.passed ? Color.green : Color.red)
+                    .accessibilityIdentifier("settings.profile.connection-result")
+            }
+            Text("会向当前模型发送一条短消息，可能产生少量 API 费用。")
+                .font(.system(size:10.5)).foregroundStyle(.tertiary)
         }
         .padding(.vertical,6)
     }
@@ -6854,23 +7836,9 @@ private struct SettingsPane: View {
     }
 
     private var selectedProviderLabel:String {
-        if model.selectedProvider == "codex" { return "Codex CLI" }
+        if model.selectedProvider == "codex" { return "Codex" }
         if model.selectedProvider == "joycode" { return "JoyCode" }
-        return model.selectedApiProfile?.label ?? "API Provider"
-    }
-
-    private var currentProviderDescription:String {
-        if model.selectedProvider == "joycode" {
-            return model.joyCodeProfileReady
-                ? "JoyCode 作为模型 Provider；Forge 工具由 Local Agent Harness 执行。"
-                : "JoyCode 登录态尚未就绪。"
-        }
-        if NativeWorkspace.matchesExternalProvider(model.selectedProvider) {
-            return model.selectedProviderReady
-                ? "当前 API Provider 由 Local Agent Harness 驱动；built-in Forge tools 走本地 direct tool session。"
-                : "当前 API Provider 尚未就绪。"
-        }
-        return "Codex CLI 自带 Agent Harness；Forge tools 通过 Codex 支持的 MCP adapter 注入，执行 authority 仍由 Forge Runtime/Repository policy 持有。"
+        return model.selectedApiProfile?.label ?? "API 服务"
     }
 
     private var settingsSignature:String {
@@ -6938,7 +7906,45 @@ private struct SettingsPane: View {
     }
 
     private func profileReadiness(_ profile:ProviderProfileDraft) -> String {
-        profileReady(profile) ? "配置已保存 · 未测试连接" : "有未保存更改或连接未配置"
+        guard profileReady(profile) else { return "有未保存更改或配置不完整" }
+        if let feedback=connectionFeedback, feedback.profileId == profile.id {
+            return feedback.passed ? "已保存 · 本次连接正常" : "已保存 · 本次连接失败"
+        }
+        return "已保存 · 尚未验证"
+    }
+
+    private func testConnection(_ profile:ProviderProfileDraft) {
+        guard testingProfileId == nil, !saving, !model.settingsLoading, profileReady(profile) else { return }
+        testingProfileId=profile.id
+        connectionFeedback=nil
+        Task {
+            let outcome: (passed:Bool,message:String)
+            do {
+                try await model.testSavedApiProfile(providerId:profile.providerId)
+                outcome=(true,"模型已响应，连接正常。")
+            } catch {
+                let raw=error.localizedDescription
+                let detail:String
+                if raw.contains("HTTP_401") || raw.contains("HTTP_403") {
+                    detail="认证失败，请检查 API Key 和授权。"
+                } else if raw.contains("HTTP_404") {
+                    detail="模型或接口不存在，请检查模型 ID 和服务地址。"
+                } else if raw.contains("HTTP_429") {
+                    detail="请求受限，请检查额度或稍后重试。"
+                } else if raw.contains("REQUEST_FAILED") {
+                    detail="无法连接到服务，请检查网络和 Endpoint。"
+                } else if raw.contains("PROFILE_NOT_READY") {
+                    detail="当前配置未就绪，请先保存并确认授权。"
+                } else {
+                    detail="连接失败：\(raw)"
+                }
+                outcome=(false,detail)
+            }
+            if profiles.contains(profile) {
+                connectionFeedback=(profile.id,outcome.passed,outcome.message)
+            }
+            testingProfileId=nil
+        }
     }
 
     private func saveApiSettings() {

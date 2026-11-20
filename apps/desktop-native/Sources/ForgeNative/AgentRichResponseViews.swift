@@ -1,11 +1,78 @@
 import SwiftUI
 import AppKit
+import ImageIO
+
+struct AgentLocalImagePreview: View {
+    let path: String
+    let accessibilityLabel: String
+    var width: CGFloat? = nil
+    var height: CGFloat? = nil
+    var maxWidth: CGFloat = 500
+    var maxHeight: CGFloat = 300
+    @State private var previewLoading = false
+    @State private var previewError: String?
+    @State private var previewImage: NSImage?
+    @State private var previewSource: String?
+
+    var body: some View {
+        Group {
+            if let previewImage, imagePreviewMatchesSource(previewSource, currentSource: path) {
+                Image(nsImage: previewImage).resizable().scaledToFit()
+            } else if previewLoading || (previewError == nil && !imagePreviewMatchesSource(previewSource, currentSource: path)) {
+                ProgressView().controlSize(.small)
+            } else if let previewError {
+                Label("图片预览失败", systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .help(previewError)
+            }
+        }
+        .frame(width: width, height: height)
+        .frame(maxWidth: maxWidth, maxHeight: maxHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityLabel(accessibilityLabel)
+        .task(id: path) {
+            previewImage = nil
+            previewSource = nil
+            previewError = nil
+            guard FileManager.default.fileExists(atPath: path) else {
+                previewError = "原图已移动或删除"
+                previewLoading = false
+                return
+            }
+            previewLoading = true
+            defer { if !Task.isCancelled { previewLoading = false } }
+            do {
+                try Task.checkCancellation()
+                guard let thumbnail = try await makeLocalImageThumbnail(at: path) else {
+                    previewError = "原图无法解码或格式不受支持"
+                    return
+                }
+                try Task.checkCancellation()
+                previewImage = NSImage(
+                    cgImage: thumbnail,
+                    size: NSSize(width: thumbnail.width, height: thumbnail.height)
+                )
+                previewSource = path
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                previewError = error.localizedDescription
+            }
+        }
+    }
+}
 
 /// Declarative assistant content: links and choices are user-driven; model
 /// text never gets an implicit command-execution capability.
 struct AgentAssistantMessageBody: View {
     let text: String
+    var accessibilityIdentifierPrefix: String = "agent.streaming-response"
     var onExecuteCommand: ((String) -> Void)? = nil
+
+    static func accessibilityPrefix(for messageID: String) -> String {
+        "agent.message.\(messageID)"
+    }
     var onReplySelection: ((String) -> Void)? = nil
     @State private var taskSelections: [String: Bool] = [:]
 
@@ -24,7 +91,7 @@ struct AgentAssistantMessageBody: View {
                         .font(.system(size: 10.5, weight: .medium))
                 }
                 .buttonStyle(.plain)
-                .accessibilityIdentifier("agent.reply-checked-options")
+                .accessibilityIdentifier("\(accessibilityIdentifierPrefix).reply-checked-options")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -53,6 +120,12 @@ struct AgentAssistantMessageBody: View {
         switch block {
         case .markdown(let markdown):
             AgentInlineMarkdown(text: markdown)
+        case .image(let label, let url):
+            AgentRemoteImageView(
+                label: label,
+                source: url,
+                accessibilityIdentifierPrefix: "\(accessibilityIdentifierPrefix).image.\(blockIndex)"
+            )
         case .heading(let level, let title):
             AgentInlineMarkdown(
                 text: title,
@@ -86,7 +159,7 @@ struct AgentAssistantMessageBody: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("\(isChecked ? "取消选择" : "选择") \(item.text)")
-                            .accessibilityIdentifier("agent.checklist.\(blockIndex).\(itemIndex)")
+                            .accessibilityIdentifier("\(accessibilityIdentifierPrefix).checklist.\(blockIndex).\(itemIndex)")
                         } else {
                             Text(item.marker)
                                 .font(.system(size: 12, design: .monospaced))
@@ -117,18 +190,27 @@ struct AgentAssistantMessageBody: View {
                 }
             }
             .scrollIndicators(.automatic)
-            .accessibilityIdentifier("agent.markdown-table")
+            .accessibilityIdentifier("\(accessibilityIdentifierPrefix).markdown-table.\(blockIndex)")
         case .choices(let prompt, let options):
             VStack(alignment: .leading, spacing: 8) {
                 AgentInlineMarkdown(text: prompt)
-                FlowChoiceButtons(options: options, onSelect: onReplySelection)
+                FlowChoiceButtons(
+                    options: options,
+                    onSelect: onReplySelection,
+                    accessibilityIdentifierPrefix: "\(accessibilityIdentifierPrefix).choice.\(blockIndex)"
+                )
                 Text("选择后填入输入框，可以修改再发送")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
             }
-            .accessibilityIdentifier("agent.interactive-options")
+            .accessibilityIdentifier("\(accessibilityIdentifierPrefix).interactive-options.\(blockIndex)")
         case .code(let language, let code):
-            AgentCodeBlockView(language: language, code: code, onExecuteCommand: onExecuteCommand)
+            AgentCodeBlockView(
+                language: language,
+                code: code,
+                onExecuteCommand: onExecuteCommand,
+                accessibilityIdentifierPrefix: "\(accessibilityIdentifierPrefix).code.\(blockIndex)"
+            )
         }
     }
 
@@ -171,6 +253,7 @@ private struct AgentInlineMarkdown: View {
 private struct FlowChoiceButtons: View {
     let options: [AgentResponseChoice]
     let onSelect: ((String) -> Void)?
+    let accessibilityIdentifierPrefix: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -189,7 +272,7 @@ private struct FlowChoiceButtons: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(onSelect == nil)
-                .accessibilityIdentifier("agent.choice.\(index)")
+                .accessibilityIdentifier("\(accessibilityIdentifierPrefix).\(index)")
             }
         }
     }
@@ -199,6 +282,7 @@ struct AgentCodeBlockView: View {
     let language: String?
     let code: String
     var onExecuteCommand: ((String) -> Void)? = nil
+    var accessibilityIdentifierPrefix: String = "agent.code"
 
     private var isCommand: Bool { AgentMessageBlock.isShellLanguage(language) }
     private var rows: [String] { code.components(separatedBy: "\n") }
@@ -222,7 +306,7 @@ struct AgentCodeBlockView: View {
                 }
                 .buttonStyle(.plain)
                 .help("复制原始代码")
-                .accessibilityIdentifier("agent.code-copy")
+                .accessibilityIdentifier("\(accessibilityIdentifierPrefix).copy")
                 if isCommand, let onExecuteCommand {
                     Button {
                         onExecuteCommand(code)
@@ -231,7 +315,7 @@ struct AgentCodeBlockView: View {
                     }
                     .buttonStyle(.plain)
                     .help("需再次确认；由现有 Forge Agent 按仓库权限执行")
-                    .accessibilityIdentifier("agent.command-run")
+                    .accessibilityIdentifier("\(accessibilityIdentifierPrefix).command-run")
                 }
             }
             .font(.system(size: 10, weight: .medium))
@@ -257,10 +341,6 @@ struct AgentCodeBlockView: View {
             .background(Color.primary.opacity(0.035))
         }
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5)
-        }
     }
 
     private func diffColor(_ line: String) -> Color {
@@ -269,5 +349,351 @@ struct AgentCodeBlockView: View {
         if line.hasPrefix("-"), !line.hasPrefix("---") { return .red }
         if line.hasPrefix("@@") { return .blue }
         return .primary
+    }
+}
+
+/// Model-provided remote images are not fetched until explicitly opened.
+/// Native save uses a user-selected destination; file:// is never accepted.
+enum RemoteImageSaveError: LocalizedError {
+    case invalidImage
+    case tooLarge
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidImage: return "远程资源不是有效图片"
+        case .tooLarge: return "图片超过 25 MB 限制"
+        }
+    }
+}
+
+func appendRemoteImageByte(_ byte: UInt8, to data: inout Data, maximumBytes: Int) throws {
+    guard data.count < maximumBytes else { throw RemoteImageSaveError.tooLarge }
+    data.append(byte)
+}
+
+private func makeImageThumbnail(from source: CGImageSource) -> CGImage? {
+    CGImageSourceCreateThumbnailAtIndex(
+        source, 0,
+        [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: 2_400,
+            kCGImageSourceCreateThumbnailWithTransform: true
+        ] as CFDictionary
+    )
+}
+
+func makeRemoteImageThumbnail(_ data: Data) async throws -> CGImage? {
+    let decoding = Task.detached(priority: .userInitiated) { () throws -> CGImage? in
+        try Task.checkCancellation()
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let thumbnail = makeImageThumbnail(from: source)
+        try Task.checkCancellation()
+        return thumbnail
+    }
+    return try await withTaskCancellationHandler {
+        try await decoding.value
+    } onCancel: {
+        decoding.cancel()
+    }
+}
+
+func validatedRemoteImageDataForSaving(_ data: Data) async throws -> Data {
+    guard try await makeRemoteImageThumbnail(data) != nil else {
+        throw RemoteImageSaveError.invalidImage
+    }
+    return data
+}
+
+func imagePreviewMatchesSource(_ previewSource: String?, currentSource: String) -> Bool {
+    previewSource == currentSource
+}
+
+func reusableRemoteImagePreviewData(
+    _ data: Data?, previewSource: String?, currentSource: String
+) -> Data? {
+    guard imagePreviewMatchesSource(previewSource, currentSource: currentSource) else { return nil }
+    return data
+}
+
+func makeLocalImageThumbnail(at path: String) async throws -> CGImage? {
+    let decoding = Task.detached(priority: .userInitiated) { () throws -> CGImage? in
+        try Task.checkCancellation()
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else { return nil }
+        let thumbnail = makeImageThumbnail(from: source)
+        try Task.checkCancellation()
+        return thumbnail
+    }
+    return try await withTaskCancellationHandler {
+        try await decoding.value
+    } onCancel: {
+        decoding.cancel()
+    }
+}
+
+func validateRemoteImageResponse(
+    statusCode: Int,
+    mimeType: String?,
+    expectedContentLength: Int64,
+    maximumBytes: Int
+) throws {
+    guard statusCode == 200,
+          mimeType?.lowercased().hasPrefix("image/") == true,
+          expectedContentLength != 0 else {
+        throw RemoteImageSaveError.invalidImage
+    }
+    guard expectedContentLength < 0 || expectedContentLength <= Int64(maximumBytes) else {
+        throw RemoteImageSaveError.tooLarge
+    }
+}
+
+func makeRemoteImageSessionConfiguration() -> URLSessionConfiguration {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.httpCookieStorage = nil
+    configuration.httpShouldSetCookies = false
+    configuration.urlCredentialStorage = nil
+    configuration.urlCache = nil
+    configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+    configuration.timeoutIntervalForRequest = 20
+    configuration.timeoutIntervalForResource = 60
+    return configuration
+}
+
+func canFollowRemoteImageRedirect(from sourceURL: URL, to targetURL: URL) -> Bool {
+    guard validatedRemoteImageURL(targetURL.absoluteString) != nil else { return false }
+    return sourceURL.scheme?.lowercased() != "https" || targetURL.scheme?.lowercased() == "https"
+}
+
+private final class RemoteImageRedirectPolicy: NSObject, URLSessionTaskDelegate {
+    private let sourceURL: URL
+
+    init(sourceURL: URL) {
+        self.sourceURL = sourceURL
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let targetURL = request.url,
+              canFollowRemoteImageRedirect(from: response.url ?? sourceURL, to: targetURL) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
+    }
+}
+
+private func downloadRemoteImage(from url: URL, maximumBytes: Int) async throws -> Data {
+    // Model-provided URLs must not inherit credentials or cookies from other app activity.
+    let redirectPolicy = RemoteImageRedirectPolicy(sourceURL: url)
+    let session = URLSession(
+        configuration: makeRemoteImageSessionConfiguration(),
+        delegate: redirectPolicy,
+        delegateQueue: nil
+    )
+    defer { session.invalidateAndCancel() }
+    let (bytes, response) = try await session.bytes(from: url)
+    guard let http = response as? HTTPURLResponse else {
+        throw RemoteImageSaveError.invalidImage
+    }
+    let expectedLength = response.expectedContentLength
+    try validateRemoteImageResponse(
+        statusCode: http.statusCode,
+        mimeType: response.mimeType,
+        expectedContentLength: expectedLength,
+        maximumBytes: maximumBytes
+    )
+
+    var data = Data()
+    if expectedLength > 0 { data.reserveCapacity(Int(expectedLength)) }
+    for try await byte in bytes {
+        try Task.checkCancellation()
+        try appendRemoteImageByte(byte, to: &data, maximumBytes: maximumBytes)
+    }
+    guard !data.isEmpty else { throw RemoteImageSaveError.invalidImage }
+    return data
+}
+
+struct AgentRemoteImageView: View {
+    let label: String
+    let source: String
+    let showsLabel: Bool
+    let accessibilityIdentifierPrefix: String
+    @State private var expanded = false
+    @State private var fullScreen = false
+    @State private var status: String?
+    @State private var isSaving = false
+    @State private var previewLoading = false
+    @State private var previewAttempt = 0
+    @State private var previewError: String?
+    @State private var previewData: Data?
+    @State private var previewSource: String?
+    @State private var previewImage: NSImage?
+
+    init(
+        label: String,
+        source: String,
+        showsLabel: Bool = true,
+        accessibilityIdentifierPrefix: String = "agent.image"
+    ) {
+        self.label = label
+        self.source = source
+        self.showsLabel = showsLabel
+        self.accessibilityIdentifierPrefix = accessibilityIdentifierPrefix
+    }
+
+    private var remoteURL: URL? {
+        validatedRemoteImageURL(source)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                if showsLabel {
+                    Image(systemName: "photo").foregroundStyle(.secondary)
+                    Text(label.isEmpty ? "图片资源" : label).font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                Button(expanded ? "收起" : "预览") { expanded.toggle() }
+                    .disabled(remoteURL == nil)
+                    .accessibilityIdentifier("\(accessibilityIdentifierPrefix).preview")
+                Button(isSaving ? "保存中…" : "保存…") { save() }
+                    .disabled(remoteURL == nil || isSaving || previewLoading)
+                    .accessibilityIdentifier("\(accessibilityIdentifierPrefix).save")
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11))
+            if expanded {
+                if let previewImage, imagePreviewMatchesSource(previewSource, currentSource: source) {
+                    Button { fullScreen = true } label: {
+                        Image(nsImage: previewImage).resizable().scaledToFit()
+                            .frame(maxWidth: 560, maxHeight: 300)
+                            .accessibilityLabel(label.isEmpty ? "图片预览" : label)
+                    }
+                    .buttonStyle(.plain)
+                    .help("放大预览")
+                    .accessibilityIdentifier("\(accessibilityIdentifierPrefix).fullscreen")
+                } else if previewLoading {
+                    ProgressView().frame(height: 80)
+                } else if let previewError {
+                    HStack(spacing: 8) {
+                        Label("图片加载失败", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary)
+                            .help(previewError)
+                        Button {
+                            previewAttempt += 1
+                        } label: {
+                            Label("重试", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(previewLoading)
+                        .accessibilityHint("重新加载图片")
+                        .accessibilityIdentifier("\(accessibilityIdentifierPrefix).retry")
+                    }
+                }
+            }
+            if let status {
+                Text(status).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+        .sheet(isPresented: $fullScreen) {
+            VStack(spacing: 10) {
+                HStack {
+                    Text(label.isEmpty ? "图片预览" : label).font(.headline)
+                    Spacer()
+                    Button("完成") { fullScreen = false }
+                        .accessibilityIdentifier("\(accessibilityIdentifierPrefix).fullscreen.close")
+                }
+                if let previewImage, previewSource == source {
+                    Image(nsImage: previewImage).resizable().scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityLabel(label.isEmpty ? "图片预览" : label)
+                } else if previewLoading {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let previewError {
+                    Label("图片加载失败", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .help(previewError)
+                }
+            }
+            .padding(18)
+            .frame(minWidth: 640, minHeight: 420)
+        }
+        .task(id: expanded ? "\(source)#\(previewAttempt)" : nil) {
+            guard expanded, let url = remoteURL else {
+                previewData = nil
+                previewSource = nil
+                previewImage = nil
+                previewError = nil
+                previewLoading = false
+                return
+            }
+            previewData = nil
+            previewSource = nil
+            previewImage = nil
+            previewLoading = true
+            previewError = nil
+            defer { if !Task.isCancelled { previewLoading = false } }
+            do {
+                let data = try await downloadRemoteImage(from: url, maximumBytes: 25 * 1024 * 1024)
+                try Task.checkCancellation()
+                guard let thumbnail = try await makeRemoteImageThumbnail(data) else {
+                    throw RemoteImageSaveError.invalidImage
+                }
+                try Task.checkCancellation()
+                previewData = data
+                previewSource = source
+                previewImage = NSImage(
+                    cgImage: thumbnail,
+                    size: NSSize(width: thumbnail.width, height: thumbnail.height)
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                previewError = error.localizedDescription
+            }
+        }
+        .accessibilityIdentifier("\(accessibilityIdentifierPrefix).resource")
+    }
+
+    @MainActor
+    private func save() {
+        guard let url = remoteURL, !isSaving else { return }
+        let panel = NSSavePanel()
+        let name = url.lastPathComponent
+        panel.nameFieldStringValue = name.isEmpty || !name.contains(".") ? "image.png" : name
+        guard panel.runModal() == .OK, let target = panel.url else { return }
+        isSaving = true
+        status = "正在保存…"
+        Task {
+            defer { isSaving = false }
+            do {
+                var data: Data
+                if let cachedPreviewData = reusableRemoteImagePreviewData(
+                    previewData, previewSource: previewSource, currentSource: source
+                ) {
+                    data = cachedPreviewData
+                } else {
+                    data = try await downloadRemoteImage(from: url, maximumBytes: 25 * 1024 * 1024)
+                    data = try await validatedRemoteImageDataForSaving(data)
+                }
+                try await Task.detached(priority: .utility) {
+                    try data.write(to: target, options: .atomic)
+                }.value
+                status = "已保存到 " + target.lastPathComponent
+            } catch let error as RemoteImageSaveError {
+                status = error.localizedDescription
+            } catch {
+                status = "保存失败：" + error.localizedDescription
+            }
+        }
     }
 }

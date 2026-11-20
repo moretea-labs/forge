@@ -17,7 +17,11 @@ import {
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
 } from '../persistence/sqlite-store';
-import { readRequirement } from '../persistence/requirement-store';
+import {
+  currentRequirementSemanticRevision,
+  readRequirement,
+  readRequirementWithinTransaction,
+} from '../persistence/requirement-store';
 import type { ScopeRef } from '../../../../packages/kernel/identity/api/index';
 import {
   isTerminalPlanContractStatus,
@@ -177,6 +181,8 @@ export interface CreatePlanSemanticInput {
   /** Optional immutable refinement parent. Omit for a root Plan. */
   parentPlanId?: string;
   requirementBasisRevision?: number;
+  /** Expected current Requirement semantic revision; checked atomically with Plan persistence. */
+  expectedRequirementRevision?: number;
   scopeKey?: string;
   sourceBasisRevision?: string;
   goal: string;
@@ -723,7 +729,6 @@ export function createPlanContract(options: PlanContractStoreOptions, input: Cre
 
 export function createPlanSemanticContext(options: PlanContractStoreOptions, input: CreatePlanSemanticInput): PlanContract {
   return withPlanAdmissionLock(options, () => {
-    assertRequirementReference(options, input.requirementId);
     const store = readPlanContractStore(options);
     const planId = sanitizeFileComponent(input.planId);
     if (!String(input.planId ?? '').trim() || planId === 'unknown') throw new Error('plan_id is required');
@@ -758,11 +763,23 @@ export function createPlanSemanticContext(options: PlanContractStoreOptions, inp
 
     const goal = String(input.goal ?? '').trim().slice(0, 2_000);
     if (!goal) throw new Error('PLAN_GOAL_REQUIRED');
+    const expectedRequirementRevision = input.expectedRequirementRevision;
+    if (expectedRequirementRevision !== undefined
+      && (!Number.isInteger(expectedRequirementRevision) || expectedRequirementRevision < 1)) {
+      throw new Error('PLAN_REQUIREMENT_EXPECTED_REVISION_INVALID');
+    }
+    if (expectedRequirementRevision !== undefined && !requirementId) {
+      throw new Error('PLAN_REQUIREMENT_REVISION_WITHOUT_REQUIREMENT');
+    }
     const requirementBasisRevision = input.requirementBasisRevision === undefined
-      ? undefined
+      ? expectedRequirementRevision
       : (() => {
           if (!Number.isInteger(input.requirementBasisRevision) || Number(input.requirementBasisRevision) < 1) {
             throw new Error('PLAN_REQUIREMENT_BASIS_REVISION_INVALID');
+          }
+          if (expectedRequirementRevision !== undefined
+            && Number(input.requirementBasisRevision) !== expectedRequirementRevision) {
+            throw new Error('PLAN_REQUIREMENT_BASIS_REVISION_MISMATCH');
           }
           return Number(input.requirementBasisRevision);
         })();
@@ -807,7 +824,33 @@ export function createPlanSemanticContext(options: PlanContractStoreOptions, inp
       createdAt: at,
       updatedAt: at,
     };
-    writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts: [plan, ...store.contracts] });
+    // Compare the exact parent Requirement revision and persist the Plan in
+    // one SQLite transaction. A concurrent Requirement revise cannot slip
+    // between proposal acceptance and Plan creation.
+    withControlPlaneTransaction(options.controllerHome, (database) => {
+      if (requirementId) {
+        const requirement = readRequirementWithinTransaction(database, requirementId);
+        if (!requirement) throw new Error(`PLAN_REQUIREMENT_NOT_FOUND: ${requirementId}`);
+        if (requirement.value.state === 'done' || requirement.value.state === 'cancelled') {
+          throw new Error(`PLAN_REQUIREMENT_TERMINAL: ${requirementId}:${requirement.value.state}`);
+        }
+        const actualRevision = currentRequirementSemanticRevision(requirement.value);
+        if (expectedRequirementRevision !== undefined && actualRevision !== expectedRequirementRevision) {
+          throw new Error(
+            `PLAN_REQUIREMENT_REVISION_CONFLICT:${requirementId}:expected=${expectedRequirementRevision}:actual=${actualRevision}`,
+          );
+        }
+      }
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'plan_contract',
+        scope: requirePlanContractStoreScopeKey(options),
+        key: plan.planId,
+        schemaVersion: 1,
+        value: plan,
+        action: 'plan_contract_write',
+        expectedRevision: null,
+      });
+    });
     return plan;
   });
 }

@@ -322,6 +322,14 @@ export function readRequirement(
   return readControlPlaneRecord<Requirement>(options.controllerHome, NAMESPACE, SCOPE, id(requirementId));
 }
 
+/** Read the canonical Requirement row using an existing Control Plane write transaction. */
+export function readRequirementWithinTransaction(
+  database: SqliteDatabase,
+  requirementId: string,
+): ControlPlaneRecord<Requirement> | undefined {
+  return readWithin(database,id(requirementId));
+}
+
 export function listRequirements(
   options: RequirementStoreOptions,
   limit = 500,

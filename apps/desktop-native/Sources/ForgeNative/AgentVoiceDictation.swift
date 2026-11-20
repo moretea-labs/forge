@@ -10,6 +10,14 @@ final class AgentVoiceDictation: ObservableObject {
     @Published private(set) var transcript = ""
     @Published private(set) var error: String?
 
+    var blocksSend: Bool {
+        Self.sendIsBlocked(isStarting:isStarting,isRecording:isRecording)
+    }
+
+    nonisolated static func sendIsBlocked(isStarting: Bool, isRecording: Bool) -> Bool {
+        isStarting || isRecording
+    }
+
     private let engine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
@@ -22,14 +30,35 @@ final class AgentVoiceDictation: ObservableObject {
         return existing + (existing.last?.isWhitespace == true ? "" : "\n") + words
     }
 
-    func start() async {
-        guard !isRecording, !isStarting else { return }
-        isStarting = true
-        defer { isStarting = false }
+    func beginStart() -> UUID? {
+        guard !isRecording, !isStarting else { return nil }
         let attemptID = UUID()
         sessionID = attemptID
+        isStarting = true
         error = nil
         transcript = ""
+        return attemptID
+    }
+
+    func finishStarting(_ attemptID: UUID) {
+        guard sessionID == attemptID else { return }
+        isStarting = false
+    }
+
+    func receiveTranscript(_ value: String, for attemptID: UUID) {
+        guard sessionID == attemptID else { return }
+        transcript = value
+    }
+
+    func cancel() {
+        stop()
+        transcript = ""
+        error = nil
+    }
+
+    func start() async {
+        guard let attemptID = beginStart() else { return }
+        defer { finishStarting(attemptID) }
 
         guard let recognizer = SFSpeechRecognizer(locale: Locale.current)
                 ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
@@ -86,7 +115,7 @@ final class AgentVoiceDictation: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self, self.sessionID == session else { return }
                 if let result {
-                    self.transcript = result.bestTranscription.formattedString
+                    self.receiveTranscript(result.bestTranscription.formattedString, for: session)
                     if result.isFinal { self.stop() }
                 }
                 if let failure {
@@ -99,6 +128,7 @@ final class AgentVoiceDictation: ObservableObject {
 
     func stop() {
         sessionID = UUID()
+        isStarting = false
         if engine.isRunning { engine.stop() }
         if request != nil { engine.inputNode.removeTap(onBus: 0) }
         request?.endAudio()

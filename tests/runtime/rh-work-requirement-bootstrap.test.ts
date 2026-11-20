@@ -500,6 +500,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(properties.requirement_priority).toMatchObject({ type: 'string', enum: ['low', 'normal', 'high', 'urgent'] });
     expect(properties.requirement_assignee).toMatchObject({ type: 'string', maxLength: 160 });
     expect(properties.requirement_status).toMatchObject({ type: 'string', enum: ['planned', 'active', 'waiting_for_user', 'done', 'cancelled'] });
+    expect(properties.expected_requirement_revision).toMatchObject({ type: 'number', minimum: 1 });
 
     const repoRoot = tempRoot('forge-typed-requirement-progress-repo-');
     const controllerHome = tempRoot('forge-typed-requirement-progress-home-');
@@ -914,6 +915,7 @@ describe('rh_work Requirement bootstrap', () => {
       requirement_id: 'REQ-THIN-PLAN-CREATE',
       scope_key: 'thin-plan-create',
       source_revision: sourceRevision,
+      expected_requirement_revision: 1,
       objective: 'Record strategy without creating execution ownership.',
       plan_items: [
         { id: 'item-a', objective: 'Describe one useful slice.', dependencies: [] },
@@ -925,6 +927,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(created.data.plan).toMatchObject({
       planId: 'PLAN-THIN-CREATE',
       revision: 1,
+      requirementBasisRevision: 1,
       items: [
         { id: 'item-a', objective: 'Describe one useful slice.', dependencies: [] },
         { id: 'item-b', objective: 'Describe a dependent slice.', dependencies: ['item-a'] },
@@ -1019,6 +1022,33 @@ describe('rh_work Requirement bootstrap', () => {
     }));
     expect(stale.status).toBe('blocked');
     expect(stale.data.currentPlan).toMatchObject({ planId: 'PLAN-THIN-CREATE', revision: 2 });
+
+    const parentAdvanced = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'requirement_revise',
+      requirement_id: 'REQ-THIN-PLAN-CREATE',
+      expected_revision: 1,
+      requirement_progress_summary: 'The parent Requirement advanced after proposal analysis.',
+    }));
+    expect(parentAdvanced.status).toBe('ok');
+    expect(parentAdvanced.data.requirement.revision).toBe(2);
+
+    const staleParent = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'PLAN-THIN-CREATE-STALE-PARENT',
+      requirement_id: 'REQ-THIN-PLAN-CREATE',
+      scope_key: 'thin-plan-stale-parent',
+      expected_requirement_revision: 1,
+      objective: 'This Plan must not be created against a stale Requirement revision.',
+      plan_items: [],
+    }));
+    expect(staleParent.status).toBe('blocked');
+    expect(staleParent.summary).toContain(
+      'PLAN_REQUIREMENT_REVISION_CONFLICT:REQ-THIN-PLAN-CREATE:expected=1:actual=2',
+    );
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, 'PLAN-THIN-CREATE-STALE-PARENT'))
+      .toBeUndefined();
   }, 15_000);
 
   test('retires the Plan scope-replan writer without mutating the Work', async () => {

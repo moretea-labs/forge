@@ -20,6 +20,7 @@ struct ZenReadOnlyReviewPane: View {
     @State private var error: String?
     @State private var reviewing: String?
     @State private var activeTurn: ForgeApiTurn?
+    @State private var reviewGeneration = UUID()
 
     var body: some View {
         VStack(alignment:.leading,spacing:12) {
@@ -46,16 +47,41 @@ struct ZenReadOnlyReviewPane: View {
                     .textSelection(.enabled)
             }
             if reviewing != nil {
-                Button("取消审查") { activeTurn?.cancel() }
+                Button("取消审查") { cancelReview() }
                     .buttonStyle(.bordered)
             }
         }
         .frame(maxWidth:.infinity,alignment:.leading)
-        .task(id:record.id + providers.joined(separator:"|")) { await run() }
-        .onDisappear { activeTurn?.cancel() }
+        .task(id:Self.reviewRequestIdentity(
+            projectId:model.selectedProjectId,repoId:model.projectRepositoryId,checkoutId:model.checkoutId,
+            recordId:record.id,role:role,focus:focus,providers:providers
+        )) { await run() }
+        .onDisappear { cancelReview() }
         .accessibilityIdentifier("zen.review.readonly.results")
     }
 
+
+    // The review is scoped to a specific workspace and review intention.
+    // Changing any input cancels the previous SwiftUI task and starts fresh.
+    static func reviewRequestIdentity(
+        projectId:String?,repoId:String?,checkoutId:String?,recordId:String,
+        role:String,focus:String,providers:[String]
+    ) -> [String] {
+        [projectId ?? "",repoId ?? "",checkoutId ?? "",recordId,role,focus] + providers
+    }
+
+    static func reviewModelName(provider:String,settings:LocalApiSettingsDetail?) -> String? {
+        guard let settings else { return nil }
+        if provider == "joycode" {
+            guard settings.joyCodeReady,
+                  !settings.joyCodeModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else { return nil }
+            return settings.joyCodeModel
+        }
+        guard provider == "api" || provider.hasPrefix("api:"),
+              let profile=settings.profile(providerId:provider),profile.endpointReady,
+              !profile.model.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else { return nil }
+        return profile.model
+    }
 
     // Keep the security-critical API transport contract in one testable path.
     // The model can only use tools exposed by the native helper; false is a
@@ -93,18 +119,33 @@ struct ZenReadOnlyReviewPane: View {
         return text
     }
 
+    private func cancelReview() {
+        reviewGeneration = UUID()
+        activeTurn?.cancel()
+        activeTurn = nil
+        reviewing = nil
+    }
+
     private func run() async {
-        guard let repoId=model.repoId,let checkoutId=model.checkoutId,
+        let generation = UUID()
+        reviewGeneration = generation
+        activeTurn?.cancel()
+        activeTurn = nil
+        outputs = []
+        error = nil
+        reviewing = nil
+        guard let projectId=model.selectedProjectId,let repoId=model.projectRepositoryId,
+              let checkoutId=model.checkoutId,
               providers.count >= 1,providers.count <= 2,
               Set(providers).count == providers.count else {
-            error="需要有效的 Repository / Checkout 和一至两个不同的 API Provider。"
+            error="需要有效的 Project / Repository / Checkout 和一至两个不同的 API Provider。"
             return
         }
         do {
             let operation=record.kind == .requirement ? "read_requirement_detail" : "read_plan_detail"
             let inputKey=record.kind == .requirement ? "requirementId" : "planId"
             let data=try await ForgeBridge.request(operation,[
-                "repoId":repoId,inputKey:record.recordId
+                "projectId":projectId,"repoId":repoId,inputKey:record.recordId
             ])
             let sourceText=try Self.canonicalSnapshot(
                 data,key:record.kind == .requirement ? "requirement" : "plan",
@@ -112,19 +153,15 @@ struct ZenReadOnlyReviewPane: View {
             )
 
             for provider in providers {
-                if Task.isCancelled { return }
-                guard model.repoId == repoId,model.checkoutId == checkoutId else {
+                if Task.isCancelled || reviewGeneration != generation { return }
+                guard model.selectedProjectId == projectId,model.projectRepositoryId == repoId,
+                      model.checkoutId == checkoutId else {
                     throw ForgeBridgeError.remote("项目已切换，停止审查。")
                 }
-                let name:String
-                if provider == "joycode",model.localApiSettings?.joyCodeReady == true {
-                    name=model.localApiSettings?.joyCodeModel ?? ""
-                } else if let profile=model.localApiSettings?.profile(providerId:provider),
-                          profile.endpointReady,provider.hasPrefix("api:") {
-                    name=profile.model
-                } else {
+                guard let name=Self.reviewModelName(provider:provider,settings:model.localApiSettings) else {
                     throw ForgeBridgeError.remote("Provider 已失效或未配置只读 API 通道：\(provider)")
                 }
+                guard reviewGeneration == generation else { return }
                 reviewing="\(name) 审查中"
                 let prompt="""
                 请作为\(role)提供独立审查意见。关注：\(focus)。
@@ -139,10 +176,15 @@ struct ZenReadOnlyReviewPane: View {
                     conversationId:conversationId,repoId:repoId,checkoutId:checkoutId,
                     provider:provider,model:name,prompt:prompt
                 ))
+                guard reviewGeneration == generation, !Task.isCancelled else {
+                    turn.cancel()
+                    return
+                }
                 activeTurn=turn
                 let result=try await turn.wait { _ in }
+                guard reviewGeneration == generation, !Task.isCancelled else { return }
                 activeTurn=nil
-                guard !Task.isCancelled,model.repoId == repoId,
+                guard model.repoId == repoId,
                       model.checkoutId == checkoutId else { return }
                 guard let output=result["output"] as? String,
                       !output.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else {
@@ -151,8 +193,10 @@ struct ZenReadOnlyReviewPane: View {
                 outputs.append(ReviewOutput(provider:provider,model:name,response:output))
             }
         } catch {
+            guard reviewGeneration == generation, !Task.isCancelled else { return }
             self.error="审查未全部完成：\(error.localizedDescription)"
         }
+        guard reviewGeneration == generation else { return }
         reviewing=nil
         activeTurn=nil
     }

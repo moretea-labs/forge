@@ -18,6 +18,112 @@ fn required(arguments: &Value, field: &str) -> Result<String, String> {
     required_bounded(arguments, field, 4096)
 }
 
+const PLUGIN_AUTHORIZATION_RESULT_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+fn project_plugin_authorizations(payload: &Value, plugin_id: &str) -> Result<Value, String> {
+    let rows = payload
+        .pointer("/result/authorizations")
+        .or_else(|| payload.pointer("/result/data/authorizations"))
+        .or_else(|| payload.pointer("/data/authorizations"))
+        .or_else(|| payload.get("authorizations"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_RESPONSE_INVALID".to_string())?;
+
+    let mut authorizations = Vec::new();
+    for row in rows {
+        let row_plugin_id = row.get("pluginId").and_then(Value::as_str).ok_or_else(|| {
+            "FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_RESPONSE_INVALID".to_string()
+        })?;
+        if row_plugin_id == plugin_id {
+            authorizations.push(row.clone());
+        }
+    }
+    let total_count = authorizations.len();
+    Ok(json!({
+        "authorizations": authorizations,
+        "totalCount": total_count,
+        "truncated": false
+    }))
+}
+
+async fn read_plugin_authorizations(plugin_id: String) -> Result<Value, String> {
+    let response = call_runtime_tool(
+        "plugin_action_execute",
+        json!({
+            "plugin_id": "plugin_management",
+            "action_id": "list_capability_authorizations",
+            "arguments": {},
+            "request_id": request_id("plugin-authorizations-read")
+        }),
+    )
+    .await?;
+
+    let payload = if response
+        .pointer("/result/externalized")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        let result = response
+            .get("result")
+            .ok_or_else(|| "FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_RESULT_INVALID".to_string())?;
+        let session_id = result
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_RESULT_INVALID".to_string())?;
+        let result_ref = result
+            .get("resultRef")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_RESULT_INVALID".to_string())?;
+
+        let mut cursor: Option<u64> = None;
+        let mut body = String::new();
+        loop {
+            let mut arguments = json!({
+                "session_id": session_id,
+                "result_ref": result_ref,
+                "limit": 128,
+                "request_id": request_id("plugin-authorizations-read-page")
+            });
+            if let Some(offset) = cursor {
+                arguments["cursor"] = json!(offset);
+            }
+            let page = call_runtime_tool("result_read", arguments).await?;
+            let chunk = page.get("items").and_then(Value::as_str).ok_or_else(|| {
+                "FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_PAGE_INVALID".to_string()
+            })?;
+            if body.len().saturating_add(chunk.len()) > PLUGIN_AUTHORIZATION_RESULT_MAX_BYTES {
+                return Err("FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_RESULT_TOO_LARGE".to_string());
+            }
+            body.push_str(chunk);
+
+            match page.get("truncated").and_then(Value::as_bool) {
+                Some(false) => break,
+                Some(true) => {
+                    let next = page
+                        .get("nextCursor")
+                        .and_then(Value::as_u64)
+                        .filter(|next| *next > cursor.unwrap_or(0))
+                        .ok_or_else(|| {
+                            "FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_CURSOR_INVALID".to_string()
+                        })?;
+                    cursor = Some(next);
+                }
+                None => {
+                    return Err("FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_PAGE_INVALID".to_string())
+                }
+            }
+        }
+        serde_json::from_str::<Value>(&body)
+            .map_err(|_| "FORGE_NATIVE_BRIDGE_PLUGIN_AUTHORIZATION_RESULT_INVALID".to_string())?
+    } else {
+        response
+    };
+
+    project_plugin_authorizations(&payload, &plugin_id)
+}
+
 fn required_strings(arguments: &Value, field: &str, max_items: usize) -> Result<Vec<String>, String> {
     let values = arguments.get(field).and_then(Value::as_array)
         .ok_or_else(|| format!("FORGE_NATIVE_BRIDGE_{field}_REQUIRED"))?;
@@ -57,9 +163,15 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
         "read_github_project_items" =>
             read_github_project_items(required(args, "repoId")?).await,
         "read_project_requirement_list" =>
-            read_project_requirement_list(required(args, "repoId")?).await,
+            read_project_requirement_list(
+                optional_project_text(args, "projectId", 512)?,
+                optional_project_text(args, "repoId", 256)?,
+            ).await,
         "read_project_plan_list" =>
-            read_project_plan_list(required(args, "repoId")?).await,
+            read_project_plan_list(
+                optional_project_text(args, "projectId", 512)?,
+                optional_project_text(args, "repoId", 256)?,
+            ).await,
         "read_project_schedules" =>
             read_project_schedules(required(args, "repoId")?).await,
         "control_project_schedule" =>
@@ -125,6 +237,10 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 required_bounded(args,"objective",4000)?,
                 args.get("requirementId").and_then(Value::as_str).map(str::to_owned),
                 args.get("parentPlanId").and_then(Value::as_str).map(str::to_owned),
+                args.get("expectedRequirementRevision").map(|value| {
+                    value.as_u64().filter(|revision| *revision > 0)
+                        .ok_or("FORGE_NATIVE_BRIDGE_EXPECTED_REQUIREMENT_REVISION_INVALID")
+                }).transpose()?,
             ).await,
         "revise_requirement" =>
             revise_requirement(
@@ -184,6 +300,7 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 required(args,"requirementId")?,
                 required(args,"operation")?,
                 args.get("confirmAuthorization").and_then(Value::as_bool).unwrap_or(false),
+                args.get("expectedRequirementRevision").and_then(Value::as_u64).filter(|revision| *revision > 0),
                 args.get("model").and_then(Value::as_str).map(str::to_owned),
                 args.get("maxTotalTokens").and_then(Value::as_u64),
                 args.get("maxTurns").and_then(Value::as_u64),
@@ -191,9 +308,49 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 args.get("checkpointPlanIds").and_then(Value::as_array)
                     .map(|values| values.iter().filter_map(Value::as_str).map(str::to_owned).take(64).collect())
                     .unwrap_or_default(),
+                args.get("approvedCheckpointRunId").and_then(Value::as_str).map(str::to_owned),
+                args.get("approvedCheckpointPlanId").and_then(Value::as_str).map(str::to_owned),
                 args.get("expiresInMinutes").and_then(Value::as_u64),
                 args.get("reason").and_then(Value::as_str).map(str::to_owned),
             ).await,
+        "record_user_knowledge" => {
+            let repo_id = required_bounded(args, "repoId", 256)?;
+            let checkout_id = required_bounded(args, "checkoutId", 256)?;
+            let request = required_bounded(args, "requestId", 160)?;
+            let scope = required_bounded(args, "scope", 16)?;
+            let summary = required_bounded(args, "summary", 8000)?;
+            let concept = required_bounded(args, "concept", 128)?;
+            let summary = summary.trim();
+            let concept = concept.trim();
+            if !matches!(scope.as_str(), "project" | "workspace")
+                || summary.chars().count() > 2000
+                || !concept.as_bytes().first().is_some_and(|c| c.is_ascii_lowercase())
+                || !concept.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'.' || c == b'-' || c == b'_') {
+                return Err("FORGE_NATIVE_KNOWLEDGE_INPUT_INVALID".to_string());
+            }
+            if !resolve_repository_effect_access(Some(&repo_id), Some(&checkout_id)).await? {
+                return Err("FORGE_NATIVE_KNOWLEDGE_WRITE_REQUIRES_FULL_ACCESS".to_string());
+            }
+            let response = call_runtime_tool("rh_work", json!({
+                "repo_id": repo_id, "checkout_id": checkout_id,
+                "operation": "learning_record", "request_id": request,
+                "learning_signals": [{
+                    "scope_kind": scope, "kind": "knowledge", "valence": "neutral",
+                    "summary": summary, "concepts": [concept],
+                    "admission_source": "explicit_human",
+                    "portability": if scope == "workspace" { "portable" } else { "local" },
+                    "salience": 0.9, "confidence": 1.0, "utility": 0.9
+                }]
+            })).await?;
+            let ids = response.pointer("/data/storedMemoryIds").and_then(Value::as_array)
+                .filter(|ids| !ids.is_empty())
+                .ok_or_else(|| "FORGE_NATIVE_KNOWLEDGE_WRITE_UNCONFIRMED".to_string())?;
+            if response.get("status").and_then(Value::as_str) != Some("ok")
+                || response.pointer("/data/recorded").and_then(Value::as_bool) != Some(true) {
+                return Err("FORGE_NATIVE_KNOWLEDGE_WRITE_UNCONFIRMED".to_string());
+            }
+            Ok(json!({"storedMemoryIds": ids}))
+        },
         "read_project_knowledge" =>
             read_project_knowledge(
                 required(args, "repoId")?,
@@ -213,6 +370,17 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
         "read_plugin_management" => read_plugin_management().await,
         "install_official_plugin" =>
             install_official_plugin(required(args, "pluginId")?).await,
+        "read_plugin_authorizations" =>
+            read_plugin_authorizations(required_bounded(args, "pluginId", 64)?).await,
+        "revoke_plugin_authorization" => call_runtime_tool("plugin_action_execute", json!({
+            "plugin_id": "plugin_management",
+            "action_id": "revoke_capability_authorization",
+            "arguments": {
+                "grant_id": required_bounded(args, "grantId", 256)?,
+                "reason": required_bounded(args, "reason", 240)?
+            },
+            "request_id": request_id("plugin-authorization-revoke")
+        })).await,
         "read_local_provider_status" => read_local_provider_status().await,
         "read_local_provider_models" => read_local_provider_models().await,
         "read_local_conversation_activity" =>
@@ -626,14 +794,20 @@ mod tests {
         assert!(!has_repository_or_project_scope(None, None));
 
         let missing_scope = tauri::async_runtime::block_on(create_plan(
-            None, None, "PLAN-1".into(), "Goal".into(), None, None,
+            None, None, "PLAN-1".into(), "Goal".into(), None, None, None,
         ));
         assert_eq!(missing_scope.unwrap_err(), "FORGE_DESKTOP_PLAN_CREATE_SCOPE_REQUIRED");
 
         let missing_requirement = tauri::async_runtime::block_on(create_plan(
-            None, Some("project-standalone".into()), "PLAN-1".into(), "Goal".into(), None, None,
+            None, Some("project-standalone".into()), "PLAN-1".into(), "Goal".into(), None, None, None,
         ));
         assert_eq!(missing_requirement.unwrap_err(), "FORGE_DESKTOP_PLAN_REQUIREMENT_REQUIRED");
+
+        let invalid_cas = tauri::async_runtime::block_on(create_plan(
+            None, Some("project-standalone".into()), "PLAN-1".into(), "Goal".into(),
+            Some("REQ-1".into()), None, Some(0),
+        ));
+        assert_eq!(invalid_cas.unwrap_err(), "FORGE_DESKTOP_PLAN_REQUIREMENT_REVISION_INVALID");
 
         let revise_without_scope = tauri::async_runtime::block_on(revise_plan(
             None, None, "PLAN-1".into(), 1, "Goal".into(),
@@ -712,6 +886,152 @@ mod tests {
     }
 
     #[test]
+    fn semantic_project_scope_preserves_project_and_repository_identity() {
+        let standalone = semantic_project_scope(
+            Some(" PROJECT-standalone ".into()), None, "scope-required"
+        ).expect("standalone Project scope");
+        assert_eq!(standalone["project_id"], "PROJECT-standalone");
+        assert!(!standalone.as_object().unwrap().contains_key("repo_id"));
+
+        let placed = semantic_project_scope(
+            Some("PROJECT-a".into()), Some(" repo-a ".into()), "scope-required"
+        ).expect("Project and Repository intersection");
+        assert_eq!(placed["project_id"], "PROJECT-a");
+        assert_eq!(placed["repo_id"], "repo-a");
+
+        let repository_only = semantic_project_scope(
+            None, Some("repo-legacy".into()), "scope-required"
+        ).expect("existing repository-only client scope remains accepted");
+        assert!(!repository_only.as_object().unwrap().contains_key("project_id"));
+        assert_eq!(repository_only["repo_id"], "repo-legacy");
+
+        assert_eq!(
+            semantic_project_scope(None, None, "scope-required").unwrap_err(),
+            "scope-required"
+        );
+    }
+
+    #[test]
+    fn requirement_create_receipt_confirms_exact_project_metadata_and_dependencies() {
+        let dependencies = vec!["REQ-parent".to_string()];
+        let receipt = json!({
+            "requirement": {
+                "requirementId": "REQ-child",
+                "projectId": "PROJECT-a",
+                "status": "planned",
+                "priority": "high",
+                "assignee": "owner",
+                "dependsOnRequirementIds": ["REQ-parent"]
+            }
+        });
+        assert_eq!(
+            super::requirement_create_receipt_error(
+                &receipt, "REQ-child", Some("PROJECT-a"), Some("planned"),
+                Some("high"), Some("owner"), Some(&dependencies)
+            ),
+            None
+        );
+        assert_eq!(
+            super::requirement_create_receipt_error(
+                &receipt, "REQ-child", Some("PROJECT-b"), Some("planned"),
+                Some("high"), Some("owner"), Some(&dependencies)
+            ),
+            Some("FORGE_DESKTOP_REQUIREMENT_PROJECT_NOT_CONFIRMED: refresh before retrying")
+        );
+        assert_eq!(
+            super::requirement_create_receipt_error(
+                &receipt, "REQ-child", Some("PROJECT-a"), Some("planned"),
+                Some("high"), Some("owner"), Some(&[])
+            ),
+            Some("FORGE_DESKTOP_REQUIREMENT_DEPENDENCIES_NOT_CONFIRMED: refresh before retrying")
+        );
+        assert_eq!(
+            super::requirement_create_receipt_error(
+                &receipt, "REQ-other", Some("PROJECT-a"), Some("planned"),
+                Some("high"), Some("owner"), Some(&dependencies)
+            ),
+            Some("FORGE_DESKTOP_REQUIREMENT_CREATE_NOT_CONFIRMED: refresh before retrying")
+        );
+        assert_eq!(
+            super::requirement_create_receipt_error(
+                &receipt, "REQ-child", Some("PROJECT-a"), Some("active"),
+                Some("high"), Some("owner"), Some(&dependencies)
+            ),
+            Some("FORGE_DESKTOP_REQUIREMENT_TASK_STATUS_NOT_CONFIRMED: refresh before retrying")
+        );
+    }
+
+    #[test]
+    fn native_project_and_plan_bridge_rejects_missing_canonical_scope() {
+        let requirement_list = tauri::async_runtime::block_on(dispatch(
+            "read_project_requirement_list", &json!({})
+        ));
+        assert_eq!(requirement_list.unwrap_err(), "FORGE_DESKTOP_REQUIREMENT_LIST_SCOPE_REQUIRED");
+
+        let plan_list = tauri::async_runtime::block_on(dispatch(
+            "read_project_plan_list", &json!({})
+        ));
+        assert_eq!(plan_list.unwrap_err(), "FORGE_DESKTOP_PLAN_LIST_SCOPE_REQUIRED");
+
+        let plan_detail = tauri::async_runtime::block_on(dispatch(
+            "read_plan_detail", &json!({"planId":"PLAN-1"})
+        ));
+        assert_eq!(plan_detail.unwrap_err(), "FORGE_DESKTOP_PLAN_DETAIL_SCOPE_REQUIRED");
+
+        let repo_only_create = tauri::async_runtime::block_on(dispatch(
+            "create_plan", &json!({"repoId":"repo-a","planId":"PLAN-1","objective":"Plan"})
+        ));
+        assert_eq!(repo_only_create.unwrap_err(), "FORGE_NATIVE_BRIDGE_projectId_REQUIRED");
+
+        let invalid_requirement_revision = tauri::async_runtime::block_on(dispatch(
+            "create_plan", &json!({
+                "projectId":"project-a","repoId":"repo-a","planId":"PLAN-1","objective":"Plan",
+                "requirementId":"REQ-1","expectedRequirementRevision":0
+            })
+        ));
+        assert_eq!(
+            invalid_requirement_revision.unwrap_err(),
+            "FORGE_NATIVE_BRIDGE_EXPECTED_REQUIREMENT_REVISION_INVALID"
+        );
+
+        let repo_only_revise = tauri::async_runtime::block_on(dispatch(
+            "revise_plan", &json!({"repoId":"repo-a","planId":"PLAN-1","expectedRevision":1,"objective":"Plan"})
+        ));
+        assert_eq!(repo_only_revise.unwrap_err(), "FORGE_NATIVE_BRIDGE_projectId_REQUIRED");
+    }
+
+    #[test]
+    fn native_plugin_authorization_bridge_requires_bounded_identifiers_and_reason() {
+        let missing_plugin = tauri::async_runtime::block_on(dispatch(
+            "read_plugin_authorizations", &json!({})
+        ));
+        assert_eq!(missing_plugin.unwrap_err(), "FORGE_NATIVE_BRIDGE_pluginId_REQUIRED");
+
+        let missing_grant = tauri::async_runtime::block_on(dispatch(
+            "revoke_plugin_authorization", &json!({})
+        ));
+        assert_eq!(missing_grant.unwrap_err(), "FORGE_NATIVE_BRIDGE_grantId_REQUIRED");
+
+        let missing_reason = tauri::async_runtime::block_on(dispatch(
+            "revoke_plugin_authorization", &json!({"grantId":"grant-1"})
+        ));
+        assert_eq!(missing_reason.unwrap_err(), "FORGE_NATIVE_BRIDGE_reason_REQUIRED");
+        let projected = project_plugin_authorizations(&json!({
+            "result": { "authorizations": [
+                { "grantId": "grant-figma", "pluginId": "figma" },
+                { "grantId": "grant-gmail", "pluginId": "gmail" }
+            ]}
+        }), "figma").expect("complete authorization projection");
+        assert_eq!(projected["totalCount"], 1);
+        assert_eq!(projected["truncated"], false);
+        assert_eq!(projected["authorizations"][0]["grantId"], "grant-figma");
+
+        assert!(project_plugin_authorizations(&json!({
+            "result": { "authorizations": [{ "grantId": "missing-plugin-id" }] }
+        }), "figma").is_err());
+    }
+
+    #[test]
     fn scoped_user_request_merge_preserves_exact_counts_and_legacy_fallback() {
         let global = json!({"data":{
             "items":[{"requestId":"global-1","updatedAt":"2026-11-09T00:00:00Z"}],
@@ -744,6 +1064,33 @@ mod tests {
     }
 
     #[test]
+    fn user_knowledge_rejects_invalid_scope_concept_and_missing_checkout_before_effect() {
+        let base = json!({
+            "repoId": "repo_1", "checkoutId": "checkout_1",
+            "requestId": "knowledge-test", "scope": "project",
+            "summary": "A human-authored correction", "concept": "engineering.root-cause"
+        });
+        let mut invalid_scope = base.clone();
+        invalid_scope["scope"] = json!("global");
+        assert_eq!(
+            tauri::async_runtime::block_on(dispatch("record_user_knowledge", &invalid_scope)).unwrap_err(),
+            "FORGE_NATIVE_KNOWLEDGE_INPUT_INVALID"
+        );
+        let mut invalid_concept = base.clone();
+        invalid_concept["concept"] = json!("invalid concept");
+        assert_eq!(
+            tauri::async_runtime::block_on(dispatch("record_user_knowledge", &invalid_concept)).unwrap_err(),
+            "FORGE_NATIVE_KNOWLEDGE_INPUT_INVALID"
+        );
+        let mut missing_checkout = base.clone();
+        missing_checkout.as_object_mut().unwrap().remove("checkoutId");
+        assert_eq!(
+            tauri::async_runtime::block_on(dispatch("record_user_knowledge", &missing_checkout)).unwrap_err(),
+            "FORGE_NATIVE_BRIDGE_checkoutId_REQUIRED"
+        );
+    }
+
+    #[test]
     fn bridge_never_accepts_arbitrary_command_execution() {
         let invalid = tauri::async_runtime::block_on(dispatch("execute_command", &json!({})));
         assert_eq!(invalid.unwrap_err(), "FORGE_NATIVE_BRIDGE_OPERATION_UNSUPPORTED");
@@ -753,6 +1100,14 @@ mod tests {
             "operation":"status"
         })));
         assert_eq!(missing_checkout.unwrap_err(), "FORGE_NATIVE_BRIDGE_checkoutId_REQUIRED");
+        let missing_approval_revision = tauri::async_runtime::block_on(dispatch("autopilot_control", &json!({
+            "repoId":"repo_1",
+            "checkoutId":"checkout_1",
+            "requirementId":"REQ-1",
+            "operation":"authorize",
+            "confirmAuthorization":true
+        })));
+        assert_eq!(missing_approval_revision.unwrap_err(), "FORGE_DESKTOP_AUTOPILOT_EXPECTED_REQUIREMENT_REVISION_REQUIRED");
         let merged = merge_user_request_projections(
             json!({"data":{"items":[
                 {"requestId":"global","title":"Global","summary":"g","status":"pending","updatedAt":"2026-11-09T02:00:00Z"},
