@@ -28,7 +28,7 @@ read_active_plan_marker() {
   local marker_plan
 
   if [[ -f "$marker_file" ]]; then
-    marker_plan="$(cat "$marker_file" 2>/dev/null | xargs)"
+    marker_plan="$(xargs <"$marker_file" 2>/dev/null)"
     if [[ -n "$marker_plan" && -f "$marker_plan" ]]; then
       printf '%s' "$marker_plan"
       return 0
@@ -39,15 +39,15 @@ read_active_plan_marker() {
 }
 
 get_active_plan() {
-  read_active_plan_marker "$ACTIVE_PLAN_MARKER" \
-    || read_active_plan_marker "$LEGACY_ACTIVE_PLAN_MARKER"
+  read_active_plan_marker "$ACTIVE_PLAN_MARKER" ||
+    read_active_plan_marker "$LEGACY_ACTIVE_PLAN_MARKER"
 }
 
 ensure_templates() {
   mkdir -p .claude/templates
 
   if [[ ! -f ".claude/templates/spec.template.md" ]]; then
-    cat > .claude/templates/spec.template.md <<'SPEC_TEMPLATE_EOF'
+    cat >.claude/templates/spec.template.md <<'SPEC_TEMPLATE_EOF'
 # Product Spec: {{PROJECT_NAME}}
 
 > **Status**: Draft
@@ -83,7 +83,7 @@ SPEC_TEMPLATE_EOF
   fi
 
   if [[ ! -f ".claude/templates/research.template.md" ]]; then
-    cat > .claude/templates/research.template.md <<'RESEARCH_TEMPLATE_EOF'
+    cat >.claude/templates/research.template.md <<'RESEARCH_TEMPLATE_EOF'
 # {{PROJECT_NAME}} — Research Notes
 
 > **Last Updated**: {{DATE}}
@@ -109,7 +109,7 @@ RESEARCH_TEMPLATE_EOF
   fi
 
   if [[ ! -f ".claude/templates/prd.template.md" ]]; then
-    cat > .claude/templates/prd.template.md <<'PRD_TEMPLATE_EOF'
+    cat >.claude/templates/prd.template.md <<'PRD_TEMPLATE_EOF'
 # PRD: {{PRD_TITLE}}
 
 > **Status**: Draft
@@ -279,7 +279,7 @@ PRD_TEMPLATE_EOF
   fi
 
   if [[ ! -f ".claude/templates/plan.template.md" ]]; then
-    cat > .claude/templates/plan.template.md <<'PLAN_TEMPLATE_EOF'
+    cat >.claude/templates/plan.template.md <<'PLAN_TEMPLATE_EOF'
 # Plan: {{TITLE}}
 
 > **Status**: Draft
@@ -361,7 +361,7 @@ PLAN_TEMPLATE_EOF
   fi
 
   if [[ ! -f ".claude/templates/contract.template.md" ]]; then
-    cat > .claude/templates/contract.template.md <<'CONTRACT_TEMPLATE_EOF'
+    cat >.claude/templates/contract.template.md <<'CONTRACT_TEMPLATE_EOF'
 # Task Contract: {{TASK_SLUG}}
 
 > **Status**: Pending
@@ -464,7 +464,7 @@ CONTRACT_TEMPLATE_EOF
   fi
 
   if [[ ! -f ".claude/templates/review.template.md" ]]; then
-    cat > .claude/templates/review.template.md <<'REVIEW_TEMPLATE_EOF'
+    cat >.claude/templates/review.template.md <<'REVIEW_TEMPLATE_EOF'
 # Task Review: {{TASK_SLUG}}
 
 > **Status**: Pending
@@ -506,7 +506,7 @@ REVIEW_TEMPLATE_EOF
   fi
 
   if [[ ! -f ".claude/templates/implementation-notes.template.md" ]]; then
-    cat > .claude/templates/implementation-notes.template.md <<'NOTES_TEMPLATE_EOF'
+    cat >.claude/templates/implementation-notes.template.md <<'NOTES_TEMPLATE_EOF'
 # Implementation Notes: {{TASK_SLUG}}
 
 > **Status**: Active
@@ -551,7 +551,7 @@ NOTES_TEMPLATE_EOF
 ensure_idle_todo() {
   mkdir -p tasks
   if [[ ! -f "tasks/todos.md" ]]; then
-    cat > tasks/todos.md <<'TODO_EOF'
+    cat >tasks/todos.md <<'TODO_EOF'
 # Deferred Goal Ledger
 
 > **Status**: Backlog
@@ -578,7 +578,7 @@ ensure_current_status_snapshot() {
   fi
 
   if [[ ! -f "tasks/current.md" ]]; then
-    cat > tasks/current.md <<'CURRENT_STATUS_EOF'
+    cat >tasks/current.md <<'CURRENT_STATUS_EOF'
 # Current Status Snapshot
 
 <!-- generated-by: forge refresh-current-status v1 -->
@@ -603,7 +603,7 @@ ensure_auxiliary_files() {
   mkdir -p plans plans/prds plans/sprints tasks/issues tasks/contracts tasks/reviews tasks/notes tasks/workstreams docs/architecture/domains docs/architecture/modules docs/architecture/requests docs/architecture/snapshots docs/architecture/diagrams scripts .ai/context .ai/harness/checks .ai/harness/session .ai/harness/controller/packets .ai/harness/projections .ai/harness/transfers .ai/harness/scripts .ai/harness/failures .ai/harness/security .ai/harness/planning .ai/harness/architecture .ai/harness/worktrees .ai/harness/runs .ai/harness/jobs .ai/harness/local-jobs .ai/harness/controller .ai/harness/edit-sessions
 
   if [[ ! -f "docs/spec.md" ]]; then
-    cat > docs/spec.md <<'SPEC_EOF'
+    cat >docs/spec.md <<'SPEC_EOF'
 # Product Spec
 
 > **Status**: Draft
@@ -612,7 +612,7 @@ SPEC_EOF
   fi
 
   if [[ ! -f "tasks/lessons.md" ]]; then
-    cat > tasks/lessons.md <<'LESSONS_EOF'
+    cat >tasks/lessons.md <<'LESSONS_EOF'
 # Lessons Learned (Self-Improvement Loop)
 
 > Capture correction-derived prevention rules here.
@@ -629,7 +629,7 @@ LESSONS_EOF
 
   mkdir -p docs/researches
   if [[ ! -f "docs/researches/README.md" ]]; then
-    cat > docs/researches/README.md <<'RESEARCH_README_EOF'
+    cat >docs/researches/README.md <<'RESEARCH_README_EOF'
 # Research Reports
 
 Durable research reports live in this directory as dated Markdown files.
@@ -641,11 +641,11 @@ RESEARCH_README_EOF
   fi
 
   if [[ ! -f ".ai/harness/checks/latest.json" ]]; then
-    echo "{}" > ".ai/harness/checks/latest.json"
+    echo "{}" >".ai/harness/checks/latest.json"
   fi
 
   if [[ ! -f ".ai/harness/session/continuation.md" ]]; then
-    cat > ".ai/harness/session/continuation.md" <<'HANDOFF_EOF'
+    cat >".ai/harness/session/continuation.md" <<'HANDOFF_EOF'
 # Forge Session Continuation Snapshot
 
 > **Reason**: bootstrap
@@ -653,7 +653,7 @@ HANDOFF_EOF
   fi
 
   if [[ ! -f ".ai/harness/session/resume.md" ]]; then
-    cat > ".ai/harness/session/resume.md" <<'RESUME_EOF'
+    cat >".ai/harness/session/resume.md" <<'RESUME_EOF'
 # Codex Resume Packet
 
 > **Reason**: bootstrap
@@ -661,64 +661,64 @@ RESUME_EOF
   fi
 
   if [[ ! -f ".ai/harness/events.jsonl" ]]; then
-    : > ".ai/harness/events.jsonl"
+    : >".ai/harness/events.jsonl"
   fi
 
   if [[ ! -f ".ai/harness/architecture/events.jsonl" ]]; then
-    : > ".ai/harness/architecture/events.jsonl"
+    : >".ai/harness/architecture/events.jsonl"
   fi
 
   if [[ ! -f ".ai/harness/architecture/.gitkeep" ]]; then
-    : > ".ai/harness/architecture/.gitkeep"
+    : >".ai/harness/architecture/.gitkeep"
   fi
 
   if [[ ! -f ".ai/harness/failures/latest.jsonl" ]]; then
-    : > ".ai/harness/failures/latest.jsonl"
+    : >".ai/harness/failures/latest.jsonl"
   fi
 
   if [[ ! -f ".ai/harness/security/.gitkeep" ]]; then
-    : > ".ai/harness/security/.gitkeep"
+    : >".ai/harness/security/.gitkeep"
   fi
 
   if [[ ! -f ".ai/harness/runs/.gitkeep" ]]; then
-    : > ".ai/harness/runs/.gitkeep"
+    : >".ai/harness/runs/.gitkeep"
   fi
   if [[ ! -f ".ai/harness/worktrees/.gitkeep" ]]; then
-    : > ".ai/harness/worktrees/.gitkeep"
+    : >".ai/harness/worktrees/.gitkeep"
   fi
   if [[ ! -f ".ai/harness/jobs/.gitkeep" ]]; then
-    : > ".ai/harness/jobs/.gitkeep"
+    : >".ai/harness/jobs/.gitkeep"
   fi
   if [[ ! -f ".ai/harness/edit-sessions/.gitkeep" ]]; then
-    : > ".ai/harness/edit-sessions/.gitkeep"
+    : >".ai/harness/edit-sessions/.gitkeep"
   fi
 
   if [[ ! -f "docs/architecture/requests/.gitkeep" ]]; then
-    : > "docs/architecture/requests/.gitkeep"
+    : >"docs/architecture/requests/.gitkeep"
   fi
 
   if [[ ! -f "docs/architecture/snapshots/.gitkeep" ]]; then
-    : > "docs/architecture/snapshots/.gitkeep"
+    : >"docs/architecture/snapshots/.gitkeep"
   fi
 
   if [[ ! -f "docs/architecture/diagrams/.gitkeep" ]]; then
-    : > "docs/architecture/diagrams/.gitkeep"
+    : >"docs/architecture/diagrams/.gitkeep"
   fi
 
   if [[ ! -f "docs/architecture/domains/.gitkeep" ]]; then
-    : > "docs/architecture/domains/.gitkeep"
+    : >"docs/architecture/domains/.gitkeep"
   fi
 
   if [[ ! -f "docs/architecture/modules/.gitkeep" ]]; then
-    : > "docs/architecture/modules/.gitkeep"
+    : >"docs/architecture/modules/.gitkeep"
   fi
 
   if [[ ! -f "tasks/workstreams/.gitkeep" ]]; then
-    : > "tasks/workstreams/.gitkeep"
+    : >"tasks/workstreams/.gitkeep"
   fi
 
   if [[ ! -f ".ai/context/capabilities.json" ]]; then
-    cat > ".ai/context/capabilities.json" <<'CAPABILITIES_EOF'
+    cat >".ai/context/capabilities.json" <<'CAPABILITIES_EOF'
 {
   "version": 1,
   "capabilities": []
@@ -727,7 +727,7 @@ CAPABILITIES_EOF
   fi
 
   if [[ ! -f "docs/architecture/index.md" ]]; then
-    cat > "docs/architecture/index.md" <<'ARCHITECTURE_INDEX_EOF'
+    cat >"docs/architecture/index.md" <<'ARCHITECTURE_INDEX_EOF'
 # Architecture Index
 
 > Umbrella architecture ledger for current boundaries, drift requests, snapshots, and diagrams.
@@ -757,7 +757,7 @@ ARCHITECTURE_INDEX_EOF
   fi
 
   if [[ ! -f ".ai/harness/policy.json" ]]; then
-    cat > ".ai/harness/policy.json" <<'POLICY_EOF'
+    cat >".ai/harness/policy.json" <<'POLICY_EOF'
 {
   "version": 1,
   "active_plan": {
@@ -917,26 +917,12 @@ ARCHITECTURE_INDEX_EOF
     "rule": "use block-level LSP/tooling hints before broad repo assumptions"
   },
   "worktree_strategy": {
-    "auto_on_conflict": true,
-    "auto_for_contract_tasks": true,
-    "branch_prefix": "codex/",
+    "enabled": false,
+    "mode": "main-only",
+    "auto_on_conflict": false,
+    "auto_for_contract_tasks": false,
     "base_branch": "main",
-    "worktree_dir_template": "../{{repo}}-wt-{{slug}}",
-    "start_script": "scripts/contract-worktree.sh start --plan <plan-file>",
-    "finish_script": "scripts/contract-worktree.sh finish",
-    "cleanup_script": "scripts/contract-worktree.sh cleanup --slug <slug>",
-    "conflict_signals": [
-      "dirty_worktree_overlaps_task_files",
-      "current_branch_not_suitable_for_task",
-      "existing_changes_unrelated_but_would_block_review",
-      "task_requires_clean_validation_surface"
-    ],
-    "validation_route": "forge:/review",
-    "merge_back": {
-      "target": "main",
-      "requires_clean_check": true,
-      "preserve_unrelated_changes": true
-    }
+    "rule": "all source work uses the primary main checkout; dirty files and overlapping paths are reconciled in place; legacy worktrees are parked evidence and are never created or auto-resumed"
   },
   "upgrade": {
     "strategy_version": 1,
@@ -1038,7 +1024,7 @@ POLICY_EOF
   fi
 
   if [[ ! -f ".ai/harness/brain-manifest.json" ]]; then
-    cat > ".ai/harness/brain-manifest.json" <<'BRAIN_MANIFEST_EOF'
+    cat >".ai/harness/brain-manifest.json" <<'BRAIN_MANIFEST_EOF'
 {
   "version": 1,
   "project": "<project>",
@@ -1055,7 +1041,7 @@ BRAIN_MANIFEST_EOF
   fi
 
   if [[ ! -f ".ai/context/context-map.json" ]]; then
-    cat > ".ai/context/context-map.json" <<'CONTEXT_EOF'
+    cat >".ai/context/context-map.json" <<'CONTEXT_EOF'
 {
   "version": 1,
   "profile": "stable-root-progressive-subdir",
@@ -1108,29 +1094,37 @@ new_plan=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --new-plan)
-      new_plan=1
-      shift
-      ;;
-    --slug)
-      [[ -n "${2:-}" ]] || { echo "Error: --slug requires a value" >&2; usage; exit 1; }
-      slug="$2"
-      shift 2
-      ;;
-    --title)
-      [[ -n "${2:-}" ]] || { echo "Error: --title requires a value" >&2; usage; exit 1; }
-      title="$2"
-      shift 2
-      ;;
-    --help|-h)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
+  --new-plan)
+    new_plan=1
+    shift
+    ;;
+  --slug)
+    [[ -n "${2:-}" ]] || {
+      echo "Error: --slug requires a value" >&2
       usage
       exit 1
-      ;;
+    }
+    slug="$2"
+    shift 2
+    ;;
+  --title)
+    [[ -n "${2:-}" ]] || {
+      echo "Error: --title requires a value" >&2
+      usage
+      exit 1
+    }
+    title="$2"
+    shift 2
+    ;;
+  --help | -h)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "Unknown argument: $1" >&2
+    usage
+    exit 1
+    ;;
   esac
 done
 

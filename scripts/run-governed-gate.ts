@@ -52,6 +52,12 @@ export function stepsFor(gate: Gate): Step[] {
         timeoutMs: 2 * 60_000,
       },
       {
+        label: 'main synchronization contract',
+        command: 'bash',
+        args: ['scripts/test-sync-main.sh'],
+        timeoutMs: 2 * 60_000,
+      },
+      {
         label: 'PR closing-reference intent',
         command: 'node',
         args: ['scripts/check-pr-closing-intent.mjs'],

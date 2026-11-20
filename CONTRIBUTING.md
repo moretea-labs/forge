@@ -80,3 +80,7 @@ Maintainers may ask for a smaller patch when a change combines documentation, ru
 ## License
 
 By contributing, you agree that your contribution is licensed under the repository's [MIT License](LICENSE) and that required attribution can be recorded in [NOTICE](NOTICE) or [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Main-only source delivery
+
+All source changes are delivered directly on the primary `main` checkout. Do not create task branches, linked worktrees, or PRs. Before work run `bash scripts/sync-main.sh`; after a validated slice use `bash scripts/sync-main.sh --commit --message "<message>" --path <owned-path> ...`. The script runs `bun run check:main` by default, commits only the selected paths, publishes only a fast-forward to `origin/main`, and verifies both refs converge.

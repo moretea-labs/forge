@@ -524,19 +524,48 @@ describe('Forge Runtime service', () => {
       env: { ...process.env, INVOCATION_ID: 'forge-systemd-test' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    let childStdout = '';
+    let childStderr = '';
+    let ready = false;
+    const exitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit) => {
+      launched.once('exit', (code, signal) => resolveExit({ code, signal }));
+    });
     await new Promise<void>((resolveReady, rejectReady) => {
-      const timer = setTimeout(() => rejectReady(new Error('package Runtime child did not become ready')), 5_000);
-      launched.once('error', rejectReady);
+      const timer = setTimeout(
+        () =>
+          rejectReady(
+            new Error(
+              `package Runtime child did not become ready (pid=${launched.pid ?? 'unknown'}, stdout=${JSON.stringify(childStdout)}, stderr=${JSON.stringify(childStderr)})`,
+            ),
+          ),
+        5_000,
+      );
+      launched.once('error', (error) => {
+        clearTimeout(timer);
+        rejectReady(error);
+      });
+      launched.once('exit', (code, signal) => {
+        if (ready) return;
+        clearTimeout(timer);
+        rejectReady(
+          new Error(
+            `package Runtime child exited before ready (code=${code}, signal=${signal}, stdout=${JSON.stringify(childStdout)}, stderr=${JSON.stringify(childStderr)})`,
+          ),
+        );
+      });
       launched.stdout?.on('data', (chunk) => {
-        if (!String(chunk).includes('ready')) return;
+        childStdout += String(chunk);
+        if (ready || !childStdout.includes('ready')) return;
+        ready = true;
         clearTimeout(timer);
         resolveReady();
       });
+      launched.stderr?.on('data', (chunk) => {
+        childStderr += String(chunk);
+      });
     });
     process.kill(-launched.pid!, 'SIGTERM');
-    const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit) => {
-      launched.once('exit', (code, signal) => resolveExit({ code, signal }));
-    });
+    const exit = await exitPromise;
     expect(exit).toEqual({ code: 0, signal: null });
   });
 

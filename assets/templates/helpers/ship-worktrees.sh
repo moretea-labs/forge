@@ -14,13 +14,12 @@ cd "$REPO_ROOT"
 usage() {
   cat <<'USAGE_EOF'
 Usage:
-  scripts/ship-worktrees.sh [--target <branch>] [--remote <name>] [--slug <slug>] [--ready] [--dry-run]
-  scripts/ship-worktrees.sh --local-merge [--target <branch>] [--slug <slug>] [--dry-run]
-  scripts/ship-worktrees.sh --cleanup-merged [--target <branch>] [--slug <slug>] [--discard-scaffold-only] [--dry-run]
+  scripts/ship-worktrees.sh [--dry-run]
+  scripts/ship-worktrees.sh --cleanup-merged [--target main] [--slug <slug>] [--dry-run]
 
-Default mode validates finished contract worktrees, commits them through
-contract-worktree finish --no-merge, pushes their codex/* branches, and opens
-draft PRs. It does not fast-forward main by default.
+Default mode delegates to scripts/sync-main.sh. PR delivery, feature-branch
+publication and new worktree creation are disabled. Cleanup is retained only
+for legacy worktrees already proven clean and integrated.
 USAGE_EOF
 }
 
@@ -116,9 +115,9 @@ dirty_paths_for_worktree() {
 is_scaffold_path() {
   local path="$1"
   case "$path" in
-    tasks/todos.md|plans/plan-*.md|tasks/contracts/*.contract.md|tasks/reviews/*.review.md|tasks/notes/*.notes.md|.ai/harness/active-plan|.ai/harness/active-worktree|.claude/.active-plan|.ai/harness/worktrees/*.json)
-      return 0
-      ;;
+  tasks/todos.md | plans/plan-*.md | tasks/contracts/*.contract.md | tasks/reviews/*.review.md | tasks/notes/*.notes.md | .ai/harness/active-plan | .ai/harness/active-worktree | .claude/.active-plan | .ai/harness/worktrees/*.json)
+    return 0
+    ;;
   esac
   return 1
 }
@@ -212,7 +211,7 @@ active_plan_or_empty() {
   if declare -F get_active_plan >/dev/null 2>&1; then
     active_plan="$(get_active_plan 2>/dev/null || true)"
   elif [[ -f ".ai/harness/active-plan" ]]; then
-    active_plan="$(cat ".ai/harness/active-plan" 2>/dev/null | xargs)"
+    active_plan="$(xargs <".ai/harness/active-plan" 2>/dev/null)"
   fi
   printf '%s' "$active_plan"
 }
@@ -342,8 +341,8 @@ ship_linked_pr() {
   [[ -n "$branch" ]] || fail "detached HEAD is not supported"
   [[ "$branch" != "$TARGET_BRANCH" ]] || fail "refusing to ship target branch as linked worktree"
   case "$branch" in
-    "$BRANCH_PREFIX"*) ;;
-    *) fail "linked ship expects branch prefix $BRANCH_PREFIX, got $branch" ;;
+  "$BRANCH_PREFIX"*) ;;
+  *) fail "linked ship expects branch prefix $BRANCH_PREFIX, got $branch" ;;
   esac
 
   finish_contract_worktree "pr"
@@ -410,7 +409,7 @@ ship_primary_local_merge() {
   while IFS=$'\t' read -r branch path; do
     [[ -n "$branch" && -n "$path" ]] || continue
     [[ "$(cd "$path" && pwd -P)" != "$(pwd -P)" ]] || continue
-    slug="${branch#${BRANCH_PREFIX}}"
+    slug="${branch#"${BRANCH_PREFIX}"}"
     echo "[Ship] Shipping linked worktree $branch at $path with local merge mode"
     (cd "$path" && bash "scripts/ship-worktrees.sh" --local-merge --target "$TARGET_BRANCH" "${child_args[@]}")
     run_cmd bash "scripts/contract-worktree.sh" cleanup --slug "$slug" --target "$TARGET_BRANCH"
@@ -424,11 +423,10 @@ ship_primary_local_merge() {
 
 cleanup_merged() {
   local branch path slug cleaned=0
-  ! is_linked_worktree || fail "--cleanup-merged must run from the target primary worktree"
 
   while IFS=$'\t' read -r branch path; do
     [[ -n "$branch" && -n "$path" ]] || continue
-    slug="${branch#${BRANCH_PREFIX}}"
+    slug="${branch#"${BRANCH_PREFIX}"}"
     if git merge-base --is-ancestor "$branch" "$TARGET_BRANCH" >/dev/null 2>&1; then
       guard_dirty_merged_worktree "$branch" "$path" || exit 1
       if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -447,62 +445,55 @@ cleanup_merged() {
   fi
 }
 
-MODE="pr"
+MODE="main-sync"
 TARGET_BRANCH=""
 REMOTE_NAME="origin"
 SLUG_OVERRIDE=""
-DRAFT_PR=1
 DRY_RUN=0
 DISCARD_SCAFFOLD_ONLY=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --target)
-      [[ -n "${2:-}" ]] || fail "--target requires a value"
-      TARGET_BRANCH="$2"
-      shift 2
-      ;;
-    --remote)
-      [[ -n "${2:-}" ]] || fail "--remote requires a value"
-      REMOTE_NAME="$2"
-      shift 2
-      ;;
-    --slug)
-      [[ -n "${2:-}" ]] || fail "--slug requires a value"
-      SLUG_OVERRIDE="$(normalize_slug "$2")"
-      shift 2
-      ;;
-    --ready)
-      DRAFT_PR=0
-      shift
-      ;;
-    --draft)
-      DRAFT_PR=1
-      shift
-      ;;
-    --dry-run)
-      DRY_RUN=1
-      shift
-      ;;
-    --local-merge)
-      MODE="local-merge"
-      shift
-      ;;
-    --cleanup-merged)
-      MODE="cleanup-merged"
-      shift
-      ;;
-    --discard-scaffold-only)
-      DISCARD_SCAFFOLD_ONLY=1
-      shift
-      ;;
-    --help|-h)
-      usage
-      exit 0
-      ;;
-    *)
-      fail "unknown argument: $1"
-      ;;
+  --target)
+    [[ -n "${2:-}" ]] || fail "--target requires a value"
+    TARGET_BRANCH="$2"
+    shift 2
+    ;;
+  --remote)
+    [[ -n "${2:-}" ]] || fail "--remote requires a value"
+    REMOTE_NAME="$2"
+    shift 2
+    ;;
+  --slug)
+    [[ -n "${2:-}" ]] || fail "--slug requires a value"
+    SLUG_OVERRIDE="$(normalize_slug "$2")"
+    shift 2
+    ;;
+  --ready | --draft)
+    fail "PR-based delivery is disabled; publish validated changes directly to main"
+    ;;
+  --dry-run)
+    DRY_RUN=1
+    shift
+    ;;
+  --local-merge)
+    fail "branch-based delivery is disabled; integrate owned paths on main and use scripts/sync-main.sh"
+    ;;
+  --cleanup-merged)
+    MODE="cleanup-merged"
+    shift
+    ;;
+  --discard-scaffold-only)
+    DISCARD_SCAFFOLD_ONLY=1
+    shift
+    ;;
+  --help | -h)
+    usage
+    exit 0
+    ;;
+  *)
+    fail "unknown argument: $1"
+    ;;
   esac
 done
 
@@ -511,24 +502,18 @@ TARGET_BRANCH="${TARGET_BRANCH:-$(policy_get '.worktree_strategy.merge_back.targ
 BRANCH_PREFIX="$(policy_get '.worktree_strategy.branch_prefix' 'codex/')"
 
 case "$MODE" in
-  pr)
-    if is_linked_worktree; then
-      ship_linked_pr
-    else
-      ship_primary_pr
-    fi
-    ;;
-  local-merge)
-    if is_linked_worktree; then
-      ship_linked_local_merge
-    else
-      ship_primary_local_merge
-    fi
-    ;;
-  cleanup-merged)
-    cleanup_merged
-    ;;
-  *)
-    fail "unsupported mode: $MODE"
-    ;;
+main-sync)
+  [[ "$(current_branch)" == "$TARGET_BRANCH" && "$TARGET_BRANCH" == "main" ]] || fail "only the canonical main branch may be synchronized"
+  [[ "$REMOTE_NAME" == "origin" ]] || fail "only origin/main is an authorized source target"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    exec bash "scripts/sync-main.sh" --dry-run
+  fi
+  exec bash "scripts/sync-main.sh"
+  ;;
+cleanup-merged)
+  cleanup_merged
+  ;;
+*)
+  fail "unsupported mode: $MODE"
+  ;;
 esac
