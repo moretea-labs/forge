@@ -30,6 +30,7 @@ import {
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { capProcessOutput } from '../../../effects/process-runner';
+import { ControllerLockContentionError } from '../../../effects/controller-locks';
 import { getRepository, selectRepositoryCheckout } from '../../repositories/registry';
 import { recordProcessHandleIndexEntry } from './handle-index';
 import { processScopeExecutionTarget, processScopeFromKey } from './process-scope';
@@ -179,16 +180,24 @@ function sanitizeTerminalProcessArtifacts(record: ManagedProcessRecord): Managed
     }
   }
   if (filesChanged === 0 && !descriptorRemoved && record.outputRedaction) return record;
-  const updated = updateProcessRecord(record.controllerHome, record.repoId, record.processId, {
-    outputRedaction: {
-      schemaVersion: 1,
-      sanitizedAt: nowIso(),
-      filesExamined,
-      filesChanged,
-      redactionCount,
-      descriptorRemoved: descriptorRemoved || record.outputRedaction?.descriptorRemoved === true,
-    },
-  }, { allowTerminal: true });
+  let updated: ManagedProcessRecord | undefined;
+  try {
+    updated = updateProcessRecord(record.controllerHome, record.repoId, record.processId, {
+      outputRedaction: {
+        schemaVersion: 1,
+        sanitizedAt: nowIso(),
+        filesExamined,
+        filesChanged,
+        redactionCount,
+        descriptorRemoved: descriptorRemoved || record.outputRedaction?.descriptorRemoved === true,
+      },
+    }, { allowTerminal: true });
+  } catch (error) {
+    if (!(error instanceof ControllerLockContentionError)) throw error;
+    // The log/descriptor sanitation above has already run; a competing Writer
+    // cannot make its optional metadata receipt block the Process terminal
+    // result. The next observation can persist the bounded redaction summary.
+  }
   // A non-authoritative Controller can still have a trustworthy local terminal
   // outcome from its live Runner waiter while the durable record remains
   // writer-fenced in `running`. Persist redaction metadata best-effort, but never
@@ -903,13 +912,24 @@ function finalizeMonitor(
   };
 
   // Durable terminal write is fenced; waiters still get local outcome.
-  const record = completeProcessFromEvidence(
-    monitor.controllerHome,
-    monitor.repoId,
-    monitor.processId,
-    monitor.fenceToken,
-    enrichedPatch,
-  );
+  let record: ManagedProcessRecord | undefined;
+  try {
+    record = completeProcessFromEvidence(
+      monitor.controllerHome,
+      monitor.repoId,
+      monitor.processId,
+      monitor.fenceToken,
+      enrichedPatch,
+    );
+  } catch (error) {
+    if (!(error instanceof ControllerLockContentionError)) throw error;
+    // Another Process Writer has this record's exact CAS lock. The Runner's
+    // durable exit receipt remains authoritative and survives the Connector;
+    // resolve already-attached waiters from that receipt instead of throwing
+    // out of the child "exit" event and stranding them. A later get/wait
+    // reattaches the same receipt and commits the canonical terminal record.
+    record = getProcessRecord(monitor.controllerHome, monitor.repoId, monitor.processId);
+  }
 
   const forWaiters: ManagedProcessRecord = {
     ...(record ?? getProcessRecord(monitor.controllerHome, monitor.repoId, monitor.processId)!),

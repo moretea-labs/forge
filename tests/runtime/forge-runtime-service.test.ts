@@ -50,7 +50,7 @@ function writePackageRuntimeCanaryFixture(packageRoot: string, supportsCurrentCa
   const cliRoot = join(packageRoot, 'src', 'cli');
   const runtimeCliRoot = join(cliRoot, 'runtime');
   const contextPackRoot = join(packageRoot, 'adapters', 'mcp', 'runtime-gateway');
-  const pluginSidecarRoot = join(packageRoot, 'src', 'runtime', 'plugins');
+  const pluginSidecarRoot = join(packageRoot, 'src', 'cli', 'github');
   mkdirSync(executionRoot, { recursive: true });
   mkdirSync(cliRoot, { recursive: true });
   mkdirSync(runtimeCliRoot, { recursive: true });
