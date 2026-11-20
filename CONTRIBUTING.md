@@ -52,8 +52,9 @@ smoke and publish. `test:full` is a manual diagnostic only.
 
 ## Change rules
 
+- All source changes must follow [Forge Engineering Quality Standard](docs/architecture/CURRENT.md#engineering-quality-standard) and the active architecture authority in `docs/architecture/CURRENT.md`.
 - Do not commit Controller Home, `.ai/harness` runtime state, local jobs, logs, worktrees, tokens, OAuth material, or machine-specific paths.
-- Prefer an isolated worktree or a dedicated branch. Do not mix unrelated fixes.
+- Forge source development uses the single canonical protected `main`; do not create task branches, writable worktrees, or PR-based source divergence. Other repositories follow their own canonical `AGENTS.md` branch policy. Keep each source change focused.
 - Preserve structured authorization boundaries. Remote writes, destructive actions, and secret access must remain explicit.
 - Do not add tests mechanically for every behavior change. Keep or update a test only when it protects an accepted externally meaningful behavior or mechanical-safety invariant that cheaper compiler/architecture checks do not already prove. Delete tests that assert retired implementation shape, lifecycle ordering, compatibility paths, or removed APIs instead of restoring production code for them.
 - During the current Kernel V2 single-authority convergence, do not add new test files or test cases. First reduce the existing suite to high-value architecture/safety/E2E coverage; use existing type and architecture gates plus retained behavior tests for validation.
@@ -62,6 +63,8 @@ smoke and publish. `test:full` is a manual diagnostic only.
 - Do not bump a package version or create a release tag without following [the release process](docs/operations/releasing.md).
 
 ## Pull requests
+
+This section applies to external community contributions. Internal Forge-maintained source work follows the canonical protected-main policy above and does not create task PRs.
 
 A pull request should contain:
 

@@ -482,6 +482,186 @@ Current source supports only the task-bound `launcher_start` lifecycle above. It
 ## Module Boundaries and Language Evolution
 This policy applies to **all Forge source development**. `AGENTS.md` is the entry point. `docs/architecture/CURRENT.md` records active authorities and `docs/reference-configs/runtime-architecture-guardrails.md` defines existing correctness and release constraints. Reconcile any disagreement within the same reviewed delivery; never introduce a second authority.
 
+## Engineering quality standard
+
+**Status:** Normative engineering standard
+**Applies to:** All new and modified Forge production code, tests, tooling, scripts, adapters, desktop/native clients, and architecture checks.
+
+This section is the canonical Forge engineering quality standard. It supplements the active architecture and safety contracts in this document and is mandatory under the repository-wide [AGENTS.md](../../AGENTS.md).
+
+### 1. Quality objective
+
+Code quality is the long-term cost and safety of understanding, changing, verifying, and operating the system. A successful build or passing test is necessary evidence, not proof of good design.
+
+Prefer code that is intentional, cohesive, decoupled, explicit, readable, verifiable, and evolvable. Keep the number of concepts and authorities small. Do not optimize for line-count reduction, file-count growth, abstraction count, test count, or green checks in isolation.
+
+### 2. Design before implementation
+
+For every substantive change, establish:
+
+1. **Outcome:** the user-visible or system-level result and behavior that must remain unchanged.
+2. **Existing design:** actual implementation, callers, neighboring modules, contracts, and recent changes. Never design against a guessed or stale source snapshot.
+3. **Responsibility:** the one domain/module that should own the behavior and the facts or transitions it owns.
+4. **Boundary:** public contract, allowed dependencies, and dependency direction.
+5. **State and effects:** canonical owner of durable state, lifecycle, authorization, resource claims, and external effects.
+6. **Failure model:** errors, cancellation, timeout, partial completion, retry/idempotency, recovery, and observability.
+7. **Verification:** smallest sufficient checks for changed behavior and important invariants.
+8. **Simplest coherent design:** prefer changing the existing canonical owner over adding a Manager, Service, Provider, registry, cache, compatibility wrapper, daemon, or state machine.
+
+A small direct fix does not need a manufactured design document. It still needs a correct owner, clear intent, and appropriate verification.
+
+### 3. Module and architecture design
+
+Follow the active architecture and its mechanical module-boundary rules in this document.
+
+- Keep the modular monolith and existing release/Runtime authority. Do not split repositories, deployables, or processes without a proven permission, release, or failure-domain boundary.
+- Kernel/domain code must not depend on concrete UI, CLI, MCP, platform adapters, Supervisor implementations, or other outer-layer implementations.
+- Cross-domain Kernel calls use the target domain's public packages/kernel/<domain>/api/index contract. Do not import another domain's private domain/, application/, infrastructure/, or ports/ internals.
+- Adapters translate external protocols and platform behavior. They do not become a second business-rule, persistence, authorization, lifecycle, or effect owner.
+- Composition roots wire implementations. Domain code must not discover or instantiate infrastructure implementations implicitly.
+- Every durable fact, state transition, lifecycle, permission decision, and replay-sensitive external effect has one canonical owner.
+- Avoid circular imports, hidden reverse dependencies, broad barrel exports that obscure ownership, and runtime dependency injection that cannot be traced.
+- Public contracts expose only what callers need. Migrate callers when a canonical contract changes.
+- A compatibility path is temporary migration debt, not a permanent second implementation. Track its live callers and remove it with the migration.
+
+### 4. Cohesion, files, functions, and abstractions
+
+- A module has one cohesive responsibility and a name that describes it. Group by domain responsibility, not generic suffixes such as Utils, Helpers, or Manager.
+- A function performs one understandable operation. Extract a helper when it names a meaningful concept, separates a real responsibility, or clarifies control flow—not merely to reduce line count.
+- Keep orchestration readable. Put domain rules in the domain owner and I/O behind existing infrastructure boundaries.
+- Avoid god objects, files coordinating unrelated subsystems, long parameter lists, boolean mode flags with unrelated branches, deep nesting, duplicated validation, and hidden mutable module state.
+- Avoid both under-abstraction (copying business rules) and over-abstraction (one-use factories, generic frameworks, wrapper-on-wrapper, speculative extension points).
+- Prefer explicit composition and small typed contracts over inheritance trees or implicit global registries.
+- Names should reveal domain intent and effects. Comments explain invariants, constraints, or trade-offs—not the syntax of the next line.
+
+#### Initial complexity review triggers
+
+These are **review triggers**, not mechanical quality scores or automatic instructions to split code:
+
+| Signal | Trigger | Required response |
+| --- | ---: | --- |
+| New or materially changed source file | around 800 non-generated lines | Soft prompt to review cohesion and ownership; no split is implied. |
+| Existing source file | around 1,600 non-generated lines | Review only when the change adds another responsibility or materially harms navigation/readability; no blanket extraction plan is required. |
+| Function/method | around 80 executable lines | Consider whether multiple operations, state transitions, or branches make it hard to follow. |
+| Function/method | around 120 executable lines | Stronger review prompt; extract only when a meaningful, independently understandable responsibility exists. A cohesive algorithm may remain intact. |
+| Cyclomatic complexity | around 15 | Review whether branches are understandable and adequately testable. |
+| Cyclomatic complexity | around 20 | Consider simplification when it improves comprehension or testing; a naturally complex domain algorithm may remain cohesive. |
+| Nesting | more than 4 control-flow levels | Consider guard clauses, named predicates, or restructuring when they make the flow clearer. |
+| Repeated business rule | more than one owner | Consolidate around one canonical owner; exact-file hash checks are insufficient. |
+| Dependency fan-out/fan-in | materially above neighboring modules | Review whether the module has become a central coordinator or lacks a contract boundary. |
+
+These values are deliberately relaxed **review prompts**, not maximum sizes, quality scores, automatic refactoring requirements, CI failure conditions, or reasons to reject a change. Crossing a numeric trigger alone does not require a written exception or code change. If a file/function remains cohesive, understandable, testable, and safe to modify, keep it as-is. Refactor when there is an evidenced problem such as mixed responsibilities, confusing control flow, duplicated business rules, difficult testing, or excessive coupling—not merely to reduce a number. Do not create tiny functions, fragmented files, or speculative abstractions to satisfy a threshold.
+
+Exclude generated code, schema/data tables, migrations, fixtures, and intentionally declarative protocol inventories from raw line-count interpretation. Existing large files are not blanket refactoring permission: improve the responsibility being changed and avoid adding unrelated complexity. Calibrate these heuristics against actual repository experience, including false positives and needless refactoring; retain meaningful design scrutiny without turning the numbers into hard gates.
+
+### 5. Types and API contracts
+
+#### TypeScript / JavaScript
+
+- Preserve strict TypeScript. Use exact domain types, discriminated unions, and explicit boundary parsing.
+- Treat untrusted input as unknown until validated and narrowed.
+- Do not add any, @ts-ignore, broad type assertions, non-null assertions, or unchecked casts without a specific, local, reviewable reason. Prefer @ts-expect-error only for an intentional documented type-system limitation; remove it when obsolete.
+- Do not hide invalid states behind optional fields or broad stringly typed objects when a discriminated union can express valid states.
+- Make async behavior explicit; handle promises and preserve cancellation/error propagation.
+- Avoid accidental public API expansion.
+
+#### Swift
+
+- Prefer value types for data and reference types only when shared identity or lifecycle is required.
+- Make UI/shared-state ownership explicit; use actor isolation and Sendable rather than suppressing concurrency diagnostics.
+- Keep SwiftUI views declarative and cohesive; move domain transitions and persistence out of view bodies.
+- Avoid force unwraps and forced casts in production paths. Model absence and failure explicitly.
+- Preserve native accessibility, focus, navigation, platform behavior, and measured layout contracts.
+
+#### Rust
+
+- Use ownership and borrowing to make lifetimes and mutation explicit; do not clone or share state merely to silence the borrow checker.
+- Return typed Result errors at fallible boundaries. Avoid production unwrap() / expect() unless the invariant is proven locally and failure is intentionally fatal.
+- Keep unsafe blocks minimal and document their invariant. Prefer safe APIs.
+- Use synchronization primitives only for real shared ownership; keep lock scope narrow and define poison, cancellation, and shutdown behavior.
+
+#### Shell
+
+- Use strict mode where compatible (set -euo pipefail), quote expansions, validate paths/arguments, and preserve command exit status.
+- Avoid eval, unbounded globs, implicit current-directory assumptions, and broad destructive commands.
+- Make scripts idempotent where they may be rerun. Explain intentional non-idempotent effects and recovery behavior.
+- Keep shell as orchestration; move complex domain logic into the canonical typed implementation.
+
+### 6. Errors, state, concurrency, and effects
+
+- Catch errors only where context can be added, a stable contract translated, safe recovery performed, or the error reported. Preserve original cause and operation identity.
+- Never silently swallow errors, return success-shaped defaults after failure, or use empty catches to keep a workflow moving.
+- Distinguish not-started, applied, not-applied, failed, and outcome-unknown where the effect model requires it. Reconcile unknown external outcomes before replay.
+- Use one source of truth. Caches, indexes, snapshots, and UI summaries are projections, not alternate authorities.
+- Prefer optimistic concurrency and narrow atomic updates. Serialize only a genuinely shared physical resource or aggregate; semantic overlap or file dirtiness alone is not a global lock.
+- Define cancellation, deadlines, resource release, idempotency keys, and shutdown behavior for long-running operations.
+- Retries are bounded, classified, and safe for the exact operation. No blind retries, hidden retry loops, or fallback paths that change effect semantics.
+- Do not introduce a store, lifecycle, daemon, scheduler, provider, or owner to compensate for an unclear existing boundary.
+
+### 7. Readability and formatting
+
+- Use the repository's canonical formatter and lint configuration for each language. Do not invent per-file conventions.
+- Keep indentation, line endings, quotes, semicolons, imports, naming, and trailing-newline behavior consistent with the language tool.
+- Keep diffs focused. Do not reformat unrelated files or mix broad style churn with behavior changes.
+- Prefer direct names and simple control flow over clever expressions, compressed one-liners, and excessive comments.
+- Remove dead imports, unreachable branches, obsolete comments, and stale docs when retiring implementation.
+- Change generated files through their canonical generator, never by editing the generated projection alone.
+
+### 8. Tests, performance, and documentation
+
+- Tests protect externally meaningful behavior, domain invariants, architecture boundaries, safety, and important regressions—not private implementation shape.
+- Select tests based on change risk. Prefer focused deterministic tests and existing suites; add tests when they close a real gap that cheaper authoritative checks cannot prove.
+- For refactors, capture the behavior that must remain, change the canonical implementation, and verify the same behavior afterward.
+- Architecture checks prove both sides: valid source passes and a deliberately invalid dependency is rejected.
+- Performance claims require matched before/after measurements in a real workflow or representative benchmark. Do not infer system speed from line-count reduction or microbenchmarks alone.
+- Keep docs and architecture maps synchronized with changed contracts and ownership. Do not add a second source of truth or progress ledger.
+
+### 9. Continuous refactoring
+
+Every feature and bug fix is also an opportunity to improve the quality of the code it touches.
+
+1. Check for duplicated rules, dead paths, unnecessary wrappers, unclear ownership, and avoidable coupling in the affected area.
+2. Identify the common root cause before changing structure.
+3. Prefer one coherent refactor at the canonical owner over another local patch or compatibility layer.
+4. Keep unrelated behavior and other in-progress changes intact.
+5. Verify affected behavior and safety invariants.
+6. Record larger deferred structural debt with exact paths, evidence, and why it was not included; do not silently make it a permanent exception.
+
+Do not expand a narrow fix into a speculative whole-repository rewrite. Choose scope by user impact, defect recurrence, change frequency, coupling, complexity, and verification risk.
+
+### 10. Automated enforcement
+
+The standard is normative while enforcement is implemented incrementally. Reuse the existing check:task → check:main → check:release path:
+
+- formatting and language-specific lint on changed source files;
+- strict type checks for typed source;
+- architecture/import-boundary and cycle checks;
+- complexity diagnostics with review-trigger semantics;
+- focused behavior and safety tests selected for the change.
+
+Use one canonical configuration and one existing Gate path. Do not create a second quality daemon, reviewer, scheduler, issue ledger, or parallel check lifecycle. Adopt existing code incrementally; do not hide the backlog with blanket suppressions or reformat the entire repository as a prerequisite.
+
+### 11. Definition of done for a code change
+
+A substantive code change is ready for integration only when:
+
+- its purpose and owning module are clear;
+- the design follows current architecture and this standard;
+- the exact diff contains no unrelated changes or silent loss of concurrent work;
+- formatting, lint, types, architecture checks, and behavior tests appropriate to the risk pass;
+- errors, concurrency, resource, authorization, and external-effect semantics remain correct;
+- docs are updated when contracts or ownership change;
+- every complexity trigger has an explicit disposition;
+- claims are limited to the evidence actually obtained.
+
+Passing checks does not excuse an incoherent design. A clean design does not excuse missing behavior or safety verification.
+
+### 12. Exceptions and evolution
+
+Exceptions are local, justified by a concrete constraint, and narrower than the rule they waive. Record why the normal approach is unsuitable, what invariant remains protected, and when the exception can be removed. Do not use blanket directory/file exclusions to silence existing debt.
+
+Review this standard against real development outcomes. Change it when evidence shows a rule is too weak, too strict, or misaligned with architecture; update the standard and its enforcement together.
+
 ## Architecture
 
 **The model owns semantic decisions. Thin Forge owns capabilities, durable facts and mechanical correctness.** Preserve one repository, one Runtime release and a modular monolith. Standalone Recovery is an independent failure domain, not another Kernel. Signed OS-native services may be separate processes to preserve platform permission identity; they do not own Requirement or Plan facts.
@@ -527,7 +707,7 @@ TypeScript remains responsible for fast-changing orchestration, MCP, plugin cont
 
 Rust is optional and **incremental**, used only after identifying a real systems-level advantage (process/resource ownership, IPC/atomicity, crash/locking or a narrow performance hot path). Start with a bounded interface and measured problem, prove Mac and Linux/WSL behavior and packaging, cut over a single owner, then delete the replaced TypeScript writer and obsolete bridge. No dual persistent stores, permanent TS/Rust fallback, new state or Rust-percent target. Go/Python do not become alternate production Kernels without a separate proven requirement.
 
-A file over 1,000 lines merits responsibility review, not an arbitrary failing size gate. Monitor actual dependency fan-out, cycles, duplicate ownership, controller bookkeeping overhead, delivery lead time and shrinking exceptions. Improve the common structural guard rather than expanding per-incident regex rules.
+The initial file/function/branch/nesting review triggers are defined in the Engineering quality standard section above. A file over 1,000 lines merits responsibility review, not an automatic failing size gate. Monitor actual dependency fan-out, cycles, duplicate ownership, controller bookkeeping overhead, delivery lead time and shrinking exceptions. Improve the common structural guard rather than expanding per-incident regex rules.
 
 ### Workflow capability dependency authority (2026-10-21)
 
