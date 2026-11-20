@@ -2,6 +2,8 @@ importScripts('core.js');
 const core = globalThis.ForgeComputerChatgptCore;
 const NATIVE_HOST = 'com.moretea.forge.computer';
 const ALARM = 'forge-computer-chatgpt-provider';
+// CentBrowser 134 measured this MV3 fallback wake reliably while background/locked.
+const ALARM_PERIOD_MINUTES = 0.05;
 const PROVIDER_ID = 'browser.chrome-extension';
 const PROVIDER_COMMAND_POLL_MS = 1_000;
 const PROVIDER_HEARTBEAT_REFRESH_MS = 8_000;
@@ -1031,12 +1033,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   sendResponse({ ok: true });
   return false;
 });
-chrome.runtime.onInstalled.addListener(() => { chrome.alarms.create(ALARM, { periodInMinutes: 1 }); void providerTick().catch(() => undefined); });
-chrome.runtime.onStartup.addListener(() => { chrome.alarms.create(ALARM, { periodInMinutes: 1 }); void providerTick().catch(() => undefined); });
+chrome.runtime.onInstalled.addListener(() => { chrome.alarms.create(ALARM, { periodInMinutes: ALARM_PERIOD_MINUTES }); void providerTick().catch(() => undefined); });
+chrome.runtime.onStartup.addListener(() => { chrome.alarms.create(ALARM, { periodInMinutes: ALARM_PERIOD_MINUTES }); void providerTick().catch(() => undefined); });
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === ALARM) void providerTick().catch(() => undefined); });
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => { if (changeInfo.status === 'complete' && String(tab.url ?? '').startsWith('https://chatgpt.com/')) void providerTick().catch(() => undefined); });
 chrome.tabs.onActivated.addListener(() => { void providerTick().catch(() => undefined); });
 chrome.tabs.onRemoved.addListener((tabId) => { unreadableConversationTabs.delete(tabId); void chrome.storage.session.remove(ownedTabKey(tabId)).catch(() => undefined); void providerTick().catch(() => undefined); });
 chrome.windows.onFocusChanged.addListener(() => { void providerTick().catch(() => undefined); });
-chrome.alarms.create(ALARM, { periodInMinutes: 1 });
+chrome.alarms.create(ALARM, { periodInMinutes: ALARM_PERIOD_MINUTES });
 void providerTick().catch(() => undefined);
