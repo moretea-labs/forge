@@ -22,7 +22,7 @@ const CONTROLLER_SCOPE = 'controller';
 export interface ProjectRevisionRecord extends ProjectIdentity {
   revision: number;
   recordedAt: string;
-  action: 'project_semantic_create' | 'project_semantic_onboard' | 'project_semantic_write';
+  action: 'project_semantic_create' | 'project_semantic_onboard' | 'project_semantic_write' | 'project_root_requirement_bound';
 }
 
 function writeProjectRevisionWithinTransaction(
@@ -39,6 +39,39 @@ function writeProjectRevisionWithinTransaction(
     action: 'project_semantic_revision_record',
     expectedRevision: null,
   });
+}
+
+/** Bind the one Project root while the caller's Requirement write is in the same SQLite transaction. */
+export function bindProjectRootRequirementWithinTransaction(
+  database: SqliteDatabase,
+  projectIdInput: string,
+  requirementIdInput: string,
+  recordedAt: string,
+): ProjectIdentity {
+  const projectId = String(projectIdInput ?? '').trim();
+  const requirementId = String(requirementIdInput ?? '').trim();
+  if (!projectId || !requirementId || requirementId.length > 160) throw new Error('PROJECT_ROOT_REQUIREMENT_ID_INVALID');
+  const projects = listControlPlaneRecordsWithinTransaction<ProjectIdentity>(database, {
+    namespace: PROJECT_SEMANTIC_NAMESPACE, limit: 1_000,
+  });
+  if (projects.length >= 1_000) throw new Error('PROJECT_IDENTITY_LOOKUP_LIMIT');
+  const matches = projects.filter(({ value }) => value.projectId === projectId);
+  if (matches.length !== 1) throw new Error(matches.length ? `PROJECT_IDENTITY_AMBIGUOUS:${projectId}` : `PROJECT_NOT_FOUND:${projectId}`);
+  const current = matches[0]!;
+  if ((current.value.status ?? 'active') === 'archived') throw new Error(`PROJECT_ARCHIVED:${projectId}`);
+  if (current.value.rootRequirementId && current.value.rootRequirementId !== requirementId) {
+    throw new Error(`PROJECT_ROOT_REQUIREMENT_ALREADY_BOUND:${projectId}:${current.value.rootRequirementId}`);
+  }
+  if (current.value.rootRequirementId === requirementId) return current.value;
+  const updated = projectIdentity({ ...current.value, rootRequirementId: requirementId });
+  const written = writeControlPlaneRecordWithinTransaction(database, {
+    namespace: PROJECT_SEMANTIC_NAMESPACE, scope: updated.workspaceId, key: updated.projectId,
+    schemaVersion: 1, value: updated, action: 'project_root_requirement_bound', expectedRevision: current.revision,
+  });
+  writeProjectRevisionWithinTransaction(database, {
+    value: written.value, revision: written.revision, recordedAt, action: 'project_root_requirement_bound',
+  });
+  return written.value;
 }
 
 export const DEFAULT_PERSONAL_WORKSPACE_ID = 'workspace-personal';
@@ -82,18 +115,25 @@ export function listWorkspaceIdentities(controllerHome: string): ControlPlaneRec
 }
 
 export function writeProjectIdentity(input: { controllerHome: string; value: Omit<ProjectIdentity, 'schemaVersion'> | ProjectIdentity; expectedRevision?: number | null }): ControlPlaneRecord<ProjectIdentity> {
-  const value = projectIdentity(input.value);
+  let value = projectIdentity(input.value);
   const workspace = readWorkspaceIdentity(input.controllerHome, value.workspaceId);
   if (!workspace) throw new Error(`PROJECT_WORKSPACE_NOT_FOUND: ${value.workspaceId}`);
   return withControlPlaneTransaction(input.controllerHome, (database) => {
+    const current = readControlPlaneRecordWithinTransaction<ProjectIdentity>(database, PROJECT_SEMANTIC_NAMESPACE, value.workspaceId, value.projectId);
+    if (current?.value.rootRequirementId) {
+      if (value.rootRequirementId && value.rootRequirementId !== current.value.rootRequirementId) {
+        throw new Error('PROJECT_ROOT_REQUIREMENT_BINDING_REQUIRES_REQUIREMENT_TRANSACTION');
+      }
+      value = projectIdentity({ ...value, rootRequirementId: current.value.rootRequirementId });
+    } else if (value.rootRequirementId) {
+      throw new Error('PROJECT_ROOT_REQUIREMENT_BINDING_REQUIRES_REQUIREMENT_TRANSACTION');
+    }
     const record = writeControlPlaneRecordWithinTransaction(database, {
       namespace: PROJECT_SEMANTIC_NAMESPACE, scope: value.workspaceId, key: value.projectId, schemaVersion: 1, value,
       action: 'project_semantic_write', expectedRevision: input.expectedRevision,
     });
     writeProjectRevisionWithinTransaction(database, {
-      value: record.value,
-      revision: record.revision,
-      recordedAt: record.updatedAt,
+      value: record.value, revision: record.revision, recordedAt: record.updatedAt,
       action: record.revision === 1 ? 'project_semantic_create' : 'project_semantic_write',
     });
     return record;
@@ -139,6 +179,7 @@ export function createProjectIdentity(input: {
   value: Omit<ProjectIdentity, 'schemaVersion'> | ProjectIdentity;
 }): ControlPlaneRecord<ProjectIdentity> {
   const value = projectIdentity(input.value);
+  if (value.rootRequirementId) throw new Error('PROJECT_ROOT_REQUIREMENT_BINDING_REQUIRES_REQUIREMENT_TRANSACTION');
   return withControlPlaneTransaction(input.controllerHome, (database) => {
     const projects = listControlPlaneRecordsWithinTransaction<ProjectIdentity>(database, {
       namespace: PROJECT_SEMANTIC_NAMESPACE,

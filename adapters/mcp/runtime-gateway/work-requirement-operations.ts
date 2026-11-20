@@ -167,6 +167,8 @@ export async function callRhWorkRequirementOperation(
       requirementId: semantic.requirementId,
       revision: semantic.revision,
       ...(semantic.repoId ? { repoId: semantic.repoId } : {}),
+      ...(semantic.parentRequirementId ? { parentRequirementId: semantic.parentRequirementId } : {}),
+      ...(semantic.rootRequirementId ? { rootRequirementId: semantic.rootRequirementId } : {}),
       title: semantic.title.slice(0, 240),
       outcomeStatement: semantic.outcomeStatement.slice(0, 500),
       state: semantic.state,
@@ -385,6 +387,8 @@ export async function callRhWorkRequirementOperation(
       || typeof args.requirement_priority === 'string'
       || typeof args.requirement_assignee === 'string'
       || typeof args.requirement_status === 'string'
+      || typeof args.requirement_parent_id === 'string'
+      || args.requirement_is_project_root === true
       || args.requirement_state === 'open'
       || args.requirement_state === 'completed'
       || args.requirement_state === 'cancelled';
@@ -411,6 +415,8 @@ export async function callRhWorkRequirementOperation(
         ...(typeof args.requirement_priority === 'string' ? { priority: args.requirement_priority as RequirementPriority } : {}),
         ...(typeof args.requirement_assignee === 'string' ? { assignee: args.requirement_assignee } : {}),
         ...(typeof args.requirement_status === 'string' ? { status: args.requirement_status as RequirementState } : {}),
+        ...(typeof args.requirement_parent_id === 'string' ? { parentRequirementId: args.requirement_parent_id } : {}),
+        ...(args.requirement_is_project_root === true ? { isProjectRoot: true } : {}),
         ...(args.requirement_state === 'open' || args.requirement_state === 'completed' || args.requirement_state === 'cancelled' ? { state: args.requirement_state } : {}),
       });
       const semantic = requirementSemanticView(revised);
@@ -466,6 +472,8 @@ export async function callRhWorkRequirementOperation(
       ...(typeof args.requirement_status === 'string' ? { status: args.requirement_status as RequirementState } : {}),
       legacyAliases: Array.isArray(args.requirement_legacy_aliases) ? args.requirement_legacy_aliases.map(String) : [],
       dependsOnRequirementIds: Array.isArray(args.requirement_dependencies) ? args.requirement_dependencies.map(String) : [],
+      ...(typeof args.requirement_parent_id === 'string' ? { parentRequirementId: args.requirement_parent_id } : {}),
+      ...(args.requirement_is_project_root === true ? { isProjectRoot: true } : {}),
     };
     const admission = operation === 'requirement_promote_candidate'
       ? (() => {

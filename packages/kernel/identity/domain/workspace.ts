@@ -16,6 +16,8 @@ export interface ProjectIdentity {
   status?: ProjectStatus;
   /** Stable digest of a portable source identity (for example a normalized Git remote), never a local path. */
   sourceFingerprint?: string;
+  /** The single canonical root Requirement for this Project. Bound once through the Requirement transaction. */
+  rootRequirementId?: string;
 }
 
 /** Node-local mapping from one portable Project to the repository/checkout used by this ForgeInstance. Never sync this record. */
@@ -49,7 +51,13 @@ export function projectIdentity(input: Omit<ProjectIdentity, 'schemaVersion'>): 
   if (status !== 'active' && status !== 'archived') throw new Error('PROJECT_STATUS_INVALID');
   const sourceFingerprint = input.sourceFingerprint?.trim();
   if (sourceFingerprint && !/^[a-f0-9]{64}$/i.test(sourceFingerprint)) throw new Error('PROJECT_SOURCE_FINGERPRINT_INVALID');
-  return { schemaVersion: 1, projectId, workspaceId, displayName, status, ...(sourceFingerprint ? { sourceFingerprint: sourceFingerprint.toLowerCase() } : {}) };
+  const rootRequirementId = input.rootRequirementId?.trim();
+  if (rootRequirementId && rootRequirementId.length > 160) throw new Error('PROJECT_ROOT_REQUIREMENT_ID_INVALID');
+  return {
+    schemaVersion: 1, projectId, workspaceId, displayName, status,
+    ...(sourceFingerprint ? { sourceFingerprint: sourceFingerprint.toLowerCase() } : {}),
+    ...(rootRequirementId ? { rootRequirementId } : {}),
+  };
 }
 
 export function projectPlacement(input: Omit<ProjectPlacement, 'schemaVersion'>): ProjectPlacement {

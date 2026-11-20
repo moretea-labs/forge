@@ -74,6 +74,41 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
     ?? JSON.parse(result!.content[0] && 'text' in result!.content[0] ? String(result!.content[0].text) : '{}')) as Record<string, any>;
 }
 
+test('rh_work exposes the single Project root and explicit child Requirement tree', async () => {
+  const home = tempRoot('forge-requirement-tree-api-');
+  ensureControllerHome(home);
+  const ctx = mcpContext(home);
+  structured(await callRuntimeTool(ctx, 'rh_work', { operation: 'project_create', project_id: 'tree-api', project_display_name: 'Tree API' }));
+  const root = structured(await callRuntimeTool(ctx, 'rh_work', {
+    operation: 'requirement_create', project_id: 'tree-api', requirement_id: 'REQ-TREE-ROOT',
+    requirement_title: 'Project root', requirement_outcome: 'Deliver the project.', requirement_is_project_root: true,
+  }));
+  expect(root.status).toBe('ok');
+  const child = structured(await callRuntimeTool(ctx, 'rh_work', {
+    operation: 'requirement_create', project_id: 'tree-api', requirement_id: 'REQ-TREE-CHILD',
+    requirement_title: 'Child', requirement_outcome: 'Deliver one slice.', requirement_parent_id: 'REQ-TREE-ROOT',
+    requirement_dependencies: ['REQ-TREE-ROOT'],
+  }));
+  expect(child.data.requirement).toMatchObject({ parentRequirementId: 'REQ-TREE-ROOT', rootRequirementId: 'REQ-TREE-ROOT' });
+  await callRuntimeTool(ctx, 'rh_work', { operation: 'requirement_create', project_id: 'tree-api', requirement_id: 'REQ-TREE-LEGACY', requirement_title: 'Legacy', requirement_outcome: 'Attach later.' });
+  const attached = structured(await callRuntimeTool(ctx, 'rh_work', { operation: 'requirement_revise', project_id: 'tree-api', requirement_id: 'REQ-TREE-LEGACY', expected_revision: 1, requirement_parent_id: 'REQ-TREE-ROOT' }));
+  expect(attached.data.requirement).toMatchObject({ parentRequirementId: 'REQ-TREE-ROOT', rootRequirementId: 'REQ-TREE-ROOT' });
+  const listed = structured(await callRuntimeTool(ctx, 'rh_work', { operation: 'requirement_list', project_id: 'tree-api' }));
+  expect(listed.data.requirements).toEqual(expect.arrayContaining([
+    expect.objectContaining({ requirementId: 'REQ-TREE-ROOT', rootRequirementId: 'REQ-TREE-ROOT' }),
+    expect.objectContaining({ requirementId: 'REQ-TREE-CHILD', parentRequirementId: 'REQ-TREE-ROOT', rootRequirementId: 'REQ-TREE-ROOT' }),
+  ]));
+  expect(structured(await callRuntimeTool(ctx, 'rh_work', { operation: 'project_get', project_id: 'tree-api' })).data.project.rootRequirementId)
+    .toBe('REQ-TREE-ROOT');
+  expect(structured(await callRuntimeTool(ctx, 'rh_work', {
+    operation: 'requirement_create', project_id: 'tree-api', requirement_id: 'REQ-TREE-SECOND-ROOT',
+    requirement_title: 'Second root', requirement_outcome: 'Must be rejected.', requirement_is_project_root: true,
+  })).status).toBe('blocked');
+  const properties = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work')?.inputSchema.properties as Record<string, any>;
+  expect(properties.requirement_parent_id).toMatchObject({ type: 'string' });
+  expect(properties.requirement_is_project_root).toMatchObject({ type: 'boolean' });
+});
+
 describe('Requirement assignment triage', () => {
   test('find unassigned tasks, assign one with CAS and read back the updated queue', async () => {
     const home = tempRoot('forge-assignment-triage-');

@@ -8,6 +8,7 @@ import { executionPlacement, scopeRef, semanticRecordMetadata } from '../../pack
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { buildRequirementBoard } from '../../src/runtime/control-plane/facade/requirement-board';
 import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
+import { createProjectIdentity, readProjectIdentity, writeProjectIdentity, writeProjectPlacement } from '../../src/runtime/control-plane/workspace/workspace-store';
 
 const homes: string[] = [];
 afterEach(() => {
@@ -234,6 +235,82 @@ test('task detail reads its latest revisions even when other Requirements own th
     { requirementId: 'req-z-history', revision: 2, title: 'First task edit' },
     { requirementId: 'req-z-history', revision: 1, title: 'Original user task' },
   ]);
+});
+
+test('Project root Requirement uniqueness and parent hierarchy are atomic and separate from dependencies', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-requirement-hierarchy-'));
+  homes.push(home);
+  const options = { controllerHome: home, now: () => '2026-11-20T00:00:00.000Z' };
+  createProjectIdentity({
+    controllerHome: home,
+    value: { projectId: 'project-hierarchy', workspaceId: 'workspace-personal', displayName: 'Hierarchy' },
+  });
+  createProjectIdentity({
+    controllerHome: home,
+    value: { projectId: 'project-hierarchy-other', workspaceId: 'workspace-personal', displayName: 'Other hierarchy' },
+  });
+  writeProjectPlacement({
+    controllerHome: home,
+    value: { projectId: 'project-hierarchy', forgeInstanceId: 'forge-hierarchy', repositoryId: 'repo-hierarchy' },
+  });
+
+  const root = createRequirement(options, {
+    requirementId: 'REQ-HIERARCHY-ROOT', projectId: 'project-hierarchy', isProjectRoot: true,
+    title: 'Project root', outcomeStatement: 'Deliver the complete project outcome.',
+  });
+  expect(root.rootRequirementId).toBe(root.requirementId);
+  expect(readProjectIdentity(home, 'workspace-personal', 'project-hierarchy')?.value.rootRequirementId)
+    .toBe(root.requirementId);
+  expect(() => writeProjectIdentity({
+    controllerHome: home,
+    expectedRevision: 2,
+    value: { projectId: 'project-hierarchy', workspaceId: 'workspace-personal', displayName: 'Hierarchy', rootRequirementId: 'REQ-HIERARCHY-OTHER' },
+  })).toThrow('PROJECT_ROOT_REQUIREMENT_BINDING_REQUIRES_REQUIREMENT_TRANSACTION');
+
+  const child = createRequirement(options, {
+    requirementId: 'REQ-HIERARCHY-CHILD', repoId: 'repo-hierarchy', parentRequirementId: root.requirementId,
+    dependsOnRequirementIds: [root.requirementId],
+    title: 'Repository child', outcomeStatement: 'Deliver one repository slice.',
+  });
+  expect(requirementSemanticView(child)).toMatchObject({
+    parentRequirementId: root.requirementId,
+    rootRequirementId: root.requirementId,
+    dependsOnRequirementIds: [root.requirementId],
+  });
+
+  const legacy = createRequirement(options, {
+    requirementId: 'REQ-HIERARCHY-LEGACY', projectId: 'project-hierarchy',
+    title: 'Existing task', outcomeStatement: 'Attach an existing task under the canonical root.',
+  });
+  const attached = reviseRequirementSemantic(options, legacy.requirementId, {
+    expectedRevision: 1, parentRequirementId: root.requirementId,
+  });
+  expect(requirementSemanticView(attached)).toMatchObject({
+    revision: 2, parentRequirementId: root.requirementId, rootRequirementId: root.requirementId,
+  });
+  expect(listRequirementRevisionRecords(options, legacy.requirementId, 2)[0]).toMatchObject({
+    revision: 1, title: 'Existing task',
+  });
+  expect(listRequirementRevisionRecords(options, legacy.requirementId, 2)[0]?.parentRequirementId).toBeUndefined();
+  expect(() => reviseRequirementSemantic(options, legacy.requirementId, {
+    expectedRevision: 2, parentRequirementId: 'REQ-OTHER-PARENT',
+  })).toThrow('REQUIREMENT_PARENT_IMMUTABLE:REQ-HIERARCHY-LEGACY');
+
+  expect(() => createRequirement(options, {
+    requirementId: 'REQ-HIERARCHY-SECOND-ROOT', projectId: 'project-hierarchy', isProjectRoot: true,
+    title: 'Second root', outcomeStatement: 'A second root must be rejected.',
+  })).toThrow(/PROJECT_ROOT_REQUIREMENT_ALREADY_BOUND:project-hierarchy:REQ-HIERARCHY-ROOT/);
+  expect(readRequirement(options, 'REQ-HIERARCHY-SECOND-ROOT')).toBeUndefined();
+
+  const foreignRoot = createRequirement(options, {
+    requirementId: 'REQ-HIERARCHY-FOREIGN-ROOT', projectId: 'project-hierarchy-other', isProjectRoot: true,
+    title: 'Foreign root', outcomeStatement: 'Belongs to another Project.',
+  });
+  expect(() => createRequirement(options, {
+    requirementId: 'REQ-HIERARCHY-CROSS-PROJECT', repoId: 'repo-hierarchy',
+    parentRequirementId: foreignRoot.requirementId,
+    title: 'Cross-project child', outcomeStatement: 'Must not cross Project roots.',
+  })).toThrow(/REQUIREMENT_HIERARCHY_PROJECT_MISMATCH/);
 });
 
 test('Requirement task priority, assignee and status share one revisioned authority and board projection', () => {

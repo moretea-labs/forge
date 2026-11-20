@@ -96,10 +96,11 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // Prompt to the existing Launch Session action.
 // 2026-11-20: revision-bound Autopilot authorization/checkpoint acceptance and
 // atomic parent-Requirement CAS for semantic Plan creation add explicit
-// expected-revision and approved-checkpoint identity fields. This is an
-// intentional public input-schema revision; refresh the exact fingerprint so
+// expected-revision and approved-checkpoint identity fields. Project Requirement
+// hierarchy additionally adds an explicit root-binding flag and parent edge,
+// separate from Requirement dependency edges. Refresh the exact fingerprint so
 // stale Connector schema snapshots are invalidated.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'a251b10ffbc0959a';
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '11a6a81fa3447c0c';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

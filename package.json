@@ -159,6 +159,8 @@
     "check:task-workflow": "bun src/cli/index.ts run check-task-workflow --strict",
     "runtime:activate-source-baseline": "bun scripts/activate-source-baseline.ts request",
     "plugin:install-desktop-operator": "bun scripts/install-desktop-operator-registration.ts",
+    "sync:main": "bash scripts/sync-main.sh",
+    "sync:main:watch": "bash scripts/sync-main-watch.sh",
     "sync:brain-docs": "bun src/cli/index.ts run sync-brain-docs --all",
     "check:forge-runtime": "bash scripts/verify-forge-runtime.sh",
     "repo:registry": "bun src/cli/v81-entry.ts repo",

@@ -56,6 +56,8 @@ export function normalizeRequirementAdmissionInput(input: CreateRequirementInput
     ...(input.priority ? { priority: input.priority } : {}),
     ...(String(input.assignee ?? '').trim() ? { assignee: String(input.assignee).trim().slice(0, 160) } : {}),
     ...(input.status ? { status: input.status } : {}),
+    ...(String(input.parentRequirementId ?? '').trim() ? { parentRequirementId: String(input.parentRequirementId).trim().slice(0, 160) } : {}),
+    ...(input.isProjectRoot ? { isProjectRoot: true } : {}),
     title: String(input.title ?? '').trim().slice(0, 500),
     outcomeStatement: String(input.outcomeStatement ?? '').trim().slice(0, 2_000),
     acceptanceCriteria: bounded(input.acceptanceCriteria, 50),
@@ -78,7 +80,13 @@ function sameBootstrapIdentity(existing: Requirement, requested: CreateRequireme
     && JSON.stringify(existing.acceptanceCriteria) === JSON.stringify(requested.acceptanceCriteria ?? [])
     && JSON.stringify(existing.requiredDeliveryReferences) === JSON.stringify(requested.requiredDeliveryReferences ?? [])
     && JSON.stringify(existing.legacyAliases) === JSON.stringify(requested.legacyAliases ?? [])
-    && JSON.stringify(existing.dependsOnRequirementIds ?? []) === JSON.stringify(requested.dependsOnRequirementIds ?? []);
+    && JSON.stringify(existing.dependsOnRequirementIds ?? []) === JSON.stringify(requested.dependsOnRequirementIds ?? [])
+    && existing.parentRequirementId === requested.parentRequirementId
+    && (requested.isProjectRoot
+      ? existing.rootRequirementId === existing.requirementId
+      : requested.parentRequirementId
+        ? Boolean(existing.rootRequirementId)
+        : !existing.rootRequirementId);
 }
 
 function existingDecision(

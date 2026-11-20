@@ -14,7 +14,7 @@ import {
 import { createHash } from 'node:crypto';
 import { REQUIREMENT_PRIORITIES, REQUIREMENT_STATE_TRANSITIONS, type RequirementPriority, type RequirementState } from '../../../../packages/kernel/goal/api/index';
 import type { ProjectIdentity, ProjectPlacement, ScopeRef } from '../../../../packages/kernel/identity/api/index';
-import { PROJECT_PLACEMENT_NAMESPACE, PROJECT_SEMANTIC_NAMESPACE } from '../workspace/workspace-store';
+import { bindProjectRootRequirementWithinTransaction, PROJECT_PLACEMENT_NAMESPACE, PROJECT_SEMANTIC_NAMESPACE } from '../workspace/workspace-store';
 export { REQUIREMENT_PRIORITIES, REQUIREMENT_STATES, type RequirementPriority, type RequirementState } from '../../../../packages/kernel/goal/api/index';
 
 export interface Requirement {
@@ -24,6 +24,10 @@ export interface Requirement {
   repoId?: string;
   /** Direct Project membership only for tasks without repository placement. */
   projectId?: string;
+  /** Explicit parent in the Project Requirement tree; independent from task dependencies. */
+  parentRequirementId?: string;
+  /** Denormalized pointer to the Project's one canonical root Requirement. */
+  rootRequirementId?: string;
   priority?: RequirementPriority;
   /** Display/identity label only; this metadata never grants access. */
   assignee?: string;
@@ -74,6 +78,10 @@ export interface CreateRequirementInput {
   requiredDeliveryReferences?: string[];
   /** Existing canonical Requirement dependencies; validated atomically before admission. */
   dependsOnRequirementIds?: string[];
+  /** Existing rooted Requirement to attach beneath; the root is inherited atomically. */
+  parentRequirementId?: string;
+  /** Explicitly designate this Requirement as the Project's single root. */
+  isProjectRoot?: boolean;
   /** Authority-derived provenance only; raw transports must not pass arbitrary audit refs. */
   auditRefs?: string[];
 }
@@ -86,6 +94,8 @@ export interface RequirementSemanticView {
   semanticScope: ScopeRef;
   repoId?: string;
   projectId?: string;
+  parentRequirementId?: string;
+  rootRequirementId?: string;
   title: string;
   outcomeStatement: string;
   acceptanceCriteria: string[];
@@ -126,6 +136,10 @@ export interface ReviseRequirementSemanticInput {
   acceptedEvidenceRefs?: string[];
   dependsOnRequirementIds?: string[];
   legacyAliases?: string[];
+  /** Attach a legacy/unrooted Requirement beneath an existing Project root. Immutable once assigned. */
+  parentRequirementId?: string;
+  /** Promote this unparented Requirement to the Project's one root. */
+  isProjectRoot?: boolean;
   state?: SemanticRequirementState;
 }
 
@@ -151,6 +165,86 @@ function assertRepositoryProjectAcceptsTask(database: SqliteDatabase, repoId: st
     if (!project) throw new Error(`PROJECT_PLACEMENT_IDENTITY_UNRESOLVED:${projectId}`);
     if (project.status === 'archived') throw new Error(`REQUIREMENT_PROJECT_ARCHIVED:${projectId}`);
   }
+}
+
+function projectIdForRequirementWithinTransaction(
+  database: SqliteDatabase,
+  requirement: Pick<Requirement, 'projectId' | 'repoId'>,
+): string | undefined {
+  if (requirement.projectId) return requirement.projectId;
+  const repoId = repositoryId(requirement.repoId);
+  if (!repoId) return undefined;
+  const placements = listControlPlaneRecordsWithinTransaction<ProjectPlacement>(database, {
+    namespace: PROJECT_PLACEMENT_NAMESPACE, limit: 1_000,
+  });
+  if (placements.length >= 1_000) throw new Error('PROJECT_PLACEMENT_LOOKUP_LIMIT');
+  const projectIds = [...new Set(placements
+    .filter(({ value }) => value.repositoryId === repoId)
+    .map(({ value }) => value.projectId))];
+  if (projectIds.length > 1) throw new Error(`REQUIREMENT_PROJECT_PLACEMENT_AMBIGUOUS:${repoId}`);
+  return projectIds[0];
+}
+
+function projectIdentityWithinTransaction(database: SqliteDatabase, projectId: string): ControlPlaneRecord<ProjectIdentity> {
+  const projects = listControlPlaneRecordsWithinTransaction<ProjectIdentity>(database, {
+    namespace: PROJECT_SEMANTIC_NAMESPACE, limit: 1_000,
+  });
+  if (projects.length >= 1_000) throw new Error('PROJECT_IDENTITY_LOOKUP_LIMIT');
+  const matches = projects.filter(({ value }) => value.projectId === projectId);
+  if (matches.length !== 1) throw new Error(matches.length
+    ? `PROJECT_IDENTITY_AMBIGUOUS:${projectId}`
+    : `REQUIREMENT_PROJECT_NOT_FOUND:${projectId}`);
+  if ((matches[0]!.value.status ?? 'active') === 'archived') throw new Error(`REQUIREMENT_PROJECT_ARCHIVED:${projectId}`);
+  return matches[0]!;
+}
+
+function assertRequirementHierarchyParentWithinTransaction(
+  database: SqliteDatabase,
+  input: { requirementId: string; repoId?: string; projectId?: string; parentRequirementId: string },
+): { parentRequirementId: string; rootRequirementId: string; projectId: string } {
+  const parentRequirementId = id(input.parentRequirementId);
+  if (parentRequirementId === input.requirementId) throw new Error(`REQUIREMENT_HIERARCHY_CYCLE:${input.requirementId}`);
+  const parent = readWithin(database, parentRequirementId);
+  if (!parent) throw new Error(`REQUIREMENT_PARENT_NOT_FOUND:${parentRequirementId}`);
+  if (parent.value.state === 'done' || parent.value.state === 'cancelled') {
+    throw new Error(`REQUIREMENT_PARENT_TERMINAL:${parentRequirementId}`);
+  }
+  const projectId = projectIdForRequirementWithinTransaction(database, input);
+  const parentProjectId = projectIdForRequirementWithinTransaction(database, parent.value);
+  if (!projectId || projectId !== parentProjectId) {
+    throw new Error(`REQUIREMENT_HIERARCHY_PROJECT_MISMATCH:${input.requirementId}:${parentRequirementId}`);
+  }
+  const rootRequirementId = parent.value.rootRequirementId;
+  if (!rootRequirementId) throw new Error(`REQUIREMENT_PARENT_ROOT_NOT_ESTABLISHED:${parentRequirementId}`);
+  const project = projectIdentityWithinTransaction(database, projectId);
+  if (project.value.rootRequirementId !== rootRequirementId) {
+    throw new Error(`REQUIREMENT_PROJECT_ROOT_MISMATCH:${projectId}:${rootRequirementId}`);
+  }
+  const root = readWithin(database, rootRequirementId);
+  if (!root || root.value.rootRequirementId !== rootRequirementId || root.value.parentRequirementId) {
+    throw new Error(`REQUIREMENT_HIERARCHY_ROOT_INVALID:${rootRequirementId}`);
+  }
+  if (root.value.state === 'done' || root.value.state === 'cancelled') throw new Error(`REQUIREMENT_PARENT_TERMINAL:${rootRequirementId}`);
+  if (projectIdForRequirementWithinTransaction(database, root.value) !== projectId) {
+    throw new Error(`REQUIREMENT_HIERARCHY_PROJECT_MISMATCH:${rootRequirementId}:${projectId}`);
+  }
+  const visited = new Set<string>([parentRequirementId]);
+  let cursor = parent.value;
+  while (cursor.parentRequirementId) {
+    const ancestorId = cursor.parentRequirementId;
+    if (ancestorId === input.requirementId || visited.has(ancestorId)) {
+      throw new Error(`REQUIREMENT_HIERARCHY_CYCLE:${input.requirementId}`);
+    }
+    visited.add(ancestorId);
+    const ancestor = readWithin(database, ancestorId);
+    if (!ancestor) throw new Error(`REQUIREMENT_PARENT_NOT_FOUND:${ancestorId}`);
+    if (ancestor.value.rootRequirementId !== rootRequirementId) {
+      throw new Error(`REQUIREMENT_HIERARCHY_ROOT_MISMATCH:${ancestorId}:${rootRequirementId}`);
+    }
+    cursor = ancestor.value;
+  }
+  if (cursor.requirementId !== rootRequirementId) throw new Error(`REQUIREMENT_HIERARCHY_ROOT_INVALID:${rootRequirementId}`);
+  return { parentRequirementId, rootRequirementId, projectId };
 }
 
 /** Startup-only format conversion in the existing Requirement owner. The old
@@ -238,6 +332,8 @@ export function requirementSemanticView(requirement: Requirement): RequirementSe
     semanticScope: { schemaVersion: 1, kind: 'requirement', id: requirement.requirementId },
     ...(requirement.repoId ? { repoId: requirement.repoId } : {}),
     ...(requirement.projectId ? { projectId: requirement.projectId } : {}),
+    ...(requirement.parentRequirementId ? { parentRequirementId: requirement.parentRequirementId } : {}),
+    ...(requirement.rootRequirementId ? { rootRequirementId: requirement.rootRequirementId } : {}),
     title: requirement.title,
     outcomeStatement: requirement.outcomeStatement,
     acceptanceCriteria: [...requirement.acceptanceCriteria],
@@ -419,6 +515,44 @@ export function reviseRequirementSemantic(
       throw new Error(`REQUIREMENT_REPOSITORY_CONFLICT:${requirementId}:existing=${current.value.repoId}:requested=${requestedRepoId}`);
     }
     if (requestedRepoId && !current.value.repoId) assertRepositoryProjectAcceptsTask(database, requestedRepoId);
+    const requestedParentRequirementId = input.parentRequirementId === undefined ? undefined : id(input.parentRequirementId);
+    if (input.isProjectRoot && requestedParentRequirementId) throw new Error('REQUIREMENT_HIERARCHY_ROOT_PARENT_CONFLICT');
+    let nextParentRequirementId = current.value.parentRequirementId;
+    let nextRootRequirementId = current.value.rootRequirementId;
+    let projectRootToBind: string | undefined;
+    if (input.isProjectRoot) {
+      if (nextParentRequirementId || (nextRootRequirementId && nextRootRequirementId !== requirementId)) {
+        throw new Error(`REQUIREMENT_HIERARCHY_ROOT_IMMUTABLE:${requirementId}`);
+      }
+      const projectId = projectIdForRequirementWithinTransaction(database, {
+        projectId: current.value.projectId, repoId: requestedRepoId ?? current.value.repoId,
+      });
+      if (!projectId) throw new Error(`REQUIREMENT_PROJECT_ROOT_REQUIRES_PROJECT:${requirementId}`);
+      const project = projectIdentityWithinTransaction(database, projectId);
+      if (project.value.rootRequirementId && project.value.rootRequirementId !== requirementId) {
+        throw new Error(`PROJECT_ROOT_REQUIREMENT_ALREADY_BOUND:${projectId}:${project.value.rootRequirementId}`);
+      }
+      nextParentRequirementId = undefined;
+      nextRootRequirementId = requirementId;
+      projectRootToBind = projectId;
+    } else if (requestedParentRequirementId) {
+      if (nextParentRequirementId && nextParentRequirementId !== requestedParentRequirementId) {
+        throw new Error(`REQUIREMENT_PARENT_IMMUTABLE:${requirementId}`);
+      }
+      if (nextRootRequirementId && !nextParentRequirementId) {
+        throw new Error(`REQUIREMENT_HIERARCHY_ROOT_IMMUTABLE:${requirementId}`);
+      }
+      const hierarchy = assertRequirementHierarchyParentWithinTransaction(database, {
+        requirementId,
+        repoId: requestedRepoId ?? current.value.repoId,
+        projectId: current.value.projectId,
+        parentRequirementId: requestedParentRequirementId,
+      });
+      nextParentRequirementId = hierarchy.parentRequirementId;
+      nextRootRequirementId = hierarchy.rootRequirementId;
+    }
+    const hierarchyChanged = nextParentRequirementId !== current.value.parentRequirementId
+      || nextRootRequirementId !== current.value.rootRequirementId;
     const currentDependencies = [...(current.value.dependsOnRequirementIds ?? [])];
     const dependsOnRequirementIds = input.dependsOnRequirementIds === undefined
       ? currentDependencies
@@ -503,6 +637,7 @@ export function reviseRequirementSemantic(
       acceptedEvidenceRefs,
       dependsOnRequirementIds,
       legacyAliases,
+      ...(hierarchyChanged ? { parentRequirementId: nextParentRequirementId, rootRequirementId: nextRootRequirementId } : {}),
       state: legacyState,
       ...(requestedState ? { needsAttention: false, attentionSummary: undefined } : {}),
       semanticRevision: semanticRevision + 1,
@@ -510,10 +645,12 @@ export function reviseRequirementSemantic(
       revision: current.value.revision + 1,
       updatedAt: at,
     };
-    return writeControlPlaneRecordWithinTransaction(database, {
+    const written = writeControlPlaneRecordWithinTransaction(database, {
       namespace: NAMESPACE, scope: SCOPE, key: requirementId, schemaVersion: SCHEMA_VERSION,
       value: updated, action: 'requirement_semantic_revised', expectedRevision: current.revision,
-    }).value;
+    });
+    if (projectRootToBind) bindProjectRootRequirementWithinTransaction(database, projectRootToBind, requirementId, at);
+    return written.value;
   });
 }
 
@@ -524,7 +661,9 @@ export function createRequirement(
   const requirementId = id(input.requirementId);
   const projectId = String(input.projectId ?? '').trim() || undefined;
   const repoId = repositoryId(input.repoId);
+  const parentRequirementId = input.parentRequirementId === undefined ? undefined : id(input.parentRequirementId);
   if (projectId && (projectId.length > 512 || repoId)) throw new Error('REQUIREMENT_PROJECT_REPOSITORY_PLACEMENT_CONFLICT');
+  if (input.isProjectRoot && parentRequirementId) throw new Error('REQUIREMENT_HIERARCHY_ROOT_PARENT_CONFLICT');
   const at = nowIso(options);
   const initialStatus = input.status ?? 'planned';
   const legacyAliases = normalizeRequirementLegacyAliases(input.legacyAliases);
@@ -558,16 +697,29 @@ export function createRequirement(
     updatedAt: at,
   };
   if (!requirement.title || !requirement.outcomeStatement) throw new Error('REQUIREMENT_CONTENT_REQUIRED');
+  let createdRequirement = requirement;
   withControlPlaneTransaction(options.controllerHome, (database) => {
     if (readWithin(database, requirementId)) throw new Error(`REQUIREMENT_ALREADY_EXISTS: ${requirementId}`);
-    if (projectId) {
-      const projects = listControlPlaneRecordsWithinTransaction<ProjectIdentity>(database, { namespace: PROJECT_SEMANTIC_NAMESPACE, limit: 1000 });
-      if (projects.length >= 1000) throw new Error('PROJECT_IDENTITY_LOOKUP_LIMIT');
-      const project = projects.find((record) => record.value.projectId === projectId)?.value;
-      if (!project) throw new Error(`REQUIREMENT_PROJECT_NOT_FOUND:${projectId}`);
-      if (project.status === 'archived') throw new Error(`REQUIREMENT_PROJECT_ARCHIVED:${projectId}`);
-    }
+    if (projectId) projectIdentityWithinTransaction(database, projectId);
     if (repoId) assertRepositoryProjectAcceptsTask(database, repoId);
+    const resolvedProjectId = projectIdForRequirementWithinTransaction(database, requirement);
+    if (parentRequirementId) {
+      const hierarchy = assertRequirementHierarchyParentWithinTransaction(database, {
+        requirementId, repoId, projectId, parentRequirementId,
+      });
+      createdRequirement = {
+        ...requirement,
+        parentRequirementId: hierarchy.parentRequirementId,
+        rootRequirementId: hierarchy.rootRequirementId,
+      };
+    } else if (input.isProjectRoot) {
+      if (!resolvedProjectId) throw new Error(`REQUIREMENT_PROJECT_ROOT_REQUIRES_PROJECT:${requirementId}`);
+      const project = projectIdentityWithinTransaction(database, resolvedProjectId);
+      if (project.value.rootRequirementId && project.value.rootRequirementId !== requirementId) {
+        throw new Error(`PROJECT_ROOT_REQUIREMENT_ALREADY_BOUND:${resolvedProjectId}:${project.value.rootRequirementId}`);
+      }
+      createdRequirement = { ...requirement, rootRequirementId: requirementId };
+    }
     assertUniqueRequirementLegacyAliasesWithinTransaction(database, requirementId, legacyAliases);
     assertRequirementDependenciesWithinTransaction(database, requirementId, dependsOnRequirementIds);
     const exclusiveCandidateRefs = requirement.auditRefs.filter(ref => ref.startsWith('cognitive-requirement-candidate:'));
@@ -586,12 +738,15 @@ export function createRequirement(
       scope: SCOPE,
       key: requirementId,
       schemaVersion: SCHEMA_VERSION,
-      value: requirement,
+      value: createdRequirement,
       action: 'requirement_created',
       expectedRevision: null,
     });
+    if (input.isProjectRoot && resolvedProjectId) {
+      bindProjectRootRequirementWithinTransaction(database, resolvedProjectId, requirementId, at);
+    }
   });
-  return requirement;
+  return createdRequirement;
 }
 
 export function bindRequirementRepositoryPlacement(
