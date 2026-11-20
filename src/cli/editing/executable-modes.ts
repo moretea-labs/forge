@@ -23,8 +23,11 @@ function hasShebang(path: string): boolean {
   let fd: number | undefined;
   try {
     fd = openSync(path, 'r');
-    const buffer = Buffer.alloc(2);
-    return readSync(fd, buffer, 0, 2, 0) === 2 && buffer.toString('utf8') === '#!';
+    const buffer = Buffer.alloc(3);
+    const read = readSync(fd, buffer, 0, 3, 0);
+    if (read < 2 || buffer.toString('utf8', 0, 2) !== '#!') return false;
+    // `#![...]` is a Rust/Swift inner attribute, not an interpreter directive.
+    return read < 3 || buffer.toString('utf8', 2, 3) !== '[';
   } catch {
     return false;
   } finally {
