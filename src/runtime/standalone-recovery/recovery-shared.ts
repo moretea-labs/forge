@@ -4,12 +4,16 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'f
 import { homedir, hostname } from 'os';
 import { delimiter, dirname, join, resolve } from 'path';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
-import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
+import { macSystemProxyEnvironment, runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
+export { macSystemProxyEnvironment };
 import { forgeRuntimeServicePaths } from '../root/service';
 import { readRuntimeReleaseAuthority } from '../root/release-store';
 import { readCurrentRecoveryRelease, type RecoveryRuntimeRole } from './release';
 import { recoveryOperationLockPath, type RecoveryOperationLockRecord } from './operation-lock';
-import { RECOVERY_MUTATION_IDENTITY_FIELDS, type RecoveryMutationIdentityArguments } from './mutation-identity-contract';
+import {
+  RECOVERY_MUTATION_IDENTITY_FIELDS,
+  type RecoveryMutationIdentityArguments,
+} from './mutation-identity-contract';
 import type { RuntimeReleaseExecutionCanaryDependencies, StagedRuntimeRelease } from '../root/release-materialize';
 import type { RuntimePerformanceEvidence } from './performance';
 import type { KnownGoodRecoveryBundle } from '../root/known-good-recovery';
@@ -98,7 +102,10 @@ export type PrimaryConnectorServiceConfig = LaunchdPrimaryConnectorServiceConfig
 
 export type RecoveryInstallProfile = 'manual' | 'gateway' | 'self-healing';
 
-export function normalizeRecoveryInstallProfile(value: unknown, fallback: RecoveryInstallProfile = 'self-healing'): RecoveryInstallProfile {
+export function normalizeRecoveryInstallProfile(
+  value: unknown,
+  fallback: RecoveryInstallProfile = 'self-healing',
+): RecoveryInstallProfile {
   if (value === undefined || value === null || value === '') return fallback;
   if (value === 'manual' || value === 'gateway' || value === 'self-healing') return value;
   throw new Error(`RECOVERY_INSTALL_PROFILE_INVALID: ${String(value)}`);
@@ -148,7 +155,9 @@ export interface RecoveryMachineIdentity {
   };
 }
 
-export function recoveryMutationIdentityExpectations(identity: Pick<RecoveryMachineIdentity, 'host' | 'platform' | 'controllerHome' | 'recovery' | 'targetRuntime'>): RecoveryMutationIdentityArguments {
+export function recoveryMutationIdentityExpectations(
+  identity: Pick<RecoveryMachineIdentity, 'host' | 'platform' | 'controllerHome' | 'recovery' | 'targetRuntime'>,
+): RecoveryMutationIdentityArguments {
   return {
     expected_host: identity.host,
     expected_platform: identity.platform,
@@ -158,7 +167,10 @@ export function recoveryMutationIdentityExpectations(identity: Pick<RecoveryMach
   };
 }
 
-export function assertRecoveryMutationIdentity(config: RecoveryConfig, args: Record<string, unknown>): RecoveryMachineIdentity {
+export function assertRecoveryMutationIdentity(
+  config: RecoveryConfig,
+  args: Record<string, unknown>,
+): RecoveryMachineIdentity {
   const identity = recoveryMachineIdentity(config);
   const expected = recoveryMutationIdentityExpectations(identity);
   for (const field of RECOVERY_MUTATION_IDENTITY_FIELDS) {
@@ -223,9 +235,7 @@ export interface RecoveryLockIntent {
   requestId?: string;
 }
 
-export type RecoveryLockAttempt<T> =
-  | { acquired: true; value: T }
-  | { acquired: false; owner: RecoveryLock };
+export type RecoveryLockAttempt<T> = { acquired: true; value: T } | { acquired: false; owner: RecoveryLock };
 
 export interface VerifyResult {
   ok: boolean;
@@ -257,19 +267,28 @@ export function isPrimaryTunnelControlPlaneOnlyDegradation(
 ): boolean {
   if (!dataPlaneHealthy || !probe || probe.ok) return false;
   const observed = probe.value as Partial<OpenAiSecureTunnelRuntimeObservation> | undefined;
-  return observed?.healthy === true
-    && observed.ready === true
-    && observed.tunnelMatches === true
-    && observed.endpointMatches === true
-    && (observed.controlPlaneState === 'degraded' || observed.controlPlaneState === 'unknown');
+  return (
+    observed?.healthy === true &&
+    observed.ready === true &&
+    observed.tunnelMatches === true &&
+    observed.endpointMatches === true &&
+    (observed.controlPlaneState === 'degraded' || observed.controlPlaneState === 'unknown')
+  );
 }
 
 /** Bounded, release-scoped explanation for a failed watchdog verification. */
 export interface RecoveryWatchdogDiagnosticEvidence {
   fingerprint: string;
   releaseIdentity: string;
-  components: Array<'runtime' | 'gateway' | 'public_mcp' | 'recovery_gateway' | 'recovery_watchdog' | 'recovery_tunnel'>;
-  failedProbes: Array<{ name: string; component: 'runtime' | 'gateway' | 'public_mcp' | 'recovery_gateway' | 'recovery_watchdog' | 'recovery_tunnel'; detail: string; status?: number }>;
+  components: Array<
+    'runtime' | 'gateway' | 'public_mcp' | 'recovery_gateway' | 'recovery_watchdog' | 'recovery_tunnel'
+  >;
+  failedProbes: Array<{
+    name: string;
+    component: 'runtime' | 'gateway' | 'public_mcp' | 'recovery_gateway' | 'recovery_watchdog' | 'recovery_tunnel';
+    detail: string;
+    status?: number;
+  }>;
   firstObservedAt: string;
   lastObservedAt: string;
   occurrences: number;
@@ -289,7 +308,15 @@ export interface RollbackResult {
 }
 
 export interface WatchdogDecision {
-  action: 'healthy' | 'degraded' | 'repair_public_tunnel' | 'restart_recovery_gateway' | 'restart_primary_connector' | 'restart_primary_runtime' | 'rollback' | 'recovery_exhausted';
+  action:
+    | 'healthy'
+    | 'degraded'
+    | 'repair_public_tunnel'
+    | 'restart_recovery_gateway'
+    | 'restart_primary_connector'
+    | 'restart_primary_runtime'
+    | 'rollback'
+    | 'recovery_exhausted';
   reason: string;
 }
 
@@ -402,7 +429,9 @@ export function recoveryMachineIdentity(
     platform,
     controllerHome,
     recovery: {
-      ...(recoveryRelease ? { releaseRevision: recoveryRelease.releaseRevision, manifestSha256: recoveryRelease.manifestSha256 } : {}),
+      ...(recoveryRelease
+        ? { releaseRevision: recoveryRelease.releaseRevision, manifestSha256: recoveryRelease.manifestSha256 }
+        : {}),
     },
     targetRuntime: {
       id: `${servicePlatform}:${serviceLabel}:${activeReleaseId ?? 'none'}`,
@@ -429,11 +458,17 @@ export function normalizeRecoveryReadOnlyTool(
   return input;
 }
 
-export function defaultPrimaryRuntimeServiceConfig(platform: NodeJS.Platform = process.platform): PrimaryRuntimeServiceConfig {
+export function defaultPrimaryRuntimeServiceConfig(
+  platform: NodeJS.Platform = process.platform,
+): PrimaryRuntimeServiceConfig {
   return { platform: platform === 'linux' ? 'systemd-user' : 'launchd' };
 }
 export function json<T>(path: string): T | undefined {
-  try { return JSON.parse(readFileSync(path, 'utf8')) as T; } catch { return undefined; }
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')) as T;
+  } catch {
+    return undefined;
+  }
 }
 
 export function writeJson(path: string, value: unknown): void {
@@ -446,19 +481,41 @@ export function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, content, { encoding: 'utf8', mode: 0o600 });
-  try { chmodSync(temporary, 0o600); } catch { /* best effort */ }
+  try {
+    chmodSync(temporary, 0o600);
+  } catch {
+    /* best effort */
+  }
   renameSync(temporary, path);
 }
 
-export function recoveryRoot(config: RecoveryConfig): string { return join(resolve(config.controllerHome), 'recovery'); }
-export function statePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'known-good.json'); }
-export function runtimePinPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'runtime-pin.json'); }
-export function lockPath(config: RecoveryConfig): string { return recoveryOperationLockPath(config.controllerHome); }
-export function auditPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'audit', 'recovery.jsonl'); }
-export function watchdogDiagnosticPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'watchdog-diagnostics.json'); }
-export function quarantinePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'quarantine.json'); }
-export function publicTunnelRepairStatePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'public-tunnel-repair.json'); }
-export function watchdogStatePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'watchdog.json'); }
+export function recoveryRoot(config: RecoveryConfig): string {
+  return join(resolve(config.controllerHome), 'recovery');
+}
+export function statePath(config: RecoveryConfig): string {
+  return join(recoveryRoot(config), 'state', 'known-good.json');
+}
+export function runtimePinPath(config: RecoveryConfig): string {
+  return join(recoveryRoot(config), 'state', 'runtime-pin.json');
+}
+export function lockPath(config: RecoveryConfig): string {
+  return recoveryOperationLockPath(config.controllerHome);
+}
+export function auditPath(config: RecoveryConfig): string {
+  return join(recoveryRoot(config), 'audit', 'recovery.jsonl');
+}
+export function watchdogDiagnosticPath(config: RecoveryConfig): string {
+  return join(recoveryRoot(config), 'state', 'watchdog-diagnostics.json');
+}
+export function quarantinePath(config: RecoveryConfig): string {
+  return join(recoveryRoot(config), 'state', 'quarantine.json');
+}
+export function publicTunnelRepairStatePath(config: RecoveryConfig): string {
+  return join(recoveryRoot(config), 'state', 'public-tunnel-repair.json');
+}
+export function watchdogStatePath(config: RecoveryConfig): string {
+  return join(recoveryRoot(config), 'state', 'watchdog.json');
+}
 export function loadWatchdogState(config: RecoveryConfig): WatchdogState {
   const state = json<WatchdogState>(watchdogStatePath(config));
   if (!state || !Number.isInteger(state.failures) || state.failures < 0 || typeof state.rollbackUsed !== 'boolean') {
@@ -496,7 +553,10 @@ function watchdogProbeComponent(name: string): RecoveryWatchdogDiagnosticEvidenc
   return 'public_mcp';
 }
 
-export function persistWatchdogDiagnosticEvidence(config: RecoveryConfig, result: VerifyResult): RecoveryWatchdogDiagnosticEvidence | undefined {
+export function persistWatchdogDiagnosticEvidence(
+  config: RecoveryConfig,
+  result: VerifyResult,
+): RecoveryWatchdogDiagnosticEvidence | undefined {
   if (result.ok) return undefined;
   const failedProbes = Object.entries(result.probes)
     .filter(([, probe]) => !probe.ok)
@@ -507,11 +567,20 @@ export function persistWatchdogDiagnosticEvidence(config: RecoveryConfig, result
       ...(probe.status === undefined ? {} : { status: probe.status }),
     }));
   if (!result.runtime.ok && !failedProbes.some((probe) => probe.name === 'runtime_status')) {
-    failedProbes.unshift({ name: 'runtime_readiness', component: 'runtime', detail: result.runtime.reasonCodes.join(', ') || 'runtime is not ready' });
+    failedProbes.unshift({
+      name: 'runtime_readiness',
+      component: 'runtime',
+      detail: result.runtime.reasonCodes.join(', ') || 'runtime is not ready',
+    });
   }
   const active = result.releases.active;
-  const releaseIdentity = [active?.revision, active?.artifactIdentity, active?.manifestSha256].filter(Boolean).join(':') || 'unresolved-release';
-  const fingerprint = createHash('sha256').update(JSON.stringify({ releaseIdentity, failedProbes })).digest('hex').slice(0, 24);
+  const releaseIdentity =
+    [active?.revision, active?.artifactIdentity, active?.manifestSha256].filter(Boolean).join(':') ||
+    'unresolved-release';
+  const fingerprint = createHash('sha256')
+    .update(JSON.stringify({ releaseIdentity, failedProbes }))
+    .digest('hex')
+    .slice(0, 24);
   const observedAt = result.at;
   const previous = json<RecoveryWatchdogDiagnosticStore>(watchdogDiagnosticPath(config));
   const entries = Array.isArray(previous?.entries) ? previous.entries : [];
@@ -519,23 +588,40 @@ export function persistWatchdogDiagnosticEvidence(config: RecoveryConfig, result
   const evidence: RecoveryWatchdogDiagnosticEvidence = existing
     ? { ...existing, lastObservedAt: observedAt, occurrences: existing.occurrences + 1 }
     : {
-      fingerprint,
-      releaseIdentity,
-      components: [...new Set(failedProbes.map((probe) => probe.component))],
-      failedProbes,
-      firstObservedAt: observedAt,
-      lastObservedAt: observedAt,
-      occurrences: 1,
-    };
+        fingerprint,
+        releaseIdentity,
+        components: [...new Set(failedProbes.map((probe) => probe.component))],
+        failedProbes,
+        firstObservedAt: observedAt,
+        lastObservedAt: observedAt,
+        occurrences: 1,
+      };
   writeJson(watchdogDiagnosticPath(config), {
     schemaVersion: 1,
-    entries: [evidence, ...entries.filter((entry) => entry.fingerprint !== fingerprint)].slice(0, WATCHDOG_DIAGNOSTIC_LIMIT),
+    entries: [evidence, ...entries.filter((entry) => entry.fingerprint !== fingerprint)].slice(
+      0,
+      WATCHDOG_DIAGNOSTIC_LIMIT,
+    ),
   } satisfies RecoveryWatchdogDiagnosticStore);
   return evidence;
 }
-export interface CommandResult { ok: boolean; status: number | null; stdout: string; stderr: string; }
-export interface CommandOptions { cwd?: string; home?: string; maxOutputBytes?: number; }
-export type CommandRunner = (commandName: string, args: string[], timeoutMs?: number, options?: CommandOptions) => Promise<CommandResult>;
+export interface CommandResult {
+  ok: boolean;
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+export interface CommandOptions {
+  cwd?: string;
+  home?: string;
+  maxOutputBytes?: number;
+}
+export type CommandRunner = (
+  commandName: string,
+  args: string[],
+  timeoutMs?: number,
+  options?: CommandOptions,
+) => Promise<CommandResult>;
 /**
  * systemd --user does not necessarily inherit the interactive shell PATH.
  * Recovery owns tunnel repair, so its non-interactive command environment must
@@ -552,48 +638,6 @@ export function recoveryCommandPath(
   const entries = inheritedPath.split(delimiter).filter(Boolean);
   return entries.includes(userBin) ? inheritedPath : [userBin, ...entries].join(delimiter);
 }
-/**
- * Resolve the macOS active proxy on each tunnel-client command. macOS launchd
- * does not inherit GUI System Settings, and stale HTTP_PROXY from another VPN
- * client must not become a second network authority. A TUN/VPN route has no
- * explicit HTTP proxy, so clear inherited proxy URLs in that case.
- */
-export function macSystemProxyEnvironment(snapshot: string, inherited: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const settings = new Map<string, string>();
-  for (const line of snapshot.split(/\r?\n/)) {
-    const match = /^\s*([A-Za-z][A-Za-z0-9]*)\s*:\s*(.*?)\s*$/.exec(line);
-    if (match) settings.set(match[1], match[2]);
-  }
-  if (settings.size === 0) throw new Error('MACOS_SYSTEM_PROXY_INVALID');
-  const endpoint = (prefix: 'HTTPS' | 'HTTP' | 'SOCKS', scheme: string): string | undefined => {
-    if (settings.get(`${prefix}Enable`) !== '1') return undefined;
-    const host = settings.get(`${prefix}Proxy`)?.trim() ?? '';
-    const port = Number(settings.get(`${prefix}Port`));
-    if (!/^[A-Za-z0-9.\-:\[\]]+$/.test(host) || !Number.isInteger(port) || port < 1 || port > 65535) {
-      throw new Error('MACOS_SYSTEM_PROXY_INVALID');
-    }
-    const name = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
-    return `${scheme}://${name}:${port}`;
-  };
-  const https = endpoint('HTTPS', 'http');
-  const http = endpoint('HTTP', 'http');
-  const socks = endpoint('SOCKS', 'socks5');
-  if (!https && !http && !socks && settings.get('ProxyAutoConfigEnable') === '1') {
-    throw new Error('MACOS_SYSTEM_PROXY_PAC_UNSUPPORTED');
-  }
-  const next = { ...inherited };
-  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) {
-    delete next[key];
-  }
-  const httpSelected = http ?? https ?? socks;
-  const httpsSelected = https ?? http ?? socks;
-  if (httpSelected) next.HTTP_PROXY = next.http_proxy = httpSelected;
-  if (httpsSelected) next.HTTPS_PROXY = next.https_proxy = httpsSelected;
-  const exclusions = [inherited.NO_PROXY, inherited.no_proxy, 'localhost,127.0.0.1,::1']
-    .filter(Boolean).flatMap((value) => value!.split(',').map((item) => item.trim()).filter(Boolean));
-  next.NO_PROXY = next.no_proxy = [...new Set(exclusions)].join(',');
-  return next;
-}
 
 /** Preserve the user account environment without inheriting private Runtime authority. */
 export function recoveryCommandEnvironment(
@@ -607,15 +651,26 @@ export function recoveryCommandEnvironment(
     HOME: home,
   };
 }
-export async function command(commandName: string, args: string[], timeoutMs = 10_000, options: CommandOptions = {}): Promise<CommandResult> {
+export async function command(
+  commandName: string,
+  args: string[],
+  timeoutMs = 10_000,
+  options: CommandOptions = {},
+): Promise<CommandResult> {
   let environment = recoveryCommandEnvironment(process.env, options.home);
   if (process.platform === 'darwin' && (commandName === 'tunnel-client' || commandName.endsWith('/tunnel-client'))) {
     const systemProxy = await command('/usr/sbin/scutil', ['--proxy'], 2_500);
-    if (!systemProxy.ok) return { ok: false, status: systemProxy.status, stdout: '', stderr: 'MACOS_SYSTEM_PROXY_UNAVAILABLE' };
+    if (!systemProxy.ok)
+      return { ok: false, status: systemProxy.status, stdout: '', stderr: 'MACOS_SYSTEM_PROXY_UNAVAILABLE' };
     try {
       environment = macSystemProxyEnvironment(systemProxy.stdout, environment);
     } catch (error) {
-      return { ok: false, status: null, stdout: '', stderr: error instanceof Error ? error.message : 'MACOS_SYSTEM_PROXY_INVALID' };
+      return {
+        ok: false,
+        status: null,
+        stdout: '',
+        stderr: error instanceof Error ? error.message : 'MACOS_SYSTEM_PROXY_INVALID',
+      };
     }
   }
   return new Promise((resolveCommand) => {
@@ -642,7 +697,11 @@ export async function command(commandName: string, args: string[], timeoutMs = 1
     };
     const signalChild = (signalName: NodeJS.Signals) => {
       if (!child.pid || child.exitCode != null) return;
-      try { process.kill(child.pid, signalName); } catch { /* Process already exited. */ }
+      try {
+        process.kill(child.pid, signalName);
+      } catch {
+        /* Process already exited. */
+      }
     };
     const stop = (detail: string) => {
       if (child.exitCode != null || stopping) return;
@@ -661,13 +720,22 @@ export async function command(commandName: string, args: string[], timeoutMs = 1
     const timeout = setTimeout(() => stop(`command timed out after ${timeoutMs}ms`), timeoutMs);
     child.stdout.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (size <= maxOutputBytes) stdout.push(Buffer.from(chunk)); else stop(`command output exceeded ${maxOutputBytes} bytes`);
+      if (size <= maxOutputBytes) stdout.push(Buffer.from(chunk));
+      else stop(`command output exceeded ${maxOutputBytes} bytes`);
     });
     child.stderr.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (size <= maxOutputBytes) stderr.push(Buffer.from(chunk)); else stop(`command output exceeded ${maxOutputBytes} bytes`);
+      if (size <= maxOutputBytes) stderr.push(Buffer.from(chunk));
+      else stop(`command output exceeded ${maxOutputBytes} bytes`);
     });
     child.once('error', () => finish({ ok: false, status: null, stdout: '', stderr: 'command spawn failed' }));
-    child.once('close', (status) => finish({ ok: status === 0, status, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') }));
+    child.once('close', (status) =>
+      finish({
+        ok: status === 0,
+        status,
+        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: Buffer.concat(stderr).toString('utf8'),
+      }),
+    );
   });
 }

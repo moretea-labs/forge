@@ -4,9 +4,18 @@ import { existsSync, readFileSync, rmSync } from 'fs';
 import { setTimeout as sleep } from 'timers/promises';
 import { dirname, join, resolve } from 'path';
 import { resolveControllerHome } from '../../effects/controller-home';
-import { createPlatformServiceManagerHost, probeSystemdUserAvailable, type PlatformServiceManagerHost, type PlatformServiceManagerKind, type SystemdUserUnitInput } from '../platform/service-manager';
-import { reconcileRetiredForgePersistentServices, type ForgeRetiredServiceReconciliation } from '../platform/service-inventory';
-import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
+import {
+  createPlatformServiceManagerHost,
+  probeSystemdUserAvailable,
+  type PlatformServiceManagerHost,
+  type PlatformServiceManagerKind,
+  type SystemdUserUnitInput,
+} from '../platform/service-manager';
+import {
+  reconcileRetiredForgePersistentServices,
+  type ForgeRetiredServiceReconciliation,
+} from '../platform/service-inventory';
+import { runtimeAuthorityFreeEnvironment, type RuntimeOutboundProxyPolicy } from '../shared/process-environment';
 import {
   activeRuntimeEntrypoint,
   activeRuntimeLaunchSpec,
@@ -18,7 +27,11 @@ import {
   type ForgeRuntimeServiceConfig,
 } from './service';
 import { materializePackageRuntimeRelease, type PackageRuntimeRelease } from './package-runtime-release';
-import { readRuntimeReleaseAuthority, revertInitialRuntimeReleasePublication, rollbackRuntimeRelease } from './release-store';
+import {
+  readRuntimeReleaseAuthority,
+  revertInitialRuntimeReleasePublication,
+  rollbackRuntimeRelease,
+} from './release-store';
 import { loadMcpServiceLocalConfig } from '../../../adapters/mcp/auth';
 import { ensurePackageConnectorService, type PackageConnectorServiceResult } from './package-connector-service';
 import { normalizeRuntimeDeploymentTopology, type RuntimeDeploymentTopology } from './deployment-topology';
@@ -98,12 +111,16 @@ export interface PackageRuntimeServiceOptions {
   forcePortable?: boolean;
   refreshConnector?: boolean;
   topology?: RuntimeDeploymentTopology;
+  /** Explicit egress policy; WSL/Linux deployments must configure their local proxy here. */
+  outboundProxy?: RuntimeOutboundProxyPolicy;
 }
 
 export interface PackageRuntimeServiceDependencies {
   installDarwinService?: typeof installForgeRuntimeService;
   ensureConnectorService?: typeof ensurePackageConnectorService;
-  scheduleDarwinActivation?: (request: PackageRuntimeActivationRequest) => Promise<{ label: string; servicePath: string }>;
+  scheduleDarwinActivation?: (
+    request: PackageRuntimeActivationRequest,
+  ) => Promise<{ label: string; servicePath: string }>;
   activationMode?: 'detached' | 'inline';
   reconcileRetiredServices?: typeof reconcileRetiredForgePersistentServices;
 }
@@ -121,14 +138,20 @@ export function renderForgeRuntimeSystemdUserUnit(input: {
   args: string[];
   environment: Record<string, string>;
 }): string {
-  return createPlatformServiceManagerHost({ platform: 'linux', systemdUserAvailable: true }).renderSystemdUserUnit({ ...input, description: input.description ?? 'Forge Runtime' });
+  return createPlatformServiceManagerHost({ platform: 'linux', systemdUserAvailable: true }).renderSystemdUserUnit({
+    ...input,
+    description: input.description ?? 'Forge Runtime',
+  });
 }
 
 export function systemdUserAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
   return probeSystemdUserAvailable(env);
 }
 
-function cleanRuntimeInstallerEnvironment(env: NodeJS.ProcessEnv, releaseEnvironment: Record<string, string>): NodeJS.ProcessEnv {
+function cleanRuntimeInstallerEnvironment(
+  env: NodeJS.ProcessEnv,
+  releaseEnvironment: Record<string, string>,
+): NodeJS.ProcessEnv {
   // The selected immutable release is the only authority reintroduced below.
   // Do not carry an installer, host Runtime or Supervisor writer claim across
   // this service boundary.
@@ -136,7 +159,9 @@ function cleanRuntimeInstallerEnvironment(env: NodeJS.ProcessEnv, releaseEnviron
 }
 
 export function systemdRuntimeInstallCommands(unitName: string): string[][] {
-  return createPlatformServiceManagerHost({ platform: 'linux', systemdUserAvailable: true }).systemdUserInstallCommands(unitName);
+  return createPlatformServiceManagerHost({ platform: 'linux', systemdUserAvailable: true }).systemdUserInstallCommands(
+    unitName,
+  );
 }
 
 export function packageRuntimeSystemdUserUnitInput(controllerHome: string): SystemdUserUnitInput {
@@ -147,7 +172,9 @@ export function packageRuntimeSystemdUserUnitInput(controllerHome: string): Syst
 }
 
 export function renderPackageRuntimeSystemdUserService(controllerHome: string): string {
-  return createPlatformServiceManagerHost({ platform: 'linux', systemdUserAvailable: true }).renderSystemdUserUnit(packageRuntimeSystemdUserUnitInput(controllerHome));
+  return createPlatformServiceManagerHost({ platform: 'linux', systemdUserAvailable: true }).renderSystemdUserUnit(
+    packageRuntimeSystemdUserUnitInput(controllerHome),
+  );
 }
 
 export function writePackageRuntimeSystemdUserService(
@@ -161,7 +188,11 @@ export function writePackageRuntimeSystemdUserService(
   );
 }
 
-function installSystemdUserService(controllerHome: string, env: NodeJS.ProcessEnv, host: PlatformServiceManagerHost): string {
+function installSystemdUserService(
+  controllerHome: string,
+  env: NodeJS.ProcessEnv,
+  host: PlatformServiceManagerHost,
+): string {
   return host.installSystemdUserUnit({
     unitName: forgeRuntimeServicePaths(controllerHome).label,
     unit: packageRuntimeSystemdUserUnitInput(controllerHome),
@@ -170,7 +201,11 @@ function installSystemdUserService(controllerHome: string, env: NodeJS.ProcessEn
   });
 }
 
-function startPortableRuntime(controllerHome: string, env: NodeJS.ProcessEnv, host: PlatformServiceManagerHost): number {
+function startPortableRuntime(
+  controllerHome: string,
+  env: NodeJS.ProcessEnv,
+  host: PlatformServiceManagerHost,
+): number {
   const entrypoint = activeRuntimeEntrypoint(controllerHome);
   const launch = activeRuntimeLaunchSpec(controllerHome);
   if (!entrypoint || !launch) throw new Error('FORGE_PACKAGE_RUNTIME_LAUNCH_SPEC_MISSING');
@@ -183,16 +218,21 @@ function startPortableRuntime(controllerHome: string, env: NodeJS.ProcessEnv, ho
     stderrPath: paths.stderrPath,
     errorCode: 'FORGE_PORTABLE_RUNTIME_START_FAILED',
   });
-  writeAtomicTextFile(join(paths.serviceRoot, 'portable.json'), `${JSON.stringify({ schemaVersion: 1, pid, startedAt: new Date().toISOString() }, null, 2)}\n`);
+  writeAtomicTextFile(
+    join(paths.serviceRoot, 'portable.json'),
+    `${JSON.stringify({ schemaVersion: 1, pid, startedAt: new Date().toISOString() }, null, 2)}\n`,
+  );
   return pid;
 }
-
 
 function activationRoot(controllerHome: string): string {
   return join(forgeRuntimeServicePaths(controllerHome).serviceRoot, 'activations');
 }
 
-function activationPaths(controllerHome: string, operationId: string): { requestPath: string; receiptPath: string; helperSourcePlistPath: string } {
+function activationPaths(
+  controllerHome: string,
+  operationId: string,
+): { requestPath: string; receiptPath: string; helperSourcePlistPath: string } {
   const root = activationRoot(controllerHome);
   return {
     requestPath: join(root, `${operationId}.request.json`),
@@ -208,7 +248,9 @@ function writeActivationRequest(request: PackageRuntimeActivationRequest): void 
 function writeActivationReceipt(
   request: PackageRuntimeActivationRequest,
   status: PackageRuntimeActivationStatus,
-  extra: Partial<Pick<PackageRuntimeActivationReceipt, 'servicePath' | 'error' | 'rollbackSucceeded' | 'rollbackErrors'>> = {},
+  extra: Partial<
+    Pick<PackageRuntimeActivationReceipt, 'servicePath' | 'error' | 'rollbackSucceeded' | 'rollbackErrors'>
+  > = {},
 ): PackageRuntimeActivationReceipt {
   const previous = readPackageRuntimeActivationReceipt(request.receiptPath);
   const now = new Date().toISOString();
@@ -234,17 +276,18 @@ export function readPackageRuntimeActivationReceipt(path: string): PackageRuntim
   if (!existsSync(path)) return undefined;
   const value = JSON.parse(readFileSync(path, 'utf8')) as Partial<PackageRuntimeActivationReceipt>;
   if (
-    value.schemaVersion !== 1
-    || typeof value.operationId !== 'string'
-    || !['activation_scheduled', 'activated', 'failed+rollback'].includes(String(value.status))
-    || typeof value.controllerHome !== 'string'
-    || typeof value.releaseId !== 'string'
-    || typeof value.packageFingerprint !== 'string'
-    || value.mode !== 'launchd'
-    || typeof value.receiptPath !== 'string'
-    || typeof value.createdAt !== 'string'
-    || typeof value.updatedAt !== 'string'
-  ) throw new Error('FORGE_PACKAGE_RUNTIME_ACTIVATION_RECEIPT_INVALID');
+    value.schemaVersion !== 1 ||
+    typeof value.operationId !== 'string' ||
+    !['activation_scheduled', 'activated', 'failed+rollback'].includes(String(value.status)) ||
+    typeof value.controllerHome !== 'string' ||
+    typeof value.releaseId !== 'string' ||
+    typeof value.packageFingerprint !== 'string' ||
+    value.mode !== 'launchd' ||
+    typeof value.receiptPath !== 'string' ||
+    typeof value.createdAt !== 'string' ||
+    typeof value.updatedAt !== 'string'
+  )
+    throw new Error('FORGE_PACKAGE_RUNTIME_ACTIVATION_RECEIPT_INVALID');
   return value as PackageRuntimeActivationReceipt;
 }
 
@@ -252,33 +295,44 @@ export function readPackageRuntimeActivationRequest(path: string): PackageRuntim
   const resolvedPath = resolve(path);
   const value = JSON.parse(readFileSync(resolvedPath, 'utf8')) as Partial<PackageRuntimeActivationRequest>;
   if (
-    value.schemaVersion !== 1
-    || typeof value.operationId !== 'string'
-    || typeof value.controllerHome !== 'string'
-    || !Number.isInteger(value.installerPid) || Number(value.installerPid) < 1
-    || !value.release || typeof value.release !== 'object'
-    || !value.config || typeof value.config !== 'object'
-    || (value.connectorEndpoint !== undefined && typeof value.connectorEndpoint !== 'string')
-    || (value.refreshConnector !== undefined && typeof value.refreshConnector !== 'boolean')
-    || typeof value.priorAuthorityPresent !== 'boolean'
-    || typeof value.publicationChanged !== 'boolean'
-    || typeof value.runnerPath !== 'string'
-    || typeof value.nodeExecutable !== 'string'
-    || typeof value.requestPath !== 'string'
-    || typeof value.receiptPath !== 'string'
-    || typeof value.helperLabel !== 'string'
-    || typeof value.helperSourcePlistPath !== 'string'
-    || typeof value.helperInstalledPlistPath !== 'string'
-    || typeof value.createdAt !== 'string'
-  ) throw new Error('FORGE_PACKAGE_RUNTIME_ACTIVATION_REQUEST_INVALID');
+    value.schemaVersion !== 1 ||
+    typeof value.operationId !== 'string' ||
+    typeof value.controllerHome !== 'string' ||
+    !Number.isInteger(value.installerPid) ||
+    Number(value.installerPid) < 1 ||
+    !value.release ||
+    typeof value.release !== 'object' ||
+    !value.config ||
+    typeof value.config !== 'object' ||
+    (value.connectorEndpoint !== undefined && typeof value.connectorEndpoint !== 'string') ||
+    (value.refreshConnector !== undefined && typeof value.refreshConnector !== 'boolean') ||
+    typeof value.priorAuthorityPresent !== 'boolean' ||
+    typeof value.publicationChanged !== 'boolean' ||
+    typeof value.runnerPath !== 'string' ||
+    typeof value.nodeExecutable !== 'string' ||
+    typeof value.requestPath !== 'string' ||
+    typeof value.receiptPath !== 'string' ||
+    typeof value.helperLabel !== 'string' ||
+    typeof value.helperSourcePlistPath !== 'string' ||
+    typeof value.helperInstalledPlistPath !== 'string' ||
+    typeof value.createdAt !== 'string'
+  )
+    throw new Error('FORGE_PACKAGE_RUNTIME_ACTIVATION_REQUEST_INVALID');
   const request = value as PackageRuntimeActivationRequest;
-  if (resolve(request.requestPath) !== resolvedPath) throw new Error('FORGE_PACKAGE_RUNTIME_ACTIVATION_REQUEST_PATH_MISMATCH');
-  if (resolve(request.controllerHome) !== resolve(request.config.controllerHome)) throw new Error('FORGE_PACKAGE_RUNTIME_ACTIVATION_HOME_MISMATCH');
+  if (resolve(request.requestPath) !== resolvedPath)
+    throw new Error('FORGE_PACKAGE_RUNTIME_ACTIVATION_REQUEST_PATH_MISMATCH');
+  if (resolve(request.controllerHome) !== resolve(request.config.controllerHome))
+    throw new Error('FORGE_PACKAGE_RUNTIME_ACTIVATION_HOME_MISMATCH');
   return request;
 }
 
 function activationXml(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
 }
 
 export function renderPackageRuntimeActivationLaunchAgent(request: PackageRuntimeActivationRequest): string {
@@ -290,13 +344,19 @@ export function renderPackageRuntimeActivationLaunchAgent(request: PackageRuntim
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${activationXml(request.helperLabel)}</string>\n  <key>ProgramArguments</key>\n  <array>\n${args.map((arg) => `    <string>${activationXml(arg)}</string>`).join('\n')}\n  </array>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>\n  </dict>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>ProcessType</key>\n  <string>Background</string>\n  <key>StandardOutPath</key>\n  <string>${activationXml(stdoutPath)}</string>\n  <key>StandardErrorPath</key>\n  <string>${activationXml(stderrPath)}</string>\n</dict>\n</plist>\n`;
 }
 
-async function scheduleDarwinPackageRuntimeActivation(request: PackageRuntimeActivationRequest): Promise<{ label: string; servicePath: string }> {
+async function scheduleDarwinPackageRuntimeActivation(
+  request: PackageRuntimeActivationRequest,
+): Promise<{ label: string; servicePath: string }> {
   if (process.platform !== 'darwin') throw new Error('FORGE_PACKAGE_RUNTIME_ACTIVATION_HELPER_PLATFORM_UNSUPPORTED');
   const host = createPlatformServiceManagerHost({ platform: 'darwin' });
   writeAtomicTextFile(request.helperSourcePlistPath, renderPackageRuntimeActivationLaunchAgent(request), 0o600);
   host.installLaunchd(request.helperSourcePlistPath, request.helperLabel);
-  const result = await host.bootstrapLaunchd({ label: request.helperLabel, plistPath: request.helperInstalledPlistPath });
-  if (!result.ok) throw new Error(`FORGE_PACKAGE_RUNTIME_ACTIVATION_HELPER_BOOTSTRAP_FAILED: ${result.diagnostics.join('; ')}`);
+  const result = await host.bootstrapLaunchd({
+    label: request.helperLabel,
+    plistPath: request.helperInstalledPlistPath,
+  });
+  if (!result.ok)
+    throw new Error(`FORGE_PACKAGE_RUNTIME_ACTIVATION_HELPER_BOOTSTRAP_FAILED: ${result.diagnostics.join('; ')}`);
   return { label: request.helperLabel, servicePath: request.helperInstalledPlistPath };
 }
 
@@ -334,10 +394,15 @@ async function rollbackPackageRuntimeActivation(
   try {
     if (request.publicationChanged) {
       const current = readRuntimeReleaseAuthority(request.controllerHome);
-      if (!current || current.active.releaseId !== request.release.releaseId || current.operationId !== request.operationId) {
+      if (
+        !current ||
+        current.active.releaseId !== request.release.releaseId ||
+        current.operationId !== request.operationId
+      ) {
         throw new Error('FORGE_PACKAGE_RUNTIME_ACTIVATION_ROLLBACK_FENCE_MISMATCH');
       }
-      if (request.priorAuthorityPresent) rollbackRuntimeRelease(request.controllerHome, `${request.operationId}-rollback`);
+      if (request.priorAuthorityPresent)
+        rollbackRuntimeRelease(request.controllerHome, `${request.operationId}-rollback`);
       else revertInitialRuntimeReleasePublication(request.controllerHome, request.operationId);
     }
   } catch (error) {
@@ -436,7 +501,9 @@ export async function activateScheduledPackageRuntimeService(
       ...(rollbackErrors.length ? { rollbackErrors } : {}),
     });
     if (rollbackErrors.length > 0) {
-      throw new Error(`FORGE_PACKAGE_RUNTIME_ACTIVATION_FAILED_AND_ROLLBACK_FAILED: ${detail}; rollback: ${rollbackErrors.join('; ')}`);
+      throw new Error(
+        `FORGE_PACKAGE_RUNTIME_ACTIVATION_FAILED_AND_ROLLBACK_FAILED: ${detail}; rollback: ${rollbackErrors.join('; ')}`,
+      );
     }
     throw new Error(`FORGE_PACKAGE_RUNTIME_ACTIVATION_FAILED_ROLLED_BACK: ${detail}`);
   } finally {
@@ -444,7 +511,9 @@ export async function activateScheduledPackageRuntimeService(
   }
 }
 
-export async function activateScheduledPackageRuntimeServiceFromPath(requestPath: string): Promise<PackageRuntimeActivationReceipt> {
+export async function activateScheduledPackageRuntimeServiceFromPath(
+  requestPath: string,
+): Promise<PackageRuntimeActivationReceipt> {
   return activateScheduledPackageRuntimeService(readPackageRuntimeActivationRequest(requestPath));
 }
 
@@ -455,7 +524,9 @@ export async function installPackageRuntimeService(
   const controllerHome = resolveControllerHome(options.controllerHome);
   const servicePaths = forgeRuntimeServicePaths(controllerHome);
   const priorAuthority = readRuntimeReleaseAuthority(controllerHome);
-  const priorConfigBytes = existsSync(servicePaths.configPath) ? readFileSync(servicePaths.configPath, 'utf8') : undefined;
+  const priorConfigBytes = existsSync(servicePaths.configPath)
+    ? readFileSync(servicePaths.configPath, 'utf8')
+    : undefined;
   const operationId = `package-runtime-install-${randomUUID()}`;
   const release = materializePackageRuntimeRelease({ controllerHome, packageRoot: options.packageRoot, operationId });
   const publicationChanged = release.authority.operationId === operationId;
@@ -466,6 +537,7 @@ export async function installPackageRuntimeService(
     port: options.port ?? 8765,
     authTokenFile: options.authTokenFile,
     topology: normalizeRuntimeDeploymentTopology(options.topology),
+    ...(options.outboundProxy ? { outboundProxy: options.outboundProxy } : {}),
   };
   writeForgeRuntimeServiceConfig(config);
   syncForgeRuntimeActiveEntrypoint(controllerHome);
@@ -479,7 +551,9 @@ export async function installPackageRuntimeService(
     accountHome: env.HOME,
   });
   const installDarwinService = dependencies.installDarwinService ?? installForgeRuntimeService;
-  const explicitInjectedInline = Boolean(dependencies.installDarwinService && !dependencies.scheduleDarwinActivation && !dependencies.activationMode);
+  const explicitInjectedInline = Boolean(
+    dependencies.installDarwinService && !dependencies.scheduleDarwinActivation && !dependencies.activationMode,
+  );
   const activationMode = dependencies.activationMode ?? (explicitInjectedInline ? 'inline' : 'detached');
   const connectorEndpoint = loadMcpServiceLocalConfig(controllerHome)?.chatgpt?.localEndpoint;
 
@@ -524,7 +598,9 @@ export async function installPackageRuntimeService(
         ...(rollbackErrors.length ? { rollbackErrors } : {}),
       });
       if (rollbackErrors.length > 0) {
-        throw new Error(`FORGE_PACKAGE_RUNTIME_ACTIVATION_SCHEDULE_FAILED_AND_ROLLBACK_FAILED: ${detail}; rollback: ${rollbackErrors.join('; ')}`);
+        throw new Error(
+          `FORGE_PACKAGE_RUNTIME_ACTIVATION_SCHEDULE_FAILED_AND_ROLLBACK_FAILED: ${detail}; rollback: ${rollbackErrors.join('; ')}`,
+        );
       }
       throw scheduleError;
     }
@@ -547,18 +623,45 @@ export async function installPackageRuntimeService(
   } else {
     try {
       if (serviceManager.kind === 'launchd') {
-        const paths = await installDarwinService({ config, runnerPath: join(release.packageRoot, 'bin', 'forge-runtime-service.mjs'), nodeExecutable: process.execPath });
-        base = { status: 'activated', mode: 'launchd', persistent: true, controllerHome, release, servicePath: paths.installedPlistPath, warnings: [] };
+        const paths = await installDarwinService({
+          config,
+          runnerPath: join(release.packageRoot, 'bin', 'forge-runtime-service.mjs'),
+          nodeExecutable: process.execPath,
+        });
+        base = {
+          status: 'activated',
+          mode: 'launchd',
+          persistent: true,
+          controllerHome,
+          release,
+          servicePath: paths.installedPlistPath,
+          warnings: [],
+        };
       } else if (serviceManager.kind === 'systemd-user') {
         const unitPath = installSystemdUserService(controllerHome, env, serviceHost);
-        base = { status: 'activated', mode: 'systemd-user', persistent: true, controllerHome, release, servicePath: unitPath, warnings: [] };
+        base = {
+          status: 'activated',
+          mode: 'systemd-user',
+          persistent: true,
+          controllerHome,
+          release,
+          servicePath: unitPath,
+          warnings: [],
+        };
       } else {
         const pid = startPortableRuntime(controllerHome, env, serviceHost);
         base = {
-          status: 'activated', mode: 'portable', persistent: false, controllerHome, release, pid,
-          warnings: [platform === 'win32'
-            ? 'Native Windows is preview: Forge started detached Runtime and OAuth Gateway processes for this session; automatic login/reboot persistence is not yet claimed.'
-            : 'systemd --user is unavailable: Forge started detached Runtime and OAuth Gateway processes; enable a user service manager for reboot persistence.'],
+          status: 'activated',
+          mode: 'portable',
+          persistent: false,
+          controllerHome,
+          release,
+          pid,
+          warnings: [
+            platform === 'win32'
+              ? 'Native Windows is preview: Forge started detached Runtime and OAuth Gateway processes for this session; automatic login/reboot persistence is not yet claimed.'
+              : 'systemd --user is unavailable: Forge started detached Runtime and OAuth Gateway processes; enable a user service manager for reboot persistence.',
+          ],
         };
       }
     } catch (installError) {
@@ -585,7 +688,9 @@ export async function installPackageRuntimeService(
       const recoveryErrors = await rollbackPackageRuntimeActivation(rollbackRequest, installDarwinService);
       const detail = installError instanceof Error ? installError.message : String(installError);
       if (recoveryErrors.length > 0) {
-        throw new Error(`FORGE_PACKAGE_RUNTIME_INSTALL_FAILED_AND_RECOVERY_FAILED: ${detail}; recovery: ${recoveryErrors.join('; ')}`);
+        throw new Error(
+          `FORGE_PACKAGE_RUNTIME_INSTALL_FAILED_AND_RECOVERY_FAILED: ${detail}; recovery: ${recoveryErrors.join('; ')}`,
+        );
       }
       throw installError;
     }
@@ -595,7 +700,14 @@ export async function installPackageRuntimeService(
   if (!connectorEndpoint || base.status === 'activation_scheduled') return base;
   const ensureConnectorService = dependencies.ensureConnectorService ?? ensurePackageConnectorService;
   const connector = await ensureConnectorService({
-    release, controllerHome, endpoint: connectorEndpoint, executable: process.execPath, platform, env, forcePortable: options.forcePortable === true, refresh: options.refreshConnector === true,
+    release,
+    controllerHome,
+    endpoint: connectorEndpoint,
+    executable: process.execPath,
+    platform,
+    env,
+    forcePortable: options.forcePortable === true,
+    refresh: options.refreshConnector === true,
   });
   return { ...base, connector };
 }

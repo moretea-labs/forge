@@ -17,15 +17,23 @@ import { normalizeRepositoryCommand } from '../../../core/repository-command/nor
 import { isProtectedRemoteBranchDeletionTarget } from '../../../core/git-branch-policy';
 import { isFocusedCheckCommand } from '../thin-harness/execution-router';
 import type { ProcessResourceClaim } from './types';
-import { IOS_SIMULATOR_TEST_RESOURCE, iosSimulatorResourceKey, normalizeClaimPath, normalizeClaims } from '../../resources/claims/conflicts';
+import {
+  IOS_SIMULATOR_TEST_RESOURCE,
+  iosSimulatorResourceKey,
+  normalizeClaimPath,
+  normalizeClaims,
+} from '../../resources/claims/conflicts';
 
 export const LIVE_DEVICE_ADMISSION_WAIT_MS = 2 * 60 * 60_000;
 
 export function claimsRequireLiveDeviceAdmission(claims: readonly { resourceKey: string }[]): boolean {
-  return claims.some((claim) => claim.resourceKey === 'host-service:ios-build'
-    || claim.resourceKey === IOS_SIMULATOR_TEST_RESOURCE
-    || claim.resourceKey.startsWith(`${IOS_SIMULATOR_TEST_RESOURCE}:udid:`)
-    || claim.resourceKey === 'host-service:android-emulator-test');
+  return claims.some(
+    (claim) =>
+      claim.resourceKey === 'host-service:ios-build' ||
+      claim.resourceKey === IOS_SIMULATOR_TEST_RESOURCE ||
+      claim.resourceKey.startsWith(`${IOS_SIMULATOR_TEST_RESOURCE}:udid:`) ||
+      claim.resourceKey === 'host-service:android-emulator-test',
+  );
 }
 
 export type ResourceClaimKind =
@@ -132,12 +140,18 @@ function claimHostService(serviceKey: string, mode: 'read' | 'write' = 'write'):
   return { resourceKey: `host-service:${normalized}`, mode };
 }
 
-function xcodeBuildCacheClaims(command: string | readonly string[], repoId: string, cwd?: string): ResourceClaimSpec[] | undefined {
+function xcodeBuildCacheClaims(
+  command: string | readonly string[],
+  repoId: string,
+  cwd?: string,
+): ResourceClaimSpec[] | undefined {
   const canonical = normalizeRepositoryCommand(command);
   let words: readonly string[];
   let directory = cwd;
-  const wrapped = canonical.kind === 'argv'
-    ? fixedShellWrapperCommand([canonical.executable!, ...(canonical.args ?? [])]) : undefined;
+  const wrapped =
+    canonical.kind === 'argv'
+      ? fixedShellWrapperCommand([canonical.executable!, ...(canonical.args ?? [])])
+      : undefined;
   if (canonical.kind === 'shell' || wrapped) {
     const shell = wrapped ?? canonical.shellCommand!;
     // Dynamic paths, redirections and compound build scripts cannot prove one cache.
@@ -145,43 +159,88 @@ function xcodeBuildCacheClaims(command: string | readonly string[], repoId: stri
     const segments = shellSegments(shell);
     if (segments.length === 2) {
       const cd = shellWordsPreservingQuotes(segments[0]!);
-      if (!shell.includes('&&') || /[;|]/.test(shell) || cd.length !== 2 || cd[0] !== 'cd'
-        || !directory || cd[1]!.startsWith('~') || cd[1]!.split(/[\\/]/).includes('..')) return undefined;
-      try { directory = realpathSync(resolve(realpathSync(directory), cd[1]!)); }
-      catch { return undefined; }
+      if (
+        !shell.includes('&&') ||
+        /[;|]/.test(shell) ||
+        cd.length !== 2 ||
+        cd[0] !== 'cd' ||
+        !directory ||
+        cd[1]!.startsWith('~') ||
+        cd[1]!.split(/[\\/]/).includes('..')
+      )
+        return undefined;
+      try {
+        directory = realpathSync(resolve(realpathSync(directory), cd[1]!));
+      } catch {
+        return undefined;
+      }
     } else if (segments.length !== 1) return undefined;
     words = shellWordsPreservingQuotes(segments.at(-1)!);
   } else words = [canonical.executable!, ...(canonical.args ?? [])];
   if (basename(words[0] ?? '') === 'xcrun' && words[1] === 'xcodebuild') words = words.slice(1);
   if (basename(words[0] ?? '') !== 'xcodebuild') return undefined;
   // Output/cache overrides can escape DerivedData and require the broad fence.
-  if (words.some((word) => /^[A-Z0-9_]*(?:ROOT|_DIR|_PATH|CACHE)[A-Z0-9_]*=/.test(word)
-    || ['archive', 'install', 'installsrc', '-exportArchive', '-create-xcframework', '-archivePath',
-      '-resultBundlePath', '-clonedSourcePackagesDirPath', '-packageCachePath', '-xcconfig'].includes(word))) return undefined;
-  const indexes = words.flatMap((word, index) => word === '-derivedDataPath' ? [index] : []);
+  if (
+    words.some(
+      (word) =>
+        /^[A-Z0-9_]*(?:ROOT|_DIR|_PATH|CACHE)[A-Z0-9_]*=/.test(word) ||
+        [
+          'archive',
+          'install',
+          'installsrc',
+          '-exportArchive',
+          '-create-xcframework',
+          '-archivePath',
+          '-resultBundlePath',
+          '-clonedSourcePackagesDirPath',
+          '-packageCachePath',
+          '-xcconfig',
+        ].includes(word),
+    )
+  )
+    return undefined;
+  const indexes = words.flatMap((word, index) => (word === '-derivedDataPath' ? [index] : []));
   if (indexes.length !== 1) return undefined;
   const path = words[indexes[0]! + 1];
-  if (!path || path.startsWith('-') || /[\0\r\n]/.test(path) || path.startsWith('~')
-    || path.split(/[\\/]/).includes('..') || (!isAbsolute(path) && !directory)) return undefined;
+  if (
+    !path ||
+    path.startsWith('-') ||
+    /[\0\r\n]/.test(path) ||
+    path.startsWith('~') ||
+    path.split(/[\\/]/).includes('..') ||
+    (!isAbsolute(path) && !directory)
+  )
+    return undefined;
   // Resolve existing symlink ancestors even when Xcode has not created the cache.
   let ancestor: string;
-  try { ancestor = isAbsolute(path) ? resolve(path) : resolve(realpathSync(directory!), path); }
-  catch { return undefined; }
+  try {
+    ancestor = isAbsolute(path) ? resolve(path) : resolve(realpathSync(directory!), path);
+  } catch {
+    return undefined;
+  }
   const suffix: string[] = [];
   for (;;) {
-    try { ancestor = realpathSync(ancestor); break; }
-    catch (error) {
+    try {
+      ancestor = realpathSync(ancestor);
+      break;
+    } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || dirname(ancestor) === ancestor) return undefined;
       // A dangling symlink is not a proven nonexistent directory suffix.
-      try { if (lstatSync(ancestor).isSymbolicLink()) return undefined; }
-      catch (statError) { if ((statError as NodeJS.ErrnoException).code !== 'ENOENT') return undefined; }
+      try {
+        if (lstatSync(ancestor).isSymbolicLink()) return undefined;
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code !== 'ENOENT') return undefined;
+      }
       suffix.unshift(basename(ancestor));
       ancestor = dirname(ancestor);
     }
   }
   // Case/Unicode folding may over-serialize case-sensitive volumes, never split
   // two spellings of the same default macOS cache into independent writers.
-  const physical = join(ancestor, ...suffix).replace(/\\/g, '/').normalize('NFD').toLowerCase();
+  const physical = join(ancestor, ...suffix)
+    .replace(/\\/g, '/')
+    .normalize('NFD')
+    .toLowerCase();
   return [
     claimBuildCacheRead(repoId),
     { resourceKey: `build-cache:${repoId}:xcode-derived-data:${physical}`, mode: 'write' },
@@ -189,12 +248,16 @@ function xcodeBuildCacheClaims(command: string | readonly string[], repoId: stri
 }
 
 const BROWSER_APPLESCRIPT_TARGETS = new Set(['google chrome', 'vivaldi']);
-const UNSAFE_BROWSER_APPLESCRIPT = /\b(?:do\s+shell\s+script|open\s+for\s+access|set\s+eof|posix\s+file|path\s+to|load\s+script|run\s+script|use\s+framework|current\s+application)\b/i;
+const UNSAFE_BROWSER_APPLESCRIPT =
+  /\b(?:do\s+shell\s+script|open\s+for\s+access|set\s+eof|posix\s+file|path\s+to|load\s+script|run\s+script|use\s+framework|current\s+application)\b/i;
 
 function browserAppleScriptHeredocClaims(script: string): ResourceClaimSpec[] | undefined {
   const lines = script.trim().split(/\r?\n/);
   const first = lines[0]?.trim() ?? '';
-  const header = /^(?:\/usr\/bin\/)?osascript\s+<<-?\s*(?:['"]([a-zA-Z_][a-zA-Z0-9_-]*)['"]|([a-zA-Z_][a-zA-Z0-9_-]*))\s*$/.exec(first);
+  const header =
+    /^(?:\/usr\/bin\/)?osascript\s+<<-?\s*(?:['"]([a-zA-Z_][a-zA-Z0-9_-]*)['"]|([a-zA-Z_][a-zA-Z0-9_-]*))\s*$/.exec(
+      first,
+    );
   if (!header) return undefined;
   const marker = header[1] ?? header[2];
   if (!marker) return undefined;
@@ -229,8 +292,10 @@ function shellXcodebuildCommands(shell: string): string[] {
         if (words[index] === '--') index += 1;
       }
       while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index] ?? '')) index += 1;
-      return basename(words[index] ?? '') === 'xcodebuild'
-        || (basename(words[index] ?? '') === 'xcrun' && words[index + 1] === 'xcodebuild');
+      return (
+        basename(words[index] ?? '') === 'xcodebuild' ||
+        (basename(words[index] ?? '') === 'xcrun' && words[index + 1] === 'xcodebuild')
+      );
     });
 }
 
@@ -241,9 +306,7 @@ function shellXcodebuildCommands(shell: string): string[] {
  */
 function exactXcodebuildSimulatorUdid(command: string | readonly string[]): string | undefined {
   const canonical = normalizeRepositoryCommand(command);
-  const argv = canonical.kind === 'argv'
-    ? [canonical.executable ?? '', ...(canonical.args ?? [])]
-    : [];
+  const argv = canonical.kind === 'argv' ? [canonical.executable ?? '', ...(canonical.args ?? [])] : [];
   const wrapped = canonical.kind === 'argv' ? fixedShellWrapperCommand(argv) : undefined;
   const commands = wrapped
     ? shellXcodebuildCommands(wrapped)
@@ -251,11 +314,8 @@ function exactXcodebuildSimulatorUdid(command: string | readonly string[]): stri
       ? [argv.join(' ')]
       : shellXcodebuildCommands(canonical.shellCommand ?? '');
   if (commands.length !== 1) return undefined;
-  const words = canonical.kind === 'argv' && !wrapped
-    ? argv
-    : shellWordsPreservingQuotes(commands[0]!);
-  const destinations = words.flatMap((word, index) =>
-    word === '-destination' ? [words[index + 1] ?? ''] : []);
+  const words = canonical.kind === 'argv' && !wrapped ? argv : shellWordsPreservingQuotes(commands[0]!);
+  const destinations = words.flatMap((word, index) => (word === '-destination' ? [words[index + 1] ?? ''] : []));
   if (destinations.length !== 1) return undefined;
   const normalized = destinations[0]!.replace(/^['"]|['"]$/g, '');
   const match = /(?:^|,)id=([0-9a-f-]+)(?:,|$)/i.exec(normalized);
@@ -277,7 +337,8 @@ function iosSimulatorTestCommandClaims(
   let matches = false;
   if (canonical.kind === 'argv') {
     const program = (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase();
-    if (program === 'xcodebuild') matches = (canonical.args ?? []).some((arg) => /^(?:test|test-without-building)$/i.test(arg));
+    if (program === 'xcodebuild')
+      matches = (canonical.args ?? []).some((arg) => /^(?:test|test-without-building)$/i.test(arg));
     if (!matches) {
       const wrapped = fixedShellWrapperCommand([canonical.executable ?? '', ...(canonical.args ?? [])]);
       matches = Boolean(wrapped && shellXcodebuildCommands(wrapped).some(isTestAction));
@@ -305,8 +366,15 @@ function localHttpServerClaims(command: string | readonly string[]): ResourceCla
   let port = '8000';
   for (let index = 2; index < args.length; index += 1) {
     const arg = args[index]!;
-    if (arg === '--bind') { bind = args[index + 1] ?? bind; index += 1; continue; }
-    if (arg === '--directory' || arg === '-d' || arg === '--protocol') { index += 1; continue; }
+    if (arg === '--bind') {
+      bind = args[index + 1] ?? bind;
+      index += 1;
+      continue;
+    }
+    if (arg === '--directory' || arg === '-d' || arg === '--protocol') {
+      index += 1;
+      continue;
+    }
     if (!arg.startsWith('-') && /^\d{1,5}$/.test(arg)) port = arg;
   }
   return [claimHostService(`tcp-listen:${bind}:${port}`, 'write')];
@@ -318,16 +386,29 @@ function loopbackCurlClaims(command: string | readonly string[], _repoId: string
   const program = (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase();
   if (program !== 'curl') return undefined;
   const args = canonical.args ?? [];
-  if (args.some((arg) => /^(?:-X|--request|-d|--data|--data-raw|--data-binary|-F|--form|-T|--upload-file|-o|--output|-O|--remote-name)$/i.test(arg))) return undefined;
+  if (
+    args.some((arg) =>
+      /^(?:-X|--request|-d|--data|--data-raw|--data-binary|-F|--form|-T|--upload-file|-o|--output|-O|--remote-name)$/i.test(
+        arg,
+      ),
+    )
+  )
+    return undefined;
   const explicitMethodIndex = args.findIndex((arg) => arg === '-X' || arg === '--request');
   if (explicitMethodIndex >= 0 && !/^(?:GET|HEAD)$/i.test(args[explicitMethodIndex + 1] ?? '')) return undefined;
   const urls = args.filter((arg) => /^https?:\/\//i.test(arg));
-  if (urls.length === 0 || urls.some((url) => {
-    try {
-      const host = new URL(url).hostname.toLowerCase();
-      return !['127.0.0.1', 'localhost', '::1'].includes(host);
-    } catch { return true; }
-  })) return undefined;
+  if (
+    urls.length === 0 ||
+    urls.some((url) => {
+      try {
+        const host = new URL(url).hostname.toLowerCase();
+        return !['127.0.0.1', 'localhost', '::1'].includes(host);
+      } catch {
+        return true;
+      }
+    })
+  )
+    return undefined;
   return [claimHostService('tcp-client:loopback', 'read')];
 }
 
@@ -355,7 +436,9 @@ function viteServiceClaims(
     const scriptName = runIndex >= 0 ? args[runIndex]?.toLowerCase() : undefined;
     if (scriptName === 'dev') {
       try {
-        const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as { scripts?: Record<string, unknown> };
+        const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as {
+          scripts?: Record<string, unknown>;
+        };
         const script = typeof pkg.scripts?.dev === 'string' ? pkg.scripts.dev : '';
         vite = simpleViteScript(script);
       } catch {
@@ -416,7 +499,12 @@ function homebrewHostMutationClaims(command: string | readonly string[]): Resour
   return [claimHostService('package-manager:homebrew', 'write')];
 }
 
-function hostOnlyCommandClaims(command: string | readonly string[], repoId: string, checkoutId?: string, repoRoot?: string): ResourceClaimSpec[] | undefined {
+function hostOnlyCommandClaims(
+  command: string | readonly string[],
+  repoId: string,
+  checkoutId?: string,
+  repoRoot?: string,
+): ResourceClaimSpec[] | undefined {
   const localServer = localHttpServerClaims(command);
   if (localServer) return localServer;
   const loopbackCurl = loopbackCurlClaims(command, repoId);
@@ -461,10 +549,18 @@ function hostOnlyCommandClaims(command: string | readonly string[], repoId: stri
   return undefined;
 }
 
-function claimTemp(checkId: string, repoId: string, scope: 'isolated' | 'shared', checkoutId?: string): ResourceClaimSpec {
+function claimTemp(
+  checkId: string,
+  repoId: string,
+  scope: 'isolated' | 'shared',
+  checkoutId?: string,
+): ResourceClaimSpec {
   const identity = checkId.replace(/[^a-zA-Z0-9._-]+/g, '-');
   const placement = checkoutScope(checkoutId, repoId);
-  return { resourceKey: scope === 'shared' ? `temp:${placement}:shared` : `temp:${placement}:${identity}`, mode: 'write' };
+  return {
+    resourceKey: scope === 'shared' ? `temp:${placement}:shared` : `temp:${placement}:${identity}`,
+    mode: 'write',
+  };
 }
 
 function staticAnalysisCheckId(checkId: string): boolean {
@@ -497,7 +593,8 @@ function claimsForDeclaredCheckEffects(
   if (effects.git === 'read') claims.push(claimGitIndexRead(checkoutId, repoId), claimGitRefsRead(repoId));
   if (effects.git === 'index') claims.push(claimGitIndex(checkoutId, repoId));
   if (effects.git === 'refs') claims.push(claimGitRefs(repoId));
-  if (effects.git === 'write') claims.push(claimWorkspaceWrite(checkoutId, repoId), claimGitIndex(checkoutId, repoId), claimGitRefs(repoId));
+  if (effects.git === 'write')
+    claims.push(claimWorkspaceWrite(checkoutId, repoId), claimGitIndex(checkoutId, repoId), claimGitRefs(repoId));
   // A generic network bit has no concrete endpoint/provider identity. Checks
   // that need serialization must name the real shared target in hostServices.
   for (const service of effects.hostServices ?? []) claims.push(claimHostService(service, 'write'));
@@ -507,8 +604,10 @@ function claimsForDeclaredCheckEffects(
 
 export function looksLikeBuildOrTest(command: string | readonly string[]): boolean {
   const canonical = normalizeRepositoryCommand(command);
-  const buildScript = (value: string | undefined): boolean => /^(?:test(?::.*)?|check(?::.*)?|typecheck|lint(?::.*)?|build(?::.*)?|compile(?::.*)?)$/i.test(value ?? '');
-  const base = (value: string | undefined): string => (value ?? '').replace(/\\/g, '/').split('/').at(-1)?.toLowerCase() ?? '';
+  const buildScript = (value: string | undefined): boolean =>
+    /^(?:test(?::.*)?|check(?::.*)?|typecheck|lint(?::.*)?|build(?::.*)?|compile(?::.*)?)$/i.test(value ?? '');
+  const base = (value: string | undefined): string =>
+    (value ?? '').replace(/\\/g, '/').split('/').at(-1)?.toLowerCase() ?? '';
 
   if (canonical.kind === 'argv') {
     const program = base(canonical.executable);
@@ -540,9 +639,13 @@ export function looksLikeBuildOrTest(command: string | readonly string[]): boole
   // Shell strings cannot be trusted structurally, so only recognize an actual
   // command/subcommand sequence. Do not scan arbitrary quoted source text.
   const lower = canonical.shellCommand?.toLowerCase() ?? '';
-  return /(?:^|[;&|]\s*)(?:bun|npm|pnpm|yarn)\s+(?:test\b|run\s+(?:test|check|typecheck|lint|build|compile)\b)/.test(lower)
-    || /(?:^|[;&|]\s*)(?:cargo|go|swift)\s+(?:test|check|build|compile)\b/.test(lower)
-    || /(?:^|[;&|]\s*)(?:pytest|xcodebuild|tsc|eslint|biome)\b/.test(lower);
+  return (
+    /(?:^|[;&|]\s*)(?:bun|npm|pnpm|yarn)\s+(?:test\b|run\s+(?:test|check|typecheck|lint|build|compile)\b)/.test(
+      lower,
+    ) ||
+    /(?:^|[;&|]\s*)(?:cargo|go|swift)\s+(?:test|check|build|compile)\b/.test(lower) ||
+    /(?:^|[;&|]\s*)(?:pytest|xcodebuild|tsc|eslint|biome)\b/.test(lower)
+  );
 }
 
 /**
@@ -572,10 +675,12 @@ function focusedTestRequestsWorkspaceMutation(command: string | readonly string[
   const canonical = normalizeRepositoryCommand(command);
   if (canonical.kind !== 'argv') return true;
   const args = (canonical.args ?? []).map((value) => value.toLowerCase());
-  return args.includes('-u')
-    || args.includes('--update-snapshots')
-    || args.includes('--update-snapshot')
-    || args.some((value) => value.startsWith('--update-snapshots='));
+  return (
+    args.includes('-u') ||
+    args.includes('--update-snapshots') ||
+    args.includes('--update-snapshot') ||
+    args.some((value) => value.startsWith('--update-snapshots='))
+  );
 }
 
 function extractLikelyPaths(command: string | readonly string[]): string[] {
@@ -597,13 +702,17 @@ function extractLikelyPaths(command: string | readonly string[]): string[] {
   } else {
     words = String(canonical.shellCommand ?? command).split(/\s+/);
   }
-  return words.filter((word) => {
-    if (!word || word.startsWith('-') || word.includes('\n') || word.includes('\r')) return false;
-    if (/\b(?:import|require|const|let|function|return)\b/.test(word) || word.includes('=>')) return false;
-    return word.includes('/')
-      || word.includes('\\')
-      || /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|swift|test|spec|json|md)$/i.test(word);
-  }).map((word) => word.replace(/^\.\//, '').replace(/\\/g, '/'));
+  return words
+    .filter((word) => {
+      if (!word || word.startsWith('-') || word.includes('\n') || word.includes('\r')) return false;
+      if (/\b(?:import|require|const|let|function|return)\b/.test(word) || word.includes('=>')) return false;
+      return (
+        word.includes('/') ||
+        word.includes('\\') ||
+        /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|swift|test|spec|json|md)$/i.test(word)
+      );
+    })
+    .map((word) => word.replace(/^\.\//, '').replace(/\\/g, '/'));
 }
 
 /**
@@ -613,9 +722,10 @@ function extractLikelyPaths(command: string | readonly string[]): string[] {
  */
 function validationDeviceClaims(command: string | readonly string[]): ResourceClaimSpec[] {
   const canonical = normalizeRepositoryCommand(command);
-  const wrapped = canonical.kind === 'argv'
-    ? fixedShellWrapperCommand([canonical.executable ?? '', ...(canonical.args ?? [])])
-    : undefined;
+  const wrapped =
+    canonical.kind === 'argv'
+      ? fixedShellWrapperCommand([canonical.executable ?? '', ...(canonical.args ?? [])])
+      : undefined;
   const words = wrapped
     ? shellWordsPreservingQuotes(wrapped)
     : canonical.kind === 'argv'
@@ -625,22 +735,31 @@ function validationDeviceClaims(command: string | readonly string[]): ResourceCl
   const androidIndex = scripts.indexOf('run_android_check.sh');
   if (androidIndex >= 0) {
     return /^(fast-journey|integration|performance)$/.test(words[androidIndex + 1] ?? '')
-      ? [claimHostService('android-emulator-test')] : [];
+      ? [claimHostService('android-emulator-test')]
+      : [];
   }
   const layerIndex = scripts.indexOf('run_ios_test_layer.sh');
   if (layerIndex >= 0) {
-    return /^(fast-journey|integration-consistency|medication-long-journey|destructive-model|performance-critical|ui-geometry|all)$/.test(words[layerIndex + 1] ?? '')
-      ? [claimHostService('ios-simulator-test')] : [];
+    return /^(fast-journey|integration-consistency|medication-long-journey|destructive-model|performance-critical|ui-geometry|all)$/.test(
+      words[layerIndex + 1] ?? '',
+    )
+      ? [claimHostService('ios-simulator-test')]
+      : [];
   }
   const iosLiveScripts = new Set([
-    'run_ios_owner_test.sh', 'run_ios_test_profile.sh', 'run_ios_performance_tests.sh',
-    'run_medication_long_journeys.sh', 'run_medication_state_model_tests.sh',
-    'run_cross_domain_state_model_tests.sh', 'verify-runtime-history-queue.sh',
-    'verify-medication-property-tests.sh', 'release_preflight_ios.sh',
-    'smoke_preflight_ios.sh', 'verify_medication_v2_install_matrix.sh',
+    'run_ios_owner_test.sh',
+    'run_ios_test_profile.sh',
+    'run_ios_performance_tests.sh',
+    'run_medication_long_journeys.sh',
+    'run_medication_state_model_tests.sh',
+    'run_cross_domain_state_model_tests.sh',
+    'verify-runtime-history-queue.sh',
+    'verify-medication-property-tests.sh',
+    'release_preflight_ios.sh',
+    'smoke_preflight_ios.sh',
+    'verify_medication_v2_install_matrix.sh',
   ]);
-  return scripts.some((script) => iosLiveScripts.has(script))
-    ? [claimHostService('ios-simulator-test')] : [];
+  return scripts.some((script) => iosLiveScripts.has(script)) ? [claimHostService('ios-simulator-test')] : [];
 }
 
 /**
@@ -664,14 +783,19 @@ function exactLeasedRemoteReviewBranchDeletion(
   const branch = match[1]!;
   if (isProtectedRemoteBranchDeletionTarget(branch, defaultBranch)) return undefined;
   const deletingByFlag = options.includes('--delete');
-  if (options.some((arg) => arg.startsWith('-')
-    && arg !== leases[0] && arg !== '--porcelain' && arg !== '--delete')) return undefined;
-  if (options.filter((arg) => arg === '--porcelain').length > 1
-    || options.filter((arg) => arg === '--delete').length > 1) return undefined;
+  if (options.some((arg) => arg.startsWith('-') && arg !== leases[0] && arg !== '--porcelain' && arg !== '--delete'))
+    return undefined;
+  if (
+    options.filter((arg) => arg === '--porcelain').length > 1 ||
+    options.filter((arg) => arg === '--delete').length > 1
+  )
+    return undefined;
   const operands = options.filter((arg) => !arg.startsWith('-'));
-  return operands.length === 2 && operands[0] === 'origin'
-    && operands[1] === (deletingByFlag ? branch : ':refs/heads/' + branch)
-    ? 'refs/heads/' + branch : undefined;
+  return operands.length === 2 &&
+    operands[0] === 'origin' &&
+    operands[1] === (deletingByFlag ? branch : ':refs/heads/' + branch)
+    ? 'refs/heads/' + branch
+    : undefined;
 }
 
 /**
@@ -688,17 +812,19 @@ function repositoryCommandClaims(
 ): ResourceClaimSpec[] {
   const classification = classifyRepositoryCommand(command, defaultBranch);
   const canonical = normalizeRepositoryCommand(command);
-  const commandProgram = canonical.kind === 'argv'
-    ? (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase()
-    : undefined;
-  const commandArgs = canonical.kind === 'argv' ? canonical.args ?? [] : [];
-  const directGate = commandProgram === 'bun'
-    && String(commandArgs[0] ?? '').replace(/^\.\//, '') === 'scripts/run-governed-gate.ts'
-    ? String(commandArgs[1] ?? '').toLowerCase()
-    : undefined;
-  const wrappedGate = ['bun', 'npm'].includes(commandProgram ?? '') && commandArgs[0] === 'run'
-    ? ({ 'check:task': 'task', 'check:main': 'main', 'check:release': 'release' } as const)[String(commandArgs[1] ?? '') as 'check:task' | 'check:main' | 'check:release']
-    : undefined;
+  const commandProgram =
+    canonical.kind === 'argv' ? (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase() : undefined;
+  const commandArgs = canonical.kind === 'argv' ? (canonical.args ?? []) : [];
+  const directGate =
+    commandProgram === 'bun' && String(commandArgs[0] ?? '').replace(/^\.\//, '') === 'scripts/run-governed-gate.ts'
+      ? String(commandArgs[1] ?? '').toLowerCase()
+      : undefined;
+  const wrappedGate =
+    ['bun', 'npm'].includes(commandProgram ?? '') && commandArgs[0] === 'run'
+      ? ({ 'check:task': 'task', 'check:main': 'main', 'check:release': 'release' } as const)[
+          String(commandArgs[1] ?? '') as 'check:task' | 'check:main' | 'check:release'
+        ]
+      : undefined;
   if ([directGate, wrappedGate].some((gate) => gate === 'task' || gate === 'main' || gate === 'release')) {
     return normalizeClaims([
       claimValidationObservation(checkoutId, repoId),
@@ -706,17 +832,20 @@ function repositoryCommandClaims(
       claimHeavyCheck(repoId),
     ]);
   }
-  const portablePackageCheck = ['bun', 'npm'].includes(commandProgram ?? '')
-    && commandArgs[0] === 'run' && commandArgs[1] === 'check:portable-package';
+  const portablePackageCheck =
+    ['bun', 'npm'].includes(commandProgram ?? '') &&
+    commandArgs[0] === 'run' &&
+    commandArgs[1] === 'check:portable-package';
   if (portablePackageCheck) {
     return normalizeClaims([claimValidationObservation(checkoutId, repoId), claimHeavyCheck(repoId)]);
   }
-  const stageOnlyRuntimeRelease = commandProgram === 'bun'
-    && String(commandArgs[0] ?? '').replace(/^[.][/]/, '') === 'bin/forge.mjs'
-    && commandArgs[1] === 'runtime'
-    && commandArgs[2] === 'service'
-    && commandArgs[3] === 'install'
-    && commandArgs.includes('--stage-only');
+  const stageOnlyRuntimeRelease =
+    commandProgram === 'bun' &&
+    String(commandArgs[0] ?? '').replace(/^[.][/]/, '') === 'bin/forge.mjs' &&
+    commandArgs[1] === 'runtime' &&
+    commandArgs[2] === 'service' &&
+    commandArgs[3] === 'install' &&
+    commandArgs.includes('--stage-only');
   if (stageOnlyRuntimeRelease) {
     return normalizeClaims([
       claimValidationObservation(checkoutId, repoId),
@@ -730,7 +859,8 @@ function repositoryCommandClaims(
   const iosSimulatorClaims = iosSimulatorTestCommandClaims(command, repoId, checkoutId, cacheClaims);
   if (iosSimulatorClaims) return iosSimulatorClaims;
   const deviceClaims = validationDeviceClaims(command);
-  if (deviceClaims.length > 0) return normalizeClaims([claimWorkspaceRead(checkoutId, repoId), claimBuildCacheWrite(repoId), ...deviceClaims]);
+  if (deviceClaims.length > 0)
+    return normalizeClaims([claimWorkspaceRead(checkoutId, repoId), claimBuildCacheWrite(repoId), ...deviceClaims]);
   const hostClaims = hostOnlyCommandClaims(command, repoId, checkoutId, repoRoot);
   if (hostClaims) return hostClaims;
 
@@ -782,9 +912,8 @@ function repositoryCommandClaims(
     return normalizeClaims(claims);
   }
 
-  const program = canonical.kind === 'argv'
-    ? (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase()
-    : undefined;
+  const program =
+    canonical.kind === 'argv' ? (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase() : undefined;
   const sub = canonical.kind === 'argv' ? canonical.args?.[0]?.toLowerCase() : undefined;
   if (program === 'git') {
     if (sub === 'add' || sub === 'rm' || sub === 'mv' || sub === 'restore' || sub === 'apply') {
@@ -821,8 +950,11 @@ export function claimsForRepositoryCommand(
     else {
       const program = basename(words[0]!);
       const args = program === 'xcrun' && words[1] === 'xcodebuild' ? words.slice(2) : words.slice(1);
-      nativeBuild = (program === 'xcodebuild' || (program === 'xcrun' && words[1] === 'xcodebuild'))
-        && !args.some((arg) => ['-list', '-version', '-showsdks', '-showdestinations', '-showBuildSettings', '-help'].includes(arg));
+      nativeBuild =
+        (program === 'xcodebuild' || (program === 'xcrun' && words[1] === 'xcodebuild')) &&
+        !args.some((arg) =>
+          ['-list', '-version', '-showsdks', '-showdestinations', '-showBuildSettings', '-help'].includes(arg),
+        );
     }
   } else nativeBuild = shellXcodebuildCommands(canonical.shellCommand ?? '').length > 0;
   const inferredClaims = repositoryCommandClaims(command, repoId, checkoutId, defaultBranch, repoRoot, executionCwd);
@@ -837,10 +969,12 @@ export function claimsForRepositoryCommand(
     const mechanicalClaims = inferredClaims.filter((claim) => {
       const key = claim.resourceKey;
       if (key === `build-cache:${repoId}`) return false;
-      return !key.startsWith('workspace:')
-        && !key.startsWith('workspace-read:')
-        && !key.startsWith('path:')
-        && key !== 'repo-content:*';
+      return (
+        !key.startsWith('workspace:') &&
+        !key.startsWith('workspace-read:') &&
+        !key.startsWith('path:') &&
+        key !== 'repo-content:*'
+      );
     });
     return normalizeClaims([...mechanicalClaims, ...declaredSourceClaims, ...nativeBuildClaims]);
   }
@@ -863,8 +997,10 @@ export function claimsForCheck(
   effects?: ControllerCheckEffects,
   executionAuthority?: ControllerCheckExecutionAuthority,
 ): ResourceClaimSpec[] {
-  const heavy = /(?:^|:)(?:test(?::coverage)?|check:(?:ci|forge-runtime|public-export|release(?:-[a-z0-9-]+)?|type|typescript-navigation))$/.test(checkId)
-    || /release|migration|integrate/i.test(checkId);
+  const heavy =
+    /(?:^|:)(?:test(?::coverage)?|check:(?:ci|forge-runtime|public-export|release(?:-[a-z0-9-]+)?|type|typescript-navigation))$/.test(
+      checkId,
+    ) || /release|migration|integrate/i.test(checkId);
   const baseClaims = effects
     ? claimsForDeclaredCheckEffects(checkId, effects, repoId, checkoutId)
     : staticAnalysisCheckId(checkId)
@@ -876,8 +1012,11 @@ export function claimsForCheck(
   // substitute for the resources the check actually reads or writes.
   const liveAuthorityClaims = executionAuthority === 'live_controller_home' ? [claimRelease(repoId)] : [];
   const deviceClaims = command ? validationDeviceClaims(command) : [];
-  const buildClaims = command ? claimsForRepositoryCommand(command, repoId, checkoutId)
-    .filter((claim) => claim.resourceKey === 'host-service:ios-build') : [];
+  const buildClaims = command
+    ? claimsForRepositoryCommand(command, repoId, checkoutId).filter(
+        (claim) => claim.resourceKey === 'host-service:ios-build',
+      )
+    : [];
   return heavy
     ? normalizeClaims([claimHeavyCheck(repoId), ...liveAuthorityClaims, ...baseClaims, ...deviceClaims, ...buildClaims])
     : normalizeClaims([...liveAuthorityClaims, ...baseClaims, ...deviceClaims, ...buildClaims]);
@@ -893,7 +1032,8 @@ export function scopeResourceClaims(
   if (!normalizedRepoId) throw new Error('RESOURCE_CLAIM_REPOSITORY_REQUIRED');
   return claims.map((claim) => {
     if (claim.repoId && claim.repoId !== normalizedRepoId) throw new Error('RESOURCE_CLAIM_REPOSITORY_MISMATCH');
-    if (claim.checkoutId && normalizedCheckoutId && claim.checkoutId !== normalizedCheckoutId) throw new Error('RESOURCE_CLAIM_CHECKOUT_MISMATCH');
+    if (claim.checkoutId && normalizedCheckoutId && claim.checkoutId !== normalizedCheckoutId)
+      throw new Error('RESOURCE_CLAIM_CHECKOUT_MISMATCH');
     return {
       ...claim,
       repoId: normalizedRepoId,

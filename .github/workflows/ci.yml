@@ -44,7 +44,7 @@ jobs:
 
       - name: Run one content-addressed main gate
         env:
-          TEST_BASE_REF: origin/${{ github.base_ref || 'main' }}
+          TEST_BASE_REF: ${{ github.event.before || format('origin/{0}', github.base_ref || 'main') }}
         run: bun run check:main
 
       - name: Verify packaged clean-install portability

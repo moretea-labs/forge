@@ -1,16 +1,36 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
-import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY, type Tool } from '@modelcontextprotocol/server';
+import {
+  CLIENT_CAPABILITIES_META_KEY,
+  CLIENT_INFO_META_KEY,
+  PROTOCOL_VERSION_META_KEY,
+  type Tool,
+} from '@modelcontextprotocol/server';
 import { execFileSync, spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import { sha256FileBounded } from '../../src/runtime/root/known-good-recovery';
 import { parseOpenAiSecureTunnelRuntimeStatus } from '../../adapters/mcp/tunnels/openai-secure-tunnel';
-import { probeRuntimeGateway } from '../../src/runtime/standalone-recovery/probe-observation';
-import { macSystemProxyEnvironment } from '../../src/runtime/standalone-recovery/recovery-shared';
+import {
+  probeOpenAiApiReachability,
+  probeRuntimeGateway,
+} from '../../src/runtime/standalone-recovery/probe-observation';
+import { macSystemProxyEnvironment, type RecoveryConfig } from '../../src/runtime/standalone-recovery/recovery-shared';
 import {
   activateRuntimeRelease,
   activatePinnedRuntimeRelease,
@@ -76,14 +96,27 @@ import {
 import { runBoundedChild } from '../../src/runtime/shared/bounded-child-supervisor';
 import { RecoveryMcpServer } from '../../src/runtime/standalone-recovery/mcp-server';
 import { callStandaloneRecoveryTool } from '../../adapters/mcp/runtime-gateway/recovery-client-adapter';
-import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { RECOVERY_MUTATION_IDENTITY_CONTRACT, RECOVERY_MUTATION_IDENTITY_FIELDS } from '../../src/runtime/standalone-recovery/mutation-identity-contract';
+import {
+  readControlPlaneRecord,
+  writeControlPlaneRecord,
+} from '../../src/runtime/control-plane/persistence/sqlite-store';
+import {
+  RECOVERY_MUTATION_IDENTITY_CONTRACT,
+  RECOVERY_MUTATION_IDENTITY_FIELDS,
+} from '../../src/runtime/standalone-recovery/mutation-identity-contract';
 import {
   evaluateRecoveryWatchdogHealth,
   RECOVERY_WATCHDOG_MAX_TICK_AGE_MS,
 } from '../../src/runtime/standalone-recovery/watchdog-heartbeat';
 import { inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { acquireRuntimeOwnership, inspectRuntimeOwnership, reconcileStoppedRuntimeOwnership, runtimeIncarnationPath, runtimeOwnerPath, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';
+import {
+  acquireRuntimeOwnership,
+  inspectRuntimeOwnership,
+  reconcileStoppedRuntimeOwnership,
+  runtimeIncarnationPath,
+  runtimeOwnerPath,
+  type RuntimeOwnershipHandle,
+} from '../../src/runtime/root/ownership';
 import {
   ensureActiveRuntimeRelease,
   publishRuntimeRelease,
@@ -91,8 +124,17 @@ import {
   reconcileFailedRuntimeReleaseActivationAuthority,
   rollbackRuntimeReleaseWithResult,
 } from '../../src/runtime/root/release-store';
-import { advanceReleaseSession, createReleaseSession, readReleaseSession, recordReleaseSessionTransaction } from '../../src/runtime/release/release-session';
-import { observeRuntimeStatus, readRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
+import {
+  advanceReleaseSession,
+  createReleaseSession,
+  readReleaseSession,
+  recordReleaseSessionTransaction,
+} from '../../src/runtime/release/release-session';
+import {
+  observeRuntimeStatus,
+  readRuntimeStatusSnapshot,
+  writeRuntimeStatusSnapshot,
+} from '../../src/runtime/root/status';
 import { materializeCandidateExecutionLane } from '../../src/runtime/root/runtime-lane';
 import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { systemdUserUnitPath } from '../../src/runtime/platform/systemd-user';
@@ -114,13 +156,39 @@ import {
   scheduleRecoveryControllerHomeMigration,
 } from '../../src/runtime/standalone-recovery/controller-home-migration';
 import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } from '../../adapters/mcp/auth';
-import { acquireRecoveryReleaseLock, installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, RECOVERY_DAEMON_LABEL, recoveryPlist, recoverySystemdUserUnitInput, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
-import { acquireRecoveryOperationLock, recoveryOperationLockOwnerAlive, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
+import {
+  acquireRecoveryReleaseLock,
+  installStandaloneRecovery,
+  inspectPrimaryConnectorLaunchdContract,
+  inspectPrimaryPublicTunnelLaunchdContract,
+  inspectRecoveryTunnelLaunchdContract,
+  RECOVERY_DAEMON_LABEL,
+  recoveryPlist,
+  recoverySystemdUserUnitInput,
+  resolveRecoveryCompilerExecutable,
+  retireStaleRecoveryLaunchAgents,
+} from '../../src/runtime/standalone-recovery/installer';
+import {
+  acquireRecoveryOperationLock,
+  recoveryOperationLockOwnerAlive,
+  recoveryOperationLockPath,
+} from '../../src/runtime/standalone-recovery/operation-lock';
 import { LINUX_PROCESS_START_TIME_PREFIX } from '../../src/runtime/shared/process-identity';
-import { publishRecoveryRelease, readCurrentRecoveryRelease, recoveryGatewayIsDraining, writeRecoveryReleaseManifest } from '../../src/runtime/standalone-recovery/release';
+import {
+  publishRecoveryRelease,
+  readCurrentRecoveryRelease,
+  recoveryGatewayIsDraining,
+  writeRecoveryReleaseManifest,
+} from '../../src/runtime/standalone-recovery/release';
 import { createRecoveryHttpTransport } from '../../src/runtime/standalone-recovery/http-transport';
 
-import { measureRuntimePerformance, assertRuntimePerformanceEvidence, readRuntimeCpu, RECOVERY_RUNAWAY_MEAN_CPU_PERCENT, RECOVERY_RUNAWAY_P95_CPU_PERCENT } from '../../src/runtime/standalone-recovery/performance';
+import {
+  measureRuntimePerformance,
+  assertRuntimePerformanceEvidence,
+  readRuntimeCpu,
+  RECOVERY_RUNAWAY_MEAN_CPU_PERCENT,
+  RECOVERY_RUNAWAY_P95_CPU_PERCENT,
+} from '../../src/runtime/standalone-recovery/performance';
 
 function idleCpuDependencies() {
   let elapsed = 0;
@@ -129,7 +197,9 @@ function idleCpuDependencies() {
     readCpu: () => ({ cpuMs: 0, processStartTime: 'fixture-process-start' }),
     monotonicNow: () => elapsed,
     wallNow: () => base + elapsed,
-    sleep: async (ms: number) => { elapsed += ms; },
+    sleep: async (ms: number) => {
+      elapsed += ms;
+    },
   };
 }
 
@@ -146,16 +216,34 @@ test('Recovery bounds Candidate work while reserving status capacity and releasi
       calls += 1;
       const input = JSON.parse(String(options.input));
       expect(options.forwardSignals).toBe(false);
-      if (input.name === 'prepare_runtime_release_session') await new Promise<void>((done) => { finishHeavy = done; });
+      if (input.name === 'prepare_runtime_release_session')
+        await new Promise<void>((done) => {
+          finishHeavy = done;
+        });
       return {
-        status: 0, signal: null, timedOut: false, stderr: '', residualPids: [], remainingPids: [], pidReuseFenced: false,
-        stdout: JSON.stringify({ schemaVersion: 1, ok: input.name !== 'list_releases', value: { ready: true }, error: 'expected failure' }),
+        status: 0,
+        signal: null,
+        timedOut: false,
+        stderr: '',
+        residualPids: [],
+        remainingPids: [],
+        pidReuseFenced: false,
+        stdout: JSON.stringify({
+          schemaVersion: 1,
+          ok: input.name !== 'list_releases',
+          value: { ready: true },
+          error: 'expected failure',
+        }),
       };
     },
   });
   const heavy = execute('prepare_runtime_release_session', { request_id: 'candidate-work-a' });
-  await expect(execute('verify_runtime_release_session_candidate', { request_id: 'candidate-work-b', session_id: 'release-session-b' }))
-    .rejects.toThrow('RECOVERY_BUSY');
+  await expect(
+    execute('verify_runtime_release_session_candidate', {
+      request_id: 'candidate-work-b',
+      session_id: 'release-session-b',
+    }),
+  ).rejects.toThrow('RECOVERY_BUSY');
   expect(calls).toBe(1);
   expect(await execute('runtime_status', {})).toEqual({ ready: true });
   finishHeavy();
@@ -176,19 +264,33 @@ test('Recovery Gateway lets unrelated Connector work enter while Candidate work 
       calls += 1;
       const input = JSON.parse(String(options.input));
       if (input.name === 'prepare_runtime_release_session') {
-        await new Promise<void>((done) => { finishCandidate = done; });
+        await new Promise<void>((done) => {
+          finishCandidate = done;
+        });
       }
       return {
-        status: 0, signal: null, timedOut: false, stderr: '', residualPids: [], remainingPids: [], pidReuseFenced: false,
-        stdout: JSON.stringify({ schemaVersion: 1, ok: true, value: { ok: true, attempted: true, detail: input.name } }),
+        status: 0,
+        signal: null,
+        timedOut: false,
+        stderr: '',
+        residualPids: [],
+        remainingPids: [],
+        pidReuseFenced: false,
+        stdout: JSON.stringify({
+          schemaVersion: 1,
+          ok: true,
+          value: { ok: true, attempted: true, detail: input.name },
+        }),
       };
     },
   });
 
   const candidate = execute('prepare_runtime_release_session', { request_id: 'candidate-isolated' });
   while (calls < 1) await Bun.sleep(1);
-  expect(await execute('restart_primary_connector', { request_id: 'connector-independent' }))
-    .toMatchObject({ ok: true, detail: 'restart_primary_connector' });
+  expect(await execute('restart_primary_connector', { request_id: 'connector-independent' })).toMatchObject({
+    ok: true,
+    detail: 'restart_primary_connector',
+  });
   expect(calls).toBe(2);
   finishCandidate();
   await candidate;
@@ -200,13 +302,21 @@ test('Recovery keeps HTTP health responsive during CPU-heavy isolated tool execu
   const marker = join(root, 'worker-started');
   const execute = createRecoveryToolExecutor(createRecoveryConfig(root), {
     releasePath: root,
-    runChild: async (_command, _args, options) => runBoundedChild(process.execPath, ['-e', `
+    runChild: async (_command, _args, options) =>
+      runBoundedChild(
+        process.execPath,
+        [
+          '-e',
+          `
       const fs = require('fs');
       fs.writeFileSync(${JSON.stringify(marker)}, 'started');
       const end = Date.now() + 750;
       while (Date.now() < end) {}
       console.log(JSON.stringify({schemaVersion:1,ok:true,value:{ready:true}}));
-    `], { ...options, input: undefined, timeoutMs: 5_000 }),
+    `,
+        ],
+        { ...options, input: undefined, timeoutMs: 5_000 },
+      ),
   });
   const server = createServer((_request, response) => response.end('healthy'));
   servers.push(server);
@@ -218,7 +328,9 @@ test('Recovery keeps HTTP health responsive during CPU-heavy isolated tool execu
   while (!existsSync(marker) && Date.now() < deadline) await Bun.sleep(10);
   expect(existsSync(marker)).toBe(true);
   let finished = false;
-  void heavy.then(() => { finished = true; });
+  void heavy.then(() => {
+    finished = true;
+  });
   const health = await fetch(`http://127.0.0.1:${address.port}/health`, { signal: AbortSignal.timeout(500) });
   expect(await health.text()).toBe('healthy');
   expect(finished).toBe(false);
@@ -232,10 +344,19 @@ test('Recovery bounds status fan-out and never replays an outcome-unknown tool c
     releasePath: '/tmp/unused-recovery-release',
     runChild: async () => {
       calls += 1;
-      await new Promise<void>((done) => { finishes.push(done); });
+      await new Promise<void>((done) => {
+        finishes.push(done);
+      });
       return {
-        status: 1, signal: null, timedOut: true, stderr: '', residualPids: [], remainingPids: [], pidReuseFenced: false,
-        stdout: '', failureCode: 'CHILD_SUPERVISOR_WALL_TIMEOUT',
+        status: 1,
+        signal: null,
+        timedOut: true,
+        stderr: '',
+        residualPids: [],
+        remainingPids: [],
+        pidReuseFenced: false,
+        stdout: '',
+        failureCode: 'CHILD_SUPERVISOR_WALL_TIMEOUT',
       };
     },
   });
@@ -261,16 +382,32 @@ test('Recovery detaches Runtime activation observation and same request reconcil
     activationObservationMs: 1,
     runChild: async () => {
       calls += 1;
-      await new Promise<void>((done) => { finish = done; });
+      await new Promise<void>((done) => {
+        finish = done;
+      });
       return {
-        status: 0, signal: null, timedOut: false, stderr: '', residualPids: [], remainingPids: [], pidReuseFenced: false,
-        stdout: JSON.stringify({ schemaVersion: 1, ok: true, value: { ok: true, attempted: true, operationId: 'activation-terminal' } }),
+        status: 0,
+        signal: null,
+        timedOut: false,
+        stderr: '',
+        residualPids: [],
+        remainingPids: [],
+        pidReuseFenced: false,
+        stdout: JSON.stringify({
+          schemaVersion: 1,
+          ok: true,
+          value: { ok: true, attempted: true, operationId: 'activation-terminal' },
+        }),
       };
     },
   });
   const args = { request_id: 'activation-detached-request' };
 
-  const first = await execute('activate_runtime_release', args) as { status: string; requestId: string; recoveryRequestId: string };
+  const first = (await execute('activate_runtime_release', args)) as {
+    status: string;
+    requestId: string;
+    recoveryRequestId: string;
+  };
   expect(first).toMatchObject({
     status: 'running',
     requestId: 'activation-detached-request',
@@ -282,8 +419,9 @@ test('Recovery detaches Runtime activation observation and same request reconcil
     requestId: 'activation-detached-request',
   });
   expect(calls).toBe(1);
-  await expect(execute('activate_runtime_release', { request_id: 'activation-detached-request', release_path: '/changed' }))
-    .rejects.toThrow('RECOVERY_REQUEST_ID_CONFLICT');
+  await expect(
+    execute('activate_runtime_release', { request_id: 'activation-detached-request', release_path: '/changed' }),
+  ).rejects.toThrow('RECOVERY_REQUEST_ID_CONFLICT');
 
   finish();
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -325,14 +463,14 @@ test('Recovery reuses the durable activation lock as running evidence after Gate
       startedAt: lock.handle.record.acquiredAt,
     });
     expect(calls).toBe(0);
-    await expect(execute('activate_runtime_release', { request_id: 'different-activation-request' }))
-      .rejects.toThrow('RECOVERY_BUSY');
+    await expect(execute('activate_runtime_release', { request_id: 'different-activation-request' })).rejects.toThrow(
+      'RECOVERY_BUSY',
+    );
     expect(calls).toBe(0);
   } finally {
     lock.handle.close();
   }
 });
-
 
 function recoveryMutationIdentityArgs(config: ReturnType<typeof createRecoveryConfig>): Record<string, string> {
   const identity = recoveryMachineIdentity(config);
@@ -366,23 +504,37 @@ test('Runtime ownership liveness rejects a reused live PID when schema-v2 proces
   mkdirSync(join(home, 'runtime'), { recursive: true });
   const runtimeInstanceId = 'runtime-stale-pid-reuse';
   const fencingGeneration = 9;
-  writeFileSync(runtimeOwnerPath(home), JSON.stringify({
-    schemaVersion: 2,
-    runtimeInstanceId,
-    pid: process.pid,
-    acquiredAt: '2026-09-20T00:00:00.000Z',
-    fencingGeneration,
-    processStartTime: 'stale-runtime-start-time',
-    executableFingerprint: 'stale-runtime-executable',
-  }, null, 2));
-  writeFileSync(runtimeIncarnationPath(home), JSON.stringify({
-    schemaVersion: 1,
-    controllerHome: home,
-    runtimeInstanceId,
-    pid: process.pid,
-    fencingGeneration,
-    activatedAt: '2026-09-20T00:00:00.000Z',
-  }, null, 2));
+  writeFileSync(
+    runtimeOwnerPath(home),
+    JSON.stringify(
+      {
+        schemaVersion: 2,
+        runtimeInstanceId,
+        pid: process.pid,
+        acquiredAt: '2026-09-20T00:00:00.000Z',
+        fencingGeneration,
+        processStartTime: 'stale-runtime-start-time',
+        executableFingerprint: 'stale-runtime-executable',
+      },
+      null,
+      2,
+    ),
+  );
+  writeFileSync(
+    runtimeIncarnationPath(home),
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        controllerHome: home,
+        runtimeInstanceId,
+        pid: process.pid,
+        fencingGeneration,
+        activatedAt: '2026-09-20T00:00:00.000Z',
+      },
+      null,
+      2,
+    ),
+  );
 
   expect(inspectRuntimeOwnership(home)).toMatchObject({
     coherent: true,
@@ -396,23 +548,37 @@ test('Runtime reconciliation ignores an incoherent incarnation PID once the sche
   roots.push(home);
   mkdirSync(join(home, 'runtime'), { recursive: true });
 
-  writeFileSync(runtimeOwnerPath(home), JSON.stringify({
-    schemaVersion: 2,
-    runtimeInstanceId: 'runtime-dead-owner',
-    pid: process.pid,
-    acquiredAt: '2026-09-20T00:00:00.000Z',
-    fencingGeneration: 10,
-    processStartTime: 'stale-runtime-start-time',
-    executableFingerprint: 'stale-runtime-executable',
-  }, null, 2));
-  writeFileSync(runtimeIncarnationPath(home), JSON.stringify({
-    schemaVersion: 1,
-    controllerHome: home,
-    runtimeInstanceId: 'runtime-older-incarnation',
-    pid: process.pid,
-    fencingGeneration: 9,
-    activatedAt: '2026-09-19T00:00:00.000Z',
-  }, null, 2));
+  writeFileSync(
+    runtimeOwnerPath(home),
+    JSON.stringify(
+      {
+        schemaVersion: 2,
+        runtimeInstanceId: 'runtime-dead-owner',
+        pid: process.pid,
+        acquiredAt: '2026-09-20T00:00:00.000Z',
+        fencingGeneration: 10,
+        processStartTime: 'stale-runtime-start-time',
+        executableFingerprint: 'stale-runtime-executable',
+      },
+      null,
+      2,
+    ),
+  );
+  writeFileSync(
+    runtimeIncarnationPath(home),
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        controllerHome: home,
+        runtimeInstanceId: 'runtime-older-incarnation',
+        pid: process.pid,
+        fencingGeneration: 9,
+        activatedAt: '2026-09-19T00:00:00.000Z',
+      },
+      null,
+      2,
+    ),
+  );
 
   expect(inspectRuntimeOwnership(home)).toMatchObject({
     coherent: false,
@@ -451,34 +617,98 @@ test('historical Stable A permits only the exact pre-context-pack omission to se
     ok: false,
     at: new Date(0).toISOString(),
     runtime: { ok: true, running: true, ready: true, stale: false, reasonCodes: [] },
-    releases: { coherent: true, active: { revision: 'package-1.8.2-historical' } as VerifyResult['releases']['active'] },
+    releases: {
+      coherent: true,
+      active: { revision: 'package-1.8.2-historical' } as VerifyResult['releases']['active'],
+    },
     probes: {
       runtime_status: { ok: true, detail: 'live' },
-      runtime_execution_surface: { ok: false, detail: 'RUNTIME_RELEASE_CONTEXT_PACK_SURFACE_INCOMPLETE: forge-context-pack is required for rh_context' },
+      runtime_execution_surface: {
+        ok: false,
+        detail: 'RUNTIME_RELEASE_CONTEXT_PACK_SURFACE_INCOMPLETE: forge-context-pack is required for rh_context',
+      },
       active_gateway: { ok: true, detail: 'HTTP 200' },
       mcp_initialize: { ok: true, detail: 'verified' },
     },
   };
   expect(legacyStableContextPackUpgradeBaseline(baseline)).toBe(true);
   expect(legacyStableContextPackUpgradeBaseline({ ...baseline, ok: true })).toBe(false);
-  expect(legacyStableContextPackUpgradeBaseline({ ...baseline, runtime: { ...baseline.runtime, ok: false } })).toBe(false);
-  expect(legacyStableContextPackUpgradeBaseline({ ...baseline, releases: { ...baseline.releases, coherent: false } })).toBe(false);
-  expect(legacyStableContextPackUpgradeBaseline({ ...baseline, releases: { ...baseline.releases, active: undefined } })).toBe(false);
-  expect(legacyStableContextPackUpgradeBaseline({ ...baseline, probes: { ...baseline.probes, active_gateway: { ok: false, detail: 'down' } } })).toBe(false);
-  expect(legacyStableContextPackUpgradeBaseline({ ...baseline, probes: { ...baseline.probes, runtime_execution_surface: { ok: false, detail: 'RUNTIME_RELEASE_PROCESS_RUNTIME_SURFACE_INCOMPLETE' } } })).toBe(false);
+  expect(legacyStableContextPackUpgradeBaseline({ ...baseline, runtime: { ...baseline.runtime, ok: false } })).toBe(
+    false,
+  );
+  expect(
+    legacyStableContextPackUpgradeBaseline({ ...baseline, releases: { ...baseline.releases, coherent: false } }),
+  ).toBe(false);
+  expect(
+    legacyStableContextPackUpgradeBaseline({ ...baseline, releases: { ...baseline.releases, active: undefined } }),
+  ).toBe(false);
+  expect(
+    legacyStableContextPackUpgradeBaseline({
+      ...baseline,
+      probes: { ...baseline.probes, active_gateway: { ok: false, detail: 'down' } },
+    }),
+  ).toBe(false);
+  expect(
+    legacyStableContextPackUpgradeBaseline({
+      ...baseline,
+      probes: {
+        ...baseline.probes,
+        runtime_execution_surface: { ok: false, detail: 'RUNTIME_RELEASE_PROCESS_RUNTIME_SURFACE_INCOMPLETE' },
+      },
+    }),
+  ).toBe(false);
+});
+
+test('Recovery OpenAI reachability measures direct and configured proxy paths separately and treats HTTP 401 as reachable', async () => {
+  const observedEnvironments: NodeJS.ProcessEnv[] = [];
+  const result = await probeOpenAiApiReachability(
+    {
+      controllerHome: '/tmp/recovery-controller',
+    } as RecoveryConfig,
+    {
+      platform: 'linux',
+      env: {
+        HTTP_PROXY: 'http://127.0.0.1:7890',
+        HTTPS_PROXY: 'http://127.0.0.1:7890',
+      },
+      transportFactory: (_home, options) => ({
+        request: async () => {
+          const environment = options?.childEnvironment?.() ?? {};
+          observedEnvironments.push(environment);
+          if (environment.HTTP_PROXY) {
+            return { status: 401, ok: false, headers: {}, body: '{"error":"unauthorized"}' };
+          }
+          throw new Error('RECOVERY_HTTP_TIMEOUT');
+        },
+      }),
+    },
+  );
+
+  expect(result.ok).toBe(true);
+  expect(result.status).toBe(401);
+  expect(result.direct.ok).toBe(false);
+  expect(result.configuredProxy.ok).toBe(true);
+  expect(result.configuredProxy.status).toBe(401);
+  expect(observedEnvironments.some((environment) => !environment.HTTP_PROXY)).toBe(true);
+  expect(observedEnvironments.some((environment) => environment.HTTP_PROXY === 'http://127.0.0.1:7890')).toBe(true);
+  expect(result.detail).toContain('direct=RECOVERY_HTTP_TIMEOUT');
+  expect(result.detail).toContain('configuredProxy=HTTP 401');
 });
 
 test('standalone Recovery retries one transport-only active gateway failure within the strict verification budget', async () => {
   let calls = 0;
   const observedHeaders: Array<Record<string, string> | undefined> = [];
-  const result = await probeRuntimeGateway({
-    request: async (request) => {
-      calls += 1;
-      observedHeaders.push(request.headers);
-      if (calls === 1) throw new Error('request failed');
-      return { status: 200, ok: true, headers: {}, body: '{}' };
+  const result = await probeRuntimeGateway(
+    {
+      request: async (request) => {
+        calls += 1;
+        observedHeaders.push(request.headers);
+        if (calls === 1) throw new Error('request failed');
+        return { status: 200, ok: true, headers: {}, body: '{}' };
+      },
     },
-  }, 'http://127.0.0.1:8765/healthz');
+    'http://127.0.0.1:8765/healthz',
+  );
 
   expect(calls).toBe(2);
   expect(observedHeaders).toEqual([
@@ -490,12 +720,15 @@ test('standalone Recovery retries one transport-only active gateway failure with
 
 test('standalone Recovery does not retry an unhealthy active gateway HTTP response', async () => {
   let calls = 0;
-  const result = await probeRuntimeGateway({
-    request: async () => {
-      calls += 1;
-      return { status: 503, ok: false, headers: {}, body: 'not ready' };
+  const result = await probeRuntimeGateway(
+    {
+      request: async () => {
+        calls += 1;
+        return { status: 503, ok: false, headers: {}, body: 'not ready' };
+      },
     },
-  }, 'http://127.0.0.1:8765/healthz');
+    'http://127.0.0.1:8765/healthz',
+  );
 
   expect(calls).toBe(1);
   expect(result).toEqual({ ok: false, detail: 'HTTP 503', status: 503 });
@@ -503,12 +736,15 @@ test('standalone Recovery does not retry an unhealthy active gateway HTTP respon
 
 test('standalone Recovery still fails closed when both active gateway transport attempts fail', async () => {
   let calls = 0;
-  const result = await probeRuntimeGateway({
-    request: async () => {
-      calls += 1;
-      throw new Error(calls === 1 ? 'stale local connection' : 'listener unavailable');
+  const result = await probeRuntimeGateway(
+    {
+      request: async () => {
+        calls += 1;
+        throw new Error(calls === 1 ? 'stale local connection' : 'listener unavailable');
+      },
     },
-  }, 'http://127.0.0.1:8765/healthz');
+    'http://127.0.0.1:8765/healthz',
+  );
 
   expect(calls).toBe(2);
   expect(result).toEqual({ ok: false, detail: 'listener unavailable' });
@@ -550,23 +786,33 @@ test('standalone Recovery launchd preserves tunnel proxy connectivity in its iso
     FORGE_RUNTIME_ID: 'must-not-inherit',
     PRIVATE_TOKEN: 'must-not-inherit',
   };
-  const plist = recoveryPlist({
-    label: RECOVERY_DAEMON_LABEL,
-    executable: '/fixture/forge-recovery',
-    command: 'daemon',
-    controllerHome: '/fixture/controller',
-    logPath: '/fixture/daemon.log',
-    productVersion: '1.8.2',
-  }, env);
+  const plist = recoveryPlist(
+    {
+      label: RECOVERY_DAEMON_LABEL,
+      executable: '/fixture/forge-recovery',
+      command: 'daemon',
+      controllerHome: '/fixture/controller',
+      logPath: '/fixture/daemon.log',
+      productVersion: '1.8.2',
+    },
+    env,
+  );
   const array = plist.match(/<array>([\s\S]*?)<\/array>/)?.[1] ?? '';
   const args = [...array.matchAll(/<string>([^<]*)<\/string>/g)].map((match) => match[1]!);
   const boundary = args.indexOf('/fixture/forge-recovery');
-  const childEnvironment = JSON.parse(execFileSync(args[0]!, [
-    ...args.slice(1, boundary), process.execPath, '-e', 'process.stdout.write(JSON.stringify(process.env))',
-  ], { encoding: 'utf8' }));
+  const childEnvironment = JSON.parse(
+    execFileSync(
+      args[0]!,
+      [...args.slice(1, boundary), process.execPath, '-e', 'process.stdout.write(JSON.stringify(process.env))'],
+      { encoding: 'utf8' },
+    ),
+  );
   expect(childEnvironment).toMatchObject({
-    HOME: env.HOME, HTTP_PROXY: env.HTTP_PROXY, HTTPS_PROXY: env.HTTPS_PROXY,
-    NO_PROXY: env.NO_PROXY, https_proxy: env.https_proxy,
+    HOME: env.HOME,
+    HTTP_PROXY: env.HTTP_PROXY,
+    HTTPS_PROXY: env.HTTPS_PROXY,
+    NO_PROXY: env.NO_PROXY,
+    https_proxy: env.https_proxy,
   });
   expect(childEnvironment.FORGE_RUNTIME_ID).toBeUndefined();
   expect(childEnvironment.PRIVATE_TOKEN).toBeUndefined();
@@ -574,13 +820,19 @@ test('standalone Recovery launchd preserves tunnel proxy connectivity in its iso
 
 test('standalone Recovery systemd preserves only configured proxy variables alongside its service contract', () => {
   const unit = recoverySystemdUserUnitInput('/fixture/controller', 'daemon', {
-    PATH: '/usr/bin', HTTP_PROXY: 'http://127.0.0.1:7890',
-    https_proxy: 'http://127.0.0.1:7891', ALL_PROXY: 'socks5://127.0.0.1:7892',
-    NO_PROXY: 'localhost,127.0.0.1,::1', http_proxy: '', PRIVATE_TOKEN: 'must-not-inherit',
+    PATH: '/usr/bin',
+    HTTP_PROXY: 'http://127.0.0.1:7890',
+    https_proxy: 'http://127.0.0.1:7891',
+    ALL_PROXY: 'socks5://127.0.0.1:7892',
+    NO_PROXY: 'localhost,127.0.0.1,::1',
+    http_proxy: '',
+    PRIVATE_TOKEN: 'must-not-inherit',
   });
   expect(unit.environment).toMatchObject({
-    HTTP_PROXY: 'http://127.0.0.1:7890', https_proxy: 'http://127.0.0.1:7891',
-    ALL_PROXY: 'socks5://127.0.0.1:7892', NO_PROXY: 'localhost,127.0.0.1,::1',
+    HTTP_PROXY: 'http://127.0.0.1:7890',
+    https_proxy: 'http://127.0.0.1:7891',
+    ALL_PROXY: 'socks5://127.0.0.1:7892',
+    NO_PROXY: 'localhost,127.0.0.1,::1',
   });
   expect(unit.environment).not.toHaveProperty('http_proxy');
   expect(unit.environment).not.toHaveProperty('PRIVATE_TOKEN');
@@ -594,13 +846,16 @@ test('standalone Recovery compiler resolves account Bun when compiled Runtime PA
   writeFileSync(bun, 'fixture bun');
   chmodSync(bun, 0o700);
 
-  expect(resolveRecoveryCompilerExecutable(
-    join(home, 'runtime', 'forge-runtime'),
-    { HOME: home, PATH: process.platform === 'win32' ? 'C:\\Windows\\System32' : '/usr/bin:/bin' },
-    home,
-  )).toBe(bun);
-  expect(resolveRecoveryCompilerExecutable('/tmp/forge-runtime', { FORGE_BUN_BIN: '/opt/forge/custom-bun' }, home))
-    .toBe('/opt/forge/custom-bun');
+  expect(
+    resolveRecoveryCompilerExecutable(
+      join(home, 'runtime', 'forge-runtime'),
+      { HOME: home, PATH: process.platform === 'win32' ? 'C:\\Windows\\System32' : '/usr/bin:/bin' },
+      home,
+    ),
+  ).toBe(bun);
+  expect(
+    resolveRecoveryCompilerExecutable('/tmp/forge-runtime', { FORGE_BUN_BIN: '/opt/forge/custom-bun' }, home),
+  ).toBe('/opt/forge/custom-bun');
 });
 
 test('standalone Recovery package Connector runner does not inherit the compiled Recovery executable', () => {
@@ -611,11 +866,13 @@ test('standalone Recovery package Connector runner does not inherit the compiled
   writeFileSync(bun, 'fixture bun');
   chmodSync(bun, 0o700);
 
-  expect(resolveRecoveryPackageConnectorExecutable(
-    join(home, 'recovery', 'current', 'forge-recovery'),
-    { HOME: home, PATH: process.platform === 'win32' ? 'C:\\Windows\\System32' : '/usr/bin:/bin' },
-    home,
-  )).toBe(bun);
+  expect(
+    resolveRecoveryPackageConnectorExecutable(
+      join(home, 'recovery', 'current', 'forge-recovery'),
+      { HOME: home, PATH: process.platform === 'win32' ? 'C:\\Windows\\System32' : '/usr/bin:/bin' },
+      home,
+    ),
+  ).toBe(bun);
 });
 
 test('standalone Recovery stage-only build never rewrites installed durable source authority', async () => {
@@ -627,12 +884,15 @@ test('standalone Recovery stage-only build never rewrites installed durable sour
   createRecoveryConfig(home, { primaryRuntimeSourceRoot: durableSource });
   const before = readFileSync(recoveryConfigPath(home), 'utf8');
 
-  const result = await installStandaloneRecovery({
-    controllerHome: home,
-    repoRoot: stageSource,
-    sourceRoot: stageSource,
-    stageOnly: true,
-  }, recoveryInstallerStubs());
+  const result = await installStandaloneRecovery(
+    {
+      controllerHome: home,
+      repoRoot: stageSource,
+      sourceRoot: stageSource,
+      stageOnly: true,
+    },
+    recoveryInstallerStubs(),
+  );
 
   expect(result.activated).toBeUndefined();
   expect(result.staged.release.sourceCommit).toBe(stageCommit);
@@ -649,11 +909,16 @@ test('standalone Recovery non-stage install rejects managed-worktree durable sou
   createRecoveryConfig(home, { primaryRuntimeSourceRoot: durableSource });
   const before = readFileSync(recoveryConfigPath(home), 'utf8');
 
-  await expect(installStandaloneRecovery({
-    controllerHome: home,
-    repoRoot: managedSource,
-    sourceRoot: managedSource,
-  }, recoveryInstallerStubs())).rejects.toThrow('RECOVERY_PRIMARY_RUNTIME_SOURCE_ROOT_DURABLE_REQUIRED');
+  await expect(
+    installStandaloneRecovery(
+      {
+        controllerHome: home,
+        repoRoot: managedSource,
+        sourceRoot: managedSource,
+      },
+      recoveryInstallerStubs(),
+    ),
+  ).rejects.toThrow('RECOVERY_PRIMARY_RUNTIME_SOURCE_ROOT_DURABLE_REQUIRED');
 
   expect(loadRecoveryConfig(home).primaryRuntimeSourceRoot).toBe(resolve(durableSource));
   expect(readFileSync(recoveryConfigPath(home), 'utf8')).toBe(before);
@@ -699,12 +964,15 @@ test('standalone Recovery non-stage install persists a durable canonical source 
       healthStatus: 200,
     }),
   };
-  const result = await installStandaloneRecovery({
-    controllerHome: home,
-    repoRoot: durableSource,
-    primaryRuntimeSourceRepositoryId: 'repo_durable_source',
-    sourceRoot: durableSource,
-  }, dependencies);
+  const result = await installStandaloneRecovery(
+    {
+      controllerHome: home,
+      repoRoot: durableSource,
+      primaryRuntimeSourceRepositoryId: 'repo_durable_source',
+      sourceRoot: durableSource,
+    },
+    dependencies,
+  );
 
   expect(result.config.primaryRuntimeSourceRoot).toBe(resolve(durableSource));
   expect(result.config.primaryRuntimeSourceRepositoryId).toBe('repo_durable_source');
@@ -733,15 +1001,22 @@ test('standalone Recovery non-stage install persists a durable canonical source 
   for (const step of ['upgrade', 'rollback']) {
     writeFileSync(join(durableSource, 'README.md'), `${step}\n`);
     execFileSync('git', ['add', 'README.md'], { cwd: durableSource });
-    execFileSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', step], { cwd: durableSource });
+    execFileSync(
+      'git',
+      ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', step],
+      { cwd: durableSource },
+    );
     const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: durableSource, encoding: 'utf8' }).trim();
     if (step === 'rollback') rejectedCommit = commit;
-    const installation = installStandaloneRecovery({
-      controllerHome: home,
-      repoRoot: durableSource,
-      primaryRuntimeSourceRepositoryId: 'repo_durable_source',
-      port: address.port,
-    }, dependencies);
+    const installation = installStandaloneRecovery(
+      {
+        controllerHome: home,
+        repoRoot: durableSource,
+        primaryRuntimeSourceRepositoryId: 'repo_durable_source',
+        port: address.port,
+      },
+      dependencies,
+    );
     if (step === 'rollback') {
       await expect(installation).rejects.toThrow('RECOVERY_RELEASE_ACTIVATION_FAILED_ROLLED_BACK');
     } else {
@@ -756,8 +1031,12 @@ test('standalone Recovery non-stage install persists a durable canonical source 
 });
 
 test('Recovery command PATH includes the standard user binary directory outside interactive shells', () => {
-  expect(recoveryCommandPath('/usr/bin:/bin', 'linux', '/home/forge-user')).toBe('/home/forge-user/.local/bin:/usr/bin:/bin');
-  expect(recoveryCommandPath('/home/forge-user/.local/bin:/usr/bin', 'linux', '/home/forge-user')).toBe('/home/forge-user/.local/bin:/usr/bin');
+  expect(recoveryCommandPath('/usr/bin:/bin', 'linux', '/home/forge-user')).toBe(
+    '/home/forge-user/.local/bin:/usr/bin:/bin',
+  );
+  expect(recoveryCommandPath('/home/forge-user/.local/bin:/usr/bin', 'linux', '/home/forge-user')).toBe(
+    '/home/forge-user/.local/bin:/usr/bin',
+  );
   expect(recoveryCommandPath('C:\\Windows\\System32', 'win32', 'C:\\Users\\forge')).toBe('C:\\Windows\\System32');
 });
 
@@ -766,12 +1045,27 @@ test('Recovery history exposes only bounded sanitized newest audit facts', async
   const config = createRecoveryConfig(home);
   const auditDirectory = join(home, 'recovery', 'audit');
   mkdirSync(auditDirectory, { recursive: true });
-  writeFileSync(join(auditDirectory, 'recovery.jsonl'), [
-    JSON.stringify({ at: '2026-10-06T00:00:00.000Z', event: 'verify', detail: { ok: true, path: '/private/controller-home' } }),
-    JSON.stringify({ at: '2026-10-06T00:01:00.000Z', event: 'rollback_failed', detail: { ok: false, request_id: 'secret-request' } }),
-    JSON.stringify({ at: '2026-10-06T00:02:00.000Z', event: 'primary_runtime_restart_succeeded', detail: { ok: true, target: 'private-service-target' } }),
-    '{"at":"partial-final-line"',
-  ].join('\n'));
+  writeFileSync(
+    join(auditDirectory, 'recovery.jsonl'),
+    [
+      JSON.stringify({
+        at: '2026-10-06T00:00:00.000Z',
+        event: 'verify',
+        detail: { ok: true, path: '/private/controller-home' },
+      }),
+      JSON.stringify({
+        at: '2026-10-06T00:01:00.000Z',
+        event: 'rollback_failed',
+        detail: { ok: false, request_id: 'secret-request' },
+      }),
+      JSON.stringify({
+        at: '2026-10-06T00:02:00.000Z',
+        event: 'primary_runtime_restart_succeeded',
+        detail: { ok: true, target: 'private-service-target' },
+      }),
+      '{"at":"partial-final-line"',
+    ].join('\n'),
+  );
 
   const history = listRecoveryHistory(config, 2);
   expect(history).toEqual({
@@ -812,10 +1106,17 @@ function controllerHome(): string {
 function committedRecoverySource(root: string): string {
   mkdirSync(root, { recursive: true });
   writeFileSync(join(root, 'README.md'), 'recovery source\n');
-  writeFileSync(join(root, 'package.json'), `${JSON.stringify({ name: 'forge-recovery-fixture', version: '1.7.2' })}\n`);
+  writeFileSync(
+    join(root, 'package.json'),
+    `${JSON.stringify({ name: 'forge-recovery-fixture', version: '1.7.2' })}\n`,
+  );
   execFileSync('git', ['init', '-q'], { cwd: root });
   execFileSync('git', ['add', 'README.md', 'package.json'], { cwd: root });
-  execFileSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', 'recovery source'], { cwd: root });
+  execFileSync(
+    'git',
+    ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', 'recovery source'],
+    { cwd: root },
+  );
   execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: root });
   return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 }
@@ -826,9 +1127,27 @@ function recoveryInstallerStubs() {
     uuid: () => '12345678-1234-1234-1234-123456789abc',
     compileBinary: ({ outputPath }: { sourceRoot: string; outputPath: string }) => {
       writeFileSync(outputPath, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
-      return { ok: true, status: 0, signal: null, timedOut: false, command: ['stub-compile'], stdout: 'compiled\n', stderr: '', error: '' };
+      return {
+        ok: true,
+        status: 0,
+        signal: null,
+        timedOut: false,
+        command: ['stub-compile'],
+        stdout: 'compiled\n',
+        stderr: '',
+        error: '',
+      };
     },
-    runCanary: () => ({ ok: true, status: 0, signal: null, timedOut: false, command: ['stub-canary'], stdout: 'canary ok\n', stderr: '', error: '' }),
+    runCanary: () => ({
+      ok: true,
+      status: 0,
+      signal: null,
+      timedOut: false,
+      command: ['stub-canary'],
+      stdout: 'canary ok\n',
+      stderr: '',
+      error: '',
+    }),
   };
 }
 
@@ -849,14 +1168,21 @@ function runtimeServiceConfig(home: string): void {
   mkdirSync(dirname(authTokenFile), { recursive: true });
   writeFileSync(authTokenFile, 'test-token\n');
   mkdirSync(paths.serviceRoot, { recursive: true });
-  writeFileSync(paths.configPath, `${JSON.stringify({
-    schemaVersion: 1,
-    controllerHome: resolve(home),
-    repositoryRoot,
-    host: '127.0.0.1',
-    port: 8765,
-    authTokenFile,
-  }, null, 2)}\n`);
+  writeFileSync(
+    paths.configPath,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        controllerHome: resolve(home),
+        repositoryRoot,
+        host: '127.0.0.1',
+        port: 8765,
+        authTokenFile,
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }
 
 function writeReleaseExecutionSurface(releaseRoot: string): {
@@ -867,7 +1193,8 @@ function writeReleaseExecutionSurface(releaseRoot: string): {
   pluginActionSidecarEntrypoint: 'forge-plugin-action-sidecar';
   pluginActionSidecarArtifactIdentity: string;
 } {
-  const processRunner = '#!/usr/bin/env bun\nimport { existsSync } from "node:fs";\nif (existsSync("fail-process-runner")) process.exit(71);\nprocess.exit(0);\n';
+  const processRunner =
+    '#!/usr/bin/env bun\nimport { existsSync } from "node:fs";\nif (existsSync("fail-process-runner")) process.exit(71);\nprocess.exit(0);\n';
   const checkRunner = '#!/bin/sh\nif [ -f fail-check-runner ]; then exit 73; fi\nexit 0\n';
   const processRunnerPath = join(releaseRoot, 'process-runner.js');
   const checkRunnerPath = join(releaseRoot, 'forge-check-runner');
@@ -896,25 +1223,36 @@ function manifest(home: string, releaseId: string, artifactIdentity: string, wor
   mkdirSync(releaseRoot, { recursive: true });
   writeFileSync(join(releaseRoot, 'forge-runtime'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
   const executionSurface = writeReleaseExecutionSurface(releaseRoot);
-  writeFileSync(path, `${JSON.stringify({
-    schemaVersion: 1,
-    releaseId,
-    artifactIdentity,
-    entrypoint: 'forge-runtime',
-    processRunnerEntrypoint: 'process-runner.js',
-    checkRunnerEntrypoint: 'forge-check-runner',
-    ...executionSurface,
-    arguments: [],
-    configurationSchemaVersion: 1,
-    controllerHome: resolve(home),
-    databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
-    workerProtocolVersion,
-    createdAt: new Date().toISOString(),
-  }, null, 2)}\n`);
+  writeFileSync(
+    path,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        releaseId,
+        artifactIdentity,
+        entrypoint: 'forge-runtime',
+        processRunnerEntrypoint: 'process-runner.js',
+        checkRunnerEntrypoint: 'forge-check-runner',
+        ...executionSurface,
+        arguments: [],
+        configurationSchemaVersion: 1,
+        controllerHome: resolve(home),
+        databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+        workerProtocolVersion,
+        createdAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+  );
   return path;
 }
 
-function verifiedManifest(home: string, releaseId: string, runtimeMarker = releaseId): { path: string; artifactIdentity: string } {
+function verifiedManifest(
+  home: string,
+  releaseId: string,
+  runtimeMarker = releaseId,
+): { path: string; artifactIdentity: string } {
   const releaseRoot = join(home, 'runtime', 'releases', releaseId);
   const path = join(releaseRoot, 'manifest.json');
   mkdirSync(releaseRoot, { recursive: true });
@@ -922,21 +1260,28 @@ function verifiedManifest(home: string, releaseId: string, runtimeMarker = relea
   writeFileSync(binaryPath, `#!/bin/sh\n# ${runtimeMarker}\nexit 0\n`, { mode: 0o700 });
   const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(binaryPath)).digest('hex')}`;
   const executionSurface = writeReleaseExecutionSurface(releaseRoot);
-  writeFileSync(path, `${JSON.stringify({
-    schemaVersion: 1,
-    releaseId,
-    artifactIdentity,
-    entrypoint: 'forge-runtime',
-    processRunnerEntrypoint: 'process-runner.js',
-    checkRunnerEntrypoint: 'forge-check-runner',
-    ...executionSurface,
-    arguments: [],
-    configurationSchemaVersion: 1,
-    controllerHome: resolve(home),
-    databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
-    workerProtocolVersion: 1,
-    createdAt: new Date().toISOString(),
-  }, null, 2)}\n`);
+  writeFileSync(
+    path,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        releaseId,
+        artifactIdentity,
+        entrypoint: 'forge-runtime',
+        processRunnerEntrypoint: 'process-runner.js',
+        checkRunnerEntrypoint: 'forge-check-runner',
+        ...executionSurface,
+        arguments: [],
+        configurationSchemaVersion: 1,
+        controllerHome: resolve(home),
+        databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+        workerProtocolVersion: 1,
+        createdAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+  );
   return { path, artifactIdentity };
 }
 
@@ -949,17 +1294,24 @@ function writeReleaseBrowserSurface(manifestPath: string): void {
   const files = ['background.js', 'content.js', 'core.js', 'manifest.json'];
   const packageHash = createHash('sha256');
   for (const file of files) {
-    const bytes = file === 'manifest.json'
-      ? JSON.stringify({
-        manifest_version: 3, key: Buffer.alloc(64, 7).toString('base64'), version: '1.0.0',
-        // The projection derives its file set from the packaged manifest, so
-        // the fixture must reference every file it writes.
-        background: { service_worker: 'background.js' },
-        content_scripts: [{ matches: ['https://chatgpt.com/*'], js: ['core.js', 'content.js'] }],
-      })
-      : `// ${release.releaseId}: ${file}\n`;
+    const bytes =
+      file === 'manifest.json'
+        ? JSON.stringify({
+            manifest_version: 3,
+            key: Buffer.alloc(64, 7).toString('base64'),
+            version: '1.0.0',
+            // The projection derives its file set from the packaged manifest, so
+            // the fixture must reference every file it writes.
+            background: { service_worker: 'background.js' },
+            content_scripts: [{ matches: ['https://chatgpt.com/*'], js: ['core.js', 'content.js'] }],
+          })
+        : `// ${release.releaseId}: ${file}\n`;
     writeFileSync(join(extensionRoot, file), bytes);
-    packageHash.update(join('adapters', 'computer', 'chrome-extension', file)).update('\0').update(bytes).update('\0');
+    packageHash
+      .update(join('adapters', 'computer', 'chrome-extension', file))
+      .update('\0')
+      .update(bytes)
+      .update('\0');
   }
   // A legacy packageRoot activates the immutable connector_cli canary.
   // Keep this fixture executable instead of advertising an incomplete package.
@@ -970,16 +1322,23 @@ function writeReleaseBrowserSurface(manifestPath: string): void {
   const connectorCli = 'process.exit(0);\n';
   mkdirSync(dirname(connectorPath), { recursive: true });
   writeFileSync(connectorPath, connectorCli);
-  packageHash.update(join('src', 'cli', 'index.ts')).update('\0').update(connectorCli).update('\0');
+  packageHash
+    .update(join('src', 'cli', 'index.ts'))
+    .update('\0')
+    .update(connectorCli)
+    .update('\0');
   const nativeHost = `#!/bin/sh\n# ${release.releaseId}\nexit 0\n`;
   writeFileSync(join(releaseRoot, 'forge-workflow-supervisor-native-host'), nativeHost, { mode: 0o700 });
-  writeFileSync(manifestPath, JSON.stringify({
-    ...release,
-    packageRoot: 'package',
-    packageArtifactIdentity: `sha256:${packageHash.digest('hex')}`,
-    workflowSupervisorNativeHostEntrypoint: 'forge-workflow-supervisor-native-host',
-    workflowSupervisorNativeHostArtifactIdentity: `sha256:${createHash('sha256').update(nativeHost).digest('hex')}`,
-  }) + '\n');
+  writeFileSync(
+    manifestPath,
+    JSON.stringify({
+      ...release,
+      packageRoot: 'package',
+      packageArtifactIdentity: `sha256:${packageHash.digest('hex')}`,
+      workflowSupervisorNativeHostEntrypoint: 'forge-workflow-supervisor-native-host',
+      workflowSupervisorNativeHostArtifactIdentity: `sha256:${createHash('sha256').update(nativeHost).digest('hex')}`,
+    }) + '\n',
+  );
 }
 
 function diagnostics() {
@@ -991,19 +1350,25 @@ function diagnostics() {
   };
 }
 
-async function runtimeServer(options: { challengeUnauthenticatedMcp?: boolean } = {}): Promise<{ port: number; endpoint: string; requests: RuntimeRequestRecord[] }> {
+async function runtimeServer(
+  options: { challengeUnauthenticatedMcp?: boolean } = {},
+): Promise<{ port: number; endpoint: string; requests: RuntimeRequestRecord[] }> {
   const sessionId = 'recovery-runtime-session';
   const requests: RuntimeRequestRecord[] = [];
-  const record = (request: IncomingMessage, body = '') => requests.push({
-    method: request.method,
-    url: request.url,
-    authorizationPresent: typeof request.headers.authorization === 'string',
-    accept: request.headers.accept,
-    contentType: request.headers['content-type'],
-    body,
-  });
+  const record = (request: IncomingMessage, body = '') =>
+    requests.push({
+      method: request.method,
+      url: request.url,
+      authorizationPresent: typeof request.headers.authorization === 'string',
+      accept: request.headers.accept,
+      contentType: request.headers['content-type'],
+      body,
+    });
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
-    if (request.method === 'GET' && (request.url === '/health' || request.url === '/ready' || request.url === '/transport-ready')) {
+    if (
+      request.method === 'GET' &&
+      (request.url === '/health' || request.url === '/ready' || request.url === '/transport-ready')
+    ) {
       record(request);
       response.setHeader('content-type', 'application/json');
       response.end(JSON.stringify({ status: 'ok' }));
@@ -1012,7 +1377,10 @@ async function runtimeServer(options: { challengeUnauthenticatedMcp?: boolean } 
     if (request.method === 'GET' && request.url === '/mcp') {
       record(request);
       response.statusCode = 401;
-      response.setHeader('www-authenticate', 'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp"');
+      response.setHeader(
+        'www-authenticate',
+        'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp"',
+      );
       response.end(JSON.stringify({ error: 'invalid_token' }));
       return;
     }
@@ -1029,12 +1397,17 @@ async function runtimeServer(options: { challengeUnauthenticatedMcp?: boolean } 
       return;
     }
     let body = '';
-    request.on('data', (chunk: Buffer) => { body += chunk.toString('utf8'); });
+    request.on('data', (chunk: Buffer) => {
+      body += chunk.toString('utf8');
+    });
     request.on('end', () => {
       record(request, body);
       if (options.challengeUnauthenticatedMcp && typeof request.headers.authorization !== 'string') {
         response.statusCode = 401;
-        response.setHeader('www-authenticate', 'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp"');
+        response.setHeader(
+          'www-authenticate',
+          'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp"',
+        );
         response.end(JSON.stringify({ error: 'invalid_token' }));
         return;
       }
@@ -1057,7 +1430,13 @@ async function runtimeServer(options: { challengeUnauthenticatedMcp?: boolean } 
       }
       response.setHeader('content-type', 'application/json');
       if (rpc.method === 'tools/list') {
-        response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { tools: [{ name: 'repository_list' }, { name: 'runtime_status' }] } }));
+        response.end(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: rpc.id,
+            result: { tools: [{ name: 'repository_list' }, { name: 'runtime_status' }] },
+          }),
+        );
         return;
       }
       response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [] } }));
@@ -1073,7 +1452,9 @@ async function runtimeServer(options: { challengeUnauthenticatedMcp?: boolean } 
   return { port: address.port, endpoint: `http://127.0.0.1:${address.port}/mcp`, requests };
 }
 
-async function failingPublicGatewayServer(status = 530): Promise<{ endpoint: string; requests: RuntimeRequestRecord[] }> {
+async function failingPublicGatewayServer(
+  status = 530,
+): Promise<{ endpoint: string; requests: RuntimeRequestRecord[] }> {
   const requests: RuntimeRequestRecord[] = [];
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
     requests.push({
@@ -1111,21 +1492,26 @@ async function saturatedPublicGatewayServer(): Promise<{ endpoint: string; reque
     response.setHeader('content-type', 'application/json');
     if (request.method === 'GET' && request.url === '/transport-ready') {
       response.statusCode = 503;
-      response.end(JSON.stringify({
-        status: 'saturated',
-        sessionCapacity: {
-          sessionCount: 8,
-          maximumSessions: 8,
-          admissibleSessionCount: 0,
-          oldestActivePostAgeMs: 65_000,
-          recoveryRecommended: true,
-        },
-      }));
+      response.end(
+        JSON.stringify({
+          status: 'saturated',
+          sessionCapacity: {
+            sessionCount: 8,
+            maximumSessions: 8,
+            admissibleSessionCount: 0,
+            oldestActivePostAgeMs: 65_000,
+            recoveryRecommended: true,
+          },
+        }),
+      );
       return;
     }
     if (request.method === 'POST' && request.url === '/mcp') {
       response.statusCode = 401;
-      response.setHeader('www-authenticate', 'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp"');
+      response.setHeader(
+        'www-authenticate',
+        'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp"',
+      );
       response.end(JSON.stringify({ error: 'invalid_token' }));
       return;
     }
@@ -1142,7 +1528,9 @@ async function saturatedPublicGatewayServer(): Promise<{ endpoint: string; reque
   return { endpoint: `http://127.0.0.1:${address.port}/mcp`, requests };
 }
 
-async function legacyConnectorTransportServer(mcpStatus = 401): Promise<{ endpoint: string; requests: RuntimeRequestRecord[] }> {
+async function legacyConnectorTransportServer(
+  mcpStatus = 401,
+): Promise<{ endpoint: string; requests: RuntimeRequestRecord[] }> {
   const requests: RuntimeRequestRecord[] = [];
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
     requests.push({
@@ -1161,8 +1549,14 @@ async function legacyConnectorTransportServer(mcpStatus = 401): Promise<{ endpoi
     }
     if (request.method === 'POST' && request.url === '/mcp') {
       response.statusCode = mcpStatus;
-      if (mcpStatus === 401) response.setHeader('www-authenticate', 'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp"');
-      response.end(JSON.stringify(mcpStatus === 401 ? { error: 'invalid_token' } : { error: 'connector_transport_failed' }));
+      if (mcpStatus === 401)
+        response.setHeader(
+          'www-authenticate',
+          'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp"',
+        );
+      response.end(
+        JSON.stringify(mcpStatus === 401 ? { error: 'invalid_token' } : { error: 'connector_transport_failed' }),
+      );
       return;
     }
     if (request.method === 'GET' && request.url === '/ready') {
@@ -1182,7 +1576,10 @@ async function legacyConnectorTransportServer(mcpStatus = 401): Promise<{ endpoi
   return { endpoint: `http://127.0.0.1:${address.port}/mcp`, requests };
 }
 
-async function healthyTransportWithHungLegacyReadinessServer(): Promise<{ endpoint: string; requests: RuntimeRequestRecord[] }> {
+async function healthyTransportWithHungLegacyReadinessServer(): Promise<{
+  endpoint: string;
+  requests: RuntimeRequestRecord[];
+}> {
   const requests: RuntimeRequestRecord[] = [];
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
     requests.push({
@@ -1196,22 +1593,27 @@ async function healthyTransportWithHungLegacyReadinessServer(): Promise<{ endpoi
     response.setHeader('content-type', 'application/json');
     if (request.method === 'GET' && request.url === '/transport-ready') {
       response.statusCode = 200;
-      response.end(JSON.stringify({
-        ready: true,
-        sessionCapacity: {
-          active: 0,
-          maximum: 64,
-          acceptingNewSessions: true,
-          activePosts: 0,
-          activeStreams: 0,
-          recoveryRecommended: false,
-        },
-      }));
+      response.end(
+        JSON.stringify({
+          ready: true,
+          sessionCapacity: {
+            active: 0,
+            maximum: 64,
+            acceptingNewSessions: true,
+            activePosts: 0,
+            activeStreams: 0,
+            recoveryRecommended: false,
+          },
+        }),
+      );
       return;
     }
     if (request.method === 'POST' && request.url === '/mcp') {
       response.statusCode = 401;
-      response.setHeader('www-authenticate', 'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp"');
+      response.setHeader(
+        'www-authenticate',
+        'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp"',
+      );
       response.end(JSON.stringify({ error: 'invalid_token' }));
       return;
     }
@@ -1313,14 +1715,18 @@ test('standalone Recovery restarts only the configured primary Connector service
     currentUid: async () => 501,
     verifyLocal: async () => healthyVerify(),
     repairConnectorBinding: async () => {
-      observedLock = JSON.parse(readFileSync(join(home, 'recovery', 'locks', 'operation.lock'), 'utf8')) as Record<string, unknown>;
+      observedLock = JSON.parse(readFileSync(join(home, 'recovery', 'locks', 'operation.lock'), 'utf8')) as Record<
+        string,
+        unknown
+      >;
       return { ok: true, attempted: false, noOp: true, detail: 'binding already current' };
     },
     probeConnectorLocal: async () => ({ ok: true, detail: 'local Connector reachable' }),
     probeConnectorOwnership: async () => ({ ok: true, detail: 'configured service owns listener' }),
     reconnect: async () => {
       reconnectCalls += 1;
-      if (reconnectCalls > 1) expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
+      if (reconnectCalls > 1)
+        expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
       return { ok: true, detail: 'public MCP reachable', verify: healthyVerify() };
     },
     runCommand: async (name, args) => {
@@ -1408,19 +1814,26 @@ test('standalone Recovery restarts the canonical Linux systemd-user primary Conn
     },
     reconnect: async () => ({ ok: true, detail: 'public MCP reachable', verify: healthyVerify() }),
     now: () => clock,
-    sleep: async (ms) => { clock += ms; },
+    sleep: async (ms) => {
+      clock += ms;
+    },
     runCommand: async (name, args) => {
       commands.push([name, ...args]);
       if (name === 'systemctl' && args.includes('restart')) return { ok: true, status: 0, stdout: '', stderr: '' };
-      if (name === 'systemctl' && args.includes('MainPID')) return { ok: true, status: 0, stdout: '4242\n', stderr: '' };
+      if (name === 'systemctl' && args.includes('MainPID'))
+        return { ok: true, status: 0, stdout: '4242\n', stderr: '' };
       if (name === 'lsof') return { ok: true, status: 0, stdout: '4242\n', stderr: '' };
       throw new Error(`unexpected command ${name} ${args.join(' ')}`);
     },
   });
   expect(result).toMatchObject({ ok: true, attempted: true });
-  expect(commands.some((entry) => entry[0] === 'systemctl' && entry[1] === '--user' && entry[2] === 'restart')).toBe(true);
+  expect(commands.some((entry) => entry[0] === 'systemctl' && entry[1] === '--user' && entry[2] === 'restart')).toBe(
+    true,
+  );
   expect(commands.some((entry) => entry[0] === 'systemctl' && entry.includes('MainPID'))).toBe(true);
-  expect(commands.some((entry) => entry[0] === 'lsof' && entry.some((arg) => String(arg).startsWith('-iTCP:')))).toBe(true);
+  expect(commands.some((entry) => entry[0] === 'lsof' && entry.some((arg) => String(arg).startsWith('-iTCP:')))).toBe(
+    true,
+  );
   expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
 });
 
@@ -1465,23 +1878,30 @@ test('standalone Recovery fails closed on a live legacy mutation lock without re
   });
   const lockFile = join(home, 'recovery', 'locks', 'operation.lock');
   mkdirSync(dirname(lockFile), { recursive: true });
-  writeFileSync(lockFile, JSON.stringify({
-    schemaVersion: 1,
-    pid: process.pid,
-    instanceId: 'legacy-live-lock',
-    acquiredAt: new Date().toISOString(),
-    action: 'restart_primary_connector',
-  }));
+  writeFileSync(
+    lockFile,
+    JSON.stringify({
+      schemaVersion: 1,
+      pid: process.pid,
+      instanceId: 'legacy-live-lock',
+      acquiredAt: new Date().toISOString(),
+      action: 'restart_primary_connector',
+    }),
+  );
 
-  await expect(restartPrimaryConnector(config, {
-    requestId: 'recovery-gateway:new-primary-connector-restart',
-    platform: 'darwin',
-    currentUid: async () => 501,
-    verifyLocal: async () => healthyVerify(),
-  })).rejects.toThrow('RECOVERY_OPERATION_LOCK_IDENTITY_UNCERTAIN');
+  await expect(
+    restartPrimaryConnector(config, {
+      requestId: 'recovery-gateway:new-primary-connector-restart',
+      platform: 'darwin',
+      currentUid: async () => 501,
+      verifyLocal: async () => healthyVerify(),
+    }),
+  ).rejects.toThrow('RECOVERY_OPERATION_LOCK_IDENTITY_UNCERTAIN');
 
   expect(JSON.parse(readFileSync(lockFile, 'utf8'))).toMatchObject({ instanceId: 'legacy-live-lock' });
-  expect(readFileSync(join(home, 'recovery', 'audit', 'recovery.jsonl'), 'utf8')).toContain('recovery_operation_lock_identity_uncertain');
+  expect(readFileSync(join(home, 'recovery', 'audit', 'recovery.jsonl'), 'utf8')).toContain(
+    'recovery_operation_lock_identity_uncertain',
+  );
 });
 
 test('shared Recovery operation locks synthesize core-compatible request attribution', async () => {
@@ -1524,7 +1944,11 @@ test('shared Recovery operation locks synthesize core-compatible request attribu
 
 test('shared Recovery operation locks use stable Linux process start identity', () => {
   const home = controllerHome();
-  const acquired = acquireRecoveryOperationLock({ controllerHome: home, action: 'release_session_cutover', requestId: 'test-stable-process-identity' });
+  const acquired = acquireRecoveryOperationLock({
+    controllerHome: home,
+    action: 'release_session_cutover',
+    requestId: 'test-stable-process-identity',
+  });
   expect(acquired.acquired).toBe(true);
   if (!acquired.acquired) throw new Error('stable Recovery operation lock was not acquired');
   try {
@@ -1539,43 +1963,52 @@ test('shared Recovery operation locks use stable Linux process start identity', 
 
 test('live legacy Linux Recovery locks remain owned across wall-clock correction', () => {
   if (process.platform !== 'linux') return;
-  expect(recoveryOperationLockOwnerAlive({
-    schemaVersion: 1,
-    pid: process.pid,
-    instanceId: 'legacy-clock-adjusted',
-    processStartTime: 'Wed Nov 18 10:49:49 2026',
-    acquiredAt: new Date().toISOString(),
-    action: 'release_session_cutover',
-    requestId: 'test-legacy-clock-shift',
-  })).toBe(true);
+  expect(
+    recoveryOperationLockOwnerAlive({
+      schemaVersion: 1,
+      pid: process.pid,
+      instanceId: 'legacy-clock-adjusted',
+      processStartTime: 'Wed Nov 18 10:49:49 2026',
+      acquiredAt: new Date().toISOString(),
+      action: 'release_session_cutover',
+      requestId: 'test-legacy-clock-shift',
+    }),
+  ).toBe(true);
 });
 
 test('Linux Recovery operation locks reject a reused PID with a different monotonic identity', () => {
   if (process.platform !== 'linux') return;
-  expect(recoveryOperationLockOwnerAlive({
-    schemaVersion: 1,
-    pid: process.pid,
-    instanceId: 'reused-pid',
-    processStartTime: `${LINUX_PROCESS_START_TIME_PREFIX}00000000-0000-0000-0000-000000000000:1`,
-    acquiredAt: new Date().toISOString(),
-    action: 'release_session_cutover',
-    requestId: 'test-reused-pid',
-  })).toBe(false);
+  expect(
+    recoveryOperationLockOwnerAlive({
+      schemaVersion: 1,
+      pid: process.pid,
+      instanceId: 'reused-pid',
+      processStartTime: `${LINUX_PROCESS_START_TIME_PREFIX}00000000-0000-0000-0000-000000000000:1`,
+      acquiredAt: new Date().toISOString(),
+      action: 'release_session_cutover',
+      requestId: 'test-reused-pid',
+    }),
+  ).toBe(false);
 });
 
 test('shared Recovery operation lock removes a malformed file when record persistence fails', () => {
   const home = controllerHome();
   const path = recoveryOperationLockPath(home);
-  expect(() => acquireRecoveryOperationLock({
-    controllerHome: home,
-    action: 'certify_stable_baseline',
-    requestId: 'test-write-failure',
-  }, {
-    writeRecord: (fd, content) => {
-      writeFileSync(fd, content.slice(0, 1));
-      throw new Error('synthetic lock write failure');
-    },
-  })).toThrow('synthetic lock write failure');
+  expect(() =>
+    acquireRecoveryOperationLock(
+      {
+        controllerHome: home,
+        action: 'certify_stable_baseline',
+        requestId: 'test-write-failure',
+      },
+      {
+        writeRecord: (fd, content) => {
+          writeFileSync(fd, content.slice(0, 1));
+          throw new Error('synthetic lock write failure');
+        },
+      },
+    ),
+  ).toThrow('synthetic lock write failure');
   expect(existsSync(path)).toBe(false);
 
   const retry = acquireRecoveryOperationLock({
@@ -1625,7 +2058,10 @@ test('standalone Recovery restarts the configured primary public tunnel when the
   const home = controllerHome();
   const connectorPlistPath = join(home, 'connector.plist');
   const tunnelPlistPath = join(home, 'primary-tunnel.plist');
-  writeFileSync(connectorPlistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
+  writeFileSync(
+    connectorPlistPath,
+    '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>',
+  );
   writeFileSync(tunnelPlistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
   const config = createRecoveryConfig(home, {
     publicMcpUrl: 'https://mcp.example.test/mcp',
@@ -1659,7 +2095,9 @@ test('standalone Recovery restarts the configured primary public tunnel when the
         : { ok: false, detail: 'HTTP 530', verify: { ...healthyVerify(), ok: false } };
     },
     now: () => clock,
-    sleep: async (ms) => { clock += ms; },
+    sleep: async (ms) => {
+      clock += ms;
+    },
     runCommand: async (name, args) => {
       commands.push([name, ...args]);
       return { ok: true, status: 0, stdout: '', stderr: '' };
@@ -1679,26 +2117,41 @@ test('standalone Recovery does not treat loopback-only health as OpenAI control-
   const endpoint = 'http://127.0.0.1:8767/mcp';
   mkdirSync(profileDir, { recursive: true });
   writeFileSync(healthUrlFile, 'http://127.0.0.1:45613\n');
-  writeFileSync(join(profileDir, 'forge.yaml'), JSON.stringify({
-    control_plane: { tunnel_id: tunnelId },
-    health: { url_file: healthUrlFile },
-    mcp: { server_urls: [{ url: endpoint }] },
-  }));
+  writeFileSync(
+    join(profileDir, 'forge.yaml'),
+    JSON.stringify({
+      control_plane: { tunnel_id: tunnelId },
+      health: { url_file: healthUrlFile },
+      mcp: { server_urls: [{ url: endpoint }] },
+    }),
+  );
   const requests: string[] = [];
-  const observed = await observeOpenAiTunnelLocalHealthFallback({
-    platform: 'openai-secure-tunnel',
-    alias: 'forge',
-    tunnelId,
-    mcpServerUrl: endpoint,
-    profile: 'forge',
-    profileDir,
-  }, {
-    request: async (url) => {
-      requests.push(url);
-      return { ok: true, status: 200 };
+  const observed = await observeOpenAiTunnelLocalHealthFallback(
+    {
+      platform: 'openai-secure-tunnel',
+      alias: 'forge',
+      tunnelId,
+      mcpServerUrl: endpoint,
+      profile: 'forge',
+      profileDir,
     },
+    {
+      request: async (url) => {
+        requests.push(url);
+        return { ok: true, status: 200 };
+      },
+    },
+  );
+  expect(observed).toMatchObject({
+    ok: false,
+    running: true,
+    healthy: true,
+    ready: true,
+    tunnelMatches: true,
+    endpointMatches: true,
+    controlPlaneState: 'unknown',
+    observedTunnelId: tunnelId,
   });
-  expect(observed).toMatchObject({ ok: false, running: true, healthy: true, ready: true, tunnelMatches: true, endpointMatches: true, controlPlaneState: 'unknown', observedTunnelId: tunnelId });
   expect(observed?.detail).toContain('control plane is unverified');
   expect(requests).toEqual(['http://127.0.0.1:45613/healthz', 'http://127.0.0.1:45613/readyz']);
 });
@@ -1708,7 +2161,10 @@ test('Recovery-owned commands keep an account HOME without inheriting Runtime au
   // tunnel-client resolves its own alias registry from HOME. Losing it makes a
   // healthy dedicated tunnel read as stopped and hides the tunnel Recovery just
   // reconnected.
-  const serviceLike = recoveryCommandEnvironment({ PATH: '/usr/bin:/bin', FORGE_RUNTIME_ID: 'x', FORGE_CONTROLLER_HOME: '/tmp/controller' }, '/Users/example');
+  const serviceLike = recoveryCommandEnvironment(
+    { PATH: '/usr/bin:/bin', FORGE_RUNTIME_ID: 'x', FORGE_CONTROLLER_HOME: '/tmp/controller' },
+    '/Users/example',
+  );
   expect(serviceLike.HOME).toBe('/Users/example');
   expect(serviceLike.PATH).toContain('/Users/example/.local/bin');
   expect(serviceLike.FORGE_RUNTIME_ID).toBeUndefined();
@@ -1719,10 +2175,21 @@ test('Recovery-owned commands keep an account HOME without inheriting Runtime au
 });
 
 test('Recovery tunnel commands use the current macOS proxy rather than an inherited fixed client port', () => {
-  const inherited = { HTTP_PROXY: 'http://127.0.0.1:7890', HTTPS_PROXY: 'http://127.0.0.1:7890', ALL_PROXY: 'socks5://127.0.0.1:7890', NO_PROXY: 'internal.local' };
-  const flclash = macSystemProxyEnvironment('HTTPEnable : 1\nHTTPProxy : 127.0.0.1\nHTTPPort : 7890\nHTTPSEnable : 1\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 7890\n', inherited);
+  const inherited = {
+    HTTP_PROXY: 'http://127.0.0.1:7890',
+    HTTPS_PROXY: 'http://127.0.0.1:7890',
+    ALL_PROXY: 'socks5://127.0.0.1:7890',
+    NO_PROXY: 'internal.local',
+  };
+  const flclash = macSystemProxyEnvironment(
+    'HTTPEnable : 1\nHTTPProxy : 127.0.0.1\nHTTPPort : 7890\nHTTPSEnable : 1\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 7890\n',
+    inherited,
+  );
   expect(flclash.HTTPS_PROXY).toBe('http://127.0.0.1:7890');
-  const changed = macSystemProxyEnvironment('HTTPEnable : 1\nHTTPProxy : 127.0.0.1\nHTTPPort : 6080\nHTTPSEnable : 1\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 6080\n', inherited);
+  const changed = macSystemProxyEnvironment(
+    'HTTPEnable : 1\nHTTPProxy : 127.0.0.1\nHTTPPort : 6080\nHTTPSEnable : 1\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 6080\n',
+    inherited,
+  );
   expect(changed.HTTP_PROXY).toBe('http://127.0.0.1:6080');
   expect(changed.HTTPS_PROXY).toBe('http://127.0.0.1:6080');
   expect(changed.ALL_PROXY).toBeUndefined();
@@ -1738,8 +2205,12 @@ test('Recovery macOS proxy resolution handles system SOCKS and rejects unsupport
   const socks = macSystemProxyEnvironment('SOCKSEnable : 1\nSOCKSProxy : localhost\nSOCKSPort : 9090\n', {});
   expect(socks.HTTPS_PROXY).toBe('socks5://localhost:9090');
   expect(socks.HTTP_PROXY).toBe('socks5://localhost:9090');
-  expect(() => macSystemProxyEnvironment('ProxyAutoConfigEnable : 1\nProxyAutoConfigURLString : https://example.org/a.pac\n', {})).toThrow('MACOS_SYSTEM_PROXY_PAC_UNSUPPORTED');
-  expect(() => macSystemProxyEnvironment('HTTPSEnable : 1\nHTTPSProxy : localhost\nHTTPSPort : bad\n', {})).toThrow('MACOS_SYSTEM_PROXY_INVALID');
+  expect(() =>
+    macSystemProxyEnvironment('ProxyAutoConfigEnable : 1\nProxyAutoConfigURLString : https://example.org/a.pac\n', {}),
+  ).toThrow('MACOS_SYSTEM_PROXY_PAC_UNSUPPORTED');
+  expect(() => macSystemProxyEnvironment('HTTPSEnable : 1\nHTTPSProxy : localhost\nHTTPSPort : bad\n', {})).toThrow(
+    'MACOS_SYSTEM_PROXY_INVALID',
+  );
 });
 
 test('automatic release reconciliation backs off a non-converging step instead of forking it every interval', () => {
@@ -1761,10 +2232,18 @@ test('automatic release reconciliation backs off a non-converging step instead o
 
   // Progress onto a different session/phase/revision restarts the schedule.
   const progressed = nextReleaseReconcileBackoff(prior, true, 'cutover:release-1:known_good:12');
-  expect(progressed).toMatchObject({ fingerprint: 'cutover:release-1:known_good:12', consecutiveFailures: 1, delayMs: 15_000 });
+  expect(progressed).toMatchObject({
+    fingerprint: 'cutover:release-1:known_good:12',
+    consecutiveFailures: 1,
+    delayMs: 15_000,
+  });
 
   // A successful step restores the base cadence and clears the failure identity.
-  expect(nextReleaseReconcileBackoff(progressed, false, undefined)).toEqual({ fingerprint: undefined, consecutiveFailures: 0, delayMs: 15_000 });
+  expect(nextReleaseReconcileBackoff(progressed, false, undefined)).toEqual({
+    fingerprint: undefined,
+    consecutiveFailures: 0,
+    delayMs: 15_000,
+  });
 });
 
 test('new Mac-first soaking candidate limits 15-minute provider backoff to a 15-second safety check', () => {
@@ -1785,17 +2264,20 @@ test('standalone Recovery classifies an externally managed OpenAI tunnel runtime
   // process registry still reports it as not running. That must not be read as a
   // failed transport, or whole-Runtime verification and Recovery soak can never
   // converge for an externally managed tunnel.
-  const observed = parseOpenAiSecureTunnelRuntimeStatus(JSON.stringify({
-    process_running: false,
-    healthy: true,
-    ready: true,
-    tunnel_id: tunnelId,
-    profile_path: profilePath,
-    runtime_state: 'healthy',
-    remote_lookup_attempted: true,
-    remote_error: '',
-    remote: { id: tunnelId },
-  }), { alias: 'forge-current', tunnelId, mcpServerUrl: endpoint });
+  const observed = parseOpenAiSecureTunnelRuntimeStatus(
+    JSON.stringify({
+      process_running: false,
+      healthy: true,
+      ready: true,
+      tunnel_id: tunnelId,
+      profile_path: profilePath,
+      runtime_state: 'healthy',
+      remote_lookup_attempted: true,
+      remote_error: '',
+      remote: { id: tunnelId },
+    }),
+    { alias: 'forge-current', tunnelId, mcpServerUrl: endpoint },
+  );
 
   expect(observed.ok).toBe(true);
   expect(observed.running).toBe(false);
@@ -1810,28 +2292,31 @@ test('standalone Recovery preserves a locally healthy tunnel as degraded when Op
   const endpoint = 'http://127.0.0.1:8767/mcp';
   writeFileSync(profilePath, `target: ${endpoint}\n`);
   const clientInstanceId = 'fd253ea7aa11eb6200222e1744b34e33';
-  const observed = parseOpenAiSecureTunnelRuntimeStatus(JSON.stringify({
-    process_running: true,
-    healthy: true,
-    ready: true,
-    tunnel_id: tunnelId,
-    profile_path: profilePath,
-    runtime_state: 'healthy',
-    remote_lookup_attempted: true,
-    remote_error: 'dial tcp: lookup api.openai.com: i/o timeout',
-    local: {
-      log: {
-        tail: JSON.stringify({
-          time: '2026-09-27T15:51:53+08:00',
-          level: 'WARN',
-          component: 'controlplane',
-          client_instance_id: clientInstanceId,
-          msg: 'poll timed out; backing off',
-          error: 'dial tcp: lookup api.openai.com: i/o timeout',
-        }),
+  const observed = parseOpenAiSecureTunnelRuntimeStatus(
+    JSON.stringify({
+      process_running: true,
+      healthy: true,
+      ready: true,
+      tunnel_id: tunnelId,
+      profile_path: profilePath,
+      runtime_state: 'healthy',
+      remote_lookup_attempted: true,
+      remote_error: 'dial tcp: lookup api.openai.com: i/o timeout',
+      local: {
+        log: {
+          tail: JSON.stringify({
+            time: '2026-09-27T15:51:53+08:00',
+            level: 'WARN',
+            component: 'controlplane',
+            client_instance_id: clientInstanceId,
+            msg: 'poll timed out; backing off',
+            error: 'dial tcp: lookup api.openai.com: i/o timeout',
+          }),
+        },
       },
-    },
-  }), { alias: 'forge-current', tunnelId, mcpServerUrl: endpoint });
+    }),
+    { alias: 'forge-current', tunnelId, mcpServerUrl: endpoint },
+  );
 
   expect(observed).toMatchObject({
     ok: false,
@@ -1859,18 +2344,33 @@ test('stable Runtime and Watchdog treat tunnel control-plane-only degradation as
   };
   expect(isPrimaryTunnelControlPlaneOnlyDegradation(controlPlaneOnly, true)).toBe(true);
   expect(isPrimaryTunnelControlPlaneOnlyDegradation(controlPlaneOnly, false)).toBe(false);
-  expect(isPrimaryTunnelControlPlaneOnlyDegradation({
-    ...controlPlaneOnly,
-    value: { ...controlPlaneOnly.value, tunnelMatches: false },
-  }, true)).toBe(false);
-  expect(isPrimaryTunnelControlPlaneOnlyDegradation({
-    ...controlPlaneOnly,
-    value: { ...controlPlaneOnly.value, healthy: false },
-  }, true)).toBe(false);
-  expect(isPrimaryTunnelControlPlaneOnlyDegradation({
-    ...controlPlaneOnly,
-    value: { ...controlPlaneOnly.value, controlPlaneState: 'unknown' },
-  }, true)).toBe(true);
+  expect(
+    isPrimaryTunnelControlPlaneOnlyDegradation(
+      {
+        ...controlPlaneOnly,
+        value: { ...controlPlaneOnly.value, tunnelMatches: false },
+      },
+      true,
+    ),
+  ).toBe(false);
+  expect(
+    isPrimaryTunnelControlPlaneOnlyDegradation(
+      {
+        ...controlPlaneOnly,
+        value: { ...controlPlaneOnly.value, healthy: false },
+      },
+      true,
+    ),
+  ).toBe(false);
+  expect(
+    isPrimaryTunnelControlPlaneOnlyDegradation(
+      {
+        ...controlPlaneOnly,
+        value: { ...controlPlaneOnly.value, controlPlaneState: 'unknown' },
+      },
+      true,
+    ),
+  ).toBe(true);
 });
 
 test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel without restarting a healthy Connector', async () => {
@@ -1911,14 +2411,22 @@ test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel witho
         : { ok: false, detail: 'public tunnel unavailable', verify: { ...healthyVerify(), ok: false } };
     },
     now: () => clock,
-    sleep: async (ms) => { clock += ms; },
+    sleep: async (ms) => {
+      clock += ms;
+    },
     runCommand: async (name, args) => {
       commands.push([name, ...args]);
-      if (name === 'systemctl' && args.includes('MainPID')) return { ok: true, status: 0, stdout: '4242\n', stderr: '' };
+      if (name === 'systemctl' && args.includes('MainPID'))
+        return { ok: true, status: 0, stdout: '4242\n', stderr: '' };
       if (name === 'lsof') return { ok: true, status: 0, stdout: '4242\n', stderr: '' };
       if (name === 'tunnel-client' && args[0] === 'runtimes' && args[1] === 'status') {
         return tunnelConnected
-          ? { ok: true, status: 0, stdout: JSON.stringify({ process_running: true, healthy: true, ready: true, tunnel_id: tunnelId }), stderr: '' }
+          ? {
+              ok: true,
+              status: 0,
+              stdout: JSON.stringify({ process_running: true, healthy: true, ready: true, tunnel_id: tunnelId }),
+              stderr: '',
+            }
           : { ok: false, status: 1, stdout: '', stderr: 'stopped' };
       }
       if (name === 'tunnel-client' && args[0] === 'runtimes' && args[1] === 'connect') {
@@ -1929,8 +2437,18 @@ test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel witho
     },
   });
   expect(result).toMatchObject({ ok: true, attempted: true });
-  expect(commands).toContainEqual(['tunnel-client', 'runtimes', 'status', 'forge', '--json', '--admin-profile', 'forge-admin']);
-  expect(commands.some((entry) => entry[0] === 'tunnel-client' && entry[1] === 'runtimes' && entry[2] === 'connect')).toBe(true);
+  expect(commands).toContainEqual([
+    'tunnel-client',
+    'runtimes',
+    'status',
+    'forge',
+    '--json',
+    '--admin-profile',
+    'forge-admin',
+  ]);
+  expect(
+    commands.some((entry) => entry[0] === 'tunnel-client' && entry[1] === 'runtimes' && entry[2] === 'connect'),
+  ).toBe(true);
   expect(commands.some((entry) => entry[0] === 'systemctl' && entry.includes('restart'))).toBe(false);
   expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
   expect(reconnectCalls).toBe(2);
@@ -1972,7 +2490,9 @@ test('standalone Recovery repairs its dedicated OpenAI Secure MCP Tunnel without
     verify: async () => verification(),
     verifyLocal: async () => verification(),
     now: () => clock,
-    sleep: async (ms) => { clock += ms; },
+    sleep: async (ms) => {
+      clock += ms;
+    },
     runCommand: async (name, args, _timeoutMs, options) => {
       commands.push([name, ...args]);
       workingDirectories.push(options?.cwd);
@@ -1985,20 +2505,46 @@ test('standalone Recovery repairs its dedicated OpenAI Secure MCP Tunnel without
         return {
           ok: true,
           status: 0,
-          stdout: JSON.stringify({ process_running: true, healthy: true, ready: true, tunnel_id: tunnelId, profile_path: profilePath, remote_lookup_attempted: true, remote_error: '', remote: { id: tunnelId } }),
+          stdout: JSON.stringify({
+            process_running: true,
+            healthy: true,
+            ready: true,
+            tunnel_id: tunnelId,
+            profile_path: profilePath,
+            remote_lookup_attempted: true,
+            remote_error: '',
+            remote: { id: tunnelId },
+          }),
           stderr: '',
         };
       }
       throw new Error(`unexpected command ${name} ${args.join(' ')}`);
     },
   });
-  expect(result).toMatchObject({ ok: true, attempted: true, serviceLabel: 'forge-recovery', serviceTarget: 'tunnel-client:forge-recovery' });
+  expect(result).toMatchObject({
+    ok: true,
+    attempted: true,
+    serviceLabel: 'forge-recovery',
+    serviceTarget: 'tunnel-client:forge-recovery',
+  });
   const connectIndex = commands.findIndex((entry) => entry[1] === 'runtimes' && entry[2] === 'connect');
   expect(connectIndex).toBeGreaterThanOrEqual(0);
   expect(commands[connectIndex]).toEqual([
-    'tunnel-client', 'runtimes', 'connect', '--alias', 'forge-recovery', '--tunnel-id', tunnelId,
-    '--runtime-api-key', 'file:/tmp/forge-recovery-runtime-key', '--mcp-server-url', endpoint,
-    '--profile', 'forge-recovery', '--profile-dir', home,
+    'tunnel-client',
+    'runtimes',
+    'connect',
+    '--alias',
+    'forge-recovery',
+    '--tunnel-id',
+    tunnelId,
+    '--runtime-api-key',
+    'file:/tmp/forge-recovery-runtime-key',
+    '--mcp-server-url',
+    endpoint,
+    '--profile',
+    'forge-recovery',
+    '--profile-dir',
+    home,
   ]);
   // tunnel-client creates its state directory relative to the working directory.
   // A persistent Forge service has a read-only working directory, so the
@@ -2062,7 +2608,9 @@ test('standalone Recovery does not reconnect a locally healthy OpenAI tunnel for
   });
 
   expect(result).toMatchObject({ ok: false, attempted: false, noOp: true });
-  expect(commands.some((entry) => entry[0] === 'tunnel-client' && entry[1] === 'runtimes' && entry[2] === 'connect')).toBe(false);
+  expect(
+    commands.some((entry) => entry[0] === 'tunnel-client' && entry[1] === 'runtimes' && entry[2] === 'connect'),
+  ).toBe(false);
 });
 
 test('standalone Recovery repairs its public tunnel from a bounded surface instead of strict whole-Runtime verification', async () => {
@@ -2076,7 +2624,11 @@ test('standalone Recovery repairs its public tunnel from a bounded surface inste
   const tunnelId = 'tunnel_0123456789abcdef0123456789abcdef';
   writeFileSync(profilePath, `target: ${endpoint}\n`);
   const config = createRecoveryConfig(home, {
-    gateway: { host: '127.0.0.1', port: runtime.port, bearerTokenFile: join(home, 'recovery', 'config', 'gateway-token.json') },
+    gateway: {
+      host: '127.0.0.1',
+      port: runtime.port,
+      bearerTokenFile: join(home, 'recovery', 'config', 'gateway-token.json'),
+    },
     recoveryTunnelService: {
       platform: 'openai-secure-tunnel',
       alias: 'forge-recovery-surface',
@@ -2103,7 +2655,8 @@ test('standalone Recovery repairs its public tunnel from a bounded surface inste
     sleep: async () => {},
     runCommand: async (name, args) => {
       commands.push([name, ...args]);
-      if (args[0] === 'runtimes' && args[1] === 'status') return { ok: false, status: 1, stdout: '', stderr: 'runtime alias not connected' };
+      if (args[0] === 'runtimes' && args[1] === 'status')
+        return { ok: false, status: 1, stdout: '', stderr: 'runtime alias not connected' };
       return { ok: true, status: 0, stdout: '', stderr: '' };
     },
   });
@@ -2141,12 +2694,17 @@ test('standalone Recovery repairs its dedicated Linux systemd-user public tunnel
     verify: async () => verification(),
     verifyLocal: async () => healthyVerify(),
     now: () => clock,
-    sleep: async (ms) => { clock += ms; },
+    sleep: async (ms) => {
+      clock += ms;
+    },
     runCommand: async (name, args) => {
       commands.push([name, ...args]);
       if (name !== 'systemctl') throw new Error(`unexpected command ${name}`);
       if (args[1] === 'show') return { ok: true, status: 0, stdout: 'loaded\n', stderr: '' };
-      if (args[1] === 'restart' && args[2] === unitName) { restarted = true; return { ok: true, status: 0, stdout: '', stderr: '' }; }
+      if (args[1] === 'restart' && args[2] === unitName) {
+        restarted = true;
+        return { ok: true, status: 0, stdout: '', stderr: '' };
+      }
       throw new Error(`unexpected systemctl args ${args.join(' ')}`);
     },
   });
@@ -2160,26 +2718,51 @@ test('standalone Recovery rejects invalid or unavailable systemd-user public tun
   const home = controllerHome();
   const degraded: VerifyResult = {
     ...healthyVerify(),
-    probes: { ...healthyVerify().probes, recovery_gateway: { ok: true, detail: 'HTTP 200' }, recovery_external_http: { ok: false, detail: 'HTTP 530' } },
+    probes: {
+      ...healthyVerify().probes,
+      recovery_gateway: { ok: true, detail: 'HTTP 200' },
+      recovery_external_http: { ok: false, detail: 'HTTP 530' },
+    },
   };
-  const invalid = await repairPublicTunnel(createRecoveryConfig(home, {
-    recoveryPublicUrl: 'https://recovery-wsl.example.test/recovery/mcp',
-    recoveryTunnelService: { platform: 'systemd-user', unitName: '../bad.service', cooldownMs: 0 },
-  }), { platform: 'linux', verify: async () => degraded, verifyLocal: async () => healthyVerify() });
-  expect(invalid).toMatchObject({ ok: false, attempted: false, noOp: true, detail: 'public tunnel systemd-user configuration is invalid' });
+  const invalid = await repairPublicTunnel(
+    createRecoveryConfig(home, {
+      recoveryPublicUrl: 'https://recovery-wsl.example.test/recovery/mcp',
+      recoveryTunnelService: { platform: 'systemd-user', unitName: '../bad.service', cooldownMs: 0 },
+    }),
+    { platform: 'linux', verify: async () => degraded, verifyLocal: async () => healthyVerify() },
+  );
+  expect(invalid).toMatchObject({
+    ok: false,
+    attempted: false,
+    noOp: true,
+    detail: 'public tunnel systemd-user configuration is invalid',
+  });
 
   const commands: string[][] = [];
-  const unavailable = await repairPublicTunnel(createRecoveryConfig(home, {
-    recoveryPublicUrl: 'https://recovery-wsl.example.test/recovery/mcp',
-    recoveryTunnelService: { platform: 'systemd-user', unitName: 'com.moretea.missing.service', cooldownMs: 0 },
-  }), {
-    platform: 'linux',
-    verify: async () => degraded,
-    verifyLocal: async () => healthyVerify(),
-    runCommand: async (name, args) => { commands.push([name, ...args]); return { ok: true, status: 0, stdout: 'not-found\n', stderr: '' }; },
+  const unavailable = await repairPublicTunnel(
+    createRecoveryConfig(home, {
+      recoveryPublicUrl: 'https://recovery-wsl.example.test/recovery/mcp',
+      recoveryTunnelService: { platform: 'systemd-user', unitName: 'com.moretea.missing.service', cooldownMs: 0 },
+    }),
+    {
+      platform: 'linux',
+      verify: async () => degraded,
+      verifyLocal: async () => healthyVerify(),
+      runCommand: async (name, args) => {
+        commands.push([name, ...args]);
+        return { ok: true, status: 0, stdout: 'not-found\n', stderr: '' };
+      },
+    },
+  );
+  expect(unavailable).toMatchObject({
+    ok: false,
+    attempted: false,
+    noOp: true,
+    detail: 'public tunnel systemd-user unit is not loaded: com.moretea.missing.service',
   });
-  expect(unavailable).toMatchObject({ ok: false, attempted: false, noOp: true, detail: 'public tunnel systemd-user unit is not loaded: com.moretea.missing.service' });
-  expect(commands).toEqual([['systemctl', '--user', 'show', '--property=LoadState', '--value', 'com.moretea.missing.service']]);
+  expect(commands).toEqual([
+    ['systemctl', '--user', 'show', '--property=LoadState', '--value', 'com.moretea.missing.service'],
+  ]);
 });
 
 test('standalone Recovery refuses to repoint an OpenAI tunnel alias owned by another tunnel', async () => {
@@ -2234,7 +2817,10 @@ test('standalone Recovery refuses to repoint an OpenAI tunnel alias owned by ano
 test('standalone Recovery accepts a primary Connector child process that owns the local MCP listener', async () => {
   const home = controllerHome();
   const connectorPlistPath = join(home, 'connector.plist');
-  writeFileSync(connectorPlistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
+  writeFileSync(
+    connectorPlistPath,
+    '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>',
+  );
   const config = createRecoveryConfig(home, {
     publicMcpUrl: 'https://mcp.example.test/mcp',
     primaryConnectorService: {
@@ -2265,7 +2851,12 @@ test('standalone Recovery accepts a primary Connector child process that owns th
       return { ok: false, status: 1, stdout: '', stderr: 'unexpected command' };
     },
   });
-  expect(result).toMatchObject({ ok: true, attempted: false, noOp: true, serviceTarget: 'gui/501/com.moretea.forge.mcp-gateway' });
+  expect(result).toMatchObject({
+    ok: true,
+    attempted: false,
+    noOp: true,
+    serviceTarget: 'gui/501/com.moretea.forge.mcp-gateway',
+  });
   expect(commands).toContainEqual(['ps', '-o', 'ppid=', '-p', '4343']);
   expect(commands).not.toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
 });
@@ -2273,7 +2864,10 @@ test('standalone Recovery accepts a primary Connector child process that owns th
 test('standalone Recovery refuses a no-op when another process owns the configured primary Connector port', async () => {
   const home = controllerHome();
   const connectorPlistPath = join(home, 'connector.plist');
-  writeFileSync(connectorPlistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
+  writeFileSync(
+    connectorPlistPath,
+    '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>',
+  );
   const config = createRecoveryConfig(home, {
     publicMcpUrl: 'https://mcp.example.test/mcp',
     primaryConnectorService: {
@@ -2323,14 +2917,14 @@ test('Recovery activate_runtime_release resolves release_path as an immutable re
     ['activate-manifest-compat', candidate.path],
   ] as const) {
     const config = createRecoveryConfig(home);
-    const result = await dispatchRecoveryTool(config, 'activate_runtime_release', {
+    const result = (await dispatchRecoveryTool(config, 'activate_runtime_release', {
       request_id: requestId,
       ...recoveryMutationIdentityArgs(config),
       release_path: releasePath,
       expected_source_revision: 'a'.repeat(40),
       expected_active_release_id: 'release-baseline',
       expected_authority_revision: 1,
-    }) as { attempted?: boolean; noOp?: boolean; detail?: string };
+    })) as { attempted?: boolean; noOp?: boolean; detail?: string };
 
     expect(result).toMatchObject({ attempted: false, noOp: true });
     expect(result.detail).not.toContain('EISDIR');
@@ -2350,34 +2944,44 @@ test('normal staging materializes one exact accepted source into Stable Home wit
   });
   let stagedFrom = '';
   let stagedHome = '';
-  const result = stageConfiguredRuntimeRelease(config, sourceRevision, {
-    stage: (input) => {
-      stagedFrom = resolve(input.sourceRoot);
-      stagedHome = resolve(input.controllerHome);
-      expect(stagedHome).toBe(resolve(home));
-      expect(stagedFrom).not.toBe(resolve(sourceRoot));
-      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: input.sourceRoot, encoding: 'utf8' }).trim()).toBe(sourceRevision);
-      expect(input.sourceRepositoryId).toBe('repo_direct_stage');
-      const staged = verifiedManifest(input.controllerHome, 'release-direct-stage-candidate');
-      const rawManifest = JSON.parse(readFileSync(staged.path, 'utf8')) as Record<string, unknown>;
-      const { controllerHome: _embeddedControllerHome, ...manifest } = rawManifest;
-      const next = {
-        ...manifest,
-        deploymentScope: 'portable',
-        sourceCommit: sourceRevision,
-        sourceRepositoryId: 'repo_direct_stage',
-      };
-      writeFileSync(staged.path, `${JSON.stringify(next, null, 2)}
-`);
-      return {
-        ...next,
-        controllerHome: input.controllerHome,
-        releasePath: dirname(staged.path),
-        manifestPath: staged.path,
-        manifestSha256: createHash('sha256').update(readFileSync(staged.path)).digest('hex'),
-      } as any;
+  const result = stageConfiguredRuntimeRelease(
+    config,
+    sourceRevision,
+    {
+      stage: (input) => {
+        stagedFrom = resolve(input.sourceRoot);
+        stagedHome = resolve(input.controllerHome);
+        expect(stagedHome).toBe(resolve(home));
+        expect(stagedFrom).not.toBe(resolve(sourceRoot));
+        expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: input.sourceRoot, encoding: 'utf8' }).trim()).toBe(
+          sourceRevision,
+        );
+        expect(input.sourceRepositoryId).toBe('repo_direct_stage');
+        const staged = verifiedManifest(input.controllerHome, 'release-direct-stage-candidate');
+        const rawManifest = JSON.parse(readFileSync(staged.path, 'utf8')) as Record<string, unknown>;
+        const { controllerHome: _embeddedControllerHome, ...manifest } = rawManifest;
+        const next = {
+          ...manifest,
+          deploymentScope: 'portable',
+          sourceCommit: sourceRevision,
+          sourceRepositoryId: 'repo_direct_stage',
+        };
+        writeFileSync(
+          staged.path,
+          `${JSON.stringify(next, null, 2)}
+`,
+        );
+        return {
+          ...next,
+          controllerHome: input.controllerHome,
+          releasePath: dirname(staged.path),
+          manifestPath: staged.path,
+          manifestSha256: createHash('sha256').update(readFileSync(staged.path)).digest('hex'),
+        } as any;
+      },
     },
-  }, 'direct-stage-test');
+    'direct-stage-test',
+  );
   expect(result).toMatchObject({
     ok: true,
     attempted: true,
@@ -2400,24 +3004,46 @@ test('portable direct activation requires exact source fence before any Runtime 
   const authority = ensureActiveRuntimeRelease(home, baseline.path);
   const rawManifestBody = JSON.parse(readFileSync(candidate.path, 'utf8')) as Record<string, unknown>;
   const { controllerHome: _embeddedControllerHome, ...manifestBody } = rawManifestBody;
-  writeFileSync(candidate.path, `${JSON.stringify({
-    ...manifestBody,
-    deploymentScope: 'portable',
-    sourceCommit: sourceRevision,
-    sourceRepositoryId: 'repo_direct_fence',
-  }, null, 2)}
-`);
+  writeFileSync(
+    candidate.path,
+    `${JSON.stringify(
+      {
+        ...manifestBody,
+        deploymentScope: 'portable',
+        sourceCommit: sourceRevision,
+        sourceRepositoryId: 'repo_direct_fence',
+      },
+      null,
+      2,
+    )}
+`,
+  );
   const config = createRecoveryConfig(home, { primaryRuntimeSourceRepositoryId: 'repo_direct_fence' });
-  const missing = await activateRuntimeRelease(config, candidate.path, {}, {
-    expectedActiveReleaseId: authority.active.releaseId,
-    expectedAuthorityRevision: authority.revision,
+  const missing = await activateRuntimeRelease(
+    config,
+    candidate.path,
+    {},
+    {
+      expectedActiveReleaseId: authority.active.releaseId,
+      expectedAuthorityRevision: authority.revision,
+    },
+  );
+  expect(missing).toMatchObject({
+    ok: false,
+    attempted: false,
+    noOp: true,
+    detail: 'RUNTIME_RELEASE_EXPECTED_SOURCE_REVISION_REQUIRED',
   });
-  expect(missing).toMatchObject({ ok: false, attempted: false, noOp: true, detail: 'RUNTIME_RELEASE_EXPECTED_SOURCE_REVISION_REQUIRED' });
-  const mismatch = await activateRuntimeRelease(config, candidate.path, {}, {
-    expectedSourceRevision: 'b'.repeat(40),
-    expectedActiveReleaseId: authority.active.releaseId,
-    expectedAuthorityRevision: authority.revision,
-  });
+  const mismatch = await activateRuntimeRelease(
+    config,
+    candidate.path,
+    {},
+    {
+      expectedSourceRevision: 'b'.repeat(40),
+      expectedActiveReleaseId: authority.active.releaseId,
+      expectedAuthorityRevision: authority.revision,
+    },
+  );
   expect(mismatch).toMatchObject({ ok: false, attempted: false, noOp: true });
   expect(mismatch.detail).toContain('RUNTIME_RELEASE_SOURCE_REVISION_MISMATCH');
   const foreignRepository = await activateRuntimeRelease(
@@ -2444,8 +3070,22 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
   const sourceRevision = committedRecoverySource(sourceRoot);
   writeFileSync(join(sourceRoot, 'WORK-ONLY.md'), 'not on fetched main\n');
   execFileSync('git', ['add', 'WORK-ONLY.md'], { cwd: sourceRoot });
-  execFileSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', 'unreleased development checkout'], { cwd: sourceRoot });
-  expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sourceRoot, encoding: 'utf8' }).trim()).not.toBe(sourceRevision);
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'user.name=Forge Test',
+      '-c',
+      'user.email=forge-test@example.invalid',
+      'commit',
+      '-qm',
+      'unreleased development checkout',
+    ],
+    { cwd: sourceRoot },
+  );
+  expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sourceRoot, encoding: 'utf8' }).trim()).not.toBe(
+    sourceRevision,
+  );
   writeFileSync(join(sourceRoot, 'README.md'), 'dirty concurrent source bytes must not enter Candidate B\n');
   writeFileSync(join(sourceRoot, 'UNTRACKED-CONCURRENT.txt'), 'also excluded\n');
   const baseline = verifiedManifest(home, 'release-baseline');
@@ -2465,76 +3105,93 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
   let stagedFrom = '';
   let candidateHome = '';
   let stageCalls = 0;
-  const result = await prepareConfiguredRuntimeReleaseSession(config, {
-    materializeCandidateLane: (input) => {
-      expect(existsSync(join(home, 'recovery', 'locks', 'operation.lock'))).toBe(false);
-      const candidateOperationLock = JSON.parse(readFileSync(join(input.candidate.controllerHome, 'recovery', 'locks', 'operation.lock'), 'utf8')) as Record<string, unknown>;
-      expect(candidateOperationLock).toMatchObject({
-        pid: process.pid,
-        action: 'release_session_prepare',
-        requestId: 'recovery-gateway:stage-request-1',
-      });
-      return materializeCandidateExecutionLane(input);
+  const result = await prepareConfiguredRuntimeReleaseSession(
+    config,
+    {
+      materializeCandidateLane: (input) => {
+        expect(existsSync(join(home, 'recovery', 'locks', 'operation.lock'))).toBe(false);
+        const candidateOperationLock = JSON.parse(
+          readFileSync(join(input.candidate.controllerHome, 'recovery', 'locks', 'operation.lock'), 'utf8'),
+        ) as Record<string, unknown>;
+        expect(candidateOperationLock).toMatchObject({
+          pid: process.pid,
+          action: 'release_session_prepare',
+          requestId: 'recovery-gateway:stage-request-1',
+        });
+        return materializeCandidateExecutionLane(input);
+      },
+      stage: (input) => {
+        stageCalls += 1;
+        stagedFrom = input.sourceRoot;
+        candidateHome = input.controllerHome;
+        expect(input.sourceRepositoryId).toBe('repo_source_fixture');
+        expect(resolve(input.sourceRoot)).not.toBe(resolve(sourceRoot));
+        expect(resolve(input.dependencyRoot ?? '')).toBe(resolve(sourceRoot));
+        expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: input.sourceRoot, encoding: 'utf8' }).trim()).toBe(
+          sourceRevision,
+        );
+        expect(readFileSync(join(input.sourceRoot, 'README.md'), 'utf8')).toBe('recovery source\n');
+        expect(existsSync(join(input.sourceRoot, 'UNTRACKED-CONCURRENT.txt'))).toBe(false);
+        expect(existsSync(join(input.sourceRoot, 'WORK-ONLY.md'))).toBe(false);
+        expect(resolve(input.controllerHome)).not.toBe(resolve(home));
+        expect(existsSync(join(home, 'recovery', 'locks', 'operation.lock'))).toBe(false);
+        const candidateOperationLock = JSON.parse(
+          readFileSync(join(input.controllerHome, 'recovery', 'locks', 'operation.lock'), 'utf8'),
+        ) as Record<string, unknown>;
+        expect(candidateOperationLock).toMatchObject({
+          pid: process.pid,
+          action: 'release_session_prepare',
+          requestId: 'recovery-gateway:stage-request-1',
+        });
+        const competingStableLock = acquireRecoveryOperationLock({
+          controllerHome: home,
+          action: 'restart_primary_connector',
+          requestId: 'recovery-gateway:stage-commit-contention',
+        });
+        expect(competingStableLock.acquired).toBe(true);
+        if (!competingStableLock.acquired) throw new Error('fixture competing Stable A lock unavailable');
+        setTimeout(() => competingStableLock.handle.close(), 50);
+        const releasePath = join(input.controllerHome, 'runtime', 'releases', 'release-new');
+        mkdirSync(releasePath, { recursive: true });
+        const manifestPath = join(releasePath, 'manifest.json');
+        const runtimePath = join(releasePath, 'forge-runtime');
+        writeFileSync(runtimePath, '#!/bin/sh\n# release-new\nexit 0\n', { mode: 0o700 });
+        const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(runtimePath)).digest('hex')}`;
+        writeFileSync(
+          manifestPath,
+          `${JSON.stringify(
+            {
+              schemaVersion: 1,
+              releaseId: 'release-new',
+              artifactIdentity,
+              entrypoint: 'forge-runtime',
+              futureSidecarEntrypoint: 'future-sidecar-v2',
+              arguments: [],
+              configurationSchemaVersion: 1,
+              deploymentScope: 'portable',
+              databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+              workerProtocolVersion: 1,
+              sourceCommit: sourceRevision,
+              createdAt: '2026-08-14T00:00:00.000Z',
+            },
+            null,
+            2,
+          )}\n`,
+        );
+        writeFileSync(join(releasePath, 'future-sidecar-v2'), 'future-sidecar');
+        return {
+          controllerHome: input.controllerHome,
+          releasePath,
+          manifestPath,
+          releaseId: 'release-new',
+          artifactIdentity,
+          manifestSha256: createHash('sha256').update(readFileSync(manifestPath)).digest('hex'),
+          sourceCommit: sourceRevision,
+        };
+      },
     },
-    stage: (input) => {
-      stageCalls += 1;
-      stagedFrom = input.sourceRoot;
-      candidateHome = input.controllerHome;
-      expect(input.sourceRepositoryId).toBe('repo_source_fixture');
-      expect(resolve(input.sourceRoot)).not.toBe(resolve(sourceRoot));
-      expect(resolve(input.dependencyRoot ?? '')).toBe(resolve(sourceRoot));
-      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: input.sourceRoot, encoding: 'utf8' }).trim()).toBe(sourceRevision);
-      expect(readFileSync(join(input.sourceRoot, 'README.md'), 'utf8')).toBe('recovery source\n');
-      expect(existsSync(join(input.sourceRoot, 'UNTRACKED-CONCURRENT.txt'))).toBe(false);
-      expect(existsSync(join(input.sourceRoot, 'WORK-ONLY.md'))).toBe(false);
-      expect(resolve(input.controllerHome)).not.toBe(resolve(home));
-      expect(existsSync(join(home, 'recovery', 'locks', 'operation.lock'))).toBe(false);
-      const candidateOperationLock = JSON.parse(readFileSync(join(input.controllerHome, 'recovery', 'locks', 'operation.lock'), 'utf8')) as Record<string, unknown>;
-      expect(candidateOperationLock).toMatchObject({
-        pid: process.pid,
-        action: 'release_session_prepare',
-        requestId: 'recovery-gateway:stage-request-1',
-      });
-      const competingStableLock = acquireRecoveryOperationLock({
-        controllerHome: home,
-        action: 'restart_primary_connector',
-        requestId: 'recovery-gateway:stage-commit-contention',
-      });
-      expect(competingStableLock.acquired).toBe(true);
-      if (!competingStableLock.acquired) throw new Error('fixture competing Stable A lock unavailable');
-      setTimeout(() => competingStableLock.handle.close(), 50);
-      const releasePath = join(input.controllerHome, 'runtime', 'releases', 'release-new');
-      mkdirSync(releasePath, { recursive: true });
-      const manifestPath = join(releasePath, 'manifest.json');
-      const runtimePath = join(releasePath, 'forge-runtime');
-      writeFileSync(runtimePath, '#!/bin/sh\n# release-new\nexit 0\n', { mode: 0o700 });
-      const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(runtimePath)).digest('hex')}`;
-      writeFileSync(manifestPath, `${JSON.stringify({
-        schemaVersion: 1,
-        releaseId: 'release-new',
-        artifactIdentity,
-        entrypoint: 'forge-runtime',
-        futureSidecarEntrypoint: 'future-sidecar-v2',
-        arguments: [],
-        configurationSchemaVersion: 1,
-        deploymentScope: 'portable',
-        databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
-        workerProtocolVersion: 1,
-        sourceCommit: sourceRevision,
-        createdAt: '2026-08-14T00:00:00.000Z',
-      }, null, 2)}\n`);
-      writeFileSync(join(releasePath, 'future-sidecar-v2'), 'future-sidecar');
-      return {
-        controllerHome: input.controllerHome,
-        releasePath,
-        manifestPath,
-        releaseId: 'release-new',
-        artifactIdentity,
-        manifestSha256: createHash('sha256').update(readFileSync(manifestPath)).digest('hex'),
-        sourceCommit: sourceRevision,
-      };
-    },
-  }, 'recovery-gateway:stage-request-1');
+    'recovery-gateway:stage-request-1',
+  );
   expect(stageCalls).toBe(1);
   expect(stagedFrom).not.toBe(resolve(sourceRoot));
   expect(candidateHome).not.toBe(resolve(home));
@@ -2566,16 +3223,29 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
     sessionId: progressed.sessionId,
     expectedRevision: progressed.revision,
     phase: 'candidate_verified',
-    receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })),
+    receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({
+      id,
+      kind: 'candidate_canary' as const,
+      summary: id,
+    })),
   });
-  progressed = advanceReleaseSession({ controllerHome: home, sessionId: progressed.sessionId, expectedRevision: progressed.revision, phase: 'cutover_eligible' });
+  progressed = advanceReleaseSession({
+    controllerHome: home,
+    sessionId: progressed.sessionId,
+    expectedRevision: progressed.revision,
+    phase: 'cutover_eligible',
+  });
   let repeatedStageCalls = 0;
-  const repeated = await prepareConfiguredRuntimeReleaseSession(config, {
-    stage: () => {
-      repeatedStageCalls += 1;
-      throw new Error('already-progressed matching ReleaseSession must not rebuild');
+  const repeated = await prepareConfiguredRuntimeReleaseSession(
+    config,
+    {
+      stage: () => {
+        repeatedStageCalls += 1;
+        throw new Error('already-progressed matching ReleaseSession must not rebuild');
+      },
     },
-  }, 'recovery-gateway:stage-request-retry');
+    'recovery-gateway:stage-request-retry',
+  );
   expect(repeatedStageCalls).toBe(0);
   expect(repeated).toMatchObject({
     ok: true,
@@ -2588,7 +3258,6 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
     active: { releaseId: 'release-baseline', artifactIdentity: baseline.artifactIdentity },
   });
 });
-
 
 async function candidateBootedFixture(label: string) {
   const home = controllerHome();
@@ -2603,41 +3272,55 @@ async function candidateBootedFixture(label: string) {
     primaryRuntimeSourceRoot: sourceRoot,
     primaryRuntimeSourceRepositoryId: 'repo-' + label,
   });
-  const prepared = await prepareConfiguredRuntimeReleaseSession(config, {
-    stage: (input) => {
-      const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: input.sourceRoot, encoding: 'utf8' }).trim();
-      const releaseId = 'release-candidate-' + label;
-      const releasePath = join(input.controllerHome, 'runtime', 'releases', releaseId);
-      mkdirSync(releasePath, { recursive: true });
-      const runtimePath = join(releasePath, 'forge-runtime');
-      writeFileSync(runtimePath, '#!/bin/sh\n# ' + label + '\nexit 0\n', { mode: 0o700 });
-      const artifactIdentity = 'sha256:' + createHash('sha256').update(readFileSync(runtimePath)).digest('hex');
-      const manifestPath = join(releasePath, 'manifest.json');
-      writeFileSync(manifestPath, JSON.stringify({
-        schemaVersion: 1,
-        releaseId,
-        artifactIdentity,
-        entrypoint: 'forge-runtime',
-        arguments: [],
-        configurationSchemaVersion: 1,
-        deploymentScope: 'portable',
-        databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
-        workerProtocolVersion: 1,
-        sourceCommit,
-        createdAt: new Date().toISOString(),
-      }, null, 2) + '\n');
-      return {
-        controllerHome: input.controllerHome,
-        releasePath,
-        manifestPath,
-        releaseId,
-        artifactIdentity,
-        manifestSha256: createHash('sha256').update(readFileSync(manifestPath)).digest('hex'),
-        sourceCommit,
-        sourceRepositoryId: input.sourceRepositoryId,
-      };
+  const prepared = await prepareConfiguredRuntimeReleaseSession(
+    config,
+    {
+      stage: (input) => {
+        const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: input.sourceRoot,
+          encoding: 'utf8',
+        }).trim();
+        const releaseId = 'release-candidate-' + label;
+        const releasePath = join(input.controllerHome, 'runtime', 'releases', releaseId);
+        mkdirSync(releasePath, { recursive: true });
+        const runtimePath = join(releasePath, 'forge-runtime');
+        writeFileSync(runtimePath, '#!/bin/sh\n# ' + label + '\nexit 0\n', { mode: 0o700 });
+        const artifactIdentity = 'sha256:' + createHash('sha256').update(readFileSync(runtimePath)).digest('hex');
+        const manifestPath = join(releasePath, 'manifest.json');
+        writeFileSync(
+          manifestPath,
+          JSON.stringify(
+            {
+              schemaVersion: 1,
+              releaseId,
+              artifactIdentity,
+              entrypoint: 'forge-runtime',
+              arguments: [],
+              configurationSchemaVersion: 1,
+              deploymentScope: 'portable',
+              databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+              workerProtocolVersion: 1,
+              sourceCommit,
+              createdAt: new Date().toISOString(),
+            },
+            null,
+            2,
+          ) + '\n',
+        );
+        return {
+          controllerHome: input.controllerHome,
+          releasePath,
+          manifestPath,
+          releaseId,
+          artifactIdentity,
+          manifestSha256: createHash('sha256').update(readFileSync(manifestPath)).digest('hex'),
+          sourceCommit,
+          sourceRepositoryId: input.sourceRepositoryId,
+        };
+      },
     },
-  }, 'candidate-fixture-' + label);
+    'candidate-fixture-' + label,
+  );
   let session = prepared.releaseSession!;
   session = advanceReleaseSession({
     controllerHome: home,
@@ -2696,22 +3379,20 @@ function candidateCanaryVerify(): VerifyResult {
 test('ReleaseSession candidate restart canary runs without holding Stable A Recovery lock', async () => {
   const { home, config, session } = await candidateBootedFixture('canary-unlocked');
   let restartCalls = 0;
-  const result = await verifyBootedReleaseSessionCandidateCanaries(
-    config,
-    session.sessionId,
-    'candidate-unlocked',
-    {
-      restartCandidateRuntime: async (candidateConfig, dependencies) => {
-        restartCalls += 1;
-        expect(candidateConfig.controllerHome).toBe(session.candidate.controllerHome);
-        expect(existsSync(recoveryOperationLockPath(home))).toBe(false);
-        expect(dependencies?.forceHealthyRestart).toBe(true);
-        expect(await dependencies?.repairPrimaryConnectorBinding?.(candidateConfig)).toMatchObject({ ok: true, noOp: true });
-        return { ok: true, attempted: true, detail: 'candidate restarted', verify: candidateCanaryVerify() };
-      },
-      observeCandidateRuntime: () => candidateRuntimeObservation(session, 'candidate-runtime-fixture'),
+  const result = await verifyBootedReleaseSessionCandidateCanaries(config, session.sessionId, 'candidate-unlocked', {
+    restartCandidateRuntime: async (candidateConfig, dependencies) => {
+      restartCalls += 1;
+      expect(candidateConfig.controllerHome).toBe(session.candidate.controllerHome);
+      expect(existsSync(recoveryOperationLockPath(home))).toBe(false);
+      expect(dependencies?.forceHealthyRestart).toBe(true);
+      expect(await dependencies?.repairPrimaryConnectorBinding?.(candidateConfig)).toMatchObject({
+        ok: true,
+        noOp: true,
+      });
+      return { ok: true, attempted: true, detail: 'candidate restarted', verify: candidateCanaryVerify() };
     },
-  );
+    observeCandidateRuntime: () => candidateRuntimeObservation(session, 'candidate-runtime-fixture'),
+  });
   expect(restartCalls).toBe(1);
   expect(result).toMatchObject({ ok: true, releaseSession: { phase: 'cutover_eligible' } });
   expect(existsSync(recoveryOperationLockPath(home))).toBe(false);
@@ -2719,25 +3400,20 @@ test('ReleaseSession candidate restart canary runs without holding Stable A Reco
 
 test('ReleaseSession rejects stale candidate canary completion after concurrent terminalization', async () => {
   const { home, config, session } = await candidateBootedFixture('canary-stale');
-  const result = await verifyBootedReleaseSessionCandidateCanaries(
-    config,
-    session.sessionId,
-    'candidate-stale',
-    {
-      restartCandidateRuntime: async () => {
-        const current = readReleaseSession(home, session.sessionId)!;
-        advanceReleaseSession({
-          controllerHome: home,
-          sessionId: current.sessionId,
-          expectedRevision: current.revision,
-          phase: 'failed',
-          receipts: [{ id: 'cancelled', kind: 'candidate_canary', summary: 'concurrent terminalization' }],
-        });
-        return { ok: true, attempted: true, detail: 'late candidate success', verify: candidateCanaryVerify() };
-      },
-      observeCandidateRuntime: () => candidateRuntimeObservation(session, 'candidate-runtime-stale'),
+  const result = await verifyBootedReleaseSessionCandidateCanaries(config, session.sessionId, 'candidate-stale', {
+    restartCandidateRuntime: async () => {
+      const current = readReleaseSession(home, session.sessionId)!;
+      advanceReleaseSession({
+        controllerHome: home,
+        sessionId: current.sessionId,
+        expectedRevision: current.revision,
+        phase: 'failed',
+        receipts: [{ id: 'cancelled', kind: 'candidate_canary', summary: 'concurrent terminalization' }],
+      });
+      return { ok: true, attempted: true, detail: 'late candidate success', verify: candidateCanaryVerify() };
     },
-  );
+    observeCandidateRuntime: () => candidateRuntimeObservation(session, 'candidate-runtime-stale'),
+  });
   expect(result.ok).toBe(false);
   expect(result.detail).toContain('RELEASE_SESSION_CANDIDATE_CANARY_COMPLETION_STALE');
   expect(readReleaseSession(home, session.sessionId)?.phase).toBe('failed');
@@ -2778,14 +3454,16 @@ test('ReleaseSession accepts a healthy Candidate B after another canary already 
           ok: false,
           attempted: false,
           noOp: true,
-          detail: 'RECOVERY_RUNTIME_RESTART_STALE_INSTANCE: expected candidate-runtime-before, observed candidate-runtime-after',
+          detail:
+            'RECOVERY_RUNTIME_RESTART_STALE_INSTANCE: expected candidate-runtime-before, observed candidate-runtime-after',
           verify: candidateCanaryVerify(),
         };
       },
-      observeCandidateRuntime: () => candidateRuntimeObservation(
-        session,
-        observations++ === 0 ? 'candidate-runtime-before' : 'candidate-runtime-after',
-      ),
+      observeCandidateRuntime: () =>
+        candidateRuntimeObservation(
+          session,
+          observations++ === 0 ? 'candidate-runtime-before' : 'candidate-runtime-after',
+        ),
     },
   );
   expect(observations).toBeGreaterThanOrEqual(2);
@@ -2838,19 +3516,26 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
     const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(runtimePath)).digest('hex')}`;
     const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: input.sourceRoot, encoding: 'utf8' }).trim();
     const manifestPath = join(releasePath, 'manifest.json');
-    writeFileSync(manifestPath, `${JSON.stringify({
-      schemaVersion: 1,
-      releaseId,
-      artifactIdentity,
-      entrypoint: 'forge-runtime',
-      arguments: [],
-      configurationSchemaVersion: 1,
-      deploymentScope: 'portable',
-      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
-      workerProtocolVersion: 1,
-      sourceCommit,
-      createdAt: '2026-10-06T00:00:00.000Z',
-    }, null, 2)}\n`);
+    writeFileSync(
+      manifestPath,
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          releaseId,
+          artifactIdentity,
+          entrypoint: 'forge-runtime',
+          arguments: [],
+          configurationSchemaVersion: 1,
+          deploymentScope: 'portable',
+          databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+          workerProtocolVersion: 1,
+          sourceCommit,
+          createdAt: '2026-10-06T00:00:00.000Z',
+        },
+        null,
+        2,
+      )}\n`,
+    );
     return {
       controllerHome: input.controllerHome,
       releasePath,
@@ -2872,27 +3557,51 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
     sessionId: terminal.sessionId,
     expectedRevision: terminal.revision,
     phase: 'failed',
-    receipts: [{ id: 'simulated_interrupted_retirement', kind: 'build', summary: 'semantic terminal commit won before physical lane cleanup' }],
+    receipts: [
+      {
+        id: 'simulated_interrupted_retirement',
+        kind: 'build',
+        summary: 'semantic terminal commit won before physical lane cleanup',
+      },
+    ],
   });
   expect(existsSync(leakedCandidateHome)).toBe(true);
 
   writeFileSync(join(sourceRoot, 'README.md'), 'recovery source v2\n');
   execFileSync('git', ['add', 'README.md'], { cwd: sourceRoot });
-  execFileSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', 'recovery source v2'], { cwd: sourceRoot });
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'user.name=Forge Test',
+      '-c',
+      'user.email=forge-test@example.invalid',
+      'commit',
+      '-qm',
+      'recovery source v2',
+    ],
+    { cwd: sourceRoot },
+  );
   execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: sourceRoot });
 
-  const second = await prepareConfiguredRuntimeReleaseSession(config, {
-    stage: (input) => {
-      expect(existsSync(leakedCandidateHome)).toBe(false);
-      return stage(input);
+  const second = await prepareConfiguredRuntimeReleaseSession(
+    config,
+    {
+      stage: (input) => {
+        expect(existsSync(leakedCandidateHome)).toBe(false);
+        return stage(input);
+      },
     },
-  }, 'terminal-lane-cleanup-second');
+    'terminal-lane-cleanup-second',
+  );
   expect(second).toMatchObject({ ok: true, releaseSession: { phase: 'built' } });
   expect(second.releaseSession?.sessionId).not.toBe(terminal.sessionId);
   const recoveryAuditPath = join(home, 'recovery', 'audit', 'recovery.jsonl');
-  const terminalCleanupAuditCount = () => readFileSync(recoveryAuditPath, 'utf8')
-    .split('\n')
-    .filter((line) => line.includes('release_session_candidate_lane_cleaned') && line.includes(terminal.sessionId)).length;
+  const terminalCleanupAuditCount = () =>
+    readFileSync(recoveryAuditPath, 'utf8')
+      .split('\n')
+      .filter((line) => line.includes('release_session_candidate_lane_cleaned') && line.includes(terminal.sessionId))
+      .length;
   expect(terminalCleanupAuditCount()).toBe(1);
 
   const orphan = second.releaseSession!;
@@ -2904,15 +3613,31 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
 
   writeFileSync(join(sourceRoot, 'README.md'), 'recovery source v3\n');
   execFileSync('git', ['add', 'README.md'], { cwd: sourceRoot });
-  execFileSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', 'recovery source v3'], { cwd: sourceRoot });
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'user.name=Forge Test',
+      '-c',
+      'user.email=forge-test@example.invalid',
+      'commit',
+      '-qm',
+      'recovery source v3',
+    ],
+    { cwd: sourceRoot },
+  );
   execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: sourceRoot });
 
-  const third = await prepareConfiguredRuntimeReleaseSession(config, {
-    stage: (input) => {
-      expect(existsSync(orphanCandidateHome)).toBe(false);
-      return stage(input);
+  const third = await prepareConfiguredRuntimeReleaseSession(
+    config,
+    {
+      stage: (input) => {
+        expect(existsSync(orphanCandidateHome)).toBe(false);
+        return stage(input);
+      },
     },
-  }, 'orphan-lane-cleanup-third');
+    'orphan-lane-cleanup-third',
+  );
   expect(third).toMatchObject({ ok: true, releaseSession: { phase: 'built' } });
   expect(third.releaseSession?.sessionId).not.toBe(orphan.sessionId);
   expect(terminalCleanupAuditCount()).toBe(1);
@@ -2939,14 +3664,17 @@ test('watchdog defers Recovery self-repair while an attributable mutation lock i
     },
   });
   mkdirSync(join(home, 'recovery', 'locks'), { recursive: true });
-  writeFileSync(join(home, 'recovery', 'locks', 'operation.lock'), JSON.stringify({
-    schemaVersion: 1,
-    pid: process.pid,
-    instanceId: 'test-live-stage-mutation',
-    acquiredAt: new Date().toISOString(),
-    action: 'release_session_prepare',
-    requestId: 'recovery-gateway:test-live-stage-mutation',
-  }));
+  writeFileSync(
+    join(home, 'recovery', 'locks', 'operation.lock'),
+    JSON.stringify({
+      schemaVersion: 1,
+      pid: process.pid,
+      instanceId: 'test-live-stage-mutation',
+      acquiredAt: new Date().toISOString(),
+      action: 'release_session_prepare',
+      requestId: 'recovery-gateway:test-live-stage-mutation',
+    }),
+  );
 
   const tick = await watchdogTick(config, {
     failures: 2,
@@ -2974,7 +3702,6 @@ describe('standalone recovery systemd user ownership', () => {
     expect(defaultPrimaryRuntimeServiceConfig('linux')).toEqual({ platform: 'systemd-user' });
     expect(defaultPrimaryRuntimeServiceConfig('darwin')).toEqual({ platform: 'launchd' });
   });
-
 });
 
 describe('standalone recovery on canonical Runtime', () => {
@@ -2984,17 +3711,22 @@ describe('standalone recovery on canonical Runtime', () => {
       socket: { encrypted: false },
       url: '/recovery/mcp',
     } as unknown as IncomingMessage;
-    const challenge = recoveryWwwAuthenticate(request, { recoveryPublicUrl: 'https://recovery.example.test/recovery/mcp' });
-    expect(challenge).toBe('Bearer error="invalid_token", error_description="Missing Authorization header", resource_metadata="https://recovery.example.test/.well-known/oauth-protected-resource/recovery/mcp"');
+    const challenge = recoveryWwwAuthenticate(request, {
+      recoveryPublicUrl: 'https://recovery.example.test/recovery/mcp',
+    });
+    expect(challenge).toBe(
+      'Bearer error="invalid_token", error_description="Missing Authorization header", resource_metadata="https://recovery.example.test/.well-known/oauth-protected-resource/recovery/mcp"',
+    );
     expect(recoveryUnauthorizedBody()).toEqual({ error: 'invalid_token', message: 'Missing Authorization header' });
   });
 
   test('authenticates every MCP transport method before method dispatch', () => {
-    const request = (method: string, url: string, authorization?: string) => ({
-      method,
-      url,
-      headers: authorization ? { authorization } : {},
-    } as Pick<IncomingMessage, 'method' | 'url' | 'headers'>);
+    const request = (method: string, url: string, authorization?: string) =>
+      ({
+        method,
+        url,
+        headers: authorization ? { authorization } : {},
+      }) as Pick<IncomingMessage, 'method' | 'url' | 'headers'>;
     for (const path of ['/mcp', '/recovery/mcp']) {
       expect(classifyRecoveryMcpRequest(request('GET', path), 'test-token')).toBe('auth_required');
       expect(classifyRecoveryMcpRequest(request('DELETE', path), 'test-token')).toBe('auth_required');
@@ -3006,13 +3738,14 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(classifyRecoveryMcpRequest(request('GET', '/recovery/health'), 'test-token')).toBe('not_mcp');
   });
 
-
   test('Recovery MCP stays stateless across protocol eras and gateway replacement', async () => {
-    const tools = [{
-      name: 'runtime_status',
-      description: 'test recovery status',
-      inputSchema: { type: 'object' as const, additionalProperties: false },
-    }];
+    const tools = [
+      {
+        name: 'runtime_status',
+        description: 'test recovery status',
+        inputSchema: { type: 'object' as const, additionalProperties: false },
+      },
+    ];
     const start = async (port = 0) => {
       const mcp = new RecoveryMcpServer({
         tools,
@@ -3037,7 +3770,9 @@ describe('standalone recovery on canonical Runtime', () => {
     };
     const stop = async (instance: Awaited<ReturnType<typeof start>>) => {
       await instance.mcp.close();
-      await new Promise<void>((resolveClose, rejectClose) => instance.httpServer.close((error) => error ? rejectClose(error) : resolveClose()));
+      await new Promise<void>((resolveClose, rejectClose) =>
+        instance.httpServer.close((error) => (error ? rejectClose(error) : resolveClose())),
+      );
     };
     const readMcpResponse = async (response: Response): Promise<{ result?: { tools?: unknown[] } }> => {
       const text = await response.text();
@@ -3076,18 +3811,20 @@ describe('standalone recovery on canonical Runtime', () => {
       accept: 'application/json, text/event-stream',
       'mcp-protocol-version': '2026-07-28',
     };
-    const modernDiscover = (id: number) => JSON.stringify({
-      jsonrpc: '2.0',
-      id,
-      method: 'server/discover',
-      params: { _meta: modernMeta },
-    });
-    const modernToolsList = (id: number) => JSON.stringify({
-      jsonrpc: '2.0',
-      id,
-      method: 'tools/list',
-      params: { _meta: modernMeta },
-    });
+    const modernDiscover = (id: number) =>
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id,
+        method: 'server/discover',
+        params: { _meta: modernMeta },
+      });
+    const modernToolsList = (id: number) =>
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id,
+        method: 'tools/list',
+        params: { _meta: modernMeta },
+      });
 
     const first = await start();
     let second: Awaited<ReturnType<typeof start>> | undefined;
@@ -3124,7 +3861,8 @@ describe('standalone recovery on canonical Runtime', () => {
         body: modernDiscover(3),
       });
       const discoveredText = await discovered.text();
-      if (discovered.status !== 200) throw new Error(`TEST_RECOVERY_MODERN_DISCOVER_FAILED: ${discovered.status} ${discoveredText}`);
+      if (discovered.status !== 200)
+        throw new Error(`TEST_RECOVERY_MODERN_DISCOVER_FAILED: ${discovered.status} ${discoveredText}`);
       expect(discovered.headers.get('mcp-session-id')).toBeNull();
 
       const restartPort = first.port;
@@ -3164,12 +3902,13 @@ describe('standalone recovery on canonical Runtime', () => {
     const address = probe.address();
     if (!address || typeof address === 'string') throw new Error('TEST_RECOVERY_GATEWAY_ADDRESS_MISSING');
     await new Promise<void>((resolveClose, reject) => {
-      probe.close((error) => error ? reject(error) : resolveClose());
+      probe.close((error) => (error ? reject(error) : resolveClose()));
     });
     initializeStandaloneRecovery(home, address.port);
 
-    await expect(callStandaloneRecoveryTool(home, 'runtime_status', {}))
-      .rejects.toThrow(/^RECOVERY_GATEWAY_UNAVAILABLE:/);
+    await expect(callStandaloneRecoveryTool(home, 'runtime_status', {})).rejects.toThrow(
+      /^RECOVERY_GATEWAY_UNAVAILABLE:/,
+    );
 
     const recovery = new RecoveryMcpServer({
       tools: RECOVERY_TOOLS as unknown as Tool[],
@@ -3199,7 +3938,7 @@ describe('standalone recovery on canonical Runtime', () => {
     } finally {
       await recovery.close();
       await new Promise<void>((resolveClose, reject) => {
-        server.close((error) => error ? reject(error) : resolveClose());
+        server.close((error) => (error ? reject(error) : resolveClose()));
       });
     }
   });
@@ -3214,12 +3953,14 @@ describe('standalone recovery on canonical Runtime', () => {
     const address = probe.address();
     if (!address || typeof address === 'string') throw new Error('TEST_RECOVERY_GATEWAY_ADDRESS_MISSING');
     await new Promise<void>((resolveClose, reject) => {
-      probe.close((error) => error ? reject(error) : resolveClose());
+      probe.close((error) => (error ? reject(error) : resolveClose()));
     });
     const config = initializeStandaloneRecovery(home, address.port);
     let dispatches = 0;
     let markDispatchStarted!: () => void;
-    const dispatchStarted = new Promise<void>((resolveDispatch) => { markDispatchStarted = resolveDispatch; });
+    const dispatchStarted = new Promise<void>((resolveDispatch) => {
+      markDispatchStarted = resolveDispatch;
+    });
     const recovery = new RecoveryMcpServer({
       tools: RECOVERY_TOOLS as unknown as Tool[],
       dispatchTool: async (name) => {
@@ -3237,10 +3978,12 @@ describe('standalone recovery on canonical Runtime', () => {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
       const rawBody = Buffer.concat(chunks).toString('utf8');
-      const body = rawBody ? JSON.parse(rawBody) as {
-        method?: string;
-        params?: { name?: string };
-      } : undefined;
+      const body = rawBody
+        ? (JSON.parse(rawBody) as {
+            method?: string;
+            params?: { name?: string };
+          })
+        : undefined;
       if (body?.method === 'tools/call' && body.params?.name === 'restart_primary_connector') {
         void recovery.handle(request, response, body).catch(() => undefined);
         await dispatchStarted;
@@ -3267,7 +4010,7 @@ describe('standalone recovery on canonical Runtime', () => {
     } finally {
       await recovery.close();
       await new Promise<void>((resolveClose, reject) => {
-        server.close((error) => error ? reject(error) : resolveClose());
+        server.close((error) => (error ? reject(error) : resolveClose()));
       });
     }
   });
@@ -3284,7 +4027,9 @@ describe('standalone recovery on canonical Runtime', () => {
           try {
             const body = JSON.parse(rawBody) as { method?: string };
             if (body.method === 'tools/call') toolCalls += 1;
-          } catch { /* the transport response below remains the access evidence */ }
+          } catch {
+            /* the transport response below remains the access evidence */
+          }
         }
         response.statusCode = status;
         if (status === 401) response.setHeader('www-authenticate', 'Bearer error="invalid_token"');
@@ -3300,9 +4045,10 @@ describe('standalone recovery on canonical Runtime', () => {
       servers.push(probe);
       initializeStandaloneRecovery(home, address.port);
 
-      const expected = status === 401
-        ? 'RECOVERY_GATEWAY_AUTH_REJECTED: HTTP 401 Unauthorized'
-        : 'RECOVERY_GATEWAY_ACCESS_DENIED: HTTP 403 Forbidden';
+      const expected =
+        status === 401
+          ? 'RECOVERY_GATEWAY_AUTH_REJECTED: HTTP 401 Unauthorized'
+          : 'RECOVERY_GATEWAY_ACCESS_DENIED: HTTP 403 Forbidden';
       await expect(callStandaloneRecoveryTool(home, 'runtime_status', {})).rejects.toThrow(expected);
       expect(toolCalls).toBe(0);
     }
@@ -3311,7 +4057,7 @@ describe('standalone recovery on canonical Runtime', () => {
   test('hashes Recovery files with bounded chunks while preserving SHA-256 semantics', () => {
     const home = controllerHome();
     const path = join(home, 'bounded-sha256-fixture.bin');
-    const content = Buffer.alloc((2 * 1024 * 1024) + 137, 0x5a);
+    const content = Buffer.alloc(2 * 1024 * 1024 + 137, 0x5a);
     writeFileSync(path, content);
 
     expect(sha256FileBounded(path)).toBe(createHash('sha256').update(content).digest('hex'));
@@ -3327,29 +4073,45 @@ describe('standalone recovery on canonical Runtime', () => {
     const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
     const knownGoodPath = join(home, 'recovery', 'state', 'known-good.json');
     mkdirSync(dirname(knownGoodPath), { recursive: true });
-    writeFileSync(knownGoodPath, `${JSON.stringify({
-      schemaVersion: 1,
-      releases: [{
-        path: join(home, 'runtime', 'releases', 'deleted-release', 'manifest.json'),
-        revision: 'deleted-release',
-        artifactIdentity: 'artifact-deleted',
-        manifestSha256: '0'.repeat(64),
-        workerProtocolVersion: 1,
-        controllerHome: resolve(home),
-        releaseAuthorityRevision: 1,
-        releaseFencingTokenSha256: '0'.repeat(64),
-        attestedAt: new Date().toISOString(),
-      }],
-      updatedAt: new Date().toISOString(),
-    }, null, 2)}\n`);
+    writeFileSync(
+      knownGoodPath,
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          releases: [
+            {
+              path: join(home, 'runtime', 'releases', 'deleted-release', 'manifest.json'),
+              revision: 'deleted-release',
+              artifactIdentity: 'artifact-deleted',
+              manifestSha256: '0'.repeat(64),
+              workerProtocolVersion: 1,
+              controllerHome: resolve(home),
+              releaseAuthorityRevision: 1,
+              releaseFencingTokenSha256: '0'.repeat(64),
+              attestedAt: new Date().toISOString(),
+            },
+          ],
+          updatedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+    );
 
     const verified = await verifyStableRuntime(config);
     expect(verified.ok).toBe(true);
     expect(verified.runtime).toMatchObject({ running: true, ready: true, stale: false });
-    expect(verified.releases).toMatchObject({ active: { revision: 'release-a', artifactIdentity: 'artifact-a' }, coherent: true });
+    expect(verified.releases).toMatchObject({
+      active: { revision: 'release-a', artifactIdentity: 'artifact-a' },
+      coherent: true,
+    });
 
     const attested = await attestKnownGood(config);
-    expect(attested).toMatchObject({ revision: 'release-a', artifactIdentity: 'artifact-a', controllerHome: resolve(home) });
+    expect(attested).toMatchObject({
+      revision: 'release-a',
+      artifactIdentity: 'artifact-a',
+      controllerHome: resolve(home),
+    });
     expect(attested.releaseAuthorityRevision).toBe(1);
     expect(attested.releaseFencingTokenSha256).toHaveLength(64);
     expect(attested.recoveryBundle).toMatchObject({
@@ -3359,12 +4121,19 @@ describe('standalone recovery on canonical Runtime', () => {
     });
     expect(existsSync(attested.recoveryBundle!.database.path)).toBe(true);
     expect(existsSync(attested.recoveryBundle!.serviceContract.path)).toBe(true);
-    const repairedKnownGood = JSON.parse(readFileSync(knownGoodPath, 'utf8')) as { schemaVersion: number; releases: Array<{ revision: string; recoveryBundle?: unknown }> };
+    const repairedKnownGood = JSON.parse(readFileSync(knownGoodPath, 'utf8')) as {
+      schemaVersion: number;
+      releases: Array<{ revision: string; recoveryBundle?: unknown }>;
+    };
     expect(repairedKnownGood.schemaVersion).toBe(2);
     expect(repairedKnownGood.releases.map((entry) => entry.revision)).toEqual(['release-a']);
     expect(repairedKnownGood.releases[0]?.recoveryBundle).toBeDefined();
 
-    const listed = await listReleases(config) as { runtimeRunning: boolean; runtimeReady: boolean; knownGood: Array<{ revision: string }> };
+    const listed = (await listReleases(config)) as {
+      runtimeRunning: boolean;
+      runtimeReady: boolean;
+      knownGood: Array<{ revision: string }>;
+    };
     expect(listed.runtimeRunning).toBe(true);
     expect(listed.runtimeReady).toBe(true);
     expect(listed.knownGood.map((entry) => entry.revision)).toContain('release-a');
@@ -3395,7 +4164,11 @@ describe('standalone recovery on canonical Runtime', () => {
       external: { ok: true },
       mcp: { ok: true },
     });
-    const withoutPublicMcp = await dispatchRecoveryTool({ ...config, publicMcpUrl: undefined }, 'verify_external_runtime', {}) as {
+    const withoutPublicMcp = (await dispatchRecoveryTool(
+      { ...config, publicMcpUrl: undefined },
+      'verify_external_runtime',
+      {},
+    )) as {
       ok: boolean;
       externalConfigured: boolean;
       external?: unknown;
@@ -3416,47 +4189,55 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('unpin_runtime_release');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('activate_pinned_runtime_release');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).not.toContain('verify_runtime_release_session_static');
-    expect(RECOVERY_TOOLS.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      'release_session_status',
-      'prepare_runtime_release_session',
-      'verify_runtime_release_session_candidate',
-      'cutover_runtime_release_session',
-      'cancel_runtime_release_session',
-      'rollback_runtime_release_session',
-      'promote_runtime_release_session_known_good',
-    ]));
+    expect(RECOVERY_TOOLS.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining([
+        'release_session_status',
+        'prepare_runtime_release_session',
+        'verify_runtime_release_session_candidate',
+        'cutover_runtime_release_session',
+        'cancel_runtime_release_session',
+        'rollback_runtime_release_session',
+        'promote_runtime_release_session_known_good',
+      ]),
+    );
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('migrate_controller_home');
     const migrateTool = RECOVERY_TOOLS.find((tool) => tool.name === 'migrate_controller_home');
-    expect(migrateTool?.inputSchema.required).toEqual(expect.arrayContaining([
-      'request_id',
-      'canonical_source_root',
-      'expected_source_revision',
-    ]));
+    expect(migrateTool?.inputSchema.required).toEqual(
+      expect.arrayContaining(['request_id', 'canonical_source_root', 'expected_source_revision']),
+    );
     expect(migrateTool?.inputSchema.properties).not.toHaveProperty('destination_home');
     const activateTool = RECOVERY_TOOLS.find((tool) => tool.name === 'activate_runtime_release');
-    const activateSchema = activateTool?.inputSchema as { required?: readonly string[]; properties?: Record<string, unknown> } | undefined;
+    const activateSchema = activateTool?.inputSchema as
+      | { required?: readonly string[]; properties?: Record<string, unknown> }
+      | undefined;
     expect(Object.keys(RECOVERY_MUTATION_IDENTITY_CONTRACT)).toEqual([...RECOVERY_MUTATION_IDENTITY_FIELDS]);
     for (const field of RECOVERY_MUTATION_IDENTITY_FIELDS) {
       expect(activateSchema?.properties?.[field]).toEqual(RECOVERY_MUTATION_IDENTITY_CONTRACT[field]);
     }
-    expect(activateSchema?.required).toEqual(expect.arrayContaining([
-      'request_id',
-      ...Array.from(RECOVERY_MUTATION_IDENTITY_FIELDS),
-      'release_path',
-      'expected_source_revision',
-      'expected_active_release_id',
-      'expected_authority_revision',
-    ]));
+    expect(activateSchema?.required).toEqual(
+      expect.arrayContaining([
+        'request_id',
+        ...Array.from(RECOVERY_MUTATION_IDENTITY_FIELDS),
+        'release_path',
+        'expected_source_revision',
+        'expected_active_release_id',
+        'expected_authority_revision',
+      ]),
+    );
     expect(activateSchema?.properties?.release_path).toMatchObject({
       description: 'Absolute path to the staged immutable Runtime release directory.',
     });
     const stageTool = RECOVERY_TOOLS.find((tool) => tool.name === 'stage_runtime_release');
-    const stageSchema = stageTool?.inputSchema as { required?: readonly string[]; properties?: Record<string, unknown> } | undefined;
-    expect(stageSchema?.required).toEqual(expect.arrayContaining([
-      'request_id',
-      ...Array.from(RECOVERY_MUTATION_IDENTITY_FIELDS),
-      'expected_source_revision',
-    ]));
+    const stageSchema = stageTool?.inputSchema as
+      | { required?: readonly string[]; properties?: Record<string, unknown> }
+      | undefined;
+    expect(stageSchema?.required).toEqual(
+      expect.arrayContaining([
+        'request_id',
+        ...Array.from(RECOVERY_MUTATION_IDENTITY_FIELDS),
+        'expected_source_revision',
+      ]),
+    );
     for (const toolName of [
       'attest_known_good',
       'rollback_previous',
@@ -3478,22 +4259,26 @@ describe('standalone recovery on canonical Runtime', () => {
     ]) {
       const tool = RECOVERY_TOOLS.find((candidate) => candidate.name === toolName);
       const schema = tool?.inputSchema as { required?: readonly string[] } | undefined;
-      expect(schema?.required).toEqual(expect.arrayContaining(['request_id', ...Array.from(RECOVERY_MUTATION_IDENTITY_FIELDS)]));
+      expect(schema?.required).toEqual(
+        expect.arrayContaining(['request_id', ...Array.from(RECOVERY_MUTATION_IDENTITY_FIELDS)]),
+      );
     }
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).not.toContain('supervisor_status');
     expect(RECOVERY_CLI_COMMANDS).toContain('list-releases');
     expect(RECOVERY_CLI_COMMANDS).toContain('restart-primary-runtime');
     expect(RECOVERY_CLI_COMMANDS).toContain('recover-primary-runtime');
     expect(RECOVERY_CLI_COMMANDS).toContain('activate-runtime-release');
-    expect(RECOVERY_CLI_COMMANDS).toEqual(expect.arrayContaining([
-      'release-session-status',
-      'release-session-prepare',
-      'release-session-candidate-verify',
-      'release-session-cutover',
-      'release-session-cancel',
-      'release-session-rollback',
-      'release-session-known-good',
-    ]));
+    expect(RECOVERY_CLI_COMMANDS).toEqual(
+      expect.arrayContaining([
+        'release-session-status',
+        'release-session-prepare',
+        'release-session-candidate-verify',
+        'release-session-cutover',
+        'release-session-cancel',
+        'release-session-rollback',
+        'release-session-known-good',
+      ]),
+    );
     expect(RECOVERY_CLI_COMMANDS).toContain('migrate-controller-home-worker');
   });
 
@@ -3509,7 +4294,12 @@ describe('standalone recovery on canonical Runtime', () => {
 
     const runtime = await runtimeServer();
     writeMainToken(home);
-    startObservedRuntime(home, runtime.endpoint, cutoverAuthority.active.releaseId, cutoverAuthority.active.artifactIdentity);
+    startObservedRuntime(
+      home,
+      runtime.endpoint,
+      cutoverAuthority.active.releaseId,
+      cutoverAuthority.active.artifactIdentity,
+    );
     const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
     const attested = await attestKnownGood(config);
     expect(attested).toMatchObject({
@@ -3566,7 +4356,13 @@ describe('standalone recovery on canonical Runtime', () => {
       candidate,
       sourceRevision: candidateRelease.sourceCommit,
     });
-    session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId,
+      expectedRevision: session.revision,
+      phase: 'built',
+      candidateRelease,
+    });
     session = advanceReleaseSession({
       controllerHome: home,
       sessionId,
@@ -3578,10 +4374,24 @@ describe('standalone recovery on canonical Runtime', () => {
       sessionId,
       expectedRevision: session.revision,
       phase: 'candidate_verified',
-      receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })),
+      receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({
+        id,
+        kind: 'candidate_canary' as const,
+        summary: id,
+      })),
     });
-    session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
-    session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId,
+      expectedRevision: session.revision,
+      phase: 'cutover_eligible',
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId,
+      expectedRevision: session.revision,
+      phase: 'cutover_attempting',
+    });
     const rollback = cutoverAuthority.previous!;
     session = recordReleaseSessionTransaction({
       controllerHome: home,
@@ -3604,16 +4414,30 @@ describe('standalone recovery on canonical Runtime', () => {
         startedAt: new Date().toISOString(),
       },
     });
-    session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_committed' });
-    session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'soaking', receipts: [{ id: 'soak_started', kind: 'soak', summary: 'cutover' }] });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId,
+      expectedRevision: session.revision,
+      phase: 'cutover_committed',
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId,
+      expectedRevision: session.revision,
+      phase: 'soaking',
+      receipts: [{ id: 'soak_started', kind: 'soak', summary: 'cutover' }],
+    });
 
     // A durable performance/bundle attestation is provisional until the
     // exact opt-in ReleaseSession commits known_good; unrelated Recovery
     // restore consumers must never select it during Soak.
     expect((await verifyStableRuntime(config)).releases.knownGood).toBeUndefined();
     const provisionalListing = await listReleases(config);
-    expect((provisionalListing.knownGood as Array<{ revision: string }>).some(
-      (entry) => entry.revision === cutoverAuthority.active.releaseId)).toBe(false);
+    expect(
+      (provisionalListing.knownGood as Array<{ revision: string }>).some(
+        (entry) => entry.revision === cutoverAuthority.active.releaseId,
+      ),
+    ).toBe(false);
 
     const corruptedInventoryPath = join(home, 'recovery', 'state', 'release-sessions', 'corrupted-session-1234.json');
     writeFileSync(corruptedInventoryPath, '{invalid JSON');
@@ -3634,13 +4458,15 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(promoted).toMatchObject({ ok: true, attempted: true, releaseSession: { phase: 'known_good' } });
     expect((await verifyStableRuntime(config)).releases.knownGood?.revision).toBe(cutoverAuthority.active.releaseId);
     const acceptedListing = await listReleases(config);
-    expect((acceptedListing.knownGood as Array<{ revision: string }>).some(
-      (entry) => entry.revision === cutoverAuthority.active.releaseId)).toBe(true);
-    expect(promoted.releaseSession?.receipts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'known_good', kind: 'known_good' }),
-    ]));
+    expect(
+      (acceptedListing.knownGood as Array<{ revision: string }>).some(
+        (entry) => entry.revision === cutoverAuthority.active.releaseId,
+      ),
+    ).toBe(true);
+    expect(promoted.releaseSession?.receipts).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'known_good', kind: 'known_good' })]),
+    );
     expect(failing.requests).toHaveLength(0);
-
   });
 
   test('independent CPU rejection does not own ReleaseSession rollback or known-good', async () => {
@@ -3655,7 +4481,12 @@ describe('standalone recovery on canonical Runtime', () => {
       const cutoverAuthority = readRuntimeReleaseAuthority(home)!;
       const runtime = await runtimeServer();
       writeMainToken(home);
-      const ownership = startObservedRuntime(home, runtime.endpoint, cutoverAuthority.active.releaseId, cutoverAuthority.active.artifactIdentity);
+      const ownership = startObservedRuntime(
+        home,
+        runtime.endpoint,
+        cutoverAuthority.active.releaseId,
+        cutoverAuthority.active.artifactIdentity,
+      );
       ensureForgeRuntimeLaunchAgentContract({ controllerHome: home, installUserLaunchAgent: true });
 
       const sessionId = 'release-known-good-reject-12345678';
@@ -3698,12 +4529,50 @@ describe('standalone recovery on canonical Runtime', () => {
         sourceCommit: 'known-good-reject-source',
         sourceRepositoryId: 'repo-known-good-reject',
       };
-      let session = createReleaseSession({ controllerHome: home, sessionId, stable, stableRelease, candidate, sourceRevision: candidateRelease.sourceCommit });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
+      let session = createReleaseSession({
+        controllerHome: home,
+        sessionId,
+        stable,
+        stableRelease,
+        candidate,
+        sourceRevision: candidateRelease.sourceCommit,
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'built',
+        candidateRelease,
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'candidate_booted',
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'candidate_verified',
+        receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({
+          id,
+          kind: 'candidate_canary' as const,
+          summary: id,
+        })),
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'cutover_eligible',
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'cutover_attempting',
+      });
       const rollback = cutoverAuthority.previous!;
       session = recordReleaseSessionTransaction({
         controllerHome: home,
@@ -3726,18 +4595,39 @@ describe('standalone recovery on canonical Runtime', () => {
           startedAt: new Date().toISOString(),
         },
       });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_committed' });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'soaking', receipts: [{ id: 'soak_started', kind: 'soak', summary: 'cutover' }] });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'cutover_committed',
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'soaking',
+        receipts: [{ id: 'soak_started', kind: 'soak', summary: 'cutover' }],
+      });
 
-      const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint, primaryRuntimeService: { platform: 'launchd' } });
+      const config = createRecoveryConfig(home, {
+        publicMcpUrl: runtime.endpoint,
+        primaryRuntimeService: { platform: 'launchd' },
+      });
       const busy = idleCpuDependencies();
-      await expect(measureConfiguredRuntimePerformance(config, {
-        ...busy,
-        readCpu: () => ({ cpuMs: busy.monotonicNow(), processStartTime: 'fixture-process-start' }),
-      })).rejects.toThrow('RECOVERY_PERFORMANCE_REJECTED');
+      await expect(
+        measureConfiguredRuntimePerformance(config, {
+          ...busy,
+          readCpu: () => ({ cpuMs: busy.monotonicNow(), processStartTime: 'fixture-process-start' }),
+        }),
+      ).rejects.toThrow('RECOVERY_PERFORMANCE_REJECTED');
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
       expect(readReleaseSession(home, sessionId)?.phase).toBe('soaking');
-      const promoted = await promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {}, 'known-good-after-independent-performance');
+      const promoted = await promoteConfiguredRuntimeReleaseSessionKnownGood(
+        config,
+        sessionId,
+        {},
+        'known-good-after-independent-performance',
+      );
       expect(promoted).toMatchObject({ ok: true, attempted: true, releaseSession: { phase: 'known_good' } });
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
       removeOwnership(ownership);
@@ -3759,7 +4649,12 @@ describe('standalone recovery on canonical Runtime', () => {
       const cutoverAuthority = readRuntimeReleaseAuthority(home)!;
       const runtime = await runtimeServer();
       writeMainToken(home);
-      const ownership = startObservedRuntime(home, runtime.endpoint, cutoverAuthority.active.releaseId, cutoverAuthority.active.artifactIdentity);
+      const ownership = startObservedRuntime(
+        home,
+        runtime.endpoint,
+        cutoverAuthority.active.releaseId,
+        cutoverAuthority.active.artifactIdentity,
+      );
       ensureForgeRuntimeLaunchAgentContract({ controllerHome: home, installUserLaunchAgent: true });
 
       const sessionId = 'release-optin-e2e-expired-12345678';
@@ -3802,12 +4697,50 @@ describe('standalone recovery on canonical Runtime', () => {
         sourceCommit: 'known-good-reject-source',
         sourceRepositoryId: 'repo-known-good-reject',
       };
-      let session = createReleaseSession({ controllerHome: home, sessionId, stable, stableRelease, candidate, sourceRevision: candidateRelease.sourceCommit });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
+      let session = createReleaseSession({
+        controllerHome: home,
+        sessionId,
+        stable,
+        stableRelease,
+        candidate,
+        sourceRevision: candidateRelease.sourceCommit,
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'built',
+        candidateRelease,
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'candidate_booted',
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'candidate_verified',
+        receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({
+          id,
+          kind: 'candidate_canary' as const,
+          summary: id,
+        })),
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'cutover_eligible',
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'cutover_attempting',
+      });
       const rollback = cutoverAuthority.previous!;
       session = recordReleaseSessionTransaction({
         controllerHome: home,
@@ -3830,10 +4763,24 @@ describe('standalone recovery on canonical Runtime', () => {
           startedAt: new Date().toISOString(),
         },
       });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_committed' });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'soaking', receipts: [{ id: 'soak_started', kind: 'soak', summary: 'cutover' }] });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'cutover_committed',
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'soaking',
+        receipts: [{ id: 'soak_started', kind: 'soak', summary: 'cutover' }],
+      });
 
-      const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint, primaryRuntimeService: { platform: 'launchd' } });
+      const config = createRecoveryConfig(home, {
+        publicMcpUrl: runtime.endpoint,
+        primaryRuntimeService: { platform: 'launchd' },
+      });
       const provisional = await attestKnownGood(config);
       expect(provisional.revision).toBe('release-b');
       expect((await listReleases(config)).knownGood).toEqual([]);
@@ -3842,9 +4789,9 @@ describe('standalone recovery on canonical Runtime', () => {
       });
       expect(promoted).toMatchObject({ ok: true, attempted: true, releaseSession: { phase: 'known_good' } });
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
-      expect((await listReleases(config)).knownGood).toEqual(expect.arrayContaining([
-        expect.objectContaining({ revision: 'release-b' }),
-      ]));
+      expect((await listReleases(config)).knownGood).toEqual(
+        expect.arrayContaining([expect.objectContaining({ revision: 'release-b' })]),
+      );
       removeOwnership(ownership);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
@@ -3855,33 +4802,39 @@ describe('standalone recovery on canonical Runtime', () => {
   test('Recovery clients require the exported source revision fence while partial or wrong explicit identity still fails closed', async () => {
     const home = controllerHome();
     const config = createRecoveryConfig(home);
-    await expect(dispatchRecoveryTool(config, 'activate_runtime_release', {
-      request_id: 'missing-source-fence',
-      release_path: join(home, 'runtime', 'releases', 'missing-release'),
-      expected_active_release_id: 'release-baseline',
-      expected_authority_revision: 1,
-    })).rejects.toThrow('RECOVERY_EXPECTED_SOURCE_REVISION_REQUIRED');
-    const frozenActivation = await dispatchRecoveryTool(config, 'activate_runtime_release', {
+    await expect(
+      dispatchRecoveryTool(config, 'activate_runtime_release', {
+        request_id: 'missing-source-fence',
+        release_path: join(home, 'runtime', 'releases', 'missing-release'),
+        expected_active_release_id: 'release-baseline',
+        expected_authority_revision: 1,
+      }),
+    ).rejects.toThrow('RECOVERY_EXPECTED_SOURCE_REVISION_REQUIRED');
+    const frozenActivation = (await dispatchRecoveryTool(config, 'activate_runtime_release', {
       request_id: 'frozen-schema-client',
       expected_source_revision: 'a'.repeat(40),
       release_path: join(home, 'runtime', 'releases', 'missing-release'),
       expected_active_release_id: 'release-baseline',
       expected_authority_revision: 1,
-    }) as { attempted?: boolean; noOp?: boolean; detail?: string };
+    })) as { attempted?: boolean; noOp?: boolean; detail?: string };
     expect(frozenActivation).toMatchObject({ attempted: false, noOp: true });
     expect(frozenActivation.detail).toContain('RUNTIME_RELEASE_CANDIDATE_MANIFEST_MISSING');
     expect(frozenActivation.detail).not.toContain('RECOVERY_TARGET_IDENTITY_REQUIRED');
 
     const identity = recoveryMachineIdentity(config);
-    await expect(dispatchRecoveryTool(config, 'restart_primary_runtime', {
-      request_id: 'partial-machine-test',
-      expected_host: identity.host,
-    })).rejects.toThrow('RECOVERY_TARGET_IDENTITY_REQUIRED:expected_platform');
-    await expect(dispatchRecoveryTool(config, 'restart_primary_runtime', {
-      request_id: 'wrong-machine-test',
-      ...recoveryMutationIdentityArgs(config),
-      expected_host: 'different-machine.example',
-    })).rejects.toThrow('RECOVERY_TARGET_IDENTITY_MISMATCH:expected_host');
+    await expect(
+      dispatchRecoveryTool(config, 'restart_primary_runtime', {
+        request_id: 'partial-machine-test',
+        expected_host: identity.host,
+      }),
+    ).rejects.toThrow('RECOVERY_TARGET_IDENTITY_REQUIRED:expected_platform');
+    await expect(
+      dispatchRecoveryTool(config, 'restart_primary_runtime', {
+        request_id: 'wrong-machine-test',
+        ...recoveryMutationIdentityArgs(config),
+        expected_host: 'different-machine.example',
+      }),
+    ).rejects.toThrow('RECOVERY_TARGET_IDENTITY_MISMATCH:expected_host');
   });
 
   test('Recovery OpenAI tunnel identity is machine-specific and cannot reuse the primary tunnel identity', () => {
@@ -3890,38 +4843,86 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(wslAlias).toStartWith('forge-recovery-');
     expect(macAlias).toStartWith('forge-recovery-');
     expect(wslAlias).not.toBe(macAlias);
-    expect(recoveryConnectorHasExternalTransport({
-      public: false,
-      services: {
-        recovery: { label: 'recovery', platform: 'systemd-user', serviceInstalled: true, plistInstalled: false, running: true },
-        tunnel: { configured: true, platform: 'openai-secure-tunnel', alias: wslAlias, tunnelId: 'recovery-wsl-1', plistInstalled: false, restartSafe: true, running: true, healthy: true, ready: true },
-      },
-    })).toBe(true);
-    const recovery = { platform: 'openai-secure-tunnel' as const, alias: wslAlias, tunnelId: 'recovery-wsl-1', mcpServerUrl: 'http://127.0.0.1:8787/recovery/mcp' };
-    expect(() => assertDistinctRecoveryOpenAiTunnelIdentity(recovery, {
-      platform: 'openai-secure-tunnel', alias: wslAlias, tunnelId: 'primary-1', mcpServerUrl: 'http://127.0.0.1:8765/mcp',
-    })).toThrow('RECOVERY_OPENAI_TUNNEL_ALIAS_CONFLICT');
-    expect(() => assertDistinctRecoveryOpenAiTunnelIdentity(recovery, {
-      platform: 'openai-secure-tunnel', alias: 'forge-primary', tunnelId: 'recovery-wsl-1', mcpServerUrl: 'http://127.0.0.1:8765/mcp',
-    })).toThrow('RECOVERY_OPENAI_TUNNEL_ID_CONFLICT');
-    expect(() => assertDistinctRecoveryOpenAiTunnelIdentity(recovery, {
-      platform: 'openai-secure-tunnel', alias: 'forge-primary', tunnelId: 'primary-1', mcpServerUrl: 'http://127.0.0.1:8765/mcp',
-    })).not.toThrow();
+    expect(
+      recoveryConnectorHasExternalTransport({
+        public: false,
+        services: {
+          recovery: {
+            label: 'recovery',
+            platform: 'systemd-user',
+            serviceInstalled: true,
+            plistInstalled: false,
+            running: true,
+          },
+          tunnel: {
+            configured: true,
+            platform: 'openai-secure-tunnel',
+            alias: wslAlias,
+            tunnelId: 'recovery-wsl-1',
+            plistInstalled: false,
+            restartSafe: true,
+            running: true,
+            healthy: true,
+            ready: true,
+          },
+        },
+      }),
+    ).toBe(true);
+    const recovery = {
+      platform: 'openai-secure-tunnel' as const,
+      alias: wslAlias,
+      tunnelId: 'recovery-wsl-1',
+      mcpServerUrl: 'http://127.0.0.1:8787/recovery/mcp',
+    };
+    expect(() =>
+      assertDistinctRecoveryOpenAiTunnelIdentity(recovery, {
+        platform: 'openai-secure-tunnel',
+        alias: wslAlias,
+        tunnelId: 'primary-1',
+        mcpServerUrl: 'http://127.0.0.1:8765/mcp',
+      }),
+    ).toThrow('RECOVERY_OPENAI_TUNNEL_ALIAS_CONFLICT');
+    expect(() =>
+      assertDistinctRecoveryOpenAiTunnelIdentity(recovery, {
+        platform: 'openai-secure-tunnel',
+        alias: 'forge-primary',
+        tunnelId: 'recovery-wsl-1',
+        mcpServerUrl: 'http://127.0.0.1:8765/mcp',
+      }),
+    ).toThrow('RECOVERY_OPENAI_TUNNEL_ID_CONFLICT');
+    expect(() =>
+      assertDistinctRecoveryOpenAiTunnelIdentity(recovery, {
+        platform: 'openai-secure-tunnel',
+        alias: 'forge-primary',
+        tunnelId: 'primary-1',
+        mcpServerUrl: 'http://127.0.0.1:8765/mcp',
+      }),
+    ).not.toThrow();
   });
 
-
   test('Controller Home migration derives a Linux user-level destination and never accepts the current configured authority as a destination override', () => {
-    expect(defaultUserControllerHomeForMigration({
-      FORGE_CONTROLLER_HOME: `${TEST_MAC_HOME}/.forge/controller`,
-      XDG_STATE_HOME: '',
-    }, TEST_LINUX_HOME)).toBe(`${TEST_LINUX_HOME}/.forge/controller`);
+    expect(
+      defaultUserControllerHomeForMigration(
+        {
+          FORGE_CONTROLLER_HOME: `${TEST_MAC_HOME}/.forge/controller`,
+          XDG_STATE_HOME: '',
+        },
+        TEST_LINUX_HOME,
+      ),
+    ).toBe(`${TEST_LINUX_HOME}/.forge/controller`);
     const home = repoLocalControllerHome();
     const config = createRecoveryConfig(home);
-    expect(() => scheduleRecoveryControllerHomeMigration(config, {
-      requestId: 'migration-test-request',
-      canonicalSourceRoot: `${TEST_LINUX_HOME}/src/forge`,
-      expectedSourceRevision: 'deadbeef',
-    }, { platform: 'darwin' })).toThrow('RECOVERY_CONTROLLER_HOME_MIGRATION_LINUX_ONLY');
+    expect(() =>
+      scheduleRecoveryControllerHomeMigration(
+        config,
+        {
+          requestId: 'migration-test-request',
+          canonicalSourceRoot: `${TEST_LINUX_HOME}/src/forge`,
+          expectedSourceRevision: 'deadbeef',
+        },
+        { platform: 'darwin' },
+      ),
+    ).toThrow('RECOVERY_CONTROLLER_HOME_MIGRATION_LINUX_ONLY');
   });
 
   test('Watchdog full verification does not attest release performance', async () => {
@@ -3974,7 +4975,11 @@ describe('standalone recovery on canonical Runtime', () => {
 
   test('Watchdog liveness observes the configured Recovery transport instead of reporting a silent healthy system', async () => {
     const home = controllerHome();
-    const activeManifest = manifest(home, 'release-watchdog-recovery-transport', 'artifact-watchdog-recovery-transport');
+    const activeManifest = manifest(
+      home,
+      'release-watchdog-recovery-transport',
+      'artifact-watchdog-recovery-transport',
+    );
     ensureActiveRuntimeRelease(home, activeManifest);
     const runtime = await runtimeServer();
     writeMainToken(home);
@@ -4003,7 +5008,6 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(tick.decision.action).not.toBe('healthy');
     expect(tick.state.publicTunnelFailures).toBe(1);
   });
-
 
   test('gateway profile keeps Recovery publication repair enabled without gaining primary Runtime repair authority', async () => {
     const home = controllerHome();
@@ -4034,7 +5038,9 @@ describe('standalone recovery on canonical Runtime', () => {
 
     const tick = await watchdogTick(config, { failures: 0, rollbackUsed: false });
     expect(tick.verify.probes.recovery_external_http).toMatchObject({ ok: false, status: 503, detail: 'HTTP 503' });
-    expect(failedRecoveryPublic.requests).toContainEqual(expect.objectContaining({ method: 'GET', url: '/recovery/health' }));
+    expect(failedRecoveryPublic.requests).toContainEqual(
+      expect.objectContaining({ method: 'GET', url: '/recovery/health' }),
+    );
     expect(tick.verify.probes.recovery_watchdog).toMatchObject({
       ok: false,
       detail: 'current immutable Recovery release is unavailable',
@@ -4100,8 +5106,11 @@ describe('standalone recovery on canonical Runtime', () => {
     const realTransport = createRecoveryHttpTransport(home);
     const rawExternalTimeoutTransport = {
       request: async (request: Parameters<typeof realTransport.request>[0]) => {
-        const authorization = Object.entries(request.headers ?? {}).some(([name, value]) => name.toLowerCase() === 'authorization' && Boolean(value));
-        if (request.url === runtime.endpoint && request.method === 'POST' && !authorization) throw new Error('RECOVERY_HTTP_TIMEOUT');
+        const authorization = Object.entries(request.headers ?? {}).some(
+          ([name, value]) => name.toLowerCase() === 'authorization' && Boolean(value),
+        );
+        if (request.url === runtime.endpoint && request.method === 'POST' && !authorization)
+          throw new Error('RECOVERY_HTTP_TIMEOUT');
         return realTransport.request(request);
       },
     };
@@ -4116,9 +5125,16 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(failedProtocol.ok).toBe(false);
     expect(failedProtocol.probes.mcp_initialize).toMatchObject({ ok: false });
     await verifyStableRuntime(config, failedTransport);
-    const diagnostics = JSON.parse(readFileSync(join(home, 'recovery', 'state', 'watchdog-diagnostics.json'), 'utf8')); expect(diagnostics.entries).toHaveLength(1);
-    expect(diagnostics.entries[0]).toMatchObject({ components: expect.arrayContaining(['gateway', 'public_mcp']), occurrences: 2, failedProbes: expect.arrayContaining([expect.objectContaining({ name: 'active_gateway', status: 503 })]) });
-    expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready')).toBe(true);
+    const diagnostics = JSON.parse(readFileSync(join(home, 'recovery', 'state', 'watchdog-diagnostics.json'), 'utf8'));
+    expect(diagnostics.entries).toHaveLength(1);
+    expect(diagnostics.entries[0]).toMatchObject({
+      components: expect.arrayContaining(['gateway', 'public_mcp']),
+      occurrences: 2,
+      failedProbes: expect.arrayContaining([expect.objectContaining({ name: 'active_gateway', status: 503 })]),
+    });
+    expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready')).toBe(
+      true,
+    );
     expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/health')).toBe(false);
     expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/mcp')).toBe(false);
 
@@ -4126,13 +5142,15 @@ describe('standalone recovery on canonical Runtime', () => {
     const lightweight = await verifyStableRuntime(config, undefined, { probeMcpProtocol: false });
     expect(lightweight.ok).toBe(true);
     expect(lightweight.probes.mcp_tools_list).toBeUndefined();
-    expect(runtime.requests.slice(requestCountBeforeLightVerify).some((request) => request.method === 'POST' && request.url === '/mcp' && request.authorizationPresent)).toBe(false);
+    expect(
+      runtime.requests
+        .slice(requestCountBeforeLightVerify)
+        .some((request) => request.method === 'POST' && request.url === '/mcp' && request.authorizationPresent),
+    ).toBe(false);
 
-    const externalInitialize = runtime.requests.find((request) => (
-      request.method === 'POST'
-      && request.url === '/mcp'
-      && !request.authorizationPresent
-    ));
+    const externalInitialize = runtime.requests.find(
+      (request) => request.method === 'POST' && request.url === '/mcp' && !request.authorizationPresent,
+    );
     expect(externalInitialize).toBeDefined();
     expect(externalInitialize?.accept).toBe('application/json, text/event-stream');
     expect(externalInitialize?.contentType).toBe('application/json');
@@ -4149,7 +5167,12 @@ describe('standalone recovery on canonical Runtime', () => {
     const runtime = await runtimeServer();
     const publicGateway = await healthyTransportWithHungLegacyReadinessServer();
     writeMainToken(home);
-    startObservedRuntime(home, runtime.endpoint, 'release-transport-ready-isolated', 'artifact-transport-ready-isolated');
+    startObservedRuntime(
+      home,
+      runtime.endpoint,
+      'release-transport-ready-isolated',
+      'artifact-transport-ready-isolated',
+    );
     const config = createRecoveryConfig(home, {
       publicMcpUrl: publicGateway.endpoint,
       primaryConnectorService: {
@@ -4169,7 +5192,9 @@ describe('standalone recovery on canonical Runtime', () => {
       status: 200,
       detail: 'transport-ready HTTP 200',
     });
-    expect(publicGateway.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready')).toBe(true);
+    expect(
+      publicGateway.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready'),
+    ).toBe(true);
     expect(publicGateway.requests.some((request) => request.method === 'GET' && request.url === '/ready')).toBe(false);
   });
 
@@ -4202,10 +5227,14 @@ describe('standalone recovery on canonical Runtime', () => {
       detail: 'legacy-mcp HTTP 401 OAuth challenge',
     });
     expect(verified.probes.primary_connector_local).toMatchObject({ ok: true, status: 401 });
-    expect(connector.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready')).toBe(true);
+    expect(connector.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready')).toBe(
+      true,
+    );
     expect(connector.requests.some((request) => request.method === 'POST' && request.url === '/mcp')).toBe(true);
     expect(connector.requests.some((request) => request.method === 'GET' && request.url === '/ready')).toBe(false);
-    expect(publicGateway.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready')).toBe(false);
+    expect(
+      publicGateway.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready'),
+    ).toBe(false);
   });
 
   test('fails closed when a Secure Tunnel Connector unexpectedly returns an OAuth challenge', async () => {
@@ -4266,18 +5295,34 @@ describe('standalone recovery on canonical Runtime', () => {
       endpointMatches: true,
       controlPlaneState: 'unknown',
     };
-    expect(managedPrimaryTransportNeedsConnectorRepair(true, {
-      ok: false, detail: 'remote status unavailable', value: locallyReady,
-    })).toBe(false);
-    expect(managedPrimaryTransportNeedsConnectorRepair(true, {
-      ok: false, detail: 'remote degraded', value: { ...locallyReady, controlPlaneState: 'degraded' },
-    })).toBe(false);
-    expect(managedPrimaryTransportNeedsConnectorRepair(true, {
-      ok: false, detail: 'local listener failed', value: { ...locallyReady, healthy: false },
-    })).toBe(true);
-    expect(managedPrimaryTransportNeedsConnectorRepair(true, {
-      ok: false, detail: 'tunnel identity changed', value: { ...locallyReady, tunnelMatches: false },
-    })).toBe(true);
+    expect(
+      managedPrimaryTransportNeedsConnectorRepair(true, {
+        ok: false,
+        detail: 'remote status unavailable',
+        value: locallyReady,
+      }),
+    ).toBe(false);
+    expect(
+      managedPrimaryTransportNeedsConnectorRepair(true, {
+        ok: false,
+        detail: 'remote degraded',
+        value: { ...locallyReady, controlPlaneState: 'degraded' },
+      }),
+    ).toBe(false);
+    expect(
+      managedPrimaryTransportNeedsConnectorRepair(true, {
+        ok: false,
+        detail: 'local listener failed',
+        value: { ...locallyReady, healthy: false },
+      }),
+    ).toBe(true);
+    expect(
+      managedPrimaryTransportNeedsConnectorRepair(true, {
+        ok: false,
+        detail: 'tunnel identity changed',
+        value: { ...locallyReady, tunnelMatches: false },
+      }),
+    ).toBe(true);
     expect(managedPrimaryTransportNeedsConnectorRepair(true, undefined)).toBe(true);
     expect(managedPrimaryTransportNeedsConnectorRepair(false, undefined)).toBe(false);
   });
@@ -4311,7 +5356,11 @@ describe('standalone recovery on canonical Runtime', () => {
     const verified = await verifyStableRuntime(config, undefined, { probeMcpProtocol: false });
     expect(verified.ok).toBe(false);
     expect(verified.probes.external_mcp_http).toMatchObject({ ok: true, status: 401 });
-    expect(verified.probes.primary_connector_ready).toMatchObject({ ok: false, status: 503, detail: 'legacy-mcp HTTP 503' });
+    expect(verified.probes.primary_connector_ready).toMatchObject({
+      ok: false,
+      status: 503,
+      detail: 'legacy-mcp HTTP 503',
+    });
     expect(verified.probes.primary_connector_local).toMatchObject({ ok: false, status: 503 });
     expect(connector.requests.some((request) => request.method === 'GET' && request.url === '/ready')).toBe(false);
 
@@ -4356,7 +5405,11 @@ describe('standalone recovery on canonical Runtime', () => {
     const verified = await verifyStableRuntime(config, undefined, { probeMcpProtocol: false });
     expect(verified.ok).toBe(false);
     expect(verified.probes.external_mcp_http).toMatchObject({ ok: false, status: 530 });
-    expect(verified.probes.primary_connector_ready).toMatchObject({ ok: true, status: 200, detail: 'transport-ready HTTP 200' });
+    expect(verified.probes.primary_connector_ready).toMatchObject({
+      ok: true,
+      status: 200,
+      detail: 'transport-ready HTTP 200',
+    });
     expect(verified.probes.primary_connector_local).toMatchObject({ ok: true, status: 401 });
 
     const tick = await watchdogTick(config, {
@@ -4375,13 +5428,20 @@ describe('standalone recovery on canonical Runtime', () => {
 
   test('attributes a managed primary public MCP failure to Connector recovery even when gateway observation is stale', async () => {
     const home = controllerHome();
-    const activeManifest = manifest(home, 'release-managed-public-stale-gateway', 'artifact-managed-public-stale-gateway');
+    const activeManifest = manifest(
+      home,
+      'release-managed-public-stale-gateway',
+      'artifact-managed-public-stale-gateway',
+    );
     ensureActiveRuntimeRelease(home, activeManifest);
     const runtime = await failingPublicGatewayServer(503);
     const connector = await runtimeServer({ challengeUnauthenticatedMcp: true });
     const publicGateway = await failingPublicGatewayServer(530);
     const tunnelPlistPath = join(home, 'primary-tunnel-stale-gateway.plist');
-    writeFileSync(tunnelPlistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
+    writeFileSync(
+      tunnelPlistPath,
+      '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>',
+    );
     writeMainToken(home);
     startObservedRuntime(
       home,
@@ -4451,7 +5511,9 @@ describe('standalone recovery on canonical Runtime', () => {
       status: 503,
       value: { admissibleSessionCount: 0, recoveryRecommended: true },
     });
-    expect(gateway.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready')).toBe(true);
+    expect(gateway.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready')).toBe(
+      true,
+    );
 
     const firstTick = await watchdogTick(config, {
       failures: 0,
@@ -4462,30 +5524,36 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(firstTick.state).toMatchObject({ failures: 1, primaryConnectorFailures: 1 });
     expect(firstTick.state.runtimeRestartAttempts ?? 0).toBe(0);
 
-    const capacityFailed = (verified.probes.primary_connector_ready.value as { recoveryRecommended?: boolean }).recoveryRecommended === true;
-    expect(decideWatchdog({
-      failures: 2,
-      firstFailureAt: Date.now() - 6_000,
-      evidenceClasses: ['public_mcp'],
-      activeKnownGood: true,
-      previousKnownGood: true,
-      rollbackUsed: false,
-      primaryConnectorConfigured: true,
-      primaryConnectorFailed: capacityFailed,
-      primaryConnectorFailures: 2,
-      primaryConnectorFirstFailureAt: Date.now() - 6_000,
-      primaryConnectorRestartAttempts: 0,
-      primaryConnectorMaximumRestartAttempts: 3,
-    })).toMatchObject({ action: 'restart_primary_connector' });
+    const capacityFailed =
+      (verified.probes.primary_connector_ready.value as { recoveryRecommended?: boolean }).recoveryRecommended === true;
+    expect(
+      decideWatchdog({
+        failures: 2,
+        firstFailureAt: Date.now() - 6_000,
+        evidenceClasses: ['public_mcp'],
+        activeKnownGood: true,
+        previousKnownGood: true,
+        rollbackUsed: false,
+        primaryConnectorConfigured: true,
+        primaryConnectorFailed: capacityFailed,
+        primaryConnectorFailures: 2,
+        primaryConnectorFirstFailureAt: Date.now() - 6_000,
+        primaryConnectorRestartAttempts: 0,
+        primaryConnectorMaximumRestartAttempts: 3,
+      }),
+    ).toMatchObject({ action: 'restart_primary_connector' });
 
-    const gatewayTick = await watchdogTick({ ...config, installProfile: 'gateway' }, {
-      failures: 2,
-      firstFailureAt: Date.now() - 6_000,
-      rollbackUsed: false,
-      primaryConnectorFailures: 2,
-      primaryConnectorFirstFailureAt: Date.now() - 6_000,
-      lastFullVerifyAt: Date.now(),
-    });
+    const gatewayTick = await watchdogTick(
+      { ...config, installProfile: 'gateway' },
+      {
+        failures: 2,
+        firstFailureAt: Date.now() - 6_000,
+        rollbackUsed: false,
+        primaryConnectorFailures: 2,
+        primaryConnectorFirstFailureAt: Date.now() - 6_000,
+        lastFullVerifyAt: Date.now(),
+      },
+    );
     expect(gatewayTick.decision).toMatchObject({
       action: 'degraded',
       reason: expect.stringContaining('permits only Recovery publication self-heal'),
@@ -4508,8 +5576,12 @@ describe('standalone recovery on canonical Runtime', () => {
     const verified = await verifyStableRuntime(config);
     expect(verified.ok).toBe(false);
     expect(verified.probes.runtime_execution_surface).toMatchObject({ ok: false });
-    expect(verified.probes.runtime_execution_surface.detail).toContain('RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: check_runner');
-    await expect(attestKnownGood(config)).rejects.toThrow('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
+    expect(verified.probes.runtime_execution_surface.detail).toContain(
+      'RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: check_runner',
+    );
+    await expect(attestKnownGood(config)).rejects.toThrow(
+      'RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY',
+    );
     expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
   });
 
@@ -4569,7 +5641,9 @@ describe('standalone recovery on canonical Runtime', () => {
     writeFileSync(backupPath!, 'corrupted shared rollback database\n', 'utf8');
     const rolled = await rollbackPrevious(config, 'corrupted shared rollback database');
     expect(rolled.ok).toBe(false);
-    expect(rolled.detail).toContain('no attested previous whole-Runtime release with a bound SQLite backup is available');
+    expect(rolled.detail).toContain(
+      'no attested previous whole-Runtime release with a bound SQLite backup is available',
+    );
     expect(rolled.verify?.probes.recovery_known_good_recoverability).toMatchObject({ ok: false });
   });
 
@@ -4631,8 +5705,10 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(previousAttestation!.recoveryBundle!.database.sha256).toBe(backupSha256!);
     expect(existsSync(firstAttestation.recoveryBundle!.root)).toBe(true);
     expect(existsSync(secondAttestation.recoveryBundle!.root)).toBe(true);
-    const listing = await listReleases(config) as { knownGood: Array<{ revision: string }> };
-    expect(listing.knownGood.map((entry) => entry.revision)).toEqual(expect.arrayContaining(['release-a', 'release-b']));
+    const listing = (await listReleases(config)) as { knownGood: Array<{ revision: string }> };
+    expect(listing.knownGood.map((entry) => entry.revision)).toEqual(
+      expect.arrayContaining(['release-a', 'release-b']),
+    );
 
     const rolled = await rollbackPrevious(config, 'active release became unhealthy after attestation');
     expect(rolled.ok).toBe(true);
@@ -4643,7 +5719,7 @@ describe('standalone recovery on canonical Runtime', () => {
       previous: { releaseId: 'release-b', artifactIdentity: 'artifact-b' },
     });
     expect(existsSync(previousDatabasePath)).toBe(true);
-    const afterRollback = await listReleases(config) as { knownGood: Array<{ revision: string }> };
+    const afterRollback = (await listReleases(config)) as { knownGood: Array<{ revision: string }> };
     expect(afterRollback.knownGood.map((entry) => entry.revision)).toContain('release-a');
   });
 
@@ -4658,10 +5734,15 @@ describe('standalone recovery on canonical Runtime', () => {
     const committedAuthority = readFileSync(authorityPath, 'utf8');
     writeFileSync(first, `${readFileSync(first, 'utf8')}\n`);
     expect(readRuntimeReleaseAuthority(home)).toBeUndefined();
-    expect(() => publishRuntimeRelease(home, third, 'must-not-reset-authority'))
-      .toThrow('RUNTIME_RELEASE_AUTHORITY_INVALID_EXISTING');
+    expect(() => publishRuntimeRelease(home, third, 'must-not-reset-authority')).toThrow(
+      'RUNTIME_RELEASE_AUTHORITY_INVALID_EXISTING',
+    );
     expect(readFileSync(authorityPath, 'utf8')).toBe(committedAuthority);
-    expect(JSON.parse(committedAuthority)).toMatchObject({ revision: 2, active: { releaseId: 'release-b' }, previous: { releaseId: 'release-a' } });
+    expect(JSON.parse(committedAuthority)).toMatchObject({
+      revision: 2,
+      active: { releaseId: 'release-b' },
+      previous: { releaseId: 'release-a' },
+    });
   });
 
   test('refuses rollback while the canonical Runtime owner is live', async () => {
@@ -4686,46 +5767,52 @@ describe('standalone recovery on canonical Runtime', () => {
 
   test('restarts the primary Runtime before allowing previous-release rollback', () => {
     const now = Date.now();
-    expect(decideWatchdog({
-      failures: 2,
-      firstFailureAt: now - 6_000,
-      evidenceClasses: ['runtime', 'mcp'],
-      activeKnownGood: false,
-      previousKnownGood: true,
-      rollbackUsed: false,
-      primaryRuntimeFailed: true,
-      runtimeRestartAttempts: 0,
-      runtimeMaximumRestartAttempts: 3,
-      nowMs: now,
-    }).action).toBe('restart_primary_runtime');
-    expect(decideWatchdog({
-      failures: 6,
-      firstFailureAt: now - 31_000,
-      evidenceClasses: ['runtime', 'mcp'],
-      activeKnownGood: false,
-      previousKnownGood: true,
-      rollbackUsed: false,
-      primaryRuntimeFailed: true,
-      runtimeRestartAttempts: 3,
-      runtimeMaximumRestartAttempts: 3,
-      runtimeRecoveryLastAttemptAt: now - 61_000,
-      runtimeRecoveryCooldownMs: 60_000,
-      nowMs: now,
-    }).action).toBe('rollback');
-    expect(decideWatchdog({
-      failures: 6,
-      firstFailureAt: now - 31_000,
-      evidenceClasses: ['runtime', 'mcp'],
-      activeKnownGood: false,
-      previousKnownGood: true,
-      rollbackUsed: false,
-      primaryRuntimeFailed: true,
-      runtimeRestartAttempts: 3,
-      runtimeMaximumRestartAttempts: 3,
-      runtimeRecoveryLastAttemptAt: now - 1_000,
-      runtimeRecoveryCooldownMs: 60_000,
-      nowMs: now,
-    }).action).toBe('degraded');
+    expect(
+      decideWatchdog({
+        failures: 2,
+        firstFailureAt: now - 6_000,
+        evidenceClasses: ['runtime', 'mcp'],
+        activeKnownGood: false,
+        previousKnownGood: true,
+        rollbackUsed: false,
+        primaryRuntimeFailed: true,
+        runtimeRestartAttempts: 0,
+        runtimeMaximumRestartAttempts: 3,
+        nowMs: now,
+      }).action,
+    ).toBe('restart_primary_runtime');
+    expect(
+      decideWatchdog({
+        failures: 6,
+        firstFailureAt: now - 31_000,
+        evidenceClasses: ['runtime', 'mcp'],
+        activeKnownGood: false,
+        previousKnownGood: true,
+        rollbackUsed: false,
+        primaryRuntimeFailed: true,
+        runtimeRestartAttempts: 3,
+        runtimeMaximumRestartAttempts: 3,
+        runtimeRecoveryLastAttemptAt: now - 61_000,
+        runtimeRecoveryCooldownMs: 60_000,
+        nowMs: now,
+      }).action,
+    ).toBe('rollback');
+    expect(
+      decideWatchdog({
+        failures: 6,
+        firstFailureAt: now - 31_000,
+        evidenceClasses: ['runtime', 'mcp'],
+        activeKnownGood: false,
+        previousKnownGood: true,
+        rollbackUsed: false,
+        primaryRuntimeFailed: true,
+        runtimeRestartAttempts: 3,
+        runtimeMaximumRestartAttempts: 3,
+        runtimeRecoveryLastAttemptAt: now - 1_000,
+        runtimeRecoveryCooldownMs: 60_000,
+        nowMs: now,
+      }).action,
+    ).toBe('degraded');
   });
 
   test('MCP Runtime restart requires caller-observed release fence and opts into healthy force explicitly', async () => {
@@ -4739,21 +5826,27 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(schema.required).toContain('expected_authority_revision');
     expect(schema.properties.force_healthy_restart).toEqual({ type: 'boolean' });
     expect(schema.properties.expected_runtime_instance_id).toEqual({ type: 'string', minLength: 8, maxLength: 128 });
-    await expect(dispatchRecoveryTool(config, 'restart_primary_runtime', {
-      request_id: 'test-unfenced-restart',
-    })).rejects.toThrow('RECOVERY_RUNTIME_RESTART_AUTHORITY_FENCE_REQUIRED');
-    await expect(dispatchRecoveryTool(config, 'restart_primary_runtime', {
-      request_id: 'test-invalid-force',
-      expected_active_release_id: 'release-current',
-      expected_authority_revision: 1,
-      force_healthy_restart: 'yes',
-    })).rejects.toThrow('RECOVERY_RUNTIME_RESTART_FORCE_INVALID');
-    await expect(dispatchRecoveryTool(config, 'restart_primary_runtime', {
-      request_id: 'test-unfenced-instance',
-      expected_active_release_id: 'release-current',
-      expected_authority_revision: 1,
-      force_healthy_restart: true,
-    })).rejects.toThrow('RECOVERY_RUNTIME_RESTART_INSTANCE_FENCE_REQUIRED');
+    await expect(
+      dispatchRecoveryTool(config, 'restart_primary_runtime', {
+        request_id: 'test-unfenced-restart',
+      }),
+    ).rejects.toThrow('RECOVERY_RUNTIME_RESTART_AUTHORITY_FENCE_REQUIRED');
+    await expect(
+      dispatchRecoveryTool(config, 'restart_primary_runtime', {
+        request_id: 'test-invalid-force',
+        expected_active_release_id: 'release-current',
+        expected_authority_revision: 1,
+        force_healthy_restart: 'yes',
+      }),
+    ).rejects.toThrow('RECOVERY_RUNTIME_RESTART_FORCE_INVALID');
+    await expect(
+      dispatchRecoveryTool(config, 'restart_primary_runtime', {
+        request_id: 'test-unfenced-instance',
+        expected_active_release_id: 'release-current',
+        expected_authority_revision: 1,
+        force_healthy_restart: true,
+      }),
+    ).rejects.toThrow('RECOVERY_RUNTIME_RESTART_INSTANCE_FENCE_REQUIRED');
   });
 
   test('stale Runtime restart authority is rejected under the Recovery lock before any bootout with caller attribution', async () => {
@@ -4852,33 +5945,53 @@ describe('standalone recovery on canonical Runtime', () => {
         const paths = forgeRuntimeServicePaths(home);
         mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
         writeFileSync(paths.installedPlistPath, '<plist/>');
-        const config = createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 } });
+        const config = createRecoveryConfig(home, {
+          primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+        });
         let launchdLoaded = true;
         let kickstartIssued = false;
         const commands: string[][] = [];
         const result = await restartPrimaryRuntime(config, {
-          forceHealthyRestart: true, platform: 'darwin', currentUid: async () => 501,
+          forceHealthyRestart: true,
+          platform: 'darwin',
+          currentUid: async () => 501,
           runCommand: async (_command, args) => {
             commands.push(args);
             if (args[0] === 'bootout') launchdLoaded = false;
             if (args[0] === 'bootstrap') launchdLoaded = true;
             if (args[0] === 'kickstart') {
               kickstartIssued = true;
-              return { ok: false, status: 3, stdout: '', stderr: 'Could not find service "' + args[2] + '" in domain for user gui: 501' };
+              return {
+                ok: false,
+                status: 3,
+                stdout: '',
+                stderr: 'Could not find service "' + args[2] + '" in domain for user gui: 501',
+              };
             }
-            if (args[0] === 'print') return kickstartIssued
-              ? registeredAfterKickstart
-                ? { ok: true, status: 0, stdout: 'registered', stderr: '' }
-                : { ok: false, status: 3, stdout: '', stderr: 'service not found' }
-              : launchdLoaded
-                ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-                : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
+            if (args[0] === 'print')
+              return kickstartIssued
+                ? registeredAfterKickstart
+                  ? { ok: true, status: 0, stdout: 'registered', stderr: '' }
+                  : { ok: false, status: 3, stdout: '', stderr: 'service not found' }
+                : launchdLoaded
+                  ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+                  : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
             return { ok: true, status: 0, stdout: '', stderr: '' };
           },
           runtimeRunning: () => launchdLoaded,
-          repairPrimaryConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'connector already bound' }),
-          verifyLocal: async () => healthyVerify(), observeLocal: async () => healthyVerify(),
-          now: (() => { let value = 0; return () => value += 250; })(), sleep: async () => undefined,
+          repairPrimaryConnectorBinding: async () => ({
+            ok: true,
+            attempted: false,
+            noOp: true,
+            detail: 'connector already bound',
+          }),
+          verifyLocal: async () => healthyVerify(),
+          observeLocal: async () => healthyVerify(),
+          now: (() => {
+            let value = 0;
+            return () => (value += 250);
+          })(),
+          sleep: async () => undefined,
         });
         const kickstartIndex = commands.findIndex((args) => args[0] === 'kickstart');
         const recheckIndex = commands.findIndex((args, index) => index > kickstartIndex && args[0] === 'print');
@@ -4900,7 +6013,9 @@ describe('standalone recovery on canonical Runtime', () => {
       const paths = forgeRuntimeServicePaths(home);
       mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
       writeFileSync(paths.installedPlistPath, '<plist/>');
-      const config = createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 } });
+      const config = createRecoveryConfig(home, {
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
       const healthyNoOp = await restartPrimaryRuntime(config, { verifyLocal: async () => healthyVerify() });
       expect(healthyNoOp).toMatchObject({ ok: true, attempted: false, noOp: true });
 
@@ -4916,16 +6031,31 @@ describe('standalone recovery on canonical Runtime', () => {
           commands.push(args);
           if (args[0] === 'bootout') launchdLoaded = false;
           if (args[0] === 'bootstrap') launchdLoaded = true;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
+          if (args[0] === 'print')
+            return launchdLoaded
+              ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+              : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
         runtimeRunning: () => launchdLoaded,
-        repairPrimaryConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'connector already bound' }),
-        verifyLocal: async () => { strictProbes += 1; return healthyVerify(); },
-        observeLocal: async () => { readinessProbes += 1; return healthyVerify(); },
-        now: (() => { let value = 0; return () => value += 250; })(),
+        repairPrimaryConnectorBinding: async () => ({
+          ok: true,
+          attempted: false,
+          noOp: true,
+          detail: 'connector already bound',
+        }),
+        verifyLocal: async () => {
+          strictProbes += 1;
+          return healthyVerify();
+        },
+        observeLocal: async () => {
+          readinessProbes += 1;
+          return healthyVerify();
+        },
+        now: (() => {
+          let value = 0;
+          return () => (value += 250);
+        })(),
         sleep: async () => undefined,
       });
       expect(restarted).toMatchObject({ ok: true, attempted: true });
@@ -4945,28 +6075,36 @@ describe('standalone recovery on canonical Runtime', () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
     process.env.HOME = home;
-    const child = Bun.spawn([process.execPath, '-e', 'setInterval(() => {}, 1000)'], { stdout: 'ignore', stderr: 'ignore' });
+    const child = Bun.spawn([process.execPath, '-e', 'setInterval(() => {}, 1000)'], {
+      stdout: 'ignore',
+      stderr: 'ignore',
+    });
     try {
       const paths = forgeRuntimeServicePaths(home);
       mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
       writeFileSync(paths.installedPlistPath, '<plist/>');
       ensureActiveRuntimeRelease(home, manifest(home, 'release-orphan-recovery', 'artifact-orphan-recovery'));
 
-      const { defaultProcessIdentityProbe, executableFingerprint } = await import('../../src/runtime/shared/process-identity');
+      const { defaultProcessIdentityProbe, executableFingerprint } = await import(
+        '../../src/runtime/shared/process-identity'
+      );
       const start = defaultProcessIdentityProbe.startTime(child.pid);
       const command = defaultProcessIdentityProbe.command(child.pid);
       expect(start).toBeTruthy();
       expect(command).toBeTruthy();
-      writeFileSync(runtimeIncarnationPath(home), JSON.stringify({
-        schemaVersion: 1,
-        controllerHome: home,
-        runtimeInstanceId: 'runtime-orphan-before-recovery',
-        pid: child.pid,
-        fencingGeneration: 1,
-        activatedAt: new Date().toISOString(),
-        processStartTime: start,
-        executableFingerprint: executableFingerprint(command!),
-      }));
+      writeFileSync(
+        runtimeIncarnationPath(home),
+        JSON.stringify({
+          schemaVersion: 1,
+          controllerHome: home,
+          runtimeInstanceId: 'runtime-orphan-before-recovery',
+          pid: child.pid,
+          fencingGeneration: 1,
+          activatedAt: new Date().toISOString(),
+          processStartTime: start,
+          executableFingerprint: executableFingerprint(command!),
+        }),
+      );
       expect(inspectRuntimeOwnership(home)).toMatchObject({ ownerAlive: false, incarnationAlive: true });
 
       const config = createRecoveryConfig(home, {
@@ -4982,16 +6120,25 @@ describe('standalone recovery on canonical Runtime', () => {
           commands.push(args);
           if (args[0] === 'bootout') launchdLoaded = false;
           if (args[0] === 'bootstrap') launchdLoaded = true;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
+          if (args[0] === 'print')
+            return launchdLoaded
+              ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+              : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
         runtimeRunning: () => inspectRuntimeOwnership(home).incarnationAlive,
-        repairPrimaryConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'connector already bound' }),
+        repairPrimaryConnectorBinding: async () => ({
+          ok: true,
+          attempted: false,
+          noOp: true,
+          detail: 'connector already bound',
+        }),
         verifyLocal: async () => healthyVerify(),
         observeLocal: async () => healthyVerify(),
-        now: (() => { let value = 0; return () => value += 250; })(),
+        now: (() => {
+          let value = 0;
+          return () => (value += 250);
+        })(),
         sleep: async () => undefined,
       });
 
@@ -5032,16 +6179,34 @@ describe('standalone recovery on canonical Runtime', () => {
           commands.push(args);
           if (args[0] === 'bootout') launchdLoaded = false;
           if (args[0] === 'bootstrap') launchdLoaded = true;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
+          if (args[0] === 'print')
+            return launchdLoaded
+              ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+              : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
-        verifyLocal: async () => { strictProbes += 1; return healthyVerify(); },
-        observeLocal: async () => ++readinessProbes >= 3
-          ? healthyVerify()
-          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
-        now: (() => { let value = 0; return () => value += 250; })(),
+        verifyLocal: async () => {
+          strictProbes += 1;
+          return healthyVerify();
+        },
+        observeLocal: async () =>
+          ++readinessProbes >= 3
+            ? healthyVerify()
+            : {
+                ...healthyVerify(),
+                ok: false,
+                runtime: {
+                  ok: false,
+                  running: false,
+                  ready: false,
+                  stale: false,
+                  reasonCodes: ['RUNTIME_UNAVAILABLE'],
+                },
+              },
+        now: (() => {
+          let value = 0;
+          return () => (value += 250);
+        })(),
         sleep: async () => undefined,
       });
       expect(result).toMatchObject({ ok: true, attempted: true });
@@ -5082,18 +6247,41 @@ describe('standalone recovery on canonical Runtime', () => {
           commands.push(args);
           if (args[0] === 'bootout') launchdLoaded = false;
           if (args[0] === 'bootstrap') launchdLoaded = true;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
+          if (args[0] === 'print')
+            return launchdLoaded
+              ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+              : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
         runtimeRunning: () => launchdLoaded,
-        repairPrimaryConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'connector already bound' }),
-        verifyLocal: async () => { strictProbes += 1; return healthyVerify(); },
-        observeLocal: async () => ++readinessProbes >= 3
-          ? healthyVerify()
-          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
-        now: (() => { let value = 0; return () => value += 250; })(),
+        repairPrimaryConnectorBinding: async () => ({
+          ok: true,
+          attempted: false,
+          noOp: true,
+          detail: 'connector already bound',
+        }),
+        verifyLocal: async () => {
+          strictProbes += 1;
+          return healthyVerify();
+        },
+        observeLocal: async () =>
+          ++readinessProbes >= 3
+            ? healthyVerify()
+            : {
+                ...healthyVerify(),
+                ok: false,
+                runtime: {
+                  ok: false,
+                  running: false,
+                  ready: false,
+                  stale: false,
+                  reasonCodes: ['RUNTIME_UNAVAILABLE'],
+                },
+              },
+        now: (() => {
+          let value = 0;
+          return () => (value += 250);
+        })(),
         sleep: async () => undefined,
       });
       expect(result).toMatchObject({ ok: true, attempted: true });
@@ -5119,7 +6307,10 @@ describe('standalone recovery on canonical Runtime', () => {
       const paths = forgeRuntimeServicePaths(home);
       const unitPath = systemdUserUnitPath(paths.label);
       mkdirSync(dirname(unitPath), { recursive: true });
-      writeFileSync(unitPath, `[Unit]\nDescription=Forge Runtime\n[Service]\nExecStart=\"${paths.activeEntrypointPath}\"\n`);
+      writeFileSync(
+        unitPath,
+        `[Unit]\nDescription=Forge Runtime\n[Service]\nExecStart=\"${paths.activeEntrypointPath}\"\n`,
+      );
       const config = createRecoveryConfig(home, {
         primaryRuntimeService: { platform: 'systemd-user', postRestartVerifyTimeoutMs: 10_000 },
       });
@@ -5130,18 +6321,37 @@ describe('standalone recovery on canonical Runtime', () => {
         currentUid: async () => 1000,
         runCommand: async (name, args) => {
           commands.push([name, ...args]);
-          if (name === 'systemctl' && args.includes('show')) return { ok: true, status: 0, stdout: 'inactive\n', stderr: '' };
+          if (name === 'systemctl' && args.includes('show'))
+            return { ok: true, status: 0, stdout: 'inactive\n', stderr: '' };
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
-        verifyLocal: async () => ++probes >= 3
-          ? healthyVerify()
-          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
-        now: (() => { let value = 0; return () => value += 1_000; })(),
+        verifyLocal: async () =>
+          ++probes >= 3
+            ? healthyVerify()
+            : {
+                ...healthyVerify(),
+                ok: false,
+                runtime: {
+                  ok: false,
+                  running: false,
+                  ready: false,
+                  stale: false,
+                  reasonCodes: ['RUNTIME_UNAVAILABLE'],
+                },
+              },
+        now: (() => {
+          let value = 0;
+          return () => (value += 1_000);
+        })(),
         sleep: async () => undefined,
       });
       expect(result).toMatchObject({ ok: true, attempted: true, serviceTarget: `${paths.label}.service` });
-      const stopIndex = commands.findIndex((entry) => entry.join(' ') === `systemctl --user stop ${paths.label}.service`);
-      const restartIndex = commands.findIndex((entry) => entry.join(' ') === `systemctl --user restart ${paths.label}.service`);
+      const stopIndex = commands.findIndex(
+        (entry) => entry.join(' ') === `systemctl --user stop ${paths.label}.service`,
+      );
+      const restartIndex = commands.findIndex(
+        (entry) => entry.join(' ') === `systemctl --user restart ${paths.label}.service`,
+      );
       expect(stopIndex).toBeGreaterThanOrEqual(0);
       expect(restartIndex).toBeGreaterThan(stopIndex);
       expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
@@ -5183,17 +6393,32 @@ describe('standalone recovery on canonical Runtime', () => {
         runCommand: async (_command, args) => {
           commands.push(args);
           if (args[0] === 'bootout') launchdLoaded = false;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'print')
+            return launchdLoaded
+              ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+              : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
           if (args[0] === 'bootstrap') launchdLoaded = true;
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
         runtimeRunning: () => false,
-        verifyLocal: async () => ++localProbes >= 3
-          ? healthyVerify()
-          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
-        now: (() => { let value = 0; return () => value += 1_000; })(),
+        verifyLocal: async () =>
+          ++localProbes >= 3
+            ? healthyVerify()
+            : {
+                ...healthyVerify(),
+                ok: false,
+                runtime: {
+                  ok: false,
+                  running: false,
+                  ready: false,
+                  stale: false,
+                  reasonCodes: ['RUNTIME_UNAVAILABLE'],
+                },
+              },
+        now: (() => {
+          let value = 0;
+          return () => (value += 1_000);
+        })(),
         sleep: async () => undefined,
       });
       expect(result).toMatchObject({ ok: true, attempted: true, rollback: { ok: true } });
@@ -5240,20 +6465,26 @@ describe('standalone recovery on canonical Runtime', () => {
         runCommand: async (_command, args) => {
           commands.push(args);
           if (args[0] === 'bootout') launchdLoaded = false;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'print')
+            return launchdLoaded
+              ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+              : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
           if (args[0] === 'bootstrap') launchdLoaded = true;
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
         runtimeRunning: () => false,
-        ensureRuntimeLaunchContract: () => { throw new Error('simulated launch contract write failure'); },
+        ensureRuntimeLaunchContract: () => {
+          throw new Error('simulated launch contract write failure');
+        },
         verifyLocal: async () => ({
           ...healthyVerify(),
           ok: false,
           runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] },
         }),
-        now: (() => { let value = 0; return () => value += 1_000; })(),
+        now: (() => {
+          let value = 0;
+          return () => (value += 1_000);
+        })(),
         sleep: async () => undefined,
       });
 
@@ -5281,15 +6512,19 @@ describe('standalone recovery on canonical Runtime', () => {
       ensureForgeRuntimeLaunchAgentContract({ controllerHome: home, installUserLaunchAgent: true });
       const commands: string[][] = [];
 
-      const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }), candidate.path, {
-        platform: 'darwin',
-        currentUid: async () => 501,
-        runCommand: async (name, args) => {
-          commands.push([name, ...args]);
-          return { ok: true, status: 0, stdout: '', stderr: '' };
+      const result = await activateRuntimeRelease(
+        createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }),
+        candidate.path,
+        {
+          platform: 'darwin',
+          currentUid: async () => 501,
+          runCommand: async (name, args) => {
+            commands.push([name, ...args]);
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          verifyLocal: async () => healthyVerify(),
         },
-        verifyLocal: async () => healthyVerify(),
-      });
+      );
 
       expect(result).toMatchObject({ ok: true, attempted: false, noOp: true });
       expect(result.detail).toContain('restart skipped');
@@ -5317,33 +6552,47 @@ describe('standalone recovery on canonical Runtime', () => {
       let launchdLoaded = true;
       const commands: string[][] = [];
 
-      const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }), candidate.path, {
-        platform: 'darwin',
-        currentUid: async () => 501,
-        runCommand: async (name, args) => {
-          commands.push([name, ...args]);
-          if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
-          if (args[0] === 'bootout') launchdLoaded = false;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
-          if (args[0] === 'bootstrap' || args[0] === 'kickstart') launchdLoaded = true;
-          return { ok: true, status: 0, stdout: '', stderr: '' };
+      const result = await activateRuntimeRelease(
+        createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }),
+        candidate.path,
+        {
+          platform: 'darwin',
+          currentUid: async () => 501,
+          runCommand: async (name, args) => {
+            commands.push([name, ...args]);
+            if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
+            if (args[0] === 'bootout') launchdLoaded = false;
+            if (args[0] === 'print')
+              return launchdLoaded
+                ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+                : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+            if (args[0] === 'bootstrap' || args[0] === 'kickstart') launchdLoaded = true;
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          runtimeRunning: () => false,
+          verifyLocal: async () => {
+            const authority = readRuntimeReleaseAuthority(home)!;
+            return {
+              ...healthyVerify(),
+              releases: {
+                active: {
+                  path: authority.active.manifestPath,
+                  revision: authority.active.releaseId,
+                  artifactIdentity: authority.active.artifactIdentity,
+                  manifestSha256: 'test-sha',
+                  workerProtocolVersion: 1,
+                },
+                coherent: true,
+              },
+            };
+          },
+          now: (() => {
+            let value = 0;
+            return () => (value += 1_000);
+          })(),
+          sleep: async () => undefined,
         },
-        runtimeRunning: () => false,
-        verifyLocal: async () => {
-          const authority = readRuntimeReleaseAuthority(home)!;
-          return {
-            ...healthyVerify(),
-            releases: {
-              active: { path: authority.active.manifestPath, revision: authority.active.releaseId, artifactIdentity: authority.active.artifactIdentity, manifestSha256: 'test-sha', workerProtocolVersion: 1 },
-              coherent: true,
-            },
-          };
-        },
-        now: (() => { let value = 0; return () => value += 1_000; })(),
-        sleep: async () => undefined,
-      });
+      );
 
       expect(result).toMatchObject({ ok: true, attempted: true });
       expect(commands.some((command) => command.includes('bootout'))).toBe(true);
@@ -5367,12 +6616,19 @@ describe('standalone recovery on canonical Runtime', () => {
       runtimeServiceConfig(home);
       writePackageRuntimeSystemdUserService(home);
       const commands: string[][] = [];
-      const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'systemd-user' } }), candidate.path, {
-        platform: 'linux',
-        currentUid: async () => 1000,
-        runCommand: async (name, args) => { commands.push([name, ...args]); return { ok: true, status: 0, stdout: '', stderr: '' }; },
-        verifyLocal: async () => healthyVerify(),
-      });
+      const result = await activateRuntimeRelease(
+        createRecoveryConfig(home, { primaryRuntimeService: { platform: 'systemd-user' } }),
+        candidate.path,
+        {
+          platform: 'linux',
+          currentUid: async () => 1000,
+          runCommand: async (name, args) => {
+            commands.push([name, ...args]);
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          verifyLocal: async () => healthyVerify(),
+        },
+      );
       expect(result).toMatchObject({ ok: true, attempted: false, noOp: true });
       expect(result.detail).toContain('restart skipped');
       expect(commands).toEqual([]);
@@ -5402,7 +6658,9 @@ describe('standalone recovery on canonical Runtime', () => {
       let connectorBindings = 0;
       const commands: string[][] = [];
       const activationOrder: string[] = [];
-      const config = createRecoveryConfig(home, { primaryRuntimeService: { platform: 'systemd-user', postRestartVerifyTimeoutMs: 10_000 } });
+      const config = createRecoveryConfig(home, {
+        primaryRuntimeService: { platform: 'systemd-user', postRestartVerifyTimeoutMs: 10_000 },
+      });
       const result = await activateRuntimeRelease(config, candidate.path, {
         platform: 'linux',
         currentUid: async () => 1000,
@@ -5424,7 +6682,11 @@ describe('standalone recovery on canonical Runtime', () => {
           connectorBindings += 1;
           activationOrder.push('connector-bind');
           if (!serviceActive) {
-            return { ok: false, attempted: true, detail: 'candidate Connector cannot become ready before the Runtime starts' };
+            return {
+              ok: false,
+              attempted: true,
+              detail: 'candidate Connector cannot become ready before the Runtime starts',
+            };
           }
           return { ok: true, attempted: true, detail: 'candidate Connector binding refreshed' };
         },
@@ -5433,12 +6695,21 @@ describe('standalone recovery on canonical Runtime', () => {
           return {
             ...healthyVerify(),
             releases: {
-              active: { path: authority.active.manifestPath, revision: authority.active.releaseId, artifactIdentity: authority.active.artifactIdentity, manifestSha256: 'test-sha', workerProtocolVersion: 1 },
+              active: {
+                path: authority.active.manifestPath,
+                revision: authority.active.releaseId,
+                artifactIdentity: authority.active.artifactIdentity,
+                manifestSha256: 'test-sha',
+                workerProtocolVersion: 1,
+              },
               coherent: true,
             },
           };
         },
-        now: (() => { let value = 0; return () => value += 1_000; })(),
+        now: (() => {
+          let value = 0;
+          return () => (value += 1_000);
+        })(),
         sleep: async () => undefined,
       });
       expect(result).toMatchObject({ ok: true, attempted: true, serviceTarget: unitName });
@@ -5474,32 +6745,46 @@ describe('standalone recovery on canonical Runtime', () => {
       writeFileSync(paths.installedPlistPath, '<plist/>');
       let launchdLoaded = true;
 
-      const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }), candidate.path, {
-        platform: 'darwin',
-        currentUid: async () => 501,
-        runCommand: async (name, args) => {
-          if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
-          if (args[0] === 'bootout') launchdLoaded = false;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
-          if (args[0] === 'bootstrap') launchdLoaded = true;
-          return { ok: true, status: 0, stdout: '', stderr: '' };
+      const result = await activateRuntimeRelease(
+        createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }),
+        candidate.path,
+        {
+          platform: 'darwin',
+          currentUid: async () => 501,
+          runCommand: async (name, args) => {
+            if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
+            if (args[0] === 'bootout') launchdLoaded = false;
+            if (args[0] === 'print')
+              return launchdLoaded
+                ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+                : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+            if (args[0] === 'bootstrap') launchdLoaded = true;
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          runtimeRunning: () => false,
+          verifyLocal: async () => {
+            const authority = readRuntimeReleaseAuthority(home)!;
+            return {
+              ...healthyVerify(),
+              releases: {
+                active: {
+                  path: authority.active.manifestPath,
+                  revision: authority.active.releaseId,
+                  artifactIdentity: authority.active.artifactIdentity,
+                  manifestSha256: 'test-sha',
+                  workerProtocolVersion: 1,
+                },
+                coherent: true,
+              },
+            };
+          },
+          now: (() => {
+            let value = 0;
+            return () => (value += 1_000);
+          })(),
+          sleep: async () => undefined,
         },
-        runtimeRunning: () => false,
-        verifyLocal: async () => {
-          const authority = readRuntimeReleaseAuthority(home)!;
-          return {
-            ...healthyVerify(),
-            releases: {
-              active: { path: authority.active.manifestPath, revision: authority.active.releaseId, artifactIdentity: authority.active.artifactIdentity, manifestSha256: 'test-sha', workerProtocolVersion: 1 },
-              coherent: true,
-            },
-          };
-        },
-        now: (() => { let value = 0; return () => value += 1_000; })(),
-        sleep: async () => undefined,
-      });
+      );
 
       expect(result).toMatchObject({ ok: true, attempted: true });
       expect(result.detail).toContain('.noindex');
@@ -5529,19 +6814,26 @@ describe('standalone recovery on canonical Runtime', () => {
       writeFileSync(paths.installedPlistPath, '<plist/>');
       const commands: string[][] = [];
 
-      const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }), candidate.path, {
-        platform: 'darwin',
-        currentUid: async () => 501,
-        runCommand: async (name, args) => {
-          commands.push([name, ...args]);
-          if (args[0] === 'print') return { ok: true, status: 0, stdout: 'still loaded', stderr: '' };
-          return { ok: true, status: 0, stdout: '', stderr: '' };
+      const result = await activateRuntimeRelease(
+        createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }),
+        candidate.path,
+        {
+          platform: 'darwin',
+          currentUid: async () => 501,
+          runCommand: async (name, args) => {
+            commands.push([name, ...args]);
+            if (args[0] === 'print') return { ok: true, status: 0, stdout: 'still loaded', stderr: '' };
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          runtimeRunning: () => false,
+          verifyLocal: async () => healthyVerify(),
+          now: (() => {
+            let value = 0;
+            return () => (value += 1_000);
+          })(),
+          sleep: async () => undefined,
         },
-        runtimeRunning: () => false,
-        verifyLocal: async () => healthyVerify(),
-        now: (() => { let value = 0; return () => value += 1_000; })(),
-        sleep: async () => undefined,
-      });
+      );
 
       expect(result).toMatchObject({ ok: false, attempted: true });
       expect(commands.some((command) => command.includes('bootout'))).toBe(true);
@@ -5584,7 +6876,10 @@ describe('standalone recovery on canonical Runtime', () => {
         },
         runtimeRunning: () => false,
         verifyLocal: async () => healthyVerify(),
-        now: (() => { let value = 0; return () => value += 1_000; })(),
+        now: (() => {
+          let value = 0;
+          return () => (value += 1_000);
+        })(),
         sleep: async () => undefined,
       });
 
@@ -5634,7 +6929,10 @@ describe('standalone recovery on canonical Runtime', () => {
         },
         runtimeRunning: () => false,
         verifyLocal: async () => healthyVerify(),
-        now: (() => { let value = 0; return () => value += 1_000; })(),
+        now: (() => {
+          let value = 0;
+          return () => (value += 1_000);
+        })(),
         sleep: async () => undefined,
       });
 
@@ -5678,21 +6976,26 @@ describe('standalone recovery on canonical Runtime', () => {
         currentUid: async () => 501,
         runCommand: async (commandName, args) => {
           if (commandName === 'lsof') return { ok: true, status: 0, stdout: 'p123\n', stderr: '' };
-          if (commandName === 'ps') return { ok: true, status: 0, stdout: '501 /usr/bin/python3 -m http.server 8765\n', stderr: '' };
+          if (commandName === 'ps')
+            return { ok: true, status: 0, stdout: '501 /usr/bin/python3 -m http.server 8765\n', stderr: '' };
           if (commandName === 'kill') {
             killSignals.push(args);
             return { ok: true, status: 0, stdout: '', stderr: '' };
           }
           if (args[0] === 'bootout') launchdLoaded = false;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'print')
+            return launchdLoaded
+              ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+              : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
           if (args[0] === 'kickstart') kickstarts += 1;
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
         runtimeRunning: () => false,
         verifyLocal: async () => healthyVerify(),
-        now: (() => { let value = 0; return () => value += 1_000; })(),
+        now: (() => {
+          let value = 0;
+          return () => (value += 1_000);
+        })(),
         sleep: async () => undefined,
       });
 
@@ -5726,54 +7029,64 @@ describe('standalone recovery on canonical Runtime', () => {
       let kickstarts = 0;
       const killSignals: string[][] = [];
 
-      const result = await activateRuntimeRelease(createRecoveryConfig(home, {
-        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
-      }), candidate.path, {
-        platform: 'darwin',
-        currentUid: async () => 501,
-        runCommand: async (commandName, args) => {
-          if (commandName === 'lsof') return occupied
-            ? { ok: true, status: 0, stdout: 'p123\n', stderr: '' }
-            : { ok: false, status: 1, stdout: '', stderr: '' };
-          if (commandName === 'ps') return {
-            ok: true,
-            status: 0,
-            stdout: `501 ${activeEntrypoint} --controller-home ${resolve(home)} --release-manifest ${resolve(first)} --port 8765\n`,
-            stderr: '',
-          };
-          if (commandName === 'kill') {
-            killSignals.push(args);
-            if (args[0] === '-TERM' && args[1] === '123') occupied = false;
+      const result = await activateRuntimeRelease(
+        createRecoveryConfig(home, {
+          primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+        }),
+        candidate.path,
+        {
+          platform: 'darwin',
+          currentUid: async () => 501,
+          runCommand: async (commandName, args) => {
+            if (commandName === 'lsof')
+              return occupied
+                ? { ok: true, status: 0, stdout: 'p123\n', stderr: '' }
+                : { ok: false, status: 1, stdout: '', stderr: '' };
+            if (commandName === 'ps')
+              return {
+                ok: true,
+                status: 0,
+                stdout: `501 ${activeEntrypoint} --controller-home ${resolve(home)} --release-manifest ${resolve(first)} --port 8765\n`,
+                stderr: '',
+              };
+            if (commandName === 'kill') {
+              killSignals.push(args);
+              if (args[0] === '-TERM' && args[1] === '123') occupied = false;
+              return { ok: true, status: 0, stdout: '', stderr: '' };
+            }
+            if (args[0] === 'bootout') launchdLoaded = false;
+            if (args[0] === 'print')
+              return launchdLoaded
+                ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+                : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+            if (args[0] === 'bootstrap') launchdLoaded = true;
+            if (args[0] === 'kickstart') kickstarts += 1;
             return { ok: true, status: 0, stdout: '', stderr: '' };
-          }
-          if (args[0] === 'bootout') launchdLoaded = false;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
-          if (args[0] === 'bootstrap') launchdLoaded = true;
-          if (args[0] === 'kickstart') kickstarts += 1;
-          return { ok: true, status: 0, stdout: '', stderr: '' };
-        },
-        runtimeRunning: () => false,
-        verifyLocal: async () => {
-          const authority = readRuntimeReleaseAuthority(home)!;
-          return {
-            ...healthyVerify(),
-            releases: {
-              active: {
-                path: authority.active.manifestPath,
-                revision: authority.active.releaseId,
-                artifactIdentity: authority.active.artifactIdentity,
-                manifestSha256: 'test-sha',
-                workerProtocolVersion: 1,
+          },
+          runtimeRunning: () => false,
+          verifyLocal: async () => {
+            const authority = readRuntimeReleaseAuthority(home)!;
+            return {
+              ...healthyVerify(),
+              releases: {
+                active: {
+                  path: authority.active.manifestPath,
+                  revision: authority.active.releaseId,
+                  artifactIdentity: authority.active.artifactIdentity,
+                  manifestSha256: 'test-sha',
+                  workerProtocolVersion: 1,
+                },
+                coherent: true,
               },
-              coherent: true,
-            },
-          };
+            };
+          },
+          now: (() => {
+            let value = 0;
+            return () => (value += 1_000);
+          })(),
+          sleep: async () => undefined,
         },
-        now: (() => { let value = 0; return () => value += 1_000; })(),
-        sleep: async () => undefined,
-      });
+      );
 
       expect(result).toMatchObject({ ok: true, attempted: true });
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-stale-listener-cleanup');
@@ -5802,34 +7115,47 @@ describe('standalone recovery on canonical Runtime', () => {
       let psReads = 0;
       const killSignals: string[][] = [];
 
-      const result = await activateRuntimeRelease(createRecoveryConfig(home, {
-        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
-      }), candidate.path, {
-        platform: 'darwin',
-        currentUid: async () => 501,
-        runCommand: async (commandName, args) => {
-          if (commandName === 'lsof') return { ok: true, status: 0, stdout: 'p123\n', stderr: '' };
-          if (commandName === 'ps') {
-            psReads += 1;
-            return psReads === 1
-              ? { ok: true, status: 0, stdout: `501 ${activeEntrypoint} --controller-home ${resolve(home)} --release-manifest ${resolve(first)} --port 8765\n`, stderr: '' }
-              : { ok: true, status: 0, stdout: '501 /usr/bin/python3 -m http.server 8765\n', stderr: '' };
-          }
-          if (commandName === 'kill') {
-            killSignals.push(args);
+      const result = await activateRuntimeRelease(
+        createRecoveryConfig(home, {
+          primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+        }),
+        candidate.path,
+        {
+          platform: 'darwin',
+          currentUid: async () => 501,
+          runCommand: async (commandName, args) => {
+            if (commandName === 'lsof') return { ok: true, status: 0, stdout: 'p123\n', stderr: '' };
+            if (commandName === 'ps') {
+              psReads += 1;
+              return psReads === 1
+                ? {
+                    ok: true,
+                    status: 0,
+                    stdout: `501 ${activeEntrypoint} --controller-home ${resolve(home)} --release-manifest ${resolve(first)} --port 8765\n`,
+                    stderr: '',
+                  }
+                : { ok: true, status: 0, stdout: '501 /usr/bin/python3 -m http.server 8765\n', stderr: '' };
+            }
+            if (commandName === 'kill') {
+              killSignals.push(args);
+              return { ok: true, status: 0, stdout: '', stderr: '' };
+            }
+            if (args[0] === 'bootout') launchdLoaded = false;
+            if (args[0] === 'print')
+              return launchdLoaded
+                ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+                : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
             return { ok: true, status: 0, stdout: '', stderr: '' };
-          }
-          if (args[0] === 'bootout') launchdLoaded = false;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
-          return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          runtimeRunning: () => false,
+          verifyLocal: async () => healthyVerify(),
+          now: (() => {
+            let value = 0;
+            return () => (value += 1_000);
+          })(),
+          sleep: async () => undefined,
         },
-        runtimeRunning: () => false,
-        verifyLocal: async () => healthyVerify(),
-        now: (() => { let value = 0; return () => value += 1_000; })(),
-        sleep: async () => undefined,
-      });
+      );
 
       expect(result).toMatchObject({ ok: false, attempted: true });
       expect(result.detail).toContain('listener identity changed after SIGTERM');
@@ -5858,18 +7184,23 @@ describe('standalone recovery on canonical Runtime', () => {
       writeFileSync(paths.installedPlistPath, '<plist/>');
       const commands: string[][] = [];
 
-      const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }), candidate.path, {
-        platform: 'darwin',
-        currentUid: async () => 501,
-        runCommand: async (name, args) => {
-          commands.push([name, ...args]);
-          return { ok: true, status: 0, stdout: '', stderr: '' };
+      const result = await activateRuntimeRelease(
+        createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }),
+        candidate.path,
+        {
+          platform: 'darwin',
+          currentUid: async () => 501,
+          runCommand: async (name, args) => {
+            commands.push([name, ...args]);
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
         },
-      }, {
-        requestId: 'recovery-gateway:stale-request',
-        expectedAuthorityRevision: observed.revision,
-        expectedActiveReleaseId: observed.active.releaseId,
-      });
+        {
+          requestId: 'recovery-gateway:stale-request',
+          expectedAuthorityRevision: observed.revision,
+          expectedActiveReleaseId: observed.active.releaseId,
+        },
+      );
 
       expect(result).toMatchObject({ ok: false, attempted: false, noOp: true });
       expect(result.detail).toContain('RUNTIME_RELEASE_ACTIVATION_STALE_BASE');
@@ -5880,7 +7211,6 @@ describe('standalone recovery on canonical Runtime', () => {
       else process.env.HOME = previousHome;
     }
   });
-
 
   test('reconciles a stale activation replay when the exact requested candidate is already active', async () => {
     const home = controllerHome();
@@ -5898,21 +7228,26 @@ describe('standalone recovery on canonical Runtime', () => {
       writeFileSync(paths.installedPlistPath, '<plist/>');
       const commands: string[][] = [];
 
-      const result = await activateRuntimeRelease(createRecoveryConfig(home, {
-        primaryRuntimeService: { platform: 'launchd' },
-      }), candidate.path, {
-        platform: 'darwin',
-        currentUid: async () => 501,
-        runCommand: async (name, args) => {
-          commands.push([name, ...args]);
-          return { ok: true, status: 0, stdout: '', stderr: '' };
+      const result = await activateRuntimeRelease(
+        createRecoveryConfig(home, {
+          primaryRuntimeService: { platform: 'launchd' },
+        }),
+        candidate.path,
+        {
+          platform: 'darwin',
+          currentUid: async () => 501,
+          runCommand: async (name, args) => {
+            commands.push([name, ...args]);
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          verifyLocal: async () => healthyVerify(),
         },
-        verifyLocal: async () => healthyVerify(),
-      }, {
-        requestId: 'recovery-gateway:lost-response-replay',
-        expectedAuthorityRevision: observed.revision,
-        expectedActiveReleaseId: observed.active.releaseId,
-      });
+        {
+          requestId: 'recovery-gateway:lost-response-replay',
+          expectedAuthorityRevision: observed.revision,
+          expectedActiveReleaseId: observed.active.releaseId,
+        },
+      );
 
       expect(result).toMatchObject({
         ok: true,
@@ -5966,7 +7301,9 @@ describe('standalone recovery on canonical Runtime', () => {
       ensureActiveRuntimeRelease(home, releaseA.path);
       publishRuntimeRelease(home, releaseB.path, 'activate-b');
       const observed = readRuntimeReleaseAuthority(home)!;
-      const config = createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 } });
+      const config = createRecoveryConfig(home, {
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
       await pinRuntimeRelease(config, releaseA.path, 'pin-release-a');
       runtimeServiceConfig(home);
       const paths = forgeRuntimeServicePaths(home);
@@ -5975,36 +7312,63 @@ describe('standalone recovery on canonical Runtime', () => {
 
       let localProbes = 0;
       let launchdLoaded = true;
-      const result = await activatePinnedRuntimeRelease(config, {
-        platform: 'darwin',
-        currentUid: async () => 501,
-        ensureRuntimeLaunchContract: () => undefined,
-        runCommand: async (_name, args) => {
-          if (args[0] === 'bootout') launchdLoaded = false;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
-          if (args[0] === 'bootstrap') launchdLoaded = true;
-          if (args[0] === 'kickstart') return { ok: false, status: 37, stdout: '', stderr: '' };
-          return { ok: true, status: 0, stdout: '', stderr: '' };
+      const result = await activatePinnedRuntimeRelease(
+        config,
+        {
+          platform: 'darwin',
+          currentUid: async () => 501,
+          ensureRuntimeLaunchContract: () => undefined,
+          runCommand: async (_name, args) => {
+            if (args[0] === 'bootout') launchdLoaded = false;
+            if (args[0] === 'print')
+              return launchdLoaded
+                ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+                : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+            if (args[0] === 'bootstrap') launchdLoaded = true;
+            if (args[0] === 'kickstart') return { ok: false, status: 37, stdout: '', stderr: '' };
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          runtimeRunning: () => false,
+          verifyLocal: async () =>
+            ++localProbes >= 2
+              ? {
+                  ...healthyVerify(),
+                  releases: {
+                    active: {
+                      path: releaseA.path,
+                      revision: 'release-a',
+                      artifactIdentity: releaseA.artifactIdentity,
+                      manifestSha256: 'release-a-sha',
+                      workerProtocolVersion: 1,
+                    },
+                    coherent: true,
+                  },
+                }
+              : {
+                  ...healthyVerify(),
+                  releases: {
+                    active: {
+                      path: releaseB.path,
+                      revision: 'release-b',
+                      artifactIdentity: releaseB.artifactIdentity,
+                      manifestSha256: 'release-b-sha',
+                      workerProtocolVersion: 1,
+                    },
+                    coherent: true,
+                  },
+                },
+          now: (() => {
+            let value = 0;
+            return () => (value += 1_000);
+          })(),
+          sleep: async () => undefined,
         },
-        runtimeRunning: () => false,
-        verifyLocal: async () => ++localProbes >= 2
-          ? {
-              ...healthyVerify(),
-              releases: {
-                active: { path: releaseA.path, revision: 'release-a', artifactIdentity: releaseA.artifactIdentity, manifestSha256: 'release-a-sha', workerProtocolVersion: 1 },
-                coherent: true,
-              },
-            }
-          : { ...healthyVerify(), releases: { active: { path: releaseB.path, revision: 'release-b', artifactIdentity: releaseB.artifactIdentity, manifestSha256: 'release-b-sha', workerProtocolVersion: 1 }, coherent: true } },
-        now: (() => { let value = 0; return () => value += 1_000; })(),
-        sleep: async () => undefined,
-      }, {
-        requestId: 'recovery-gateway:activate-pinned-a',
-        expectedAuthorityRevision: observed.revision,
-        expectedActiveReleaseId: observed.active.releaseId,
-      });
+        {
+          requestId: 'recovery-gateway:activate-pinned-a',
+          expectedAuthorityRevision: observed.revision,
+          expectedActiveReleaseId: observed.active.releaseId,
+        },
+      );
 
       expect(result).toMatchObject({ ok: true, attempted: true });
       expect(result.detail).not.toContain('RUNTIME_RELEASE_REVERSE_ACTIVATION_REQUIRES_ROLLBACK');
@@ -6025,11 +7389,18 @@ describe('standalone recovery on canonical Runtime', () => {
       ensureActiveRuntimeRelease(home, releaseA.path);
       publishRuntimeRelease(home, releaseB.path, 'activate-b');
       writeControlPlaneRecord(home, {
-        namespace: 'runtime_pin_probe', scope: 'controller', key: 'latest-state', schemaVersion: 1,
-        value: { marker: 'must-survive-runtime-only-fallback' }, expectedRevision: null, action: 'seed_runtime_pin_probe',
+        namespace: 'runtime_pin_probe',
+        scope: 'controller',
+        key: 'latest-state',
+        schemaVersion: 1,
+        value: { marker: 'must-survive-runtime-only-fallback' },
+        expectedRevision: null,
+        action: 'seed_runtime_pin_probe',
       });
       const observed = readRuntimeReleaseAuthority(home)!;
-      const config = createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 5_000 } });
+      const config = createRecoveryConfig(home, {
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 5_000 },
+      });
       await pinRuntimeRelease(config, releaseA.path, 'pin-release-a-for-failure');
       runtimeServiceConfig(home);
       const paths = forgeRuntimeServicePaths(home);
@@ -6038,45 +7409,66 @@ describe('standalone recovery on canonical Runtime', () => {
 
       let launchdLoaded = true;
       let kickstarts = 0;
-      const result = await activatePinnedRuntimeRelease(config, {
-        platform: 'darwin',
-        currentUid: async () => 501,
-        ensureRuntimeLaunchContract: () => undefined,
-        runCommand: async (_name, args) => {
-          if (args[0] === 'bootout') launchdLoaded = false;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
-          if (args[0] === 'bootstrap') launchdLoaded = true;
-          if (args[0] === 'kickstart') kickstarts += 1;
-          return { ok: true, status: 0, stdout: '', stderr: '' };
-        },
-        runtimeRunning: () => false,
-        verifyLocal: async () => {
-          const authority = readRuntimeReleaseAuthority(home)!;
-          if (kickstarts === 0 || kickstarts >= 2) {
+      const result = await activatePinnedRuntimeRelease(
+        config,
+        {
+          platform: 'darwin',
+          currentUid: async () => 501,
+          ensureRuntimeLaunchContract: () => undefined,
+          runCommand: async (_name, args) => {
+            if (args[0] === 'bootout') launchdLoaded = false;
+            if (args[0] === 'print')
+              return launchdLoaded
+                ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+                : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+            if (args[0] === 'bootstrap') launchdLoaded = true;
+            if (args[0] === 'kickstart') kickstarts += 1;
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          runtimeRunning: () => false,
+          verifyLocal: async () => {
+            const authority = readRuntimeReleaseAuthority(home)!;
+            if (kickstarts === 0 || kickstarts >= 2) {
+              return {
+                ...healthyVerify(),
+                releases: {
+                  active: {
+                    path: authority.active.manifestPath,
+                    revision: authority.active.releaseId,
+                    artifactIdentity: authority.active.artifactIdentity,
+                    manifestSha256: authority.active.manifestSha256,
+                    workerProtocolVersion: 1,
+                  },
+                  coherent: true,
+                },
+              };
+            }
             return {
               ...healthyVerify(),
-              releases: {
-                active: { path: authority.active.manifestPath, revision: authority.active.releaseId, artifactIdentity: authority.active.artifactIdentity, manifestSha256: authority.active.manifestSha256, workerProtocolVersion: 1 },
-                coherent: true,
-              },
+              ok: false,
+              runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] },
             };
-          }
-          return { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } };
+          },
+          now: (() => {
+            let value = 0;
+            return () => (value += 1_000);
+          })(),
+          sleep: async () => undefined,
         },
-        now: (() => { let value = 0; return () => value += 1_000; })(),
-        sleep: async () => undefined,
-      }, {
-        requestId: 'recovery-gateway:activate-pinned-a-fails',
-        expectedAuthorityRevision: observed.revision,
-        expectedActiveReleaseId: observed.active.releaseId,
-      });
+        {
+          requestId: 'recovery-gateway:activate-pinned-a-fails',
+          expectedAuthorityRevision: observed.revision,
+          expectedActiveReleaseId: observed.active.releaseId,
+        },
+      );
 
       expect(result.ok).toBe(false);
       expect(result.rollback).toMatchObject({ ok: true });
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
-      expect(readControlPlaneRecord<{ marker: string }>(home, 'runtime_pin_probe', 'controller', 'latest-state')?.value.marker).toBe('must-survive-runtime-only-fallback');
+      expect(
+        readControlPlaneRecord<{ marker: string }>(home, 'runtime_pin_probe', 'controller', 'latest-state')?.value
+          .marker,
+      ).toBe('must-survive-runtime-only-fallback');
       expect(kickstarts).toBeGreaterThanOrEqual(2);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
@@ -6100,18 +7492,23 @@ describe('standalone recovery on canonical Runtime', () => {
       writeFileSync(paths.installedPlistPath, '<plist/>');
       const commands: string[][] = [];
 
-      const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }), releaseA.path, {
-        platform: 'darwin',
-        currentUid: async () => 501,
-        runCommand: async (name, args) => {
-          commands.push([name, ...args]);
-          return { ok: true, status: 0, stdout: '', stderr: '' };
+      const result = await activateRuntimeRelease(
+        createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }),
+        releaseA.path,
+        {
+          platform: 'darwin',
+          currentUid: async () => 501,
+          runCommand: async (name, args) => {
+            commands.push([name, ...args]);
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
         },
-      }, {
-        requestId: 'recovery-gateway:reverse-request',
-        expectedAuthorityRevision: observed.revision,
-        expectedActiveReleaseId: observed.active.releaseId,
-      });
+        {
+          requestId: 'recovery-gateway:reverse-request',
+          expectedAuthorityRevision: observed.revision,
+          expectedActiveReleaseId: observed.active.releaseId,
+        },
+      );
 
       expect(result).toMatchObject({ ok: false, attempted: false, noOp: true });
       expect(result.detail).toContain('RUNTIME_RELEASE_REVERSE_ACTIVATION_REQUIRES_ROLLBACK');
@@ -6135,26 +7532,35 @@ describe('standalone recovery on canonical Runtime', () => {
       const candidateRoot = join(home, 'runtime', 'releases', candidateReleaseId);
       mkdirSync(candidateRoot, { recursive: true });
       writeFileSync(join(candidateRoot, 'forge-runtime'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
-      const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(join(candidateRoot, 'forge-runtime'))).digest('hex')}`;
+      const artifactIdentity = `sha256:${createHash('sha256')
+        .update(readFileSync(join(candidateRoot, 'forge-runtime')))
+        .digest('hex')}`;
       const executionSurface = writeReleaseExecutionSurface(candidateRoot);
       const candidateManifestPath = join(candidateRoot, 'manifest.json');
-      writeFileSync(candidateManifestPath, `${JSON.stringify({
-        schemaVersion: 1,
-        releaseId: candidateReleaseId,
-        artifactIdentity,
-        entrypoint: 'forge-runtime',
-        processRunnerEntrypoint: 'process-runner.js',
-        checkRunnerEntrypoint: 'forge-check-runner',
-        ...executionSurface,
-        arguments: [],
-        configurationSchemaVersion: 1,
-        deploymentScope: 'portable',
-        sourceCommit: acceptedSourceRevision,
-        sourceRepositoryId: acceptedSourceRepositoryId,
-        databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
-        workerProtocolVersion: 1,
-        createdAt: new Date().toISOString(),
-      }, null, 2)}\n`);
+      writeFileSync(
+        candidateManifestPath,
+        `${JSON.stringify(
+          {
+            schemaVersion: 1,
+            releaseId: candidateReleaseId,
+            artifactIdentity,
+            entrypoint: 'forge-runtime',
+            processRunnerEntrypoint: 'process-runner.js',
+            checkRunnerEntrypoint: 'forge-check-runner',
+            ...executionSurface,
+            arguments: [],
+            configurationSchemaVersion: 1,
+            deploymentScope: 'portable',
+            sourceCommit: acceptedSourceRevision,
+            sourceRepositoryId: acceptedSourceRepositoryId,
+            databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+            workerProtocolVersion: 1,
+            createdAt: new Date().toISOString(),
+          },
+          null,
+          2,
+        )}\n`,
+      );
 
       const authorityBefore = ensureActiveRuntimeRelease(home, first);
       const runtime = await runtimeServer();
@@ -6178,38 +7584,64 @@ describe('standalone recovery on canonical Runtime', () => {
       const candidateHealthy = (): VerifyResult => ({
         ...healthyVerify(),
         releases: {
-          active: { path: candidateManifestPath, revision: candidateReleaseId, artifactIdentity, manifestSha256: 'candidate-sha', workerProtocolVersion: 1 },
+          active: {
+            path: candidateManifestPath,
+            revision: candidateReleaseId,
+            artifactIdentity,
+            manifestSha256: 'candidate-sha',
+            workerProtocolVersion: 1,
+          },
           coherent: true,
         },
       });
-      const result = await activateRuntimeRelease(config, candidateManifestPath, {
-        platform: 'darwin',
-        currentUid: async () => 501,
-        runCommand: async (_command, args) => {
-          commands.push(args);
-          if (args[0] === 'bootout') launchdLoaded = false;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
-          if (args[0] === 'bootstrap') launchdLoaded = true;
-          if (args[0] === 'kickstart') return { ok: false, status: 37, stdout: '', stderr: '' };
-          return { ok: true, status: 0, stdout: '', stderr: '' };
+      const result = await activateRuntimeRelease(
+        config,
+        candidateManifestPath,
+        {
+          platform: 'darwin',
+          currentUid: async () => 501,
+          runCommand: async (_command, args) => {
+            commands.push(args);
+            if (args[0] === 'bootout') launchdLoaded = false;
+            if (args[0] === 'print')
+              return launchdLoaded
+                ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+                : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+            if (args[0] === 'bootstrap') launchdLoaded = true;
+            if (args[0] === 'kickstart') return { ok: false, status: 37, stdout: '', stderr: '' };
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          runtimeRunning: () => false,
+          verifyLocal: async () => {
+            strictLocalProbes += 1;
+            return candidateHealthy();
+          },
+          observeLocal: async () =>
+            ++readinessProbes >= 3
+              ? candidateHealthy()
+              : {
+                  ...healthyVerify(),
+                  ok: false,
+                  runtime: {
+                    ok: false,
+                    running: false,
+                    ready: false,
+                    stale: false,
+                    reasonCodes: ['RUNTIME_UNAVAILABLE'],
+                  },
+                },
+          now: (() => {
+            let value = 0;
+            return () => (value += 250);
+          })(),
+          sleep: async () => undefined,
         },
-        runtimeRunning: () => false,
-        verifyLocal: async () => {
-          strictLocalProbes += 1;
-          return candidateHealthy();
+        {
+          expectedSourceRevision: acceptedSourceRevision,
+          expectedActiveReleaseId: authorityBefore.active.releaseId,
+          expectedAuthorityRevision: authorityBefore.revision,
         },
-        observeLocal: async () => ++readinessProbes >= 3
-          ? candidateHealthy()
-          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
-        now: (() => { let value = 0; return () => value += 250; })(),
-        sleep: async () => undefined,
-      }, {
-        expectedSourceRevision: acceptedSourceRevision,
-        expectedActiveReleaseId: authorityBefore.active.releaseId,
-        expectedAuthorityRevision: authorityBefore.revision,
-      });
+      );
       expect(result).toMatchObject({ ok: true, attempted: true });
       expect(strictLocalProbes).toBe(1);
       expect(readinessProbes).toBeGreaterThan(strictLocalProbes);
@@ -6234,21 +7666,28 @@ describe('standalone recovery on canonical Runtime', () => {
     writeFileSync(join(candidateRoot, 'forge-runtime'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
     const executionSurface = writeReleaseExecutionSurface(candidateRoot);
     const candidateManifestPath = join(candidateRoot, 'manifest.json');
-    writeFileSync(candidateManifestPath, `${JSON.stringify({
-      schemaVersion: 1,
-      releaseId: candidateReleaseId,
-      artifactIdentity: 'sha256:deadbeef',
-      entrypoint: 'forge-runtime',
-      processRunnerEntrypoint: 'process-runner.js',
-      checkRunnerEntrypoint: 'forge-check-runner',
-      ...executionSurface,
-      arguments: [],
-      configurationSchemaVersion: 1,
-      controllerHome: resolve(home),
-      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
-      workerProtocolVersion: 1,
-      createdAt: new Date().toISOString(),
-    }, null, 2)}\n`);
+    writeFileSync(
+      candidateManifestPath,
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          releaseId: candidateReleaseId,
+          artifactIdentity: 'sha256:deadbeef',
+          entrypoint: 'forge-runtime',
+          processRunnerEntrypoint: 'process-runner.js',
+          checkRunnerEntrypoint: 'forge-check-runner',
+          ...executionSurface,
+          arguments: [],
+          configurationSchemaVersion: 1,
+          controllerHome: resolve(home),
+          databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+          workerProtocolVersion: 1,
+          createdAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+    );
     const config = createRecoveryConfig(home);
     const result = await activateRuntimeRelease(config, candidateManifestPath);
     expect(result).toMatchObject({ ok: false, attempted: false, noOp: true });
@@ -6265,24 +7704,33 @@ describe('standalone recovery on canonical Runtime', () => {
       const candidateRoot = join(home, 'runtime', 'releases', candidateReleaseId);
       mkdirSync(candidateRoot, { recursive: true });
       writeFileSync(join(candidateRoot, 'forge-runtime'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
-      const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(join(candidateRoot, 'forge-runtime'))).digest('hex')}`;
+      const artifactIdentity = `sha256:${createHash('sha256')
+        .update(readFileSync(join(candidateRoot, 'forge-runtime')))
+        .digest('hex')}`;
       const executionSurface = writeReleaseExecutionSurface(candidateRoot);
       const candidateManifestPath = join(candidateRoot, 'manifest.json');
-      writeFileSync(candidateManifestPath, `${JSON.stringify({
-        schemaVersion: 1,
-        releaseId: candidateReleaseId,
-        artifactIdentity,
-        entrypoint: 'forge-runtime',
-        processRunnerEntrypoint: 'process-runner.js',
-        checkRunnerEntrypoint: 'forge-check-runner',
-        ...executionSurface,
-        arguments: [],
-        configurationSchemaVersion: 1,
-        controllerHome: resolve(home),
-        databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
-        workerProtocolVersion: 1,
-        createdAt: new Date().toISOString(),
-      }, null, 2)}\n`);
+      writeFileSync(
+        candidateManifestPath,
+        `${JSON.stringify(
+          {
+            schemaVersion: 1,
+            releaseId: candidateReleaseId,
+            artifactIdentity,
+            entrypoint: 'forge-runtime',
+            processRunnerEntrypoint: 'process-runner.js',
+            checkRunnerEntrypoint: 'forge-check-runner',
+            ...executionSurface,
+            arguments: [],
+            configurationSchemaVersion: 1,
+            controllerHome: resolve(home),
+            databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+            workerProtocolVersion: 1,
+            createdAt: new Date().toISOString(),
+          },
+          null,
+          2,
+        )}\n`,
+      );
 
       writeReleaseBrowserSurface(first);
       writeReleaseBrowserSurface(candidateManifestPath);
@@ -6314,48 +7762,65 @@ describe('standalone recovery on canonical Runtime', () => {
           ...verify,
           ok,
           releases: {
-            active: { path: authority.active.manifestPath, revision: authority.active.releaseId, artifactIdentity: authority.active.artifactIdentity, manifestSha256: 'test-sha', workerProtocolVersion: 1 },
+            active: {
+              path: authority.active.manifestPath,
+              revision: authority.active.releaseId,
+              artifactIdentity: authority.active.artifactIdentity,
+              manifestSha256: 'test-sha',
+              workerProtocolVersion: 1,
+            },
             coherent: true,
           },
-          probes: ok ? verify.probes : { ...verify.probes, mcp_initialize: { ok: false, detail: 'strict MCP acceptance failed' } },
+          probes: ok
+            ? verify.probes
+            : { ...verify.probes, mcp_initialize: { ok: false, detail: 'strict MCP acceptance failed' } },
         };
       };
-      const activate = () => activateRuntimeRelease(config, candidateManifestPath, {
-        platform: 'darwin',
-        currentUid: async () => 501,
-        runCommand: async (_command, args) => {
-          commands.push(args);
-          if (args[0] === 'bootout') launchdLoaded = false;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
-          if (args[0] === 'bootstrap') launchdLoaded = true;
-          return { ok: true, status: 0, stdout: '', stderr: '' };
-        },
-        runtimeRunning: () => false,
-        repairPrimaryConnectorBinding: async () => {
-          const activeRelease = readRuntimeReleaseAuthority(home)?.active.releaseId ?? 'none';
-          connectorBindingStates.push(`${activeRelease}:${launchdLoaded ? 'runtime-started' : 'runtime-stopped'}`);
-          return launchdLoaded
-            ? { ok: true, attempted: true, detail: `Connector rebound for ${activeRelease}` }
-            : { ok: false, attempted: true, detail: `Connector bind attempted while ${activeRelease} Runtime was stopped` };
-        },
-        verifyLocal: async () => {
-          strictProbes += 1;
-          const activeRelease = readRuntimeReleaseAuthority(home)?.active.releaseId;
-          if (activeRelease === candidateReleaseId) {
-            candidateStrictProbes += 1;
-            return currentAuthorityVerify(false);
-          }
-          return currentAuthorityVerify(stableStrictHealthy);
-        },
-        observeLocal: async () => {
-          readinessProbes += 1;
-          return currentAuthorityVerify(true);
-        },
-        now: (() => { let value = 0; return () => value += 250; })(),
-        sleep: async () => undefined,
-      });
+      const activate = () =>
+        activateRuntimeRelease(config, candidateManifestPath, {
+          platform: 'darwin',
+          currentUid: async () => 501,
+          runCommand: async (_command, args) => {
+            commands.push(args);
+            if (args[0] === 'bootout') launchdLoaded = false;
+            if (args[0] === 'print')
+              return launchdLoaded
+                ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+                : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+            if (args[0] === 'bootstrap') launchdLoaded = true;
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          runtimeRunning: () => false,
+          repairPrimaryConnectorBinding: async () => {
+            const activeRelease = readRuntimeReleaseAuthority(home)?.active.releaseId ?? 'none';
+            connectorBindingStates.push(`${activeRelease}:${launchdLoaded ? 'runtime-started' : 'runtime-stopped'}`);
+            return launchdLoaded
+              ? { ok: true, attempted: true, detail: `Connector rebound for ${activeRelease}` }
+              : {
+                  ok: false,
+                  attempted: true,
+                  detail: `Connector bind attempted while ${activeRelease} Runtime was stopped`,
+                };
+          },
+          verifyLocal: async () => {
+            strictProbes += 1;
+            const activeRelease = readRuntimeReleaseAuthority(home)?.active.releaseId;
+            if (activeRelease === candidateReleaseId) {
+              candidateStrictProbes += 1;
+              return currentAuthorityVerify(false);
+            }
+            return currentAuthorityVerify(stableStrictHealthy);
+          },
+          observeLocal: async () => {
+            readinessProbes += 1;
+            return currentAuthorityVerify(true);
+          },
+          now: (() => {
+            let value = 0;
+            return () => (value += 250);
+          })(),
+          sleep: async () => undefined,
+        });
       const result = await activate();
       expect(result.ok).toBe(false);
       expect(result.rollback).toMatchObject({ ok: true });
@@ -6370,7 +7835,10 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(strictProbes).toBe(2);
       expect(candidateStrictProbes).toBe(1);
       expect(readinessProbes).toBeGreaterThan(candidateStrictProbes);
-      expect(connectorBindingStates).toEqual(['release-failed-activation:runtime-started', 'release-a:runtime-started']);
+      expect(connectorBindingStates).toEqual([
+        'release-failed-activation:runtime-started',
+        'release-a:runtime-started',
+      ]);
 
       // A transient strict Connector/public failure after Stable A has reached
       // local readiness must report incomplete rollback verification without
@@ -6382,7 +7850,10 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(degradedRollback.rollback?.detail).toContain('service remains running');
       expect(launchdLoaded).toBe(true);
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
-      expect(connectorBindingStates).toEqual(['release-failed-activation:runtime-started', 'release-a:runtime-started']);
+      expect(connectorBindingStates).toEqual([
+        'release-failed-activation:runtime-started',
+        'release-a:runtime-started',
+      ]);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -6404,36 +7875,56 @@ describe('standalone recovery on canonical Runtime', () => {
 
       let launchdLoaded = true;
       let kickstarts = 0;
-      const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 5_000 } }), candidate.path, {
-        platform: 'darwin',
-        currentUid: async () => 501,
-        runCommand: async (name, args) => {
-          if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
-          if (args[0] === 'bootout') launchdLoaded = false;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
-          if (args[0] === 'bootstrap') launchdLoaded = true;
-          if (args[0] === 'kickstart') kickstarts += 1;
-          return { ok: true, status: 0, stdout: '', stderr: '' };
-        },
-        runtimeRunning: () => false,
-        verifyLocal: async () => {
-          if (kickstarts === 0 || kickstarts >= 2) {
-            const authority = readRuntimeReleaseAuthority(home)!;
+      const result = await activateRuntimeRelease(
+        createRecoveryConfig(home, {
+          primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 5_000 },
+        }),
+        candidate.path,
+        {
+          platform: 'darwin',
+          currentUid: async () => 501,
+          runCommand: async (name, args) => {
+            if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
+            if (args[0] === 'bootout') launchdLoaded = false;
+            if (args[0] === 'print')
+              return launchdLoaded
+                ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+                : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+            if (args[0] === 'bootstrap') launchdLoaded = true;
+            if (args[0] === 'kickstart') kickstarts += 1;
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          runtimeRunning: () => false,
+          verifyLocal: async () => {
+            if (kickstarts === 0 || kickstarts >= 2) {
+              const authority = readRuntimeReleaseAuthority(home)!;
+              return {
+                ...healthyVerify(),
+                releases: {
+                  active: {
+                    path: authority.active.manifestPath,
+                    revision: authority.active.releaseId,
+                    artifactIdentity: authority.active.artifactIdentity,
+                    manifestSha256: 'test-sha',
+                    workerProtocolVersion: 1,
+                  },
+                  coherent: true,
+                },
+              };
+            }
             return {
               ...healthyVerify(),
-              releases: {
-                active: { path: authority.active.manifestPath, revision: authority.active.releaseId, artifactIdentity: authority.active.artifactIdentity, manifestSha256: 'test-sha', workerProtocolVersion: 1 },
-                coherent: true,
-              },
+              ok: false,
+              runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] },
             };
-          }
-          return { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } };
+          },
+          now: (() => {
+            let value = 0;
+            return () => (value += 1_000);
+          })(),
+          sleep: async () => undefined,
         },
-        now: (() => { let value = 0; return () => value += 1_000; })(),
-        sleep: async () => undefined,
-      });
+      );
 
       expect(result.ok).toBe(false);
       expect(result.rollback).toMatchObject({ ok: true });
@@ -6475,9 +7966,10 @@ describe('standalone recovery on canonical Runtime', () => {
         currentUid: async () => 501,
         runCommand: async (_command, args) => {
           if (args[0] === 'bootout') launchdLoaded = false;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'print')
+            return launchdLoaded
+              ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+              : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
           if (args[0] === 'bootstrap') launchdLoaded = true;
           if (args[0] === 'kickstart') {
             kickstarts += 1;
@@ -6487,7 +7979,10 @@ describe('standalone recovery on canonical Runtime', () => {
         },
         runtimeRunning: () => false,
         verifyLocal: async () => healthyVerify(),
-        now: (() => { let value = 0; return () => value += 1_000; })(),
+        now: (() => {
+          let value = 0;
+          return () => (value += 1_000);
+        })(),
         sleep: async () => undefined,
       });
 
@@ -6552,7 +8047,10 @@ describe('standalone recovery on canonical Runtime', () => {
         },
         runtimeRunning: () => false,
         verifyLocal: async () => healthyVerify(),
-        now: (() => { let value = 0; return () => value += 1_000; })(),
+        now: (() => {
+          let value = 0;
+          return () => (value += 1_000);
+        })(),
         sleep: async () => undefined,
       });
 
@@ -6585,7 +8083,10 @@ describe('standalone recovery on canonical Runtime', () => {
         return { ok: true, status: 0, stdout: '', stderr: '' };
       },
       probeGateway: async () => ({ ok: ++probes >= 3, detail: probes >= 3 ? 'healthy' : 'unavailable' }),
-      now: (() => { let now = 0; return () => now += 1_000; })(),
+      now: (() => {
+        let now = 0;
+        return () => (now += 1_000);
+      })(),
       sleep: async () => undefined,
     });
     expect(result).toMatchObject({ ok: true, attempted: true });
@@ -6594,37 +8095,41 @@ describe('standalone recovery on canonical Runtime', () => {
 
   test('restarts a failed primary Connector automatically only after a bounded sustained failure', () => {
     const now = Date.parse('2026-08-19T01:40:00.000Z');
-    expect(decideWatchdog({
-      failures: 2,
-      firstFailureAt: now - 6_000,
-      evidenceClasses: [],
-      activeKnownGood: true,
-      previousKnownGood: true,
-      rollbackUsed: false,
-      primaryConnectorConfigured: true,
-      primaryConnectorFailed: true,
-      primaryConnectorFailures: 2,
-      primaryConnectorFirstFailureAt: now - 6_000,
-      primaryConnectorRestartAttempts: 0,
-      primaryConnectorMaximumRestartAttempts: 3,
-      nowMs: now,
-    })).toMatchObject({ action: 'restart_primary_connector' });
+    expect(
+      decideWatchdog({
+        failures: 2,
+        firstFailureAt: now - 6_000,
+        evidenceClasses: [],
+        activeKnownGood: true,
+        previousKnownGood: true,
+        rollbackUsed: false,
+        primaryConnectorConfigured: true,
+        primaryConnectorFailed: true,
+        primaryConnectorFailures: 2,
+        primaryConnectorFirstFailureAt: now - 6_000,
+        primaryConnectorRestartAttempts: 0,
+        primaryConnectorMaximumRestartAttempts: 3,
+        nowMs: now,
+      }),
+    ).toMatchObject({ action: 'restart_primary_connector' });
 
-    expect(decideWatchdog({
-      failures: 2,
-      firstFailureAt: now - 6_000,
-      evidenceClasses: [],
-      activeKnownGood: true,
-      previousKnownGood: true,
-      rollbackUsed: false,
-      primaryConnectorConfigured: true,
-      primaryConnectorFailed: true,
-      primaryConnectorFailures: 2,
-      primaryConnectorFirstFailureAt: now - 6_000,
-      primaryConnectorRestartAttempts: 3,
-      primaryConnectorMaximumRestartAttempts: 3,
-      nowMs: now,
-    })).toMatchObject({ action: 'degraded' });
+    expect(
+      decideWatchdog({
+        failures: 2,
+        firstFailureAt: now - 6_000,
+        evidenceClasses: [],
+        activeKnownGood: true,
+        previousKnownGood: true,
+        rollbackUsed: false,
+        primaryConnectorConfigured: true,
+        primaryConnectorFailed: true,
+        primaryConnectorFailures: 2,
+        primaryConnectorFirstFailureAt: now - 6_000,
+        primaryConnectorRestartAttempts: 3,
+        primaryConnectorMaximumRestartAttempts: 3,
+        nowMs: now,
+      }),
+    ).toMatchObject({ action: 'degraded' });
   });
 
   test('proves Recovery Watchdog liveness with heartbeat, PID, release identity, and stuck-tick fencing', () => {
@@ -6652,38 +8157,56 @@ describe('standalone recovery on canonical Runtime', () => {
       lastTickCompletedAt: new Date(now - 2_000).toISOString(),
     };
 
-    expect(evaluateRecoveryWatchdogHealth({ heartbeat, runtimeIdentity, currentRelease: release, nowMs: now, pidAlive: () => true })).toMatchObject({ ok: true });
-    expect(evaluateRecoveryWatchdogHealth({
-      heartbeat: { ...heartbeat, lastPulseAt: new Date(now - 60_000).toISOString() },
-      runtimeIdentity,
-      currentRelease: release,
-      nowMs: now,
-      pidAlive: () => true,
-    })).toMatchObject({ ok: false, detail: 'Recovery Watchdog heartbeat is stale' });
-    expect(evaluateRecoveryWatchdogHealth({
-      heartbeat: {
-        ...heartbeat,
-        lastPulseAt: new Date(now - 1_000).toISOString(),
-        lastTickStartedAt: new Date(now - RECOVERY_WATCHDOG_MAX_TICK_AGE_MS - 1).toISOString(),
-        lastTickCompletedAt: new Date(now - RECOVERY_WATCHDOG_MAX_TICK_AGE_MS - 10_000).toISOString(),
-      },
-      runtimeIdentity,
-      currentRelease: release,
-      nowMs: now,
-      pidAlive: () => true,
-    })).toMatchObject({ ok: false, detail: 'Recovery Watchdog tick is stuck beyond its bounded recovery window' });
-    expect(evaluateRecoveryWatchdogHealth({
-      heartbeat: { ...heartbeat, releaseRevision: 'stale-recovery' },
-      runtimeIdentity,
-      currentRelease: release,
-      nowMs: now,
-      pidAlive: () => true,
-    })).toMatchObject({ ok: false, detail: 'Recovery Watchdog is not running the current immutable Recovery release' });
+    expect(
+      evaluateRecoveryWatchdogHealth({
+        heartbeat,
+        runtimeIdentity,
+        currentRelease: release,
+        nowMs: now,
+        pidAlive: () => true,
+      }),
+    ).toMatchObject({ ok: true });
+    expect(
+      evaluateRecoveryWatchdogHealth({
+        heartbeat: { ...heartbeat, lastPulseAt: new Date(now - 60_000).toISOString() },
+        runtimeIdentity,
+        currentRelease: release,
+        nowMs: now,
+        pidAlive: () => true,
+      }),
+    ).toMatchObject({ ok: false, detail: 'Recovery Watchdog heartbeat is stale' });
+    expect(
+      evaluateRecoveryWatchdogHealth({
+        heartbeat: {
+          ...heartbeat,
+          lastPulseAt: new Date(now - 1_000).toISOString(),
+          lastTickStartedAt: new Date(now - RECOVERY_WATCHDOG_MAX_TICK_AGE_MS - 1).toISOString(),
+          lastTickCompletedAt: new Date(now - RECOVERY_WATCHDOG_MAX_TICK_AGE_MS - 10_000).toISOString(),
+        },
+        runtimeIdentity,
+        currentRelease: release,
+        nowMs: now,
+        pidAlive: () => true,
+      }),
+    ).toMatchObject({ ok: false, detail: 'Recovery Watchdog tick is stuck beyond its bounded recovery window' });
+    expect(
+      evaluateRecoveryWatchdogHealth({
+        heartbeat: { ...heartbeat, releaseRevision: 'stale-recovery' },
+        runtimeIdentity,
+        currentRelease: release,
+        nowMs: now,
+        pidAlive: () => true,
+      }),
+    ).toMatchObject({ ok: false, detail: 'Recovery Watchdog is not running the current immutable Recovery release' });
   });
 
   test('accepts a live Recovery runtime child owned by the managed wrapper and rejects unrelated PIDs', () => {
     const alive = new Set([100, 101, 102, 200]);
-    const parent = new Map([[101, 100], [102, 101], [200, 1]]);
+    const parent = new Map([
+      [101, 100],
+      [102, 101],
+      [200, 1],
+    ]);
     const processAlive = (pid: number) => alive.has(pid);
     const processParentPid = (pid: number) => parent.get(pid);
 
@@ -6750,8 +8273,12 @@ describe('standalone recovery on canonical Runtime', () => {
     });
     expect(descriptor.tools).toContain('recover_primary_runtime');
     expect(descriptor.tools).toContain('rollback_previous');
-    expect(descriptor.warnings).toContain('No current immutable Forge Recovery release is installed. Run forge recovery install.');
-    expect(descriptor.warnings).toContain('Forge Recovery launchd service is not installed. Run forge recovery install.');
+    expect(descriptor.warnings).toContain(
+      'No current immutable Forge Recovery release is installed. Run forge recovery install.',
+    );
+    expect(descriptor.warnings).toContain(
+      'Forge Recovery launchd service is not installed. Run forge recovery install.',
+    );
     expect(descriptor.warnings).toContain('Forge Recovery service is not running on the current Recovery release.');
     expect(descriptor.warnings).toContain('The dedicated Forge Recovery tunnel plist is not installed.');
     const serialized = JSON.stringify(descriptor);
@@ -6770,7 +8297,7 @@ describe('standalone recovery on canonical Runtime', () => {
     const address = reservation.address();
     if (!address || typeof address === 'string') throw new Error('Recovery bootstrap port reservation failed');
     const port = address.port;
-    await new Promise<void>((done, reject) => reservation.close((error) => error ? reject(error) : done()));
+    await new Promise<void>((done, reject) => reservation.close((error) => (error ? reject(error) : done())));
 
     const entryPath = resolve('src/runtime/standalone-recovery/entry.ts');
     const releaseRoot = join(home, 'recovery', 'releases', 'recovery-bootstrap-fixture');
@@ -6807,7 +8334,10 @@ describe('standalone recovery on canonical Runtime', () => {
 
     try {
       await new Promise<void>((done, reject) => {
-        const timer = setTimeout(() => reject(new Error(`Recovery daemon did not bind port ${port}; stdout=${stdout}; stderr=${stderr}`)), 10_000);
+        const timer = setTimeout(
+          () => reject(new Error(`Recovery daemon did not bind port ${port}; stdout=${stdout}; stderr=${stderr}`)),
+          10_000,
+        );
         child.stdout?.on('data', (chunk) => {
           stdout += chunk.toString('utf8');
           if (stdout.includes(`"port":${port}`)) {
@@ -6815,11 +8345,20 @@ describe('standalone recovery on canonical Runtime', () => {
             done();
           }
         });
-        child.stderr?.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
-        child.once('error', (error) => { clearTimeout(timer); reject(error); });
+        child.stderr?.on('data', (chunk) => {
+          stderr += chunk.toString('utf8');
+        });
+        child.once('error', (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
         child.once('exit', (code, signal) => {
           clearTimeout(timer);
-          reject(new Error(`Recovery daemon exited before Gateway readiness: code=${code} signal=${signal}; stderr=${stderr}`));
+          reject(
+            new Error(
+              `Recovery daemon exited before Gateway readiness: code=${code} signal=${signal}; stderr=${stderr}`,
+            ),
+          );
         });
       });
 
@@ -6834,7 +8373,8 @@ describe('standalone recovery on canonical Runtime', () => {
         accept: 'application/json, text/event-stream',
         'content-type': 'application/json',
       };
-      const send = (body: Record<string, unknown>) => fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
+      const send = (body: Record<string, unknown>) =>
+        fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
       const decode = async (response: Response) => {
         const raw = await response.text();
         const data = raw.split(/\r?\n/).find((line) => line.startsWith('data:'));
@@ -6845,7 +8385,11 @@ describe('standalone recovery on canonical Runtime', () => {
         jsonrpc: '2.0',
         id: 1,
         method: 'initialize',
-        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'recovery-bootstrap-test', version: '1' } },
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'recovery-bootstrap-test', version: '1' },
+        },
       });
       expect(initialized.status).toBe(200);
       expect((await decode(initialized)).result.serverInfo.name).toBe('forge-standalone-recovery');
@@ -6856,10 +8400,17 @@ describe('standalone recovery on canonical Runtime', () => {
       const listed = await send({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
       expect(listed.status).toBe(200);
       const toolNames = ((await decode(listed)).result.tools as Array<{ name: string }>).map((tool) => tool.name);
-      expect(toolNames).toEqual(expect.arrayContaining(['runtime_status', 'restart_primary_runtime', 'recover_primary_runtime']));
+      expect(toolNames).toEqual(
+        expect.arrayContaining(['runtime_status', 'restart_primary_runtime', 'recover_primary_runtime']),
+      );
       expect(listed.headers.get('mcp-session-id')).toBeNull();
 
-      const status = await send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'runtime_status', arguments: {} } });
+      const status = await send({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'runtime_status', arguments: {} },
+      });
       expect(status.status).toBe(200);
       expect((await decode(status)).result.structuredContent).toMatchObject({
         running: false,
@@ -6871,7 +8422,10 @@ describe('standalone recovery on canonical Runtime', () => {
         child.kill('SIGTERM');
         await new Promise<void>((done) => {
           const timer = setTimeout(done, 5_000);
-          child.once('exit', () => { clearTimeout(timer); done(); });
+          child.once('exit', () => {
+            clearTimeout(timer);
+            done();
+          });
         });
       }
     }
@@ -6905,30 +8459,48 @@ describe('standalone recovery on canonical Runtime', () => {
       let localProbes = 0;
       let launchdLoaded = true;
       const commands: string[][] = [];
-      const recover = (recoveryConfig: typeof config, reason = 'standalone recovery') => recoverPrimaryRuntime(recoveryConfig, reason, {
-        platform: 'darwin',
-        currentUid: async () => 501,
-        runCommand: async (_command, args) => {
-          commands.push(args);
-          if (args[0] === 'bootout') launchdLoaded = false;
-          if (args[0] === 'print') return launchdLoaded
-            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
-          if (args[0] === 'bootstrap') launchdLoaded = true;
-          return { ok: true, status: 0, stdout: '', stderr: '' };
-        },
-        runtimeRunning: () => false,
-        verifyLocal: async () => ++localProbes >= 3
-          ? healthyVerify()
-          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
-        now: (() => { let value = 0; return () => value += 1_000; })(),
-        sleep: async () => undefined,
-      });
+      const recover = (recoveryConfig: typeof config, reason = 'standalone recovery') =>
+        recoverPrimaryRuntime(recoveryConfig, reason, {
+          platform: 'darwin',
+          currentUid: async () => 501,
+          runCommand: async (_command, args) => {
+            commands.push(args);
+            if (args[0] === 'bootout') launchdLoaded = false;
+            if (args[0] === 'print')
+              return launchdLoaded
+                ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+                : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+            if (args[0] === 'bootstrap') launchdLoaded = true;
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          runtimeRunning: () => false,
+          verifyLocal: async () =>
+            ++localProbes >= 3
+              ? healthyVerify()
+              : {
+                  ...healthyVerify(),
+                  ok: false,
+                  runtime: {
+                    ok: false,
+                    running: false,
+                    ready: false,
+                    stale: false,
+                    reasonCodes: ['RUNTIME_UNAVAILABLE'],
+                  },
+                },
+          now: (() => {
+            let value = 0;
+            return () => (value += 1_000);
+          })(),
+          sleep: async () => undefined,
+        });
       const executeTool = createRecoveryToolExecutor(config, {
         releasePath: join(home, 'recovery', 'releases', 'recovery-bootstrap-fixture'),
         runChild: async (_command, _args, options) => {
           const request = JSON.parse(String(options.input)) as { name: string; args: Record<string, unknown> };
-          const value = await dispatchRecoveryTool(config, request.name, request.args, { recoverPrimaryRuntime: recover });
+          const value = await dispatchRecoveryTool(config, request.name, request.args, {
+            recoverPrimaryRuntime: recover,
+          });
           return {
             status: 0,
             signal: null,
@@ -6945,7 +8517,9 @@ describe('standalone recovery on canonical Runtime', () => {
         tools: RECOVERY_TOOLS as unknown as Tool[],
         dispatchTool: executeTool,
       });
-      const recoveryServer = createServer((request, response) => { void recoveryMcp.handle(request, response); });
+      const recoveryServer = createServer((request, response) => {
+        void recoveryMcp.handle(request, response);
+      });
       servers.push(recoveryServer);
       await new Promise<void>((done, reject) => {
         recoveryServer.once('error', reject);
@@ -6955,11 +8529,14 @@ describe('standalone recovery on canonical Runtime', () => {
       if (!address || typeof address === 'string') throw new Error('independent Recovery MCP test server unavailable');
       const endpoint = `http://127.0.0.1:${address.port}/recovery/mcp`;
       const headers = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
-      const send = (body: Record<string, unknown>) => fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
+      const send = (body: Record<string, unknown>) =>
+        fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
       const decode = async (response: Response) => {
         const raw = await response.text();
         const data = raw.split(/\r?\n/).find((line) => line.startsWith('data:'));
-        return JSON.parse(data ? data.slice(5).trim() : raw) as { result?: { structuredContent?: Record<string, unknown> } };
+        return JSON.parse(data ? data.slice(5).trim() : raw) as {
+          result?: { structuredContent?: Record<string, unknown> };
+        };
       };
 
       expect((await fetch(primary.endpoint)).status).toBe(503);
@@ -6967,7 +8544,11 @@ describe('standalone recovery on canonical Runtime', () => {
         jsonrpc: '2.0',
         id: 1,
         method: 'initialize',
-        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'independent-recovery-test', version: '1' } },
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'independent-recovery-test', version: '1' },
+        },
       });
       expect(initialized.status).toBe(200);
       expect((await decode(initialized)).result).toMatchObject({ serverInfo: { name: 'forge-standalone-recovery' } });
@@ -7011,7 +8592,14 @@ describe('standalone recovery on canonical Runtime', () => {
     let initialPid: number | undefined;
     let launchdTarget: string | undefined;
     let restartedPid: number | undefined;
-    const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const alive = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
     const waitFor = async (predicate: () => boolean | Promise<boolean>, timeoutMs: number, detail: string) => {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
@@ -7022,20 +8610,32 @@ describe('standalone recovery on canonical Runtime', () => {
     };
     const stopPid = async (pid: number | undefined) => {
       if (!pid || !alive(pid)) return;
-      try { process.kill(pid, 'SIGTERM'); } catch { return; }
-      for (let attempt = 0; attempt < 60 && alive(pid); attempt += 1) await new Promise((done) => setTimeout(done, 100));
-      if (alive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* already exited */ } }
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch {
+        return;
+      }
+      for (let attempt = 0; attempt < 60 && alive(pid); attempt += 1)
+        await new Promise((done) => setTimeout(done, 100));
+      if (alive(pid)) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          /* already exited */
+        }
+      }
     };
     const stopChild = async (child: ReturnType<typeof spawn> | undefined) => {
       if (!child || child.exitCode !== null || child.signalCode !== null) return;
       child.kill('SIGTERM');
       await waitFor(() => child.exitCode !== null || child.signalCode !== null, 5_000, 'child process did not stop');
     };
-    const launchctl = (...args: string[]) => execFileSync('launchctl', args, {
-      encoding: 'utf8',
-      env: { ...process.env, HOME: home },
-      timeout: 20_000,
-    });
+    const launchctl = (...args: string[]) =>
+      execFileSync('launchctl', args, {
+        encoding: 'utf8',
+        env: { ...process.env, HOME: home },
+        timeout: 20_000,
+      });
     const reservePort = async () => {
       const server = createServer();
       await new Promise<void>((done, reject) => {
@@ -7045,7 +8645,7 @@ describe('standalone recovery on canonical Runtime', () => {
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('disposable port reservation failed');
       const port = address.port;
-      await new Promise<void>((done, reject) => server.close((error) => error ? reject(error) : done()));
+      await new Promise<void>((done, reject) => server.close((error) => (error ? reject(error) : done())));
       return port;
     };
     try {
@@ -7066,20 +8666,26 @@ describe('standalone recovery on canonical Runtime', () => {
       const runtimeScriptSource = [
         "import { createServer } from 'node:http';",
         "import { rmSync } from 'node:fs';",
-        "import { acquireRuntimeOwnership, runtimeIncarnationPath } from " + JSON.stringify(resolve('src/runtime/root/ownership.ts')) + ";",
-        "import { removeRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from " + JSON.stringify(resolve('src/runtime/root/status.ts')) + ";",
-        "import { readRuntimeReleaseAuthority } from " + JSON.stringify(resolve('src/runtime/root/release-store.ts')) + ";",
-        "const flag = (name) => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : undefined; };",
+        'import { acquireRuntimeOwnership, runtimeIncarnationPath } from ' +
+          JSON.stringify(resolve('src/runtime/root/ownership.ts')) +
+          ';',
+        'import { removeRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from ' +
+          JSON.stringify(resolve('src/runtime/root/status.ts')) +
+          ';',
+        'import { readRuntimeReleaseAuthority } from ' +
+          JSON.stringify(resolve('src/runtime/root/release-store.ts')) +
+          ';',
+        'const flag = (name) => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : undefined; };',
         "const home = flag('--controller-home');",
         "const host = flag('--host') ?? '127.0.0.1';",
         "const port = Number(flag('--port'));",
-        "const active = readRuntimeReleaseAuthority(home)?.active;",
+        'const active = readRuntimeReleaseAuthority(home)?.active;',
         "if (!active) throw new Error('disposable Runtime release authority missing');",
         "const runtimeInstanceId = 'disposable-runtime-' + process.pid + '-' + Date.now();",
-        "const ownership = acquireRuntimeOwnership(home, runtimeInstanceId);",
+        'const ownership = acquireRuntimeOwnership(home, runtimeInstanceId);',
         "const sessionId = 'disposable-session-' + process.pid;",
         "const json = (response, status, value) => { response.statusCode = status; response.setHeader('content-type', 'application/json'); response.end(JSON.stringify(value)); };",
-        "const server = createServer((request, response) => {",
+        'const server = createServer((request, response) => {',
         "  const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;",
         "  if (request.method === 'GET' && (pathname === '/health' || pathname === '/ready' || pathname === '/transport-ready')) { json(response, 200, { status: 'ok' }); return; }",
         "  if (request.method === 'GET' && pathname === '/mcp') { response.statusCode = 401; response.setHeader('www-authenticate', 'Bearer'); response.end(JSON.stringify({ error: 'unauthorized' })); return; }",
@@ -7094,20 +8700,21 @@ describe('standalone recovery on canonical Runtime', () => {
         "    if (rpc.method === 'tools/list') { json(response, 200, { jsonrpc: '2.0', id: rpc.id, result: { tools: [{ name: 'controller_context', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }] } }); return; }",
         "    if (rpc.method === 'tools/call') { json(response, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: 'disposable Runtime ready' }] } }); return; }",
         "    json(response, 200, { jsonrpc: '2.0', id: rpc.id, result: {} });",
-        "  });",
-        "});",
-        "server.listen(port, host, () => {",
-        "  const observedAt = new Date().toISOString();",
+        '  });',
+        '});',
+        'server.listen(port, host, () => {',
+        '  const observedAt = new Date().toISOString();',
         "  writeRuntimeStatusSnapshot(home, { schemaVersion: 1, runtimeInstanceId, pid: process.pid, releaseId: active.releaseId, artifactIdentity: active.artifactIdentity, endpoint: 'http://' + host + ':' + port + '/mcp', startedAt: observedAt, updatedAt: observedAt, readiness: { ready: true, reasonCodes: [], diagnostics: { database: { outcome: 'pass' }, scheduler: { outcome: 'pass' }, releaseCoherence: { outcome: 'pass' }, mcpEndToEnd: { outcome: 'pass' } }, observedAt } });",
         "  process.stdout.write('RUNTIME_READY\\\\n');",
-        "});",
-        "let stopping = false;",
-        "const stop = () => { if (stopping) return; stopping = true; server.close(() => { ownership.release(); rmSync(runtimeIncarnationPath(home), { force: true }); removeRuntimeStatusSnapshot(home, runtimeInstanceId, process.pid); process.exit(0); }); server.closeAllConnections?.(); setTimeout(() => process.exit(1), 5000).unref(); };",
+        '});',
+        'let stopping = false;',
+        'const stop = () => { if (stopping) return; stopping = true; server.close(() => { ownership.release(); rmSync(runtimeIncarnationPath(home), { force: true }); removeRuntimeStatusSnapshot(home, runtimeInstanceId, process.pid); process.exit(0); }); server.closeAllConnections?.(); setTimeout(() => process.exit(1), 5000).unref(); };',
         "process.on('SIGTERM', stop); process.on('SIGINT', stop);",
       ].join('\n');
       writeFileSync(runtimeScriptPath, runtimeScriptSource);
       const shellQuote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
-      const runtimeWrapper = '#!/bin/sh\nexec ' + shellQuote(process.execPath) + ' ' + shellQuote(runtimeScriptPath) + ' "$@"\n';
+      const runtimeWrapper =
+        '#!/bin/sh\nexec ' + shellQuote(process.execPath) + ' ' + shellQuote(runtimeScriptPath) + ' "$@"\n';
       const firstManifest = JSON.parse(readFileSync(firstManifestPath, 'utf8')) as Record<string, unknown>;
       firstManifest.artifactIdentity = 'sha256:' + createHash('sha256').update(runtimeWrapper).digest('hex');
       writeFileSync(firstManifestPath, JSON.stringify(firstManifest, null, 2) + '\n');
@@ -7132,19 +8739,28 @@ describe('standalone recovery on canonical Runtime', () => {
       launchctl('bootstrap', domain, launchAgent.paths.installedPlistPath);
       launchctl('enable', launchdTarget);
       launchctl('kickstart', '-k', launchdTarget);
-      await waitFor(async () => { try { return (await fetch(primaryHealth)).status === 200; } catch { return false; } }, 15_000, 'initial disposable launchd Runtime did not become ready');
+      await waitFor(
+        async () => {
+          try {
+            return (await fetch(primaryHealth)).status === 200;
+          } catch {
+            return false;
+          }
+        },
+        15_000,
+        'initial disposable launchd Runtime did not become ready',
+      );
       initialPid = readRuntimeStatusSnapshot(home)?.pid;
       if (!initialPid) throw new Error('initial launchd Runtime did not publish its process identity');
       await attestKnownGood(config);
       publishRuntimeRelease(home, secondManifestPath, 'publish-release-b');
 
-
-
       const recoveryReleaseRoot = join(home, 'recovery', 'releases', 'recovery-bootstrap-fixture');
       mkdirSync(recoveryReleaseRoot, { recursive: true });
       const recoveryEntryPath = resolve('src/runtime/standalone-recovery/entry.ts');
       const recoveryExecutable = join(recoveryReleaseRoot, 'forge-recovery');
-      const recoveryExecutableSource = '#!/bin/sh\nexec ' + shellQuote(process.execPath) + ' ' + shellQuote(recoveryEntryPath) + ' "$@"\n';
+      const recoveryExecutableSource =
+        '#!/bin/sh\nexec ' + shellQuote(process.execPath) + ' ' + shellQuote(recoveryEntryPath) + ' "$@"\n';
       writeFileSync(recoveryExecutable, recoveryExecutableSource, { mode: 0o700 });
       writeRecoveryReleaseManifest(recoveryReleaseRoot, {
         schemaVersion: 1,
@@ -7154,7 +8770,9 @@ describe('standalone recovery on canonical Runtime', () => {
         cleanWorkspace: true,
         builtAt: new Date().toISOString(),
         productVersion: FORGE_VERSION,
-        artifacts: { 'forge-recovery': { sha256: createHash('sha256').update(recoveryExecutableSource).digest('hex') } },
+        artifacts: {
+          'forge-recovery': { sha256: createHash('sha256').update(recoveryExecutableSource).digest('hex') },
+        },
       });
       publishRecoveryRelease(home, recoveryReleaseRoot);
       const recoveryConfig = initializeStandaloneRecovery(home, recoveryPort, {
@@ -7172,59 +8790,145 @@ describe('standalone recovery on canonical Runtime', () => {
         stdio: ['ignore', 'ignore', 'pipe'],
       });
       let recoveryError = '';
-      recoveryChild.stderr?.on('data', (chunk) => { recoveryError += chunk.toString('utf8'); });
+      recoveryChild.stderr?.on('data', (chunk) => {
+        recoveryError += chunk.toString('utf8');
+      });
       const recoveryHealth = 'http://127.0.0.1:' + recoveryPort + '/health';
-      await waitFor(async () => {
-        if (recoveryChild?.exitCode !== null) throw new Error('Recovery daemon exited: ' + recoveryError);
-        try { return (await fetch(recoveryHealth)).status === 200; } catch { return false; }
-      }, 15_000, 'independent Recovery daemon did not become ready: ' + recoveryError);
+      await waitFor(
+        async () => {
+          if (recoveryChild?.exitCode !== null) throw new Error('Recovery daemon exited: ' + recoveryError);
+          try {
+            return (await fetch(recoveryHealth)).status === 200;
+          } catch {
+            return false;
+          }
+        },
+        15_000,
+        'independent Recovery daemon did not become ready: ' + recoveryError,
+      );
 
       if (!launchdTarget) throw new Error('disposable launchd target was not installed');
       launchctl('bootout', launchdTarget);
-      await waitFor(async () => {
-        try { await fetch(primaryHealth, { signal: AbortSignal.timeout(250) }); return false; } catch { return true; }
-      }, 5_000, 'Primary MCP remained available after Runtime shutdown');
+      await waitFor(
+        async () => {
+          try {
+            await fetch(primaryHealth, { signal: AbortSignal.timeout(250) });
+            return false;
+          } catch {
+            return true;
+          }
+        },
+        5_000,
+        'Primary MCP remained available after Runtime shutdown',
+      );
       expect((await fetch(recoveryHealth)).status).toBe(200);
 
       const endpoint = 'http://127.0.0.1:' + recoveryPort + '/recovery/mcp';
-      const headers = { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
-      const send = (body: Record<string, unknown>) => fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
+      const headers = {
+        authorization: 'Bearer ' + token,
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      };
+      const send = (body: Record<string, unknown>) =>
+        fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
       const decode = async (response: Response) => {
         const raw = await response.text();
         const data = raw.split(/\r?\n/).find((line) => line.startsWith('data:'));
-        return JSON.parse(data ? data.slice(5).trim() : raw) as { result?: { structuredContent?: Record<string, unknown> } };
+        return JSON.parse(data ? data.slice(5).trim() : raw) as {
+          result?: { structuredContent?: Record<string, unknown> };
+        };
       };
       const initialized = await send({
-        jsonrpc: '2.0', id: 1, method: 'initialize',
-        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'real-disposable-recovery-test', version: '1' } },
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'real-disposable-recovery-test', version: '1' },
+        },
       });
       expect(initialized.status).toBe(200);
       expect((await decode(initialized)).result).toMatchObject({ serverInfo: { name: 'forge-standalone-recovery' } });
       expect((await send({ jsonrpc: '2.0', method: 'notifications/initialized' })).status).toBe(202);
       const recovered = await send({
-        jsonrpc: '2.0', id: 2, method: 'tools/call',
-        params: { name: 'recover_primary_runtime', arguments: { request_id: 'recovery-real-process-primary-loss-20261117', ...recoveryMutationIdentityArgs(recoveryConfig) } },
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'recover_primary_runtime',
+          arguments: {
+            request_id: 'recovery-real-process-primary-loss-20261117',
+            ...recoveryMutationIdentityArgs(recoveryConfig),
+          },
+        },
       });
       expect(recovered.status).toBe(200);
       const recoveredPayload = await decode(recovered);
-      if (!recoveredPayload.result?.structuredContent) throw new Error('Recovery tool returned no structured result: ' + JSON.stringify(recoveredPayload).slice(0, 8_000));
-      expect(recoveredPayload.result.structuredContent).toMatchObject({ ok: true, attempted: true, rollback: { ok: true } });
+      if (!recoveredPayload.result?.structuredContent)
+        throw new Error(
+          'Recovery tool returned no structured result: ' + JSON.stringify(recoveredPayload).slice(0, 8_000),
+        );
+      expect(recoveredPayload.result.structuredContent).toMatchObject({
+        ok: true,
+        attempted: true,
+        rollback: { ok: true },
+      });
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
-      await waitFor(async () => { try { return (await fetch(primaryHealth)).status === 200; } catch { return false; } }, 10_000, 'recovered Runtime did not reopen its health endpoint');
+      await waitFor(
+        async () => {
+          try {
+            return (await fetch(primaryHealth)).status === 200;
+          } catch {
+            return false;
+          }
+        },
+        10_000,
+        'recovered Runtime did not reopen its health endpoint',
+      );
       restartedPid = readRuntimeStatusSnapshot(home)?.pid;
       if (!restartedPid) throw new Error('recovered Runtime did not publish its process identity');
       expect(restartedPid).toBeGreaterThan(0);
       expect(restartedPid).not.toBe(initialPid);
       expect(alive(restartedPid)).toBe(true);
       expect(alive(initialPid)).toBe(false);
-      const status = await send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'runtime_status', arguments: {} } });
+      const status = await send({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'runtime_status', arguments: {} },
+      });
       expect(status.status).toBe(200);
-      expect((await decode(status)).result?.structuredContent).toMatchObject({ running: true, ready: true, stale: false, snapshot: { releaseId: 'release-a' } });
-      const primaryInitialize = await fetch(primaryEndpoint, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'primary-reconnect-check', version: '1' } } }) });
+      expect((await decode(status)).result?.structuredContent).toMatchObject({
+        running: true,
+        ready: true,
+        stale: false,
+        snapshot: { releaseId: 'release-a' },
+      });
+      const primaryInitialize = await fetch(primaryEndpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2025-06-18',
+            capabilities: {},
+            clientInfo: { name: 'primary-reconnect-check', version: '1' },
+          },
+        }),
+      });
       expect(primaryInitialize.status).toBe(200);
       expect((await fetch(recoveryHealth)).status).toBe(200);
     } finally {
-      if (launchdTarget) { try { launchctl('bootout', launchdTarget); } catch { /* already unloaded */ } }
+      if (launchdTarget) {
+        try {
+          launchctl('bootout', launchdTarget);
+        } catch {
+          /* already unloaded */
+        }
+      }
       await stopChild(recoveryChild);
       await stopPid(initialPid);
       await stopPid(restartedPid);
@@ -7240,14 +8944,16 @@ describe('standalone recovery on canonical Runtime', () => {
       recoveryPublicUrl: 'https://recovery.example.test/recovery/mcp',
     });
     const sessionMethods: string[] = [];
-    const json = (value: unknown, status = 200, headers: Record<string, string> = {}) => new Response(JSON.stringify(value), {
-      status,
-      headers: { 'content-type': 'application/json', ...headers },
-    });
-    const sse = (value: unknown, headers: Record<string, string> = {}) => new Response(`event: message\ndata: ${JSON.stringify(value)}\n\n`, {
-      status: 200,
-      headers: { 'content-type': 'text/event-stream', ...headers },
-    });
+    const json = (value: unknown, status = 200, headers: Record<string, string> = {}) =>
+      new Response(JSON.stringify(value), {
+        status,
+        headers: { 'content-type': 'application/json', ...headers },
+      });
+    const sse = (value: unknown, headers: Record<string, string> = {}) =>
+      new Response(`event: message\ndata: ${JSON.stringify(value)}\n\n`, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream', ...headers },
+      });
     const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       const headers = new Headers(init?.headers);
@@ -7263,17 +8969,29 @@ describe('standalone recovery on canonical Runtime', () => {
         });
       }
       if (url === 'https://recovery.example.test/.well-known/oauth-protected-resource/recovery/mcp') {
-        return json({ resource: 'https://recovery.example.test/recovery/mcp', authorization_servers: ['https://recovery.example.test'] });
+        return json({
+          resource: 'https://recovery.example.test/recovery/mcp',
+          authorization_servers: ['https://recovery.example.test'],
+        });
       }
       if (url === 'https://recovery.example.test/recovery/oauth/register') {
-        return json({ client_id: RECOVERY_VERIFIER_OAUTH_CLIENT_ID, forge_client_owner: 'recovery_verifier', forge_client_reused: true }, 201);
+        return json(
+          {
+            client_id: RECOVERY_VERIFIER_OAUTH_CLIENT_ID,
+            forge_client_owner: 'recovery_verifier',
+            forge_client_reused: true,
+          },
+          201,
+        );
       }
       if (url === 'https://recovery.example.test/recovery/oauth/authorize') {
         const form = new URLSearchParams(String(init?.body ?? ''));
         const state = form.get('state') ?? '';
         return new Response(null, {
           status: 302,
-          headers: { location: `${RECOVERY_VERIFIER_OAUTH_REDIRECT_URI}?code=recovery-test-code&state=${encodeURIComponent(state)}` },
+          headers: {
+            location: `${RECOVERY_VERIFIER_OAUTH_REDIRECT_URI}?code=recovery-test-code&state=${encodeURIComponent(state)}`,
+          },
         });
       }
       if (url === 'https://recovery.example.test/recovery/oauth/token') {
@@ -7282,7 +9000,8 @@ describe('standalone recovery on canonical Runtime', () => {
       if (url !== 'https://recovery.example.test/recovery/mcp') throw new Error(`unexpected verifier URL: ${url}`);
       if (!headers.has('authorization')) {
         return json({ error: 'invalid_token' }, 401, {
-          'www-authenticate': 'Bearer error="invalid_token", error_description="Missing Authorization header", resource_metadata="https://recovery.example.test/.well-known/oauth-protected-resource/recovery/mcp"',
+          'www-authenticate':
+            'Bearer error="invalid_token", error_description="Missing Authorization header", resource_metadata="https://recovery.example.test/.well-known/oauth-protected-resource/recovery/mcp"',
         });
       }
       expect(init?.method).not.toBe('DELETE');
@@ -7338,8 +9057,14 @@ describe('standalone recovery on canonical Runtime', () => {
         systemdPid: () => undefined,
         processAlive: () => false,
       });
-      expect(descriptor.services.recovery).toMatchObject({ platform: 'systemd-user', serviceInstalled: true, running: false });
-      expect(descriptor.warnings).not.toContain('Forge Recovery systemd-user service is not installed. Run forge recovery install.');
+      expect(descriptor.services.recovery).toMatchObject({
+        platform: 'systemd-user',
+        serviceInstalled: true,
+        running: false,
+      });
+      expect(descriptor.warnings).not.toContain(
+        'Forge Recovery systemd-user service is not installed. Run forge recovery install.',
+      );
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -7358,36 +9083,50 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(descriptor.url).toBe('http://127.0.0.1:8787/recovery/mcp');
     expect(descriptor.public).toBe(false);
     expect(descriptor.readyForChatGPT).toBe(false);
-    expect(descriptor.warnings).toContain('Recovery is loopback-only. Configure a dedicated OpenAI Secure MCP Tunnel or an HTTPS tunnel service before adding it to ChatGPT.');
+    expect(descriptor.warnings).toContain(
+      'Recovery is loopback-only. Configure a dedicated OpenAI Secure MCP Tunnel or an HTTPS tunnel service before adding it to ChatGPT.',
+    );
   });
   test('requires RunAtLoad and unconditional KeepAlive for the Recovery tunnel launch agent', () => {
     const home = controllerHome();
     const plistPath = join(home, 'Library', 'LaunchAgents', 'com.moretea.forge-recovery-tunnel.plist');
     mkdirSync(dirname(plistPath), { recursive: true });
-    writeFileSync(plistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict></dict></plist>');
-    expect(inspectRecoveryTunnelLaunchdContract({
-      platform: 'launchd',
-      label: 'com.moretea.forge-recovery-tunnel',
+    writeFileSync(
       plistPath,
-    })).toMatchObject({ plistInstalled: true, runAtLoad: true, keepAliveAlways: false, restartSafe: false });
+      '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict></dict></plist>',
+    );
+    expect(
+      inspectRecoveryTunnelLaunchdContract({
+        platform: 'launchd',
+        label: 'com.moretea.forge-recovery-tunnel',
+        plistPath,
+      }),
+    ).toMatchObject({ plistInstalled: true, runAtLoad: true, keepAliveAlways: false, restartSafe: false });
 
     writeFileSync(plistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
-    expect(inspectRecoveryTunnelLaunchdContract({
-      platform: 'launchd',
-      label: 'com.moretea.forge-recovery-tunnel',
-      plistPath,
-    })).toMatchObject({ plistInstalled: true, runAtLoad: true, keepAliveAlways: true, restartSafe: true });
+    expect(
+      inspectRecoveryTunnelLaunchdContract({
+        platform: 'launchd',
+        label: 'com.moretea.forge-recovery-tunnel',
+        plistPath,
+      }),
+    ).toMatchObject({ plistInstalled: true, runAtLoad: true, keepAliveAlways: true, restartSafe: true });
   });
   test('accepts failure-triggered KeepAlive for the explicitly managed primary public tunnel', () => {
     const home = controllerHome();
     const plistPath = join(home, 'Library', 'LaunchAgents', 'com.cloudflare.cloudflared.plist');
     mkdirSync(dirname(plistPath), { recursive: true });
-    writeFileSync(plistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict></dict></plist>');
-    expect(inspectPrimaryPublicTunnelLaunchdContract({
-      platform: 'launchd',
-      label: 'com.cloudflare.cloudflared',
+    writeFileSync(
       plistPath,
-    })).toMatchObject({
+      '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict></dict></plist>',
+    );
+    expect(
+      inspectPrimaryPublicTunnelLaunchdContract({
+        platform: 'launchd',
+        label: 'com.cloudflare.cloudflared',
+        plistPath,
+      }),
+    ).toMatchObject({
       plistInstalled: true,
       runAtLoad: true,
       keepAliveAlways: false,
@@ -7400,12 +9139,17 @@ describe('standalone recovery on canonical Runtime', () => {
     const home = controllerHome();
     const plistPath = join(home, 'Library', 'LaunchAgents', 'com.moretea.forge.mcp-gateway.plist');
     mkdirSync(dirname(plistPath), { recursive: true });
-    writeFileSync(plistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict></dict></plist>');
-    expect(inspectPrimaryConnectorLaunchdContract({
-      platform: 'launchd',
-      label: 'com.moretea.forge.mcp-gateway',
+    writeFileSync(
       plistPath,
-    })).toMatchObject({
+      '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict></dict></plist>',
+    );
+    expect(
+      inspectPrimaryConnectorLaunchdContract({
+        platform: 'launchd',
+        label: 'com.moretea.forge.mcp-gateway',
+        plistPath,
+      }),
+    ).toMatchObject({
       plistInstalled: true,
       runAtLoad: true,
       keepAliveAlways: false,
@@ -7448,18 +9192,25 @@ describe('standalone recovery on canonical Runtime', () => {
     const home = controllerHome();
     const path = recoveryConfigPath(home);
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify({
-      schemaVersion: 1,
-      controllerHome: home,
-      stableIngressUrl: 'http://127.0.0.1:8765',
-      publicTunnelService: { platform: 'launchd', label: 'com.moretea.retired-recovery' },
-      agentRepair: { enabled: true, command: 'pi' },
-      publicMcpUrl: 'https://mcp.example.test/mcp',
-      recoveryPublicUrl: 'https://recovery.example.test/recovery/mcp',
-      recoveryTunnelService: { platform: 'launchd', label: 'com.moretea.forge-recovery-tunnel' },
-      readOnlyTool: { name: 'controller_ready' },
-      gateway: { host: '127.0.0.1', port: 8787, bearerTokenFile: join(home, 'recovery', 'config', 'gateway-token.json') },
-    }));
+    writeFileSync(
+      path,
+      JSON.stringify({
+        schemaVersion: 1,
+        controllerHome: home,
+        stableIngressUrl: 'http://127.0.0.1:8765',
+        publicTunnelService: { platform: 'launchd', label: 'com.moretea.retired-recovery' },
+        agentRepair: { enabled: true, command: 'pi' },
+        publicMcpUrl: 'https://mcp.example.test/mcp',
+        recoveryPublicUrl: 'https://recovery.example.test/recovery/mcp',
+        recoveryTunnelService: { platform: 'launchd', label: 'com.moretea.forge-recovery-tunnel' },
+        readOnlyTool: { name: 'controller_ready' },
+        gateway: {
+          host: '127.0.0.1',
+          port: 8787,
+          bearerTokenFile: join(home, 'recovery', 'config', 'gateway-token.json'),
+        },
+      }),
+    );
     const loaded = loadRecoveryConfig(home);
     expect(loaded).not.toHaveProperty('stableIngressUrl');
     expect(loaded).not.toHaveProperty('publicTunnelService');
@@ -7469,10 +9220,15 @@ describe('standalone recovery on canonical Runtime', () => {
     const migrated = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
     expect(migrated.readOnlyTool).toEqual({ name: 'controller_ready' });
 
-    writeFileSync(path, JSON.stringify({ ...migrated, readOnlyTool: { name: 'controller_context', arguments: { stale: true } } }));
+    writeFileSync(
+      path,
+      JSON.stringify({ ...migrated, readOnlyTool: { name: 'controller_context', arguments: { stale: true } } }),
+    );
     expect(loadRecoveryConfig(home).readOnlyTool).toEqual({ name: 'repository_list', arguments: {} });
-    expect((JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>).readOnlyTool)
-      .toEqual({ name: 'controller_context', arguments: { stale: true } });
+    expect((JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>).readOnlyTool).toEqual({
+      name: 'controller_context',
+      arguments: { stale: true },
+    });
 
     createRecoveryConfig(home, {});
     const persisted = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
@@ -7537,59 +9293,91 @@ describe('standalone recovery on canonical Runtime', () => {
     };
     const firstHealthy = recordWatchdogRuntimeHealthy(state, 1_000);
     expect(firstHealthy.runtimeRestartAttempts).toBe(3);
-    expect(recordWatchdogRuntimeHealthy(firstHealthy, 1_000 + WATCHDOG_RUNTIME_RESTART_BUDGET_STABLE_MS - 1).runtimeRestartAttempts).toBe(3);
-    expect(recordWatchdogRuntimeHealthy(firstHealthy, 1_000 + WATCHDOG_RUNTIME_RESTART_BUDGET_STABLE_MS)).toMatchObject({
-      runtimeRestartAttempts: 0,
-      runtimeRestartFailures: 0,
-      runtimeRestartBudgetExhaustedAt: undefined,
-    });
-    expect(watchdogRuntimeRestartBudgetStableMs({ primaryRuntimeService: { platform: 'launchd', restartBudgetStableDurationMs: 12_345 } })).toBe(12_345);
+    expect(
+      recordWatchdogRuntimeHealthy(firstHealthy, 1_000 + WATCHDOG_RUNTIME_RESTART_BUDGET_STABLE_MS - 1)
+        .runtimeRestartAttempts,
+    ).toBe(3);
+    expect(recordWatchdogRuntimeHealthy(firstHealthy, 1_000 + WATCHDOG_RUNTIME_RESTART_BUDGET_STABLE_MS)).toMatchObject(
+      {
+        runtimeRestartAttempts: 0,
+        runtimeRestartFailures: 0,
+        runtimeRestartBudgetExhaustedAt: undefined,
+      },
+    );
+    expect(
+      watchdogRuntimeRestartBudgetStableMs({
+        primaryRuntimeService: { platform: 'launchd', restartBudgetStableDurationMs: 12_345 },
+      }),
+    ).toBe(12_345);
   });
 
   test('enters explicit operator handoff when the active release has exhausted its restart budget', () => {
     const now = Date.parse('2026-08-09T06:20:00.000Z');
-    expect(decideWatchdog({
-      failures: 2,
-      firstFailureAt: now - 6_000,
-      evidenceClasses: ['runtime'],
-      activeKnownGood: true,
-      previousKnownGood: false,
-      rollbackUsed: false,
-      primaryRuntimeFailed: true,
-      runtimeRestartAttempts: 3,
-      runtimeMaximumRestartAttempts: 3,
-      nowMs: now,
-    })).toMatchObject({ action: 'recovery_exhausted' });
+    expect(
+      decideWatchdog({
+        failures: 2,
+        firstFailureAt: now - 6_000,
+        evidenceClasses: ['runtime'],
+        activeKnownGood: true,
+        previousKnownGood: false,
+        rollbackUsed: false,
+        primaryRuntimeFailed: true,
+        runtimeRestartAttempts: 3,
+        runtimeMaximumRestartAttempts: 3,
+        nowMs: now,
+      }),
+    ).toMatchObject({ action: 'recovery_exhausted' });
   });
 
   test('grants startup grace only to a live non-stale Runtime owner and never shorter than release verification', () => {
     const now = Date.parse('2026-08-09T06:20:00.000Z');
     expect(watchdogRuntimeStartupGraceMs({ primaryRuntimeService: { platform: 'launchd' } })).toBe(60_000);
-    expect(watchdogRuntimeStartupGraceMs({
-      primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 120_000 },
-    })).toBe(120_000);
-    expect(runtimeWithinWatchdogStartupGrace({
-      running: true,
-      stale: false,
-      snapshot: { startedAt: '2026-08-09T06:19:30.000Z' },
-    }, now)).toBe(true);
-    expect(runtimeWithinWatchdogStartupGrace({
-      running: true,
-      stale: false,
-      snapshot: { startedAt: '2026-08-09T06:18:00.000Z' },
-    }, now)).toBe(false);
-    expect(runtimeWithinWatchdogStartupGrace({
-      running: false,
-      stale: false,
-      snapshot: { startedAt: '2026-08-09T06:19:30.000Z' },
-    }, now)).toBe(false);
-    expect(runtimeWithinWatchdogStartupGrace({
-      running: true,
-      stale: true,
-      snapshot: { startedAt: '2026-08-09T06:19:30.000Z' },
-    }, now)).toBe(false);
+    expect(
+      watchdogRuntimeStartupGraceMs({
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 120_000 },
+      }),
+    ).toBe(120_000);
+    expect(
+      runtimeWithinWatchdogStartupGrace(
+        {
+          running: true,
+          stale: false,
+          snapshot: { startedAt: '2026-08-09T06:19:30.000Z' },
+        },
+        now,
+      ),
+    ).toBe(true);
+    expect(
+      runtimeWithinWatchdogStartupGrace(
+        {
+          running: true,
+          stale: false,
+          snapshot: { startedAt: '2026-08-09T06:18:00.000Z' },
+        },
+        now,
+      ),
+    ).toBe(false);
+    expect(
+      runtimeWithinWatchdogStartupGrace(
+        {
+          running: false,
+          stale: false,
+          snapshot: { startedAt: '2026-08-09T06:19:30.000Z' },
+        },
+        now,
+      ),
+    ).toBe(false);
+    expect(
+      runtimeWithinWatchdogStartupGrace(
+        {
+          running: true,
+          stale: true,
+          snapshot: { startedAt: '2026-08-09T06:19:30.000Z' },
+        },
+        now,
+      ),
+    ).toBe(false);
   });
-
 });
 
 describe('Recovery verifier OAuth registration lifecycle', () => {
@@ -7616,41 +9404,86 @@ describe('Recovery verifier OAuth registration lifecycle', () => {
   });
 
   test('rejects attempts to claim the reserved verifier id with different metadata', () => {
-    expect(() => recoveryOAuthClientRegistrationIdentity({
-      client_id: RECOVERY_VERIFIER_OAUTH_CLIENT_ID,
-      client_name: 'not-the-verifier',
-      redirect_uris: [RECOVERY_VERIFIER_OAUTH_REDIRECT_URI],
-      token_endpoint_auth_method: 'none',
-      grant_types: ['authorization_code'],
-      response_types: ['code'],
-    })).toThrow('RECOVERY_OAUTH_VERIFIER_CLIENT_METADATA_INVALID');
+    expect(() =>
+      recoveryOAuthClientRegistrationIdentity({
+        client_id: RECOVERY_VERIFIER_OAUTH_CLIENT_ID,
+        client_name: 'not-the-verifier',
+        redirect_uris: [RECOVERY_VERIFIER_OAUTH_REDIRECT_URI],
+        token_endpoint_auth_method: 'none',
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+      }),
+    ).toThrow('RECOVERY_OAUTH_VERIFIER_CLIENT_METADATA_INVALID');
   });
 });
 
-
 describe('Recovery independent performance diagnostics', () => {
-  const identity = { releaseId: 'candidate', authorityRevision: 3, runtimeInstanceId: 'runtime', pid: 123, startedAt: 'start' };
+  const identity = {
+    releaseId: 'candidate',
+    authorityRevision: 3,
+    runtimeInstanceId: 'runtime',
+    pid: 123,
+    startedAt: 'start',
+  };
 
   test('CPU-time samples enforce thresholds, identity, expiry and measurement availability', async () => {
     const deps = idleCpuDependencies();
     const evidence = await measureRuntimePerformance(() => identity, deps);
-    expect(evidence).toMatchObject({ policy: 'runaway-cpu-v4', sampleCount: 20, warmupMs: 10_000, durationMs: 50_000, meanCpuPercent: 0, sustainedHighWindowCount: 0 });
-    expect(() => assertRuntimePerformanceEvidence(evidence, identity, Date.parse(evidence.measuredUntil) + 60_001)).toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
-    expect(() => assertRuntimePerformanceEvidence(evidence, { ...identity, authorityRevision: 4 })).toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
-    expect(() => assertRuntimePerformanceEvidence({ ...evidence, meanCpuPercent: 10.34, p95CpuPercent: 31.09 }, identity)).not.toThrow();
-    expect(() => assertRuntimePerformanceEvidence({ ...evidence, meanCpuPercent: 90.64, p95CpuPercent: 104.72 }, identity)).toThrow('RECOVERY_PERFORMANCE_REJECTED');
-    expect(() => assertRuntimePerformanceEvidence({ ...evidence, meanCpuPercent: RECOVERY_RUNAWAY_MEAN_CPU_PERCENT + 0.01 }, identity)).toThrow('RECOVERY_PERFORMANCE_REJECTED');
+    expect(evidence).toMatchObject({
+      policy: 'runaway-cpu-v4',
+      sampleCount: 20,
+      warmupMs: 10_000,
+      durationMs: 50_000,
+      meanCpuPercent: 0,
+      sustainedHighWindowCount: 0,
+    });
+    expect(() =>
+      assertRuntimePerformanceEvidence(evidence, identity, Date.parse(evidence.measuredUntil) + 60_001),
+    ).toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
+    expect(() => assertRuntimePerformanceEvidence(evidence, { ...identity, authorityRevision: 4 })).toThrow(
+      'RECOVERY_PERFORMANCE_UNKNOWN',
+    );
+    expect(() =>
+      assertRuntimePerformanceEvidence({ ...evidence, meanCpuPercent: 10.34, p95CpuPercent: 31.09 }, identity),
+    ).not.toThrow();
+    expect(() =>
+      assertRuntimePerformanceEvidence({ ...evidence, meanCpuPercent: 90.64, p95CpuPercent: 104.72 }, identity),
+    ).toThrow('RECOVERY_PERFORMANCE_REJECTED');
+    expect(() =>
+      assertRuntimePerformanceEvidence(
+        { ...evidence, meanCpuPercent: RECOVERY_RUNAWAY_MEAN_CPU_PERCENT + 0.01 },
+        identity,
+      ),
+    ).toThrow('RECOVERY_PERFORMANCE_REJECTED');
     // A bounded scheduled maintenance pass lands in at most a few windows of one
     // observation. Live evidence: healthy Canonical Runtime at mean=12.60%, p95=65.05%
     // with four high windows out of twenty. That is bounded periodic work, not runaway.
-    expect(() => assertRuntimePerformanceEvidence({
-      ...evidence, meanCpuPercent: 12.6, p95CpuPercent: RECOVERY_RUNAWAY_P95_CPU_PERCENT + 15.05, sustainedHighWindowCount: 4,
-    }, identity)).not.toThrow();
+    expect(() =>
+      assertRuntimePerformanceEvidence(
+        {
+          ...evidence,
+          meanCpuPercent: 12.6,
+          p95CpuPercent: RECOVERY_RUNAWAY_P95_CPU_PERCENT + 15.05,
+          sustainedHighWindowCount: 4,
+        },
+        identity,
+      ),
+    ).not.toThrow();
     // Sustained consumption at the same tail still rejects: half or more of the windows.
-    expect(() => assertRuntimePerformanceEvidence({
-      ...evidence, meanCpuPercent: 12.6, p95CpuPercent: RECOVERY_RUNAWAY_P95_CPU_PERCENT + 15.05, sustainedHighWindowCount: 10,
-    }, identity)).toThrow('RECOVERY_PERFORMANCE_REJECTED');
-    expect(() => assertRuntimePerformanceEvidence({ ...evidence, sustainedHighWindowCount: 21 }, identity)).toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
+    expect(() =>
+      assertRuntimePerformanceEvidence(
+        {
+          ...evidence,
+          meanCpuPercent: 12.6,
+          p95CpuPercent: RECOVERY_RUNAWAY_P95_CPU_PERCENT + 15.05,
+          sustainedHighWindowCount: 10,
+        },
+        identity,
+      ),
+    ).toThrow('RECOVERY_PERFORMANCE_REJECTED');
+    expect(() => assertRuntimePerformanceEvidence({ ...evidence, sustainedHighWindowCount: 21 }, identity)).toThrow(
+      'RECOVERY_PERFORMANCE_UNKNOWN',
+    );
 
     let singleSpikeElapsed = 0;
     const singleSpike = await measureRuntimePerformance(() => identity, {
@@ -7660,42 +9493,67 @@ describe('Recovery independent performance diagnostics', () => {
       }),
       monotonicNow: () => singleSpikeElapsed,
       wallNow: () => Date.now() - 60_000 + singleSpikeElapsed,
-      sleep: async (ms: number) => { singleSpikeElapsed += ms; },
+      sleep: async (ms: number) => {
+        singleSpikeElapsed += ms;
+      },
     });
     expect(singleSpike).toMatchObject({ meanCpuPercent: 3, p95CpuPercent: 0, sampleCount: 20 });
 
     let repeatedSpikeElapsed = 0;
-    await expect(measureRuntimePerformance(() => identity, {
-      readCpu: () => ({
-        cpuMs: repeatedSpikeElapsed < 12_500 ? 0 : (repeatedSpikeElapsed - 12_500) * 0.6,
-        processStartTime: 'same',
+    await expect(
+      measureRuntimePerformance(() => identity, {
+        readCpu: () => ({
+          cpuMs: repeatedSpikeElapsed < 12_500 ? 0 : (repeatedSpikeElapsed - 12_500) * 0.6,
+          processStartTime: 'same',
+        }),
+        monotonicNow: () => repeatedSpikeElapsed,
+        wallNow: () => Date.now() - 60_000 + repeatedSpikeElapsed,
+        sleep: async (ms: number) => {
+          repeatedSpikeElapsed += ms;
+        },
       }),
-      monotonicNow: () => repeatedSpikeElapsed,
-      wallNow: () => Date.now() - 60_000 + repeatedSpikeElapsed,
-      sleep: async (ms: number) => { repeatedSpikeElapsed += ms; },
-    })).rejects.toThrow('RECOVERY_PERFORMANCE_REJECTED');
+    ).rejects.toThrow('RECOVERY_PERFORMANCE_REJECTED');
 
     const busy = idleCpuDependencies();
-    await expect(measureRuntimePerformance(() => identity, {
-      ...busy, readCpu: () => ({ cpuMs: busy.monotonicNow(), processStartTime: 'same' }),
-    })).rejects.toThrow('RECOVERY_PERFORMANCE_REJECTED');
+    await expect(
+      measureRuntimePerformance(() => identity, {
+        ...busy,
+        readCpu: () => ({ cpuMs: busy.monotonicNow(), processStartTime: 'same' }),
+      }),
+    ).rejects.toThrow('RECOVERY_PERFORMANCE_REJECTED');
     let readings = 0;
-    await expect(measureRuntimePerformance(() => identity, {
-      ...idleCpuDependencies(), readCpu: () => ({ cpuMs: 0, processStartTime: String(readings++) }),
-    })).rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
+    await expect(
+      measureRuntimePerformance(() => identity, {
+        ...idleCpuDependencies(),
+        readCpu: () => ({ cpuMs: 0, processStartTime: String(readings++) }),
+      }),
+    ).rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
     const changed = idleCpuDependencies();
-    await expect(measureRuntimePerformance(() => ({ ...identity, authorityRevision: changed.monotonicNow() > 10_000 ? 4 : 3 }), changed))
-      .rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
-    await expect(measureRuntimePerformance(() => identity, {
-      ...idleCpuDependencies(), readCpu: () => { throw new Error('sample unavailable'); },
-    })).rejects.toThrow('sample unavailable');
+    await expect(
+      measureRuntimePerformance(
+        () => ({ ...identity, authorityRevision: changed.monotonicNow() > 10_000 ? 4 : 3 }),
+        changed,
+      ),
+    ).rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
+    await expect(
+      measureRuntimePerformance(() => identity, {
+        ...idleCpuDependencies(),
+        readCpu: () => {
+          throw new Error('sample unavailable');
+        },
+      }),
+    ).rejects.toThrow('sample unavailable');
     let warmupElapsed = 0;
-    await expect(measureRuntimePerformance(() => identity, {
-      readCpu: () => ({ cpuMs: 0, processStartTime: 'same' }),
-      monotonicNow: () => warmupElapsed,
-      wallNow: () => Date.now() + warmupElapsed,
-      sleep: async () => { warmupElapsed += 20_000; },
-    })).rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN: interrupted CPU warmup window');
+    await expect(
+      measureRuntimePerformance(() => identity, {
+        readCpu: () => ({ cpuMs: 0, processStartTime: 'same' }),
+        monotonicNow: () => warmupElapsed,
+        wallNow: () => Date.now() + warmupElapsed,
+        sleep: async () => {
+          warmupElapsed += 20_000;
+        },
+      }),
+    ).rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN: interrupted CPU warmup window');
     expect(readRuntimeCpu(process.pid).cpuMs).toBeGreaterThanOrEqual(0);
   });
 
@@ -7712,7 +9570,11 @@ describe('Recovery independent performance diagnostics', () => {
     const evidence = await measureConfiguredRuntimePerformance(config, {
       ...deps,
       sleep: async (ms: number) => {
-        const probe = acquireRecoveryOperationLock({ controllerHome: home, action: 'test_probe_during_performance_observation', requestId: `test-probe-${++probes}` });
+        const probe = acquireRecoveryOperationLock({
+          controllerHome: home,
+          action: 'test_probe_during_performance_observation',
+          requestId: `test-probe-${++probes}`,
+        });
         expect(probe.acquired).toBe(true);
         if (probe.acquired) probe.handle.close();
         await deps.sleep(ms);
@@ -7720,7 +9582,11 @@ describe('Recovery independent performance diagnostics', () => {
     });
     expect(evidence.sampleCount).toBe(20);
     expect(probes).toBeGreaterThan(0);
-    const held = acquireRecoveryOperationLock({ controllerHome: home, action: 'test_attestation_lock', requestId: 'test-attestation-lock' });
+    const held = acquireRecoveryOperationLock({
+      controllerHome: home,
+      action: 'test_attestation_lock',
+      requestId: 'test-attestation-lock',
+    });
     expect(held.acquired).toBe(true);
     await expect(attestKnownGood(config)).rejects.toThrow('Recovery mutation already in progress');
     if (held.acquired) held.handle.close();
@@ -7737,9 +9603,12 @@ describe('Recovery independent performance diagnostics', () => {
     startObservedRuntime(home, runtime.endpoint, 'release-cpu', 'artifact-cpu');
     const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
     const busy = idleCpuDependencies();
-    await expect(measureConfiguredRuntimePerformance(config, {
-      ...busy, readCpu: () => ({ cpuMs: busy.monotonicNow(), processStartTime: 'same' }),
-    })).rejects.toThrow('RECOVERY_PERFORMANCE_REJECTED');
+    await expect(
+      measureConfiguredRuntimePerformance(config, {
+        ...busy,
+        readCpu: () => ({ cpuMs: busy.monotonicNow(), processStartTime: 'same' }),
+      }),
+    ).rejects.toThrow('RECOVERY_PERFORMANCE_REJECTED');
     const attested = await attestKnownGood(config);
     expect(attested.performance).toBeUndefined();
     const result = await rollbackPrevious(config, 'explicit performance regression');
@@ -7758,20 +9627,21 @@ describe('Recovery independent performance diagnostics', () => {
     const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
     const dependencies = idleCpuDependencies();
     let switched = false;
-    await expect(measureConfiguredRuntimePerformance(config, {
-      ...dependencies,
-      readCpu: () => {
-        if (!switched) {
-          switched = true;
-          removeOwnership(ownership);
-          publishRuntimeRelease(home, second, 'switch-during-performance-observation');
-        }
-        return { cpuMs: 0, processStartTime: 'same' };
-      },
-    })).rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
+    await expect(
+      measureConfiguredRuntimePerformance(config, {
+        ...dependencies,
+        readCpu: () => {
+          if (!switched) {
+            switched = true;
+            removeOwnership(ownership);
+            publishRuntimeRelease(home, second, 'switch-during-performance-observation');
+          }
+          return { cpuMs: 0, processStartTime: 'same' };
+        },
+      }),
+    ).rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
     expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
   });
-
 });
 
 test('recovery release install waits for an in-flight Recovery mutation instead of failing immediately', async () => {
@@ -7794,8 +9664,12 @@ test('recovery release install waits for an in-flight Recovery mutation instead 
       if (attempts < 3) return { acquired: false as const, owner };
       return acquireRecoveryOperationLock(input);
     },
-    sleep: async (ms) => { waits.push(ms); },
-    report: (detail) => { reported.push(detail); },
+    sleep: async (ms) => {
+      waits.push(ms);
+    },
+    report: (detail) => {
+      reported.push(detail);
+    },
   });
   expect(attempts).toBe(3);
   expect(waits).toEqual([2_000, 2_000]);
@@ -7815,11 +9689,15 @@ test('recovery release install still fails closed when the Recovery mutation nev
     requestId: 'internal:attest_known_good:stuck-mutation',
   };
   let clock = 0;
-  await expect(acquireRecoveryReleaseLock(home, {
-    acquire: () => ({ acquired: false as const, owner }),
-    sleep: async (ms) => { clock += ms; },
-    now: () => clock,
-    waitMs: 5_000,
-    report: () => {},
-  })).rejects.toThrow('RECOVERY_OPERATION_LOCK_BUSY');
+  await expect(
+    acquireRecoveryReleaseLock(home, {
+      acquire: () => ({ acquired: false as const, owner }),
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      now: () => clock,
+      waitMs: 5_000,
+      report: () => {},
+    }),
+  ).rejects.toThrow('RECOVERY_OPERATION_LOCK_BUSY');
 });

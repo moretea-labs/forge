@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildMcpCommand } from '../../src/cli/commands/mcp';
+import { resolveRuntimeOutboundProxyPolicyFromCli } from '../../src/cli/commands/runtime';
 
 const ROOT = join(import.meta.dir, '../..');
 const CLI = join(ROOT, 'src/cli/index.ts');
@@ -43,11 +44,15 @@ describe('runtime command surface', () => {
         FORGE_TEST_GIT_MARKER: gitCalls,
       };
 
-      const runtime = spawnSync(process.execPath, [CLI, 'runtime', 'status', '--controller-home', controllerHome, '--json'], {
-        cwd: root,
-        encoding: 'utf-8',
-        env,
-      });
+      const runtime = spawnSync(
+        process.execPath,
+        [CLI, 'runtime', 'status', '--controller-home', controllerHome, '--json'],
+        {
+          cwd: root,
+          encoding: 'utf-8',
+          env,
+        },
+      );
       expect(runtime.status).toBe(0);
       expect(JSON.parse(runtime.stdout)).toMatchObject({ runtime: { running: false }, repositories: [] });
 
@@ -76,12 +81,58 @@ describe('runtime command surface', () => {
     expect(service.stdout).not.toMatch(/^\s+restart\b/m);
     expect(service.stdout).not.toMatch(/^\s+keepalive\b/m);
 
-    const install = spawnSync('bun', [CLI, 'runtime', 'service', 'install', '--help'], { cwd: ROOT, encoding: 'utf-8' });
+    const install = spawnSync('bun', [CLI, 'runtime', 'service', 'install', '--help'], {
+      cwd: ROOT,
+      encoding: 'utf-8',
+    });
     expect(install.status).toBe(0);
     expect(install.stdout).toContain('--controller-home');
     expect(install.stdout).toContain('--repo');
     expect(install.stdout).toContain('--port');
+
+    const installPackage = spawnSync('bun', [CLI, 'runtime', 'service', 'install-package', '--help'], {
+      cwd: ROOT,
+      encoding: 'utf-8',
+    });
+    expect(installPackage.status).toBe(0);
+    expect(installPackage.stdout).toContain('--proxy-mode');
+    expect(installPackage.stdout).toContain('--http-proxy');
+    expect(installPackage.stdout).toContain('--https-proxy');
+    expect(installPackage.stdout).toContain('--proxy-bypass');
     expect(install.stdout).not.toMatch(/^\s+keepalive\b/m);
+  });
+
+  test('packaged Runtime installer requires an explicit proxy mode and validates WSL proxy configuration', () => {
+    expect(
+      resolveRuntimeOutboundProxyPolicyFromCli({
+        proxyMode: 'explicit',
+        httpProxy: 'http://127.0.0.1:7890',
+        httpsProxy: 'http://127.0.0.1:7890',
+        proxyBypass: 'internal.local',
+      }),
+    ).toEqual({
+      mode: 'explicit',
+      httpProxy: 'http://127.0.0.1:7890',
+      httpsProxy: 'http://127.0.0.1:7890',
+      noProxy: 'internal.local,localhost,127.0.0.1,::1',
+    });
+    expect(() =>
+      resolveRuntimeOutboundProxyPolicyFromCli({
+        httpProxy: 'http://127.0.0.1:7890',
+      }),
+    ).toThrow('RUNTIME_OUTBOUND_PROXY_MODE_REQUIRED');
+    expect(() =>
+      resolveRuntimeOutboundProxyPolicyFromCli({
+        proxyMode: 'explicit',
+      }),
+    ).toThrow('FORGE_RUNTIME_OUTBOUND_PROXY_ENDPOINT_REQUIRED');
+    expect(() =>
+      resolveRuntimeOutboundProxyPolicyFromCli({
+        proxyMode: 'explicit',
+        httpsProxy: 'http://user:password@127.0.0.1:7890',
+      }),
+    ).toThrow('FORGE_OUTBOUND_PROXY_URL_INVALID');
+    expect(resolveRuntimeOutboundProxyPolicyFromCli({ proxyMode: 'direct' })).toEqual({ mode: 'direct' });
   });
 
   test('root public surface keeps the legacy controller lifecycle and component rollout owner retired', () => {
@@ -112,7 +163,9 @@ describe('runtime command surface', () => {
     ]) {
       expect(scripts).not.toHaveProperty(legacy);
     }
-    expect(Object.values(scripts).join('\n')).not.toMatch(/controller-runtime\.sh|restart-forge\.sh|rollout-all-registered-repos\.sh/);
+    expect(Object.values(scripts).join('\n')).not.toMatch(
+      /controller-runtime\.sh|restart-forge\.sh|rollout-all-registered-repos\.sh/,
+    );
     expect(pkg.bin?.['forge-runtime']).toBe('bin/forge-runtime.mjs');
   });
 
@@ -129,20 +182,40 @@ describe('runtime command surface', () => {
     const httpTransport = readFileSync(join(ROOT, 'adapters/mcp/transports/http.ts'), 'utf8');
     const httpObservation = readFileSync(join(ROOT, 'adapters/mcp/transports/http-observation.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/runtime-tools.ts'), 'utf8');
-    const runtimeObservation = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/runtime-observation-adapter.ts'), 'utf8');
-    const runtimeReadinessObservation = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/runtime-readiness-observation.ts'), 'utf8');
+    const runtimeObservation = readFileSync(
+      join(ROOT, 'adapters/mcp/runtime-gateway/runtime-observation-adapter.ts'),
+      'utf8',
+    );
+    const runtimeReadinessObservation = readFileSync(
+      join(ROOT, 'adapters/mcp/runtime-gateway/runtime-readiness-observation.ts'),
+      'utf8',
+    );
     const recoveryAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/recovery-adapter.ts'), 'utf8');
     const statusInboxAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/status-inbox-adapter.ts'), 'utf8');
     const workAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/work-adapter.ts'), 'utf8');
-    const controllerAuthorityAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/controller-authority-adapter.ts'), 'utf8');
-    const runtimeGatewaySurface = [runtimeTools, runtimeObservation, runtimeReadinessObservation, recoveryAdapter, statusInboxAdapter, controllerAuthorityAdapter, workAdapter].join('\n');
+    const controllerAuthorityAdapter = readFileSync(
+      join(ROOT, 'adapters/mcp/runtime-gateway/controller-authority-adapter.ts'),
+      'utf8',
+    );
+    const runtimeGatewaySurface = [
+      runtimeTools,
+      runtimeObservation,
+      runtimeReadinessObservation,
+      recoveryAdapter,
+      statusInboxAdapter,
+      controllerAuthorityAdapter,
+      workAdapter,
+    ].join('\n');
     const toolsetNames = readFileSync(join(ROOT, 'adapters/mcp/toolset-names.ts'), 'utf8');
     const processGc = readFileSync(join(ROOT, 'src/runtime/execution/process-runtime/gc.ts'), 'utf8');
     const workerOwnership = readFileSync(join(ROOT, 'src/runtime/execution/workers/ownership.ts'), 'utf8');
     const workerEntry = readFileSync(join(ROOT, 'src/cli/execution/worker-entry.ts'), 'utf8');
     const projectionInvalidation = readFileSync(join(ROOT, 'src/runtime/projections/invalidation.ts'), 'utf8');
     const materializedView = readFileSync(join(ROOT, 'src/runtime/projections/materialized-view.ts'), 'utf8');
-    const controllerContextProjection = readFileSync(join(ROOT, 'src/runtime/projections/controller-context.ts'), 'utf8');
+    const controllerContextProjection = readFileSync(
+      join(ROOT, 'src/runtime/projections/controller-context.ts'),
+      'utf8',
+    );
     const compositeOperations = readFileSync(join(ROOT, 'src/cli/controller/composite-operations.ts'), 'utf8');
     const controllerPostcondition = readFileSync(join(ROOT, 'src/cli/controller/postcondition.ts'), 'utf8');
     const localBridgeServer = readFileSync(join(ROOT, 'src/cli/local-bridge/server.ts'), 'utf8');
@@ -159,7 +232,10 @@ describe('runtime command surface', () => {
     const localBridgeFacade = readFileSync(join(ROOT, 'src/cli/local-bridge/facade-api.ts'), 'utf8');
     const standaloneRecovery = readFileSync(join(ROOT, 'src/runtime/standalone-recovery/core.ts'), 'utf8');
     const facadeActions = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/suggested-actions.ts'), 'utf8');
-    const capabilityRegistry = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/capability-registry.ts'), 'utf8');
+    const capabilityRegistry = readFileSync(
+      join(ROOT, 'src/runtime/control-plane/facade/capability-registry.ts'),
+      'utf8',
+    );
     const sourceBaseline = readFileSync(join(ROOT, 'scripts/activate-source-baseline.ts'), 'utf8');
     expect(sourceBaseline).toContain("['rev-parse', '--is-inside-work-tree']");
     expect(sourceBaseline).toContain("reason: 'WORKTREE_NOT_GIT_REPOSITORY'");
@@ -198,7 +274,8 @@ describe('runtime command surface', () => {
       'scripts/controller-runtime.sh',
       'scripts/activate-source-baseline.command',
       'scripts/restart-forge.sh',
-    ]) expect(existsSync(join(ROOT, legacyAuthorityPath))).toBe(false);
+    ])
+      expect(existsSync(join(ROOT, legacyAuthorityPath))).toBe(false);
     expect(httpTransport).not.toContain('ensureControllerDaemon');
     expect(httpTransport).not.toContain('readForgeRuntimeStatus');
     expect(httpObservation).toContain('readForgeRuntimeStatus');
@@ -234,7 +311,10 @@ describe('runtime command surface', () => {
     expect(runtimeGatewaySurface).not.toContain("case 'self_healing_monitor_tick':");
     expect(runtimeGatewaySurface).not.toContain('AUTONOMOUS_RUNTIME_RECOVERY_RETIRED');
     const contextSummaryStart = runtimeObservation.indexOf('function compactControllerContextSummaryPayload');
-    const contextSummaryEnd = runtimeObservation.indexOf('export async function controllerReadiness(', contextSummaryStart);
+    const contextSummaryEnd = runtimeObservation.indexOf(
+      'export async function controllerReadiness(',
+      contextSummaryStart,
+    );
     const contextSummaryBlock = runtimeObservation.slice(contextSummaryStart, contextSummaryEnd);
     expect(contextSummaryBlock).toContain('ready: ready.ready === true');
     expect(contextSummaryBlock).toContain('reasonCodes:');
@@ -247,7 +327,9 @@ describe('runtime command surface', () => {
     expect(contextHandlerBlock).toContain('taskLedger,');
     expect(contextHandlerBlock).toContain('projectionSnapshot: runtimeSnapshot');
     expect(contextHandlerBlock).toContain('runtimeStorageInspection: storageInspection');
-    expect(contextHandlerBlock).toContain('buildControllerOperationalPlan(repository.canonicalRoot, taskLedger, liveGit)');
+    expect(contextHandlerBlock).toContain(
+      'buildControllerOperationalPlan(repository.canonicalRoot, taskLedger, liveGit)',
+    );
     expect(contextHandlerBlock).toContain("markPhase('build.operational_plan', operationalPlanStartedAt)");
     expect(contextHandlerBlock).toContain("markPhase('build.task_board', taskBoardStartedAt)");
     expect(contextHandlerBlock).toContain("markPhase('build.task_ledger', taskLedgerStartedAt)");
@@ -268,7 +350,10 @@ describe('runtime command surface', () => {
     expect(statusHandlerBlock).toContain("observationPolicy: 'bounded_sample_with_mutation_invalidation'");
     expect(contextHandlerBlock).toContain('sourceObservation: gitIdentityObservation');
     const runtimeIdentityStart = controllerAuthorityAdapter.indexOf('export function runtimeIdentitySnapshot');
-    const runtimeIdentityEnd = controllerAuthorityAdapter.indexOf('export function authenticatedFacadeControllerIdentity', runtimeIdentityStart);
+    const runtimeIdentityEnd = controllerAuthorityAdapter.indexOf(
+      'export function authenticatedFacadeControllerIdentity',
+      runtimeIdentityStart,
+    );
     const runtimeIdentityBlock = controllerAuthorityAdapter.slice(runtimeIdentityStart, runtimeIdentityEnd);
     expect(runtimeIdentityBlock).toContain('observeRuntimeStatus(ctx.controllerHome)');
     expect(runtimeIdentityBlock).toContain('runtimeInstanceId: snapshot?.runtimeInstanceId');
@@ -286,8 +371,13 @@ describe('runtime command surface', () => {
     expect(localBridgeBlock).not.toContain('generationMatches');
     expect(localBridgeBlock).not.toContain('health: health.components.localBridge.state');
     expect(localBridgeBlock).not.toContain('state: health.state');
-    const readinessEvidenceStart = runtimeReadinessObservation.indexOf('export async function controllerReadinessEvidence');
-    const readinessEvidenceEnd = runtimeReadinessObservation.indexOf('export function runtimeSourceSnapshotStatus', readinessEvidenceStart);
+    const readinessEvidenceStart = runtimeReadinessObservation.indexOf(
+      'export async function controllerReadinessEvidence',
+    );
+    const readinessEvidenceEnd = runtimeReadinessObservation.indexOf(
+      'export function runtimeSourceSnapshotStatus',
+      readinessEvidenceStart,
+    );
     const readinessEvidenceBlock = runtimeReadinessObservation.slice(readinessEvidenceStart, readinessEvidenceEnd);
     expect(readinessEvidenceBlock).toContain('expectedSurface: localBridgeExpectedSurface');
     expect(readinessEvidenceBlock).toContain('generation: localBridgeSurface?.generation');
@@ -315,7 +405,8 @@ describe('runtime command surface', () => {
       'src/runtime/supervisor/installer.ts',
       'src/runtime/supervisor/operation-store.ts',
       'src/runtime/supervisor/state-store.ts',
-    ]) expect(existsSync(join(ROOT, legacyPath))).toBe(false);
+    ])
+      expect(existsSync(join(ROOT, legacyPath))).toBe(false);
     expect(existsSync(join(ROOT, 'src/cli/controller/bluegreen-rollout.ts'))).toBe(false);
     expect(compositeOperations).not.toContain("from './bluegreen-rollout'");
     expect(compositeOperations).not.toContain('controllerRollout');
@@ -409,7 +500,7 @@ describe('runtime command surface', () => {
     const accessModeSource = readFileSync(join(ROOT, 'adapters/mcp/access-mode.ts'), 'utf8');
     expect(accessModeSource).not.toContain('repo_local_fallback');
     expect(accessModeSource).not.toContain('mcpLocalConfigPath');
-    expect(localBridgeFacade).toContain("observeRuntimeStatus(ctx.controllerHome)");
+    expect(localBridgeFacade).toContain('observeRuntimeStatus(ctx.controllerHome)');
     expect(localBridgeFacade).not.toContain("from '../controller/lifecycle'");
     expect(localBridgeFacade).not.toContain('buildRuntimeOperationalView');
     expect(standaloneRecovery).not.toContain('runtime-slots');

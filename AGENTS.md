@@ -76,6 +76,7 @@ Building successfully, seeing elements in the tree, and passing outer-rectangle 
 Use only checks relevant to the changed boundary:
 ```bash
 bun run check:type
+bun run check:source-quality
 bun run check:repository-hygiene
 bun run check:runtime-architecture
 bun run check:architecture-sync

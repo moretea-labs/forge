@@ -546,6 +546,7 @@ These are **review triggers**, not mechanical quality scores or automatic instru
 | Function/method | around 120 executable lines | Stronger review prompt; extract only when a meaningful, independently understandable responsibility exists. A cohesive algorithm may remain intact. |
 | Cyclomatic complexity | around 15 | Review whether branches are understandable and adequately testable. |
 | Cyclomatic complexity | around 20 | Consider simplification when it improves comprehension or testing; a naturally complex domain algorithm may remain cohesive. |
+| Cognitive complexity | around 15 | Additional static signal from the linter; it is not interchangeable with cyclomatic complexity. |
 | Nesting | more than 4 control-flow levels | Consider guard clauses, named predicates, or restructuring when they make the flow clearer. |
 | Repeated business rule | more than one owner | Consolidate around one canonical owner; exact-file hash checks are insufficient. |
 | Dependency fan-out/fan-in | materially above neighboring modules | Review whether the module has become a central coordinator or lacks a contract boundary. |
@@ -707,7 +708,7 @@ TypeScript remains responsible for fast-changing orchestration, MCP, plugin cont
 
 Rust is optional and **incremental**, used only after identifying a real systems-level advantage (process/resource ownership, IPC/atomicity, crash/locking or a narrow performance hot path). Start with a bounded interface and measured problem, prove Mac and Linux/WSL behavior and packaging, cut over a single owner, then delete the replaced TypeScript writer and obsolete bridge. No dual persistent stores, permanent TS/Rust fallback, new state or Rust-percent target. Go/Python do not become alternate production Kernels without a separate proven requirement.
 
-The initial file/function/branch/nesting review triggers are defined in the Engineering quality standard section above. A file over 1,000 lines merits responsibility review, not an automatic failing size gate. Monitor actual dependency fan-out, cycles, duplicate ownership, controller bookkeeping overhead, delivery lead time and shrinking exceptions. Improve the common structural guard rather than expanding per-incident regex rules.
+The initial file/function/branch/nesting review triggers are defined in the Engineering quality standard section above. For an existing file, around 1,600 lines is a soft responsibility-review prompt only when a change adds another responsibility or materially harms navigation/readability; no automatic size gate or blanket extraction is implied. Monitor actual dependency fan-out, cycles, duplicate ownership, controller bookkeeping overhead, delivery lead time and shrinking exceptions. Improve the common structural guard rather than expanding per-incident regex rules.
 
 ### Workflow capability dependency authority (2026-10-21)
 

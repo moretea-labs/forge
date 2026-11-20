@@ -32,6 +32,7 @@ Run the cheapest authoritative checks while working. Prefer compiler/type and ar
 
 ```bash
 npm run check:type
+bun run check:source-quality
 npm run check:public-docs
 npm run check:release-surface
 npm run check:package-identity

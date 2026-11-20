@@ -1,6 +1,16 @@
 import { writeAtomicTextFile } from '../shared/atomic-text-file';
 import { createHash, randomUUID } from 'crypto';
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from 'fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from 'fs';
 import { homedir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { resolveControllerHome } from '../../effects/controller-home';
@@ -8,6 +18,12 @@ import { createPlatformServiceManagerHost } from '../platform/service-manager';
 import { forgeRuntimePersistentServiceLabel } from '../platform/service-inventory';
 import { loadRuntimeReleaseManifest } from './release-manifest';
 import { normalizeRuntimeDeploymentTopology, type RuntimeDeploymentTopology } from './deployment-topology';
+import {
+  allowlistedProxyEnvironment,
+  normalizeRuntimeOutboundProxyPolicy,
+  resolveRuntimeOutboundProxyEnvironment,
+  type RuntimeOutboundProxyPolicy,
+} from '../shared/process-environment';
 import type { RuntimeReleaseManifest } from './types';
 
 export interface ForgeRuntimeServiceConfig {
@@ -20,6 +36,8 @@ export interface ForgeRuntimeServiceConfig {
   authTokenFile: string;
   /** Persisted product-level component composition. Missing is accepted only for legacy configs. */
   topology?: RuntimeDeploymentTopology;
+  /** Explicit outbound policy for Forge-owned Runtime and child-process egress. */
+  outboundProxy?: RuntimeOutboundProxyPolicy;
 }
 
 export interface ForgeRuntimeServicePaths {
@@ -35,7 +53,12 @@ export interface ForgeRuntimeServicePaths {
 }
 
 function xml(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
 }
 
 export function forgeRuntimeServicePaths(controllerHome: string): ForgeRuntimeServicePaths {
@@ -68,17 +91,21 @@ export function validateForgeRuntimeServiceConfig(
   if (input.schemaVersion !== 1) throw new Error('FORGE_RUNTIME_SERVICE_CONFIG_VERSION_UNSUPPORTED');
   const controllerHome = resolve(input.controllerHome);
   const configuredRepositoryRoot = input.repositoryRoot?.trim() ? resolve(input.repositoryRoot) : undefined;
-  const repositoryRoot = configuredRepositoryRoot && existsSync(configuredRepositoryRoot) ? configuredRepositoryRoot : undefined;
+  const repositoryRoot =
+    configuredRepositoryRoot && existsSync(configuredRepositoryRoot) ? configuredRepositoryRoot : undefined;
   const authTokenFile = resolve(input.authTokenFile);
+  const outboundProxy = normalizeRuntimeOutboundProxyPolicy(input.outboundProxy);
   if (!input.host.trim()) throw new Error('FORGE_RUNTIME_SERVICE_HOST_REQUIRED');
-  if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65_535) throw new Error('FORGE_RUNTIME_SERVICE_PORT_INVALID');
+  if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65_535)
+    throw new Error('FORGE_RUNTIME_SERVICE_PORT_INVALID');
   if (configuredRepositoryRoot && !repositoryRoot && options.missingRepositoryRoot !== 'omit') {
     throw new Error(`FORGE_RUNTIME_SERVICE_REPOSITORY_MISSING: ${configuredRepositoryRoot}`);
   }
   if (!existsSync(authTokenFile)) throw new Error(`FORGE_RUNTIME_SERVICE_AUTH_TOKEN_MISSING: ${authTokenFile}`);
-  const { repositoryRoot: _configuredRepositoryRoot, ...rest } = input;
+  const { repositoryRoot: _configuredRepositoryRoot, outboundProxy: _configuredOutboundProxy, ...rest } = input;
   return {
     ...rest,
+    ...(outboundProxy ? { outboundProxy } : {}),
     controllerHome,
     ...(repositoryRoot ? { repositoryRoot } : {}),
     host: input.host.trim(),
@@ -91,7 +118,10 @@ export function readForgeRuntimeServiceConfig(
   path: string,
   options: ForgeRuntimeServiceConfigValidationOptions = {},
 ): ForgeRuntimeServiceConfig {
-  return validateForgeRuntimeServiceConfig(JSON.parse(readFileSync(resolve(path), 'utf8')) as ForgeRuntimeServiceConfig, options);
+  return validateForgeRuntimeServiceConfig(
+    JSON.parse(readFileSync(resolve(path), 'utf8')) as ForgeRuntimeServiceConfig,
+    options,
+  );
 }
 
 interface RuntimeReleaseAuthorityRecord {
@@ -133,7 +163,8 @@ function readActiveRuntimeRelease(controllerHome: string): ActiveRuntimeReleaseR
   const manifestPath = resolve(active.manifestPath);
   if (!isInside(releasesRoot, manifestPath)) throw new Error('FORGE_RUNTIME_RELEASE_MANIFEST_OUTSIDE_RELEASES');
   const manifest = loadRuntimeReleaseManifest(manifestPath, home);
-  if (manifest.schemaVersion !== 1 || !manifest.releaseId || !manifest.entrypoint) throw new Error('FORGE_RUNTIME_RELEASE_MANIFEST_INVALID');
+  if (manifest.schemaVersion !== 1 || !manifest.releaseId || !manifest.entrypoint)
+    throw new Error('FORGE_RUNTIME_RELEASE_MANIFEST_INVALID');
   if (active.releaseId && active.releaseId !== manifest.releaseId) throw new Error('FORGE_RUNTIME_RELEASE_ID_MISMATCH');
   const releaseRoot = dirname(manifestPath);
   const entrypoint = resolve(releaseRoot, manifest.entrypoint);
@@ -170,7 +201,10 @@ function activeRuntimeProductVersion(active: ActiveRuntimeReleaseRecord): string
   }
 }
 
-function legacyBrowserAutomationLaunchAgentPaths(controllerHome: string, accountHome = process.env.HOME ?? homedir()): { label: string; installedPlistPath: string } {
+function legacyBrowserAutomationLaunchAgentPaths(
+  controllerHome: string,
+  accountHome = process.env.HOME ?? homedir(),
+): { label: string; installedPlistPath: string } {
   const home = resolveControllerHome(controllerHome);
   const suffix = createHash('sha256').update(home).digest('hex').slice(0, 12);
   const label = `com.moretea.forge.browser-automation.${suffix}`;
@@ -183,7 +217,10 @@ function legacyBrowserAutomationLaunchAgentPaths(controllerHome: string, account
 async function retireLegacyBrowserAutomationLaunchAgent(controllerHome: string): Promise<void> {
   const legacy = legacyBrowserAutomationLaunchAgentPaths(controllerHome);
   if (!existsSync(legacy.installedPlistPath)) return;
-  const result = await createPlatformServiceManagerHost({ platform: 'darwin' }).bootoutLaunchd({ label: legacy.label, plistPath: legacy.installedPlistPath });
+  const result = await createPlatformServiceManagerHost({ platform: 'darwin' }).bootoutLaunchd({
+    label: legacy.label,
+    plistPath: legacy.installedPlistPath,
+  });
   if (!result.ok) throw new Error(`FORGE_BROWSER_AUTOMATION_LEGACY_RETIRE_FAILED: ${result.diagnostics.join('; ')}`);
   rmSync(legacy.installedPlistPath, { force: true });
 }
@@ -200,13 +237,16 @@ function verifiedRuntimeLaunchdContract(controllerHome: string): { port: number;
     const active = readActiveRuntimeRelease(paths.controllerHome);
     if (!active || !activeRuntimeEntrypoint(paths.controllerHome)) return undefined;
     if (!existsSync(paths.sourcePlistPath) || !existsSync(paths.installedPlistPath)) return undefined;
-    if (statSync(paths.sourcePlistPath).size > 128 * 1024 || statSync(paths.installedPlistPath).size > 128 * 1024) return undefined;
+    if (statSync(paths.sourcePlistPath).size > 128 * 1024 || statSync(paths.installedPlistPath).size > 128 * 1024)
+      return undefined;
     const source = readFileSync(paths.sourcePlistPath, 'utf8');
     if (source !== readFileSync(paths.installedPlistPath, 'utf8')) return undefined;
     const parseXmlString = (raw: string): string | undefined => {
       if (/&(?!(?:amp|lt|gt|quot|apos);)/.test(raw) || /[<>]/.test(raw)) return undefined;
-      return raw.replace(/&(amp|lt|gt|quot|apos);/g, (_, entity: string) =>
-        ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" })[entity] ?? '');
+      return raw.replace(
+        /&(amp|lt|gt|quot|apos);/g,
+        (_, entity: string) => ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" })[entity] ?? '',
+      );
     };
     const label = /<key>Label<\/key>\s*<string>([^<]*)<\/string>/.exec(source);
     if (!label || parseXmlString(label[1]!) !== paths.label) return undefined;
@@ -225,11 +265,14 @@ function verifiedRuntimeLaunchdContract(controllerHome: string): { port: number;
     }
     if (cursor !== text.length || args[0] !== resolve(paths.activeEntrypointPath)) return undefined;
     const exactValue = (flag: string): string | undefined => {
-      const indices = args.flatMap((arg, index) => arg === flag ? [index] : []);
+      const indices = args.flatMap((arg, index) => (arg === flag ? [index] : []));
       return indices.length === 1 ? args[indices[0]! + 1] : undefined;
     };
-    if (exactValue('--controller-home') !== paths.controllerHome
-      || exactValue('--release-manifest') !== resolve(active.manifestPath)) return undefined;
+    if (
+      exactValue('--controller-home') !== paths.controllerHome ||
+      exactValue('--release-manifest') !== resolve(active.manifestPath)
+    )
+      return undefined;
     const portString = exactValue('--port');
     if (!portString || !/^[1-9]\d{0,4}$/.test(portString)) return undefined;
     const port = Number(portString);
@@ -249,7 +292,7 @@ export function restoreRuntimeConfigFromVerifiedLaunchdContract(controllerHome: 
   const proven = verifiedRuntimeLaunchdContract(controllerHome);
   if (!proven) return false;
   const arg = (flag: string): string | undefined => {
-    const indices = proven.args.flatMap((value, index) => value === flag ? [index] : []);
+    const indices = proven.args.flatMap((value, index) => (value === flag ? [index] : []));
     return indices.length === 1 ? proven.args[indices[0]! + 1] : undefined;
   };
   const host = arg('--host');
@@ -257,7 +300,7 @@ export function restoreRuntimeConfigFromVerifiedLaunchdContract(controllerHome: 
   if (!host || !authTokenFile) return false;
   try {
     const topologyString = arg('--deployment-topology');
-    const topology = topologyString ? JSON.parse(topologyString) as RuntimeDeploymentTopology : undefined;
+    const topology = topologyString ? (JSON.parse(topologyString) as RuntimeDeploymentTopology) : undefined;
     writeForgeRuntimeServiceConfig({
       schemaVersion: 1,
       controllerHome: forgeRuntimeServicePaths(controllerHome).controllerHome,
@@ -277,16 +320,22 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
   const home = resolveControllerHome(controllerHome);
   const active = readActiveRuntimeRelease(home);
   if (!active) return undefined;
-  const config = readForgeRuntimeServiceConfig(forgeRuntimeServicePaths(home).configPath, { missingRepositoryRoot: 'omit' });
+  const config = readForgeRuntimeServiceConfig(forgeRuntimeServicePaths(home).configPath, {
+    missingRepositoryRoot: 'omit',
+  });
   if (config.controllerHome !== home) throw new Error('FORGE_RUNTIME_SERVICE_HOME_MISMATCH');
   const manifestArguments = active.manifest.arguments ?? [];
   if (!Array.isArray(manifestArguments) || !manifestArguments.every((argument) => typeof argument === 'string')) {
     throw new Error('FORGE_RUNTIME_RELEASE_ARGUMENTS_INVALID');
   }
-  const diagnosticEntrypoint = typeof active.manifest.diagnosticEntrypoint === 'string' && active.manifest.diagnosticEntrypoint.trim()
-    ? resolve(active.releaseRoot, active.manifest.diagnosticEntrypoint)
-    : undefined;
-  if (diagnosticEntrypoint && (!isInside(active.releaseRoot, diagnosticEntrypoint) || !existsSync(diagnosticEntrypoint))) {
+  const diagnosticEntrypoint =
+    typeof active.manifest.diagnosticEntrypoint === 'string' && active.manifest.diagnosticEntrypoint.trim()
+      ? resolve(active.releaseRoot, active.manifest.diagnosticEntrypoint)
+      : undefined;
+  if (
+    diagnosticEntrypoint &&
+    (!isInside(active.releaseRoot, diagnosticEntrypoint) || !existsSync(diagnosticEntrypoint))
+  ) {
     throw new Error('FORGE_RUNTIME_RELEASE_DIAGNOSTIC_ENTRYPOINT_INVALID');
   }
   const productVersion = activeRuntimeProductVersion(active);
@@ -294,22 +343,34 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
   // Older immutable releases require these derived fields when Recovery rebinds
   // their launch contract. Current Runtimes ignore them as execution authority.
   const legacyChatgpt = topology.remoteControllers.includes('chatgpt');
-  const launchTopology = { ...topology, components: {
-    workflowSupervisor: legacyChatgpt,
-    workflowSupervisorNativeBrowser: legacyChatgpt,
-  } };
+  const launchTopology = {
+    ...topology,
+    components: {
+      workflowSupervisor: legacyChatgpt,
+      workflowSupervisorNativeBrowser: legacyChatgpt,
+    },
+  };
   return {
     args: [
-      '--controller-home', home,
+      '--controller-home',
+      home,
       ...(config.repositoryRoot ? ['--repo', config.repositoryRoot] : []),
-      '--release-manifest', active.manifestPath,
-      '--host', config.host,
-      '--port', String(config.port),
-      '--auth-token-file', config.authTokenFile,
-      '--deployment-topology', JSON.stringify(launchTopology),
+      '--release-manifest',
+      active.manifestPath,
+      '--host',
+      config.host,
+      '--port',
+      String(config.port),
+      '--auth-token-file',
+      config.authTokenFile,
+      '--deployment-topology',
+      JSON.stringify(launchTopology),
       ...manifestArguments,
     ],
     environment: {
+      ...allowlistedProxyEnvironment(
+        resolveRuntimeOutboundProxyEnvironment(config.outboundProxy, process.env, process.platform),
+      ),
       FORGE_CONTROLLER_HOME: home,
       FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: active.releaseRoot,
       ...(diagnosticEntrypoint ? { FORGE_CLI_EXECUTABLE: diagnosticEntrypoint } : {}),
@@ -368,7 +429,11 @@ function atomicMirrorRuntimeEntrypoint(path: string, target: string): void {
   }
 }
 
-export function syncForgeRuntimeActiveEntrypoint(controllerHome: string): { path: string; target?: string; changed: boolean } {
+export function syncForgeRuntimeActiveEntrypoint(controllerHome: string): {
+  path: string;
+  target?: string;
+  changed: boolean;
+} {
   const paths = forgeRuntimeServicePaths(controllerHome);
   const target = activeRuntimeEntrypoint(controllerHome);
   if (!target) {
@@ -386,9 +451,11 @@ export function syncForgeRuntimeActiveEntrypoint(controllerHome: string): { path
   return { path: paths.activeEntrypointPath, target, changed: true };
 }
 
-function desiredForgeRuntimeLaunchAgentContract(
-  input: { controllerHome: string; bootstrapNodeExecutable?: string; bootstrapRunnerPath?: string },
-): { paths: ForgeRuntimeServicePaths; mode: 'release' | 'bootstrap'; plist: string } {
+function desiredForgeRuntimeLaunchAgentContract(input: {
+  controllerHome: string;
+  bootstrapNodeExecutable?: string;
+  bootstrapRunnerPath?: string;
+}): { paths: ForgeRuntimeServicePaths; mode: 'release' | 'bootstrap'; plist: string } {
   const paths = forgeRuntimeServicePaths(input.controllerHome);
   const active = activeRuntimeEntrypoint(input.controllerHome);
   const useRelease = Boolean(active);
@@ -403,53 +470,103 @@ function desiredForgeRuntimeLaunchAgentContract(
     plist: renderForgeRuntimeLaunchAgent({
       paths,
       ...(useRelease
-        ? { activeEntrypointPath: paths.activeEntrypointPath, runtimeArgs: releaseLaunch!.args, environment: releaseLaunch!.environment }
+        ? {
+            activeEntrypointPath: paths.activeEntrypointPath,
+            runtimeArgs: releaseLaunch!.args,
+            environment: releaseLaunch!.environment,
+          }
         : { nodeExecutable: input.bootstrapNodeExecutable!, runnerPath: input.bootstrapRunnerPath! }),
     }),
   };
 }
 
-export function inspectForgeRuntimeLaunchAgentContract(
-  input: { controllerHome: string; bootstrapNodeExecutable?: string; bootstrapRunnerPath?: string; inspectUserLaunchAgent?: boolean },
-): { paths: ForgeRuntimeServicePaths; mode: 'release' | 'bootstrap'; sourceMatches: boolean; installedMatches: boolean; matches: boolean } {
+export function inspectForgeRuntimeLaunchAgentContract(input: {
+  controllerHome: string;
+  bootstrapNodeExecutable?: string;
+  bootstrapRunnerPath?: string;
+  inspectUserLaunchAgent?: boolean;
+}): {
+  paths: ForgeRuntimeServicePaths;
+  mode: 'release' | 'bootstrap';
+  sourceMatches: boolean;
+  installedMatches: boolean;
+  matches: boolean;
+} {
   const desired = desiredForgeRuntimeLaunchAgentContract(input);
-  const existingSource = existsSync(desired.paths.sourcePlistPath) ? readFileSync(desired.paths.sourcePlistPath, 'utf8') : undefined;
-  const existingInstalled = input.inspectUserLaunchAgent && existsSync(desired.paths.installedPlistPath)
-    ? readFileSync(desired.paths.installedPlistPath, 'utf8')
+  const existingSource = existsSync(desired.paths.sourcePlistPath)
+    ? readFileSync(desired.paths.sourcePlistPath, 'utf8')
     : undefined;
+  const existingInstalled =
+    input.inspectUserLaunchAgent && existsSync(desired.paths.installedPlistPath)
+      ? readFileSync(desired.paths.installedPlistPath, 'utf8')
+      : undefined;
   const sourceMatches = existingSource === desired.plist;
   const installedMatches = input.inspectUserLaunchAgent !== true || existingInstalled === desired.plist;
-  return { paths: desired.paths, mode: desired.mode, sourceMatches, installedMatches, matches: sourceMatches && installedMatches };
+  return {
+    paths: desired.paths,
+    mode: desired.mode,
+    sourceMatches,
+    installedMatches,
+    matches: sourceMatches && installedMatches,
+  };
 }
 
-export function ensureForgeRuntimeLaunchAgentContract(
-  input: { controllerHome: string; bootstrapNodeExecutable?: string; bootstrapRunnerPath?: string; installUserLaunchAgent?: boolean },
-): { paths: ForgeRuntimeServicePaths; mode: 'release' | 'bootstrap'; changed: boolean } {
+export function ensureForgeRuntimeLaunchAgentContract(input: {
+  controllerHome: string;
+  bootstrapNodeExecutable?: string;
+  bootstrapRunnerPath?: string;
+  installUserLaunchAgent?: boolean;
+}): { paths: ForgeRuntimeServicePaths; mode: 'release' | 'bootstrap'; changed: boolean } {
   const desired = desiredForgeRuntimeLaunchAgentContract(input);
   if (desired.mode === 'release') syncForgeRuntimeActiveEntrypoint(input.controllerHome);
-  const existingSource = existsSync(desired.paths.sourcePlistPath) ? readFileSync(desired.paths.sourcePlistPath, 'utf8') : undefined;
-  const existingInstalled = input.installUserLaunchAgent && existsSync(desired.paths.installedPlistPath)
-    ? readFileSync(desired.paths.installedPlistPath, 'utf8')
+  const existingSource = existsSync(desired.paths.sourcePlistPath)
+    ? readFileSync(desired.paths.sourcePlistPath, 'utf8')
     : undefined;
-  const changed = existingSource !== desired.plist || (input.installUserLaunchAgent === true && existingInstalled !== desired.plist);
+  const existingInstalled =
+    input.installUserLaunchAgent && existsSync(desired.paths.installedPlistPath)
+      ? readFileSync(desired.paths.installedPlistPath, 'utf8')
+      : undefined;
+  const changed =
+    existingSource !== desired.plist || (input.installUserLaunchAgent === true && existingInstalled !== desired.plist);
   if (existingSource !== desired.plist) writeAtomicTextFile(desired.paths.sourcePlistPath, desired.plist);
-  if (input.installUserLaunchAgent === true && existingInstalled !== desired.plist) writeAtomicTextFile(desired.paths.installedPlistPath, desired.plist, 0o644);
+  if (input.installUserLaunchAgent === true && existingInstalled !== desired.plist)
+    writeAtomicTextFile(desired.paths.installedPlistPath, desired.plist, 0o644);
   return { paths: desired.paths, mode: desired.mode, changed };
 }
 
-export function renderForgeRuntimeLaunchAgent(input: { paths: ForgeRuntimeServicePaths; activeEntrypointPath?: string; runtimeArgs?: string[]; environment?: Record<string, string>; nodeExecutable?: string; runnerPath?: string }): string {
+export function renderForgeRuntimeLaunchAgent(input: {
+  paths: ForgeRuntimeServicePaths;
+  activeEntrypointPath?: string;
+  runtimeArgs?: string[];
+  environment?: Record<string, string>;
+  nodeExecutable?: string;
+  runnerPath?: string;
+}): string {
   if (input.activeEntrypointPath && !input.runtimeArgs) throw new Error('FORGE_RUNTIME_RELEASE_LAUNCH_ARGS_REQUIRED');
   const args = input.activeEntrypointPath
     ? [resolve(input.activeEntrypointPath), ...(input.runtimeArgs ?? [])]
-    : [resolve(input.nodeExecutable!), resolve(input.runnerPath!), '--controller-home', input.paths.controllerHome, '--config', input.paths.configPath];
-  const environmentEntries = Object.entries(input.environment ?? {}).sort(([left], [right]) => left.localeCompare(right));
-  const environmentXml = environmentEntries.length > 0
-    ? `  <key>EnvironmentVariables</key>\n  <dict>\n${environmentEntries.map(([key, value]) => `    <key>${xml(key)}</key>\n    <string>${xml(value)}</string>`).join('\n')}\n  </dict>\n`
-    : '';
+    : [
+        resolve(input.nodeExecutable!),
+        resolve(input.runnerPath!),
+        '--controller-home',
+        input.paths.controllerHome,
+        '--config',
+        input.paths.configPath,
+      ];
+  const environmentEntries = Object.entries(input.environment ?? {}).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  const environmentXml =
+    environmentEntries.length > 0
+      ? `  <key>EnvironmentVariables</key>\n  <dict>\n${environmentEntries.map(([key, value]) => `    <key>${xml(key)}</key>\n    <string>${xml(value)}</string>`).join('\n')}\n  </dict>\n`
+      : '';
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${xml(input.paths.label)}</string>\n  <key>ProgramArguments</key>\n  <array>\n${args.map((arg) => `    <string>${xml(arg)}</string>`).join('\n')}\n  </array>\n${environmentXml}  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <dict>\n    <key>SuccessfulExit</key>\n    <false/>\n  </dict>\n  <key>ThrottleInterval</key>\n  <integer>5</integer>\n  <key>ProcessType</key>\n  <string>Interactive</string>\n  <key>StandardOutPath</key>\n  <string>${xml(input.paths.stdoutPath)}</string>\n  <key>StandardErrorPath</key>\n  <string>${xml(input.paths.stderrPath)}</string>\n</dict>\n</plist>\n`;
 }
 
-export function writeForgeRuntimeServiceConfig(input: ForgeRuntimeServiceConfig): { config: ForgeRuntimeServiceConfig; paths: ForgeRuntimeServicePaths } {
+export function writeForgeRuntimeServiceConfig(input: ForgeRuntimeServiceConfig): {
+  config: ForgeRuntimeServiceConfig;
+  paths: ForgeRuntimeServicePaths;
+} {
   const config = validateForgeRuntimeServiceConfig(input);
   const paths = forgeRuntimeServicePaths(config.controllerHome);
   mkdirSync(join(paths.serviceRoot, 'logs'), { recursive: true, mode: 0o700 });
@@ -457,8 +574,13 @@ export function writeForgeRuntimeServiceConfig(input: ForgeRuntimeServiceConfig)
   return { config, paths };
 }
 
-export async function installForgeRuntimeService(input: { config: ForgeRuntimeServiceConfig; runnerPath: string; nodeExecutable?: string }): Promise<ForgeRuntimeServicePaths> {
-  if (process.platform !== 'darwin') throw new Error('FORGE_RUNTIME_SERVICE_PLATFORM_UNSUPPORTED: launchd requires macOS');
+export async function installForgeRuntimeService(input: {
+  config: ForgeRuntimeServiceConfig;
+  runnerPath: string;
+  nodeExecutable?: string;
+}): Promise<ForgeRuntimeServicePaths> {
+  if (process.platform !== 'darwin')
+    throw new Error('FORGE_RUNTIME_SERVICE_PLATFORM_UNSUPPORTED: launchd requires macOS');
   const { config, paths } = writeForgeRuntimeServiceConfig(input.config);
   ensureForgeRuntimeLaunchAgentContract({
     controllerHome: config.controllerHome,
@@ -480,9 +602,13 @@ export async function installForgeRuntimeService(input: { config: ForgeRuntimeSe
 }
 
 export async function uninstallForgeRuntimeService(controllerHome: string): Promise<ForgeRuntimeServicePaths> {
-  if (process.platform !== 'darwin') throw new Error('FORGE_RUNTIME_SERVICE_PLATFORM_UNSUPPORTED: launchd requires macOS');
+  if (process.platform !== 'darwin')
+    throw new Error('FORGE_RUNTIME_SERVICE_PLATFORM_UNSUPPORTED: launchd requires macOS');
   const paths = forgeRuntimeServicePaths(controllerHome);
-  const result = await createPlatformServiceManagerHost({ platform: 'darwin' }).bootoutLaunchd({ label: paths.label, plistPath: paths.installedPlistPath });
+  const result = await createPlatformServiceManagerHost({ platform: 'darwin' }).bootoutLaunchd({
+    label: paths.label,
+    plistPath: paths.installedPlistPath,
+  });
   if (!result.ok) throw new Error(`FORGE_RUNTIME_SERVICE_BOOTOUT_FAILED: ${result.diagnostics.join('; ')}`);
   rmSync(paths.installedPlistPath, { force: true });
 

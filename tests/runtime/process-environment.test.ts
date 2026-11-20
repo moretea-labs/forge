@@ -4,7 +4,13 @@ import type { ChildProcess } from 'child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { repositoryChildProcessEnvironment, resolveBunExecutable, runtimeAuthorityFreeEnvironment } from '../../src/runtime/shared/process-environment';
+import {
+  normalizeRuntimeOutboundProxyPolicy,
+  repositoryChildProcessEnvironment,
+  resolveBunExecutable,
+  resolveRuntimeOutboundProxyEnvironment,
+  runtimeAuthorityFreeEnvironment,
+} from '../../src/runtime/shared/process-environment';
 import {
   buildSchedulerWorkerLaunchDescriptor,
   resolveSchedulerWorkerCommand,
@@ -59,18 +65,141 @@ describe('repository child process environment', () => {
     expect(sanitized.USER_VISIBLE_SETTING).toBe('preserve-me');
   });
 
+  test('passes only allowlisted proxy variables to repository children and always bypasses loopback', () => {
+    const normalized = repositoryChildProcessEnvironment(
+      {
+        PATH: '/usr/bin',
+        HTTP_PROXY: 'http://127.0.0.1:7890',
+        https_proxy: 'http://127.0.0.1:7890',
+        ALL_PROXY: 'socks5://127.0.0.1:7890',
+        NO_PROXY: 'internal.local',
+        no_proxy: 'registry.local',
+      },
+      'linux',
+    );
+
+    expect(normalized.HTTP_PROXY).toBe('http://127.0.0.1:7890');
+    expect(normalized.HTTPS_PROXY).toBe('http://127.0.0.1:7890');
+    expect(normalized.ALL_PROXY).toBe('socks5://127.0.0.1:7890');
+    expect(normalized).not.toHaveProperty('https_proxy');
+    expect(normalized).not.toHaveProperty('no_proxy');
+    expect(normalized.NO_PROXY).toContain('internal.local');
+    expect(normalized.NO_PROXY).toContain('registry.local');
+    expect(normalized.NO_PROXY).toContain('localhost');
+    expect(normalized.NO_PROXY).toContain('127.0.0.1');
+    expect(normalized.NO_PROXY).toContain('::1');
+  });
+
+  test('resolves explicit outbound proxy policy and rejects invalid or credential-bearing endpoints', () => {
+    const resolved = resolveRuntimeOutboundProxyEnvironment(
+      {
+        mode: 'explicit',
+        httpsProxy: 'http://127.0.0.1:7890',
+        noProxy: 'internal.local',
+      },
+      {
+        HTTP_PROXY: 'http://127.0.0.1:9000',
+        https_proxy: 'http://127.0.0.1:9001',
+        no_proxy: 'registry.local',
+      },
+      'linux',
+    );
+
+    expect(resolved.HTTP_PROXY).toBe('http://127.0.0.1:7890');
+    expect(resolved.HTTPS_PROXY).toBe('http://127.0.0.1:7890');
+    expect(resolved.NO_PROXY).toContain('internal.local');
+    expect(resolved.NO_PROXY).toContain('registry.local');
+    expect(() => normalizeRuntimeOutboundProxyPolicy({ mode: 'explicit' })).toThrow(
+      'FORGE_RUNTIME_OUTBOUND_PROXY_ENDPOINT_REQUIRED',
+    );
+    expect(() =>
+      normalizeRuntimeOutboundProxyPolicy({
+        mode: 'explicit',
+        httpsProxy: 'http://user:password@127.0.0.1:7890',
+      }),
+    ).toThrow('FORGE_OUTBOUND_PROXY_URL_INVALID');
+  });
+
+  test('direct egress is explicit and clears inherited proxy variables', () => {
+    const resolved = resolveRuntimeOutboundProxyEnvironment(
+      {
+        mode: 'direct',
+        noProxy: 'internal.local',
+      },
+      {
+        HTTP_PROXY: 'http://127.0.0.1:7890',
+        HTTPS_PROXY: 'http://127.0.0.1:7890',
+        ALL_PROXY: 'socks5://127.0.0.1:7890',
+      },
+      'linux',
+    );
+
+    expect(resolved.HTTP_PROXY).toBeUndefined();
+    expect(resolved.HTTPS_PROXY).toBeUndefined();
+    expect(resolved.ALL_PROXY).toBeUndefined();
+    expect(resolved.NO_PROXY).toContain('internal.local');
+    expect(resolved.NO_PROXY).toContain('localhost');
+  });
+
+  test('resolves current macOS system proxy snapshots and fails closed when unavailable', () => {
+    const inherited = {
+      HTTP_PROXY: 'http://127.0.0.1:7890',
+      HTTPS_PROXY: 'http://127.0.0.1:7890',
+      ALL_PROXY: 'socks5://127.0.0.1:7890',
+      NO_PROXY: 'internal.local',
+    };
+    const first = resolveRuntimeOutboundProxyEnvironment(
+      { mode: 'macos-system' },
+      inherited,
+      'darwin',
+      'HTTPEnable : 1\nHTTPProxy : 127.0.0.1\nHTTPPort : 7890\nHTTPSEnable : 1\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 7890\n',
+    );
+    const changed = resolveRuntimeOutboundProxyEnvironment(
+      { mode: 'macos-system' },
+      inherited,
+      'darwin',
+      'HTTPEnable : 1\nHTTPProxy : 127.0.0.1\nHTTPPort : 6080\nHTTPSEnable : 1\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 6080\n',
+    );
+
+    expect(first.HTTP_PROXY).toBe('http://127.0.0.1:7890');
+    expect(changed.HTTP_PROXY).toBe('http://127.0.0.1:6080');
+    expect(changed.HTTPS_PROXY).toBe('http://127.0.0.1:6080');
+    expect(changed.ALL_PROXY).toBeUndefined();
+    expect(changed.NO_PROXY).toContain('internal.local');
+    expect(changed.NO_PROXY).toContain('127.0.0.1');
+    expect(() =>
+      resolveRuntimeOutboundProxyEnvironment(
+        { mode: 'macos-system' },
+        {},
+        'darwin',
+        'HTTPEnable : 0\nHTTPSEnable : 0\nSOCKSEnable : 0\n',
+      ),
+    ).toThrow('FORGE_RUNTIME_OUTBOUND_PROXY_SYSTEM_NOT_CONFIGURED');
+    expect(() =>
+      resolveRuntimeOutboundProxyEnvironment(
+        { mode: 'macos-system' },
+        {},
+        'linux',
+        'HTTPEnable : 1\nHTTPProxy : 127.0.0.1\nHTTPPort : 7890\n',
+      ),
+    ).toThrow('FORGE_RUNTIME_OUTBOUND_PROXY_PLATFORM_UNSUPPORTED');
+  });
+
   test('normalizes Windows PATH case variants into one usable canonical PATH', () => {
-    const normalized = repositoryChildProcessEnvironment({
-      Path: 'C:\\Windows\\System32;C:\\Program Files\\Git\\cmd',
-      PATH: '',
-      FORGE_RUNTIME_PRIVATE_TEST: 'must-not-leak',
-      FORGE_RELEASE_PATH: 'C:\\private-runtime-release',
-      FORGE_RELEASE_ID: 'private-release-id',
-      FORGE_RELEASE_AUTHORITY_REVISION: '321',
-      FORGE_RELEASE_SOURCE_COMMIT: 'deadbeef',
-      FORGE_BUILD_VERSION: '1.7.2-host-runtime',
-      REPOSITORY_VISIBLE_SETTING: 'preserve-me',
-    }, 'win32');
+    const normalized = repositoryChildProcessEnvironment(
+      {
+        Path: 'C:\\Windows\\System32;C:\\Program Files\\Git\\cmd',
+        PATH: '',
+        FORGE_RUNTIME_PRIVATE_TEST: 'must-not-leak',
+        FORGE_RELEASE_PATH: 'C:\\private-runtime-release',
+        FORGE_RELEASE_ID: 'private-release-id',
+        FORGE_RELEASE_AUTHORITY_REVISION: '321',
+        FORGE_RELEASE_SOURCE_COMMIT: 'deadbeef',
+        FORGE_BUILD_VERSION: '1.7.2-host-runtime',
+        REPOSITORY_VISIBLE_SETTING: 'preserve-me',
+      },
+      'win32',
+    );
 
     expect(normalized.PATH).toBe('C:\\Windows\\System32;C:\\Program Files\\Git\\cmd');
     expect(Object.keys(normalized).filter((key) => key.toLowerCase() === 'path')).toEqual(['PATH']);
@@ -84,38 +213,71 @@ describe('repository child process environment', () => {
   });
 
   test('uses the last non-empty Windows PATH variant as the case-insensitive override', () => {
-    const normalized = repositoryChildProcessEnvironment({
-      PATH: 'C:\\Windows\\System32',
-      Path: 'D:\\tools;C:\\Windows\\System32',
-    }, 'win32');
+    const normalized = repositoryChildProcessEnvironment(
+      {
+        PATH: 'C:\\Windows\\System32',
+        Path: 'D:\\tools;C:\\Windows\\System32',
+      },
+      'win32',
+    );
 
     expect(normalized.PATH).toBe('D:\\tools;C:\\Windows\\System32');
     expect(Object.keys(normalized).filter((key) => key.toLowerCase() === 'path')).toEqual(['PATH']);
   });
 
   test('never treats a compiled Forge Runtime as Bun through FORGE_BUN_EXECUTABLE', () => {
-    expect(resolveBunExecutable('/tmp/forge-runtime', {
-      FORGE_BUN_EXECUTABLE: '/tmp/forge-runtime',
-      HOME: '/Users/nonexistent-for-test',
-    })).toBe(process.platform === 'win32' ? 'bun.exe' : 'bun');
+    expect(
+      resolveBunExecutable('/tmp/forge-runtime', {
+        FORGE_BUN_EXECUTABLE: '/tmp/forge-runtime',
+        HOME: '/Users/nonexistent-for-test',
+      }),
+    ).toBe(process.platform === 'win32' ? 'bun.exe' : 'bun');
   });
 
   test('accepts an explicit Bun command name', () => {
-    expect(resolveBunExecutable('/tmp/forge-runtime', {
-      FORGE_BUN_EXECUTABLE: 'bun',
-      HOME: '/Users/nonexistent-for-test',
-    })).toBe('bun');
+    expect(
+      resolveBunExecutable('/tmp/forge-runtime', {
+        FORGE_BUN_EXECUTABLE: 'bun',
+        HOME: '/Users/nonexistent-for-test',
+      }),
+    ).toBe('bun');
   });
 
   test('uses the hosting executable only when it is Bun itself', () => {
     expect(resolveBunExecutable('bun', { HOME: '/Users/nonexistent-for-test' })).toBe('bun');
   });
 
+  test('scheduler workers receive allowlisted proxy variables without persisting them in lifecycle metadata', () => {
+    const launch = buildSchedulerWorkerLaunchDescriptor({
+      command: { entry: '/runtime/worker-entry.ts', loader: '/runtime/loader.mjs', cwd: '/runtime' },
+      controllerHome: '/controller',
+      repoId: 'repo-a',
+      jobId: 'job-a',
+      controllerPid: 42,
+      isBun: true,
+      environment: {
+        PATH: '/usr/bin',
+        HTTP_PROXY: 'http://127.0.0.1:7890',
+        https_proxy: 'http://127.0.0.1:7890',
+        NO_PROXY: 'internal.local',
+      },
+    });
+
+    expect(launch.environment.HTTP_PROXY).toBe('http://127.0.0.1:7890');
+    expect(launch.environment.HTTPS_PROXY).toBe('http://127.0.0.1:7890');
+    expect(launch.environment.NO_PROXY).toContain('localhost');
+    expect(launch.environment).not.toHaveProperty('https_proxy');
+    expect(launch.lifecycleEnvironment).not.toHaveProperty('HTTP_PROXY');
+    expect(launch.lifecycleEnvironment).not.toHaveProperty('HTTPS_PROXY');
+  });
+
   test('compiled Runtime scheduler resolves a real Bun executable instead of recursively spawning forge-runtime', () => {
-    expect(resolveSchedulerWorkerExecutable(true, '/tmp/forge-runtime', {
-      FORGE_BUN_EXECUTABLE: 'bun',
-      HOME: '/Users/nonexistent-for-test',
-    })).toBe('bun');
+    expect(
+      resolveSchedulerWorkerExecutable(true, '/tmp/forge-runtime', {
+        FORGE_BUN_EXECUTABLE: 'bun',
+        HOME: '/Users/nonexistent-for-test',
+      }),
+    ).toBe('bun');
     expect(resolveSchedulerWorkerExecutable(false, '/tmp/node', {})).toBe('/tmp/node');
   });
 
@@ -136,10 +298,12 @@ describe('repository child process environment', () => {
       loader,
       cwd: root,
     });
-    expect(() => resolveSchedulerWorkerCommand({
-      runtimeSourceRoot: join(root, 'missing'),
-      isBun: false,
-    })).toThrow('WORKER_ENTRYPOINT_MISSING');
+    expect(() =>
+      resolveSchedulerWorkerCommand({
+        runtimeSourceRoot: join(root, 'missing'),
+        isBun: false,
+      }),
+    ).toThrow('WORKER_ENTRYPOINT_MISSING');
   });
 
   test('builds Scheduler worker launch args and separates child env from persisted diagnostics', () => {
@@ -153,7 +317,11 @@ describe('repository child process environment', () => {
       runtimeSourceRoot: '/runtime',
       isBun: false,
       execPath: '/usr/bin/node',
-      environment: { PATH: '/usr/bin', SECRET_FOR_TEST: 'not-persisted' },
+      environment: {
+        PATH: '/usr/bin:/usr/local/bin',
+        NO_PROXY: 'localhost,127.0.0.1,::1',
+        SECRET_FOR_TEST: 'not-persisted',
+      },
       writeClaimEnvironment: {
         FORGE_RUNTIME_INSTANCE_ID: 'runtime-a',
         FORGE_RELEASE_ID: 'release-a',
@@ -163,12 +331,22 @@ describe('repository child process environment', () => {
     expect(launch).toMatchObject({
       executable: '/usr/bin/node',
       args: [
-        '--loader', '/runtime/node-ts-loader.mjs', '/runtime/worker-entry.ts',
-        '--controller-home', '/controller', '--repo-id', 'repo-a', '--job-id', 'job-a', '--controller-pid', '42',
+        '--loader',
+        '/runtime/node-ts-loader.mjs',
+        '/runtime/worker-entry.ts',
+        '--controller-home',
+        '/controller',
+        '--repo-id',
+        'repo-a',
+        '--job-id',
+        'job-a',
+        '--controller-pid',
+        '42',
       ],
       cwd: '/runtime',
       environment: {
-        PATH: '/usr/bin',
+        PATH: '/usr/bin:/usr/local/bin',
+        NO_PROXY: 'localhost,127.0.0.1,::1',
         SECRET_FOR_TEST: 'not-persisted',
         FORGE_EXECUTION_WORKER: '1',
         FORGE_CONTROLLER_HOME: '/controller',
@@ -177,7 +355,7 @@ describe('repository child process environment', () => {
         FORGE_RELEASE_ID: 'release-a',
       },
       lifecycleEnvironment: {
-        PATH: '/usr/bin',
+        PATH: '/usr/bin:/usr/local/bin',
         FORGE_EXECUTION_WORKER: '1',
         FORGE_CONTROLLER_HOME: '/controller',
         FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: '/runtime',
@@ -273,15 +451,17 @@ describe('repository child process environment', () => {
     });
     expect(failure.error.message).toContain('Worker stderr: boom');
 
-    expect(buildSchedulerWorkerSpawnFailureLifecycle({
-      executable: '/bad/runtime',
-      cwd: '/runtime',
-      environment: {},
-      ownerPid: 42,
-      attempt: 3,
-      maxAttempts: 3,
-      spawnedAt: '2026-08-21T00:00:00.000Z',
-    })).toMatchObject({ startupState: 'spawn_failed', attempt: 3, maxAttempts: 3 });
+    expect(
+      buildSchedulerWorkerSpawnFailureLifecycle({
+        executable: '/bad/runtime',
+        cwd: '/runtime',
+        environment: {},
+        ownerPid: 42,
+        attempt: 3,
+        maxAttempts: 3,
+        spawnedAt: '2026-08-21T00:00:00.000Z',
+      }),
+    ).toMatchObject({ startupState: 'spawn_failed', attempt: 3, maxAttempts: 3 });
   });
 
   test('persists Scheduler worker lifecycle state outside GlobalScheduler', () => {
@@ -302,35 +482,55 @@ describe('repository child process environment', () => {
     let updated: ExecutionJob | undefined;
     let rebuilds = 0;
     const dependencies = {
-      updateJob: (_controllerHome: string, _repoId: string, _jobId: string, updater: (current: ExecutionJob) => ExecutionJob) => {
+      updateJob: (
+        _controllerHome: string,
+        _repoId: string,
+        _jobId: string,
+        updater: (current: ExecutionJob) => ExecutionJob,
+      ) => {
         updated = updater(updated ?? dispatched);
         return updated;
       },
-      rebuildProjection: () => { rebuilds += 1; },
+      rebuildProjection: () => {
+        rebuilds += 1;
+      },
     };
 
-    persistSchedulerSpawnedWorkerLifecycle({
-      controllerHome: '/controller',
-      repoId: 'repo-a',
-      jobId: 'job-a',
-      lifecycle,
-    }, dependencies);
+    persistSchedulerSpawnedWorkerLifecycle(
+      {
+        controllerHome: '/controller',
+        repoId: 'repo-a',
+        jobId: 'job-a',
+        lifecycle,
+      },
+      dependencies,
+    );
     expect(updated?.workerLifecycle).toEqual(lifecycle);
-    expect(persistSchedulerTerminalWorkerLifecycle({
-      controllerHome: '/controller',
-      repoId: 'repo-a',
-      jobId: 'job-a',
-      status: 'succeeded',
-      lifecycle: { ...lifecycle, startupState: 'exited' },
-    }, dependencies)).toBe(true);
+    expect(
+      persistSchedulerTerminalWorkerLifecycle(
+        {
+          controllerHome: '/controller',
+          repoId: 'repo-a',
+          jobId: 'job-a',
+          status: 'succeeded',
+          lifecycle: { ...lifecycle, startupState: 'exited' },
+        },
+        dependencies,
+      ),
+    ).toBe(true);
     expect(rebuilds).toBe(1);
-    expect(persistSchedulerTerminalWorkerLifecycle({
-      controllerHome: '/controller',
-      repoId: 'repo-a',
-      jobId: 'job-a',
-      status: 'running',
-      lifecycle,
-    }, dependencies)).toBe(false);
+    expect(
+      persistSchedulerTerminalWorkerLifecycle(
+        {
+          controllerHome: '/controller',
+          repoId: 'repo-a',
+          jobId: 'job-a',
+          status: 'running',
+          lifecycle,
+        },
+        dependencies,
+      ),
+    ).toBe(false);
   });
 
   test('persists Scheduler worker attachment and registered lifecycle outside GlobalScheduler', () => {
@@ -349,35 +549,45 @@ describe('repository child process environment', () => {
       workerLifecycle: lifecycle,
     } as ExecutionJob;
     let updated: ExecutionJob | undefined;
-    const attached = persistSchedulerWorkerAttachment({
-      controllerHome: '/controller',
-      repoId: 'repo-a',
-      jobId: 'job-a',
-      workerPid: 88,
-      lifecycle,
-    }, {
-      attachWorker: () => current,
-      updateJob: (_controllerHome, _repoId, _jobId, updater) => {
-        updated = updater(current);
-        return updated;
+    const attached = persistSchedulerWorkerAttachment(
+      {
+        controllerHome: '/controller',
+        repoId: 'repo-a',
+        jobId: 'job-a',
+        workerPid: 88,
+        lifecycle,
       },
-    });
+      {
+        attachWorker: () => current,
+        updateJob: (_controllerHome, _repoId, _jobId, updater) => {
+          updated = updater(current);
+          return updated;
+        },
+      },
+    );
 
     expect(attached).toBe(true);
     expect(updated?.workerLifecycle).toMatchObject({
       workerPid: 88,
       startupState: 'registered',
     });
-    expect(persistSchedulerWorkerAttachment({
-      controllerHome: '/controller',
-      repoId: 'repo-a',
-      jobId: 'job-a',
-      workerPid: 99,
-      lifecycle,
-    }, {
-      attachWorker: () => undefined,
-      updateJob: () => { throw new Error('must not update'); },
-    })).toBe(false);
+    expect(
+      persistSchedulerWorkerAttachment(
+        {
+          controllerHome: '/controller',
+          repoId: 'repo-a',
+          jobId: 'job-a',
+          workerPid: 99,
+          lifecycle,
+        },
+        {
+          attachWorker: () => undefined,
+          updateJob: () => {
+            throw new Error('must not update');
+          },
+        },
+      ),
+    ).toBe(false);
   });
 
   test('spawns Scheduler worker processes through a normalized process adapter', () => {
@@ -409,10 +619,14 @@ describe('repository child process environment', () => {
         env: { PATH: '/usr/bin' },
       },
     });
-    expect(spawnSchedulerWorkerProcess(launch, {
-      platform: 'win32',
-      spawnProcess: (() => { throw new Error('spawn denied'); }) as typeof import('child_process').spawn,
-    })).toEqual({ ok: false, startupError: 'spawn denied' });
+    expect(
+      spawnSchedulerWorkerProcess(launch, {
+        platform: 'win32',
+        spawnProcess: (() => {
+          throw new Error('spawn denied');
+        }) as typeof import('child_process').spawn,
+      }),
+    ).toEqual({ ok: false, startupError: 'spawn denied' });
   });
 
   test('registers Scheduler worker processes and preserves attach failure cleanup ordering', async () => {
@@ -420,36 +634,52 @@ describe('repository child process environment', () => {
     const children = new Map<string, ChildProcess>();
     const child = {
       pid: 88,
-      unref: () => { events.push('unref'); },
+      unref: () => {
+        events.push('unref');
+      },
     } as unknown as ChildProcess;
 
-    expect(registerSchedulerWorkerProcess({
-      jobId: 'job-a',
-      child,
-      children,
-      attach: (pid) => {
-        events.push(`attach:${pid}`);
-        return false;
-      },
-    }, {
-      terminateWorker: async (pid) => { events.push(`terminate:${pid}`); },
-    })).toBe(false);
+    expect(
+      registerSchedulerWorkerProcess(
+        {
+          jobId: 'job-a',
+          child,
+          children,
+          attach: (pid) => {
+            events.push(`attach:${pid}`);
+            return false;
+          },
+        },
+        {
+          terminateWorker: async (pid) => {
+            events.push(`terminate:${pid}`);
+          },
+        },
+      ),
+    ).toBe(false);
     await Promise.resolve();
     expect(children.has('job-a')).toBe(false);
     expect(events).toEqual(['attach:88', 'terminate:88', 'unref']);
 
     events.length = 0;
-    expect(registerSchedulerWorkerProcess({
-      jobId: 'job-a',
-      child,
-      children,
-      attach: (pid) => {
-        events.push(`attach:${pid}`);
-        return true;
-      },
-    }, {
-      terminateWorker: async (pid) => { events.push(`terminate:${pid}`); },
-    })).toBe(true);
+    expect(
+      registerSchedulerWorkerProcess(
+        {
+          jobId: 'job-a',
+          child,
+          children,
+          attach: (pid) => {
+            events.push(`attach:${pid}`);
+            return true;
+          },
+        },
+        {
+          terminateWorker: async (pid) => {
+            events.push(`terminate:${pid}`);
+          },
+        },
+      ),
+    ).toBe(true);
     expect(children.get('job-a')).toBe(child);
     expect(events).toEqual(['attach:88', 'unref']);
   });
@@ -462,7 +692,9 @@ describe('repository child process environment', () => {
     ]);
 
     await cleanupSchedulerWorkerProcesses(children, {
-      terminateWorker: async (pid) => { terminated.push(pid); },
+      terminateWorker: async (pid) => {
+        terminated.push(pid);
+      },
     });
 
     expect(children.size).toBe(0);
@@ -492,7 +724,9 @@ describe('repository child process environment', () => {
       children,
       stderrCapture: {
         path: '/tmp/worker-stderr.log',
-        append: (chunk) => { stderr += typeof chunk === 'string' ? chunk : chunk.toString('utf8'); },
+        append: (chunk) => {
+          stderr += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+        },
         snapshot: () => ({ stderr, stderrTruncated: true }),
       },
       onExit: (exit) => exits.push(exit),
@@ -503,13 +737,15 @@ describe('repository child process environment', () => {
     childEvents.emit('close', 1, null);
 
     expect(children.has('job-a')).toBe(false);
-    expect(exits).toEqual([{
-      exitCode: null,
-      signal: null,
-      stderr: 'boom',
-      stderrTruncated: true,
-      startupError: 'startup failed',
-    }]);
+    expect(exits).toEqual([
+      {
+        exitCode: null,
+        signal: null,
+        stderr: 'boom',
+        stderrTruncated: true,
+        startupError: 'startup failed',
+      },
+    ]);
   });
 
   test('captures Scheduler worker stderr with a bounded persisted diagnostic', () => {
@@ -531,13 +767,16 @@ describe('repository child process environment', () => {
     expect(readFileSync(capture.path, 'utf8')).toBe('abcde');
   });
 
-  test.skipIf(process.platform === 'win32')('resolves ~/.bun/bin/bun from the OS account home when env -i removes HOME', () => {
-    const home = mkdtempSync(join(tmpdir(), 'forge-bun-home-'));
-    homes.push(home);
-    const bin = join(home, '.bun', 'bin');
-    mkdirSync(bin, { recursive: true });
-    const bun = join(bin, 'bun');
-    writeFileSync(bun, 'fixture');
-    expect(resolveBunExecutable('/tmp/forge-runtime', {}, home)).toBe(bun);
-  });
+  test.skipIf(process.platform === 'win32')(
+    'resolves ~/.bun/bin/bun from the OS account home when env -i removes HOME',
+    () => {
+      const home = mkdtempSync(join(tmpdir(), 'forge-bun-home-'));
+      homes.push(home);
+      const bin = join(home, '.bun', 'bin');
+      mkdirSync(bin, { recursive: true });
+      const bun = join(bin, 'bun');
+      writeFileSync(bun, 'fixture');
+      expect(resolveBunExecutable('/tmp/forge-runtime', {}, home)).toBe(bun);
+    },
+  );
 });

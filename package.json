@@ -61,6 +61,7 @@
     "install.ps1",
     "bin/",
     "scripts/",
+    "!scripts/check-source-quality.mjs",
     "!scripts/benchmark-*",
     "!scripts/route-nl-vs-ts-eval.ts",
     "!scripts/check-npm-release.sh",
@@ -116,6 +117,7 @@
     "test:full": "bun scripts/test-governance.ts full",
     "test:coverage": "bun test --coverage",
     "check:type": "bun x tsc --noEmit",
+    "check:source-quality": "bun scripts/check-source-quality.mjs",
     "check:runtime-architecture": "node scripts/check-runtime-architecture.mjs",
     "check:repository-hygiene": "node scripts/check-repository-hygiene.mjs",
     "check:generated-authority": "node scripts/sync-generated-authority.mjs --check",
@@ -169,6 +171,7 @@
     "check:portable-package": "node scripts/run-portable-package-check.mjs"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.8",
     "@types/bun": "latest",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6"

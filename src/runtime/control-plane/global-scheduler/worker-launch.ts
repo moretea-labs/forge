@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
-import { resolveBunExecutable } from '../../shared/process-environment';
+import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../shared/process-environment';
 
 const WORKER_ENVIRONMENT_KEYS = [
   'PATH',
@@ -35,14 +35,16 @@ export interface SchedulerWorkerCommand {
   directExecutable?: true;
 }
 
-export function resolveSchedulerWorkerCommand(input: {
-  runtimeSourceRoot?: string;
-  workerEntrypoint?: string;
-  standaloneExecutable?: string;
-  isBun?: boolean;
-  cwd?: string;
-  pathExists?: (path: string) => boolean;
-} = {}): SchedulerWorkerCommand {
+export function resolveSchedulerWorkerCommand(
+  input: {
+    runtimeSourceRoot?: string;
+    workerEntrypoint?: string;
+    standaloneExecutable?: string;
+    isBun?: boolean;
+    cwd?: string;
+    pathExists?: (path: string) => boolean;
+  } = {},
+): SchedulerWorkerCommand {
   const pathExists = input.pathExists ?? existsSync;
   if (input.standaloneExecutable) {
     const entry = resolve(input.standaloneExecutable);
@@ -96,10 +98,14 @@ export function buildSchedulerWorkerLaunchDescriptor(input: {
     ? input.command.entry
     : resolveSchedulerWorkerExecutable(isBun, input.execPath ?? process.execPath, environmentSource);
   const workerArgs = [
-    '--controller-home', input.controllerHome,
-    '--repo-id', input.repoId,
-    '--job-id', input.jobId,
-    '--controller-pid', String(input.controllerPid),
+    '--controller-home',
+    input.controllerHome,
+    '--repo-id',
+    input.repoId,
+    '--job-id',
+    input.jobId,
+    '--controller-pid',
+    String(input.controllerPid),
   ];
   const args = input.command.directExecutable
     ? workerArgs
@@ -107,7 +113,7 @@ export function buildSchedulerWorkerLaunchDescriptor(input: {
       ? [input.command.entry, ...workerArgs]
       : ['--loader', input.command.loader, input.command.entry, ...workerArgs];
   const environment: NodeJS.ProcessEnv = {
-    ...environmentSource,
+    ...repositoryChildProcessEnvironment(environmentSource),
     FORGE_EXECUTION_WORKER: '1',
     FORGE_CONTROLLER_HOME: input.controllerHome,
     ...(input.runtimeSourceRoot ? { FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: input.runtimeSourceRoot } : {}),

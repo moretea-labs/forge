@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import { loadRuntimeReleaseManifest } from './release-manifest';
 import { readRuntimeReleaseAuthority } from './release-store';
 import { readForgeRuntimeServiceConfig } from './service';
-import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
+import { resolveRuntimeOutboundProxyEnvironment, type RuntimeOutboundProxyPolicy } from '../shared/process-environment';
 
 export interface ForgeRuntimeServiceCommand {
   executable: string;
@@ -12,7 +12,10 @@ export interface ForgeRuntimeServiceCommand {
   env: NodeJS.ProcessEnv;
 }
 
-export function resolveForgeRuntimeServiceCommand(controllerHome: string, configPath: string): ForgeRuntimeServiceCommand {
+export function resolveForgeRuntimeServiceCommand(
+  controllerHome: string,
+  configPath: string,
+): ForgeRuntimeServiceCommand {
   const config = readForgeRuntimeServiceConfig(configPath);
   const home = resolve(controllerHome);
   if (config.controllerHome !== home) throw new Error('FORGE_RUNTIME_SERVICE_HOME_MISMATCH');
@@ -22,25 +25,35 @@ export function resolveForgeRuntimeServiceCommand(controllerHome: string, config
   const releaseRoot = dirname(resolve(authority.active.manifestPath));
   const executable = join(releaseRoot, activeRuntimeReleaseManifest.entrypoint);
   if (!existsSync(executable)) throw new Error(`FORGE_RUNTIME_RELEASE_ENTRYPOINT_MISSING: ${executable}`);
+  const outboundProxyPolicy: RuntimeOutboundProxyPolicy | undefined =
+    config.outboundProxy ?? (process.platform === 'darwin' ? { mode: 'macos-system' } : undefined);
+  const runtimeEnvironment = resolveRuntimeOutboundProxyEnvironment(outboundProxyPolicy, process.env, process.platform);
   return {
     executable,
     args: [
-      '--controller-home', home,
+      '--controller-home',
+      home,
       ...(config.repositoryRoot ? ['--repo', config.repositoryRoot] : []),
-      '--release-manifest', authority.active.manifestPath,
-      '--host', config.host,
-      '--port', String(config.port),
-      '--auth-token-file', config.authTokenFile,
+      '--release-manifest',
+      authority.active.manifestPath,
+      '--host',
+      config.host,
+      '--port',
+      String(config.port),
+      '--auth-token-file',
+      config.authTokenFile,
       ...activeRuntimeReleaseManifest.arguments,
     ],
     env: {
-      ...runtimeAuthorityFreeEnvironment(process.env),
+      ...runtimeEnvironment,
       FORGE_CONTROLLER_HOME: home,
       FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: releaseRoot,
       FORGE_RELEASE_PATH: releaseRoot,
       FORGE_RELEASE_ID: authority.active.releaseId,
       FORGE_RELEASE_REVISION: activeRuntimeReleaseManifest.releaseRevision ?? authority.active.releaseId,
-      ...(activeRuntimeReleaseManifest.sourceCommit ? { FORGE_RELEASE_SOURCE_COMMIT: activeRuntimeReleaseManifest.sourceCommit } : {}),
+      ...(activeRuntimeReleaseManifest.sourceCommit
+        ? { FORGE_RELEASE_SOURCE_COMMIT: activeRuntimeReleaseManifest.sourceCommit }
+        : {}),
       FORGE_RELEASE_CLEAN_WORKSPACE: String(activeRuntimeReleaseManifest.cleanWorkspace !== false),
     },
   };
@@ -52,7 +65,12 @@ function forward(child: ChildProcess, signal: NodeJS.Signals): void {
 
 export async function runForgeRuntimeService(controllerHome: string, configPath: string): Promise<number> {
   const command = resolveForgeRuntimeServiceCommand(controllerHome, configPath);
-  const child = spawn(command.executable, command.args, { env: command.env, stdio: 'inherit', detached: false, windowsHide: true });
+  const child = spawn(command.executable, command.args, {
+    env: command.env,
+    stdio: 'inherit',
+    detached: false,
+    windowsHide: true,
+  });
   const onSigint = () => forward(child, 'SIGINT');
   const onSigterm = () => forward(child, 'SIGTERM');
   process.once('SIGINT', onSigint);
