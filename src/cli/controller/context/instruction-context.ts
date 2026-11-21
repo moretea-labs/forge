@@ -2,7 +2,13 @@ import { readFileSync } from 'fs';
 import { posix, resolve } from 'path';
 import type { ToolPolicy } from '../../../runtime/control-plane/tool-policy';
 import { readableFile } from './known-paths';
-import { readFirstPartyDesignKnowledge, readFirstPartyIosEngineeringKnowledge, UI_UX_INTENT, IOS_ENGINEERING_INTENT, type FirstPartyDesignKnowledge } from '../../../runtime/context/first-party-design-knowledge';
+import {
+  readFirstPartyDesignKnowledge,
+  readFirstPartyIosEngineeringKnowledge,
+  UI_UX_INTENT,
+  IOS_ENGINEERING_INTENT,
+  type FirstPartyDesignKnowledge,
+} from '../../../runtime/context/first-party-design-knowledge';
 
 const CONTRACT_NAMES = ['AGENTS.md', 'CLAUDE.md'] as const;
 // UI sources need the repository's existing design rules as read evidence,
@@ -50,22 +56,40 @@ export function buildRepositoryInstructionContext(
   repoRoot: string,
   policy: ToolPolicy,
   targetPaths: string[],
-  options: { maxTargets?: number; maxContracts?: number; maxCharsPerContract?: number; maxTotalChars?: number; uiIntent?: string } = {},
+  options: {
+    maxTargets?: number;
+    maxContracts?: number;
+    maxCharsPerContract?: number;
+    maxTotalChars?: number;
+    uiIntent?: string;
+  } = {},
 ): RepositoryInstructionContext {
   const maxTargets = Math.max(1, Math.min(30, Math.trunc(options.maxTargets ?? DEFAULT_MAX_TARGETS)));
   const maxContracts = Math.max(1, Math.min(30, Math.trunc(options.maxContracts ?? DEFAULT_MAX_CONTRACTS)));
-  const maxCharsPerContract = Math.max(500, Math.min(50_000, Math.trunc(options.maxCharsPerContract ?? DEFAULT_MAX_CHARS_PER_CONTRACT)));
-  const maxTotalChars = Math.max(2_000, Math.min(100_000, Math.trunc(options.maxTotalChars ?? DEFAULT_MAX_TOTAL_CHARS)));
-  const allTargets = [...new Set(targetPaths.map((path) => path.trim()).filter(Boolean).filter((path) => !isInstructionContract(path)))];
+  const maxCharsPerContract = Math.max(
+    500,
+    Math.min(50_000, Math.trunc(options.maxCharsPerContract ?? DEFAULT_MAX_CHARS_PER_CONTRACT)),
+  );
+  const maxTotalChars = Math.max(
+    2_000,
+    Math.min(100_000, Math.trunc(options.maxTotalChars ?? DEFAULT_MAX_TOTAL_CHARS)),
+  );
+  const allTargets = [
+    ...new Set(
+      targetPaths
+        .map((path) => path.trim())
+        .filter(Boolean)
+        .filter((path) => !isInstructionContract(path)),
+    ),
+  ];
   // Requirement-only lookup may know just AGENTS.md (root or module)
   // before finding any source file. Preserve that explicitly named guide as
   // a scope anchor; excluding it otherwise drops the applicable rules.
   const explicitGuide = targetPaths.find((path) => isInstructionContract(path.trim()));
-  const targets = allTargets.length > 0
-    ? allTargets.slice(0, maxTargets)
-    : explicitGuide ? [explicitGuide.trim()] : [];
+  const targets = allTargets.length > 0 ? allTargets.slice(0, maxTargets) : explicitGuide ? [explicitGuide.trim()] : [];
   const coverageGaps: string[] = [];
-  if (allTargets.length > targets.length) coverageGaps.push(`instruction_targets_truncated:${allTargets.length - targets.length}`);
+  if (allTargets.length > targets.length)
+    coverageGaps.push(`instruction_targets_truncated:${allTargets.length - targets.length}`);
 
   const contractTargets = new Map<string, Set<string>>();
   const denied = new Set<string>();
@@ -87,12 +111,13 @@ export function buildRepositoryInstructionContext(
   // Opt-in by the user's UI/design task or a concrete View owner. Only read
   // design paths already declared by repository guidance, plus root DESIGN.md.
   // Policy and byte limits are the same as for AGENTS.md.
-  const isUiTask = UI_UX_INTENT.test(options.uiIntent ?? '')
-    || targets.some(path => /(?:\/Views?\/|(?:View|Screen)\.(?:swift|tsx|jsx)$)/i.test(path));
+  const isUiTask =
+    UI_UX_INTENT.test(options.uiIntent ?? '') ||
+    targets.some((path) => /(?:\/Views?\/|(?:View|Screen)\.(?:swift|tsx|jsx)$)/i.test(path));
   if (isUiTask && targets.length > 0) {
     const designPaths = new Set<string>();
     const declaredGuidance = [...contractTargets.keys()];
-      // Never derive product facts or design requirements from the retriever.
+    // Never derive product facts or design requirements from the retriever.
     for (const guidePath of declaredGuidance) {
       try {
         const text = readFileSync(resolve(repoRoot, guidePath), 'utf8').slice(0, 64_000);
@@ -100,12 +125,12 @@ export function buildRepositoryInstructionContext(
           const reference = match[1]?.trim();
           if (!reference || !/(?:^|\/)(?:design\/|design-rules\.md$)|^DESIGN\.md$/i.test(reference)) continue;
           if (reference.startsWith('/') || reference.includes('..')) continue;
-          for (const candidate of [
-            reference,
-            posix.normalize(posix.join(posix.dirname(guidePath), reference)),
-          ]) {
+          for (const candidate of [reference, posix.normalize(posix.join(posix.dirname(guidePath), reference))]) {
             const readable = readableFile(repoRoot, policy, candidate);
-            if (readable.ok) { designPaths.add(readable.path); break; }
+            if (readable.ok) {
+              designPaths.add(readable.path);
+              break;
+            }
           }
           if (designPaths.size >= 4) break;
         }
@@ -122,14 +147,18 @@ export function buildRepositoryInstructionContext(
       contractTargets.set(path, appliesTo);
     }
   }
-  if (denied.size > 0) coverageGaps.push(...[...denied].sort().map((entry) => `instruction_contract_unreadable:${entry}`));
+  if (denied.size > 0)
+    coverageGaps.push(...[...denied].sort().map((entry) => `instruction_contract_unreadable:${entry}`));
   const firstPartyKnowledge = isUiTask ? readFirstPartyDesignKnowledge() : undefined;
   if (firstPartyKnowledge?.status === 'unavailable') {
     coverageGaps.push(`first_party_design_knowledge_unavailable:${firstPartyKnowledge.reason}`);
   }
   if (firstPartyKnowledge?.truncated) coverageGaps.push('first_party_design_knowledge_truncated');
-  const isIosTask = IOS_ENGINEERING_INTENT.test(options.uiIntent ?? '')
-    || targets.some(path => /(?:^|\/)(?:ios|iphone|ipad)(?:\/|$)|\.(?:swift|xcworkspace|xcodeproj|entitlements)$/i.test(path));
+  const isIosTask =
+    IOS_ENGINEERING_INTENT.test(options.uiIntent ?? '') ||
+    targets.some((path) =>
+      /(?:^|\/)(?:ios|iphone|ipad)(?:\/|$)|\.(?:swift|xcworkspace|xcodeproj|entitlements)$/i.test(path),
+    );
   const firstPartyEngineeringKnowledge = isIosTask ? readFirstPartyIosEngineeringKnowledge() : undefined;
   if (firstPartyEngineeringKnowledge?.status === 'unavailable') {
     coverageGaps.push(`first_party_ios_knowledge_unavailable:${firstPartyEngineeringKnowledge.reason}`);
@@ -142,14 +171,22 @@ export function buildRepositoryInstructionContext(
     if (leftDepth !== rightDepth) return leftDepth - rightDepth;
     const leftName = posix.basename(left);
     const rightName = posix.basename(right);
-    if (leftName !== rightName) return CONTRACT_NAMES.indexOf(leftName as typeof CONTRACT_NAMES[number]) - CONTRACT_NAMES.indexOf(rightName as typeof CONTRACT_NAMES[number]);
+    if (leftName !== rightName)
+      return (
+        CONTRACT_NAMES.indexOf(leftName as (typeof CONTRACT_NAMES)[number]) -
+        CONTRACT_NAMES.indexOf(rightName as (typeof CONTRACT_NAMES)[number])
+      );
     return left.localeCompare(right);
   });
   const selectedPaths = orderedPaths.slice(0, maxContracts);
-  if (orderedPaths.length > selectedPaths.length) coverageGaps.push(`instruction_contracts_truncated:${orderedPaths.length - selectedPaths.length}`);
+  if (orderedPaths.length > selectedPaths.length)
+    coverageGaps.push(`instruction_contracts_truncated:${orderedPaths.length - selectedPaths.length}`);
 
   const contracts: RepositoryInstructionContract[] = [];
-  const fairContractBudget = Math.max(500, Math.min(maxCharsPerContract, Math.floor(maxTotalChars / Math.max(1, selectedPaths.length))));
+  const fairContractBudget = Math.max(
+    500,
+    Math.min(maxCharsPerContract, Math.floor(maxTotalChars / Math.max(1, selectedPaths.length))),
+  );
   for (const path of selectedPaths) {
     try {
       const raw = readFileSync(resolve(repoRoot, path), 'utf8');
@@ -162,7 +199,9 @@ export function buildRepositoryInstructionContext(
       });
       if (truncated) coverageGaps.push(`instruction_contract_content_truncated:${path}`);
     } catch (error) {
-      coverageGaps.push(`instruction_contract_read_failed:${path}:${error instanceof Error ? error.message : String(error)}`);
+      coverageGaps.push(
+        `instruction_contract_read_failed:${path}:${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
@@ -174,6 +213,11 @@ export function buildRepositoryInstructionContext(
     ...(firstPartyKnowledge ? { firstPartyKnowledge } : {}),
     ...(firstPartyEngineeringKnowledge ? { firstPartyEngineeringKnowledge } : {}),
     coverageGaps: coverageGaps.slice(0, 30),
-    truncated: allTargets.length > targets.length || orderedPaths.length > selectedPaths.length || contracts.some((entry) => entry.truncated) || firstPartyKnowledge?.truncated === true || firstPartyEngineeringKnowledge?.truncated === true,
+    truncated:
+      allTargets.length > targets.length ||
+      orderedPaths.length > selectedPaths.length ||
+      contracts.some((entry) => entry.truncated) ||
+      firstPartyKnowledge?.truncated === true ||
+      firstPartyEngineeringKnowledge?.truncated === true,
   };
 }

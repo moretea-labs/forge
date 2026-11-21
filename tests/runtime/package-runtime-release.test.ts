@@ -1,11 +1,27 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { resolveLightweightPluginActionRuntimeInvocation } from '../../src/runtime/plugins/lightweight-action';
 import { spawnSync } from 'child_process';
-import { materializePackageRuntimeRelease, packageRuntimeFileIndex } from '../../src/runtime/root/package-runtime-release';
-import { readFirstPartyDesignKnowledge, readFirstPartyIosEngineeringKnowledge } from '../../src/runtime/context/first-party-design-knowledge';
+import {
+  materializePackageRuntimeRelease,
+  packageRuntimeFileIndex,
+} from '../../src/runtime/root/package-runtime-release';
+import {
+  readFirstPartyDesignKnowledge,
+  readFirstPartyIosEngineeringKnowledge,
+} from '../../src/runtime/context/first-party-design-knowledge';
 import { assertStorageHeadroom, readStorageCapacity } from '../../src/runtime/shared/storage-capacity';
 
 const roots: string[] = [];
@@ -20,35 +36,95 @@ function fixture(targetPackageRoot?: string): { home: string; packageRoot: strin
   const home = join(root, 'home');
   const packageRoot = targetPackageRoot ?? join(root, 'package-source');
   mkdirSync(packageRoot, { recursive: true });
-  for (const dir of ['src/cli', 'src/cli/runtime', 'src/cli/github', 'src/cli/local-bridge', 'src/runtime/root', 'src/runtime/shared', 'src/runtime/execution/process-runtime', 'src/runtime/plugins', 'src/runtime/local-bridge', 'adapters/mcp/runtime-gateway', 'packages/kernel/scheduler/api', 'bin', 'assets', 'scripts']) {
+  for (const dir of [
+    'src/cli',
+    'src/cli/runtime',
+    'src/cli/github',
+    'src/cli/local-bridge',
+    'src/runtime/root',
+    'src/runtime/shared',
+    'src/runtime/execution/process-runtime',
+    'src/runtime/plugins',
+    'src/runtime/local-bridge',
+    'adapters/mcp/runtime-gateway',
+    'packages/kernel/scheduler/api',
+    'bin',
+    'assets',
+    'scripts',
+  ]) {
     mkdirSync(join(packageRoot, dir), { recursive: true });
   }
-  writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
-  writeFileSync(join(packageRoot, 'src', 'cli', 'index.ts'), "import { scheduler } from '../../packages/kernel/scheduler/api/index';\nif (process.argv.slice(2).join(' ') === 'mcp serve --help') process.exit(scheduler === 1 ? 0 : 3);\nprocess.exit(4);\n");
+  writeFileSync(
+    join(packageRoot, 'package.json'),
+    JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }),
+  );
+  writeFileSync(
+    join(packageRoot, 'src', 'cli', 'index.ts'),
+    "import { scheduler } from '../../packages/kernel/scheduler/api/index';\nif (process.argv.slice(2).join(' ') === 'mcp serve --help') process.exit(scheduler === 1 ? 0 : 3);\nprocess.exit(4);\n",
+  );
   writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 1;\n');
   writeFileSync(join(packageRoot, 'adapters', 'mcp', 'adapter.ts'), 'export const adapter = 1;\n');
-  writeFileSync(join(packageRoot, 'adapters', 'mcp', 'runtime-gateway', 'context-pack-sidecar.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge context-pack release canary'); process.exit(0); } process.exit(2);\n");
-  writeFileSync(join(packageRoot, 'packages', 'kernel', 'scheduler', 'api', 'index.ts'), 'export const scheduler = 1;\n');
-  writeFileSync(join(packageRoot, 'src', 'cli', 'runtime', 'entry.ts'), "import { adapter } from '../../../adapters/mcp/adapter';\nimport { scheduler } from '../../../packages/kernel/scheduler/api';\nimport { localBridgeRuntime } from '../local-bridge/runtime-bridge';\nprocess.exit(adapter === 1 && scheduler === 1 && localBridgeRuntime === 2 ? 0 : 1);\n");
-  writeFileSync(join(packageRoot, 'src', 'cli', 'local-bridge', 'job-store.ts'), 'export const localBridgeJobStore = 1;\n');
-  writeFileSync(join(packageRoot, 'src', 'runtime', 'local-bridge', 'lifecycle.ts'), 'export const localBridgeLifecycle = 1;\n');
-  writeFileSync(join(packageRoot, 'src', 'cli', 'local-bridge', 'runtime-bridge.ts'), "import { localBridgeJobStore } from './job-store';\nimport { localBridgeLifecycle } from '../../runtime/local-bridge/lifecycle';\nexport const localBridgeRuntime = localBridgeJobStore + localBridgeLifecycle;\n");
-  writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), 'export async function load(url, context, nextLoad) { return nextLoad(url, context); }\n');
-  writeFileSync(join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime', 'process-runner-entry.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge process-runner release canary'); process.exit(0); } process.exit(2);\n");
-  writeFileSync(join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime', 'check-runner-sidecar.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge check-runner release canary'); process.exit(0); } process.exit(2);\n");
-  writeFileSync(join(packageRoot, 'src', 'cli', 'github', 'plugin-action-sidecar.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge plugin-action sidecar release canary'); process.exit(0); } process.exit(2);\n");
+  writeFileSync(
+    join(packageRoot, 'adapters', 'mcp', 'runtime-gateway', 'context-pack-sidecar.ts'),
+    "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge context-pack release canary'); process.exit(0); } process.exit(2);\n",
+  );
+  writeFileSync(
+    join(packageRoot, 'packages', 'kernel', 'scheduler', 'api', 'index.ts'),
+    'export const scheduler = 1;\n',
+  );
+  writeFileSync(
+    join(packageRoot, 'src', 'cli', 'runtime', 'entry.ts'),
+    "import { adapter } from '../../../adapters/mcp/adapter';\nimport { scheduler } from '../../../packages/kernel/scheduler/api';\nimport { localBridgeRuntime } from '../local-bridge/runtime-bridge';\nprocess.exit(adapter === 1 && scheduler === 1 && localBridgeRuntime === 2 ? 0 : 1);\n",
+  );
+  writeFileSync(
+    join(packageRoot, 'src', 'cli', 'local-bridge', 'job-store.ts'),
+    'export const localBridgeJobStore = 1;\n',
+  );
+  writeFileSync(
+    join(packageRoot, 'src', 'runtime', 'local-bridge', 'lifecycle.ts'),
+    'export const localBridgeLifecycle = 1;\n',
+  );
+  writeFileSync(
+    join(packageRoot, 'src', 'cli', 'local-bridge', 'runtime-bridge.ts'),
+    "import { localBridgeJobStore } from './job-store';\nimport { localBridgeLifecycle } from '../../runtime/local-bridge/lifecycle';\nexport const localBridgeRuntime = localBridgeJobStore + localBridgeLifecycle;\n",
+  );
+  writeFileSync(
+    join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'),
+    'export async function load(url, context, nextLoad) { return nextLoad(url, context); }\n',
+  );
+  writeFileSync(
+    join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime', 'process-runner-entry.ts'),
+    "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge process-runner release canary'); process.exit(0); } process.exit(2);\n",
+  );
+  writeFileSync(
+    join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime', 'check-runner-sidecar.ts'),
+    "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge check-runner release canary'); process.exit(0); } process.exit(2);\n",
+  );
+  writeFileSync(
+    join(packageRoot, 'src', 'cli', 'github', 'plugin-action-sidecar.ts'),
+    "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge plugin-action sidecar release canary'); process.exit(0); } process.exit(2);\n",
+  );
   writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(99);\n');
-  writeFileSync(join(packageRoot, 'scripts', 'benchmark-cognitive-memory-activation.ts'), 'throw new Error(\"benchmark only\");\n');
+  writeFileSync(
+    join(packageRoot, 'scripts', 'benchmark-cognitive-memory-activation.ts'),
+    'throw new Error(\"benchmark only\");\n',
+  );
   writeFileSync(join(packageRoot, 'scripts', 'check-release-readiness.sh'), 'exit 99\n');
   writeFileSync(join(packageRoot, 'scripts', 'public-release.ts'), 'throw new Error(\"release management only\");\n');
-  writeFileSync(join(packageRoot, 'scripts', 'stage-runtime-release.ts'), 'throw new Error(\"release staging only\");\n');
+  writeFileSync(
+    join(packageRoot, 'scripts', 'stage-runtime-release.ts'),
+    'throw new Error(\"release staging only\");\n',
+  );
   writeFileSync(join(packageRoot, 'scripts', 'route-nl-vs-ts-eval.ts'), 'throw new Error(\"evaluation only\");\n');
   writeFileSync(join(packageRoot, 'scripts', 'verify-forge-runtime.sh'), 'exit 0\n');
   writeFileSync(join(packageRoot, 'scripts', 'bootstrap-runtime-maintenance-recovery.sh'), 'exit 0\n');
   mkdirSync(join(packageRoot, 'node_modules', 'runtime-dependency'), { recursive: true });
   writeFileSync(join(packageRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'export const dependency = 1;\n');
   writeFileSync(join(packageRoot, 'node_modules', 'runtime-dependency', 'linked.js'), 'export const linked = 1;\n');
-  symlinkSync(join(packageRoot, 'node_modules', 'runtime-dependency', 'linked.js'), join(packageRoot, 'node_modules', 'runtime-dependency', 'linked-copy.js'));
+  symlinkSync(
+    join(packageRoot, 'node_modules', 'runtime-dependency', 'linked.js'),
+    join(packageRoot, 'node_modules', 'runtime-dependency', 'linked-copy.js'),
+  );
   return { home, packageRoot };
 }
 
@@ -58,9 +134,16 @@ describe('package Runtime release immutability', () => {
     const designAssets = join(packageRoot, 'assets', 'knowledge-packs', 'v1');
     mkdirSync(designAssets, { recursive: true });
     for (const name of ['manifest.json', 'design-ui-ux.md', 'ios-engineering.md']) {
-      writeFileSync(join(designAssets, name), readFileSync(new URL(`../../assets/knowledge-packs/v1/${name}`, import.meta.url)));
+      writeFileSync(
+        join(designAssets, name),
+        readFileSync(new URL(`../../assets/knowledge-packs/v1/${name}`, import.meta.url)),
+      );
     }
-    const release = materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'snapshot-source' });
+    const release = materializePackageRuntimeRelease({
+      controllerHome: home,
+      packageRoot,
+      operationId: 'snapshot-source',
+    });
     const packagedKnowledge = readFirstPartyDesignKnowledge(release.packageRoot);
     expect(packagedKnowledge.status).toBe('ready');
     expect(packagedKnowledge.content).toContain('Optical centering differs from geometry');
@@ -72,14 +155,28 @@ describe('package Runtime release immutability', () => {
     expect(release.packageRoot).toBe(join(release.releaseRoot, 'package'));
     expect(readFileSync(join(release.packageRoot, 'src', 'runtime.ts'), 'utf8')).toBe('export const runtime = 1;\n');
     expect(existsSync(join(release.packageRoot, 'src', 'cli', 'github', 'plugin-action-sidecar.ts'))).toBe(true);
-    expect(readFileSync(join(release.packageRoot, 'src', 'cli', 'local-bridge', 'job-store.ts'), 'utf8')).toBe('export const localBridgeJobStore = 1;\n');
-    expect(readFileSync(join(release.packageRoot, 'src', 'runtime', 'local-bridge', 'lifecycle.ts'), 'utf8')).toBe('export const localBridgeLifecycle = 1;\n');
-    expect(readFileSync(join(release.packageRoot, 'src', 'cli', 'local-bridge', 'runtime-bridge.ts'), 'utf8')).toContain('localBridgeJobStore');
+    expect(readFileSync(join(release.packageRoot, 'src', 'cli', 'local-bridge', 'job-store.ts'), 'utf8')).toBe(
+      'export const localBridgeJobStore = 1;\n',
+    );
+    expect(readFileSync(join(release.packageRoot, 'src', 'runtime', 'local-bridge', 'lifecycle.ts'), 'utf8')).toBe(
+      'export const localBridgeLifecycle = 1;\n',
+    );
+    expect(
+      readFileSync(join(release.packageRoot, 'src', 'cli', 'local-bridge', 'runtime-bridge.ts'), 'utf8'),
+    ).toContain('localBridgeJobStore');
     expect(existsSync(join(release.packageRoot, 'src', 'runtime', 'plugins', 'plugin-action-sidecar.ts'))).toBe(false);
-    expect(readFileSync(join(release.packageRoot, 'adapters', 'mcp', 'adapter.ts'), 'utf8')).toBe('export const adapter = 1;\n');
-    expect(readFileSync(join(release.packageRoot, 'packages', 'kernel', 'scheduler', 'api', 'index.ts'), 'utf8')).toBe('export const scheduler = 1;\n');
-    expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'utf8')).toBe('export const dependency = 1;\n');
-    expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'linked-copy.js'), 'utf8')).toBe('export const linked = 1;\n');
+    expect(readFileSync(join(release.packageRoot, 'adapters', 'mcp', 'adapter.ts'), 'utf8')).toBe(
+      'export const adapter = 1;\n',
+    );
+    expect(readFileSync(join(release.packageRoot, 'packages', 'kernel', 'scheduler', 'api', 'index.ts'), 'utf8')).toBe(
+      'export const scheduler = 1;\n',
+    );
+    expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'utf8')).toBe(
+      'export const dependency = 1;\n',
+    );
+    expect(
+      readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'linked-copy.js'), 'utf8'),
+    ).toBe('export const linked = 1;\n');
     const manifest = JSON.parse(readFileSync(release.manifestPath, 'utf8')) as Record<string, string>;
     expect(manifest.processRunnerEntrypoint).toBe('process-runner.js');
     expect(manifest.checkRunnerEntrypoint).toBe('forge-check-runner');
@@ -89,10 +186,23 @@ describe('package Runtime release immutability', () => {
     expect(manifest.checkRunnerArtifactIdentity).toMatch(/^sha256:/);
     expect(manifest.contextPackArtifactIdentity).toMatch(/^sha256:/);
     expect(manifest.pluginActionSidecarArtifactIdentity).toMatch(/^sha256:/);
-    expect(spawnSync(join(release.releaseRoot, 'process-runner.js'), ['--forge-release-canary-child'], { encoding: 'utf8' }).status).toBe(0);
-    expect(spawnSync(join(release.releaseRoot, 'forge-check-runner'), ['--forge-release-canary-child'], { encoding: 'utf8' }).status).toBe(0);
-    expect(spawnSync(join(release.releaseRoot, 'forge-context-pack'), ['--forge-release-canary-child'], { encoding: 'utf8' }).status).toBe(0);
-    expect(spawnSync(join(release.releaseRoot, 'forge-plugin-action-sidecar'), ['--forge-release-canary-child'], { encoding: 'utf8' }).status).toBe(0);
+    expect(
+      spawnSync(join(release.releaseRoot, 'process-runner.js'), ['--forge-release-canary-child'], { encoding: 'utf8' })
+        .status,
+    ).toBe(0);
+    expect(
+      spawnSync(join(release.releaseRoot, 'forge-check-runner'), ['--forge-release-canary-child'], { encoding: 'utf8' })
+        .status,
+    ).toBe(0);
+    expect(
+      spawnSync(join(release.releaseRoot, 'forge-context-pack'), ['--forge-release-canary-child'], { encoding: 'utf8' })
+        .status,
+    ).toBe(0);
+    expect(
+      spawnSync(join(release.releaseRoot, 'forge-plugin-action-sidecar'), ['--forge-release-canary-child'], {
+        encoding: 'utf8',
+      }).status,
+    ).toBe(0);
 
     writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 2;\n');
     rmSync(packageRoot, { recursive: true, force: true });
@@ -102,10 +212,12 @@ describe('package Runtime release immutability', () => {
     expect(readFirstPartyDesignKnowledge(release.packageRoot)).toEqual(packagedKnowledge);
     expect(readFirstPartyIosEngineeringKnowledge(release.packageRoot)).toEqual(packagedIos);
 
-    const launched = spawnSync(release.entrypointPath, [], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' } });
+    const launched = spawnSync(release.entrypointPath, [], {
+      encoding: 'utf8',
+      env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+    });
     expect(launched.status).toBe(0);
   });
-
 
   test('resolves the CLI-composed plugin action sidecar from source and immutable package roots', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-plugin-sidecar-resolution-'));
@@ -118,7 +230,10 @@ describe('package Runtime release immutability', () => {
     mkdirSync(join(root, 'src', 'runtime', 'shared'), { recursive: true });
     mkdirSync(join(root, 'bin'), { recursive: true });
     writeFileSync(sourceSidecar, 'export {};\n');
-    writeFileSync(sourceLoader, 'export async function load(url, context, nextLoad) { return nextLoad(url, context); }\n');
+    writeFileSync(
+      sourceLoader,
+      'export async function load(url, context, nextLoad) { return nextLoad(url, context); }\n',
+    );
 
     const source = resolveLightweightPluginActionRuntimeInvocation({
       sourceDir,
@@ -134,7 +249,10 @@ describe('package Runtime release immutability', () => {
     mkdirSync(join(releaseRoot, 'package', 'src', 'cli', 'github'), { recursive: true });
     mkdirSync(join(releaseRoot, 'package', 'src', 'runtime', 'shared'), { recursive: true });
     writeFileSync(packageSidecar, 'export {};\n');
-    writeFileSync(packageLoader, 'export async function load(url, context, nextLoad) { return nextLoad(url, context); }\n');
+    writeFileSync(
+      packageLoader,
+      'export async function load(url, context, nextLoad) { return nextLoad(url, context); }\n',
+    );
 
     const packaged = resolveLightweightPluginActionRuntimeInvocation({
       releasePath: releaseRoot,
@@ -166,42 +284,79 @@ describe('package Runtime release immutability', () => {
     );
 
     // Required dependency satisfied by neither layout fails closed before staging.
-    expect(() => materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'hoisted-missing' }))
-      .toThrow('PACKAGE_RUNTIME_DEPENDENCY_MISSING: runtime-dependency');
+    expect(() =>
+      materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'hoisted-missing' }),
+    ).toThrow('PACKAGE_RUNTIME_DEPENDENCY_MISSING: runtime-dependency');
 
     // Hoisted sibling dependencies, including a transitive dependency nested
     // inside one of them (npm-style) and one hoisted beside its parent.
     mkdirSync(join(globalRoot, 'node_modules', 'runtime-dependency'), { recursive: true });
     writeFileSync(join(globalRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'export const dependency = 1;\n');
-    writeFileSync(join(globalRoot, 'node_modules', 'runtime-dependency', 'package.json'), JSON.stringify({
-      name: 'runtime-dependency',
-      version: '1.0.0',
-      dependencies: { 'nested-transitive': '^1.0.0' },
-    }));
-    mkdirSync(join(globalRoot, 'node_modules', 'runtime-dependency', 'node_modules', 'nested-transitive'), { recursive: true });
-    writeFileSync(join(globalRoot, 'node_modules', 'runtime-dependency', 'node_modules', 'nested-transitive', 'index.js'), 'export const nested = 1;\n');
+    writeFileSync(
+      join(globalRoot, 'node_modules', 'runtime-dependency', 'package.json'),
+      JSON.stringify({
+        name: 'runtime-dependency',
+        version: '1.0.0',
+        dependencies: { 'nested-transitive': '^1.0.0' },
+      }),
+    );
+    mkdirSync(join(globalRoot, 'node_modules', 'runtime-dependency', 'node_modules', 'nested-transitive'), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(globalRoot, 'node_modules', 'runtime-dependency', 'node_modules', 'nested-transitive', 'index.js'),
+      'export const nested = 1;\n',
+    );
     mkdirSync(join(globalRoot, 'node_modules', '@scope', 'dep'), { recursive: true });
     writeFileSync(join(globalRoot, 'node_modules', '@scope', 'dep', 'index.js'), 'export const scoped = 1;\n');
-    writeFileSync(join(globalRoot, 'node_modules', '@scope', 'dep', 'package.json'), JSON.stringify({
-      name: '@scope/dep',
-      version: '1.0.0',
-      dependencies: { 'hoisted-transitive': '^1.0.0' },
-    }));
+    writeFileSync(
+      join(globalRoot, 'node_modules', '@scope', 'dep', 'package.json'),
+      JSON.stringify({
+        name: '@scope/dep',
+        version: '1.0.0',
+        dependencies: { 'hoisted-transitive': '^1.0.0' },
+      }),
+    );
     mkdirSync(join(globalRoot, 'node_modules', 'hoisted-transitive'), { recursive: true });
     writeFileSync(join(globalRoot, 'node_modules', 'hoisted-transitive', 'index.js'), 'export const hoisted = 1;\n');
 
-    const release = materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'hoisted-closure' });
-    expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'utf8')).toBe('export const dependency = 1;\n');
-    expect(readFileSync(join(release.packageRoot, 'node_modules', '@scope', 'dep', 'index.js'), 'utf8')).toBe('export const scoped = 1;\n');
-    expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'node_modules', 'nested-transitive', 'index.js'), 'utf8')).toBe('export const nested = 1;\n');
-    expect(readFileSync(join(release.packageRoot, 'node_modules', 'hoisted-transitive', 'index.js'), 'utf8')).toBe('export const hoisted = 1;\n');
+    const release = materializePackageRuntimeRelease({
+      controllerHome: home,
+      packageRoot,
+      operationId: 'hoisted-closure',
+    });
+    expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'utf8')).toBe(
+      'export const dependency = 1;\n',
+    );
+    expect(readFileSync(join(release.packageRoot, 'node_modules', '@scope', 'dep', 'index.js'), 'utf8')).toBe(
+      'export const scoped = 1;\n',
+    );
+    expect(
+      readFileSync(
+        join(
+          release.packageRoot,
+          'node_modules',
+          'runtime-dependency',
+          'node_modules',
+          'nested-transitive',
+          'index.js',
+        ),
+        'utf8',
+      ),
+    ).toBe('export const nested = 1;\n');
+    expect(readFileSync(join(release.packageRoot, 'node_modules', 'hoisted-transitive', 'index.js'), 'utf8')).toBe(
+      'export const hoisted = 1;\n',
+    );
 
     // The connector CLI canary ran during materialize and resolved the hoisted
     // dependency from the snapshot; the release must keep launching after the
     // entire global install directory disappears.
     rmSync(globalRoot, { recursive: true, force: true });
     expect(existsSync(globalRoot)).toBe(false);
-    const launched = spawnSync(release.entrypointPath, [], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' } });
+    const launched = spawnSync(release.entrypointPath, [], {
+      encoding: 'utf8',
+      env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+    });
     expect(launched.status).toBe(0);
   });
 
@@ -217,7 +372,11 @@ describe('package Runtime release immutability', () => {
     expect(paths.has('scripts/verify-forge-runtime.sh')).toBe(true);
     expect(paths.has('scripts/bootstrap-runtime-maintenance-recovery.sh')).toBe(true);
 
-    const release = materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'non-runtime-exclusion' });
+    const release = materializePackageRuntimeRelease({
+      controllerHome: home,
+      packageRoot,
+      operationId: 'non-runtime-exclusion',
+    });
     expect(existsSync(join(release.packageRoot, 'scripts', 'benchmark-cognitive-memory-activation.ts'))).toBe(false);
     expect(existsSync(join(release.packageRoot, 'scripts', 'public-release.ts'))).toBe(false);
     expect(existsSync(join(release.packageRoot, 'scripts', 'verify-forge-runtime.sh'))).toBe(true);
@@ -226,23 +385,33 @@ describe('package Runtime release immutability', () => {
 
   test('fails closed when bytes inside an existing immutable package snapshot change', () => {
     const { home, packageRoot } = fixture();
-    const release = materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'snapshot-first' });
+    const release = materializePackageRuntimeRelease({
+      controllerHome: home,
+      packageRoot,
+      operationId: 'snapshot-first',
+    });
     const snapshotFile = join(release.packageRoot, 'src', 'runtime.ts');
     writeFileSync(snapshotFile, 'export const runtime = 999;\n');
 
-    expect(() => materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'snapshot-repeat' }))
-      .toThrow('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION');
+    expect(() =>
+      materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'snapshot-repeat' }),
+    ).toThrow('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION');
     expect(readFileSync(snapshotFile, 'utf8')).toBe('export const runtime = 999;\n');
   });
 
   test('refuses to publish an existing package release whose execution surface is no longer executable', () => {
     const { home, packageRoot } = fixture();
-    const release = materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'execution-surface-first' });
+    const release = materializePackageRuntimeRelease({
+      controllerHome: home,
+      packageRoot,
+      operationId: 'execution-surface-first',
+    });
     const processRunnerPath = join(release.releaseRoot, 'process-runner.js');
     chmodSync(processRunnerPath, 0o600);
 
-    expect(() => materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'execution-surface-repeat' }))
-      .toThrow(/PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION|RUNTIME_RELEASE_EXECUTION_ENTRY_NOT_EXECUTABLE/);
+    expect(() =>
+      materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'execution-surface-repeat' }),
+    ).toThrow(/PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION|RUNTIME_RELEASE_EXECUTION_ENTRY_NOT_EXECUTABLE/);
   });
 
   test('does not promote a package release whose staged Connector CLI dependency graph is incomplete', () => {
@@ -254,8 +423,9 @@ describe('package Runtime release immutability', () => {
       "import { futureDependency } from '../../future-runtime-root/dependency';\nif (process.argv.slice(2).join(' ') === 'mcp serve --help') process.exit(futureDependency === 1 ? 0 : 3);\nprocess.exit(4);\n",
     );
 
-    expect(() => materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'connector-canary-fail' }))
-      .toThrow(/RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: connector_cli/);
+    expect(() =>
+      materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'connector-canary-fail' }),
+    ).toThrow(/RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: connector_cli/);
     const releasesRoot = join(home, 'runtime', 'releases');
     expect(existsSync(releasesRoot) ? readdirSync(releasesRoot) : []).toEqual([]);
   });
@@ -267,8 +437,9 @@ describe('package Runtime release immutability', () => {
       'process.exit(9);\n',
     );
 
-    expect(() => materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'execution-canary-fail' }))
-      .toThrow('RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: process_runner');
+    expect(() =>
+      materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'execution-canary-fail' }),
+    ).toThrow('RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: process_runner');
     const releasesRoot = join(home, 'runtime', 'releases');
     expect(existsSync(releasesRoot) ? readdirSync(releasesRoot) : []).toEqual([]);
   });
@@ -277,13 +448,15 @@ describe('package Runtime release immutability', () => {
     const { home } = fixture();
     const capacity = readStorageCapacity(home);
     expect(capacity.availableBytes).toBeNumber();
-    expect(() => assertStorageHeadroom(home, {
-      operation: 'test_impossible_write',
-      // Filesystem free space can increase between separate statfs reads.
-      // Use a fixed impossibly large (but safe integer) requirement to prove
-      // the production headroom guard still rejects the write deterministically.
-      requiredBytes: Number.MAX_SAFE_INTEGER,
-      reserveBytes: 0,
-    })).toThrow('FORGE_STORAGE_HEADROOM_LOW');
+    expect(() =>
+      assertStorageHeadroom(home, {
+        operation: 'test_impossible_write',
+        // Filesystem free space can increase between separate statfs reads.
+        // Use a fixed impossibly large (but safe integer) requirement to prove
+        // the production headroom guard still rejects the write deterministically.
+        requiredBytes: Number.MAX_SAFE_INTEGER,
+        reserveBytes: 0,
+      }),
+    ).toThrow('FORGE_STORAGE_HEADROOM_LOW');
   });
 });

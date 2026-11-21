@@ -89,7 +89,14 @@ export type ControllerContextRetrievalMode = 'implementation' | 'plan' | 'debug'
 export type ControllerEvidenceReadinessStatus = 'ready' | 'degraded' | 'insufficient';
 export type ControllerSemanticEvidenceStatus = 'not_requested' | 'ready' | 'partial' | 'unavailable' | 'error';
 export const CONTROLLER_CONTEXT_IMPACT_DOMAINS = [
-  'persistence', 'scheduler', 'notification', 'timeline', 'events', 'cache', 'api', 'concurrency',
+  'persistence',
+  'scheduler',
+  'notification',
+  'timeline',
+  'events',
+  'cache',
+  'api',
+  'concurrency',
 ] as const;
 export type ControllerContextImpactDomain = (typeof CONTROLLER_CONTEXT_IMPACT_DOMAINS)[number];
 export type GovernanceRuleLevel = 'kernel' | 'capability' | 'platform' | 'project';
@@ -278,7 +285,16 @@ export interface ControllerContextPackProjection {
     query?: string;
     entryPoints: Array<Pick<StructuralNodeSummary, 'id' | 'kind' | 'name' | 'filePath' | 'startLine' | 'endLine'>>;
     relatedFiles: string[];
-    metadata?: Pick<StructuralIndexMetadata, 'initialized' | 'lastIndexedAt' | 'buildVersion' | 'extractionVersion' | 'staleEngine' | 'changedFiles' | 'ignoredChangedFileCount'>;
+    metadata?: Pick<
+      StructuralIndexMetadata,
+      | 'initialized'
+      | 'lastIndexedAt'
+      | 'buildVersion'
+      | 'extractionVersion'
+      | 'staleEngine'
+      | 'changedFiles'
+      | 'ignoredChangedFileCount'
+    >;
     fallbackReason?: string;
     timingsMs?: StructuralReadProviderResponse['timingsMs'];
     truncated: boolean;

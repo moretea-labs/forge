@@ -12,24 +12,27 @@ describe('repository UI instruction context', () => {
     try {
       mkdirSync(join(root, 'docs', 'mvp2', 'design'), { recursive: true });
       mkdirSync(join(root, 'apps', 'ios', 'Features'), { recursive: true });
-      writeFileSync(join(root, 'AGENTS.md'),
-        '# Project rules\nFor UI work read `docs/mvp2/design/design-rules.md`.\n');
+      writeFileSync(join(root, 'AGENTS.md'), '# Project rules\nFor UI work read `docs/mvp2/design/design-rules.md`.\n');
       writeFileSync(join(root, 'apps', 'ios', 'AGENTS.md'), '# iOS rules\n');
       writeFileSync(join(root, 'DESIGN.md'), '# Canonical visual style\nOrdinary cards have no shadows.\n');
-      writeFileSync(join(root, 'docs', 'mvp2', 'design', 'design-rules.md'),
-        '# Design rules\nNo decorative outlines.\n');
+      writeFileSync(
+        join(root, 'docs', 'mvp2', 'design', 'design-rules.md'),
+        '# Design rules\nNo decorative outlines.\n',
+      );
       writeFileSync(join(root, 'apps', 'ios', 'Features', 'MedicationView.swift'), 'struct MedicationView {}\n');
       const paths = ['apps/ios/Features/MedicationView.swift'];
       const policy = getToolPolicy('controller', { repoRoot: root });
 
       const ui = buildRepositoryInstructionContext(root, policy, paths, { uiIntent: '优化用药界面' });
       expect(ui.status).toBe('ready');
-      expect(ui.contracts.map(contract => contract.path)).toContain('AGENTS.md');
-      expect(ui.contracts.map(contract => contract.path)).toContain('apps/ios/AGENTS.md');
-      expect(ui.contracts.map(contract => contract.path)).toContain('DESIGN.md');
-      expect(ui.contracts.map(contract => contract.path)).toContain('docs/mvp2/design/design-rules.md');
-      expect(ui.contracts.find(contract => contract.path === 'DESIGN.md')?.content).toContain('no shadows');
-      expect(ui.contracts.find(contract => contract.path === 'docs/mvp2/design/design-rules.md')?.content).toContain('No decorative outlines');
+      expect(ui.contracts.map((contract) => contract.path)).toContain('AGENTS.md');
+      expect(ui.contracts.map((contract) => contract.path)).toContain('apps/ios/AGENTS.md');
+      expect(ui.contracts.map((contract) => contract.path)).toContain('DESIGN.md');
+      expect(ui.contracts.map((contract) => contract.path)).toContain('docs/mvp2/design/design-rules.md');
+      expect(ui.contracts.find((contract) => contract.path === 'DESIGN.md')?.content).toContain('no shadows');
+      expect(ui.contracts.find((contract) => contract.path === 'docs/mvp2/design/design-rules.md')?.content).toContain(
+        'No decorative outlines',
+      );
       expect(ui.firstPartyKnowledge?.status).toBe('ready');
       expect(ui.firstPartyKnowledge?.source).toBe('forge_first_party');
       expect(ui.firstPartyKnowledge?.authority).toBe('advisory');
@@ -39,9 +42,11 @@ describe('repository UI instruction context', () => {
       expect(ui.firstPartyEngineeringKnowledge?.status).toBe('ready');
       expect(ui.firstPartyEngineeringKnowledge?.content).toContain('Simulator build is not a physical-device build');
 
-      const backend = buildRepositoryInstructionContext(root, policy, ['apps/api/Domain/Medicine.ts'], { uiIntent: 'fix transaction persistence' });
-      expect(backend.contracts.map(contract => contract.path)).not.toContain('DESIGN.md');
-      expect(backend.contracts.map(contract => contract.path)).not.toContain('docs/mvp2/design/design-rules.md');
+      const backend = buildRepositoryInstructionContext(root, policy, ['apps/api/Domain/Medicine.ts'], {
+        uiIntent: 'fix transaction persistence',
+      });
+      expect(backend.contracts.map((contract) => contract.path)).not.toContain('DESIGN.md');
+      expect(backend.contracts.map((contract) => contract.path)).not.toContain('docs/mvp2/design/design-rules.md');
       expect(backend.firstPartyKnowledge).toBeUndefined();
       expect(backend.firstPartyEngineeringKnowledge).toBeUndefined();
     } finally {
@@ -59,21 +64,36 @@ describe('repository UI instruction context', () => {
       writeFileSync(join(root, 'DESIGN.md'), 'No ornamental shadows.\n');
       writeFileSync(join(root, 'src', 'MedicationView.swift'), 'struct MedicationView {}\n');
       expect(Bun.spawnSync(['git', 'init', '-q'], { cwd: root }).exitCode).toBe(0);
-      expect(Bun.spawnSync([
-        'git', '-c', 'user.name=Forge Test', '-c', 'user.email=forge@test.invalid',
-        'commit', '--allow-empty', '-qm', 'init',
-      ], { cwd: root }).exitCode).toBe(0);
+      expect(
+        Bun.spawnSync(
+          [
+            'git',
+            '-c',
+            'user.name=Forge Test',
+            '-c',
+            'user.email=forge@test.invalid',
+            'commit',
+            '--allow-empty',
+            '-qm',
+            'init',
+          ],
+          { cwd: root },
+        ).exitCode,
+      ).toBe(0);
       const pack = buildControllerContextPack(root, getToolPolicy('controller', { repoRoot: root }), {
         description: 'Requirement-only: 复刻 SwiftUI 用药界面',
         knownPaths: ['src/MedicationView.swift'],
         maxFiles: 1,
         maxSnippets: 2,
       });
-      expect(pack.files.some(file => file.path === 'src/MedicationView.swift')).toBe(true);
-      expect(pack.instructionContext.contracts.map(contract => contract.path)).toContain('DESIGN.md');
-      expect(pack.instructionContext.contracts.map(contract => contract.path)).toContain('docs/design/design-rules.md');
-      expect(pack.instructionContext.contracts.find(contract => contract.path === 'DESIGN.md')?.content)
-        .toContain('No ornamental shadows');
+      expect(pack.files.some((file) => file.path === 'src/MedicationView.swift')).toBe(true);
+      expect(pack.instructionContext.contracts.map((contract) => contract.path)).toContain('DESIGN.md');
+      expect(pack.instructionContext.contracts.map((contract) => contract.path)).toContain(
+        'docs/design/design-rules.md',
+      );
+      expect(pack.instructionContext.contracts.find((contract) => contract.path === 'DESIGN.md')?.content).toContain(
+        'No ornamental shadows',
+      );
       expect(pack.instructionContext.firstPartyKnowledge?.content).toContain('real rendered screen');
       expect(pack.instructionContext.firstPartyEngineeringKnowledge?.content).toContain('SwiftUI views declarative');
     } finally {
@@ -89,15 +109,29 @@ describe('repository UI instruction context', () => {
       writeFileSync(join(root, 'DESIGN.md'), 'Avoid decorative shadows.\\n');
       writeFileSync(join(root, 'docs', 'design', 'design-rules.md'), 'Use flat cards.\\n');
       expect(Bun.spawnSync(['git', 'init', '-q'], { cwd: root }).exitCode).toBe(0);
-      expect(Bun.spawnSync([
-        'git', '-c', 'user.name=Forge Test', '-c', 'user.email=forge@test.invalid',
-        'commit', '--allow-empty', '-qm', 'init',
-      ], { cwd: root }).exitCode).toBe(0);
+      expect(
+        Bun.spawnSync(
+          [
+            'git',
+            '-c',
+            'user.name=Forge Test',
+            '-c',
+            'user.email=forge@test.invalid',
+            'commit',
+            '--allow-empty',
+            '-qm',
+            'init',
+          ],
+          { cwd: root },
+        ).exitCode,
+      ).toBe(0);
       const pack = buildControllerContextPack(root, getToolPolicy('controller', { repoRoot: root }), {
         description: '按用户设计规范继续修改用药界面',
-        knownPaths: ['AGENTS.md'], maxFiles: 1, maxSnippets: 1,
+        knownPaths: ['AGENTS.md'],
+        maxFiles: 1,
+        maxSnippets: 1,
       });
-      const paths = pack.instructionContext.contracts.map(contract => contract.path);
+      const paths = pack.instructionContext.contracts.map((contract) => contract.path);
       expect(paths).toContain('AGENTS.md');
       expect(paths).toContain('DESIGN.md');
       expect(paths).toContain('docs/design/design-rules.md');
@@ -112,20 +146,33 @@ describe('repository UI instruction context', () => {
     try {
       mkdirSync(join(root, 'docs', 'mvp2', 'design'), { recursive: true });
       writeFileSync(join(root, 'AGENTS.md'), '# Repository constraints\\n');
-      writeFileSync(join(root, 'docs', 'mvp2', 'AGENTS.md'),
-        'For UI read \`docs/mvp2/design/design-rules.md\`.\\n');
+      writeFileSync(join(root, 'docs', 'mvp2', 'AGENTS.md'), 'For UI read \`docs/mvp2/design/design-rules.md\`.\\n');
       writeFileSync(join(root, 'DESIGN.md'), 'Flat surfaces.\\n');
       writeFileSync(join(root, 'docs', 'mvp2', 'design', 'design-rules.md'), 'Do not add card shadows.\\n');
       expect(Bun.spawnSync(['git', 'init', '-q'], { cwd: root }).exitCode).toBe(0);
-      expect(Bun.spawnSync([
-        'git', '-c', 'user.name=Forge Test', '-c', 'user.email=forge@test.invalid',
-        'commit', '--allow-empty', '-qm', 'init',
-      ], { cwd: root }).exitCode).toBe(0);
+      expect(
+        Bun.spawnSync(
+          [
+            'git',
+            '-c',
+            'user.name=Forge Test',
+            '-c',
+            'user.email=forge@test.invalid',
+            'commit',
+            '--allow-empty',
+            '-qm',
+            'init',
+          ],
+          { cwd: root },
+        ).exitCode,
+      ).toBe(0);
       const pack = buildControllerContextPack(root, getToolPolicy('controller', { repoRoot: root }), {
         description: '用药 UI 源码迁移',
-        knownPaths: ['docs/mvp2/AGENTS.md'], maxFiles: 1, maxSnippets: 1,
+        knownPaths: ['docs/mvp2/AGENTS.md'],
+        maxFiles: 1,
+        maxSnippets: 1,
       });
-      const paths = pack.instructionContext.contracts.map(contract => contract.path);
+      const paths = pack.instructionContext.contracts.map((contract) => contract.path);
       expect(paths).toContain('AGENTS.md');
       expect(paths).toContain('docs/mvp2/AGENTS.md');
       expect(paths).toContain('DESIGN.md');
@@ -138,11 +185,15 @@ describe('repository UI instruction context', () => {
   test('UI-only intent loads first-party guidance even before any implementation path is known', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-first-party-ui-bootstrap-'));
     try {
-      const guidance = buildRepositoryInstructionContext(root, getToolPolicy('controller', { repoRoot: root }), [], { uiIntent: '药箱导出图标视觉对齐' });
+      const guidance = buildRepositoryInstructionContext(root, getToolPolicy('controller', { repoRoot: root }), [], {
+        uiIntent: '药箱导出图标视觉对齐',
+      });
       expect(guidance.firstPartyKnowledge?.status).toBe('ready');
       expect(guidance.firstPartyKnowledge?.content).toContain('Optical centering differs from geometry');
       expect(guidance.contracts).toEqual([]);
-      const notUi = buildRepositoryInstructionContext(root, getToolPolicy('controller', { repoRoot: root }), [], { uiIntent: 'repair SQL index' });
+      const notUi = buildRepositoryInstructionContext(root, getToolPolicy('controller', { repoRoot: root }), [], {
+        uiIntent: 'repair SQL index',
+      });
       expect(notUi.firstPartyKnowledge).toBeUndefined();
       expect(notUi.firstPartyEngineeringKnowledge).toBeUndefined();
       const iosOnly = buildRepositoryInstructionContext(root, getToolPolicy('controller', { repoRoot: root }), [], {
@@ -162,10 +213,16 @@ describe('repository UI instruction context', () => {
       writeFileSync(join(root, 'AGENTS.md'), '# Rules\nSee `DESIGN.md` for UI.\n');
       writeFileSync(join(root, 'DESIGN.md'), 'A'.repeat(20_000));
       writeFileSync(join(root, 'src', 'EditorView.swift'), 'struct EditorView {}\n');
-      const ui = buildRepositoryInstructionContext(root, getToolPolicy('controller', { repoRoot: root }),
-        ['src/EditorView.swift'], { uiIntent: 'UI', maxCharsPerContract: 800, maxTotalChars: 2_000 });
-      expect(ui.contracts.find(contract => contract.path === 'DESIGN.md')?.truncated).toBe(true);
-      expect(ui.coverageGaps.some(gap => gap.includes('instruction_contract_content_truncated:DESIGN.md'))).toBe(true);
+      const ui = buildRepositoryInstructionContext(
+        root,
+        getToolPolicy('controller', { repoRoot: root }),
+        ['src/EditorView.swift'],
+        { uiIntent: 'UI', maxCharsPerContract: 800, maxTotalChars: 2_000 },
+      );
+      expect(ui.contracts.find((contract) => contract.path === 'DESIGN.md')?.truncated).toBe(true);
+      expect(ui.coverageGaps.some((gap) => gap.includes('instruction_contract_content_truncated:DESIGN.md'))).toBe(
+        true,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

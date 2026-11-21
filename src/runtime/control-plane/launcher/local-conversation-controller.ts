@@ -4,12 +4,13 @@ import { tmpdir } from 'os';
 import { extname, isAbsolute, join, relative, sep } from 'path';
 import { redactProcessOutput } from '../../../effects/process-runner';
 import { resolveProviderMcpBootstrap } from './provider-mcp-bootstrap';
-import { readFirstPartyDesignKnowledge, readFirstPartyIosEngineeringKnowledge, UI_UX_INTENT, IOS_ENGINEERING_INTENT } from '../../context/first-party-design-knowledge';
 import {
-  buildCodexControllerInvocation,
-  launcherProcessEnvironment,
-  resolveLauncherExecutable,
-} from './thin-launcher';
+  readFirstPartyDesignKnowledge,
+  readFirstPartyIosEngineeringKnowledge,
+  UI_UX_INTENT,
+  IOS_ENGINEERING_INTENT,
+} from '../../context/first-party-design-knowledge';
+import { buildCodexControllerInvocation, launcherProcessEnvironment, resolveLauncherExecutable } from './thin-launcher';
 
 const LOCAL_CONVERSATION_TIMEOUT_MS = 5 * 60_000;
 const LOCAL_CONVERSATION_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -69,7 +70,8 @@ export function readLocalConversationActivity(conversationId: string): LocalConv
 }
 
 export function cancelLocalConversation(conversationId: string): {
-  conversationId: string; status: 'requested' | 'not_active';
+  conversationId: string;
+  status: 'requested' | 'not_active';
 } {
   if (!LOCAL_CONVERSATION_ID.test(conversationId)) throw Error('LOCAL_CONVERSATION_ID_INVALID');
   const turn = activeLocalTurns.get(conversationId);
@@ -81,7 +83,6 @@ export function cancelLocalConversation(conversationId: string): {
   // Signalling is not proof that a Forge MCP effect was rolled back.
   return { conversationId, status: 'requested' };
 }
-
 
 export interface LocalConversationProviderStatus {
   provider: 'codex';
@@ -152,7 +153,7 @@ export interface ParsedCodexConversationEvents {
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
 function boundedTimeout(value: number | undefined): number {
@@ -164,13 +165,17 @@ function agentMessageText(item: Record<string, unknown>): string | undefined {
   if (typeof item.text === 'string' && item.text.trim()) return item.text.trim();
   if (typeof item.output_text === 'string' && item.output_text.trim()) return item.output_text.trim();
   if (!Array.isArray(item.content)) return undefined;
-  const text = item.content.map((entry) => {
-    const content = record(entry);
-    if (!content) return '';
-    if (typeof content.text === 'string') return content.text;
-    if (typeof content.output_text === 'string') return content.output_text;
-    return '';
-  }).filter(Boolean).join('\n').trim();
+  const text = item.content
+    .map((entry) => {
+      const content = record(entry);
+      if (!content) return '';
+      if (typeof content.text === 'string') return content.text;
+      if (typeof content.output_text === 'string') return content.output_text;
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n')
+    .trim();
   return text || undefined;
 }
 
@@ -186,7 +191,11 @@ export function parseCodexConversationJsonl(stdout: string): ParsedCodexConversa
     const trimmed = line.trim();
     if (!trimmed.startsWith('{')) continue;
     let event: Record<string, unknown> | undefined;
-    try { event = record(JSON.parse(trimmed)); } catch { continue; }
+    try {
+      event = record(JSON.parse(trimmed));
+    } catch {
+      continue;
+    }
     if (!event) continue;
     const type = typeof event.type === 'string' ? event.type : '';
     if (type === 'thread.started' && typeof event.thread_id === 'string' && event.thread_id.trim()) {
@@ -197,8 +206,14 @@ export function parseCodexConversationJsonl(stdout: string): ParsedCodexConversa
       const receipt = record(event.usage);
       const input = receipt?.input_tokens;
       const output = receipt?.output_tokens;
-      if (typeof input === 'number' && Number.isSafeInteger(input) && input >= 0
-          && typeof output === 'number' && Number.isSafeInteger(output) && output >= 0) {
+      if (
+        typeof input === 'number' &&
+        Number.isSafeInteger(input) &&
+        input >= 0 &&
+        typeof output === 'number' &&
+        Number.isSafeInteger(output) &&
+        output >= 0
+      ) {
         inputTokens += input;
         outputTokens += output;
         reportedRounds += 1;
@@ -218,13 +233,20 @@ export function parseCodexConversationJsonl(stdout: string): ParsedCodexConversa
     }
   }
   return {
-    providerSessionId, output, toolActivityCount,
-    ...(reportedRounds > 0 ? {
-      usage: {
-        inputTokens, outputTokens, totalTokens: inputTokens + outputTokens,
-        reportedRounds, totalRounds: completedRounds,
-      },
-    } : {}),
+    providerSessionId,
+    output,
+    toolActivityCount,
+    ...(reportedRounds > 0
+      ? {
+          usage: {
+            inputTokens,
+            outputTokens,
+            totalTokens: inputTokens + outputTokens,
+            reportedRounds,
+            totalRounds: completedRounds,
+          },
+        }
+      : {}),
   };
 }
 
@@ -237,7 +259,9 @@ function activityField(item: Record<string, unknown>, ...keys: string[]): string
 }
 
 function boundedActivityDetail(value: string): string | undefined {
-  const detail = redactProcessOutput(value).replace(/\s+/g, ' ').trim()
+  const detail = redactProcessOutput(value)
+    .replace(/\s+/g, ' ')
+    .trim()
     .slice(0, LOCAL_CONVERSATION_ACTIVITY_DETAIL_CHARS);
   return detail || undefined;
 }
@@ -246,9 +270,7 @@ function activityLabel(itemType: string, item: Record<string, unknown>): string 
   if (itemType === 'mcp_tool_call') {
     const tool = activityField(item, 'tool', 'tool_name', 'name');
     const server = activityField(item, 'server', 'server_name');
-    const display = tool
-      ? (server && !tool.startsWith(`${server}.`) ? `${server} · ${tool}` : tool)
-      : server;
+    const display = tool ? (server && !tool.startsWith(`${server}.`) ? `${server} · ${tool}` : tool) : server;
     return display ? `正在使用 ${display}` : '正在使用 Forge 工具';
   }
   if (itemType === 'command_execution') return '正在执行命令';
@@ -259,11 +281,12 @@ function activityLabel(itemType: string, item: Record<string, unknown>): string 
 
 function activityDetail(itemType: string, item: Record<string, unknown>): string | undefined {
   if (itemType === 'command_execution') {
-    const command = typeof item.command === 'string'
-      ? item.command
-      : Array.isArray(item.command)
-        ? item.command.filter((part): part is string => typeof part === 'string').join(' ')
-        : '';
+    const command =
+      typeof item.command === 'string'
+        ? item.command
+        : Array.isArray(item.command)
+          ? item.command.filter((part): part is string => typeof part === 'string').join(' ')
+          : '';
     return command ? boundedActivityDetail(command) : undefined;
   }
   if (itemType === 'file_change') {
@@ -331,7 +354,11 @@ function applyActivityLine(active: ActiveLocalTurn, line: string): void {
   const trimmed = line.trim();
   if (!trimmed.startsWith('{')) return;
   let event: Record<string, unknown> | undefined;
-  try { event = record(JSON.parse(trimmed)); } catch { return; }
+  try {
+    event = record(JSON.parse(trimmed));
+  } catch {
+    return;
+  }
   if (!event) return;
   const type = typeof event.type === 'string' ? event.type : '';
   const now = new Date().toISOString();
@@ -403,18 +430,22 @@ function localConversationCwd(): string {
 export function conversationPrompt(prompt: string, repoId?: string, checkoutId?: string): string {
   // At task start and on explicit UI resumptions, supply the actual canonical
   // knowledge body rather than relying on a model to remember a design plugin.
-  const designKnowledge = repoId && checkoutId && UI_UX_INTENT.test(prompt)
-    ? readFirstPartyDesignKnowledge()
-    : undefined;
-  const designContext = designKnowledge?.status === 'ready'
-    ? `Forge first-party Design/UI-UX guidance (${designKnowledge.packVersion}, ${designKnowledge.digest}, ${designKnowledge.path}; advisory, never above user/project authority; truncated=${designKnowledge.truncated === true}; sources=${designKnowledge.sourceProvenance?.join(', ') ?? 'unknown'}):\n${designKnowledge.content}`
-    : designKnowledge ? `Forge Design/UI-UX guidance unavailable: ${designKnowledge.reason}. Do not claim it was loaded.` : undefined;
-  const engineeringKnowledge = repoId && checkoutId && IOS_ENGINEERING_INTENT.test(prompt)
-    ? readFirstPartyIosEngineeringKnowledge()
-    : undefined;
-  const engineeringContext = engineeringKnowledge?.status === 'ready'
-    ? `Forge first-party iOS Engineering guidance (${engineeringKnowledge.packVersion}, ${engineeringKnowledge.digest}, ${engineeringKnowledge.path}; advisory, source=${engineeringKnowledge.sourceProvenance?.join(', ') ?? 'unknown'}):\n${engineeringKnowledge.content}`
-    : engineeringKnowledge ? `Forge iOS Engineering guidance unavailable: ${engineeringKnowledge.reason}. Do not claim it was loaded.` : undefined;
+  const designKnowledge =
+    repoId && checkoutId && UI_UX_INTENT.test(prompt) ? readFirstPartyDesignKnowledge() : undefined;
+  const designContext =
+    designKnowledge?.status === 'ready'
+      ? `Forge first-party Design/UI-UX guidance (${designKnowledge.packVersion}, ${designKnowledge.digest}, ${designKnowledge.path}; advisory, never above user/project authority; truncated=${designKnowledge.truncated === true}; sources=${designKnowledge.sourceProvenance?.join(', ') ?? 'unknown'}):\n${designKnowledge.content}`
+      : designKnowledge
+        ? `Forge Design/UI-UX guidance unavailable: ${designKnowledge.reason}. Do not claim it was loaded.`
+        : undefined;
+  const engineeringKnowledge =
+    repoId && checkoutId && IOS_ENGINEERING_INTENT.test(prompt) ? readFirstPartyIosEngineeringKnowledge() : undefined;
+  const engineeringContext =
+    engineeringKnowledge?.status === 'ready'
+      ? `Forge first-party iOS Engineering guidance (${engineeringKnowledge.packVersion}, ${engineeringKnowledge.digest}, ${engineeringKnowledge.path}; advisory, source=${engineeringKnowledge.sourceProvenance?.join(', ') ?? 'unknown'}):\n${engineeringKnowledge.content}`
+      : engineeringKnowledge
+        ? `Forge iOS Engineering guidance unavailable: ${engineeringKnowledge.reason}. Do not claim it was loaded.`
+        : undefined;
   const repositoryInstructions = repoId
     ? checkoutId
       ? `Attached repository: ${repoId}; selected checkout: ${checkoutId}. Pass both repo_id=${repoId} and checkout_id=${checkoutId} to every Forge capability that requires repository scope. Before source edits, retrieve current applicable repository guidance through rh_context; if a UI/design task has no known source path yet, start with known_paths=["AGENTS.md"], then expand to relevant module guidance and source. For UI work, use the first-party Design/UI-UX knowledge attached below as general guidance, then retrieve the latest repository and product-specific design facts through rh_context. Explicit user corrections, frozen design and released product baseline take precedence. Absence of actual rendered review must be reported, not implied by coordinates, tests or compilation. Retrieval gaps are not evidence of compliance.`
@@ -437,10 +468,17 @@ export async function readLocalConversationProviderStatus(
   try {
     const executable = resolveLauncherExecutable({ controllerType: 'codex', cwd });
     const loginConfirmed = await new Promise<boolean>((resolve) => {
-      execFile(executable, ['login', 'status'], {
-        cwd, env: launcherProcessEnvironment(process.env),
-        timeout: 4_000, maxBuffer: 8 * 1024,
-      }, (error) => resolve(!error));
+      execFile(
+        executable,
+        ['login', 'status'],
+        {
+          cwd,
+          env: launcherProcessEnvironment(process.env),
+          timeout: 4_000,
+          maxBuffer: 8 * 1024,
+        },
+        (error) => resolve(!error),
+      );
     });
     if (!loginConfirmed) {
       return {
@@ -486,30 +524,39 @@ function boundedCatalogText(value: unknown, fallback = ''): string {
 
 export function parseCodexModelCatalog(stdout: string): LocalConversationModelCatalog {
   let parsed: unknown;
-  try { parsed = JSON.parse(stdout); } catch { throw new Error('LOCAL_CONVERSATION_MODEL_CATALOG_INVALID'); }
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error('LOCAL_CONVERSATION_MODEL_CATALOG_INVALID');
+  }
   const root = record(parsed);
   const rows = Array.isArray(root?.models) ? root.models : [];
-  const models = rows.flatMap((value, index): Array<LocalConversationModelOption & { priority: number }> => {
-    const item = record(value);
-    const slug = boundedCatalogText(item?.slug);
-    if (!slug || slug.length > 120 || !/^[A-Za-z0-9._:-]+$/.test(slug) || item?.visibility !== 'list') return [];
-    const levels = Array.isArray(item.supported_reasoning_levels)
-      ? item.supported_reasoning_levels.flatMap((entry): LocalConversationReasoningOption[] => {
-          const level = record(entry);
-          const effort = boundedCatalogText(level?.effort);
-          if (!effort || effort.length > 32 || !/^[A-Za-z0-9_-]+$/.test(effort)) return [];
-          return [{ effort, description: boundedCatalogText(level?.description) }];
-        })
-      : [];
-    return [{
-      slug,
-      displayName: boundedCatalogText(item.display_name, slug),
-      description: boundedCatalogText(item.description),
-      defaultReasoningLevel: boundedCatalogText(item.default_reasoning_level),
-      supportedReasoningLevels: levels,
-      priority: typeof item.priority === 'number' && Number.isFinite(item.priority) ? item.priority : 10_000 + index,
-    }];
-  }).sort((left, right) => left.priority - right.priority)
+  const models = rows
+    .flatMap((value, index): Array<LocalConversationModelOption & { priority: number }> => {
+      const item = record(value);
+      const slug = boundedCatalogText(item?.slug);
+      if (!slug || slug.length > 120 || !/^[A-Za-z0-9._:-]+$/.test(slug) || item?.visibility !== 'list') return [];
+      const levels = Array.isArray(item.supported_reasoning_levels)
+        ? item.supported_reasoning_levels.flatMap((entry): LocalConversationReasoningOption[] => {
+            const level = record(entry);
+            const effort = boundedCatalogText(level?.effort);
+            if (!effort || effort.length > 32 || !/^[A-Za-z0-9_-]+$/.test(effort)) return [];
+            return [{ effort, description: boundedCatalogText(level?.description) }];
+          })
+        : [];
+      return [
+        {
+          slug,
+          displayName: boundedCatalogText(item.display_name, slug),
+          description: boundedCatalogText(item.description),
+          defaultReasoningLevel: boundedCatalogText(item.default_reasoning_level),
+          supportedReasoningLevels: levels,
+          priority:
+            typeof item.priority === 'number' && Number.isFinite(item.priority) ? item.priority : 10_000 + index,
+        },
+      ];
+    })
+    .sort((left, right) => left.priority - right.priority)
     .slice(0, 32)
     .map(({ priority: _priority, ...model }) => model);
   if (!models.length) throw new Error('LOCAL_CONVERSATION_MODEL_CATALOG_EMPTY');
@@ -521,19 +568,24 @@ export async function readLocalConversationModelCatalog(
 ): Promise<LocalConversationModelCatalog> {
   const executable = resolveLauncherExecutable({ controllerType: 'codex', cwd });
   const stdout = await new Promise<string>((resolve, reject) => {
-    execFile(executable, ['debug', 'models'], {
-      cwd,
-      env: launcherProcessEnvironment(process.env),
-      timeout: 5_000,
-      maxBuffer: 8 * 1024 * 1024,
-      encoding: 'utf8',
-    }, (error, output) => {
-      if (error) {
-        reject(new Error(`LOCAL_CONVERSATION_MODEL_CATALOG_FAILED: ${error.message}`));
-        return;
-      }
-      resolve(output);
-    });
+    execFile(
+      executable,
+      ['debug', 'models'],
+      {
+        cwd,
+        env: launcherProcessEnvironment(process.env),
+        timeout: 5_000,
+        maxBuffer: 8 * 1024 * 1024,
+        encoding: 'utf8',
+      },
+      (error, output) => {
+        if (error) {
+          reject(new Error(`LOCAL_CONVERSATION_MODEL_CATALOG_FAILED: ${error.message}`));
+          return;
+        }
+        resolve(output);
+      },
+    );
   });
   return parseCodexModelCatalog(stdout);
 }
@@ -568,12 +620,14 @@ export function runCodexConversation(
         lastActivity: '正在启动 Codex',
         startedAt: now,
         updatedAt: now,
-        events: [{
-          phase: 'starting',
-          label: '正在启动 Codex',
-          status: 'active',
-          startedAt: now,
-        }],
+        events: [
+          {
+            phase: 'starting',
+            label: '正在启动 Codex',
+            status: 'active',
+            startedAt: now,
+          },
+        ],
       },
     };
     activeLocalTurns.set(conversationId, active);
@@ -600,7 +654,9 @@ export function runCodexConversation(
       stdout = append(stdout, text, 'stdout');
       ingestActivityChunk(active, text);
     });
-    child.stderr?.on('data', (chunk) => { stderr = append(stderr, chunk, 'stderr'); });
+    child.stderr?.on('data', (chunk) => {
+      stderr = append(stderr, chunk, 'stderr');
+    });
     child.once('error', (error) => fail(new Error(`LOCAL_CONVERSATION_PROVIDER_START_FAILED: ${error.message}`)));
     child.once('close', (code, signal) => {
       if (active.lineBuffer.trim()) applyActivityLine(active, active.lineBuffer);
@@ -613,12 +669,22 @@ export function runCodexConversation(
       settled = true;
       clearTimeout(timer);
       if (active.cancelRequested) {
-        reject(new Error('LOCAL_CONVERSATION_CANCELLED_RECONCILE: Codex stopped; any in-flight Forge tool needs independent outcome verification.'));
+        reject(
+          new Error(
+            'LOCAL_CONVERSATION_CANCELLED_RECONCILE: Codex stopped; any in-flight Forge tool needs independent outcome verification.',
+          ),
+        );
         return;
       }
       if (code !== 0) {
-        const detail = redactProcessOutput(stderr.trim() || stdout.trim()).replace(/\s+/g, ' ').slice(0, 1200);
-        reject(new Error(`LOCAL_CONVERSATION_PROVIDER_FAILED: code=${String(code ?? 'null')} signal=${signal ?? 'none'}${detail ? `; ${detail}` : ''}`));
+        const detail = redactProcessOutput(stderr.trim() || stdout.trim())
+          .replace(/\s+/g, ' ')
+          .slice(0, 1200);
+        reject(
+          new Error(
+            `LOCAL_CONVERSATION_PROVIDER_FAILED: code=${String(code ?? 'null')} signal=${signal ?? 'none'}${detail ? `; ${detail}` : ''}`,
+          ),
+        );
         return;
       }
       resolve({ stdout, stderr, activity });
@@ -668,7 +734,9 @@ export function validateLocalConversationImagePaths(conversationId: string, imag
 }
 
 export function buildLocalConversationProviderArgs(
-  model?: string, reasoningEffort?: string, imagePaths: string[] = [],
+  model?: string,
+  reasoningEffort?: string,
+  imagePaths: string[] = [],
 ): string[] {
   const selectedModel = model?.trim();
   const selectedReasoning = reasoningEffort?.trim();
@@ -693,8 +761,10 @@ export async function sendLocalConversation(input: LocalConversationSendInput): 
   const repoId = input.repoId?.trim();
   const checkoutId = input.checkoutId?.trim();
   if (!LOCAL_CONVERSATION_ID.test(conversationId)) throw new Error('LOCAL_CONVERSATION_ID_INVALID');
-  if (!prompt || prompt.length > LOCAL_CONVERSATION_MAX_PROMPT_CHARS) throw new Error('LOCAL_CONVERSATION_PROMPT_INVALID');
-  if (providerSessionId && !LOCAL_CONVERSATION_ID.test(providerSessionId)) throw new Error('LOCAL_CONVERSATION_PROVIDER_SESSION_INVALID');
+  if (!prompt || prompt.length > LOCAL_CONVERSATION_MAX_PROMPT_CHARS)
+    throw new Error('LOCAL_CONVERSATION_PROMPT_INVALID');
+  if (providerSessionId && !LOCAL_CONVERSATION_ID.test(providerSessionId))
+    throw new Error('LOCAL_CONVERSATION_PROVIDER_SESSION_INVALID');
   if (repoId && repoId.length > 256) throw new Error('LOCAL_CONVERSATION_REPOSITORY_INVALID');
   if (checkoutId && checkoutId.length > 256) throw new Error('LOCAL_CONVERSATION_CHECKOUT_INVALID');
   if (repoId && !checkoutId) throw new Error('LOCAL_CONVERSATION_CHECKOUT_REQUIRED');
@@ -738,8 +808,6 @@ export async function sendLocalConversation(input: LocalConversationSendInput): 
     output: parsed.output.trim(),
     toolActivityCount: parsed.toolActivityCount,
     ...(parsed.usage ? { usage: parsed.usage } : {}),
-    activityEvents: completed.activity.events
-      .filter((event) => event.phase === 'tool')
-      .map((event) => ({ ...event })),
+    activityEvents: completed.activity.events.filter((event) => event.phase === 'tool').map((event) => ({ ...event })),
   };
 }
