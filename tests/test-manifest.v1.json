@@ -919,6 +919,10 @@
       "module": "process-runtime",
       "resource": "pure"
     },
+    "tests/runtime/project-data-store.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/workspace-semantic-sync.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
