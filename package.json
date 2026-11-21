@@ -115,7 +115,7 @@
     "test:coverage": "bun test --coverage",
     "check:type": "bun x tsc --noEmit",
     "check:source-quality": "bun scripts/check-source-quality.mjs",
-    "check:runtime-architecture": "node scripts/check-runtime-architecture.mjs",
+    "check:runtime-architecture": "bun scripts/check-candidate-architecture.ts",
     "check:repository-hygiene": "node scripts/check-repository-hygiene.mjs",
     "check:generated-authority": "node scripts/sync-generated-authority.mjs --check",
     "check:source-duplication": "node scripts/check-source-duplication.mjs",
