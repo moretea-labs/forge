@@ -39,6 +39,10 @@ printf 'untouched\n' >unrelated.txt
 git add owned.txt unrelated.txt scripts/sync-main.sh
 git commit -m 'test: initialize sync fixture' >/dev/null
 git push -u origin main >/dev/null 2>&1
+# A freshly initialized bare repository may still advertise master as HEAD
+# even though this fixture publishes main. GitHub runners do not necessarily
+# configure init.defaultBranch=main; make clone behavior deterministic.
+git --git-dir="$BARE" symbolic-ref HEAD refs/heads/main
 
 # Exact-path commit: an unrelated dirty file must remain outside the commit.
 printf 'committed\n' >owned.txt
