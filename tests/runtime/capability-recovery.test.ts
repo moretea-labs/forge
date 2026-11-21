@@ -35,7 +35,6 @@ import { applyEditOperations, beginEditSession, getEditSession } from '../../src
 import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/runtime/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/runtime/repositories/runtime-storage';
 import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
-import { applyControllerHomeMigration } from '../../src/runtime/control-plane/persistence/controller-home-migration';
 import {
   assertOwnedResourceCleanupTarget,
   getOwnedResource,

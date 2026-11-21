@@ -30,12 +30,10 @@ import {
   getScheduleRuntimeState,
 } from '../../packages/kernel/scheduler/api/index';
 import { getWorkContract, isCurrentWorkContract, workSemanticView } from '../../packages/kernel/work/api/index';
-import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
 import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 const roots: string[] = [];
-afterEach(() => {
-});  while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
-
+afterEach(() => {});
+while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 
 function tempHome(prefix = 'forge-thin-substrate-test-'): string {
   const root = mkdtempSync(join(tmpdir(), prefix));
@@ -96,28 +94,44 @@ describe('Thin capability substrate', () => {
       target: { kind: 'synthetic', id: 'exact-target' },
       scopes: ['audit.read'],
     };
-    expect(findActiveCanonicalGrant(controllerHome, { ...exactQuery, risk: 'readonly' })?.grantId).toBe(leastPrivilege.grantId);
+    expect(findActiveCanonicalGrant(controllerHome, { ...exactQuery, risk: 'readonly' })?.grantId).toBe(
+      leastPrivilege.grantId,
+    );
     expect(findActiveCanonicalGrant(controllerHome, { ...exactQuery, risk: 'remote_write' })).toBeUndefined();
     expect(findActiveCanonicalGrant(controllerHome, { ...exactQuery, ownerScope: 'another-owner' })).toBeUndefined();
     expect(findActiveCanonicalGrant(controllerHome, { ...exactQuery, scopes: [] })).toBeUndefined();
-    expect(findActiveCanonicalGrant(controllerHome, { capability: 'audit:read', target: exactQuery.target, scopes: exactQuery.scopes })).toBeUndefined();
-    expect(findActiveCanonicalGrant(controllerHome, { principalId: 'legacy-owner', capability: 'audit:read' })).toBeUndefined();
-    expect(findActiveCanonicalGrant(controllerHome, {
-      principalId: 'legacy-owner',
-      capability: 'audit:read',
-      target: { kind: 'synthetic', id: 'exact-target' },
-    })).toBeUndefined();
+    expect(
+      findActiveCanonicalGrant(controllerHome, {
+        capability: 'audit:read',
+        target: exactQuery.target,
+        scopes: exactQuery.scopes,
+      }),
+    ).toBeUndefined();
+    expect(
+      findActiveCanonicalGrant(controllerHome, { principalId: 'legacy-owner', capability: 'audit:read' }),
+    ).toBeUndefined();
+    expect(
+      findActiveCanonicalGrant(controllerHome, {
+        principalId: 'legacy-owner',
+        capability: 'audit:read',
+        target: { kind: 'synthetic', id: 'exact-target' },
+      }),
+    ).toBeUndefined();
     const legacyPath = join(controllerHome, 'system', 'authorization-grants', 'grants.json');
     const legacyStore = JSON.parse(readFileSync(legacyPath, 'utf8')) as { grants: Array<Record<string, unknown>> };
     delete legacyStore.grants.find((grant) => grant.grantId === leastPrivilege.grantId)!.riskCeiling;
     writeFileSync(legacyPath, JSON.stringify(legacyStore));
-    expect(findActiveCanonicalGrant(controllerHome, { ...exactQuery, risk: 'readonly' })?.grantId).toBe(leastPrivilege.grantId);
+    expect(findActiveCanonicalGrant(controllerHome, { ...exactQuery, risk: 'readonly' })?.grantId).toBe(
+      leastPrivilege.grantId,
+    );
     expect(findActiveCanonicalGrant(controllerHome, { ...exactQuery, risk: 'remote_write' })).toBeUndefined();
-    expect(() => revokeCanonicalGrant(controllerHome, {
-      grantId: leastPrivilege.grantId,
-      ownerScope: 'another-owner',
-      reason: 'unauthorized revocation',
-    })).toThrow('GRANT_OWNER_MISMATCH');
+    expect(() =>
+      revokeCanonicalGrant(controllerHome, {
+        grantId: leastPrivilege.grantId,
+        ownerScope: 'another-owner',
+        reason: 'unauthorized revocation',
+      }),
+    ).toThrow('GRANT_OWNER_MISMATCH');
 
     // 4) Revoke grant
     revokeCanonicalGrant(controllerHome, {
@@ -132,13 +146,15 @@ describe('Thin capability substrate', () => {
       risk: 'readonly',
     });
     expect(revokedQuery).toBeUndefined();
-    expect(() => recordCanonicalGrant(controllerHome, {
-      grantId: globalGrant.grantId,
-      principalId: 'chatgpt-controller',
-      ownerScope: 'controller:global',
-      capabilities: ['google_calendar:*', 'web_browser:read'],
-      riskCeiling: 'workspace_write',
-    })).toThrow('GRANT_ID_REUSE_REQUIRES_NEW_ENROLLMENT');
+    expect(() =>
+      recordCanonicalGrant(controllerHome, {
+        grantId: globalGrant.grantId,
+        principalId: 'chatgpt-controller',
+        ownerScope: 'controller:global',
+        capabilities: ['google_calendar:*', 'web_browser:read'],
+        riskCeiling: 'workspace_write',
+      }),
+    ).toThrow('GRANT_ID_REUSE_REQUIRES_NEW_ENROLLMENT');
 
     const freshEnrollment = recordCanonicalGrant(controllerHome, {
       principalId: 'chatgpt-controller',
@@ -147,53 +163,83 @@ describe('Thin capability substrate', () => {
       riskCeiling: 'workspace_write',
     });
     expect(freshEnrollment.grantId).not.toBe(globalGrant.grantId);
-    expect(listCanonicalGrants(controllerHome).find((entry) => entry.grantId === globalGrant.grantId)?.revokedAt).toBeDefined();
-    expect(findActiveCanonicalGrant(controllerHome, {
-      principalId: 'chatgpt-controller', capability: 'web_browser:read', risk: 'readonly',
-    })?.grantId).toBe(freshEnrollment.grantId);
+    expect(
+      listCanonicalGrants(controllerHome).find((entry) => entry.grantId === globalGrant.grantId)?.revokedAt,
+    ).toBeDefined();
+    expect(
+      findActiveCanonicalGrant(controllerHome, {
+        principalId: 'chatgpt-controller',
+        capability: 'web_browser:read',
+        risk: 'readonly',
+      })?.grantId,
+    ).toBe(freshEnrollment.grantId);
     const fixedStart = new Date('2026-10-21T10:00:00.000Z');
     const timeBoundGrant = recordCanonicalGrant(controllerHome, {
-      principalId: 'time-bound-owner', ownerScope: 'controller:replay',
-      capabilities: ['browser:read'], riskCeiling: 'readonly',
-      expiresInMinutes: 60, now: fixedStart,
+      principalId: 'time-bound-owner',
+      ownerScope: 'controller:replay',
+      capabilities: ['browser:read'],
+      riskCeiling: 'readonly',
+      expiresInMinutes: 60,
+      now: fixedStart,
     });
     const replayedGrant = recordCanonicalGrant(controllerHome, {
       grantId: timeBoundGrant.grantId,
-      principalId: 'time-bound-owner', ownerScope: 'controller:replay',
-      capabilities: ['browser:read'], riskCeiling: 'readonly',
-      expiresInMinutes: 90 * 24 * 60, now: new Date('2026-10-21T10:30:00.000Z'),
+      principalId: 'time-bound-owner',
+      ownerScope: 'controller:replay',
+      capabilities: ['browser:read'],
+      riskCeiling: 'readonly',
+      expiresInMinutes: 90 * 24 * 60,
+      now: new Date('2026-10-21T10:30:00.000Z'),
     });
     expect(replayedGrant.createdAt).toBe(timeBoundGrant.createdAt);
     expect(replayedGrant.expiresAt).toBe(timeBoundGrant.expiresAt);
     expect(replayedGrant.updatedAt).toBe('2026-10-21T10:30:00.000Z');
-    expect(findActiveCanonicalGrant(controllerHome, {
-      principalId: 'time-bound-owner', capability: 'browser:read', at: new Date('2026-10-21T11:01:00.000Z'),
-    })).toBeUndefined();
+    expect(
+      findActiveCanonicalGrant(controllerHome, {
+        principalId: 'time-bound-owner',
+        capability: 'browser:read',
+        at: new Date('2026-10-21T11:01:00.000Z'),
+      }),
+    ).toBeUndefined();
     const boundFirst = recordCanonicalGrant(controllerHome, {
-      principalId: 'device-bound-owner', ownerScope: 'controller:devices',
+      principalId: 'device-bound-owner',
+      ownerScope: 'controller:devices',
       target: { kind: 'desktop_app', id: 'some-app' },
-      capabilities: ['credential:use'], scopes: ['credential.fill'],
+      capabilities: ['credential:use'],
+      scopes: ['credential.fill'],
       riskCeiling: 'workspace_write',
       constraints: { deviceId: 'local-device-a', use: { purpose: 'sign-in', limit: 1 } },
     });
-    expect(() => recordCanonicalGrant(controllerHome, {
-      grantId: boundFirst.grantId,
-      principalId: 'device-bound-owner', ownerScope: 'controller:devices',
-      target: { kind: 'desktop_app', id: 'some-app' },
-      capabilities: ['credential:use'], scopes: ['credential.fill'],
-      riskCeiling: 'workspace_write',
-      constraints: { deviceId: 'local-device-b', use: { purpose: 'sign-in', limit: 1 } },
-    })).toThrow('GRANT_IDENTITY_SCOPE_CHANGE_REQUIRES_NEW_ENROLLMENT');
-    expect(listCanonicalGrants(controllerHome).find((row) => row.grantId === boundFirst.grantId)?.constraints).toEqual(boundFirst.constraints);
+    expect(() =>
+      recordCanonicalGrant(controllerHome, {
+        grantId: boundFirst.grantId,
+        principalId: 'device-bound-owner',
+        ownerScope: 'controller:devices',
+        target: { kind: 'desktop_app', id: 'some-app' },
+        capabilities: ['credential:use'],
+        scopes: ['credential.fill'],
+        riskCeiling: 'workspace_write',
+        constraints: { deviceId: 'local-device-b', use: { purpose: 'sign-in', limit: 1 } },
+      }),
+    ).toThrow('GRANT_IDENTITY_SCOPE_CHANGE_REQUIRES_NEW_ENROLLMENT');
+    expect(listCanonicalGrants(controllerHome).find((row) => row.grantId === boundFirst.grantId)?.constraints).toEqual(
+      boundFirst.constraints,
+    );
     const boundSecond = recordCanonicalGrant(controllerHome, {
-      principalId: 'device-bound-owner', ownerScope: 'controller:devices',
+      principalId: 'device-bound-owner',
+      ownerScope: 'controller:devices',
       target: { kind: 'desktop_app', id: 'some-app' },
-      capabilities: ['credential:use'], scopes: ['credential.fill'],
+      capabilities: ['credential:use'],
+      scopes: ['credential.fill'],
       riskCeiling: 'workspace_write',
       constraints: { deviceId: 'local-device-b', use: { purpose: 'sign-in', limit: 1 } },
     });
     expect(boundSecond.grantId).not.toBe(boundFirst.grantId);
-    expect(listCanonicalGrants(controllerHome).filter((row) => [boundFirst.grantId, boundSecond.grantId].includes(row.grantId))).toHaveLength(2);
+    expect(
+      listCanonicalGrants(controllerHome).filter((row) =>
+        [boundFirst.grantId, boundSecond.grantId].includes(row.grantId),
+      ),
+    ).toHaveLength(2);
     const restrictedQuery = {
       principalId: 'device-bound-owner',
       ownerScope: 'controller:devices',
@@ -203,28 +249,55 @@ describe('Thin capability substrate', () => {
       risk: 'workspace_write' as const,
     };
     expect(findActiveCanonicalGrant(controllerHome, restrictedQuery)).toBeUndefined();
-    expect(findActiveCanonicalGrant(controllerHome, { ...restrictedQuery, constraints: { deviceId: 'local-device-c' } })).toBeUndefined();
-    expect(findActiveCanonicalGrant(controllerHome, { ...restrictedQuery, constraints: { deviceId: 'local-device-a', use: { purpose: 'sign-in', limit: 2 } } })).toBeUndefined();
-    expect(findActiveCanonicalGrant(controllerHome, { ...restrictedQuery, constraints: { use: { limit: 1, purpose: 'sign-in' }, deviceId: 'local-device-b' } })?.grantId).toBe(boundSecond.grantId);
-    expect(findActiveCanonicalGrant(controllerHome, { ...restrictedQuery, constraints: { use: { limit: 1, purpose: 'sign-in' }, deviceId: 'local-device-a' } })?.grantId).toBe(boundFirst.grantId);
-    expect(findActiveCanonicalGrant(controllerHome, { principalId: 'chatgpt-controller', capability: 'web_browser:read', constraints: { deviceId: 'local-device-a' } })).toBeUndefined();
+    expect(
+      findActiveCanonicalGrant(controllerHome, { ...restrictedQuery, constraints: { deviceId: 'local-device-c' } }),
+    ).toBeUndefined();
+    expect(
+      findActiveCanonicalGrant(controllerHome, {
+        ...restrictedQuery,
+        constraints: { deviceId: 'local-device-a', use: { purpose: 'sign-in', limit: 2 } },
+      }),
+    ).toBeUndefined();
+    expect(
+      findActiveCanonicalGrant(controllerHome, {
+        ...restrictedQuery,
+        constraints: { use: { limit: 1, purpose: 'sign-in' }, deviceId: 'local-device-b' },
+      })?.grantId,
+    ).toBe(boundSecond.grantId);
+    expect(
+      findActiveCanonicalGrant(controllerHome, {
+        ...restrictedQuery,
+        constraints: { use: { limit: 1, purpose: 'sign-in' }, deviceId: 'local-device-a' },
+      })?.grantId,
+    ).toBe(boundFirst.grantId);
+    expect(
+      findActiveCanonicalGrant(controllerHome, {
+        principalId: 'chatgpt-controller',
+        capability: 'web_browser:read',
+        constraints: { deviceId: 'local-device-a' },
+      }),
+    ).toBeUndefined();
     const replayBound = recordCanonicalGrant(controllerHome, {
       grantId: boundFirst.grantId,
-      principalId: 'device-bound-owner', ownerScope: 'controller:devices',
+      principalId: 'device-bound-owner',
+      ownerScope: 'controller:devices',
       target: { kind: 'desktop_app', id: 'some-app' },
-      capabilities: ['credential:use'], scopes: ['credential.fill'],
+      capabilities: ['credential:use'],
+      scopes: ['credential.fill'],
       riskCeiling: 'workspace_write',
       constraints: { use: { limit: 1, purpose: 'sign-in' }, deviceId: 'local-device-a' },
     });
     expect(replayBound.grantId).toBe(boundFirst.grantId);
     expect(listCanonicalGrants(controllerHome).find((row) => row.grantId === boundSecond.grantId)).toBeDefined();
-    expect(() => recordCanonicalGrant(controllerHome, {
-      grantId: leastPrivilege.grantId,
-      principalId: 'different-principal',
-      capabilities: ['audit:read'],
-      target: { kind: 'synthetic', id: 'exact-target' },
-      scopes: ['audit.read'],
-    })).toThrow('GRANT_IDENTITY_SCOPE_CHANGE_REQUIRES_NEW_ENROLLMENT');
+    expect(() =>
+      recordCanonicalGrant(controllerHome, {
+        grantId: leastPrivilege.grantId,
+        principalId: 'different-principal',
+        capabilities: ['audit:read'],
+        target: { kind: 'synthetic', id: 'exact-target' },
+        scopes: ['audit.read'],
+      }),
+    ).toThrow('GRANT_IDENTITY_SCOPE_CHANGE_REQUIRES_NEW_ENROLLMENT');
   });
 
   test('Step 4: ScheduleDefinition splits authored intent from mechanical runtime state', () => {
@@ -308,19 +381,21 @@ describe('Thin capability substrate', () => {
 
   test('Step 4a: UserRequest writer rejects retired Work target scope', () => {
     const controllerHome = tempHome();
-    expect(() => recordUserRequest(controllerHome, {
-      kind: 'user_action_request',
-      rootCauseKey: 'legacy-work-scope',
-      title: 'Retired Work scope',
-      summary: 'New UserRequests must use current repository/project/requirement scope.',
-      actionRequired: 'product_decision',
-      targetScope: {
-        scopeKind: 'work',
-        scopeId: 'work-retired',
-        repoId: 'repo-example',
-        workId: 'work-retired',
-      },
-    })).toThrow('USER_REQUEST_WORK_SCOPE_RETIRED');
+    expect(() =>
+      recordUserRequest(controllerHome, {
+        kind: 'user_action_request',
+        rootCauseKey: 'legacy-work-scope',
+        title: 'Retired Work scope',
+        summary: 'New UserRequests must use current repository/project/requirement scope.',
+        actionRequired: 'product_decision',
+        targetScope: {
+          scopeKind: 'work',
+          scopeId: 'work-retired',
+          repoId: 'repo-example',
+          workId: 'work-retired',
+        },
+      }),
+    ).toThrow('USER_REQUEST_WORK_SCOPE_RETIRED');
     expect(listUserRequests(controllerHome, 'all')).toHaveLength(0);
   });
 
@@ -328,46 +403,55 @@ describe('Thin capability substrate', () => {
     const controllerHome = tempHome();
     const path = userRequestStorePath(controllerHome);
     mkdirSync(join(controllerHome, 'system', 'user-requests'), { recursive: true });
-    writeFileSync(path, `${JSON.stringify({
-      schemaVersion: 1,
-      requests: [
+    writeFileSync(
+      path,
+      `${JSON.stringify(
         {
           schemaVersion: 1,
-          requestId: 'duplicate-decision',
-          kind: 'user_decision_request',
-          rootCauseKey: 'legacy-root-a',
-          title: 'Older duplicate',
-          summary: 'Older compatibility row.',
-          actionRequired: 'product_decision',
-          status: 'pending',
-          createdAt: '2026-10-01T00:00:00.000Z',
-          updatedAt: '2026-10-01T00:00:00.000Z',
+          requests: [
+            {
+              schemaVersion: 1,
+              requestId: 'duplicate-decision',
+              kind: 'user_decision_request',
+              rootCauseKey: 'legacy-root-a',
+              title: 'Older duplicate',
+              summary: 'Older compatibility row.',
+              actionRequired: 'product_decision',
+              status: 'pending',
+              createdAt: '2026-10-01T00:00:00.000Z',
+              updatedAt: '2026-10-01T00:00:00.000Z',
+            },
+            {
+              schemaVersion: 1,
+              requestId: 'duplicate-decision',
+              kind: 'user_decision_request',
+              rootCauseKey: 'legacy-root-b',
+              title: 'Newer duplicate',
+              summary: 'Newer compatibility row.',
+              actionRequired: 'product_decision',
+              status: 'pending',
+              createdAt: '2026-10-01T00:00:01.000Z',
+              updatedAt: '2026-10-01T00:00:01.000Z',
+            },
+          ],
         },
-        {
-          schemaVersion: 1,
-          requestId: 'duplicate-decision',
-          kind: 'user_decision_request',
-          rootCauseKey: 'legacy-root-b',
-          title: 'Newer duplicate',
-          summary: 'Newer compatibility row.',
-          actionRequired: 'product_decision',
-          status: 'pending',
-          createdAt: '2026-10-01T00:00:01.000Z',
-          updatedAt: '2026-10-01T00:00:01.000Z',
-        },
-      ],
-    }, null, 2)}\n`);
+        null,
+        2,
+      )}\n`,
+    );
 
     expect(listUserRequests(controllerHome, 'pending')).toHaveLength(1);
     expect(getUserRequest(controllerHome, 'duplicate-decision')?.title).toBe('Newer duplicate');
-    expect(() => recordUserRequest(controllerHome, {
-      requestId: 'duplicate-decision',
-      kind: 'user_decision_request',
-      rootCauseKey: 'new-conflicting-root',
-      title: 'Conflicting request',
-      summary: 'Must fail closed instead of creating a second authority.',
-      actionRequired: 'product_decision',
-    })).toThrow('USER_REQUEST_ID_CONFLICT');
+    expect(() =>
+      recordUserRequest(controllerHome, {
+        requestId: 'duplicate-decision',
+        kind: 'user_decision_request',
+        rootCauseKey: 'new-conflicting-root',
+        title: 'Conflicting request',
+        summary: 'Must fail closed instead of creating a second authority.',
+        actionRequired: 'product_decision',
+      }),
+    ).toThrow('USER_REQUEST_ID_CONFLICT');
 
     const resolved = resolveUserRequest(controllerHome, {
       requestId: 'duplicate-decision',
@@ -381,7 +465,6 @@ describe('Thin capability substrate', () => {
     expect(persisted.requests).toHaveLength(2);
     expect(persisted.requests.every((request) => request.status === 'resolved')).toBe(true);
   });
-
 
   test('Step 5 & 3: OwnedResource tracks explicit ownership provenance and supports idempotent cleanup', () => {
     const controllerHome = tempHome();
@@ -472,14 +555,17 @@ describe('Thin capability substrate', () => {
     expect(authResult.handle?.status).toBe('completed');
 
     recordCanonicalGrant(controllerHome, {
-      principalId: 'restricted-test-agent', capabilities: ['browser:navigate'],
+      principalId: 'restricted-test-agent',
+      capabilities: ['browser:navigate'],
       constraints: { deviceId: 'trusted-device-claimed-by-provider' },
     });
     // Broker does not receive trusted device evidence today. A constrained
     // grant must not be treated like a broad, reusable grant by default.
     const restrictedResult = await invokeCapability(controllerHome, {
-      capabilityId: 'browser:navigate', principalId: 'restricted-test-agent',
-      target: { scope: 'global' }, arguments: { url: 'https://example.com' },
+      capabilityId: 'browser:navigate',
+      principalId: 'restricted-test-agent',
+      target: { scope: 'global' },
+      arguments: { url: 'https://example.com' },
     });
     expect(restrictedResult.success).toBe(false);
     expect(restrictedResult.error?.code).toBe('UNAUTHORIZED_CAPABILITY');
@@ -536,15 +622,26 @@ describe('Thin capability substrate', () => {
     const id = 'repository-long-running-task-123';
     const startedAt = '2026-10-17T00:00:00.000Z';
     const original = recordDirectActivity(home, {
-      activityId: id, capabilityId: 'repository:read_file',
-      kind: 'direct_execution', targetScope: 'repository:test',
-      principalId: 'forge-runtime', status: 'running', startedAt, summary: 'Exhausted provider resume',
+      activityId: id,
+      capabilityId: 'repository:read_file',
+      kind: 'direct_execution',
+      targetScope: 'repository:test',
+      principalId: 'forge-runtime',
+      status: 'running',
+      startedAt,
+      summary: 'Exhausted provider resume',
     });
-    for (let i = 0; i < 205; i++) recordDirectActivity(home, {
-      activityId: `unrelated-${i}`, capabilityId: 'repository:read_file',
-      kind: 'direct_execution', targetScope: 'repository:test', principalId: 'test',
-      status: 'completed', startedAt: '2026-10-18T00:00:00.000Z', summary: 'Unrelated activity',
-    });
+    for (let i = 0; i < 205; i++)
+      recordDirectActivity(home, {
+        activityId: `unrelated-${i}`,
+        capabilityId: 'repository:read_file',
+        kind: 'direct_execution',
+        targetScope: 'repository:test',
+        principalId: 'test',
+        status: 'completed',
+        startedAt: '2026-10-18T00:00:00.000Z',
+        summary: 'Unrelated activity',
+      });
     expect(listDirectActivities(home, 200).some((item) => item.activityId === id)).toBe(false);
     expect(getDirectActivity(home, id)).toEqual(original);
     recordDirectActivity(home, { ...original, status: 'completed', completedAt: '2026-10-18T01:00:00.000Z' });

@@ -3,9 +3,10 @@ import { homedir } from 'os';
 import { basename, dirname, join, relative, resolve } from 'path';
 
 export function resolveControllerHome(explicit?: string): string {
-  const configured = explicit?.trim()
-    || process.env.FORGE_CONTROLLER_HOME?.trim()
-    || (process.env.XDG_STATE_HOME?.trim()
+  const configured =
+    explicit?.trim() ||
+    process.env.FORGE_CONTROLLER_HOME?.trim() ||
+    (process.env.XDG_STATE_HOME?.trim()
       ? join(process.env.XDG_STATE_HOME.trim(), 'forge', 'controller')
       : join(homedir(), '.forge', 'controller'));
   return resolve(configured);
@@ -33,7 +34,8 @@ export function repoLocalNoIndexControllerHome(
   platform: NodeJS.Platform = process.platform,
 ): string | undefined {
   const home = resolve(controllerHome);
-  if (platform !== 'darwin' || basename(home) !== 'controller-home' || basename(dirname(home)) !== '_ops') return undefined;
+  if (platform !== 'darwin' || basename(home) !== 'controller-home' || basename(dirname(home)) !== '_ops')
+    return undefined;
   return `${home}.noindex`;
 }
 
@@ -46,7 +48,11 @@ export function ensureControllerHomeStorage(
   if (!physical || existsSync(home)) return home;
 
   let logicalEntryExists = false;
-  try { logicalEntryExists = lstatSync(home).isSymbolicLink(); } catch { /* absent */ }
+  try {
+    logicalEntryExists = lstatSync(home).isSymbolicLink();
+  } catch {
+    /* absent */
+  }
   mkdirSync(physical, { recursive: true });
   if (!logicalEntryExists) {
     const target = relative(dirname(home), physical) || basename(physical);
@@ -111,12 +117,20 @@ export function migrateStoppedRepoLocalControllerHomeStorage(
   try {
     const target = relative(dirname(logicalHome), physicalHome) || basename(physicalHome);
     symlinkSync(target, logicalHome, 'dir');
-    if (!lstatSync(logicalHome).isSymbolicLink() || symlinkTargetPath(logicalHome) !== physicalHome || !existsSync(physicalHome)) {
+    if (
+      !lstatSync(logicalHome).isSymbolicLink() ||
+      symlinkTargetPath(logicalHome) !== physicalHome ||
+      !existsSync(physicalHome)
+    ) {
       throw new Error(`CONTROLLER_HOME_NOINDEX_POSTCHECK_FAILED: ${logicalHome}`);
     }
     return { migrated: true, logicalHome, physicalHome };
   } catch (error) {
-    try { rmSync(logicalHome, { force: true }); } catch { /* best effort */ }
+    try {
+      rmSync(logicalHome, { force: true });
+    } catch {
+      /* best effort */
+    }
     if (!existsSync(logicalHome) && existsSync(physicalHome)) renameSync(physicalHome, logicalHome);
     throw error;
   }
@@ -135,7 +149,6 @@ export function rollbackStoppedRepoLocalControllerHomeStorage(migration: Control
   renameSync(physicalHome, logicalHome);
 }
 
-
 export interface StoppedControllerHomeAuthorityRelocation {
   migrated: boolean;
   sourceHome: string;
@@ -144,7 +157,10 @@ export interface StoppedControllerHomeAuthorityRelocation {
 }
 
 function directoryEntryExists(path: string): boolean {
-  try { lstatSync(path); return true; } catch (error) {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   }
@@ -206,12 +222,19 @@ export function relocateStoppedControllerHomeAuthority(input: {
     };
   } catch (error) {
     try {
-      if (!directoryEntryExists(sourceHome) && directoryEntryExists(destinationHome)) renameSync(destinationHome, sourceHome);
-      if (archivedDestinationHome && !directoryEntryExists(destinationHome) && directoryEntryExists(archivedDestinationHome)) {
+      if (!directoryEntryExists(sourceHome) && directoryEntryExists(destinationHome))
+        renameSync(destinationHome, sourceHome);
+      if (
+        archivedDestinationHome &&
+        !directoryEntryExists(destinationHome) &&
+        directoryEntryExists(archivedDestinationHome)
+      ) {
         renameSync(archivedDestinationHome, destinationHome);
       }
     } catch {
-      throw new Error(`CONTROLLER_HOME_RELOCATION_ROLLBACK_FAILED: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `CONTROLLER_HOME_RELOCATION_ROLLBACK_FAILED: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
     throw error;
   }
@@ -224,8 +247,11 @@ export function rollbackStoppedControllerHomeAuthorityRelocation(
   if (!relocation.migrated) return;
   const sourceHome = resolve(relocation.sourceHome);
   const destinationHome = resolve(relocation.destinationHome);
-  const archivedDestinationHome = relocation.archivedDestinationHome ? resolve(relocation.archivedDestinationHome) : undefined;
-  if (directoryEntryExists(sourceHome)) throw new Error(`CONTROLLER_HOME_RELOCATION_ROLLBACK_SOURCE_EXISTS: ${sourceHome}`);
+  const archivedDestinationHome = relocation.archivedDestinationHome
+    ? resolve(relocation.archivedDestinationHome)
+    : undefined;
+  if (directoryEntryExists(sourceHome))
+    throw new Error(`CONTROLLER_HOME_RELOCATION_ROLLBACK_SOURCE_EXISTS: ${sourceHome}`);
   if (!directoryEntryExists(destinationHome) || !lstatSync(destinationHome).isDirectory()) {
     throw new Error(`CONTROLLER_HOME_RELOCATION_ROLLBACK_DESTINATION_MISSING: ${destinationHome}`);
   }
@@ -236,14 +262,21 @@ export function rollbackStoppedControllerHomeAuthorityRelocation(
   try {
     if (archivedDestinationHome) renameSync(archivedDestinationHome, destinationHome);
   } catch (error) {
-    try { if (!directoryEntryExists(destinationHome) && directoryEntryExists(sourceHome)) renameSync(sourceHome, destinationHome); } catch { /* best effort */ }
-    throw new Error(`CONTROLLER_HOME_RELOCATION_ROLLBACK_RESTORE_FAILED: ${error instanceof Error ? error.message : String(error)}`);
+    try {
+      if (!directoryEntryExists(destinationHome) && directoryEntryExists(sourceHome))
+        renameSync(sourceHome, destinationHome);
+    } catch {
+      /* best effort */
+    }
+    throw new Error(
+      `CONTROLLER_HOME_RELOCATION_ROLLBACK_RESTORE_FAILED: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
 export function ensureControllerHome(explicit?: string): string {
   const home = ensureControllerHomeStorage(resolveControllerHome(explicit));
-  for (const child of ['', 'repositories', 'system', 'locks', 'indexes', 'audit', 'mcp', 'sessions', 'work-handles', 'workflows']) {
+  for (const child of ['', 'repositories', 'system', 'locks', 'indexes', 'audit', 'mcp', 'sessions', 'workflows']) {
     mkdirSync(join(home, child), { recursive: true });
   }
   return home;
@@ -346,7 +379,6 @@ export function ensureRepositoryControllerLayout(controllerHome: string, repoId:
     'hook-state',
     'local-bridge',
     'ephemeral-issues',
-    'work-handles',
     'results',
     'audit',
     'processes',

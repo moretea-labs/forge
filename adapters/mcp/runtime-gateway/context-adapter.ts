@@ -1,30 +1,66 @@
-import { createHash } from "crypto";
-import { defaultSemanticProviderRegistry, type SemanticNavigationKind, type SemanticNavigationRequest } from "../../../src/runtime/context/semantic-navigation";
-import { isIncidentalSemanticDependencyProbe } from "../../../src/runtime/context/semantic-navigation-contract";
-import { buildContextClosureReceipt } from "../../../src/runtime/context/context-closure";
-import type { MultiRepositoryMcpToolContext } from "../multi-repository";
-import { result } from "./result-adapter";
-import { boundedRuntimeResult } from "./bounded-result-runtime";
-import { selected } from "./shared-adapter";
-import { resolveMcpPath } from "../../../src/runtime/safe-tooling/path-policy";
-import { freshGitIdentityAsync, type CachedGitIdentity } from "../../../src/runtime/repositories/inspector";
-import { repositorySummary, resolveRepositorySelection } from "../../../src/runtime/repositories/registry";
-import { getExecutionJob, listExecutionJobs } from "../../../src/runtime/execution/jobs/store";
-import { isManagedProcessActive, listProcessRecords, listRecoverableProcessRecords, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
-import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from "../../../src/runtime/context/context-pack-contract";
-import { buildControllerContextPackInSidecar } from "../../../src/runtime/context/context-pack-process";
-import { isCodeShapedTerm } from "../../../src/cli/controller/context/query-planning";
-import { listControllerChecks } from "../../../src/runtime/execution/process-runtime/check-runner";
-import { getAssistantPluginManifest, getAssistantPluginManifestForAction, getControllerPluginManifest, listAssistantPluginManifests, listControllerPluginManifests } from "../../../src/runtime/plugins/store";
-import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, getCapabilityDescriptor, getCoreCapabilityExecutionSchema, getPluginActionCapabilitySchema, searchCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, listHandoffItems, normalizeCheckIds, summarizeHandoffItem, getPlanContract, planSemanticView, FACADE_TOOLS } from "../../../src/runtime/control-plane/facade";
-import { getWorkContract, workSemanticView } from "../../../packages/kernel/work/api/index";
-import { readRequirement, requirementSemanticView } from '../../../src/runtime/control-plane/persistence/requirement-store';
-import { readForgeInstanceIdentity, type ScopeRef } from "../../../packages/kernel/identity/api/index";
-import { memoryAddressKey } from "../../../packages/kernel/cognition/api/index";
-import { currentControllerInstanceId } from "../../../src/runtime/control-plane/execution/session-store";
-import { resolveProjectForRepositoryPlacement } from "../../../src/runtime/control-plane/workspace/workspace-store";
-import { activateCognitiveMemory, auditCognitiveMemory } from "../../../src/runtime/control-plane/persistence/cognition-store";
-import { cognitiveUsageFeedbackForContext, resolveCognitiveAttention } from "../../../src/runtime/context/cognitive-attention";
+import { createHash } from 'crypto';
+import {
+  defaultSemanticProviderRegistry,
+  type SemanticNavigationKind,
+  type SemanticNavigationRequest,
+} from '../../../src/runtime/context/semantic-navigation';
+import { isIncidentalSemanticDependencyProbe } from '../../../src/runtime/context/semantic-navigation-contract';
+import { buildContextClosureReceipt } from '../../../src/runtime/context/context-closure';
+import type { MultiRepositoryMcpToolContext } from '../multi-repository';
+import { result } from './result-adapter';
+import { boundedRuntimeResult } from './bounded-result-runtime';
+import { selected } from './shared-adapter';
+import { resolveMcpPath } from '../../../src/runtime/safe-tooling/path-policy';
+import { freshGitIdentityAsync, type CachedGitIdentity } from '../../../src/runtime/repositories/inspector';
+import { repositorySummary, resolveRepositorySelection } from '../../../src/runtime/repositories/registry';
+import { getExecutionJob, listExecutionJobs } from '../../../src/runtime/execution/jobs/store';
+import {
+  isManagedProcessActive,
+  listProcessRecords,
+  listRecoverableProcessRecords,
+  processRuntimeResourceDiagnostics,
+} from '../../../src/runtime/execution/process-runtime';
+import {
+  CONTROLLER_CONTEXT_IMPACT_DOMAINS,
+  type ControllerContextImpactDomain,
+} from '../../../src/runtime/context/context-pack-contract';
+import { buildControllerContextPackInSidecar } from '../../../src/runtime/context/context-pack-process';
+import { isCodeShapedTerm } from '../../../src/cli/controller/context/query-planning';
+import { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
+import {
+  getAssistantPluginManifest,
+  getAssistantPluginManifestForAction,
+  getControllerPluginManifest,
+  listAssistantPluginManifests,
+  listControllerPluginManifests,
+} from '../../../src/runtime/plugins/store';
+import {
+  allowedFacadeOperations,
+  buildFacadeResult,
+  listCapabilityDescriptors,
+  getCapabilityDescriptor,
+  getCoreCapabilityExecutionSchema,
+  getPluginActionCapabilitySchema,
+  searchCapabilityDescriptors,
+  summarizeCapabilityGroups,
+  listHandoffAttentionItems,
+  listHandoffItems,
+  normalizeCheckIds,
+  summarizeHandoffItem,
+  FACADE_TOOLS,
+} from '../../../src/runtime/control-plane/facade';
+import { readForgeInstanceIdentity, type ScopeRef } from '../../../packages/kernel/identity/api/index';
+import { memoryAddressKey } from '../../../packages/kernel/cognition/api/index';
+import { currentControllerInstanceId } from '../../../src/runtime/control-plane/execution/session-store';
+import { resolveProjectForRepositoryPlacement } from '../../../src/runtime/control-plane/workspace/workspace-store';
+import {
+  activateCognitiveMemory,
+  auditCognitiveMemory,
+} from '../../../src/runtime/control-plane/persistence/cognition-store';
+import {
+  cognitiveUsageFeedbackForContext,
+  resolveCognitiveAttention,
+} from '../../../src/runtime/context/cognitive-attention';
 import { invalidFacadeOperation, repositoryExecutionReadiness } from './status-inbox-adapter';
 import { summarizeExecutionJob } from './runtime-tool-shared';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
@@ -39,13 +75,6 @@ function timestampIsRecent(value: string | undefined, cutoffMs: number): boolean
   return Number.isFinite(timestamp) && timestamp >= cutoffMs;
 }
 
-const RESUME_CONTEXT_HUMAN_REQUEST_REASONS = new Set([
-  'policy_approval_required',
-  'missing_authorization',
-  'invalid_objective',
-  'destructive_action_requires_confirmation',
-]);
-
 function rhContextReadSessionId(ctx: MultiRepositoryMcpToolContext): string | undefined {
   const principal = ctx.principalId?.trim();
   if (principal) {
@@ -57,11 +86,18 @@ function rhContextReadSessionId(ctx: MultiRepositoryMcpToolContext): string | un
 }
 
 function rhContextKnowledgeAuditRequested(args: Record<string, unknown>): boolean {
-  return [
-    'knowledge_query', 'knowledge_memory_id', 'knowledge_scope_kind', 'knowledge_scope_id',
-    'knowledge_concept', 'knowledge_facet', 'knowledge_source_kind',
-  ].some(key => typeof args[key] === 'string' && String(args[key]).trim().length > 0)
-    || typeof args.knowledge_limit === 'number';
+  return (
+    [
+      'knowledge_query',
+      'knowledge_memory_id',
+      'knowledge_scope_kind',
+      'knowledge_scope_id',
+      'knowledge_concept',
+      'knowledge_facet',
+      'knowledge_source_kind',
+    ].some((key) => typeof args[key] === 'string' && String(args[key]).trim().length > 0) ||
+    typeof args.knowledge_limit === 'number'
+  );
 }
 
 function rhContextKnowledgeScopes(
@@ -95,8 +131,9 @@ function rhContextKnowledgeAudit(
   const resolved = rhContextKnowledgeScopes(ctx, repository);
   const requestedKind = typeof args.knowledge_scope_kind === 'string' ? args.knowledge_scope_kind.trim() : '';
   const requestedId = typeof args.knowledge_scope_id === 'string' ? args.knowledge_scope_id.trim() : '';
-  const scopes = resolved.scopes.filter(scope =>
-    (!requestedKind || scope.kind === requestedKind) && (!requestedId || scope.id === requestedId));
+  const scopes = resolved.scopes.filter(
+    (scope) => (!requestedKind || scope.kind === requestedKind) && (!requestedId || scope.id === requestedId),
+  );
   const scopeMismatch = resolved.scopes.length > 0 && scopes.length === 0 && Boolean(requestedKind || requestedId);
   const rawQuery = typeof args.knowledge_query === 'string' ? args.knowledge_query.trim() : '';
   const query = rawQuery === '*' ? '' : rawQuery;
@@ -104,13 +141,25 @@ function rhContextKnowledgeAudit(
     scopes,
     ...(query ? { query } : {}),
     ...(typeof args.knowledge_memory_id === 'string' && args.knowledge_memory_id.trim()
-      ? { memoryId: args.knowledge_memory_id.trim() } : {}),
+      ? { memoryId: args.knowledge_memory_id.trim() }
+      : {}),
     ...(typeof args.knowledge_concept === 'string' && args.knowledge_concept.trim()
-      ? { concept: args.knowledge_concept.trim() } : {}),
+      ? { concept: args.knowledge_concept.trim() }
+      : {}),
     ...(typeof args.knowledge_facet === 'string' && args.knowledge_facet.trim()
-      ? { facet: args.knowledge_facet.trim() } : {}),
+      ? { facet: args.knowledge_facet.trim() }
+      : {}),
     ...(typeof args.knowledge_source_kind === 'string' && args.knowledge_source_kind.trim()
-      ? { sourceKind: args.knowledge_source_kind.trim() as 'experience' | 'outcome' | 'knowledge' | 'controller' | 'system' | 'external' } : {}),
+      ? {
+          sourceKind: args.knowledge_source_kind.trim() as
+            | 'experience'
+            | 'outcome'
+            | 'knowledge'
+            | 'controller'
+            | 'system'
+            | 'external',
+        }
+      : {}),
     ...(typeof args.knowledge_limit === 'number' ? { limit: args.knowledge_limit } : {}),
   });
   const usage = cognitiveUsageFeedbackForContext({
@@ -119,32 +168,46 @@ function rhContextKnowledgeAudit(
     scopes,
     ...(resolved.projectId ? { projectId: resolved.projectId } : {}),
   });
-  const usageByAddress = new Map(usage.map(item => [memoryAddressKey(item.address), item]));
+  const usageByAddress = new Map(usage.map((item) => [memoryAddressKey(item.address), item]));
   const activation = query
     ? activateCognitiveMemory(ctx.controllerHome, scopes, query, {
-        maxItems: Math.min(32, Math.max(1, typeof args.knowledge_limit === 'number' ? Math.trunc(args.knowledge_limit) : 24)),
+        maxItems: Math.min(
+          32,
+          Math.max(1, typeof args.knowledge_limit === 'number' ? Math.trunc(args.knowledge_limit) : 24),
+        ),
         usageFeedback: usage,
       })
     : undefined;
-  const activationByAddress = new Map((activation?.items ?? []).map(item => [
-    memoryAddressKey({ scope: item.memory.scope, id: item.memory.id }),
-    { score: item.score, reasons: item.reasons, activationPath: item.activationPath },
-  ]));
+  const activationByAddress = new Map(
+    (activation?.items ?? []).map((item) => [
+      memoryAddressKey({ scope: item.memory.scope, id: item.memory.id }),
+      { score: item.score, reasons: item.reasons, activationPath: item.activationPath },
+    ]),
+  );
   return {
     readonly: true,
     advisoryOnly: true,
-    authorityBoundary: 'Learned memory never overrides project contracts, authorization, verification, Requirement/Plan, or semantic acceptance.',
+    authorityBoundary:
+      'Learned memory never overrides project contracts, authorization, verification, Requirement/Plan, or semantic acceptance.',
     scopes,
     filters: {
       ...(rawQuery ? { query: rawQuery } : {}),
       ...(requestedKind ? { scopeKind: requestedKind } : {}),
       ...(requestedId ? { scopeId: requestedId } : {}),
-      ...(typeof args.knowledge_memory_id === 'string' && args.knowledge_memory_id.trim() ? { memoryId: args.knowledge_memory_id.trim() } : {}),
-      ...(typeof args.knowledge_concept === 'string' && args.knowledge_concept.trim() ? { concept: args.knowledge_concept.trim() } : {}),
-      ...(typeof args.knowledge_facet === 'string' && args.knowledge_facet.trim() ? { facet: args.knowledge_facet.trim() } : {}),
-      ...(typeof args.knowledge_source_kind === 'string' && args.knowledge_source_kind.trim() ? { sourceKind: args.knowledge_source_kind.trim() } : {}),
+      ...(typeof args.knowledge_memory_id === 'string' && args.knowledge_memory_id.trim()
+        ? { memoryId: args.knowledge_memory_id.trim() }
+        : {}),
+      ...(typeof args.knowledge_concept === 'string' && args.knowledge_concept.trim()
+        ? { concept: args.knowledge_concept.trim() }
+        : {}),
+      ...(typeof args.knowledge_facet === 'string' && args.knowledge_facet.trim()
+        ? { facet: args.knowledge_facet.trim() }
+        : {}),
+      ...(typeof args.knowledge_source_kind === 'string' && args.knowledge_source_kind.trim()
+        ? { sourceKind: args.knowledge_source_kind.trim() }
+        : {}),
     },
-    items: audit.items.map(entry => {
+    items: audit.items.map((entry) => {
       const address = memoryAddressKey({ scope: entry.memory.scope, id: entry.memory.id });
       return {
         memory: entry.memory,
@@ -186,13 +249,14 @@ function rhContextLearningRecall(
     maxBytes: 12 * 1024,
     usageFeedback: usage,
   });
-  const usageByAddress = new Map(usage.map(item => [memoryAddressKey(item.address), item]));
+  const usageByAddress = new Map(usage.map((item) => [memoryAddressKey(item.address), item]));
   return {
     advisoryOnly: true,
-    authorityBoundary: 'Learned context may guide model decisions but never grants execution, lifecycle, or acceptance authority.',
+    authorityBoundary:
+      'Learned context may guide model decisions but never grants execution, lifecycle, or acceptance authority.',
     scopePolicy: 'unified_relevance_with_narrow_scope_prior',
     scopes: resolved.scopes,
-    items: activation.items.map(entry => ({
+    items: activation.items.map((entry) => ({
       memoryId: memoryAddressKey({ scope: entry.memory.scope, id: entry.memory.id }),
       text: entry.memory.canonicalText,
       score: entry.score,
@@ -222,7 +286,8 @@ const RH_CONTEXT_SEMANTIC_QUERY_LIMIT = 8;
 
 const RH_CONTEXT_SEMANTIC_LOCATION_LIMIT = 200;
 
-const RH_CONTEXT_LEGACY_SEMANTIC_SYNTAX = '@tsnav references <repo-path>:<line>:<column> | @swiftnav references <repo-path>:<line>:<column>';
+const RH_CONTEXT_LEGACY_SEMANTIC_SYNTAX =
+  '@tsnav references <repo-path>:<line>:<column> | @swiftnav references <repo-path>:<line>:<column>';
 
 type RhContextSemanticNavigationRequest = {
   navigation: SemanticNavigationKind;
@@ -238,22 +303,27 @@ function rhContextLegacySemanticQuery(query: string): {
   requests: RhContextSemanticNavigationRequest[];
 } {
   const requests: RhContextSemanticNavigationRequest[] = [];
-  const directive = /(?:^|\s)@(tsnav|swiftnav)\s+(definition|references|implementations)\s+([^\s]+):(\d+):(\d+)(?:\s+tsconfig=([^\s]+))?/gi;
-  const retrievalQuery = query.replace(directive, (_match, directiveKind, navigation, path, line, column, tsconfigPath) => {
-    const language = String(directiveKind).toLowerCase() === 'swiftnav' ? 'swift' : 'typescript';
-    requests.push({
-      navigation: String(navigation).toLowerCase() as SemanticNavigationKind,
-      path: String(path),
-      line: Number(line),
-      column: Number(column),
-      language,
-      ...(tsconfigPath ? { tsconfig_path: String(tsconfigPath) } : {}),
-    });
-    return ' ';
-  }).replace(/\s+/g, ' ').trim();
-  const fallback = requests.length > 0
-    ? `${requests[0]!.language === 'swift' ? 'Swift' : 'TypeScript'} ${requests[0]!.navigation} ${requests[0]!.path}`
-    : query;
+  const directive =
+    /(?:^|\s)@(tsnav|swiftnav)\s+(definition|references|implementations)\s+([^\s]+):(\d+):(\d+)(?:\s+tsconfig=([^\s]+))?/gi;
+  const retrievalQuery = query
+    .replace(directive, (_match, directiveKind, navigation, path, line, column, tsconfigPath) => {
+      const language = String(directiveKind).toLowerCase() === 'swiftnav' ? 'swift' : 'typescript';
+      requests.push({
+        navigation: String(navigation).toLowerCase() as SemanticNavigationKind,
+        path: String(path),
+        line: Number(line),
+        column: Number(column),
+        language,
+        ...(tsconfigPath ? { tsconfig_path: String(tsconfigPath) } : {}),
+      });
+      return ' ';
+    })
+    .replace(/\s+/g, ' ')
+    .trim();
+  const fallback =
+    requests.length > 0
+      ? `${requests[0]!.language === 'swift' ? 'Swift' : 'TypeScript'} ${requests[0]!.navigation} ${requests[0]!.path}`
+      : query;
   return { retrievalQuery: retrievalQuery || fallback, requests };
 }
 
@@ -270,7 +340,11 @@ interface RhContextSemanticNavigationProjection {
   requestTruncated: boolean;
   freshness: 'not_requested' | 'changed_during_query' | 'current_at_query';
   sourceIdentity?: Record<string, unknown>;
-  staticClosure: { scope: string; status: 'not_requested' | 'incomplete' | 'complete_for_requested_symbols'; limitations: string[] };
+  staticClosure: {
+    scope: string;
+    status: 'not_requested' | 'incomplete' | 'complete_for_requested_symbols';
+    limitations: string[];
+  };
 }
 
 async function rhContextSemanticNavigation(
@@ -293,10 +367,14 @@ async function rhContextSemanticNavigation(
     .digest('hex')
     .slice(0, 20);
 
-  const fingerprintOf = (identity: CachedGitIdentity | undefined): string | undefined => identity
-    ? identity.workingTreeFingerprint
-      ?? createHash('sha256').update(`${identity.head ?? ''}\n${identity.branch ?? ''}`).digest('hex').slice(0, 24)
-    : undefined;
+  const fingerprintOf = (identity: CachedGitIdentity | undefined): string | undefined =>
+    identity
+      ? (identity.workingTreeFingerprint ??
+        createHash('sha256')
+          .update(`${identity.head ?? ''}\n${identity.branch ?? ''}`)
+          .digest('hex')
+          .slice(0, 24))
+      : undefined;
   // Semantic providers are targeted/optional, so pay the stronger fresh identity
   // sampling cost only when semantic evidence was explicitly requested.
   const sourceBefore = requests.length > 0 ? await freshGitIdentityAsync(repoRoot) : undefined;
@@ -305,7 +383,11 @@ async function rhContextSemanticNavigation(
 
   requests.forEach((entry, index) => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-      errors.push({ index, code: 'SEMANTIC_NAVIGATION_REQUEST_INVALID', message: 'semantic_navigation entries must be objects.' });
+      errors.push({
+        index,
+        code: 'SEMANTIC_NAVIGATION_REQUEST_INVALID',
+        message: 'semantic_navigation entries must be objects.',
+      });
       return;
     }
     const item = entry as Record<string, unknown>;
@@ -313,20 +395,44 @@ async function rhContextSemanticNavigation(
     const path = String(item.path ?? '').trim();
     const line = Number(item.line);
     const column = Number(item.column);
-    const tsconfigPath = typeof item.tsconfig_path === 'string' && item.tsconfig_path.trim() ? item.tsconfig_path.trim() : undefined;
-    const language = typeof item.language === 'string' && item.language.trim() ? item.language.trim().toLowerCase() : undefined;
-    if (!['definition', 'references', 'implementations'].includes(navigation) || !path || !Number.isInteger(line) || line < 1 || !Number.isInteger(column) || column < 1) {
-      errors.push({ index, code: 'SEMANTIC_NAVIGATION_REQUEST_INVALID', message: 'navigation, path, and positive 1-based line/column are required.' });
+    const tsconfigPath =
+      typeof item.tsconfig_path === 'string' && item.tsconfig_path.trim() ? item.tsconfig_path.trim() : undefined;
+    const language =
+      typeof item.language === 'string' && item.language.trim() ? item.language.trim().toLowerCase() : undefined;
+    if (
+      !['definition', 'references', 'implementations'].includes(navigation) ||
+      !path ||
+      !Number.isInteger(line) ||
+      line < 1 ||
+      !Number.isInteger(column) ||
+      column < 1
+    ) {
+      errors.push({
+        index,
+        code: 'SEMANTIC_NAVIGATION_REQUEST_INVALID',
+        message: 'navigation, path, and positive 1-based line/column are required.',
+      });
       return;
     }
     const targetDecision = resolveMcpPath(repoRoot, path, policy, 'read');
     if (!targetDecision.ok) {
-      errors.push({ index, code: 'SEMANTIC_NAVIGATION_TARGET_DENIED', message: targetDecision.reason ?? 'target path denied by MCP read policy.' });
+      errors.push({
+        index,
+        code: 'SEMANTIC_NAVIGATION_TARGET_DENIED',
+        message: targetDecision.reason ?? 'target path denied by MCP read policy.',
+      });
       return;
     }
     indexedRequests.push({
       index,
-      request: { navigation, path, line, column, ...(tsconfigPath ? { tsconfigPath } : {}), ...(language ? { language } : {}) },
+      request: {
+        navigation,
+        path,
+        line,
+        column,
+        ...(tsconfigPath ? { tsconfigPath } : {}),
+        ...(language ? { language } : {}),
+      },
     });
   });
 
@@ -376,7 +482,11 @@ async function rhContextSemanticNavigation(
     });
     // With no resolved requested relationship, even dependency-only denied reads
     // may conceal material evidence. Preserve admission blocking for this case.
-    if (allowedLocations.length === 0 && sidecarDeniedReads > 0 && Number(semantic.materialPolicyDeniedReads ?? sidecarDeniedReads) === 0) {
+    if (
+      allowedLocations.length === 0 &&
+      sidecarDeniedReads > 0 &&
+      Number(semantic.materialPolicyDeniedReads ?? sidecarDeniedReads) === 0
+    ) {
       materialPolicyDeniedReads += sidecarDeniedReads;
     }
     const truncated = allowedLocations.length > RH_CONTEXT_SEMANTIC_LOCATION_LIMIT;
@@ -400,39 +510,49 @@ async function rhContextSemanticNavigation(
   results.sort((left, right) => {
     const leftTarget = left.target as { path?: string; line?: number; column?: number } | undefined;
     const rightTarget = right.target as { path?: string; line?: number; column?: number } | undefined;
-    return String(leftTarget?.path ?? '').localeCompare(String(rightTarget?.path ?? ''))
-      || Number(leftTarget?.line ?? 0) - Number(rightTarget?.line ?? 0)
-      || Number(leftTarget?.column ?? 0) - Number(rightTarget?.column ?? 0);
+    return (
+      String(leftTarget?.path ?? '').localeCompare(String(rightTarget?.path ?? '')) ||
+      Number(leftTarget?.line ?? 0) - Number(rightTarget?.line ?? 0) ||
+      Number(leftTarget?.column ?? 0) - Number(rightTarget?.column ?? 0)
+    );
   });
 
   const sourceAfter = requests.length > 0 ? await freshGitIdentityAsync(repoRoot) : undefined;
   const sourceFingerprintAfter = fingerprintOf(sourceAfter);
   const sourceChangedDuringQuery = Boolean(
-    sourceBefore
-    && sourceAfter
-    && (sourceBefore.head !== sourceAfter.head || sourceFingerprintBefore !== sourceFingerprintAfter),
+    sourceBefore &&
+      sourceAfter &&
+      (sourceBefore.head !== sourceAfter.head || sourceFingerprintBefore !== sourceFingerprintAfter),
   );
   if (sourceChangedDuringQuery) {
     errors.push({
       index: -1,
       code: 'SEMANTIC_SOURCE_CHANGED_DURING_QUERY',
-      message: 'Repository source identity changed while semantic providers were running. Returned locations are retained only as hints for the sampled source and are not proof for the newer source state.',
+      message:
+        'Repository source identity changed while semantic providers were running. Returned locations are retained only as hints for the sampled source and are not proof for the newer source state.',
     });
   }
 
   const requestTruncated = raw.length > RH_CONTEXT_SEMANTIC_QUERY_LIMIT;
-  const incomplete = requestTruncated || anyLocationTruncated || policyDeniedLocations > 0 || materialPolicyDeniedReads > 0 || errors.length > 0 || sourceChangedDuringQuery;
+  const incomplete =
+    requestTruncated ||
+    anyLocationTruncated ||
+    policyDeniedLocations > 0 ||
+    materialPolicyDeniedReads > 0 ||
+    errors.length > 0 ||
+    sourceChangedDuringQuery;
   const languages = new Set(results.map((entry) => String(entry.language ?? '')).filter(Boolean));
   const singleLanguage = languages.size === 1 ? [...languages][0] : undefined;
-  const scope = singleLanguage === 'typescript'
-    ? 'requested_typescript_static_relationships'
-    : singleLanguage === 'swift'
-      ? 'requested_swift_static_relationships'
-      : singleLanguage
-        ? `requested_${singleLanguage.replace(/[^a-z0-9_-]+/gi, '_').toLowerCase()}_static_relationships`
-        : languages.size > 1
-          ? 'requested_multilanguage_static_relationships'
-          : 'requested_semantic_static_relationships';
+  const scope =
+    singleLanguage === 'typescript'
+      ? 'requested_typescript_static_relationships'
+      : singleLanguage === 'swift'
+        ? 'requested_swift_static_relationships'
+        : singleLanguage
+          ? `requested_${singleLanguage.replace(/[^a-z0-9_-]+/gi, '_').toLowerCase()}_static_relationships`
+          : languages.size > 1
+            ? 'requested_multilanguage_static_relationships'
+            : 'requested_semantic_static_relationships';
   return {
     requested: raw.length,
     executed: requests.length,
@@ -444,112 +564,148 @@ async function rhContextSemanticNavigation(
     materialPolicyDeniedReads,
     policyDeniedReadSamples: Array.from(policyDeniedReadSamples),
     requestTruncated,
-    freshness: raw.length === 0 ? 'not_requested' : sourceChangedDuringQuery ? 'changed_during_query' : 'current_at_query',
-    ...(sourceBefore ? {
-      sourceIdentity: {
-        repoId: repositoryIdentity.repoId,
-        checkoutId: repositoryIdentity.checkoutId,
-        branch: sourceBefore.branch,
-        head: sourceBefore.head,
-        workingTreeFingerprint: sourceFingerprintBefore,
-        sampledAt: new Date(sourceBefore.sampledAt).toISOString(),
-      },
-    } : {}),
+    freshness:
+      raw.length === 0 ? 'not_requested' : sourceChangedDuringQuery ? 'changed_during_query' : 'current_at_query',
+    ...(sourceBefore
+      ? {
+          sourceIdentity: {
+            repoId: repositoryIdentity.repoId,
+            checkoutId: repositoryIdentity.checkoutId,
+            branch: sourceBefore.branch,
+            head: sourceBefore.head,
+            workingTreeFingerprint: sourceFingerprintBefore,
+            sampledAt: new Date(sourceBefore.sampledAt).toISOString(),
+          },
+        }
+      : {}),
     staticClosure: {
       scope,
       status: raw.length === 0 ? 'not_requested' : incomplete ? 'incomplete' : 'complete_for_requested_symbols',
-      limitations: ['dynamic_registration', 'string_or_config_edges', 'reflection', 'runtime_dispatch', 'stale_or_missing_language_index'],
+      limitations: [
+        'dynamic_registration',
+        'string_or_config_edges',
+        'reflection',
+        'runtime_dispatch',
+        'stale_or_missing_language_index',
+      ],
     },
   };
 }
 
-export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
+export async function callContextAdapter(
+  ctx: MultiRepositoryMcpToolContext,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<CallToolResult | undefined> {
   if (name !== 'rh_context') return undefined;
-    const operation = String(args.operation ?? 'get');
-    const repository = selected(ctx, args);
-    if (!allowedFacadeOperations('rh_context').includes(operation)) {
-      return invalidFacadeOperation('rh_context', operation);
+  // Work is fully retired, including historical records. Frozen schema fields
+  // do not establish a new read, source-routing or recovery capability.
+  if (typeof args.work_id === 'string' && args.work_id.trim()) {
+    return result(
+      buildFacadeResult({
+        status: 'blocked',
+        summary: 'WORK_RETIRED: work_id is no longer supported; use Requirement, Plan or repository context.',
+        data: { retiredField: 'work_id' },
+        suggestedNextActions: [],
+      }) as unknown as Record<string, unknown>,
+      true,
+    );
+  }
+  const operation = String(args.operation ?? 'get');
+  const repository = selected(ctx, args);
+  if (!allowedFacadeOperations('rh_context').includes(operation)) {
+    return invalidFacadeOperation('rh_context', operation);
+  }
+  if (operation === 'search') {
+    const query = typeof args.query === 'string' ? args.query.trim() : '';
+    const knowledgeAuditRequested = rhContextKnowledgeAuditRequested(args);
+    if (!query && !knowledgeAuditRequested) {
+      const facade = buildFacadeResult({
+        status: 'failed',
+        summary: 'rh_context.search requires a non-empty code query or explicit knowledge audit fields.',
+        data: { operation, repoId: repository.repoId },
+        suggestedNextActions: [],
+      });
+      return result(facade as unknown as Record<string, unknown>, true);
     }
-    if (operation === 'search') {
-      const query = typeof args.query === 'string' ? args.query.trim() : '';
-      const knowledgeAuditRequested = rhContextKnowledgeAuditRequested(args);
-      if (!query && !knowledgeAuditRequested) {
-        const facade = buildFacadeResult({
-          status: 'failed',
-          summary: 'rh_context.search requires a non-empty code query or explicit knowledge audit fields.',
-          data: { operation, repoId: repository.repoId },
-          suggestedNextActions: [],
-        });
-        return result(facade as unknown as Record<string, unknown>, true);
-      }
-      const cognitionAudit = knowledgeAuditRequested ? rhContextKnowledgeAudit(ctx, repository, args) : undefined;
-      const includeLearningRecall = args.include_learning_recall !== false;
-      const queryVariants = Array.isArray(args.recall_query_variants)
-        ? args.recall_query_variants.filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
-          .slice(0, 3).map(value => value.trim().slice(0, 256))
-        : [];
-      const learningRecall = query && !knowledgeAuditRequested && includeLearningRecall
+    const cognitionAudit = knowledgeAuditRequested ? rhContextKnowledgeAudit(ctx, repository, args) : undefined;
+    const includeLearningRecall = args.include_learning_recall !== false;
+    const queryVariants = Array.isArray(args.recall_query_variants)
+      ? args.recall_query_variants
+          .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+          .slice(0, 3)
+          .map((value) => value.trim().slice(0, 256))
+      : [];
+    const learningRecall =
+      query && !knowledgeAuditRequested && includeLearningRecall
         ? rhContextLearningRecall(ctx, repository, query, queryVariants)
         : undefined;
-      if (!query && cognitionAudit) {
-        const items = Array.isArray(cognitionAudit.items) ? cognitionAudit.items : [];
-        const facade = buildFacadeResult({
-          status: 'ok',
-          summary: `Retrieved ${items.length} bounded learned-memory audit item(s).`,
-          data: { operation, repoId: repository.repoId, cognitionAudit },
-          warnings: [],
-          suggestedNextActions: [],
-          detailLevel: args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary',
-          rawAvailable: false,
-        });
-        // cognitionAudit is already bounded by scope/item/relation/usage/activation budgets.
-        // Preserve its nested provenance and reasoning rather than letting generic facade depth
-        // bounding turn the read-only audit contract into opaque "[bounded-depth]" markers.
-        (facade.data as typeof facade.data & { cognitionAudit: typeof cognitionAudit }).cognitionAudit = cognitionAudit;
-        return result(facade as unknown as Record<string, unknown>);
-      }
-      const legacySemanticQuery = rhContextLegacySemanticQuery(query);
-      const retrievalQuery = legacySemanticQuery.retrievalQuery;
-      const list = (value: unknown): string[] => Array.isArray(value)
-        ? value.map(String).map((entry) => entry.trim()).filter(Boolean)
+    if (!query && cognitionAudit) {
+      const items = Array.isArray(cognitionAudit.items) ? cognitionAudit.items : [];
+      const facade = buildFacadeResult({
+        status: 'ok',
+        summary: `Retrieved ${items.length} bounded learned-memory audit item(s).`,
+        data: { operation, repoId: repository.repoId, cognitionAudit },
+        warnings: [],
+        suggestedNextActions: [],
+        detailLevel: args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary',
+        rawAvailable: false,
+      });
+      // cognitionAudit is already bounded by scope/item/relation/usage/activation budgets.
+      // Preserve its nested provenance and reasoning rather than letting generic facade depth
+      // bounding turn the read-only audit contract into opaque "[bounded-depth]" markers.
+      (facade.data as typeof facade.data & { cognitionAudit: typeof cognitionAudit }).cognitionAudit = cognitionAudit;
+      return result(facade as unknown as Record<string, unknown>);
+    }
+    const legacySemanticQuery = rhContextLegacySemanticQuery(query);
+    const retrievalQuery = legacySemanticQuery.retrievalQuery;
+    const list = (value: unknown): string[] =>
+      Array.isArray(value)
+        ? value
+            .map(String)
+            .map((entry) => entry.trim())
+            .filter(Boolean)
         : [];
-      const retrievalMode = args.retrieval_mode === 'plan' || args.retrieval_mode === 'debug' || args.retrieval_mode === 'review'
+    const retrievalMode =
+      args.retrieval_mode === 'plan' || args.retrieval_mode === 'debug' || args.retrieval_mode === 'review'
         ? args.retrieval_mode
         : 'implementation';
-      const impactDomains = list(args.impact_domains)
-        .filter((domain): domain is ControllerContextImpactDomain => CONTROLLER_CONTEXT_IMPACT_DOMAINS.includes(domain as ControllerContextImpactDomain));
-      // CodeGraph is opt-in. Ordinary source location never starts a graph index.
-      const structuralContext = args.structural_context === 'off' || args.structural_context === 'auto' || args.structural_context === 'required'
+    const impactDomains = list(args.impact_domains).filter((domain): domain is ControllerContextImpactDomain =>
+      CONTROLLER_CONTEXT_IMPACT_DOMAINS.includes(domain as ControllerContextImpactDomain),
+    );
+    // CodeGraph is opt-in. Ordinary source location never starts a graph index.
+    const structuralContext =
+      args.structural_context === 'off' || args.structural_context === 'auto' || args.structural_context === 'required'
         ? args.structural_context
         : 'off';
-      const requestedCheckIds = list(args.requested_check_ids);
-      // Source retrieval is the default Context responsibility. Check
-      // readiness is only meaningful when the controller has named the
-      // checks it is about to use, so do not pay its Git/dependency/schedule
-      // preflight cost for every broad search.
-      const checks = requestedCheckIds.length > 0
-        ? listControllerChecks(repository.canonicalRoot)
-        : [];
-      const executionReadiness = requestedCheckIds.length > 0
+    const requestedCheckIds = list(args.requested_check_ids);
+    // Source retrieval is the default Context responsibility. Check
+    // readiness is only meaningful when the controller has named the
+    // checks it is about to use, so do not pay its Git/dependency/schedule
+    // preflight cost for every broad search.
+    const checks = requestedCheckIds.length > 0 ? listControllerChecks(repository.canonicalRoot) : [];
+    const executionReadiness =
+      requestedCheckIds.length > 0
         ? repositoryExecutionReadiness(repository.canonicalRoot, checks, requestedCheckIds, {
             repoId: repository.repoId,
             checkoutId: repository.activeCheckoutId,
           })
         : undefined;
-      // GPT supplies repository-language code hints for natural-language intents.
-      // Forge only searches those literal terms; it does not translate or infer semantics.
-      const codeSearchTerms = list(args.search_terms).filter((term) => term.length <= 160).slice(0, 8);
-      const exactCodeQuery = !/\s/u.test(retrievalQuery) && isCodeShapedTerm(retrievalQuery);
-      const pack = await buildControllerContextPackInSidecar({
-        repoRoot: repository.canonicalRoot,
-        policy: ctx.policy,
-        options: {
+    // GPT supplies repository-language code hints for natural-language intents.
+    // Forge only searches those literal terms; it does not translate or infer semantics.
+    const codeSearchTerms = list(args.search_terms)
+      .filter((term) => term.length <= 160)
+      .slice(0, 8);
+    const exactCodeQuery = !/\s/u.test(retrievalQuery) && isCodeShapedTerm(retrievalQuery);
+    const pack = await buildControllerContextPackInSidecar({
+      repoRoot: repository.canonicalRoot,
+      policy: ctx.policy,
+      options: {
         description: retrievalQuery,
         // Only an actual single code identifier is an implicit exact needle.
         // Prose (including mixed-language queries) stays in description; the
         // model supplies matching source-language hints through search_terms.
-        searchTerms: codeSearchTerms.length ? codeSearchTerms
-          : exactCodeQuery ? [retrievalQuery] : undefined,
+        searchTerms: codeSearchTerms.length ? codeSearchTerms : exactCodeQuery ? [retrievalQuery] : undefined,
         knownPaths: list(args.known_paths),
         includeGlobs: list(args.include_globs),
         excludeGlobs: list(args.exclude_globs),
@@ -558,501 +714,504 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         structuralContext,
         retrievalMode,
         impactDomains,
-          session: rhContextReadSessionId(ctx)
-            ? { sessionId: rhContextReadSessionId(ctx)!, repoId: repository.repoId, checkoutId: repository.activeCheckoutId }
-            : undefined,
-        },
-      });
-      const explicitSemanticNavigation = Array.isArray(args.semantic_navigation) ? args.semantic_navigation : [];
-      const semanticRequests = [...explicitSemanticNavigation, ...legacySemanticQuery.requests];
-      const semanticNavigation = {
-        ...await rhContextSemanticNavigation(repository.canonicalRoot, ctx.policy, semanticRequests, { repoId: repository.repoId, checkoutId: repository.activeCheckoutId }),
-        requestSource: explicitSemanticNavigation.length > 0 && legacySemanticQuery.requests.length > 0
+        session: rhContextReadSessionId(ctx)
+          ? {
+              sessionId: rhContextReadSessionId(ctx)!,
+              repoId: repository.repoId,
+              checkoutId: repository.activeCheckoutId,
+            }
+          : undefined,
+      },
+    });
+    const explicitSemanticNavigation = Array.isArray(args.semantic_navigation) ? args.semantic_navigation : [];
+    const semanticRequests = [...explicitSemanticNavigation, ...legacySemanticQuery.requests];
+    const semanticNavigation = {
+      ...(await rhContextSemanticNavigation(repository.canonicalRoot, ctx.policy, semanticRequests, {
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+      })),
+      requestSource:
+        explicitSemanticNavigation.length > 0 && legacySemanticQuery.requests.length > 0
           ? 'schema_and_query'
           : explicitSemanticNavigation.length > 0
             ? 'semantic_navigation'
             : legacySemanticQuery.requests.length > 0
               ? 'query_compatibility'
               : 'none',
-        compatibilityQuerySyntax: RH_CONTEXT_LEGACY_SEMANTIC_SYNTAX,
-      };
-      // Keep actionable source locations in a shallow, bounded projection. The
-      // generic facade's depth budget otherwise replaces nested LSP locations
-      // with opaque [bounded-depth] markers, hiding the very evidence requested.
-      const semanticEvidence = semanticNavigation.requested > 0 ? (() => {
-        const locations = semanticNavigation.results.flatMap((entry) => {
-          const target = entry.target && typeof entry.target === 'object' && !Array.isArray(entry.target)
-            ? entry.target as Record<string, unknown>
-            : {};
-          const values = Array.isArray(entry.locations) ? entry.locations : [];
-          return values.flatMap((value) => {
-            if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
-            const location = value as Record<string, unknown>;
-            const path = typeof location.path === 'string' ? location.path : '';
-            const line = typeof location.line === 'number' ? location.line : Number.NaN;
-            const column = typeof location.column === 'number' ? location.column : Number.NaN;
-            if (!path || !Number.isSafeInteger(line) || line < 1 || !Number.isSafeInteger(column) || column < 1) return [];
-            return [{
-              provider: typeof entry.provider === 'string' ? entry.provider : 'unknown',
-              language: typeof entry.language === 'string' ? entry.language : 'unknown',
-              navigation: typeof entry.navigation === 'string' ? entry.navigation : 'unknown',
-              targetPath: typeof target.path === 'string' ? target.path : '',
-              targetLine: typeof target.line === 'number' ? target.line : 0,
-              targetColumn: typeof target.column === 'number' ? target.column : 0,
-              path,
-              line,
-              column,
-              ...(typeof location.name === 'string' ? { name: location.name } : {}),
-              ...(typeof location.kind === 'string' ? { kind: location.kind } : {}),
-            }];
-          });
-        });
-        const totalLocations = semanticNavigation.results.reduce((total, entry) => total + (
-          typeof entry.totalLocations === 'number'
-            ? entry.totalLocations
-            : Array.isArray(entry.locations) ? entry.locations.length : 0
-        ), 0);
-        return {
-          requested: semanticNavigation.requested,
-          resultCount: semanticNavigation.results.length,
-          totalLocations,
-          returnedLocations: Math.min(locations.length, RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT),
-          truncated: semanticNavigation.requestTruncated
-            || locations.length > RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT
-            || semanticNavigation.results.some((entry) => entry.truncated === true),
-          locations: locations.slice(0, RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT),
-        };
-      })() : undefined;
-      const semanticReasonCodes = Array.from(new Set([
+      compatibilityQuerySyntax: RH_CONTEXT_LEGACY_SEMANTIC_SYNTAX,
+    };
+    // Keep actionable source locations in a shallow, bounded projection. The
+    // generic facade's depth budget otherwise replaces nested LSP locations
+    // with opaque [bounded-depth] markers, hiding the very evidence requested.
+    const semanticEvidence =
+      semanticNavigation.requested > 0
+        ? (() => {
+            const locations = semanticNavigation.results.flatMap((entry) => {
+              const target =
+                entry.target && typeof entry.target === 'object' && !Array.isArray(entry.target)
+                  ? (entry.target as Record<string, unknown>)
+                  : {};
+              const values = Array.isArray(entry.locations) ? entry.locations : [];
+              return values.flatMap((value) => {
+                if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+                const location = value as Record<string, unknown>;
+                const path = typeof location.path === 'string' ? location.path : '';
+                const line = typeof location.line === 'number' ? location.line : Number.NaN;
+                const column = typeof location.column === 'number' ? location.column : Number.NaN;
+                if (!path || !Number.isSafeInteger(line) || line < 1 || !Number.isSafeInteger(column) || column < 1)
+                  return [];
+                return [
+                  {
+                    provider: typeof entry.provider === 'string' ? entry.provider : 'unknown',
+                    language: typeof entry.language === 'string' ? entry.language : 'unknown',
+                    navigation: typeof entry.navigation === 'string' ? entry.navigation : 'unknown',
+                    targetPath: typeof target.path === 'string' ? target.path : '',
+                    targetLine: typeof target.line === 'number' ? target.line : 0,
+                    targetColumn: typeof target.column === 'number' ? target.column : 0,
+                    path,
+                    line,
+                    column,
+                    ...(typeof location.name === 'string' ? { name: location.name } : {}),
+                    ...(typeof location.kind === 'string' ? { kind: location.kind } : {}),
+                  },
+                ];
+              });
+            });
+            const totalLocations = semanticNavigation.results.reduce(
+              (total, entry) =>
+                total +
+                (typeof entry.totalLocations === 'number'
+                  ? entry.totalLocations
+                  : Array.isArray(entry.locations)
+                    ? entry.locations.length
+                    : 0),
+              0,
+            );
+            return {
+              requested: semanticNavigation.requested,
+              resultCount: semanticNavigation.results.length,
+              totalLocations,
+              returnedLocations: Math.min(locations.length, RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT),
+              truncated:
+                semanticNavigation.requestTruncated ||
+                locations.length > RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT ||
+                semanticNavigation.results.some((entry) => entry.truncated === true),
+              locations: locations.slice(0, RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT),
+            };
+          })()
+        : undefined;
+    const semanticReasonCodes = Array.from(
+      new Set([
         ...semanticNavigation.errors.map((entry) => `semantic.${String(entry.code ?? 'provider_error').toLowerCase()}`),
         ...(semanticNavigation.requestTruncated ? ['semantic.request_truncated'] : []),
-        ...(semanticNavigation.policyDeniedLocations > 0 || semanticNavigation.materialPolicyDeniedReads > 0 ? ['semantic.policy_denied'] : []),
+        ...(semanticNavigation.policyDeniedLocations > 0 || semanticNavigation.materialPolicyDeniedReads > 0
+          ? ['semantic.policy_denied']
+          : []),
         ...(semanticNavigation.freshness === 'changed_during_query' ? ['semantic.source_changed_during_query'] : []),
-        ...(semanticNavigation.requested > 0 && semanticNavigation.staticClosure.status !== 'complete_for_requested_symbols' ? ['semantic.static_closure_incomplete'] : []),
-      ]));
-      const semanticUnavailable = semanticNavigation.requested > 0
-        && semanticNavigation.results.length === 0
-        && semanticNavigation.errors.length > 0
-        && semanticNavigation.errors.every((entry) => /UNAVAILABLE|NOT_AVAILABLE|NOT_READY|MISSING|NOT_FOUND|BUILD_SETTINGS|BUILD_SERVER/i.test(String(entry.code ?? '')));
-      const semanticReadinessStatus = semanticNavigation.requested === 0
-        ? 'not_requested' as const
+        ...(semanticNavigation.requested > 0 &&
+        semanticNavigation.staticClosure.status !== 'complete_for_requested_symbols'
+          ? ['semantic.static_closure_incomplete']
+          : []),
+      ]),
+    );
+    const semanticUnavailable =
+      semanticNavigation.requested > 0 &&
+      semanticNavigation.results.length === 0 &&
+      semanticNavigation.errors.length > 0 &&
+      semanticNavigation.errors.every((entry) =>
+        /UNAVAILABLE|NOT_AVAILABLE|NOT_READY|MISSING|NOT_FOUND|BUILD_SETTINGS|BUILD_SERVER/i.test(
+          String(entry.code ?? ''),
+        ),
+      );
+    const semanticReadinessStatus =
+      semanticNavigation.requested === 0
+        ? ('not_requested' as const)
         : semanticNavigation.results.length === 0 && semanticNavigation.errors.length > 0
-          ? semanticUnavailable ? 'unavailable' as const : 'error' as const
-          : semanticNavigation.staticClosure.status === 'complete_for_requested_symbols' && semanticReasonCodes.length === 0
-            ? 'ready' as const
-            : 'partial' as const;
-      const readinessStatus = pack.readiness.status === 'insufficient'
-        ? 'insufficient' as const
+          ? semanticUnavailable
+            ? ('unavailable' as const)
+            : ('error' as const)
+          : semanticNavigation.staticClosure.status === 'complete_for_requested_symbols' &&
+              semanticReasonCodes.length === 0
+            ? ('ready' as const)
+            : ('partial' as const);
+    const readinessStatus =
+      pack.readiness.status === 'insufficient'
+        ? ('insufficient' as const)
         : semanticReadinessStatus === 'unavailable' || semanticReadinessStatus === 'error'
-          ? 'insufficient' as const
+          ? ('insufficient' as const)
           : pack.readiness.status === 'degraded' || semanticReadinessStatus === 'partial'
-            ? 'degraded' as const
-            : 'ready' as const;
-      const readiness = {
-        ...pack.readiness,
-        status: readinessStatus,
-        semantic: { status: semanticReadinessStatus, reasonCodes: semanticReasonCodes },
-        unresolvedReasonCodes: Array.from(new Set([...pack.readiness.unresolvedReasonCodes, ...semanticReasonCodes])).slice(0, 80),
-        readyForHighConfidenceMutation: readinessStatus === 'ready',
-      };
-      const contextClosure = buildContextClosureReceipt({
-        repoRoot: repository.canonicalRoot,
-        query: retrievalQuery,
-        pack: { ...pack, readiness },
-        semanticNavigation,
-        semanticProviders: defaultSemanticProviderRegistry.list(),
-        includeRecentChanges: retrievalMode !== 'implementation',
-      });
-      const warnings = structuralContext === 'required' && !pack.structuralContext.requiredSatisfied
-        ? [pack.structuralContext.fallbackReason ?? 'Required structural context is not ready; lexical retrieval results are returned as degraded evidence.']
+            ? ('degraded' as const)
+            : ('ready' as const);
+    const readiness = {
+      ...pack.readiness,
+      status: readinessStatus,
+      semantic: { status: semanticReadinessStatus, reasonCodes: semanticReasonCodes },
+      unresolvedReasonCodes: Array.from(
+        new Set([...pack.readiness.unresolvedReasonCodes, ...semanticReasonCodes]),
+      ).slice(0, 80),
+      readyForHighConfidenceMutation: readinessStatus === 'ready',
+    };
+    const contextClosure = buildContextClosureReceipt({
+      repoRoot: repository.canonicalRoot,
+      query: retrievalQuery,
+      pack: { ...pack, readiness },
+      semanticNavigation,
+      semanticProviders: defaultSemanticProviderRegistry.list(),
+      includeRecentChanges: retrievalMode !== 'implementation',
+    });
+    const warnings =
+      structuralContext === 'required' && !pack.structuralContext.requiredSatisfied
+        ? [
+            pack.structuralContext.fallbackReason ??
+              'Required structural context is not ready; lexical retrieval results are returned as degraded evidence.',
+          ]
         : [];
-      // Omitted paths and readiness are factual evidence, not a tool-authored
-      // next query. The caller decides which gaps matter and issues each follow-up.
-      // Source-language interpretation belongs to the model, not the lexical
-      // retriever. Don't invent translations or silently broaden a user query.
-      // Warn only when a non-English cold start returned no implementation owner.
-      const nonEnglishColdStart = /\p{Script=Han}/u.test(retrievalQuery)
-        && codeSearchTerms.length === 0
-        && list(args.known_paths).length === 0
-        && !pack.files.some(file => /\.(?:ts|tsx|js|jsx|swift|py|rs|go|java|kt|c|cc|cpp|h|hpp|cs|rb)$/i.test(file.path));
-      if (nonEnglishColdStart) {
-        warnings.push('No implementation source found from the non-English query alone; source-language code terms were not supplied, so documentation-only results do not establish implementation coverage.');
-      }
-      if (readiness.status !== 'ready' && pack.omitted.length === 0) {
-        warnings.push('Search evidence is incomplete; unresolved reason codes identify the remaining materialization or coverage limits.');
-      }
-      const detailLevel = args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary';
-      const isSummary = detailLevel === 'summary';
-      const facade = buildFacadeResult({
-        status: 'ok',
-        summary: pack.files.length
-          ? `Retrieved ${pack.files.length} bounded code context file(s) for the query.`
-          : 'No bounded code context matched the query.',
-        data: {
-          operation,
-          repoId: repository.repoId,
-          goal: pack.goal,
-          search: isSummary ? {
-            terms: pack.search.terms,
-            truncated: pack.search.truncated,
-            evidenceTruncated: pack.search.evidenceTruncated,
-          } : pack.search,
-          ...(!isSummary || structuralContext !== 'off' ? { structuralContext: pack.structuralContext } : {}),
-          ...(!isSummary || impactDomains.length > 0 || retrievalMode !== 'implementation' ? { impactContext: pack.impactContext } : {}),
-          ...(!isSummary || semanticNavigation.requested > 0 ? { semanticNavigation } : {}),
-          ...(semanticEvidence ? { semanticEvidence } : {}),
-          contextClosure,
-          // The original context pack already resolves and bounds repository
-          // guidance. Surface that *content* to the model; paths-only closure
-          // receipts proved discovery but did not let an assistant read rules.
-          instructionContext: pack.instructionContext,
-          readiness,
-          files: pack.files,
-          coverage: isSummary ? {
-            exactKnownPaths: pack.coverage.exactKnownPaths,
-            unresolvedRelationships: pack.coverage.unresolvedRelationships,
-            skippedCandidates: pack.coverage.skippedCandidates,
-            likelyRelatedNotInspectedCount: pack.coverage.likelyRelatedNotInspected.length,
-          } : pack.coverage,
-          deniedPaths: pack.deniedPaths,
-          limits: pack.limits,
-          ...(isSummary ? {
-            omittedCandidateCount: pack.omitted.length,
-            detailPointer: { tool: 'rh_context', arguments: { ...args, detail_level: 'detail' } },
-          } : {
-            expansion: pack.expansion,
-            cache: pack.cache,
-            timingsMs: pack.timingsMs,
-            omitted: pack.omitted,
-            contextContract: pack.contextContract,
-            retrievalPolicy: {
-              defaultBackend: 'bounded_lexical',
-              structuralBackend: 'retired',
-              rawReadTool: 'read_repository_file',
-              shellSearchFallbackOnly: true,
-              executionReadiness: 'requested_check_ids_only',
-            },
-          }),
-          ...(cognitionAudit ? { cognitionAudit } : {}),
-          ...(learningRecall ? { learningRecall } : {}),
-          ...(executionReadiness ? {
-            executionReadiness,
-            registeredChecks: checks.slice(0, 80).map((check) => ({ id: check.id, description: check.description, source: check.source, effects: check.effects })),
-          } : {}),
-        },
-        warnings,
-        suggestedNextActions: [],
-        detailLevel,
-        rawAvailable: true,
-      });
-      // ContextClosureReceipt already enforces bounded paths, tests, skills, semantic providers,
-      // and reason codes. Generic facade depth bounding is appropriate for exploratory context,
-      // but it must not corrupt this runtime-issued round-trip contract because rh_work validates
-      // the exact full receipt digest supplied by the Controller during engineering re-entry.
-      (facade.data as typeof facade.data & { contextClosure: typeof contextClosure }).contextClosure = contextClosure;
-      // Keep the already-owned instruction pack readable in the MCP response.
-      // The generic facade bounds nested strings to 1k characters and otherwise
-      // silently hides the design rules after they have been found on disk.
-      const readableInstructions = {
-        ...pack.instructionContext,
-        contracts: pack.instructionContext.contracts.map(contract => {
-          const limit = isSummary
-            ? /(?:^|\/)(?:DESIGN\.md|design\/[^/]+\.md)$/i.test(contract.path) ? 6_000 : 1_600
-            : contract.content.length;
-          return {
-            ...contract,
-            content: contract.content.slice(0, limit),
-            truncated: contract.truncated || contract.content.length > limit,
-          };
-        }),
-      };
-      (facade.data as typeof facade.data & { instructionContext: typeof readableInstructions }).instructionContext = readableInstructions;
-      // Like source guidance, the bounded Cognitive working set must retain
-      // provenance and rejection feedback; generic nested depth bounding drops
-      // these details exactly when conflicting memories need inspection.
-      if (learningRecall) {
-        (facade.data as typeof facade.data & { learningRecall: typeof learningRecall }).learningRecall = learningRecall;
-      }
-      if (semanticEvidence) {
-        (facade.data as typeof facade.data & { semanticEvidence: typeof semanticEvidence }).semanticEvidence = semanticEvidence;
-      }
-      // Individual snippets are bounded, but broad searches can still aggregate
-      // a very large direct MCP payload. Keep ContextClosure authority inline and
-      // externalize only the heavy file collection through the existing Result Store.
-      const boundedFiles = boundedRuntimeResult({
+    // Omitted paths and readiness are factual evidence, not a tool-authored
+    // next query. The caller decides which gaps matter and issues each follow-up.
+    // Source-language interpretation belongs to the model, not the lexical
+    // retriever. Don't invent translations or silently broaden a user query.
+    // Warn only when a non-English cold start returned no implementation owner.
+    const nonEnglishColdStart =
+      /\p{Script=Han}/u.test(retrievalQuery) &&
+      codeSearchTerms.length === 0 &&
+      list(args.known_paths).length === 0 &&
+      !pack.files.some((file) => /\.(?:ts|tsx|js|jsx|swift|py|rs|go|java|kt|c|cc|cpp|h|hpp|cs|rb)$/i.test(file.path));
+    if (nonEnglishColdStart) {
+      warnings.push(
+        'No implementation source found from the non-English query alone; source-language code terms were not supplied, so documentation-only results do not establish implementation coverage.',
+      );
+    }
+    if (readiness.status !== 'ready' && pack.omitted.length === 0) {
+      warnings.push(
+        'Search evidence is incomplete; unresolved reason codes identify the remaining materialization or coverage limits.',
+      );
+    }
+    const detailLevel = args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary';
+    const isSummary = detailLevel === 'summary';
+    const facade = buildFacadeResult({
+      status: 'ok',
+      summary: pack.files.length
+        ? `Retrieved ${pack.files.length} bounded code context file(s) for the query.`
+        : 'No bounded code context matched the query.',
+      data: {
+        operation,
+        repoId: repository.repoId,
+        goal: pack.goal,
+        search: isSummary
+          ? {
+              terms: pack.search.terms,
+              truncated: pack.search.truncated,
+              evidenceTruncated: pack.search.evidenceTruncated,
+            }
+          : pack.search,
+        ...(!isSummary || structuralContext !== 'off' ? { structuralContext: pack.structuralContext } : {}),
+        ...(!isSummary || impactDomains.length > 0 || retrievalMode !== 'implementation'
+          ? { impactContext: pack.impactContext }
+          : {}),
+        ...(!isSummary || semanticNavigation.requested > 0 ? { semanticNavigation } : {}),
+        ...(semanticEvidence ? { semanticEvidence } : {}),
+        contextClosure,
+        // The original context pack already resolves and bounds repository
+        // guidance. Surface that *content* to the model; paths-only closure
+        // receipts proved discovery but did not let an assistant read rules.
+        instructionContext: pack.instructionContext,
+        readiness,
+        files: pack.files,
+        coverage: isSummary
+          ? {
+              exactKnownPaths: pack.coverage.exactKnownPaths,
+              unresolvedRelationships: pack.coverage.unresolvedRelationships,
+              skippedCandidates: pack.coverage.skippedCandidates,
+              likelyRelatedNotInspectedCount: pack.coverage.likelyRelatedNotInspected.length,
+            }
+          : pack.coverage,
+        deniedPaths: pack.deniedPaths,
+        limits: pack.limits,
+        ...(isSummary
+          ? {
+              omittedCandidateCount: pack.omitted.length,
+              detailPointer: { tool: 'rh_context', arguments: { ...args, detail_level: 'detail' } },
+            }
+          : {
+              expansion: pack.expansion,
+              cache: pack.cache,
+              timingsMs: pack.timingsMs,
+              omitted: pack.omitted,
+              contextContract: pack.contextContract,
+              retrievalPolicy: {
+                defaultBackend: 'bounded_lexical',
+                structuralBackend: 'retired',
+                rawReadTool: 'read_repository_file',
+                shellSearchFallbackOnly: true,
+                executionReadiness: 'requested_check_ids_only',
+              },
+            }),
+        ...(cognitionAudit ? { cognitionAudit } : {}),
+        ...(learningRecall ? { learningRecall } : {}),
+        ...(executionReadiness
+          ? {
+              executionReadiness,
+              registeredChecks: checks
+                .slice(0, 80)
+                .map((check) => ({
+                  id: check.id,
+                  description: check.description,
+                  source: check.source,
+                  effects: check.effects,
+                })),
+            }
+          : {}),
+      },
+      warnings,
+      suggestedNextActions: [],
+      detailLevel,
+      rawAvailable: true,
+    });
+    // ContextClosureReceipt already enforces bounded paths, tests, skills, semantic providers,
+    // and reason codes. Generic facade depth bounding is appropriate for exploratory context,
+    // but it must not corrupt this runtime-issued round-trip contract because rh_work validates
+    // the exact full receipt digest supplied by the Controller during engineering re-entry.
+    (facade.data as typeof facade.data & { contextClosure: typeof contextClosure }).contextClosure = contextClosure;
+    // Keep the already-owned instruction pack readable in the MCP response.
+    // The generic facade bounds nested strings to 1k characters and otherwise
+    // silently hides the design rules after they have been found on disk.
+    const readableInstructions = {
+      ...pack.instructionContext,
+      contracts: pack.instructionContext.contracts.map((contract) => {
+        const limit = isSummary
+          ? /(?:^|\/)(?:DESIGN\.md|design\/[^/]+\.md)$/i.test(contract.path)
+            ? 6_000
+            : 1_600
+          : contract.content.length;
+        return {
+          ...contract,
+          content: contract.content.slice(0, limit),
+          truncated: contract.truncated || contract.content.length > limit,
+        };
+      }),
+    };
+    (facade.data as typeof facade.data & { instructionContext: typeof readableInstructions }).instructionContext =
+      readableInstructions;
+    // Like source guidance, the bounded Cognitive working set must retain
+    // provenance and rejection feedback; generic nested depth bounding drops
+    // these details exactly when conflicting memories need inspection.
+    if (learningRecall) {
+      (facade.data as typeof facade.data & { learningRecall: typeof learningRecall }).learningRecall = learningRecall;
+    }
+    if (semanticEvidence) {
+      (facade.data as typeof facade.data & { semanticEvidence: typeof semanticEvidence }).semanticEvidence =
+        semanticEvidence;
+    }
+    // Individual snippets are bounded, but broad searches can still aggregate
+    // a very large direct MCP payload. Keep ContextClosure authority inline and
+    // externalize only the heavy file collection through the existing Result Store.
+    const boundedFiles = boundedRuntimeResult(
+      {
         controllerHome: ctx.controllerHome,
         repoId: repository.repoId,
         sessionId: ctx.sessionId,
         principalId: ctx.principalId,
         controllerInstanceId: ctx.controllerInstanceId,
-      }, pack.files);
-      const data = facade.data as typeof facade.data & {
-        files: typeof pack.files;
-        filesResult?: unknown;
-        filesTruncated?: boolean;
-        fileCount?: number;
-        filePreview?: Array<{ path: string; reasons: string[]; hitLines: number[]; snippetCount: number }>;
-      };
-      if (boundedFiles.externalized) {
-        data.files = [];
-        data.filesResult = boundedFiles.value;
-        data.filesTruncated = true;
-        data.fileCount = pack.files.length;
-        data.filePreview = pack.files.slice(0, 10).map((file) => ({
-          path: file.path,
-          reasons: file.reasons.slice(0, 4),
-          hitLines: file.hitLines.slice(0, 12),
-          snippetCount: file.snippetCount,
-        }));
-      } else {
-        data.files = pack.files;
-      }
-      if (cognitionAudit) {
-        (facade.data as typeof facade.data & { cognitionAudit: typeof cognitionAudit }).cognitionAudit = cognitionAudit;
-      }
-      return result(facade as unknown as Record<string, unknown>);
+      },
+      pack.files,
+    );
+    const data = facade.data as typeof facade.data & {
+      files: typeof pack.files;
+      filesResult?: unknown;
+      filesTruncated?: boolean;
+      fileCount?: number;
+      filePreview?: Array<{ path: string; reasons: string[]; hitLines: number[]; snippetCount: number }>;
+    };
+    if (boundedFiles.externalized) {
+      data.files = [];
+      data.filesResult = boundedFiles.value;
+      data.filesTruncated = true;
+      data.fileCount = pack.files.length;
+      data.filePreview = pack.files.slice(0, 10).map((file) => ({
+        path: file.path,
+        reasons: file.reasons.slice(0, 4),
+        hitLines: file.hitLines.slice(0, 12),
+        snippetCount: file.snippetCount,
+      }));
+    } else {
+      data.files = pack.files;
     }
-    const startedAt = performance.now();
-    const requestedCapabilityId = typeof args.capability_id === 'string' ? args.capability_id.trim() : '';
-    if (requestedCapabilityId) {
-      const pluginMatch = /^plugin\.([^.]+)\.(.+)$/.exec(requestedCapabilityId);
-      const manifests = pluginMatch ? (() => {
-        const pluginId = pluginMatch[1];
-        try {
-          const actionId = pluginMatch[2];
-          // Exact iPhone action schemas do not require the unrelated Controller
-          // legacy migration. All other capability reads keep the usual path.
-          return [pluginId === 'computer' && actionId.startsWith('physical_device_')
-            ? getAssistantPluginManifestForAction(ctx.controllerHome, repository, { pluginId, actionId })
-            : getAssistantPluginManifest(ctx.controllerHome, repository, pluginId)];
-        } catch (error) {
-          if (!(error instanceof Error) || !error.message.startsWith('PLUGIN_NOT_FOUND:')) throw error;
-        }
-        try {
-          return [getControllerPluginManifest(ctx.controllerHome, pluginId)];
-        } catch (error) {
-          if (!(error instanceof Error) || !error.message.startsWith('PLUGIN_NOT_FOUND:')) throw error;
-        }
-        return [];
-      })() : [];
-      const descriptor = getCapabilityDescriptor(requestedCapabilityId, manifests);
-      const coreCapability = getCoreCapabilityExecutionSchema(requestedCapabilityId);
-      const pluginAction = getPluginActionCapabilitySchema(requestedCapabilityId, manifests);
-      const facade = buildFacadeResult({
-        status: 'ok',
-        summary: descriptor
-          ? `Exact capability ${requestedCapabilityId} is available.`
-          : `Capability ${requestedCapabilityId} was not found.`,
-        data: {
-          operation,
+    if (cognitionAudit) {
+      (facade.data as typeof facade.data & { cognitionAudit: typeof cognitionAudit }).cognitionAudit = cognitionAudit;
+    }
+    return result(facade as unknown as Record<string, unknown>);
+  }
+  const startedAt = performance.now();
+  const requestedCapabilityId = typeof args.capability_id === 'string' ? args.capability_id.trim() : '';
+  if (requestedCapabilityId) {
+    const pluginMatch = /^plugin\.([^.]+)\.(.+)$/.exec(requestedCapabilityId);
+    const manifests = pluginMatch
+      ? (() => {
+          const pluginId = pluginMatch[1];
+          try {
+            const actionId = pluginMatch[2];
+            // Exact iPhone action schemas do not require the unrelated Controller
+            // legacy migration. All other capability reads keep the usual path.
+            return [
+              pluginId === 'computer' && actionId.startsWith('physical_device_')
+                ? getAssistantPluginManifestForAction(ctx.controllerHome, repository, { pluginId, actionId })
+                : getAssistantPluginManifest(ctx.controllerHome, repository, pluginId),
+            ];
+          } catch (error) {
+            if (!(error instanceof Error) || !error.message.startsWith('PLUGIN_NOT_FOUND:')) throw error;
+          }
+          try {
+            return [getControllerPluginManifest(ctx.controllerHome, pluginId)];
+          } catch (error) {
+            if (!(error instanceof Error) || !error.message.startsWith('PLUGIN_NOT_FOUND:')) throw error;
+          }
+          return [];
+        })()
+      : [];
+    const descriptor = getCapabilityDescriptor(requestedCapabilityId, manifests);
+    const coreCapability = getCoreCapabilityExecutionSchema(requestedCapabilityId);
+    const pluginAction = getPluginActionCapabilitySchema(requestedCapabilityId, manifests);
+    const facade = buildFacadeResult({
+      status: 'ok',
+      summary: descriptor
+        ? `Exact capability ${requestedCapabilityId} is available.`
+        : `Capability ${requestedCapabilityId} was not found.`,
+      data: {
+        operation,
+        repoId: repository.repoId,
+        repository: {
           repoId: repository.repoId,
-          repository: {
-            repoId: repository.repoId,
-            displayName: repository.displayName,
-            defaultBranch: repository.defaultBranch,
-            repositoryType: repository.repositoryType,
-          },
-          capabilityLookup: {
-            requestedCapabilityId,
-            found: Boolean(descriptor),
-            descriptor,
-            coreCapability,
-            pluginAction,
-          },
-          toolArchitecture: {
-            facadeTools: [...FACADE_TOOLS],
-            domainSchemaLoading: 'exact_capability_fast_path',
-          },
-          bounded: true,
+          displayName: repository.displayName,
+          defaultBranch: repository.defaultBranch,
+          repositoryType: repository.repositoryType,
         },
-        warnings: [],
-        suggestedNextActions: [],
-        detailLevel: args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary',
-        rawAvailable: false,
-      });
-      const payload = facade as unknown as Record<string, unknown>;
-      payload.responseMeta = {
-        serverDurationMs: Number((performance.now() - startedAt).toFixed(2)),
-        structuredPayloadBytes: 0,
-      };
-      (payload.responseMeta as { structuredPayloadBytes: number }).structuredPayloadBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
-      return result(payload);
-    }
-    const capabilityIntentQuery = operation === 'list' && typeof args.query === 'string'
-      ? args.query.trim()
-      : '';
-    if (capabilityIntentQuery) {
-      const learningRecall = args.include_learning_recall === false
+        capabilityLookup: {
+          requestedCapabilityId,
+          found: Boolean(descriptor),
+          descriptor,
+          coreCapability,
+          pluginAction,
+        },
+        toolArchitecture: {
+          facadeTools: [...FACADE_TOOLS],
+          domainSchemaLoading: 'exact_capability_fast_path',
+        },
+        bounded: true,
+      },
+      warnings: [],
+      suggestedNextActions: [],
+      detailLevel: args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary',
+      rawAvailable: false,
+    });
+    const payload = facade as unknown as Record<string, unknown>;
+    payload.responseMeta = {
+      serverDurationMs: Number((performance.now() - startedAt).toFixed(2)),
+      structuredPayloadBytes: 0,
+    };
+    (payload.responseMeta as { structuredPayloadBytes: number }).structuredPayloadBytes = Buffer.byteLength(
+      JSON.stringify(payload),
+      'utf8',
+    );
+    return result(payload);
+  }
+  const capabilityIntentQuery = operation === 'list' && typeof args.query === 'string' ? args.query.trim() : '';
+  if (capabilityIntentQuery) {
+    const learningRecall =
+      args.include_learning_recall === false
         ? undefined
         : rhContextLearningRecall(ctx, repository, capabilityIntentQuery);
-      // Intent-ranked capability discovery must reflect the executable plugin contract.
-      // Persisted manifests are status projections and may outlive a source release that moved an action.
-      const manifestOptions = { preferStored: false };
-      const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
-      const controllerManifests = listControllerPluginManifests(ctx.controllerHome, manifestOptions);
-      const manifests = [...new Map(
+    // Intent-ranked capability discovery must reflect the executable plugin contract.
+    // Persisted manifests are status projections and may outlive a source release that moved an action.
+    const manifestOptions = { preferStored: false };
+    const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
+    const controllerManifests = listControllerPluginManifests(ctx.controllerHome, manifestOptions);
+    const manifests = [
+      ...new Map(
         [...controllerManifests, ...repositoryManifests].map((manifest) => [manifest.pluginId, manifest] as const),
-      ).values()];
-      const matches = searchCapabilityDescriptors(capabilityIntentQuery, manifests, 12)
-        .map((match) => ({
-          ...match,
-          coreCapability: getCoreCapabilityExecutionSchema(match.capabilityId),
-          pluginAction: getPluginActionCapabilitySchema(match.capabilityId, manifests),
-        }));
-      const facade = buildFacadeResult({
-        status: 'ok',
-        summary: matches.length > 0
+      ).values(),
+    ];
+    const matches = searchCapabilityDescriptors(capabilityIntentQuery, manifests, 12).map((match) => ({
+      ...match,
+      coreCapability: getCoreCapabilityExecutionSchema(match.capabilityId),
+      pluginAction: getPluginActionCapabilitySchema(match.capabilityId, manifests),
+    }));
+    const facade = buildFacadeResult({
+      status: 'ok',
+      summary:
+        matches.length > 0
           ? `Found ${matches.length} capability candidate(s) for intent: ${capabilityIntentQuery}`
           : `No capability candidates matched intent: ${capabilityIntentQuery}`,
-        data: {
-          operation,
-          repoId: repository.repoId,
-          capabilitySearch: {
-            query: capabilityIntentQuery,
-            matches,
-            readOnlyDiscovery: true,
-            executeWith: 'capability-specific',
-          },
-          ...(learningRecall ? { learningRecall } : {}),
-          toolArchitecture: {
-            facadeTools: [...FACADE_TOOLS],
-            domainSchemaLoading: 'intent_ranked_capability_search',
-            exactCapabilityLookupStillAvailable: true,
-          },
-          bounded: true,
+      data: {
+        operation,
+        repoId: repository.repoId,
+        capabilitySearch: {
+          query: capabilityIntentQuery,
+          matches,
+          readOnlyDiscovery: true,
+          executeWith: 'capability-specific',
         },
-        warnings: [],
-        suggestedNextActions: [],
-        detailLevel: args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary',
-        rawAvailable: false,
-      });
-      return result(facade as unknown as Record<string, unknown>);
-    }
-    const requested = Array.isArray(args.requested_check_ids) ? args.requested_check_ids.map(String) : [];
-    const detailLevel = args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary';
-    const isSummary = detailLevel === 'summary';
-    const checks = requested.length > 0 || !isSummary ? listControllerChecks(repository.canonicalRoot) : [];
-    const normalizedChecks = normalizeCheckIds(requested, checks);
-    const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
-    const workId = typeof args.work_id === 'string' ? args.work_id : undefined;
-    const work = workId ? getWorkContract(store, workId) : undefined;
-    if (workId && !work) {
-      const facade = buildFacadeResult({
-        status: 'not_found',
-        summary: `Work ${workId} not found in this repository.`,
-        data: { operation, repoId: repository.repoId, workId },
-        suggestedNextActions: [],
-      });
-      return result(facade as unknown as Record<string, unknown>, true);
-    }
-    const recentActivityCutoffMs = Date.now() - RH_CONTEXT_RECENT_ACTIVITY_WINDOW_MS;
-    const recentJobs = !isSummary && !workId
-      ? listExecutionJobs(ctx.controllerHome, repository.repoId, 20)
+        ...(learningRecall ? { learningRecall } : {}),
+        toolArchitecture: {
+          facadeTools: [...FACADE_TOOLS],
+          domainSchemaLoading: 'intent_ranked_capability_search',
+          exactCapabilityLookupStillAvailable: true,
+        },
+        bounded: true,
+      },
+      warnings: [],
+      suggestedNextActions: [],
+      detailLevel: args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary',
+      rawAvailable: false,
+    });
+    return result(facade as unknown as Record<string, unknown>);
+  }
+  const requested = Array.isArray(args.requested_check_ids) ? args.requested_check_ids.map(String) : [];
+  const detailLevel = args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary';
+  const isSummary = detailLevel === 'summary';
+  const checks = requested.length > 0 || !isSummary ? listControllerChecks(repository.canonicalRoot) : [];
+  const normalizedChecks = normalizeCheckIds(requested, checks);
+  const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
+  const recentActivityCutoffMs = Date.now() - RH_CONTEXT_RECENT_ACTIVITY_WINDOW_MS;
+  const recentJobs = !isSummary
+    ? listExecutionJobs(ctx.controllerHome, repository.repoId, 20)
         .filter((job) => timestampIsRecent(job.updatedAt, recentActivityCutoffMs))
         .slice(0, 5)
-      : [];
-    const processScan = isSummary
-      ? listRecoverableProcessRecords(ctx.controllerHome, repository.repoId)
-      : listProcessRecords(ctx.controllerHome, repository.repoId, 50);
-    const relevantProcesses = work
-      ? []
-      : processScan.filter((process) => timestampIsRecent(process.updatedAt, recentActivityCutoffMs));
-    const liveProcessIds = new Set(processRuntimeResourceDiagnostics().activeProcessIds);
-    const activeProcesses = relevantProcesses.filter((process) => liveProcessIds.has(process.processId) && isManagedProcessActive(process));
-    const manifestOptions = { preferStored: true };
-    const manifests = isSummary
-      ? []
-      : (() => {
-          const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
-          const controllerManifests = listControllerPluginManifests(ctx.controllerHome, manifestOptions);
-          return [...new Map(
+    : [];
+  const processScan = isSummary
+    ? listRecoverableProcessRecords(ctx.controllerHome, repository.repoId)
+    : listProcessRecords(ctx.controllerHome, repository.repoId, 50);
+  const relevantProcesses = processScan.filter((process) =>
+    timestampIsRecent(process.updatedAt, recentActivityCutoffMs),
+  );
+  const liveProcessIds = new Set(processRuntimeResourceDiagnostics().activeProcessIds);
+  const activeProcesses = relevantProcesses.filter(
+    (process) => liveProcessIds.has(process.processId) && isManagedProcessActive(process),
+  );
+  const manifestOptions = { preferStored: true };
+  const manifests = isSummary
+    ? []
+    : (() => {
+        const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
+        const controllerManifests = listControllerPluginManifests(ctx.controllerHome, manifestOptions);
+        return [
+          ...new Map(
             [...repositoryManifests, ...controllerManifests].map((manifest) => [manifest.pluginId, manifest] as const),
-          ).values()];
-        })();
-    const capabilities = isSummary ? [] : listCapabilityDescriptors(manifests);
-    const capabilityGroups = isSummary ? [] : summarizeCapabilityGroups(manifests);
-    const capabilityLookup = undefined;
-    const selectedChecks = normalizedChecks.validCheckIds
-      .map((id) => checks.find((check) => check.id === id))
-      .filter((check): check is (typeof checks)[number] => Boolean(check))
-      .map((check) => ({ id: check.id, description: check.description, source: check.source }));
-    const pendingAttention = listHandoffItems({ ...store, status: 'pending', limit: isSummary ? 20 : 5 });
-    const currentAttentionScan = listHandoffAttentionItems(store, isSummary ? 20 : 5);
-    const workAttentionItems = work
-      ? currentAttentionScan.filter((item) => item.workId === work.workId)
-      : [];
-    const workAttention = workAttentionItems[0];
-    const resumeContext = work ? await (async () => {
-      const semanticWork = workSemanticView(work);
-      const requirementRecord = work.requirementId?.trim()
-        ? readRequirement({ controllerHome: ctx.controllerHome }, work.requirementId.trim())
-        : undefined;
-      const semanticRequirement = requirementRecord ? requirementSemanticView(requirementRecord.value) : undefined;
-      const plan = work.planId?.trim() ? getPlanContract(store, work.planId.trim()) : undefined;
-      const semanticPlan = plan ? planSemanticView(plan) : undefined;
-      const exactCheckout = work.checkoutId?.trim()
-        ? repository.checkouts.find((candidate) => candidate.checkoutId === work.checkoutId)
-        : repository.checkouts.find((candidate) => candidate.checkoutId === repository.activeCheckoutId);
-      const source = await freshGitIdentityAsync(exactCheckout?.canonicalRoot ?? repository.canonicalRoot);
-      const unresolvedHumanRequests = workAttentionItems
-        .filter((item) => Boolean(item.creationReason && RESUME_CONTEXT_HUMAN_REQUEST_REASONS.has(item.creationReason)))
-        .slice(0, 8)
-        .map((item) => ({
-          id: item.id,
-          reason: item.reason.slice(0, 500),
-          creationReason: item.creationReason,
-          blockingDecision: item.blockingDecision?.slice(0, 500),
-          recommendedDecision: item.recommendedDecision.slice(0, 500),
-        }));
-      const checkReceiptRefs = work.checkRefs
-        .flatMap((record) => record.receipt?.receiptId?.trim() ? [record.receipt.receiptId.trim()] : [])
-        .slice(-24);
-      return {
-        schemaVersion: 1 as const,
-        derived: true as const,
-        semantic: {
-          ...(semanticRequirement ? { requirement: semanticRequirement } : {}),
-          ...(semanticPlan ? { plan: semanticPlan } : {}),
-          work: semanticWork,
-        },
-        source: {
-          checkoutId: exactCheckout?.checkoutId ?? work.checkoutId,
-          worktree: exactCheckout?.worktree ?? false,
-          head: source.head,
-          branch: source.branch,
-          dirty: source.dirty,
-          workingTreeFingerprint: source.workingTreeFingerprint,
-          observedAt: new Date(source.sampledAt).toISOString(),
-        },
-        staleness: {
-          requirementBasisStale: Boolean(semanticRequirement && semanticPlan?.requirementBasisRevision && semanticRequirement.revision !== semanticPlan.requirementBasisRevision),
-          workRequirementBasisStale: Boolean(semanticRequirement && semanticWork.requirementRevision && semanticRequirement.revision !== semanticWork.requirementRevision),
-          workPlanBasisStale: Boolean(semanticPlan && semanticWork.planRevision && semanticPlan.revision !== semanticWork.planRevision),
-          sourceBasisStale: Boolean(semanticPlan?.sourceBasisRevision && source.head && semanticPlan.sourceBasisRevision !== source.head),
-          advisoryOnly: true as const,
-        },
-        unresolvedHumanRequests,
-        durableHandles: {
-          processes: relevantProcesses.slice(0, 8).map((process) => ({
-            processId: process.processId,
-            status: process.status,
-            updatedAt: process.updatedAt,
-          })),
-        },
-        receipts: {
-          resultRefs: semanticWork.resultRefs,
-          ...(work.completionReceipt?.receiptId?.trim() ? { completionReceiptRef: work.completionReceipt.receiptId.trim() } : {}),
-          checkReceiptRefs,
-        },
-      };
-    })() : undefined;
-    const currentAttentionItems = work
-      ? workAttentionItems
-      : isSummary
-        ? currentAttentionScan.slice(0, 3)
-        : currentAttentionScan;
-    const attention = isSummary
-      ? currentAttentionItems.map((item) => ({
+          ).values(),
+        ];
+      })();
+  const capabilities = isSummary ? [] : listCapabilityDescriptors(manifests);
+  const capabilityGroups = isSummary ? [] : summarizeCapabilityGroups(manifests);
+  const capabilityLookup = undefined;
+  const selectedChecks = normalizedChecks.validCheckIds
+    .map((id) => checks.find((check) => check.id === id))
+    .filter((check): check is (typeof checks)[number] => Boolean(check))
+    .map((check) => ({ id: check.id, description: check.description, source: check.source }));
+  const pendingAttention = listHandoffItems({ ...store, status: 'pending', limit: isSummary ? 20 : 5 });
+  const currentAttentionScan = listHandoffAttentionItems(store, isSummary ? 20 : 5);
+  // Current UserRequests and processes cannot be selected by a retired Work.
+  const currentAttentionItems = isSummary ? currentAttentionScan.slice(0, 3) : currentAttentionScan;
+  const attention = isSummary
+    ? currentAttentionItems.map((item) => ({
         id: item.id,
         workId: item.workId,
         title: item.title.slice(0, 96),
@@ -1061,136 +1220,140 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         blockingDecision: item.blockingDecision?.slice(0, 160),
         updatedAt: item.updatedAt,
       }))
-      : currentAttentionItems.map(summarizeHandoffItem);
-    const detailCheckCandidates = requested.length > 0
+    : currentAttentionItems.map(summarizeHandoffItem);
+  const detailCheckCandidates =
+    requested.length > 0
       ? selectedChecks
       : checks.map((check) => ({ id: check.id, description: check.description, source: check.source }));
-    const checkSummaries = isSummary ? selectedChecks : detailCheckCandidates.slice(0, 24);
-    const detailArguments = {
-      repo_id: repository.repoId,
-      operation,
-      ...(workId ? { work_id: workId } : {}),
-      ...(requested.length ? { requested_check_ids: requested } : {}),
-    };
-    const summaryData = {
-      operation,
+  const checkSummaries = isSummary ? selectedChecks : detailCheckCandidates.slice(0, 24);
+  const detailArguments = {
+    repo_id: repository.repoId,
+    operation,
+    ...(requested.length ? { requested_check_ids: requested } : {}),
+  };
+  const summaryData = {
+    operation,
+    repoId: repository.repoId,
+    repository: {
       repoId: repository.repoId,
-      repository: {
-        repoId: repository.repoId,
-        displayName: repository.displayName,
-        defaultBranch: repository.defaultBranch,
-        repositoryType: repository.repositoryType,
-      },
-      checks: selectedChecks,
-      selectedChecks,
-      requestedCheckIds: requested,
-      normalizedChecks,
-      invalidCheckIdsAreNotFailures: true,
-      capabilityInventory: {
-        mode: 'detail_only',
-        deferred: true,
-        reason: 'Repository summary does not hydrate plugin manifests; request capability_id or detail/raw only when schema/policy detail is needed.',
-      },
-      capabilityLookup,
-      toolArchitecture: {
-        facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
-        domainSchemaLoading: 'static_stable_surface',
-      },
-      historicalWork: work
-        ? {
-            readOnly: true,
-            workId: work.workId,
-            state: work.semanticState,
-            objective: work.objective.slice(0, 160),
-          }
-        : undefined,
-      activeProcesses: activeProcesses.slice(0, 3).map((process) => ({ processId: process.processId, status: process.status, route: process.route, startedAt: process.startedAt, updatedAt: process.updatedAt })),
-      recentProcesses: relevantProcesses.slice(0, 5).map((process) => ({ processId: process.processId, status: process.status, route: process.route, startedAt: process.startedAt, updatedAt: process.updatedAt })),
-      ...(resumeContext ? { historicalWorkContext: resumeContext } : {}),
-      activeAttention: attention,
-      counts: {
-        availableChecks: checks.length,
-        selectedChecks: selectedChecks.length,
-        capabilityInventoryDeferred: true,
-        historicalWorkSelected: work ? 1 : 0,
-        currentAttention: work ? workAttentionItems.length : 0,
-        repositoryAttention: currentAttentionScan.length,
-        currentAttentionShown: attention.length,
-        activeProcesses: activeProcesses.length,
-        recentProcesses: relevantProcesses.length,
-        historicalProcessScanDeferred: true,
-        pendingAttentionScanned: pendingAttention.length,
-        historicalPendingAttention: Math.max(0, pendingAttention.length - currentAttentionScan.length),
-        omittedCurrentAttention: Math.max(0, (work ? workAttentionItems.length : 0) - attention.length),
-        omittedPendingAttention: Math.max(0, pendingAttention.length - attention.length),
-      },
-      historicalExecutionJobsIncluded: false,
-      detailPointers: {
-        detail: { tool: 'rh_context', arguments: { ...detailArguments, detail_level: 'detail' } },
-        raw: { tool: 'rh_context', arguments: { ...detailArguments, detail_level: 'raw' } },
-      },
-      bounded: true,
+      displayName: repository.displayName,
+      defaultBranch: repository.defaultBranch,
+      repositoryType: repository.repositoryType,
+    },
+    checks: selectedChecks,
+    selectedChecks,
+    requestedCheckIds: requested,
+    normalizedChecks,
+    invalidCheckIdsAreNotFailures: true,
+    capabilityInventory: {
+      mode: 'detail_only',
+      deferred: true,
+      reason:
+        'Repository summary does not hydrate plugin manifests; request capability_id or detail/raw only when schema/policy detail is needed.',
+    },
+    capabilityLookup,
+    toolArchitecture: {
+      facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
+      domainSchemaLoading: 'static_stable_surface',
+    },
+    activeProcesses: activeProcesses
+      .slice(0, 3)
+      .map((process) => ({
+        processId: process.processId,
+        status: process.status,
+        route: process.route,
+        startedAt: process.startedAt,
+        updatedAt: process.updatedAt,
+      })),
+    recentProcesses: relevantProcesses
+      .slice(0, 5)
+      .map((process) => ({
+        processId: process.processId,
+        status: process.status,
+        route: process.route,
+        startedAt: process.startedAt,
+        updatedAt: process.updatedAt,
+      })),
+    activeAttention: attention,
+    counts: {
+      availableChecks: checks.length,
+      selectedChecks: selectedChecks.length,
+      capabilityInventoryDeferred: true,
+      currentAttention: currentAttentionScan.length,
+      repositoryAttention: currentAttentionScan.length,
+      currentAttentionShown: attention.length,
+      activeProcesses: activeProcesses.length,
+      recentProcesses: relevantProcesses.length,
+      historicalProcessScanDeferred: true,
+      pendingAttentionScanned: pendingAttention.length,
+      historicalPendingAttention: Math.max(0, pendingAttention.length - currentAttentionScan.length),
+      omittedCurrentAttention: Math.max(0, currentAttentionScan.length - attention.length),
+      omittedPendingAttention: Math.max(0, pendingAttention.length - attention.length),
+    },
+    historicalExecutionJobsIncluded: false,
+    detailPointers: {
+      detail: { tool: 'rh_context', arguments: { ...detailArguments, detail_level: 'detail' } },
+      raw: { tool: 'rh_context', arguments: { ...detailArguments, detail_level: 'raw' } },
+    },
+    bounded: true,
+  };
+  const detailCapabilities = capabilities.slice(0, 24);
+  const detailData = {
+    operation,
+    repoId: repository.repoId,
+    repository: repositorySummary(repository),
+    checks: checkSummaries,
+    omittedCheckCount: Math.max(0, checks.length - checkSummaries.length),
+    selectedChecks,
+    requestedCheckIds: requested,
+    normalizedChecks,
+    invalidCheckIdsAreNotFailures: true,
+    capabilityCount: capabilities.length,
+    capabilities: detailCapabilities,
+    omittedCapabilityCount: Math.max(0, capabilities.length - detailCapabilities.length),
+    capabilityGroups,
+    capabilityLookup,
+    toolArchitecture: {
+      facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
+      atomicTypedToolsRetained: true,
+      internalHandlersRetained: true,
+      domainSchemaLoading: 'static_stable_surface',
+      dynamicDomainSchemaLoadingSupported: false,
+    },
+    activeProcesses: activeProcesses.slice(0, 10),
+    recentProcesses: relevantProcesses.slice(0, 20),
+    recentExecutionJobs: recentJobs.map((job) => summarizeExecutionJob(job, repository.canonicalRoot)),
+    activeAttention: attention,
+    counts: {
+      availableChecks: checks.length,
+      selectedChecks: selectedChecks.length,
+      capabilities: capabilities.length,
+      recentExecutionJobs: recentJobs.length,
+      activeProcesses: activeProcesses.length,
+      recentProcesses: relevantProcesses.length,
+      activeAttention: attention.length,
+    },
+    bounded: true,
+  };
+  const facade = buildFacadeResult({
+    status: 'ok',
+    summary: 'Bounded repository context is available.',
+    data: isSummary ? summaryData : detailData,
+    warnings: normalizedChecks.warnings,
+    suggestedNextActions: normalizedChecks.suggestedNextActions,
+    detailLevel,
+    rawAvailable: detailLevel === 'raw',
+  });
+  const payload = facade as unknown as Record<string, unknown>;
+  if (isSummary) {
+    payload.responseMeta = {
+      serverDurationMs: Number((performance.now() - startedAt).toFixed(2)),
+      structuredPayloadBytes: 0,
     };
-    const detailCapabilities = capabilities.slice(0, 24);
-    const detailData = {
-      operation,
-      repoId: repository.repoId,
-      repository: repositorySummary(repository),
-      checks: checkSummaries,
-      omittedCheckCount: Math.max(0, checks.length - checkSummaries.length),
-      selectedChecks,
-      requestedCheckIds: requested,
-      normalizedChecks,
-      invalidCheckIdsAreNotFailures: true,
-      capabilityCount: capabilities.length,
-      capabilities: detailCapabilities,
-      omittedCapabilityCount: Math.max(0, capabilities.length - detailCapabilities.length),
-      capabilityGroups,
-      capabilityLookup,
-      toolArchitecture: {
-        facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
-        atomicTypedToolsRetained: true,
-        internalHandlersRetained: true,
-        domainSchemaLoading: 'static_stable_surface',
-        dynamicDomainSchemaLoadingSupported: false,
-      },
-      ...(resumeContext ? { historicalWorkContext: resumeContext } : {}),
-      historicalWork: work ? { ...work, readOnly: true } : undefined,
-      activeProcesses: activeProcesses.slice(0, 10),
-      recentProcesses: relevantProcesses.slice(0, 20),
-      recentExecutionJobs: recentJobs.map((job) => summarizeExecutionJob(job, repository.canonicalRoot)),
-      activeAttention: attention,
-      counts: {
-        availableChecks: checks.length,
-        selectedChecks: selectedChecks.length,
-        capabilities: capabilities.length,
-        historicalWorkSelected: work ? 1 : 0,
-        recentExecutionJobs: recentJobs.length,
-        activeProcesses: activeProcesses.length,
-        recentProcesses: relevantProcesses.length,
-        activeAttention: attention.length,
-      },
-      bounded: true,
-    };
-    const facade = buildFacadeResult({
-      status: 'ok',
-      summary: work
-        ? `Bounded read-only historical Work context for ${work.workId}.`
-        : 'Bounded repository context is available.',
-      data: isSummary ? summaryData : detailData,
-      warnings: normalizedChecks.warnings,
-      evidenceRefs: work?.evidenceRefs?.slice(0, 5) ?? [],
-      suggestedNextActions: normalizedChecks.suggestedNextActions,
-      detailLevel,
-      rawAvailable: detailLevel === 'raw',
-    });
-    const payload = facade as unknown as Record<string, unknown>;
-    if (isSummary) {
-      payload.responseMeta = {
-        serverDurationMs: Number((performance.now() - startedAt).toFixed(2)),
-        structuredPayloadBytes: 0,
-      };
-      (payload.responseMeta as { structuredPayloadBytes: number }).structuredPayloadBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
-    }
-    return result(payload);
+    (payload.responseMeta as { structuredPayloadBytes: number }).structuredPayloadBytes = Buffer.byteLength(
+      JSON.stringify(payload),
+      'utf8',
+    );
+  }
+  return result(payload);
 }

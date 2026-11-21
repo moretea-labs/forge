@@ -20,7 +20,6 @@ const FROZEN_SEMANTIC_V1_MAX_BYTES = 8 * 1024;
 const FROZEN_FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const FROZEN_COMMON_FIELDS = ['repo_id', 'checkout_id', 'request_id', 'detail_level'] as const;
 const FROZEN_SEMANTIC_V1_FIELDS: Record<string, ReadonlySet<string>> = {
-  work_get: new Set([...FROZEN_COMMON_FIELDS, 'operation', 'work_id']),
   requirement_list: new Set([...FROZEN_COMMON_FIELDS, 'operation', 'limit']),
   requirement_get: new Set([...FROZEN_COMMON_FIELDS, 'operation', 'requirement_id']),
   requirement_revise: new Set([
@@ -69,7 +68,6 @@ const FROZEN_CURRENT_CONVERSATION_FIELDS = new Set([
   'checkout_id',
   'request_id',
   'detail_level',
-  'work_id',
   'handoff_id',
   'launch_args',
   'launch_reservation_ms',
@@ -96,9 +94,9 @@ function unsafeObjectKey(value: unknown): string | undefined {
   return undefined;
 }
 
-function parseFrozenSemanticV1(capabilityId: string):
-  | { ok: true; value: Record<string, unknown> }
-  | { ok: false; summary: string; data: Record<string, unknown> } {
+function parseFrozenSemanticV1(
+  capabilityId: string,
+): { ok: true; value: Record<string, unknown> } | { ok: false; summary: string; data: Record<string, unknown> } {
   const encoded = capabilityId.slice(FROZEN_SEMANTIC_V1_PREFIX.length);
   if (Buffer.byteLength(encoded, 'utf8') > FROZEN_SEMANTIC_V1_MAX_BYTES) {
     return { ok: false, summary: 'FROZEN_MCP_SEMANTIC_V1_TOO_LARGE', data: { maxBytes: FROZEN_SEMANTIC_V1_MAX_BYTES } };
@@ -127,11 +125,14 @@ function translateFrozenSemanticV1(
   const frozenOperation = typeof semantic.operation === 'string' ? semantic.operation.trim() : '';
   const allowed = FROZEN_SEMANTIC_V1_FIELDS[frozenOperation];
   if (!allowed) return failure('FROZEN_MCP_SEMANTIC_V1_OPERATION_UNSUPPORTED', { operation: frozenOperation });
-  const operation = frozenOperation === 'work_get' ? 'get' : frozenOperation;
+  const operation = frozenOperation;
 
   const semanticUnsupported = unsupportedInputField(semantic, allowed);
   if (semanticUnsupported) {
-    return failure('FROZEN_MCP_SEMANTIC_V1_FIELD_UNSUPPORTED', { operation: frozenOperation, field: semanticUnsupported });
+    return failure('FROZEN_MCP_SEMANTIC_V1_FIELD_UNSUPPORTED', {
+      operation: frozenOperation,
+      field: semanticUnsupported,
+    });
   }
   const outerAllowed = new Set([...allowed, 'capability_id']);
   const outerUnsupported = unsupportedInputField(outer, outerAllowed);
@@ -141,9 +142,11 @@ function translateFrozenSemanticV1(
 
   for (const field of allowed) {
     if (field === 'operation') continue;
-    if (Object.prototype.hasOwnProperty.call(semantic, field)
-      && Object.prototype.hasOwnProperty.call(outer, field)
-      && !isDeepStrictEqual(semantic[field], outer[field])) {
+    if (
+      Object.prototype.hasOwnProperty.call(semantic, field) &&
+      Object.prototype.hasOwnProperty.call(outer, field) &&
+      !isDeepStrictEqual(semantic[field], outer[field])
+    ) {
       return failure('FROZEN_MCP_SEMANTIC_V1_FIELD_CONFLICT', { operation: frozenOperation, field });
     }
   }
@@ -174,6 +177,9 @@ export function normalizeRhWorkInputWireMigration(input: Record<string, unknown>
   const args = { ...input };
   const requestedOperation = String(args.operation ?? '');
   const capabilityId = typeof args.capability_id === 'string' ? args.capability_id.trim() : '';
+  if (typeof args.work_id === 'string' && args.work_id.trim()) {
+    return failure('WORK_RETIRED', { retiredField: 'work_id' });
+  }
 
   if (capabilityId === FROZEN_CURRENT_CONVERSATION_ENROLLMENT) {
     const unsupported = unsupportedInputField(args, FROZEN_CURRENT_CONVERSATION_FIELDS);
@@ -202,9 +208,12 @@ export function normalizeRhWorkInputWireMigration(input: Record<string, unknown>
   }
 
   if (capabilityId.includes(':')) {
-    return failure('FROZEN_MCP_LIFECYCLE_REMOVED: only bounded semantic.v1 and current-conversation enrollment carriers remain supported.', {
-      carrier: capabilityId.slice(0, capabilityId.indexOf(':')),
-    });
+    return failure(
+      'FROZEN_MCP_LIFECYCLE_REMOVED: only bounded semantic.v1 and current-conversation enrollment carriers remain supported.',
+      {
+        carrier: capabilityId.slice(0, capabilityId.indexOf(':')),
+      },
+    );
   }
 
   return { ok: true, args, operation: requestedOperation };

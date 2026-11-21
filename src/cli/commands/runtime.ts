@@ -33,12 +33,7 @@ import {
   assertRuntimeReleaseFiles,
   stageRuntimeReleaseFromCandidateSource,
 } from '../../runtime/root/release-materialize';
-import {
-  applyControllerHomeMigration,
-  previewControllerHomeMigration,
-  rollbackControllerHomeMigration,
-  inspectUnroutableMigratedWork,
-} from '../../runtime/control-plane/persistence/controller-home-migration';
+import { inspectRetiredWorkPurge, purgeRetiredWork } from '../../runtime/control-plane/persistence/retired-work-purge';
 
 function output(value: unknown, json = true): void {
   console.log(json ? JSON.stringify(value, null, 2) : String(value));
@@ -306,48 +301,22 @@ export function buildRuntimeCommand(): Command {
     );
 
   command
-    .command('migrate-controller-home')
+    .command('purge-retired-work')
     .description(
-      'Preview or transactionally migrate non-terminal business state from an explicitly selected retired Controller Home',
+      'Inspect or permanently erase obsolete Work, WorkHandle and audit history from an offline Controller Home',
     )
-    .requiredOption(
-      '--source <path>',
-      'Retired Controller Home to inspect; repository presence never selects this implicitly',
-    )
-    .option('--destination <path>', 'Canonical Controller Home; defaults to the installed user-level authority')
-    .option('--apply', 'Apply the reviewed migration and freeze the source SQLite as a read-only archive')
-    .option('--rollback <migration-id>', 'Rollback one migration only when none of its imported records changed')
-    .option(
-      '--inspect-unroutable <migration-id>',
-      'Read-only audit of imported historical Work from unregistered repositories',
-    )
-    .action(
-      async (opts: {
-        source: string;
-        destination?: string;
-        apply?: boolean;
-        rollback?: string;
-        inspectUnroutable?: string;
-      }) => {
-        const destination = resolveControllerHome(opts.destination);
-        if (opts.inspectUnroutable?.trim()) {
-          output(
-            inspectUnroutableMigratedWork({ destinationHome: destination, migrationId: opts.inspectUnroutable.trim() }),
-          );
-          return;
-        }
-        if (opts.rollback?.trim()) {
-          output(rollbackControllerHomeMigration({ destinationHome: destination, migrationId: opts.rollback.trim() }));
-          return;
-        }
-        const input = { sourceHome: resolve(opts.source), destinationHome: destination };
-        if (opts.apply === true) {
-          output(await applyControllerHomeMigration(input));
-          return;
-        }
-        output(await previewControllerHomeMigration(input));
-      },
-    );
+    .option('--controller-home <path>', 'Explicit Controller Home; defaults to the installed user-level Home')
+    .option('--apply', 'Permanently delete retired Work SQLite namespaces and legacy on-disk state')
+    .option('--runtime-stopped', 'Confirm every Runtime using this Controller Home is stopped')
+    .action((opts: { controllerHome?: string; apply?: boolean; runtimeStopped?: boolean }) => {
+      const controllerHome = resolveControllerHome(opts.controllerHome);
+      if (opts.apply) {
+        if (!opts.runtimeStopped) throw new Error('RETIRED_WORK_PURGE_REQUIRES_STOPPED_RUNTIME');
+        output(purgeRetiredWork(controllerHome));
+        return;
+      }
+      output(inspectRetiredWorkPurge(controllerHome));
+    });
 
   command
     .command('status')

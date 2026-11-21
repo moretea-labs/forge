@@ -1273,11 +1273,10 @@ forbid(
   'repository Git safety must not depend on Work review methodology',
 );
 
-// The model-facing rh_work surface is the thin semantic ABI: the schema enum must
-// come from the single operation registry, that registry's model list must not
-// re-advertise legacy engineering lifecycle verbs, and the schema must not
-// hand-write lifecycle-only inputs. Legacy verbs stay reachable only through the
-// bounded server-side compatibility carrier, never as advertised model surface.
+// Frozen published MCP schema is temporarily separate from live admission.
+// Legacy get/list/get_contract enum strings are inert wire tokens only; the
+// Runtime must never route them to historic Work. Versioned schema cleanup
+// remains required before #483 can be closed.
 requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', '[...RH_WORK_MODEL_OPERATIONS]');
 forbid(
   'adapters/mcp/runtime-gateway/runtime-tool-definitions.ts',
@@ -1289,10 +1288,17 @@ const rhWorkOperations = (rhWorkOperationContract.match(/RH_WORK_OPERATIONS = \[
 if (!rhWorkOperations.trim()) {
   failures.push('rh_work operation contract must define RH_WORK_OPERATIONS as the single operation registry');
 }
-if (!/export const RH_WORK_MODEL_OPERATIONS\s*=\s*RH_WORK_OPERATIONS\s*;/.test(rhWorkOperationContract)) {
-  failures.push(
-    'RH_WORK_MODEL_OPERATIONS must alias RH_WORK_OPERATIONS instead of defining a second model-facing registry',
-  );
+if (
+  !/export const RH_WORK_MODEL_OPERATIONS\s*=\s*\[[\s\S]*?'get_contract'[\s\S]*?\.\.\.RH_WORK_OPERATIONS\.slice\(1\)/.test(
+    rhWorkOperationContract,
+  )
+) {
+  failures.push('frozen MCP enum must preserve old tokens until the versioned schema cutover');
+}
+for (const retiredReader of ['list', 'get', 'get_contract']) {
+  if (rhWorkOperations.includes("'" + retiredReader + "'")) {
+    failures.push('retired Work operation must never be accepted: ' + retiredReader);
+  }
 }
 for (const legacyModelVerb of [
   'start',
@@ -2856,25 +2862,32 @@ requireText(
   'packages/kernel/work/domain/types.ts',
   'export type SemanticWorkState = (typeof SEMANTIC_WORK_STATES)[number];',
 );
-requireText(
-  'adapters/mcp/runtime-gateway/work-semantic-operations.ts',
-  "const RH_WORK_SEMANTIC_OPERATIONS = new Set(['get', 'get_contract']);",
+requireMissing('adapters/mcp/runtime-gateway/work-semantic-operations.ts');
+requireMissing('adapters/mcp/runtime-gateway/work-list-projection.ts');
+forbid(
+  'adapters/mcp/runtime-gateway/context-adapter.ts',
+  /getWorkContract|historicalWorkContext|historicalWorkSelected/,
+  'retired Work historical context must not be queried',
 );
 forbid(
   'src/runtime/control-plane/facade/rh-work-operation-contract.ts',
   /'start'|'revise'|'complete'|'outcome_record'|'experience_record'/,
   'retired Work lifecycle/write vocabulary must not remain in the accepted rh_work ABI',
 );
-requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', "if (operation === 'get_contract') {");
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "operation === 'get_contract'");
+forbid(
+  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  /callRhWorkSemanticOperation|callRhWorkListProjection|namespace: 'work_contract'/,
+  'retired Work cannot be read by the rh_work carrier',
+);
+requireText('src/runtime/control-plane/persistence/retired-work-purge.ts', 'export const RETIRED_WORK_NAMESPACES');
 forbid(
   'packages/kernel/work/domain/state-machine.ts',
   /READ_ONLY_REVIEW_CLEAN_SCOPE|cleanReadOnlyReviewEvidence|READ_ONLY_REVIEW_FINDINGS_BLOCK/,
   'historical Work state parsing must not retain review-completion gates',
 );
 requireMissing('src/runtime/control-plane/execution/work-evidence-policy.ts');
-// Work is historical read-only compatibility data. Requirement/Plan/Run/Git
-// own current mutable state; no Work lifecycle writer may return.
+// Work and WorkHandle are fully retired, including historical data.
+// Requirement/Plan/Run/Git own their separate current state.
 requireText(
   'packages/kernel/identity/infrastructure/user-request-store.ts',
   "throw new Error('USER_REQUEST_WORK_SCOPE_RETIRED')",

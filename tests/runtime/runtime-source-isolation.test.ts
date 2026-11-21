@@ -8,7 +8,12 @@ import { executionIdentityForRepository } from '../../src/runtime/control-plane/
 import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
-import { addRepositoryCheckout, listRepositories, registerRepository, resolveRepositorySelection } from '../../src/runtime/repositories/registry';
+import {
+  addRepositoryCheckout,
+  listRepositories,
+  registerRepository,
+  resolveRepositorySelection,
+} from '../../src/runtime/repositories/registry';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { callContextAdapter } from '../../adapters/mcp/runtime-gateway/context-adapter';
 import { recordGatewayLatency } from '../../src/core/observability/gateway-contention-metrics';
@@ -26,7 +31,10 @@ import {
 } from '../../src/runtime/control-plane/runtime-generation';
 import { writeJsonAtomic } from '../../src/runtime/shared/json-files';
 import { MAX_PLUGIN_ACTION_TIMEOUT_MS } from '../../packages/plugin-runtime/external';
-import { PLUGIN_ACTION_SIDECAR_SETTLEMENT_GRACE_MS, pluginActionSidecarTimeoutMs } from '../../src/runtime/plugins/action-application';
+import {
+  PLUGIN_ACTION_SIDECAR_SETTLEMENT_GRACE_MS,
+  pluginActionSidecarTimeoutMs,
+} from '../../src/runtime/plugins/action-application';
 import {
   resolveLightweightPluginActionRuntimeInvocation,
   startLightweightPluginAction,
@@ -36,17 +44,26 @@ import {
   startManagedPluginAction,
   waitManagedPluginAction,
 } from '../../src/runtime/plugins/lightweight-action';
-import { clearAssistantPluginManifestCacheForTest, getAssistantPluginManifest, submitAssistantPluginAction } from '../../src/runtime/plugins/store';
+import {
+  clearAssistantPluginManifestCacheForTest,
+  getAssistantPluginManifest,
+  submitAssistantPluginAction,
+} from '../../src/runtime/plugins/store';
 import { createHandoffItem, getHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { WorkContract } from '../../packages/kernel/work/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
 import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
-import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
-import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
+import {
+  writeProjectIdentity,
+  writeProjectPlacement,
+  writeWorkspaceIdentity,
+} from '../../src/runtime/control-plane/workspace/workspace-store';
+import {
+  readControlPlaneRecord,
+  writeControlPlaneRecord,
+} from '../../src/runtime/control-plane/persistence/sqlite-store';
 
 const roots: string[] = [];
 const previousEnv = process.env[CONTROLLER_RUNTIME_SOURCE_ROOT_ENV];
@@ -89,22 +106,32 @@ function writeProjectEngineeringContract(root: string): void {
     join(root, '.agents', 'skills', 'typescript-engineering', 'SKILL.md'),
     '# TypeScript Engineering\n\nTest fixture skill for TypeScript context closure.\n',
   );
-  writeFileSync(join(root, '.forge', 'project-engineering.json'), JSON.stringify({
-    schemaVersion: 1,
-    contractId: 'context-roundtrip-engineering',
-    contractVersion: '1',
-    projectId: 'context-roundtrip',
-    authority: {},
-    quality: {},
-    checks: [],
-    journeys: [],
-    platforms: [],
-    skillRefs: ['typescript-engineering@1'],
-    tooling: [],
-  }, null, 2));
+  writeFileSync(
+    join(root, '.forge', 'project-engineering.json'),
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        contractId: 'context-roundtrip-engineering',
+        contractVersion: '1',
+        projectId: 'context-roundtrip',
+        authority: {},
+        quality: {},
+        checks: [],
+        journeys: [],
+        platforms: [],
+        skillRefs: ['typescript-engineering@1'],
+        tooling: [],
+      },
+      null,
+      2,
+    ),
+  );
 }
 
-function mcpContext(controllerHome: string, repository: ReturnType<typeof registerRepository>): MultiRepositoryMcpToolContext {
+function mcpContext(
+  controllerHome: string,
+  repository: ReturnType<typeof registerRepository>,
+): MultiRepositoryMcpToolContext {
   const policy = getToolPolicy('controller', { repoRoot: repository.canonicalRoot });
   return {
     repoRoot: repository.canonicalRoot,
@@ -120,41 +147,15 @@ function mcpContext(controllerHome: string, repository: ReturnType<typeof regist
 
 function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record<string, unknown> {
   expect(result).toBeTruthy();
-  return (result!.structuredContent
-    ?? JSON.parse(result!.content[0] && 'text' in result!.content[0] ? String(result!.content[0].text) : '{}')) as Record<string, unknown>;
-}
-
-function createProjectionWork(
-  controllerHome: string,
-  repository: ReturnType<typeof registerRepository>,
-  workId: string,
-): WorkContract {
-  return seedHistoricalWorkContract({ controllerHome, repoId: repository.repoId }, {
-    workId,
-    repoId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
-    objective: `Project ${workId} through bounded Runtime facade reads.`,
-    acceptanceCriteria: ['Runtime facade reads remain available.'],
-    constraints: { workspaceMode: 'isolated' },
-    requestedBy: 'chatgpt',
-    dispatchState: 'running',
-    allowedPaths: [],
-    forbiddenPaths: [],
-    checks: [],
-  });
-}
-
-function corruptProjectionWork(controllerHome: string, repoId: string, workId: string): void {
-  const record = readControlPlaneRecord<WorkContract>(controllerHome, 'work_contract', repoId, workId)!;
-  writeControlPlaneRecord(controllerHome, {
-    namespace: 'work_contract', scope: repoId, key: workId, schemaVersion: 2,
-    expectedRevision: record.revision, action: 'test_malformed_runtime_facade_projection',
-    value: { ...record.value, objective: '   ' },
-  });
+  return (result!.structuredContent ??
+    JSON.parse(result!.content[0] && 'text' in result!.content[0] ? String(result!.content[0].text) : '{}')) as Record<
+    string,
+    unknown
+  >;
 }
 
 describe('runtime source isolation', () => {
-  test('rh_context source routing uses explicit checkout identity and ignores historical Work placement', async () => {
+  test('rh_context source routing uses explicit checkout identity and denies retired work_id', async () => {
     const controllerHome = tempRoot('forge-context-explicit-checkout-home-');
     const repoRoot = tempRoot('forge-context-explicit-checkout-repo-');
     initGitRepo(repoRoot, 'context-explicit-checkout');
@@ -169,49 +170,64 @@ describe('runtime source isolation', () => {
     git(worktree, 'add', '.');
     git(worktree, 'commit', '-m', 'isolated context source');
     const registry = addRepositoryCheckout({ repoId: repository.repoId, path: worktree, controllerHome });
-    const checkout = registry.checkouts.find(item => item.canonicalRoot === realpathSync(worktree));
+    const checkout = registry.checkouts.find((item) => item.canonicalRoot === realpathSync(worktree));
     expect(checkout).toBeDefined();
-    const workId = 'work-context-source-provenance';
-    seedHistoricalWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId, repoId: repository.repoId, checkoutId: checkout!.checkoutId,
-      objective: 'Historical Work placement must not select current source.',
-      acceptanceCriteria: [], constraints: {}, requestedBy: 'chatgpt', checks: [],
-    });
     const context = mcpContext(controllerHome, repository);
     const baseArgs = {
-      repo_id: repository.repoId, operation: 'search', query: 'EXACT_WORK_SOURCE',
-      known_paths: ['src/index.ts'], max_files: 1, max_snippets: 2,
-      detail_level: 'raw', retrieval_mode: 'implementation', structural_context: 'off',
+      repo_id: repository.repoId,
+      operation: 'search',
+      query: 'EXACT_WORK_SOURCE',
+      known_paths: ['src/index.ts'],
+      max_files: 1,
+      max_snippets: 2,
+      detail_level: 'raw',
+      retrieval_mode: 'implementation',
+      structural_context: 'off',
     };
 
-    const historicalWorkData = structured(await callRuntimeTool(context, 'rh_context', {
-      ...baseArgs, work_id: workId,
-    })).data as {
+    const historicalWorkData = structured(
+      await callRuntimeTool(context, 'rh_context', {
+        ...baseArgs,
+      }),
+    ).data as {
       contextClosure?: { sourceRevision?: string; repository?: { branch?: string } };
       files?: Array<{ snippets?: Array<{ content?: string }> }>;
     };
-    const historicalWorkSource = (historicalWorkData.files ?? []).flatMap(file => file.snippets ?? []).map(snippet => snippet.content ?? '').join('');
+    const historicalWorkSource = (historicalWorkData.files ?? [])
+      .flatMap((file) => file.snippets ?? [])
+      .map((snippet) => snippet.content ?? '')
+      .join('');
     expect(historicalWorkData.contextClosure?.sourceRevision).toBe(git(repoRoot, 'rev-parse', 'HEAD'));
     expect(historicalWorkSource).toContain('CANONICAL');
     expect(historicalWorkSource).not.toContain('ISOLATED');
 
-    const explicitCheckoutData = structured(await callRuntimeTool(context, 'rh_context', {
-      ...baseArgs, checkout_id: checkout!.checkoutId, work_id: workId,
-    })).data as {
+    const explicitCheckoutData = structured(
+      await callRuntimeTool(context, 'rh_context', {
+        ...baseArgs,
+        checkout_id: checkout!.checkoutId,
+      }),
+    ).data as {
       contextClosure?: { sourceRevision?: string; repository?: { branch?: string } };
       files?: Array<{ snippets?: Array<{ content?: string }> }>;
     };
-    const explicitCheckoutSource = (explicitCheckoutData.files ?? []).flatMap(file => file.snippets ?? []).map(snippet => snippet.content ?? '').join('');
+    const explicitCheckoutSource = (explicitCheckoutData.files ?? [])
+      .flatMap((file) => file.snippets ?? [])
+      .map((snippet) => snippet.content ?? '')
+      .join('');
     expect(explicitCheckoutData.contextClosure?.sourceRevision).toBe(git(worktree, 'rev-parse', 'HEAD'));
     expect(explicitCheckoutData.contextClosure?.repository?.branch).toBe('work/context-exact-source');
     expect(explicitCheckoutSource).toContain('ISOLATED');
     expect(explicitCheckoutSource).not.toContain('CANONICAL');
 
-    const unknownHistoricalWork = structured(await callRuntimeTool(context, 'rh_context', {
-      ...baseArgs, work_id: 'unknown-work-context',
-    })).data as { files?: Array<{ snippets?: Array<{ content?: string }> }> };
-    const unknownSource = (unknownHistoricalWork.files ?? []).flatMap(file => file.snippets ?? []).map(snippet => snippet.content ?? '').join('');
-    expect(unknownSource).toContain('CANONICAL');
+    const retiredWork = structured(
+      await callRuntimeTool(context, 'rh_context', {
+        ...baseArgs,
+        work_id: 'retired-work-context',
+      }),
+    );
+    expect(retiredWork.status).toBe('blocked');
+    expect(retiredWork.summary).toContain('WORK_RETIRED');
+    expect(retiredWork.data).not.toHaveProperty('files');
   });
   test('stable semantic ids resolve without synthetic repository ownership in a multi-repository Controller Home', async () => {
     const controllerHome = tempRoot('forge-home-stable-semantic-id-');
@@ -225,115 +241,154 @@ describe('runtime source isolation', () => {
 
     const requirementId = 'REQ-stable-semantic-id';
     const planId = 'PLAN-stable-semantic-id';
-    const workId = 'work-stable-semantic-id';
-    createRequirement({ controllerHome }, {
-      requirementId,
-      title: 'Stable semantic id lookup',
-      outcomeStatement: 'Model-facing semantic reads resolve from stable identity without selecting repository ownership first.',
-    });
-    createPlanContract({ controllerHome, repoId: primary.repoId }, {
-      planId,
-      repoId: primary.repoId,
-      requirementId,
-      scopeKey: 'stable-semantic-id',
-      sourceRevision: git(primaryRoot, 'rev-parse', 'HEAD'),
-      goal: 'Read the semantic Plan directly by stable id.',
-      steps: [],
-    });
-    createProjectionWork(controllerHome, primary, workId);
-
+    createRequirement(
+      { controllerHome },
+      {
+        requirementId,
+        title: 'Stable semantic id lookup',
+        outcomeStatement:
+          'Model-facing semantic reads resolve from stable identity without selecting repository ownership first.',
+      },
+    );
+    createPlanContract(
+      { controllerHome, repoId: primary.repoId },
+      {
+        planId,
+        repoId: primary.repoId,
+        requirementId,
+        scopeKey: 'stable-semantic-id',
+        sourceRevision: git(primaryRoot, 'rev-parse', 'HEAD'),
+        goal: 'Read the semantic Plan directly by stable id.',
+        steps: [],
+      },
+    );
     const unscoped = {
       ...mcpContext(controllerHome, primary),
       explicitRepository: undefined,
     } as MultiRepositoryMcpToolContext;
 
-    const requirement = structured(await callRuntimeTool(unscoped, 'rh_work', {
-      operation: 'requirement_get',
-      requirement_id: requirementId,
-    }));
-    const plan = structured(await callRuntimeTool(unscoped, 'rh_work', {
-      operation: 'plan_get',
-      plan_id: planId,
-    }));
-    const work = structured(await callRuntimeTool(unscoped, 'rh_work', {
-      operation: 'get',
-      work_id: workId,
-    }));
+    const requirement = structured(
+      await callRuntimeTool(unscoped, 'rh_work', {
+        operation: 'requirement_get',
+        requirement_id: requirementId,
+      }),
+    );
+    const plan = structured(
+      await callRuntimeTool(unscoped, 'rh_work', {
+        operation: 'plan_get',
+        plan_id: planId,
+      }),
+    );
 
-    expect((requirement.data as { requirement?: { requirementId?: string } })?.requirement?.requirementId).toBe(requirementId);
+    expect((requirement.data as { requirement?: { requirementId?: string } })?.requirement?.requirementId).toBe(
+      requirementId,
+    );
     expect((plan.data as { plan?: { planId?: string } })?.plan?.planId).toBe(planId);
-    expect((work.data as { work?: { workId?: string } })?.work?.workId).toBe(workId);
 
     // The public rh_work schema is frozen. Forward-compatible Requirement progress
     // travels in the existing bounded semantic carrier; no extra MCP fields.
-    const revisedRequirement = structured(await callRuntimeTool(unscoped, 'rh_work', {
+    const revisedRequirement = structured(
+      await callRuntimeTool(unscoped, 'rh_work', {
+        operation: 'repair',
+        capability_id: `semantic.v1:${JSON.stringify({
+          operation: 'requirement_revise',
+          requirement_id: requirementId,
+          expected_revision: 1,
+          requirement_outcome: 'Revise Requirement directly by stable id without repository selection.',
+          requirement_progress_summary: 'Source under review',
+          requirement_remaining_work: ['Runtime acceptance'],
+          requirement_accepted_evidence_refs: ['git:reviewed'],
+        })}`,
+      }),
+    );
+    const revisedPlan = structured(
+      await callRuntimeTool(unscoped, 'rh_work', {
+        operation: 'plan_revise',
+        plan_id: planId,
+        expected_revision: 1,
+        objective: 'Revise Plan directly by stable id without repository selection.',
+      }),
+    );
+    const revisedRequirementData = (
+      revisedRequirement as unknown as { data?: { requirement?: Record<string, unknown> } }
+    ).data;
+    const revisedPlanData = (revisedPlan as unknown as { data?: { plan?: Record<string, unknown> } }).data;
+    expect(revisedRequirementData?.requirement).toMatchObject({
+      requirementId,
+      revision: 2,
+      progressSummary: 'Source under review',
+      remainingWork: ['Runtime acceptance'],
+      acceptedEvidenceRefs: ['git:reviewed'],
+    });
+    const resumedRequirement = structured(
+      await callRuntimeTool(unscoped, 'rh_work', {
+        operation: 'requirement_get',
+        requirement_id: requirementId,
+      }),
+    );
+    expect((resumedRequirement as unknown as { data?: { progress?: Record<string, unknown> } }).data?.progress).toEqual(
+      {
+        source: 'requirement',
+        summary: 'Source under review',
+        remainingWork: ['Runtime acceptance'],
+        acceptedEvidenceRefs: ['git:reviewed'],
+      },
+    );
+    const incompleteCompletion = await callRuntimeTool(unscoped, 'rh_work', {
       operation: 'repair',
       capability_id: `semantic.v1:${JSON.stringify({
         operation: 'requirement_revise',
         requirement_id: requirementId,
-        expected_revision: 1,
-        requirement_outcome: 'Revise Requirement directly by stable id without repository selection.',
-        requirement_progress_summary: 'Source under review',
+        expected_revision: 2,
+        requirement_state: 'completed',
         requirement_remaining_work: ['Runtime acceptance'],
-        requirement_accepted_evidence_refs: ['git:reviewed'],
-      })}`,
-    }));
-    const revisedPlan = structured(await callRuntimeTool(unscoped, 'rh_work', {
-      operation: 'plan_revise',
-      plan_id: planId,
-      expected_revision: 1,
-      objective: 'Revise Plan directly by stable id without repository selection.',
-    }));
-    const revisedRequirementData = (revisedRequirement as unknown as { data?: { requirement?: Record<string, unknown> } }).data;
-    const revisedPlanData = (revisedPlan as unknown as { data?: { plan?: Record<string, unknown> } }).data;
-    expect(revisedRequirementData?.requirement).toMatchObject({
-      requirementId, revision: 2, progressSummary: 'Source under review',
-      remainingWork: ['Runtime acceptance'], acceptedEvidenceRefs: ['git:reviewed'],
-    });
-    const resumedRequirement = structured(await callRuntimeTool(unscoped, 'rh_work', {
-      operation: 'requirement_get', requirement_id: requirementId,
-    }));
-    expect((resumedRequirement as unknown as { data?: { progress?: Record<string, unknown> } }).data?.progress).toEqual({
-      source: 'requirement', summary: 'Source under review',
-      remainingWork: ['Runtime acceptance'], acceptedEvidenceRefs: ['git:reviewed'],
-    });
-    const incompleteCompletion = await callRuntimeTool(unscoped, 'rh_work', {
-      operation: 'repair',
-      capability_id: `semantic.v1:${JSON.stringify({
-        operation: 'requirement_revise', requirement_id: requirementId, expected_revision: 2,
-        requirement_state: 'completed', requirement_remaining_work: ['Runtime acceptance'],
       })}`,
     });
     expect(JSON.stringify(incompleteCompletion)).toContain('REQUIREMENT_SEMANTIC_ACCEPTANCE_EVIDENCE_REQUIRED');
     const missingEvidenceCompletion = await callRuntimeTool(unscoped, 'rh_work', {
       operation: 'repair',
       capability_id: `semantic.v1:${JSON.stringify({
-        operation: 'requirement_revise', requirement_id: requirementId, expected_revision: 2,
-        requirement_state: 'completed', requirement_remaining_work: [], requirement_accepted_evidence_refs: [],
+        operation: 'requirement_revise',
+        requirement_id: requirementId,
+        expected_revision: 2,
+        requirement_state: 'completed',
+        requirement_remaining_work: [],
+        requirement_accepted_evidence_refs: [],
       })}`,
     });
     expect(JSON.stringify(missingEvidenceCompletion)).toContain('REQUIREMENT_SEMANTIC_ACCEPTANCE_EVIDENCE_REQUIRED');
-    const acceptedRequirement = structured(await callRuntimeTool(unscoped, 'rh_work', {
-      operation: 'repair',
-      capability_id: `semantic.v1:${JSON.stringify({
-        operation: 'requirement_revise', requirement_id: requirementId, expected_revision: 2,
-        requirement_state: 'completed', requirement_progress_summary: 'Accepted through the public rh_work path',
-        requirement_remaining_work: [], requirement_accepted_evidence_refs: ['git:reviewed', 'review:accepted'],
-      })}`,
-    }));
+    const acceptedRequirement = structured(
+      await callRuntimeTool(unscoped, 'rh_work', {
+        operation: 'repair',
+        capability_id: `semantic.v1:${JSON.stringify({
+          operation: 'requirement_revise',
+          requirement_id: requirementId,
+          expected_revision: 2,
+          requirement_state: 'completed',
+          requirement_progress_summary: 'Accepted through the public rh_work path',
+          requirement_remaining_work: [],
+          requirement_accepted_evidence_refs: ['git:reviewed', 'review:accepted'],
+        })}`,
+      }),
+    );
     expect((acceptedRequirement.data as { requirement?: Record<string, unknown> })?.requirement).toMatchObject({
-      requirementId, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['git:reviewed', 'review:accepted'],
+      requirementId,
+      state: 'completed',
+      remainingWork: [],
+      acceptedEvidenceRefs: ['git:reviewed', 'review:accepted'],
     });
     expect(revisedPlanData?.plan).toMatchObject({ planId, revision: 2 });
-    const retiredWorkWrite = structured(await callRuntimeTool(unscoped, 'rh_work', {
-      operation: 'revise',
-      work_id: workId,
-    }));
-    expect(retiredWorkWrite.status).toBe('failed');
-    expect(retiredWorkWrite.summary).toContain('Invalid rh_work operation');
+    const retiredWorkWrite = structured(
+      await callRuntimeTool(unscoped, 'rh_work', {
+        operation: 'revise',
+        work_id: 'retired-work',
+      }),
+    );
+    expect(retiredWorkWrite.status).not.toBe('ok');
+    expect(JSON.stringify(retiredWorkWrite)).toContain('WORK_RETIRED');
   });
 
-  test('stable semantic Plan and Work id routing disambiguates across repository scopes', async () => {
+  test('stable semantic Plan id routing disambiguates across repository scopes', async () => {
     const controllerHome = tempRoot('forge-home-semantic-routing-');
     const repoARoot = tempRoot('forge-semantic-routing-a-');
     const repoBRoot = tempRoot('forge-semantic-routing-b-');
@@ -344,27 +399,29 @@ describe('runtime source isolation', () => {
     const repoB = registerRepository({ path: repoBRoot, controllerHome, displayName: 'Repo B' });
 
     const sharedPlanId = 'PLAN-shared-disambiguation';
-    const sharedWorkId = 'work-shared-disambiguation';
 
-    createPlanContract({ controllerHome, repoId: repoA.repoId }, {
-      planId: sharedPlanId,
-      repoId: repoA.repoId,
-      scopeKey: 'shared-scope-a',
-      sourceRevision: git(repoARoot, 'rev-parse', 'HEAD'),
-      goal: 'Goal in Repo A',
-      steps: [],
-    });
-    createPlanContract({ controllerHome, repoId: repoB.repoId }, {
-      planId: sharedPlanId,
-      repoId: repoB.repoId,
-      scopeKey: 'shared-scope-b',
-      sourceRevision: git(repoBRoot, 'rev-parse', 'HEAD'),
-      goal: 'Goal in Repo B',
-      steps: [],
-    });
-
-    createProjectionWork(controllerHome, repoA, sharedWorkId);
-    createProjectionWork(controllerHome, repoB, sharedWorkId);
+    createPlanContract(
+      { controllerHome, repoId: repoA.repoId },
+      {
+        planId: sharedPlanId,
+        repoId: repoA.repoId,
+        scopeKey: 'shared-scope-a',
+        sourceRevision: git(repoARoot, 'rev-parse', 'HEAD'),
+        goal: 'Goal in Repo A',
+        steps: [],
+      },
+    );
+    createPlanContract(
+      { controllerHome, repoId: repoB.repoId },
+      {
+        planId: sharedPlanId,
+        repoId: repoB.repoId,
+        scopeKey: 'shared-scope-b',
+        sourceRevision: git(repoBRoot, 'rev-parse', 'HEAD'),
+        goal: 'Goal in Repo B',
+        steps: [],
+      },
+    );
 
     const unscopedCtx = {
       ...mcpContext(controllerHome, repoA),
@@ -372,95 +429,75 @@ describe('runtime source isolation', () => {
     } as MultiRepositoryMcpToolContext;
 
     // Unscoped get when present in >1 scope => SEMANTIC_ID_SCOPE_AMBIGUOUS
-    const ambiguousPlanGet = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
-      operation: 'plan_get',
-      plan_id: sharedPlanId,
-    }));
+    const ambiguousPlanGet = structured(
+      await callRuntimeTool(unscopedCtx, 'rh_work', {
+        operation: 'plan_get',
+        plan_id: sharedPlanId,
+      }),
+    );
     expect(ambiguousPlanGet.status).toBe('blocked');
     expect(ambiguousPlanGet.summary).toContain('SEMANTIC_ID_SCOPE_AMBIGUOUS');
     expect((ambiguousPlanGet.data as { scopes?: string[] })?.scopes).toEqual([repoA.repoId, repoB.repoId].sort());
 
-    const ambiguousWorkGet = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
-      operation: 'get',
-      work_id: sharedWorkId,
-    }));
-    expect(ambiguousWorkGet.status).toBe('blocked');
-    expect(ambiguousWorkGet.summary).toContain('SEMANTIC_ID_SCOPE_AMBIGUOUS');
-    expect((ambiguousWorkGet.data as { scopes?: string[] })?.scopes).toEqual([repoA.repoId, repoB.repoId].sort());
-
     // Explicit repo_id => disambiguates exact record
-    const planA = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
-      operation: 'plan_get',
-      plan_id: sharedPlanId,
-      repo_id: repoA.repoId,
-    }));
+    const planA = structured(
+      await callRuntimeTool(unscopedCtx, 'rh_work', {
+        operation: 'plan_get',
+        plan_id: sharedPlanId,
+        repo_id: repoA.repoId,
+      }),
+    );
     expect(planA.status).toBe('ok');
     expect((planA.data as { plan?: { goal?: string } })?.plan?.goal).toBe('Goal in Repo A');
 
-    const planB = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
-      operation: 'plan_get',
-      plan_id: sharedPlanId,
-      repo_id: repoB.repoId,
-    }));
+    const planB = structured(
+      await callRuntimeTool(unscopedCtx, 'rh_work', {
+        operation: 'plan_get',
+        plan_id: sharedPlanId,
+        repo_id: repoB.repoId,
+      }),
+    );
     expect(planB.status).toBe('ok');
     expect((planB.data as { plan?: { goal?: string } })?.plan?.goal).toBe('Goal in Repo B');
-
-    const workA = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
-      operation: 'get',
-      work_id: sharedWorkId,
-      repo_id: repoA.repoId,
-    }));
-    expect(workA.status).toBe('ok');
-    expect((workA.data as { work?: { workId?: string } })?.work?.workId).toBe(sharedWorkId);
 
     // Explicit repo_id where id does not exist => not_found for that scope, does NOT pick from another scope
     const nonExistentRepoRoot = tempRoot('forge-semantic-routing-c-');
     initGitRepo(nonExistentRepoRoot, 'routing-c');
     const repoC = registerRepository({ path: nonExistentRepoRoot, controllerHome, displayName: 'Repo C' });
-    const missingInC = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
-      operation: 'plan_get',
-      plan_id: sharedPlanId,
-      repo_id: repoC.repoId,
-    }));
+    const missingInC = structured(
+      await callRuntimeTool(unscopedCtx, 'rh_work', {
+        operation: 'plan_get',
+        plan_id: sharedPlanId,
+        repo_id: repoC.repoId,
+      }),
+    );
     expect(missingInC.status).toBe('not_found');
     expect(missingInC.summary).toContain(repoC.repoId);
 
-    const missingWorkInC = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
-      operation: 'get',
-      work_id: sharedWorkId,
-      repo_id: repoC.repoId,
-    }));
-    expect(missingWorkInC.status).toBe('not_found');
-    expect(missingWorkInC.summary).toContain(repoC.repoId);
-
     // Unscoped revise when ambiguous => SEMANTIC_ID_SCOPE_AMBIGUOUS
-    const ambiguousRevisePlan = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
-      operation: 'plan_revise',
-      plan_id: sharedPlanId,
-      expected_revision: 1,
-      objective: 'Cannot revise ambiguously',
-    }));
+    const ambiguousRevisePlan = structured(
+      await callRuntimeTool(unscopedCtx, 'rh_work', {
+        operation: 'plan_revise',
+        plan_id: sharedPlanId,
+        expected_revision: 1,
+        objective: 'Cannot revise ambiguously',
+      }),
+    );
     expect(ambiguousRevisePlan.status).toBe('blocked');
     expect(ambiguousRevisePlan.summary).toContain('SEMANTIC_ID_SCOPE_AMBIGUOUS');
 
     // Explicit scoped revise => succeeds for the exact scope
-    const revisedPlanB = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
-      operation: 'plan_revise',
-      plan_id: sharedPlanId,
-      repo_id: repoB.repoId,
-      expected_revision: 1,
-      objective: 'Revised Goal in Repo B',
-    }));
+    const revisedPlanB = structured(
+      await callRuntimeTool(unscopedCtx, 'rh_work', {
+        operation: 'plan_revise',
+        plan_id: sharedPlanId,
+        repo_id: repoB.repoId,
+        expected_revision: 1,
+        objective: 'Revised Goal in Repo B',
+      }),
+    );
     expect(revisedPlanB.status).toBe('ok');
     expect((revisedPlanB.data as { plan?: { revision?: number } })?.plan?.revision).toBe(2);
-
-    // Assert Repo B work is still revision 1
-    const workBAfter = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
-      operation: 'get',
-      work_id: sharedWorkId,
-      repo_id: repoB.repoId,
-    }));
-    expect((workBAfter.data as { work?: { revision?: number } })?.work?.revision).toBe(1);
   });
 
   test('resolver prefers package root over ambient execution cwd', () => {
@@ -477,10 +514,14 @@ describe('runtime source isolation', () => {
     const releaseRoot = tempRoot('forge-release-controller-plugin-managed-');
     ensureControllerHome(controllerHome);
     const sidecar = join(releaseRoot, 'forge-plugin-action-sidecar');
-    writeFileSync(sidecar, `#!/bin/sh
+    writeFileSync(
+      sidecar,
+      `#!/bin/sh
 sleep 1
 printf '{"ok":true}\\n'
-`, { mode: 0o700 });
+`,
+      { mode: 0o700 },
+    );
 
     const previousReleasePath = process.env.FORGE_RELEASE_PATH;
     process.env.FORGE_RELEASE_PATH = releaseRoot;
@@ -510,29 +551,29 @@ printf '{"ok":true}\\n'
       expect(second.handle.processId).toBe(first.handle.processId);
       expect(second.handle.deduplicated).toBe(true);
 
-      await expect(startManagedControllerPluginAction({
-        controllerHome,
-        request: { ...request, args: { value: 2 } },
-        interactiveWaitMs: 0,
-        timeoutMs: 10_000,
-      })).rejects.toThrow('PROCESS_REQUEST_CONFLICT');
+      await expect(
+        startManagedControllerPluginAction({
+          controllerHome,
+          request: { ...request, args: { value: 2 } },
+          interactiveWaitMs: 0,
+          timeoutMs: 10_000,
+        }),
+      ).rejects.toThrow('PROCESS_REQUEST_CONFLICT');
 
-      const completed = await waitManagedControllerPluginAction(
-        controllerHome,
-        first.handle.processId,
-        10_000,
-      );
+      const completed = await waitManagedControllerPluginAction(controllerHome, first.handle.processId, 10_000);
       expect(completed.completed).toBe(true);
       expect(completed.ok).toBe(false);
       expect(completed.stderrTail ?? '').toContain('PROCESS_RUNNER_TRUSTED_RUNTIME_CHILD_INVALID');
       expect(completed.processId).toBe(first.handle.processId);
 
-      await expect(startManagedControllerPluginAction({
-        controllerHome,
-        request: { ...request, args: { value: 3 } },
-        interactiveWaitMs: 0,
-        timeoutMs: 10_000,
-      })).rejects.toThrow('PROCESS_REQUEST_CONFLICT');
+      await expect(
+        startManagedControllerPluginAction({
+          controllerHome,
+          request: { ...request, args: { value: 3 } },
+          interactiveWaitMs: 0,
+          timeoutMs: 10_000,
+        }),
+      ).rejects.toThrow('PROCESS_REQUEST_CONFLICT');
     } finally {
       if (previousReleasePath === undefined) delete process.env.FORGE_RELEASE_PATH;
       else process.env.FORGE_RELEASE_PATH = previousReleasePath;
@@ -545,12 +586,15 @@ printf '{"ok":true}\\n'
     const sourceCommit = git(parent, 'rev-parse', 'HEAD');
     const releaseRoot = join(parent, '_ops', 'controller-home', 'supervisor', 'releases', `release-${sourceCommit}`);
     mkdirSync(releaseRoot, { recursive: true });
-    writeFileSync(join(releaseRoot, 'manifest.json'), JSON.stringify({
-      schemaVersion: 3,
-      releaseRevision: sourceCommit,
-      sourceCommit,
-      cleanWorkspace: true,
-    }));
+    writeFileSync(
+      join(releaseRoot, 'manifest.json'),
+      JSON.stringify({
+        schemaVersion: 3,
+        releaseRevision: sourceCommit,
+        sourceCommit,
+        cleanWorkspace: true,
+      }),
+    );
 
     writeFileSync(join(parent, 'src', 'newer-main.ts'), 'export const newerMain = true;\n');
     git(parent, 'add', '.');
@@ -573,12 +617,15 @@ printf '{"ok":true}\\n'
     const sourceCommit = git(parent, 'rev-parse', 'HEAD');
     const releaseRoot = join(parent, '_ops', 'controller-home', 'runtime', 'releases', `release-${sourceCommit}`);
     mkdirSync(releaseRoot, { recursive: true });
-    writeFileSync(join(releaseRoot, 'manifest.json'), JSON.stringify({
-      schemaVersion: 3,
-      releaseRevision: sourceCommit,
-      sourceCommit,
-      cleanWorkspace: true,
-    }));
+    writeFileSync(
+      join(releaseRoot, 'manifest.json'),
+      JSON.stringify({
+        schemaVersion: 3,
+        releaseRevision: sourceCommit,
+        sourceCommit,
+        cleanWorkspace: true,
+      }),
+    );
     const active = collectRuntimeSourceIdentity(releaseRoot);
     pinRuntimeSource(parent);
     writeFileSync(join(parent, 'src', 'gateway-main-advanced.ts'), 'export const gatewayAdvanced = true;\n');
@@ -596,15 +643,25 @@ printf '{"ok":true}\\n'
     const releaseParent = tempRoot('forge-bound-release-parent-');
     initGitRepo(releaseParent, 'controller-runtime-fixture');
     const releaseCommit = git(releaseParent, 'rev-parse', 'HEAD');
-    const releaseRoot = join(releaseParent, '_ops', 'controller-home', 'runtime', 'releases', `release-${releaseCommit}`);
+    const releaseRoot = join(
+      releaseParent,
+      '_ops',
+      'controller-home',
+      'runtime',
+      'releases',
+      `release-${releaseCommit}`,
+    );
     mkdirSync(releaseRoot, { recursive: true });
-    writeFileSync(join(releaseRoot, 'manifest.json'), JSON.stringify({
-      schemaVersion: 3,
-      releaseId: `release-${releaseCommit}`,
-      releaseRevision: `release-${releaseCommit}`,
-      sourceCommit: releaseCommit,
-      cleanWorkspace: true,
-    }));
+    writeFileSync(
+      join(releaseRoot, 'manifest.json'),
+      JSON.stringify({
+        schemaVersion: 3,
+        releaseId: `release-${releaseCommit}`,
+        releaseRevision: `release-${releaseCommit}`,
+        sourceCommit: releaseCommit,
+        cleanWorkspace: true,
+      }),
+    );
     const sourceRoot = tempRoot('forge-independent-source-');
     initGitRepo(sourceRoot, 'independent-controller-source');
     const previous = {
@@ -627,7 +684,8 @@ printf '{"ok":true}\\n'
       expect(releaseIdentity.canonicalRoot).toBe(realpathSync(releaseRoot));
       expect(releaseIdentity.releaseRevision).toBe(`release-${releaseCommit}`);
     } finally {
-      const restore = (key: string, value: string | undefined) => value === undefined ? delete process.env[key] : process.env[key] = value;
+      const restore = (key: string, value: string | undefined) =>
+        value === undefined ? delete process.env[key] : (process.env[key] = value);
       restore('FORGE_RELEASE_PATH', previous.path);
       restore('FORGE_RELEASE_ID', previous.id);
       restore('FORGE_RELEASE_REVISION', previous.revision);
@@ -652,7 +710,10 @@ printf '{"ok":true}\\n'
     initGitRepo(parent, 'controller-runtime-fixture');
     const releaseRoot = join(parent, '_ops', 'controller-home', 'supervisor', 'releases', 'invalid-release');
     mkdirSync(releaseRoot, { recursive: true });
-    writeFileSync(join(releaseRoot, 'manifest.json'), JSON.stringify({ sourceCommit: git(parent, 'rev-parse', 'HEAD') }));
+    writeFileSync(
+      join(releaseRoot, 'manifest.json'),
+      JSON.stringify({ sourceCommit: git(parent, 'rev-parse', 'HEAD') }),
+    );
 
     expect(() => collectRuntimeSourceIdentity(releaseRoot)).toThrow(/RUNTIME_RELEASE_MANIFEST_INCOMPLETE/);
   });
@@ -667,10 +728,7 @@ printf '{"ok":true}\\n'
     const active = collectRuntimeSourceIdentity(runtimeRoot);
     pinRuntimeSource(runtimeRoot);
 
-    const withExecutionOverride = evaluateRuntimeSourceDrift(
-      active,
-      collectRuntimeSourceIdentity(businessRoot),
-    );
+    const withExecutionOverride = evaluateRuntimeSourceDrift(active, collectRuntimeSourceIdentity(businessRoot));
     expect(withExecutionOverride.restartRequired).toBe(true);
     expect(withExecutionOverride.reasons.some((reason) => reason.includes('runtime source root moved'))).toBe(true);
 
@@ -787,10 +845,12 @@ printf '{"ok":true}\\n'
     });
 
     const repository = registerRepository({ path: businessRoot, controllerHome, displayName: 'Business' });
-    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
-      repo_id: repository.repoId,
-      operation: 'get',
-    }));
+    const payload = structured(
+      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
+        repo_id: repository.repoId,
+        operation: 'get',
+      }),
+    );
     const data = payload.data as {
       readiness: { ready: boolean; reasonCodes: string[] };
       repositoryState?: { branch?: string | null };
@@ -807,7 +867,6 @@ printf '{"ok":true}\\n'
     }
   });
 
-
   test('rh_status partitions active processes by exact checkout and excludes terminal processes', async () => {
     const business = tempRoot('forge-status-process-scope-');
     const controllerHome = tempRoot('forge-home-process-scope-');
@@ -817,43 +876,81 @@ printf '{"ok":true}\\n'
     const worktree = join(controllerHome, 'other-checkout');
     git(business, 'worktree', 'add', '-q', '-b', 'other-checkout', worktree);
     const registry = addRepositoryCheckout({ repoId: repository.repoId, path: worktree, controllerHome });
-    const otherCheckout = registry.checkouts.find(item => item.canonicalRoot === realpathSync(worktree))!;
-    const otherRepository = resolveRepositorySelection({ repoId: repository.repoId, checkoutId: otherCheckout.checkoutId, controllerHome });
+    const otherCheckout = registry.checkouts.find((item) => item.canonicalRoot === realpathSync(worktree))!;
+    const otherRepository = resolveRepositorySelection({
+      repoId: repository.repoId,
+      checkoutId: otherCheckout.checkoutId,
+      controllerHome,
+    });
     const otherHandle = await spawnManagedProcess({
-      controllerHome, repoId: repository.repoId, checkoutId: otherCheckout.checkoutId,
+      controllerHome,
+      repoId: repository.repoId,
+      checkoutId: otherCheckout.checkoutId,
       executionIdentity: executionIdentityForRepository(otherRepository),
-      command: { kind: 'argv', executable: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], cwd: worktree },
-      timeoutMs: 15000, returnHandleImmediately: true,
+      command: {
+        kind: 'argv',
+        executable: process.execPath,
+        args: ['-e', 'setInterval(() => {}, 1000)'],
+        cwd: worktree,
+      },
+      timeoutMs: 15000,
+      returnHandleImmediately: true,
     });
     const handle = await spawnManagedProcess({
-      controllerHome, repoId: repository.repoId,
+      controllerHome,
+      repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(repository),
-      command: { kind: 'argv', executable: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], cwd: business },
-      timeoutMs: 15000, returnHandleImmediately: true,
+      command: {
+        kind: 'argv',
+        executable: process.execPath,
+        args: ['-e', 'setInterval(() => {}, 1000)'],
+        cwd: business,
+      },
+      timeoutMs: 15000,
+      returnHandleImmediately: true,
     });
     try {
-      const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
-        repo_id: repository.repoId, detail_level: 'detail',
-      }));
-      const data = payload.data as { activeProcessCount: number; activeProcessScopes: { checkoutCounts: Record<string, number>; unscopedCount: number } };
+      const payload = structured(
+        await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
+          repo_id: repository.repoId,
+          detail_level: 'detail',
+        }),
+      );
+      const data = payload.data as {
+        activeProcessCount: number;
+        activeProcessScopes: { checkoutCounts: Record<string, number>; unscopedCount: number };
+      };
       expect(data.activeProcessCount).toBe(2);
-      expect(data.activeProcessScopes).toEqual({ checkoutCounts: { [repository.activeCheckoutId!]: 1, [otherCheckout.checkoutId]: 1 }, unscopedCount: 0 });
+      expect(data.activeProcessScopes).toEqual({
+        checkoutCounts: { [repository.activeCheckoutId!]: 1, [otherCheckout.checkoutId]: 1 },
+        unscopedCount: 0,
+      });
       updateProcessRecord(controllerHome, repository.repoId, otherHandle.processId, { checkoutId: undefined });
-      const unknownPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
-        repo_id: repository.repoId, detail_level: 'detail',
-      }));
+      const unknownPayload = structured(
+        await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
+          repo_id: repository.repoId,
+          detail_level: 'detail',
+        }),
+      );
       expect((unknownPayload.data as Record<string, unknown>).activeProcessScopes).toEqual({
-        checkoutCounts: { [repository.activeCheckoutId!]: 1 }, unscopedCount: 1,
+        checkoutCounts: { [repository.activeCheckoutId!]: 1 },
+        unscopedCount: 1,
       });
     } finally {
       await cancelProcess(controllerHome, repository.repoId, handle.processId);
       await cancelProcess(controllerHome, repository.repoId, otherHandle.processId);
     }
-    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
-      repo_id: repository.repoId, detail_level: 'detail',
-    }));
-    expect((payload.data as Record<string, unknown>).activeProcessScopes).toEqual({ checkoutCounts: {}, unscopedCount: 0 });
+    const payload = structured(
+      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
+        repo_id: repository.repoId,
+        detail_level: 'detail',
+      }),
+    );
+    expect((payload.data as Record<string, unknown>).activeProcessScopes).toEqual({
+      checkoutCounts: {},
+      unscopedCount: 0,
+    });
   });
 
   test('rh_status keeps maintenance diagnostic opt-in on a clean Controller', async () => {
@@ -863,9 +960,13 @@ printf '{"ok":true}\\n'
     ensureControllerHome(controllerHome);
     const repository = registerRepository({ path: business, controllerHome, displayName: 'Status Maintenance' });
 
-    const defaultPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
-      repo_id: repository.repoId, operation: 'get', detail_level: 'detail',
-    }));
+    const defaultPayload = structured(
+      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
+        repo_id: repository.repoId,
+        operation: 'get',
+        detail_level: 'detail',
+      }),
+    );
     const defaultData = defaultPayload.data as {
       readiness?: { diagnostics?: { semantics?: Record<string, unknown> } };
     };
@@ -875,9 +976,14 @@ printf '{"ok":true}\\n'
       maintenanceObservation: 'not_requested',
     });
 
-    const observedPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
-      repo_id: repository.repoId, operation: 'get', detail_level: 'detail', include_maintenance: true,
-    }));
+    const observedPayload = structured(
+      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
+        repo_id: repository.repoId,
+        operation: 'get',
+        detail_level: 'detail',
+        include_maintenance: true,
+      }),
+    );
     const observedData = observedPayload.data as typeof defaultData;
     expect(observedData.readiness?.diagnostics?.semantics).toMatchObject({
       maintenanceObservation: 'observed',
@@ -885,27 +991,37 @@ printf '{"ok":true}\\n'
     expect(typeof observedData.readiness?.diagnostics?.semantics?.maintenanceCandidateCount).toBe('number');
   });
 
-
   test('rh_context knowledge-only search audits learned memory within current Project and Workspace scopes', async () => {
     const business = tempRoot('forge-context-knowledge-audit-');
     const controllerHome = tempRoot('forge-home-context-knowledge-audit-');
     initGitRepo(business, 'context-knowledge-audit');
     ensureControllerHome(controllerHome);
     const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Knowledge Audit' });
-    const instance = ensureForgeInstanceIdentity({ controllerHome, preferredInstanceId: 'forge-context-knowledge-audit' });
+    const instance = ensureForgeInstanceIdentity({
+      controllerHome,
+      preferredInstanceId: 'forge-context-knowledge-audit',
+    });
     writeWorkspaceIdentity({ controllerHome, value: { workspaceId: 'workspace-audit', title: 'Audit Workspace' } });
-    writeProjectIdentity({ controllerHome, value: { projectId: 'project-audit', workspaceId: 'workspace-audit', displayName: 'Audit Project' } });
-    writeProjectPlacement({ controllerHome, value: {
-      projectId: 'project-audit',
-      forgeInstanceId: instance.instanceId,
-      repositoryId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-    } });
+    writeProjectIdentity({
+      controllerHome,
+      value: { projectId: 'project-audit', workspaceId: 'workspace-audit', displayName: 'Audit Project' },
+    });
+    writeProjectPlacement({
+      controllerHome,
+      value: {
+        projectId: 'project-audit',
+        forgeInstanceId: instance.instanceId,
+        repositoryId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+      },
+    });
     const auditScope = { schemaVersion: 1 as const, kind: 'project' as const, id: 'project-audit' };
     const authority: CognitiveWriteAuthorityPort = {
       assertMemoryWrite() {},
       assertEdgeWrite() {},
-      evidenceAvailable() { return true; },
+      evidenceAvailable() {
+        return true;
+      },
     };
     recordCognitiveMemory(cognitionMemoryStore(controllerHome), authority, {
       id: 'mem:rh-context-audit',
@@ -926,38 +1042,49 @@ printf '{"ok":true}\\n'
       counterEvidenceRefs: [],
     });
 
-    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
-      repo_id: repository.repoId,
-      operation: 'search',
-      knowledge_query: 'self explanatory',
-      knowledge_concept: 'product.interaction',
-      knowledge_limit: 8,
-      detail_level: 'detail',
-    }));
-    const data = payload.data as { cognitionAudit?: {
-      readonly?: boolean;
-      advisoryOnly?: boolean;
-      authorityBoundary?: string;
-      scopes?: Array<{ kind?: string; id?: string }>;
-      items?: Array<{ memory?: { id?: string; confidence?: number; provenance?: { sourceKind?: string; sourceId?: string } }; activation?: { reasons?: unknown[] } }>;
-    } };
+    const payload = structured(
+      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+        repo_id: repository.repoId,
+        operation: 'search',
+        knowledge_query: 'self explanatory',
+        knowledge_concept: 'product.interaction',
+        knowledge_limit: 8,
+        detail_level: 'detail',
+      }),
+    );
+    const data = payload.data as {
+      cognitionAudit?: {
+        readonly?: boolean;
+        advisoryOnly?: boolean;
+        authorityBoundary?: string;
+        scopes?: Array<{ kind?: string; id?: string }>;
+        items?: Array<{
+          memory?: { id?: string; confidence?: number; provenance?: { sourceKind?: string; sourceId?: string } };
+          activation?: { reasons?: unknown[] };
+        }>;
+      };
+    };
     expect(data.cognitionAudit).toMatchObject({ readonly: true, advisoryOnly: true });
     expect(data.cognitionAudit?.authorityBoundary).toContain('never overrides');
-    expect(data.cognitionAudit?.scopes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'project', id: 'project-audit' }),
-      expect.objectContaining({ kind: 'workspace', id: 'workspace-audit' }),
-    ]));
-    expect(data.cognitionAudit?.items).toContainEqual(expect.objectContaining({
-      memory: expect.objectContaining({
-        id: 'mem:rh-context-audit',
-        confidence: 0.94,
-        provenance: expect.objectContaining({
-          sourceKind: 'controller',
-          sourceId: 'controller-learning:audit',
+    expect(data.cognitionAudit?.scopes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'project', id: 'project-audit' }),
+        expect.objectContaining({ kind: 'workspace', id: 'workspace-audit' }),
+      ]),
+    );
+    expect(data.cognitionAudit?.items).toContainEqual(
+      expect.objectContaining({
+        memory: expect.objectContaining({
+          id: 'mem:rh-context-audit',
+          confidence: 0.94,
+          provenance: expect.objectContaining({
+            sourceKind: 'controller',
+            sourceId: 'controller-learning:audit',
+          }),
         }),
+        activation: expect.objectContaining({ reasons: expect.any(Array) }),
       }),
-      activation: expect.objectContaining({ reasons: expect.any(Array) }),
-    }));
+    );
   });
 
   test('rh_context keeps incidental TypeScript dependency denials diagnostic but blocks denied requested sources', async () => {
@@ -965,66 +1092,140 @@ printf '{"ok":true}\\n'
     const controllerHome = tempRoot('forge-home-context-ts-materiality-');
     initGitRepo(business, 'context-ts-materiality');
     mkdirSync(join(business, 'node_modules', 'dummy-dependency'), { recursive: true });
-    writeFileSync(join(business, 'node_modules', 'dummy-dependency', 'index.d.ts'), 'export interface External { value: string };\n');
-    writeFileSync(join(business, 'tsconfig.json'), JSON.stringify({
-      compilerOptions: { module: 'CommonJS', moduleResolution: 'Node', target: 'ES2022' },
-      include: ['src/**/*.ts'],
-    }));
+    writeFileSync(
+      join(business, 'node_modules', 'dummy-dependency', 'index.d.ts'),
+      'export interface External { value: string };\n',
+    );
+    writeFileSync(
+      join(business, 'tsconfig.json'),
+      JSON.stringify({
+        compilerOptions: { module: 'CommonJS', moduleResolution: 'Node', target: 'ES2022' },
+        include: ['src/**/*.ts'],
+      }),
+    );
     writeFileSync(join(business, 'src', 'helper.ts'), 'export const helper = 42;\n');
     const definitionLine = 'export const EXPORTED = helper;';
-    writeFileSync(join(business, 'src', 'index.ts'),
-      "import type { External } from 'dummy-dependency';\nimport { helper } from './helper';\n" + definitionLine + '\n');
+    writeFileSync(
+      join(business, 'src', 'index.ts'),
+      "import type { External } from 'dummy-dependency';\nimport { helper } from './helper';\n" + definitionLine + '\n',
+    );
     git(business, 'add', '.');
     git(business, 'commit', '-m', 'typescript fixture');
-    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context TypeScript Materiality' });
+    const repository = registerRepository({
+      path: business,
+      controllerHome,
+      displayName: 'Context TypeScript Materiality',
+    });
     const context = mcpContext(controllerHome, repository);
-    const search = async (path: string, line: number, column: number) => structured(await callRuntimeTool(context, 'rh_context', {
-      repo_id: repository.repoId, operation: 'search', query: 'EXPORTED',
-      known_paths: ['src/index.ts', 'src/helper.ts'], retrieval_mode: 'review',
-      structural_context: 'off', max_files: 4, max_snippets: 8, detail_level: 'raw',
-      semantic_navigation: [{ navigation: 'definition', path, line, column }],
-    }));
+    const search = async (path: string, line: number, column: number) =>
+      structured(
+        await callRuntimeTool(context, 'rh_context', {
+          repo_id: repository.repoId,
+          operation: 'search',
+          query: 'EXPORTED',
+          known_paths: ['src/index.ts', 'src/helper.ts'],
+          retrieval_mode: 'review',
+          structural_context: 'off',
+          max_files: 4,
+          max_snippets: 8,
+          detail_level: 'raw',
+          semantic_navigation: [{ navigation: 'definition', path, line, column }],
+        }),
+      );
     const allowed = (await search('src/index.ts', 3, definitionLine.indexOf('helper') + 2)).data as {
-      readiness?: { status?: string; readyForHighConfidenceMutation?: boolean; semantic?: { status?: string; reasonCodes?: string[] } };
-      semanticNavigation?: { policyDeniedReads?: number; materialPolicyDeniedReads?: number; staticClosure?: { status?: string } };
-      semanticEvidence?: { totalLocations?: number; returnedLocations?: number; truncated?: boolean; locations?: Array<{ path?: string; line?: number; column?: number; navigation?: string }> };
+      readiness?: {
+        status?: string;
+        readyForHighConfidenceMutation?: boolean;
+        semantic?: { status?: string; reasonCodes?: string[] };
+      };
+      semanticNavigation?: {
+        policyDeniedReads?: number;
+        materialPolicyDeniedReads?: number;
+        staticClosure?: { status?: string };
+      };
+      semanticEvidence?: {
+        totalLocations?: number;
+        returnedLocations?: number;
+        truncated?: boolean;
+        locations?: Array<{ path?: string; line?: number; column?: number; navigation?: string }>;
+      };
     };
     expect(allowed.semanticNavigation?.policyDeniedReads).toBeGreaterThan(0);
     expect(allowed.semanticNavigation?.materialPolicyDeniedReads).toBe(0);
     expect(allowed.semanticNavigation?.staticClosure?.status).toBe('complete_for_requested_symbols');
-    expect(allowed.semanticEvidence?.locations).toContainEqual(expect.objectContaining({ path: 'src/helper.ts', line: 1, navigation: 'definition' }));
+    expect(allowed.semanticEvidence?.locations).toContainEqual(
+      expect.objectContaining({ path: 'src/helper.ts', line: 1, navigation: 'definition' }),
+    );
     expect(allowed.semanticEvidence?.returnedLocations).toBeGreaterThan(0);
-    expect(allowed.readiness).toMatchObject({ status: 'ready', readyForHighConfidenceMutation: true, semantic: { status: 'ready', reasonCodes: [] } });
+    expect(allowed.readiness).toMatchObject({
+      status: 'ready',
+      readyForHighConfidenceMutation: true,
+      semantic: { status: 'ready', reasonCodes: [] },
+    });
     const denied = (await search('node_modules/dummy-dependency/index.d.ts', 1, 20)).data as {
       readiness?: { status?: string; semantic?: { reasonCodes?: string[] } };
       semanticNavigation?: { errors?: Array<{ code?: string }> };
     };
     expect(denied.readiness?.status).toBe('insufficient');
     expect(denied.readiness?.semantic?.reasonCodes).toContain('semantic.semantic_navigation_target_denied');
-    expect(denied.semanticNavigation?.errors?.map(error => error.code)).toContain('SEMANTIC_NAVIGATION_TARGET_DENIED');
+    expect(denied.semanticNavigation?.errors?.map((error) => error.code)).toContain(
+      'SEMANTIC_NAVIGATION_TARGET_DENIED',
+    );
   });
 
   test('rh_context search exposes multi-wave readiness and folds semantic failures into mutation readiness', async () => {
     const business = tempRoot('forge-context-readiness-facade-');
     const controllerHome = tempRoot('forge-home-context-readiness-facade-');
     initGitRepo(business, 'context-readiness-facade');
-    writeFileSync(join(business, 'src', 'index.ts'), "import { helper } from './helper';\nexport const ENTRY_MARKER = helper;\n" + '// Source evidence must survive the MCP facade.\n'.repeat(40) + 'export const END_OF_SOURCE_EVIDENCE = true;\n');
+    writeFileSync(
+      join(business, 'src', 'index.ts'),
+      "import { helper } from './helper';\nexport const ENTRY_MARKER = helper;\n" +
+        '// Source evidence must survive the MCP facade.\n'.repeat(40) +
+        'export const END_OF_SOURCE_EVIDENCE = true;\n',
+    );
     writeFileSync(join(business, 'src', 'helper.ts'), 'export const helper = 42;\n');
     const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Readiness Facade' });
-    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
-      repo_id: repository.repoId, operation: 'search', query: 'ENTRY_MARKER', known_paths: ['src/index.ts'], retrieval_mode: 'review', structural_context: 'off', max_files: 4, max_snippets: 8, detail_level: 'raw',
-      semantic_navigation: [{ navigation: 'references', path: 'src/index.ts', line: 0, column: 1 }],
-    }));
-    const data = payload.data as { readiness?: { status?: string; readyForHighConfidenceMutation?: boolean; semantic?: { status?: string; reasonCodes?: string[] }; unresolvedReasonCodes?: string[] }; expansion?: { waveCount?: number; expansionPerformed?: boolean; materializedPaths?: string[] }; semanticNavigation?: { requested?: number; errors?: Array<{ code?: string }> } };
+    const payload = structured(
+      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+        repo_id: repository.repoId,
+        operation: 'search',
+        query: 'ENTRY_MARKER',
+        known_paths: ['src/index.ts'],
+        retrieval_mode: 'review',
+        structural_context: 'off',
+        max_files: 4,
+        max_snippets: 8,
+        detail_level: 'raw',
+        semantic_navigation: [{ navigation: 'references', path: 'src/index.ts', line: 0, column: 1 }],
+      }),
+    );
+    const data = payload.data as {
+      readiness?: {
+        status?: string;
+        readyForHighConfidenceMutation?: boolean;
+        semantic?: { status?: string; reasonCodes?: string[] };
+        unresolvedReasonCodes?: string[];
+      };
+      expansion?: { waveCount?: number; expansionPerformed?: boolean; materializedPaths?: string[] };
+      semanticNavigation?: { requested?: number; errors?: Array<{ code?: string }> };
+    };
     expect(data.expansion).toMatchObject({ expansionPerformed: true });
     expect(data.expansion?.waveCount).toBeGreaterThanOrEqual(2);
     expect(data.expansion?.materializedPaths).toContain('src/helper.ts');
     expect(data.semanticNavigation?.requested).toBe(1);
-    expect(data.semanticNavigation?.errors?.some((entry) => entry.code === 'SEMANTIC_NAVIGATION_REQUEST_INVALID')).toBe(true);
-    expect(data.readiness).toMatchObject({ status: 'insufficient', readyForHighConfidenceMutation: false, semantic: { status: 'error' } });
+    expect(data.semanticNavigation?.errors?.some((entry) => entry.code === 'SEMANTIC_NAVIGATION_REQUEST_INVALID')).toBe(
+      true,
+    );
+    expect(data.readiness).toMatchObject({
+      status: 'insufficient',
+      readyForHighConfidenceMutation: false,
+      semantic: { status: 'error' },
+    });
     expect(data.readiness?.unresolvedReasonCodes).toContain('semantic.semantic_navigation_request_invalid');
     expect(payload.detailLevel).toBe('raw');
-    const source = (payload.data as { files: Array<{ path: string; snippets: Array<{ content: string; truncated: boolean }> }> }).files.find(file => file.path === 'src/index.ts')?.snippets[0];
+    const source = (
+      payload.data as { files: Array<{ path: string; snippets: Array<{ content: string; truncated: boolean }> }> }
+    ).files.find((file) => file.path === 'src/index.ts')?.snippets[0];
     expect(source?.truncated).toBe(false);
     expect(source?.content.length).toBeGreaterThan(1_000);
     expect(source?.content).toContain('END_OF_SOURCE_EVIDENCE');
@@ -1035,25 +1236,52 @@ printf '{"ok":true}\\n'
     const controllerHome = tempRoot('forge-home-context-progressive-candidates-');
     initGitRepo(business, 'context-progressive-candidates');
     writeFileSync(join(business, 'src', 'owner.ts'), 'export function progressiveOwner() { return true; }\n');
-    writeFileSync(join(business, 'src', 'consumer.ts'), "import { progressiveOwner } from './owner';\nexport const result = progressiveOwner();\n");
-    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Progressive Candidates' });
-    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
-      repo_id: repository.repoId, operation: 'search', query: 'Inspect progressiveOwner references',
-      search_terms: ['progressiveOwner'], retrieval_mode: 'plan', structural_context: 'off',
-      max_files: 1, max_snippets: 2, detail_level: 'detail', include_learning_recall: false,
-    }));
-    const data = payload.data as { readiness?: { retrieval?: { omittedCandidateCount?: number } }; omitted?: Array<{ path: string; reason: string }> };
+    writeFileSync(
+      join(business, 'src', 'consumer.ts'),
+      "import { progressiveOwner } from './owner';\nexport const result = progressiveOwner();\n",
+    );
+    const repository = registerRepository({
+      path: business,
+      controllerHome,
+      displayName: 'Context Progressive Candidates',
+    });
+    const payload = structured(
+      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+        repo_id: repository.repoId,
+        operation: 'search',
+        query: 'Inspect progressiveOwner references',
+        search_terms: ['progressiveOwner'],
+        retrieval_mode: 'plan',
+        structural_context: 'off',
+        max_files: 1,
+        max_snippets: 2,
+        detail_level: 'detail',
+        include_learning_recall: false,
+      }),
+    );
+    const data = payload.data as {
+      readiness?: { retrieval?: { omittedCandidateCount?: number } };
+      omitted?: Array<{ path: string; reason: string }>;
+    };
     expect(data.readiness?.retrieval?.omittedCandidateCount).toBeGreaterThan(0);
     expect(data.omitted).toContainEqual(expect.objectContaining({ path: 'src/consumer.ts' }));
     expect(payload.suggestedNextActions).toEqual([]);
     // The caller, not Forge, chooses whether and how to retrieve this path.
-    const followed = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
-      repo_id: repository.repoId, operation: 'search', query: 'Inspect progressiveOwner consumer',
-      known_paths: ['src/consumer.ts'], max_files: 3, max_snippets: 6,
-      retrieval_mode: 'implementation', include_learning_recall: false,
-    }));
-    expect((followed.data as { files: Array<{ path: string }> }).files.map(file => file.path))
-      .toContain('src/consumer.ts');
+    const followed = structured(
+      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+        repo_id: repository.repoId,
+        operation: 'search',
+        query: 'Inspect progressiveOwner consumer',
+        known_paths: ['src/consumer.ts'],
+        max_files: 3,
+        max_snippets: 6,
+        retrieval_mode: 'implementation',
+        include_learning_recall: false,
+      }),
+    );
+    expect((followed.data as { files: Array<{ path: string }> }).files.map((file) => file.path)).toContain(
+      'src/consumer.ts',
+    );
     expect(followed.suggestedNextActions).toEqual([]);
   });
 
@@ -1064,25 +1292,49 @@ printf '{"ok":true}\\n'
     mkdirSync(join(business, 'docs'), { recursive: true });
     writeFileSync(join(business, 'docs', 'first-task.zh-CN.md'), '工作归属应该退役，自动推进需要由需求驱动。\n');
     writeFileSync(join(business, 'src', 'authority.ts'), 'export function requirementAuthority() { return true; }\n');
-    writeFileSync(join(business, 'src', 'scheduler.ts'), "import { requirementAuthority } from './authority';\nexport function schedulerContinue() { return requirementAuthority(); }\n");
+    writeFileSync(
+      join(business, 'src', 'scheduler.ts'),
+      "import { requirementAuthority } from './authority';\nexport function schedulerContinue() { return requirementAuthority(); }\n",
+    );
     git(business, 'add', '.');
     git(business, 'commit', '-qm', 'discovery fixture');
     const repository = registerRepository({ path: business, controllerHome, displayName: 'Source Language Discovery' });
     const context = mcpContext(controllerHome, repository);
     const query = '工作归属应该退役，自动推进需要由需求驱动。';
-    const cold = structured(await callRuntimeTool(context, 'rh_context', {
-      repo_id: repository.repoId, operation: 'search', query, retrieval_mode: 'plan',
-      structural_context: 'off', max_files: 4, max_snippets: 8, include_learning_recall: false,
-    }));
-    expect((cold.data as { files: Array<{ path: string }> }).files.some(file => file.path.startsWith('src/'))).toBe(false);
-    expect((cold.warnings as string[] | undefined)?.some(warning => warning.includes('source-language code terms'))).toBe(true);
-    const grounded = structured(await callRuntimeTool(context, 'rh_context', {
-      repo_id: repository.repoId, operation: 'search', query,
-      search_terms: ['requirement', 'scheduler'], retrieval_mode: 'plan',
-      structural_context: 'off', max_files: 4, max_snippets: 8, include_learning_recall: false,
-    }));
-    expect((grounded.data as { files: Array<{ path: string }> }).files.map(file => file.path))
-      .toEqual(expect.arrayContaining(['src/authority.ts', 'src/scheduler.ts']));
+    const cold = structured(
+      await callRuntimeTool(context, 'rh_context', {
+        repo_id: repository.repoId,
+        operation: 'search',
+        query,
+        retrieval_mode: 'plan',
+        structural_context: 'off',
+        max_files: 4,
+        max_snippets: 8,
+        include_learning_recall: false,
+      }),
+    );
+    expect((cold.data as { files: Array<{ path: string }> }).files.some((file) => file.path.startsWith('src/'))).toBe(
+      false,
+    );
+    expect(
+      (cold.warnings as string[] | undefined)?.some((warning) => warning.includes('source-language code terms')),
+    ).toBe(true);
+    const grounded = structured(
+      await callRuntimeTool(context, 'rh_context', {
+        repo_id: repository.repoId,
+        operation: 'search',
+        query,
+        search_terms: ['requirement', 'scheduler'],
+        retrieval_mode: 'plan',
+        structural_context: 'off',
+        max_files: 4,
+        max_snippets: 8,
+        include_learning_recall: false,
+      }),
+    );
+    expect((grounded.data as { files: Array<{ path: string }> }).files.map((file) => file.path)).toEqual(
+      expect.arrayContaining(['src/authority.ts', 'src/scheduler.ts']),
+    );
   });
 
   test('rh_context runtime-issued closure round-trips into engineering preconditions without depth corruption', async () => {
@@ -1091,22 +1343,30 @@ printf '{"ok":true}\\n'
     initGitRepo(business, 'context-roundtrip-facade');
     writeFileSync(join(business, 'src', 'index.ts'), 'export const ENTRY_MARKER = true;\n');
     writeProjectEngineeringContract(business);
-    git(business, 'add', '.forge/project-engineering.json', '.agents/skills/typescript-engineering/SKILL.md', 'src/index.ts');
+    git(
+      business,
+      'add',
+      '.forge/project-engineering.json',
+      '.agents/skills/typescript-engineering/SKILL.md',
+      'src/index.ts',
+    );
     git(business, 'commit', '-m', 'add engineering contract');
     const sourceRevision = git(business, 'rev-parse', 'HEAD');
     const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Roundtrip Facade' });
     const ctx = mcpContext(controllerHome, repository);
 
-    const contextPayload = structured(await callRuntimeTool(ctx, 'rh_context', {
-      repo_id: repository.repoId,
-      operation: 'search',
-      query: 'ENTRY_MARKER',
-      known_paths: ['src/index.ts'],
-      retrieval_mode: 'implementation',
-      structural_context: 'off',
-      max_files: 2,
-      max_snippets: 4,
-    }));
+    const contextPayload = structured(
+      await callRuntimeTool(ctx, 'rh_context', {
+        repo_id: repository.repoId,
+        operation: 'search',
+        query: 'ENTRY_MARKER',
+        known_paths: ['src/index.ts'],
+        retrieval_mode: 'implementation',
+        structural_context: 'off',
+        max_files: 2,
+        max_snippets: 4,
+      }),
+    );
     const contextData = contextPayload.data as { contextClosure?: Record<string, unknown> };
     const closure = contextData.contextClosure;
     expect(closure).toBeTruthy();
@@ -1114,25 +1374,54 @@ printf '{"ok":true}\\n'
     expect((closure?.readiness as { status?: string } | undefined)?.status).not.toBe('insufficient');
 
     const neutralDecisions = {
-      ownership: 'No ownership change.', single_writer: 'One checkout/EditSession writer.', transaction: 'No transaction change.', lifecycle: 'No lifecycle change.',
-      concurrency: 'No concurrency change.', persistence: 'No persistence change.', failure: 'Fail closed.', projection_cache: 'No projection change.',
-      time: 'No time change.', performance: 'No performance change.', compatibility: 'Backward compatible.',
-      semantic_scope_identity: 'Exact repository/Requirement/Plan scope.', authorization_trust: 'Existing controller authority.', resource_fencing: 'Existing Process/Lease fencing.',
-      deployment_topology: 'No topology change.', schema_evolution_durability: 'No schema change.', idempotency_replay: 'Existing request identity.',
-      retention_gc: 'No retention change.', observability_evidence: 'Git/Process/Check receipts remain authoritative.', recovery_failure_domain: 'No recovery change.',
-      capacity_backpressure: 'No capacity change.', release_upgrade_rollback: 'No release change.', security_privacy: 'No security change.',
-      portability: 'No portability change.', migration_retirement: 'No migration change.',
+      ownership: 'No ownership change.',
+      single_writer: 'One checkout/EditSession writer.',
+      transaction: 'No transaction change.',
+      lifecycle: 'No lifecycle change.',
+      concurrency: 'No concurrency change.',
+      persistence: 'No persistence change.',
+      failure: 'Fail closed.',
+      projection_cache: 'No projection change.',
+      time: 'No time change.',
+      performance: 'No performance change.',
+      compatibility: 'Backward compatible.',
+      semantic_scope_identity: 'Exact repository/Requirement/Plan scope.',
+      authorization_trust: 'Existing controller authority.',
+      resource_fencing: 'Existing Process/Lease fencing.',
+      deployment_topology: 'No topology change.',
+      schema_evolution_durability: 'No schema change.',
+      idempotency_replay: 'Existing request identity.',
+      retention_gc: 'No retention change.',
+      observability_evidence: 'Git/Process/Check receipts remain authoritative.',
+      recovery_failure_domain: 'No recovery change.',
+      capacity_backpressure: 'No capacity change.',
+      release_upgrade_rollback: 'No release change.',
+      security_privacy: 'No security change.',
+      portability: 'No portability change.',
+      migration_retirement: 'No migration change.',
     };
     const engineeringPreconditions = {
       context_closure: closure,
       product_dod: {
         user_outcome: 'Round-trip the exact Context Closure.',
-        completion_conditions: ['Receipt is accepted.'], non_regression: ['Digest validation remains strict.'],
-        performance_expectations: ['No hot-path expansion.'], non_goals: ['No lifecycle changes.'],
+        completion_conditions: ['Receipt is accepted.'],
+        non_regression: ['Digest validation remains strict.'],
+        performance_expectations: ['No hot-path expansion.'],
+        non_goals: ['No lifecycle changes.'],
       },
       design_decision: {
-        semantic_scope_keys: ['context-closure-roundtrip'], mutation_class: 'isolated_write', decisions: neutralDecisions,
-        complexity_budget: { added_writers: 0, added_durable_mechanisms: 0, projection_paths: 0, global_invalidations: 0, lifecycle_hooks: 0, synchronous_critical_path_work: 0, notes: [] },
+        semantic_scope_keys: ['context-closure-roundtrip'],
+        mutation_class: 'isolated_write',
+        decisions: neutralDecisions,
+        complexity_budget: {
+          added_writers: 0,
+          added_durable_mechanisms: 0,
+          projection_paths: 0,
+          global_invalidations: 0,
+          lifecycle_hooks: 0,
+          synchronous_critical_path_work: 0,
+          notes: [],
+        },
       },
       independent_critique: { decision: 'approved', findings: [] },
     };
@@ -1141,19 +1430,27 @@ printf '{"ok":true}\\n'
       repoRoot: business,
       sourceRevision,
       draft: engineeringPreconditions,
-      requirementContext: { objective: 'Prove runtime-issued Context Closure round-trip.', acceptanceCriteria: ['Context Closure round-trips intact.'] },
+      requirementContext: {
+        objective: 'Prove runtime-issued Context Closure round-trip.',
+        acceptanceCriteria: ['Context Closure round-trips intact.'],
+      },
     });
     expect(minted.contextClosureReceiptId).toBe(closure?.receiptId as string | undefined);
 
-    expect(() => mintEngineeringAdmissionEvidence({
-      repoRoot: business,
-      sourceRevision,
-      draft: {
-        ...engineeringPreconditions,
-        context_closure: { ...closure, generatedAt: '2099-01-01T00:00:00.000Z' },
-      },
-      requirementContext: { objective: 'Reject forged Context Closure.', acceptanceCriteria: ['Mutated receipts fail closed.'] },
-    })).toThrow('CONTEXT_CLOSURE_RECEIPT_NOT_ISSUED_BY_RUNTIME');
+    expect(() =>
+      mintEngineeringAdmissionEvidence({
+        repoRoot: business,
+        sourceRevision,
+        draft: {
+          ...engineeringPreconditions,
+          context_closure: { ...closure, generatedAt: '2099-01-01T00:00:00.000Z' },
+        },
+        requirementContext: {
+          objective: 'Reject forged Context Closure.',
+          acceptanceCriteria: ['Mutated receipts fail closed.'],
+        },
+      }),
+    ).toThrow('CONTEXT_CLOSURE_RECEIPT_NOT_ISSUED_BY_RUNTIME');
   });
 
   test('rh_context list query returns bounded read-only intent discovery and preserves plugin_action_execute authority', async () => {
@@ -1162,12 +1459,14 @@ printf '{"ok":true}\\n'
     initGitRepo(business, 'context-capability-search');
     ensureControllerHome(controllerHome);
     const repository = registerRepository({ path: business, controllerHome, displayName: 'Capability Search' });
-    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
-      repo_id: repository.repoId,
-      operation: 'list',
-      query: 'browser login authentication',
-      detail_level: 'summary',
-    }));
+    const payload = structured(
+      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+        repo_id: repository.repoId,
+        operation: 'list',
+        query: 'browser login authentication',
+        detail_level: 'summary',
+      }),
+    );
     const data = payload.data as {
       capabilitySearch?: {
         query?: string;
@@ -1180,7 +1479,9 @@ printf '{"ok":true}\\n'
       query: 'browser login authentication',
       readOnlyDiscovery: true,
     });
-    const computerMatch = data.capabilitySearch?.matches?.find((entry) => entry.capabilityId?.startsWith('plugin.computer.'));
+    const computerMatch = data.capabilitySearch?.matches?.find((entry) =>
+      entry.capabilityId?.startsWith('plugin.computer.'),
+    );
     expect(computerMatch).toBeTruthy();
     expect(computerMatch?.descriptor?.exposedVia).toBe('plugin_action_execute');
   });
@@ -1199,16 +1500,22 @@ printf '{"ok":true}\\n'
     );
     clearAssistantPluginManifestCacheForTest();
 
-    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
-      repo_id: repository.repoId,
-      operation: 'list',
-      query: 'physical iPhone app open',
-      detail_level: 'summary',
-    }));
-    const matches = ((payload.data as { capabilitySearch?: { matches?: Array<{ capabilityId?: string }> } }).capabilitySearch?.matches ?? []);
+    const payload = structured(
+      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+        repo_id: repository.repoId,
+        operation: 'list',
+        query: 'physical iPhone app open',
+        detail_level: 'summary',
+      }),
+    );
+    const matches =
+      (payload.data as { capabilitySearch?: { matches?: Array<{ capabilityId?: string }> } }).capabilitySearch
+        ?.matches ?? [];
     // Computer publishes repository physical-device actions on macOS only.
     // Linux/Windows must not advertise unsupported native iPhone control.
-    expect(matches.some((entry) => entry.capabilityId === 'plugin.computer.physical_device_open')).toBe(process.platform === 'darwin');
+    expect(matches.some((entry) => entry.capabilityId === 'plugin.computer.physical_device_open')).toBe(
+      process.platform === 'darwin',
+    );
     expect(matches.some((entry) => entry.capabilityId === 'plugin.ios.physical_device_open')).toBe(false);
   });
 
@@ -1230,17 +1537,20 @@ printf '{"ok":true}\\n'
     expect(controllerScoped.scope).toBe('controller');
     expect((controllerScoped.plugin as { pluginId?: string }).pluginId).toBe('browser');
 
-    const retiredControllerSentinel = structured(await callRuntimeTool(ctx, 'get_plugin', {
-      repo_id: '__controller__',
-      plugin_id: 'browser',
-    }));
+    const retiredControllerSentinel = structured(
+      await callRuntimeTool(ctx, 'get_plugin', {
+        repo_id: '__controller__',
+        plugin_id: 'browser',
+      }),
+    );
     expect(retiredControllerSentinel.error).toMatchObject({ code: 'PLUGIN_CONTROLLER_REPOSITORY_SENTINEL_RETIRED' });
 
-    const repositoryContextLookup = structured(await callRuntimeTool(ctx, 'get_plugin', {
-      repo_id: repository.repoId,
-      plugin_id: 'browser',
-    }));
+    const repositoryContextLookup = structured(
+      await callRuntimeTool(ctx, 'get_plugin', {
+        repo_id: repository.repoId,
+        plugin_id: 'browser',
+      }),
+    );
     expect(repositoryContextLookup.scope).toBe('controller');
   });
-
 });

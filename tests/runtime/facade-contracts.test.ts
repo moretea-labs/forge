@@ -614,33 +614,28 @@ describe('handoff and facade contracts', () => {
   });
 
   test('keeps frozen MCP carriers bounded and transport-only', () => {
-    const semantic = normalizeRhWorkInputWireMigration({
+    const retired = normalizeRhWorkInputWireMigration({
       operation: 'repair',
       repo_id: 'repo-current',
       request_id: 'frozen-semantic-read',
-      capability_id: `semantic.v1:${JSON.stringify({ operation: 'work_get', work_id: 'WORK-1' })}`,
+      capability_id: 'semantic.v1:' + JSON.stringify({ operation: 'work_get', work_id: 'WORK-1' }),
     });
-    expect(semantic).toMatchObject({
-      ok: true,
-      operation: 'get',
-      args: {
-        operation: 'get',
-        repo_id: 'repo-current',
-        request_id: 'frozen-semantic-read',
-        work_id: 'WORK-1',
-      },
+    expect(retired).toMatchObject({
+      ok: false,
+      summary: 'FROZEN_MCP_SEMANTIC_V1_OPERATION_UNSUPPORTED',
+      data: { operation: 'work_get' },
     });
 
     expect(
       normalizeRhWorkInputWireMigration({
         operation: 'repair',
         work_id: 'WORK-OUTER',
-        capability_id: `semantic.v1:${JSON.stringify({ operation: 'work_get', work_id: 'WORK-INNER' })}`,
+        capability_id: 'controller.current_conversation.enroll',
       }),
     ).toMatchObject({
       ok: false,
-      summary: 'FROZEN_MCP_SEMANTIC_V1_FIELD_CONFLICT',
-      data: { operation: 'work_get', field: 'work_id' },
+      summary: 'WORK_RETIRED',
+      data: { retiredField: 'work_id' },
     });
 
     expect(
@@ -650,8 +645,8 @@ describe('handoff and facade contracts', () => {
       }),
     ).toMatchObject({
       ok: false,
-      summary: 'FROZEN_MCP_SEMANTIC_V1_FIELD_UNSUPPORTED',
-      data: { operation: 'work_get', field: 'lifecycle_phase' },
+      summary: 'FROZEN_MCP_SEMANTIC_V1_OPERATION_UNSUPPORTED',
+      data: { operation: 'work_get' },
     });
 
     expect(
@@ -667,7 +662,6 @@ describe('handoff and facade contracts', () => {
     const enrollment = normalizeRhWorkInputWireMigration({
       operation: 'repair',
       repo_id: 'repo-current',
-      work_id: 'WORK-1',
       request_id: 'frozen-current-conversation',
       capability_id: 'controller.current_conversation.enroll',
     });
@@ -679,14 +673,12 @@ describe('handoff and facade contracts', () => {
         controller_type: 'chatgpt',
         transport_conversation: 'bound',
         enroll_current_conversation: true,
-        work_id: 'WORK-1',
       },
     });
 
     expect(
       normalizeRhWorkInputWireMigration({
         operation: 'repair',
-        work_id: 'WORK-1',
         controller_type: 'codex',
         capability_id: 'controller.current_conversation.enroll',
       }),

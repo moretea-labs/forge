@@ -4,7 +4,10 @@ import { SEMANTIC_SCOPE_KEY } from '../../../src/effects/controller-home';
 import { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { isRhWorkAcceptedOperation } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
-import { findControlPlaneRecordsByKey, readControlPlaneRecord } from '../../../src/runtime/control-plane/persistence/sqlite-store';
+import {
+  findControlPlaneRecordsByKey,
+  readControlPlaneRecord,
+} from '../../../src/runtime/control-plane/persistence/sqlite-store';
 import { result } from './result-adapter';
 import { selected, selectedOptional } from './shared-adapter';
 import { invalidFacadeOperation } from './status-inbox-adapter';
@@ -12,8 +15,6 @@ import { normalizeRhWorkInputWireMigration } from './work-input-wire-migration';
 import { callRhWorkScheduleAdapter, isRhWorkScheduleOperation } from './scheduler-adapter';
 import { callRhWorkRequirementOperation, isRhWorkRequirementOperation } from './work-requirement-operations';
 import { callRhWorkProjectOperation, isRhWorkProjectOperation } from './work-project-operations';
-import { callRhWorkSemanticOperation } from './work-semantic-operations';
-import { callRhWorkListProjection } from './work-list-projection';
 import {
   callRhWorkPlanCreateOperation,
   callRhWorkPlanCreateWithoutRepository,
@@ -29,7 +30,7 @@ export { runFacadeRepair };
 export { runtimeIdentitySnapshot } from './controller-authority-adapter';
 
 export function contextRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 export function contextText(value: unknown, maxChars: number): string | undefined {
@@ -38,11 +39,8 @@ export function contextText(value: unknown, maxChars: number): string | undefine
 }
 
 function semanticStableSpec(operation: string) {
-  if (operation === 'get' || operation === 'get_contract') {
-    return { namespace: 'work_contract', idField: 'work_id', kind: 'work' as const };
-  }
   if (operation === 'plan_get' || operation === 'plan_revise') {
-    return { namespace: 'plan_contract', idField: 'plan_id', kind: 'plan' as const };
+    return { namespace: 'plan_contract', idField: 'plan_id' } as const;
   }
   return undefined;
 }
@@ -57,25 +55,29 @@ async function routeStableSemanticOperation(
 
   const id = String(args[spec.idField] ?? '').trim();
   if (!id) {
-    return result(buildFacadeResult({
-      status: 'not_found',
-      summary: `${spec.kind === 'work' ? 'Historical Work' : 'Plan'} stable id is required.`,
-      data: {},
-    }) as unknown as Record<string, unknown>, true);
+    return result(
+      buildFacadeResult({
+        status: 'not_found',
+        summary: 'Plan stable id is required.',
+        data: {},
+      }) as unknown as Record<string, unknown>,
+      true,
+    );
   }
 
-  const explicitRepoId = typeof args.repo_id === 'string' && args.repo_id.trim()
-    ? args.repo_id.trim()
-    : undefined;
+  const explicitRepoId = typeof args.repo_id === 'string' && args.repo_id.trim() ? args.repo_id.trim() : undefined;
   let targetScope: string;
   if (explicitRepoId) {
     const exact = readControlPlaneRecord<unknown>(ctx.controllerHome, spec.namespace, explicitRepoId, id);
     if (!exact) {
-      return result(buildFacadeResult({
-        status: 'not_found',
-        summary: `${spec.kind === 'work' ? 'Historical Work' : 'Plan'} ${id} not found in repository ${explicitRepoId}.`,
-        data: spec.kind === 'work' ? { workId: id, repoId: explicitRepoId } : { planId: id, repoId: explicitRepoId },
-      }) as unknown as Record<string, unknown>, true);
+      return result(
+        buildFacadeResult({
+          status: 'not_found',
+          summary: 'Plan ' + id + ' not found in repository ' + explicitRepoId + '.',
+          data: { planId: id, repoId: explicitRepoId },
+        }) as unknown as Record<string, unknown>,
+        true,
+      );
     }
     targetScope = explicitRepoId;
   } else {
@@ -93,25 +95,28 @@ async function routeStableSemanticOperation(
           limit: 2,
         });
     if (matches.length === 0) {
-      return result(buildFacadeResult({
-        status: 'not_found',
-        summary: `${spec.kind === 'work' ? 'Historical Work' : 'Plan'} ${id} not found.`,
-        data: spec.kind === 'work' ? { workId: id } : { planId: id },
-      }) as unknown as Record<string, unknown>, true);
+      return result(
+        buildFacadeResult({
+          status: 'not_found',
+          summary: 'Plan ' + id + ' not found.',
+          data: { planId: id },
+        }) as unknown as Record<string, unknown>,
+        true,
+      );
     }
     if (matches.length > 1) {
-      return result(buildFacadeResult({
-        status: 'blocked',
-        summary: `SEMANTIC_ID_SCOPE_AMBIGUOUS: ${id} resolves to ${matches.length} scopes.`,
-        data: { id, scopes: matches.map((record) => record.scope).sort() },
-      }) as unknown as Record<string, unknown>, true);
+      return result(
+        buildFacadeResult({
+          status: 'blocked',
+          summary: `SEMANTIC_ID_SCOPE_AMBIGUOUS: ${id} resolves to ${matches.length} scopes.`,
+          data: { id, scopes: matches.map((record) => record.scope).sort() },
+        }) as unknown as Record<string, unknown>,
+        true,
+      );
     }
     targetScope = matches[0]!.scope;
   }
 
-  if (spec.kind === 'work') {
-    return callRhWorkSemanticOperation({ controllerHome: ctx.controllerHome, scopeKey: targetScope }, operation, args);
-  }
   const planStore = explicitRepoId
     ? { controllerHome: ctx.controllerHome, repoId: explicitRepoId }
     : { controllerHome: ctx.controllerHome, scopeKey: targetScope };
@@ -119,9 +124,8 @@ async function routeStableSemanticOperation(
 }
 
 /**
- * rh_work remains a compatibility namespace for durable Requirement/Plan,
- * schedule/workflow and historical Work reads. Work lifecycle writes are
- * retired; ordinary execution and validation use direct domain capabilities.
+ * Frozen rh_work MCP carrier supports Project, Requirement, Plan, Schedule
+ * and Workflow only. There is no Work execution or historical read surface.
  */
 export async function callWorkAdapter(
   ctx: MultiRepositoryMcpToolContext,
@@ -129,11 +133,14 @@ export async function callWorkAdapter(
 ): Promise<CallToolResult> {
   const wireMigration = normalizeRhWorkInputWireMigration(input);
   if (!wireMigration.ok) {
-    return result(buildFacadeResult({
-      status: 'blocked',
-      summary: wireMigration.summary,
-      data: wireMigration.data,
-    }) as unknown as Record<string, unknown>, true);
+    return result(
+      buildFacadeResult({
+        status: 'blocked',
+        summary: wireMigration.summary,
+        data: wireMigration.data,
+      }) as unknown as Record<string, unknown>,
+      true,
+    );
   }
 
   const args = wireMigration.args;
@@ -172,9 +179,6 @@ export async function callWorkAdapter(
   const repository = selected(ctx, args);
   const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
 
-  const workList = callRhWorkListProjection(store, operation, args);
-  if (workList) return workList;
-
   if (isRhWorkScheduleOperation(operation)) {
     return callRhWorkScheduleAdapter(ctx, repository, operation, args);
   }
@@ -204,7 +208,8 @@ export async function callWorkAdapter(
   if (planCreate) return planCreate;
 
   if (operation === 'repair') {
-    if (typeof args.work_id === 'string' && args.work_id.trim()) return invalidFacadeOperation('rh_work', 'repair_with_work_id');
+    if (typeof args.work_id === 'string' && args.work_id.trim())
+      return invalidFacadeOperation('rh_work', 'repair_with_work_id');
     return runFacadeRepair(ctx, repository, args);
   }
 

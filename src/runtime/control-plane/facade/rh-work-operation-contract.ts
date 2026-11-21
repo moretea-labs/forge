@@ -8,9 +8,6 @@
  */
 export const RH_WORK_OPERATIONS = [
   'repair',
-  'list',
-  'get',
-  'get_contract',
   'launcher_start',
   'project_create',
   'project_list',
@@ -45,9 +42,16 @@ export const RH_WORK_OPERATIONS = [
  * controller-claim vocabulary instead of silently translating it.
  */
 
-// One registry is authoritative for both server admission and model schema.
-// Historical Work remains readable through list/get/get_contract only.
-export const RH_WORK_MODEL_OPERATIONS = RH_WORK_OPERATIONS;
+// The installed MCP schema is frozen for this version; these three legacy
+// enum strings are inert wire tokens, not accepted operations or retained data.
+// A versioned MCP release must remove the strings from the model schema too.
+export const RH_WORK_MODEL_OPERATIONS = [
+  'repair',
+  'list',
+  'get',
+  'get_contract',
+  ...RH_WORK_OPERATIONS.slice(1),
+] as const;
 
 export type RhWorkOperation = (typeof RH_WORK_OPERATIONS)[number];
 
