@@ -3188,12 +3188,19 @@ struct ZenProjectDetailPane: View {
     @State private var openingRequirementId: String?
     @State private var error: String?
     @State private var openError: String?
+    @State private var hoveredTaskId: String?
+    @State private var showsRevisionHistory = false
 
     var body: some View {
         ScrollViewReader { proxy in
         VStack(alignment:.leading,spacing:12) {
             HStack {
-                Button(action:onBack) { Label("返回项目",systemImage:"chevron.left") }
+                Button(action:onBack) {
+                    Label("返回项目",systemImage:"chevron.left")
+                        .labelStyle(.iconOnly)
+                        .frame(width:30,height:30)
+                }
+                .accessibilityLabel("返回项目")
                     .buttonStyle(.plain)
                     .disabled(openingRequirementId != nil)
                 Spacer()
@@ -3203,7 +3210,13 @@ struct ZenProjectDetailPane: View {
                         await load(reset:true)
                         await restoreRequirementPosition(using:proxy)
                     }
-                } label: { Label("刷新",systemImage:"arrow.clockwise") }
+                } label: {
+                    Image(systemName:"arrow.clockwise")
+                        .frame(width:30,height:30)
+                }
+                .buttonStyle(.plain)
+                .help("刷新项目")
+                .accessibilityLabel("刷新项目")
                     .disabled(loading || loadingMore || openingRequirementId != nil)
             }
             if loading { ProgressView().controlSize(.small) }
@@ -3258,13 +3271,32 @@ struct ZenProjectDetailPane: View {
                                 }
                             }
                         }
-                        Divider()
-                        Text("任务概况").font(.system(size:12,weight:.semibold))
-                        Text("待开始 \(detail.taskStatusCounts["planned"] ?? 0) · 进行中 \(detail.taskStatusCounts["active"] ?? 0) · 待你处理 \(detail.taskStatusCounts["waiting_for_user"] ?? 0) · 已完成 \(detail.taskStatusCounts["done"] ?? 0) · 已取消 \(detail.taskStatusCounts["cancelled"] ?? 0) · 阻塞 \(detail.blockedTaskCount)")
-                            .font(.system(size:10)).foregroundStyle(.secondary)
-                        Text("优先级 · 紧急 \(detail.taskPriorityCounts["urgent"] ?? 0) · 高 \(detail.taskPriorityCounts["high"] ?? 0) · 普通 \(detail.taskPriorityCounts["normal"] ?? 0) · 低 \(detail.taskPriorityCounts["low"] ?? 0)")
-                            .font(.system(size:10)).foregroundStyle(.secondary)
-                        Divider()
+                        // Status stays visible; the tasks are the primary content.
+                        ViewThatFits(in:.horizontal) {
+                            HStack(spacing:18) {
+                                projectMetric("待开始",detail.taskStatusCounts["planned"] ?? 0)
+                                projectMetric("进行中",detail.taskStatusCounts["active"] ?? 0)
+                                projectMetric("待处理",detail.taskStatusCounts["waiting_for_user"] ?? 0)
+                                projectMetric("已完成",detail.taskStatusCounts["done"] ?? 0)
+                            }
+                            VStack(alignment:.leading,spacing:8) {
+                                HStack(spacing:18) {
+                                    projectMetric("待开始",detail.taskStatusCounts["planned"] ?? 0)
+                                    projectMetric("进行中",detail.taskStatusCounts["active"] ?? 0)
+                                }
+                                HStack(spacing:18) {
+                                    projectMetric("待处理",detail.taskStatusCounts["waiting_for_user"] ?? 0)
+                                    projectMetric("已完成",detail.taskStatusCounts["done"] ?? 0)
+                                }
+                            }
+                        }
+                        .padding(.vertical,8)
+                        .accessibilityIdentifier("zen.projects.detail.status-summary")
+                        if detail.blockedTaskCount > 0 {
+                            Text("\(detail.blockedTaskCount) 项阻塞")
+                                .font(.system(size:10))
+                                .foregroundStyle(.orange)
+                        }
                         HStack {
                             Text("任务").font(.system(size:12,weight:.semibold))
                             Spacer()
@@ -3297,14 +3329,21 @@ struct ZenProjectDetailPane: View {
                                 if !task.progressSummary.isEmpty {
                                     Text(task.progressSummary).font(.system(size:10)).foregroundStyle(.secondary).lineLimit(2)
                                 }
-                                Text("剩余 \(task.remainingWorkCount) · 证据 \(task.acceptedEvidenceCount) · 依赖 \(task.dependencyCount) · 计划 \(task.linkedPlanCount)")
+                                Text("依赖 \(task.dependencyCount) · 计划 \(task.linkedPlanCount)")
                                     .font(.system(size:9)).foregroundStyle(.tertiary)
                             }
                             .padding(.trailing,14)
                             }
                             .buttonStyle(.plain)
                             .disabled(detail.project.status != "active" || openingRequirementId != nil)
-                            .padding(.vertical,7)
+                            .padding(.horizontal,10)
+                            .padding(.vertical,11)
+                            .background(hoveredTaskId == task.requirementId
+                                        ? Color.primary.opacity(0.045) : Color.clear,
+                                        in:RoundedRectangle(cornerRadius:9,style:.continuous))
+                            .onHover { hovered in
+                                hoveredTaskId = hovered ? task.requirementId : nil
+                            }
                             .overlay(alignment:.trailing) {
                                 if openingRequirementId == task.requirementId {
                                     ProgressView().controlSize(.small)
@@ -3312,7 +3351,6 @@ struct ZenProjectDetailPane: View {
                                     Image(systemName:"chevron.right").font(.system(size:9,weight:.semibold)).foregroundStyle(.tertiary)
                                 }
                             }
-                            .overlay(alignment:.bottom) { Rectangle().fill(Color.primary.opacity(0.055)).frame(height:1) }
                             .id(projectTaskScrollId(task.requirementId,repositoryId:task.repoId))
                             .accessibilityIdentifier("zen.projects.detail.task.\(task.requirementId)")
                             .accessibilityLabel("打开任务 \(task.title)，\(taskScopeLabel(task))")
@@ -3324,25 +3362,33 @@ struct ZenProjectDetailPane: View {
                                 .accessibilityIdentifier("zen.projects.detail.load-more")
                         }
                         if let error { Text(error).font(.system(size:10)).foregroundStyle(.orange) }
-                        Divider()
-                        Text("操作记录").font(.system(size:12,weight:.semibold))
-                        if detail.revisionHistory.isEmpty {
-                            Text("暂无操作记录")
-                                .font(.system(size:10))
-                                .foregroundStyle(.tertiary)
-                                .accessibilityIdentifier("zen.projects.detail.history.empty")
-                        } else {
-                            ForEach(detail.revisionHistory) { record in
-                                HStack(spacing:8) {
-                                    Text("v\(record.revision)").font(.system(size:10,design:.monospaced))
-                                    Text(actionLabel(record.action)).font(.system(size:10))
-                                    Spacer()
-                                    Text(record.recordedAt).font(.system(size:9,design:.monospaced)).foregroundStyle(.tertiary)
+                        DisclosureGroup(isExpanded:$showsRevisionHistory) {
+                            if detail.revisionHistory.isEmpty {
+                                Text("暂无操作记录")
+                                    .font(.system(size:10))
+                                    .foregroundStyle(.tertiary)
+                                    .accessibilityIdentifier("zen.projects.detail.history.empty")
+                            } else {
+                                VStack(alignment:.leading,spacing:10) {
+                                    ForEach(detail.revisionHistory) { record in
+                                        HStack(spacing:8) {
+                                            Text("v\(record.revision)").font(.system(size:10,design:.monospaced))
+                                            Text(actionLabel(record.action)).font(.system(size:10))
+                                            Spacer()
+                                            Text(record.recordedAt).font(.system(size:9,design:.monospaced)).foregroundStyle(.tertiary)
+                                        }
+                                        .accessibilityElement(children:.combine)
+                                        .accessibilityLabel("版本 \(record.revision)，\(actionLabel(record.action))，\(record.recordedAt)")
+                                    }
                                 }
-                                .accessibilityElement(children:.combine)
-                                .accessibilityLabel("版本 \(record.revision)，\(actionLabel(record.action))，\(record.recordedAt)")
+                                .padding(.top,8)
                             }
+                        } label: {
+                            Text("操作记录")
+                                .font(.system(size:11,weight:.medium))
+                                .foregroundStyle(.secondary)
                         }
+                        .accessibilityIdentifier("zen.projects.detail.history")
                     }
                     .frame(maxWidth:.infinity,alignment:.leading)
                 }
@@ -3352,13 +3398,26 @@ struct ZenProjectDetailPane: View {
             }
         }
         .padding(22)
-        .frame(minWidth:540,minHeight:470)
+        .frame(maxWidth:960,minHeight:470)
+        .frame(maxWidth:.infinity,alignment:.center)
         .task {
             await load(reset:true)
             await restoreRequirementPosition(using:proxy)
         }
         .accessibilityIdentifier("zen.projects.detail")
         }
+    }
+
+    private func projectMetric(_ title:String,_ count:Int) -> some View {
+        HStack(alignment:.firstTextBaseline,spacing:5) {
+            Text(String(count))
+                .font(.system(size:14,weight:.semibold))
+                .monospacedDigit()
+            Text(title)
+                .font(.system(size:10))
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children:.combine)
     }
 
     private func restoreRequirementPosition(using proxy:ScrollViewProxy) async {
