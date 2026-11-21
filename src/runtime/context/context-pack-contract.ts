@@ -210,6 +210,7 @@ export interface ControllerContextPackProjection {
       truncated: boolean;
     }>;
     firstPartyKnowledge?: import('./first-party-design-knowledge').FirstPartyDesignKnowledge;
+    firstPartyEngineeringKnowledge?: import('./first-party-design-knowledge').FirstPartyDesignKnowledge;
     coverageGaps: string[];
     truncated: boolean;
   };

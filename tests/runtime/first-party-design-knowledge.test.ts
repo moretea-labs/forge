@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readFirstPartyDesignKnowledge } from '../../src/runtime/context/first-party-design-knowledge';
+import { readFirstPartyDesignKnowledge, readFirstPartyIosEngineeringKnowledge } from '../../src/runtime/context/first-party-design-knowledge';
 
 const root = resolve(import.meta.dir, '../..');
 const manifest = JSON.parse(readFileSync(resolve(root, 'assets/knowledge-packs/v1/manifest.json'), 'utf8')) as {
@@ -16,7 +16,7 @@ describe('first-party Design knowledge package', () => {
   test('tracks its canonical content and source without requiring Forge Design plugin', () => {
     expect(manifest.schemaVersion).toBe(1);
     expect(manifest.packVersion).toBe('v1');
-    expect(manifest.packages.map(entry => entry.id)).toEqual(['design-ui-ux']);
+    expect(manifest.packages.map(entry => entry.id)).toEqual(['design-ui-ux', 'ios-engineering']);
     const entry = manifest.packages[0]!;
     expect(entry.path).toBe('assets/knowledge-packs/v1/design-ui-ux.md');
     expect(entry.authority).toBe('advisory');
@@ -43,6 +43,23 @@ describe('first-party Design knowledge package', () => {
     expect(result.truncated).toBe(false);
   });
 
+  test('pins iOS Engineering separately from Design while using the same verified loader', () => {
+    const entry = manifest.packages.find(pack => pack.id === 'ios-engineering')!;
+    const content = readFileSync(resolve(root, entry.path), 'utf8');
+    expect(entry.path).toBe('assets/knowledge-packs/v1/ios-engineering.md');
+    expect(entry.authority).toBe('advisory');
+    expect(entry.pluginRequired).toBe(false);
+    expect(createHash('sha256').update(content).digest('hex')).toBe(entry.sha256);
+    const ios = readFirstPartyIosEngineeringKnowledge();
+    expect(ios).toMatchObject({
+      id: 'ios-engineering', status: 'ready', source: 'forge_first_party',
+      digest: `sha256:${entry.sha256}`, truncated: false,
+    });
+    expect(ios.sourceProvenance).toContain('moretea-labs/forge:docs/architecture/CURRENT.md');
+    expect(ios.content).toContain('Simulator build is not a physical-device build');
+    expect(ios.content).toContain('Optical centering is not proof');
+  });
+
   test('fails visibly on corrupt or path-forged manifests; never follows an injected path', () => {
     const fakeRoot = mkdtempSync(resolve(tmpdir(), 'forge-design-asset-'));
     const base = resolve(fakeRoot, 'assets/knowledge-packs/v1');
@@ -57,6 +74,16 @@ describe('first-party Design knowledge package', () => {
       writeFileSync(manifestPath, JSON.stringify(manifest));
       writeFileSync(resolve(base, 'design-ui-ux.md'), 'modified content');
       expect(readFirstPartyDesignKnowledge(fakeRoot).reason).toBe('digest_mismatch');
+      // A forged ios-engineering path must never be opened. A tampered
+      // iOS body must be detected independently of the Design pack.
+      const iosEntry = manifest.packages.find(pack => pack.id === 'ios-engineering')!;
+      writeFileSync(manifestPath, JSON.stringify({
+        ...manifest, packages: [{ ...iosEntry, path: '../../outside-ios.md' }],
+      }));
+      expect(readFirstPartyIosEngineeringKnowledge(fakeRoot).reason).toBe('manifest_invalid');
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      writeFileSync(resolve(base, 'ios-engineering.md'), 'modified iOS body');
+      expect(readFirstPartyIosEngineeringKnowledge(fakeRoot).reason).toBe('digest_mismatch');
     } finally {
       rmSync(fakeRoot, { recursive: true, force: true });
     }

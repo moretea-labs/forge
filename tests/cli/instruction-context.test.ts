@@ -35,11 +35,15 @@ describe('repository UI instruction context', () => {
       expect(ui.firstPartyKnowledge?.authority).toBe('advisory');
       expect(ui.firstPartyKnowledge?.content).toContain('Optical centering differs from geometry');
       expect(ui.firstPartyKnowledge?.digest).toMatch(/^sha256:[a-f0-9]{64}$/);
+      expect(ui.firstPartyEngineeringKnowledge?.id).toBe('ios-engineering');
+      expect(ui.firstPartyEngineeringKnowledge?.status).toBe('ready');
+      expect(ui.firstPartyEngineeringKnowledge?.content).toContain('Simulator build is not a physical-device build');
 
       const backend = buildRepositoryInstructionContext(root, policy, ['apps/api/Domain/Medicine.ts'], { uiIntent: 'fix transaction persistence' });
       expect(backend.contracts.map(contract => contract.path)).not.toContain('DESIGN.md');
       expect(backend.contracts.map(contract => contract.path)).not.toContain('docs/mvp2/design/design-rules.md');
       expect(backend.firstPartyKnowledge).toBeUndefined();
+      expect(backend.firstPartyEngineeringKnowledge).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -71,6 +75,7 @@ describe('repository UI instruction context', () => {
       expect(pack.instructionContext.contracts.find(contract => contract.path === 'DESIGN.md')?.content)
         .toContain('No ornamental shadows');
       expect(pack.instructionContext.firstPartyKnowledge?.content).toContain('real rendered screen');
+      expect(pack.instructionContext.firstPartyEngineeringKnowledge?.content).toContain('SwiftUI views declarative');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -139,6 +144,12 @@ describe('repository UI instruction context', () => {
       expect(guidance.contracts).toEqual([]);
       const notUi = buildRepositoryInstructionContext(root, getToolPolicy('controller', { repoRoot: root }), [], { uiIntent: 'repair SQL index' });
       expect(notUi.firstPartyKnowledge).toBeUndefined();
+      expect(notUi.firstPartyEngineeringKnowledge).toBeUndefined();
+      const iosOnly = buildRepositoryInstructionContext(root, getToolPolicy('controller', { repoRoot: root }), [], {
+        uiIntent: 'Xcode signing failure while running XCTest',
+      });
+      expect(iosOnly.firstPartyEngineeringKnowledge?.status).toBe('ready');
+      expect(iosOnly.firstPartyKnowledge).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

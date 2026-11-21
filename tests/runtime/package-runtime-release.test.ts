@@ -5,7 +5,7 @@ import { join } from 'path';
 import { resolveLightweightPluginActionRuntimeInvocation } from '../../src/runtime/plugins/lightweight-action';
 import { spawnSync } from 'child_process';
 import { materializePackageRuntimeRelease, packageRuntimeFileIndex } from '../../src/runtime/root/package-runtime-release';
-import { readFirstPartyDesignKnowledge } from '../../src/runtime/context/first-party-design-knowledge';
+import { readFirstPartyDesignKnowledge, readFirstPartyIosEngineeringKnowledge } from '../../src/runtime/context/first-party-design-knowledge';
 import { assertStorageHeadroom, readStorageCapacity } from '../../src/runtime/shared/storage-capacity';
 
 const roots: string[] = [];
@@ -57,7 +57,7 @@ describe('package Runtime release immutability', () => {
     const { home, packageRoot } = fixture();
     const designAssets = join(packageRoot, 'assets', 'knowledge-packs', 'v1');
     mkdirSync(designAssets, { recursive: true });
-    for (const name of ['manifest.json', 'design-ui-ux.md']) {
+    for (const name of ['manifest.json', 'design-ui-ux.md', 'ios-engineering.md']) {
       writeFileSync(join(designAssets, name), readFileSync(new URL(`../../assets/knowledge-packs/v1/${name}`, import.meta.url)));
     }
     const release = materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'snapshot-source' });
@@ -65,6 +65,9 @@ describe('package Runtime release immutability', () => {
     expect(packagedKnowledge.status).toBe('ready');
     expect(packagedKnowledge.content).toContain('Optical centering differs from geometry');
     expect(packagedKnowledge.digest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    const packagedIos = readFirstPartyIosEngineeringKnowledge(release.packageRoot);
+    expect(packagedIos.status).toBe('ready');
+    expect(packagedIos.content).toContain('Simulator build is not a physical-device build');
 
     expect(release.packageRoot).toBe(join(release.releaseRoot, 'package'));
     expect(readFileSync(join(release.packageRoot, 'src', 'runtime.ts'), 'utf8')).toBe('export const runtime = 1;\n');
@@ -97,6 +100,7 @@ describe('package Runtime release immutability', () => {
     // The canonical Design method remains readable from the immutable release
     // without the source checkout, plugin project, or a global installation.
     expect(readFirstPartyDesignKnowledge(release.packageRoot)).toEqual(packagedKnowledge);
+    expect(readFirstPartyIosEngineeringKnowledge(release.packageRoot)).toEqual(packagedIos);
 
     const launched = spawnSync(release.entrypointPath, [], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' } });
     expect(launched.status).toBe(0);

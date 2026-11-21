@@ -253,9 +253,17 @@ describe('handoff and facade contracts', () => {
     expect(attached).toContain('checkout_id=checkout-medication');
     const adapterSource = readFileSync(new URL('../../adapters/mcp/runtime-gateway/core-capability-adapter.ts', import.meta.url), 'utf8');
     expect(adapterSource).toContain('checkoutId: repository?.activeCheckoutId');
+    const iosUi = conversationPrompt('用 SwiftUI 修复 iPhone 详情页', 'repo-medication', 'checkout-medication');
+    expect(iosUi).toContain('Forge first-party Design/UI-UX guidance (v1');
+    expect(iosUi).toContain('Forge first-party iOS Engineering guidance (v1, sha256:');
+    expect(iosUi).toContain('Simulator build is not a physical-device build');
+    const iosBuild = conversationPrompt('修复 Xcode 签名和 XCTest', 'repo-medication', 'checkout-medication');
+    expect(iosBuild).toContain('Forge first-party iOS Engineering guidance (v1');
+    expect(iosBuild).not.toContain('Forge first-party Design/UI-UX guidance (v1');
     const backend = conversationPrompt('repair PostgreSQL transaction consistency', 'repo-medication', 'checkout-medication');
     expect(backend).not.toContain('Forge first-party Design/UI-UX guidance (v1');
     expect(backend).not.toContain('Optical centering differs from geometry');
+    expect(backend).not.toContain('Forge first-party iOS Engineering guidance (v1');
     const unbound = conversationPrompt('design visual layout', 'repo-medication');
     expect(unbound).not.toContain('Forge first-party Design/UI-UX guidance (v1');
     const detached = conversationPrompt('普通聊天');

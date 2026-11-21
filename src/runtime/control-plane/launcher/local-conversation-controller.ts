@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { extname, isAbsolute, join, relative, sep } from 'path';
 import { redactProcessOutput } from '../../../effects/process-runner';
 import { resolveProviderMcpBootstrap } from './provider-mcp-bootstrap';
-import { readFirstPartyDesignKnowledge, UI_UX_INTENT } from '../../context/first-party-design-knowledge';
+import { readFirstPartyDesignKnowledge, readFirstPartyIosEngineeringKnowledge, UI_UX_INTENT, IOS_ENGINEERING_INTENT } from '../../context/first-party-design-knowledge';
 import {
   buildCodexControllerInvocation,
   launcherProcessEnvironment,
@@ -409,6 +409,12 @@ export function conversationPrompt(prompt: string, repoId?: string, checkoutId?:
   const designContext = designKnowledge?.status === 'ready'
     ? `Forge first-party Design/UI-UX guidance (${designKnowledge.packVersion}, ${designKnowledge.digest}, ${designKnowledge.path}; advisory, never above user/project authority; truncated=${designKnowledge.truncated === true}; sources=${designKnowledge.sourceProvenance?.join(', ') ?? 'unknown'}):\n${designKnowledge.content}`
     : designKnowledge ? `Forge Design/UI-UX guidance unavailable: ${designKnowledge.reason}. Do not claim it was loaded.` : undefined;
+  const engineeringKnowledge = repoId && checkoutId && IOS_ENGINEERING_INTENT.test(prompt)
+    ? readFirstPartyIosEngineeringKnowledge()
+    : undefined;
+  const engineeringContext = engineeringKnowledge?.status === 'ready'
+    ? `Forge first-party iOS Engineering guidance (${engineeringKnowledge.packVersion}, ${engineeringKnowledge.digest}, ${engineeringKnowledge.path}; advisory, source=${engineeringKnowledge.sourceProvenance?.join(', ') ?? 'unknown'}):\n${engineeringKnowledge.content}`
+    : engineeringKnowledge ? `Forge iOS Engineering guidance unavailable: ${engineeringKnowledge.reason}. Do not claim it was loaded.` : undefined;
   const repositoryInstructions = repoId
     ? checkoutId
       ? `Attached repository: ${repoId}; selected checkout: ${checkoutId}. Pass both repo_id=${repoId} and checkout_id=${checkoutId} to every Forge capability that requires repository scope. Before source edits, retrieve current applicable repository guidance through rh_context; if a UI/design task has no known source path yet, start with known_paths=["AGENTS.md"], then expand to relevant module guidance and source. For UI work, use the first-party Design/UI-UX knowledge attached below as general guidance, then retrieve the latest repository and product-specific design facts through rh_context. Explicit user corrections, frozen design and released product baseline take precedence. Absence of actual rendered review must be reported, not implied by coordinates, tests or compilation. Retrieval gaps are not evidence of compliance.`
@@ -419,6 +425,7 @@ export function conversationPrompt(prompt: string, repoId?: string, checkoutId?:
     'Use the injected Forge MCP capabilities for repository, Runtime, and other Forge operations. Work and ControllerRound are retired and must never be created. Create Requirement, Plan, Schedule, or Workflow state only when the user explicitly requests that durable context or trigger.',
     repositoryInstructions,
     ...(designContext ? [designContext] : []),
+    ...(engineeringContext ? [engineeringContext] : []),
     '',
     prompt,
   ].join('\n');

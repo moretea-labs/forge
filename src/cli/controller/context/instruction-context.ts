@@ -2,7 +2,7 @@ import { readFileSync } from 'fs';
 import { posix, resolve } from 'path';
 import type { ToolPolicy } from '../../../runtime/control-plane/tool-policy';
 import { readableFile } from './known-paths';
-import { readFirstPartyDesignKnowledge, UI_UX_INTENT, type FirstPartyDesignKnowledge } from '../../../runtime/context/first-party-design-knowledge';
+import { readFirstPartyDesignKnowledge, readFirstPartyIosEngineeringKnowledge, UI_UX_INTENT, IOS_ENGINEERING_INTENT, type FirstPartyDesignKnowledge } from '../../../runtime/context/first-party-design-knowledge';
 
 const CONTRACT_NAMES = ['AGENTS.md', 'CLAUDE.md'] as const;
 // UI sources need the repository's existing design rules as read evidence,
@@ -27,6 +27,7 @@ export interface RepositoryInstructionContext {
   contracts: RepositoryInstructionContract[];
   /** Generic packaged method; never overrides repository-specific design facts. */
   firstPartyKnowledge?: FirstPartyDesignKnowledge;
+  firstPartyEngineeringKnowledge?: FirstPartyDesignKnowledge;
   coverageGaps: string[];
   truncated: boolean;
 }
@@ -117,7 +118,7 @@ export function buildRepositoryInstructionContext(
     if (rootDesign.ok) designPaths.add(rootDesign.path);
     for (const path of designPaths) {
       const appliesTo = contractTargets.get(path) ?? new Set<string>();
-      targets.forEach(target => appliesTo.add(target));
+      for (const target of targets) appliesTo.add(target);
       contractTargets.set(path, appliesTo);
     }
   }
@@ -127,6 +128,13 @@ export function buildRepositoryInstructionContext(
     coverageGaps.push(`first_party_design_knowledge_unavailable:${firstPartyKnowledge.reason}`);
   }
   if (firstPartyKnowledge?.truncated) coverageGaps.push('first_party_design_knowledge_truncated');
+  const isIosTask = IOS_ENGINEERING_INTENT.test(options.uiIntent ?? '')
+    || targets.some(path => /(?:^|\/)(?:ios|iphone|ipad)(?:\/|$)|\.(?:swift|xcworkspace|xcodeproj|entitlements)$/i.test(path));
+  const firstPartyEngineeringKnowledge = isIosTask ? readFirstPartyIosEngineeringKnowledge() : undefined;
+  if (firstPartyEngineeringKnowledge?.status === 'unavailable') {
+    coverageGaps.push(`first_party_ios_knowledge_unavailable:${firstPartyEngineeringKnowledge.reason}`);
+  }
+  if (firstPartyEngineeringKnowledge?.truncated) coverageGaps.push('first_party_ios_knowledge_truncated');
 
   const orderedPaths = [...contractTargets.keys()].sort((left, right) => {
     const leftDepth = left.split('/').length;
@@ -164,7 +172,8 @@ export function buildRepositoryInstructionContext(
     targetPaths: targets,
     contracts,
     ...(firstPartyKnowledge ? { firstPartyKnowledge } : {}),
+    ...(firstPartyEngineeringKnowledge ? { firstPartyEngineeringKnowledge } : {}),
     coverageGaps: coverageGaps.slice(0, 30),
-    truncated: allTargets.length > targets.length || orderedPaths.length > selectedPaths.length || contracts.some((entry) => entry.truncated) || firstPartyKnowledge?.truncated === true,
+    truncated: allTargets.length > targets.length || orderedPaths.length > selectedPaths.length || contracts.some((entry) => entry.truncated) || firstPartyKnowledge?.truncated === true || firstPartyEngineeringKnowledge?.truncated === true,
   };
 }
