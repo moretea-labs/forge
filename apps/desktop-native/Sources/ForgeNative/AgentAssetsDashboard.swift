@@ -11,6 +11,8 @@ struct AgentAssetsDashboard: View {
     @Binding var showRemoteImages: Bool
     @Binding var searchQuery: String
     @Binding var selectedResourceID: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var focusedResourceId: String?
 
     static func accessibilityIdentifier(for resourceID: String, control: String? = nil) -> String {
         let prefix = "agent.assets.resource.\(resourceID)"
@@ -135,143 +137,262 @@ struct AgentAssetsDashboard: View {
     }
 
     var body: some View {
-        let items = resources
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                HStack(spacing: 10) {
-                    Label("\(items.count) 个资源", systemImage: "square.stack.3d.up")
-                        .font(.system(size: 12, weight: .medium))
-                    HStack(spacing:6) {
-                        Image(systemName:"magnifyingglass")
-                            .font(.system(size:10))
-                            .foregroundStyle(.secondary)
-                        TextField("搜索图片、文件或会话",text:$searchQuery)
-                            .textFieldStyle(.plain)
-                            .font(.system(size:11.5))
-                            .accessibilityLabel("搜索资源")
-                            .accessibilityIdentifier("agent.assets.search")
-                        if !searchQuery.isEmpty {
-                            Button { searchQuery = "" } label: {
-                                Image(systemName:"xmark.circle.fill")
-                                    .font(.system(size:10))
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.tertiary)
-                            .help("清除搜索")
-                            .accessibilityLabel("清除资源搜索")
-                        }
-                    }
-                    .padding(.horizontal,8)
-                    .frame(minWidth:120,maxWidth:210)
-                    .frame(height:28)
-                    .background(Color.primary.opacity(0.035),in:RoundedRectangle(cornerRadius:7,style:.continuous))
-                    Toggle("我的附件", isOn: $showLocalResources)
-                        .accessibilityIdentifier("agent.assets.filter.local")
-                    Toggle("回复图片", isOn: $showRemoteImages)
-                        .accessibilityIdentifier("agent.assets.filter.remote")
-                    Spacer(minLength: 8)
-                    Picker("项目", selection: $selectedRepoId) {
-                        Text("全部项目").tag("")
-                        ForEach(model.projects) { project in
-                            Text(project.label).tag(project.repoId)
-                        }
-                    }
-                    .frame(maxWidth: 200)
-                    .accessibilityIdentifier("agent.assets.project-filter")
-                }
-                .toggleStyle(.checkbox)
-                .font(.system(size: 11.5))
-                .padding(.bottom, 5)
+        GeometryReader { geometry in
+            let items = resources
+            let compact = geometry.size.width < 740
+            let chosen = items.first(where: { $0.id == focusedResourceId })
+
+            VStack(spacing:0) {
+                resourceToolbar(count:items.count)
 
                 if items.isEmpty {
-                    VStack(spacing: 9) {
-                        Image(systemName: "square.stack.3d.up").font(.system(size: 28)).foregroundStyle(.tertiary)
-                        Text(searchQuery.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty ? "暂无资源" : "没有匹配的资源")
-                            .font(.system(size: 14, weight: .medium))
+                    VStack(spacing:10) {
+                        Image(systemName:"square.stack.3d.up")
+                            .font(.system(size:27,weight:.light))
+                            .foregroundStyle(.tertiary)
+                        Text(searchQuery.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+                             ? "暂无资源" : "没有匹配的资源")
+                            .font(.system(size:13,weight:.medium))
                     }
-                    .frame(maxWidth: .infinity, minHeight: 240)
+                    .frame(maxWidth:.infinity,maxHeight:.infinity)
+                } else if compact, let chosen {
+                    resourceDetail(chosen,compact:true)
+                        .id(chosen.id)
                 } else {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(items) { item in
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack(spacing: 10) {
-                                    Image(systemName: item.kind == .file ? "doc" : item.remote ? "network" : "photo")
-                                        .foregroundStyle(.secondary)
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(item.title).font(.system(size: 12, weight: .medium))
-                                            .lineLimit(1)
-                                        Button {
-                                            selectedResourceID = item.id
-                                            model.selectThread(item.threadId, messageId: item.messageId)
-                                        } label: {
-                                            HStack(spacing: 4) {
-                                                Text(item.threadTitle)
-                                                    .font(.system(size: 10.5))
-                                                    .foregroundStyle(.secondary)
-                                                    .lineLimit(1)
-                                                Image(systemName: "arrow.up.right")
-                                                    .font(.system(size: 8))
-                                                    .foregroundStyle(.tertiary)
-                                                    .accessibilityHidden(true)
-                                            }
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                        }
-                                        .buttonStyle(.plain)
-                                        .help("跳转到原始对话")
-                                        .accessibilityLabel("打开来源会话：\(item.threadTitle)")
-                                        .accessibilityHint("切换到原始对话")
-                                        .accessibilityIdentifier(Self.accessibilityIdentifier(for: item.id, control: "source-thread"))
-                                        Text(item.date.formatted(.dateTime.year().month().day().hour().minute()))
-                                            .font(.system(size: 10)).foregroundStyle(.tertiary)
-                                    }
-                                    Spacer()
-                                }
-                                switch item.kind {
-                                case .remoteImage:
-                                    AgentRemoteImageView(
-                                        label: item.title,
-                                        source: item.source,
-                                        showsLabel: false,
-                                        accessibilityIdentifierPrefix: Self.accessibilityIdentifier(for: item.id, control: "remote-image")
-                                    )
-                                case .localImage:
-                                    AgentLocalImageResourceView(
-                                        path: item.source,
-                                        accessibilityIdentifierPrefix: Self.accessibilityIdentifier(for: item.id, control: "local-image")
-                                    )
-                                case .file:
-                                    AgentLocalFileResourceView(
-                                        model: model,
-                                        repoId: item.repoId,
-                                        checkoutId: item.checkoutId,
-                                        relativePath: item.source,
-                                        rootPath: item.localRoot,
-                                        accessibilityIdentifierPrefix: Self.accessibilityIdentifier(for: item.id, control: "local-file")
-                                    )
-                                }
-                            }
-                            .padding(.vertical, 14)
-                            .accessibilityElement(children: .contain)
-                            .accessibilityIdentifier(Self.accessibilityIdentifier(for: item.id))
-                            .id(item.id)
-                            Divider().opacity(0.4)
+                    HStack(alignment:.top,spacing:0) {
+                        resourceList(items:items,compact:compact)
+                            .frame(width:compact ? nil : min(300,max(240,geometry.size.width * 0.34)))
+                            .frame(maxWidth:compact ? .infinity : nil)
+                        if !compact, let preview = chosen ?? items.first {
+                            resourceDetail(preview,compact:false)
+                                .id(preview.id)
+                                .frame(maxWidth:.infinity,maxHeight:.infinity)
                         }
                     }
                 }
             }
-            .padding(26)
-            .frame(maxWidth: 960, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .center)
+            .frame(maxWidth:.infinity,maxHeight:.infinity)
+            .onChange(of:searchQuery) { _ in
+                // A filtered-out selection should not leave a blank preview.
+                if !resources.contains(where: { $0.id == focusedResourceId }) {
+                    focusedResourceId = nil
+                }
             }
-            .onAppear {
-                guard let target = selectedResourceID else { return }
-                proxy.scrollTo(target, anchor: .center)
-                selectedResourceID = nil
+            .onChange(of:selectedRepoId) { _ in
+                if !resources.contains(where: { $0.id == focusedResourceId }) {
+                    focusedResourceId = nil
+                }
             }
             .accessibilityIdentifier("agent.assets.dashboard")
         }
     }
+
+    private func resourceToolbar(count:Int) -> some View {
+        HStack(spacing:12) {
+            Text("\(count) 项")
+                .font(.system(size:11,weight:.medium))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+
+            HStack(spacing:7) {
+                Image(systemName:"magnifyingglass")
+                    .font(.system(size:11))
+                    .foregroundStyle(.secondary)
+                TextField("搜索文件、图片或会话",text:$searchQuery)
+                    .textFieldStyle(.plain)
+                    .font(.system(size:11.5))
+                    .accessibilityLabel("搜索资源")
+                    .accessibilityIdentifier("agent.assets.search")
+                if !searchQuery.isEmpty {
+                    Button { searchQuery = "" } label: {
+                        Image(systemName:"xmark.circle.fill")
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("清除搜索")
+                    .accessibilityLabel("清除资源搜索")
+                }
+            }
+            .padding(.horizontal,10)
+            .frame(maxWidth:330)
+            .frame(height:30)
+            .background(Color.primary.opacity(0.035),
+                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+
+            Spacer(minLength:0)
+            Menu {
+                Toggle("我的附件",isOn:$showLocalResources)
+                    .accessibilityIdentifier("agent.assets.filter.local")
+                Toggle("回复图片",isOn:$showRemoteImages)
+                    .accessibilityIdentifier("agent.assets.filter.remote")
+            } label: {
+                Image(systemName:"line.3.horizontal.decrease")
+                    .frame(width:28,height:28)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("筛选资源")
+            .accessibilityLabel("筛选资源")
+
+            Picker("项目",selection:$selectedRepoId) {
+                Text("全部项目").tag("")
+                ForEach(model.projects) { project in
+                    Text(project.label).tag(project.repoId)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth:160)
+            .accessibilityIdentifier("agent.assets.project-filter")
+        }
+        .padding(.horizontal,18).padding(.vertical,10)
+        .accessibilityIdentifier("agent.assets.toolbar")
+    }
+
+    private func resourceIcon(_ item:Resource) -> String {
+        switch item.kind {
+        case .remoteImage: return "photo"
+        case .localImage: return "photo.on.rectangle"
+        case .file: return "doc.text"
+        }
+    }
+
+    private func resourceList(items:[Resource],compact:Bool) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment:.leading,spacing:3) {
+                    ForEach(items) { item in
+                        let selected = !compact && item.id == (focusedResourceId ?? items.first?.id)
+                        Button {
+                            withAnimation(reduceMotion ? nil : .easeOut(duration:0.16)) {
+                                focusedResourceId = item.id
+                            }
+                        } label: {
+                            HStack(alignment:.center,spacing:10) {
+                                Image(systemName:resourceIcon(item))
+                                    .font(.system(size:13))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width:22)
+                                VStack(alignment:.leading,spacing:4) {
+                                    Text(item.title)
+                                        .font(.system(size:11.5,weight:selected ? .semibold : .medium))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Text(item.threadTitle)
+                                        .font(.system(size:10))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength:0)
+                                if compact {
+                                    Image(systemName:"chevron.right")
+                                        .font(.system(size:9))
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                            .padding(.horizontal,10).padding(.vertical,12)
+                            .frame(maxWidth:.infinity,alignment:.leading)
+                            .contentShape(RoundedRectangle(cornerRadius:9,style:.continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .background(selected ? Color.primary.opacity(0.055) : Color.clear,
+                                    in:RoundedRectangle(cornerRadius:9,style:.continuous))
+                        .accessibilityLabel("预览资源：\(item.title)")
+                        .accessibilityIdentifier(Self.accessibilityIdentifier(for:item.id))
+                        .id(item.id)
+                    }
+                }
+                .padding(.horizontal,10).padding(.vertical,8)
+            }
+            .scrollIndicators(.automatic)
+            .onAppear {
+                guard let target=selectedResourceID,items.contains(where:{ $0.id == target }) else { return }
+                focusedResourceId = target
+                proxy.scrollTo(target,anchor:.center)
+                selectedResourceID = nil
+            }
+        }
+    }
+
+    private func resourceDetail(_ item:Resource,compact:Bool) -> some View {
+        VStack(alignment:.leading,spacing:0) {
+            HStack(spacing:10) {
+                if compact {
+                    Button {
+                        withAnimation(reduceMotion ? nil : .easeOut(duration:0.16)) {
+                            focusedResourceId = nil
+                        }
+                    } label: {
+                        Image(systemName:"chevron.left")
+                            .frame(width:28,height:28)
+                    }
+                    .buttonStyle(.plain)
+                    .help("返回资源列表")
+                    .accessibilityLabel("返回资源列表")
+                    .accessibilityIdentifier("agent.assets.back-to-list")
+                }
+                VStack(alignment:.leading,spacing:4) {
+                    Text(item.title)
+                        .font(.system(size:13,weight:.semibold))
+                        .lineLimit(1).truncationMode(.middle)
+                    Text(item.date.formatted(.dateTime.year().month().day().hour().minute()))
+                        .font(.system(size:10))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength:6)
+                Button {
+                    selectedResourceID = item.id
+                    model.selectThread(item.threadId,messageId:item.messageId)
+                } label: {
+                    Label("来源会话",systemImage:"arrow.up.right")
+                        .font(.system(size:10.5,weight:.medium))
+                }
+                .buttonStyle(.plain)
+                .help(item.threadTitle)
+                .accessibilityLabel("打开来源会话：\(item.threadTitle)")
+                .accessibilityHint("切换到原始对话")
+                .accessibilityIdentifier(Self.accessibilityIdentifier(for:item.id,control:"source-thread"))
+            }
+            .padding(.horizontal,20).padding(.vertical,14)
+
+            ScrollView {
+                VStack(alignment:.leading,spacing:14) {
+                    switch item.kind {
+                    case .remoteImage:
+                        AgentRemoteImageView(
+                            label:item.title,
+                            source:item.source,
+                            showsLabel:false,
+                            accessibilityIdentifierPrefix:Self.accessibilityIdentifier(for:item.id,control:"remote-image")
+                        )
+                    case .localImage:
+                        AgentLocalImageResourceView(
+                            path:item.source,
+                            accessibilityIdentifierPrefix:Self.accessibilityIdentifier(for:item.id,control:"local-image")
+                        )
+                    case .file:
+                        AgentLocalFileResourceView(
+                            model:model,
+                            repoId:item.repoId,
+                            checkoutId:item.checkoutId,
+                            relativePath:item.source,
+                            rootPath:item.localRoot,
+                            accessibilityIdentifierPrefix:Self.accessibilityIdentifier(for:item.id,control:"local-file")
+                        )
+                    }
+                }
+                .padding(20)
+                .frame(maxWidth:720,alignment:.leading)
+                .frame(maxWidth:.infinity,alignment:.center)
+            }
+            .scrollIndicators(.automatic)
+        }
+        .frame(maxWidth:.infinity,maxHeight:.infinity)
+        .background(Color.primary.opacity(0.012))
+        .accessibilityElement(children:.contain)
+        .accessibilityIdentifier("agent.assets.preview")
+    }
+
 }
 
 private struct AgentLocalImageResourceView: View {
