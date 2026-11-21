@@ -30,10 +30,7 @@ import {
   withCheckoutMutationGate,
   type LatencyBreakdown,
 } from '../src/runtime/execution/thin-harness';
-import {
-  getLeaseSideEffectMetrics,
-  resetLeaseSideEffectMetrics,
-} from '../src/runtime/resources/leases/store';
+import { getLeaseSideEffectMetrics, resetLeaseSideEffectMetrics } from '../src/runtime/resources/leases/store';
 import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
 import { listProcessRecords } from '../src/runtime/execution/process-runtime/store';
 import { listLocalBridgeJobSnapshots } from '../src/runtime/local-bridge/read-model';
@@ -41,6 +38,9 @@ import { listFastReceipts } from '../src/runtime/execution/thin-harness/fast-rec
 import { callRepositoryTool } from '../src/runtime/control-plane/facade/repository-tool-dispatch';
 
 const BASELINE_REV = 'e1582c573b738c29ff41eda6884685488654e5b9';
+// Write cases may emit lease lifecycle events and mutation receipts legitimately.
+// An unclassified future case remains subject to the strict read-only checks.
+const MUTATING_BENCHMARK_CASES = new Set(['bounded_patch', 'fast_mutation_ownership']);
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -69,9 +69,7 @@ function median(values: number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0
-    ? (sorted[mid - 1]! + sorted[mid]!) / 2
-    : sorted[mid]!;
+  return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!;
 }
 
 function roundMs(value: number): number {
@@ -98,8 +96,12 @@ function observeEffects(fixture: ReturnType<typeof createFixture>) {
   return {
     executionJobIds: new Set(jobs.map((job) => job.jobId)),
     localJobIds: new Set(listLocalBridgeJobSnapshots(fixture.repoRoot, 500).map((job) => job.jobId)),
-    managedProcessIds: new Set(listProcessRecords(fixture.controllerHome, fixture.repository.repoId, 1000).map((process) => process.processId)),
-    recordedWorkerPids: new Set(jobs.map((job) => job.workerPid).filter((pid): pid is number => typeof pid === 'number')),
+    managedProcessIds: new Set(
+      listProcessRecords(fixture.controllerHome, fixture.repository.repoId, 1000).map((process) => process.processId),
+    ),
+    recordedWorkerPids: new Set(
+      jobs.map((job) => job.workerPid).filter((pid): pid is number => typeof pid === 'number'),
+    ),
   };
 }
 
@@ -235,14 +237,15 @@ async function sampleOnce(
   const effectsAfter = observeEffects(fixture);
   const side = result?.durableSideEffects ?? {};
   const latency = result?.latency ?? {
-    routingMs: 0, policyMs: 0, snapshotMs: 0, executionMs: 0, receiptMs: 0, totalMs: 0,
+    routingMs: 0,
+    policyMs: 0,
+    snapshotMs: 0,
+    executionMs: 0,
+    receiptMs: 0,
+    totalMs: 0,
   };
   const routingMs = roundMs(Math.max(latency.routingMs ?? 0, latency.gatewayValidationMs ?? 0));
-  const policyMs = roundMs(Math.max(
-    latency.policyMs ?? 0,
-    latency.authorizationMs ?? 0,
-    latency.resourceClaimMs ?? 0,
-  ));
+  const policyMs = roundMs(Math.max(latency.policyMs ?? 0, latency.authorizationMs ?? 0, latency.resourceClaimMs ?? 0));
   const snapshotMs = roundMs(Math.max(latency.snapshotMs ?? 0, latency.repositorySnapshotMs ?? 0));
   const executionMs = roundMs(Math.max(latency.executionMs ?? 0, latency.operationExecutionMs ?? 0));
   const receiptMs = roundMs(Math.max(latency.receiptMs ?? 0, latency.evidencePersistenceMs ?? 0));
@@ -268,21 +271,22 @@ async function sampleOnce(
     overheadMs: roundMs(Math.max(0, reportedTotalMs - operationMs)),
     responseBytes: result?.responseBytes ?? serializedBytes(result),
     eventLoopLagMs: lag,
-    executionJobCount: Math.max(side.executionJobCount ?? 0, newCount(effectsBefore.executionJobIds, effectsAfter.executionJobIds)),
+    executionJobCount: Math.max(
+      side.executionJobCount ?? 0,
+      newCount(effectsBefore.executionJobIds, effectsAfter.executionJobIds),
+    ),
     localJobCount: Math.max(side.localJobCount ?? 0, newCount(effectsBefore.localJobIds, effectsAfter.localJobIds)),
     recordedWorkerPidCount: newCount(effectsBefore.recordedWorkerPids, effectsAfter.recordedWorkerPids),
     managedProcessRecordCount: newCount(effectsBefore.managedProcessIds, effectsAfter.managedProcessIds),
     runtimeEventDelta: Math.max(
       0,
-      (side.runtimeEventCount ?? 0)
-        + (sideAfter.durableAcquireEvents + sideAfter.durableReleaseEvents)
-        - (sideBefore.durableAcquireEvents + sideBefore.durableReleaseEvents),
+      (side.runtimeEventCount ?? 0) +
+        (sideAfter.durableAcquireEvents + sideAfter.durableReleaseEvents) -
+        (sideBefore.durableAcquireEvents + sideBefore.durableReleaseEvents),
     ),
     projectionInvalidationDelta: Math.max(
       0,
-      (side.projectionUpdateCount ?? 0)
-        + sideAfter.projectionDirtyMarks
-        - sideBefore.projectionDirtyMarks,
+      (side.projectionUpdateCount ?? 0) + sideAfter.projectionDirtyMarks - sideBefore.projectionDirtyMarks,
     ),
     schedulerWakeDelta: Math.max(
       0,
@@ -291,9 +295,9 @@ async function sampleOnce(
     receiptCount: Math.max(result?.receipt ? 1 : 0, observedReceiptDelta),
     leaseFilesTouched: Math.max(
       0,
-      Math.abs(countLeaseFiles(fixture.controllerHome) - leasesBefore)
-        + (sideAfter.ephemeralAcquires - sideBefore.ephemeralAcquires)
-        + (sideAfter.ephemeralReleases - sideBefore.ephemeralReleases),
+      Math.abs(countLeaseFiles(fixture.controllerHome) - leasesBefore) +
+        (sideAfter.ephemeralAcquires - sideBefore.ephemeralAcquires) +
+        (sideAfter.ephemeralReleases - sideBefore.ephemeralReleases),
     ),
     ephemeralLeaseAcquires: Math.max(0, sideAfter.ephemeralAcquires - sideBefore.ephemeralAcquires),
     ok: result?.ok === true,
@@ -341,15 +345,17 @@ async function runCase(
     latency: LatencyBreakdown;
     receipt?: { executionId: string } | null;
     responseBytes?: number;
-    durableSideEffects?: MetricsSample extends never ? never : {
-      executionJobCount?: number;
-      localJobCount?: number;
-      workerSpawnCount?: number;
-      projectionUpdateCount?: number;
-      schedulerWakeCount?: number;
-      runtimeEventCount?: number;
-      ephemeralLeaseAcquireCount?: number;
-    };
+    durableSideEffects?: MetricsSample extends never
+      ? never
+      : {
+          executionJobCount?: number;
+          localJobCount?: number;
+          workerSpawnCount?: number;
+          projectionUpdateCount?: number;
+          schedulerWakeCount?: number;
+          runtimeEventCount?: number;
+          ephemeralLeaseAcquireCount?: number;
+        };
   }>,
 ): Promise<CaseReport> {
   const warmup = await sampleOnce(fixture, name, fn);
@@ -363,7 +369,7 @@ async function runCase(
 async function main() {
   const asJson = process.argv.includes('--json');
   const label = process.argv.includes('--label')
-    ? process.argv[process.argv.indexOf('--label') + 1] ?? 'feature'
+    ? (process.argv[process.argv.indexOf('--label') + 1] ?? 'feature')
     : 'feature';
   const head = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf-8' }).stdout?.trim() ?? 'unknown';
   const fixture = createFixture();
@@ -376,138 +382,166 @@ async function main() {
   try {
     const cases: CaseReport[] = [];
 
-    cases.push(await runCase(fixture, 'small_file_read', () => executeFast(ctx, {
-      operation: 'read_file',
-      input: { path: 'README.md' },
-    })));
+    cases.push(
+      await runCase(fixture, 'small_file_read', () =>
+        executeFast(ctx, {
+          operation: 'read_file',
+          input: { path: 'README.md' },
+        }),
+      ),
+    );
 
-    cases.push(await runCase(fixture, 'symbol_search', () => executeFast(ctx, {
-      operation: 'search',
-      input: { query: 'add', max_results: 10 },
-    })));
+    cases.push(
+      await runCase(fixture, 'symbol_search', () =>
+        executeFast(ctx, {
+          operation: 'search',
+          input: { query: 'add', max_results: 10 },
+        }),
+      ),
+    );
 
-    cases.push(await runCase(fixture, 'git_status', () => executeFast(ctx, {
-      operation: 'git_status',
-      input: {},
-    })));
+    cases.push(
+      await runCase(fixture, 'git_status', () =>
+        executeFast(ctx, {
+          operation: 'git_status',
+          input: {},
+        }),
+      ),
+    );
 
-    cases.push(await runCase(fixture, 'git_diff', () => executeFast(ctx, {
-      operation: 'git_diff',
-      input: { max_bytes: 8192 },
-    })));
+    cases.push(
+      await runCase(fixture, 'git_diff', () =>
+        executeFast(ctx, {
+          operation: 'git_diff',
+          input: { max_bytes: 8192 },
+        }),
+      ),
+    );
 
-    cases.push(await runCase(fixture, 'bounded_patch', async () => {
-      // Restore canonical content so each timed run applies a real bounded replace.
-      writeFileSync(join(fixture.repoRoot, 'src', 'lib.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
-      return executeFast(ctx, {
-        operation: 'apply_patch',
-        requestId: `bench-patch-${Date.now()}-${Math.random()}`,
-        input: {
-          operations: [{
-            type: 'replace',
-            path: 'src/lib.ts',
-            old_text: 'return a + b;',
-            new_text: 'return a + b; // bench',
-          }],
-          allowed_paths: ['src/**'],
-          purpose: 'bench-patch',
-        },
-        allowedPaths: ['src/**'],
-      });
-    }));
+    cases.push(
+      await runCase(fixture, 'bounded_patch', async () => {
+        // Restore canonical content so each timed run applies a real bounded replace.
+        writeFileSync(
+          join(fixture.repoRoot, 'src', 'lib.ts'),
+          'export function add(a: number, b: number) { return a + b; }\n',
+        );
+        return executeFast(ctx, {
+          operation: 'apply_patch',
+          requestId: `bench-patch-${Date.now()}-${Math.random()}`,
+          input: {
+            operations: [
+              {
+                type: 'replace',
+                path: 'src/lib.ts',
+                old_text: 'return a + b;',
+                new_text: 'return a + b; // bench',
+              },
+            ],
+            allowed_paths: ['src/**'],
+            purpose: 'bench-patch',
+          },
+          allowedPaths: ['src/**'],
+        });
+      }),
+    );
 
-    cases.push(await runCase(fixture, 'focused_command_facade', () => callRepositoryFacade(
-      fixture,
-      'execute_command',
-      {
-        command: ['git', 'status', '--short'],
-        timeout_ms: 10_000,
-        include_latency_breakdown: true,
-      },
-    )));
-
-    cases.push(await runCase(fixture, '7_step_batch_facade', () => callRepositoryFacade(
-      fixture,
-      'repository_workbench',
-      {
-        operation: 'batch_execute',
-        payload: {
+    cases.push(
+      await runCase(fixture, 'focused_command_facade', () =>
+        callRepositoryFacade(fixture, 'execute_command', {
+          command: ['git', 'status', '--short'],
+          timeout_ms: 10_000,
           include_latency_breakdown: true,
-          steps: [
-            { kind: 'read_file', input: { path: 'README.md' } },
-            { kind: 'search', input: { query: 'add' } },
-            { kind: 'read_file', input: { path: 'src/lib.ts' } },
-            { kind: 'git_diff', input: {} },
-            { kind: 'git_status', input: {} },
-            { kind: 'run_short_command', input: { command: ['git', 'rev-parse', 'HEAD'] } },
-            { kind: 'search', input: { query: 'benchmark' } },
-          ],
-        },
-      },
-    )));
+        }),
+      ),
+    );
 
-    cases.push(await runCase(fixture, '4_lane_read_facade', () => callRepositoryFacade(
-      fixture,
-      'repository_workbench',
-      {
-        operation: 'lanes_execute',
-        payload: {
-          include_latency_breakdown: true,
-          max_concurrency: 4,
-          read_lanes: [
-            { kind: 'search', input: { query: 'add' } },
-            { kind: 'read_file', input: { path: 'README.md' } },
-            { kind: 'git_status', input: {} },
-            { kind: 'git_diff', input: {} },
-          ],
-        },
-      },
-    )));
+    cases.push(
+      await runCase(fixture, '7_step_batch_facade', () =>
+        callRepositoryFacade(fixture, 'repository_workbench', {
+          operation: 'batch_execute',
+          payload: {
+            include_latency_breakdown: true,
+            steps: [
+              { kind: 'read_file', input: { path: 'README.md' } },
+              { kind: 'search', input: { query: 'add' } },
+              { kind: 'read_file', input: { path: 'src/lib.ts' } },
+              { kind: 'git_diff', input: {} },
+              { kind: 'git_status', input: {} },
+              { kind: 'run_short_command', input: { command: ['git', 'rev-parse', 'HEAD'] } },
+              { kind: 'search', input: { query: 'benchmark' } },
+            ],
+          },
+        }),
+      ),
+    );
 
-    cases.push(await runCase(fixture, 'fast_mutation_ownership', async () => {
-      const started = performance.now();
-      const gated = await withCheckoutMutationGate(
-        {
-          controllerHome: fixture.controllerHome,
-          repoId: fixture.repository.repoId,
-          checkoutId: fixture.repository.activeCheckoutId,
-          repoRoot: fixture.repoRoot,
-          owner: `fast:bench-own-${Date.now()}`,
-          ttlMs: 10_000,
-        },
-        async (_gate, helpers) => {
-          helpers.assert();
-          await new Promise((resolve) => setTimeout(resolve, 5));
-          helpers.renew();
-          return true;
-        },
-      );
-      const totalMs = Math.round((performance.now() - started) * 100) / 100;
-      return {
-        ok: gated.ok,
-        latency: {
-          routingMs: 0,
-          policyMs: 0,
-          snapshotMs: 0,
-          executionMs: totalMs,
-          receiptMs: 0,
-          totalMs,
-          operationExecutionMs: totalMs,
-          path: 'fast' as const,
-        },
-        receipt: null,
-        durableSideEffects: {
-          executionJobCount: 0,
-          localJobCount: 0,
-          workerSpawnCount: 0,
-          projectionUpdateCount: 0,
-          runtimeEventCount: 0,
-          schedulerWakeCount: 0,
-        },
-      };
-    }));
+    cases.push(
+      await runCase(fixture, '4_lane_read_facade', () =>
+        callRepositoryFacade(fixture, 'repository_workbench', {
+          operation: 'lanes_execute',
+          payload: {
+            include_latency_breakdown: true,
+            max_concurrency: 4,
+            read_lanes: [
+              { kind: 'search', input: { query: 'add' } },
+              { kind: 'read_file', input: { path: 'README.md' } },
+              { kind: 'git_status', input: {} },
+              { kind: 'git_diff', input: {} },
+            ],
+          },
+        }),
+      ),
+    );
+
+    cases.push(
+      await runCase(fixture, 'fast_mutation_ownership', async () => {
+        const started = performance.now();
+        const gated = await withCheckoutMutationGate(
+          {
+            controllerHome: fixture.controllerHome,
+            repoId: fixture.repository.repoId,
+            checkoutId: fixture.repository.activeCheckoutId,
+            repoRoot: fixture.repoRoot,
+            owner: `fast:bench-own-${Date.now()}`,
+            ttlMs: 10_000,
+          },
+          async (_gate, helpers) => {
+            helpers.assert();
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            helpers.renew();
+            return true;
+          },
+        );
+        const totalMs = Math.round((performance.now() - started) * 100) / 100;
+        return {
+          ok: gated.ok,
+          latency: {
+            routingMs: 0,
+            policyMs: 0,
+            snapshotMs: 0,
+            executionMs: totalMs,
+            receiptMs: 0,
+            totalMs,
+            operationExecutionMs: totalMs,
+            path: 'fast' as const,
+          },
+          receipt: null,
+          durableSideEffects: {
+            executionJobCount: 0,
+            localJobCount: 0,
+            workerSpawnCount: 0,
+            projectionUpdateCount: 0,
+            runtimeEventCount: 0,
+            schedulerWakeCount: 0,
+          },
+        };
+      }),
+    );
 
     const observations = cases.flatMap((entry) => [entry.warmup, ...entry.runs]);
+    const readObservations = cases
+      .filter((entry) => !MUTATING_BENCHMARK_CASES.has(entry.name))
+      .flatMap((entry) => [entry.warmup, ...entry.runs]);
     const report = {
       schemaVersion: 5,
       kind: 'repository_facade_feature_benchmark',
@@ -522,7 +556,7 @@ async function main() {
         'Reported time and phases come from LatencyBreakdown; outer gap is wall minus reported total and phase gap is reported total minus named phases.',
         'Response bytes measure the in-process result/envelope serialized by this benchmark.',
         'Job, managed Process, and recorded worker-PID counts are observed from existing fixture stores, while lease counts use the controller-global authority; recorded worker PIDs do not count all OS child processes.',
-        'Acceptance evaluates every warmup and timed run, not only medians; counters outside the observed stores remain unknown.',
+        'Acceptance evaluates every warmup and timed run, not only medians; read-only cases must create no receipts, leases or Runtime events, while mutating cases may legitimately acquire leases and record their effects. Counters outside the observed stores remain unknown.',
         `Baseline ${BASELINE_REV} is a historical reference only; no synthetic A/B claim is made.`,
       ].join(' '),
       cases: cases.map((entry) => ({
@@ -536,9 +570,11 @@ async function main() {
         zeroLocalJobs: observations.every((sample) => sample.localJobCount === 0),
         zeroRecordedWorkerPids: observations.every((sample) => sample.recordedWorkerPidCount === 0),
         zeroManagedProcesses: observations.every((sample) => sample.managedProcessRecordCount === 0),
-        zeroRuntimeEvents: observations.every((sample) => sample.runtimeEventDelta === 0),
-        zeroProjectionInvalidations: observations.every((sample) => sample.projectionInvalidationDelta === 0),
-        zeroSchedulerWakes: observations.every((sample) => sample.schedulerWakeDelta === 0),
+        zeroReadRuntimeEvents: readObservations.every((sample) => sample.runtimeEventDelta === 0),
+        zeroReadProjectionInvalidations: readObservations.every((sample) => sample.projectionInvalidationDelta === 0),
+        zeroReadSchedulerWakes: readObservations.every((sample) => sample.schedulerWakeDelta === 0),
+        zeroReadReceipts: readObservations.every((sample) => sample.receiptCount === 0),
+        zeroReadLeaseAcquires: readObservations.every((sample) => sample.ephemeralLeaseAcquires === 0),
         allOk: observations.every((sample) => sample.ok),
       },
     };
