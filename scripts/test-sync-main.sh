@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# GitHub Actions sets TEST_BASE_REF to the real repository's commit. This
+# fixture creates unrelated temporary Git histories; their check base must
+# come from each fixture's own origin/main, not the outer CI environment.
+unset TEST_BASE_REF
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
