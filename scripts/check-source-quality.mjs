@@ -91,8 +91,10 @@ if (swiftFiles.length > 0) {
   const legacySwiftFiles = swiftFiles.filter((path) => legacySwiftPaths.has(path));
   const onMac = process.platform === 'darwin';
   if (strictSwiftFiles.length > 0) {
-    runTool('Swift formatting', onMac ? 'xcrun' : 'swift-format', [
-      ...(onMac ? ['swift-format'] : []),
+    // Ubuntu runner Swift 6 exposes the formatter as `swift format`, while
+    // Xcode resolves the same tool through `xcrun swift-format` on macOS.
+    runTool('Swift formatting', onMac ? 'xcrun' : 'swift', [
+      ...(onMac ? ['swift-format'] : ['format']),
       'lint',
       '--strict',
       ...strictSwiftFiles,

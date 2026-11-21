@@ -216,6 +216,14 @@ describe('execution-speed test governance', () => {
     expect(source).not.toContain('workspaceMutationDigest(repoRoot) !== baselineWorkspace');
   });
 
+  test('source quality uses strict Swift 6 toolchain formatter on Linux (#714)', () => {
+    const source = readFileSync(join(ROOT, 'scripts/check-source-quality.mjs'), 'utf8');
+    expect(source).toContain("onMac ? 'xcrun' : 'swift'");
+    expect(source).toContain("onMac ? ['swift-format'] : ['format']");
+    expect(source).toContain("'lint',");
+    expect(source).toContain("'--strict',");
+  });
+
   test('Rust source quality parses 2021 async in sparse candidate and rejects malformed Rust', () => {
     const script = readFileSync(join(ROOT, 'scripts/check-source-quality.mjs'), 'utf8');
     expect(script).toContain("'--edition', '2021'");
