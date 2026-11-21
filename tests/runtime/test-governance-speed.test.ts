@@ -216,6 +216,38 @@ describe('execution-speed test governance', () => {
     expect(source).not.toContain('workspaceMutationDigest(repoRoot) !== baselineWorkspace');
   });
 
+  test('Rust source quality parses 2021 async in sparse candidate and rejects malformed Rust', () => {
+    const script = readFileSync(join(ROOT, 'scripts/check-source-quality.mjs'), 'utf8');
+    expect(script).toContain("'--edition', '2021'");
+    expect(script).toContain("'--config', 'skip_children=true'");
+    expect(script).toContain('const strictRustFiles = rustFiles.filter');
+    expect(script).toContain("'--emit', 'stdout'");
+
+    const dir = mkdtempSync(join(tmpdir(), 'forge-rust-source-quality-'));
+    try {
+      const file = join(dir, 'main.rs');
+      const parseArgs = ['--edition', '2021', '--config', 'skip_children=true', '--emit', 'stdout', '--quiet', file];
+      // A committed candidate can contain only the edited main.rs; old sibling
+      // modules must not be required to validate its syntax.
+      writeFileSync(file, 'mod not_in_candidate;\nasync fn run() { let _value = 1; }\n');
+      const good = spawnSync('rustfmt', parseArgs, { encoding: 'utf8' });
+      expect(good.status).toBe(0);
+
+      writeFileSync(file, 'mod not_in_candidate;\nasync fn run( {\n');
+      const bad = spawnSync('rustfmt', parseArgs, { encoding: 'utf8' });
+      expect(bad.status).not.toBe(0);
+
+      // New/other Rust source still gets the strict formatting check.
+      writeFileSync(file, 'fn example(){let _value=1;}\n');
+      const strict = spawnSync('rustfmt', ['--edition', '2021', '--config', 'skip_children=true', '--check', file], {
+        encoding: 'utf8',
+      });
+      expect(strict.status).not.toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('models task, main, and release as one reusable nested gate DAG', () => {
     expect(stepsFor('task')[0]).toEqual({
       label: 'typecheck',
