@@ -2,6 +2,8 @@
 
 - [Home](Home)
 - [Quick Start](Quick-Start)
+- [Connect ChatGPT](Connecting-ChatGPT)
+- [连接 ChatGPT](Connecting-ChatGPT.zh-CN)
 - [Installation](Installation)
 - [Core Concepts](Core-Concepts)
 - [Execution Lifecycle](Execution-Lifecycle)
@@ -19,7 +21,6 @@
 **Project**
 
 - [Repository](https://github.com/moretea-labs/forge)
-- [Versioned Docs](https://github.com/moretea-labs/forge/tree/main/docs)
 - [Latest stable v1.8.1](https://github.com/moretea-labs/forge/releases/tag/v1.8.1)
 - [npm package](https://www.npmjs.com/package/@moretea-labs/forge)
 - [Support](https://github.com/moretea-labs/forge/blob/main/SUPPORT.md)

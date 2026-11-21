@@ -1,4 +1,4 @@
-# Forge Wiki — ChatGPT MCP for local computer and software tasks
+# Forge Documentation — ChatGPT MCP for local computer and software tasks
 
 Forge is a local-first, permission-scoped MCP action runtime for ChatGPT and other explicitly selected external controllers. It gives ChatGPT durable execution tools for local files, Git repositories, browsers, and authorized services—**without putting an additional AI agent inside Forge**. The product is intentionally Direct-first: ordinary bounded work stays lightweight, while Process Runtime, managed runs, worktrees, scheduling, and Recovery handle the cases that need durability or isolation.
 
@@ -19,6 +19,7 @@ macOS and Linux are supported; WSL2 is the recommended Windows path. Native Wind
 
 - New user: [Quick Start](Quick-Start)
 - Installation choices: [Installation](Installation)
+- Connect ChatGPT: [English](Connecting-ChatGPT) · [中文](Connecting-ChatGPT.zh-CN)
 - Product model: [Core Concepts](Core-Concepts)
 - Request-to-evidence flow: [Execution Lifecycle](Execution-Lifecycle)
 - System boundaries: [Architecture](Architecture)

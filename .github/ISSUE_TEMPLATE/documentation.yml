@@ -7,7 +7,7 @@ body:
     id: page
     attributes:
       label: Page or file
-      placeholder: README.md or docs/tutorials/01-install-and-start.md
+      placeholder: README.md or docs/wiki/Installation.md
     validations:
       required: true
   - type: textarea

@@ -1,4 +1,4 @@
-# Tutorial 2: Connect ChatGPT
+# Connect ChatGPT
 
 This tutorial connects ChatGPT as the external controller for Forge. Forge stays local and loopback-bound; ChatGPT reaches it through either OpenAI Secure MCP Tunnel or an explicitly chosen HTTPS tunnel.
 
@@ -6,7 +6,7 @@ This tutorial connects ChatGPT as the external controller for Forge. Forge stays
 
 ChatGPT MCP availability is controlled by your ChatGPT plan/workspace and can change independently of Forge. Check OpenAI's current [Developer mode and MCP apps](https://help.openai.com/en/articles/12584461-developer-mode-apps-and-full-mcp-connectors-in-chatgpt-beta) documentation before setup.
 
-At the time this guide was updated, full MCP including write/modify actions is a beta capability for ChatGPT Business, Enterprise, and Edu on web. Pro supports developer-mode MCP with read/fetch scope rather than full write MCP. Workspace administrators may also need to enable developer mode/RBAC.
+Exact read/write availability changes by plan and workspace policy. Check the current OpenAI documentation; administrators may need to enable the required app permissions.
 
 Forge does not bypass those product permissions.
 
@@ -151,4 +151,4 @@ Then, after granting a repository or local folder, verify bounded context/read a
 - Remote Git, GitHub, email, destructive cleanup, publication, and secret access remain separately authorized by Forge.
 - Codex/Claude are not installed or enabled unless you explicitly configure them as controller/execution entries.
 
-Continue with [Tutorial 3: First Repository Task](03-first-repository-task.md) when you want software-work capabilities. Use [Troubleshooting](../operations/troubleshooting.md) when the Runtime, tunnel, connector, or tool surface is not healthy.
+Continue with [Execution Lifecycle](Execution-Lifecycle) when you want software-work capabilities. Use [Troubleshooting](Troubleshooting) when the Runtime, tunnel, connector, or tool surface is not healthy.

@@ -1,4 +1,4 @@
-# 教程 2：连接 ChatGPT
+# 连接 ChatGPT
 
 本教程把 ChatGPT 接成 Forge 的外部主控。Forge 和 MCP 仍只监听本机 loopback；ChatGPT 通过 OpenAI Secure MCP Tunnel，或用户明确选择的 HTTPS tunnel 访问它。
 
@@ -6,7 +6,7 @@
 
 ChatGPT 的 MCP 能力由套餐、工作区和管理员策略决定，会独立于 Forge 变化。开始前请查看 OpenAI 当前的[开发者模式和 MCP 应用](https://help.openai.com/zh-hans-cn/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt-beta)说明。
 
-本文更新时，包含写入/修改的完整 MCP 正在 ChatGPT Business、Enterprise、Edu 网页版中以 beta 提供；Pro 的开发者模式 MCP 当前是 read/fetch 范围。工作区还可能要求管理员开启 Developer Mode / RBAC。
+不同套餐与工作区的读取、写入权限可能变化，以 OpenAI 当前说明为准；管理员可能还需要启用相应的 App 权限。
 
 Forge 不会绕过这些 ChatGPT 产品权限。
 
@@ -151,4 +151,4 @@ ChatGPT UI 会变化，所以以 OpenAI 当前 Developer Mode 文档为准，不
 - 远程 Git、GitHub、邮件、破坏性清理、发布和密钥仍分别授权。
 - Codex/Claude 只有明确选择为主控或执行入口时才配置。
 
-需要软件开发能力时继续[教程 3：第一个仓库任务](03-first-repository-task.zh-CN.md)。Runtime、tunnel、Connector 或工具面异常时查看[故障排查](../operations/troubleshooting.zh-CN.md)。
+需要软件开发能力时继续阅读[执行与验证生命周期](Execution-Lifecycle)。Runtime、tunnel、Connector 或工具面异常时查看[故障排查](Troubleshooting)。

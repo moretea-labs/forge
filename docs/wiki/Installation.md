@@ -43,4 +43,4 @@ npm install -g . --omit=optional --no-audit --no-fund
 - **Windows + WSL2:** recommended Windows path, using Linux instructions inside WSL2.
 - **Native Windows:** preview; check the explicitly supported CLI and portable Runtime scope.
 
-See the [platform support matrix](https://github.com/moretea-labs/forge/blob/main/docs/operations/platform-support.md). Forge publishes `forge`, `forge-hook`, and `forge-runtime`. A successful CLI version check alone does not prove MCP connectivity; complete the [ChatGPT connection tutorial](https://github.com/moretea-labs/forge/blob/main/docs/tutorials/02-connect-chatgpt.md) and verify the connector.
+See the [platform support matrix](https://github.com/moretea-labs/forge/blob/main/docs/operations/platform-support.md). Forge publishes `forge`, `forge-hook`, and `forge-runtime`. A successful CLI version check alone does not prove MCP connectivity; complete the [ChatGPT connection tutorial](Connecting-ChatGPT) and verify the connector.

@@ -39,7 +39,7 @@ footer{border-top:1px solid #d0d5dd;padding:1rem;text-align:center}
 <div class="wrap"><nav aria-label="Documentation">NAV_LINKS</nav><main>{{ content }}</main></div>
 <footer><a href="https://github.com/moretea-labs/forge">GitHub</a> ·
 <a href="https://www.npmjs.com/package/@moretea-labs/forge">npm</a> ·
-<a href="https://github.com/moretea-labs/forge/wiki">Wiki</a></footer></body></html>"""
+<a href="https://github.com/moretea-labs/forge/releases">Releases</a></footer></body></html>"""
 
 
 def rewrite(content, pages):
@@ -51,6 +51,18 @@ def rewrite(content, pages):
             return "[" + title + "](" + link + (sep + fragment if sep else "") + ")"
         return match.group(0)
     return LINK.sub(replace, content)
+
+
+def verify_internal_links(content, pages, source):
+    # Page source is the single public documentation authority. A stray
+    # repository-relative wiki link would become a broken Pages URL.
+    for _, url in LINK.findall(content):
+        target = url.partition("#")[0]
+        if not target or target == "./" or target.startswith(("https://", "http://", "mailto:", "/")):
+            continue
+        if target.endswith(".html") and target[:-5] in pages:
+            continue
+        raise ValueError("Broken Pages link in " + source + ": " + url)
 
 
 def build(dest):
@@ -79,8 +91,10 @@ def build(dest):
         fm = ('---\nlayout: default\ntitle: "' + title
               + '"\ndescription: "' + DESCRIPTION
               + '"\npermalink: ' + permalink + '\n---\n\n')
+        content = rewrite(source, pages)
+        verify_internal_links(content, pages, path.name)
         (dest / (("index" if slug == "Home" else slug) + ".md")).write_text(
-            fm + rewrite(source, pages), encoding="utf-8")
+            fm + content, encoding="utf-8")
         urls.append(BASE + permalink)
     (dest / "robots.txt").write_text(
         "User-agent: *\nAllow: /\nSitemap: " + BASE + "/sitemap.xml\n",

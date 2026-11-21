@@ -53,7 +53,7 @@ Re-running a provider's `forge plugin install <id>` uses the version pinned by t
 
 ## How to use from ChatGPT
 
-After [connecting ChatGPT to Forge MCP](https://github.com/moretea-labs/forge/blob/main/docs/tutorials/02-connect-chatgpt.md), ask for a bounded goal:
+After [connecting ChatGPT to Forge MCP](Connecting-ChatGPT), ask for a bounded goal:
 
 - “Inspect the currently open Chrome page, check form fields, and report what is wrong.”
 - “Read the authorized Finder folder, organize the documents, and show me the result.”

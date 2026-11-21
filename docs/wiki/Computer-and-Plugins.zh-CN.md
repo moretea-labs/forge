@@ -14,7 +14,7 @@ forge setup configure --controller chatgpt --tunnel auto
 forge setup next
 ~~~
 
-按程序提示完成 Package Runtime 和 ChatGPT MCP 连接。详见[连接 ChatGPT 中文教程](https://github.com/moretea-labs/forge/blob/main/docs/tutorials/02-connect-chatgpt.zh-CN.md)。
+按程序提示完成 Package Runtime 和 ChatGPT MCP 连接。详见[连接 ChatGPT 中文教程](Connecting-ChatGPT.zh-CN)。
 
 ## 第二步：macOS 安装 Computer
 

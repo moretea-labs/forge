@@ -13,7 +13,7 @@ forge setup next
 forge doctor
 ```
 
-When using the packaged persistent service, `forge runtime service install-package` reconciles the installed Package Runtime. Review [Installation](Installation) and [ChatGPT connection](https://github.com/moretea-labs/forge/blob/main/docs/tutorials/02-connect-chatgpt.md) for platform-specific setup. Updates do not remove the requirement to validate the authenticated MCP connector.
+When using the packaged persistent service, `forge runtime service install-package` reconciles the installed Package Runtime. Review [Installation](Installation) and [ChatGPT connection](Connecting-ChatGPT) for platform-specific setup. Updates do not remove the requirement to validate the authenticated MCP connector.
 
 ## How releases are verified
 

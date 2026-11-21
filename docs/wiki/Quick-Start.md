@@ -21,7 +21,7 @@ forge setup configure --controller chatgpt --tunnel auto
 forge setup next
 ```
 
-Follow each reported next step to configure the Package Runtime and authenticated connector. OpenAI Secure MCP Tunnel is preferred when available; it is a transport, not another Forge controller. Read the [ChatGPT MCP setup tutorial](https://github.com/moretea-labs/forge/blob/main/docs/tutorials/02-connect-chatgpt.md).
+Follow each reported next step to configure the Package Runtime and authenticated connector. OpenAI Secure MCP Tunnel is preferred when available; it is a transport, not another Forge controller. Read the [ChatGPT MCP setup tutorial](Connecting-ChatGPT).
 
 ## 3. Adopt a code repository only when needed
 
@@ -35,7 +35,7 @@ You can use authorized file, browser or service capabilities without first adopt
 
 ## 4. Complete a small task and check the result
 
-Ask ChatGPT to inspect a repository, make a scoped change, run the focused check, review the diff, and commit if verified. The [first repository task](https://github.com/moretea-labs/forge/blob/main/docs/tutorials/03-first-repository-task.md) walks through the process. Destructive, secret-bearing and external effects have separate authorization requirements.
+Ask ChatGPT to inspect a repository, make a scoped change, run the focused check, review the diff, and commit if verified. The [first repository task](Execution-Lifecycle) walks through the process. Destructive, secret-bearing and external effects have separate authorization requirements.
 
 ## Source checkout for contributors
 
@@ -56,4 +56,4 @@ forge setup next
 forge doctor
 ```
 
-Read [Releases and Upgrades](Releases-and-Upgrades), [Troubleshooting](Troubleshooting), and the [full documentation](https://github.com/moretea-labs/forge/tree/main/docs). Current stable: [v1.8.1](https://github.com/moretea-labs/forge/releases/tag/v1.8.1).
+Read [Releases and Upgrades](Releases-and-Upgrades), [Troubleshooting](Troubleshooting), and the [full documentation](Home). Current stable: [v1.8.1](https://github.com/moretea-labs/forge/releases/tag/v1.8.1).

@@ -1,6 +1,6 @@
 # 执行与验证生命周期
 
-Forge 的 **Work / WorkHandle 一等执行生命周期已经退役**。当前开发与自动运行不应创建、恢复、完成或借用旧 Work 获得权限。历史 Work / WorkHandle 只提供审计与迁移读取，不是活动任务、锁、Writer 或续跑来源。当前架构依据以 [CURRENT.md](../architecture/CURRENT.md) 为准。
+Forge 的 **Work / WorkHandle 一等执行生命周期已经退役**。当前开发与自动运行不应创建、恢复、完成或借用旧 Work 获得权限。历史 Work / WorkHandle 只提供审计与迁移读取，不是活动任务、锁、Writer 或续跑来源。当前架构依据以 [CURRENT.md](https://github.com/moretea-labs/forge/blob/main/docs/architecture/CURRENT.md) 为准。
 
 ## 当前事实所有者
 

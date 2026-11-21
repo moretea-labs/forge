@@ -25,7 +25,6 @@ install.sh
 package.json
 package-lock.json
 docs/README.md
-docs/tutorials/
 docs/operations/releasing.md
 docs/operations/releasing.zh-CN.md
 docs/operations/github-repository.md
