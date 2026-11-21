@@ -41,10 +41,26 @@ const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'a49ea0cf84a8d20c';
 // tool. Adapter extraction may move implementation ownership without silently
 // changing names, descriptions, input schemas, or annotations.
 const EXPECTED_PREFERRED_CONTROLLER_TOOL_NAMES = [
-  'rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute',
-  'repository_list', 'repository_get', 'repository_register', 'execute_command',
-  'read_repository_file', 'repository_safe_patch_apply', 'run_check', 'plugin_action_execute',
-  'process_get', 'process_wait', 'process_logs', 'process_cancel', 'result_read', 'result_search',
+  'read_repository_file',
+  'execute_command',
+  'repository_safe_patch_apply',
+  'repository_list',
+  'repository_get',
+  'repository_register',
+  'run_check',
+  'plugin_action_execute',
+  'process_get',
+  'process_wait',
+  'process_logs',
+  'process_cancel',
+  'result_read',
+  'result_search',
+  'rh_access',
+  'rh_status',
+  'rh_inbox',
+  'rh_context',
+  'rh_work',
+  'capability_execute',
 ] as const;
 // The stable bounded surface now includes the generic typed capability executor
 // already shipped on main. V3 Work objective relations intentionally extend only
@@ -94,6 +110,9 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // Schema v23 documents Project-scoped Plan identity and the project_id == scope_key rule.
 // 2026-11-18 #313 adds task-bound ChatGPT continuation identity and one bounded
 // Prompt to the existing Launch Session action.
+// 2026-11-21 #714: preferred routing leads with read_repository_file, execute_command,
+// and repository_safe_patch_apply. Facade names stay registered after them.
+// Refresh the name and schema fingerprints for that order only.
 // 2026-11-20: revision-bound Autopilot authorization/checkpoint acceptance and
 // atomic parent-Requirement CAS for semantic Plan creation add explicit
 // expected-revision and approved-checkpoint identity fields. Project Requirement
@@ -126,22 +145,23 @@ const defaultNames: string[] = [...PREFERRED_CONTROLLER_TOOL_NAMES];
 const preferredNames: string[] = [...PREFERRED_FACADE_TOOL_NAMES];
 const defaultFingerprint = forgeToolSurfaceFingerprint(defaultNames);
 const stableDefinitions = defaultNames
-  .map((name) => definitionByName.get(name)).filter((tool) => tool !== undefined)
+  .map((name) => definitionByName.get(name))
+  .filter((tool) => tool !== undefined)
   .map((tool) => injectCognitionSettlementFields(injectDurableCommandFields(tool)));
 const stableSchemaFingerprint = forgeToolSurfaceFingerprint(stableDefinitions);
 const fullFingerprint = forgeToolSurfaceFingerprint(fullNames);
 const duplicateDefault = defaultNames.filter((name, index) => defaultNames.indexOf(name) !== index);
 const missingDefault = defaultNames.filter((name) => !fullNames.includes(name));
 const sourceCollisions = Object.entries(sourceGroups).flatMap(([group, names], groupIndex, entries) =>
-  names.filter((name) => entries.slice(0, groupIndex).some(([, earlier]) => earlier.includes(name)))
-    .map((name) => `${group}:${name}`));
-const recoveryMcpSource = readFileSync(new URL('../src/runtime/standalone-recovery/mcp-server.ts', import.meta.url), 'utf8');
-const recoveryStatelessMarkers = [
-  'createMcpHandler',
-  'toNodeHandler',
-  "legacy: 'stateless'",
-  "responseMode: 'auto'",
-];
+  names
+    .filter((name) => entries.slice(0, groupIndex).some(([, earlier]) => earlier.includes(name)))
+    .map((name) => `${group}:${name}`),
+);
+const recoveryMcpSource = readFileSync(
+  new URL('../src/runtime/standalone-recovery/mcp-server.ts', import.meta.url),
+  'utf8',
+);
+const recoveryStatelessMarkers = ['createMcpHandler', 'toNodeHandler', "legacy: 'stateless'", "responseMode: 'auto'"];
 const recoverySessionAuthorityMarkers = [
   'McpSessionRegistry',
   'NodeStreamableHTTPServerTransport',
@@ -164,18 +184,28 @@ if (defaultNames.join('\n') !== EXPECTED_PREFERRED_CONTROLLER_TOOL_NAMES.join('\
   failures.push(`preferred-name schema contract names changed: ${defaultNames.join(', ')}`);
 }
 if (defaultFingerprint !== EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT) {
-  failures.push(`stable ChatGPT tool-name fingerprint changed: ${defaultFingerprint} != ${EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT}`);
+  failures.push(
+    `stable ChatGPT tool-name fingerprint changed: ${defaultFingerprint} != ${EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT}`,
+  );
 }
 if (stableDefinitions.length !== defaultNames.length) {
-  failures.push(`preferred-name schema contract definitions are incomplete: ${stableDefinitions.length}/${defaultNames.length}`);
+  failures.push(
+    `preferred-name schema contract definitions are incomplete: ${stableDefinitions.length}/${defaultNames.length}`,
+  );
 } else if (stableSchemaFingerprint !== EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT) {
-  failures.push(`preferred-name schema contract schema fingerprint changed: ${stableSchemaFingerprint} != ${EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT}`);
+  failures.push(
+    `preferred-name schema contract schema fingerprint changed: ${stableSchemaFingerprint} != ${EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT}`,
+  );
 }
 if (defaultNames.length > MAX_PREFERRED_TOOL_COUNT) {
-  failures.push(`preferred controller tool list exceeds its advisory size budget: ${defaultNames.length} > ${MAX_PREFERRED_TOOL_COUNT}`);
+  failures.push(
+    `preferred controller tool list exceeds its advisory size budget: ${defaultNames.length} > ${MAX_PREFERRED_TOOL_COUNT}`,
+  );
 }
-if (duplicateDefault.length) failures.push(`preferred-name duplicate names: ${[...new Set(duplicateDefault)].join(', ')}`);
-if (missingDefault.length) failures.push(`preferred tools missing from registered definitions: ${missingDefault.join(', ')}`);
+if (duplicateDefault.length)
+  failures.push(`preferred-name duplicate names: ${[...new Set(duplicateDefault)].join(', ')}`);
+if (missingDefault.length)
+  failures.push(`preferred tools missing from registered definitions: ${missingDefault.join(', ')}`);
 if (sourceCollisions.length) failures.push(`tool schema authority collisions: ${sourceCollisions.join(', ')}`);
 for (const name of ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']) {
   if (!preferredNames.includes(name)) failures.push(`preferred facade surface missing: ${name}`);
@@ -185,10 +215,15 @@ if (fullNames.length < defaultNames.length) {
   failures.push('complete MCP registry is missing preferred capability names');
 }
 if (fullFingerprint !== EXPECTED_EXPOSED_NAME_FINGERPRINT) {
-  failures.push(`complete MCP tool-name fingerprint changed: ${fullFingerprint} != ${EXPECTED_EXPOSED_NAME_FINGERPRINT}`);
+  failures.push(
+    `complete MCP tool-name fingerprint changed: ${fullFingerprint} != ${EXPECTED_EXPOSED_NAME_FINGERPRINT}`,
+  );
 }
 const projectedNames = controllerExposureSnapshot({
-  policy, toolset: 'full', controllerHome: process.cwd(), repoRoot: process.cwd(),
+  policy,
+  toolset: 'full',
+  controllerHome: process.cwd(),
+  repoRoot: process.cwd(),
 } as MultiRepositoryMcpToolContext).actualToolNames.sort();
 if (projectedNames.join('\n') !== [...fullNames].sort().join('\n')) {
   failures.push('controller_capabilities expectation differs from the complete MCP registry');
@@ -211,7 +246,9 @@ for (const retiredWorkLearningField of [
   'quality_adjustment_fingerprint',
 ] as const) {
   if (retiredWorkLearningField in rhWorkProperties) {
-    failures.push(`stable rh_work Tool Contract must not restore retired Work-specific learning field ${retiredWorkLearningField}`);
+    failures.push(
+      `stable rh_work Tool Contract must not restore retired Work-specific learning field ${retiredWorkLearningField}`,
+    );
   }
 }
 if (failures.length) {
@@ -220,17 +257,23 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({
-  status: 'ok',
-  toolSurface: FORGE_TOOL_SURFACE,
-  version: FORGE_VERSION,
-  preferredToolCount: defaultNames.length,
-  preferredFingerprint: defaultFingerprint,
-  preferredSchemaFingerprint: stableSchemaFingerprint,
-  preferredToolBudget: MAX_PREFERRED_TOOL_COUNT,
-  exposedToolCount: fullNames.length,
-  exposedNameFingerprint: fullFingerprint,
-  sourceToolCounts: Object.fromEntries(Object.entries(sourceGroups).map(([name, tools]) => [name, tools.length])),
-  sourceCollisions: [...new Set(sourceCollisions)].sort(),
-  accessModeChangesSchema: false,
-}, null, 2));
+console.log(
+  JSON.stringify(
+    {
+      status: 'ok',
+      toolSurface: FORGE_TOOL_SURFACE,
+      version: FORGE_VERSION,
+      preferredToolCount: defaultNames.length,
+      preferredFingerprint: defaultFingerprint,
+      preferredSchemaFingerprint: stableSchemaFingerprint,
+      preferredToolBudget: MAX_PREFERRED_TOOL_COUNT,
+      exposedToolCount: fullNames.length,
+      exposedNameFingerprint: fullFingerprint,
+      sourceToolCounts: Object.fromEntries(Object.entries(sourceGroups).map(([name, tools]) => [name, tools.length])),
+      sourceCollisions: [...new Set(sourceCollisions)].sort(),
+      accessModeChangesSchema: false,
+    },
+    null,
+    2,
+  ),
+);

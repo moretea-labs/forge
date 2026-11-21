@@ -2,17 +2,14 @@ import type { McpToolDefinition } from '../../packages/protocols/mcp/tool-contra
 import type { MultiRepositoryMcpToolContext } from './multi-repository';
 import { buildMultiRepositoryToolDefinitions } from './multi-repository';
 import { accessToolDefinitions } from './tool-mapping/access-tools';
-import {
-  resolveControllerAccessState,
-  type ControllerAccessState,
-} from './access-mode';
+import { resolveControllerAccessState, type ControllerAccessState } from './access-mode';
 import { repositoryToolDefinitions } from './tool-mapping/repository-tools';
 import { runtimeToolDefinitions } from './runtime-gateway/runtime-tool-definitions';
 import { executionToolDefinitions } from './runtime-gateway/execution-tools';
 import { processToolDefinitions } from './runtime-gateway/process-tools';
 import { injectDurableCommandFields } from './runtime-gateway/router';
 import { injectCognitionSettlementFields } from './runtime-gateway/cognition-settlement';
-import { PREFERRED_FACADE_TOOL_NAMES } from './toolset-names';
+import { PREFERRED_CONTROLLER_TOOL_NAMES } from './toolset-names';
 export { PREFERRED_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from './toolset-names';
 import { forgeToolSurfaceFingerprint } from '../../src/runtime/shared/runtime-config';
 
@@ -87,9 +84,7 @@ function pruneStaticExposureCache(): void {
   }
 }
 
-export function resolveControllerAccessStateForContext(
-  ctx: MultiRepositoryMcpToolContext,
-): ControllerAccessState {
+export function resolveControllerAccessStateForContext(ctx: MultiRepositoryMcpToolContext): ControllerAccessState {
   return resolveControllerAccessState({
     controllerHome: ctx.controllerHome,
   });
@@ -109,7 +104,7 @@ function uniqueDefinitions(definitions: McpToolDefinition[]): {
     byName.set(definition.name, definition);
   }
   const preferredOrder = new Map<string, number>(
-    (PREFERRED_FACADE_TOOL_NAMES as readonly string[]).map((name, index) => [name, index]),
+    (PREFERRED_CONTROLLER_TOOL_NAMES as readonly string[]).map((name, index) => [name, index]),
   );
   const orderedDefinitions = [...byName.values()].sort((left, right) => {
     const leftOrder = preferredOrder.get(left.name);
@@ -138,9 +133,7 @@ function staticExposureCacheKey(ctx: MultiRepositoryMcpToolContext): string {
   });
 }
 
-function buildStaticControllerExposureSnapshot(
-  ctx: MultiRepositoryMcpToolContext,
-): StaticControllerExposureSnapshot {
+function buildStaticControllerExposureSnapshot(ctx: MultiRepositoryMcpToolContext): StaticControllerExposureSnapshot {
   const currentDefinitions = runtimeToolDefinitions.concat(
     executionToolDefinitions,
     processToolDefinitions,
@@ -181,9 +174,7 @@ function buildStaticControllerExposureSnapshot(
   };
 }
 
-function staticControllerExposureSnapshot(
-  ctx: MultiRepositoryMcpToolContext,
-): StaticControllerExposureSnapshot {
+function staticControllerExposureSnapshot(ctx: MultiRepositoryMcpToolContext): StaticControllerExposureSnapshot {
   const key = staticExposureCacheKey(ctx);
   const cached = staticControllerExposureCache.get(key);
   if (cached) return cached;
@@ -203,14 +194,18 @@ function capabilityForToolName(name: string): string {
   if (name.includes('plugin')) return 'plugin';
   if (name.startsWith('result_') || name.includes('artifact') || name.includes('evidence')) return 'evidence';
   if (name.includes('controller_')) return 'controller';
-  if (name.startsWith('process_') || name.startsWith('schedule_') || name.startsWith('runtime_') || name.startsWith('maintenance_')) return 'runtime-maintenance';
+  if (
+    name.startsWith('process_') ||
+    name.startsWith('schedule_') ||
+    name.startsWith('runtime_') ||
+    name.startsWith('maintenance_')
+  )
+    return 'runtime-maintenance';
   if (name.startsWith('work_') || name.startsWith('session_')) return 'workflow';
   return 'compatibility';
 }
 
-export function controllerToolInventory(
-  toolNames: readonly string[],
-): ControllerToolInventoryEntry[] {
+export function controllerToolInventory(toolNames: readonly string[]): ControllerToolInventoryEntry[] {
   const profile = 'full' as const;
   return toolNames.map((name) => ({
     name,

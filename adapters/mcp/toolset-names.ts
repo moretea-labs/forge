@@ -9,20 +9,16 @@ export const PREFERRED_FACADE_TOOL_NAMES = [...FACADE_TOOLS] as const;
  * Removal of an obsolete public handler is a source migration, not a toolset switch.
  */
 export const PREFERRED_CONTROLLER_TOOL_NAMES = [
-  ...PREFERRED_FACADE_TOOL_NAMES,
+  // Agent-direct path. Search uses execute_command. rh_* stays registered below
+  // for frozen connectors and optional Requirement/Plan progress.
+  'read_repository_file',
+  'execute_command',
+  'repository_safe_patch_apply',
 
   // Repository selection / bootstrap.
   'repository_list',
   'repository_get',
   'repository_register',
-
-  // Unified terminal entry; scope determines its authorized execution target.
-  'execute_command',
-
-  // Source inspection and bounded Direct Edit. Code location is routed through
-  // rh_context.search and exact file reads.
-  'read_repository_file',
-  'repository_safe_patch_apply',
 
   // Focused checks through Process Runtime.
   'run_check',
@@ -45,4 +41,7 @@ export const PREFERRED_CONTROLLER_TOOL_NAMES = [
   // Evidence. The complete registry also exposes exact typed approval actions.
   'result_read',
   'result_search',
+
+  // Optional progress overlay and frozen connector facades. Not the first tools.
+  ...PREFERRED_FACADE_TOOL_NAMES,
 ] as const;
