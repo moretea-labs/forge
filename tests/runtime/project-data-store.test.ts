@@ -10,6 +10,7 @@ import type { Requirement } from '../../src/runtime/control-plane/persistence/re
 import { writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
   buildProjectDataSnapshot,
+  importProjectDataFromRepository,
   materializeProjectDataToRepository,
   projectDataPlanDefinition,
   projectDataRequirementDefinition,
@@ -17,6 +18,7 @@ import {
   resolveProjectDataHeadSha,
   writeProjectDataSnapshot,
 } from '../../src/runtime/control-plane/workspace/project-data-store';
+import { listSemanticSyncReplicas } from '../../src/runtime/control-plane/workspace/semantic-sync-service';
 import {
   writeProjectIdentity,
   writeProjectPlacement,
@@ -84,10 +86,16 @@ function plan(): PlanContract {
   };
 }
 
-function seedController(home: string, projectId: string, sourceFingerprint: string): void {
+function seedController(
+  home: string,
+  projectId: string,
+  sourceFingerprint: string,
+  instanceId = 'mac-forge',
+  repositoryId = 'repo_mac_local',
+): void {
   ensureForgeInstanceIdentity({
     controllerHome: home,
-    preferredInstanceId: 'mac-forge',
+    preferredInstanceId: instanceId,
     now: () => '2026-09-03T00:00:00.000Z',
   });
   writeWorkspaceIdentity({
@@ -102,7 +110,7 @@ function seedController(home: string, projectId: string, sourceFingerprint: stri
   });
   writeProjectPlacement({
     controllerHome: home,
-    value: { projectId, forgeInstanceId: 'mac-forge', repositoryId: 'repo_mac_local' },
+    value: { projectId, forgeInstanceId: instanceId, repositoryId },
     expectedRevision: null,
   });
 }
@@ -283,6 +291,102 @@ describe('Git project-data store (refs #712)', () => {
           expectedBaseGitSha: head,
         }),
       ).toThrow('PROJECT_DATA_BASE_GIT_SHA_MISMATCH');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('imports Git project-data definitions as replicas on another Forge instance', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-project-data-import-'));
+    try {
+      const macHome = join(root, 'mac-controller');
+      const wslHome = join(root, 'wsl-controller');
+      const repositoryRoot = join(root, 'repo');
+      const remote = 'https://github.com/moretea-labs/forge.git';
+      const projectId = stablePortableProjectId(remote);
+      const sourceFingerprint = portableProjectSourceFingerprint(remote);
+      seedController(macHome, projectId, sourceFingerprint, 'mac-forge', 'repo_mac_local');
+      ensureForgeInstanceIdentity({
+        controllerHome: wslHome,
+        preferredInstanceId: 'wsl-forge',
+        now: () => '2026-09-03T00:00:00.000Z',
+      });
+      writeProjectPlacement({
+        controllerHome: wslHome,
+        value: { projectId, forgeInstanceId: 'wsl-forge', repositoryId: 'repo_wsl_local' },
+        expectedRevision: null,
+      });
+
+      writeControlPlaneRecord(macHome, {
+        namespace: 'requirement',
+        scope: 'controller',
+        key: 'REQ-ORPHAN',
+        schemaVersion: 1,
+        value: requirement({
+          requirementId: 'REQ-ORPHAN',
+          title: 'Shared definition',
+          projectId,
+          state: 'active',
+        }),
+        expectedRevision: null,
+      });
+
+      mkdirSync(repositoryRoot, { recursive: true });
+      git(repositoryRoot, ['init']);
+      git(repositoryRoot, ['config', 'user.email', 'forge@example.com']);
+      git(repositoryRoot, ['config', 'user.name', 'Forge Test']);
+      writeFileSync(join(repositoryRoot, 'README.md'), 'shared\n');
+      git(repositoryRoot, ['add', 'README.md']);
+      git(repositoryRoot, ['commit', '-m', 'init']);
+
+      materializeProjectDataToRepository({
+        controllerHome: macHome,
+        workspaceId: 'workspace-personal',
+        projectId,
+        repositoryRoot,
+        now: () => '2026-09-03T00:30:00.000Z',
+      });
+
+      const receipt = importProjectDataFromRepository({
+        controllerHome: wslHome,
+        repositoryRoot,
+        now: () => '2026-09-03T00:31:00.000Z',
+      });
+      expect(receipt.targetForgeInstanceId).toBe('wsl-forge');
+      expect(receipt.applied).toEqual(
+        expect.arrayContaining(['requirement:REQ-ORPHAN', `project:${projectId}`, 'workspace:workspace-personal']),
+      );
+      expect(
+        listSemanticSyncReplicas({
+          controllerHome: wslHome,
+          workspaceId: 'workspace-personal',
+          projectId,
+        })
+          .map((entry) => entry.key)
+          .sort(),
+      ).toEqual(
+        expect.arrayContaining(['requirement:REQ-ORPHAN', `project:${projectId}`, 'workspace:workspace-personal']),
+      );
+
+      writeControlPlaneRecord(wslHome, {
+        namespace: 'requirement',
+        scope: 'controller',
+        key: 'REQ-ORPHAN',
+        schemaVersion: 1,
+        value: requirement({
+          requirementId: 'REQ-ORPHAN',
+          title: 'Conflicting WSL authority',
+          projectId,
+        }),
+        expectedRevision: null,
+      });
+      expect(() =>
+        importProjectDataFromRepository({
+          controllerHome: wslHome,
+          repositoryRoot,
+          now: () => '2026-09-03T00:32:00.000Z',
+        }),
+      ).toThrow('PROJECT_DATA_LOCAL_AUTHORITY_CONFLICT:requirement:REQ-ORPHAN');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

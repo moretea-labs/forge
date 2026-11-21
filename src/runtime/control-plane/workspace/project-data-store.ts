@@ -2,11 +2,44 @@ import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
-import { readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
+import {
+  assertSemanticSyncRecordBounds,
+  MAX_SEMANTIC_SYNC_JOURNAL_KEY_SAMPLES,
+  readForgeInstanceIdentity,
+  scopeRef,
+  semanticRecordMetadata,
+  semanticSyncRecordKey,
+  type SemanticSyncBundle,
+  type SemanticSyncImportReceipt,
+  type SemanticSyncRecord,
+  type SemanticSyncRecordKind,
+} from '../../../../packages/kernel/identity/api/index';
+import { SEMANTIC_SCOPE_KEY } from '../../../effects/controller-home';
 import type { PlanContract } from '../facade/types';
+import { assertControlPlaneMetadataPayload } from '../persistence/metadata-payload-policy';
 import type { Requirement } from '../persistence/requirement-store';
-import { listControlPlaneRecords } from '../persistence/sqlite-store';
-import { readProjectIdentity, readProjectPlacement, readWorkspaceIdentity } from './workspace-store';
+import {
+  ControlPlaneConflictError,
+  listControlPlaneRecords,
+  readControlPlaneRecordWithinTransaction,
+  withControlPlaneTransaction,
+  writeControlPlaneRecordWithinTransaction,
+  type SqliteDatabase,
+} from '../persistence/sqlite-store';
+import {
+  SEMANTIC_SYNC_JOURNAL_NAMESPACE,
+  SEMANTIC_SYNC_REPLICA_NAMESPACE,
+  boundedSemanticSyncJournal,
+  type SemanticSyncJournalEntry,
+  type SemanticSyncReplica,
+} from './semantic-sync-service';
+import {
+  PROJECT_SEMANTIC_NAMESPACE,
+  WORKSPACE_SEMANTIC_NAMESPACE,
+  readProjectIdentity,
+  readProjectPlacement,
+  readWorkspaceIdentity,
+} from './workspace-store';
 
 export const PROJECT_DATA_ROOT = '.forge/project-data';
 export const PROJECT_DATA_MANIFEST_NAME = 'manifest.json';
@@ -513,4 +546,317 @@ export function materializeProjectDataToRepository(input: {
     resolveHeadSha: () => resolveProjectDataHeadSha(input.repositoryRoot),
   });
   return { snapshot, writtenPaths: written.writtenPaths, headSha };
+}
+
+function syncRecordFromProjectData<T>(input: {
+  kind: SemanticSyncRecordKind;
+  id: string;
+  revision: number;
+  updatedAt: string;
+  sourceForgeInstanceId: string;
+  value: T;
+  expectedRevision: number | null;
+}): SemanticSyncRecord<T> {
+  const envelope = {
+    metadata: semanticRecordMetadata({
+      scope: scopeRef(input.kind, input.id),
+      revision: input.revision,
+      updatedAt: input.updatedAt,
+      origin: 'local',
+      forgeInstanceId: input.sourceForgeInstanceId,
+    }),
+    value: input.value,
+  };
+  return {
+    schemaVersion: 1,
+    kind: input.kind,
+    id: input.id,
+    envelope,
+    condition: { expectedRevision: input.expectedRevision },
+    fingerprint: sha256(envelope),
+  };
+}
+
+/** Convert a stage-1 Git snapshot into a semantic-sync bundle for replica import. */
+export function projectDataSnapshotToSemanticSyncBundle(
+  snapshot: ProjectDataSnapshot,
+  targetReplicaRevisions?: Readonly<Record<string, number>>,
+): SemanticSyncBundle {
+  const expected = (kind: SemanticSyncRecordKind, id: string): number | null =>
+    targetReplicaRevisions?.[semanticSyncRecordKey(kind, id)] ?? null;
+  const source = snapshot.manifest.sourceForgeInstanceId;
+  const records: SemanticSyncRecord[] = [
+    syncRecordFromProjectData({
+      kind: 'workspace',
+      id: snapshot.workspace.id,
+      revision: snapshot.workspace.revision,
+      updatedAt: snapshot.workspace.updatedAt,
+      sourceForgeInstanceId: source,
+      value: snapshot.workspace.value,
+      expectedRevision: expected('workspace', snapshot.workspace.id),
+    }),
+    syncRecordFromProjectData({
+      kind: 'project',
+      id: snapshot.project.id,
+      revision: snapshot.project.revision,
+      updatedAt: snapshot.project.updatedAt,
+      sourceForgeInstanceId: source,
+      value: snapshot.project.value,
+      expectedRevision: expected('project', snapshot.project.id),
+    }),
+    ...snapshot.requirements.map((entry) =>
+      syncRecordFromProjectData({
+        kind: 'requirement',
+        id: entry.id,
+        revision: entry.revision,
+        updatedAt: entry.updatedAt,
+        sourceForgeInstanceId: source,
+        value: entry.value,
+        expectedRevision: expected('requirement', entry.id),
+      }),
+    ),
+    ...snapshot.plans.map((entry) =>
+      syncRecordFromProjectData({
+        kind: 'plan',
+        id: entry.id,
+        revision: entry.revision,
+        updatedAt: entry.updatedAt,
+        sourceForgeInstanceId: source,
+        value: entry.value,
+        expectedRevision: expected('plan', entry.id),
+      }),
+    ),
+  ];
+  records.sort((left, right) =>
+    semanticSyncRecordKey(left.kind, left.id).localeCompare(semanticSyncRecordKey(right.kind, right.id)),
+  );
+  assertSemanticSyncRecordBounds(records);
+  const base = {
+    schemaVersion: 1 as const,
+    kind: 'forge_semantic_sync_bundle' as const,
+    workspaceId: snapshot.manifest.workspaceId,
+    projectId: snapshot.manifest.projectId,
+    sourceForgeInstanceId: source,
+    generatedAt: snapshot.manifest.generatedAt,
+    records,
+  };
+  const bundle: SemanticSyncBundle = { ...base, contentFingerprint: sha256(base) };
+  assertControlPlaneMetadataPayload(bundle, 'semantic_sync_bundle');
+  return bundle;
+}
+
+function localProjectDataValue(
+  database: SqliteDatabase,
+  input: { kind: SemanticSyncRecordKind; id: string; workspaceId: string; repositoryId?: string },
+): unknown | undefined {
+  if (input.kind === 'workspace') {
+    const record = readControlPlaneRecordWithinTransaction(
+      database,
+      WORKSPACE_SEMANTIC_NAMESPACE,
+      CONTROLLER_SCOPE,
+      input.id,
+    );
+    return record?.value;
+  }
+  if (input.kind === 'project') {
+    const record = readControlPlaneRecordWithinTransaction(
+      database,
+      PROJECT_SEMANTIC_NAMESPACE,
+      input.workspaceId,
+      input.id,
+    );
+    if (!record) return undefined;
+    const value = record.value as Record<string, unknown>;
+    return {
+      projectId: value.projectId,
+      workspaceId: value.workspaceId,
+      displayName: value.displayName,
+      ...(typeof value.sourceFingerprint === 'string' ? { sourceFingerprint: value.sourceFingerprint } : {}),
+      ...(typeof value.rootRequirementId === 'string' ? { rootRequirementId: value.rootRequirementId } : {}),
+    };
+  }
+  if (input.kind === 'requirement') {
+    const record = readControlPlaneRecordWithinTransaction<Requirement>(
+      database,
+      'requirement',
+      CONTROLLER_SCOPE,
+      input.id,
+    );
+    return record ? projectDataRequirementDefinition(record.value) : undefined;
+  }
+  if (input.kind === 'plan') {
+    const semantic = readControlPlaneRecordWithinTransaction<PlanContract>(
+      database,
+      'plan_contract',
+      SEMANTIC_SCOPE_KEY,
+      input.id,
+    );
+    const record =
+      semantic ??
+      (input.repositoryId
+        ? readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', input.repositoryId, input.id)
+        : undefined);
+    return record ? projectDataPlanDefinition(record.value) : undefined;
+  }
+  return undefined;
+}
+
+function applyProjectDataReplicaRecord(input: {
+  database: SqliteDatabase;
+  incoming: SemanticSyncRecord;
+  workspaceId: string;
+  repositoryId?: string;
+  scope: string;
+  sourceForgeInstanceId: string;
+  importedAt: string;
+  applied: string[];
+  converged: string[];
+  replicaRevisions: Record<string, number>;
+}): void {
+  const key = semanticSyncRecordKey(input.incoming.kind, input.incoming.id);
+  const localValue = localProjectDataValue(input.database, {
+    kind: input.incoming.kind,
+    id: input.incoming.id,
+    workspaceId: input.workspaceId,
+    repositoryId: input.repositoryId,
+  });
+  if (localValue !== undefined) {
+    if (stableJson(localValue) !== stableJson(input.incoming.envelope.value)) {
+      throw new Error(`PROJECT_DATA_LOCAL_AUTHORITY_CONFLICT:${key}`);
+    }
+    input.converged.push(key);
+    return;
+  }
+  const currentReplica = readControlPlaneRecordWithinTransaction<SemanticSyncReplica>(
+    input.database,
+    SEMANTIC_SYNC_REPLICA_NAMESPACE,
+    input.scope,
+    key,
+  );
+  if (currentReplica?.value.record.fingerprint === input.incoming.fingerprint) {
+    input.converged.push(key);
+    input.replicaRevisions[key] = currentReplica.revision;
+    return;
+  }
+  try {
+    const written = writeControlPlaneRecordWithinTransaction(input.database, {
+      namespace: SEMANTIC_SYNC_REPLICA_NAMESPACE,
+      scope: input.scope,
+      key,
+      schemaVersion: 1,
+      value: {
+        schemaVersion: 1,
+        sourceForgeInstanceId: input.sourceForgeInstanceId,
+        importedAt: input.importedAt,
+        record: input.incoming,
+      } satisfies SemanticSyncReplica,
+      action: 'project_data_replica_import',
+      expectedRevision: input.incoming.condition.expectedRevision,
+    });
+    input.applied.push(key);
+    input.replicaRevisions[key] = written.revision;
+  } catch (error) {
+    if (error instanceof ControlPlaneConflictError) {
+      throw new Error(
+        `PROJECT_DATA_REPLICA_REVISION_CONFLICT:${key}:expected=${error.expectedRevision ?? 'absent'}:actual=${error.actualRevision ?? 'absent'}`,
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * Import stage-1 Git project-data as semantic replicas on another Forge instance.
+ * Local authority that already matches the definition converges; conflicting
+ * local definitions fail closed. Progress fields are never imported from Git.
+ */
+export function importProjectDataSnapshot(input: {
+  controllerHome: string;
+  snapshot: ProjectDataSnapshot;
+  targetReplicaRevisions?: Readonly<Record<string, number>>;
+  now?: () => string;
+}): SemanticSyncImportReceipt {
+  const bundle = projectDataSnapshotToSemanticSyncBundle(input.snapshot, input.targetReplicaRevisions);
+  const instance = readForgeInstanceIdentity(input.controllerHome);
+  if (!instance) throw new Error('PROJECT_DATA_FORGE_INSTANCE_IDENTITY_REQUIRED');
+  if (instance.instanceId === bundle.sourceForgeInstanceId) throw new Error('PROJECT_DATA_SELF_IMPORT_REFUSED');
+  const placement = readProjectPlacement(input.controllerHome, instance.instanceId, bundle.projectId);
+  const repositoryId = placement?.value.repositoryId;
+  const importedAt = input.now?.() ?? new Date().toISOString();
+  const scope = `${bundle.workspaceId.trim()}:${bundle.projectId.trim()}`;
+  const applied: string[] = [];
+  const converged: string[] = [];
+  const replicaRevisions: Record<string, number> = {};
+
+  withControlPlaneTransaction(input.controllerHome, (database) => {
+    for (const incoming of bundle.records) {
+      applyProjectDataReplicaRecord({
+        database,
+        incoming,
+        workspaceId: bundle.workspaceId,
+        repositoryId,
+        scope,
+        sourceForgeInstanceId: bundle.sourceForgeInstanceId,
+        importedAt,
+        applied,
+        converged,
+        replicaRevisions,
+      });
+    }
+    const currentJournal = readControlPlaneRecordWithinTransaction<{
+      schemaVersion: 1;
+      entries: SemanticSyncJournalEntry[];
+    }>(database, SEMANTIC_SYNC_JOURNAL_NAMESPACE, scope, 'journal');
+    const entries = boundedSemanticSyncJournal([
+      ...(currentJournal?.value.entries ?? []),
+      {
+        schemaVersion: 1,
+        sourceForgeInstanceId: bundle.sourceForgeInstanceId,
+        bundleFingerprint: bundle.contentFingerprint,
+        importedAt,
+        appliedCount: applied.length,
+        convergedCount: converged.length,
+        sampledKeys: [...applied, ...converged].slice(0, MAX_SEMANTIC_SYNC_JOURNAL_KEY_SAMPLES),
+      },
+    ]);
+    const journalValue = { schemaVersion: 1 as const, entries };
+    assertControlPlaneMetadataPayload(journalValue, 'semantic_sync_journal');
+    writeControlPlaneRecordWithinTransaction(database, {
+      namespace: SEMANTIC_SYNC_JOURNAL_NAMESPACE,
+      scope,
+      key: 'journal',
+      schemaVersion: 1,
+      value: journalValue,
+      action: 'project_data_journal_append',
+      expectedRevision: currentJournal?.revision ?? null,
+    });
+  });
+
+  return {
+    schemaVersion: 1,
+    workspaceId: bundle.workspaceId,
+    projectId: bundle.projectId,
+    sourceForgeInstanceId: bundle.sourceForgeInstanceId,
+    targetForgeInstanceId: instance.instanceId,
+    bundleFingerprint: bundle.contentFingerprint,
+    importedAt,
+    applied,
+    converged,
+    replicaRevisions,
+  };
+}
+
+export function importProjectDataFromRepository(input: {
+  controllerHome: string;
+  repositoryRoot: string;
+  targetReplicaRevisions?: Readonly<Record<string, number>>;
+  now?: () => string;
+}): SemanticSyncImportReceipt {
+  const snapshot = readProjectDataSnapshot(input.repositoryRoot);
+  return importProjectDataSnapshot({
+    controllerHome: input.controllerHome,
+    snapshot,
+    targetReplicaRevisions: input.targetReplicaRevisions,
+    now: input.now,
+  });
 }
