@@ -71,14 +71,14 @@ describe('full retired Work data erasure', () => {
     const preview = inspectRetiredWorkPurge(home);
     expect(preview).toMatchObject({
       applied: false,
-      records: 3,
-      auditEvents: 6,
-      auditFloors: 3,
-      auditRecordCursors: 3,
+      records: 5,
+      auditEvents: 10,
+      auditFloors: 5,
+      auditRecordCursors: 5,
     });
     expect(preview.directories).toHaveLength(2);
     const erased = purgeRetiredWork(home);
-    expect(erased).toMatchObject({ applied: true, records: 3, auditEvents: 6 });
+    expect(erased).toMatchObject({ applied: true, records: 5, auditEvents: 10 });
     expect(existsSync(dir)).toBe(false);
     expect(existsSync(oldIndex)).toBe(false);
     // No retained raw Work payload in compacted SQLite pages/WAL.
@@ -99,7 +99,7 @@ describe('full retired Work data erasure', () => {
           db.prepare('SELECT COUNT(*) AS count FROM control_plane_audit WHERE namespace = ?').get(namespace),
         ),
       ),
-    ).toEqual([{ count: 0 }, { count: 0 }, { count: 0 }]);
+    ).toEqual(RETIRED_WORK_NAMESPACES.map(() => ({ count: 0 })));
     for (const namespace of ['plan_contract', 'process_request_binding', 'user_request']) {
       expect(readControlPlaneRecord(home, namespace, 'repo-1', 'retain')?.value).toEqual({ id: namespace });
     }

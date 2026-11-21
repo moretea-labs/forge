@@ -973,7 +973,6 @@ const required = [
   'src/runtime/execution/thin-harness/index.ts',
   'src/runtime/execution/thin-harness/execution-router.ts',
   'src/runtime/control-plane/facade/requirement-authority.ts',
-  'src/runtime/control-plane/execution/work-handle-history.ts',
   'packages/protocols/handoff/status.ts',
   'packages/kernel/work/domain/implementation-review.ts',
   'packages/kernel/work/domain/state-machine.ts',
@@ -1053,9 +1052,6 @@ const stage7fKernelMemoryConsumers = new Set([
   'src/runtime/evidence/operational-shadow.ts',
   'src/runtime/control-plane/persistence/operational-prior-store.ts',
   'src/runtime/context/assistant-context.ts',
-  'src/runtime/context/assistant-work-context.ts',
-  'src/runtime/control-plane/persistence/experience-store.ts',
-  'src/cli/commands/brain-assistant.ts',
 ]);
 const stage7fOperationalStoreConsumers = new Set(['src/runtime/execution/process-runtime/check-facade.ts']);
 for (const { from, specifier } of stage7fMemoryImports) {
@@ -2583,19 +2579,14 @@ forbid(
   /Create or claim a WorkContract|controller_claim|WorkContract.*external SuperController/,
   'Local Bridge must never recommend retired Work lifecycle as the migration path',
 );
-requireText(
-  'src/runtime/control-plane/execution/work-handle-history.ts',
-  'Read-only compatibility lookup for historical WorkHandle inspection.',
-);
+requireMissing('src/runtime/control-plane/execution/work-handle-history.ts');
+requireMissing('src/runtime/context/assistant-work-context.ts');
+requireMissing('src/runtime/control-plane/persistence/experience-store.ts');
+requireMissing('src/cli/commands/brain-assistant.ts');
 forbid(
   'src/runtime/control-plane/execution/work-handle-store.ts',
   /export function (?:writeWorkHandle|transitionWorkHandle|markWorkHandleFailed|relocateWorkHandlePlacementAtomically|rebindWorkHandleControllerIdentity|newWorkId|listValidatingWorkHandles)\b/,
   'Historical WorkHandle storage must remain read-only in production',
-);
-forbid(
-  'src/runtime/control-plane/execution/work-handle-history.ts',
-  /WORK_CANONICAL_MUTATION_|MutationAuthority|ensureRepository|rearm|transitionWorkHandle|writeWorkHandle/,
-  'Historical WorkHandle compatibility must remain read-only and cannot regain repository mutation authority',
 );
 requireMissing('src/runtime/control-plane/execution/direct-canonical-work-reconciliation.ts');
 requireMissing('src/runtime/control-plane/execution/work-operation-service.ts');
@@ -3097,21 +3088,13 @@ requireText('packages/kernel/cognition/application/activation-service.ts', 'stru
 requireText('packages/kernel/cognition/application/activation-service.ts', 'fairScopedRead');
 requireText('packages/kernel/cognition/application/activation-service.ts', 'seenFamilies');
 
-for (const path of [
-  'adapters/mcp/runtime-gateway/work-learning-operations.ts',
-  'src/runtime/control-plane/persistence/experience-store.ts',
-]) {
+for (const path of ['adapters/mcp/runtime-gateway/work-learning-operations.ts']) {
   forbid(
     path,
     /assertFacadeControllerRoundAuthority|controllerSessionAuthorityMatches|getControllerSession|EXPERIENCE_CONTROLLER_NOT_OWNER|EXPERIENCE_ROUND_AUTHORITY_MISMATCH|EXPERIENCE_CLAIM_AUTHORITY_MISMATCH/,
     'advisory learning writes must use Work provenance and evidence, not Controller ownership',
   );
 }
-forbid(
-  'src/cli/commands/brain-assistant.ts',
-  /authority-env|BRAIN_CONTROLLER_AUTHORITY_REQUIRED|BRAIN_AUTHORITY_ENV_INVALID/,
-  'advisory experience CLI must not require a Controller capability',
-);
 // Retired Gateway/CLI forwarding aliases must not be reintroduced: adapter
 // definitions and execution-domain reconciliation own their canonical paths.
 for (const path of [

@@ -871,10 +871,6 @@
       "module": "controller",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/assistant-work-context.test.ts": {
-      "module": "controller",
-      "resource": "controller-home-isolated"
-    },
     "tests/runtime/workflow-runtime-interpreter.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"

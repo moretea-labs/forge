@@ -24,7 +24,7 @@ export type RuntimeLifecycleClosureStatus = (typeof RUNTIME_LIFECYCLE_CLOSURE_ST
 export interface RuntimeLifecycleClassDefinition {
   id: string;
   owner: string;
-  scope: 'controller' | 'repository' | 'work' | 'process' | 'session' | 'provider' | 'resource';
+  scope: 'controller' | 'repository' | 'process' | 'session' | 'provider' | 'resource';
   dataClass: RuntimeLifecycleDataClass;
   storage: string;
   terminalCondition: string;
@@ -42,259 +42,494 @@ function lifecycle(value: RuntimeLifecycleClassDefinition): RuntimeLifecycleClas
 
 export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefinition[] = Object.freeze([
   lifecycle({
-    id: 'requirement', owner: 'Goal / Requirement authority', scope: 'controller', dataClass: 'semantic_authority',
+    id: 'requirement',
+    owner: 'Goal / Requirement authority',
+    scope: 'controller',
+    dataClass: 'semantic_authority',
     storage: 'Controller Home SQLite requirement namespace',
     terminalCondition: 'Requirement semantic state reaches completed or cancelled through revisioned Requirement CAS.',
-    activeProtection: 'Stable Requirement identity plus expected-revision CAS serializes authored semantic updates; execution evidence and Controller dispositions cannot mutate Requirement state.',
-    retentionCapacity: 'Permanent semantic/audit retention is the explicit policy: SQLite stores exactly one current row per requirementId and revisions update that row in place. Cardinality grows only when a new Requirement identity is deliberately admitted, never from retry/recovery cycles.',
-    cleanupAuthority: 'Requirement authority owns semantic retention. Runtime GC does not delete Requirement rows; replaceable execution evidence is reclaimed by its own lifecycle classes.',
-    recoverySemantics: 'Recovery reads the retained Requirement identity/revision and never infers completion, continuation or reopening from Work, Plan, Controller or provider state.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/control-plane/persistence/requirement-store.ts','packages/kernel/goal/api/index.ts','tests/runtime/requirement-portfolio-migration.test.ts'],
+    activeProtection:
+      'Stable Requirement identity plus expected-revision CAS serializes authored semantic updates; execution evidence and Controller dispositions cannot mutate Requirement state.',
+    retentionCapacity:
+      'Permanent semantic/audit retention is the explicit policy: SQLite stores exactly one current row per requirementId and revisions update that row in place. Cardinality grows only when a new Requirement identity is deliberately admitted, never from retry/recovery cycles.',
+    cleanupAuthority:
+      'Requirement authority owns semantic retention. Runtime GC does not delete Requirement rows; replaceable execution evidence is reclaimed by its own lifecycle classes.',
+    recoverySemantics:
+      'Recovery reads the retained Requirement identity/revision and never infers completion, continuation or reopening from Work, Plan, Controller or provider state.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'src/runtime/control-plane/persistence/requirement-store.ts',
+      'packages/kernel/goal/api/index.ts',
+      'tests/runtime/requirement-portfolio-migration.test.ts',
+    ],
   }),
   lifecycle({
-    id: 'plan', owner: 'Goal / Plan authority', scope: 'repository', dataClass: 'semantic_authority',
+    id: 'plan',
+    owner: 'Goal / Plan authority',
+    scope: 'repository',
+    dataClass: 'semantic_authority',
     storage: 'Controller Home SQLite plan namespace',
-    terminalCondition: 'Plan has no Runtime-owned terminal lifecycle; it remains model-authored revisioned working memory until the model/user revises or stops referencing it.',
-    activeProtection: 'Stable Plan identity plus expected-revision CAS protects each authored revision. Approval, PlanStep acceptance, supersession and predecessor obligations are not execution authority.',
-    retentionCapacity: 'Permanent semantic/audit retention stores one current semantic row per planId plus bounded revision history; retries/recovery do not create replacement Plan identities.',
-    cleanupAuthority: 'Plan semantic retention is independent from disposable execution/process evidence; Runtime cleanup never rewrites Plan progress.',
-    recoverySemantics: 'Recovery re-reads the same Plan identity/revision and never derives Plan progress or execution admission from receipts, Work lifecycle, ControllerRound or compatibility fields.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/control-plane/facade/plan-contract-store.ts','tests/runtime/goal-authority-convergence.test.ts'],
+    terminalCondition:
+      'Plan has no Runtime-owned terminal lifecycle; it remains model-authored revisioned working memory until the model/user revises or stops referencing it.',
+    activeProtection:
+      'Stable Plan identity plus expected-revision CAS protects each authored revision. Approval, PlanStep acceptance, supersession and predecessor obligations are not execution authority.',
+    retentionCapacity:
+      'Permanent semantic/audit retention stores one current semantic row per planId plus bounded revision history; retries/recovery do not create replacement Plan identities.',
+    cleanupAuthority:
+      'Plan semantic retention is independent from disposable execution/process evidence; Runtime cleanup never rewrites Plan progress.',
+    recoverySemantics:
+      'Recovery re-reads the same Plan identity/revision and never derives Plan progress or execution admission from receipts, Work lifecycle, ControllerRound or compatibility fields.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'src/runtime/control-plane/facade/plan-contract-store.ts',
+      'tests/runtime/goal-authority-convergence.test.ts',
+    ],
   }),
   lifecycle({
-    id: 'work', owner: 'Historical Work compatibility reader', scope: 'work', dataClass: 'semantic_authority',
-    storage: 'Controller Home SQLite historical Work records retained for audit and migration reads only.',
-    terminalCondition: 'No current Work lifecycle transition exists. Historical semantic state is immutable compatibility data.',
-    activeProtection: 'Historical Work identity grants no writer, checkout owner, lock, liveness, scheduling, recovery or completion authority.',
-    retentionCapacity: 'Existing rows and bounded revision history remain readable; current execution paths cannot create successor Work identities or mutate historical state.',
-    cleanupAuthority: 'No Work cleanup writer exists. Process, checkout, resource lease, Schedule, WorkflowRun and Git owners manage their own current resources.',
-    recoverySemantics: 'Recovery may inspect historical Work/WorkHandle provenance but must never reactivate, advance, bind, lock or veto current repository execution.',
-    closureStatus: 'existing_bounded', evidencePaths: ['packages/kernel/work/api/index.ts','src/runtime/control-plane/execution/work-handle-history.ts'],
-  }),
-  lifecycle({
-    id: 'process_record_log', owner: 'Process Runtime', scope: 'process', dataClass: 'execution_authority',
+    id: 'process_record_log',
+    owner: 'Process Runtime',
+    scope: 'process',
+    dataClass: 'execution_authority',
     storage: 'Controller Home repository process records/logs',
-    terminalCondition: 'Process is succeeded, failed, timed_out, cancelled, orphaned, completed_unknown or unknown after reconciliation.',
-    activeProtection: 'Active process index and live process identity are never GCd; stale active records require evidence-based reconciliation.',
-    retentionCapacity: 'Terminal records default to 7 days and 500 records per repository; malformed/unknown evidence is preserved fail-closed.',
+    terminalCondition:
+      'Process is succeeded, failed, timed_out, cancelled, orphaned, completed_unknown or unknown after reconciliation.',
+    activeProtection:
+      'Active process index and live process identity are never GCd; stale active records require evidence-based reconciliation.',
+    retentionCapacity:
+      'Terminal records default to 7 days and 500 records per repository; malformed/unknown evidence is preserved fail-closed.',
     cleanupAuthority: 'Process Runtime gcTerminalProcesses under Runtime writer fence.',
-    recoverySemantics: 'GC never fabricates terminality and never throws cleanup failure into the controller main loop.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/execution/process-runtime/gc.ts'],
+    recoverySemantics:
+      'GC never fabricates terminality and never throws cleanup failure into the controller main loop.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: ['src/runtime/execution/process-runtime/gc.ts'],
   }),
   lifecycle({
-    id: 'execution_job', owner: 'Execution Job / Scheduler authority', scope: 'repository', dataClass: 'execution_authority',
+    id: 'execution_job',
+    owner: 'Execution Job / Scheduler authority',
+    scope: 'repository',
+    dataClass: 'execution_authority',
     storage: 'Controller Home execution-job store',
     terminalCondition: 'Job reaches its canonical terminal lifecycle outcome.',
-    activeProtection: 'Active Job/lease/dependency state remains authoritative and cannot be reclaimed by artifact cleanup.',
-    retentionCapacity: 'ExecutionJob creation is retired fail-closed. Legacy terminal bundles use a 30-day horizon, retain at most 500 terminal records per repository, scan at most 5000 records and remove at most 32 bundles per selected-repository maintenance cycle.',
-    cleanupAuthority: 'ExecutionJob store owns retired-bundle cleanup; centralized Scheduler maintenance invokes it for the same bounded repository slot as Process GC.',
-    recoverySemantics: 'Active/nonterminal Jobs are protected. Terminal cleanup is fenced by the existing per-Job lock, removes Job-owned record/request/worker-receipt/per-job-event/artifact state, preserves the global audit ledger, and never replays an accepted external effect.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/execution/jobs/store.ts','src/runtime/evidence/artifact-store.ts','src/runtime/control-plane/global-scheduler/maintenance.ts','tests/runtime/runtime-cleanup.test.ts'],
+    activeProtection:
+      'Active Job/lease/dependency state remains authoritative and cannot be reclaimed by artifact cleanup.',
+    retentionCapacity:
+      'ExecutionJob creation is retired fail-closed. Legacy terminal bundles use a 30-day horizon, retain at most 500 terminal records per repository, scan at most 5000 records and remove at most 32 bundles per selected-repository maintenance cycle.',
+    cleanupAuthority:
+      'ExecutionJob store owns retired-bundle cleanup; centralized Scheduler maintenance invokes it for the same bounded repository slot as Process GC.',
+    recoverySemantics:
+      'Active/nonterminal Jobs are protected. Terminal cleanup is fenced by the existing per-Job lock, removes Job-owned record/request/worker-receipt/per-job-event/artifact state, preserves the global audit ledger, and never replays an accepted external effect.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'src/runtime/execution/jobs/store.ts',
+      'src/runtime/evidence/artifact-store.ts',
+      'src/runtime/control-plane/global-scheduler/maintenance.ts',
+      'tests/runtime/runtime-cleanup.test.ts',
+    ],
   }),
   lifecycle({
-    id: 'check_receipt', owner: 'Verification / Process evidence authority', scope: 'process', dataClass: 'evidence',
+    id: 'check_receipt',
+    owner: 'Verification / Process evidence authority',
+    scope: 'process',
+    dataClass: 'evidence',
     storage: 'Controller Home Process/check receipt evidence',
     terminalCondition: 'Check Process reaches terminal outcome and receipt is bound to exact input/source identity.',
-    activeProtection: 'Receipts referenced by current Process/check evidence or retained Operational Memory are protected; they are evidence only and never completion/review authority.',
-    retentionCapacity: 'A Process check receipt has no separate mutable authority: it is derived from one terminal Process record and copied into Work VerificationRecord when consumed. Process records are bounded by the 7-day/500 policy; persisted check-result sidecars use 30-day/500 retention, a 5000-entry scan bound and at most 50 removals per selected-repository cleanup pass.',
-    cleanupAuthority: 'Process GC owns terminal Process/log source, Scheduler maintenance owns replaceable check-result sidecars, and Work lifecycle owns accepted VerificationRecord copies; none becomes a second receipt authority.',
-    recoverySemantics: 'Active Work cache identities protect required sidecars; truncated/malformed scans fail closed, and missing or changed evidence becomes stale/replay-gap rather than synthetic success.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/execution/process-runtime/check-receipt.ts','src/runtime/execution/process-runtime/gc.ts','src/runtime/execution/process-runtime/check-result-retention.ts','packages/kernel/work/api/index.ts','tests/runtime/check-result-retention.test.ts'],
+    activeProtection:
+      'Receipts referenced by current Process/check evidence or retained Operational Memory are protected; they are evidence only and never completion/review authority.',
+    retentionCapacity:
+      'A Process check receipt has no separate mutable authority: it is derived from one terminal Process record and copied into Work VerificationRecord when consumed. Process records are bounded by the 7-day/500 policy; persisted check-result sidecars use 30-day/500 retention, a 5000-entry scan bound and at most 50 removals per selected-repository cleanup pass.',
+    cleanupAuthority:
+      'Process GC owns terminal Process/log source, Scheduler maintenance owns replaceable check-result sidecars, and Work lifecycle owns accepted VerificationRecord copies; none becomes a second receipt authority.',
+    recoverySemantics:
+      'Active Work cache identities protect required sidecars; truncated/malformed scans fail closed, and missing or changed evidence becomes stale/replay-gap rather than synthetic success.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'src/runtime/execution/process-runtime/check-receipt.ts',
+      'src/runtime/execution/process-runtime/gc.ts',
+      'src/runtime/execution/process-runtime/check-result-retention.ts',
+      'packages/kernel/work/api/index.ts',
+      'tests/runtime/check-result-retention.test.ts',
+    ],
   }),
   lifecycle({
-    id: 'resource_lease', owner: 'Runtime ResourceLease authority', scope: 'resource', dataClass: 'execution_authority',
+    id: 'resource_lease',
+    owner: 'Runtime ResourceLease authority',
+    scope: 'resource',
+    dataClass: 'execution_authority',
     storage: 'Repository-scoped active resource lease files.',
     terminalCondition: 'A lease expires or is released by its exact fenced owner/terminal Process.',
-    activeProtection: 'Resource key, owner identity and fencing token protect each live resource lease; no Work or Controller lifecycle participates.',
-    retentionCapacity: 'Resource leases default to 30 seconds with a five-second minimum; every active-lease read/acquire physically reaps expired or malformed files without truncating the live authoritative set.',
-    cleanupAuthority: 'The ResourceLease store owns expiry/release under the repository Controller lock; centralized Runtime maintenance invokes the same active view and introduces no second lease authority.',
-    recoverySemantics: 'Expired resource leases cannot strand task ownership because task ownership does not exist here; a successor must reacquire the exact resource and receive a new fencing token.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/resources/leases/store.ts','src/runtime/control-plane/runtime-cleanup.ts','tests/runtime/process-runtime.test.ts'],
+    activeProtection:
+      'Resource key, owner identity and fencing token protect each live resource lease; no Work or Controller lifecycle participates.',
+    retentionCapacity:
+      'Resource leases default to 30 seconds with a five-second minimum; every active-lease read/acquire physically reaps expired or malformed files without truncating the live authoritative set.',
+    cleanupAuthority:
+      'The ResourceLease store owns expiry/release under the repository Controller lock; centralized Runtime maintenance invokes the same active view and introduces no second lease authority.',
+    recoverySemantics:
+      'Expired resource leases cannot strand task ownership because task ownership does not exist here; a successor must reacquire the exact resource and receive a new fencing token.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'src/runtime/resources/leases/store.ts',
+      'src/runtime/control-plane/runtime-cleanup.ts',
+      'tests/runtime/process-runtime.test.ts',
+    ],
   }),
   lifecycle({
-    id: 'scheduler_occurrence_history', owner: 'Kernel Scheduler authority', scope: 'repository', dataClass: 'execution_authority',
+    id: 'scheduler_occurrence_history',
+    owner: 'Kernel Scheduler authority',
+    scope: 'repository',
+    dataClass: 'execution_authority',
     storage: 'Controller Home schedule occurrence/decision records plus a bounded active/recent index.',
-    terminalCondition: 'Occurrence settles and falls outside the 5,000-entry recent index; active created/queued/running occurrences remain protected independently of age.',
-    activeProtection: 'The active/recent index plus a per-schedule Controller lock is re-read immediately before deletion, so concurrent saveOccurrence and active wake lineage fail closed.',
-    retentionCapacity: 'The Scheduler index retains at most 5,000 recent and 5,000 active identities; centralized maintenance physically reclaims occurrence/decision files after they fall outside both sets under bounded scan/removal budgets.',
-    cleanupAuthority: 'Central Runtime maintenance invokes Scheduler-owned cleanup; Scheduler storage performs deletion under the same schedule task lock used by occurrence writes.',
-    recoverySemantics: 'Deleted history is disposable execution history backed by Runtime events; cleanup never recreates a deleted Schedule or resurrects terminal Work.',
-    closureStatus: 'existing_bounded', evidencePaths: ['packages/kernel/scheduler/api/index.ts','src/runtime/control-plane/runtime-cleanup.ts','tests/runtime/runtime-cleanup.test.ts'],
+    terminalCondition:
+      'Occurrence settles and falls outside the 5,000-entry recent index; active created/queued/running occurrences remain protected independently of age.',
+    activeProtection:
+      'The active/recent index plus a per-schedule Controller lock is re-read immediately before deletion, so concurrent saveOccurrence and active wake lineage fail closed.',
+    retentionCapacity:
+      'The Scheduler index retains at most 5,000 recent and 5,000 active identities; centralized maintenance physically reclaims occurrence/decision files after they fall outside both sets under bounded scan/removal budgets.',
+    cleanupAuthority:
+      'Central Runtime maintenance invokes Scheduler-owned cleanup; Scheduler storage performs deletion under the same schedule task lock used by occurrence writes.',
+    recoverySemantics:
+      'Deleted history is disposable execution history backed by Runtime events; cleanup never recreates a deleted Schedule or resurrects terminal Work.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'packages/kernel/scheduler/api/index.ts',
+      'src/runtime/control-plane/runtime-cleanup.ts',
+      'tests/runtime/runtime-cleanup.test.ts',
+    ],
   }),
   lifecycle({
-    id: 'managed_workspace_checkout', owner: 'Repository checkout / resource lease authority', scope: 'repository', dataClass: 'provider_artifact',
+    id: 'managed_workspace_checkout',
+    owner: 'Repository checkout / resource lease authority',
+    scope: 'repository',
+    dataClass: 'provider_artifact',
     storage: 'Controller-owned managed worktree/checkouts plus repository registry placement metadata',
-    terminalCondition: 'The registered checkout is removed only after source preservation, Git containment and active lease/reference checks prove it is safe.',
-    activeProtection: 'Registered checkout identity, dirty/unintegrated source, Git containment, active Process/resource leases and explicit retained references block unsafe worktree deletion.',
-    retentionCapacity: 'Orphaned managed worktrees use a six-hour default TTL, cleanup-pending ownership releases after one hour, and every pass is scan/removal-budget bounded; active Work, lease and explicit references remain protected.',
-    cleanupAuthority: 'Work finalization/terminal cleanup and centralized Runtime maintenance; both reuse the managed-workspace/registry authority and never infer semantic completion from deletion.',
-    recoverySemantics: 'Dirty/unintegrated source is preserved and surfaced for reconciliation; malformed/unknown ownership and active leases fail closed instead of deleting the workspace.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/execution/managed-workspace.ts','src/runtime/control-plane/execution/work-terminal-cleanup.ts','src/runtime/control-plane/runtime-cleanup.ts','tests/runtime/runtime-cleanup.test.ts'],
+    terminalCondition:
+      'The registered checkout is removed only after source preservation, Git containment and active lease/reference checks prove it is safe.',
+    activeProtection:
+      'Registered checkout identity, dirty/unintegrated source, Git containment, active Process/resource leases and explicit retained references block unsafe worktree deletion.',
+    retentionCapacity:
+      'Orphaned managed worktrees use a six-hour default TTL, cleanup-pending ownership releases after one hour, and every pass is scan/removal-budget bounded; active Work, lease and explicit references remain protected.',
+    cleanupAuthority:
+      'Work finalization/terminal cleanup and centralized Runtime maintenance; both reuse the managed-workspace/registry authority and never infer semantic completion from deletion.',
+    recoverySemantics:
+      'Dirty/unintegrated source is preserved and surfaced for reconciliation; malformed/unknown ownership and active leases fail closed instead of deleting the workspace.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'src/runtime/execution/managed-workspace.ts',
+      'src/runtime/control-plane/execution/work-terminal-cleanup.ts',
+      'src/runtime/control-plane/runtime-cleanup.ts',
+      'tests/runtime/runtime-cleanup.test.ts',
+    ],
   }),
   lifecycle({
-    id: 'edit_session', owner: 'Edit Session authority', scope: 'repository', dataClass: 'execution_authority',
-    storage: 'Controller Home repository edit-sessions namespace reached through the repository runtime-storage compatibility binding.',
-    terminalCondition: 'Edit session is finalized, superseded or rolled back and no non-terminal Work still references the session for review/delivery.',
-    activeProtection: 'Non-terminal sessions and terminal sessions whose workId belongs to a non-terminal Work are never physically reclaimed.',
-    retentionCapacity: 'Terminal unowned sessions retain at most the newest 200 identities and seven days of history; centralized cleanup uses bounded rotating scans/removal budgets.',
-    cleanupAuthority: 'Central Runtime maintenance invokes EditSession-owned physical retention using EditSession state and current resource ownership.',
-    recoverySemantics: 'Stale fingerprints reconcile into explicit session state before terminality; physical cleanup removes disposable patch/session artifacts only and never implies semantic task completion.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/editing/edit-session.ts','src/runtime/repositories/runtime-storage.ts','src/runtime/control-plane/runtime-cleanup.ts','tests/runtime/runtime-cleanup.test.ts'],
+    id: 'edit_session',
+    owner: 'Edit Session authority',
+    scope: 'repository',
+    dataClass: 'execution_authority',
+    storage:
+      'Controller Home repository edit-sessions namespace reached through the repository runtime-storage compatibility binding.',
+    terminalCondition:
+      'Edit session is finalized, superseded or rolled back and no non-terminal Work still references the session for review/delivery.',
+    activeProtection:
+      'Non-terminal sessions and terminal sessions whose workId belongs to a non-terminal Work are never physically reclaimed.',
+    retentionCapacity:
+      'Terminal unowned sessions retain at most the newest 200 identities and seven days of history; centralized cleanup uses bounded rotating scans/removal budgets.',
+    cleanupAuthority:
+      'Central Runtime maintenance invokes EditSession-owned physical retention using EditSession state and current resource ownership.',
+    recoverySemantics:
+      'Stale fingerprints reconcile into explicit session state before terminality; physical cleanup removes disposable patch/session artifacts only and never implies semantic task completion.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'src/runtime/editing/edit-session.ts',
+      'src/runtime/repositories/runtime-storage.ts',
+      'src/runtime/control-plane/runtime-cleanup.ts',
+      'tests/runtime/runtime-cleanup.test.ts',
+    ],
   }),
   lifecycle({
-    id: 'mcp_transport_session', owner: 'MCP HTTP transport lifecycle', scope: 'session', dataClass: 'execution_authority',
+    id: 'mcp_transport_session',
+    owner: 'MCP HTTP transport lifecycle',
+    scope: 'session',
+    dataClass: 'execution_authority',
     storage: 'Controller-owned MCP transport registry',
-    terminalCondition: 'Client DELETE, explicit replacement, lease expiry, absolute lifetime or oldest-safe capacity eviction.',
+    terminalCondition:
+      'Client DELETE, explicit replacement, lease expiry, absolute lifetime or oldest-safe capacity eviction.',
     activeProtection: 'Active POST work cannot be evicted and authenticated principal/route must match stored session.',
     retentionCapacity: 'Global maximum, lease expiry and absolute lifetime bound stream-only sessions.',
     cleanupAuthority: 'MCP transport registry lifecycle.',
     recoverySemantics: 'Closing transport state never cancels or completes a durably accepted Job.',
-    closureStatus: 'existing_bounded', evidencePaths: ['docs/architecture/modules/controller-runtime/transport-lifecycle.md','adapters/mcp/transports'],
+    closureStatus: 'existing_bounded',
+    evidencePaths: ['docs/architecture/modules/controller-runtime/transport-lifecycle.md', 'adapters/mcp/transports'],
   }),
   lifecycle({
-    id: 'browser_session_profile', owner: 'Browser session/provider authority', scope: 'provider', dataClass: 'provider_artifact',
+    id: 'browser_session_profile',
+    owner: 'Browser session/provider authority',
+    scope: 'provider',
+    dataClass: 'provider_artifact',
     storage: 'Controller Home BrowserSession authority and provider profile roots',
-    terminalCondition: 'Session is explicitly closed/replaced/expired; reusable profile may outlive one session only by explicit ownership policy.',
-    activeProtection: 'Active session/profile ownership and user-owned browser resources must not be reclaimed as Forge disposable state.',
-    retentionCapacity: 'Active sessions remain authoritative; tombstoned sessions use a 30-day TTL plus a 5,000-record cap and bounded 100-removal maintenance pass. Legacy repo-local import is permanently fenced by one Controller-level cutover marker before tombstone GC is allowed.',
-    cleanupAuthority: 'Browser provider authority tombstones sessions; Scheduler maintenance invokes the same Browser authority tombstone retention after legacy cutover closure.',
-    recoverySemantics: 'Active sessions are never reclaimed; legacy import cannot reopen after cutover, and deleted tombstones remain audit history in SQLite rather than active provider state.',
-    closureStatus: 'existing_bounded', evidencePaths: ['adapters/browser/session-authority.ts','src/runtime/root/browser-session-persistence.ts','src/runtime/control-plane/global-scheduler/maintenance.ts','tests/runtime/browser-session-authority.test.ts'],
+    terminalCondition:
+      'Session is explicitly closed/replaced/expired; reusable profile may outlive one session only by explicit ownership policy.',
+    activeProtection:
+      'Active session/profile ownership and user-owned browser resources must not be reclaimed as Forge disposable state.',
+    retentionCapacity:
+      'Active sessions remain authoritative; tombstoned sessions use a 30-day TTL plus a 5,000-record cap and bounded 100-removal maintenance pass. Legacy repo-local import is permanently fenced by one Controller-level cutover marker before tombstone GC is allowed.',
+    cleanupAuthority:
+      'Browser provider authority tombstones sessions; Scheduler maintenance invokes the same Browser authority tombstone retention after legacy cutover closure.',
+    recoverySemantics:
+      'Active sessions are never reclaimed; legacy import cannot reopen after cutover, and deleted tombstones remain audit history in SQLite rather than active provider state.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'adapters/browser/session-authority.ts',
+      'src/runtime/root/browser-session-persistence.ts',
+      'src/runtime/control-plane/global-scheduler/maintenance.ts',
+      'tests/runtime/browser-session-authority.test.ts',
+    ],
   }),
   lifecycle({
-    id: 'browser_disposable_artifact', owner: 'Browser provider artifact lifecycle', scope: 'provider', dataClass: 'provider_artifact',
+    id: 'browser_disposable_artifact',
+    owner: 'Browser provider artifact lifecycle',
+    scope: 'provider',
+    dataClass: 'provider_artifact',
     storage: 'Controller Home captures/downloads/diagnostics/interactions',
-    terminalCondition: 'Owning browser interaction/round is settled and no active diagnostic/recovery reference remains.',
+    terminalCondition:
+      'Owning browser interaction/round is settled and no active diagnostic/recovery reference remains.',
     activeProtection: 'Artifacts referenced by active provider interaction or user-owned resources are protected.',
-    retentionCapacity: 'Controller Home screenshots/downloads/diagnostics use explicit TTLs plus per-class count/byte caps, a one-hour active grace, and bounded 1000-entry/16-removal maintenance budgets.',
-    cleanupAuthority: 'Scheduler periodic maintenance invokes the Browser disposable-artifact retention authority for one repository slot; legacy repo-local Browser artifacts remain import/cleanup-only.',
-    recoverySemantics: 'Artifact deletion is disposable cleanup only and cannot rewrite provider-effect or ControllerRound outcome; capacity that cannot be reduced without crossing active grace remains an explicit blocker.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/control-plane/generated-cache-retention.ts','src/runtime/control-plane/global-scheduler/maintenance.ts','src/runtime/plugins/browser-session-store.ts','tests/runtime/generated-cache-retention.test.ts'],
+    retentionCapacity:
+      'Controller Home screenshots/downloads/diagnostics use explicit TTLs plus per-class count/byte caps, a one-hour active grace, and bounded 1000-entry/16-removal maintenance budgets.',
+    cleanupAuthority:
+      'Scheduler periodic maintenance invokes the Browser disposable-artifact retention authority for one repository slot; legacy repo-local Browser artifacts remain import/cleanup-only.',
+    recoverySemantics:
+      'Artifact deletion is disposable cleanup only and cannot rewrite provider-effect or ControllerRound outcome; capacity that cannot be reduced without crossing active grace remains an explicit blocker.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'src/runtime/control-plane/generated-cache-retention.ts',
+      'src/runtime/control-plane/global-scheduler/maintenance.ts',
+      'src/runtime/plugins/browser-session-store.ts',
+      'tests/runtime/generated-cache-retention.test.ts',
+    ],
   }),
   lifecycle({
-    id: 'computer_interaction_target', owner: 'Computer interaction target authority', scope: 'controller', dataClass: 'execution_authority',
+    id: 'computer_interaction_target',
+    owner: 'Computer interaction target authority',
+    scope: 'controller',
+    dataClass: 'execution_authority',
     storage: 'Controller Home computer_interaction_target records',
-    terminalCondition: 'Target/lease is released, replaced or becomes invalid against stable application/provider identity.',
-    activeProtection: 'Stable application identity and provider binding/lease fencing protect active interaction targets.',
-    retentionCapacity: 'Active targets are retained; tombstones use a 30-day TTL, a 256-record cap, a 1000-row scan bound and a 32-removal maintenance budget.',
-    cleanupAuthority: 'Computer target authority owns tombstone policy; centralized Scheduler maintenance invokes it and every delete is re-read under the existing per-target lock with revision CAS fencing.',
-    recoverySemantics: 'Missing/mismatched stable identity fails closed rather than retargeting an arbitrary foreground app; tombstone deletion cannot replay provider effects and lock contention is reported as a bounded blocker.',
-    closureStatus: 'existing_bounded', evidencePaths: ['adapters/computer/interaction-target-authority.ts','packages/plugin-runtime/computer/target-authority.ts','src/runtime/root/computer-target-persistence.ts','src/runtime/control-plane/global-scheduler/maintenance.ts','tests/runtime/computer-interaction-target.test.ts'],
+    terminalCondition:
+      'Target/lease is released, replaced or becomes invalid against stable application/provider identity.',
+    activeProtection:
+      'Stable application identity and provider binding/lease fencing protect active interaction targets.',
+    retentionCapacity:
+      'Active targets are retained; tombstones use a 30-day TTL, a 256-record cap, a 1000-row scan bound and a 32-removal maintenance budget.',
+    cleanupAuthority:
+      'Computer target authority owns tombstone policy; centralized Scheduler maintenance invokes it and every delete is re-read under the existing per-target lock with revision CAS fencing.',
+    recoverySemantics:
+      'Missing/mismatched stable identity fails closed rather than retargeting an arbitrary foreground app; tombstone deletion cannot replay provider effects and lock contention is reported as a bounded blocker.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'adapters/computer/interaction-target-authority.ts',
+      'packages/plugin-runtime/computer/target-authority.ts',
+      'src/runtime/root/computer-target-persistence.ts',
+      'src/runtime/control-plane/global-scheduler/maintenance.ts',
+      'tests/runtime/computer-interaction-target.test.ts',
+    ],
   }),
   lifecycle({
-    id: 'plugin_config_profile', owner: 'Plugin configuration/trust authority', scope: 'controller', dataClass: 'execution_authority',
+    id: 'plugin_config_profile',
+    owner: 'Plugin configuration/trust authority',
+    scope: 'controller',
+    dataClass: 'execution_authority',
     storage: 'Controller Home plugin config/registration/trust state',
     terminalCondition: 'Registration/profile is disabled, removed or superseded by explicit configuration mutation.',
-    activeProtection: 'Exact Controller Home trust, principal grants and provider identity protect active plugin capability.',
-    retentionCapacity: 'Controller Home config/profile state has explicit replace/remove operations; legacy .forge/plugins and .repo-harness/plugins config is import-only, retired after cutover, and stale cross-Controller symlinks are unlinked without traversal. GitHub registry authority remains outside this config class.',
-    cleanupAuthority: 'Plugin configuration authority owns explicit replacement/removal; legacy import cleanup retires repository-local compatibility state without creating a second Runtime authority.',
-    recoverySemantics: 'Missing/unhealthy provider remains degraded/unsupported; authoritative malformed Controller Home config fails closed instead of falling back to legacy state, and cleanup cannot broaden trust or arbitrary-code authority.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/plugins/external-registration.ts','src/runtime/plugins/store.ts','tests/runtime/plugin-config-controller-home-boundary.test.ts','tests/cli/plugin-command.test.ts'],
+    activeProtection:
+      'Exact Controller Home trust, principal grants and provider identity protect active plugin capability.',
+    retentionCapacity:
+      'Controller Home config/profile state has explicit replace/remove operations; legacy .forge/plugins and .repo-harness/plugins config is import-only, retired after cutover, and stale cross-Controller symlinks are unlinked without traversal. GitHub registry authority remains outside this config class.',
+    cleanupAuthority:
+      'Plugin configuration authority owns explicit replacement/removal; legacy import cleanup retires repository-local compatibility state without creating a second Runtime authority.',
+    recoverySemantics:
+      'Missing/unhealthy provider remains degraded/unsupported; authoritative malformed Controller Home config fails closed instead of falling back to legacy state, and cleanup cannot broaden trust or arbitrary-code authority.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'src/runtime/plugins/external-registration.ts',
+      'src/runtime/plugins/store.ts',
+      'tests/runtime/plugin-config-controller-home-boundary.test.ts',
+      'tests/cli/plugin-command.test.ts',
+    ],
   }),
   lifecycle({
-    id: 'release_artifact', owner: 'Runtime Release authority', scope: 'controller', dataClass: 'provider_artifact',
+    id: 'release_artifact',
+    owner: 'Runtime Release authority',
+    scope: 'controller',
+    dataClass: 'provider_artifact',
     storage: 'Controller Home immutable release resources/manifests',
-    terminalCondition: 'Release is superseded and is neither active, known-good nor inside the required rollback/reference window.',
+    terminalCondition:
+      'Release is superseded and is neither active, known-good nor inside the required rollback/reference window.',
     activeProtection: 'Active release, known-good/rollback identity and recovery references are never deleted.',
-    retentionCapacity: 'Superseded unreferenced Runtime releases use a 30-minute default grace and staging releases a six-hour grace under a shared bounded removal budget; active, previous, connector, Supervisor and Recovery current/previous references are protected.',
-    cleanupAuthority: 'Release retention runs under centralized Runtime maintenance for unreferenced immutable artifacts; activation, known-good attestation and rollback selection remain Recovery/Release authority only.',
-    recoverySemantics: 'Every candidate refreshes release authority before deletion; missing/malformed authority fails closed, while historical known-good attestations remain evidence without pinning obsolete artifacts forever.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/control-plane/release-retention.ts','src/runtime/root/release-store.ts','src/runtime/root/release-manifest.ts','tests/runtime/release-retention.test.ts'],
+    retentionCapacity:
+      'Superseded unreferenced Runtime releases use a 30-minute default grace and staging releases a six-hour grace under a shared bounded removal budget; active, previous, connector, Supervisor and Recovery current/previous references are protected.',
+    cleanupAuthority:
+      'Release retention runs under centralized Runtime maintenance for unreferenced immutable artifacts; activation, known-good attestation and rollback selection remain Recovery/Release authority only.',
+    recoverySemantics:
+      'Every candidate refreshes release authority before deletion; missing/malformed authority fails closed, while historical known-good attestations remain evidence without pinning obsolete artifacts forever.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'src/runtime/control-plane/release-retention.ts',
+      'src/runtime/root/release-store.ts',
+      'src/runtime/root/release-manifest.ts',
+      'tests/runtime/release-retention.test.ts',
+    ],
   }),
   lifecycle({
-    id: 'recovery_backup', owner: 'Standalone Recovery authority', scope: 'controller', dataClass: 'provider_artifact',
+    id: 'recovery_backup',
+    owner: 'Standalone Recovery authority',
+    scope: 'controller',
+    dataClass: 'provider_artifact',
     storage: 'Recovery-owned backup/audit resources outside ordinary execution state',
     terminalCondition: 'Backup is superseded, unreferenced and outside rollback/recovery retention policy.',
     activeProtection: 'Active/known-good recovery target and required schema/database rollback evidence are protected.',
-    retentionCapacity: 'The exact previous-release database backup is protected; older unreferenced .sqlite backups share the release-retention grace/removal budget and report reclaimed bytes separately from immutable release artifacts.',
-    cleanupAuthority: 'Central release retention may prune only old unreferenced backup artifacts; Recovery remains the sole rollback/selection authority and ordinary cleanup cannot alter release selection.',
-    recoverySemantics: 'Backup authority is re-read immediately before deletion; missing/invalid previous-backup authority fails closed and the only referenced rollback backup is never reclaimed.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/control-plane/release-retention.ts','src/runtime/standalone-recovery','docs/operations/standalone-disaster-recovery.md','tests/runtime/release-retention.test.ts'],
+    retentionCapacity:
+      'The exact previous-release database backup is protected; older unreferenced .sqlite backups share the release-retention grace/removal budget and report reclaimed bytes separately from immutable release artifacts.',
+    cleanupAuthority:
+      'Central release retention may prune only old unreferenced backup artifacts; Recovery remains the sole rollback/selection authority and ordinary cleanup cannot alter release selection.',
+    recoverySemantics:
+      'Backup authority is re-read immediately before deletion; missing/invalid previous-backup authority fails closed and the only referenced rollback backup is never reclaimed.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'src/runtime/control-plane/release-retention.ts',
+      'src/runtime/standalone-recovery',
+      'docs/operations/standalone-disaster-recovery.md',
+      'tests/runtime/release-retention.test.ts',
+    ],
   }),
   lifecycle({
-    id: 'quarantine', owner: 'Runtime Recovery / migration quarantine', scope: 'repository', dataClass: 'provider_artifact',
+    id: 'quarantine',
+    owner: 'Runtime Recovery / migration quarantine',
+    scope: 'repository',
+    dataClass: 'provider_artifact',
     storage: 'Controller Home quarantine namespaces',
-    terminalCondition: 'Quarantined artifact is reconciled/recovered or exceeds a safe retention window with no active audit/recovery hold.',
+    terminalCondition:
+      'Quarantined artifact is reconciled/recovered or exceeds a safe retention window with no active audit/recovery hold.',
     activeProtection: 'Unresolved/corrupt evidence is preserved until an explicit safe disposition exists.',
-    retentionCapacity: 'Local Job and retired legacy-check quarantine entries share a Controller Home 30-day default retention horizon, 200-entry and 256 MiB capacity bounds, plus one bounded scan/removal budget; legacy repo-local quarantine roots are migration-only and retired after evidence relocation.',
-    cleanupAuthority: 'Central Runtime full maintenance owns quarantine retention; repair/quarantine writers only relocate evidence into the Controller Home quarantine root and never infer semantic completion.',
-    recoverySemantics: 'Quarantine remains diagnostic evidence, never a shadow active authority; legacy symlinks are relocated without traversal, and repeated maintenance is idempotent and fail-closed on unreadable evidence.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/recovery/quarantine-retention.ts','src/runtime/recovery/maintenance-executor.ts','src/runtime/recovery/local-jobs-repair.ts','tests/runtime/capability-recovery.test.ts'],
+    retentionCapacity:
+      'Local Job and retired legacy-check quarantine entries share a Controller Home 30-day default retention horizon, 200-entry and 256 MiB capacity bounds, plus one bounded scan/removal budget; legacy repo-local quarantine roots are migration-only and retired after evidence relocation.',
+    cleanupAuthority:
+      'Central Runtime full maintenance owns quarantine retention; repair/quarantine writers only relocate evidence into the Controller Home quarantine root and never infer semantic completion.',
+    recoverySemantics:
+      'Quarantine remains diagnostic evidence, never a shadow active authority; legacy symlinks are relocated without traversal, and repeated maintenance is idempotent and fail-closed on unreadable evidence.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'src/runtime/recovery/quarantine-retention.ts',
+      'src/runtime/recovery/maintenance-executor.ts',
+      'src/runtime/recovery/local-jobs-repair.ts',
+      'tests/runtime/capability-recovery.test.ts',
+    ],
   }),
   lifecycle({
-    id: 'operational_memory', owner: 'Kernel Memory shadow reducer', scope: 'controller', dataClass: 'derived',
+    id: 'operational_memory',
+    owner: 'Kernel Memory shadow reducer',
+    scope: 'controller',
+    dataClass: 'derived',
     storage: 'Controller Home derived operational Memory records backed by retained Process evidence',
-    terminalCondition: 'Support evidence expires/disappears, compatibility invalidates the prior, or the namespace is explicitly dropped.',
-    activeProtection: 'Only exact retained mechanical evidence supports a prior; semantic decisions/external effects/authorization are forbidden consumers.',
-    retentionCapacity: 'Signals have 7d/30d horizons, scope cardinality 128, compatibility cardinality 256 and per-target sample caps.',
+    terminalCondition:
+      'Support evidence expires/disappears, compatibility invalidates the prior, or the namespace is explicitly dropped.',
+    activeProtection:
+      'Only exact retained mechanical evidence supports a prior; semantic decisions/external effects/authorization are forbidden consumers.',
+    retentionCapacity:
+      'Signals have 7d/30d horizons, scope cardinality 128, compatibility cardinality 256 and per-target sample caps.',
     cleanupAuthority: 'Operational Memory store/reducer; full namespace is droppable and rebuildable.',
-    recoverySemantics: 'Corrupt/missing/stale derived state fails open and rebuilds from authoritative retained Process evidence.',
-    closureStatus: 'existing_bounded', evidencePaths: ['packages/kernel/memory/api/index.ts','tests/runtime/operational-prior-store.test.ts'],
+    recoverySemantics:
+      'Corrupt/missing/stale derived state fails open and rebuilds from authoritative retained Process evidence.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: ['packages/kernel/memory/api/index.ts', 'tests/runtime/operational-prior-store.test.ts'],
   }),
   lifecycle({
-    id: 'context_record', owner: 'Context Plane projection authority', scope: 'controller', dataClass: 'derived',
+    id: 'context_record',
+    owner: 'Context Plane projection authority',
+    scope: 'controller',
+    dataClass: 'derived',
     storage: 'Controller Home SQLite context_record namespace',
     terminalCondition: 'Record is superseded/stale/dropped and no longer selected by bounded context projection.',
-    activeProtection: 'Context is advisory only; missing context degrades routing/evidence readiness instead of changing authority.',
+    activeProtection:
+      'Context is advisory only; missing context degrades routing/evidence readiness instead of changing authority.',
     retentionCapacity: 'Record count is capped at 1000 and each record/query has explicit byte/item/token bounds.',
     cleanupAuthority: 'Context Plane bounded projection maintenance.',
     recoverySemantics: 'Loss is tolerated; source/control-plane authorities reconstruct current context.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/context/context-plane.ts'],
+    closureStatus: 'existing_bounded',
+    evidencePaths: ['src/runtime/context/context-plane.ts'],
   }),
   lifecycle({
-    id: 'assistant_outcome_observation', owner: 'Kernel Memory outcome observation service', scope: 'controller', dataClass: 'evidence',
-    storage: 'Controller Home SQLite assistant_outcome_observation namespace; immutable schemaVersion 1 records.',
-    terminalCondition: 'One accepted observation per explicit collection identity; retries cannot create another fact.',
-    activeProtection: 'Controller claim, source Work scope and retained evidence gate writes; invalidated evidence excludes recall.',
-    retentionCapacity: 'At most 1000 immutable metadata observations per semantic scope. Admission stops at capacity; raw logs and credentials are excluded.',
-    cleanupAuthority: 'Controller Home evidence retention owns lifecycle; no automatic deletion or chat reconstruction is introduced by recall.',
-    recoverySemantics: 'Complete Runtime/SQLite backup restores observations. A missing source is a visible gap, never a fabricated zero.',
-    closureStatus: 'existing_bounded', evidencePaths: ['packages/kernel/memory/api/index.ts', 'src/runtime/control-plane/persistence/experience-store.ts', 'tests/runtime/assistant-learning.test.ts'],
-  }),
-  lifecycle({
-    id: 'assistant_experience', owner: 'Kernel Memory experience service', scope: 'controller', dataClass: 'derived',
-    storage: 'Controller Home SQLite assistant_experience namespace; schemaVersion 1, portable scope and revision CAS',
-    terminalCondition: 'Explicit retraction/supersession or validity expiry; missing support evidence excludes recall immediately.',
-    activeProtection: 'Only the active Work Controller may submit scoped evidence-backed experience. Recall cannot grant authorization or decide acceptance.',
-    retentionCapacity: '1000 records per semantic scope, 16 KiB per record, 32 support/counterevidence references each; 30d observations, 90d hypotheses, explicit lesson expiry or durable rationale; terminal rows retire after 30d grace.',
-    cleanupAuthority: 'Central Runtime maintenance calls the Memory retirement adapter under its existing removal budget.',
-    recoverySemantics: 'Experience is not rebuilt from chat. Whole-release SQLite backup/restore preserves state; missing evidence produces an explicit recall gap. CAS and transactions prevent partial supersession.',
-    closureStatus: 'existing_bounded', evidencePaths: ['packages/kernel/memory/api/index.ts', 'src/runtime/control-plane/persistence/experience-store.ts', 'tests/runtime/assistant-learning.test.ts'],
-  }),
-  lifecycle({
-    id: 'repository_controller_home_namespace', owner: 'Repository Registry / Controller Home storage authority', scope: 'repository', dataClass: 'execution_authority',
+    id: 'repository_controller_home_namespace',
+    owner: 'Repository Registry / Controller Home storage authority',
+    scope: 'repository',
+    dataClass: 'execution_authority',
     storage: 'Controller Home repositories/<repoId> namespace',
-    terminalCondition: 'Repository is explicitly disabled/removed and all active Work/Process/session/provider/recovery references are closed.',
+    terminalCondition:
+      'Repository is explicitly disabled/removed and all active Process/session/provider/recovery references are closed.',
     activeProtection: 'Registered active repository and every live child authority protect its namespace.',
-    retentionCapacity: 'Removed repositories enter a seven-day grace, then centralized maintenance may reclaim only an explicit allowlist of disposable Controller Home children under bounded scan/removal budgets. Semantic/audit/migration directories are never inferred as disposable.',
-    cleanupAuthority: 'Central Runtime maintenance invokes repository namespace retention only after live Work/Job/Process/Lease/Browser-session fences and Work cleanup evidence are closed.',
-    recoverySemantics: 'Unknown authority state, truncated Browser authority scans, symlinks and incomplete Work cleanup fail closed. Re-registration keeps Registry/SQLite/audit lineage while stale execution placement is rebuilt.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/control-plane/repository-namespace-retention.ts','src/runtime/control-plane/runtime-cleanup.ts','src/runtime/repositories/registry.ts','tests/runtime/runtime-cleanup.test.ts'],
+    retentionCapacity:
+      'Removed repositories enter a seven-day grace, then centralized maintenance may reclaim only an explicit allowlist of disposable Controller Home children under bounded scan/removal budgets. Semantic/audit/migration directories are never inferred as disposable.',
+    cleanupAuthority:
+      'Central Runtime maintenance invokes repository namespace retention only after live Job/Process/Lease/Browser-session fences are closed.',
+    recoverySemantics:
+      'Unknown authority state, truncated Browser authority scans, symlinks and incomplete ownership cleanup fail closed. Re-registration keeps Registry/SQLite/audit lineage while stale execution placement is rebuilt.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'src/runtime/control-plane/repository-namespace-retention.ts',
+      'src/runtime/control-plane/runtime-cleanup.ts',
+      'src/runtime/repositories/registry.ts',
+      'tests/runtime/runtime-cleanup.test.ts',
+    ],
   }),
   lifecycle({
-    id: 'sqlite_control_plane', owner: 'Controller Home SQLite persistence authority', scope: 'controller', dataClass: 'execution_authority',
+    id: 'sqlite_control_plane',
+    owner: 'Controller Home SQLite persistence authority',
+    scope: 'controller',
+    dataClass: 'execution_authority',
     storage: 'Controller Home control-plane.sqlite and bounded backup/recovery artifacts',
-    terminalCondition: 'Rows follow their owning domain lifecycle; free pages become reclaimable only after safe row cleanup.',
+    terminalCondition:
+      'Rows follow their owning domain lifecycle; free pages become reclaimable only after safe row cleanup.',
     activeProtection: 'Transactions/CAS revisions and domain references protect current canonical rows.',
-    retentionCapacity: 'Central cleanup performs PASSIVE WAL checkpointing and only VACUUMs already-free pages after both the 64 MiB reclaimable-byte and 20% free-page thresholds are met; live-writer SQLITE_BUSY is a fail-closed retry-later blocker.',
-    cleanupAuthority: 'Central Runtime cleanup invokes bounded SQLite physical maintenance; owning domains remain the only row-retirement authority.',
-    recoverySemantics: 'Compaction never defines semantic terminality, preserves current rows/audit continuity, and re-runs integrity validation after VACUUM.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/control-plane/persistence/sqlite-store.ts','src/runtime/control-plane/runtime-cleanup.ts'],
+    retentionCapacity:
+      'Central cleanup performs PASSIVE WAL checkpointing and only VACUUMs already-free pages after both the 64 MiB reclaimable-byte and 20% free-page thresholds are met; live-writer SQLITE_BUSY is a fail-closed retry-later blocker.',
+    cleanupAuthority:
+      'Central Runtime cleanup invokes bounded SQLite physical maintenance; owning domains remain the only row-retirement authority.',
+    recoverySemantics:
+      'Compaction never defines semantic terminality, preserves current rows/audit continuity, and re-runs integrity validation after VACUUM.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: [
+      'src/runtime/control-plane/persistence/sqlite-store.ts',
+      'src/runtime/control-plane/runtime-cleanup.ts',
+    ],
   }),
   lifecycle({
-    id: 'runtime_temp', owner: 'Runtime diagnostics/process scratch lifecycle', scope: 'process', dataClass: 'temporary',
-    storage: 'OS temporary roots / Controller-observed Runtime temp entries, including forge-runtime-release-source-* detached release snapshot containers.',
-    terminalCondition: 'Normal release snapshot scope removes its worktree/container immediately; orphaned Runtime temp is terminal after the owning live Process is gone and the retention threshold is exceeded.',
-    activeProtection: 'Release snapshot callbacks own their temp container until finally cleanup; collectRuntimeProcesses protects longer-lived scratch still attributable to a live Runtime process.',
-    retentionCapacity: 'Immediate release-snapshot finally cleanup plus RUNTIME_TEMP_RETENTION_MINUTES age threshold and bounded maintenance candidate scan for crash leftovers.',
-    cleanupAuthority: 'Release materialization owns immediate snapshot cleanup; Central Runtime maintenance removeRuntimeTempEntry owns stale crash-leftover cleanup.',
-    recoverySemantics: 'Release snapshot/temp cleanup is disposable, lives outside repository workspace authority, prunes stale Git worktree metadata after failed materialization/removal, and never participates in semantic completion or effect replay.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/diagnostics/performance.ts','src/runtime/recovery/maintenance-executor.ts'],
+    id: 'runtime_temp',
+    owner: 'Runtime diagnostics/process scratch lifecycle',
+    scope: 'process',
+    dataClass: 'temporary',
+    storage:
+      'OS temporary roots / Controller-observed Runtime temp entries, including forge-runtime-release-source-* detached release snapshot containers.',
+    terminalCondition:
+      'Normal release snapshot scope removes its worktree/container immediately; orphaned Runtime temp is terminal after the owning live Process is gone and the retention threshold is exceeded.',
+    activeProtection:
+      'Release snapshot callbacks own their temp container until finally cleanup; collectRuntimeProcesses protects longer-lived scratch still attributable to a live Runtime process.',
+    retentionCapacity:
+      'Immediate release-snapshot finally cleanup plus RUNTIME_TEMP_RETENTION_MINUTES age threshold and bounded maintenance candidate scan for crash leftovers.',
+    cleanupAuthority:
+      'Release materialization owns immediate snapshot cleanup; Central Runtime maintenance removeRuntimeTempEntry owns stale crash-leftover cleanup.',
+    recoverySemantics:
+      'Release snapshot/temp cleanup is disposable, lives outside repository workspace authority, prunes stale Git worktree metadata after failed materialization/removal, and never participates in semantic completion or effect replay.',
+    closureStatus: 'existing_bounded',
+    evidencePaths: ['src/runtime/diagnostics/performance.ts', 'src/runtime/recovery/maintenance-executor.ts'],
   }),
 ]);
 
-export function runtimeLifecycleClosureSummary(): { total: number; existingBounded: number; needsV2c2Closure: number; pendingIds: string[] } {
-  const pendingIds = RUNTIME_LIFECYCLE_INVENTORY.filter((entry) => entry.closureStatus === 'needs_v2c2_closure').map((entry) => entry.id);
+export function runtimeLifecycleClosureSummary(): {
+  total: number;
+  existingBounded: number;
+  needsV2c2Closure: number;
+  pendingIds: string[];
+} {
+  const pendingIds = RUNTIME_LIFECYCLE_INVENTORY.filter((entry) => entry.closureStatus === 'needs_v2c2_closure').map(
+    (entry) => entry.id,
+  );
   return {
     total: RUNTIME_LIFECYCLE_INVENTORY.length,
     existingBounded: RUNTIME_LIFECYCLE_INVENTORY.length - pendingIds.length,

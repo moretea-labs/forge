@@ -11,7 +11,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { configuredBrainRoot } from '../../effects/brain-root';
-import { addBrainAssistantCommands } from './brain-assistant';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { findRegisteredRepositoryByCheckoutRoot } from '../../runtime/repositories/registry';
 import { readRequirement, requirementSemanticView } from '../../runtime/control-plane/persistence/requirement-store';
@@ -205,7 +204,10 @@ function logicalBrainPath(project: string, subdir: string, fileName: string): st
 function sourceDerivedFileName(sourcePath: string): string {
   const parsed = path.posix.parse(sourcePath);
   if (sourcePath.startsWith('docs/reference-configs/')) return `${parsed.name}.md`;
-  const stem = sourcePath.replace(/\.md$/i, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  const stem = sourcePath
+    .replace(/\.md$/i, '')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
   return `${stem || parsed.name || 'document'}.md`;
 }
 
@@ -231,7 +233,8 @@ function globMatches(pattern: string, relPath: string): boolean {
     } else if (patternParts[pi] === '**') {
       result = match(pi + 1, si) || (si < pathParts.length && match(pi, si + 1));
     } else {
-      result = si < pathParts.length && globSegmentToRegExp(patternParts[pi]).test(pathParts[si]) && match(pi + 1, si + 1);
+      result =
+        si < pathParts.length && globSegmentToRegExp(patternParts[pi]).test(pathParts[si]) && match(pi + 1, si + 1);
     }
     memo.set(key, result);
     return result;
@@ -297,7 +300,11 @@ function collectItems(
 ): BrainItem[] {
   const project = manifest.project || path.basename(repoRoot);
   const defaultPrefix = stripWildcard(manifest.default_brain_path || `brain/${project}/*`);
-  const changed = new Set((opts.changed ?? []).map((value) => safeRepoPath(repoRoot, value, issues, 'changed path')).filter(Boolean) as string[]);
+  const changed = new Set(
+    (opts.changed ?? [])
+      .map((value) => safeRepoPath(repoRoot, value, issues, 'changed path'))
+      .filter(Boolean) as string[],
+  );
   const groups = Array.isArray(manifest.groups) ? manifest.groups : [];
   const entries = Array.isArray(manifest.entries) ? manifest.entries : [];
   const selected: BrainItem[] = [];
@@ -322,7 +329,11 @@ function collectItems(
     for (const sourcePath of Array.from(sources).sort()) {
       if (changed.size > 0 && !changed.has(sourcePath)) continue;
       if (isExcluded(sourcePath, manifest.exclusions)) continue;
-      const brainPath = logicalBrainPath(project, group.brain_subdir || scope || 'references', sourceDerivedFileName(sourcePath));
+      const brainPath = logicalBrainPath(
+        project,
+        group.brain_subdir || scope || 'references',
+        sourceDerivedFileName(sourcePath),
+      );
       if (defaultPrefix && !brainPath.startsWith(defaultPrefix)) {
         issue(issues, 'error', `Group ${group.id} target is outside default_brain_path: ${brainPath}`);
         continue;
@@ -382,18 +393,24 @@ export function runBrain(mode: 'status' | 'check' | 'sync', opts: BrainCommandOp
   const root = brainRoot();
   const scope = assertScope(opts.scope);
   const issues: BrainIssue[] = [];
-  const items = collectItems(
-    repoRoot,
-    manifest,
-    root,
-    { scope, changed: opts.changed, includeArchive: false },
-    issues,
-  );
+  const items = collectItems(repoRoot, manifest, root, { scope, changed: opts.changed, includeArchive: false }, issues);
   const synced: BrainItem[] = [];
   const skipped: BrainItem[] = [];
 
   if (mode === 'status') {
-    return { repoRoot, manifestPath, brainRoot: root, project: manifest.project || path.basename(repoRoot), mode, scope, selected: items, synced, skipped, issues, dryRun: false };
+    return {
+      repoRoot,
+      manifestPath,
+      brainRoot: root,
+      project: manifest.project || path.basename(repoRoot),
+      mode,
+      scope,
+      selected: items,
+      synced,
+      skipped,
+      issues,
+      dryRun: false,
+    };
   }
 
   if (items.length > 0 && mode === 'check' && !fs.existsSync(root)) {
@@ -415,7 +432,8 @@ export function runBrain(mode: 'status' | 'check' | 'sync', opts: BrainCommandOp
     const targetContent = targetExists ? fs.readFileSync(item.targetPath, 'utf-8') : null;
     if (mode === 'check') {
       if (!targetExists) issue(issues, 'error', `Brain file is missing for ${item.id}: ${item.brainPath}`);
-      else if (targetContent !== sourceContent) issue(issues, 'error', `Brain file differs for ${item.id}: ${item.sourcePath} -> ${item.brainPath}`);
+      else if (targetContent !== sourceContent)
+        issue(issues, 'error', `Brain file differs for ${item.id}: ${item.sourcePath} -> ${item.brainPath}`);
       else skipped.push(item);
       continue;
     }
@@ -430,7 +448,19 @@ export function runBrain(mode: 'status' | 'check' | 'sync', opts: BrainCommandOp
     synced.push(item);
   }
 
-  return { repoRoot, manifestPath, brainRoot: root, project: manifest.project || path.basename(repoRoot), mode, scope, selected: items, synced, skipped, issues, dryRun: opts.dryRun === true };
+  return {
+    repoRoot,
+    manifestPath,
+    brainRoot: root,
+    project: manifest.project || path.basename(repoRoot),
+    mode,
+    scope,
+    selected: items,
+    synced,
+    skipped,
+    issues,
+    dryRun: opts.dryRun === true,
+  };
 }
 
 interface HistoricalBrainSource {
@@ -451,10 +481,16 @@ function gitText(repoRoot: string, args: string[]): string {
 function terminalSourceKind(sourcePath: string): 'plan' | 'notes' | null {
   const normalized = normalizeSlashes(sourcePath);
   const base = path.posix.basename(normalized);
-  if ((/^plans\/plan-[^/]+\.md$/).test(normalized) || (normalized.startsWith('plans/archive/') && base.startsWith('plan-') && base.endsWith('.md'))) {
+  if (
+    /^plans\/plan-[^/]+\.md$/.test(normalized) ||
+    (normalized.startsWith('plans/archive/') && base.startsWith('plan-') && base.endsWith('.md'))
+  ) {
     return 'plan';
   }
-  if ((/^tasks\/notes\/[^/]+\.notes\.md$/).test(normalized) || (normalized.startsWith('tasks/archive/') && base.startsWith('notes-') && base.endsWith('.md'))) {
+  if (
+    /^tasks\/notes\/[^/]+\.notes\.md$/.test(normalized) ||
+    (normalized.startsWith('tasks/archive/') && base.startsWith('notes-') && base.endsWith('.md'))
+  ) {
     return 'notes';
   }
   return null;
@@ -537,29 +573,79 @@ function yamlQuote(value: string): string {
   return JSON.stringify(value);
 }
 
-function modernBrainPromotionSource(repoRoot: string, opts: BrainPromoteOptions, issues: BrainIssue[]): {
-  sources: string[]; sections: string[]; relatedPlan: string; terminalAt: string; outcome: string; sourceRequirement: string; knowledgeScope: string;
+function modernBrainPromotionSource(
+  repoRoot: string,
+  opts: BrainPromoteOptions,
+  issues: BrainIssue[],
+): {
+  sources: string[];
+  sections: string[];
+  relatedPlan: string;
+  terminalAt: string;
+  outcome: string;
+  sourceRequirement: string;
+  knowledgeScope: string;
 } {
   const requirementId = opts.requirementId?.trim();
   if (!requirementId) {
-    issue(issues, 'error', 'Modern Brain promotion requires --requirement-id; use --legacy-git-history only for retired Git delete/rename imports.');
-    return { sources: [], sections: [], relatedPlan: '', terminalAt: '', outcome: '', sourceRequirement: '', knowledgeScope: '' };
+    issue(
+      issues,
+      'error',
+      'Modern Brain promotion requires --requirement-id; use --legacy-git-history only for retired Git delete/rename imports.',
+    );
+    return {
+      sources: [],
+      sections: [],
+      relatedPlan: '',
+      terminalAt: '',
+      outcome: '',
+      sourceRequirement: '',
+      knowledgeScope: '',
+    };
   }
   const controllerHome = resolveRepoPreferredControllerHome(repoRoot, opts.controllerHome);
   const repository = findRegisteredRepositoryByCheckoutRoot(repoRoot, controllerHome);
   if (!repository) {
-    issue(issues, 'error', `Repository is not registered in Controller Home; cannot resolve Requirement evidence for ${requirementId}.`);
-    return { sources: [], sections: [], relatedPlan: '', terminalAt: '', outcome: '', sourceRequirement: requirementId, knowledgeScope: '' };
+    issue(
+      issues,
+      'error',
+      `Repository is not registered in Controller Home; cannot resolve Requirement evidence for ${requirementId}.`,
+    );
+    return {
+      sources: [],
+      sections: [],
+      relatedPlan: '',
+      terminalAt: '',
+      outcome: '',
+      sourceRequirement: requirementId,
+      knowledgeScope: '',
+    };
   }
   const record = readRequirement({ controllerHome }, requirementId);
   if (!record) {
     issue(issues, 'error', `Requirement not found: ${requirementId}`);
-    return { sources: [], sections: [], relatedPlan: '', terminalAt: '', outcome: '', sourceRequirement: requirementId, knowledgeScope: '' };
+    return {
+      sources: [],
+      sections: [],
+      relatedPlan: '',
+      terminalAt: '',
+      outcome: '',
+      sourceRequirement: requirementId,
+      knowledgeScope: '',
+    };
   }
   const view = requirementSemanticView(record.value);
   if (view.acceptedEvidenceRefs.length === 0) {
     issue(issues, 'error', `Brain promotion requires accepted Requirement evidence: ${requirementId}`);
-    return { sources: [], sections: [], relatedPlan: '', terminalAt: '', outcome: '', sourceRequirement: requirementId, knowledgeScope: `requirement:${requirementId}` };
+    return {
+      sources: [],
+      sections: [],
+      relatedPlan: '',
+      terminalAt: '',
+      outcome: '',
+      sourceRequirement: requirementId,
+      knowledgeScope: `requirement:${requirementId}`,
+    };
   }
   const knowledgeScope = `requirement:${requirementId}`;
   const section = [
@@ -598,7 +684,9 @@ export function runBrainPromote(opts: BrainPromoteOptions): BrainPromoteResult {
   const root = brainRoot();
   const issues: BrainIssue[] = [];
   const brainPath = logicalBrainPath(project, opts.category, `${opts.slug}.md`);
-  const targetPath = safeBrainPath(root, brainPath, `promote:${opts.slug}`, issues) || path.resolve(root, project, opts.category, `${opts.slug}.md`);
+  const targetPath =
+    safeBrainPath(root, brainPath, `promote:${opts.slug}`, issues) ||
+    path.resolve(root, project, opts.category, `${opts.slug}.md`);
 
   let sources: string[] = [];
   let sections: string[] = [];
@@ -611,12 +699,16 @@ export function runBrainPromote(opts: BrainPromoteOptions): BrainPromoteResult {
   if (opts.legacyGitHistory) {
     const historicalSources = findTerminalHistorySources(repoRoot, opts.slug);
     sources = historicalSources.map((source) => `git:${source.gitRef}`);
-    if (historicalSources.length === 0) issue(issues, 'error', `No terminal plan or notes found in Git history for slug: ${opts.slug}`);
+    if (historicalSources.length === 0)
+      issue(issues, 'error', `No terminal plan or notes found in Git history for slug: ${opts.slug}`);
     sections = historicalSources.map((source) => `## Source: git:${source.gitRef}\n\n${source.content.trim()}\n`);
     const firstContent = historicalSources[0]?.content ?? '';
     const relatedPlanSource = historicalSources.find((source) => terminalSourceKind(source.sourcePath) === 'plan');
-    relatedPlan = relatedPlanSource ? `git:${relatedPlanSource.gitRef}` : frontmatterValue(firstContent, 'Related Plan');
-    terminalAt = historicalSources[0]?.terminalAt || frontmatterValue(firstContent, 'Archived') || new Date().toISOString();
+    relatedPlan = relatedPlanSource
+      ? `git:${relatedPlanSource.gitRef}`
+      : frontmatterValue(firstContent, 'Related Plan');
+    terminalAt =
+      historicalSources[0]?.terminalAt || frontmatterValue(firstContent, 'Archived') || new Date().toISOString();
     outcome = frontmatterValue(firstContent, 'Outcome') || 'Promoted';
   } else {
     const modern = modernBrainPromotionSource(repoRoot, opts, issues);
@@ -647,8 +739,17 @@ export function runBrainPromote(opts: BrainPromoteOptions): BrainPromoteResult {
   }
 
   return {
-    repoRoot, brainRoot: root, project, slug: opts.slug, category: opts.category, targetPath, brainPath,
-    sources, issues, dryRun: opts.dryRun === true, written: !hasErrors && !opts.dryRun,
+    repoRoot,
+    brainRoot: root,
+    project,
+    slug: opts.slug,
+    category: opts.category,
+    targetPath,
+    brainPath,
+    sources,
+    issues,
+    dryRun: opts.dryRun === true,
+    written: !hasErrors && !opts.dryRun,
   };
 }
 
@@ -690,7 +791,6 @@ function exitCodeFor(issues: BrainIssue[]): number {
 
 export function buildBrainCommand(): Command {
   const brain = new Command('brain').description('Manage explicit repo-to-brain sync and terminal-workflow promotion');
-  addBrainAssistantCommands(brain);
 
   brain
     .command('status')
@@ -721,7 +821,12 @@ export function buildBrainCommand(): Command {
     .description('Mirror stable manifest groups into ~/brain/<project>/*')
     .option('--repo <path>', 'Repository root to inspect')
     .option('--scope <scope>', 'Scope to sync')
-    .option('--changed <path>', 'Limit sync to one changed repo path', (value, previous: string[] = []) => [...previous, value], [])
+    .option(
+      '--changed <path>',
+      'Limit sync to one changed repo path',
+      (value, previous: string[] = []) => [...previous, value],
+      [],
+    )
     .option('--dry-run', 'Show planned writes without writing files')
     .option('--json', 'Output JSON instead of human-readable text')
     .action((rawOpts: BrainCommandOptions) => {
@@ -732,12 +837,17 @@ export function buildBrainCommand(): Command {
 
   brain
     .command('promote')
-    .description('Promote accepted Requirement evidence into ~/brain/<project>/<category>/; Git-history import is explicit legacy compatibility only')
+    .description(
+      'Promote accepted Requirement evidence into ~/brain/<project>/<category>/; Git-history import is explicit legacy compatibility only',
+    )
     .requiredOption('--slug <slug>', 'Brain entry slug')
     .requiredOption('--category <category>', 'Target category: decisions|runbooks|patterns|references')
     .option('--repo <path>', 'Repository root to inspect')
     .option('--requirement-id <id>', 'Requirement identity carrying accepted evidence for modern promotion')
-    .option('--controller-home <path>', 'Override Controller Home used to resolve the registered repository and Requirement')
+    .option(
+      '--controller-home <path>',
+      'Override Controller Home used to resolve the registered repository and Requirement',
+    )
     .option('--legacy-git-history', 'Explicitly use retired Git delete/rename promotion compatibility')
     .option('--dry-run', 'Show planned promotion without writing files')
     .option('--json', 'Output JSON instead of human-readable text')

@@ -9,7 +9,13 @@ import {
 
 // Exhaustive namespaces owned by the retired Work/WorkHandle lifecycle, NOT
 // other execution facts such as Process, Requirement, Plan or UserRequest.
-export const RETIRED_WORK_NAMESPACES = ['work_contract', 'work_semantic_revision', 'execution_work_handle'] as const;
+export const RETIRED_WORK_NAMESPACES = [
+  'work_contract',
+  'work_semantic_revision',
+  'execution_work_handle',
+  'assistant_experience',
+  'assistant_outcome_observation',
+] as const;
 const LEGACY_WORK_DIRECTORIES = ['work-handles', 'indexes/work-contracts'] as const;
 
 export interface RetiredWorkPurgeReport {

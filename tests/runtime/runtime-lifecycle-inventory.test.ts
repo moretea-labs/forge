@@ -5,13 +5,28 @@ import {
 } from '../../src/runtime/recovery/lifecycle-inventory';
 
 const REQUIRED_CLASSES = [
-  'assistant_experience', 'assistant_outcome_observation',
-  'requirement','plan','work','process_record_log','execution_job','check_receipt','resource_lease',
+  'requirement',
+  'plan',
+  'process_record_log',
+  'execution_job',
+  'check_receipt',
+  'resource_lease',
   'scheduler_occurrence_history',
-  'managed_workspace_checkout','edit_session','mcp_transport_session',
-  'browser_session_profile','browser_disposable_artifact','computer_interaction_target',
-  'plugin_config_profile','release_artifact','recovery_backup','quarantine',
-  'operational_memory','context_record','repository_controller_home_namespace','sqlite_control_plane','runtime_temp',
+  'managed_workspace_checkout',
+  'edit_session',
+  'mcp_transport_session',
+  'browser_session_profile',
+  'browser_disposable_artifact',
+  'computer_interaction_target',
+  'plugin_config_profile',
+  'release_artifact',
+  'recovery_backup',
+  'quarantine',
+  'operational_memory',
+  'context_record',
+  'repository_controller_home_namespace',
+  'sqlite_control_plane',
+  'runtime_temp',
 ] as const;
 
 describe('Kernel V2 runtime lifecycle inventory', () => {
@@ -23,7 +38,15 @@ describe('Kernel V2 runtime lifecycle inventory', () => {
 
   test('makes ownership, terminality, protection, retention, cleanup and recovery explicit', () => {
     for (const entry of RUNTIME_LIFECYCLE_INVENTORY) {
-      for (const value of [entry.owner, entry.storage, entry.terminalCondition, entry.activeProtection, entry.retentionCapacity, entry.cleanupAuthority, entry.recoverySemantics]) {
+      for (const value of [
+        entry.owner,
+        entry.storage,
+        entry.terminalCondition,
+        entry.activeProtection,
+        entry.retentionCapacity,
+        entry.cleanupAuthority,
+        entry.recoverySemantics,
+      ]) {
         expect(value.trim().length).toBeGreaterThan(8);
       }
       expect(entry.evidencePaths.length).toBeGreaterThan(0);
@@ -40,20 +63,48 @@ describe('Kernel V2 runtime lifecycle inventory', () => {
   });
 
   test('keeps authored semantic authority durable without restoring ControllerRound lifecycle', () => {
-    for (const id of ['requirement', 'plan', 'work'] as const) {
+    for (const id of ['requirement', 'plan'] as const) {
       const entry = RUNTIME_LIFECYCLE_INVENTORY.find((candidate) => candidate.id === id);
       expect(entry).toBeDefined();
       expect(entry!.dataClass).toBe('semantic_authority');
       expect(entry!.retentionCapacity).toMatch(/semantic|revision history|audit retention/i);
-      expect(entry!.cleanupAuthority).toMatch(/does not delete|never rewrites|never rewrite semantic Work completion|semantic retention|no Work cleanup writer exists/i);
+      expect(entry!.cleanupAuthority).toMatch(
+        /does not delete|never rewrites|never rewrite semantic Work completion|semantic retention|no Work cleanup writer exists/i,
+      );
     }
     expect(RUNTIME_LIFECYCLE_INVENTORY.some((candidate) => candidate.id === 'controller_round')).toBe(false);
     expect(RUNTIME_LIFECYCLE_INVENTORY.some((candidate) => candidate.id === 'controller_session_lease')).toBe(false);
   });
 
   test('keeps already-bounded Process, transport, Context and Operational Memory classes explicit', () => {
-    const bounded = new Set(RUNTIME_LIFECYCLE_INVENTORY.filter((entry) => entry.closureStatus === 'existing_bounded').map((entry) => entry.id));
-    for (const id of ['requirement','plan','work','process_record_log','mcp_transport_session','operational_memory','context_record','runtime_temp','managed_workspace_checkout','scheduler_occurrence_history','edit_session','plugin_config_profile','quarantine','release_artifact','recovery_backup','browser_disposable_artifact','repository_controller_home_namespace','browser_session_profile','computer_interaction_target','check_receipt','execution_job','resource_lease']) {
+    const bounded = new Set(
+      RUNTIME_LIFECYCLE_INVENTORY.filter((entry) => entry.closureStatus === 'existing_bounded').map(
+        (entry) => entry.id,
+      ),
+    );
+    for (const id of [
+      'requirement',
+      'plan',
+      'process_record_log',
+      'mcp_transport_session',
+      'operational_memory',
+      'context_record',
+      'runtime_temp',
+      'managed_workspace_checkout',
+      'scheduler_occurrence_history',
+      'edit_session',
+      'plugin_config_profile',
+      'quarantine',
+      'release_artifact',
+      'recovery_backup',
+      'browser_disposable_artifact',
+      'repository_controller_home_namespace',
+      'browser_session_profile',
+      'computer_interaction_target',
+      'check_receipt',
+      'execution_job',
+      'resource_lease',
+    ]) {
       expect(bounded.has(id)).toBe(true);
     }
   });
