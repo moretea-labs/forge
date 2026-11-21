@@ -123,8 +123,7 @@ export function buildRepositoryInstructionContext(
   // design paths already declared by repository guidance, plus root DESIGN.md.
   // Policy and byte limits are the same as for AGENTS.md.
   const isUiTask =
-    isUiIntent ||
-    targets.some((path) => /(?:\/Views?\/|(?:View|Screen)\.(?:swift|tsx|jsx)$)/i.test(path));
+    isUiIntent || targets.some((path) => /(?:\/Views?\/|(?:View|Screen)\.(?:swift|tsx|jsx)$)/i.test(path));
   if (isUiTask) {
     const designPaths = new Set<string>();
     const declaredGuidance = [...contractTargets.keys()];
