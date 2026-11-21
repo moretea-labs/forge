@@ -121,7 +121,7 @@ function sourceFiles(directory) {
     if (entry.isDirectory() && GENERATED_SOURCE_DIRECTORY_NAMES.has(entry.name)) continue;
     const path = `${directory}/${entry.name}`;
     if (entry.isDirectory()) files.push(...sourceFiles(path));
-    else if (entry.isFile() && path.endsWith('.ts')) files.push(path);
+    else if (entry.isFile() && /\.(?:ts|tsx|mts|cts)$/.test(path)) files.push(path);
   }
   return files;
 }
@@ -227,12 +227,18 @@ function genericWorkLifecycleMutationRecords(files) {
   return records;
 }
 
-function staticTypeScriptImportRecords(files) {
+function staticTypeScriptImportRecordsFromSources(sources) {
   const ts = loadTypeScriptCompiler();
   if (!ts) return [];
   const records = [];
-  for (const path of [...files].sort()) {
-    const sourceFile = ts.createSourceFile(path, text(path), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  for (const { path, source } of [...sources].sort((a, b) => a.path.localeCompare(b.path))) {
+    const sourceFile = ts.createSourceFile(
+      path,
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    );
     function visit(node) {
       let specifier;
       if (
@@ -264,8 +270,12 @@ function staticTypeScriptImportRecords(files) {
   return records;
 }
 
-function staticTypeScriptDependencyGraph(files) {
-  const orderedFiles = [...files].sort();
+function staticTypeScriptImportRecords(files) {
+  return staticTypeScriptImportRecordsFromSources(files.map((path) => ({ path, source: text(path) })));
+}
+
+function staticTypeScriptDependencyGraphFromSources(sources) {
+  const orderedFiles = sources.map(({ path }) => path).sort();
   const known = new Set(orderedFiles);
   const graph = new Map(orderedFiles.map((path) => [path, new Set()]));
 
@@ -273,21 +283,149 @@ function staticTypeScriptDependencyGraph(files) {
     if (!specifier.startsWith('.')) return undefined;
     const base = normalize(`${dirname(fromPath)}/${specifier}`).replaceAll('\\', '/');
     const extension = extname(base);
-    const withoutRuntimeExtension = ['.js', '.mjs', '.cjs'].includes(extension)
-      ? base.slice(0, -extension.length)
-      : base;
-    const candidates =
-      extension === '.ts'
-        ? [base]
-        : [withoutRuntimeExtension, `${withoutRuntimeExtension}.ts`, `${withoutRuntimeExtension}/index.ts`];
+    const sourceExtensions = ['.ts', '.tsx', '.mts', '.cts'];
+    const runtimeExtensions = { '.js': ['.ts', '.tsx'], '.mjs': ['.mts'], '.cjs': ['.cts'] };
+    const mapped = runtimeExtensions[extension];
+    const stem = mapped ? base.slice(0, -extension.length) : base;
+    const candidates = sourceExtensions.includes(extension)
+      ? [base]
+      : mapped
+        ? mapped.map((suffix) => `${stem}${suffix}`)
+        : [
+            base,
+            ...sourceExtensions.map((suffix) => `${base}${suffix}`),
+            ...sourceExtensions.map((suffix) => `${base}/index${suffix}`),
+          ];
     return candidates.find((candidate) => known.has(candidate));
   }
 
-  for (const { from, specifier } of staticTypeScriptImportRecords(orderedFiles)) {
+  for (const { from, specifier } of staticTypeScriptImportRecordsFromSources(sources)) {
     const target = resolveTypeScriptImport(from, specifier);
     if (target) graph.get(from).add(target);
   }
   return graph;
+}
+
+function staticTypeScriptDependencyGraph(files) {
+  return staticTypeScriptDependencyGraphFromSources(files.map((path) => ({ path, source: text(path) })));
+}
+
+const DURABLE_MUTATION_OWNER_PATHS = new Map([
+  ['createRequirement', 'src/runtime/control-plane/persistence/requirement-store.ts'],
+  ['updateRequirement', 'src/runtime/control-plane/persistence/requirement-store.ts'],
+  ['saveSchedule', 'packages/kernel/scheduler/infrastructure/schedule-store.ts'],
+  ['updateSchedule', 'packages/kernel/scheduler/infrastructure/schedule-store.ts'],
+  ['persistScheduleRevision', 'packages/kernel/scheduler/infrastructure/schedule-store.ts'],
+  ['ensureForgeInstanceIdentity', 'packages/kernel/identity/infrastructure/identity-store.ts'],
+  ['recordCanonicalGrant', 'packages/kernel/identity/infrastructure/grant-store.ts'],
+  ['revokeCanonicalGrant', 'packages/kernel/identity/infrastructure/grant-store.ts'],
+  ['publishRuntimeRelease', 'src/runtime/root/release-store.ts'],
+  ['rollbackRuntimeRelease', 'src/runtime/root/release-store.ts'],
+  ['protectRuntimeReleaseAuthority', 'src/runtime/root/release-store.ts'],
+  ['ensureActiveRuntimeRelease', 'src/runtime/root/release-store.ts'],
+]);
+
+function durableMutationOwnerViolationsFromSources(sources) {
+  const ts = loadTypeScriptCompiler();
+  if (!ts) return new Set();
+  const violations = new Set();
+  for (const { path, source } of sources) {
+    const sourceFile = ts.createSourceFile(
+      path,
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    );
+    const localStringConstants = new Map();
+    function visit(node) {
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.initializer &&
+        ts.isStringLiteralLike(node.initializer)
+      ) {
+        localStringConstants.set(node.name.text, node.initializer.text);
+      }
+      const declaredName =
+        ts.isFunctionDeclaration(node) && node.name
+          ? node.name.text
+          : ts.isVariableDeclaration(node) &&
+              ts.isIdentifier(node.name) &&
+              node.initializer &&
+              (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+            ? node.name.text
+            : undefined;
+      if (
+        declaredName &&
+        DURABLE_MUTATION_OWNER_PATHS.has(declaredName) &&
+        path !== DURABLE_MUTATION_OWNER_PATHS.get(declaredName)
+      ) {
+        violations.add(`${path}::second mutation owner ${declaredName}`);
+      }
+      if (ts.isCallExpression(node)) {
+        const callName = ts.isIdentifier(node.expression)
+          ? node.expression.text
+          : ts.isPropertyAccessExpression(node.expression)
+            ? node.expression.name.text
+            : undefined;
+        if (
+          /^(?:writeControlPlaneRecord|writeControlPlaneRecordWithinTransaction|mutateControlPlaneRecord)$/.test(
+            callName ?? '',
+          ) &&
+          path !== DURABLE_MUTATION_OWNER_PATHS.get('createRequirement')
+        ) {
+          const record = node.arguments.find((argument) => ts.isObjectLiteralExpression(argument));
+          if (record) {
+            const namespace = record.properties.find(
+              (property) =>
+                ts.isPropertyAssignment(property) &&
+                (ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name)) &&
+                property.name.text === 'namespace',
+            );
+            if (namespace && ts.isPropertyAssignment(namespace)) {
+              const value = namespace.initializer;
+              const literal = ts.isStringLiteralLike(value)
+                ? value.text
+                : ts.isIdentifier(value)
+                  ? localStringConstants.get(value.text)
+                  : undefined;
+              if (literal === 'requirement') violations.add(`${path}::direct requirement persistence writer`);
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(sourceFile);
+  }
+  return violations;
+}
+
+function kernelDomainSourceEdgeFailure(edge) {
+  const { from, to } = edgeParts(edge);
+  return /^packages\/kernel\/[^/]+\/(?:domain|application)\//.test(from) && to.startsWith('src/')
+    ? `Kernel domain/application must depend only on Kernel/protocol ports, never legacy src mechanisms: ${edge}`
+    : undefined;
+}
+
+const architectureOwnerGraphFixture = process.env.FORGE_ARCHITECTURE_OWNER_GRAPH_FIXTURE;
+if (architectureOwnerGraphFixture) {
+  const fixture = JSON.parse(architectureOwnerGraphFixture);
+  const sources = Array.isArray(fixture.sources) ? fixture.sources : [];
+  const edges = dependencyEdges(staticTypeScriptDependencyGraphFromSources(sources));
+  const violations = durableMutationOwnerViolationsFromSources(sources);
+  for (const edge of edges) {
+    const failure = kernelDomainSourceEdgeFailure(edge);
+    if (failure) violations.add(failure);
+  }
+  if (violations.size > 0) {
+    console.error('[runtime-architecture-owner-graph-fixture] FAILED');
+    for (const violation of violations) console.error(`- ${violation}`);
+    process.exit(1);
+  }
+  console.log(`[runtime-architecture-owner-graph-fixture] OK\n${edges.join('\n')}`);
+  process.exit(0);
 }
 
 function relativeStaticTypeScriptDependencyGraph(directory = 'src') {
@@ -1081,6 +1219,7 @@ requireMissing('src/runtime/control-plane/execution/work-delivery-service.ts');
 requireMissing('src/runtime/control-plane/facade/goal-workloop.ts');
 requireMissing('src/runtime/control-plane/facade/goal-workloop-access.ts');
 requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts');
+requireMissing('src/runtime/control-plane/execution/work-revision-diff.ts');
 forbid(
   'adapters/mcp/runtime-gateway/work-adapter.ts',
   /ImplementationReview|executeWorkVerification|work_finalize/,
@@ -2524,11 +2663,8 @@ for (const edge of dependencyEdges(b7ProductionGraph)) {
   ) {
     failures.push(`Kernel modules must never depend on MCP adapters or retired MCP gateway paths: ${edge}`);
   }
-  if (/^packages\/kernel\/[^/]+\/(?:domain|application)\//.test(from) && to.startsWith('src/')) {
-    failures.push(
-      `Kernel domain/application must depend only on Kernel/protocol ports, never legacy src mechanisms: ${edge}`,
-    );
-  }
+  const kernelDomainViolation = kernelDomainSourceEdgeFailure(edge);
+  if (kernelDomainViolation) failures.push(kernelDomainViolation);
   if (from.startsWith('packages/plugin-runtime/') && (to.startsWith('adapters/') || to.startsWith('src/runtime/'))) {
     failures.push(
       `Plugin Runtime provider dispatch must not depend on concrete adapters or Runtime implementations: ${edge}`,
@@ -2583,6 +2719,16 @@ for (const requiredEdge of [
       `Portable semantic identity contract must be consumed through the Kernel Identity boundary: ${requiredEdge}`,
     );
 }
+
+const B7_EXISTING_REQUIREMENT_MIGRATION_WRITERS = new Set([
+  'src/cli/controller/legacy-issue-cutover.ts::direct requirement persistence writer',
+  'src/cli/controller/requirement-portfolio-migration.ts::direct requirement persistence writer',
+]);
+requireExactShrinkingInventory(
+  'durable mutation Owner guardrail',
+  durableMutationOwnerViolationsFromSources(b7ProductionFiles.map((path) => ({ path, source: text(path) }))),
+  B7_EXISTING_REQUIREMENT_MIGRATION_WRITERS,
+);
 
 const b7LifecycleOwnerMarkers = new Map([
   ['WorkContract transition authority', ['packages/kernel/work/domain/state-machine.ts']],
