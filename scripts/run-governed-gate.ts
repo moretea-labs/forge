@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { createHash } from 'crypto';
+import { spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { runBoundedChild } from '../src/runtime/shared/bounded-child-supervisor';
@@ -145,10 +146,41 @@ function definitionValue(gate: Gate): unknown {
   };
 }
 
+function resolvedGateCommit(ref: string, label: string): string {
+  if (!ref) return '';
+  if (/^0{40}$/.test(ref)) return ref;
+  const result = spawnSync('git', ['rev-parse', '--verify', '--end-of-options', ref + '^{commit}'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    timeout: 3_000,
+  });
+  const sha = result.stdout?.trim() ?? '';
+  if (result.error || result.status !== 0 || !/^[0-9a-f]{40,64}$/.test(sha)) {
+    throw new Error('GATE_CACHE_REF_UNRESOLVED: ' + label);
+  }
+  return sha;
+}
+
+function gateCandidateIdentity(): unknown {
+  return {
+    // Resolve Git refs: origin/main's name alone does not bind its moving SHA.
+    baseCommit: resolvedGateCommit(process.env.TEST_BASE_REF?.trim() ?? '', 'TEST_BASE_REF'),
+    candidateCommit: resolvedGateCommit(
+      process.env.FORGE_CHECK_CANDIDATE_SHA?.trim() ?? '',
+      'FORGE_CHECK_CANDIDATE_SHA',
+    ),
+    sourceMode: process.env.FORGE_CHECK_SOURCE_QUALITY_MODE?.trim() || 'workspace',
+  };
+}
+
 export function gateDefinitionDigest(gate: Gate): string {
   return createHash('sha256')
-    .update(JSON.stringify(definitionValue(gate)))
+    .update(JSON.stringify({ definition: definitionValue(gate), candidate: gateCandidateIdentity() }))
     .digest('hex');
+}
+
+function gateCachePath(gate: Gate, contentDigest: string, definitionDigest: string): string {
+  return join(CACHE_ROOT, contentDigest + '-' + definitionDigest.slice(0, 24) + '-' + gate + '.json');
 }
 
 function releaseArtifactAvailable(): boolean {
@@ -162,7 +194,7 @@ function releaseArtifactAvailable(): boolean {
 }
 
 function hasReusableGateCache(gate: Gate, contentDigest: string, definitionDigest: string): boolean {
-  const cachePath = join(CACHE_ROOT, `${contentDigest}-${gate}.json`);
+  const cachePath = gateCachePath(gate, contentDigest, definitionDigest);
   if (!existsSync(cachePath)) return false;
   try {
     const cached = JSON.parse(readFileSync(cachePath, 'utf8')) as { status?: string; definitionDigest?: string };
@@ -178,7 +210,7 @@ function hasReusableGateCache(gate: Gate, contentDigest: string, definitionDiges
 
 async function runGate(gate: Gate, contentDigest: string): Promise<number> {
   const definitionDigest = gateDefinitionDigest(gate);
-  const cachePath = join(CACHE_ROOT, `${contentDigest}-${gate}.json`);
+  const cachePath = gateCachePath(gate, contentDigest, definitionDigest);
   if (hasReusableGateCache(gate, contentDigest, definitionDigest)) {
     console.error(`[gate:${gate}] cached candidate checks hit ${contentDigest.slice(0, 12)}`);
     return 0;
@@ -204,6 +236,13 @@ async function runGate(gate: Gate, contentDigest: string): Promise<number> {
       console.error(`[gate:${gate}] failed: ${step.label}`);
       return status || 1;
     }
+  }
+
+  // Do not cache results verified against a different Git baseline or
+  // candidate if a ref moved during a long Gate run.
+  if (gateDefinitionDigest(gate) !== definitionDigest) {
+    console.error(`[gate:${gate}] Git candidate/baseline moved during validation; recheck the current candidate`);
+    return 1;
   }
 
   // A different Writer may change unrelated files between steps. Do not
@@ -233,9 +272,14 @@ async function runGate(gate: Gate, contentDigest: string): Promise<number> {
 export async function main(args = process.argv.slice(2)): Promise<number> {
   const gate = args[0] as Gate;
   if (!['task', 'main', 'release'].includes(gate)) throw new Error('expected gate: task, main, or release');
+  const definitionDigest = gateDefinitionDigest(gate);
   const contentDigest = testContentDigest(ROOT);
   const status = await runGate(gate, contentDigest);
   if (status !== 0) return status;
+  if (gateDefinitionDigest(gate) !== definitionDigest) {
+    console.error(`[gate:${gate}] Git candidate/baseline moved before completion; current candidate requires checks`);
+    return 1;
+  }
   if (testContentDigest(ROOT) !== contentDigest) {
     console.error(`[gate:${gate}] candidate content changed; current candidate requires checks`);
     return 1;

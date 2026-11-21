@@ -209,9 +209,9 @@ describe('execution-speed test governance', () => {
 
   test('test-runner checks mutation per child, not between unrelated test runs', () => {
     const source = readFileSync(join(ROOT, 'src/testing/test-governance.ts'), 'utf8');
-    expect(source).toContain('const testWorkspaceBefore = workspaceMutationDigest(repoRoot);');
-    expect(source).toContain('workspaceMutationDigest(repoRoot) !== testWorkspaceBefore');
-    expect(source).toContain('testInputDigest(repoRoot, file) !== inputDigest');
+    expect(source).toContain('const testWorkspaceBefore = workspaceMutationDigest(testRoot);');
+    expect(source).toContain('workspaceMutationDigest(testRoot) !== testWorkspaceBefore');
+    expect(source).toContain('testInputDigest(testRoot, file) !== inputDigest');
     expect(source).not.toContain('const baselineWorkspace = workspaceMutationDigest(repoRoot)');
     expect(source).not.toContain('workspaceMutationDigest(repoRoot) !== baselineWorkspace');
   });
@@ -245,6 +245,44 @@ describe('execution-speed test governance', () => {
       expect(strict.status).not.toBe(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('main Gate cache identity changes with actual baseline, candidate and source mode (#714)', () => {
+    const keys = ['TEST_BASE_REF', 'FORGE_CHECK_CANDIDATE_SHA', 'FORGE_CHECK_SOURCE_QUALITY_MODE'] as const;
+    const saved = keys.map((key) => [key, process.env[key]] as const);
+    const head = git(ROOT, 'rev-parse', 'HEAD');
+    const parent = git(ROOT, 'rev-parse', 'HEAD~1');
+    try {
+      for (const key of keys) delete process.env[key];
+      const defaultKey = gateDefinitionDigest('main');
+      process.env.TEST_BASE_REF = parent;
+      const olderBase = gateDefinitionDigest('main');
+      process.env.TEST_BASE_REF = head;
+      const currentBase = gateDefinitionDigest('main');
+      expect(olderBase).not.toBe(defaultKey);
+      expect(currentBase).not.toBe(olderBase);
+
+      process.env.FORGE_CHECK_SOURCE_QUALITY_MODE = 'committed';
+      const committedMode = gateDefinitionDigest('main');
+      expect(committedMode).not.toBe(currentBase);
+
+      process.env.FORGE_CHECK_CANDIDATE_SHA = parent;
+      const priorCandidate = gateDefinitionDigest('main');
+      process.env.FORGE_CHECK_CANDIDATE_SHA = head;
+      expect(gateDefinitionDigest('main')).not.toBe(priorCandidate);
+
+      process.env.TEST_BASE_REF = 'bad-nonexistent-gate-cache-ref';
+      expect(() => gateDefinitionDigest('main')).toThrow(/GATE_CACHE_REF_UNRESOLVED: TEST_BASE_REF/);
+      process.env.TEST_BASE_REF = '0'.repeat(40);
+      expect(() => gateDefinitionDigest('main')).not.toThrow();
+      const gate = readFileSync(join(ROOT, 'scripts/run-governed-gate.ts'), 'utf8');
+      expect(gate).toContain('if (gateDefinitionDigest(gate) !== definitionDigest)');
+    } finally {
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
   });
 
