@@ -1614,10 +1614,13 @@ export function recordEditSessionProcessCheckReceipts(
         `EDIT_CHECK_RECEIPT_STALE_REVISION: receipt targets ${receipt.editSessionId}@${String(receipt.editRevision)} but current session is ${session.sessionId}@${session.currentRevision}`,
       );
     }
-    if (session.issueId !== undefined && receipt.issueId !== session.issueId) {
+    // Issue/task on an edit session are optional progress annotations, not
+    // acceptance authorities (#714). Reject only a concrete contradiction when
+    // both sides declare an id; omit-on-receipt must not block check evidence.
+    if (session.issueId !== undefined && receipt.issueId !== undefined && receipt.issueId !== session.issueId) {
       throw new Error('EDIT_CHECK_RECEIPT_ISSUE_MISMATCH: receipt issue does not match the edit session');
     }
-    if (session.taskId !== undefined && receipt.taskId !== session.taskId) {
+    if (session.taskId !== undefined && receipt.taskId !== undefined && receipt.taskId !== session.taskId) {
       throw new Error('EDIT_CHECK_RECEIPT_TASK_MISMATCH: receipt task does not match the edit session');
     }
     const existing = session.checkResults.find((entry) => entry.checkId === receipt.checkId);

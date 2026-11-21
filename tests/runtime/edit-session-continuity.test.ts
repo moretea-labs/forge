@@ -1684,6 +1684,113 @@ test('sync verifyEditSession keeps validation-input fingerprint under unrelated 
   expect(readFileSync(join(fx.repoRoot, 'noise.md'), 'utf8')).toContain('concurrent noise');
 });
 
+test('recordEditSessionProcessCheckReceipts accepts check evidence without issue/task binding (#714)', () => {
+  const fx = fixture();
+  mkdirSync(join(fx.repoRoot, '.forge'), { recursive: true });
+  writeFileSync(
+    join(fx.repoRoot, '.forge', 'checks.json'),
+    JSON.stringify({
+      version: 1,
+      checks: {
+        verify: {
+          description: 'binding-free receipt',
+          command: [
+            process.execPath,
+            '-e',
+            "const fs=require('fs'); if(!fs.readFileSync('source.ts','utf8').includes('value = 2')) process.exit(9); process.exit(0);",
+          ],
+          timeoutMs: 10_000,
+          effects: { reads: ['source.ts'] },
+        },
+      },
+    }),
+  );
+  spawnSync('git', ['add', '.forge/checks.json'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'add binding-free check'], { cwd: fx.repoRoot });
+
+  const binding = durableBinding({
+    repoId: fx.repository.repoId,
+    checkoutId: fx.repository.activeCheckoutId,
+  });
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Issue annotation without acceptance binding',
+    allowedPaths: ['source.ts'],
+    checks: ['verify'],
+    binding,
+    issueId: 'ISS-714-optional',
+    taskId: 'TASK-714-optional',
+  });
+  applyEditOperations(
+    fx.repoRoot,
+    fx.policy,
+    session.sessionId,
+    [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        expectedSha256: sha256(fx.initial),
+        replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+      },
+    ],
+    { binding },
+  );
+
+  const current = getEditSession(fx.repoRoot, session.sessionId);
+  expect(current.issueId).toBe('ISS-714-optional');
+  const fingerprint = editSessionValidationInputFingerprint(fx.repoRoot, session.sessionId, ['verify']);
+  const finishedAt = new Date().toISOString();
+  const receipt: ProcessCheckCompletionReceipt = {
+    schemaVersion: 1,
+    receiptId: 'receipt-714-no-binding',
+    resultDigest: 'digest-714-no-binding',
+    repoId: fx.repository.repoId,
+    checkoutId: fx.repository.activeCheckoutId,
+    editSessionId: session.sessionId,
+    editRevision: current.currentRevision,
+    checkId: 'verify',
+    processId: 'process-714-no-binding',
+    status: 'passed',
+    runtimeStatus: 'succeeded',
+    ok: true,
+    timedOut: false,
+    cancelled: false,
+    artifactPath: 'controller-home://checks/controller/latest-verify.json',
+    summary: 'binding-free receipt passed',
+    startedAt: finishedAt,
+    finishedAt,
+  };
+
+  const sealed = recordEditSessionProcessCheckReceipts(fx.repoRoot, session.sessionId, {
+    repoId: fx.repository.repoId,
+    checkoutId: fx.repository.activeCheckoutId!,
+    receipts: [receipt],
+    validatedWorkspaceFingerprint: fingerprint,
+  });
+  expect(sealed.status).toBe('checked');
+
+  expect(() =>
+    recordEditSessionProcessCheckReceipts(fx.repoRoot, session.sessionId, {
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId!,
+      receipts: [
+        {
+          ...receipt,
+          receiptId: 'receipt-714-conflict',
+          resultDigest: 'digest-714-conflict',
+          processId: 'process-714-conflict',
+          issueId: 'ISS-OTHER',
+        },
+      ],
+      expectedCheckReceipts: {
+        verify: { receiptId: receipt.receiptId, resultDigest: receipt.resultDigest },
+      },
+      validatedWorkspaceFingerprint: fingerprint,
+    }),
+  ).toThrow('EDIT_CHECK_RECEIPT_ISSUE_MISMATCH');
+
+  expect(finalizeEditSession(fx.repoRoot, session.sessionId, { binding }).status).toBe('finalized');
+});
+
 test('recordEditSessionProcessCheckReceipts seals validation-input only under unrelated dirty (#714)', () => {
   const fx = fixture();
   mkdirSync(join(fx.repoRoot, '.forge'), { recursive: true });
