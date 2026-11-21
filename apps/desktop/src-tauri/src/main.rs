@@ -2827,9 +2827,18 @@ fn compact_local_api_history(messages: &mut Vec<Value>) -> bool {
     let first = messages[0].clone();
     // Latest explicit user request (often a task change) is more authoritative
     // than the conversation's original prompt. Keep it when old tool rounds go.
+    // Anthropic tool results also use role=user. Do not mistake these for
+    // instructions or orphan them from their tool_use on compaction. Real
+    // multimodal user prompts (text + image blocks) must still be preserved.
     let latest_task = messages[..start].iter().rev()
-        .find(|item| item.get("role").and_then(Value::as_str) == Some("user"))
-        .cloned();
+        .find(|item| {
+            if item.get("role").and_then(Value::as_str) != Some("user") { return false; }
+            let content = item.get("content");
+            content.and_then(Value::as_str).is_some()
+                || content.and_then(Value::as_array).is_some_and(|parts|
+                    !parts.iter().any(|part| part.get("type").and_then(Value::as_str)
+                        == Some("tool_result")))
+        }).cloned();
     let recent = messages[start..].to_vec();
     messages.clear();
     messages.push(first.clone());
@@ -6671,6 +6680,68 @@ mod tests {
         assert_eq!(history[1]["content"], "new task: fix bug B");
         assert!(history[2]["content"].as_str().unwrap().contains("supersedes"));
         assert_eq!(history.last().unwrap()["tool_call_id"], "call-13");
+    }
+
+    #[test]
+    fn anthropic_compaction_does_not_keep_orphan_tool_results_as_user_instructions() {
+        let mut history = vec![
+            json!({"role":"user","content":"old task"}),
+            json!({"role":"assistant","content":[{"type":"text","text":"ready"}]}),
+            json!({"role":"user","content":"latest human task"}),
+        ];
+        for index in 0..14 {
+            let id = format!("toolu_{index}");
+            history.push(json!({"role":"assistant","content":[{
+                "type":"tool_use","id":id,"name":"read_file","input":{}
+            }]}));
+            history.push(json!({"role":"user","content":[{
+                "type":"tool_result","tool_use_id":id,"content":"Forge read receipt"
+            }]}));
+        }
+        assert!(compact_local_api_history(&mut history));
+        assert_eq!(history[0]["content"], "old task");
+        assert_eq!(history[1]["content"], "latest human task");
+        assert!(history[2]["content"].as_str().unwrap().contains("compacted"));
+        for (index, entry) in history.iter().enumerate() {
+            let Some(blocks) = entry.get("content").and_then(Value::as_array) else { continue };
+            for block in blocks {
+                if block["type"] != "tool_result" { continue; }
+                assert!(index > 0, "orphan Anthropic tool result");
+                let id = block["tool_use_id"].as_str().unwrap();
+                assert_eq!(history[index - 1]["role"], "assistant");
+                assert!(history[index - 1]["content"].as_array().unwrap().iter()
+                    .any(|tool| tool["type"] == "tool_use" && tool["id"] == id),
+                    "tool result requires its matching tool_use");
+            }
+        }
+        assert_eq!(history.iter().filter(|item|
+            item.get("content").and_then(Value::as_str).is_some()).count(), 3);
+    }
+
+    #[test]
+    fn anthropic_compaction_preserves_multimodal_human_request() {
+        let multimodal = json!([
+            {"type":"text","text":"inspect this screenshot"},
+            {"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}
+        ]);
+        let mut history = vec![
+            json!({"role":"user","content":"first task"}),
+            json!({"role":"assistant","content":[{"type":"text","text":"ready"}]}),
+            json!({"role":"user","content":multimodal.clone()}),
+        ];
+        for index in 0..14 {
+            let id = format!("toolu_{index}");
+            history.push(json!({"role":"assistant","content":[{
+                "type":"tool_use","id":id,"name":"read_file","input":{}
+            }]}));
+            history.push(json!({"role":"user","content":[{
+                "type":"tool_result","tool_use_id":id,"content":"read result"
+            }]}));
+        }
+        assert!(compact_local_api_history(&mut history));
+        assert_eq!(history[1]["content"], multimodal,
+            "real user image context should survive compaction");
+        assert!(history[2]["content"].as_str().unwrap().contains("compacted"));
     }
 
     #[test]
