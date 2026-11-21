@@ -1,7 +1,19 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -24,8 +36,16 @@ import { addRepositoryCheckout, getRepository, registerRepository } from '../../
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/runtime/repositories/runtime-storage';
 import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import { applyControllerHomeMigration } from '../../src/runtime/control-plane/persistence/controller-home-migration';
-import { assertOwnedResourceCleanupTarget, getOwnedResource, recordOwnedResource } from '../../packages/kernel/identity/api/index';
-import { managedBranchOwnedResourceId, managedBranchOwnedResourceLocator, managedWorkspaceOwnedResourceId } from '../../src/runtime/execution/managed-workspace';
+import {
+  assertOwnedResourceCleanupTarget,
+  getOwnedResource,
+  recordOwnedResource,
+} from '../../packages/kernel/identity/api/index';
+import {
+  managedBranchOwnedResourceId,
+  managedBranchOwnedResourceLocator,
+  managedWorkspaceOwnedResourceId,
+} from '../../src/runtime/execution/managed-workspace';
 import { recordIosTestEvidenceOwner } from '../../src/runtime/control-plane/generated-cache-retention';
 import {
   applyExternalFilesystemGrant,
@@ -62,18 +82,32 @@ describe('capability recovery classifier', () => {
 
   it('classifies recent controller run failure samples into stable recovery classes', () => {
     expect(classifyFailure('Controller process 86981 is no longer running')).toBe('agent_runtime_failure');
-    expect(classifyFailure('实现完成，但自动集成需要处理：7 edit operations failed precondition checks')).toBe('dirty_worktree_conflict');
-    expect(classifyFailure('Response payload is not completed: ContentLengthError: Not enough data to satisfy content length header.')).toBe('agent_runtime_failure');
-    expect(classifyFailure("You've hit your usage limit. Upgrade to Pro, purchase more credits or try again later.")).toBe('user_action_required');
+    expect(classifyFailure('实现完成，但自动集成需要处理：7 edit operations failed precondition checks')).toBe(
+      'dirty_worktree_conflict',
+    );
+    expect(
+      classifyFailure(
+        'Response payload is not completed: ContentLengthError: Not enough data to satisfy content length header.',
+      ),
+    ).toBe('agent_runtime_failure');
+    expect(
+      classifyFailure("You've hit your usage limit. Upgrade to Pro, purchase more credits or try again later."),
+    ).toBe('user_action_required');
   });
 
   it('classifies runtime storage local-job blockers distinctly', () => {
-    expect(classifyFailure('RUNTIME_STORAGE_NOT_READY: local-jobs: active or unreadable Local Jobs must finish before runtime storage can be relocated')).toBe('local_jobs_legacy_active');
+    expect(
+      classifyFailure(
+        'RUNTIME_STORAGE_NOT_READY: local-jobs: active or unreadable Local Jobs must finish before runtime storage can be relocated',
+      ),
+    ).toBe('local_jobs_legacy_active');
   });
 
   it('classifies external filesystem grants separately from generic policy denial', () => {
     expect(classifyFailure('Browser action forbidden by policy')).toBe('policy_denied');
-    expect(classifyFailure('SELECTED_PATH_SCOPE_DENIED: /Users/me/Downloads/file.txt escapes the selected repository')).toBe('external_filesystem_grant_required');
+    expect(
+      classifyFailure('SELECTED_PATH_SCOPE_DENIED: /Users/me/Downloads/file.txt escapes the selected repository'),
+    ).toBe('external_filesystem_grant_required');
   });
 });
 
@@ -172,7 +206,12 @@ describe('capability recovery probe', () => {
       commandExecuteAvailable: true,
       issueToolsAvailable: true,
       jobToolsAvailable: true,
-      executionJobs: [{ status: 'waiting_for_user', error: '实现完成，但自动集成需要处理：7 edit operations failed precondition checks' }],
+      executionJobs: [
+        {
+          status: 'waiting_for_user',
+          error: '实现完成，但自动集成需要处理：7 edit operations failed precondition checks',
+        },
+      ],
     });
 
     const recentFailures = snapshot.capabilities.find((capability) => capability.id === 'recent.failures');
@@ -190,14 +229,20 @@ describe('capability recovery probe', () => {
       localBridgeRunning: true,
       connectorHealthy: true,
       runtimeStorageReady: false,
-      runtimeStorageWarnings: ['local-jobs: active or unreadable Local Jobs must finish before runtime storage can be relocated'],
+      runtimeStorageWarnings: [
+        'local-jobs: active or unreadable Local Jobs must finish before runtime storage can be relocated',
+      ],
       commandPreviewAvailable: true,
       commandExecuteAvailable: false,
-      recentErrors: ['RUNTIME_STORAGE_NOT_READY: local-jobs: active or unreadable Local Jobs must finish before runtime storage can be relocated'],
+      recentErrors: [
+        'RUNTIME_STORAGE_NOT_READY: local-jobs: active or unreadable Local Jobs must finish before runtime storage can be relocated',
+      ],
     });
 
     const actionIds = snapshot.recommendedActions.map((action) => action.id);
-    expect(snapshot.capabilities.find((capability) => capability.id === 'runtime.storage')?.class).toBe('local_jobs_legacy_active');
+    expect(snapshot.capabilities.find((capability) => capability.id === 'runtime.storage')?.class).toBe(
+      'local_jobs_legacy_active',
+    );
     expect(actionIds).toContain('recovery.local_jobs_reconcile');
     expect(actionIds).toContain('recovery.runtime_storage_finalize_relocation');
     expect(snapshot.notes.join(' ')).toContain('runtime_maintenance_apply');
@@ -210,7 +255,15 @@ describe('capability recovery probe', () => {
       schedulerStatus: 'ready',
       localBridgeRunning: true,
       connectorHealthy: true,
-      pluginStates: [{ pluginId: 'gmail', enabled: true, healthState: 'error', ready: false, errors: ['Set one of FORGE_GMAIL_ACCESS_TOKEN before invoking gmail Google Workspace actions.'] }],
+      pluginStates: [
+        {
+          pluginId: 'gmail',
+          enabled: true,
+          healthState: 'error',
+          ready: false,
+          errors: ['Set one of FORGE_GMAIL_ACCESS_TOKEN before invoking gmail Google Workspace actions.'],
+        },
+      ],
     });
 
     expect(snapshot.recommendedActions.map((action) => action.id)).toContain('recovery.workspace_auth_login_prepare');
@@ -228,17 +281,25 @@ describe('capability recovery probe', () => {
       connectorHealthy: true,
     });
 
-    expect(snapshot.capabilities.find((capability) => capability.id === 'worker.loop')?.class).toBe('stale_runtime_state');
+    expect(snapshot.capabilities.find((capability) => capability.id === 'worker.loop')?.class).toBe(
+      'stale_runtime_state',
+    );
     expect(snapshot.recommendedActions.map((action) => action.id)).toContain('recovery.local_jobs_reconcile');
   });
 });
 
 describe('authorized recovery actions', () => {
   it('requires explicit authorization for mutating recovery', () => {
-    expect(() => assertRecoveryAuthorized(RECOVERY_ACTIONS.rebuildProjection)).toThrow('RECOVERY_AUTHORIZATION_REQUIRED');
-    expect(() => assertRecoveryAuthorized(RECOVERY_ACTIONS.rebuildProjection, RECOVERY_ACTIONS.rebuildProjection.id)).not.toThrow();
+    expect(() => assertRecoveryAuthorized(RECOVERY_ACTIONS.rebuildProjection)).toThrow(
+      'RECOVERY_AUTHORIZATION_REQUIRED',
+    );
+    expect(() =>
+      assertRecoveryAuthorized(RECOVERY_ACTIONS.rebuildProjection, RECOVERY_ACTIONS.rebuildProjection.id),
+    ).not.toThrow();
     expect(() => assertRecoveryAuthorized(RECOVERY_ACTIONS.cleanupApply)).toThrow('RECOVERY_AUTHORIZATION_REQUIRED');
-    expect(() => assertRecoveryAuthorized(RECOVERY_ACTIONS.cleanupApply, RECOVERY_ACTIONS.cleanupApply.id)).not.toThrow();
+    expect(() =>
+      assertRecoveryAuthorized(RECOVERY_ACTIONS.cleanupApply, RECOVERY_ACTIONS.cleanupApply.id),
+    ).not.toThrow();
   });
 
   it('does not resolve deleted Runtime lifecycle or autonomous source-repair actions', () => {
@@ -263,18 +324,50 @@ describe('authorized recovery actions', () => {
   });
 });
 
-
 describe('runtime maintenance executor', () => {
-  function advanceWorkToCleanup(store: { controllerHome: string; repoId: string; now?: () => string }, workId: string): void {
+  function advanceWorkToCleanup(
+    store: { controllerHome: string; repoId: string; now?: () => string },
+    workId: string,
+  ): void {
     replaceHistoricalWorkContract(store, {
       workId,
       phase: 'cleanup',
       phaseEvidence: {
-        implementation: { state: 'satisfied', source: 'recorded', summary: 'Historical fixture implementation complete.', evidenceRefs: [], recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z' },
-        verification: { state: 'satisfied', source: 'recorded', summary: 'Historical fixture verification complete.', evidenceRefs: [], recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z' },
-        review: { state: 'satisfied', source: 'recorded', summary: 'Historical fixture review complete.', evidenceRefs: [], recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z' },
-        delivery: { state: 'satisfied', source: 'recorded', summary: 'Historical fixture delivery complete.', evidenceRefs: [], recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z' },
-        cleanup: { state: 'satisfied', source: 'recorded', summary: 'Historical fixture cleanup state.', evidenceRefs: [], recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z' },
+        implementation: {
+          state: 'satisfied',
+          source: 'recorded',
+          summary: 'Historical fixture implementation complete.',
+          evidenceRefs: [],
+          recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z',
+        },
+        verification: {
+          state: 'satisfied',
+          source: 'recorded',
+          summary: 'Historical fixture verification complete.',
+          evidenceRefs: [],
+          recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z',
+        },
+        review: {
+          state: 'satisfied',
+          source: 'recorded',
+          summary: 'Historical fixture review complete.',
+          evidenceRefs: [],
+          recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z',
+        },
+        delivery: {
+          state: 'satisfied',
+          source: 'recorded',
+          summary: 'Historical fixture delivery complete.',
+          evidenceRefs: [],
+          recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z',
+        },
+        cleanup: {
+          state: 'satisfied',
+          source: 'recorded',
+          summary: 'Historical fixture cleanup state.',
+          evidenceRefs: [],
+          recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z',
+        },
       },
     });
   }
@@ -306,21 +399,24 @@ describe('runtime maintenance executor', () => {
     const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
     mkdirSync(join(root, '.forge', 'controller', 'managed-worktrees', repoId), { recursive: true });
     execFileSync('git', ['worktree', 'add', '-q', '-b', `work/${source}`, worktree, 'HEAD'], { cwd: repoRoot });
-    seedHistoricalWorkContract({ controllerHome, repoId, now: () => '2026-01-01T00:00:00.000Z' }, {
-      workId,
-      repoId,
-      objective: `stale managed ${source} work`,
-      acceptanceCriteria: ['preserve unique source'],
-      allowedPaths: ['**'],
-      forbiddenPaths: [],
-      checks: [],
-      constraints: {},
-      requestedBy: 'chatgpt',
-      phase: 'verification',
-      checkoutId: `checkout-${source}`,
-      worktreeRef: worktree,
-      baseRevision,
-    });
+    seedHistoricalWorkContract(
+      { controllerHome, repoId, now: () => '2026-01-01T00:00:00.000Z' },
+      {
+        workId,
+        repoId,
+        objective: `stale managed ${source} work`,
+        acceptanceCriteria: ['preserve unique source'],
+        allowedPaths: ['**'],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: {},
+        requestedBy: 'chatgpt',
+        phase: 'verification',
+        checkoutId: `checkout-${source}`,
+        worktreeRef: worktree,
+        baseRevision,
+      },
+    );
     if (source === 'dirty') {
       mkdirSync(join(worktree, 'docs', 'architecture'), { recursive: true });
       writeFileSync(join(worktree, 'docs', 'architecture', 'global-hook-runtime.md'), '# recent successful write\n');
@@ -338,8 +434,15 @@ describe('runtime maintenance executor', () => {
     };
   }
 
-
-  function editFixture(input: { workStatus?: 'cancelled' | 'running'; createWork?: boolean; applyEdit?: boolean; contractFree?: boolean; checks?: string[] } = {}) {
+  function editFixture(
+    input: {
+      workStatus?: 'cancelled' | 'running';
+      createWork?: boolean;
+      applyEdit?: boolean;
+      contractFree?: boolean;
+      checks?: string[];
+    } = {},
+  ) {
     const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-edit-session-'));
     temporaryRoots.push(root);
     const controllerHome = join(root, 'controller');
@@ -360,24 +463,37 @@ describe('runtime maintenance executor', () => {
     const checkoutId = registered.activeCheckoutId;
     ensureRepositoryRuntimeStorageBinding(registered, 'edit-sessions', controllerHome);
     const requestedWorkState = input.workStatus ?? 'cancelled';
-    const workId = input.contractFree ? undefined : input.createWork === false ? 'work-missing' : `work-${requestedWorkState}`;
+    const workId = input.contractFree
+      ? undefined
+      : input.createWork === false
+        ? 'work-missing'
+        : `work-${requestedWorkState}`;
     if (input.createWork !== false && workId) {
-      seedHistoricalWorkContract({ controllerHome, repoId }, {
-        workId,
-        repoId,
-        checkoutId,
-        objective: 'Characterize stale Edit Session maintenance.',
-        acceptanceCriteria: [],
-        allowedPaths: ['src/**'],
-        forbiddenPaths: [],
-        checks: [],
-        constraints: { workspaceMode: 'current' },
-        requestedBy: 'chatgpt',
-        ...(requestedWorkState === 'running' ? { dispatchState: 'running' as const } : {}),
-        ...(requestedWorkState === 'cancelled' ? { semanticState: 'cancelled' as const } : {}),
-      });
+      seedHistoricalWorkContract(
+        { controllerHome, repoId },
+        {
+          workId,
+          repoId,
+          checkoutId,
+          objective: 'Characterize stale Edit Session maintenance.',
+          acceptanceCriteria: [],
+          allowedPaths: ['src/**'],
+          forbiddenPaths: [],
+          checks: [],
+          constraints: { workspaceMode: 'current' },
+          requestedBy: 'chatgpt',
+          ...(requestedWorkState === 'running' ? { dispatchState: 'running' as const } : {}),
+          ...(requestedWorkState === 'cancelled' ? { semanticState: 'cancelled' as const } : {}),
+        },
+      );
     }
-    const binding = { workId, repoId, checkoutId, principalId: 'principal-test', controllerInstanceId: 'controller-instance-test' };
+    const binding = {
+      workId,
+      repoId,
+      checkoutId,
+      principalId: 'principal-test',
+      controllerInstanceId: 'controller-instance-test',
+    };
     const session = beginEditSession(repoRoot, {
       purpose: 'Stale Edit Session maintenance fixture',
       allowedPaths: ['src/**'],
@@ -385,9 +501,13 @@ describe('runtime maintenance executor', () => {
       binding,
     });
     if (input.applyEdit !== false) {
-      applyEditOperations(repoRoot, getToolPolicy('controller'), session.sessionId, [
-        { type: 'create', path: 'src/session.ts', content: 'export const sessionValue = 1;\n' },
-      ], { binding });
+      applyEditOperations(
+        repoRoot,
+        getToolPolicy('controller'),
+        session.sessionId,
+        [{ type: 'create', path: 'src/session.ts', content: 'export const sessionValue = 1;\n' }],
+        { binding },
+      );
     }
     return {
       controllerHome,
@@ -396,6 +516,93 @@ describe('runtime maintenance executor', () => {
       sessionId: session.sessionId,
     };
   }
+
+  it('releases active OwnedResources whose worktree path and branch ref are already absent (#510)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-absent-owned-resource-'));
+    temporaryRoots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    mkdirSync(controllerHome, { recursive: true });
+    mkdirSync(repoRoot, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), '# absent owned resource\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
+
+    const registered = registerRepository({ path: repoRoot, displayName: 'absent-owned-resource', controllerHome });
+    const checkoutId = 'checkout_absent_owned_resource';
+    const branch = 'work/absent-owned-resource';
+    const missingWorktree = join(controllerHome, 'managed-worktrees', registered.repoId, 'work-absent-owned-resource');
+    mkdirSync(missingWorktree, { recursive: true });
+    writeFileSync(join(missingWorktree, '.keep'), 'temporary witness\n');
+    recordOwnedResource(controllerHome, {
+      resourceId: managedWorkspaceOwnedResourceId(registered.repoId, checkoutId),
+      kind: 'worktree',
+      targetRef: missingWorktree,
+      creator: 'forge:test-absent-owned-resource',
+      repoId: registered.repoId,
+      retentionIntent: 'temporary',
+    });
+    recordOwnedResource(controllerHome, {
+      resourceId: managedBranchOwnedResourceId(registered.repoId, checkoutId),
+      kind: 'git_branch',
+      targetRef: branch,
+      locator: managedBranchOwnedResourceLocator(repoRoot, checkoutId, branch),
+      creator: 'forge:test-absent-owned-resource',
+      repoId: registered.repoId,
+      retentionIntent: 'retain_on_failure',
+    });
+    // Simulate historical cleanup that removed the physical target while the
+    // OwnedResource record remained active.
+    rmSync(missingWorktree, { recursive: true, force: true });
+
+    const repository = { repoId: registered.repoId, canonicalRoot: registered.canonicalRoot, defaultBranch: 'main' };
+    const before = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
+    expect(before.summary.absentOwnedResources).toBeGreaterThanOrEqual(2);
+    expect(before.candidates.filter((candidate) => candidate.kind === 'absent_owned_resource')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: managedWorkspaceOwnedResourceId(registered.repoId, checkoutId),
+          safe: true,
+          sourceState: 'no_managed_source',
+        }),
+        expect.objectContaining({
+          id: managedBranchOwnedResourceId(registered.repoId, checkoutId),
+          safe: true,
+          sourceState: 'no_managed_source',
+        }),
+      ]),
+    );
+
+    const applied = applyRuntimeMaintenance(repository, controllerHome, {
+      actionId: 'full_maintenance_pass',
+      confirmMaintenance: true,
+      minAgeMinutes: 0,
+      maxCandidates: 50,
+    });
+    expect(applied.applied.filter((entry) => entry.kind === 'absent_owned_resource' && entry.applied)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: managedWorkspaceOwnedResourceId(registered.repoId, checkoutId),
+          result: 'absent_owned_resource_released',
+        }),
+        expect.objectContaining({
+          id: managedBranchOwnedResourceId(registered.repoId, checkoutId),
+          result: 'absent_owned_resource_released',
+        }),
+      ]),
+    );
+    expect(
+      getOwnedResource(controllerHome, managedWorkspaceOwnedResourceId(registered.repoId, checkoutId))?.status,
+    ).toBe('released');
+    expect(getOwnedResource(controllerHome, managedBranchOwnedResourceId(registered.repoId, checkoutId))?.status).toBe(
+      'released',
+    );
+    expect(existsSync(missingWorktree)).toBe(false);
+    expect(applied.summary.absentOwnedResources).toBe(0);
+  });
 
   it('reconciles a clean integrated managed worktree from canonical OwnedResource authority when its WorkContract is absent', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-owned-resource-worktree-'));
@@ -417,7 +624,9 @@ describe('runtime maintenance executor', () => {
     mkdirSync(join(controllerHome, 'managed-worktrees', registered.repoId), { recursive: true });
     execFileSync('git', ['worktree', 'add', '-q', '-b', branch, worktree, 'HEAD'], { cwd: repoRoot });
     const withCheckout = addRepositoryCheckout({ repoId: registered.repoId, path: worktree, controllerHome });
-    const checkout = withCheckout.checkouts.find((candidate) => candidate.checkoutId !== registered.activeCheckoutId && candidate.worktree);
+    const checkout = withCheckout.checkouts.find(
+      (candidate) => candidate.checkoutId !== registered.activeCheckoutId && candidate.worktree,
+    );
     if (!checkout) throw new Error('owned-resource worktree fixture checkout missing');
 
     const registeredWorktree = checkout.canonicalRoot;
@@ -443,13 +652,15 @@ describe('runtime maintenance executor', () => {
 
     const repository = { repoId: registered.repoId, canonicalRoot: registered.canonicalRoot, defaultBranch: 'main' };
     const before = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(before.candidates).toContainEqual(expect.objectContaining({
-      kind: 'unowned_managed_worktree',
-      path: registeredWorktree,
-      safe: true,
-      ownershipStatus: 'explicit',
-      sourceState: 'clean_integrated',
-    }));
+    expect(before.candidates).toContainEqual(
+      expect.objectContaining({
+        kind: 'unowned_managed_worktree',
+        path: registeredWorktree,
+        safe: true,
+        ownershipStatus: 'explicit',
+        sourceState: 'clean_integrated',
+      }),
+    );
 
     const applied = applyRuntimeMaintenance(repository, controllerHome, {
       actionId: 'full_maintenance_pass',
@@ -457,17 +668,27 @@ describe('runtime maintenance executor', () => {
       minAgeMinutes: 0,
       maxCandidates: 50,
     });
-    expect(applied.applied).toContainEqual(expect.objectContaining({
-      kind: 'unowned_managed_worktree',
-      path: registeredWorktree,
-      applied: true,
-      result: 'owned_managed_worktree_detached',
-    }));
+    expect(applied.applied).toContainEqual(
+      expect.objectContaining({
+        kind: 'unowned_managed_worktree',
+        path: registeredWorktree,
+        applied: true,
+        result: 'owned_managed_worktree_detached',
+      }),
+    );
     expect(existsSync(worktree)).toBe(false);
     expect(execFileSync('git', ['branch', '--list', branch], { cwd: repoRoot, encoding: 'utf8' }).trim()).toBe('');
-    expect(getRepository(registered.repoId, controllerHome, { includeRemoved: true }).checkouts.find((candidate) => candidate.checkoutId === checkout.checkoutId)?.lifecycle).toBe('removed');
-    expect(getOwnedResource(controllerHome, managedWorkspaceOwnedResourceId(registered.repoId, checkout.checkoutId))?.status).toBe('released');
-    expect(getOwnedResource(controllerHome, managedBranchOwnedResourceId(registered.repoId, checkout.checkoutId))?.status).toBe('released');
+    expect(
+      getRepository(registered.repoId, controllerHome, { includeRemoved: true }).checkouts.find(
+        (candidate) => candidate.checkoutId === checkout.checkoutId,
+      )?.lifecycle,
+    ).toBe('removed');
+    expect(
+      getOwnedResource(controllerHome, managedWorkspaceOwnedResourceId(registered.repoId, checkout.checkoutId))?.status,
+    ).toBe('released');
+    expect(
+      getOwnedResource(controllerHome, managedBranchOwnedResourceId(registered.repoId, checkout.checkoutId))?.status,
+    ).toBe('released');
     expect(applied.summary.unownedManagedWorktrees).toBe(0);
   });
 
@@ -475,16 +696,23 @@ describe('runtime maintenance executor', () => {
     const { controllerHome, localJobs, repository } = tempRepo();
     const jobDir = join(localJobs, 'JOB-stale');
     mkdirSync(jobDir, { recursive: true });
-    writeFileSync(join(jobDir, 'job.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      jobId: 'JOB-stale',
-      action: 'repository-command',
-      status: 'running',
-      createdAt: '2026-07-05T00:00:00.000Z',
-      updatedAt: '2026-07-05T00:00:00.000Z',
-      workerPid: 99999999,
-    }, null, 2)}
-`);
+    writeFileSync(
+      join(jobDir, 'job.json'),
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          jobId: 'JOB-stale',
+          action: 'repository-command',
+          status: 'running',
+          createdAt: '2026-07-05T00:00:00.000Z',
+          updatedAt: '2026-07-05T00:00:00.000Z',
+          workerPid: 99999999,
+        },
+        null,
+        2,
+      )}
+`,
+    );
 
     const before = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 0 });
     expect(before.recommendedActions).toContain('local_jobs_reconcile');
@@ -511,7 +739,10 @@ describe('runtime maintenance executor', () => {
       minAgeMinutes: 0,
     });
     const legacyApplied = applied.applied.some((candidate) => candidate.applied && candidate.id === 'JOB-broken');
-    const typedApplied = applied.runtimeStorageRepairApply?.applied.some((candidate) => candidate.status === 'applied' && candidate.path.includes('JOB-broken')) ?? false;
+    const typedApplied =
+      applied.runtimeStorageRepairApply?.applied.some(
+        (candidate) => candidate.status === 'applied' && candidate.path.includes('JOB-broken'),
+      ) ?? false;
     expect(legacyApplied || typedApplied).toBe(true);
     const quarantineRoot = join(controllerHome, 'repositories', repository.repoId, 'quarantine', 'local-jobs');
     expect(readdirSync(quarantineRoot).some((entry) => entry.includes('JOB-broken'))).toBe(true);
@@ -539,8 +770,12 @@ describe('runtime maintenance executor', () => {
     symlinkSync(outside, symlinkRoot, 'dir');
 
     const report = cleanupRuntimeQuarantine(controllerHome, repository.repoId, root, {
-      nowMs: Date.now(), retentionMs: 60_000, maxRetainedEntries: 10,
-      maxRetainedBytes: 1024 * 1024, maxEntries: 20, maxRemovals: 20,
+      nowMs: Date.now(),
+      retentionMs: 60_000,
+      maxRetainedEntries: 10,
+      maxRetainedBytes: 1024 * 1024,
+      maxEntries: 20,
+      maxRemovals: 20,
     });
     expect(report.policyVersion).toBe('runtime-quarantine-retention-v1');
     expect(report.migratedLegacyCount).toBe(2);
@@ -554,7 +789,10 @@ describe('runtime maintenance executor', () => {
     expect(readdirSync(quarantineRoot).some((entry) => entry.startsWith('legacy-root-local-jobs'))).toBe(true);
 
     const again = cleanupRuntimeQuarantine(controllerHome, repository.repoId, root, {
-      nowMs: Date.now(), retentionMs: 60_000, maxEntries: 20, maxRemovals: 20,
+      nowMs: Date.now(),
+      retentionMs: 60_000,
+      maxEntries: 20,
+      maxRemovals: 20,
     });
     expect(again.migratedLegacyCount).toBe(0);
     expect(again.removedCount).toBe(0);
@@ -605,7 +843,8 @@ describe('runtime maintenance executor', () => {
 
     // Exhaust the explicit pass's minimum 1,000-entry budget in the first root.
     const noiseRoot = join(repoRoot, '.repo-harness');
-    for (let i = 0; i < 1_005; i++) mkdirSync(join(noiseRoot, `noise-${i.toString().padStart(4, '0')}`), { recursive: true });
+    for (let i = 0; i < 1_005; i++)
+      mkdirSync(join(noiseRoot, `noise-${i.toString().padStart(4, '0')}`), { recursive: true });
     const cache = join(worktree, '.repo-harness', 'ios-build', 'DerivedData');
     mkdirSync(join(cache, 'Build'), { recursive: true });
     writeFileSync(join(cache, 'info.plist'), 'rebuildable Xcode cache fixture');
@@ -620,7 +859,9 @@ describe('runtime maintenance executor', () => {
     try {
       now.mockReturnValue(firstMinute * 60_000);
       const first = applyRuntimeMaintenance(registered, controllerHome, {
-        actionId: 'full_maintenance_pass', confirmMaintenance: true, maxCandidates: 1,
+        actionId: 'full_maintenance_pass',
+        confirmMaintenance: true,
+        maxCandidates: 1,
       });
       expect(first.generatedCacheGc?.rootsInspected).toBe(1);
       expect(first.generatedCacheGc?.budgetExhausted).toBe(true);
@@ -630,7 +871,9 @@ describe('runtime maintenance executor', () => {
       // scanning the saturated canonical root.
       now.mockReturnValue((firstMinute + 1) * 60_000);
       const second = applyRuntimeMaintenance(registered, controllerHome, {
-        actionId: 'full_maintenance_pass', confirmMaintenance: true, maxCandidates: 1,
+        actionId: 'full_maintenance_pass',
+        confirmMaintenance: true,
+        maxCandidates: 1,
       });
       const targetSuffix = ':.repo-harness/ios-build/DerivedData/Build';
       const wasRemoved = second.generatedCacheGc?.removedPaths.some((path) => path.endsWith(targetSuffix));
@@ -655,12 +898,24 @@ describe('runtime maintenance executor', () => {
     execFileSync('git', ['commit', '-qm', 'commit edit session'], { cwd: fx.repoRoot });
 
     const before = getEditSession(fx.repoRoot, fx.sessionId);
-    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(status.candidates).toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: true }));
+    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, {
+      minAgeMinutes: 0,
+      maxCandidates: 50,
+    });
+    expect(status.candidates).toContainEqual(
+      expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: true }),
+    );
     expect(getEditSession(fx.repoRoot, fx.sessionId)).toEqual(before);
 
-    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, { actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50 });
-    expect(applied.applied).toContainEqual(expect.objectContaining({ id: fx.sessionId, applied: true, result: 'edit_session_finalized' }));
+    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
+      actionId: 'full_maintenance_pass',
+      confirmMaintenance: true,
+      minAgeMinutes: 0,
+      maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(
+      expect.objectContaining({ id: fx.sessionId, applied: true, result: 'edit_session_finalized' }),
+    );
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('finalized');
   });
 
@@ -670,13 +925,18 @@ describe('runtime maintenance executor', () => {
     execFileSync('git', ['commit', '-qm', 'integrate legacy edit with unavailable check'], { cwd: fx.repoRoot });
 
     const before = getEditSession(fx.repoRoot, fx.sessionId);
-    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(status.candidates).toContainEqual(expect.objectContaining({
-      kind: 'stale_edit_session',
-      id: fx.sessionId,
-      safe: true,
-      reason: 'Exact committed after-images, no live lease; missing checks remain UNVERIFIED.',
-    }));
+    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, {
+      minAgeMinutes: 0,
+      maxCandidates: 50,
+    });
+    expect(status.candidates).toContainEqual(
+      expect.objectContaining({
+        kind: 'stale_edit_session',
+        id: fx.sessionId,
+        safe: true,
+        reason: 'Exact committed after-images, no live lease; missing checks remain UNVERIFIED.',
+      }),
+    );
     expect(getEditSession(fx.repoRoot, fx.sessionId)).toEqual(before);
 
     const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
@@ -685,11 +945,13 @@ describe('runtime maintenance executor', () => {
       minAgeMinutes: 0,
       maxCandidates: 50,
     });
-    expect(applied.applied).toContainEqual(expect.objectContaining({
-      id: fx.sessionId,
-      applied: true,
-      result: 'edit_session_reconciled_unverified',
-    }));
+    expect(applied.applied).toContainEqual(
+      expect.objectContaining({
+        id: fx.sessionId,
+        applied: true,
+        result: 'edit_session_reconciled_unverified',
+      }),
+    );
     const reconciled = getEditSession(fx.repoRoot, fx.sessionId);
     expect(reconciled.status).toBe('reconciled_unverified');
     expect(reconciled.unverifiedChecks).toEqual(['package:check:type']);
@@ -703,33 +965,55 @@ describe('runtime maintenance executor', () => {
     writeFileSync(join(fx.repoRoot, 'src/session.ts'), 'export const sessionValue = 2;\n');
 
     const before = getEditSession(fx.repoRoot, fx.sessionId);
-    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(status.candidates).toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: true }));
+    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, {
+      minAgeMinutes: 0,
+      maxCandidates: 50,
+    });
+    expect(status.candidates).toContainEqual(
+      expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: true }),
+    );
     expect(getEditSession(fx.repoRoot, fx.sessionId)).toEqual(before);
 
-    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, { actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50 });
-    expect(applied.applied).toContainEqual(expect.objectContaining({ id: fx.sessionId, applied: true, result: 'edit_session_superseded' }));
+    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
+      actionId: 'full_maintenance_pass',
+      confirmMaintenance: true,
+      minAgeMinutes: 0,
+      maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(
+      expect.objectContaining({ id: fx.sessionId, applied: true, result: 'edit_session_superseded' }),
+    );
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('superseded');
     expect(readFileSync(join(fx.repoRoot, 'src/session.ts'), 'utf8')).toBe('export const sessionValue = 2;\n');
   });
 
   it('does not select a stale EditSession that still owns unique uncommitted content', () => {
     const fx = editFixture();
-    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(status.candidates).toContainEqual(expect.objectContaining({
-      kind: 'stale_edit_session',
-      id: fx.sessionId,
-      safe: false,
-      reason: 'EDIT_SESSION_RECONCILIATION_UNCOMMITTED_SOURCE',
-    }));
-    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
-      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
+    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, {
+      minAgeMinutes: 0,
+      maxCandidates: 50,
     });
-    expect(applied.applied).toContainEqual(expect.objectContaining({
-      id: fx.sessionId,
-      applied: false,
-      result: 'not_selected',
-    }));
+    expect(status.candidates).toContainEqual(
+      expect.objectContaining({
+        kind: 'stale_edit_session',
+        id: fx.sessionId,
+        safe: false,
+        reason: 'EDIT_SESSION_RECONCILIATION_UNCOMMITTED_SOURCE',
+      }),
+    );
+    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
+      actionId: 'full_maintenance_pass',
+      confirmMaintenance: true,
+      minAgeMinutes: 0,
+      maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(
+      expect.objectContaining({
+        id: fx.sessionId,
+        applied: false,
+        result: 'not_selected',
+      }),
+    );
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('dirty');
     expect(readFileSync(join(fx.repoRoot, 'src/session.ts'), 'utf8')).toBe('export const sessionValue = 1;\n');
   });
@@ -740,52 +1024,83 @@ describe('runtime maintenance executor', () => {
     execFileSync('git', ['commit', '-qm', 'commit contract-free direct edit'], { cwd: fx.repoRoot });
 
     const before = getEditSession(fx.repoRoot, fx.sessionId);
-    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(status.candidates).toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: true }));
+    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, {
+      minAgeMinutes: 0,
+      maxCandidates: 50,
+    });
+    expect(status.candidates).toContainEqual(
+      expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: true }),
+    );
     expect(getEditSession(fx.repoRoot, fx.sessionId)).toEqual(before);
-    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, { actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50 });
-    expect(applied.applied).toContainEqual(expect.objectContaining({ id: fx.sessionId, applied: true, result: 'edit_session_finalized' }));
+    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
+      actionId: 'full_maintenance_pass',
+      confirmMaintenance: true,
+      minAgeMinutes: 0,
+      maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(
+      expect.objectContaining({ id: fx.sessionId, applied: true, result: 'edit_session_finalized' }),
+    );
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('finalized');
   });
 
-
   it('treats historical Work ownership as provenance while EditSession source safety remains authoritative', () => {
     const fx = editFixture({ createWork: false });
-    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(status.candidates).toContainEqual(expect.objectContaining({
-      kind: 'stale_edit_session',
-      id: fx.sessionId,
-      safe: false,
-      reason: 'EDIT_SESSION_RECONCILIATION_UNCOMMITTED_SOURCE',
-    }));
-    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
-      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
+    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, {
+      minAgeMinutes: 0,
+      maxCandidates: 50,
     });
-    expect(applied.applied).toContainEqual(expect.objectContaining({
-      id: fx.sessionId,
-      applied: false,
-      result: 'not_selected',
-    }));
+    expect(status.candidates).toContainEqual(
+      expect.objectContaining({
+        kind: 'stale_edit_session',
+        id: fx.sessionId,
+        safe: false,
+        reason: 'EDIT_SESSION_RECONCILIATION_UNCOMMITTED_SOURCE',
+      }),
+    );
+    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
+      actionId: 'full_maintenance_pass',
+      confirmMaintenance: true,
+      minAgeMinutes: 0,
+      maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(
+      expect.objectContaining({
+        id: fx.sessionId,
+        applied: false,
+        result: 'not_selected',
+      }),
+    );
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('dirty');
   });
 
   it('preserves an empty OPEN EditSession until an explicit owner action closes it', () => {
     const fx = editFixture({ applyEdit: false });
-    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(status.candidates).toContainEqual(expect.objectContaining({
-      kind: 'stale_edit_session',
-      id: fx.sessionId,
-      safe: false,
-      reason: 'EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE',
-    }));
-    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
-      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
+    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, {
+      minAgeMinutes: 0,
+      maxCandidates: 50,
     });
-    expect(applied.applied).toContainEqual(expect.objectContaining({
-      id: fx.sessionId,
-      applied: false,
-      result: 'not_selected',
-    }));
+    expect(status.candidates).toContainEqual(
+      expect.objectContaining({
+        kind: 'stale_edit_session',
+        id: fx.sessionId,
+        safe: false,
+        reason: 'EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE',
+      }),
+    );
+    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
+      actionId: 'full_maintenance_pass',
+      confirmMaintenance: true,
+      minAgeMinutes: 0,
+      maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(
+      expect.objectContaining({
+        id: fx.sessionId,
+        applied: false,
+        result: 'not_selected',
+      }),
+    );
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('open');
     expect(existsSync(join(fx.repoRoot, 'src/session.ts'))).toBe(false);
   });
@@ -795,7 +1110,10 @@ describe('runtime maintenance executor', () => {
     expect(AUTOMATIC_RUNTIME_MAINTENANCE_ACTION_ALLOWLIST.has('full_maintenance_pass')).toBe(false);
     expect(AUTOMATIC_RUNTIME_MAINTENANCE_ACTION_ALLOWLIST.has('local_jobs_reconcile')).toBe(true);
     const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
-      actionId: 'local_jobs_reconcile', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
+      actionId: 'local_jobs_reconcile',
+      confirmMaintenance: true,
+      minAgeMinutes: 0,
+      maxCandidates: 50,
     });
     expect(applied.applied.some((candidate) => candidate.id === fx.sessionId && candidate.applied)).toBe(false);
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('dirty');
@@ -816,13 +1134,18 @@ describe('runtime maintenance executor', () => {
 
     try {
       process.env.TMPDIR = defaultTempRoot;
-      const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 0, maxCandidates: 200 });
-      expect(status.candidates).toContainEqual(expect.objectContaining({
-        kind: 'stale_runtime_temp_entry',
-        path: staleEntry,
-        safe: true,
-        ownershipStatus: 'explicit',
-      }));
+      const status = buildRuntimeMaintenanceStatus(repository, controllerHome, {
+        minAgeMinutes: 0,
+        maxCandidates: 200,
+      });
+      expect(status.candidates).toContainEqual(
+        expect.objectContaining({
+          kind: 'stale_runtime_temp_entry',
+          path: staleEntry,
+          safe: true,
+          ownershipStatus: 'explicit',
+        }),
+      );
       expect(status.candidates).not.toContainEqual(expect.objectContaining({ path: foreignEntry }));
     } finally {
       if (previousTmpdir === undefined) delete process.env.TMPDIR;
@@ -844,7 +1167,8 @@ describe('runtime maintenance executor', () => {
     mkdirSync(join(gitSourceEntry, 'nested', '.git'), { recursive: true });
     writeFileSync(join(gitSourceEntry, 'nested', '.git', 'HEAD'), 'ref: refs/heads/main\n');
     mkdirSync(highCardinalityEntry, { recursive: true });
-    for (let index = 0; index < 256; index += 1) writeFileSync(join(highCardinalityEntry, `entry-${index}.tmp`), 'generated');
+    for (let index = 0; index < 256; index += 1)
+      writeFileSync(join(highCardinalityEntry, `entry-${index}.tmp`), 'generated');
     mkdirSync(recentEntry, { recursive: true });
     writeFileSync(target, 'preserve');
     symlinkSync(target, symbolicLink);
@@ -854,15 +1178,22 @@ describe('runtime maintenance executor', () => {
     utimesSync(highCardinalityEntry, old, old);
 
     const boundedRepository = { ...repository, runtimeTempRoots: [runtimeTempRoot] };
-    const status = buildRuntimeMaintenanceStatus(boundedRepository, controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
+    const status = buildRuntimeMaintenanceStatus(boundedRepository, controllerHome, {
+      minAgeMinutes: 0,
+      maxCandidates: 50,
+    });
     expect(status.readyForExecution).toBe(true);
     expect(status.summary.staleRuntimeTempEntries).toBe(3);
     const tempCandidates = status.candidates.filter((candidate) => candidate.kind === 'stale_runtime_temp_entry');
     expect(tempCandidates.find((candidate) => candidate.path === staleEntry)).toMatchObject({ safe: true });
     expect(tempCandidates.find((candidate) => candidate.path === gitSourceEntry)).toMatchObject({ safe: false });
-    expect(tempCandidates.find((candidate) => candidate.path === gitSourceEntry)?.reason).toContain('RUNTIME_TEMP_GIT_SOURCE_PROTECTED');
+    expect(tempCandidates.find((candidate) => candidate.path === gitSourceEntry)?.reason).toContain(
+      'RUNTIME_TEMP_GIT_SOURCE_PROTECTED',
+    );
     expect(tempCandidates.find((candidate) => candidate.path === highCardinalityEntry)).toMatchObject({ safe: false });
-    expect(tempCandidates.find((candidate) => candidate.path === highCardinalityEntry)?.reason).toContain('RUNTIME_TEMP_GIT_SOURCE_PROTECTED');
+    expect(tempCandidates.find((candidate) => candidate.path === highCardinalityEntry)?.reason).toContain(
+      'RUNTIME_TEMP_GIT_SOURCE_PROTECTED',
+    );
 
     const applied = applyRuntimeMaintenance(boundedRepository, controllerHome, {
       actionId: 'full_maintenance_pass',
@@ -871,8 +1202,16 @@ describe('runtime maintenance executor', () => {
       maxCandidates: 50,
     });
     expect(applied.applied.some((candidate) => candidate.path === staleEntry && candidate.applied)).toBe(true);
-    expect(applied.applied.find((candidate) => candidate.path === gitSourceEntry)).toMatchObject({ safe: false, applied: false, result: 'not_selected' });
-    expect(applied.applied.find((candidate) => candidate.path === highCardinalityEntry)).toMatchObject({ safe: false, applied: false, result: 'not_selected' });
+    expect(applied.applied.find((candidate) => candidate.path === gitSourceEntry)).toMatchObject({
+      safe: false,
+      applied: false,
+      result: 'not_selected',
+    });
+    expect(applied.applied.find((candidate) => candidate.path === highCardinalityEntry)).toMatchObject({
+      safe: false,
+      applied: false,
+      result: 'not_selected',
+    });
     expect(existsSync(staleEntry)).toBe(false);
     expect(existsSync(gitSourceEntry)).toBe(true);
     expect(existsSync(join(gitSourceEntry, 'nested', '.git', 'HEAD'))).toBe(true);
@@ -885,26 +1224,38 @@ describe('runtime maintenance executor', () => {
 
 describe('auth and external filesystem handoffs', () => {
   it('summarizes Gmail auth without exposing secrets and prepares login guidance', () => {
-    const status = buildWorkspaceAuthStatus([{
-      schemaVersion: 1,
-      manifestVersion: 1,
-      revision: 1,
-      pluginId: 'gmail',
-      provider: 'google',
-      displayName: 'Gmail',
-      pluginVersion: '1.0.0',
-      authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: [] },
-      enabled: true,
-      lifecycle: { state: 'error', reason: 'token missing' },
-      health: { state: 'error', checkedAt: '2026-07-05T00:00:00.000Z', ready: false, probed: true, errors: ['access token missing'], warnings: [] },
-      permissions: [],
-      capabilities: [],
-      actions: [],
-      updatedAt: '2026-07-05T00:00:00.000Z',
-    }]);
+    const status = buildWorkspaceAuthStatus([
+      {
+        schemaVersion: 1,
+        manifestVersion: 1,
+        revision: 1,
+        pluginId: 'gmail',
+        provider: 'google',
+        displayName: 'Gmail',
+        pluginVersion: '1.0.0',
+        authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: [] },
+        enabled: true,
+        lifecycle: { state: 'error', reason: 'token missing' },
+        health: {
+          state: 'error',
+          checkedAt: '2026-07-05T00:00:00.000Z',
+          ready: false,
+          probed: true,
+          errors: ['access token missing'],
+          warnings: [],
+        },
+        permissions: [],
+        capabilities: [],
+        actions: [],
+        updatedAt: '2026-07-05T00:00:00.000Z',
+      },
+    ]);
     expect((status.actionRequired as unknown[]).length).toBe(1);
     expect(JSON.stringify(status)).not.toContain('secret');
-    const login = prepareWorkspaceAuthLogin({ service: 'gmail' }) as { tokenEnvironmentVariables: string[]; safety: { credentialMaterialPersisted: boolean } };
+    const login = prepareWorkspaceAuthLogin({ service: 'gmail' }) as {
+      tokenEnvironmentVariables: string[];
+      safety: { credentialMaterialPersisted: boolean };
+    };
     expect(login.tokenEnvironmentVariables).toContain('FORGE_GMAIL_ACCESS_TOKEN');
     expect(login.safety.credentialMaterialPersisted).toBe(false);
   });
@@ -933,7 +1284,9 @@ describe('auth and external filesystem handoffs', () => {
     expect(applied.file).toEqual({ schemaVersion: 1, updatedAt: expect.any(String), grantCount: 1 });
     expect(JSON.stringify(applied)).not.toContain('"grants"');
     const reusable = previewExternalFilesystemGrant(repoRoot, {
-      grant_key: 'notes', root_path: externalRoot, reason: 'another read of the same authorized path',
+      grant_key: 'notes',
+      root_path: externalRoot,
+      reason: 'another read of the same authorized path',
     });
     expect(reusable.alreadyAuthorized).toBe(true);
     expect(reusable.safety.requiresApply).toBe(false);
@@ -948,12 +1301,18 @@ describe('auth and external filesystem handoffs', () => {
     writeFileSync(join(outside, 'outside.txt'), 'not granted');
     symlinkSync(join(outside, 'outside.txt'), join(externalRoot, 'link.txt'));
     symlinkSync(outside, join(externalRoot, 'linked-directory'));
-    expect(() => readExternalFilesystemSnapshot(repoRoot, {
-      target_key: 'notes', path: 'link.txt',
-    })).toThrow('EXTERNAL_FS_PATH_ESCAPE_DENIED');
-    expect(() => readExternalFilesystemSnapshot(repoRoot, {
-      target_key: 'notes', path: 'linked-directory/outside.txt',
-    })).toThrow('EXTERNAL_FS_PATH_ESCAPE_DENIED');
+    expect(() =>
+      readExternalFilesystemSnapshot(repoRoot, {
+        target_key: 'notes',
+        path: 'link.txt',
+      }),
+    ).toThrow('EXTERNAL_FS_PATH_ESCAPE_DENIED');
+    expect(() =>
+      readExternalFilesystemSnapshot(repoRoot, {
+        target_key: 'notes',
+        path: 'linked-directory/outside.txt',
+      }),
+    ).toThrow('EXTERNAL_FS_PATH_ESCAPE_DENIED');
     // Retain the persisted historical record but never advertise an expired
     // target as a currently usable permission.
     const grantsPath = join(repoRoot, '.forge/external-filesystem-grants.json');
@@ -963,9 +1322,13 @@ describe('auth and external filesystem handoffs', () => {
     const expired = listExternalFilesystemTargets(repoRoot);
     expect(expired.targets).toEqual([]);
     expect(expired.safety.expiredGrantCount).toBe(1);
-    expect(previewExternalFilesystemGrant(repoRoot, {
-      grant_key: 'notes', root_path: externalRoot, reason: 'renew expired scope',
-    }).alreadyAuthorized).toBe(false);
+    expect(
+      previewExternalFilesystemGrant(repoRoot, {
+        grant_key: 'notes',
+        root_path: externalRoot,
+        reason: 'renew expired scope',
+      }).alreadyAuthorized,
+    ).toBe(false);
   });
 });
 
@@ -987,7 +1350,11 @@ describe('sandbox patch handoff artifact', () => {
     expect(artifact.id).toMatch(/^PATCH-/);
     expect(artifact.touchedPaths).toEqual(['src/a.ts']);
     expect(artifact.checks).toEqual([{ id: 'package:check:type', status: 'passed' }]);
-    expect(artifact.provenance).toEqual({ actor: 'codex', workspace: 'isolated_worktree', source: 'blocked-chatgpt-session' });
+    expect(artifact.provenance).toEqual({
+      actor: 'codex',
+      workspace: 'isolated_worktree',
+      source: 'blocked-chatgpt-session',
+    });
     expect(artifact.integration.safeToApply).toBe(true);
   });
 
@@ -1003,22 +1370,40 @@ describe('owned worktree identity across macOS remounts', () => {
     const controllerHome = join(root, 'controller');
     const worktree = join(root, 'worktree');
     mkdirSync(worktree);
-    const input = { resourceId: 'pinned-replay', kind: 'worktree' as const, targetRef: worktree,
-      creator: 'forge:managed-workspace', repoId: 'repo-original', associatedWorkId: 'work-original' };
+    const input = {
+      resourceId: 'pinned-replay',
+      kind: 'worktree' as const,
+      targetRef: worktree,
+      creator: 'forge:managed-workspace',
+      repoId: 'repo-original',
+      associatedWorkId: 'work-original',
+    };
     const original = recordOwnedResource(controllerHome, input);
     expect(recordOwnedResource(controllerHome, input)).toEqual(original);
-    for (const change of [{ creator: 'other' }, { repoId: 'other' }, { associatedWorkId: 'other' }, { associatedRequirementId: 'other' }]) {
-      expect(() => recordOwnedResource(controllerHome, { ...input, ...change })).toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
+    for (const change of [
+      { creator: 'other' },
+      { repoId: 'other' },
+      { associatedWorkId: 'other' },
+      { associatedRequirementId: 'other' },
+    ]) {
+      expect(() => recordOwnedResource(controllerHome, { ...input, ...change })).toThrow(
+        'OWNED_RESOURCE_IDENTITY_CONFLICT',
+      );
       expect(getOwnedResource(controllerHome, original.resourceId)).toEqual(original);
     }
     const target = { resourceId: original.resourceId, kind: 'worktree' as const, targetRef: worktree };
-    expect(() => assertOwnedResourceCleanupTarget(controllerHome, { ...target, identityFingerprint: 'wrong' }))
-      .toThrow('OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH');
+    expect(() => assertOwnedResourceCleanupTarget(controllerHome, { ...target, identityFingerprint: 'wrong' })).toThrow(
+      'OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH',
+    );
     // A caller's copy of the stored witness must not bypass a fresh disk check.
     rmSync(worktree, { recursive: true });
     writeFileSync(worktree, 'replacement file');
-    expect(() => assertOwnedResourceCleanupTarget(controllerHome, { ...target, identityFingerprint: original.identityFingerprint }))
-      .toThrow('OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH');
+    expect(() =>
+      assertOwnedResourceCleanupTarget(controllerHome, {
+        ...target,
+        identityFingerprint: original.identityFingerprint,
+      }),
+    ).toThrow('OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH');
   });
 
   it('rejects historical device witnesses without volume proof and preserves their records', () => {
@@ -1038,32 +1423,41 @@ describe('owned worktree identity across macOS remounts', () => {
     const stat = lstatSync(canonicalPath);
     const majorBase = Math.floor(stat.dev / 0x1000000) * 0x1000000;
     const priorDevice = majorBase + ((stat.dev - majorBase + 3) % 256);
-    const fingerprint = (device: number, ino: number): string => createHash('sha256').update([
-      resource.ownerForgeInstanceId,
-      'filesystem_path',
-      canonicalPath,
-      String(device),
-      String(ino),
-      'directory',
-    ].join('\0')).digest('hex');
+    const fingerprint = (device: number, ino: number): string =>
+      createHash('sha256')
+        .update(
+          [
+            resource.ownerForgeInstanceId,
+            'filesystem_path',
+            canonicalPath,
+            String(device),
+            String(ino),
+            'directory',
+          ].join('\0'),
+        )
+        .digest('hex');
     const resourceFile = join(controllerHome, 'owned-resources', 'remount-device-witness.json');
     const writeWitness = (identityFingerprint: string, createdAt = resource.provenance.createdAt): void => {
-      writeFileSync(resourceFile, JSON.stringify({
-        ...resource,
-        provenance: { ...resource.provenance, createdAt },
-        identityFingerprint,
-      }));
+      writeFileSync(
+        resourceFile,
+        JSON.stringify({
+          ...resource,
+          provenance: { ...resource.provenance, createdAt },
+          identityFingerprint,
+        }),
+      );
     };
 
     writeWitness(fingerprint(priorDevice, stat.ino));
     const originalWitnessBytes = readFileSync(resourceFile, 'utf8');
-    const replay = () => recordOwnedResource(controllerHome, {
-      resourceId: resource.resourceId,
-      kind: 'worktree',
-      targetRef: worktree,
-      creator: 'forge:managed-workspace',
-      retentionIntent: 'temporary',
-    });
+    const replay = () =>
+      recordOwnedResource(controllerHome, {
+        resourceId: resource.resourceId,
+        kind: 'worktree',
+        targetRef: worktree,
+        creator: 'forge:managed-workspace',
+        retentionIntent: 'temporary',
+      });
     expect(replay).toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
     expect(readFileSync(resourceFile, 'utf8')).toBe(originalWitnessBytes);
     const cleanupTarget = {
@@ -1071,30 +1465,38 @@ describe('owned worktree identity across macOS remounts', () => {
       kind: 'worktree' as const,
       targetRef: worktree,
     };
-    expect(() => assertOwnedResourceCleanupTarget(controllerHome, cleanupTarget))
-      .toThrow('OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH');
+    expect(() => assertOwnedResourceCleanupTarget(controllerHome, cleanupTarget)).toThrow(
+      'OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH',
+    );
 
     // An old device number cannot disguise a different inode.
     writeWitness(fingerprint(priorDevice, stat.ino + 1));
-    expect(() => assertOwnedResourceCleanupTarget(controllerHome, cleanupTarget))
-      .toThrow('OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH');
+    expect(() => assertOwnedResourceCleanupTarget(controllerHome, cleanupTarget)).toThrow(
+      'OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH',
+    );
     expect(replay).toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
 
     if (process.platform === 'darwin') {
       // An old witness is not authority to revive a released resource.
-      writeFileSync(resourceFile, JSON.stringify({
-        ...resource,
-        identityFingerprint: resource.identityFingerprint,
-        status: 'released',
-      }));
+      writeFileSync(
+        resourceFile,
+        JSON.stringify({
+          ...resource,
+          identityFingerprint: resource.identityFingerprint,
+          status: 'released',
+        }),
+      );
       expect(replay).toThrow('OWNED_RESOURCE_REUSE_REQUIRES_NEW_ID');
 
       // Resuming an adopted/non-cleanup-capable resource cannot grant deletion authority.
-      writeFileSync(resourceFile, JSON.stringify({
-        ...resource,
-        identityFingerprint: resource.identityFingerprint,
-        cleanupCapable: false,
-      }));
+      writeFileSync(
+        resourceFile,
+        JSON.stringify({
+          ...resource,
+          identityFingerprint: resource.identityFingerprint,
+          cleanupCapable: false,
+        }),
+      );
       expect(replay).toThrow('OWNED_RESOURCE_CLEANUP_AUTHORITY_ESCALATION_FORBIDDEN');
     }
 
@@ -1104,8 +1506,9 @@ describe('owned worktree identity across macOS remounts', () => {
     mkdirSync(worktree);
     const replacement = lstatSync(worktree);
     writeWitness(fingerprint(priorDevice, replacement.ino), '2000-01-01T00:00:00.000Z');
-    expect(() => assertOwnedResourceCleanupTarget(controllerHome, cleanupTarget))
-      .toThrow('OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH');
+    expect(() => assertOwnedResourceCleanupTarget(controllerHome, cleanupTarget)).toThrow(
+      'OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH',
+    );
     expect(replay).toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
   });
 });

@@ -3,13 +3,23 @@ import { basename, dirname, join, relative, resolve } from 'path';
 import { tmpdir } from 'os';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { runProcess } from '../../effects/process-runner';
-import { cleanupEditSession, getEditSession, inspectIntegratedEditSession, listEditSessions } from '../editing/edit-session';
+import {
+  cleanupEditSession,
+  getEditSession,
+  inspectIntegratedEditSession,
+  listEditSessions,
+} from '../editing/edit-session';
 import { withRepositoryMutationExclusion } from '../resources/leases/store';
 import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../repositories/runtime-storage';
 import { getRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../repositories/registry';
 import type { RepositoryRecord } from '../../core/repository/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
-import { assertOwnedResourceCleanupTarget, listOwnedResources, markOwnedResourceCleaned, type OwnedResource } from '../../../packages/kernel/identity/api/index';
+import {
+  assertOwnedResourceCleanupTarget,
+  listOwnedResources,
+  markOwnedResourceCleaned,
+  type OwnedResource,
+} from '../../../packages/kernel/identity/api/index';
 import {
   collectRuntimeProcesses,
   removeRuntimeTempEntry,
@@ -23,14 +33,25 @@ import {
   type RuntimeStorageRepairPreview,
 } from './local-jobs-repair';
 import { gcTerminalProcesses, type ProcessGcResult } from '../execution/process-runtime/gc';
-import { cleanupGeneratedRepositoryCheckoutCaches, cleanupReleasableIosTestEvidence, inspectRepositoryIosTestEvidence, type IosTestEvidenceInventoryReport, type IosTestEvidenceRetentionReport, type RepositoryGeneratedCacheRetentionReport } from '../control-plane/generated-cache-retention';
+import {
+  cleanupGeneratedRepositoryCheckoutCaches,
+  cleanupReleasableIosTestEvidence,
+  inspectRepositoryIosTestEvidence,
+  type IosTestEvidenceInventoryReport,
+  type IosTestEvidenceRetentionReport,
+  type RepositoryGeneratedCacheRetentionReport,
+} from '../control-plane/generated-cache-retention';
 import {
   cleanupRuntimeQuarantine,
   quarantineRuntimePath,
   runtimeLegacyCheckQuarantineRoot,
   type RuntimeQuarantineRetentionReport,
 } from './quarantine-retention';
-import { managedBranchOwnedResourceId, managedBranchOwnedResourceLocator, managedWorkspaceOwnedResourceId } from '../execution/managed-workspace';
+import {
+  managedBranchOwnedResourceId,
+  managedBranchOwnedResourceLocator,
+  managedWorkspaceOwnedResourceId,
+} from '../execution/managed-workspace';
 
 export type RuntimeMaintenanceActionId =
   | 'local_jobs_reconcile'
@@ -47,7 +68,8 @@ export type RuntimeMaintenanceCandidateKind =
   | 'runtime_storage_warning'
   | 'stale_runtime_temp_entry'
   | 'stale_edit_session'
-  | 'unowned_managed_worktree';
+  | 'unowned_managed_worktree'
+  | 'absent_owned_resource';
 
 export interface RuntimeMaintenanceRepository {
   repoId: string;
@@ -94,8 +116,18 @@ export interface RuntimeMaintenanceCandidate {
   sourceControllerHome?: string;
   objective?: string;
   continuationPrompt?: string;
-  disposition?: 'resume_or_supersede_review' | 'completion_reconciliation' | 'ownership_reconciliation' | 'source_preservation_required' | 'semantic_completion_required';
-  sourceState?: 'no_managed_source' | 'clean_integrated' | 'dirty_worktree' | 'unintegrated_commits' | 'source_state_unknown';
+  disposition?:
+    | 'resume_or_supersede_review'
+    | 'completion_reconciliation'
+    | 'ownership_reconciliation'
+    | 'source_preservation_required'
+    | 'semantic_completion_required';
+  sourceState?:
+    | 'no_managed_source'
+    | 'clean_integrated'
+    | 'dirty_worktree'
+    | 'unintegrated_commits'
+    | 'source_state_unknown';
 }
 
 export interface RuntimeMaintenanceSummary {
@@ -110,6 +142,7 @@ export interface RuntimeMaintenanceSummary {
   staleRuntimeTempEntries: number;
   staleEditSessions: number;
   unownedManagedWorktrees: number;
+  absentOwnedResources: number;
 }
 
 export interface RuntimeMaintenanceStatus {
@@ -161,16 +194,34 @@ interface LocalJobState {
   outcome?: unknown;
 }
 
-const VALID_MAINTENANCE_ACTIONS = new Set<RuntimeMaintenanceActionId>(['local_jobs_reconcile', 'quarantine_unreadable_local_jobs', 'runtime_storage_finalize_relocation', 'rebuild_projection', 'full_maintenance_pass']);
+const VALID_MAINTENANCE_ACTIONS = new Set<RuntimeMaintenanceActionId>([
+  'local_jobs_reconcile',
+  'quarantine_unreadable_local_jobs',
+  'runtime_storage_finalize_relocation',
+  'rebuild_projection',
+  'full_maintenance_pass',
+]);
 // Automatic maintenance is intentionally limited to the narrowly-scoped local
 // job reconciliation action. Broader passes remain explicit/manual operations.
-export const AUTOMATIC_RUNTIME_MAINTENANCE_ACTION_ALLOWLIST = new Set<RuntimeMaintenanceActionId>(['local_jobs_reconcile']);
+export const AUTOMATIC_RUNTIME_MAINTENANCE_ACTION_ALLOWLIST = new Set<RuntimeMaintenanceActionId>([
+  'local_jobs_reconcile',
+]);
 const ACTIVE_LOCAL_JOB_STATUSES = new Set(['pending_approval', 'approved', 'dispatched', 'running']);
-const TERMINAL_LOCAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'timed_out', 'orphaned', 'stale', 'rejected']);
+const TERMINAL_LOCAL_JOB_STATUSES = new Set([
+  'succeeded',
+  'failed',
+  'cancelled',
+  'timed_out',
+  'orphaned',
+  'stale',
+  'rejected',
+]);
 const DEFAULT_MIN_AGE_MINUTES = 10;
 const MAX_CANDIDATES = 200;
 
-function now(): string { return new Date().toISOString(); }
+function now(): string {
+  return new Date().toISOString();
+}
 
 function clampNumber(value: number | undefined, fallback: number, min = 0, max = 24 * 60): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
@@ -250,12 +301,18 @@ function summarize(candidates: RuntimeMaintenanceCandidate[]): RuntimeMaintenanc
     staleRuntimeTempEntries: candidates.filter((candidate) => candidate.kind === 'stale_runtime_temp_entry').length,
     staleEditSessions: candidates.filter((candidate) => candidate.kind === 'stale_edit_session').length,
     unownedManagedWorktrees: candidates.filter((candidate) => candidate.kind === 'unowned_managed_worktree').length,
+    absentOwnedResources: candidates.filter((candidate) => candidate.kind === 'absent_owned_resource').length,
   };
 }
 
 function uniqueActions(candidates: RuntimeMaintenanceCandidate[], storageReady: boolean): RuntimeMaintenanceActionId[] {
   const actions = candidates
-    .filter((candidate) => candidate.safe || candidate.kind === 'pending_approval_local_job' || candidate.kind === 'runtime_storage_warning')
+    .filter(
+      (candidate) =>
+        candidate.safe ||
+        candidate.kind === 'pending_approval_local_job' ||
+        candidate.kind === 'runtime_storage_warning',
+    )
     .map((candidate) => candidate.suggestedAction);
   if (!storageReady) actions.push('runtime_storage_finalize_relocation');
   actions.push('full_maintenance_pass');
@@ -264,13 +321,18 @@ function uniqueActions(candidates: RuntimeMaintenanceCandidate[], storageReady: 
 
 function typedRepairActions(preview: RuntimeStorageRepairPreview): RuntimeMaintenanceActionId[] {
   const actions: RuntimeMaintenanceActionId[] = [];
-  if (preview.candidates.some((candidate) => candidate.safe && candidate.action === 'terminalize')) actions.push('local_jobs_reconcile');
-  if (preview.candidates.some((candidate) => candidate.safe && candidate.action === 'quarantine')) actions.push('quarantine_unreadable_local_jobs');
+  if (preview.candidates.some((candidate) => candidate.safe && candidate.action === 'terminalize'))
+    actions.push('local_jobs_reconcile');
+  if (preview.candidates.some((candidate) => candidate.safe && candidate.action === 'quarantine'))
+    actions.push('quarantine_unreadable_local_jobs');
   if (preview.safeCandidateCount > 0) actions.push('full_maintenance_pass');
   return actions;
 }
 
-function selectedTypedRepairCandidateIds(actionId: RuntimeMaintenanceActionId, preview: RuntimeStorageRepairPreview): string[] {
+function selectedTypedRepairCandidateIds(
+  actionId: RuntimeMaintenanceActionId,
+  preview: RuntimeStorageRepairPreview,
+): string[] {
   return preview.candidates
     .filter((candidate) => {
       if (!candidate.safe) return false;
@@ -298,7 +360,10 @@ function runtimeStorageCandidates(report: RepositoryRuntimeStorageReport | undef
   });
 }
 
-function scanLocalJobCandidates(repoRoot: string, options: Required<RuntimeMaintenanceOptions>): RuntimeMaintenanceCandidate[] {
+function scanLocalJobCandidates(
+  repoRoot: string,
+  options: Required<RuntimeMaintenanceOptions>,
+): RuntimeMaintenanceCandidate[] {
   const root = localJobsRoot(repoRoot);
   if (!existsSync(root)) return [];
   const candidates: RuntimeMaintenanceCandidate[] = [];
@@ -436,10 +501,12 @@ function gitWorktreePaths(repoRoot: string): string[] {
 
 function looksLikeForgeManagedWorktree(path: string): boolean {
   const normalized = resolve(path).replace(/\\/g, '/');
-  return normalized.includes('/.forge/managed-worktrees/')
-    || normalized.includes('/.forge/controller/managed-worktrees/')
-    || normalized.includes('/.repo-harness/managed-worktrees/')
-    || normalized.includes('/managed-worktrees/repo_');
+  return (
+    normalized.includes('/.forge/managed-worktrees/') ||
+    normalized.includes('/.forge/controller/managed-worktrees/') ||
+    normalized.includes('/.repo-harness/managed-worktrees/') ||
+    normalized.includes('/managed-worktrees/repo_')
+  );
 }
 
 type StaleWorkSourceState = NonNullable<RuntimeMaintenanceCandidate['sourceState']>;
@@ -455,14 +522,11 @@ interface OwnedManagedWorktreeInspection {
   canonicalBranch?: string;
 }
 
-function activeOwnedWorktreeResource(
-  controllerHome: string,
-  repoId: string,
-  path: string,
-): OwnedResource | undefined {
+function activeOwnedWorktreeResource(controllerHome: string, repoId: string, path: string): OwnedResource | undefined {
   const target = resolve(path);
-  return listOwnedResources(controllerHome, { kind: 'worktree', status: 'active', repoId })
-    .find((resource) => resource.cleanupCapable === true && resolve(resource.targetRef) === target);
+  return listOwnedResources(controllerHome, { kind: 'worktree', status: 'active', repoId }).find(
+    (resource) => resource.cleanupCapable === true && resolve(resource.targetRef) === target,
+  );
 }
 
 function inspectOwnedManagedWorktree(
@@ -472,14 +536,29 @@ function inspectOwnedManagedWorktree(
 ): OwnedManagedWorktreeInspection {
   const path = resolve(pathInput);
   if (!looksLikeForgeManagedWorktree(path)) {
-    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'Managed worktree is outside Forge-managed storage; automatic cleanup is forbidden.' };
+    return {
+      safe: false,
+      path,
+      sourceState: 'source_state_unknown',
+      detail: 'Managed worktree is outside Forge-managed storage; automatic cleanup is forbidden.',
+    };
   }
   if (!existsSync(path)) {
-    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'Owned managed worktree path is absent; registry/resource reconciliation is required before cleanup.' };
+    return {
+      safe: false,
+      path,
+      sourceState: 'source_state_unknown',
+      detail: 'Owned managed worktree path is absent; registry/resource reconciliation is required before cleanup.',
+    };
   }
   const workspaceResource = activeOwnedWorktreeResource(controllerHome, repository.repoId, path);
   if (!workspaceResource) {
-    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'No active cleanup-capable OwnedResource matches this managed worktree path.' };
+    return {
+      safe: false,
+      path,
+      sourceState: 'source_state_unknown',
+      detail: 'No active cleanup-capable OwnedResource matches this managed worktree path.',
+    };
   }
   try {
     assertOwnedResourceCleanupTarget(controllerHome, {
@@ -488,52 +567,124 @@ function inspectOwnedManagedWorktree(
       targetRef: path,
     });
   } catch (error) {
-    return { safe: false, path, sourceState: 'source_state_unknown', detail: `Managed worktree OwnedResource failed exact identity validation: ${error instanceof Error ? error.message : String(error)}` };
+    return {
+      safe: false,
+      path,
+      sourceState: 'source_state_unknown',
+      detail: `Managed worktree OwnedResource failed exact identity validation: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
   let registered;
-  try { registered = getRepository(repository.repoId, controllerHome, { includeRemoved: true }); } catch (error) {
-    return { safe: false, path, sourceState: 'source_state_unknown', detail: `Repository registry could not be read for owned managed worktree: ${error instanceof Error ? error.message : String(error)}` };
+  try {
+    registered = getRepository(repository.repoId, controllerHome, { includeRemoved: true });
+  } catch (error) {
+    return {
+      safe: false,
+      path,
+      sourceState: 'source_state_unknown',
+      detail: `Repository registry could not be read for owned managed worktree: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
-  const checkout = registered.checkouts.find((candidate) =>
-    candidate.worktree === true
-    && (candidate.lifecycle ?? 'active') === 'active'
-    && (resolve(candidate.canonicalRoot) === path || resolve(candidate.localRoot) === path));
+  const checkout = registered.checkouts.find(
+    (candidate) =>
+      candidate.worktree === true &&
+      (candidate.lifecycle ?? 'active') === 'active' &&
+      (resolve(candidate.canonicalRoot) === path || resolve(candidate.localRoot) === path),
+  );
   if (!checkout) {
-    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'Owned managed worktree has no active matching Repository Registry checkout.' };
+    return {
+      safe: false,
+      path,
+      sourceState: 'source_state_unknown',
+      detail: 'Owned managed worktree has no active matching Repository Registry checkout.',
+    };
   }
   if (registered.activeCheckoutId === checkout.checkoutId) {
-    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'Owned managed worktree is unexpectedly the canonical active checkout; automatic cleanup is forbidden.' };
+    return {
+      safe: false,
+      path,
+      sourceState: 'source_state_unknown',
+      detail: 'Owned managed worktree is unexpectedly the canonical active checkout; automatic cleanup is forbidden.',
+    };
   }
-  const status = runProcess('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: path, timeoutMs: 10_000, maxOutputBytes: 500_000 });
+  const status = runProcess('git', ['status', '--porcelain', '--untracked-files=all'], {
+    cwd: path,
+    timeoutMs: 10_000,
+    maxOutputBytes: 500_000,
+  });
   if (!status.ok) {
-    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'Owned managed worktree status could not be read.' };
+    return {
+      safe: false,
+      path,
+      sourceState: 'source_state_unknown',
+      detail: 'Owned managed worktree status could not be read.',
+    };
   }
   if (status.stdout.trim()) {
-    return { safe: false, path, sourceState: 'dirty_worktree', detail: 'Owned managed worktree is dirty; unique source must be preserved.' };
+    return {
+      safe: false,
+      path,
+      sourceState: 'dirty_worktree',
+      detail: 'Owned managed worktree is dirty; unique source must be preserved.',
+    };
   }
   const head = runProcess('git', ['rev-parse', 'HEAD'], { cwd: path, timeoutMs: 10_000, maxOutputBytes: 100_000 });
-  const branch = runProcess('git', ['branch', '--show-current'], { cwd: path, timeoutMs: 10_000, maxOutputBytes: 100_000 });
+  const branch = runProcess('git', ['branch', '--show-current'], {
+    cwd: path,
+    timeoutMs: 10_000,
+    maxOutputBytes: 100_000,
+  });
   if (!head.ok || !head.stdout.trim() || !branch.ok || !branch.stdout.trim()) {
-    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'Owned managed worktree HEAD/branch identity could not be resolved.' };
+    return {
+      safe: false,
+      path,
+      sourceState: 'source_state_unknown',
+      detail: 'Owned managed worktree HEAD/branch identity could not be resolved.',
+    };
   }
   const branchName = branch.stdout.trim();
   if (checkout.branch?.trim() && checkout.branch.trim() !== branchName) {
-    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'Owned managed worktree branch no longer matches its Repository Registry checkout identity.' };
+    return {
+      safe: false,
+      path,
+      sourceState: 'source_state_unknown',
+      detail: 'Owned managed worktree branch no longer matches its Repository Registry checkout identity.',
+    };
   }
   let canonical;
-  try { canonical = selectRepositoryCheckout(registered, registered.activeCheckoutId); } catch (error) {
-    return { safe: false, path, sourceState: 'source_state_unknown', detail: `Canonical repository checkout could not be resolved: ${error instanceof Error ? error.message : String(error)}` };
+  try {
+    canonical = selectRepositoryCheckout(registered, registered.activeCheckoutId);
+  } catch (error) {
+    return {
+      safe: false,
+      path,
+      sourceState: 'source_state_unknown',
+      detail: `Canonical repository checkout could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
-  const canonicalBranch = runProcess('git', ['branch', '--show-current'], { cwd: canonical.canonicalRoot, timeoutMs: 10_000, maxOutputBytes: 100_000 });
-  if (!canonicalBranch.ok || !canonicalBranch.stdout.trim()) {
-    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'Canonical integration branch could not be resolved for owned managed-worktree cleanup.' };
-  }
-  const canonicalBranchName = canonicalBranch.stdout.trim();
-  const contained = runProcess('git', ['merge-base', '--is-ancestor', head.stdout.trim(), `refs/heads/${canonicalBranchName}`], {
+  const canonicalBranch = runProcess('git', ['branch', '--show-current'], {
     cwd: canonical.canonicalRoot,
     timeoutMs: 10_000,
     maxOutputBytes: 100_000,
   });
+  if (!canonicalBranch.ok || !canonicalBranch.stdout.trim()) {
+    return {
+      safe: false,
+      path,
+      sourceState: 'source_state_unknown',
+      detail: 'Canonical integration branch could not be resolved for owned managed-worktree cleanup.',
+    };
+  }
+  const canonicalBranchName = canonicalBranch.stdout.trim();
+  const contained = runProcess(
+    'git',
+    ['merge-base', '--is-ancestor', head.stdout.trim(), `refs/heads/${canonicalBranchName}`],
+    {
+      cwd: canonical.canonicalRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 100_000,
+    },
+  );
   if (!contained.ok) {
     return {
       safe: false,
@@ -551,6 +702,137 @@ function inspectOwnedManagedWorktree(
     branch: branchName,
     canonicalBranch: canonicalBranchName,
     detail: `Canonical OwnedResource proves cleanup authority for a clean managed worktree whose HEAD ${head.stdout.trim()} is already contained in canonical branch ${canonicalBranchName}.`,
+  };
+}
+
+/**
+ * Active OwnedResources whose physical target is already gone inflate #510
+ * branch/worktree inventories. Releasing the record preserves evidence while
+ * clearing false "active" ownership; no filesystem deletion is performed.
+ */
+function scanAbsentOwnedResourceCandidates(
+  repository: RuntimeMaintenanceRepository,
+  controllerHome: string,
+  maxCandidates: number,
+): RuntimeMaintenanceCandidate[] {
+  const listedWorktrees = new Set(gitWorktreePaths(repository.canonicalRoot).map((path) => resolve(path)));
+  const candidates: RuntimeMaintenanceCandidate[] = [];
+  for (const resource of listOwnedResources(controllerHome, { status: 'active', repoId: repository.repoId })) {
+    if (candidates.length >= maxCandidates) break;
+    if (resource.kind === 'worktree') {
+      const path = resolve(resource.targetRef);
+      if (existsSync(path) || listedWorktrees.has(path)) continue;
+      if (!looksLikeForgeManagedWorktree(path) && !path.includes('/managed-worktrees/')) continue;
+      candidates.push({
+        kind: 'absent_owned_resource',
+        id: resource.resourceId,
+        path,
+        status: resource.status,
+        safe: true,
+        reason:
+          'Active worktree OwnedResource target path is absent from the filesystem and Git worktree list; release the record without deleting source.',
+        suggestedAction: 'full_maintenance_pass',
+        ownershipStatus: 'explicit',
+        sourceState: 'no_managed_source',
+      });
+      continue;
+    }
+    if (resource.kind === 'git_branch') {
+      const branch = String(resource.targetRef ?? '').trim();
+      if (!branch || branch === 'main' || branch === (repository.defaultBranch ?? '').trim()) continue;
+      const local = runProcess('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], {
+        cwd: repository.canonicalRoot,
+        timeoutMs: 10_000,
+        maxOutputBytes: 4_096,
+      });
+      const remote = runProcess('git', ['show-ref', '--verify', '--quiet', `refs/remotes/origin/${branch}`], {
+        cwd: repository.canonicalRoot,
+        timeoutMs: 10_000,
+        maxOutputBytes: 4_096,
+      });
+      if (local.ok || remote.ok) continue;
+      candidates.push({
+        kind: 'absent_owned_resource',
+        id: resource.resourceId,
+        status: resource.status,
+        safe: true,
+        reason: `Active git_branch OwnedResource target '${branch}' is absent from local and origin refs; release the record without deleting source.`,
+        suggestedAction: 'full_maintenance_pass',
+        ownershipStatus: 'explicit',
+        sourceState: 'no_managed_source',
+      });
+    }
+  }
+  return candidates;
+}
+
+function releaseAbsentOwnedResource(
+  repository: RuntimeMaintenanceRepository,
+  controllerHome: string,
+  candidate: RuntimeMaintenanceCandidate,
+): RuntimeMaintenanceCandidate & { applied: boolean; result: string } {
+  if (candidate.kind !== 'absent_owned_resource') {
+    return { ...candidate, applied: false, result: 'unsupported_candidate' };
+  }
+  const resource = listOwnedResources(controllerHome, { status: 'active', repoId: repository.repoId }).find(
+    (entry) => entry.resourceId === candidate.id,
+  );
+  if (!resource) {
+    return { ...candidate, applied: true, result: 'absent_owned_resource_already_released' };
+  }
+  if (resource.kind === 'worktree') {
+    const path = resolve(resource.targetRef);
+    if (existsSync(path) || gitWorktreePaths(repository.canonicalRoot).some((entry) => resolve(entry) === path)) {
+      return { ...candidate, safe: false, applied: false, result: 'absent_owned_resource_target_reappeared' };
+    }
+  }
+  if (resource.kind === 'git_branch') {
+    const branch = String(resource.targetRef ?? '').trim();
+    const local = runProcess('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], {
+      cwd: repository.canonicalRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 4_096,
+    });
+    const remote = runProcess('git', ['show-ref', '--verify', '--quiet', `refs/remotes/origin/${branch}`], {
+      cwd: repository.canonicalRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 4_096,
+    });
+    if (local.ok || remote.ok) {
+      return { ...candidate, safe: false, applied: false, result: 'absent_owned_resource_ref_reappeared' };
+    }
+  }
+  const prefix =
+    resource.kind === 'worktree' ? `managed-worktree:${repository.repoId}:` : `managed-branch:${repository.repoId}:`;
+  if (resource.resourceId.startsWith(prefix)) {
+    const checkoutId = resource.resourceId.slice(prefix.length);
+    if (checkoutId) {
+      try {
+        const registered = getRepository(repository.repoId, controllerHome, { includeRemoved: true });
+        const checkout = registered.checkouts.find((entry) => entry.checkoutId === checkoutId);
+        if (checkout && (checkout.lifecycle ?? 'active') !== 'removed') {
+          const checkoutPath = resolve(checkout.localRoot || checkout.canonicalRoot);
+          if (!existsSync(checkoutPath)) {
+            setRepositoryCheckoutLifecycle({
+              controllerHome,
+              repoId: repository.repoId,
+              checkoutId,
+              lifecycle: 'removed',
+              reason: 'Absent OwnedResource reconciliation: checkout path and branch/worktree target are already gone.',
+            });
+          }
+        }
+      } catch {
+        // Registry may be unavailable for embedded fixtures; OwnedResource release still proceeds.
+      }
+    }
+  }
+  markOwnedResourceCleaned(controllerHome, resource.resourceId, 'forge:runtime-maintenance-absent-owned-resource');
+  return {
+    ...candidate,
+    applied: true,
+    result: 'absent_owned_resource_released',
+    sourceState: 'no_managed_source',
   };
 }
 
@@ -584,7 +866,8 @@ function scanRetainedWorktreeCandidates(
       id: 'managed-worktree:' + basename(normalized),
       path: normalized,
       safe: false,
-      reason: 'Git reports a Forge-managed worktree without canonical cleanup-capable OwnedResource authority. Historical Work metadata cannot grant or veto cleanup; reconcile the physical owner first.',
+      reason:
+        'Git reports a Forge-managed worktree without canonical cleanup-capable OwnedResource authority. Historical Work metadata cannot grant or veto cleanup; reconcile the physical owner first.',
       suggestedAction: 'full_maintenance_pass',
       ownershipStatus: 'unknown',
       disposition: 'ownership_reconciliation',
@@ -608,7 +891,13 @@ function detachOwnedManagedWorktree(
 ): RuntimeMaintenanceCandidate & { applied: boolean; result: string } {
   if (!candidate.path) return { ...candidate, applied: false, result: 'owned_managed_worktree_path_missing' };
   const inspection = inspectOwnedManagedWorktree(repository, controllerHome, candidate.path);
-  if (!inspection.safe || !inspection.workspaceResourceId || !inspection.checkoutId || !inspection.branch || !inspection.canonicalBranch) {
+  if (
+    !inspection.safe ||
+    !inspection.workspaceResourceId ||
+    !inspection.checkoutId ||
+    !inspection.branch ||
+    !inspection.canonicalBranch
+  ) {
     return {
       ...candidate,
       safe: false,
@@ -625,7 +914,8 @@ function detachOwnedManagedWorktree(
       repoId: repository.repoId,
       checkoutId: inspection.checkoutId,
       lifecycle: 'removed',
-      reason: 'Canonical OwnedResource cleanup reconciled a WorkContract-less managed worktree whose source is already integrated.',
+      reason:
+        'Canonical OwnedResource cleanup reconciled a WorkContract-less managed worktree whose source is already integrated.',
     });
     const removed = runProcess('git', ['worktree', 'remove', '--force', inspection.path], {
       cwd: repository.canonicalRoot,
@@ -635,14 +925,22 @@ function detachOwnedManagedWorktree(
     if (!removed.ok && existsSync(inspection.path)) {
       throw new Error(`OWNED_MANAGED_WORKTREE_REMOVE_FAILED: ${removed.stderr || removed.stdout}`);
     }
-    markOwnedResourceCleaned(controllerHome, inspection.workspaceResourceId, 'forge:runtime-maintenance-owned-worktree');
+    markOwnedResourceCleaned(
+      controllerHome,
+      inspection.workspaceResourceId,
+      'forge:runtime-maintenance-owned-worktree',
+    );
     if (inspection.branch !== inspection.canonicalBranch) {
       try {
         assertOwnedResourceCleanupTarget(controllerHome, {
           resourceId: managedBranchOwnedResourceId(repository.repoId, inspection.checkoutId),
           kind: 'git_branch',
           targetRef: inspection.branch,
-          locator: managedBranchOwnedResourceLocator(repository.canonicalRoot, inspection.checkoutId, inspection.branch),
+          locator: managedBranchOwnedResourceLocator(
+            repository.canonicalRoot,
+            inspection.checkoutId,
+            inspection.branch,
+          ),
         });
       } catch {
         return {
@@ -703,7 +1001,9 @@ function detachOwnedManagedWorktree(
           lifecycle: 'active',
           reason: 'Rollback failed OwnedResource managed-worktree cleanup.',
         });
-      } catch { /* preserve primary failure */ }
+      } catch {
+        /* preserve primary failure */
+      }
     }
     throw error;
   }
@@ -729,7 +1029,8 @@ function scanStaleEditSessionCandidates(
       let safety: { safe: boolean; reason: string };
       try {
         safety = inspectIntegratedEditSession(repository.canonicalRoot, session.sessionId, {
-          controllerHome, repoId: repository.repoId,
+          controllerHome,
+          repoId: repository.repoId,
         });
       } catch (error) {
         safety = { safe: false, reason: error instanceof Error ? error.message : String(error) };
@@ -769,7 +1070,10 @@ function coerceRepository(repository: RuntimeMaintenanceRepository): RepositoryR
   return repository as RepositoryRecord;
 }
 
-function safeRuntimeStorage(repository: RuntimeMaintenanceRepository, controllerHome: string): { report?: RepositoryRuntimeStorageReport; error?: string } {
+function safeRuntimeStorage(
+  repository: RuntimeMaintenanceRepository,
+  controllerHome: string,
+): { report?: RepositoryRuntimeStorageReport; error?: string } {
   try {
     return { report: ensureRepositoryRuntimeStorage(coerceRepository(repository), controllerHome) };
   } catch (error) {
@@ -794,15 +1098,32 @@ export function buildRuntimeMaintenanceStatus(
   const storageCandidates = runtimeStorageCandidates(storage.report);
   const tempCandidates = scanRuntimeTempCandidates(repository, normalized.maxCandidates);
   const staleEditCandidates = scanStaleEditSessionCandidates(repository, controllerHome, normalized);
-  const retainedWorktreeCandidates = scanRetainedWorktreeCandidates(repository, controllerHome, normalized.maxCandidates);
-  const candidates = [...localJobCandidates, ...storageCandidates, ...staleEditCandidates, ...retainedWorktreeCandidates, ...tempCandidates].slice(0, normalized.maxCandidates);
+  const retainedWorktreeCandidates = scanRetainedWorktreeCandidates(
+    repository,
+    controllerHome,
+    normalized.maxCandidates,
+  );
+  const absentOwnedResourceCandidates = scanAbsentOwnedResourceCandidates(
+    repository,
+    controllerHome,
+    normalized.maxCandidates,
+  );
+  const candidates = [
+    ...localJobCandidates,
+    ...storageCandidates,
+    ...staleEditCandidates,
+    ...retainedWorktreeCandidates,
+    ...absentOwnedResourceCandidates,
+    ...tempCandidates,
+  ].slice(0, normalized.maxCandidates);
   const summary = summarize(candidates);
   const blockingCandidates = candidates.filter((candidate) => candidate.kind !== 'stale_runtime_temp_entry');
-  const readyForExecution = storage.report?.readyForExecution === true
-    && blockingCandidates.filter((candidate) => candidate.safe).length === 0
-    && blockingCandidates.filter((candidate) => !candidate.safe).length === 0
-    && runtimeStorageRepair.safeCandidateCount === 0
-    && runtimeStorageRepair.unsafeCandidateCount === 0;
+  const readyForExecution =
+    storage.report?.readyForExecution === true &&
+    blockingCandidates.filter((candidate) => candidate.safe).length === 0 &&
+    blockingCandidates.filter((candidate) => !candidate.safe).length === 0 &&
+    runtimeStorageRepair.safeCandidateCount === 0 &&
+    runtimeStorageRepair.unsafeCandidateCount === 0;
   return {
     schemaVersion: 1,
     generatedAt: now(),
@@ -814,10 +1135,12 @@ export function buildRuntimeMaintenanceStatus(
     candidates,
     summary,
     runtimeStorageRepair,
-    recommendedActions: Array.from(new Set([
-      ...uniqueActions(candidates, storage.report?.readyForExecution === true),
-      ...typedRepairActions(runtimeStorageRepair),
-    ])),
+    recommendedActions: Array.from(
+      new Set([
+        ...uniqueActions(candidates, storage.report?.readyForExecution === true),
+        ...typedRepairActions(runtimeStorageRepair),
+      ]),
+    ),
     continuation: {
       retryOriginalOperation: true,
       afterSuccess: [
@@ -832,6 +1155,7 @@ export function buildRuntimeMaintenanceStatus(
       'System temp cleanup only removes direct forge-prefixed children of approved temp roots after a 24-hour retention period and a fresh process-occupancy check.',
       'Runtime lifecycle changes and source repair are outside the runtime maintenance executor.',
       'Unknown-ownership managed worktrees remain lifecycle blockers. Cleanup is eligible only when canonical OwnedResource identity is exact, the worktree is clean, and its HEAD is already contained in the canonical branch.',
+      'Absent OwnedResource records (missing worktree path or branch ref) may be released as evidence reconciliation; no filesystem or Git ref deletion is performed for that candidate kind.',
     ],
   };
 }
@@ -844,7 +1168,8 @@ export function previewAutomaticRuntimeMaintenance(
   const actionId = readString(rawArguments, 'action_id', 'actionId') as RuntimeMaintenanceActionId | undefined;
   const confirmMaintenance = readBoolean(rawArguments, 'confirm_maintenance', 'confirmMaintenance') === true;
   const authorization = readString(rawArguments, 'authorization', 'authorization');
-  const cancelPendingApprovals = readBoolean(rawArguments, 'cancel_pending_approvals', 'cancelPendingApprovals') === true;
+  const cancelPendingApprovals =
+    readBoolean(rawArguments, 'cancel_pending_approvals', 'cancelPendingApprovals') === true;
   const status = buildRuntimeMaintenanceStatus(repository, controllerHome, {
     minAgeMinutes: readNumber(rawArguments, 'min_age_minutes', 'minAgeMinutes'),
     maxCandidates: readNumber(rawArguments, 'max_candidates', 'maxCandidates'),
@@ -942,7 +1267,10 @@ export function previewAutomaticRuntimeMaintenance(
   };
 }
 
-function terminalizeLocalJob(candidate: RuntimeMaintenanceCandidate, status: 'orphaned' | 'cancelled' = 'orphaned'): string {
+function terminalizeLocalJob(
+  candidate: RuntimeMaintenanceCandidate,
+  status: 'orphaned' | 'cancelled' = 'orphaned',
+): string {
   if (!candidate.path) throw new Error('LOCAL_JOB_PATH_MISSING');
   const jobPath = join(candidate.path, 'job.json');
   const job = readJson(jobPath) as LocalJobState;
@@ -959,7 +1287,12 @@ function terminalizeLocalJob(candidate: RuntimeMaintenanceCandidate, status: 'or
   return status;
 }
 
-function quarantineLocalJob(controllerHome: string, repoId: string, repoRoot: string, candidate: RuntimeMaintenanceCandidate): string {
+function quarantineLocalJob(
+  controllerHome: string,
+  repoId: string,
+  repoRoot: string,
+  candidate: RuntimeMaintenanceCandidate,
+): string {
   if (!candidate.path) throw new Error('LOCAL_JOB_PATH_MISSING');
   const root = localJobsRoot(repoRoot);
   if (!isWithin(root, candidate.path)) throw new Error('LOCAL_JOB_PATH_OUTSIDE_ROOT');
@@ -990,8 +1323,10 @@ function rebuildActiveIndex(repoRoot: string): void {
 function shouldApply(actionId: RuntimeMaintenanceActionId, candidate: RuntimeMaintenanceCandidate): boolean {
   if (!candidate.safe) return false;
   if (actionId === 'full_maintenance_pass') return candidate.kind !== 'runtime_storage_warning';
-  if (actionId === 'local_jobs_reconcile') return candidate.kind === 'stale_active_local_job' || candidate.kind === 'pending_approval_local_job';
-  if (actionId === 'quarantine_unreadable_local_jobs') return candidate.kind === 'unreadable_local_job' || candidate.kind === 'missing_job_metadata';
+  if (actionId === 'local_jobs_reconcile')
+    return candidate.kind === 'stale_active_local_job' || candidate.kind === 'pending_approval_local_job';
+  if (actionId === 'quarantine_unreadable_local_jobs')
+    return candidate.kind === 'unreadable_local_job' || candidate.kind === 'missing_job_metadata';
   return false;
 }
 
@@ -1000,21 +1335,26 @@ export function applyRuntimeMaintenance(
   controllerHome: string,
   options: RuntimeMaintenanceApplyOptions,
 ): RuntimeMaintenanceApplyResult {
-  if (options.confirmMaintenance !== true) throw new Error('RUNTIME_MAINTENANCE_CONFIRMATION_REQUIRED: confirmMaintenance=true is required.');
-  if (!VALID_MAINTENANCE_ACTIONS.has(options.actionId)) throw new Error(`RUNTIME_MAINTENANCE_ACTION_UNKNOWN: ${options.actionId}`);
+  if (options.confirmMaintenance !== true)
+    throw new Error('RUNTIME_MAINTENANCE_CONFIRMATION_REQUIRED: confirmMaintenance=true is required.');
+  if (!VALID_MAINTENANCE_ACTIONS.has(options.actionId))
+    throw new Error(`RUNTIME_MAINTENANCE_ACTION_UNKNOWN: ${options.actionId}`);
   const before = buildRuntimeMaintenanceStatus(repository, controllerHome, options);
   const typedCandidateIds = selectedTypedRepairCandidateIds(options.actionId, before.runtimeStorageRepair);
-  const runtimeStorageRepairApply = typedCandidateIds.length > 0
-    ? applyRuntimeStorageRepair(coerceRepository(repository), controllerHome, {
-      confirmRepair: true,
-      candidateIds: typedCandidateIds,
-      minAgeMinutes: options.minAgeMinutes,
-      maxCandidates: options.maxCandidates,
-    })
-    : undefined;
-  const typedAppliedPaths = new Set((runtimeStorageRepairApply?.applied ?? [])
-    .filter((entry) => entry.status === 'applied')
-    .map((entry) => resolve(entry.path)));
+  const runtimeStorageRepairApply =
+    typedCandidateIds.length > 0
+      ? applyRuntimeStorageRepair(coerceRepository(repository), controllerHome, {
+          confirmRepair: true,
+          candidateIds: typedCandidateIds,
+          minAgeMinutes: options.minAgeMinutes,
+          maxCandidates: options.maxCandidates,
+        })
+      : undefined;
+  const typedAppliedPaths = new Set(
+    (runtimeStorageRepairApply?.applied ?? [])
+      .filter((entry) => entry.status === 'applied')
+      .map((entry) => resolve(entry.path)),
+  );
   const applied = before.candidates.map((candidate) => {
     if (candidate.path && typedAppliedPaths.has(resolve(candidate.path))) {
       return { ...candidate, applied: true, result: 'handled_by_runtime_storage_repair' };
@@ -1028,7 +1368,11 @@ export function applyRuntimeMaintenance(
         return { ...candidate, applied: true, result: terminalizeLocalJob(candidate, 'cancelled') };
       }
       if (candidate.kind === 'unreadable_local_job' || candidate.kind === 'missing_job_metadata') {
-        return { ...candidate, applied: true, result: quarantineLocalJob(controllerHome, repository.repoId, repository.canonicalRoot, candidate) };
+        return {
+          ...candidate,
+          applied: true,
+          result: quarantineLocalJob(controllerHome, repository.repoId, repository.canonicalRoot, candidate),
+        };
       }
       if (candidate.kind === 'stale_runtime_temp_entry') {
         if (!candidate.path) throw new Error('RUNTIME_TEMP_PATH_MISSING');
@@ -1044,14 +1388,21 @@ export function applyRuntimeMaintenance(
       if (candidate.kind === 'unowned_managed_worktree') {
         return detachOwnedManagedWorktree(repository, controllerHome, candidate);
       }
+      if (candidate.kind === 'absent_owned_resource') {
+        return releaseAbsentOwnedResource(repository, controllerHome, candidate);
+      }
       if (candidate.kind === 'stale_edit_session') {
         const cleaned = withRepositoryMutationExclusion(
-          controllerHome, repository.repoId, 'maintenance-edit-session:' + candidate.id,
-          () => cleanupEditSession(repository.canonicalRoot, candidate.id, {
-            controllerHome, repoId: repository.repoId,
-            reviewer: 'runtime-maintenance',
-            note: 'Exact integrated bytes retained; missing checks remain unverified.',
-          }),
+          controllerHome,
+          repository.repoId,
+          'maintenance-edit-session:' + candidate.id,
+          () =>
+            cleanupEditSession(repository.canonicalRoot, candidate.id, {
+              controllerHome,
+              repoId: repository.repoId,
+              reviewer: 'runtime-maintenance',
+              note: 'Exact integrated bytes retained; missing checks remain unverified.',
+            }),
         );
         const closed = ['finalized', 'reconciled_unverified', 'superseded', 'rolled_back'].includes(cleaned.status);
         return {
@@ -1067,16 +1418,18 @@ export function applyRuntimeMaintenance(
   });
   // Reuse the existing Process GC within the explicit full-maintenance cadence.
   // No scheduler, per-tool-call cleanup, or database compaction is introduced.
-  const processGc = options.actionId === 'full_maintenance_pass'
-    ? gcTerminalProcesses({ controllerHome, repoId: repository.repoId })
-    : undefined;
-  const quarantineGc = options.actionId === 'full_maintenance_pass'
-    ? cleanupRuntimeQuarantine(controllerHome, repository.repoId, repository.canonicalRoot, {
-      maxEntries: Math.max(100, (options.maxCandidates ?? 50) * 3),
-      maxRemovals: Math.max(1, options.maxCandidates ?? 50),
-      additionalRoots: [runtimeLegacyCheckQuarantineRoot(controllerHome, repository.repoId)],
-    })
-    : undefined;
+  const processGc =
+    options.actionId === 'full_maintenance_pass'
+      ? gcTerminalProcesses({ controllerHome, repoId: repository.repoId })
+      : undefined;
+  const quarantineGc =
+    options.actionId === 'full_maintenance_pass'
+      ? cleanupRuntimeQuarantine(controllerHome, repository.repoId, repository.canonicalRoot, {
+          maxEntries: Math.max(100, (options.maxCandidates ?? 50) * 3),
+          maxRemovals: Math.max(1, options.maxCandidates ?? 50),
+          additionalRoots: [runtimeLegacyCheckQuarantineRoot(controllerHome, repository.repoId)],
+        })
+      : undefined;
   let generatedCacheGc: RepositoryGeneratedCacheRetentionReport | undefined;
   let iosTestEvidenceGc: IosTestEvidenceRetentionReport | undefined;
   let iosTestEvidenceInventory: IosTestEvidenceInventoryReport | undefined;
@@ -1120,12 +1473,21 @@ export function applyRuntimeMaintenance(
     // Legacy Work preservation artifacts are read-only after Work retirement.
   }
 
-  if (options.actionId === 'runtime_storage_finalize_relocation' || options.actionId === 'full_maintenance_pass' || applied.some((candidate) => candidate.applied) || runtimeStorageRepairApply) {
+  if (
+    options.actionId === 'runtime_storage_finalize_relocation' ||
+    options.actionId === 'full_maintenance_pass' ||
+    applied.some((candidate) => candidate.applied) ||
+    runtimeStorageRepairApply
+  ) {
     rebuildActiveIndex(repository.canonicalRoot);
   }
   const storage = safeRuntimeStorage(repository, controllerHome);
   let projection: unknown;
-  try { projection = rebuildRepositoryProjection(controllerHome, repository.repoId); } catch (error) { projection = { error: error instanceof Error ? error.message : String(error) }; }
+  try {
+    projection = rebuildRepositoryProjection(controllerHome, repository.repoId);
+  } catch (error) {
+    projection = { error: error instanceof Error ? error.message : String(error) };
+  }
   const after = buildRuntimeMaintenanceStatus(repository, controllerHome, options);
   return {
     ...after,
