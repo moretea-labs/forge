@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
@@ -9,9 +10,11 @@ import type { Requirement } from '../../src/runtime/control-plane/persistence/re
 import { writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
   buildProjectDataSnapshot,
+  materializeProjectDataToRepository,
   projectDataPlanDefinition,
   projectDataRequirementDefinition,
   readProjectDataSnapshot,
+  resolveProjectDataHeadSha,
   writeProjectDataSnapshot,
 } from '../../src/runtime/control-plane/workspace/project-data-store';
 import {
@@ -19,6 +22,12 @@ import {
   writeProjectPlacement,
   writeWorkspaceIdentity,
 } from '../../src/runtime/control-plane/workspace/workspace-store';
+
+function git(cwd: string, args: string[]): string {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(' ')} failed`);
+  return result.stdout.trim();
+}
 
 function requirement(overrides: Partial<Requirement> = {}): Requirement {
   return {
@@ -218,6 +227,62 @@ describe('Git project-data store (refs #712)', () => {
       expect(
         readFileSync(join(repositoryRoot, '.forge/project-data/requirements/REQ-ORPHAN.json'), 'utf8'),
       ).not.toContain('"state"');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('materializeProjectDataToRepository binds manifest baseSha to real Git HEAD', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-project-data-git-'));
+    try {
+      const controllerHome = join(root, 'controller');
+      const repositoryRoot = join(root, 'repo');
+      const remote = 'https://github.com/moretea-labs/forge.git';
+      const projectId = stablePortableProjectId(remote);
+      const sourceFingerprint = portableProjectSourceFingerprint(remote);
+      seedController(controllerHome, projectId, sourceFingerprint);
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'requirement',
+        scope: 'controller',
+        key: 'REQ-DATA-1',
+        schemaVersion: 1,
+        value: requirement({ requirementId: 'REQ-DATA-1', projectId }),
+        expectedRevision: null,
+      });
+
+      mkdirSync(repositoryRoot, { recursive: true });
+      git(repositoryRoot, ['init']);
+      git(repositoryRoot, ['config', 'user.email', 'forge@example.com']);
+      git(repositoryRoot, ['config', 'user.name', 'Forge Test']);
+      writeFileSync(join(repositoryRoot, 'README.md'), 'project-data\n');
+      git(repositoryRoot, ['add', 'README.md']);
+      git(repositoryRoot, ['commit', '-m', 'init']);
+      const head = resolveProjectDataHeadSha(repositoryRoot);
+      expect(head).toMatch(/^[a-f0-9]{40}$/);
+
+      const materialized = materializeProjectDataToRepository({
+        controllerHome,
+        workspaceId: 'workspace-personal',
+        projectId,
+        repositoryRoot,
+        now: () => '2026-09-03T00:20:00.000Z',
+      });
+      expect(materialized.headSha).toBe(head);
+      expect(materialized.snapshot.manifest.baseGitSha).toBe(head);
+      expect(readProjectDataSnapshot(repositoryRoot).manifest.baseGitSha).toBe(head);
+
+      writeFileSync(join(repositoryRoot, 'README.md'), 'project-data changed\n');
+      git(repositoryRoot, ['add', 'README.md']);
+      git(repositoryRoot, ['commit', '-m', 'advance']);
+      expect(() =>
+        materializeProjectDataToRepository({
+          controllerHome,
+          workspaceId: 'workspace-personal',
+          projectId,
+          repositoryRoot,
+          expectedBaseGitSha: head,
+        }),
+      ).toThrow('PROJECT_DATA_BASE_GIT_SHA_MISMATCH');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

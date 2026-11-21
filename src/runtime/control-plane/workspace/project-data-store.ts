@@ -1,3 +1,4 @@
+import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
@@ -464,4 +465,52 @@ export function readProjectDataSnapshot(repositoryRoot: string): ProjectDataSnap
   });
 
   return { manifest, workspace, project, requirements, plans };
+}
+
+/** Resolve the exact 40-hex HEAD SHA for project-data base CAS. */
+export function resolveProjectDataHeadSha(repositoryRoot: string): string | null {
+  const result = spawnSync('git', ['-C', repositoryRoot, 'rev-parse', '--verify', 'HEAD'], {
+    encoding: 'utf8',
+    timeout: 15_000,
+  });
+  if (result.status !== 0) return null;
+  const sha = String(result.stdout ?? '')
+    .trim()
+    .toLowerCase();
+  return /^[a-f0-9]{40}$/.test(sha) ? sha : null;
+}
+
+/**
+ * Build and materialize stage-1 project-data under the canonical repository.
+ * When expectedBaseGitSha is omitted, current HEAD is used for both the
+ * manifest base and the fail-closed write precondition.
+ */
+export function materializeProjectDataToRepository(input: {
+  controllerHome: string;
+  workspaceId: string;
+  projectId: string;
+  repositoryRoot: string;
+  expectedBaseGitSha?: string | null;
+  now?: () => string;
+}): { snapshot: ProjectDataSnapshot; writtenPaths: string[]; headSha: string | null } {
+  const headSha = resolveProjectDataHeadSha(input.repositoryRoot);
+  const expected = input.expectedBaseGitSha === undefined ? headSha : input.expectedBaseGitSha;
+  if (expected && !headSha) throw new Error('PROJECT_DATA_BASE_GIT_SHA_UNRESOLVED');
+  if (expected && headSha && expected !== headSha) {
+    throw new Error(`PROJECT_DATA_BASE_GIT_SHA_MISMATCH:expected=${expected},actual=${headSha}`);
+  }
+  const snapshot = buildProjectDataSnapshot({
+    controllerHome: input.controllerHome,
+    workspaceId: input.workspaceId,
+    projectId: input.projectId,
+    baseGitSha: expected ?? null,
+    now: input.now,
+  });
+  const written = writeProjectDataSnapshot({
+    repositoryRoot: input.repositoryRoot,
+    snapshot,
+    expectedBaseGitSha: expected ?? null,
+    resolveHeadSha: () => resolveProjectDataHeadSha(input.repositoryRoot),
+  });
+  return { snapshot, writtenPaths: written.writtenPaths, headSha };
 }
