@@ -811,6 +811,12 @@ test('recovery never clicks Stop and requires an exact idle assistant or explici
   expect(run({ lastRole: 'assistant' })).toMatchObject({ ready: true, capability: 'recover-no-stop-prewrite-v1' });
   expect(run({ lastRole: 'user' })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
   expect(run({ lastRole: 'user', failureVisible: true })).toMatchObject({ ready: true, capability: 'recover-no-stop-prewrite-v1' });
+  expect(run({ lastRole: 'user', failureVisible: true, failureText: '消息传输超时。请重试。重试' }))
+    .toMatchObject({ ready: true, capability: 'recover-no-stop-prewrite-v1' });
+  expect(run({ lastRole: 'user', failureVisible: true, failureText: '消息传输超时。请重试。重试', stopVisible: true }))
+    .toMatchObject({ ready: false, reason: 'provider_recovery_turn_live' });
+  expect(run({ lastRole: 'user', failureVisible: true, failureText: '消息传输超时。请重试。重试', mapped: false }))
+    .toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
   expect(run({ lastRole: 'user', failureVisible: true, mapped: false })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
   expect(run({ lastRole: 'user', failureVisible: true, failureInsideMessage: true })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
   expect(run({ lastRole: 'user', failureVisible: true, failureText: 'This is ordinary conversation prose' })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
