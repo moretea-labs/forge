@@ -16,7 +16,7 @@ import { claimsForAssistantPluginAction } from '../../src/runtime/plugins/store'
 import type { AssistantPluginActionDescriptor } from '../../src/runtime/plugins/types';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -464,6 +464,34 @@ describe('Process Runtime fine-grained resource claims', () => {
         ),
       ).toBe(false);
     }
+  });
+
+  test('workspace observation does not monopolize path writes or short Git mutations (#713)', () => {
+    const pathWrite = { resourceKey: 'path:co1:src/runtime/example.ts', mode: 'write' as const };
+    const indexExclusive = { resourceKey: 'git-index:co1', mode: 'exclusive' as const };
+    const headExclusive = { resourceKey: 'git-head:co1', mode: 'exclusive' as const };
+    const reader = lease('workspace:co1', 'read');
+    const writer = lease('workspace:co1', 'write');
+    const foreignReader = lease('workspace:co2', 'read');
+
+    expect(claimsConflict(pathWrite, reader)).toBe(false);
+    expect(claimsConflict(indexExclusive, reader)).toBe(false);
+    expect(claimsConflict(headExclusive, reader)).toBe(false);
+    expect(claimsConflict({ resourceKey: 'workspace-read:co1', mode: 'read' }, writer)).toBe(true);
+    expect(claimsConflict(pathWrite, writer)).toBe(true);
+    expect(claimsConflict(indexExclusive, writer)).toBe(true);
+    expect(claimsConflict(pathWrite, foreignReader)).toBe(false);
+
+    const focusedTest = claimsForRepositoryCommand(
+      ['bun', 'test', 'tests/runtime/process-environment.test.ts'],
+      'repo1',
+      'co1',
+    );
+    expect(focusedTest).toContainEqual({ resourceKey: 'workspace:co1', mode: 'read' });
+    expect(focusedTest.some((claim) => claimsConflict(claim, lease('path:co1:src/runtime/example.ts', 'write')))).toBe(
+      false,
+    );
+    expect(focusedTest.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(true);
   });
 
   test('ordinary xcodebuild log redirection does not acquire unrelated Git-ref ownership', () => {

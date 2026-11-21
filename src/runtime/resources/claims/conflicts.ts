@@ -7,8 +7,14 @@ import type { ExecutionLease } from '../leases/types';
  * Workspace is one resource key per checkout:
  *   workspace:<checkoutId>  mode=read|write|exclusive
  *
- * Multiple reads may share; any write/exclusive conflicts with other modes
- * on the same resource (see claimsConflict).
+ * Same-key policy: multiple reads may share; any write/exclusive conflicts
+ * with other modes on that exact resource (see claimsConflict).
+ *
+ * Cross-key policy (#713): workspace observation (mode=read) does not
+ * monopolize same-checkout path writes or short git-index/git-head mutations.
+ * Workspace write/exclusive still fences the whole checkout tree. Prefer
+ * validation-input:<checkout> for governed gates; workspace:read remains the
+ * claim for ordinary status/test observation and must not block path edits.
  *
  * Legacy keys:
  *   workspace-read:<checkoutId>  → treated as workspace:<checkoutId> mode=read
@@ -85,7 +91,7 @@ function scopedRemoteRef(key: string): { repoId: string; remote: string; ref: st
  */
 export function normalizeClaimPath(raw: string): string | null {
   if (!raw || typeof raw !== 'string') return null;
-  let path = raw.replace(/\\/g, '/').replace(/^\.\//, '');
+  const path = raw.replace(/\\/g, '/').replace(/^\.\//, '');
   // Reject absolute and parent-escape for claim paths (workspace write instead).
   if (path.startsWith('/') || path.startsWith('~/') || path.includes('\0')) return null;
   const segments = path.split('/').filter((s) => s.length > 0 && s !== '.');
@@ -127,8 +133,11 @@ export function resourceKeysOverlap(leftRaw: string, rightRaw: string): boolean 
   // Legacy host-wide claims remain a conservative wildcard while exact UDIDs
   // on different booted simulators may proceed independently.
   const scopedPrefix = `${IOS_SIMULATOR_TEST_RESOURCE}:udid:`;
-  if ((left === IOS_SIMULATOR_TEST_RESOURCE && right.startsWith(scopedPrefix))
-      || (right === IOS_SIMULATOR_TEST_RESOURCE && left.startsWith(scopedPrefix))) return true;
+  if (
+    (left === IOS_SIMULATOR_TEST_RESOURCE && right.startsWith(scopedPrefix)) ||
+    (right === IOS_SIMULATOR_TEST_RESOURCE && left.startsWith(scopedPrefix))
+  )
+    return true;
 
   // A single exact remote ref is independent from different review refs,
   // while opaque Git pushes and repo-wide remote mutations stay exclusive.
@@ -138,40 +147,56 @@ export function resourceKeysOverlap(leftRaw: string, rightRaw: string): boolean 
   const rightRemoteRef = scopedRemoteRef(right);
   if (leftRemoteRef || rightRemoteRef) {
     if (leftRemoteRef && rightRemoteRef) {
-      return leftRemoteRef.repoId === rightRemoteRef.repoId
-        && leftRemoteRef.remote === rightRemoteRef.remote
-        && leftRemoteRef.ref === rightRemoteRef.ref;
+      return (
+        leftRemoteRef.repoId === rightRemoteRef.repoId &&
+        leftRemoteRef.remote === rightRemoteRef.remote &&
+        leftRemoteRef.ref === rightRemoteRef.ref
+      );
     }
     const exact = leftRemoteRef ?? rightRemoteRef!;
     const other = leftRemoteRef ? right : left;
-    return other === `remote:${exact.repoId}` || other === `git-refs:${exact.repoId}`
-      || other.startsWith('git-ref:') || other === 'repo-content:*';
+    return (
+      other === `remote:${exact.repoId}` ||
+      other === `git-refs:${exact.repoId}` ||
+      other.startsWith('git-ref:') ||
+      other === 'repo-content:*'
+    );
   }
 
   // Explicit Xcode caches also carry a shared read on build-cache:<repo>.
   // Opaque builds retain its write lock; concrete caches serialize by physical
   // path (including ancestor/child overlap), even across different repositories.
   const cacheMarker = ':xcode-derived-data:';
-  if (left.startsWith('build-cache:') && right.startsWith('build-cache:')
-    && left.includes(cacheMarker) && right.includes(cacheMarker)) {
-    return pathOverlaps(left.slice(left.indexOf(cacheMarker) + cacheMarker.length).replace(/^\/+/, ''),
-      right.slice(right.indexOf(cacheMarker) + cacheMarker.length).replace(/^\/+/, ''));
+  if (
+    left.startsWith('build-cache:') &&
+    right.startsWith('build-cache:') &&
+    left.includes(cacheMarker) &&
+    right.includes(cacheMarker)
+  ) {
+    return pathOverlaps(
+      left.slice(left.indexOf(cacheMarker) + cacheMarker.length).replace(/^\/+/, ''),
+      right.slice(right.indexOf(cacheMarker) + cacheMarker.length).replace(/^\/+/, ''),
+    );
   }
 
   if (left === 'repo-content:*') {
-    return right === 'repo-content:*'
-      || right.startsWith('path:')
-      || right.startsWith('workspace:')
-      || isGitRefKey(right)
-      || right.startsWith('git-index:')
-      || right.startsWith('git-head:');
+    return (
+      right === 'repo-content:*' ||
+      right.startsWith('path:') ||
+      right.startsWith('workspace:') ||
+      isGitRefKey(right) ||
+      right.startsWith('git-index:') ||
+      right.startsWith('git-head:')
+    );
   }
   if (right === 'repo-content:*') {
-    return left.startsWith('path:')
-      || left.startsWith('workspace:')
-      || isGitRefKey(left)
-      || left.startsWith('git-index:')
-      || left.startsWith('git-head:');
+    return (
+      left.startsWith('path:') ||
+      left.startsWith('workspace:') ||
+      isGitRefKey(left) ||
+      left.startsWith('git-index:') ||
+      left.startsWith('git-head:')
+    );
   }
 
   const leftWs = workspaceCheckoutId(left);
@@ -219,6 +244,38 @@ export function resourceKeysOverlap(leftRaw: string, rightRaw: string): boolean 
   return false;
 }
 
+/**
+ * True when one side is checkout observation (workspace:read) and the other
+ * is a same-checkout path or git-index/git-head mutation. Overlap remains
+ * true for provenance, but observation must not serialize model edits (#713).
+ */
+function workspaceObservationAllowsCheckoutMutation(
+  leftKey: string,
+  leftMode: ResourceClaimSpec['mode'],
+  rightKey: string,
+  rightMode: ResourceClaimSpec['mode'],
+): boolean {
+  const leftWs = workspaceCheckoutId(leftKey);
+  const rightWs = workspaceCheckoutId(rightKey);
+  if (leftWs && leftMode === 'read') {
+    if (rightKey.startsWith('path:')) {
+      const pathCheckout = pathCheckoutId(rightKey);
+      return pathCheckout === undefined || pathCheckout === leftWs;
+    }
+    const indexCheckout = gitIndexCheckoutId(rightKey);
+    return indexCheckout !== undefined && indexCheckout === leftWs;
+  }
+  if (rightWs && rightMode === 'read') {
+    if (leftKey.startsWith('path:')) {
+      const pathCheckout = pathCheckoutId(leftKey);
+      return pathCheckout === undefined || pathCheckout === rightWs;
+    }
+    const indexCheckout = gitIndexCheckoutId(leftKey);
+    return indexCheckout !== undefined && indexCheckout === rightWs;
+  }
+  return false;
+}
+
 export function resourceClaimsConflict(
   left: Pick<ResourceClaimSpec, 'resourceKey' | 'mode'>,
   right: Pick<ResourceClaimSpec, 'resourceKey' | 'mode'>,
@@ -235,6 +292,9 @@ export function resourceClaimsConflict(
     return nonReleaseMode !== 'read';
   }
   if (!resourceKeysOverlap(leftKey, rightKey)) return false;
+  if (workspaceObservationAllowsCheckoutMutation(leftKey, left.mode, rightKey, right.mode)) {
+    return false;
+  }
   // Read + read may share; any write/exclusive conflicts.
   return left.mode !== 'read' || right.mode !== 'read';
 }
@@ -243,7 +303,10 @@ export function claimsConflict(claim: ResourceClaimSpec, lease: ExecutionLease):
   return resourceClaimsConflict(claim, lease);
 }
 
-export function normalizeClaims(claims: ResourceClaimSpec[], options: { readOnly?: boolean } = {}): ResourceClaimSpec[] {
+export function normalizeClaims(
+  claims: ResourceClaimSpec[],
+  options: { readOnly?: boolean } = {},
+): ResourceClaimSpec[] {
   if (claims.length === 0) {
     return options.readOnly ? [] : [{ resourceKey: 'repo-content:*', mode: 'write' }];
   }
@@ -252,7 +315,11 @@ export function normalizeClaims(claims: ResourceClaimSpec[], options: { readOnly
     const key = normalizeResourceKey(claim.resourceKey);
     if (!key) continue;
     const existing = map.get(key);
-    if (!existing || existing.mode === 'read' && claim.mode !== 'read' || existing.mode === 'write' && claim.mode === 'exclusive') {
+    if (
+      !existing ||
+      (existing.mode === 'read' && claim.mode !== 'read') ||
+      (existing.mode === 'write' && claim.mode === 'exclusive')
+    ) {
       map.set(key, { ...claim, resourceKey: key });
     }
   }
