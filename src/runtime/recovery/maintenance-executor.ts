@@ -1108,12 +1108,15 @@ export function buildRuntimeMaintenanceStatus(
     controllerHome,
     normalized.maxCandidates,
   );
+  // Absent OwnedResource evidence reconciliation is cheap and unblocks #510
+  // branch/worktree census; keep it ahead of high-cardinality stale Edit Sessions
+  // so a full candidate budget cannot hide phantom active ownership.
   const candidates = [
     ...localJobCandidates,
     ...storageCandidates,
-    ...staleEditCandidates,
-    ...retainedWorktreeCandidates,
     ...absentOwnedResourceCandidates,
+    ...retainedWorktreeCandidates,
+    ...staleEditCandidates,
     ...tempCandidates,
   ].slice(0, normalized.maxCandidates);
   const summary = summarize(candidates);
