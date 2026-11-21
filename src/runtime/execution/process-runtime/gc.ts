@@ -10,7 +10,7 @@ import { existsSync, readFileSync, readdirSync, unlinkSync, statSync } from 'fs'
 import { join } from 'path';
 import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../effects/controller-home';
 import { isRepositoryProcessScopeKey, processScopeRoot } from './process-scope';
-import { getProcessRecord, listActiveProcessIds } from './store';
+import { deleteProcessRecord, getProcessRecord, listActiveProcessIds } from './store';
 import { reconcileStaleManagedProcessForMaintenance, releaseProcessLeasesOnce } from './runtime';
 import { isManagedProcessActive, type ProcessRuntimeStatus } from './types';
 import { assertRuntimeMayWrite } from '../../root/write-fence';
@@ -230,7 +230,11 @@ export function gcTerminalProcesses(options: ProcessGcOptions): ProcessGcResult 
     let removedLogs = 0;
     const logs = logDir(options.controllerHome, options.repoId);
     for (const victim of victims) {
-      if (safeUnlink(victim.path)) removedRecords += 1;
+      // Prefer deleteProcessRecord so recovery-index + handle-index locators stay
+      // coherent with the removed Process file (#377).
+      if (deleteProcessRecord(options.controllerHome, options.repoId, victim.processId) || safeUnlink(victim.path)) {
+        removedRecords += 1;
+      }
       if (options.deleteLogs !== false) {
         for (const suffix of ['.stdout.log', '.stderr.log', '.exit.json', '.exit.json.started.json']) {
           if (safeUnlink(join(logs, `${victim.processId}${suffix}`))) removedLogs += 1;

@@ -101,6 +101,17 @@ const AUDIT_RETENTION_CHUNK_ROWS = 500;
 export const REBUILDABLE_AUDIT_NAMESPACES = [
   'computer_interaction_target_index',
   'computer_interaction_target',
+  // Process/Output handle locators are rebuildable projections. Their orphaned
+  // revision tails previously grew without bound (#377) and dominated live
+  // control-plane.sqlite size, slowing MCP/control-plane reads.
+  'process_handle_index',
+  'process_recovery_index',
+  'output_handle_index',
+  // Idempotency bindings keep current rows for replay safety; deleted-key
+  // history is not semantic evidence and may be bounded after GC.
+  'process_request_binding',
+  'process_invocation_binding',
+  'process_check_execution_binding',
 ] as const;
 
 /**
@@ -114,6 +125,15 @@ export const REBUILDABLE_RECORD_AUDIT_NAMESPACES = [
   'computer_interaction_target_index',
   'execution_work_validation_index',
   'work_contract',
+  // One recovery-index row can accumulate 10^4–10^5 revisions; handle indexes
+  // re-record on every process observation. Bound their audit tails like other
+  // rebuildable locators so maintenance can converge DB size (#377).
+  'process_recovery_index',
+  'process_handle_index',
+  'output_handle_index',
+  'process_request_binding',
+  'process_invocation_binding',
+  'process_check_execution_binding',
 ] as const;
 
 export interface PruneOrphanedAuditOptions {

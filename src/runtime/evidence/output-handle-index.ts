@@ -84,6 +84,7 @@ export function recordOutputHandleIndexEntry(
     key: handleId,
     schemaVersion: OUTPUT_HANDLE_INDEX_SCHEMA_VERSION,
     action: 'output_handle_index_record',
+    skipWriteWhenMutationReturnsCurrent: true,
     mutate: (currentRecord) => {
       const current = currentRecord?.value;
       if (current) {
@@ -99,14 +100,29 @@ export function recordOutputHandleIndexEntry(
         const nextStorage = current.storage.scope === 'instance' || storage.scope !== 'instance'
           ? current.storage
           : storage;
+        const nextRepositoryId = current.repositoryId ?? repositoryId;
+        const nextPrincipalId = current.principalId ?? principalId;
+        const nextSessionId = current.sessionId ?? sessionId;
+        const nextWorkId = current.workId ?? workId;
+        const nextOperationId = current.operationId ?? operationId;
+        if (
+          nextStorage === current.storage
+          && nextRepositoryId === current.repositoryId
+          && nextPrincipalId === current.principalId
+          && nextSessionId === current.sessionId
+          && nextWorkId === current.workId
+          && nextOperationId === current.operationId
+        ) {
+          return current;
+        }
         return {
           ...current,
           storage: nextStorage,
-          ...(current.repositoryId || repositoryId ? { repositoryId: current.repositoryId ?? repositoryId } : {}),
-          ...(current.principalId || principalId ? { principalId: current.principalId ?? principalId } : {}),
-          ...(current.sessionId || sessionId ? { sessionId: current.sessionId ?? sessionId } : {}),
-          ...(current.workId || workId ? { workId: current.workId ?? workId } : {}),
-          ...(current.operationId || operationId ? { operationId: current.operationId ?? operationId } : {}),
+          ...(nextRepositoryId ? { repositoryId: nextRepositoryId } : {}),
+          ...(nextPrincipalId ? { principalId: nextPrincipalId } : {}),
+          ...(nextSessionId ? { sessionId: nextSessionId } : {}),
+          ...(nextWorkId ? { workId: nextWorkId } : {}),
+          ...(nextOperationId ? { operationId: nextOperationId } : {}),
           updatedAt: now,
         };
       }

@@ -22,6 +22,7 @@ import { cleanupControllerReleaseHistory } from './release-retention';
 import { cleanupRetiredRepositoryNamespaces } from './repository-namespace-retention';
 import { maintainControlPlaneDatabase, type ControlPlaneDatabaseMaintenanceReport } from './persistence/sqlite-store';
 import { cleanupExpiredExperiences } from './persistence/experience-store';
+import { gcOrphanedProcessHandleIndexEntries } from '../execution/process-runtime/handle-index';
 import {
   measureReclaimablePath,
   RUNTIME_LIFECYCLE_RETENTION_POLICY_VERSION,
@@ -93,6 +94,19 @@ const CURRENT_AUDIT_KEEP_TAIL = numericSetting(
 const CURRENT_AUDIT_MAX_ROWS_PER_PASS = numericSetting(
   process.env.FORGE_CURRENT_AUDIT_MAX_ROWS_PER_PASS,
   20_000,
+  1,
+);
+const PROCESS_HANDLE_INDEX_GC_RETENTION_MS = numericSetting(
+  process.env.FORGE_PROCESS_HANDLE_INDEX_GC_RETENTION_MS,
+  7 * 24 * 60 * 60_000,
+  60_000,
+);
+const PROCESS_HANDLE_INDEX_GC_MAX_ROWS = numericSetting(
+  process.env.FORGE_PROCESS_HANDLE_INDEX_GC_MAX_ROWS,
+  // Live hosts can accumulate >100k orphan handle locators; 500/tick converges too
+  // slowly against ongoing Process churn. Keep the pass bounded for the scheduler
+  // busy budget while clearing stale rows within a few dozen maintenance ticks.
+  2_500,
   1,
 );
 
@@ -1330,6 +1344,18 @@ export function cleanupControllerRuntimeState(
     }
   } catch (error) {
     errors.push(errorText('SQLite orphan retention', error));
+  }
+  try {
+    // Rebuildable process handle locators historically never aged out once the
+    // Process JSON was GC'd, leaving 10^5+ SQLite rows that slowed control-plane
+    // reads on the MCP path (#377). Bound each tick so the scheduler stays live.
+    gcOrphanedProcessHandleIndexEntries(home, {
+      olderThanMs: PROCESS_HANDLE_INDEX_GC_RETENTION_MS,
+      maxRows: PROCESS_HANDLE_INDEX_GC_MAX_ROWS,
+      nowMs,
+    });
+  } catch (error) {
+    errors.push(errorText('process handle index GC', error));
   }
   const inspectedPaths = referenceBudget.inspected + worktreeBudget.inspected + dependencyBudget.inspected + tempBudget.inspected + schedulerBudget.inspected + editSessionBudget.inspected + repositoryNamespaceRetention.inspected + releaseRetention.inspected + releaseSessionCandidates.inspected;
   const budgetExhausted = referenceBudget.exhausted || worktreeBudget.exhausted || dependencyBudget.exhausted || tempBudget.exhausted || schedulerBudget.exhausted || editSessionBudget.exhausted || removalBudget.exhausted || releaseSessionCandidates.truncated;

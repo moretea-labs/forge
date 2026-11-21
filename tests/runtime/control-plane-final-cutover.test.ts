@@ -353,6 +353,52 @@ describe('final SQLite control-plane cutover', () => {
     });
   });
 
+  test('SQLite maintenance bounds process recovery and handle index audit tails', () => {
+    withHome((controllerHome) => {
+      let recovery = writeControlPlaneRecord(controllerHome, {
+        namespace: 'process_recovery_index', scope: 'repo-perf', key: 'v2', schemaVersion: 2,
+        value: { activeProcessIds: [], pendingLeaseReleaseIds: [], revision: 1 }, expectedRevision: null,
+      });
+      let handle = writeControlPlaneRecord(controllerHome, {
+        namespace: 'process_handle_index', scope: 'instance', key: 'proc_perf_1', schemaVersion: 1,
+        value: { processId: 'proc_perf_1', revision: 1 }, expectedRevision: null,
+      });
+      for (let revision = 2; revision <= 80; revision += 1) {
+        recovery = writeControlPlaneRecord(controllerHome, {
+          namespace: 'process_recovery_index', scope: 'repo-perf', key: 'v2', schemaVersion: 2,
+          value: { activeProcessIds: [], pendingLeaseReleaseIds: [], revision }, expectedRevision: recovery.revision,
+        });
+        handle = writeControlPlaneRecord(controllerHome, {
+          namespace: 'process_handle_index', scope: 'instance', key: 'proc_perf_1', schemaVersion: 1,
+          value: { processId: 'proc_perf_1', revision }, expectedRevision: handle.revision,
+        });
+      }
+
+      const report = maintainControlPlaneDatabase(controllerHome, {
+        allowVacuum: false,
+        pruneRebuildableRecordAudit: { olderThanMs: -1_000, keepTail: 8, maxRows: 1_000 },
+      });
+      // 80 - 8 = 72 revisions pruned per namespace.
+      expect(report.prunedCurrentAuditRows).toBe(144);
+      expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({ integrity: 'ok', orphanRecordCount: 0 });
+
+      const database = new Database(controlPlaneDatabasePath(controllerHome));
+      try {
+        const recoveryRevisions = database.query(
+          "SELECT revision FROM control_plane_audit WHERE namespace = 'process_recovery_index' AND scope = 'repo-perf' AND record_key = 'v2' ORDER BY revision",
+        ).all().map((row) => (row as { revision: number }).revision);
+        expect(recoveryRevisions).toEqual(Array.from({ length: 8 }, (_, index) => 73 + index));
+        const handleRevisions = database.query(
+          "SELECT revision FROM control_plane_audit WHERE namespace = 'process_handle_index' AND scope = 'instance' AND record_key = 'proc_perf_1' ORDER BY revision",
+        ).all().map((row) => (row as { revision: number }).revision);
+        expect(handleRevisions).toEqual(Array.from({ length: 8 }, (_, index) => 73 + index));
+      } finally {
+        database.close();
+      }
+      void handle;
+    });
+  });
+
   test('current-record retention uses a bounded record cursor across passes', () => {
     withHome((controllerHome) => {
       const namespace = 'computer_interaction_target_index';

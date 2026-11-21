@@ -12,8 +12,16 @@
  * degrades attachment convenience and never becomes a capability gate.
  */
 
+import { existsSync } from 'fs';
+import { join } from 'path';
 import { readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
-import { mutateControlPlaneRecord, readControlPlaneRecord } from '../../control-plane/persistence/sqlite-store';
+import { repositoryControllerRoot, workspaceScopeRoot } from '../../../effects/controller-home';
+import {
+  deleteControlPlaneRecord,
+  listControlPlaneRecords,
+  mutateControlPlaneRecord,
+  readControlPlaneRecord,
+} from '../../control-plane/persistence/sqlite-store';
 
 export const PROCESS_HANDLE_INDEX_NAMESPACE = 'process_handle_index';
 const PROCESS_HANDLE_INDEX_SCOPE = 'instance';
@@ -91,6 +99,32 @@ export function workspaceExecutionTarget(controllerHome: string, workspaceId: st
   };
 }
 
+function sameProcessExecutionTarget(left: ProcessExecutionTarget, right: ProcessExecutionTarget): boolean {
+  return left.schemaVersion === right.schemaVersion
+    && left.scope === right.scope
+    && left.forgeInstanceId === right.forgeInstanceId
+    && left.repositoryId === right.repositoryId
+    && left.workspaceId === right.workspaceId
+    && left.checkoutId === right.checkoutId;
+}
+
+function processRecordPathForHandle(controllerHome: string, entry: ProcessHandleIndexEntry): string | undefined {
+  const processId = boundedId(entry.processId);
+  if (!processId) return undefined;
+  // Mirror processScopeRoot without importing process-scope (it depends on this module).
+  if (entry.target.scope === 'repository') {
+    const repositoryId = boundedId(entry.target.repositoryId);
+    if (!repositoryId) return undefined;
+    return join(repositoryControllerRoot(controllerHome, repositoryId), 'processes', `${processId}.json`);
+  }
+  if (entry.target.scope === 'workspace') {
+    const workspaceId = boundedId(entry.target.workspaceId);
+    if (!workspaceId) return undefined;
+    return join(workspaceScopeRoot(controllerHome, workspaceId), 'processes', `${processId}.json`);
+  }
+  return join(controllerHome, 'instance', 'processes', `${processId}.json`);
+}
+
 export function recordProcessHandleIndexEntry(
   controllerHome: string,
   input: Omit<ProcessHandleIndexEntry, 'schemaVersion' | 'recordedAt' | 'updatedAt' | 'workId'> & { now?: string },
@@ -107,24 +141,89 @@ export function recordProcessHandleIndexEntry(
       key: processId,
       schemaVersion: PROCESS_HANDLE_INDEX_SCHEMA_VERSION,
       action: 'process_handle_index_record',
-      mutate: (current) => ({
-        schemaVersion: PROCESS_HANDLE_INDEX_SCHEMA_VERSION,
-        processId,
-        lane: input.lane,
-        target: input.target,
-        ...(principalId ? { principalId } : {}),
-        ...(current?.value.principalId && !principalId ? { principalId: current.value.principalId } : {}),
-        ...(current?.value.workId ? { workId: current.value.workId } : {}),
-        ...(commandId ? { commandId } : {}),
-        recordedAt: current?.value.recordedAt ?? now,
-        updatedAt: now,
-      }),
+      skipWriteWhenMutationReturnsCurrent: true,
+      mutate: (current) => {
+        const nextPrincipal = principalId
+          ?? (current?.value.principalId ? current.value.principalId : undefined);
+        const nextCommand = commandId ?? current?.value.commandId;
+        if (
+          current
+          && current.schemaVersion === PROCESS_HANDLE_INDEX_SCHEMA_VERSION
+          && current.value.processId === processId
+          && current.value.lane === input.lane
+          && sameProcessExecutionTarget(current.value.target, input.target)
+          && current.value.principalId === nextPrincipal
+          && current.value.commandId === nextCommand
+        ) {
+          // Locator identity unchanged: keep the current value object so the
+          // control-plane writer skips revision/audit amplification (#377).
+          return current.value;
+        }
+        return {
+          schemaVersion: PROCESS_HANDLE_INDEX_SCHEMA_VERSION,
+          processId,
+          lane: input.lane,
+          target: input.target,
+          ...(nextPrincipal ? { principalId: nextPrincipal } : {}),
+          ...(current?.value.workId ? { workId: current.value.workId } : {}),
+          ...(nextCommand ? { commandId: nextCommand } : {}),
+          recordedAt: current?.value.recordedAt ?? now,
+          updatedAt: now,
+        };
+      },
     });
     return record.value;
   } catch {
     // A locator projection must never block an already-authorized process.
     return undefined;
   }
+}
+
+/** Remove a rebuildable process handle locator after its Process record is gone. */
+export function deleteProcessHandleIndexEntry(controllerHome: string, processId: string): boolean {
+  const key = boundedId(processId);
+  if (!key) return false;
+  try {
+    return deleteControlPlaneRecord(controllerHome, {
+      namespace: PROCESS_HANDLE_INDEX_NAMESPACE,
+      scope: PROCESS_HANDLE_INDEX_SCOPE,
+      key,
+      action: 'process_handle_index_delete',
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Bound stale handle-index rows whose Process record is already gone. This is a
+ * rebuildable locator GC only; missing entries never authorize or block attachment.
+ */
+export function gcOrphanedProcessHandleIndexEntries(
+  controllerHome: string,
+  options: { olderThanMs: number; maxRows?: number; nowMs?: number } = { olderThanMs: 7 * 24 * 60 * 60_000 },
+): { examined: number; removed: number } {
+  const olderThanMs = Math.max(0, Math.trunc(options.olderThanMs));
+  const maxRows = Math.max(1, Math.min(Math.trunc(options.maxRows ?? 500), 5_000));
+  const cutoffMs = (options.nowMs ?? Date.now()) - olderThanMs;
+  const records = listControlPlaneRecords<ProcessHandleIndexEntry>(controllerHome, {
+    namespace: PROCESS_HANDLE_INDEX_NAMESPACE,
+    scope: PROCESS_HANDLE_INDEX_SCOPE,
+    limit: maxRows,
+  });
+  let examined = 0;
+  let removed = 0;
+  for (const record of records) {
+    examined += 1;
+    const updatedMs = Date.parse(record.updatedAt);
+    if (!Number.isFinite(updatedMs) || updatedMs > cutoffMs) continue;
+    const entry = record.value;
+    if (!entry || entry.schemaVersion !== PROCESS_HANDLE_INDEX_SCHEMA_VERSION) continue;
+    const processPath = processRecordPathForHandle(controllerHome, entry);
+    if (processPath && existsSync(processPath)) continue;
+    if (deleteProcessHandleIndexEntry(controllerHome, entry.processId)) removed += 1;
+  }
+  return { examined, removed };
 }
 
 export function readProcessHandleIndexEntry(

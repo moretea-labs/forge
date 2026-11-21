@@ -20,6 +20,7 @@ import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../.
 import { mutateControlPlaneRecord, readOrImportControlPlaneRecord } from '../../control-plane/persistence/sqlite-store';
 import { isSensitiveOutputKey, redactSensitiveText } from '../../evidence/sensitive-output';
 import { touchSchedulerWakeSignal } from '../../control-plane/global-scheduler/wake-signal';
+import { deleteProcessHandleIndexEntry } from './handle-index';
 import { isRepositoryProcessScopeKey, legacyWorkspaceScopeRoot, processScopeRoot } from './process-scope';
 import {
   isManagedProcessActive,
@@ -714,6 +715,13 @@ export function deleteProcessRecord(
     active: false,
     pendingLeaseRelease: false,
   });
+  // Handle index is a rebuildable locator; drop it with the Process record so
+  // SQLite does not retain hundreds of thousands of stale rows (#377).
+  try {
+    deleteProcessHandleIndexEntry(controllerHome, processId);
+  } catch {
+    // Locator cleanup must never revive a deleted Process record.
+  }
   return true;
 }
 

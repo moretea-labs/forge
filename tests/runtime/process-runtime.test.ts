@@ -34,7 +34,12 @@ import {
 import type { ProcessHandle } from '../../src/runtime/execution/process-runtime/types';
 import { createProcessRecord, deleteProcessRecord, listProcessRecords, updateProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import { resolveProcessRunnerEntryPath, resolveProcessRunnerInvocation } from '../../src/runtime/execution/process-runtime/runtime';
-import { forgeInstanceExecutionTarget, recordProcessHandleIndexEntry } from '../../src/runtime/execution/process-runtime/handle-index';
+import {
+  forgeInstanceExecutionTarget,
+  gcOrphanedProcessHandleIndexEntries,
+  recordProcessHandleIndexEntry,
+  readProcessHandleIndexEntry,
+} from '../../src/runtime/execution/process-runtime/handle-index';
 import { readControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
   claimRunnerStarted,
@@ -4825,4 +4830,92 @@ describe('process MCP live surface', () => {
     const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, started.processId, { timeoutMs: 5_000 });
     expect(terminal).toMatchObject({ completed: true, status: 'succeeded', ok: true });
   }, 15_000);
+});
+
+describe('process handle index write amplification', () => {
+  test('identical handle re-records do not advance control-plane revision', () => {
+    const fx = fixture();
+    const processId = 'proc_handle_idempotent';
+    const target = forgeInstanceExecutionTarget(fx.controllerHome);
+    const first = recordProcessHandleIndexEntry(fx.controllerHome, {
+      processId,
+      lane: 'lightweight',
+      target,
+      principalId: 'principal-a',
+      commandId: 'cmd-a',
+      now: '2026-11-21T00:00:00.000Z',
+    });
+    expect(first?.updatedAt).toBe('2026-11-21T00:00:00.000Z');
+    const before = readControlPlaneRecord(fx.controllerHome, 'process_handle_index', 'instance', processId);
+    expect(before?.revision).toBe(1);
+
+    const second = recordProcessHandleIndexEntry(fx.controllerHome, {
+      processId,
+      lane: 'lightweight',
+      target,
+      principalId: 'principal-a',
+      commandId: 'cmd-a',
+      now: '2026-11-21T00:00:10.000Z',
+    });
+    expect(second?.updatedAt).toBe('2026-11-21T00:00:00.000Z');
+    const after = readControlPlaneRecord(fx.controllerHome, 'process_handle_index', 'instance', processId);
+    expect(after?.revision).toBe(1);
+  });
+
+  test('deleteProcessRecord removes the rebuildable handle locator', () => {
+    const fx = fixture();
+    const processId = 'proc_handle_delete_with_record';
+    createProcessRecord({
+      schemaVersion: 1,
+      processId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      controllerHome: fx.controllerHome,
+      status: 'succeeded',
+      route: 'managed',
+      command: { kind: 'argv', executable: process.execPath, args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
+      resourceClaims: [],
+      interactiveWaitMs: 0,
+      timeoutMs: 1_000,
+      maxOutputBytes: 1_024,
+      startedAt: '2026-11-01T00:00:00.000Z',
+      updatedAt: '2026-11-01T00:00:01.000Z',
+      finishedAt: '2026-11-01T00:00:01.000Z',
+      terminalFenceToken: 1,
+      terminalWritten: true,
+      leasesReleased: true,
+      leaseReleaseState: 'released',
+      identity: { pid: 1, processStartTime: 'Mon Jan  1 00:00:00 2001', executableFingerprint: 'dead' },
+      stdoutPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${processId}.stdout.log`),
+      stderrPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${processId}.stderr.log`),
+      exitReceiptPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${processId}.exit.json`),
+      logPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${processId}.stdout.log`),
+    });
+    recordProcessHandleIndexEntry(fx.controllerHome, {
+      processId,
+      lane: 'managed',
+      target: forgeInstanceExecutionTarget(fx.controllerHome),
+    });
+    expect(readProcessHandleIndexEntry(fx.controllerHome, processId)?.processId).toBe(processId);
+    expect(deleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId)).toBe(true);
+    expect(readProcessHandleIndexEntry(fx.controllerHome, processId)).toBeUndefined();
+  });
+
+  test('orphan handle-index GC removes stale locators without a Process record', () => {
+    const fx = fixture();
+    const processId = 'proc_handle_orphan_gc';
+    recordProcessHandleIndexEntry(fx.controllerHome, {
+      processId,
+      lane: 'managed',
+      target: forgeInstanceExecutionTarget(fx.controllerHome),
+    });
+    expect(readProcessHandleIndexEntry(fx.controllerHome, processId)?.processId).toBe(processId);
+    // Negative age is the established retention test seam: every current row is eligible.
+    const result = gcOrphanedProcessHandleIndexEntries(fx.controllerHome, {
+      olderThanMs: -1_000,
+      maxRows: 50,
+    });
+    expect(result.removed).toBeGreaterThanOrEqual(1);
+    expect(readProcessHandleIndexEntry(fx.controllerHome, processId)).toBeUndefined();
+  });
 });
