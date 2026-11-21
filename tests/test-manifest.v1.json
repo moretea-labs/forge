@@ -482,7 +482,7 @@
       "module": "controller",
       "resource": "temp-isolated"
     },
-    "tests/runtime/controller-home-migration.test.ts": {
+    "tests/runtime/retired-work-purge.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
     },

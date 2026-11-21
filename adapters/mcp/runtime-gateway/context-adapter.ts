@@ -951,14 +951,12 @@ export async function callContextAdapter(
         ...(executionReadiness
           ? {
               executionReadiness,
-              registeredChecks: checks
-                .slice(0, 80)
-                .map((check) => ({
-                  id: check.id,
-                  description: check.description,
-                  source: check.source,
-                  effects: check.effects,
-                })),
+              registeredChecks: checks.slice(0, 80).map((check) => ({
+                id: check.id,
+                description: check.description,
+                source: check.source,
+                effects: check.effects,
+              })),
             }
           : {}),
       },
@@ -1256,24 +1254,20 @@ export async function callContextAdapter(
       facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
       domainSchemaLoading: 'static_stable_surface',
     },
-    activeProcesses: activeProcesses
-      .slice(0, 3)
-      .map((process) => ({
-        processId: process.processId,
-        status: process.status,
-        route: process.route,
-        startedAt: process.startedAt,
-        updatedAt: process.updatedAt,
-      })),
-    recentProcesses: relevantProcesses
-      .slice(0, 5)
-      .map((process) => ({
-        processId: process.processId,
-        status: process.status,
-        route: process.route,
-        startedAt: process.startedAt,
-        updatedAt: process.updatedAt,
-      })),
+    activeProcesses: activeProcesses.slice(0, 3).map((process) => ({
+      processId: process.processId,
+      status: process.status,
+      route: process.route,
+      startedAt: process.startedAt,
+      updatedAt: process.updatedAt,
+    })),
+    recentProcesses: relevantProcesses.slice(0, 5).map((process) => ({
+      processId: process.processId,
+      status: process.status,
+      route: process.route,
+      startedAt: process.startedAt,
+      updatedAt: process.updatedAt,
+    })),
     activeAttention: attention,
     counts: {
       availableChecks: checks.length,

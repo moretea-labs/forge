@@ -684,8 +684,10 @@ printf '{"ok":true}\\n'
       expect(releaseIdentity.canonicalRoot).toBe(realpathSync(releaseRoot));
       expect(releaseIdentity.releaseRevision).toBe(`release-${releaseCommit}`);
     } finally {
-      const restore = (key: string, value: string | undefined) =>
-        value === undefined ? delete process.env[key] : (process.env[key] = value);
+      const restore = (key: string, value: string | undefined) => {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      };
       restore('FORGE_RELEASE_PATH', previous.path);
       restore('FORGE_RELEASE_ID', previous.id);
       restore('FORGE_RELEASE_REVISION', previous.revision);

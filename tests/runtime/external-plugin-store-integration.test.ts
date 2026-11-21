@@ -1300,7 +1300,7 @@ describe('plugin capability authorization management', () => {
       origin: { surface: 'mcp', actor: 'principal:test-user' },
     });
     expect(
-      (listed.result?.result as { authorizations: Array<{ grantId: string }> }).authorizations.map(
+      (listed.result?.result as { authorizations: Array<{ grantId: string }> } | undefined)?.authorizations?.map(
         (entry) => entry.grantId,
       ),
     ).toEqual([owned.grantId]);
