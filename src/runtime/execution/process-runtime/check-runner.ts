@@ -1,7 +1,17 @@
 import { createHash, randomUUID } from 'crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import {
+  closeSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
-import { basename, dirname, join, normalize, relative, resolve } from 'path';
+import { basename, dirname, isAbsolute, join, normalize, relative, resolve } from 'path';
 import {
   capProcessOutput,
   redactProcessOutput,
@@ -96,14 +106,17 @@ export interface ControllerCheckExecutionIdentity {
 
 interface CheckConfig {
   version?: number;
-  checks?: Record<string, {
-    description?: string;
-    command?: unknown;
-    cwd?: string;
-    timeoutMs?: number;
-    effects?: unknown;
-    selection?: unknown;
-  }>;
+  checks?: Record<
+    string,
+    {
+      description?: string;
+      command?: unknown;
+      cwd?: string;
+      timeoutMs?: number;
+      effects?: unknown;
+      selection?: unknown;
+    }
+  >;
 }
 
 const CHECK_CONFIG = '.forge/checks.json';
@@ -121,9 +134,7 @@ const SAFE_PACKAGE_SCRIPT = /^(test(?::|$)|check(?::|$)|lint(?::|$)|typecheck(?:
  * scripts/), so resolve through the manifest before falling back to dev paths.
  */
 function syncSupervisorBridgePath(repoRoot: string): string {
-  const candidates: string[] = [
-    resolve(import.meta.dir, '../../../../scripts/run-supervised-command.ts'),
-  ];
+  const candidates: string[] = [resolve(import.meta.dir, '../../../../scripts/run-supervised-command.ts')];
   try {
     const manifestPath = join(import.meta.dir, 'manifest.json');
     if (existsSync(manifestPath)) {
@@ -184,7 +195,14 @@ function normalizeHostServices(value: unknown): string[] | undefined {
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string' || entry.trim().length === 0)) {
     throw new Error('check effects.hostServices must be an array of non-empty strings');
   }
-  const normalized = value.map((entry) => String(entry).trim().toLowerCase().replace(/[^a-z0-9._:-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120));
+  const normalized = value.map((entry) =>
+    String(entry)
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._:-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 120),
+  );
   if (normalized.some((entry) => !entry)) throw new Error('check effects.hostServices contains an invalid service key');
   return [...new Set(normalized)].sort();
 }
@@ -209,9 +227,15 @@ function normalizeCheckEffects(repoRoot: string, value: unknown): ControllerChec
     ...(raw.reads !== undefined ? { reads: normalizeEffectPaths(repoRoot, 'reads', raw.reads)! } : {}),
     ...(raw.writes !== undefined ? { writes: normalizeEffectPaths(repoRoot, 'writes', raw.writes)! } : {}),
     ...(raw.cache !== undefined ? { cache: normalizeEffectMode('cache', raw.cache, ['read', 'write'] as const)! } : {}),
-    ...(raw.temp !== undefined ? { temp: normalizeEffectMode('temp', raw.temp, ['isolated', 'shared'] as const)! } : {}),
-    ...(raw.git !== undefined ? { git: normalizeEffectMode('git', raw.git, ['read', 'index', 'refs', 'write'] as const)! } : {}),
-    ...(raw.network !== undefined ? { network: normalizeEffectMode('network', raw.network, ['read', 'write'] as const)! } : {}),
+    ...(raw.temp !== undefined
+      ? { temp: normalizeEffectMode('temp', raw.temp, ['isolated', 'shared'] as const)! }
+      : {}),
+    ...(raw.git !== undefined
+      ? { git: normalizeEffectMode('git', raw.git, ['read', 'index', 'refs', 'write'] as const)! }
+      : {}),
+    ...(raw.network !== undefined
+      ? { network: normalizeEffectMode('network', raw.network, ['read', 'write'] as const)! }
+      : {}),
     ...(raw.hostServices !== undefined ? { hostServices: normalizeHostServices(raw.hostServices)! } : {}),
   };
 }
@@ -221,7 +245,10 @@ const CHECK_RISK_FLOORS = ['readonly', 'low', 'medium', 'high', 'destructive'] a
 const CHECK_PHASES = ['pre_edit', 'post_edit', 'pre_finalize', 'release'] as const;
 
 function inferredCheckSelection(name: string): ControllerCheckSelection {
-  const normalized = name.trim().toLowerCase().replace(/^package:/, '');
+  const normalized = name
+    .trim()
+    .toLowerCase()
+    .replace(/^package:/, '');
   if (/(?:^|:)(?:check:)?release$|full[-:]?regression/.test(normalized)) {
     return { costClass: 'L4', riskFloor: 'high', phases: ['release'] };
   }
@@ -234,7 +261,11 @@ function inferredCheckSelection(name: string): ControllerCheckSelection {
   if (/(?:^|:)(?:integration|build)(?::|$)/.test(normalized) || normalized === 'test') {
     return { costClass: 'L2', riskFloor: 'medium', phases: ['post_edit', 'pre_finalize'] };
   }
-  if (/(?:^|:)(?:architecture-sync|check-scheduling|context-files|bootstrap-files|background-check-overlap)$/.test(normalized)) {
+  if (
+    /(?:^|:)(?:architecture-sync|check-scheduling|context-files|bootstrap-files|background-check-overlap)$/.test(
+      normalized,
+    )
+  ) {
     return { costClass: 'L0', riskFloor: 'low', phases: ['post_edit'] };
   }
   return { costClass: 'L1', riskFloor: 'low', phases: ['post_edit'] };
@@ -245,18 +276,31 @@ function normalizeCheckSelection(value: unknown, id: string): ControllerCheckSel
   if (value === undefined) return fallback;
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('check selection must be an object');
   const raw = value as Record<string, unknown>;
-  const unsupported = Object.keys(raw).filter((key) => !['costClass', 'cost_class', 'riskFloor', 'risk_floor', 'phases'].includes(key));
+  const unsupported = Object.keys(raw).filter(
+    (key) => !['costClass', 'cost_class', 'riskFloor', 'risk_floor', 'phases'].includes(key),
+  );
   if (unsupported.length > 0) throw new Error(`unsupported check selection field(s): ${unsupported.join(', ')}`);
   const cost = raw.costClass ?? raw.cost_class;
   const risk = raw.riskFloor ?? raw.risk_floor;
   const phases = raw.phases;
-  if (cost !== undefined && (typeof cost !== 'string' || !CHECK_COST_CLASSES.includes(cost as ControllerCheckCostClass))) {
+  if (
+    cost !== undefined &&
+    (typeof cost !== 'string' || !CHECK_COST_CLASSES.includes(cost as ControllerCheckCostClass))
+  ) {
     throw new Error(`check selection.costClass must be one of: ${CHECK_COST_CLASSES.join(', ')}`);
   }
-  if (risk !== undefined && (typeof risk !== 'string' || !CHECK_RISK_FLOORS.includes(risk as ControllerCheckRiskFloor))) {
+  if (
+    risk !== undefined &&
+    (typeof risk !== 'string' || !CHECK_RISK_FLOORS.includes(risk as ControllerCheckRiskFloor))
+  ) {
     throw new Error(`check selection.riskFloor must be one of: ${CHECK_RISK_FLOORS.join(', ')}`);
   }
-  if (phases !== undefined && (!Array.isArray(phases) || phases.length === 0 || phases.some((entry) => typeof entry !== 'string' || !CHECK_PHASES.includes(entry as ControllerCheckPhase)))) {
+  if (
+    phases !== undefined &&
+    (!Array.isArray(phases) ||
+      phases.length === 0 ||
+      phases.some((entry) => typeof entry !== 'string' || !CHECK_PHASES.includes(entry as ControllerCheckPhase)))
+  ) {
     throw new Error(`check selection.phases must contain one or more of: ${CHECK_PHASES.join(', ')}`);
   }
   return {
@@ -291,9 +335,14 @@ function inferredPackageCheckEffects(name: string): ControllerCheckEffects | und
     // Its scratch space is check-local; it never mutates repository source.
     return { reads: ['.'], temp: 'isolated', git: 'read' };
   }
-  const cachedStaticAnalysis = /(?:^|:)(?:typecheck|lint|format:check|mcp-compatibility|forge-runtime)$/.test(normalized);
+  const cachedStaticAnalysis = /(?:^|:)(?:typecheck|lint|format:check|mcp-compatibility|forge-runtime)$/.test(
+    normalized,
+  );
   if (cachedStaticAnalysis) return { reads: ['.'], cache: 'write' };
-  const isolatedReadOnlyCheck = /(?:^|:)(?:quality-harness|evaluation-framework|background-check-overlap|typescript-navigation|check-scheduling|bootstrap-files)$/.test(normalized);
+  const isolatedReadOnlyCheck =
+    /(?:^|:)(?:quality-harness|evaluation-framework|background-check-overlap|typescript-navigation|check-scheduling|bootstrap-files)$/.test(
+      normalized,
+    );
   if (isolatedReadOnlyCheck) return { reads: ['.'], temp: 'isolated', git: 'read' };
   const browserLive = /(?:^|:)browser-live$/.test(normalized);
   if (browserLive) {
@@ -318,17 +367,24 @@ function configuredChecks(repoRoot: string): ControllerCheck[] {
   if (!path) return [];
   const config = JSON.parse(readFileSync(path, 'utf-8')) as CheckConfig;
   return Object.entries(config.checks ?? {}).flatMap(([id, value]) => {
-    if (!Array.isArray(value.command) || value.command.length === 0 || value.command.some((part) => typeof part !== 'string' || part.length === 0)) return [];
-    return [{
-      id,
-      description: value.description?.trim() || `Repository check ${id}`,
-      command: value.command as string[],
-      cwd: normalizeCwd(repoRoot, value.cwd),
-      timeoutMs: boundedTimeout(value.timeoutMs),
-      source: 'repo-config' as const,
-      effects: normalizeCheckEffects(repoRoot, value.effects),
-      selection: normalizeCheckSelection(value.selection, id),
-    }];
+    if (
+      !Array.isArray(value.command) ||
+      value.command.length === 0 ||
+      value.command.some((part) => typeof part !== 'string' || part.length === 0)
+    )
+      return [];
+    return [
+      {
+        id,
+        description: value.description?.trim() || `Repository check ${id}`,
+        command: value.command as string[],
+        cwd: normalizeCwd(repoRoot, value.cwd),
+        timeoutMs: boundedTimeout(value.timeoutMs),
+        source: 'repo-config' as const,
+        effects: normalizeCheckEffects(repoRoot, value.effects),
+        selection: normalizeCheckSelection(value.selection, id),
+      },
+    ];
   });
 }
 
@@ -343,19 +399,22 @@ function packageChecks(repoRoot: string): ControllerCheck[] {
   const pkg = JSON.parse(readFileSync(packagePath, 'utf-8')) as { scripts?: Record<string, unknown> };
   return Object.entries(pkg.scripts ?? {}).flatMap(([name, value]) => {
     if (typeof value !== 'string' || !SAFE_PACKAGE_SCRIPT.test(name)) return [];
-    return [{
-      id: `package:${name}`,
-      description: `Run package script ${name}`,
-      command: ['bun', 'run', name],
-      cwd: '.',
-      timeoutMs: packageScriptTimeoutMs(name),
-      source: 'package-script' as const,
-      executionAuthority: name.trim().toLowerCase() === 'check:stable-baseline'
-        ? 'live_controller_home' as const
-        : 'isolated_controller_home' as const,
-      effects: inferredPackageCheckEffects(name),
-      selection: inferredCheckSelection(name),
-    }];
+    return [
+      {
+        id: `package:${name}`,
+        description: `Run package script ${name}`,
+        command: ['bun', 'run', name],
+        cwd: '.',
+        timeoutMs: packageScriptTimeoutMs(name),
+        source: 'package-script' as const,
+        executionAuthority:
+          name.trim().toLowerCase() === 'check:stable-baseline'
+            ? ('live_controller_home' as const)
+            : ('isolated_controller_home' as const),
+        effects: inferredPackageCheckEffects(name),
+        selection: inferredCheckSelection(name),
+      },
+    ];
   });
 }
 
@@ -463,14 +522,18 @@ function readStructuredCheckObservation(check: ControllerCheck, path: string | u
     const bytes = readFileSync(path);
     if (bytes.byteLength > MAX_STRUCTURED_CHECK_RESULT_BYTES) return { error: 'CHECK_STRUCTURED_RESULT_TOO_LARGE' };
     const value = JSON.parse(bytes.toString('utf8')) as unknown;
-    if (!isStructuredCheckFailureEvidence(value) || value.gate !== expectedGate) return { error: 'CHECK_STRUCTURED_RESULT_INVALID' };
+    if (!isStructuredCheckFailureEvidence(value) || value.gate !== expectedGate)
+      return { error: 'CHECK_STRUCTURED_RESULT_INVALID' };
     return { evidence: value };
   } catch {
     return { error: 'CHECK_STRUCTURED_RESULT_INVALID' };
   }
 }
 
-function consumeStructuredCheckObservation(check: ControllerCheck, path: string | undefined): StructuredCheckObservation {
+function consumeStructuredCheckObservation(
+  check: ControllerCheck,
+  path: string | undefined,
+): StructuredCheckObservation {
   try {
     return readStructuredCheckObservation(check, path);
   } finally {
@@ -478,7 +541,10 @@ function consumeStructuredCheckObservation(check: ControllerCheck, path: string 
   }
 }
 
-function applyStructuredCheckObservation(processOk: boolean, observation: StructuredCheckObservation): {
+function applyStructuredCheckObservation(
+  processOk: boolean,
+  observation: StructuredCheckObservation,
+): {
   ok: boolean;
   failureClass?: 'acceptance_failure' | 'infrastructure_failure';
   failureEvidence?: StructuredCheckFailureEvidence;
@@ -489,7 +555,12 @@ function applyStructuredCheckObservation(processOk: boolean, observation: Struct
   const evidence = observation.evidence!;
   const reportOk = evidence.status === 'passed';
   if (reportOk !== processOk) {
-    return { ok: false, failureClass: 'infrastructure_failure', failureEvidence: evidence, error: 'CHECK_STRUCTURED_RESULT_STATUS_MISMATCH' };
+    return {
+      ok: false,
+      failureClass: 'infrastructure_failure',
+      failureEvidence: evidence,
+      error: 'CHECK_STRUCTURED_RESULT_STATUS_MISMATCH',
+    };
   }
   if (reportOk) return { ok: true, failureEvidence: evidence };
   const sourceOnly = evidence.failureClasses.length > 0 && evidence.failureClasses.every((entry) => entry === 'source');
@@ -501,7 +572,12 @@ function applyStructuredCheckObservation(processOk: boolean, observation: Struct
 }
 
 function artifactSlug(id: string): string {
-  return id.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'check';
+  return (
+    id
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'check'
+  );
 }
 
 function evidencePath(storage: ResolvedRepositoryCheckStorage, id: string): string {
@@ -527,26 +603,111 @@ function checkRevisionPathspecs(): string[] {
   return ['.', ...CHECK_REVISION_EXCLUDES.map((path) => `:(exclude)${path}`)];
 }
 
+/**
+ * Narrow check input paths from declared effects.reads (#713).
+ * Whole-tree readers (missing reads or '.') keep the broad checkout observation.
+ */
+function checkContentNarrowReads(check?: Pick<ControllerCheck, 'effects'>): string[] | null {
+  const reads = check?.effects?.reads;
+  if (!reads || reads.length === 0 || reads.some((path) => path === '.' || path === './')) return null;
+  return [...new Set(reads.map((path) => path.replace(/^\.\//, '')).filter(Boolean))];
+}
+
 interface ControllerCheckContentObservation {
   revision: string;
   fileDigests?: Map<string, string>;
   listingAvailable: boolean;
 }
 
+function observeExactCheckReadPaths(
+  repoRoot: string,
+  paths: readonly string[],
+  captureFileDigests: boolean,
+): ControllerCheckContentObservation {
+  const root = resolve(repoRoot);
+  const revision = createHash('sha256').update('controller-check-content-v3-scoped\n');
+  const fileDigests = captureFileDigests ? new Map<string, string>() : undefined;
+  for (const raw of [...paths].sort()) {
+    const absolute = resolve(root, raw);
+    const relativePath = relative(root, absolute);
+    if (!relativePath || relativePath.startsWith('..') || isAbsolute(relativePath)) {
+      revision.update(`escape:${raw}\0`);
+      fileDigests?.set(raw, 'escape');
+      continue;
+    }
+    revision.update(`${relativePath}\0`);
+    try {
+      const stat = lstatSync(absolute);
+      if (stat.isDirectory()) {
+        const nested = runProcess(
+          'git',
+          ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', relativePath],
+          { cwd: root, timeoutMs: 10_000, maxOutputBytes: 8 * 1024 * 1024 },
+        );
+        if (!nested.ok) {
+          revision.update(`git-error:${nested.error || nested.stderr}`);
+          fileDigests?.set(relativePath, 'git-error');
+          continue;
+        }
+        for (const child of nested.stdout.split('\0').filter(Boolean).sort()) {
+          revision.update(`${child}\0`);
+          try {
+            const content = readFileSync(resolve(root, child));
+            revision.update(content);
+            fileDigests?.set(child, createHash('sha256').update(content).digest('hex'));
+          } catch {
+            revision.update('missing');
+            fileDigests?.set(child, 'missing');
+          }
+        }
+        continue;
+      }
+      if (stat.isSymbolicLink()) {
+        const target = readlinkSync(absolute);
+        revision.update(`symlink:${target}`);
+        fileDigests?.set(relativePath, createHash('sha256').update(`symlink:${target}`).digest('hex'));
+        continue;
+      }
+      const content = readFileSync(absolute);
+      revision.update(content);
+      fileDigests?.set(relativePath, createHash('sha256').update(content).digest('hex'));
+    } catch {
+      revision.update('missing');
+      fileDigests?.set(relativePath, 'missing');
+    }
+  }
+  return {
+    revision: revision.digest('hex').slice(0, 24),
+    ...(fileDigests ? { fileDigests } : {}),
+    listingAvailable: true,
+  };
+}
+
 function observeControllerCheckContent(
   repoRoot: string,
-  options: { captureFileDigests?: boolean } = {},
+  options: { captureFileDigests?: boolean; check?: Pick<ControllerCheck, 'effects'> } = {},
 ): ControllerCheckContentObservation {
-  const files = runProcess('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', ...checkRevisionPathspecs()], {
-    cwd: repoRoot,
-    timeoutMs: 10_000,
-    maxOutputBytes: 8 * 1024 * 1024,
-  });
+  const narrowReads = checkContentNarrowReads(options.check);
+  if (narrowReads) {
+    return observeExactCheckReadPaths(repoRoot, narrowReads, Boolean(options.captureFileDigests));
+  }
+  const files = runProcess(
+    'git',
+    ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', ...checkRevisionPathspecs()],
+    {
+      cwd: repoRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 8 * 1024 * 1024,
+    },
+  );
   const revision = createHash('sha256').update('controller-check-content-v2\n');
   const fileDigests = options.captureFileDigests ? new Map<string, string>() : undefined;
   if (!files.ok) {
     return {
-      revision: revision.update(`git-error:${files.error || files.stderr}`).digest('hex').slice(0, 24),
+      revision: revision
+        .update(`git-error:${files.error || files.stderr}`)
+        .digest('hex')
+        .slice(0, 24),
       ...(fileDigests ? { fileDigests } : {}),
       listingAvailable: false,
     };
@@ -570,8 +731,8 @@ function observeControllerCheckContent(
   };
 }
 
-export function currentControllerCheckRevision(repoRoot: string): string {
-  return observeControllerCheckContent(repoRoot).revision;
+export function currentControllerCheckRevision(repoRoot: string, check?: Pick<ControllerCheck, 'effects'>): string {
+  return observeControllerCheckContent(repoRoot, { check }).revision;
 }
 
 function controllerCheckWriteScopeContainsPath(scope: string, relativePath: string): boolean {
@@ -583,7 +744,8 @@ function controllerCheckInputIntegrityChanged(
   input: ControllerCheckContentObservation,
   completed: ControllerCheckContentObservation,
 ): boolean {
-  if (!input.listingAvailable || !completed.listingAvailable || !input.fileDigests || !completed.fileDigests) return true;
+  if (!input.listingAvailable || !completed.listingAvailable || !input.fileDigests || !completed.fileDigests)
+    return true;
   const writeScopes = check.effects?.writes ?? [];
   const observedPaths = new Set([...input.fileDigests.keys(), ...completed.fileDigests.keys()]);
   for (const relativePath of observedPaths) {
@@ -594,16 +756,20 @@ function controllerCheckInputIntegrityChanged(
 }
 
 function checkDefinitionDigest(check: ControllerCheck): string {
-  return createHash('sha256').update(JSON.stringify({
-    id: check.id,
-    description: check.description,
-    command: check.command,
-    cwd: check.cwd,
-    timeoutMs: check.timeoutMs,
-    source: check.source,
-    executionAuthority: check.executionAuthority ?? 'isolated_controller_home',
-    effects: check.effects,
-  })).digest('hex');
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        id: check.id,
+        description: check.description,
+        command: check.command,
+        cwd: check.cwd,
+        timeoutMs: check.timeoutMs,
+        source: check.source,
+        executionAuthority: check.executionAuthority ?? 'isolated_controller_home',
+        effects: check.effects,
+      }),
+    )
+    .digest('hex');
 }
 
 export function snapshotControllerCheck(repoRoot: string, id: string): ControllerCheckSnapshot {
@@ -643,7 +809,10 @@ const CONTROLLER_CHECK_EXECUTION_IDENTITY_VERSION = 'controller-check-execution-
  * observed Runtime liveness so a dead/replaced Runtime cannot reuse a prior
  * green Stable Baseline receipt merely because its status file remained.
  */
-export function controllerCheckLiveExecutionStateFingerprint(controllerHome: string, recoveryFenceInstanceId?: string): string {
+export function controllerCheckLiveExecutionStateFingerprint(
+  controllerHome: string,
+  recoveryFenceInstanceId?: string,
+): string {
   const mutationLockPath = recoveryOperationLockPath(controllerHome);
   try {
     const raw = readFileSync(mutationLockPath, 'utf8');
@@ -663,10 +832,12 @@ export function controllerCheckLiveExecutionStateFingerprint(controllerHome: str
       throw new Error('LIVE_CHECK_RECOVERY_MUTATION_IN_PROGRESS');
     }
   } catch (error) {
-    if (error instanceof Error && (
-      error.message === 'LIVE_CHECK_RECOVERY_MUTATION_IN_PROGRESS'
-      || error.message === 'LIVE_CHECK_RECOVERY_MUTATION_STATE_UNREADABLE'
-    )) throw error;
+    if (
+      error instanceof Error &&
+      (error.message === 'LIVE_CHECK_RECOVERY_MUTATION_IN_PROGRESS' ||
+        error.message === 'LIVE_CHECK_RECOVERY_MUTATION_STATE_UNREADABLE')
+    )
+      throw error;
     if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
       throw new Error('LIVE_CHECK_RECOVERY_MUTATION_STATE_UNREADABLE');
     }
@@ -675,68 +846,83 @@ export function controllerCheckLiveExecutionStateFingerprint(controllerHome: str
   const recoveryRelease = readCurrentRecoveryRelease(controllerHome);
   const runtime = observeRuntimeStatus(controllerHome);
   return createHash('sha256')
-    .update(JSON.stringify({
-      release: release ? {
-        revision: release.revision,
-        releaseId: release.active.releaseId,
-        artifactIdentity: release.active.artifactIdentity,
-        manifestSha256: release.active.manifestSha256,
-      } : null,
-      recoveryRelease: recoveryRelease ? {
-        releaseRevision: recoveryRelease.releaseRevision,
-        sourceCommit: recoveryRelease.sourceCommit,
-        manifestSha256: recoveryRelease.manifestSha256,
-      } : null,
-      runtime: {
-        running: runtime.running,
-        ready: runtime.ready,
-        stale: runtime.stale,
-        reasonCodes: [...runtime.reasonCodes].sort(),
-        runtimeInstanceId: runtime.snapshot?.runtimeInstanceId ?? null,
-        pid: runtime.snapshot?.pid ?? null,
-        releaseId: runtime.snapshot?.releaseId ?? null,
-        artifactIdentity: runtime.snapshot?.artifactIdentity ?? null,
-      },
-    }))
+    .update(
+      JSON.stringify({
+        release: release
+          ? {
+              revision: release.revision,
+              releaseId: release.active.releaseId,
+              artifactIdentity: release.active.artifactIdentity,
+              manifestSha256: release.active.manifestSha256,
+            }
+          : null,
+        recoveryRelease: recoveryRelease
+          ? {
+              releaseRevision: recoveryRelease.releaseRevision,
+              sourceCommit: recoveryRelease.sourceCommit,
+              manifestSha256: recoveryRelease.manifestSha256,
+            }
+          : null,
+        runtime: {
+          running: runtime.running,
+          ready: runtime.ready,
+          stale: runtime.stale,
+          reasonCodes: [...runtime.reasonCodes].sort(),
+          runtimeInstanceId: runtime.snapshot?.runtimeInstanceId ?? null,
+          pid: runtime.snapshot?.pid ?? null,
+          releaseId: runtime.snapshot?.releaseId ?? null,
+          artifactIdentity: runtime.snapshot?.artifactIdentity ?? null,
+        },
+      }),
+    )
     .digest('hex')
     .slice(0, 24);
 }
 
-export function controllerCheckEnvironmentFingerprint(check: ControllerCheck, executionStateFingerprint?: string): string {
+export function controllerCheckEnvironmentFingerprint(
+  check: ControllerCheck,
+  executionStateFingerprint?: string,
+): string {
   const env = repositoryChildProcessEnvironment(process.env);
   return createHash('sha256')
-    .update(JSON.stringify({
-      platform: process.platform,
-      arch: process.arch,
-      node: process.version,
-      bun: typeof Bun !== 'undefined' ? Bun.version : undefined,
-      // Fingerprint the executable that the check actually runs, not the
-      // Controller launcher binary. Compiled Runtime uses active-forge-runtime
-      // for the parent and forge-check-runner for the sidecar; process.execPath
-      // therefore differs even though both execute the exact same check/toolchain.
-      commandExecutable: check.command[0],
-      executionAuthority: check.executionAuthority ?? 'isolated_controller_home',
-      executionStateFingerprint: executionStateFingerprint?.trim() || '',
-      path: env.PATH ?? '',
-      home: env.HOME ?? env.USERPROFILE ?? '',
-      bunInstall: env.BUN_INSTALL ?? '',
-      nodeOptions: env.NODE_OPTIONS ?? '',
-      nodePath: env.NODE_PATH ?? '',
-      ci: env.CI ?? '',
-      lang: env.LANG ?? '',
-      lcAll: env.LC_ALL ?? '',
-      tz: env.TZ ?? '',
-    }))
+    .update(
+      JSON.stringify({
+        platform: process.platform,
+        arch: process.arch,
+        node: process.version,
+        bun: typeof Bun !== 'undefined' ? Bun.version : undefined,
+        // Fingerprint the executable that the check actually runs, not the
+        // Controller launcher binary. Compiled Runtime uses active-forge-runtime
+        // for the parent and forge-check-runner for the sidecar; process.execPath
+        // therefore differs even though both execute the exact same check/toolchain.
+        commandExecutable: check.command[0],
+        executionAuthority: check.executionAuthority ?? 'isolated_controller_home',
+        executionStateFingerprint: executionStateFingerprint?.trim() || '',
+        path: env.PATH ?? '',
+        home: env.HOME ?? env.USERPROFILE ?? '',
+        bunInstall: env.BUN_INSTALL ?? '',
+        nodeOptions: env.NODE_OPTIONS ?? '',
+        nodePath: env.NODE_PATH ?? '',
+        ci: env.CI ?? '',
+        lang: env.LANG ?? '',
+        lcAll: env.LC_ALL ?? '',
+        tz: env.TZ ?? '',
+      }),
+    )
     .digest('hex')
     .slice(0, 24);
 }
 
 function checkWorkspaceClean(repoRoot: string): boolean {
-  const status = runProcess('git', ['status', '--porcelain=v1', '--untracked-files=all', '--', ...checkRevisionPathspecs()], {
-    cwd: repoRoot,
-    timeoutMs: 10_000,
-    maxOutputBytes: 1024 * 1024,
-  });
+  const status = runProcess(
+    'git',
+    ['status', '--porcelain=v1', '--untracked-files=all', '--', ...checkRevisionPathspecs()],
+    {
+      cwd: repoRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 1024 * 1024,
+    },
+  );
   return status.ok && status.stdout.trim().length === 0;
 }
 
@@ -764,16 +950,18 @@ function buildCheckCacheKey(
   environmentFingerprint = controllerCheckEnvironmentFingerprint(check),
 ): string {
   return createHash('sha256')
-    .update(JSON.stringify({
-      identityVersion: CONTROLLER_CHECK_EXECUTION_IDENTITY_VERSION,
-      id: check.id,
-      definitionDigest,
-      command: check.command,
-      cwd: check.cwd,
-      timeoutMs,
-      revision,
-      environment: environmentFingerprint,
-    }))
+    .update(
+      JSON.stringify({
+        identityVersion: CONTROLLER_CHECK_EXECUTION_IDENTITY_VERSION,
+        id: check.id,
+        definitionDigest,
+        command: check.command,
+        cwd: check.cwd,
+        timeoutMs,
+        revision,
+        environment: environmentFingerprint,
+      }),
+    )
     .digest('hex')
     .slice(0, 24);
 }
@@ -790,15 +978,13 @@ function controllerCheckExecutionIdentityForRevision(
     ? validateControllerCheckSnapshot(repoRoot, snapshot)
     : listControllerChecks(repoRoot).find((entry) => entry.id === id);
   if (!check || check.id !== id) throw new Error(`check not found: ${id}`);
-  const timeoutMs = requestedTimeoutMs === undefined
-    ? check.timeoutMs
-    : Math.min(check.timeoutMs, boundedTimeout(requestedTimeoutMs));
+  const timeoutMs =
+    requestedTimeoutMs === undefined ? check.timeoutMs : Math.min(check.timeoutMs, boundedTimeout(requestedTimeoutMs));
   const definitionDigest = checkDefinitionDigest(check);
   const environmentFingerprint = controllerCheckEnvironmentFingerprint(check, executionStateFingerprint);
   const checkoutClean = checkWorkspaceClean(repoRoot);
-  const crossCheckoutReusable = checkoutClean
-    && checkEffectsAllowCrossCheckoutReuse(check)
-    && checkToolchainIsFingerprintable(check);
+  const crossCheckoutReusable =
+    checkoutClean && checkEffectsAllowCrossCheckoutReuse(check) && checkToolchainIsFingerprintable(check);
   return {
     schemaVersion: 1,
     checkId: id,
@@ -820,10 +1006,14 @@ export function controllerCheckExecutionIdentity(
   snapshot?: ControllerCheckSnapshot,
   executionStateFingerprint?: string,
 ): ControllerCheckExecutionIdentity {
+  const check = snapshot
+    ? validateControllerCheckSnapshot(repoRoot, snapshot)
+    : listControllerChecks(repoRoot).find((entry) => entry.id === id);
+  if (!check || check.id !== id) throw new Error(`check not found: ${id}`);
   return controllerCheckExecutionIdentityForRevision(
     repoRoot,
     id,
-    currentControllerCheckRevision(repoRoot),
+    currentControllerCheckRevision(repoRoot, check),
     requestedTimeoutMs,
     snapshot,
     executionStateFingerprint,
@@ -882,22 +1072,28 @@ export function readLatestControllerCheckEvidence(
   id: string,
   storageAuthority?: RepositoryCheckStorageAuthority | ResolvedRepositoryCheckStorage,
 ): ControllerCheckEvidence | undefined {
-  const storage = storageAuthority && 'physicalRoot' in storageAuthority
-    ? storageAuthority as ResolvedRepositoryCheckStorage
-    : resolveRepositoryCheckStorage(repoRoot, storageAuthority as RepositoryCheckStorageAuthority | undefined);
+  const storage =
+    storageAuthority && 'physicalRoot' in storageAuthority
+      ? (storageAuthority as ResolvedRepositoryCheckStorage)
+      : resolveRepositoryCheckStorage(repoRoot, storageAuthority as RepositoryCheckStorageAuthority | undefined);
   const path = evidencePath(storage, id);
   if (!existsSync(path)) return undefined;
   try {
     const value = JSON.parse(readFileSync(path, 'utf-8')) as ControllerCheckEvidence;
     if (value.schemaVersion !== 2 || value.checkId !== id) return undefined;
-    if (value.failureEvidence !== undefined && !isStructuredCheckFailureEvidence(value.failureEvidence)) return undefined;
+    if (value.failureEvidence !== undefined && !isStructuredCheckFailureEvidence(value.failureEvidence))
+      return undefined;
     return value;
   } catch (_error) {
     return undefined;
   }
 }
 
-function readControllerCheckEvidenceByKey(storage: ResolvedRepositoryCheckStorage, id: string, cacheKey: string): ControllerCheckEvidence | undefined {
+function readControllerCheckEvidenceByKey(
+  storage: ResolvedRepositoryCheckStorage,
+  id: string,
+  cacheKey: string,
+): ControllerCheckEvidence | undefined {
   const path = historicalEvidencePath(storage, id, cacheKey);
   if (!existsSync(path)) return undefined;
   try {
@@ -920,20 +1116,28 @@ export function runControllerCheck(
   snapshot?: ControllerCheckSnapshot,
   storageAuthority?: RepositoryCheckStorageAuthority,
 ): ControllerCheckResult {
-  const check = snapshot ? validateControllerCheckSnapshot(repoRoot, snapshot) : listControllerChecks(repoRoot).find((entry) => entry.id === id);
+  const check = snapshot
+    ? validateControllerCheckSnapshot(repoRoot, snapshot)
+    : listControllerChecks(repoRoot).find((entry) => entry.id === id);
   if (!check || check.id !== id) throw new Error(`check not found: ${id}`);
   if (check.executionAuthority === 'live_controller_home') {
     throw new Error('LIVE_CHECK_DURABLE_EXECUTION_REQUIRED');
   }
   const storage = ensureRepositoryCheckStorage(repoRoot, storageAuthority);
   prepareControllerCheckDependencies(repoRoot, check);
-  const inputIntegrity = observeControllerCheckContent(repoRoot, { captureFileDigests: true });
-  const identity = controllerCheckExecutionIdentityForRevision(repoRoot, id, inputIntegrity.revision, requestedTimeoutMs, snapshot);
+  const inputIntegrity = observeControllerCheckContent(repoRoot, { captureFileDigests: true, check });
+  const identity = controllerCheckExecutionIdentityForRevision(
+    repoRoot,
+    id,
+    inputIntegrity.revision,
+    requestedTimeoutMs,
+    snapshot,
+  );
   const timeoutMs = identity.timeoutMs;
   const revision = identity.revision;
   const cacheKey = identity.cacheKey;
-  const cached = readControllerCheckEvidenceByKey(storage, id, cacheKey)
-    ?? readLatestControllerCheckEvidence(repoRoot, id, storage);
+  const cached =
+    readControllerCheckEvidenceByKey(storage, id, cacheKey) ?? readLatestControllerCheckEvidence(repoRoot, id, storage);
   if (cached?.cacheKey === cacheKey && cached.ok) {
     return {
       check,
@@ -962,13 +1166,15 @@ export function runControllerCheck(
     const childEnvironment = repositoryChildProcessEnvironment();
     if (structuredResultPath) childEnvironment[STRUCTURED_CHECK_RESULT_PATH_ENV] = structuredResultPath;
     delete childEnvironment[CHECK_BRIDGE_RUNTIME_ENV];
-    childEnvironment.FORGE_SUPERVISED_REQUEST = Buffer.from(JSON.stringify({
-      command: check.command[0],
-      args: check.command.slice(1),
-      cwd: resolve(repoRoot, check.cwd),
-      timeoutMs,
-      maxOutputBytes: 256 * 1024,
-    })).toString('base64url');
+    childEnvironment.FORGE_SUPERVISED_REQUEST = Buffer.from(
+      JSON.stringify({
+        command: check.command[0],
+        args: check.command.slice(1),
+        cwd: resolve(repoRoot, check.cwd),
+        timeoutMs,
+        maxOutputBytes: 256 * 1024,
+      }),
+    ).toString('base64url');
     const bridgePath = syncSupervisorBridgePath(repoRoot);
     const bridge = runProcess(bridgeRuntime, [bridgePath], {
       cwd: repoRoot,
@@ -988,7 +1194,10 @@ export function runControllerCheck(
         timedOut: bridge.timedOut,
         command: check.command,
         stdout: capProcessOutput(redactProcessOutput(bridge.stdout), 256 * 1024),
-        stderr: capProcessOutput(redactProcessOutput([bridge.stderr, bridgeFailure].filter(Boolean).join('\n')), 256 * 1024),
+        stderr: capProcessOutput(
+          redactProcessOutput([bridge.stderr, bridgeFailure].filter(Boolean).join('\n')),
+          256 * 1024,
+        ),
         error: bridgeFailure,
       };
     } else {
@@ -996,7 +1205,7 @@ export function runControllerCheck(
         const supervised = JSON.parse(bridge.stdout) as Awaited<ReturnType<typeof runBoundedChild>>;
         const error = supervised.failureCode
           ? `${supervised.failureCode}${supervised.error ? `: ${supervised.error}` : ''}`
-          : supervised.error ?? '';
+          : (supervised.error ?? '');
         result = {
           ok: supervised.status === 0 && !supervised.failureCode,
           status: supervised.status,
@@ -1004,7 +1213,10 @@ export function runControllerCheck(
           timedOut: supervised.timedOut,
           command: check.command,
           stdout: capProcessOutput(redactProcessOutput(supervised.stdout), 256 * 1024),
-          stderr: capProcessOutput(redactProcessOutput([supervised.stderr, error].filter(Boolean).join('\n')), 256 * 1024),
+          stderr: capProcessOutput(
+            redactProcessOutput([supervised.stderr, error].filter(Boolean).join('\n')),
+            256 * 1024,
+          ),
           error: redactProcessOutput(error),
         };
       } catch (error) {
@@ -1027,7 +1239,7 @@ export function runControllerCheck(
   }
   const structuredObservation = consumeStructuredCheckObservation(check, structuredResultPath);
   const structuredDecision = applyStructuredCheckObservation(result.ok, structuredObservation);
-  const completedContent = observeControllerCheckContent(repoRoot, { captureFileDigests: true });
+  const completedContent = observeControllerCheckContent(repoRoot, { captureFileDigests: true, check });
   const completedRevision = completedContent.revision;
   const stale = controllerCheckInputIntegrityChanged(check, inputIntegrity, completedContent);
   const executedAt = new Date().toISOString();
@@ -1042,23 +1254,28 @@ export function runControllerCheck(
     stderr: [
       result.stderr || result.error,
       structuredDecision.error,
-      stale ? 'repository revision changed while the check was running; evidence is stale and the check must be rerun' : '',
-    ].filter(Boolean).join('\n'),
+      stale
+        ? 'repository revision changed while the check was running; evidence is stale and the check must be rerun'
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n'),
     command: result.command,
     executedAt,
     cacheHit: false,
     validatedRevision: stale ? completedRevision : revision,
     originalExecutedAt: executedAt,
     failureClass: hardInfrastructureFailure
-      ? 'infrastructure_failure' as const
-      : structuredDecision.failureClass ?? classifyControllerCheckFailure({
-        ok: effectiveOk,
-        stale,
-        timedOut: result.timedOut,
-        runtimeFailure: Boolean(result.error) || Boolean(result.signal),
-        stdout: result.stdout,
-        stderr: [result.stderr, result.error, structuredDecision.error].filter(Boolean).join('\n'),
-      }),
+      ? ('infrastructure_failure' as const)
+      : (structuredDecision.failureClass ??
+        classifyControllerCheckFailure({
+          ok: effectiveOk,
+          stale,
+          timedOut: result.timedOut,
+          runtimeFailure: Boolean(result.error) || Boolean(result.signal),
+          stdout: result.stdout,
+          stderr: [result.stderr, result.error, structuredDecision.error].filter(Boolean).join('\n'),
+        })),
     failureEvidence: structuredDecision.failureEvidence,
   };
   return {
@@ -1131,7 +1348,10 @@ interface HeavyCheckLease {
   release(): void;
 }
 
-function tryAcquireHeavyCheckLock(storage: ResolvedRepositoryCheckStorage, checkId: string): HeavyCheckLease | undefined {
+function tryAcquireHeavyCheckLock(
+  storage: ResolvedRepositoryCheckStorage,
+  checkId: string,
+): HeavyCheckLease | undefined {
   const path = join(storage.lockRoot, HEAVY_CHECK_LOCK);
   mkdirSync(dirname(path), { recursive: true });
   const lockId = `${process.pid}:${Date.now()}:${checkId}`;
@@ -1181,7 +1401,10 @@ function tryAcquireHeavyCheckLock(storage: ResolvedRepositoryCheckStorage, check
   };
 }
 
-async function acquireHeavyCheckLock(storage: ResolvedRepositoryCheckStorage, checkId: string): Promise<HeavyCheckLease> {
+async function acquireHeavyCheckLock(
+  storage: ResolvedRepositoryCheckStorage,
+  checkId: string,
+): Promise<HeavyCheckLease> {
   const deadline = Date.now() + MAX_TIMEOUT_MS * 2;
   while (true) {
     const lease = tryAcquireHeavyCheckLock(storage, checkId);
@@ -1231,7 +1454,8 @@ async function executeControllerCheckAsync(
   const childEnvironment = repositoryChildProcessEnvironment();
   const structuredResultPath = structuredCheckResultPath(check);
   if (structuredResultPath) childEnvironment[STRUCTURED_CHECK_RESULT_PATH_ENV] = structuredResultPath;
-  if (isolatedControllerHome?.trim() && liveControllerHome?.trim()) throw new Error('CHECK_CONTROLLER_HOME_AUTHORITY_CONFLICT');
+  if (isolatedControllerHome?.trim() && liveControllerHome?.trim())
+    throw new Error('CHECK_CONTROLLER_HOME_AUTHORITY_CONFLICT');
   if (liveControllerHome?.trim()) childEnvironment.FORGE_CONTROLLER_HOME = resolve(liveControllerHome);
   else if (isolatedControllerHome?.trim()) childEnvironment.FORGE_CONTROLLER_HOME = resolve(isolatedControllerHome);
   const supervised = await runBoundedChild(check.command[0], check.command.slice(1), {
@@ -1247,36 +1471,37 @@ async function executeControllerCheckAsync(
   const processTreeError = supervised.failureCode
     ? `${supervised.failureCode}${supervised.remainingPids.length > 0 ? `; remaining processes: ${supervised.remainingPids.join(', ')}` : ''}`
     : '';
-  const timeoutMessage = supervised.timedOut
-    ? `process timed out after ${timeoutMs}ms: ${command.join(' ')}`
-    : '';
+  const timeoutMessage = supervised.timedOut ? `process timed out after ${timeoutMs}ms: ${command.join(' ')}` : '';
   const processOk = supervised.status === 0 && !supervised.failureCode;
   const structuredObservation = consumeStructuredCheckObservation(check, structuredResultPath);
   const structuredDecision = applyStructuredCheckObservation(processOk, structuredObservation);
-  const hardInfrastructureFailure = supervised.timedOut
-    || Boolean(supervised.failureCode)
-    || Boolean(supervised.error)
-    || Boolean(supervised.signal);
+  const hardInfrastructureFailure =
+    supervised.timedOut || Boolean(supervised.failureCode) || Boolean(supervised.error) || Boolean(supervised.signal);
   const result = {
     ok: structuredDecision.ok,
     status: !structuredDecision.ok && supervised.status === 0 ? 1 : supervised.status,
     timedOut: supervised.timedOut,
     stdout: capProcessOutput(redactProcessOutput(supervised.stdout), maxOutputBytes),
-    stderr: capProcessOutput(redactProcessOutput([
-      supervised.stderr,
-      timeoutMessage || supervised.error || '',
-      processTreeError,
-      structuredDecision.error,
-    ].filter(Boolean).join('\n')), maxOutputBytes),
+    stderr: capProcessOutput(
+      redactProcessOutput(
+        [supervised.stderr, timeoutMessage || supervised.error || '', processTreeError, structuredDecision.error]
+          .filter(Boolean)
+          .join('\n'),
+      ),
+      maxOutputBytes,
+    ),
     failureClass: hardInfrastructureFailure
-      ? 'infrastructure_failure' as const
-      : structuredDecision.failureClass ?? classifyControllerCheckFailure({
-      ok: structuredDecision.ok,
-      timedOut: supervised.timedOut,
-      runtimeFailure: Boolean(supervised.failureCode) || Boolean(supervised.error) || Boolean(supervised.signal),
-      stdout: supervised.stdout,
-      stderr: [supervised.stderr, timeoutMessage, supervised.error, processTreeError, structuredDecision.error].filter(Boolean).join('\n'),
-    }),
+      ? ('infrastructure_failure' as const)
+      : (structuredDecision.failureClass ??
+        classifyControllerCheckFailure({
+          ok: structuredDecision.ok,
+          timedOut: supervised.timedOut,
+          runtimeFailure: Boolean(supervised.failureCode) || Boolean(supervised.error) || Boolean(supervised.signal),
+          stdout: supervised.stdout,
+          stderr: [supervised.stderr, timeoutMessage, supervised.error, processTreeError, structuredDecision.error]
+            .filter(Boolean)
+            .join('\n'),
+        })),
     failureEvidence: structuredDecision.failureEvidence,
   };
 
@@ -1306,7 +1531,9 @@ export function runControllerCheckAsync(
 ): Promise<ControllerCheckResult> {
   let check: ControllerCheck | undefined;
   try {
-    check = options.snapshot ? validateControllerCheckSnapshot(repoRoot, options.snapshot) : listControllerChecks(repoRoot).find((entry) => entry.id === id);
+    check = options.snapshot
+      ? validateControllerCheckSnapshot(repoRoot, options.snapshot)
+      : listControllerChecks(repoRoot).find((entry) => entry.id === id);
   } catch (error) {
     return Promise.reject(error);
   }
@@ -1328,7 +1555,7 @@ export function runControllerCheckAsync(
   } catch (error) {
     return Promise.reject(error);
   }
-  const inputIntegrity = observeControllerCheckContent(repoRoot, { captureFileDigests: true });
+  const inputIntegrity = observeControllerCheckContent(repoRoot, { captureFileDigests: true, check });
   const identity = controllerCheckExecutionIdentityForRevision(
     repoRoot,
     id,
@@ -1340,8 +1567,8 @@ export function runControllerCheckAsync(
   const timeoutMs = identity.timeoutMs;
   const revision = identity.revision;
   const cacheKey = identity.cacheKey;
-  const cached = readControllerCheckEvidenceByKey(storage, id, cacheKey)
-    ?? readLatestControllerCheckEvidence(repoRoot, id, storage);
+  const cached =
+    readControllerCheckEvidenceByKey(storage, id, cacheKey) ?? readLatestControllerCheckEvidence(repoRoot, id, storage);
   const withLiveRecoveryFence = async <T>(action: (recoveryFenceInstanceId?: string) => Promise<T> | T): Promise<T> => {
     if (!liveCertification) return await action(undefined);
     let attempt;
@@ -1434,19 +1661,26 @@ export function runControllerCheckAsync(
     assertExecutionStillRequested();
     return withLiveRecoveryFence(async (recoveryFenceInstanceId) => {
       assertExecutionStillRequested();
-      const result = await executeControllerCheckAsync(repoRoot, check, timeoutMs, storage, (pid) => {
-        lease?.setChildPid(pid);
-        notifySpawn(pid);
-      }, options.isolatedControllerHome, options.liveControllerHome);
-      const completedContent = observeControllerCheckContent(repoRoot, { captureFileDigests: true });
+      const result = await executeControllerCheckAsync(
+        repoRoot,
+        check,
+        timeoutMs,
+        storage,
+        (pid) => {
+          lease?.setChildPid(pid);
+          notifySpawn(pid);
+        },
+        options.isolatedControllerHome,
+        options.liveControllerHome,
+      );
+      const completedContent = observeControllerCheckContent(repoRoot, { captureFileDigests: true, check });
       const completedRevision = completedContent.revision;
       let liveStateStale = false;
       if (liveCertification) {
         try {
-          liveStateStale = controllerCheckLiveExecutionStateFingerprint(
-            liveControllerHome!,
-            recoveryFenceInstanceId,
-          ) !== expectedLiveState;
+          liveStateStale =
+            controllerCheckLiveExecutionStateFingerprint(liveControllerHome!, recoveryFenceInstanceId) !==
+            expectedLiveState;
         } catch {
           liveStateStale = true;
         }
@@ -1455,20 +1689,24 @@ export function runControllerCheckAsync(
       const stale = repositoryStale || liveStateStale;
       const finalized = {
         ...result,
-        ...(stale ? {
-          ok: false,
-          status: 1,
-          stderr: [
-            result.stderr,
-            repositoryStale
-              ? 'repository revision changed while the check was running; evidence is stale and the check must be rerun'
-              : '',
-            liveStateStale
-              ? 'live Runtime/Recovery authority changed while the check was running; evidence is stale and the check must be rerun'
-              : '',
-          ].filter(Boolean).join('\n'),
-          failureClass: 'infrastructure_failure' as const,
-        } : {}),
+        ...(stale
+          ? {
+              ok: false,
+              status: 1,
+              stderr: [
+                result.stderr,
+                repositoryStale
+                  ? 'repository revision changed while the check was running; evidence is stale and the check must be rerun'
+                  : '',
+                liveStateStale
+                  ? 'live Runtime/Recovery authority changed while the check was running; evidence is stale and the check must be rerun'
+                  : '',
+              ]
+                .filter(Boolean)
+                .join('\n'),
+              failureClass: 'infrastructure_failure' as const,
+            }
+          : {}),
         cacheHit: false,
         validatedRevision: stale ? completedRevision : revision,
       };
@@ -1489,12 +1727,13 @@ export function runControllerCheckAsync(
     const lease = await acquireHeavyCheckLock(storage, id);
     try {
       assertExecutionStillRequested();
-      const currentRevision = currentControllerCheckRevision(repoRoot);
+      const currentRevision = currentControllerCheckRevision(repoRoot, check);
       if (currentRevision !== revision) {
         throw new Error(`repository revision changed while heavy check ${id} was queued; resubmit the check`);
       }
-      const refreshed = readControllerCheckEvidenceByKey(storage, id, cacheKey)
-        ?? readLatestControllerCheckEvidence(repoRoot, id, storage);
+      const refreshed =
+        readControllerCheckEvidenceByKey(storage, id, cacheKey) ??
+        readLatestControllerCheckEvidence(repoRoot, id, storage);
       if (refreshed?.cacheKey === cacheKey && refreshed.ok) {
         return {
           check,
@@ -1507,7 +1746,8 @@ export function runControllerCheckAsync(
           executedAt: refreshed.executedAt,
           artifactPath: logicalEvidenceArtifactPath(id),
           cacheHit: true,
-          validatedRevision: refreshed.validatedRevision ?? refreshed.completedRevision ?? refreshed.revision ?? revision,
+          validatedRevision:
+            refreshed.validatedRevision ?? refreshed.completedRevision ?? refreshed.revision ?? revision,
           originalExecutedAt: refreshed.originalExecutedAt ?? refreshed.executedAt,
           failureClass: refreshed.failureClass,
         };
@@ -1517,19 +1757,23 @@ export function runControllerCheckAsync(
       lease.release();
     }
   };
-  const promise = controllerCheckConcurrencyClass(id) === 'heavy'
-    ? (() => {
-        const repoKey = resolve(repoRoot);
-        const previous = heavyCheckQueues.get(repoKey) ?? Promise.resolve();
-        const queued = previous.catch(() => undefined).then(executeHeavy);
-        const tail = queued.then(() => undefined, () => undefined);
-        heavyCheckQueues.set(repoKey, tail);
-        void tail.then(() => {
-          if (heavyCheckQueues.get(repoKey) === tail) heavyCheckQueues.delete(repoKey);
-        });
-        return queued;
-      })()
-    : execute();
+  const promise =
+    controllerCheckConcurrencyClass(id) === 'heavy'
+      ? (() => {
+          const repoKey = resolve(repoRoot);
+          const previous = heavyCheckQueues.get(repoKey) ?? Promise.resolve();
+          const queued = previous.catch(() => undefined).then(executeHeavy);
+          const tail = queued.then(
+            () => undefined,
+            () => undefined,
+          );
+          heavyCheckQueues.set(repoKey, tail);
+          void tail.then(() => {
+            if (heavyCheckQueues.get(repoKey) === tail) heavyCheckQueues.delete(repoKey);
+          });
+          return queued;
+        })()
+      : execute();
 
   active.promise = promise;
   activeAsyncChecks.set(key, active);
