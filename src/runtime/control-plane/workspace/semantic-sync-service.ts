@@ -7,12 +7,10 @@ import {
   scopeRef,
   semanticRecordMetadata,
   semanticSyncRecordKey,
-  type ProjectIdentity,
   type SemanticSyncBundle,
   type SemanticSyncImportReceipt,
   type SemanticSyncRecord,
   type SemanticSyncRecordKind,
-  type WorkspaceIdentity,
 } from '../../../../packages/kernel/identity/api/index';
 import { readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
 import type { WorkContract } from '../../../../packages/kernel/work/api/index';
@@ -31,7 +29,6 @@ import {
 } from '../persistence/sqlite-store';
 import { assertControlPlaneMetadataPayload } from '../persistence/metadata-payload-policy';
 import {
-  PROJECT_PLACEMENT_NAMESPACE,
   PROJECT_SEMANTIC_NAMESPACE,
   WORKSPACE_SEMANTIC_NAMESPACE,
   readProjectIdentity,
@@ -133,10 +130,12 @@ interface SemanticSyncJournal {
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
-      .filter(([, entry]) => entry !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => [key, canonical(entry)]));
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, entry]) => entry !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonical(entry)]),
+    );
   }
   return value;
 }
@@ -158,8 +157,12 @@ export function projectRequirementSemantic(requirement: Requirement): Requiremen
     acceptanceCriteria: [...requirement.acceptanceCriteria],
     requiredDeliveryReferences: [...requirement.requiredDeliveryReferences],
     state: requirement.state,
-    ...('createdAt' in requirement && typeof (requirement as any).createdAt === 'string' ? { createdAt: (requirement as any).createdAt } : {}),
-    ...('updatedAt' in requirement && typeof (requirement as any).updatedAt === 'string' ? { updatedAt: (requirement as any).updatedAt } : {}),
+    ...('createdAt' in requirement && typeof (requirement as any).createdAt === 'string'
+      ? { createdAt: (requirement as any).createdAt }
+      : {}),
+    ...('updatedAt' in requirement && typeof (requirement as any).updatedAt === 'string'
+      ? { updatedAt: (requirement as any).updatedAt }
+      : {}),
   };
 }
 
@@ -272,23 +275,76 @@ export function exportSemanticSyncBundle(input: {
   const placement = readProjectPlacement(input.controllerHome, instance.instanceId, project.value.projectId);
   if (!placement) throw new Error(`SEMANTIC_SYNC_PROJECT_PLACEMENT_NOT_FOUND: ${project.value.projectId}`);
   const repoId = placement.value.repositoryId;
-  const expected = (kind: SemanticSyncRecordKind, id: string): number | null => input.targetReplicaRevisions?.[semanticSyncRecordKey(kind, id)] ?? null;
+  const expected = (kind: SemanticSyncRecordKind, id: string): number | null =>
+    input.targetReplicaRevisions?.[semanticSyncRecordKey(kind, id)] ?? null;
   const records: SemanticSyncRecord[] = [
-    record({ kind: 'workspace', id: workspace.value.workspaceId, revision: workspace.revision, updatedAt: workspace.updatedAt, sourceForgeInstanceId: instance.instanceId, value: workspace.value, expectedRevision: expected('workspace', workspace.value.workspaceId) }),
-    record({ kind: 'project', id: project.value.projectId, revision: project.revision, updatedAt: project.updatedAt, sourceForgeInstanceId: instance.instanceId, value: project.value, expectedRevision: expected('project', project.value.projectId) }),
+    record({
+      kind: 'workspace',
+      id: workspace.value.workspaceId,
+      revision: workspace.revision,
+      updatedAt: workspace.updatedAt,
+      sourceForgeInstanceId: instance.instanceId,
+      value: workspace.value,
+      expectedRevision: expected('workspace', workspace.value.workspaceId),
+    }),
+    record({
+      kind: 'project',
+      id: project.value.projectId,
+      revision: project.revision,
+      updatedAt: project.updatedAt,
+      sourceForgeInstanceId: instance.instanceId,
+      value: project.value,
+      expectedRevision: expected('project', project.value.projectId),
+    }),
   ];
-  const plans = listControlPlaneRecords<PlanContract>(input.controllerHome, { namespace: 'plan_contract', scope: repoId, limit: 1_000 });
-  const requirementIds = new Set<string>();
-  for (const plan of plans) if (plan.value.requirementId?.trim()) requirementIds.add(plan.value.requirementId.trim());
-  const requirements = listControlPlaneRecords<Requirement>(input.controllerHome, { namespace: 'requirement', scope: CONTROLLER_SCOPE, limit: 5_000 })
-    .filter((entry) => requirementIds.has(entry.value.requirementId));
+  const plans = listControlPlaneRecords<PlanContract>(input.controllerHome, {
+    namespace: 'plan_contract',
+    scope: repoId,
+    limit: 1_000,
+  });
+  // Export every Project-owned Requirement, not only Plan-linked ones. Keep
+  // Plan-linked Requirements without projectId for legacy semantic visibility.
+  const planRequirementIds = new Set<string>();
+  for (const plan of plans)
+    if (plan.value.requirementId?.trim()) planRequirementIds.add(plan.value.requirementId.trim());
+  const projectId = project.value.projectId;
+  const requirements = listControlPlaneRecords<Requirement>(input.controllerHome, {
+    namespace: 'requirement',
+    scope: CONTROLLER_SCOPE,
+    limit: 5_000,
+  }).filter((entry) => {
+    const ownedByProject = entry.value.projectId?.trim() === projectId;
+    return ownedByProject || planRequirementIds.has(entry.value.requirementId);
+  });
   for (const entry of requirements) {
-    records.push(record({ kind: 'requirement', id: entry.value.requirementId, revision: entry.revision, updatedAt: entry.updatedAt, sourceForgeInstanceId: instance.instanceId, value: projectRequirementSemantic(entry.value), expectedRevision: expected('requirement', entry.value.requirementId) }));
+    records.push(
+      record({
+        kind: 'requirement',
+        id: entry.value.requirementId,
+        revision: entry.revision,
+        updatedAt: entry.updatedAt,
+        sourceForgeInstanceId: instance.instanceId,
+        value: projectRequirementSemantic(entry.value),
+        expectedRevision: expected('requirement', entry.value.requirementId),
+      }),
+    );
   }
   for (const entry of plans) {
-    records.push(record({ kind: 'plan', id: entry.value.planId, revision: entry.revision, updatedAt: entry.updatedAt, sourceForgeInstanceId: instance.instanceId, value: projectPlanSemantic(entry.value), expectedRevision: expected('plan', entry.value.planId) }));
+    records.push(
+      record({
+        kind: 'plan',
+        id: entry.value.planId,
+        revision: entry.revision,
+        updatedAt: entry.updatedAt,
+        sourceForgeInstanceId: instance.instanceId,
+        value: projectPlanSemantic(entry.value),
+        expectedRevision: expected('plan', entry.value.planId),
+      }),
+    );
   }
-  records.sort((left, right) => semanticSyncRecordKey(left.kind, left.id).localeCompare(semanticSyncRecordKey(right.kind, right.id)));
+  records.sort((left, right) =>
+    semanticSyncRecordKey(left.kind, left.id).localeCompare(semanticSyncRecordKey(right.kind, right.id)),
+  );
   assertSemanticSyncRecordBounds(records);
   const base = {
     schemaVersion: 1 as const,
@@ -301,25 +357,38 @@ export function exportSemanticSyncBundle(input: {
   };
   const bundle: SemanticSyncBundle = { ...base, contentFingerprint: bundleFingerprint(base) };
   assertControlPlaneMetadataPayload(bundle, 'semantic_sync_bundle');
-  if (Buffer.byteLength(stableJson(bundle), 'utf8') > MAX_SEMANTIC_SYNC_BUNDLE_BYTES) throw new Error('SEMANTIC_SYNC_BUNDLE_TOO_LARGE');
+  if (Buffer.byteLength(stableJson(bundle), 'utf8') > MAX_SEMANTIC_SYNC_BUNDLE_BYTES)
+    throw new Error('SEMANTIC_SYNC_BUNDLE_TOO_LARGE');
   return bundle;
 }
 
-function localRecordWithinTransaction(database: SqliteDatabase, input: { kind: SemanticSyncRecordKind; id: string; workspaceId: string; repositoryId?: string }): ControlPlaneRecord<unknown> | undefined {
-  if (input.kind === 'workspace') return readControlPlaneRecordWithinTransaction(database, WORKSPACE_SEMANTIC_NAMESPACE, CONTROLLER_SCOPE, input.id);
-  if (input.kind === 'project') return readControlPlaneRecordWithinTransaction(database, PROJECT_SEMANTIC_NAMESPACE, input.workspaceId, input.id);
-  if (input.kind === 'requirement') return readControlPlaneRecordWithinTransaction(database, 'requirement', CONTROLLER_SCOPE, input.id);
+function localRecordWithinTransaction(
+  database: SqliteDatabase,
+  input: { kind: SemanticSyncRecordKind; id: string; workspaceId: string; repositoryId?: string },
+): ControlPlaneRecord<unknown> | undefined {
+  if (input.kind === 'workspace')
+    return readControlPlaneRecordWithinTransaction(database, WORKSPACE_SEMANTIC_NAMESPACE, CONTROLLER_SCOPE, input.id);
+  if (input.kind === 'project')
+    return readControlPlaneRecordWithinTransaction(database, PROJECT_SEMANTIC_NAMESPACE, input.workspaceId, input.id);
+  if (input.kind === 'requirement')
+    return readControlPlaneRecordWithinTransaction(database, 'requirement', CONTROLLER_SCOPE, input.id);
   if (input.kind === 'plan') {
     const semantic = readControlPlaneRecordWithinTransaction(database, 'plan_contract', SEMANTIC_SCOPE_KEY, input.id);
-    return semantic ?? (input.repositoryId
-      ? readControlPlaneRecordWithinTransaction(database, 'plan_contract', input.repositoryId, input.id)
-      : undefined);
+    return (
+      semantic ??
+      (input.repositoryId
+        ? readControlPlaneRecordWithinTransaction(database, 'plan_contract', input.repositoryId, input.id)
+        : undefined)
+    );
   }
   if (input.kind === 'work') {
     const semantic = readControlPlaneRecordWithinTransaction(database, 'work_contract', SEMANTIC_SCOPE_KEY, input.id);
-    return semantic ?? (input.repositoryId
-      ? readControlPlaneRecordWithinTransaction(database, 'work_contract', input.repositoryId, input.id)
-      : undefined);
+    return (
+      semantic ??
+      (input.repositoryId
+        ? readControlPlaneRecordWithinTransaction(database, 'work_contract', input.repositoryId, input.id)
+        : undefined)
+    );
   }
   return undefined;
 }
@@ -342,25 +411,36 @@ export function boundedSemanticSyncJournal(entries: readonly SemanticSyncJournal
 }
 
 function assertBundle(bundle: SemanticSyncBundle): void {
-  if (bundle.schemaVersion !== 1 || bundle.kind !== 'forge_semantic_sync_bundle') throw new Error('SEMANTIC_SYNC_BUNDLE_SCHEMA_INVALID');
-  if (!bundle.workspaceId.trim() || !bundle.projectId.trim() || !bundle.sourceForgeInstanceId.trim()) throw new Error('SEMANTIC_SYNC_BUNDLE_IDENTITY_REQUIRED');
+  if (bundle.schemaVersion !== 1 || bundle.kind !== 'forge_semantic_sync_bundle')
+    throw new Error('SEMANTIC_SYNC_BUNDLE_SCHEMA_INVALID');
+  if (!bundle.workspaceId.trim() || !bundle.projectId.trim() || !bundle.sourceForgeInstanceId.trim())
+    throw new Error('SEMANTIC_SYNC_BUNDLE_IDENTITY_REQUIRED');
   assertSemanticSyncRecordBounds(bundle.records);
   assertControlPlaneMetadataPayload(bundle, 'semantic_sync_bundle');
-  if (Buffer.byteLength(stableJson(bundle), 'utf8') > MAX_SEMANTIC_SYNC_BUNDLE_BYTES) throw new Error('SEMANTIC_SYNC_BUNDLE_TOO_LARGE');
+  if (Buffer.byteLength(stableJson(bundle), 'utf8') > MAX_SEMANTIC_SYNC_BUNDLE_BYTES)
+    throw new Error('SEMANTIC_SYNC_BUNDLE_TOO_LARGE');
   const { contentFingerprint: _fingerprint, ...base } = bundle;
-  if (bundle.contentFingerprint !== bundleFingerprint(base)) throw new Error('SEMANTIC_SYNC_BUNDLE_FINGERPRINT_MISMATCH');
+  if (bundle.contentFingerprint !== bundleFingerprint(base))
+    throw new Error('SEMANTIC_SYNC_BUNDLE_FINGERPRINT_MISMATCH');
   const workspaceRecords = bundle.records.filter((entry) => entry.kind === 'workspace');
   const projectRecords = bundle.records.filter((entry) => entry.kind === 'project');
-  if (workspaceRecords.length !== 1 || workspaceRecords[0]?.id !== bundle.workspaceId) throw new Error('SEMANTIC_SYNC_WORKSPACE_IDENTITY_MISMATCH');
-  if (projectRecords.length !== 1 || projectRecords[0]?.id !== bundle.projectId) throw new Error('SEMANTIC_SYNC_PROJECT_IDENTITY_MISMATCH');
+  if (workspaceRecords.length !== 1 || workspaceRecords[0]?.id !== bundle.workspaceId)
+    throw new Error('SEMANTIC_SYNC_WORKSPACE_IDENTITY_MISMATCH');
+  if (projectRecords.length !== 1 || projectRecords[0]?.id !== bundle.projectId)
+    throw new Error('SEMANTIC_SYNC_PROJECT_IDENTITY_MISMATCH');
   const workspaceValue = workspaceRecords[0]?.envelope.value as { workspaceId?: unknown } | undefined;
   const projectValue = projectRecords[0]?.envelope.value as { projectId?: unknown; workspaceId?: unknown } | undefined;
   if (workspaceValue?.workspaceId !== bundle.workspaceId) throw new Error('SEMANTIC_SYNC_WORKSPACE_PAYLOAD_MISMATCH');
-  if (projectValue?.projectId !== bundle.projectId || projectValue?.workspaceId !== bundle.workspaceId) throw new Error('SEMANTIC_SYNC_PROJECT_PAYLOAD_MISMATCH');
+  if (projectValue?.projectId !== bundle.projectId || projectValue?.workspaceId !== bundle.workspaceId)
+    throw new Error('SEMANTIC_SYNC_PROJECT_PAYLOAD_MISMATCH');
   for (const entry of bundle.records) {
     const key = semanticSyncRecordKey(entry.kind, entry.id);
-    if (entry.fingerprint !== sha256(entry.envelope)) throw new Error(`SEMANTIC_SYNC_RECORD_FINGERPRINT_MISMATCH: ${key}`);
-    if (entry.envelope.metadata.forgeInstanceId !== bundle.sourceForgeInstanceId || entry.envelope.metadata.origin !== 'local') {
+    if (entry.fingerprint !== sha256(entry.envelope))
+      throw new Error(`SEMANTIC_SYNC_RECORD_FINGERPRINT_MISMATCH: ${key}`);
+    if (
+      entry.envelope.metadata.forgeInstanceId !== bundle.sourceForgeInstanceId ||
+      entry.envelope.metadata.origin !== 'local'
+    ) {
       throw new Error(`SEMANTIC_SYNC_RECORD_SOURCE_MISMATCH: ${key}`);
     }
   }
@@ -386,7 +466,12 @@ export function importSemanticSyncBundle(input: {
   withControlPlaneTransaction(input.controllerHome, (database) => {
     for (const incoming of input.bundle.records) {
       const key = semanticSyncRecordKey(incoming.kind, incoming.id);
-      const local = localRecordWithinTransaction(database, { kind: incoming.kind, id: incoming.id, workspaceId: input.bundle.workspaceId, repositoryId });
+      const local = localRecordWithinTransaction(database, {
+        kind: incoming.kind,
+        id: incoming.id,
+        workspaceId: input.bundle.workspaceId,
+        repositoryId,
+      });
       if (local) {
         if (stableJson(localSemanticValue(incoming.kind, local.value)) !== stableJson(incoming.envelope.value)) {
           throw new Error(`SEMANTIC_SYNC_LOCAL_AUTHORITY_CONFLICT: ${key}`);
@@ -394,7 +479,12 @@ export function importSemanticSyncBundle(input: {
         converged.push(key);
         continue;
       }
-      const currentReplica = readControlPlaneRecordWithinTransaction<SemanticSyncReplica>(database, SEMANTIC_SYNC_REPLICA_NAMESPACE, scope, key);
+      const currentReplica = readControlPlaneRecordWithinTransaction<SemanticSyncReplica>(
+        database,
+        SEMANTIC_SYNC_REPLICA_NAMESPACE,
+        scope,
+        key,
+      );
       if (currentReplica?.value.record.fingerprint === incoming.fingerprint) {
         converged.push(key);
         replicaRevisions[key] = currentReplica.revision;
@@ -406,7 +496,12 @@ export function importSemanticSyncBundle(input: {
           scope,
           key,
           schemaVersion: 1,
-          value: { schemaVersion: 1, sourceForgeInstanceId: input.bundle.sourceForgeInstanceId, importedAt, record: incoming } satisfies SemanticSyncReplica,
+          value: {
+            schemaVersion: 1,
+            sourceForgeInstanceId: input.bundle.sourceForgeInstanceId,
+            importedAt,
+            record: incoming,
+          } satisfies SemanticSyncReplica,
           action: 'semantic_sync_replica_import',
           expectedRevision: incoming.condition.expectedRevision,
         });
@@ -414,21 +509,31 @@ export function importSemanticSyncBundle(input: {
         replicaRevisions[key] = written.revision;
       } catch (error) {
         if (error instanceof ControlPlaneConflictError) {
-          throw new Error(`SEMANTIC_SYNC_REPLICA_REVISION_CONFLICT: ${key} expected=${error.expectedRevision ?? 'absent'} actual=${error.actualRevision ?? 'absent'}`);
+          throw new Error(
+            `SEMANTIC_SYNC_REPLICA_REVISION_CONFLICT: ${key} expected=${error.expectedRevision ?? 'absent'} actual=${error.actualRevision ?? 'absent'}`,
+          );
         }
         throw error;
       }
     }
-    const currentJournal = readControlPlaneRecordWithinTransaction<SemanticSyncJournal>(database, SEMANTIC_SYNC_JOURNAL_NAMESPACE, scope, JOURNAL_KEY);
-    const entries = boundedSemanticSyncJournal([...(currentJournal?.value.entries ?? []), {
-      schemaVersion: 1,
-      sourceForgeInstanceId: input.bundle.sourceForgeInstanceId,
-      bundleFingerprint: input.bundle.contentFingerprint,
-      importedAt,
-      appliedCount: applied.length,
-      convergedCount: converged.length,
-      sampledKeys: [...applied, ...converged].slice(0, MAX_SEMANTIC_SYNC_JOURNAL_KEY_SAMPLES),
-    }]);
+    const currentJournal = readControlPlaneRecordWithinTransaction<SemanticSyncJournal>(
+      database,
+      SEMANTIC_SYNC_JOURNAL_NAMESPACE,
+      scope,
+      JOURNAL_KEY,
+    );
+    const entries = boundedSemanticSyncJournal([
+      ...(currentJournal?.value.entries ?? []),
+      {
+        schemaVersion: 1,
+        sourceForgeInstanceId: input.bundle.sourceForgeInstanceId,
+        bundleFingerprint: input.bundle.contentFingerprint,
+        importedAt,
+        appliedCount: applied.length,
+        convergedCount: converged.length,
+        sampledKeys: [...applied, ...converged].slice(0, MAX_SEMANTIC_SYNC_JOURNAL_KEY_SAMPLES),
+      },
+    ]);
     const journalValue = { schemaVersion: 1, entries } satisfies SemanticSyncJournal;
     assertControlPlaneMetadataPayload(journalValue, 'semantic_sync_journal');
     writeControlPlaneRecordWithinTransaction(database, {
@@ -456,7 +561,12 @@ export function importSemanticSyncBundle(input: {
   };
 }
 
-export function listSemanticSyncReplicas(input: { controllerHome: string; workspaceId: string; projectId: string; limit?: number }): ControlPlaneRecord<SemanticSyncReplica>[] {
+export function listSemanticSyncReplicas(input: {
+  controllerHome: string;
+  workspaceId: string;
+  projectId: string;
+  limit?: number;
+}): ControlPlaneRecord<SemanticSyncReplica>[] {
   return listControlPlaneRecords<SemanticSyncReplica>(input.controllerHome, {
     namespace: SEMANTIC_SYNC_REPLICA_NAMESPACE,
     scope: replicaScope(input.workspaceId, input.projectId),
@@ -464,7 +574,11 @@ export function listSemanticSyncReplicas(input: { controllerHome: string; worksp
   });
 }
 
-export function readSemanticSyncJournal(input: { controllerHome: string; workspaceId: string; projectId: string }): SemanticSyncJournalEntry[] {
+export function readSemanticSyncJournal(input: {
+  controllerHome: string;
+  workspaceId: string;
+  projectId: string;
+}): SemanticSyncJournalEntry[] {
   const records = listControlPlaneRecords<SemanticSyncJournal>(input.controllerHome, {
     namespace: SEMANTIC_SYNC_JOURNAL_NAMESPACE,
     scope: replicaScope(input.workspaceId, input.projectId),
