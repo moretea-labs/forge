@@ -1,22 +1,24 @@
 # Checkout route integrity (P0)
 
-## Fail-closed pre-spawn guard
+## Fail-closed process identity
 
-Before Process Runtime spawns any managed process, an immutable `ResolvedExecutionIdentity`
-must match:
+Before a scoped Process action, Forge verifies an immutable `ResolvedExecutionIdentity` against concrete execution resources:
 
-- requested `repoId` / `checkoutId`
-- registered checkout lifecycle and realpath root
-- process `cwd` realpath inside the expected root
-- Git top-level equal to expected root
-- Git common-dir ownership of the registered repository
-- optional branch / expected HEAD from WorkHandle
+- the requested `repoId` / `checkoutId` and registered checkout lifecycle
+- the checkout realpath and Process `cwd` realpath
+- Git top-level and common-dir ownership of the selected repository
+- explicit Git branch / revision constraints when the operation requests them
 
-Mismatch codes include `EXECUTION_IDENTITY_MISMATCH`, `CHECKOUT_ROUTE_MISMATCH`,
-`GIT_TOPLEVEL_MISMATCH`, `GIT_COMMON_DIR_MISMATCH`, `WORK_HANDLE_BRANCH_CHANGED`,
-and `WORK_HANDLE_HEAD_CHANGED`. There is no silent fallback to main or another checkout.
+Current mismatch diagnostics include `EXECUTION_IDENTITY_MISMATCH`,
+`CHECKOUT_ROUTE_MISMATCH`, `GIT_TOPLEVEL_MISMATCH`, and
+`GIT_COMMON_DIR_MISMATCH`. There is no silent fallback to another checkout.
 
-## Legacy WorkContract migration
+## Retired WorkHandle compatibility
 
-Legacy contracts may bind only through a unique exact WorkHandle match
-(`resolveLegacyWorkContractIdentity`). Ambiguous or incomplete identity is rejected.
+Historical `WorkContract` / `WorkHandle` records are audit-only. They do not
+supply new Process execution identities, authorize branch selection, determine
+Writer ownership, or block an otherwise valid repository operation.
+`WORK_HANDLE_BRANCH_CHANGED` / `WORK_HANDLE_HEAD_CHANGED` identify historical
+diagnostics; they are not current pre-spawn prerequisites. Legacy
+`resolveLegacyWorkContractIdentity` lookups, where still supported, must remain
+read-only and fail closed on ambiguous historical identity.

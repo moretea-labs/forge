@@ -8,7 +8,7 @@ Forge keeps execution and durable state on the operator-controlled machine. Chat
 
 The controller can know many repositories, but each repository action resolves to a stable repository identity and, when needed, a checkout identity. A repository switch must be explicit.
 
-## Durable work
+## Durable execution
 
 Complex work is represented by persistent plans, tasks, jobs, runs, handoffs, checks, and evidence. A transport timeout does not imply that execution stopped, so status must be checked before replaying a write.
 
@@ -24,4 +24,4 @@ A task is complete only when the relevant diff, checks, integrated revision, and
 
 Forge Runtime releases are built from a clean canonical source tree. Source commit, immutable manifest, service registration, active whole-release authority, database compatibility, Worker protocol, and the running Runtime identity must agree exactly.
 
-Continue with [Work Lifecycle](Work-Lifecycle), [Security Model](Security-Model), and [Runtime Architecture](Runtime-Architecture).
+Continue with [Execution Lifecycle](Execution-Lifecycle), [Security Model](Security-Model), and [Runtime Architecture](Runtime-Architecture).

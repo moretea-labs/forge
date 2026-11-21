@@ -27,7 +27,10 @@ import type { ProjectionObservation, ProjectionSourceReconciliation } from '../h
 import { RUNTIME_HEALTH_THRESHOLDS } from '../health/evaluator';
 import { isProcessAlive } from '../shared/process-tree';
 import type { TaskLedgerProjection } from './task-ledger-types';
-import { collectWorkLifecycleAttention, workLifecycleAttentionBlocksReadiness } from '../control-plane/execution/work-lifecycle-audit';
+import {
+  collectRepositoryLifecycleAttention,
+  repositoryLifecycleAttentionBlocksReadiness,
+} from '../control-plane/execution/repository-lifecycle-audit';
 
 export interface ProjectionMetadata {
   contentRevision: number;
@@ -152,12 +155,21 @@ function projectionWithExecutionIndexOverlay(
   let activeJobs: ExecutionJob[] | undefined;
   let recentJobs: ExecutionJob[] | undefined;
   let leases: ReturnType<typeof listActiveLeases> | undefined;
-  try { activeJobs = listActiveExecutionJobs(controllerHome, repoId); }
-  catch { activeJobs = undefined; }
-  try { recentJobs = listExecutionJobs(controllerHome, repoId, 100); }
-  catch { recentJobs = undefined; }
-  try { leases = listActiveLeases(controllerHome, repoId); }
-  catch { leases = undefined; }
+  try {
+    activeJobs = listActiveExecutionJobs(controllerHome, repoId);
+  } catch {
+    activeJobs = undefined;
+  }
+  try {
+    recentJobs = listExecutionJobs(controllerHome, repoId, 100);
+  } catch {
+    recentJobs = undefined;
+  }
+  try {
+    leases = listActiveLeases(controllerHome, repoId);
+  } catch {
+    leases = undefined;
+  }
 
   const projectionLeases = leases ? projectionVisibleLeases(leases) : undefined;
   const activeJobSummaries = activeJobs?.map(executionJobSummary) ?? base.activeJobs;
@@ -166,14 +178,12 @@ function projectionWithExecutionIndexOverlay(
   const materializedLifecycleAttention = base.attention.filter((entry) => entry.jobId.startsWith('lifecycle:'));
   const materializedCurrentLifecycleAttention = base.currentAttention
     .filter((entry) => entry.jobId.startsWith('lifecycle:'))
-    .filter(workLifecycleAttentionBlocksReadiness);
+    .filter(repositoryLifecycleAttentionBlocksReadiness);
   const attention = attentionJobs
     ? attentionJobs.map(attentionSummary)
     : base.attention.filter((entry) => !entry.jobId.startsWith('lifecycle:'));
   const currentAttention = attentionJobs
-    ? attentionJobs
-      .filter((job) => executionAttentionIsCurrent(job, activeJobIds))
-      .map(attentionSummary)
+    ? attentionJobs.filter((job) => executionAttentionIsCurrent(job, activeJobIds)).map(attentionSummary)
     : base.currentAttention.filter((entry) => !entry.jobId.startsWith('lifecycle:'));
 
   return {
@@ -182,9 +192,7 @@ function projectionWithExecutionIndexOverlay(
     queueDepth: activeJobs
       ? activeJobs.filter((job) => job.status !== 'running' && job.status !== 'dispatched').length
       : base.queueDepth,
-    runningWorkers: activeJobs
-      ? activeJobs.filter((job) => job.status === 'running').length
-      : base.runningWorkers,
+    runningWorkers: activeJobs ? activeJobs.filter((job) => job.status === 'running').length : base.runningWorkers,
     activeLeases: projectionLeases ? projectionLeases.length : base.activeLeases,
     releaseFrozen: projectionLeases
       ? projectionLeases.some((lease) => lease.resourceKey.startsWith('release:'))
@@ -214,17 +222,20 @@ function buildRepositoryProjection(
   const activeJobs = listActiveExecutionJobs(controllerHome, repoId);
   const activeJobIds = new Set(activeJobs.map((job) => job.jobId));
   const leases = projectionVisibleLeases(listActiveLeases(controllerHome, repoId));
-  const attentionJobs = listExecutionJobs(controllerHome, repoId, 100)
-    .filter((job) => ATTENTION_JOB_STATUSES.has(job.status));
+  const attentionJobs = listExecutionJobs(controllerHome, repoId, 100).filter((job) =>
+    ATTENTION_JOB_STATUSES.has(job.status),
+  );
   // Terminal attention records remain in history for diagnosis and audit, but only
   // active/unresolved records should influence "current readiness" decisions.
   // Terminal status wins over a missing legacy finishedAt timestamp.
   const currentAttentionJobs = attentionJobs.filter((job) => executionAttentionIsCurrent(job, activeJobIds));
   const repository = listRepositories(controllerHome).find((entry) => entry.repoId === repoId);
-  const lifecycleAttention = repository ? collectWorkLifecycleAttention(controllerHome, repository) : [];
-  const plugins = repository ? listAssistantPluginManifests(controllerHome, repository, {
-    preferStored: true,
-  }) : [];
+  const lifecycleAttention = repository ? collectRepositoryLifecycleAttention(controllerHome, repository) : [];
+  const plugins = repository
+    ? listAssistantPluginManifests(controllerHome, repository, {
+        preferStored: true,
+      })
+    : [];
   const projection: RepositoryRuntimeProjection = {
     schemaVersion: 1,
     repoId,
@@ -251,7 +262,7 @@ function buildRepositoryProjection(
     activeLeases: leases.length,
     currentAttention: [
       ...currentAttentionJobs.map((job) => ({ jobId: job.jobId, status: job.status, message: job.error?.message })),
-      ...lifecycleAttention.filter(workLifecycleAttentionBlocksReadiness),
+      ...lifecycleAttention.filter(repositoryLifecycleAttentionBlocksReadiness),
     ].slice(0, 100),
     attention: [
       ...attentionJobs.map((job) => ({ jobId: job.jobId, status: job.status, message: job.error?.message })),
@@ -267,17 +278,21 @@ function buildRepositoryProjection(
   };
   projection.metadata = {
     ...projection.metadata!,
-    contentFingerprint: createHash('sha256').update(JSON.stringify({
-      repoId: projection.repoId,
-      releaseFrozen: projection.releaseFrozen,
-      activeJobs: projection.activeJobs,
-      queueDepth: projection.queueDepth,
-      runningWorkers: projection.runningWorkers,
-      activeLeases: projection.activeLeases,
-      currentAttention: projection.currentAttention,
-      attention: projection.attention,
-      plugins: projection.plugins,
-    })).digest('hex'),
+    contentFingerprint: createHash('sha256')
+      .update(
+        JSON.stringify({
+          repoId: projection.repoId,
+          releaseFrozen: projection.releaseFrozen,
+          activeJobs: projection.activeJobs,
+          queueDepth: projection.queueDepth,
+          runningWorkers: projection.runningWorkers,
+          activeLeases: projection.activeLeases,
+          currentAttention: projection.currentAttention,
+          attention: projection.attention,
+          plugins: projection.plugins,
+        }),
+      )
+      .digest('hex'),
   };
   return projection;
 }
@@ -334,7 +349,9 @@ export function reconcileProjectionWithTaskLedger(
     status,
     projectionRunningWorkers,
     ledgerRunningTasks,
-    ...(runningTasks.length > 0 ? { ledgerRunningTaskIds: runningTasks.map((task) => `${task.issueId}/${task.taskId}`) } : {}),
+    ...(runningTasks.length > 0
+      ? { ledgerRunningTaskIds: runningTasks.map((task) => `${task.issueId}/${task.taskId}`) }
+      : {}),
     ...(status === 'mismatch'
       ? { detail: `projection runningWorkers=${projectionRunningWorkers}, ledger runningTasks=${ledgerRunningTasks}` }
       : {}),
@@ -389,18 +406,25 @@ function refreshOwner(input: RepositoryProjectionRefreshOptions, acquiredAt: str
   };
 }
 
-function ownerStillOwnsRefresh(marker: ProjectionDirtyMarker, nowMs: number, currentOwner?: ProjectionRefreshOwner): boolean {
+function ownerStillOwnsRefresh(
+  marker: ProjectionDirtyMarker,
+  nowMs: number,
+  currentOwner?: ProjectionRefreshOwner,
+): boolean {
   if (marker.refreshStatus !== 'running') return false;
-  const startedAt = Date.parse(marker.runningStartedAt ?? marker.refreshOwner?.acquiredAt ?? marker.refreshUpdatedAt ?? marker.markedAt);
+  const startedAt = Date.parse(
+    marker.runningStartedAt ?? marker.refreshOwner?.acquiredAt ?? marker.refreshUpdatedAt ?? marker.markedAt,
+  );
   const ageMs = Number.isFinite(startedAt) ? Math.max(0, nowMs - startedAt) : Number.POSITIVE_INFINITY;
   if (ageMs >= PROJECTION_REFRESH_STALE_OWNER_MS) return false;
   const owner = marker.refreshOwner;
   if (!owner?.pid || !isProcessAlive(owner.pid)) return false;
   if (
-    currentOwner?.runtimeInstanceId
-    && owner.runtimeInstanceId
-    && currentOwner.runtimeInstanceId !== owner.runtimeInstanceId
-  ) return false;
+    currentOwner?.runtimeInstanceId &&
+    owner.runtimeInstanceId &&
+    currentOwner.runtimeInstanceId !== owner.runtimeInstanceId
+  )
+    return false;
   return true;
 }
 
@@ -483,77 +507,90 @@ function refreshRepositoryProjection(
   // Claim one refresh generation under the repository projection lock, then release
   // it before the expensive materialization. Real jobs/leases/finalizers must be
   // able to invalidate the projection while a refresh is building.
-  const claim = withRepositoryProjectionRefreshLock(
-    controllerHome,
-    repoId,
-    lockOwner,
-    () => {
-      dirtyProjectionReadCache.delete(dirtyProjectionReadCacheKey(controllerHome, repoId));
-      const previous = readJsonFile<RepositoryRuntimeProjection | undefined>(projectionPath(controllerHome, repoId), undefined);
-      const sourceRevision = normalizeGitRevision(options.sourceRevision)
-        ?? projectionSourceRevisionFromRepository(controllerHome, options.repository)
-        ?? normalizeGitRevision(previous?.metadata?.generatedFromRevision);
-      let marker = readRepositoryProjectionDirty(controllerHome, repoId);
-      const changed = sourceRevisionChanged(
-        previous?.metadata?.generatedFromRevision,
-        sourceRevision,
-        Boolean(marker) || !previous,
-        Boolean(previous),
-      );
-      if (!marker && (changed || options.force === true)) {
-        marker = updateRepositoryProjectionRefreshRequest(controllerHome, repoId, {
+  const claim = withRepositoryProjectionRefreshLock(controllerHome, repoId, lockOwner, () => {
+    dirtyProjectionReadCache.delete(dirtyProjectionReadCacheKey(controllerHome, repoId));
+    const previous = readJsonFile<RepositoryRuntimeProjection | undefined>(
+      projectionPath(controllerHome, repoId),
+      undefined,
+    );
+    const sourceRevision =
+      normalizeGitRevision(options.sourceRevision) ??
+      projectionSourceRevisionFromRepository(controllerHome, options.repository) ??
+      normalizeGitRevision(previous?.metadata?.generatedFromRevision);
+    let marker = readRepositoryProjectionDirty(controllerHome, repoId);
+    const changed = sourceRevisionChanged(
+      previous?.metadata?.generatedFromRevision,
+      sourceRevision,
+      Boolean(marker) || !previous,
+      Boolean(previous),
+    );
+    if (!marker && (changed || options.force === true)) {
+      marker = updateRepositoryProjectionRefreshRequest(
+        controllerHome,
+        repoId,
+        {
           reason: options.reason ?? (changed ? 'git-source-revision-changed' : 'projection-refresh-requested'),
           sourceRevision,
           nowMs,
-        }, { lock: false });
-        if (!marker) {
-          return {
-            kind: 'skip' as const,
-            result: { refreshed: false, skippedReason: 'passive_runtime' as const },
-          };
-        }
-      }
+        },
+        { lock: false },
+      );
       if (!marker) {
         return {
           kind: 'skip' as const,
-          result: { refreshed: false, skippedReason: 'clean' as const, projection: previous },
+          result: { refreshed: false, skippedReason: 'passive_runtime' as const },
         };
       }
+    }
+    if (!marker) {
+      return {
+        kind: 'skip' as const,
+        result: { refreshed: false, skippedReason: 'clean' as const, projection: previous },
+      };
+    }
 
-      const currentOwner = refreshOwner(options, acquiredAt);
-      if (ownerStillOwnsRefresh(marker, nowMs, currentOwner)) {
-        return {
-          kind: 'skip' as const,
-          result: { refreshed: false, skippedReason: 'running' as const, marker, projection: previous },
-        };
-      }
-      if (marker.refreshStatus === 'running' && !ownerStillOwnsRefresh(marker, nowMs, currentOwner)) {
-        marker = recoverStaleOwner(controllerHome, repoId, marker, acquiredAt, 'stale_owner_or_restart');
-      }
-      if (
-        marker.refreshStatus === 'failed'
-        && options.force !== true
-        && marker.nextAttemptAt
-        && Date.parse(marker.nextAttemptAt) > nowMs
-      ) {
-        return {
-          kind: 'skip' as const,
-          result: { refreshed: false, skippedReason: 'retry_deferred' as const, marker, projection: previous },
-        };
-      }
+    const currentOwner = refreshOwner(options, acquiredAt);
+    if (ownerStillOwnsRefresh(marker, nowMs, currentOwner)) {
+      return {
+        kind: 'skip' as const,
+        result: { refreshed: false, skippedReason: 'running' as const, marker, projection: previous },
+      };
+    }
+    if (marker.refreshStatus === 'running' && !ownerStillOwnsRefresh(marker, nowMs, currentOwner)) {
+      marker = recoverStaleOwner(controllerHome, repoId, marker, acquiredAt, 'stale_owner_or_restart');
+    }
+    if (
+      marker.refreshStatus === 'failed' &&
+      options.force !== true &&
+      marker.nextAttemptAt &&
+      Date.parse(marker.nextAttemptAt) > nowMs
+    ) {
+      return {
+        kind: 'skip' as const,
+        result: { refreshed: false, skippedReason: 'retry_deferred' as const, marker, projection: previous },
+      };
+    }
 
-      const running = markRunning(controllerHome, repoId, {
+    const running = markRunning(
+      controllerHome,
+      repoId,
+      {
         ...marker,
         sourceRevision: marker.sourceRevision ?? sourceRevision,
-      }, owner, acquiredAt);
-      return {
-        kind: 'build' as const,
-        running,
-        previous: readJsonFile<RepositoryRuntimeProjection | undefined>(projectionPath(controllerHome, repoId), undefined),
-        buildRevision: normalizeGitRevision(running.sourceRevision) ?? sourceRevision,
-      };
-    },
-  );
+      },
+      owner,
+      acquiredAt,
+    );
+    return {
+      kind: 'build' as const,
+      running,
+      previous: readJsonFile<RepositoryRuntimeProjection | undefined>(
+        projectionPath(controllerHome, repoId),
+        undefined,
+      ),
+      buildRevision: normalizeGitRevision(running.sourceRevision) ?? sourceRevision,
+    };
+  });
 
   if (claim.kind === 'skip') return claim.result;
 
@@ -577,15 +614,16 @@ function refreshRepositoryProjection(
   // short publish section, so no invalidation can be lost.
   return withRepositoryProjectionRefreshLock(controllerHome, repoId, lockOwner, () => {
     const current = readRepositoryProjectionDirty(controllerHome, repoId);
-    const currentProjection = readJsonFile<RepositoryRuntimeProjection | undefined>(projectionPath(controllerHome, repoId), undefined);
+    const currentProjection = readJsonFile<RepositoryRuntimeProjection | undefined>(
+      projectionPath(controllerHome, repoId),
+      undefined,
+    );
     if (
-      !current
-      || current.nonce !== claim.running.nonce
-      || (
-        claim.running.sourceRevision
-        && current.sourceRevision
-        && !gitRevisionsEquivalent(claim.running.sourceRevision, current.sourceRevision)
-      )
+      !current ||
+      current.nonce !== claim.running.nonce ||
+      (claim.running.sourceRevision &&
+        current.sourceRevision &&
+        !gitRevisionsEquivalent(claim.running.sourceRevision, current.sourceRevision))
     ) {
       return { refreshed: false, skippedReason: 'superseded', marker: current, projection: currentProjection };
     }
@@ -604,25 +642,22 @@ export function refreshRepositoryProjectionForRepository(
   return refreshRepositoryProjection(controllerHome, repository.repoId, { ...options, repository });
 }
 
-export function projectionBlocksReadiness(
-  snapshot: RepositoryRuntimeProjectionSnapshot,
-): boolean {
-  const ageMs = snapshot.dirtySinceAt
-    ? Math.max(0, Date.now() - Date.parse(snapshot.dirtySinceAt))
-    : 0;
-  const activeInvariantAtRisk = snapshot.projection.activeJobs.length > 0
-    || snapshot.projection.queueDepth > 0
-    || snapshot.projection.runningWorkers > 0
-    || snapshot.projection.activeLeases > 0
-    || snapshot.activeInvariantAtRisk === true
-    || dirtyReasonImpliesActiveRisk(snapshot.dirtyReason);
-  const requiredRefresh = snapshot.stale && (
-    snapshot.sourceRevisionChanged !== false
-    || activeInvariantAtRisk
-    || Boolean(snapshot.buildError)
-    || snapshot.refreshStatus === 'running'
-    || snapshot.refreshStatus === 'failed'
-  );
+export function projectionBlocksReadiness(snapshot: RepositoryRuntimeProjectionSnapshot): boolean {
+  const ageMs = snapshot.dirtySinceAt ? Math.max(0, Date.now() - Date.parse(snapshot.dirtySinceAt)) : 0;
+  const activeInvariantAtRisk =
+    snapshot.projection.activeJobs.length > 0 ||
+    snapshot.projection.queueDepth > 0 ||
+    snapshot.projection.runningWorkers > 0 ||
+    snapshot.projection.activeLeases > 0 ||
+    snapshot.activeInvariantAtRisk === true ||
+    dirtyReasonImpliesActiveRisk(snapshot.dirtyReason);
+  const requiredRefresh =
+    snapshot.stale &&
+    (snapshot.sourceRevisionChanged !== false ||
+      activeInvariantAtRisk ||
+      Boolean(snapshot.buildError) ||
+      snapshot.refreshStatus === 'running' ||
+      snapshot.refreshStatus === 'failed');
   return requiredRefresh && ageMs >= RUNTIME_HEALTH_THRESHOLDS.projectionRefreshGraceMs;
 }
 
@@ -630,28 +665,29 @@ export function projectionObservation(
   snapshot: RepositoryRuntimeProjectionSnapshot,
   sourceReconciliation?: ProjectionSourceReconciliation,
 ): ProjectionObservation {
-  const dirtyAgeMs = snapshot.dirtySinceAt
-    ? Math.max(0, Date.now() - Date.parse(snapshot.dirtySinceAt))
-    : undefined;
-  const activeInvariantAtRisk = snapshot.projection.activeJobs.length > 0
-    || snapshot.projection.queueDepth > 0
-    || snapshot.projection.runningWorkers > 0
-    || snapshot.projection.activeLeases > 0
-    || snapshot.activeInvariantAtRisk === true
-    || dirtyReasonImpliesActiveRisk(snapshot.dirtyReason);
-  const sourceChanged = snapshot.sourceRevisionChanged ?? sourceRevisionChanged(
-    snapshot.projection.metadata?.generatedFromRevision,
-    snapshot.dirtySourceRevision,
-    snapshot.stale,
-    snapshot.persisted,
-  );
-  const refreshPending = snapshot.stale && (
-    sourceChanged
-    || activeInvariantAtRisk
-    || Boolean(snapshot.buildError)
-    || snapshot.refreshStatus === 'running'
-    || snapshot.refreshStatus === 'failed'
-  );
+  const dirtyAgeMs = snapshot.dirtySinceAt ? Math.max(0, Date.now() - Date.parse(snapshot.dirtySinceAt)) : undefined;
+  const activeInvariantAtRisk =
+    snapshot.projection.activeJobs.length > 0 ||
+    snapshot.projection.queueDepth > 0 ||
+    snapshot.projection.runningWorkers > 0 ||
+    snapshot.projection.activeLeases > 0 ||
+    snapshot.activeInvariantAtRisk === true ||
+    dirtyReasonImpliesActiveRisk(snapshot.dirtyReason);
+  const sourceChanged =
+    snapshot.sourceRevisionChanged ??
+    sourceRevisionChanged(
+      snapshot.projection.metadata?.generatedFromRevision,
+      snapshot.dirtySourceRevision,
+      snapshot.stale,
+      snapshot.persisted,
+    );
+  const refreshPending =
+    snapshot.stale &&
+    (sourceChanged ||
+      activeInvariantAtRisk ||
+      Boolean(snapshot.buildError) ||
+      snapshot.refreshStatus === 'running' ||
+      snapshot.refreshStatus === 'failed');
   return {
     readable: Boolean(snapshot.projection),
     persisted: snapshot.persisted,
@@ -662,7 +698,8 @@ export function projectionObservation(
     activeInvariantAtRisk,
     lastBuildError: snapshot.buildError ?? snapshot.projection.metadata?.lastBuildError,
     contentRevision: snapshot.projection.metadata?.contentRevision ?? snapshot.projection.revision,
-    generatedFromRevision: snapshot.projection.metadata?.generatedFromRevision ?? snapshot.dirtySourceRevision ?? snapshot.dirtyReason,
+    generatedFromRevision:
+      snapshot.projection.metadata?.generatedFromRevision ?? snapshot.dirtySourceRevision ?? snapshot.dirtyReason,
     ...(sourceReconciliation ? { sourceReconciliation } : {}),
   };
 }
@@ -688,7 +725,11 @@ export function readRepositoryProjectionSnapshot(
 
   if (!stale && persisted) {
     dirtyProjectionReadCache.delete(dirtyProjectionReadCacheKey(controllerHome, repoId));
-    return { projection: projectionWithExecutionIndexOverlay(controllerHome, repoId, persisted), stale: false, persisted: true };
+    return {
+      projection: projectionWithExecutionIndexOverlay(controllerHome, repoId, persisted),
+      stale: false,
+      persisted: true,
+    };
   }
 
   // A hot read must remain read-only and must not rebuild the full projection in
@@ -698,11 +739,11 @@ export function readRepositoryProjectionSnapshot(
   const persistedRevision = persisted?.revision ?? null;
   const cached = dirtyMarker ? dirtyProjectionReadCache.get(cacheKey) : undefined;
   if (
-    cached
-    && dirtyMarker
-    && cached.dirtyNonce === dirtyMarker.nonce
-    && cached.dirtyUpdatedAt === dirtyMarker.refreshUpdatedAt
-    && cached.persistedRevision === persistedRevision
+    cached &&
+    dirtyMarker &&
+    cached.dirtyNonce === dirtyMarker.nonce &&
+    cached.dirtyUpdatedAt === dirtyMarker.refreshUpdatedAt &&
+    cached.persistedRevision === persistedRevision
   ) {
     return cached.value;
   }

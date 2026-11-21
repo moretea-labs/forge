@@ -3,15 +3,13 @@ import { existsSync, realpathSync } from 'fs';
 import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../core/repository/types';
 
-export interface WorkLifecycleAttention {
+export interface RepositoryLifecycleAttention {
   jobId: string;
   status: string;
   message: string;
 }
 
-const CURRENT_READINESS_LIFECYCLE_STATUSES = new Set([
-  'active_checkout_missing',
-]);
+const CURRENT_READINESS_LIFECYCLE_STATUSES = new Set(['active_checkout_missing']);
 
 /**
  * Runtime readiness blocks only a contradiction that makes a registered active
@@ -19,8 +17,8 @@ const CURRENT_READINESS_LIFECYCLE_STATUSES = new Set([
  * advisory attention; they do not, by themselves, establish an active execution
  * conflict for the selected checkout.
  */
-export function workLifecycleAttentionBlocksReadiness(
-  finding: Pick<WorkLifecycleAttention, 'status'>,
+export function repositoryLifecycleAttentionBlocksReadiness(
+  finding: Pick<RepositoryLifecycleAttention, 'status'>,
 ): boolean {
   return CURRENT_READINESS_LIFECYCLE_STATUSES.has(finding.status);
 }
@@ -85,8 +83,11 @@ function dirty(path: string): boolean | undefined {
 }
 
 function canonicalPath(path: string): string {
-  try { return realpathSync.native(path); }
-  catch { return resolve(path); }
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return resolve(path);
+  }
 }
 
 function refReachableFromTarget(repositoryRoot: string, ref: string, targetBranch: string): boolean | undefined {
@@ -105,7 +106,12 @@ const EXACT_COMMIT_REVISION = /^[0-9a-f]{40}$/i;
 function reachableCommitSet(repositoryRoot: string, targetBranch: string): ReadonlySet<string> | undefined {
   const output = git(repositoryRoot, ['rev-list', targetBranch]);
   if (output === undefined) return undefined;
-  return new Set(output.split('\n').map((revision) => revision.trim()).filter(Boolean));
+  return new Set(
+    output
+      .split('\n')
+      .map((revision) => revision.trim())
+      .filter(Boolean),
+  );
 }
 
 function exactCommitReachableFromTarget(
@@ -144,19 +150,19 @@ function branchIntegrated(
   return !cherry.stdout.split('\n').some((line) => line.startsWith('+ '));
 }
 
-function attention(code: string, identity: string, message: string): WorkLifecycleAttention {
+function attention(code: string, identity: string, message: string): RepositoryLifecycleAttention {
   return { jobId: `lifecycle:${code}:${identity}`, status: code, message };
 }
 
 /**
- * Compatibility-named read-only repository lifecycle audit.
+ * Read-only repository lifecycle audit independent of historical Work records.
  * It reports only Registry/Git contradictions through the existing Runtime projection.
  */
-export function collectWorkLifecycleAttention(
+export function collectRepositoryLifecycleAttention(
   _controllerHome: string,
   repository: RepositoryRecord,
-): WorkLifecycleAttention[] {
-  const findings: WorkLifecycleAttention[] = [];
+): RepositoryLifecycleAttention[] {
+  const findings: RepositoryLifecycleAttention[] = [];
   const canonicalBranch = git(repository.canonicalRoot, ['branch', '--show-current'])?.trim();
   const targetBranch = canonicalBranch || repository.defaultBranch || 'main';
   const targetReachability = new Map<string, ReadonlySet<string> | undefined>();
@@ -174,11 +180,13 @@ export function collectWorkLifecycleAttention(
 
   for (const checkout of repository.checkouts) {
     if ((checkout.lifecycle ?? 'active') === 'active' && !existsSync(checkout.canonicalRoot)) {
-      findings.push(attention(
-        'active_checkout_missing',
-        checkout.checkoutId,
-        'Registry checkout ' + checkout.checkoutId + ' is active but ' + checkout.canonicalRoot + ' is missing.',
-      ));
+      findings.push(
+        attention(
+          'active_checkout_missing',
+          checkout.checkoutId,
+          'Registry checkout ' + checkout.checkoutId + ' is active but ' + checkout.canonicalRoot + ' is missing.',
+        ),
+      );
     }
   }
 
@@ -188,9 +196,20 @@ export function collectWorkLifecycleAttention(
     const isDirty = dirty(root);
     if (isDirty === false) {
       const integrated = worktree.branch
-        ? branchIntegrated(repository.canonicalRoot, worktree.branch, targetBranch, reachableFrom(targetBranch), worktree.head)
+        ? branchIntegrated(
+            repository.canonicalRoot,
+            worktree.branch,
+            targetBranch,
+            reachableFrom(targetBranch),
+            worktree.head,
+          )
         : worktree.head
-          ? exactCommitReachableFromTarget(repository.canonicalRoot, worktree.head, targetBranch, reachableFrom(targetBranch))
+          ? exactCommitReachableFromTarget(
+              repository.canonicalRoot,
+              worktree.head,
+              targetBranch,
+              reachableFrom(targetBranch),
+            )
           : undefined;
       if (integrated === true) continue;
     }
@@ -198,28 +217,44 @@ export function collectWorkLifecycleAttention(
     const identity = worktree.branch ?? root;
     const branchText = worktree.branch ? ' on ' + worktree.branch : '';
     const dirtyText = isDirty === true ? ' and has uncommitted changes' : '';
-    findings.push(attention(
-      code,
-      identity,
-      'Git worktree ' + root + branchText + ' is linked but absent from the active checkout registry' + dirtyText + '.',
-    ));
+    findings.push(
+      attention(
+        code,
+        identity,
+        'Git worktree ' +
+          root +
+          branchText +
+          ' is linked but absent from the active checkout registry' +
+          dirtyText +
+          '.',
+      ),
+    );
   }
 
-  const branches = git(repository.canonicalRoot, ['for-each-ref', '--format=%(refname:short)%09%(objectname)', 'refs/heads/work', 'refs/heads/codex'])
-    ?.split('\n')
-    .map((line) => {
-      const [branch, head] = line.split('\t');
-      return { branch: branch?.trim() ?? '', head: head?.trim() };
-    })
-    .filter((entry) => Boolean(entry.branch)) ?? [];
+  const branches =
+    git(repository.canonicalRoot, [
+      'for-each-ref',
+      '--format=%(refname:short)%09%(objectname)',
+      'refs/heads/work',
+      'refs/heads/codex',
+    ])
+      ?.split('\n')
+      .map((line) => {
+        const [branch, head] = line.split('\t');
+        return { branch: branch?.trim() ?? '', head: head?.trim() };
+      })
+      .filter((entry) => Boolean(entry.branch)) ?? [];
   const targetReachableCommits = reachableFrom(targetBranch);
   for (const { branch, head } of branches) {
-    if (branchIntegrated(repository.canonicalRoot, branch, targetBranch, targetReachableCommits, head) !== false) continue;
-    findings.push(attention(
-      'branch_not_integrated',
-      branch,
-      'Git branch ' + branch + ' has unique patches not integrated into ' + targetBranch + '.',
-    ));
+    if (branchIntegrated(repository.canonicalRoot, branch, targetBranch, targetReachableCommits, head) !== false)
+      continue;
+    findings.push(
+      attention(
+        'branch_not_integrated',
+        branch,
+        'Git branch ' + branch + ' has unique patches not integrated into ' + targetBranch + '.',
+      ),
+    );
   }
 
   return Array.from(new Map(findings.map((finding) => [finding.jobId, finding])).values())

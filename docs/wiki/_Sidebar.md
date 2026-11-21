@@ -4,7 +4,7 @@
 - [Quick Start](Quick-Start)
 - [Installation](Installation)
 - [Core Concepts](Core-Concepts)
-- [Work Lifecycle](Work-Lifecycle)
+- [Execution Lifecycle](Execution-Lifecycle)
 - [Architecture](Architecture)
 - [Runtime Architecture](Runtime-Architecture)
 - [Implementation](Implementation)

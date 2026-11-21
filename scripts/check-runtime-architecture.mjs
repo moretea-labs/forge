@@ -1220,6 +1220,7 @@ requireMissing('src/runtime/control-plane/facade/goal-workloop.ts');
 requireMissing('src/runtime/control-plane/facade/goal-workloop-access.ts');
 requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts');
 requireMissing('src/runtime/control-plane/execution/work-revision-diff.ts');
+requireMissing('src/runtime/control-plane/execution/work-lifecycle-audit.ts');
 forbid(
   'src/runtime/root/controller-services.ts',
   /initializeWorkCandidateIndex|readActiveWorkCandidates/,
@@ -3013,7 +3014,7 @@ forbid(
   'EditSession retention must be owned by EditSession state/retention rather than Work liveness',
 );
 forbid(
-  'src/runtime/control-plane/execution/work-lifecycle-audit.ts',
+  'src/runtime/control-plane/execution/repository-lifecycle-audit.ts',
   /packages\/kernel\/work|work-handle-store|readActiveWorkCandidates|getWorkContract|listWorkHandles|isTerminalSemanticWorkState|work_active|active_work_handle_missing|terminal_work_cleanup_unsettled/,
   'Runtime readiness must be derived from Repository Registry and Git facts; historical Work/WorkHandle cannot create current attention',
 );

@@ -4,9 +4,13 @@ import { spawnSync } from 'child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { classifyFailure } from '../../src/runtime/recovery/classifier';
-import { classifyRuntimeReadinessSemantics, evaluateRuntimeHealth, type RuntimeHealthObservations } from '../../src/runtime/health';
+import {
+  classifyRuntimeReadinessSemantics,
+  evaluateRuntimeHealth,
+  type RuntimeHealthObservations,
+} from '../../src/runtime/health';
 import {
   projectionBlocksReadiness,
   projectionObservation,
@@ -19,11 +23,18 @@ import { executionJobRoot, rebuildExecutionJobIndexes } from '../../src/runtime/
 import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
 import type { TaskLedgerProjection } from '../../src/runtime/projections/task-ledger-types';
 import { flushMcpDiagnostics, recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
-import { classifyForgeIncidentForRepair, maybeRegisterMcpIncidentRepair } from '../../src/runtime/diagnostics/incident-repair';
+import {
+  classifyForgeIncidentForRepair,
+  maybeRegisterMcpIncidentRepair,
+} from '../../src/runtime/diagnostics/incident-repair';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { authenticatedFacadeControllerIdentity } from '../../adapters/mcp/runtime-gateway/controller-authority-adapter';
 import { createMcpToolContext as createMultiRepositoryContext } from '../../adapters/mcp/multi-repository';
-import { resolveControllerAccessState, persistControllerAccessMode, configuredControllerAccessMode } from '../../adapters/mcp/access-mode';
+import {
+  resolveControllerAccessState,
+  persistControllerAccessMode,
+  configuredControllerAccessMode,
+} from '../../adapters/mcp/access-mode';
 import { createForgeMcpServer } from '../../adapters/mcp/server';
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { repositoryControllerRoot } from '../../src/effects/controller-home';
@@ -31,9 +42,15 @@ import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repos
 import { buildRuntimeMaintenanceStatus } from '../../src/runtime/recovery';
 import { writeJsonAtomic } from '../../src/runtime/shared/json-files';
 import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';
-import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
+import {
+  collectRuntimeSourceIdentity,
+  rotateRuntimeGeneration,
+} from '../../src/runtime/control-plane/runtime-generation';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
-import { collectWorkLifecycleAttention, workLifecycleAttentionBlocksReadiness } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
+import {
+  collectRepositoryLifecycleAttention,
+  repositoryLifecycleAttentionBlocksReadiness,
+} from '../../src/runtime/control-plane/execution/repository-lifecycle-audit';
 import { sampleRepositoryGitStatusForRepositories } from '../../src/runtime/projections/git-status-sampler';
 import { getWorkContract, listWorkContracts } from '../../packages/kernel/work/api';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
@@ -103,26 +120,30 @@ function ledgerWithRunningTask(): TaskLedgerProjection {
       reason: 'fixture',
       nextAction: 'fixture',
     },
-    issues: [{
-      id: 'I1',
-      title: 'Fixture',
-      isCurrent: true,
-      taskCounts: { running: 1 },
-      tasks: [{
-        issueId: 'I1',
-        taskId: 'T3',
-        title: 'Running task',
-        effectiveStatus: 'running',
-        retryable: false,
-        requiresExplicitRetry: false,
-        dispatchable: false,
-        queueable: false,
-        multipleActiveRuns: false,
-        allowedPaths: [],
-        checks: [],
-        runIds: [],
-      }],
-    }],
+    issues: [
+      {
+        id: 'I1',
+        title: 'Fixture',
+        isCurrent: true,
+        taskCounts: { running: 1 },
+        tasks: [
+          {
+            issueId: 'I1',
+            taskId: 'T3',
+            title: 'Running task',
+            effectiveStatus: 'running',
+            retryable: false,
+            requiresExplicitRetry: false,
+            dispatchable: false,
+            queueable: false,
+            multipleActiveRuns: false,
+            allowedPaths: [],
+            checks: [],
+            runIds: [],
+          },
+        ],
+      },
+    ],
     attention: [],
     readyTasks: [],
     queueableTasks: [],
@@ -191,7 +212,6 @@ function controllerFixture(): { controllerHome: string; repoRoot: string; owners
 }
 
 describe('runtime observability', () => {
-
   test('transport-session rollover is an explicit recovery capability rather than implicit authority', () => {
     const ctx = {
       principalId: 'principal-a',
@@ -200,13 +220,19 @@ describe('runtime observability', () => {
       controllerType: 'chatgpt' as const,
     } as any;
 
-    expect(() => authenticatedFacadeControllerIdentity(ctx, {
-      session_id: 'mcp-old-transport',
-    })).toThrow('CONTROLLER_TRANSPORT_SESSION_ROLLOVER_NOT_ALLOWED');
+    expect(() =>
+      authenticatedFacadeControllerIdentity(ctx, {
+        session_id: 'mcp-old-transport',
+      }),
+    ).toThrow('CONTROLLER_TRANSPORT_SESSION_ROLLOVER_NOT_ALLOWED');
 
-    const recovered = authenticatedFacadeControllerIdentity(ctx, {
-      session_id: 'mcp-old-transport',
-    }, { allowTransportSessionRollover: true });
+    const recovered = authenticatedFacadeControllerIdentity(
+      ctx,
+      {
+        session_id: 'mcp-old-transport',
+      },
+      { allowTransportSessionRollover: true },
+    );
     expect(recovered).toMatchObject({
       principalId: 'principal-a',
       sessionId: 'mcp-new-transport',
@@ -249,7 +275,11 @@ describe('runtime observability', () => {
         attempt: 1,
         maxAttempts: 1,
         evidenceIds: [],
-        error: { code: 'LEGACY_ATTENTION', message: 'legacy terminal record intentionally omits finishedAt', retryable: false },
+        error: {
+          code: 'LEGACY_ATTENTION',
+          message: 'legacy terminal record intentionally omits finishedAt',
+          retryable: false,
+        },
       };
       const records = join(executionJobRoot(controllerHome, repoId), 'records');
       mkdirSync(records, { recursive: true });
@@ -257,19 +287,23 @@ describe('runtime observability', () => {
       rebuildExecutionJobIndexes(controllerHome, [repoId]);
 
       const snapshot = readRepositoryProjectionSnapshot(controllerHome, repoId);
-      expect(snapshot.projection.attention).toContainEqual(expect.objectContaining({
-        jobId: legacy.jobId,
-        status: 'human_attention_required',
-      }));
+      expect(snapshot.projection.attention).toContainEqual(
+        expect.objectContaining({
+          jobId: legacy.jobId,
+          status: 'human_attention_required',
+        }),
+      );
       expect(snapshot.projection.currentAttention).not.toContainEqual(expect.objectContaining({ jobId: legacy.jobId }));
-      const health = evaluateRuntimeHealth(observations({
-        workers: {
-          queueDepth: snapshot.projection.queueDepth,
-          runningWorkers: snapshot.projection.runningWorkers,
-          activeLeases: snapshot.projection.activeLeases,
-          activeAttentionCount: snapshot.projection.currentAttention.length,
-        },
-      }));
+      const health = evaluateRuntimeHealth(
+        observations({
+          workers: {
+            queueDepth: snapshot.projection.queueDepth,
+            runningWorkers: snapshot.projection.runningWorkers,
+            activeLeases: snapshot.projection.activeLeases,
+            activeAttentionCount: snapshot.projection.currentAttention.length,
+          },
+        }),
+      );
       expect(health.activeBlockers.map((item) => item.code)).not.toContain('ACTIVE_JOB_ATTENTION_REQUIRED');
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
@@ -305,23 +339,31 @@ describe('runtime observability', () => {
         checks: [],
       });
 
-      expect(collectWorkLifecycleAttention(controllerHome, repository)).not.toContainEqual(expect.objectContaining({
-        jobId: `lifecycle:work_active:${localEffectWorkId}`,
-      }));
+      expect(collectRepositoryLifecycleAttention(controllerHome, repository)).not.toContainEqual(
+        expect.objectContaining({
+          jobId: `lifecycle:work_active:${localEffectWorkId}`,
+        }),
+      );
       rebuildRepositoryProjection(controllerHome, repository.repoId);
       const projection = readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection;
-      expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({
-        jobId: `lifecycle:work_active:${localEffectWorkId}`,
-      }));
-      const sourceNeutralHealth = evaluateRuntimeHealth(observations({
-        workers: {
-          queueDepth: projection.queueDepth,
-          runningWorkers: projection.runningWorkers,
-          activeLeases: projection.activeLeases,
-          activeAttentionCount: projection.currentAttention.length,
-        },
-      }));
-      expect(sourceNeutralHealth.activeBlockers.map((item) => item.code)).not.toContain('ACTIVE_JOB_ATTENTION_REQUIRED');
+      expect(projection.currentAttention).not.toContainEqual(
+        expect.objectContaining({
+          jobId: `lifecycle:work_active:${localEffectWorkId}`,
+        }),
+      );
+      const sourceNeutralHealth = evaluateRuntimeHealth(
+        observations({
+          workers: {
+            queueDepth: projection.queueDepth,
+            runningWorkers: projection.runningWorkers,
+            activeLeases: projection.activeLeases,
+            activeAttentionCount: projection.currentAttention.length,
+          },
+        }),
+      );
+      expect(sourceNeutralHealth.activeBlockers.map((item) => item.code)).not.toContain(
+        'ACTIVE_JOB_ATTENTION_REQUIRED',
+      );
 
       const repositoryWorkId = 'work-repository-change-still-blocks-release';
       seedHistoricalWorkContract(store, {
@@ -338,9 +380,11 @@ describe('runtime observability', () => {
         checks: [],
         dispatchState: 'running',
       });
-      expect(collectWorkLifecycleAttention(controllerHome, repository)).not.toContainEqual(expect.objectContaining({
-        jobId: `lifecycle:work_active:${repositoryWorkId}`,
-      }));
+      expect(collectRepositoryLifecycleAttention(controllerHome, repository)).not.toContainEqual(
+        expect.objectContaining({
+          jobId: `lifecycle:work_active:${repositoryWorkId}`,
+        }),
+      );
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
       rmSync(repoRoot, { recursive: true, force: true });
@@ -348,14 +392,14 @@ describe('runtime observability', () => {
   });
 
   test('keeps isolated Work lifecycle debt out of shared Runtime readiness', () => {
-    expect(workLifecycleAttentionBlocksReadiness({ status: 'work_active' })).toBe(false);
-    expect(workLifecycleAttentionBlocksReadiness({ status: 'active_work_handle_missing' })).toBe(false);
-    expect(workLifecycleAttentionBlocksReadiness({ status: 'active_worktree_missing' })).toBe(false);
-    expect(workLifecycleAttentionBlocksReadiness({ status: 'terminal_work_cleanup_unsettled' })).toBe(false);
-    expect(workLifecycleAttentionBlocksReadiness({ status: 'branch_not_integrated' })).toBe(false);
-    expect(workLifecycleAttentionBlocksReadiness({ status: 'linked_worktree_unregistered' })).toBe(false);
-    expect(workLifecycleAttentionBlocksReadiness({ status: 'dirty_linked_worktree_unregistered' })).toBe(false);
-    expect(workLifecycleAttentionBlocksReadiness({ status: 'active_checkout_missing' })).toBe(true);
+    expect(repositoryLifecycleAttentionBlocksReadiness({ status: 'work_active' })).toBe(false);
+    expect(repositoryLifecycleAttentionBlocksReadiness({ status: 'active_work_handle_missing' })).toBe(false);
+    expect(repositoryLifecycleAttentionBlocksReadiness({ status: 'active_worktree_missing' })).toBe(false);
+    expect(repositoryLifecycleAttentionBlocksReadiness({ status: 'terminal_work_cleanup_unsettled' })).toBe(false);
+    expect(repositoryLifecycleAttentionBlocksReadiness({ status: 'branch_not_integrated' })).toBe(false);
+    expect(repositoryLifecycleAttentionBlocksReadiness({ status: 'linked_worktree_unregistered' })).toBe(false);
+    expect(repositoryLifecycleAttentionBlocksReadiness({ status: 'dirty_linked_worktree_unregistered' })).toBe(false);
+    expect(repositoryLifecycleAttentionBlocksReadiness({ status: 'active_checkout_missing' })).toBe(true);
   });
 
   test('derives lifecycle attention for dirty unregistered worktrees and unintegrated Work branches', () => {
@@ -380,25 +424,35 @@ describe('runtime observability', () => {
       spawnSync('git', ['commit', '-m', 'unique work'], { cwd: worktreeRoot, stdio: 'ignore' });
       writeFileSync(join(worktreeRoot, 'unfinished.txt'), 'dirty\n');
 
-      const findings = collectWorkLifecycleAttention(controllerHome, repository);
-      expect(findings).toEqual(expect.arrayContaining([
-        expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }),
-        expect.objectContaining({ status: 'branch_not_integrated' }),
-      ]));
+      const findings = collectRepositoryLifecycleAttention(controllerHome, repository);
+      expect(findings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }),
+          expect.objectContaining({ status: 'branch_not_integrated' }),
+        ]),
+      );
       rebuildRepositoryProjection(controllerHome, repository.repoId);
       const projection = readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection;
-      expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }));
-      expect(projection.attention).toContainEqual(expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }));
-      expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({ status: 'branch_not_integrated' }));
+      expect(projection.currentAttention).not.toContainEqual(
+        expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }),
+      );
+      expect(projection.attention).toContainEqual(
+        expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }),
+      );
+      expect(projection.currentAttention).not.toContainEqual(
+        expect.objectContaining({ status: 'branch_not_integrated' }),
+      );
       expect(projection.attention).toContainEqual(expect.objectContaining({ status: 'branch_not_integrated' }));
-      const health = evaluateRuntimeHealth(observations({
-        workers: {
-          queueDepth: projection.queueDepth,
-          runningWorkers: projection.runningWorkers,
-          activeLeases: projection.activeLeases,
-          activeAttentionCount: projection.currentAttention.length,
-        },
-      }));
+      const health = evaluateRuntimeHealth(
+        observations({
+          workers: {
+            queueDepth: projection.queueDepth,
+            runningWorkers: projection.runningWorkers,
+            activeLeases: projection.activeLeases,
+            activeAttentionCount: projection.currentAttention.length,
+          },
+        }),
+      );
       expect(health.activeBlockers.map((item) => item.code)).not.toContain('ACTIVE_JOB_ATTENTION_REQUIRED');
     } finally {
       spawnSync('git', ['worktree', 'remove', '--force', worktreeRoot], { cwd: repoRoot, stdio: 'ignore' });
@@ -440,7 +494,11 @@ describe('runtime observability', () => {
         },
       );
       const fakeGit = join(fakeBin, 'git');
-      writeFileSync(fakeGit, `#!/usr/bin/env bash\nset -eu\nprintf 'git\\n' >> "$FORGE_TEST_GIT_MARKER"\nsleep 0.1\nexit 0\n`, 'utf8');
+      writeFileSync(
+        fakeGit,
+        `#!/usr/bin/env bash\nset -eu\nprintf 'git\\n' >> "$FORGE_TEST_GIT_MARKER"\nsleep 0.1\nexit 0\n`,
+        'utf8',
+      );
       chmodSync(fakeGit, 0o755);
       process.env.FORGE_TEST_GIT_MARKER = marker;
       process.env.PATH = `${fakeBin}:${originalPath ?? ''}`;
@@ -470,13 +528,19 @@ describe('runtime observability', () => {
       spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
       const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
       const fakeGit = join(fakeBin, 'git');
-      writeFileSync(fakeGit, `#!/usr/bin/env bash\nset -eu\nprintf 'git\\n' >> "$FORGE_TEST_GIT_MARKER"\nsleep 0.12\ncmd="\${3:-}"\ncase "$cmd" in\n  status) printf '## main\\n' ;;\n  branch) printf 'main\\n' ;;\n  rev-parse)\n    if [[ "\${4:-}" == '--verify' ]]; then printf '0123456789012345678901234567890123456789\\n'; else printf 'origin/main\\n'; fi ;;\nesac\nexit 0\n`, 'utf8');
+      writeFileSync(
+        fakeGit,
+        `#!/usr/bin/env bash\nset -eu\nprintf 'git\\n' >> "$FORGE_TEST_GIT_MARKER"\nsleep 0.12\ncmd="\${3:-}"\ncase "$cmd" in\n  status) printf '## main\\n' ;;\n  branch) printf 'main\\n' ;;\n  rev-parse)\n    if [[ "\${4:-}" == '--verify' ]]; then printf '0123456789012345678901234567890123456789\\n'; else printf 'origin/main\\n'; fi ;;\nesac\nexit 0\n`,
+        'utf8',
+      );
       chmodSync(fakeGit, 0o755);
       process.env.FORGE_TEST_GIT_MARKER = marker;
       process.env.PATH = `${fakeBin}:${originalPath ?? ''}`;
 
       let timerFired = false;
-      const timer = setTimeout(() => { timerFired = true; }, 20);
+      const timer = setTimeout(() => {
+        timerFired = true;
+      }, 20);
       const result = await sampleRepositoryGitStatusForRepositories(controllerHome, [repository]);
       clearTimeout(timer);
       expect(result.sampled).toBe(1);
@@ -510,7 +574,10 @@ describe('runtime observability', () => {
       writeFileSync(join(repoRoot, 'delivered.txt'), 'delivered\n');
       spawnSync('git', ['add', 'delivered.txt'], { cwd: repoRoot, stdio: 'ignore' });
       spawnSync('git', ['commit', '-m', 'delivered patch'], { cwd: repoRoot, stdio: 'ignore' });
-      const deliveredCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
+      const deliveredCommit = spawnSync('git', ['rev-parse', 'HEAD'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+      }).stdout.trim();
       spawnSync('git', ['switch', '-c', 'release/v2', 'main'], { cwd: repoRoot, stdio: 'ignore' });
       spawnSync('git', ['cherry-pick', deliveredCommit], { cwd: repoRoot, stdio: 'ignore' });
 
@@ -520,13 +587,17 @@ describe('runtime observability', () => {
       spawnSync('git', ['commit', '-m', 'unique patch'], { cwd: repoRoot, stdio: 'ignore' });
       spawnSync('git', ['switch', 'release/v2'], { cwd: repoRoot, stdio: 'ignore' });
 
-      const findings = collectWorkLifecycleAttention(controllerHome, repository);
-      expect(findings).not.toContainEqual(expect.objectContaining({
-        jobId: 'lifecycle:branch_not_integrated:work/patch-equivalent',
-      }));
-      expect(findings).toContainEqual(expect.objectContaining({
-        jobId: 'lifecycle:branch_not_integrated:work/unique-patch',
-      }));
+      const findings = collectRepositoryLifecycleAttention(controllerHome, repository);
+      expect(findings).not.toContainEqual(
+        expect.objectContaining({
+          jobId: 'lifecycle:branch_not_integrated:work/patch-equivalent',
+        }),
+      );
+      expect(findings).toContainEqual(
+        expect.objectContaining({
+          jobId: 'lifecycle:branch_not_integrated:work/unique-patch',
+        }),
+      );
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
       rmSync(repoRoot, { recursive: true, force: true });
@@ -553,30 +624,49 @@ describe('runtime observability', () => {
       writeFileSync(join(repoRoot, 'delivered.txt'), 'delivered\n');
       spawnSync('git', ['add', 'delivered.txt'], { cwd: repoRoot, stdio: 'ignore' });
       spawnSync('git', ['commit', '-m', 'delivered patch'], { cwd: repoRoot, stdio: 'ignore' });
-      const deliveredCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
+      const deliveredCommit = spawnSync('git', ['rev-parse', 'HEAD'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+      }).stdout.trim();
       spawnSync('git', ['switch', '-c', 'release/v2', 'main'], { cwd: repoRoot, stdio: 'ignore' });
       spawnSync('git', ['cherry-pick', deliveredCommit], { cwd: repoRoot, stdio: 'ignore' });
-      expect(spawnSync('git', ['worktree', 'add', equivalentRoot, 'work/linked-equivalent'], { cwd: repoRoot }).status).toBe(0);
-      expect(spawnSync('git', ['worktree', 'add', '--detach', detachedRoot, baseCommit], { cwd: repoRoot }).status).toBe(0);
-      expect(spawnSync('git', ['worktree', 'add', '-b', 'work/linked-unique', uniqueRoot, 'main'], { cwd: repoRoot }).status).toBe(0);
+      expect(
+        spawnSync('git', ['worktree', 'add', equivalentRoot, 'work/linked-equivalent'], { cwd: repoRoot }).status,
+      ).toBe(0);
+      expect(
+        spawnSync('git', ['worktree', 'add', '--detach', detachedRoot, baseCommit], { cwd: repoRoot }).status,
+      ).toBe(0);
+      expect(
+        spawnSync('git', ['worktree', 'add', '-b', 'work/linked-unique', uniqueRoot, 'main'], { cwd: repoRoot }).status,
+      ).toBe(0);
       writeFileSync(join(uniqueRoot, 'unique.txt'), 'unique\n');
       spawnSync('git', ['add', 'unique.txt'], { cwd: uniqueRoot, stdio: 'ignore' });
       spawnSync('git', ['commit', '-m', 'unique linked patch'], { cwd: uniqueRoot, stdio: 'ignore' });
 
-      const cleanFindings = collectWorkLifecycleAttention(controllerHome, repository);
-      expect(cleanFindings).not.toContainEqual(expect.objectContaining({
-        jobId: 'lifecycle:linked_worktree_unregistered:work/linked-equivalent',
-      }));
-      expect(cleanFindings.some((finding) => finding.status === 'linked_worktree_unregistered' && finding.message.includes(detachedRoot))).toBe(false);
-      expect(cleanFindings).toContainEqual(expect.objectContaining({
-        jobId: 'lifecycle:linked_worktree_unregistered:work/linked-unique',
-      }));
+      const cleanFindings = collectRepositoryLifecycleAttention(controllerHome, repository);
+      expect(cleanFindings).not.toContainEqual(
+        expect.objectContaining({
+          jobId: 'lifecycle:linked_worktree_unregistered:work/linked-equivalent',
+        }),
+      );
+      expect(
+        cleanFindings.some(
+          (finding) => finding.status === 'linked_worktree_unregistered' && finding.message.includes(detachedRoot),
+        ),
+      ).toBe(false);
+      expect(cleanFindings).toContainEqual(
+        expect.objectContaining({
+          jobId: 'lifecycle:linked_worktree_unregistered:work/linked-unique',
+        }),
+      );
 
       writeFileSync(join(equivalentRoot, 'unfinished.txt'), 'dirty\n');
-      const dirtyFindings = collectWorkLifecycleAttention(controllerHome, repository);
-      expect(dirtyFindings).toContainEqual(expect.objectContaining({
-        jobId: 'lifecycle:dirty_linked_worktree_unregistered:work/linked-equivalent',
-      }));
+      const dirtyFindings = collectRepositoryLifecycleAttention(controllerHome, repository);
+      expect(dirtyFindings).toContainEqual(
+        expect.objectContaining({
+          jobId: 'lifecycle:dirty_linked_worktree_unregistered:work/linked-equivalent',
+        }),
+      );
     } finally {
       spawnSync('git', ['worktree', 'remove', '--force', equivalentRoot], { cwd: repoRoot, stdio: 'ignore' });
       spawnSync('git', ['worktree', 'remove', '--force', detachedRoot], { cwd: repoRoot, stdio: 'ignore' });
@@ -590,9 +680,11 @@ describe('runtime observability', () => {
   });
 
   test('keeps readiness true while exposing an unknown external endpoint', () => {
-    const health = evaluateRuntimeHealth(observations({
-      externalReachability: { status: 'unknown', detail: 'public endpoint probe is not configured' },
-    }));
+    const health = evaluateRuntimeHealth(
+      observations({
+        externalReachability: { status: 'unknown', detail: 'public endpoint probe is not configured' },
+      }),
+    );
 
     expect(health.ready).toBe(true);
     expect(health.components.externalReachability).toMatchObject({ state: 'warning', ready: true });
@@ -600,9 +692,11 @@ describe('runtime observability', () => {
   });
 
   test('blocks readiness for a known unhealthy external endpoint', () => {
-    const health = evaluateRuntimeHealth(observations({
-      externalReachability: { status: 'unhealthy', detail: 'probe_timeout' },
-    }));
+    const health = evaluateRuntimeHealth(
+      observations({
+        externalReachability: { status: 'unhealthy', detail: 'probe_timeout' },
+      }),
+    );
 
     expect(health.ready).toBe(false);
     expect(health.activeBlockers.map((item) => item.code)).toContain('EXTERNAL_ENDPOINT_UNHEALTHY');
@@ -664,8 +758,7 @@ describe('runtime observability', () => {
     expect(observation.sourceReconciliation?.detail).toBeTruthy();
     // The contradiction is diagnostic evidence; the readiness decision keeps its
     // original value (a fresh, non-stale snapshot is not blocking).
-    expect(projectionBlocksReadiness(contradictory))
-      .toBe(projectionBlocksReadiness(contradictory));
+    expect(projectionBlocksReadiness(contradictory)).toBe(projectionBlocksReadiness(contradictory));
     expect(projectionBlocksReadiness(contradictory)).toBe(false);
     const health = evaluateRuntimeHealth(observations({ projection: observation }));
     expect(health.ready).toBe(true);
@@ -702,14 +795,16 @@ describe('runtime observability', () => {
       sourceRevisionChanged: true,
       projection: {
         ...snapshot.projection,
-        activeJobs: [{
-          jobId: 'job-live',
-          type: 'agent-run',
-          status: 'running',
-          priority: 'P1',
-          updatedAt: new Date().toISOString(),
-          workerPid: process.pid,
-        }],
+        activeJobs: [
+          {
+            jobId: 'job-live',
+            type: 'agent-run',
+            status: 'running',
+            priority: 'P1',
+            updatedAt: new Date().toISOString(),
+            workerPid: process.pid,
+          },
+        ],
         runningWorkers: 1,
       },
     };
@@ -751,8 +846,14 @@ describe('runtime observability', () => {
         message: 'fixture',
       });
       await flushMcpDiagnostics(controllerHome);
-      const timing = JSON.parse(readFileSync(join(controllerHome, 'audit', 'mcp-timings.jsonl'), 'utf8')) as Record<string, unknown>;
-      const incident = JSON.parse(readFileSync(join(controllerHome, 'audit', 'mcp-incidents.jsonl'), 'utf8')) as Record<string, unknown>;
+      const timing = JSON.parse(readFileSync(join(controllerHome, 'audit', 'mcp-timings.jsonl'), 'utf8')) as Record<
+        string,
+        unknown
+      >;
+      const incident = JSON.parse(readFileSync(join(controllerHome, 'audit', 'mcp-incidents.jsonl'), 'utf8')) as Record<
+        string,
+        unknown
+      >;
       expect(timing).toMatchObject({
         traceId,
         requestId,
@@ -785,7 +886,11 @@ describe('runtime observability', () => {
           message: 'Connection failed while contacting Canonical Runtime',
         };
         recordMcpIncident(controllerHome, incident);
-        latest = maybeRegisterMcpIncidentRepair({ controllerHome, runtimeSourceRoot: join(controllerHome, 'unknown-release'), incident });
+        latest = maybeRegisterMcpIncidentRepair({
+          controllerHome,
+          runtimeSourceRoot: join(controllerHome, 'unknown-release'),
+          incident,
+        });
       }
       expect(latest).toMatchObject({ eligible: true, recurrent: true });
       expect(latest?.workId).toBeUndefined();
@@ -841,7 +946,9 @@ describe('runtime observability', () => {
       const defaultNames = await listNames();
       expect(defaultNames).toEqual(expect.arrayContaining([...PREFERRED_CONTROLLER_TOOL_NAMES]));
       expect(defaultNames.length).toBeGreaterThan(PREFERRED_CONTROLLER_TOOL_NAMES.length);
-      expect(defaultNames).toEqual(expect.arrayContaining(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']));
+      expect(defaultNames).toEqual(
+        expect.arrayContaining(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']),
+      );
       expect(defaultNames).toContain('execute_command');
       expect(defaultNames).not.toContain('repository_command_execute');
       expect(defaultNames).not.toContain('process_exec');
@@ -865,7 +972,10 @@ describe('runtime observability', () => {
         expect(fullNames).not.toContain('repository_command_execute');
         expect(fullNames).not.toContain('process_exec');
         expect(fullNames).not.toContain('work_execute');
-        const hostCall = await fullClient.callTool({ name: 'execute_command', arguments: { scope: 'host', command: ['echo', 'ungranted-host'] } });
+        const hostCall = await fullClient.callTool({
+          name: 'execute_command',
+          arguments: { scope: 'host', command: ['echo', 'ungranted-host'] },
+        });
         expect(hostCall.isError).toBe(true);
         // The public MCP boundary refuses host execution without an authenticated
         // principal, before resolving the instance target or considering Grants.
@@ -880,10 +990,16 @@ describe('runtime observability', () => {
         spawnSync('git', ['-C', commandRepoRoot, 'add', '.']);
         expect(spawnSync('git', ['-C', commandRepoRoot, 'commit', '-m', 'init']).status).toBe(0);
         const repo = registerRepository({ path: commandRepoRoot, controllerHome });
-        const previewCall = await fullClient.callTool({ name: 'execute_command', arguments: { repo_id: repo.repoId, command: ['git', 'status', '--short'], dry_run: true } });
+        const previewCall = await fullClient.callTool({
+          name: 'execute_command',
+          arguments: { repo_id: repo.repoId, command: ['git', 'status', '--short'], dry_run: true },
+        });
         expect(previewCall.isError).not.toBe(true);
         expect(previewCall.structuredContent).toMatchObject({ status: 'preview' });
-        const commandCall = await fullClient.callTool({ name: 'execute_command', arguments: { repo_id: repo.repoId, command: ['git', 'status', '--short'], timeout_ms: 10000 } });
+        const commandCall = await fullClient.callTool({
+          name: 'execute_command',
+          arguments: { repo_id: repo.repoId, command: ['git', 'status', '--short'], timeout_ms: 10000 },
+        });
         expect(commandCall.isError).not.toBe(true);
         expect(commandCall.structuredContent).toMatchObject({ accepted: true });
       } finally {
@@ -915,10 +1031,23 @@ describe('runtime observability', () => {
       const traceId = String(meta!.traceId);
       await flushMcpDiagnostics(controllerHome);
       const incidents = readFileSync(join(controllerHome, 'audit', 'mcp-incidents.jsonl'), 'utf8')
-        .trim().split('\n').map((line) => JSON.parse(line) as { traceId: string; code: string });
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { traceId: string; code: string });
       expect(incidents.some((entry) => entry.traceId === traceId && entry.code === 'TOOL_NOT_FOUND')).toBe(true);
       const timings = readFileSync(join(controllerHome, 'audit', 'mcp-timings.jsonl'), 'utf8')
-        .trim().split('\n').map((line) => JSON.parse(line) as { traceId: string; requestId?: string; layer?: string; startedAt?: string; hostConversationSessionId?: string });
+        .trim()
+        .split('\n')
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              traceId: string;
+              requestId?: string;
+              layer?: string;
+              startedAt?: string;
+              hostConversationSessionId?: string;
+            },
+        );
       const timing = timings.find((entry) => entry.traceId === traceId);
       expect(timing).toMatchObject({ layer: 'public_gateway' });
       expect(timing?.requestId).toBe(String(meta?.requestId ?? ''));
@@ -985,7 +1114,9 @@ describe('runtime observability', () => {
       const health = evaluateRuntimeHealth(observations());
       expect(health.ready).toBe(true);
       expect(classifyRuntimeReadinessSemantics(health, { maintenanceHealthy: false })).toMatchObject({
-        executionReady: true, maintenanceHealthy: false, releaseReady: true,
+        executionReady: true,
+        maintenanceHealthy: false,
+        releaseReady: true,
       });
     });
 
@@ -1001,7 +1132,10 @@ describe('runtime observability', () => {
     });
 
     test('real execution failures still downgrade execution readiness', () => {
-      const health = evaluateRuntimeHealth({ ...observations(), daemon: { status: 'not_ready', error: 'runtime down' } });
+      const health = evaluateRuntimeHealth({
+        ...observations(),
+        daemon: { status: 'not_ready', error: 'runtime down' },
+      });
       expect(health.ready).toBe(false);
       const semantics = classifyRuntimeReadinessSemantics(health);
       expect(semantics.executionReady).toBe(false);
@@ -1033,10 +1167,15 @@ describe('runtime observability', () => {
         expect(maintenance.readyForExecution).toBe(false);
 
         const ctx = createMultiRepositoryContext({ repo: repoRoot, profile: 'controller', controllerHome });
-        const read = await callRepositoryTool(controllerHome, 'read_repository_file', {
-          repo_id: repository.repoId,
-          path: 'README.md',
-        }, ctx);
+        const read = await callRepositoryTool(
+          controllerHome,
+          'read_repository_file',
+          {
+            repo_id: repository.repoId,
+            path: 'README.md',
+          },
+          ctx,
+        );
         expect(read).toBeTruthy();
         expect(JSON.parse(read?.content[0]?.text ?? '{}').content).toContain('fixture');
 
