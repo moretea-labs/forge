@@ -153,9 +153,14 @@ echo "[sync-main] fetching $REMOTE/$BRANCH"
 git fetch "$REMOTE" "$BRANCH"
 read -r ahead behind < <(sync_refs)
 
+# Validate the complete candidate against the remote branch, not only HEAD.
+# Without TEST_BASE_REF, source-quality/test selection can miss older pending
+# commits; GitHub Actions then rejects changes that were reported PASS locally.
+# Respect an explicit caller baseline; otherwise pin the freshly fetched ref.
+CHECK_BASE_REF="${TEST_BASE_REF:-$REMOTE/$BRANCH}"
 if [[ "$COMMIT" -eq 1 ]]; then
-  echo "[sync-main] running validation: $CHECK_COMMAND"
-  bash -lc "$CHECK_COMMAND"
+  echo "[sync-main] running validation: $CHECK_COMMAND (base=$CHECK_BASE_REF)"
+  TEST_BASE_REF="$CHECK_BASE_REF" bash -lc "$CHECK_COMMAND"
   git diff --check -- "${PATHS[@]}"
   git add -- "${PATHS[@]}"
   git diff --cached --check -- "${PATHS[@]}"
@@ -163,8 +168,8 @@ if [[ "$COMMIT" -eq 1 ]]; then
   echo "[sync-main] committing only the selected paths"
   git commit -m "$MESSAGE"
 elif [[ "$ahead" -gt 0 ]]; then
-  echo "[sync-main] validating already-committed changes before publication: $CHECK_COMMAND"
-  bash -lc "$CHECK_COMMAND"
+  echo "[sync-main] validating already-committed changes before publication: $CHECK_COMMAND (base=$CHECK_BASE_REF)"
+  TEST_BASE_REF="$CHECK_BASE_REF" bash -lc "$CHECK_COMMAND"
 fi
 
 # Re-fetch after validation/commit so a concurrent remote update cannot be
