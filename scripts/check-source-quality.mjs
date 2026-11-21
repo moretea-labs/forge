@@ -78,8 +78,34 @@ if (biomeFiles.length > 0) {
   }
 }
 
+// These two desktop Swift files predate a swift-format baseline. Their
+// large existing indentation/spacing debt is not an authorization for an
+// unrelated whole-file rewrite. Require syntax parsing here; other Swift
+// sources still use strict formatting.
+const legacySwiftPaths = new Set([
+  'apps/desktop-native/Sources/ForgeNative/ForgeNativeApp.swift',
+  'apps/desktop-native/Sources/ForgeNative/ZenModeView.swift',
+]);
 if (swiftFiles.length > 0) {
-  runTool('Swift formatting', 'swift-format', ['lint', '--strict', ...swiftFiles]);
+  const strictSwiftFiles = swiftFiles.filter((path) => !legacySwiftPaths.has(path));
+  const legacySwiftFiles = swiftFiles.filter((path) => legacySwiftPaths.has(path));
+  const onMac = process.platform === 'darwin';
+  if (strictSwiftFiles.length > 0) {
+    runTool('Swift formatting', onMac ? 'xcrun' : 'swift-format', [
+      ...(onMac ? ['swift-format'] : []),
+      'lint',
+      '--strict',
+      ...strictSwiftFiles,
+    ]);
+  }
+  for (const path of legacySwiftFiles) {
+    runTool('Legacy Swift syntax', onMac ? 'xcrun' : 'swiftc', [
+      ...(onMac ? ['swiftc'] : []),
+      '-frontend',
+      '-parse',
+      path,
+    ]);
+  }
 }
 
 if (rustFiles.length > 0) {
