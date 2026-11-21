@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { spawn, spawnSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createServer } from 'net';
 import { loadTestManifest, runTestSelection, type TestRunReceipt } from '../../src/testing/test-governance';
 import { consumeStructuredCheckResultPath } from '../../scripts/test-governance';
+import { committedChangedPaths, materializeCommittedTestCandidate } from '../../src/testing/source-quality-candidate';
 
 const ROOT = join(import.meta.dir, '../..');
 const TEST_FILE_RUNNER = join(ROOT, 'scripts', 'run-bun-test-file.ts');
@@ -21,7 +22,9 @@ function processExists(pid: number): boolean {
 
 describe('test runner infrastructure', () => {
   test('consumes the parent structured-result path before spawning nested test processes', () => {
-    const env: NodeJS.ProcessEnv = { FORGE_CHECK_STRUCTURED_RESULT_PATH: join(tmpdir(), 'forge-structured-result.json') };
+    const env: NodeJS.ProcessEnv = {
+      FORGE_CHECK_STRUCTURED_RESULT_PATH: join(tmpdir(), 'forge-structured-result.json'),
+    };
     const path = consumeStructuredCheckResultPath(env);
     expect(path).toBe(join(tmpdir(), 'forge-structured-result.json'));
     expect(env.FORGE_CHECK_STRUCTURED_RESULT_PATH).toBeUndefined();
@@ -90,7 +93,10 @@ describe('test runner infrastructure', () => {
         `writeFileSync(${JSON.stringify(ready)}, "ready");\n` +
         'test("wait", async () => { await new Promise(() => {}); });\n',
     );
-    const runner = spawn(process.execPath, [TEST_FILE_RUNNER, testFile], { cwd: ROOT, stdio: ['ignore', 'ignore', 'pipe'] });
+    const runner = spawn(process.execPath, [TEST_FILE_RUNNER, testFile], {
+      cwd: ROOT,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
     try {
       const deadline = Date.now() + 5_000;
       while (!existsSync(ready) && Date.now() < deadline) await Bun.sleep(10);
@@ -125,33 +131,155 @@ describe('test runner infrastructure', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-test-runner-controller-'));
     try {
       let receipt: TestRunReceipt | undefined;
-      const status = await runTestSelection(repo, manifest, {
-        gate: 'infrastructure',
-        changedPaths: [],
-        modules: ['runner'],
-        files: [testPath],
-        reason: 'mutation fixture',
-      }, {
-        useCache: false,
-        storageAuthority: { controllerHome, repoId: 'repo-test-runner-mutation' },
-        onReceipt: (value) => { receipt = value; },
-      });
+      const status = await runTestSelection(
+        repo,
+        manifest,
+        {
+          gate: 'infrastructure',
+          changedPaths: [],
+          modules: ['runner'],
+          files: [testPath],
+          reason: 'mutation fixture',
+        },
+        {
+          useCache: false,
+          storageAuthority: { controllerHome, repoId: 'repo-test-runner-mutation' },
+          onReceipt: (value) => {
+            receipt = value;
+          },
+        },
+      );
       expect(status).toBe(1);
       expect(receipt?.failureEvidence).toMatchObject({
         status: 'failed',
         failures: 1,
         failureClasses: ['infrastructure'],
         contaminated: true,
-        failureDetails: [{ file: testPath, failureClass: 'infrastructure', failureCode: 'TEST_INFRA_WORKTREE_MUTATION' }],
+        failureDetails: [
+          { file: testPath, failureClass: 'infrastructure', failureCode: 'TEST_INFRA_WORKTREE_MUTATION' },
+        ],
       });
       expect(readFileSync(join(repo, 'tracked.txt'), 'utf8')).toBe('mutated\n');
       expect(existsSync(join(repo, '.ai', 'harness', 'checks'))).toBe(false);
-      expect(existsSync(join(controllerHome, 'repositories', 'repo-test-runner-mutation', 'checks', 'tests', 'receipts'))).toBe(true);
+      expect(
+        existsSync(join(controllerHome, 'repositories', 'repo-test-runner-mutation', 'checks', 'tests', 'receipts')),
+      ).toBe(true);
     } finally {
       rmSync(repo, { recursive: true, force: true });
       rmSync(controllerHome, { recursive: true, force: true });
     }
   }, 15_000);
+
+  test('uses pinned Git candidate for independent tests without touching another Writer dirty, and catches test mutation', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'forge-test-runner-committed-'));
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-test-runner-committed-controller-'));
+    let isolated: string | undefined;
+    try {
+      mkdirSync(join(repo, 'tests'), { recursive: true });
+      mkdirSync(join(repo, 'src'), { recursive: true });
+      writeFileSync(join(repo, 'src/value.ts'), 'export const value = 1;\n');
+      writeFileSync(
+        join(repo, 'tests/reads.test.ts'),
+        'import { test, expect } from "bun:test";\n' +
+          'import { readFileSync } from "node:fs";\n' +
+          'test("reads candidate", () => { expect(readFileSync("src/value.ts", "utf8")).toBe("export const value = 1;\\n"); });\n',
+      );
+      writeFileSync(
+        join(repo, 'tests/mutates.test.ts'),
+        'import { test, expect } from "bun:test";\n' +
+          'import { writeFileSync } from "node:fs";\n' +
+          'test("writes candidate", () => { writeFileSync("src/value.ts", "export const value = 9;\\n"); expect(true).toBe(true); });\n',
+      );
+      spawnSync('git', ['init', '-q'], { cwd: repo });
+      spawnSync('git', ['add', '.'], { cwd: repo });
+      spawnSync(
+        'git',
+        ['-c', 'user.name=Fixture', '-c', 'user.email=test@invalid.local', 'commit', '-qm', 'candidate'],
+        { cwd: repo },
+      );
+      symlinkSync(join(ROOT, 'node_modules'), join(repo, 'node_modules'), 'dir');
+      // This is the other Writer's dirty change. It must remain untouched.
+      writeFileSync(join(repo, 'src/value.ts'), 'export const value = 2;\n');
+      writeFileSync(join(repo, 'src/untracked.ts'), 'untracked\n');
+      isolated = materializeCommittedTestCandidate(repo, 'HEAD');
+      expect(existsSync(join(isolated, '.git'))).toBe(true);
+      expect(existsSync(join(isolated, 'src/untracked.ts'))).toBe(false);
+      const original = loadTestManifest(ROOT);
+      const manifest = {
+        ...original,
+        tests: {
+          'tests/reads.test.ts': { module: 'runner' as const, resource: 'pure' as const },
+          'tests/mutates.test.ts': { module: 'runner' as const, resource: 'pure' as const },
+        },
+      };
+      let outcome: TestRunReceipt | undefined;
+      const options = {
+        useCache: false,
+        pureConcurrency: 1,
+        isolatedCandidateRoot: isolated,
+        isolatedCandidateRevision: 'pinned-fixture',
+        storageAuthority: { controllerHome, repoId: 'repo-committed-test' },
+        onReceipt: (receipt: TestRunReceipt) => {
+          outcome = receipt;
+        },
+      };
+      const selection = (file: string) => ({
+        gate: 'infrastructure' as const,
+        changedPaths: [file],
+        modules: ['runner' as const],
+        files: [file],
+        reason: 'pinned candidate regression',
+      });
+      expect(await runTestSelection(repo, manifest, selection('tests/reads.test.ts'), options)).toBe(0);
+      expect(outcome?.failureEvidence).toMatchObject({ status: 'passed', contaminated: false });
+      expect(readFileSync(join(repo, 'src/value.ts'), 'utf8')).toBe('export const value = 2;\n');
+
+      expect(await runTestSelection(repo, manifest, selection('tests/mutates.test.ts'), options)).toBe(1);
+      expect(outcome?.failureEvidence).toMatchObject({
+        status: 'failed',
+        contaminated: true,
+        failureDetails: [
+          {
+            file: 'tests/mutates.test.ts',
+            failureClass: 'infrastructure',
+            failureCode: 'TEST_INFRA_WORKTREE_MUTATION',
+          },
+        ],
+      });
+      expect(readFileSync(join(repo, 'src/value.ts'), 'utf8')).toBe('export const value = 2;\n');
+      expect(readFileSync(join(repo, 'src/untracked.ts'), 'utf8')).toBe('untracked\n');
+    } finally {
+      if (isolated) rmSync(isolated, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  test('selects committed deleted paths without absorbing another Writer dirty', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'forge-test-selection-committed-'));
+    try {
+      spawnSync('git', ['init', '-q'], { cwd: repo });
+      writeFileSync(join(repo, 'removed.ts'), 'export const old = 1;\n');
+      spawnSync('git', ['add', '.'], { cwd: repo });
+      spawnSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=test@invalid.local', 'commit', '-qm', 'base'], {
+        cwd: repo,
+      });
+      const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).stdout.trim();
+      rmSync(join(repo, 'removed.ts'));
+      writeFileSync(join(repo, 'added.ts'), 'export const added = 1;\n');
+      spawnSync('git', ['add', '-A'], { cwd: repo });
+      spawnSync(
+        'git',
+        ['-c', 'user.name=Fixture', '-c', 'user.email=test@invalid.local', 'commit', '-qm', 'candidate'],
+        { cwd: repo },
+      );
+      writeFileSync(join(repo, 'uncommitted.ts'), 'export const dirty = 2;\n');
+      writeFileSync(join(repo, 'added.ts'), 'export const dirty = 3;\n');
+      expect(committedChangedPaths(repo, base, 'HEAD')).toEqual(['added.ts', 'removed.ts']);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
 
   test('retries infrastructure once but never retries a source assertion', async () => {
     const repo = mkdtempSync(join(tmpdir(), 'forge-test-runner-retry-'));
@@ -162,16 +290,20 @@ describe('test runner infrastructure', () => {
     const sourcePath = 'tests/source-no-retry.test.ts';
     const infraMarker = join(markerDir, 'infra-attempt');
     const sourceMarker = join(markerDir, 'source-attempt');
-    writeFileSync(join(repo, infraPath),
+    writeFileSync(
+      join(repo, infraPath),
       'import { expect, test } from "bun:test";\n' +
-      'import { appendFileSync, existsSync } from "fs";\n' +
-      `const marker=${JSON.stringify(infraMarker)}; const first=!existsSync(marker); appendFileSync(marker, "x");\n` +
-      'test("infra retry", () => { if (first) { console.error("EADDRINUSE"); throw new Error("port fixture"); } expect(true).toBe(true); });\n');
-    writeFileSync(join(repo, sourcePath),
+        'import { appendFileSync, existsSync } from "fs";\n' +
+        `const marker=${JSON.stringify(infraMarker)}; const first=!existsSync(marker); appendFileSync(marker, "x");\n` +
+        'test("infra retry", () => { if (first) { console.error("EADDRINUSE"); throw new Error("port fixture"); } expect(true).toBe(true); });\n',
+    );
+    writeFileSync(
+      join(repo, sourcePath),
       'import { expect, test } from "bun:test";\n' +
-      'import { appendFileSync } from "fs";\n' +
-      `appendFileSync(${JSON.stringify(sourceMarker)}, "x");\n` +
-      'test("source failure", () => { expect(false).toBe(true); });\n');
+        'import { appendFileSync } from "fs";\n' +
+        `appendFileSync(${JSON.stringify(sourceMarker)}, "x");\n` +
+        'test("source failure", () => { expect(false).toBe(true); });\n',
+    );
     spawnSync('git', ['init', '-q'], { cwd: repo });
     spawnSync('git', ['add', '.'], { cwd: repo });
     const base = loadTestManifest(ROOT);
@@ -183,23 +315,45 @@ describe('test runner infrastructure', () => {
       },
     };
     try {
-      const infraStatus = await runTestSelection(repo, manifest, {
-        gate: 'integration', changedPaths: [], modules: ['runner'], files: [infraPath], reason: 'retry fixture',
-      }, {
-        useCache: false, tempConcurrency: 1,
-        storageAuthority: { controllerHome, repoId: 'repo-test-runner-retry' },
-      });
+      const infraStatus = await runTestSelection(
+        repo,
+        manifest,
+        {
+          gate: 'integration',
+          changedPaths: [],
+          modules: ['runner'],
+          files: [infraPath],
+          reason: 'retry fixture',
+        },
+        {
+          useCache: false,
+          tempConcurrency: 1,
+          storageAuthority: { controllerHome, repoId: 'repo-test-runner-retry' },
+        },
+      );
       expect(infraStatus).toBe(0);
       expect(readFileSync(infraMarker, 'utf8')).toBe('xx');
 
       let sourceReceipt: TestRunReceipt | undefined;
-      const sourceStatus = await runTestSelection(repo, manifest, {
-        gate: 'integration', changedPaths: [], modules: ['runner'], files: [sourcePath], reason: 'source fixture',
-      }, {
-        useCache: false, tempConcurrency: 1,
-        storageAuthority: { controllerHome, repoId: 'repo-test-runner-retry' },
-        onReceipt: (value) => { sourceReceipt = value; },
-      });
+      const sourceStatus = await runTestSelection(
+        repo,
+        manifest,
+        {
+          gate: 'integration',
+          changedPaths: [],
+          modules: ['runner'],
+          files: [sourcePath],
+          reason: 'source fixture',
+        },
+        {
+          useCache: false,
+          tempConcurrency: 1,
+          storageAuthority: { controllerHome, repoId: 'repo-test-runner-retry' },
+          onReceipt: (value) => {
+            sourceReceipt = value;
+          },
+        },
+      );
       expect(sourceStatus).toBe(1);
       expect(readFileSync(sourceMarker, 'utf8')).toBe('x');
       expect(sourceReceipt?.failureEvidence).toMatchObject({
@@ -207,7 +361,9 @@ describe('test runner infrastructure', () => {
         failures: 1,
         failureClasses: ['source'],
         contaminated: false,
-        failureDetails: [{ file: sourcePath, failureClass: 'source', failureCode: 'TEST_SOURCE_ASSERTION_FAILED', attempts: 1 }],
+        failureDetails: [
+          { file: sourcePath, failureClass: 'source', failureCode: 'TEST_SOURCE_ASSERTION_FAILED', attempts: 1 },
+        ],
       });
     } finally {
       rmSync(repo, { recursive: true, force: true });
@@ -221,8 +377,7 @@ describe('test runner infrastructure', () => {
     const testFile = join(dir, 'hangs.test.ts');
     writeFileSync(
       testFile,
-      'import { test } from "bun:test";\n' +
-        'test("never completes", async () => { await new Promise(() => {}); });\n',
+      'import { test } from "bun:test";\n' + 'test("never completes", async () => { await new Promise(() => {}); });\n',
     );
     try {
       const result = spawnSync(

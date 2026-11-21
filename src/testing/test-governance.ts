@@ -514,6 +514,9 @@ export interface TestRunReceipt {
 
 export interface RunTestSelectionOptions {
   useCache?: boolean;
+  /** Temporary pinned-commit test source, never registered as a development checkout. */
+  isolatedCandidateRoot?: string;
+  isolatedCandidateRevision?: string;
   storageAuthority?: RepositoryCheckStorageAuthority;
   pureConcurrency?: number;
   tempConcurrency?: number;
@@ -540,18 +543,22 @@ export async function runTestSelection(
   const useCache = options.useCache ?? true;
   const storage = ensureRepositoryCheckStorage(repoRoot, options.storageAuthority);
   const contentDigest = testContentDigest(repoRoot);
-  const runnerDigest = hashFiles(
-    repoRoot,
-    [
-      MANIFEST_PATH,
-      'scripts/run-bun-test-file.ts',
-      'scripts/test-governance.ts',
-      'src/testing/test-governance.ts',
-      'src/runtime/shared/bounded-child-supervisor.ts',
-      'src/runtime/shared/process-tree.ts',
-    ],
-    'test-runner-v1',
-  );
+  const runnerInputs = [
+    MANIFEST_PATH,
+    'scripts/run-bun-test-file.ts',
+    'scripts/test-governance.ts',
+    'src/testing/test-governance.ts',
+    'src/runtime/shared/bounded-child-supervisor.ts',
+    'src/runtime/shared/process-tree.ts',
+  ];
+  const runnerDigest = hashFiles(repoRoot, runnerInputs, 'test-runner-v1');
+  const isolatedRunnerDigest = options.isolatedCandidateRoot
+    ? hashFiles(
+        options.isolatedCandidateRoot,
+        runnerInputs,
+        `test-runner-v1:committed:${options.isolatedCandidateRevision ?? 'unknown'}`,
+      )
+    : undefined;
   const toolchain = toolchainSignature();
   const capability = capabilitySignature();
   let failures = 0;
@@ -576,13 +583,19 @@ export async function runTestSelection(
   const runOne = async (file: string): Promise<void> => {
     if (contaminated) return;
     const entry = manifest.tests[file]!;
-    const testDigest = hashFiles(repoRoot, [file], 'test-file-v1');
-    const inputDigest = testInputDigest(repoRoot, file);
+    // Only independent resource classes run against an immutable candidate
+    // copy. Shared/host-dependent tests retain the registered checkout until
+    // their external dependencies can be isolated without changing semantics.
+    const isolated = options.isolatedCandidateRoot && (entry.resource === 'pure' || entry.resource === 'temp-isolated');
+    const testRoot = isolated ? options.isolatedCandidateRoot! : repoRoot;
+    const checkRunnerDigest = isolated ? isolatedRunnerDigest! : runnerDigest;
+    const testDigest = hashFiles(testRoot, [file], 'test-file-v1');
+    const inputDigest = testInputDigest(testRoot, file);
     const key = createHash('sha256')
       .update(
         JSON.stringify({
           inputDigest,
-          runnerDigest,
+          runnerDigest: checkRunnerDigest,
           testDigest,
           toolchain,
           capability,
@@ -621,11 +634,11 @@ export async function runTestSelection(
       // Ignore changes between child runs, but preserve the strict workspace
       // mutation veto during each child. A simultaneous external Writer cannot
       // be distinguished from test mutation here without process isolation.
-      const testWorkspaceBefore = workspaceMutationDigest(repoRoot);
+      const testWorkspaceBefore = workspaceMutationDigest(testRoot);
       console.error(`[tests] ${file}${attempts > 1 ? ' (infrastructure retry)' : ''}`);
       if (file.endsWith('.test.mjs')) {
         const independent = await runBoundedChild('node', ['--test', file], {
-          cwd: repoRoot,
+          cwd: testRoot,
           env: process.env,
           timeoutMs: Number(process.env.BUN_TEST_FILE_WALL_TIMEOUT_MS ?? 120_000),
           stdio: 'inherit',
@@ -643,7 +656,7 @@ export async function runTestSelection(
           process.execPath,
           ['test', '--timeout', process.env.BUN_TEST_TIMEOUT_MS ?? '60000', '--max-concurrency', '1', file],
           {
-            cwd: repoRoot,
+            cwd: testRoot,
             env: process.env,
             timeoutMs: Number(process.env.BUN_TEST_FILE_WALL_TIMEOUT_MS ?? 120_000),
             stdio: 'inherit',
@@ -660,12 +673,12 @@ export async function runTestSelection(
       } else {
         result = await runBunTestFile(
           ['--timeout', process.env.BUN_TEST_TIMEOUT_MS ?? '60000', '--max-concurrency', '1', file],
-          { forwardSignals: true, cwd: repoRoot },
+          { forwardSignals: true, cwd: testRoot },
         );
       }
       if (
-        workspaceMutationDigest(repoRoot) !== testWorkspaceBefore ||
-        testInputDigest(repoRoot, file) !== inputDigest
+        workspaceMutationDigest(testRoot) !== testWorkspaceBefore ||
+        testInputDigest(testRoot, file) !== inputDigest
       ) {
         contaminated = true;
         result = {
@@ -685,7 +698,7 @@ export async function runTestSelection(
       version: 2,
       key,
       inputDigest,
-      runnerDigest,
+      runnerDigest: checkRunnerDigest,
       testDigest,
       toolchain,
       capability,

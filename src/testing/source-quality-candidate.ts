@@ -37,7 +37,7 @@ export function committedSourceCandidate(
   const revision = git(repoRoot, ['rev-parse', '--verify', `${targetRef}^{commit}`])
     .toString('utf8')
     .trim();
-  const changed = gitPaths(git(repoRoot, ['diff', '--name-only', '-z', `${baseRef}...${revision}`]));
+  const changed = committedChangedPaths(repoRoot, baseRef, revision);
   const atRevision = new Set(gitPaths(git(repoRoot, ['ls-tree', '-r', '--name-only', '-z', revision])));
   const paths = [...new Set(changed)].filter((path) => atRevision.has(path)).sort();
   for (const path of paths) requireRepositoryPath(path);
@@ -103,6 +103,53 @@ export function materializeCommittedTypeScriptCandidate(repoRoot: string, candid
       throw new Error('Committed TypeScript candidate contains a forbidden Git or dependency entry');
     }
     symlinkSync(dependencies, join(root, 'node_modules'), 'dir');
+    return root;
+  } catch (error) {
+    rmSync(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+/** Include deleted source paths when deciding which committed regressions to run. */
+export function committedChangedPaths(repoRoot: string, baseRef: string, revisionRef: string): string[] {
+  const revision = git(repoRoot, ['rev-parse', '--verify', `${revisionRef}^{commit}`])
+    .toString('utf8')
+    .trim();
+  const paths = [...new Set(gitPaths(git(repoRoot, ['diff', '--name-only', '-z', `${baseRef}...${revision}`])))].sort();
+  for (const path of paths) requireRepositoryPath(path);
+  return paths;
+}
+
+/**
+ * Disposable test fixture for the pinned commit, not another development
+ * checkout or task ledger. Git metadata exists only to let tests detect
+ * tracked source mutations inside this isolated tree.
+ */
+export function materializeCommittedTestCandidate(repoRoot: string, revision: string): string {
+  const root = materializeCommittedTypeScriptCandidate(repoRoot, revision);
+  const runGit = (args: string[]): void => {
+    const result = spawnSync('git', args, { cwd: root });
+    if (result.error || result.status !== 0) {
+      throw new Error(
+        `Cannot initialize committed test fixture: ${result.error?.message ?? result.stderr?.toString() ?? result.status}`,
+      );
+    }
+  };
+  try {
+    runGit(['init', '-q', '-b', 'main']);
+    // Preserve even tracked files matched by ignore rules in the source archive.
+    // The node_modules symlink is a dependency only, never a test-source input.
+    runGit(['add', '-f', '-A', '--', '.', ':!node_modules']);
+    runGit([
+      '-c',
+      'user.name=Forge Test Fixture',
+      '-c',
+      'user.email=forge-test@invalid.local',
+      'commit',
+      '-q',
+      '-m',
+      'pinned committed test candidate',
+    ]);
     return root;
   } catch (error) {
     rmSync(root, { recursive: true, force: true });

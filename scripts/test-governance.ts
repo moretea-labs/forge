@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
-import { mkdirSync, renameSync, writeFileSync } from 'fs';
+import { mkdirSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { dirname, isAbsolute, resolve } from 'path';
 import { ensureControllerHome } from '../src/effects/controller-home';
+import { committedChangedPaths, materializeCommittedTestCandidate } from '../src/testing/source-quality-candidate';
 import { findRegisteredRepositoryByCheckoutRoot, registerRepository } from '../src/runtime/repositories/registry';
 import {
   collectChangedPaths,
@@ -71,54 +72,76 @@ function writeStructuredCheckEvidence(path: string | undefined, evidence: Struct
 export async function main(args: string[]): Promise<number> {
   const options = parseTestGovernanceArgs(args);
   const structuredResultPath = consumeStructuredCheckResultPath();
-  const manifest = loadTestManifest(ROOT);
-  const errors = validateTestManifest(ROOT, manifest);
-  if (errors.length > 0) {
-    for (const error of errors) console.error(`[tests] manifest: ${error}`);
-    writeStructuredCheckEvidence(structuredResultPath, {
-      schemaVersion: 1,
-      producer: 'test-governance',
-      gate: options.gate,
-      status: 'failed',
-      failures: 1,
-      failureClasses: ['source'],
-      failureDetails: [{
-        file: 'tests/test-manifest.v1.json',
-        failureClass: 'source',
-        failureCode: TEST_FAILURE_CODES.SOURCE_MANIFEST_INVALID,
-        attempts: 1,
-        durationMs: 0,
-      }],
-      failureDetailsTruncated: false,
-      contaminated: false,
+  const baseRef =
+    options.baseRef ??
+    process.env.TEST_BASE_REF ??
+    (process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : undefined);
+  const committedMode = process.env.FORGE_CHECK_SOURCE_QUALITY_MODE === 'committed';
+  const revision = process.env.FORGE_CHECK_CANDIDATE_SHA;
+  if (committedMode && (!revision || !baseRef)) throw new Error('Committed tests require candidate SHA and base ref');
+  const isolatedRoot = committedMode ? materializeCommittedTestCandidate(ROOT, revision!) : undefined;
+  try {
+    const sourceRoot = isolatedRoot ?? ROOT;
+    const manifest = loadTestManifest(sourceRoot);
+    const errors = validateTestManifest(sourceRoot, manifest);
+    if (errors.length > 0) {
+      for (const error of errors) console.error(`[tests] manifest: ${error}`);
+      writeStructuredCheckEvidence(structuredResultPath, {
+        schemaVersion: 1,
+        producer: 'test-governance',
+        gate: options.gate,
+        status: 'failed',
+        failures: 1,
+        failureClasses: ['source'],
+        failureDetails: [
+          {
+            file: 'tests/test-manifest.v1.json',
+            failureClass: 'source',
+            failureCode: TEST_FAILURE_CODES.SOURCE_MANIFEST_INVALID,
+            attempts: 1,
+            durationMs: 0,
+          },
+        ],
+        failureDetailsTruncated: false,
+        contaminated: false,
+      });
+      return 1;
+    }
+    if (options.validateOnly) {
+      console.error(`[tests] manifest v1 valid: ${Object.keys(manifest.tests).length} test files`);
+      return 0;
+    }
+    const changedPaths =
+      options.changedPaths.length > 0
+        ? options.changedPaths
+        : committedMode
+          ? committedChangedPaths(ROOT, baseRef!, revision!)
+          : collectChangedPaths(ROOT, { baseRef });
+    const selection = selectTests(manifest, options.gate, changedPaths, options.explicitTests);
+    console.error(`[tests] gate=${selection.gate}; reason=${selection.reason}`);
+    console.error(
+      `[tests] modules=${selection.modules.join(', ')}; selected=${selection.files.length}/${Object.keys(manifest.tests).length}`,
+    );
+    if (options.listOnly) {
+      for (const file of selection.files) console.log(file);
+      return 0;
+    }
+    const controllerHome = ensureControllerHome();
+    const repository =
+      findRegisteredRepositoryByCheckoutRoot(ROOT, controllerHome) ??
+      registerRepository({ path: ROOT, controllerHome });
+    if (isolatedRoot)
+      console.error(`[tests] pinned candidate ${revision!.slice(0, 12)} for independent test resources`);
+    return await runTestSelection(ROOT, manifest, selection, {
+      useCache: options.useCache,
+      isolatedCandidateRoot: isolatedRoot,
+      isolatedCandidateRevision: revision,
+      storageAuthority: { controllerHome, repoId: repository.repoId },
+      onReceipt: (receipt) => writeStructuredCheckEvidence(structuredResultPath, receipt.failureEvidence),
     });
-    return 1;
+  } finally {
+    if (isolatedRoot) rmSync(isolatedRoot, { recursive: true, force: true });
   }
-  if (options.validateOnly) {
-    console.error(`[tests] manifest v1 valid: ${Object.keys(manifest.tests).length} test files`);
-    return 0;
-  }
-  const changedPaths = collectChangedPaths(ROOT, {
-    explicit: options.changedPaths.length > 0 ? options.changedPaths : undefined,
-    baseRef: options.baseRef
-      ?? process.env.TEST_BASE_REF
-      ?? (process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : undefined),
-  });
-  const selection = selectTests(manifest, options.gate, changedPaths, options.explicitTests);
-  console.error(`[tests] gate=${selection.gate}; reason=${selection.reason}`);
-  console.error(`[tests] modules=${selection.modules.join(', ')}; selected=${selection.files.length}/${Object.keys(manifest.tests).length}`);
-  if (options.listOnly) {
-    for (const file of selection.files) console.log(file);
-    return 0;
-  }
-  const controllerHome = ensureControllerHome();
-  const repository = findRegisteredRepositoryByCheckoutRoot(ROOT, controllerHome)
-    ?? registerRepository({ path: ROOT, controllerHome });
-  return runTestSelection(ROOT, manifest, selection, {
-    useCache: options.useCache,
-    storageAuthority: { controllerHome, repoId: repository.repoId },
-    onReceipt: (receipt) => writeStructuredCheckEvidence(structuredResultPath, receipt.failureEvidence),
-  });
 }
 
 if (import.meta.main) process.exitCode = await main(process.argv.slice(2));
