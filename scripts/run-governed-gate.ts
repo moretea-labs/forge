@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { runBoundedChild } from '../src/runtime/shared/bounded-child-supervisor';
-import { testContentDigest, workspaceMutationDigest } from '../src/testing/test-governance';
+import { testContentDigest } from '../src/testing/test-governance';
 import { resolveControllerHome } from '../src/effects/controller-home';
 
 export type Gate = 'task' | 'main' | 'release';
@@ -21,7 +21,7 @@ type Step = CommandStep | GateStep;
 
 const ROOT = resolve(import.meta.dir, '..');
 const REPOSITORY_CACHE_KEY = createHash('sha256').update(ROOT).digest('hex').slice(0, 24);
-const RECEIPT_ROOT = join(resolveControllerHome(), 'cache', 'governed-gates', REPOSITORY_CACHE_KEY);
+const CACHE_ROOT = join(resolveControllerHome(), 'cache', 'governed-gates', REPOSITORY_CACHE_KEY);
 
 export function stepsFor(gate: Gate): Step[] {
   if (gate === 'task')
@@ -86,7 +86,7 @@ export function stepsFor(gate: Gate): Step[] {
     ];
   if (gate === 'main')
     return [
-      { label: 'focused task receipt', gate: 'task' },
+      { label: 'task checks', gate: 'task' },
       {
         label: 'frozen MCP tool contract',
         command: 'bun',
@@ -117,7 +117,7 @@ export function stepsFor(gate: Gate): Step[] {
       },
     ];
   return [
-    { label: 'main candidate receipt', gate: 'main' },
+    { label: 'main checks', gate: 'main' },
     {
       label: 'release surface and tarball',
       command: 'bash',
@@ -161,14 +161,14 @@ function releaseArtifactAvailable(): boolean {
   }
 }
 
-function passedReceipt(gate: Gate, contentDigest: string, definitionDigest: string): boolean {
-  const receiptPath = join(RECEIPT_ROOT, `${contentDigest}-${gate}.json`);
-  if (!existsSync(receiptPath)) return false;
+function hasReusableGateCache(gate: Gate, contentDigest: string, definitionDigest: string): boolean {
+  const cachePath = join(CACHE_ROOT, `${contentDigest}-${gate}.json`);
+  if (!existsSync(cachePath)) return false;
   try {
-    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) as { status?: string; definitionDigest?: string };
+    const cached = JSON.parse(readFileSync(cachePath, 'utf8')) as { status?: string; definitionDigest?: string };
     return (
-      receipt.status === 'passed' &&
-      receipt.definitionDigest === definitionDigest &&
+      cached.status === 'passed' &&
+      cached.definitionDigest === definitionDigest &&
       (gate !== 'release' || releaseArtifactAvailable())
     );
   } catch (_error) {
@@ -176,11 +176,11 @@ function passedReceipt(gate: Gate, contentDigest: string, definitionDigest: stri
   }
 }
 
-async function runGate(gate: Gate, contentDigest: string, baselineWorkspace: string): Promise<number> {
+async function runGate(gate: Gate, contentDigest: string): Promise<number> {
   const definitionDigest = gateDefinitionDigest(gate);
-  const receiptPath = join(RECEIPT_ROOT, `${contentDigest}-${gate}.json`);
-  if (passedReceipt(gate, contentDigest, definitionDigest)) {
-    console.error(`[gate:${gate}] content receipt hit ${contentDigest.slice(0, 12)}`);
+  const cachePath = join(CACHE_ROOT, `${contentDigest}-${gate}.json`);
+  if (hasReusableGateCache(gate, contentDigest, definitionDigest)) {
+    console.error(`[gate:${gate}] cached candidate checks hit ${contentDigest.slice(0, 12)}`);
     return 0;
   }
 
@@ -189,7 +189,7 @@ async function runGate(gate: Gate, contentDigest: string, baselineWorkspace: str
     console.error(`[gate:${gate}] ${step.label}`);
     let status: number;
     if ('gate' in step) {
-      status = await runGate(step.gate, contentDigest, baselineWorkspace);
+      status = await runGate(step.gate, contentDigest);
     } else {
       const child = await runBoundedChild(step.command, step.args, {
         cwd: ROOT,
@@ -204,13 +204,17 @@ async function runGate(gate: Gate, contentDigest: string, baselineWorkspace: str
       console.error(`[gate:${gate}] failed: ${step.label}`);
       return status || 1;
     }
-    if (workspaceMutationDigest(ROOT) !== baselineWorkspace) {
-      console.error(`[gate:${gate}] TEST_INFRA_WORKTREE_MUTATION: candidate delta changed during ${step.label}`);
-      return 1;
-    }
   }
 
-  atomicJson(receiptPath, {
+  // A different Writer may change unrelated files between steps. Do not
+  // repeatedly scan and veto the entire Git delta after every command.
+  // Only cache a full Gate result if its input candidate is still identical.
+  if (testContentDigest(ROOT) !== contentDigest) {
+    console.error(`[gate:${gate}] candidate content changed; run checks against the current candidate`);
+    return 1;
+  }
+
+  atomicJson(cachePath, {
     version: 2,
     gate,
     status: 'passed',
@@ -222,7 +226,7 @@ async function runGate(gate: Gate, contentDigest: string, baselineWorkspace: str
     durationMs: Math.round(performance.now() - startedAt),
     completedAt: new Date().toISOString(),
   });
-  console.error(`[gate:${gate}] passed; receipt=${receiptPath}`);
+  console.error(`[gate:${gate}] passed; cached result=${cachePath}`);
   return 0;
 }
 
@@ -230,11 +234,10 @@ export async function main(args = process.argv.slice(2)): Promise<number> {
   const gate = args[0] as Gate;
   if (!['task', 'main', 'release'].includes(gate)) throw new Error('expected gate: task, main, or release');
   const contentDigest = testContentDigest(ROOT);
-  const baselineWorkspace = workspaceMutationDigest(ROOT);
-  const status = await runGate(gate, contentDigest, baselineWorkspace);
+  const status = await runGate(gate, contentDigest);
   if (status !== 0) return status;
   if (testContentDigest(ROOT) !== contentDigest) {
-    console.error(`[gate:${gate}] candidate content changed; refusing stale receipt`);
+    console.error(`[gate:${gate}] candidate content changed; current candidate requires checks`);
     return 1;
   }
   return 0;

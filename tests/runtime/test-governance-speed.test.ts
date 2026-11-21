@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   loadTestManifest,
   selectTests,
+  testContentDigest,
   testInputDigest,
   testInputPaths,
   workspaceMutationDigest,
@@ -84,16 +85,50 @@ describe('execution-speed test governance', () => {
     }
   });
 
+  test('candidate cache identity is based on final content, not intermediate Git mutation events', () => {
+    const repo = temporaryRepository();
+    try {
+      const initial = testContentDigest(repo);
+      writeFileSync(join(repo, 'src/unrelated.ts'), 'export const unrelated = 2;\n');
+      expect(testContentDigest(repo)).not.toBe(initial);
+      writeFileSync(join(repo, 'src/unrelated.ts'), 'export const unrelated = 1;\n');
+      expect(testContentDigest(repo)).toBe(initial);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('governed gate does not rescan whole Git delta after each step, but checks final candidate before caching', () => {
+    const source = readFileSync(join(ROOT, 'scripts/run-governed-gate.ts'), 'utf8');
+    expect(source).not.toContain('workspaceMutationDigest');
+    expect(source).toContain('if (testContentDigest(ROOT) !== contentDigest)');
+    expect(source.indexOf('if (testContentDigest(ROOT) !== contentDigest)')).toBeLessThan(
+      source.indexOf('atomicJson(cachePath, {'),
+    );
+  });
+
   test('models task, main, and release as one reusable nested gate DAG', () => {
-    expect(stepsFor('task').some((step) => !('gate' in step) && step.label === 'context pack readiness regression' && step.command === 'bun' && step.args.join(' ') === 'test tests/runtime/context-pack-readiness.test.ts')).toBe(true);
+    expect(
+      stepsFor('task').some(
+        (step) =>
+          !('gate' in step) &&
+          step.label === 'context pack readiness regression' &&
+          step.command === 'bun' &&
+          step.args.join(' ') === 'test tests/runtime/context-pack-readiness.test.ts',
+      ),
+    ).toBe(true);
     expect(stepsFor('task').some((step) => !('gate' in step) && step.label === 'affected tests')).toBe(true);
     expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'frozen MCP tool contract')).toBe(true);
     expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'quality harness benchmark')).toBe(true);
     expect(stepsFor('main')).toContainEqual({
       label: 'Recovery rollback and known-good authority',
       command: 'bun',
-      args: ['test', 'tests/runtime/standalone-recovery.test.ts', '--test-name-pattern',
-        'restores only the attested previous whole-Runtime release while Runtime is stopped|independent CPU rejection does not own ReleaseSession rollback or known-good|long soak and absent Supervisor proof do not veto mechanical known-good'],
+      args: [
+        'test',
+        'tests/runtime/standalone-recovery.test.ts',
+        '--test-name-pattern',
+        'restores only the attested previous whole-Runtime release while Runtime is stopped|independent CPU rejection does not own ReleaseSession rollback or known-good|long soak and absent Supervisor proof do not veto mechanical known-good',
+      ],
       timeoutMs: 5 * 60_000,
     });
     expect(stepsFor('main').some((step) => 'gate' in step && step.gate === 'task')).toBe(true);
