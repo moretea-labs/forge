@@ -12,6 +12,7 @@ import {
   workspaceMutationDigest,
 } from '../../src/testing/test-governance';
 import { gateDefinitionDigest, stepsFor } from '../../scripts/run-governed-gate';
+import { runCandidateModuleBoundaries } from '../../scripts/check-candidate-module-boundaries';
 import {
   committedSourceCandidate,
   materializeCommittedSourceCandidate,
@@ -294,6 +295,42 @@ describe('execution-speed test governance', () => {
     }
   });
 
+  test('module boundary check pins committed inputs despite other Writer dirty but rejects committed violations (#714)', () => {
+    const repo = temporaryRepository();
+    try {
+      const debtDir = join(repo, 'docs/architecture');
+      const kernelDir = join(repo, 'packages/kernel/example/infrastructure');
+      const scriptsDir = join(repo, 'scripts');
+      mkdirSync(debtDir, { recursive: true });
+      mkdirSync(kernelDir, { recursive: true });
+      mkdirSync(scriptsDir, { recursive: true });
+      writeFileSync(join(debtDir, 'kernel-legacy-edge-debt.json'), '{"version":1,"edges":[]}\n');
+      writeFileSync(join(debtDir, 'runtime-cli-edge-debt.json'), '{"version":1,"edges":[]}\n');
+      writeFileSync(
+        join(scriptsDir, 'check-module-boundaries.mjs'),
+        readFileSync(join(ROOT, 'scripts/check-module-boundaries.mjs')),
+      );
+      const modulePath = join(kernelDir, 'sample.ts');
+      writeFileSync(modulePath, 'export const sample = true;\n');
+      symlinkSync(join(ROOT, 'node_modules'), join(repo, 'node_modules'), 'dir');
+      git(repo, 'add', 'docs', 'packages', 'scripts');
+      git(repo, 'commit', '-qm', 'valid module boundary candidate');
+      const validRevision = git(repo, 'rev-parse', 'HEAD');
+
+      writeFileSync(modulePath, "import '../../../../src/cli/forbidden';\n");
+      expect(runCandidateModuleBoundaries(repo, true, validRevision)).toBe(0);
+      expect(runCandidateModuleBoundaries(repo, false)).toBe(1);
+
+      git(repo, 'add', 'packages');
+      git(repo, 'commit', '-qm', 'invalid module dependency');
+      expect(runCandidateModuleBoundaries(repo, true, 'HEAD')).toBe(1);
+      expect(() => runCandidateModuleBoundaries(repo, true, 'unknown-ref')).toThrow();
+      expect(() => runCandidateModuleBoundaries(repo, true)).toThrow(/requires candidate SHA/);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   test('models task, main, and release as one reusable nested gate DAG', () => {
     expect(stepsFor('task')[0]).toEqual({
       label: 'typecheck',
@@ -311,6 +348,12 @@ describe('execution-speed test governance', () => {
       ),
     ).toBe(true);
     expect(stepsFor('task').some((step) => !('gate' in step) && step.label === 'affected tests')).toBe(true);
+    expect(stepsFor('task')).toContainEqual({
+      label: 'module boundaries',
+      command: 'bun',
+      args: ['scripts/check-candidate-module-boundaries.ts'],
+      timeoutMs: 2 * 60_000,
+    });
     expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'frozen MCP tool contract')).toBe(true);
     expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'quality harness benchmark')).toBe(true);
     expect(stepsFor('main')).toContainEqual({

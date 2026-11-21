@@ -42,8 +42,8 @@ export function stepsFor(gate: Gate): Step[] {
       },
       {
         label: 'module boundaries',
-        command: 'node',
-        args: ['scripts/check-module-boundaries.mjs'],
+        command: 'bun',
+        args: ['scripts/check-candidate-module-boundaries.ts'],
         timeoutMs: 2 * 60_000,
       },
       {
