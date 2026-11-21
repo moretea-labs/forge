@@ -196,7 +196,10 @@ struct ZenWorkspacePane: View {
     @Environment(\.colorScheme) private var colorScheme
     @FocusState private var searchFocused: Bool
     @State private var requirementQuery = ""
-    @State private var boardPresentation: BoardPresentation = .board
+    // List-first keeps project goals readable without seven permanent lanes.
+    // Board remains an explicit alternative for status management.
+    @State private var boardPresentation: BoardPresentation = .list
+    @State private var hoveredRequirementId: String?
     @State private var requirementSortOrder: RequirementSortOrder = .source
     @State private var hideEmptyColumns = true
 
@@ -908,7 +911,7 @@ struct ZenWorkspacePane: View {
                                        truncated:model.zenGitHubBoardTruncated)
                 } else if boardMode == "forge" && boardPresentation == .list {
                     ScrollView {
-                        LazyVStack(spacing:0) {
+                        LazyVStack(spacing:4) {
                             ForEach(visibleRequirements) { item in
                                 requirementListRow(item)
                             }
@@ -1101,12 +1104,16 @@ struct ZenWorkspacePane: View {
                     .font(.system(size:9,weight:.semibold))
                     .foregroundStyle(.tertiary)
             }
-            .padding(.vertical,11)
-            .contentShape(Rectangle())
+            .padding(.horizontal,10)
+            .padding(.vertical,12)
+            .contentShape(RoundedRectangle(cornerRadius:9,style:.continuous))
         }
         .buttonStyle(.plain)
-        .overlay(alignment:.bottom) {
-            Rectangle().fill(Color.primary.opacity(0.055)).frame(height:1)
+        .background(hoveredRequirementId == item.recordId
+                    ? Color.primary.opacity(0.045) : Color.clear,
+                    in:RoundedRectangle(cornerRadius:9,style:.continuous))
+        .onHover { hovering in
+            hoveredRequirementId = hovering ? item.recordId : nil
         }
         .accessibilityIdentifier("zen.requirement.list.\(item.recordId)")
     }
