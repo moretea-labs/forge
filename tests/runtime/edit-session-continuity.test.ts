@@ -16,6 +16,7 @@ import {
   finalizeEditSession,
   getEditSession,
   listEditSessions,
+  verifyEditSession,
   type EditSessionBinding,
 } from '../../src/runtime/editing/edit-session';
 import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
@@ -1617,6 +1618,68 @@ test('validation input fingerprint includes check reads and ignores unrelated HE
 
   writeFileSync(join(fx.repoRoot, 'dep.txt'), 'dependency changed\n');
   expect(editSessionValidationInputFingerprint(fx.repoRoot, session.sessionId, ['verify'])).not.toBe(before);
+});
+
+test('sync verifyEditSession keeps validation-input fingerprint under unrelated dirty (#713/#714)', () => {
+  const fx = fixture();
+  mkdirSync(join(fx.repoRoot, '.forge'), { recursive: true });
+  writeFileSync(
+    join(fx.repoRoot, '.forge', 'checks.json'),
+    JSON.stringify({
+      version: 1,
+      checks: {
+        verify: {
+          description: 'owned-source sync verify',
+          command: [
+            process.execPath,
+            '-e',
+            "const fs=require('fs'); if(!fs.readFileSync('source.ts','utf8').includes('value = 2')) process.exit(9); process.exit(0);",
+          ],
+          timeoutMs: 10_000,
+          effects: { reads: ['source.ts'] },
+        },
+      },
+    }),
+  );
+  spawnSync('git', ['add', '.forge/checks.json'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'add sync verify check'], { cwd: fx.repoRoot });
+
+  const binding = durableBinding();
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Sync verify under concurrent dirty',
+    allowedPaths: ['source.ts'],
+    checks: ['verify'],
+    binding,
+  });
+  applyEditOperations(
+    fx.repoRoot,
+    fx.policy,
+    session.sessionId,
+    [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        expectedSha256: sha256(fx.initial),
+        replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+      },
+    ],
+    { binding },
+  );
+
+  writeFileSync(join(fx.repoRoot, 'other-writer.ts'), 'export const foreign = 1;\n');
+  writeFileSync(join(fx.repoRoot, 'noise.md'), 'untracked concurrent noise\n');
+
+  const checked = verifyEditSession(fx.repoRoot, session.sessionId, { checkIds: ['verify'] });
+  expect(checked.status).toBe('checked');
+  expect(checked.validatedWorkspaceFingerprint).toBeTruthy();
+  expect(checked.validatedOutsideWorkspaceFingerprint).toBeTruthy();
+  expect(checked.validatedWorkspaceFingerprint).toBe(
+    editSessionValidationInputFingerprint(fx.repoRoot, session.sessionId, ['verify']),
+  );
+  expect(finalizeEditSession(fx.repoRoot, session.sessionId, { binding }).status).toBe('finalized');
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toContain('value = 2');
+  expect(readFileSync(join(fx.repoRoot, 'other-writer.ts'), 'utf8')).toContain('foreign = 1');
+  expect(readFileSync(join(fx.repoRoot, 'noise.md'), 'utf8')).toContain('concurrent noise');
 });
 
 test('validation survives unrelated concurrent dirty and second-session edits (#713)', async () => {

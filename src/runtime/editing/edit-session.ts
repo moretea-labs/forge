@@ -2381,6 +2381,30 @@ export function createEditSavepoint(repoRoot: string, sessionId: string, nameVal
   return session;
 }
 
+/**
+ * Sync/async verify capture the same validation-input identity as the Process
+ * coordinator (#713/#714): session paths ∪ declared check reads. Unrelated
+ * concurrent dirty must not clear a successful verification fingerprint.
+ */
+function captureStableVerificationFingerprints(
+  repoRoot: string,
+  sessionId: string,
+  checkIds: readonly string[],
+  beforeInput: string,
+  beforeOutside: string,
+): {
+  validatedWorkspaceFingerprint?: string;
+  validatedOutsideWorkspaceFingerprint?: string;
+} {
+  if (checkIds.length === 0) return {};
+  const afterInput = editSessionValidationInputFingerprint(repoRoot, sessionId, checkIds);
+  if (afterInput !== beforeInput) return {};
+  return {
+    validatedWorkspaceFingerprint: beforeInput,
+    validatedOutsideWorkspaceFingerprint: beforeOutside,
+  };
+}
+
 export function verifyEditSession(
   repoRoot: string,
   sessionId: string,
@@ -2391,10 +2415,12 @@ export function verifyEditSession(
   } = {},
 ): EditSession {
   const request = resolveVerificationRequest(repoRoot, sessionId, input);
-  const checkedInput = request.checkIds.length ? verifiedWorkspaceInput(repoRoot) : undefined;
-  const checkedOutsideInput = checkedInput
-    ? verifiedWorkspaceInput(repoRoot, sessionTrackedPaths(request.session))
-    : undefined;
+  const beforeInput =
+    request.checkIds.length > 0
+      ? editSessionValidationInputFingerprint(repoRoot, sessionId, request.checkIds)
+      : undefined;
+  const beforeOutside =
+    beforeInput !== undefined ? editSessionOutsideWorkspaceFingerprint(repoRoot, sessionId) : undefined;
   const results = request.checkIds.map((checkId) => {
     try {
       return checkRecord(runControllerCheck(repoRoot, checkId));
@@ -2407,15 +2433,16 @@ export function verifyEditSession(
       } satisfies EditSessionCheckRecord;
     }
   });
+  const fingerprints =
+    beforeInput !== undefined && beforeOutside !== undefined
+      ? captureStableVerificationFingerprints(repoRoot, sessionId, request.checkIds, beforeInput, beforeOutside)
+      : {};
   return persistVerificationResult(repoRoot, request.session, {
     checkIds: request.checkIds,
     reviewer: request.reviewer,
     note: request.note,
     results,
-    validatedWorkspaceFingerprint:
-      checkedInput && verifiedWorkspaceInput(repoRoot) === checkedInput ? checkedInput : undefined,
-    validatedOutsideWorkspaceFingerprint:
-      checkedInput && verifiedWorkspaceInput(repoRoot) === checkedInput ? checkedOutsideInput : undefined,
+    ...fingerprints,
   });
 }
 
@@ -2433,10 +2460,12 @@ export async function verifyEditSessionAsync(
   } = {},
 ): Promise<EditSession> {
   const request = resolveVerificationRequest(repoRoot, sessionId, input);
-  const checkedInput = request.checkIds.length ? verifiedWorkspaceInput(repoRoot) : undefined;
-  const checkedOutsideInput = checkedInput
-    ? verifiedWorkspaceInput(repoRoot, sessionTrackedPaths(request.session))
-    : undefined;
+  const beforeInput =
+    request.checkIds.length > 0
+      ? editSessionValidationInputFingerprint(repoRoot, sessionId, request.checkIds)
+      : undefined;
+  const beforeOutside =
+    beforeInput !== undefined ? editSessionOutsideWorkspaceFingerprint(repoRoot, sessionId) : undefined;
   const results: EditSessionCheckRecord[] = [];
   for (const checkId of request.checkIds) {
     try {
@@ -2455,15 +2484,16 @@ export async function verifyEditSessionAsync(
     }
   }
   assertCurrentHashes(repoRoot, request.session);
+  const fingerprints =
+    beforeInput !== undefined && beforeOutside !== undefined
+      ? captureStableVerificationFingerprints(repoRoot, sessionId, request.checkIds, beforeInput, beforeOutside)
+      : {};
   return persistVerificationResult(repoRoot, request.session, {
     checkIds: request.checkIds,
     reviewer: request.reviewer,
     note: request.note,
     results,
-    validatedWorkspaceFingerprint:
-      checkedInput && verifiedWorkspaceInput(repoRoot) === checkedInput ? checkedInput : undefined,
-    validatedOutsideWorkspaceFingerprint:
-      checkedInput && verifiedWorkspaceInput(repoRoot) === checkedInput ? checkedOutsideInput : undefined,
+    ...fingerprints,
   });
 }
 
