@@ -12,11 +12,7 @@ import type { RepositoryRecord } from '../../../core/repository/types';
 import { repositoryGitStatus } from '../../repositories/structured-git';
 import { selectRepositoryCheckout } from '../../repositories/registry';
 import { executionIdentityForRepository } from './execution-identity';
-import {
-  commandFingerprint,
-  verificationInputFingerprint,
-  workspaceValidationFingerprint,
-} from './verification-evidence';
+import { verificationInputFingerprint } from './verification-evidence';
 import {
   claimsForCheck,
   getProcessRecord,
@@ -44,9 +40,8 @@ export interface EditValidationRunState {
   /** Exact Work verification source identity captured before any lane starts. */
   sourceRevision?: string;
   /**
-   * Validation-input fingerprint. For sessions with tracked paths this is the
-   * owned-path identity (#713); unscoped sessions keep the whole-workspace
-   * fingerprint. Unrelated concurrent dirty must not invalidate the run.
+   * Validation-input fingerprint (session paths ∪ declared check reads).
+   * Unrelated concurrent dirty must not invalidate the run (#713/#714).
    */
   workspaceFingerprint?: string;
   outsideWorkspaceFingerprint?: string;
@@ -467,13 +462,15 @@ export async function reconcileEditValidationRun(
       );
     }
   }
-  // Bind validation to session paths + declared check reads (#713). Runs that
-  // still carry a whole-workspace fingerprint (whole-tree readers / legacy)
-  // compare the full tree; unrelated concurrent dirty must not fail the run.
-  const currentInputFingerprint =
-    run.outsideWorkspaceFingerprint !== undefined
-      ? editSessionValidationInputFingerprint(validationRepository.canonicalRoot, run.editSessionId, run.checkIds)
-      : workspaceValidationFingerprint(validationRepository.canonicalRoot, status);
+  // Always bind validation to session paths + declared check reads (#713/#714).
+  // Whole-workspace equality is not an acceptance gate: unrelated concurrent
+  // dirty must not fail the run. Legacy runs sealed against a whole-tree digest
+  // need a fresh validation attempt under the current input fingerprint.
+  const currentInputFingerprint = editSessionValidationInputFingerprint(
+    validationRepository.canonicalRoot,
+    run.editSessionId,
+    run.checkIds,
+  );
   if (currentInputFingerprint !== run.workspaceFingerprint) {
     return failedRun(
       controllerHome,

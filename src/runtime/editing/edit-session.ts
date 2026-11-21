@@ -440,10 +440,11 @@ export function editSessionSourceRevisionTouchesValidationInput(
 
 function validatedEditSessionInputMatches(repoRoot: string, session: EditSession): boolean {
   if (!session.validatedWorkspaceFingerprint) return false;
-  if (session.validatedOutsideWorkspaceFingerprint !== undefined) {
-    return editSessionValidationInputFingerprint(repoRoot, session.sessionId) === session.validatedWorkspaceFingerprint;
-  }
-  return verifiedWorkspaceInput(repoRoot) === session.validatedWorkspaceFingerprint;
+  // Always compare validation-input identity. Whole-workspace equality is not an
+  // acceptance gate: unrelated concurrent dirty must not invalidate owned-path
+  // evidence (#713/#714). Legacy seals that stored a whole-tree digest need a
+  // fresh verify against the current validation-input fingerprint.
+  return editSessionValidationInputFingerprint(repoRoot, session.sessionId) === session.validatedWorkspaceFingerprint;
 }
 
 /** Only a descendant commit touching exactly the owned after-image paths may reconcile a checked edit. */
@@ -1532,8 +1533,10 @@ function persistVerificationResult(
     input.results.length && input.results.every((result) => result.ok)
       ? input.validatedWorkspaceFingerprint
       : undefined;
+  // Preserve a previously captured outside digest when a re-record only reseals
+  // the validation-input identity (thin harness / receipt replay paths).
   session.validatedOutsideWorkspaceFingerprint = session.validatedWorkspaceFingerprint
-    ? input.validatedOutsideWorkspaceFingerprint
+    ? (input.validatedOutsideWorkspaceFingerprint ?? session.validatedOutsideWorkspaceFingerprint)
     : undefined;
   session.requestedChecks = input.checkIds;
   session.checkResults = input.results;
@@ -1588,22 +1591,15 @@ export function recordEditSessionProcessCheckReceipts(
     );
   }
   if (input.receipts.length) {
-    // Prefer validation-input identity when the coordinator captured one (#713).
-    // Whole-workspace equality still applies for legacy callers that only pass
-    // validatedWorkspaceFingerprint.
-    if (input.validatedOutsideWorkspaceFingerprint !== undefined) {
-      const current = editSessionValidationInputFingerprint(
-        repoRoot,
-        session.sessionId,
-        input.receipts.map((receipt) => receipt.checkId),
-      );
-      if (!input.validatedWorkspaceFingerprint || current !== input.validatedWorkspaceFingerprint) {
-        throw new Error('EDIT_VALIDATION_WORKSPACE_CHANGED');
-      }
-    } else if (
-      !input.validatedWorkspaceFingerprint ||
-      verifiedWorkspaceInput(repoRoot) !== input.validatedWorkspaceFingerprint
-    ) {
+    // Always seal against validation-input identity. Whole-workspace equality
+    // is not an acceptance gate: unrelated concurrent dirty must not invalidate
+    // owned-path evidence (#713/#714).
+    const current = editSessionValidationInputFingerprint(
+      repoRoot,
+      session.sessionId,
+      input.receipts.map((receipt) => receipt.checkId),
+    );
+    if (!input.validatedWorkspaceFingerprint || current !== input.validatedWorkspaceFingerprint) {
       throw new Error('EDIT_VALIDATION_WORKSPACE_CHANGED');
     }
   }

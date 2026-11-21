@@ -3,7 +3,7 @@ import { join } from 'path';
 import { scopedOperationRoot } from '../../../effects/controller-home';
 import { readJsonFile, sanitizeFileComponent } from '../../shared/json-files';
 import type { ProcessCheckExecutionIdentity } from '../../evidence/process-check-execution';
-import { listControlPlaneRecords, readOrImportControlPlaneRecord } from '../persistence/sqlite-store';
+import { listControlPlaneRecords, readControlPlaneRecord } from '../persistence/sqlite-store';
 
 export const WORK_HANDLE_STATES = [
   'prepared',
@@ -94,9 +94,7 @@ export interface WorkCleanupReceipt {
   blockers: string[];
 }
 
-export type WorkFinalizationFailureCode =
-  | 'WORK_HANDLE_HEAD_CHANGED'
-  | 'WORK_TARGET_ADVANCE_LINEAR_HISTORY_VIOLATION';
+export type WorkFinalizationFailureCode = 'WORK_HANDLE_HEAD_CHANGED' | 'WORK_TARGET_ADVANCE_LINEAR_HISTORY_VIOLATION';
 
 export interface WorkFinalizationStages {
   validation: 'pending' | 'done' | 'failed';
@@ -115,12 +113,15 @@ export interface WorkValidationRunState {
   workspaceFingerprint: string;
   requestedChecks: string[];
   resumeState: WorkHandleStateName;
-  processes: Record<string, {
-    processId: string;
-    requestId: string;
-    /** Exact producer-side Check identity for this Work verification snapshot. */
-    checkExecution?: ProcessCheckExecutionIdentity;
-  }>;
+  processes: Record<
+    string,
+    {
+      processId: string;
+      requestId: string;
+      /** Exact producer-side Check identity for this Work verification snapshot. */
+      checkExecution?: ProcessCheckExecutionIdentity;
+    }
+  >;
 }
 
 export interface WorkHandleState {
@@ -201,22 +202,32 @@ export function resolveWorkDeliveryTargetBranch(
 }
 
 function workHandlePath(controllerHome: string, handle: Pick<WorkHandleState, 'repositoryId' | 'workId'>): string {
-  return join(scopedOperationRoot(controllerHome, handle.repositoryId), 'work-handles', `${sanitizeFileComponent(handle.workId)}.json`);
+  return join(
+    scopedOperationRoot(controllerHome, handle.repositoryId),
+    'work-handles',
+    `${sanitizeFileComponent(handle.workId)}.json`,
+  );
 }
 
-export function readWorkHandle(controllerHome: string, repositoryId: string, workId: string): WorkHandleState | undefined {
+export function readWorkHandle(
+  controllerHome: string,
+  repositoryId: string,
+  workId: string,
+): WorkHandleState | undefined {
   const path = workHandlePath(controllerHome, { repositoryId, workId });
-  const record = readOrImportControlPlaneRecord<WorkHandleState>(controllerHome, {
-    namespace: 'execution_work_handle',
-    scope: repositoryId,
-    key: sanitizeFileComponent(workId),
-    schemaVersion: 1,
-    readLegacy: () => existsSync(path) ? readJsonFile<WorkHandleState>(path) : undefined,
-  });
-  const handle = record?.value;
-  if (!handle || !record) return undefined;
-  if (handle.workId !== workId || handle.repositoryId !== repositoryId) throw new Error('WORK_HANDLE_IDENTITY_MISMATCH');
-  return { ...handle, recordRevision: record.revision };
+  // WorkHandle is retired historical evidence. Reading must not import legacy
+  // JSON into SQLite or create an executable/liveness owner as a side effect.
+  const record = readControlPlaneRecord<WorkHandleState>(
+    controllerHome,
+    'execution_work_handle',
+    repositoryId,
+    sanitizeFileComponent(workId),
+  );
+  const handle = record?.value ?? (existsSync(path) ? readJsonFile<WorkHandleState>(path) : undefined);
+  if (!handle) return undefined;
+  if (handle.workId !== workId || handle.repositoryId !== repositoryId)
+    throw new Error('WORK_HANDLE_IDENTITY_MISMATCH');
+  return record ? { ...handle, recordRevision: record.revision } : handle;
 }
 
 export function listWorkHandles(controllerHome: string, repositoryId: string, limit = 5_000): WorkHandleState[] {
@@ -232,10 +243,7 @@ export function listWorkHandles(controllerHome: string, repositoryId: string, li
  * reached. Cleanup/recovery readers use this only to avoid acting on incomplete legacy inventory.
  * This function grants no Work lifecycle or repository mutation authority.
  */
-export function listWorkHandlesFailClosed(
-  controllerHome: string,
-  repositoryId: string,
-): WorkHandleState[] {
+export function listWorkHandlesFailClosed(controllerHome: string, repositoryId: string): WorkHandleState[] {
   const handles = listWorkHandles(controllerHome, repositoryId, 5_000);
   // SQLite caps inventory at 5,000. Reaching the cap cannot prove absence of
   // newer physical Writers or complete resource ownership; reject rather than

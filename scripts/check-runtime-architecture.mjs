@@ -1222,6 +1222,11 @@ requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts
 requireMissing('src/runtime/control-plane/execution/work-revision-diff.ts');
 requireMissing('src/runtime/control-plane/execution/work-lifecycle-audit.ts');
 forbid(
+  'src/runtime/control-plane/execution/work-handle-store.ts',
+  /readOrImportControlPlaneRecord|\b(?:writeControlPlaneRecord|mutateControlPlaneRecord)\s*\(/,
+  'legacy WorkHandle readers must never import or mutate persisted historical records',
+);
+forbid(
   'src/runtime/root/controller-services.ts',
   /initializeWorkCandidateIndex|readActiveWorkCandidates/,
   'Runtime startup must not initialize legacy Work active-admission indexes',

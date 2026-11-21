@@ -16,9 +16,11 @@ import {
   finalizeEditSession,
   getEditSession,
   listEditSessions,
+  recordEditSessionProcessCheckReceipts,
   verifyEditSession,
   type EditSessionBinding,
 } from '../../src/runtime/editing/edit-session';
+import type { ProcessCheckCompletionReceipt } from '../../src/runtime/execution/process-runtime/check-receipt';
 import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import { startOrJoinEditValidation } from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
 import { waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
@@ -1680,6 +1682,95 @@ test('sync verifyEditSession keeps validation-input fingerprint under unrelated 
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toContain('value = 2');
   expect(readFileSync(join(fx.repoRoot, 'other-writer.ts'), 'utf8')).toContain('foreign = 1');
   expect(readFileSync(join(fx.repoRoot, 'noise.md'), 'utf8')).toContain('concurrent noise');
+});
+
+test('recordEditSessionProcessCheckReceipts seals validation-input only under unrelated dirty (#714)', () => {
+  const fx = fixture();
+  mkdirSync(join(fx.repoRoot, '.forge'), { recursive: true });
+  writeFileSync(
+    join(fx.repoRoot, '.forge', 'checks.json'),
+    JSON.stringify({
+      version: 1,
+      checks: {
+        verify: {
+          description: 'owned-source receipt seal',
+          command: [
+            process.execPath,
+            '-e',
+            "const fs=require('fs'); if(!fs.readFileSync('source.ts','utf8').includes('value = 2')) process.exit(9); process.exit(0);",
+          ],
+          timeoutMs: 10_000,
+          effects: { reads: ['source.ts'] },
+        },
+      },
+    }),
+  );
+  spawnSync('git', ['add', '.forge/checks.json'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'add receipt seal check'], { cwd: fx.repoRoot });
+
+  const binding = durableBinding({
+    repoId: fx.repository.repoId,
+    checkoutId: fx.repository.activeCheckoutId,
+  });
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Receipt seal under concurrent dirty',
+    allowedPaths: ['source.ts'],
+    checks: ['verify'],
+    binding,
+  });
+  applyEditOperations(
+    fx.repoRoot,
+    fx.policy,
+    session.sessionId,
+    [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        expectedSha256: sha256(fx.initial),
+        replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+      },
+    ],
+    { binding },
+  );
+
+  const current = getEditSession(fx.repoRoot, session.sessionId);
+  writeFileSync(join(fx.repoRoot, 'other-writer.ts'), 'export const foreign = 1;\n');
+  writeFileSync(join(fx.repoRoot, 'noise.md'), 'untracked concurrent noise\n');
+
+  const fingerprint = editSessionValidationInputFingerprint(fx.repoRoot, session.sessionId, ['verify']);
+  const finishedAt = new Date().toISOString();
+  const receipt: ProcessCheckCompletionReceipt = {
+    schemaVersion: 1,
+    receiptId: 'receipt-714-validation-input',
+    resultDigest: 'digest-714-validation-input',
+    repoId: fx.repository.repoId,
+    checkoutId: fx.repository.activeCheckoutId,
+    editSessionId: session.sessionId,
+    editRevision: current.currentRevision,
+    checkId: 'verify',
+    processId: 'process-714-validation-input',
+    status: 'passed',
+    runtimeStatus: 'succeeded',
+    ok: true,
+    timedOut: false,
+    cancelled: false,
+    artifactPath: 'controller-home://checks/controller/latest-verify.json',
+    summary: 'owned-source receipt seal passed',
+    startedAt: finishedAt,
+    finishedAt,
+  };
+
+  // No outside fingerprint: legacy whole-tree compare would reject under dirty.
+  const sealed = recordEditSessionProcessCheckReceipts(fx.repoRoot, session.sessionId, {
+    repoId: fx.repository.repoId,
+    checkoutId: fx.repository.activeCheckoutId!,
+    receipts: [receipt],
+    validatedWorkspaceFingerprint: fingerprint,
+  });
+  expect(sealed.status).toBe('checked');
+  expect(sealed.validatedWorkspaceFingerprint).toBe(fingerprint);
+  expect(finalizeEditSession(fx.repoRoot, session.sessionId, { binding }).status).toBe('finalized');
+  expect(readFileSync(join(fx.repoRoot, 'other-writer.ts'), 'utf8')).toContain('foreign = 1');
 });
 
 test('validation survives unrelated concurrent dirty and second-session edits (#713)', async () => {
