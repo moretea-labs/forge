@@ -89,6 +89,38 @@ expect_failure 'concurrent HEAD successor' 'HEAD changed during validation' bash
 [[ "$(git --git-dir="$BARE" rev-parse main)" == "$REMOTE_BEFORE_CONCURRENT" ]] || fail "unvalidated successor reached remote"
 bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed' >/dev/null
 
+# A Writer racing *inside* git push must not publish a successor that was
+# created after the last HEAD identity check. The wrapper injects precisely
+# at the push invocation, later than script-level validation checks.
+printf 'push race candidate\n' >pending-push-race.ts
+git add pending-push-race.ts
+git commit -m 'test: validated before push race' >/dev/null
+VALIDATED_BEFORE_PUSH="$(git rev-parse HEAD)"
+mkdir -p "$TMP/git-wrapper"
+cat >"$TMP/git-wrapper/git" <<'GIT_WRAPPER'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == push && "${FORGE_TEST_PUSH_RACE:-}" == 1 && ! -e "${FORGE_TEST_PUSH_RACE_MARKER:-/dev/null}" ]]; then
+  printf '%s\n' "$*" >"$FORGE_TEST_PUSH_RACE_MARKER"
+  "$FORGE_TEST_REAL_GIT" -c user.name='Concurrent Writer' -c user.email=writer@example.invalid \
+    commit --allow-empty -qm 'test: successor created inside git push'
+fi
+exec "$FORGE_TEST_REAL_GIT" "$@"
+GIT_WRAPPER
+chmod +x "$TMP/git-wrapper/git"
+expect_failure 'racing Writer at push dispatch' 'main synchronization did not converge' \
+  env PATH="$TMP/git-wrapper:$PATH" FORGE_TEST_PUSH_RACE=1 \
+  FORGE_TEST_PUSH_RACE_MARKER="$TMP/push-race-marker" \
+  FORGE_TEST_REAL_GIT="$(command -v git)" \
+  bash scripts/sync-main.sh --check-command "test \"\$FORGE_CHECK_SOURCE_QUALITY_MODE\" = committed"
+[[ -f "$TMP/push-race-marker" ]] || fail "push-race fixture did not inject a successor"
+[[ "$(git --git-dir="$BARE" rev-parse main)" == "$VALIDATED_BEFORE_PUSH" ]] ||
+  fail "unvalidated successor was pushed after the final HEAD check"
+[[ "$(git rev-parse HEAD)" != "$VALIDATED_BEFORE_PUSH" ]] ||
+  fail "push-race fixture did not advance local HEAD"
+# The next invocation validates that successor before allowing publication.
+bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed' >/dev/null
+
 # A remote-only fast-forward is synchronized without touching unrelated dirt.
 git clone "$BARE" "$OTHER" >/dev/null 2>&1
 cd "$OTHER"

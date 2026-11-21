@@ -186,7 +186,10 @@ read -r ahead behind < <(sync_refs)
 if [[ "$ahead" -gt 0 ]]; then
   [[ "$(git rev-parse HEAD)" == "$VALIDATED_HEAD" ]] || fail "HEAD changed since validation; refusing to push unvalidated successor commits"
   echo "[sync-main] pushing $ahead commit(s) to $REMOTE/$BRANCH (fast-forward only)"
-  if push_output="$(git push "$REMOTE" "$BRANCH:$BRANCH" 2>&1)"; then
+  # Push the exact validated commit object, not a moving local branch ref.
+  # Another Writer can advance main after the last HEAD check but before
+  # Git resolves push refs; that successor was never included in this Gate.
+  if push_output="$(git push "$REMOTE" "$VALIDATED_HEAD:refs/heads/$BRANCH" 2>&1)"; then
     printf '%s\n' "$push_output"
     if grep -qi 'Bypassed rule violations' <<<"$push_output"; then
       echo "[sync-main] WARNING: GitHub accepted the direct push by bypassing a required status check; the local Main gate passed, but remote branch protection still needs review" >&2
