@@ -1,13 +1,8 @@
-import { initializeWorkCandidateIndex } from '../../../packages/kernel/work/api/index';
 import {
   inspectControlPlaneDatabase,
   type ControlPlaneDatabaseInspection,
 } from '../control-plane/persistence/sqlite-store';
-import type {
-  RuntimeControllerSnapshot,
-  RuntimeReadiness,
-  RuntimeReleaseManifest,
-} from './types';
+import type { RuntimeControllerSnapshot, RuntimeReadiness, RuntimeReleaseManifest } from './types';
 
 export class RuntimeControllerServices {
   private initializedDatabase?: ControlPlaneDatabaseInspection;
@@ -17,12 +12,13 @@ export class RuntimeControllerServices {
     private readonly runtimeInstanceId: string,
     private readonly release: RuntimeReleaseManifest,
     private readonly readiness: () => RuntimeReadiness,
-    private readonly inspectDatabase: (controllerHome: string) => ControlPlaneDatabaseInspection = inspectControlPlaneDatabase,
+    private readonly inspectDatabase: (
+      controllerHome: string,
+    ) => ControlPlaneDatabaseInspection = inspectControlPlaneDatabase,
   ) {}
 
   initialize(): ControlPlaneDatabaseInspection {
     this.initializedDatabase = this.inspectDatabase(this.controllerHome);
-    initializeWorkCandidateIndex(this.controllerHome);
     return this.initializedDatabase;
   }
 

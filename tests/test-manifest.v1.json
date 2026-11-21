@@ -959,6 +959,10 @@
       "module": "controller",
       "resource": "pure"
     },
+    "tests/runtime/work-retirement-startup.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/workflow-asset-storage.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"

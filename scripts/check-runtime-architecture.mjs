@@ -1221,6 +1221,22 @@ requireMissing('src/runtime/control-plane/facade/goal-workloop-access.ts');
 requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts');
 requireMissing('src/runtime/control-plane/execution/work-revision-diff.ts');
 forbid(
+  'src/runtime/root/controller-services.ts',
+  /initializeWorkCandidateIndex|readActiveWorkCandidates/,
+  'Runtime startup must not initialize legacy Work active-admission indexes',
+);
+forbid(
+  'packages/kernel/work/infrastructure/work-contract-store.ts',
+  /\b(?:initializeWorkCandidateIndex|readActiveWorkCandidates)\b/,
+  'historical Work storage must not rebuild an active Work admission projection',
+);
+requireText('AGENTS.md', '**Work lifecycle is retired (no opt-in).**');
+forbid(
+  'AGENTS.md',
+  /Work is explicit opt-in|Work may provide bounded verification and Work-scoped identity/,
+  'repository guidance must not authorize the retired Work lifecycle',
+);
+forbid(
   'adapters/mcp/runtime-gateway/work-adapter.ts',
   /ImplementationReview|executeWorkVerification|work_finalize/,
   'rh_work must not regain review, verification, or finalization behavior authority',

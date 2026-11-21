@@ -22,7 +22,7 @@ Forge 是本地优先的 ChatGPT MCP 执行工具，支持授权范围内的电�
 
 普通 ChatGPT Connector 默认暴露 **19 个 MCP 工具**。`rh_status`、`rh_access`、`rh_inbox`、`rh_context`、`rh_work` 五个 facade 覆盖主要控制循环，其余默认工具负责仓库、源码/补丁、check、Process、插件分发与结果读取。
 
-Forge 默认 Direct-first：仅调查不会创建 durable Work；只有真正需要隔离时才建立 worktree。长命令由同一个 Process 生命周期管理，并返回有界摘要与可继续读取的引用。
+Forge 默认 Direct-first：Work / WorkHandle 一等执行生命周期已退役，普通开发和调查都不创建、恢复或要求 Work；只有真正需要隔离时才建立 worktree。长命令由同一个 Process 生命周期管理，并返回有界摘要与可继续读取的引用。
 
 ## 文档地图
 

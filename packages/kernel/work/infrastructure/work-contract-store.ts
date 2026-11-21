@@ -6,9 +6,8 @@ import { readJsonFile, sanitizeFileComponent } from '../../../../src/runtime/sha
 import {
   listControlPlaneRecordKeys,
   listControlPlaneRecords,
-  listControlPlaneRecordsWithinTransaction,
   listControlPlaneRecordsExcludingPayloadTextValues,
-  initializeControlPlanePayloadTextExclusionIndex,
+  listControlPlaneRecordsWithinTransaction,
   readControlPlaneRecord,
   readControlPlaneRecordWithinTransaction,
   withControlPlaneReadDatabase,
@@ -44,23 +43,6 @@ export interface ListWorkContractOptions extends WorkContractStoreOptions {
   /** Explicit pagination for complete internal historical inventory. */
   offset?: number;
   detailLevel?: 'summary' | 'detail' | 'raw';
-}
-
-export interface InvalidActiveWorkCandidate {
-  workId: string;
-  updatedAt: string;
-  checkoutId?: string;
-  requirementId?: string;
-  planId?: string;
-  planStepId?: string;
-  semanticScopeKeys: string[];
-  isolation: 'shared' | 'isolated';
-  error: string;
-}
-
-export interface ActiveWorkCandidateSnapshot {
-  contracts: WorkContract[];
-  invalid: InvalidActiveWorkCandidate[];
 }
 
 export interface WorkContractLineageSnapshot {
@@ -130,7 +112,10 @@ export function semanticWorkState(work: Pick<WorkContract, 'semanticState'>): Se
 }
 
 export function workSemanticView(work: WorkContract): WorkSemanticView {
-  const resultRefs = [...new Set((work.semanticResultRefs ?? []).map((value) => value.trim()).filter(Boolean))].slice(0, 100);
+  const resultRefs = [...new Set((work.semanticResultRefs ?? []).map((value) => value.trim()).filter(Boolean))].slice(
+    0,
+    100,
+  );
   return {
     workId: work.workId,
     revision: currentWorkSemanticRevision(work),
@@ -138,11 +123,17 @@ export function workSemanticView(work: WorkContract): WorkSemanticView {
     objective: work.objective,
     state: semanticWorkState(work),
     ...(work.requirementId?.trim() ? { requirementId: work.requirementId.trim() } : {}),
-    ...(Number.isInteger(work.requirementRevision) && Number(work.requirementRevision) > 0 ? { requirementRevision: Number(work.requirementRevision) } : {}),
+    ...(Number.isInteger(work.requirementRevision) && Number(work.requirementRevision) > 0
+      ? { requirementRevision: Number(work.requirementRevision) }
+      : {}),
     ...(work.planId?.trim() ? { planId: work.planId.trim() } : {}),
-    ...(Number.isInteger(work.planRevision) && Number(work.planRevision) > 0 ? { planRevision: Number(work.planRevision) } : {}),
+    ...(Number.isInteger(work.planRevision) && Number(work.planRevision) > 0
+      ? { planRevision: Number(work.planRevision) }
+      : {}),
     ...(work.semanticParentWorkId?.trim() ? { semanticParentWorkId: work.semanticParentWorkId.trim() } : {}),
-    ...(normalizeWorkObjectiveRelationIds(work.dependsOnWorkIds).length > 0 ? { dependsOnWorkIds: normalizeWorkObjectiveRelationIds(work.dependsOnWorkIds) } : {}),
+    ...(normalizeWorkObjectiveRelationIds(work.dependsOnWorkIds).length > 0
+      ? { dependsOnWorkIds: normalizeWorkObjectiveRelationIds(work.dependsOnWorkIds) }
+      : {}),
     resultRefs,
     createdAt: work.createdAt,
     updatedAt: work.semanticUpdatedAt ?? work.createdAt,
@@ -163,7 +154,8 @@ function validateWorkObjectiveRelationIntegrity(candidate: WorkContract, contrac
   for (const relatedWorkId of [...(parent ? [parent] : []), ...dependencies]) {
     const related = byId.get(relatedWorkId);
     if (!related) throw new Error(`WORK_OBJECTIVE_RELATION_NOT_FOUND: ${relatedWorkId}`);
-    if ((related.lifecycleRole ?? 'primary') !== 'primary') throw new Error(`WORK_OBJECTIVE_RELATION_TARGET_NOT_PRIMARY: ${relatedWorkId}`);
+    if ((related.lifecycleRole ?? 'primary') !== 'primary')
+      throw new Error(`WORK_OBJECTIVE_RELATION_TARGET_NOT_PRIMARY: ${relatedWorkId}`);
   }
   const seenParents = new Set<string>();
   let parentCursor = parent;
@@ -179,8 +171,9 @@ function validateWorkObjectiveRelationIntegrity(candidate: WorkContract, contrac
     visiting.add(workId);
     const work = byId.get(workId);
     if (!work) return false;
-    return normalizeWorkObjectiveRelationIds(work.dependsOnWorkIds)
-      .some((dependency) => dependencyReachesCandidate(dependency, visiting));
+    return normalizeWorkObjectiveRelationIds(work.dependsOnWorkIds).some((dependency) =>
+      dependencyReachesCandidate(dependency, visiting),
+    );
   };
   for (const dependency of dependencies) {
     if (dependencyReachesCandidate(dependency, new Set())) throw new Error('WORK_DEPENDENCY_CYCLE');
@@ -195,66 +188,83 @@ function initialPhaseEvidenceForNewWork(
   input: Pick<WorkContract, 'phase' | 'evidenceRefs' | 'updatedAt'> & { phaseState?: WorkPhaseEvidenceState },
 ): WorkPhaseEvidenceMap {
   const currentIndex = phaseIndex(input.phase);
-  return Object.fromEntries((['implementation', 'verification', 'review', 'delivery', 'cleanup'] as WorkPhase[]).map((phase) => {
-    const index = phaseIndex(phase);
-    const state: WorkPhaseEvidenceState = index < currentIndex
-      ? 'satisfied'
-      : index > currentIndex
-        ? 'pending'
-        : input.phaseState ?? 'active';
-    return [phase, {
-      state,
-      source: 'recorded' as const,
-      summary: index < currentIndex
-        ? `Canonical Work was admitted after phase ${phase}.`
-        : index > currentIndex
-          ? `Waiting for Work phase ${phase}.`
-          : `Canonical Work admitted in ${phase}.`,
-      evidenceRefs: index <= currentIndex ? input.evidenceRefs.slice(0, 20) : [],
-      recordedAt: input.updatedAt,
-    } satisfies WorkPhaseEvidence];
-  })) as WorkPhaseEvidenceMap;
+  return Object.fromEntries(
+    (['implementation', 'verification', 'review', 'delivery', 'cleanup'] as WorkPhase[]).map((phase) => {
+      const index = phaseIndex(phase);
+      const state: WorkPhaseEvidenceState =
+        index < currentIndex ? 'satisfied' : index > currentIndex ? 'pending' : (input.phaseState ?? 'active');
+      return [
+        phase,
+        {
+          state,
+          source: 'recorded' as const,
+          summary:
+            index < currentIndex
+              ? `Canonical Work was admitted after phase ${phase}.`
+              : index > currentIndex
+                ? `Waiting for Work phase ${phase}.`
+                : `Canonical Work admitted in ${phase}.`,
+          evidenceRefs: index <= currentIndex ? input.evidenceRefs.slice(0, 20) : [],
+          recordedAt: input.updatedAt,
+        } satisfies WorkPhaseEvidence,
+      ];
+    }),
+  ) as WorkPhaseEvidenceMap;
 }
 
 function legacyPhaseEvidence(
-  contract: Pick<WorkContract, 'phase' | 'evidenceRefs' | 'completionReceipt' | 'updatedAt'> & { legacyStatus?: 'open' | 'running' | 'blocked' | 'ready' | 'completed' | 'failed' | 'cancelled' },
+  contract: Pick<WorkContract, 'phase' | 'evidenceRefs' | 'completionReceipt' | 'updatedAt'> & {
+    legacyStatus?: 'open' | 'running' | 'blocked' | 'ready' | 'completed' | 'failed' | 'cancelled';
+  },
   source: WorkPhaseEvidence['source'] = 'legacy_inferred',
 ): WorkPhaseEvidenceMap {
   const currentIndex = phaseIndex(contract.phase);
   const completedByReceipt = Boolean(contract.completionReceipt);
-  return Object.fromEntries((['implementation', 'verification', 'review', 'delivery', 'cleanup'] as WorkPhase[]).map((phase) => {
-    const index = phaseIndex(phase);
-    let state: WorkPhaseEvidenceState = index < currentIndex ? 'satisfied' : index === currentIndex ? 'active' : 'pending';
-    if (completedByReceipt) state = phase === 'review' ? 'skipped' : 'satisfied';
-    else if (contract.legacyStatus === 'failed' && phase === contract.phase) state = 'failed';
-    else if (contract.legacyStatus === 'cancelled' && phase === contract.phase) state = 'skipped';
-    const receiptId = contract.completionReceipt && (phase === 'delivery' || phase === 'cleanup')
-      ? contract.completionReceipt.receiptId
-      : undefined;
-    return [phase, {
-      state,
-      source: completedByReceipt ? 'recorded' : source,
-      summary: completedByReceipt
-        ? phase === 'review'
-          ? `Legacy completed Work predates first-class implementation review; review phase is compatibility-skipped without synthesizing approval.`
-          : `Phase ${phase} satisfied by Work completion receipt ${contract.completionReceipt!.receiptId}.`
-        : index < currentIndex
-          ? `Legacy Work advanced beyond ${phase}.`
-          : `Legacy Work phase ${phase} is ${state}.`,
-      evidenceRefs: contract.evidenceRefs.slice(0, 20),
-      recordedAt: contract.updatedAt,
-      ...(receiptId ? { receiptId } : {}),
-    } satisfies WorkPhaseEvidence];
-  })) as WorkPhaseEvidenceMap;
+  return Object.fromEntries(
+    (['implementation', 'verification', 'review', 'delivery', 'cleanup'] as WorkPhase[]).map((phase) => {
+      const index = phaseIndex(phase);
+      let state: WorkPhaseEvidenceState =
+        index < currentIndex ? 'satisfied' : index === currentIndex ? 'active' : 'pending';
+      if (completedByReceipt) state = phase === 'review' ? 'skipped' : 'satisfied';
+      else if (contract.legacyStatus === 'failed' && phase === contract.phase) state = 'failed';
+      else if (contract.legacyStatus === 'cancelled' && phase === contract.phase) state = 'skipped';
+      const receiptId =
+        contract.completionReceipt && (phase === 'delivery' || phase === 'cleanup')
+          ? contract.completionReceipt.receiptId
+          : undefined;
+      return [
+        phase,
+        {
+          state,
+          source: completedByReceipt ? 'recorded' : source,
+          summary: completedByReceipt
+            ? phase === 'review'
+              ? `Legacy completed Work predates first-class implementation review; review phase is compatibility-skipped without synthesizing approval.`
+              : `Phase ${phase} satisfied by Work completion receipt ${contract.completionReceipt!.receiptId}.`
+            : index < currentIndex
+              ? `Legacy Work advanced beyond ${phase}.`
+              : `Legacy Work phase ${phase} is ${state}.`,
+          evidenceRefs: contract.evidenceRefs.slice(0, 20),
+          recordedAt: contract.updatedAt,
+          ...(receiptId ? { receiptId } : {}),
+        } satisfies WorkPhaseEvidence,
+      ];
+    }),
+  ) as WorkPhaseEvidenceMap;
 }
 
 function migrateLegacyWorkContract(legacy: WorkContract): WorkContract {
   // One-way schema migration only: v1-v3 rows may still carry retired status.
   // v4 strips it permanently and keeps semanticState as the only Work lifecycle state.
   // Removal condition: once supported Controller Homes contain no schema<4 Work rows for one full release boundary, delete legacyStatus handling entirely.
-  const legacyStatus = (legacy as WorkContract & { status?: 'open' | 'running' | 'blocked' | 'ready' | 'completed' | 'failed' | 'cancelled' }).status;
-  const semanticState: SemanticWorkState = legacy.semanticState
-    ?? (legacyStatus === 'completed' ? 'completed' : legacyStatus === 'cancelled' ? 'cancelled' : 'open');
+  const legacyStatus = (
+    legacy as WorkContract & {
+      status?: 'open' | 'running' | 'blocked' | 'ready' | 'completed' | 'failed' | 'cancelled';
+    }
+  ).status;
+  const semanticState: SemanticWorkState =
+    legacy.semanticState ??
+    (legacyStatus === 'completed' ? 'completed' : legacyStatus === 'cancelled' ? 'cancelled' : 'open');
   // Phase is a mechanical checkpoint projection only. A legacy row without a
   // persisted phase is admitted at the neutral first checkpoint; terminal
   // status never advances phase, and status is never a phase-transition authority.
@@ -262,7 +272,7 @@ function migrateLegacyWorkContract(legacy: WorkContract): WorkContract {
     ? 'cleanup'
     : semanticState === 'completed'
       ? 'delivery'
-      : legacy.phase ?? 'implementation';
+      : (legacy.phase ?? 'implementation');
   const legacyDefaults = legacyPhaseEvidence({
     phase,
     legacyStatus,
@@ -273,10 +283,10 @@ function migrateLegacyWorkContract(legacy: WorkContract): WorkContract {
   const existingPhaseEvidence = legacy.phaseEvidence as Partial<WorkPhaseEvidenceMap> | undefined;
   const existingReview = existingPhaseEvidence?.review;
   const legacyReviewAdvancedPastCheckpoint = Boolean(
-    existingReview
-    && existingReview.source === 'legacy_inferred'
-    && existingReview.state === 'pending'
-    && phaseIndex(phase) > phaseIndex('review'),
+    existingReview &&
+      existingReview.source === 'legacy_inferred' &&
+      existingReview.state === 'pending' &&
+      phaseIndex(phase) > phaseIndex('review'),
   );
   const phaseEvidence: WorkPhaseEvidenceMap = existingPhaseEvidence
     ? {
@@ -287,7 +297,8 @@ function migrateLegacyWorkContract(legacy: WorkContract): WorkContract {
             ? {
                 ...existingReview,
                 state: 'skipped' as const,
-                summary: 'Legacy Work advanced beyond first-class implementation review before that checkpoint existed; compatibility-skipped without synthesizing Controller approval.',
+                summary:
+                  'Legacy Work advanced beyond first-class implementation review before that checkpoint existed; compatibility-skipped without synthesizing Controller approval.',
               }
             : existingReview
           : {
@@ -295,7 +306,8 @@ function migrateLegacyWorkContract(legacy: WorkContract): WorkContract {
               ...(phaseIndex(phase) > phaseIndex('review')
                 ? {
                     state: 'skipped' as const,
-                    summary: 'Legacy Work advanced beyond first-class implementation review; compatibility-skipped without synthesizing Controller approval.',
+                    summary:
+                      'Legacy Work advanced beyond first-class implementation review; compatibility-skipped without synthesizing Controller approval.',
                   }
                 : {}),
             },
@@ -317,12 +329,13 @@ function migrateLegacyWorkContract(legacy: WorkContract): WorkContract {
   // semantic terminal state, but migrate the obsolete label to the current
   // repository-change classification so terminal history remains readable and
   // cannot poison scheduler relay discovery forever.
-  const workKind = legacy.workKind === 'reconciliation'
-    && legacy.completionOutcome === 'completed_changed'
-    && legacy.completionReceipt
-    && isRepositoryCompletionReceipt(legacy.completionReceipt)
-    ? 'repository_change' as const
-    : legacy.workKind ?? 'repository_change';
+  const workKind =
+    legacy.workKind === 'reconciliation' &&
+    legacy.completionOutcome === 'completed_changed' &&
+    legacy.completionReceipt &&
+    isRepositoryCompletionReceipt(legacy.completionReceipt)
+      ? ('repository_change' as const)
+      : (legacy.workKind ?? 'repository_change');
   return validateWorkSemantics({
     ...legacyWithoutRetiredFields,
     schemaVersion: 4,
@@ -345,30 +358,38 @@ function migrateLegacyWorkContract(legacy: WorkContract): WorkContract {
 
 function validateCanonicalWorkContract(contract: WorkContract): WorkContract {
   if (contract.schemaVersion !== 4) {
-    throw new Error(`WORK_CONTRACT_SCHEMA_MIGRATION_REQUIRED: ${contract.workId}:schema=${String(contract.schemaVersion)}`);
+    throw new Error(
+      `WORK_CONTRACT_SCHEMA_MIGRATION_REQUIRED: ${contract.workId}:schema=${String(contract.schemaVersion)}`,
+    );
   }
   return validateWorkSemantics(contract);
 }
 
-function storedWorkContractNeedsMigration(contract: WorkContract, persistedSchemaVersion: number = contract.schemaVersion): boolean {
+function storedWorkContractNeedsMigration(
+  contract: WorkContract,
+  persistedSchemaVersion: number = contract.schemaVersion,
+): boolean {
   const phaseEvidence = contract.phaseEvidence as Partial<WorkPhaseEvidenceMap> | undefined;
   // Some pre-review-checkpoint rows were stamped with the current outer
   // schema while omitting only `review`. That exact historical shape remains
   // migration-compatible, but it must be persisted once rather than inferred
   // repeatedly by the normal read path.
-  const legacyReviewGap = persistedSchemaVersion === 3
-    && phaseEvidence
-    && !phaseEvidence.review
-    && phaseEvidence.implementation
-    && phaseEvidence.verification
-    && phaseEvidence.delivery
-    && phaseEvidence.cleanup;
-  return persistedSchemaVersion !== 4
-    || contract.semanticState === undefined
-    || Object.prototype.hasOwnProperty.call(contract as object, 'status')
-    || Object.prototype.hasOwnProperty.call(contract as object, 'allowedPaths')
-    || Object.prototype.hasOwnProperty.call(contract as object, 'forbiddenPaths')
-    || Boolean(legacyReviewGap);
+  const legacyReviewGap =
+    persistedSchemaVersion === 3 &&
+    phaseEvidence &&
+    !phaseEvidence.review &&
+    phaseEvidence.implementation &&
+    phaseEvidence.verification &&
+    phaseEvidence.delivery &&
+    phaseEvidence.cleanup;
+  return (
+    persistedSchemaVersion !== 4 ||
+    contract.semanticState === undefined ||
+    Object.hasOwn(contract as object, 'status') ||
+    Object.hasOwn(contract as object, 'allowedPaths') ||
+    Object.hasOwn(contract as object, 'forbiddenPaths') ||
+    Boolean(legacyReviewGap)
+  );
 }
 
 function workContractAtPersistedSchema(contract: WorkContract, persistedSchemaVersion: number): WorkContract {
@@ -377,7 +398,10 @@ function workContractAtPersistedSchema(contract: WorkContract, persistedSchemaVe
     : { ...contract, schemaVersion: persistedSchemaVersion as WorkContract['schemaVersion'] };
 }
 
-function canonicalizeStoredWorkContract(contract: WorkContract, persistedSchemaVersion: number = contract.schemaVersion): WorkContract {
+function canonicalizeStoredWorkContract(
+  contract: WorkContract,
+  persistedSchemaVersion: number = contract.schemaVersion,
+): WorkContract {
   // The control-plane record envelope is the persisted schema authority. Some
   // historical writers advanced the payload first, leaving it stamped v4 under
   // a v3 envelope. Read it as the envelope declares so the one-way migration
@@ -402,7 +426,11 @@ function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore
   // Normalize historical v1-v3 rows in memory only. Historical Work storage is
   // read-only; projected v4 shape is never committed by ordinary reads. Remove
   // this migration branch after supported Controller Homes report zero schema<4 rows.
-  return { schemaVersion: 4, updatedAt: store.updatedAt, contracts: store.contracts.map((contract) => canonicalizeStoredWorkContract(contract)) };
+  return {
+    schemaVersion: 4,
+    updatedAt: store.updatedAt,
+    contracts: store.contracts.map((contract) => canonicalizeStoredWorkContract(contract)),
+  };
 }
 
 export function readWorkContractStore(options: WorkContractStoreOptions): WorkContractStore {
@@ -466,10 +494,21 @@ export function readWorkGoalSnapshot(
       LIMIT 5001
     `);
     try {
-      return statement.all(requirementId, requirementId, planId, planId, SEMANTIC_SCOPE_KEY, SEMANTIC_SCOPE_KEY) as Array<{
-        record_key: string; schema_version: number; payload: string;
+      return statement.all(
+        requirementId,
+        requirementId,
+        planId,
+        planId,
+        SEMANTIC_SCOPE_KEY,
+        SEMANTIC_SCOPE_KEY,
+      ) as Array<{
+        record_key: string;
+        schema_version: number;
+        payload: string;
       }>;
-    } finally { statement.finalize?.(); }
+    } finally {
+      statement.finalize?.();
+    }
   });
   const contracts: WorkContract[] = [];
   const invalid: WorkContractLineageSnapshot['invalid'] = [];
@@ -484,7 +523,9 @@ export function readWorkGoalSnapshot(
     try {
       if (duplicates.has(row.record_key)) throw new Error('WORK_GOAL_IDENTITY_AMBIGUOUS');
       contracts.push(canonicalizeStoredWorkContract(raw, row.schema_version));
-    } catch (error) { invalid.push(lineageInvalidWork(raw, error, row.record_key)); }
+    } catch (error) {
+      invalid.push(lineageInvalidWork(raw, error, row.record_key));
+    }
   }
   return { contracts, invalid, truncated: rows.length > 5000 };
 }
@@ -494,15 +535,19 @@ function lineageInvalidWork(
   error: unknown,
   recordKey?: string,
 ): WorkContractLineageSnapshot['invalid'][number] {
-  const clean = (id: unknown): string | undefined => typeof id === 'string' && id.trim() ? id.trim() : undefined;
+  const clean = (id: unknown): string | undefined => (typeof id === 'string' && id.trim() ? id.trim() : undefined);
   return {
     workId: clean(raw.workId) ?? recordKey ?? '',
     ...(clean(raw.requirementId) ? { requirementId: clean(raw.requirementId) } : {}),
     ...(clean(raw.semanticParentWorkId) ? { semanticParentWorkId: clean(raw.semanticParentWorkId) } : {}),
-    dependsOnWorkIds: Array.isArray(raw.dependsOnWorkIds) ? raw.dependsOnWorkIds.map(clean).filter((id): id is string => Boolean(id)) : [],
+    dependsOnWorkIds: Array.isArray(raw.dependsOnWorkIds)
+      ? raw.dependsOnWorkIds.map(clean).filter((id): id is string => Boolean(id))
+      : [],
     ...(clean(raw.parentWorkId) ? { parentWorkId: clean(raw.parentWorkId) } : {}),
     ...(clean(raw.predecessorWorkId) ? { predecessorWorkId: clean(raw.predecessorWorkId) } : {}),
-    supersedes: Array.isArray(raw.supersedes) ? raw.supersedes.map(clean).filter((id): id is string => Boolean(id)) : [],
+    supersedes: Array.isArray(raw.supersedes)
+      ? raw.supersedes.map(clean).filter((id): id is string => Boolean(id))
+      : [],
     ...(clean(raw.supersededBy) ? { supersededBy: clean(raw.supersededBy) } : {}),
     error: error instanceof Error ? error.message : String(error),
   };
@@ -525,13 +570,21 @@ function workRequestIndexPath(controllerHome: string, requestId: string): string
 
 function readWorkRequestIndex(path: string, requestId: string): WorkRequestIndexRecord {
   let value: unknown;
-  try { value = readJsonFile<unknown>(path); }
-  catch { throw new Error(`WORK_REQUEST_INDEX_CORRUPT: ${requestId}`); }
+  try {
+    value = readJsonFile<unknown>(path);
+  } catch {
+    throw new Error(`WORK_REQUEST_INDEX_CORRUPT: ${requestId}`);
+  }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`WORK_REQUEST_INDEX_CORRUPT: ${requestId}`);
   }
   const record = value as Partial<WorkRequestIndexRecord>;
-  if (record.requestId !== requestId || !record.repoId?.trim() || !record.workId?.trim() || !record.semanticKey?.trim()) {
+  if (
+    record.requestId !== requestId ||
+    !record.repoId?.trim() ||
+    !record.workId?.trim() ||
+    !record.semanticKey?.trim()
+  ) {
     throw new Error(`WORK_REQUEST_INDEX_CORRUPT: ${requestId}`);
   }
   return record as WorkRequestIndexRecord;
@@ -551,84 +604,35 @@ export function getWorkContractByRequestId(
     throw new Error(`REQUEST_ID_REPO_CONFLICT: ${normalizedRequestId} already belongs to repository ${record.repoId}`);
   }
   const work = getWorkContract({ controllerHome, repoId: record.repoId }, record.workId);
-  if (!work) throw new Error(`WORK_ACCEPTANCE_LOST: request ${normalizedRequestId} is indexed without a readable WorkContract`);
+  if (!work)
+    throw new Error(`WORK_ACCEPTANCE_LOST: request ${normalizedRequestId} is indexed without a readable WorkContract`);
   return work;
 }
 
 export function isCurrentWorkContract(contract: WorkContract): boolean {
-  return semanticWorkState(contract) === 'open'
-    && !contract.supersededBy?.trim()
-    && contract.workKind !== 'superseded'
-    && contract.completionOutcome !== 'superseded';
+  return (
+    semanticWorkState(contract) === 'open' &&
+    !contract.supersededBy?.trim() &&
+    contract.workKind !== 'superseded' &&
+    contract.completionOutcome !== 'superseded'
+  );
 }
 
-export function listWorkContracts(options: ListWorkContractOptions): WorkContract[] {
-  const state = options.state ?? 'active';
-  const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? 50), 100));
-  const offset = Math.max(0, Math.trunc(options.offset ?? 0));
-  if (state === 'active' && offset > 0) throw new Error('WORK_ACTIVE_PAGINATION_UNSUPPORTED');
-  if (state === 'active') {
-    const active = readActiveWorkCandidates({ ...options, limit });
-    if (active.invalid.length > 0) {
-      // Preserve the aggregate list API's fail-closed semantics. Callers that
-      // intentionally need row-isolated corruption diagnostics use
-      // readActiveWorkCandidates() directly and can inspect every invalid row.
-      throw new Error(active.invalid[0]!.error);
-    }
-    return active.contracts;
-  }
-  const store = readWorkContractStore(options);
-  return store.contracts
-    .filter((contract) => {
-      if (state === 'all') return true;
-      return semanticWorkState(contract) === state;
-    })
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-    .slice(offset, offset + limit);
-}
-
-function workExecutionSemanticScopeKeys(contract: WorkContract): string[] {
-  const declared = contract.engineeringContext?.semanticScope?.keys
-    ?.map((value) => value.trim())
-    .filter(Boolean) ?? [];
-  if (declared.length > 0) return [...new Set(declared)].sort();
-  if (contract.planId?.trim() && contract.planStepId?.trim()) {
-    return [`plan-step:${contract.planId.trim()}:${contract.planStepId.trim()}`];
-  }
-  return [`work:${contract.workId}`];
-}
-
-function workExecutionIsolation(contract: WorkContract): 'shared' | 'isolated' {
-  return contract.worktreePolicy?.required === true
-    || contract.constraints?.workspaceMode === 'isolated'
-    ? 'isolated'
-    : 'shared';
-}
-
-function rawWorkMayBeCurrent(contract: WorkContract): boolean {
-  return semanticWorkState(contract) === 'open'
-    && !contract.supersededBy?.trim()
-    && contract.workKind !== 'superseded'
-    && contract.completionOutcome !== 'superseded';
+function rawLegacyWorkMayBeOpen(contract: WorkContract): boolean {
+  return (
+    semanticWorkState(contract) === 'open' &&
+    !contract.supersededBy?.trim() &&
+    contract.workKind !== 'superseded' &&
+    contract.completionOutcome !== 'superseded'
+  );
 }
 
 /**
- * Row-isolated active Work admission projection. Canonical aggregate Work reads
- * remain strict. Each SQLite row is normalized independently so one malformed
- * legacy sibling cannot erase otherwise valid Work authority from control-plane
- * admission. Invalid active rows stay explicit and conservative by identity,
- * lineage, scope and isolation; they are never mutated or silently accepted.
+ * Historical unresolved Work list only. The old active-admission index is
+ * retired; this on-demand read preserves semantic-scope precedence so a stale
+ * repository-scoped open shadow cannot appear as current historical evidence.
  */
-export function initializeWorkCandidateIndex(controllerHome: string): void {
-  initializeControlPlanePayloadTextExclusionIndex(controllerHome, {
-    namespace: 'work_contract', field: 'semanticState', excludedValues: TERMINAL_SEMANTIC_WORK_STATES,
-  });
-}
-
-export function readActiveWorkCandidates(
-  options: WorkContractStoreOptions & { limit?: number },
-): ActiveWorkCandidateSnapshot {
-  const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? 1_000), 1_000));
+function listHistoricalUnresolvedWork(options: ListWorkContractOptions): WorkContract[] {
   const requestedScope = workContractStoreScopeKey(options);
   const records = listControlPlaneRecordsExcludingPayloadTextValues<WorkContract>(options.controllerHome, {
     namespace: 'work_contract',
@@ -637,44 +641,39 @@ export function readActiveWorkCandidates(
     excludedValues: TERMINAL_SEMANTIC_WORK_STATES,
     limit: 5_000,
   });
-  const semanticAuthorityWorkIds = requestedScope === SEMANTIC_SCOPE_KEY
-    ? new Set<string>()
-    : new Set(listControlPlaneRecordKeys(options.controllerHome, {
-        namespace: 'work_contract',
-        scope: SEMANTIC_SCOPE_KEY,
-        limit: 5_000,
-      }));
-  // Scheduler admission only projects historical rows; exact Work access owns
-  // one-time schema persistence, so polling cannot advance Work revisions.
+  const semanticIds =
+    requestedScope === SEMANTIC_SCOPE_KEY
+      ? new Set<string>()
+      : new Set(
+          listControlPlaneRecordKeys(options.controllerHome, {
+            namespace: 'work_contract',
+            scope: SEMANTIC_SCOPE_KEY,
+            limit: 5_000,
+          }),
+        );
   const contracts: WorkContract[] = [];
-  const invalid: InvalidActiveWorkCandidate[] = [];
   for (const record of records) {
-    // Exact Work reads already prefer semantic scope over repository-scoped
-    // compatibility rows. Collection reads must preserve the same one-authority
-    // rule or a stale open compatibility shadow can resurrect terminal Work.
-    if (semanticAuthorityWorkIds.has(record.key)) continue;
-    const raw = record.value;
-    if (!rawWorkMayBeCurrent(raw)) continue;
-    try {
-      const normalized = canonicalizeStoredWorkContract(raw, record.schemaVersion);
-      if (isCurrentWorkContract(normalized)) contracts.push(normalized);
-    } catch (error) {
-      invalid.push({
-        workId: raw.workId,
-        updatedAt: raw.updatedAt,
-        ...(raw.checkoutId?.trim() ? { checkoutId: raw.checkoutId.trim() } : {}),
-        ...(raw.requirementId?.trim() ? { requirementId: raw.requirementId.trim() } : {}),
-        ...(raw.planId?.trim() ? { planId: raw.planId.trim() } : {}),
-        ...(raw.planStepId?.trim() ? { planStepId: raw.planStepId.trim() } : {}),
-        semanticScopeKeys: workExecutionSemanticScopeKeys(raw),
-        isolation: workExecutionIsolation(raw),
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    if (semanticIds.has(record.key) || !rawLegacyWorkMayBeOpen(record.value)) continue;
+    // Do not silently drop corrupt unresolved history. This path is read-only
+    // and never grants authorization, but a broken archival record must remain visible as an error.
+    const normalized = canonicalizeStoredWorkContract(record.value, record.schemaVersion);
+    if (isCurrentWorkContract(normalized)) contracts.push(normalized);
   }
-  contracts.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  invalid.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  return { contracts: contracts.slice(0, limit), invalid };
+  return contracts.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+export function listWorkContracts(options: ListWorkContractOptions): WorkContract[] {
+  // "active" is a historical query alias, never an execution or admission state.
+  const state = options.state ?? 'active';
+  const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? 50), 100));
+  const offset = Math.max(0, Math.trunc(options.offset ?? 0));
+  if (state === 'active') {
+    return listHistoricalUnresolvedWork(options).slice(offset, offset + limit);
+  }
+  return readWorkContractStore(options)
+    .contracts.filter((contract) => state === 'all' || semanticWorkState(contract) === state)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(offset, offset + limit);
 }
 
 export function listWorkSemanticRevisionRecords(
@@ -684,22 +683,24 @@ export function listWorkSemanticRevisionRecords(
 ): WorkSemanticRevisionRecord[] {
   const normalizedId = workId ? sanitizeFileComponent(workId) : undefined;
   const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 1000));
-  const authoritativeOptions = normalizedId
-    ? authoritativeExistingWorkStoreOptions(options, normalizedId)
-    : options;
+  const authoritativeOptions = normalizedId ? authoritativeExistingWorkStoreOptions(options, normalizedId) : options;
   const records = listControlPlaneRecords<WorkSemanticRevisionRecord>(authoritativeOptions.controllerHome, {
-    namespace: 'work_semantic_revision', scope: workContractStoreScopeKey(authoritativeOptions), limit: 5_000,
+    namespace: 'work_semantic_revision',
+    scope: workContractStoreScopeKey(authoritativeOptions),
+    limit: 5_000,
   }).map((record) => record.value);
   return records
     .filter((record) => !normalizedId || record.workId === normalizedId)
     .map((record) => ({
       ...record,
-      semanticScope: record.semanticScope ?? semanticScopeRefForWork({
-        workId: record.workId,
-        requirementId: record.requirementId,
-        planId: record.planId,
-        planStepId: undefined,
-      }),
+      semanticScope:
+        record.semanticScope ??
+        semanticScopeRefForWork({
+          workId: record.workId,
+          requirementId: record.requirementId,
+          planId: record.planId,
+          planStepId: undefined,
+        }),
     }))
     .sort((left, right) => right.revision - left.revision)
     .slice(0, boundedLimit);
@@ -768,13 +769,15 @@ export function summarizeWorkContract(contract: WorkContract): WorkContractSumma
     handoffCount: contract.handoffRefs.length,
     evidenceCount: contract.evidenceRefs.length,
     checkCount: contract.checkRefs.length,
-    ...(contract.engineeringContext ? {
-      engineering: {
-        profileVersion: contract.engineeringContext.profileVersion,
-        riskClass: contract.engineeringContext.riskClass,
-        missingAdmissionEvidence: contract.engineeringContext.missingAdmissionEvidence,
-        missingCompletionEvidence: contract.engineeringContext.missingCompletionEvidence,
-      },
-    } : {}),
+    ...(contract.engineeringContext
+      ? {
+          engineering: {
+            profileVersion: contract.engineeringContext.profileVersion,
+            riskClass: contract.engineeringContext.riskClass,
+            missingAdmissionEvidence: contract.engineeringContext.missingAdmissionEvidence,
+            missingCompletionEvidence: contract.engineeringContext.missingCompletionEvidence,
+          },
+        }
+      : {}),
   };
 }
