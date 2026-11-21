@@ -458,7 +458,6 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
   const startedAt = new Date().toISOString();
   const trace = new LatencyTrace('fast');
   const sideEffectsBefore = getLeaseSideEffectMetrics();
-  const receiptMode = request.receiptMode ?? 'standalone';
   const requestId = request.requestId?.trim() || undefined;
   const inputHash = hashRequestInput({ operation: request.operation, input: request.input });
   const owner = `fast:${ctx.sessionId ?? 'anon'}:${request.operation}:${requestId ?? Date.now()}`;
@@ -529,6 +528,9 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
 
   const operation = request.operation;
   const needsMutation = decision.effects.mutatesWorkspace || decision.effects.mutatesGitRefs;
+  // Pure observations are returned to the Agent without a second durable evidence record.
+  // Request-ledger and mutation receipts stay enabled for effectful operations.
+  const receiptMode = request.receiptMode ?? (needsMutation ? 'standalone' : 'none');
   const isExplicitWriteOp = [
     'apply_patch',
     'repository_safe_patch_apply',

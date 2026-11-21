@@ -33,7 +33,7 @@ const MAX_INLINE_BATCH_BYTES = 64 * 1024;
 
 /**
  * Typed multi-step batch on Fast Path.
- * One parent receipt only. Write batches hold one Mutation Ownership for the whole batch.
+ * Write batches keep one parent receipt and Mutation Ownership; read-only batches return directly.
  */
 export async function executeRepositoryBatch(
   ctx: BatchExecutorContext,
@@ -572,27 +572,31 @@ export async function executeRepositoryBatch(
   const finishedAt = new Date().toISOString();
   const preReceipt = trace.snapshot(true);
   preReceipt.executionMs = Math.round(stepResults.reduce((sum, entry) => sum + entry.durationMs, 0) * 100) / 100;
+  // Read-only batches return their results directly. Only effectful batches need
+  // an execution receipt for reconciliation; do not create a second evidence log.
   const receiptStarted = performance.now();
-  const written = writeFastReceipt(ctx.controllerHome, {
-    repoId: ctx.repository.repoId,
-    checkoutId: ctx.repository.activeCheckoutId,
-    operation: 'batch',
-    startedAt,
-    finishedAt,
-    durationMs: preReceipt.totalMs,
-    outcome: ok ? 'succeeded' : 'failed',
-    changedPaths: allChangedPaths,
-    repositoryChanged,
-    authorizationDecision: 'batch_precheck',
-    policyDecision: ok ? 'allowed' : 'failed',
-    outputSummary: `batch steps=${stepResults.length} ok=${stepResults.filter((s) => s.ok).length} failed=${stepResults.filter((s) => !s.ok).length}`,
-    stepCount: stepResults.length,
-    reasons: decision.reasons,
-    requestId,
-    inputHash,
-    observabilityLatency: preReceipt,
-  });
-  trace.add('receiptMs', performance.now() - receiptStarted);
+  const written = hasWrite
+    ? writeFastReceipt(ctx.controllerHome, {
+        repoId: ctx.repository.repoId,
+        checkoutId: ctx.repository.activeCheckoutId,
+        operation: 'batch',
+        startedAt,
+        finishedAt,
+        durationMs: preReceipt.totalMs,
+        outcome: ok ? 'succeeded' : 'failed',
+        changedPaths: allChangedPaths,
+        repositoryChanged,
+        authorizationDecision: 'batch_precheck',
+        policyDecision: ok ? 'allowed' : 'failed',
+        outputSummary: `batch steps=${stepResults.length} ok=${stepResults.filter((s) => s.ok).length} failed=${stepResults.filter((s) => !s.ok).length}`,
+        stepCount: stepResults.length,
+        reasons: decision.reasons,
+        requestId,
+        inputHash,
+        observabilityLatency: preReceipt,
+      })
+    : { receipt: undefined, persisted: undefined, warning: undefined };
+  if (hasWrite) trace.add('receiptMs', performance.now() - receiptStarted);
   const latency = trace.snapshot(request.includeLatencyBreakdown === true);
   latency.executionMs = preReceipt.executionMs;
   if (written.receipt) {

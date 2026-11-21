@@ -42,12 +42,7 @@ const PROJECT_FILE_PATTERNS = [
   /go\.sum$/i,
 ];
 
-const SCHEMA_FILE_PATTERNS = [
-  /\/migrations?\//i,
-  /\.sql$/i,
-  /schema\.(ts|js|prisma|graphql)$/i,
-  /prisma\/schema/i,
-];
+const SCHEMA_FILE_PATTERNS = [/\/migrations?\//i, /\.sql$/i, /schema\.(ts|js|prisma|graphql)$/i, /prisma\/schema/i];
 
 function normalizePath(path: string): string {
   return path.replace(/^\.\//, '').replace(/\\/g, '/');
@@ -59,11 +54,18 @@ function pathMatches(path: string, patterns: RegExp[]): boolean {
 
 function overlaps(left: string[], right: string[]): string[] {
   const rightSet = new Set(right.map(normalizePath));
-  return left.map(normalizePath).filter((path) => rightSet.has(path)
-    || [...rightSet].some((other) => path.startsWith(`${other}/`) || other.startsWith(`${path}/`)));
+  return left
+    .map(normalizePath)
+    .filter(
+      (path) =>
+        rightSet.has(path) ||
+        [...rightSet].some((other) => path.startsWith(`${other}/`) || other.startsWith(`${path}/`)),
+    );
 }
 
-export function detectPatchProposalConflicts(lanes: Array<PatchProposalValidateRequest & { id: string }>): LaneConflict[] {
+export function detectPatchProposalConflicts(
+  lanes: Array<PatchProposalValidateRequest & { id: string }>,
+): LaneConflict[] {
   const conflicts: LaneConflict[] = [];
   for (let i = 0; i < lanes.length; i += 1) {
     for (let j = i + 1; j < lanes.length; j += 1) {
@@ -101,8 +103,9 @@ export function detectPatchProposalConflicts(lanes: Array<PatchProposalValidateR
 
   for (const lane of lanes) {
     const projectHits = lane.writePaths.filter((path) => pathMatches(path, PROJECT_FILE_PATTERNS));
-    const otherProjectWriters = lanes.filter((other) => other.id !== lane.id
-      && other.writePaths.some((path) => pathMatches(path, PROJECT_FILE_PATTERNS)));
+    const otherProjectWriters = lanes.filter(
+      (other) => other.id !== lane.id && other.writePaths.some((path) => pathMatches(path, PROJECT_FILE_PATTERNS)),
+    );
     if (projectHits.length > 0 && otherProjectWriters.length > 0) {
       conflicts.push({
         type: 'project_file',
@@ -112,8 +115,9 @@ export function detectPatchProposalConflicts(lanes: Array<PatchProposalValidateR
       });
     }
     const schemaHits = lane.writePaths.filter((path) => pathMatches(path, SCHEMA_FILE_PATTERNS));
-    const otherSchemaWriters = lanes.filter((other) => other.id !== lane.id
-      && other.writePaths.some((path) => pathMatches(path, SCHEMA_FILE_PATTERNS)));
+    const otherSchemaWriters = lanes.filter(
+      (other) => other.id !== lane.id && other.writePaths.some((path) => pathMatches(path, SCHEMA_FILE_PATTERNS)),
+    );
     if (schemaHits.length > 0 && otherSchemaWriters.length > 0) {
       conflicts.push({
         type: 'schema_file',
@@ -153,7 +157,10 @@ async function mapPool<T, R>(
 }
 
 function digest(value: unknown): string {
-  return createHash('sha256').update(JSON.stringify(value ?? null)).digest('hex').slice(0, 24);
+  return createHash('sha256')
+    .update(JSON.stringify(value ?? null))
+    .digest('hex')
+    .slice(0, 24);
 }
 
 /**
@@ -164,7 +171,6 @@ export async function executeLightweightLanes(
   ctx: LanesExecutorContext,
   request: LightweightLanesRequest,
 ): Promise<LightweightLanesResult> {
-  const startedAt = new Date().toISOString();
   const wallStart = performance.now();
   const trace = new LatencyTrace('fast');
   const concurrency = Math.max(
@@ -188,10 +194,8 @@ export async function executeLightweightLanes(
   const conflicts = detectPatchProposalConflicts(proposalInputs);
   const conflictedLaneIds = new Set(conflicts.flatMap((entry) => entry.laneIds));
 
-  const readResults = await trace.measure('executionMs', async () => mapPool(
-    readLaneInputs,
-    concurrency,
-    async (lane) => {
+  const readResults = await trace.measure('executionMs', async () =>
+    mapPool(readLaneInputs, concurrency, async (lane) => {
       const startedAtMs = performance.now() - wallStart;
       const laneStarted = performance.now();
       try {
@@ -208,11 +212,11 @@ export async function executeLightweightLanes(
         });
         const effects = decision.effects;
         if (
-          decision.mode !== 'fast'
-          || effects.mutatesWorkspace
-          || effects.mutatesGitRefs
-          || effects.remoteWrite
-          || decision.risk !== 'readonly'
+          decision.mode !== 'fast' ||
+          effects.mutatesWorkspace ||
+          effects.mutatesGitRefs ||
+          effects.remoteWrite ||
+          decision.risk !== 'readonly'
         ) {
           return {
             id: lane.id,
@@ -242,9 +246,9 @@ export async function executeLightweightLanes(
             signal: request.signal,
           },
         );
-        const repoChanged = executed.repositoryChanged === true || Boolean(
-          (executed.result as { repositoryChanged?: boolean } | undefined)?.repositoryChanged,
-        );
+        const repoChanged =
+          executed.repositoryChanged === true ||
+          Boolean((executed.result as { repositoryChanged?: boolean } | undefined)?.repositoryChanged);
         if (repoChanged) {
           return {
             id: lane.id,
@@ -266,11 +270,12 @@ export async function executeLightweightLanes(
           error: executed.ok
             ? undefined
             : {
-              code: 'READ_LANE_FAILED',
-              message: (executed.result?.error as { message?: string } | undefined)?.message
-                ?? executed.escalation?.reason
-                ?? 'read lane failed',
-            },
+                code: 'READ_LANE_FAILED',
+                message:
+                  (executed.result?.error as { message?: string } | undefined)?.message ??
+                  executed.escalation?.reason ??
+                  'read lane failed',
+              },
         } satisfies ReadLaneResult;
       } catch (error) {
         return {
@@ -285,8 +290,8 @@ export async function executeLightweightLanes(
           },
         } satisfies ReadLaneResult;
       }
-    },
-  ));
+    }),
+  );
 
   const shouldRunProposals = request.failFast !== true || readResults.every((entry) => entry.ok);
   const baseRevision = await (async () => {
@@ -296,7 +301,7 @@ export async function executeLightweightLanes(
         maxOutputBytes: 4_096,
         signal: request.signal,
       });
-      return out.ok ? (out.stdout.trim() || null) : null;
+      return out.ok ? out.stdout.trim() || null : null;
     } catch {
       return null;
     }
@@ -385,44 +390,30 @@ export async function executeLightweightLanes(
     }
   }
 
-  const finishedAt = new Date().toISOString();
   const latency = trace.snapshot(request.includeLatencyBreakdown === true);
-  const ok = readResults.every((entry) => entry.ok)
-    && proposalResults.every((entry) => entry.ok || entry.analysisOnly);
+  const ok = readResults.every((entry) => entry.ok) && proposalResults.every((entry) => entry.ok || entry.analysisOnly);
 
   // Overlap heuristic for benchmarks only — not a proof of offloaded concurrency.
   // Do not treat this as production "true concurrent" evidence when inspector fallback is sync.
-  const concurrent = readResults.length >= 2 && readResults.some((left, i) =>
-    readResults.some((right, j) => i !== j
-      && left.startedAtMs !== undefined
-      && right.startedAtMs !== undefined
-      && left.finishedAtMs !== undefined
-      && right.finishedAtMs !== undefined
-      && left.startedAtMs < right.finishedAtMs
-      && right.startedAtMs < left.finishedAtMs));
+  const concurrent =
+    readResults.length >= 2 &&
+    readResults.some((left, i) =>
+      readResults.some(
+        (right, j) =>
+          i !== j &&
+          left.startedAtMs !== undefined &&
+          right.startedAtMs !== undefined &&
+          left.finishedAtMs !== undefined &&
+          right.finishedAtMs !== undefined &&
+          left.startedAtMs < right.finishedAtMs &&
+          right.startedAtMs < left.finishedAtMs,
+      ),
+    );
 
-  const written = writeFastReceipt(ctx.controllerHome, {
-    repoId: ctx.repository.repoId,
-    checkoutId: ctx.repository.activeCheckoutId,
-    operation: proposalInputs.length ? 'patch_proposal_validate' : 'read_lanes',
-    startedAt,
-    finishedAt,
-    durationMs: latency.totalMs,
-    outcome: ok ? 'succeeded' : 'failed',
-    changedPaths: [],
-    repositoryChanged: false,
-    authorizationDecision: 'read_only_lanes',
-    policyDecision: 'allowed',
-    outputSummary: `readLanes=${readResults.length} proposals=${proposalResults.length} conflicts=${conflicts.length} concurrent=${concurrent}`,
-    latency: request.includeLatencyBreakdown === true ? latency : undefined,
-    observabilityLatency: latency,
-    laneCount: readResults.length + proposalResults.length,
-  });
-
+  // Observation and proposal validation have no external effect to reconcile.
+  // Return their results without writing a separate durable evidence record.
   return {
     ok,
-    receipt: written.receipt,
-    receiptPersisted: written.persisted,
     readLanes: readResults,
     patchProposals: proposalResults,
     conflicts,
@@ -462,16 +453,10 @@ export async function integratePatchProposals(
   const receiptIds: string[] = [];
   const continueOnError = options.continueOnError === true;
 
-  const requested = proposals.filter(
-    (entry) => !entry.analysisOnly && entry.ok && entry.proposalId,
-  );
+  const requested = proposals.filter((entry) => !entry.analysisOnly && entry.ok && entry.proposalId);
   const serverCandidates = requested.map((entry) => ({
     entry,
-    server: readServerPatchProposal(
-      ctx.controllerHome,
-      ctx.repository.repoId,
-      entry.proposalId!,
-    ),
+    server: readServerPatchProposal(ctx.controllerHome, ctx.repository.repoId, entry.proposalId!),
   }));
   const applyable = serverCandidates.filter(
     (candidate): candidate is { entry: PatchProposalValidateResult; server: ServerPatchProposal } =>
@@ -479,7 +464,9 @@ export async function integratePatchProposals(
   );
   const serverByProposalId = new Map(
     serverCandidates
-      .filter((candidate): candidate is { entry: PatchProposalValidateResult; server: ServerPatchProposal } => Boolean(candidate.server))
+      .filter((candidate): candidate is { entry: PatchProposalValidateResult; server: ServerPatchProposal } =>
+        Boolean(candidate.server),
+      )
       .map((candidate) => [candidate.entry.proposalId!, candidate.server]),
   );
 
@@ -513,10 +500,12 @@ export async function integratePatchProposals(
       ownerIdentity: {
         repositoryId: ctx.repository.repoId,
         checkoutId: ctx.repository.activeCheckoutId,
-        worktreeId: ctx.repository.checkouts.find((checkout) => checkout.checkoutId === ctx.repository.activeCheckoutId)?.canonicalRoot
-          ?? ctx.repository.canonicalRoot,
-        branch: ctx.repository.checkouts.find((checkout) => checkout.checkoutId === ctx.repository.activeCheckoutId)?.branch
-          ?? 'detached',
+        worktreeId:
+          ctx.repository.checkouts.find((checkout) => checkout.checkoutId === ctx.repository.activeCheckoutId)
+            ?.canonicalRoot ?? ctx.repository.canonicalRoot,
+        branch:
+          ctx.repository.checkouts.find((checkout) => checkout.checkoutId === ctx.repository.activeCheckoutId)
+            ?.branch ?? 'detached',
         principalId: ctx.principalId ?? ctx.sessionId ?? `request:${requestId}`,
       },
       ttlMs: 45_000,
@@ -534,14 +523,17 @@ export async function integratePatchProposals(
       const prevalidated = new Map<string, Awaited<ReturnType<typeof validateServerPatchProposalForApply>>>();
       for (const { entry } of applyable) {
         helpers.assert();
-        prevalidated.set(entry.proposalId!, await validateServerPatchProposalForApply({
-          controllerHome: ctx.controllerHome,
-          repoId: ctx.repository.repoId,
-          checkoutId: ctx.repository.activeCheckoutId,
-          repoRoot: ctx.repository.canonicalRoot,
-          proposalId: entry.proposalId!,
-          signal: helpers.signal,
-        }));
+        prevalidated.set(
+          entry.proposalId!,
+          await validateServerPatchProposalForApply({
+            controllerHome: ctx.controllerHome,
+            repoId: ctx.repository.repoId,
+            checkoutId: ctx.repository.activeCheckoutId,
+            repoRoot: ctx.repository.canonicalRoot,
+            proposalId: entry.proposalId!,
+            signal: helpers.signal,
+          }),
+        );
       }
 
       for (const proposal of proposals) {
@@ -612,9 +604,9 @@ export async function integratePatchProposals(
         }
         const serverProposal: ServerPatchProposal = validation.proposal;
         if (
-          options.expectedBaseRevision
-          && serverProposal.baseSnapshot.head
-          && options.expectedBaseRevision !== serverProposal.baseSnapshot.head
+          options.expectedBaseRevision &&
+          serverProposal.baseSnapshot.head &&
+          options.expectedBaseRevision !== serverProposal.baseSnapshot.head
         ) {
           applied.push({
             proposalId: proposal.proposalId,
@@ -630,11 +622,14 @@ export async function integratePatchProposals(
           .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
           .map((entry) => String(entry.path ?? ''))
           .filter(Boolean);
-        const outside = opPaths.filter((path) => !serverProposal.writePaths.some((write) => {
-          const n = path.replace(/^\.\//, '');
-          const w = write.replace(/^\.\//, '');
-          return n === w || n.startsWith(`${w}/`);
-        }));
+        const outside = opPaths.filter(
+          (path) =>
+            !serverProposal.writePaths.some((write) => {
+              const n = path.replace(/^\.\//, '');
+              const w = write.replace(/^\.\//, '');
+              return n === w || n.startsWith(`${w}/`);
+            }),
+        );
         if (outside.length > 0) {
           applied.push({
             proposalId: proposal.proposalId,
@@ -673,9 +668,12 @@ export async function integratePatchProposals(
           },
         );
         if (executed.receipt) receiptIds.push(executed.receipt.executionId);
-        const changed = executed.changedPaths
-          ?? ((executed.result?.applied as { appliedChunks?: Array<{ paths?: string[] }> } | undefined)?.appliedChunks
-            ?.flatMap((chunk) => chunk.paths ?? []) ?? []);
+        const changed =
+          executed.changedPaths ??
+          (
+            executed.result?.applied as { appliedChunks?: Array<{ paths?: string[] }> } | undefined
+          )?.appliedChunks?.flatMap((chunk) => chunk.paths ?? []) ??
+          [];
         const stepOk = executed.ok && executed.operationSucceeded !== false;
         if (stepOk) {
           markServerPatchProposalApplied(ctx.controllerHome, ctx.repository.repoId, proposal.proposalId);
@@ -688,7 +686,7 @@ export async function integratePatchProposals(
           changedPaths: changed,
           error: stepOk
             ? undefined
-            : (executed.result?.error as { message?: string } | undefined)?.message ?? 'apply failed',
+            : ((executed.result?.error as { message?: string } | undefined)?.message ?? 'apply failed'),
         });
         if (!stepOk && !continueOnError) break;
       }
@@ -723,12 +721,14 @@ export async function integratePatchProposals(
   if (!gated.ok) {
     return {
       ok: false,
-      applied: [{
-        proposalId: 'batch',
-        ok: false,
-        changedPaths: [],
-        error: `mutation_busy: ${gated.busy.reason}`,
-      }],
+      applied: [
+        {
+          proposalId: 'batch',
+          ok: false,
+          changedPaths: [],
+          error: `mutation_busy: ${gated.busy.reason}`,
+        },
+      ],
       receiptIds: [],
       reconciliationRequired: false,
     };

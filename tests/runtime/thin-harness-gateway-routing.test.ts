@@ -37,7 +37,13 @@ import {
   classifyRepositoryCommandRoute,
   waitRepositoryCommandProcess,
 } from '../../src/runtime/execution/process-runtime/command-facade';
-import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/thin-harness';
+import {
+  routeExecution,
+  isFastEligibleTool,
+  executeFast,
+  executeLightweightLanes,
+  listFastReceipts,
+} from '../../src/runtime/execution/thin-harness';
 import { getProcessRecord, listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { getProcessHandle, waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
 import { readControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
@@ -517,7 +523,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(classifyGatewayExecutionPath('plugin_action_execute', {}).path).toBe('direct');
   });
 
-  test('registered async workspace writer is idempotent under one managed Process resource lease', async () => {
+  test('ordinary async local command reuses one lightweight handle without a Process lease (#714)', async () => {
     const fx = fixture();
     roots.push(fx.root);
     const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
@@ -537,10 +543,11 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const first = await callRepositoryTool(fx.controllerHome, 'execute_command', args);
     const firstPayload = first?.structuredContent as Record<string, unknown>;
     expect(first?.isError).not.toBe(true);
+    // Ordinary local writers stay agent-direct: in-memory lightweight handle, no durable Process lease.
     expect(firstPayload.path).toBe('process_managed');
     expect(firstPayload.status).toBe('running');
     const processId = String(firstPayload.processId ?? '');
-    expect(processId).toBeTruthy();
+    expect(processId).toStartWith('lightweight:');
     const sideEffects = firstPayload.durableSideEffects as
       | { executionJobCount?: number; localJobCount?: number; workerSpawnCount?: number }
       | undefined;
@@ -552,8 +559,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const retry = await callRepositoryTool(fx.controllerHome, 'execute_command', args);
     expect(retry?.isError).not.toBe(true);
     expect(String(((retry?.structuredContent ?? {}) as Record<string, unknown>).processId ?? '')).toBe(processId);
-    expect(processId).not.toStartWith('lightweight:');
-    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBeGreaterThan(processesBefore);
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore);
     const terminal = await waitRepositoryCommandProcess(fx.controllerHome, fx.repository.repoId, processId, {
       timeoutMs: 10_000,
     });
@@ -2167,7 +2173,47 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(git(fx.repoRoot, ['status', '--porcelain'])).toBe('');
   });
 
-  test('workbench batch_execute runs multi-step Fast Path with one parent receipt', async () => {
+  test('single read Fast Path has no durable receipt; explicit opt-in is still available', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const plain = await executeFast(
+      { controllerHome: fx.controllerHome, repository: fx.repository },
+      { operation: 'read_file', input: { path: 'README.md' } },
+    );
+    expect(plain.ok).toBe(true);
+    expect(plain.receipt).toBeUndefined();
+    expect(plain.receiptPersisted).toBeUndefined();
+    expect(listFastReceipts(fx.controllerHome, fx.repository.repoId)).toEqual([]);
+
+    const explicit = await executeFast(
+      { controllerHome: fx.controllerHome, repository: fx.repository },
+      { operation: 'read_file', input: { path: 'README.md' }, receiptMode: 'standalone' },
+    );
+    expect(explicit.ok).toBe(true);
+    expect(explicit.receiptPersisted).toBe(true);
+    expect(listFastReceipts(fx.controllerHome, fx.repository.repoId)).toHaveLength(1);
+  });
+
+  test('read-only lanes return results without creating durable evidence', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const result = await executeLightweightLanes(
+      { controllerHome: fx.controllerHome, repository: fx.repository },
+      {
+        repoId: fx.repository.repoId,
+        readLanes: [
+          { kind: 'git_status', input: {} },
+          { kind: 'read_file', input: { path: 'README.md' } },
+        ],
+      },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.readLanes).toHaveLength(2);
+    expect(result.receipt).toBeUndefined();
+    expect(listFastReceipts(fx.controllerHome, fx.repository.repoId)).toEqual([]);
+  });
+
+  test('workbench read-only batch returns results without a durable receipt', async () => {
     const fx = fixture();
     roots.push(fx.root);
     const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
@@ -2189,7 +2235,9 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(payload.mode).toBe('fast');
     expect(payload.ok).toBe(true);
     expect(Array.isArray(payload.steps) && (payload.steps as unknown[]).length).toBe(4);
-    expect(payload.receipt).toBeTruthy();
+    expect(payload.receipt).toBeUndefined();
+    expect(payload.receiptPersisted).toBeUndefined();
+    expect(listFastReceipts(fx.controllerHome, fx.repository.repoId)).toEqual([]);
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
   });
 });
