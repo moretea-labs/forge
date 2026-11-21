@@ -136,6 +136,112 @@ describe('full retired Work data erasure', () => {
     expect(readControlPlaneRecord(home, 'work_contract', 'repo-cli', 'legacy-id')).toBeUndefined();
   });
 
+  test('removes Work-only sync replicas and journal keys without deleting Plan replicas', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-retired-work-mixed-'));
+    tempRoots.push(home);
+    const scope = 'workspace:project';
+    writeControlPlaneRecord(home, {
+      namespace: 'semantic_sync_replica',
+      scope,
+      key: 'work:legacy',
+      schemaVersion: 1,
+      value: { schemaVersion: 1, record: { kind: 'work', id: 'legacy' } },
+      expectedRevision: null,
+    });
+    writeControlPlaneRecord(home, {
+      namespace: 'semantic_sync_replica',
+      scope,
+      key: 'work:legacy',
+      schemaVersion: 1,
+      value: { schemaVersion: 1, record: { kind: 'work', id: 'legacy', revision: 2 } },
+      expectedRevision: 1,
+    });
+    writeControlPlaneRecord(home, {
+      namespace: 'semantic_sync_replica',
+      scope,
+      key: 'plan:current',
+      schemaVersion: 1,
+      value: { schemaVersion: 1, record: { kind: 'plan', id: 'current' } },
+      expectedRevision: null,
+    });
+    writeControlPlaneRecord(home, {
+      namespace: 'semantic_sync_journal',
+      scope,
+      key: 'journal',
+      schemaVersion: 1,
+      value: {
+        schemaVersion: 1,
+        entries: [
+          { schemaVersion: 1, sampledKeys: ['work:legacy', 'plan:current'], appliedCount: 2, convergedCount: 0 },
+        ],
+      },
+      expectedRevision: null,
+    });
+    withControlPlaneTransaction(home, (db) => {
+      db.prepare(
+        'INSERT INTO control_plane_audit_floor(namespace,scope,record_key,floor_revision,updated_at) VALUES(?,?,?,?,?)',
+      ).run('semantic_sync_replica', scope, 'work:legacy', 2, '2026-11-21');
+      db.prepare(
+        'INSERT INTO control_plane_audit_record_cursor(name,namespace,scope,record_key,updated_at) VALUES(?,?,?,?,?)',
+      ).run('legacy-sync-cursor', 'semantic_sync_replica', scope, 'work:legacy', '2026-11-21');
+    });
+    const preview = inspectRetiredWorkPurge(home);
+    expect(preview).toMatchObject({
+      applied: false,
+      records: 1,
+      auditEvents: 2,
+      auditFloors: 1,
+      auditRecordCursors: 1,
+      journalReferences: 1,
+    });
+    expect(purgeRetiredWork(home)).toMatchObject({ applied: true, records: 1, journalReferences: 1 });
+    expect(readControlPlaneRecord(home, 'semantic_sync_replica', scope, 'work:legacy')).toBeUndefined();
+    expect(readControlPlaneRecord(home, 'semantic_sync_replica', scope, 'plan:current')?.value).toEqual({
+      schemaVersion: 1,
+      record: { kind: 'plan', id: 'current' },
+    });
+    expect(
+      readControlPlaneRecord<{ entries: Array<{ sampledKeys: string[] }> }>(
+        home,
+        'semantic_sync_journal',
+        scope,
+        'journal',
+      )?.value.entries[0]?.sampledKeys,
+    ).toEqual(['plan:current']);
+    expect(inspectRetiredWorkPurge(home)).toMatchObject({
+      records: 0,
+      auditEvents: 0,
+      auditFloors: 0,
+      auditRecordCursors: 0,
+      journalReferences: 0,
+    });
+    expect(readFileSync(join(home, 'control-plane.sqlite')).includes(Buffer.from('work:legacy'))).toBe(false);
+    expect(purgeRetiredWork(home).journalReferences).toBe(0);
+  });
+
+  test('fails closed before deleting records when a legacy sync journal is malformed', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-retired-work-invalid-journal-'));
+    tempRoots.push(home);
+    writeControlPlaneRecord(home, {
+      namespace: 'work_contract',
+      scope: 'repo-invalid',
+      key: 'old-work',
+      schemaVersion: 1,
+      value: { workId: 'old-work' },
+      expectedRevision: null,
+    });
+    writeControlPlaneRecord(home, {
+      namespace: 'semantic_sync_journal',
+      scope: 'workspace:project',
+      key: 'journal',
+      schemaVersion: 1,
+      value: { schemaVersion: 1, entries: null },
+      expectedRevision: null,
+    });
+    expect(() => purgeRetiredWork(home)).toThrow('RETIRED_WORK_JOURNAL_INVALID');
+    expect(readControlPlaneRecord(home, 'work_contract', 'repo-invalid', 'old-work')).toBeDefined();
+  });
+
   test('does not create a database for an empty Controller Home', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-empty-retired-purge-'));
     tempRoots.push(home);

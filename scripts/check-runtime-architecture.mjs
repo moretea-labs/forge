@@ -2888,6 +2888,11 @@ forbid(
   'retired Work cannot be read by the rh_work carrier',
 );
 requireText('src/runtime/control-plane/persistence/retired-work-purge.ts', 'export const RETIRED_WORK_NAMESPACES');
+requireText(
+  'src/runtime/control-plane/persistence/retired-work-purge.ts',
+  "const WORK_REPLICA_NAMESPACE = 'semantic_sync_replica';",
+);
+requireText('src/runtime/control-plane/persistence/retired-work-purge.ts', 'journalWorkReferences(db, true)');
 forbid(
   'packages/kernel/work/domain/state-machine.ts',
   /READ_ONLY_REVIEW_CLEAN_SCOPE|cleanReadOnlyReviewEvidence|READ_ONLY_REVIEW_FINDINGS_BLOCK/,
