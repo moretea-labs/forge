@@ -10,6 +10,8 @@ import {
   beginEditSession,
   cleanupEditSession,
   editSessionOwnedWorkspaceFingerprint,
+  editSessionSourceRevisionTouchesValidationInput,
+  editSessionValidationInputFingerprint,
   inspectIntegratedEditSession,
   finalizeEditSession,
   getEditSession,
@@ -1555,6 +1557,64 @@ test('owned validation fingerprint ignores unrelated concurrent dirty (#713)', (
 
   writeFileSync(join(fx.repoRoot, 'source.ts'), 'export const value = 3;\n');
   expect(editSessionOwnedWorkspaceFingerprint(fx.repoRoot, session.sessionId)).not.toBe(before);
+});
+
+test('validation input fingerprint includes check reads and ignores unrelated HEAD (#713)', () => {
+  const fx = fixture();
+  mkdirSync(join(fx.repoRoot, '.forge'), { recursive: true });
+  writeFileSync(
+    join(fx.repoRoot, '.forge', 'checks.json'),
+    JSON.stringify({
+      version: 1,
+      checks: {
+        verify: {
+          description: 'read owned source and a declared dependency',
+          command: [process.execPath, '-e', 'process.exit(0)'],
+          timeoutMs: 5_000,
+          effects: { reads: ['source.ts', 'dep.txt'] },
+        },
+      },
+    }),
+  );
+  writeFileSync(join(fx.repoRoot, 'dep.txt'), 'dependency\n');
+  spawnSync('git', ['add', 'dep.txt', '.forge/checks.json'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'add dependency'], { cwd: fx.repoRoot });
+  const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).stdout.trim();
+
+  const binding = durableBinding();
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Validation input with check reads',
+    allowedPaths: ['source.ts'],
+    checks: ['verify'],
+    binding,
+  });
+  applyEditOperations(
+    fx.repoRoot,
+    fx.policy,
+    session.sessionId,
+    [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        expectedSha256: sha256(fx.initial),
+        replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+      },
+    ],
+    { binding },
+  );
+
+  const before = editSessionValidationInputFingerprint(fx.repoRoot, session.sessionId, ['verify']);
+  writeFileSync(join(fx.repoRoot, 'foreign.ts'), 'export const x = 1;\n');
+  spawnSync('git', ['add', 'foreign.ts'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'unrelated concurrent commit'], { cwd: fx.repoRoot });
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).stdout.trim();
+  expect(editSessionSourceRevisionTouchesValidationInput(fx.repoRoot, session.sessionId, base, head, ['verify'])).toBe(
+    false,
+  );
+  expect(editSessionValidationInputFingerprint(fx.repoRoot, session.sessionId, ['verify'])).toBe(before);
+
+  writeFileSync(join(fx.repoRoot, 'dep.txt'), 'dependency changed\n');
+  expect(editSessionValidationInputFingerprint(fx.repoRoot, session.sessionId, ['verify'])).not.toBe(before);
 });
 
 function sha256(value: string): string {

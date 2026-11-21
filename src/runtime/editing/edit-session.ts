@@ -1,6 +1,16 @@
 import { createHash, randomBytes } from 'crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
-import { dirname, join, relative } from 'path';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { atomicWriteFile } from '../../effects/fs-transaction';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { runProcess } from '../../effects/process-runner';
@@ -316,26 +326,124 @@ export function editSessionOutsideWorkspaceFingerprint(repoRoot: string, session
 }
 
 /**
- * Validation-input identity for one Edit Session (#713).
- * Fingerprints only the session's tracked paths so unrelated concurrent dirty
- * does not invalidate an in-flight validation. Sessions with no tracked paths
- * fall back to the whole-workspace fingerprint (conservative).
+ * Exact filesystem identity for declared relative paths (no HEAD).
+ * Used so linked/nested check inputs are visible even when parent porcelain is
+ * unchanged, while unrelated paths stay outside the fingerprint (#713).
  */
+function fingerprintExactRelativePaths(repoRoot: string, paths: readonly string[]): string {
+  const root = resolve(repoRoot);
+  const hash = createHash('sha256');
+  for (const raw of [...new Set(paths)].sort()) {
+    const absolute = resolve(root, raw);
+    const relativePath = relative(root, absolute);
+    if (!relativePath || relativePath.startsWith('..') || isAbsolute(relativePath)) {
+      throw new Error(`EDIT_VALIDATION_PATH_OUTSIDE_CHECKOUT: ${raw}`);
+    }
+    hash.update(`\npath:${relativePath}\n`);
+    if (!existsSync(absolute)) {
+      hash.update('missing');
+      continue;
+    }
+    const stat = lstatSync(absolute);
+    if (stat.isSymbolicLink()) {
+      hash.update(`symlink:${readlinkSync(absolute)}`);
+      continue;
+    }
+    if (stat.isDirectory()) {
+      const status = runProcess('git', ['status', '--porcelain=v1', '--untracked-files=all', '--', relativePath], {
+        cwd: root,
+        timeoutMs: 10_000,
+        maxOutputBytes: 4 * 1024 * 1024,
+      });
+      if (!status.ok) throw new Error('EDIT_VALIDATION_WORKSPACE_STATUS_UNAVAILABLE');
+      hash.update(
+        workspaceValidationFingerprint(root, {
+          head: null,
+          branch: null,
+          porcelain: status.stdout,
+          ...splitRepositoryGitStatus(status.stdout),
+        }),
+      );
+      continue;
+    }
+    if (!stat.isFile()) {
+      throw new Error(`EDIT_VALIDATION_PATH_TYPE_UNSUPPORTED: ${relativePath}`);
+    }
+    hash.update(`mode:${stat.mode};size:${stat.size};`);
+    hash.update(readFileSync(absolute));
+  }
+  return hash.digest('hex');
+}
+
+function editSessionValidationInputPathSet(
+  repoRoot: string,
+  sessionId: string,
+  checkIds?: readonly string[],
+): string[] | null {
+  const session = getEditSession(repoRoot, sessionId);
+  const pathSet = new Set(sessionTrackedPaths(session));
+  const ids = checkIds === undefined ? [...session.requestedChecks] : [...checkIds];
+  if (pathSet.size === 0 && ids.length === 0) return null;
+  for (const id of ids) {
+    const check = listControllerChecks(repoRoot).find((entry) => entry.id === id);
+    const reads = check?.effects?.reads;
+    if (!reads || reads.some((path) => path === '.' || path === './')) return null;
+    for (const path of reads) pathSet.add(path);
+  }
+  if (pathSet.size === 0) return null;
+  return [...pathSet].sort();
+}
+
+/**
+ * Validation-input identity for one Edit Session (#713).
+ * Fingerprints session tracked paths plus declared check `effects.reads`.
+ * Whole-tree readers (reads: ['.'] / undeclared) fall back to the full
+ * workspace fingerprint. Unrelated concurrent dirty stays outside this set.
+ */
+export function editSessionValidationInputFingerprint(
+  repoRoot: string,
+  sessionId: string,
+  checkIds?: readonly string[],
+): string {
+  const paths = editSessionValidationInputPathSet(repoRoot, sessionId, checkIds);
+  if (!paths) return verifiedWorkspaceInput(repoRoot);
+  return fingerprintExactRelativePaths(repoRoot, paths);
+}
+
+/** @deprecated Prefer editSessionValidationInputFingerprint; kept for owned-path callers. */
 export function editSessionOwnedWorkspaceFingerprint(repoRoot: string, sessionId: string): string {
-  const paths = sessionTrackedPaths(getEditSession(repoRoot, sessionId));
-  if (paths.length === 0) return verifiedWorkspaceInput(repoRoot);
-  const status = runProcess('git', ['status', '--porcelain=v1', '--untracked-files=all', '--', ...paths], {
-    cwd: repoRoot,
-    timeoutMs: 10_000,
-    maxOutputBytes: 4 * 1024 * 1024,
-  });
-  if (!status.ok) throw new Error('EDIT_VALIDATION_WORKSPACE_STATUS_UNAVAILABLE');
-  return workspaceValidationFingerprint(repoRoot, {
-    head: null,
-    branch: null,
-    porcelain: status.stdout,
-    ...splitRepositoryGitStatus(status.stdout),
-  });
+  return editSessionValidationInputFingerprint(repoRoot, sessionId, []);
+}
+
+/**
+ * True when a HEAD advance touches this session's validation input paths.
+ * Unscoped / whole-tree validation inputs treat any revision change as a touch.
+ */
+export function editSessionSourceRevisionTouchesValidationInput(
+  repoRoot: string,
+  sessionId: string,
+  fromRevision: string,
+  toRevision: string,
+  checkIds?: readonly string[],
+): boolean {
+  if (!fromRevision || !toRevision || fromRevision === toRevision) return false;
+  const paths = editSessionValidationInputPathSet(repoRoot, sessionId, checkIds);
+  if (!paths) return true;
+  const diff = runProcess(
+    'git',
+    ['diff', '--name-only', '--no-renames', `${fromRevision}..${toRevision}`, '--', ...paths],
+    { cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 512 * 1024 },
+  );
+  if (!diff.ok) return true;
+  return diff.stdout.trim().length > 0;
+}
+
+function validatedEditSessionInputMatches(repoRoot: string, session: EditSession): boolean {
+  if (!session.validatedWorkspaceFingerprint) return false;
+  if (session.validatedOutsideWorkspaceFingerprint !== undefined) {
+    return editSessionValidationInputFingerprint(repoRoot, session.sessionId) === session.validatedWorkspaceFingerprint;
+  }
+  return verifiedWorkspaceInput(repoRoot) === session.validatedWorkspaceFingerprint;
 }
 
 /** Only a descendant commit touching exactly the owned after-image paths may reconcile a checked edit. */
@@ -1041,10 +1149,7 @@ export function reconcileEditSession(
   if (session.assurance?.approvalRequired && input.approvalConfirmed !== true) return session;
   if (session.requestedChecks.length > 0 && !requestedChecksPassed(session)) return session;
   if (session.requestedChecks.length > 0) {
-    const currentInputMatches = Boolean(
-      session.validatedWorkspaceFingerprint &&
-        verifiedWorkspaceInput(repoRoot) === session.validatedWorkspaceFingerprint,
-    );
+    const currentInputMatches = validatedEditSessionInputMatches(repoRoot, session);
     const committedOwnedEditOnly =
       !currentInputMatches &&
       checkedAfterImageCommitted(repoRoot, session) &&
@@ -1483,12 +1588,16 @@ export function recordEditSessionProcessCheckReceipts(
     );
   }
   if (input.receipts.length) {
-    // Prefer session-owned input identity when the coordinator captured one
-    // (#713). Whole-workspace equality still applies for legacy callers that
-    // only pass validatedWorkspaceFingerprint.
+    // Prefer validation-input identity when the coordinator captured one (#713).
+    // Whole-workspace equality still applies for legacy callers that only pass
+    // validatedWorkspaceFingerprint.
     if (input.validatedOutsideWorkspaceFingerprint !== undefined) {
-      const owned = editSessionOwnedWorkspaceFingerprint(repoRoot, session.sessionId);
-      if (!input.validatedWorkspaceFingerprint || owned !== input.validatedWorkspaceFingerprint) {
+      const current = editSessionValidationInputFingerprint(
+        repoRoot,
+        session.sessionId,
+        input.receipts.map((receipt) => receipt.checkId),
+      );
+      if (!input.validatedWorkspaceFingerprint || current !== input.validatedWorkspaceFingerprint) {
         throw new Error('EDIT_VALIDATION_WORKSPACE_CHANGED');
       }
     } else if (
@@ -2515,8 +2624,7 @@ export function finalizeEditSession(
     !emptyOpenSession &&
     session.requestedChecks.length > 0 &&
     requestedChecksPassed(session) &&
-    (!session.validatedWorkspaceFingerprint ||
-      verifiedWorkspaceInput(repoRoot) !== session.validatedWorkspaceFingerprint)
+    !validatedEditSessionInputMatches(repoRoot, session)
   ) {
     throw new Error('EDIT_SESSION_VALIDATED_WORKSPACE_CHANGED');
   }

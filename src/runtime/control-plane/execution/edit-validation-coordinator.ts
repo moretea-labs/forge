@@ -1,8 +1,9 @@
 import { createHash } from 'crypto';
 import {
   getEditSession,
-  editSessionOwnedWorkspaceFingerprint,
   editSessionOutsideWorkspaceFingerprint,
+  editSessionSourceRevisionTouchesValidationInput,
+  editSessionValidationInputFingerprint,
   recordEditSessionProcessCheckReceipts,
   type EditSession,
 } from '../../editing/edit-session';
@@ -448,19 +449,30 @@ export async function reconcileEditValidationRun(
     );
   }
   if (run.sourceRevision && currentSourceRevision !== run.sourceRevision) {
-    return failedRun(
-      controllerHome,
-      run,
-      'EDIT_VALIDATION_SOURCE_CHANGED',
-      `Validation source changed from ${run.sourceRevision} to ${currentSourceRevision ?? 'unavailable'}.`,
-    );
+    const touchesOwnedInput =
+      !currentSourceRevision ||
+      editSessionSourceRevisionTouchesValidationInput(
+        validationRepository.canonicalRoot,
+        run.editSessionId,
+        run.sourceRevision,
+        currentSourceRevision,
+        run.checkIds,
+      );
+    if (touchesOwnedInput) {
+      return failedRun(
+        controllerHome,
+        run,
+        'EDIT_VALIDATION_SOURCE_CHANGED',
+        `Validation source changed from ${run.sourceRevision} to ${currentSourceRevision ?? 'unavailable'}.`,
+      );
+    }
   }
-  // Bind validation to the session's owned input (#713). Runs that still carry
-  // a whole-workspace fingerprint (no tracked paths / legacy) compare the full
-  // tree; otherwise unrelated concurrent dirty must not fail the run.
+  // Bind validation to session paths + declared check reads (#713). Runs that
+  // still carry a whole-workspace fingerprint (whole-tree readers / legacy)
+  // compare the full tree; unrelated concurrent dirty must not fail the run.
   const currentInputFingerprint =
     run.outsideWorkspaceFingerprint !== undefined
-      ? editSessionOwnedWorkspaceFingerprint(validationRepository.canonicalRoot, run.editSessionId)
+      ? editSessionValidationInputFingerprint(validationRepository.canonicalRoot, run.editSessionId, run.checkIds)
       : workspaceValidationFingerprint(validationRepository.canonicalRoot, status);
   if (currentInputFingerprint !== run.workspaceFingerprint) {
     return failedRun(
@@ -688,12 +700,12 @@ export async function startOrJoinEditValidation(
     validationRepository.canonicalRoot,
     session.sessionId,
   );
-  // Prefer owned-path input identity so concurrent Writers on other paths do
-  // not serialize validation (#713). Unscoped sessions still fingerprint the
-  // whole workspace.
-  const validationWorkspaceFingerprint = editSessionOwnedWorkspaceFingerprint(
+  // Session paths + declared check reads. Whole-tree readers still fingerprint
+  // the full workspace; unrelated concurrent dirty stays outside this set (#713).
+  const validationWorkspaceFingerprint = editSessionValidationInputFingerprint(
     validationRepository.canonicalRoot,
     session.sessionId,
+    checkIds,
   );
   const run = saveRun(controllerHome, {
     schemaVersion: 1,
