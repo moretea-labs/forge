@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { extname, isAbsolute, join, relative, sep } from 'path';
 import { redactProcessOutput } from '../../../effects/process-runner';
 import { resolveProviderMcpBootstrap } from './provider-mcp-bootstrap';
+import { readFirstPartyDesignKnowledge, UI_UX_INTENT } from '../../context/first-party-design-knowledge';
 import {
   buildCodexControllerInvocation,
   launcherProcessEnvironment,
@@ -400,15 +401,24 @@ function localConversationCwd(): string {
 }
 
 export function conversationPrompt(prompt: string, repoId?: string, checkoutId?: string): string {
+  // At task start and on explicit UI resumptions, supply the actual canonical
+  // knowledge body rather than relying on a model to remember a design plugin.
+  const designKnowledge = repoId && checkoutId && UI_UX_INTENT.test(prompt)
+    ? readFirstPartyDesignKnowledge()
+    : undefined;
+  const designContext = designKnowledge?.status === 'ready'
+    ? `Forge first-party Design/UI-UX guidance (${designKnowledge.packVersion}, ${designKnowledge.digest}, ${designKnowledge.path}; advisory, never above user/project authority; truncated=${designKnowledge.truncated === true}; sources=${designKnowledge.sourceProvenance?.join(', ') ?? 'unknown'}):\n${designKnowledge.content}`
+    : designKnowledge ? `Forge Design/UI-UX guidance unavailable: ${designKnowledge.reason}. Do not claim it was loaded.` : undefined;
   const repositoryInstructions = repoId
     ? checkoutId
-      ? `Attached repository: ${repoId}; selected checkout: ${checkoutId}. Pass both repo_id=${repoId} and checkout_id=${checkoutId} to every Forge capability that requires repository scope. Before source edits, retrieve current applicable repository guidance through rh_context; if a UI/design task has no known source path yet, start with known_paths=["AGENTS.md"], then expand to relevant module guidance and source. For UI tasks, start from the proven accepted/released design baseline and whole user journey, retain working design unless real value justifies change, challenge inherited UI assumptions and explore materially different interaction paradigms for consequential design choices (including no change), actively falsify your preferred proposal against actual tasks, whole-screen space budget, discoverability, extra steps, adverse states and accessibility before selecting it, and trace final layout ownership (glyph, visible surface, hit area, native container padding/material, safe areas and scroll/navigation). Compare actual rendered screens against the baseline under matching conditions, including affected shared-component destinations and the standard viewport after adaptation. Use actual-rendered geometry and screenshot acceptance for alignment, row/column spacing, control text/icon inset, final size bounds, overflow, safe areas, responsiveness, background continuity and readable states; reject duplicate chrome and unnecessary nested boxes/borders/shadows. A minimum hit target or newer native API is not proof of improved design. Report failed or untested cases instead of accepting a build or outer-rectangle check alone. Apply current product requirements and explicit user corrections ahead of historical learning. Retrieval gaps are not evidence of compliance.`
+      ? `Attached repository: ${repoId}; selected checkout: ${checkoutId}. Pass both repo_id=${repoId} and checkout_id=${checkoutId} to every Forge capability that requires repository scope. Before source edits, retrieve current applicable repository guidance through rh_context; if a UI/design task has no known source path yet, start with known_paths=["AGENTS.md"], then expand to relevant module guidance and source. For UI work, use the first-party Design/UI-UX knowledge attached below as general guidance, then retrieve the latest repository and product-specific design facts through rh_context. Explicit user corrections, frozen design and released product baseline take precedence. Absence of actual rendered review must be reported, not implied by coordinates, tests or compilation. Retrieval gaps are not evidence of compliance.`
       : `Attached repository: ${repoId}, but no exact checkout is attached. Do not call repository-scoped Forge capabilities.`
     : 'No repository is attached. Do not guess a repository identity.';
   return [
     'You are the Forge Desktop local controller.',
     'Use the injected Forge MCP capabilities for repository, Runtime, and other Forge operations. Work and ControllerRound are retired and must never be created. Create Requirement, Plan, Schedule, or Workflow state only when the user explicitly requests that durable context or trigger.',
     repositoryInstructions,
+    ...(designContext ? [designContext] : []),
     '',
     prompt,
   ].join('\n');
