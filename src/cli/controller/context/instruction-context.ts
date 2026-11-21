@@ -2,11 +2,11 @@ import { readFileSync } from 'fs';
 import { posix, resolve } from 'path';
 import type { ToolPolicy } from '../../../runtime/control-plane/tool-policy';
 import { readableFile } from './known-paths';
+import { readFirstPartyDesignKnowledge, UI_UX_INTENT, type FirstPartyDesignKnowledge } from '../../../runtime/context/first-party-design-knowledge';
 
 const CONTRACT_NAMES = ['AGENTS.md', 'CLAUDE.md'] as const;
 // UI sources need the repository's existing design rules as read evidence,
 // not a second policy store or a new design-approval gate.
-const UI_INTENT = /\b(?:ui|ux|swiftui|view|screen|layout|design|visual|style|sheet|form)\b|界面|页面|布局|设计|视觉|交互|样式|复刻|卡片|弹窗/i;
 const DESIGN_REFERENCE = /\x60([^\x60\n]+\.md)\x60/g;
 const DEFAULT_MAX_TARGETS = 12;
 const DEFAULT_MAX_CONTRACTS = 12;
@@ -25,6 +25,8 @@ export interface RepositoryInstructionContext {
   authority: 'guidance_only';
   targetPaths: string[];
   contracts: RepositoryInstructionContract[];
+  /** Generic packaged method; never overrides repository-specific design facts. */
+  firstPartyKnowledge?: FirstPartyDesignKnowledge;
   coverageGaps: string[];
   truncated: boolean;
 }
@@ -84,7 +86,7 @@ export function buildRepositoryInstructionContext(
   // Opt-in by the user's UI/design task or a concrete View owner. Only read
   // design paths already declared by repository guidance, plus root DESIGN.md.
   // Policy and byte limits are the same as for AGENTS.md.
-  const isUiTask = UI_INTENT.test(options.uiIntent ?? '')
+  const isUiTask = UI_UX_INTENT.test(options.uiIntent ?? '')
     || targets.some(path => /(?:\/Views?\/|(?:View|Screen)\.(?:swift|tsx|jsx)$)/i.test(path));
   if (isUiTask && targets.length > 0) {
     const designPaths = new Set<string>();
@@ -120,6 +122,11 @@ export function buildRepositoryInstructionContext(
     }
   }
   if (denied.size > 0) coverageGaps.push(...[...denied].sort().map((entry) => `instruction_contract_unreadable:${entry}`));
+  const firstPartyKnowledge = isUiTask ? readFirstPartyDesignKnowledge() : undefined;
+  if (firstPartyKnowledge?.status === 'unavailable') {
+    coverageGaps.push(`first_party_design_knowledge_unavailable:${firstPartyKnowledge.reason}`);
+  }
+  if (firstPartyKnowledge?.truncated) coverageGaps.push('first_party_design_knowledge_truncated');
 
   const orderedPaths = [...contractTargets.keys()].sort((left, right) => {
     const leftDepth = left.split('/').length;
@@ -156,7 +163,8 @@ export function buildRepositoryInstructionContext(
     authority: 'guidance_only',
     targetPaths: targets,
     contracts,
+    ...(firstPartyKnowledge ? { firstPartyKnowledge } : {}),
     coverageGaps: coverageGaps.slice(0, 30),
-    truncated: allTargets.length > targets.length || orderedPaths.length > selectedPaths.length || contracts.some((entry) => entry.truncated),
+    truncated: allTargets.length > targets.length || orderedPaths.length > selectedPaths.length || contracts.some((entry) => entry.truncated) || firstPartyKnowledge?.truncated === true,
   };
 }

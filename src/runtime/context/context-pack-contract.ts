@@ -209,6 +209,7 @@ export interface ControllerContextPackProjection {
       content: string;
       truncated: boolean;
     }>;
+    firstPartyKnowledge?: import('./first-party-design-knowledge').FirstPartyDesignKnowledge;
     coverageGaps: string[];
     truncated: boolean;
   };

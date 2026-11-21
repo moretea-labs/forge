@@ -30,10 +30,16 @@ describe('repository UI instruction context', () => {
       expect(ui.contracts.map(contract => contract.path)).toContain('docs/mvp2/design/design-rules.md');
       expect(ui.contracts.find(contract => contract.path === 'DESIGN.md')?.content).toContain('no shadows');
       expect(ui.contracts.find(contract => contract.path === 'docs/mvp2/design/design-rules.md')?.content).toContain('No decorative outlines');
+      expect(ui.firstPartyKnowledge?.status).toBe('ready');
+      expect(ui.firstPartyKnowledge?.source).toBe('forge_first_party');
+      expect(ui.firstPartyKnowledge?.authority).toBe('advisory');
+      expect(ui.firstPartyKnowledge?.content).toContain('Optical centering differs from geometry');
+      expect(ui.firstPartyKnowledge?.digest).toMatch(/^sha256:[a-f0-9]{64}$/);
 
       const backend = buildRepositoryInstructionContext(root, policy, ['apps/api/Domain/Medicine.ts'], { uiIntent: 'fix transaction persistence' });
       expect(backend.contracts.map(contract => contract.path)).not.toContain('DESIGN.md');
       expect(backend.contracts.map(contract => contract.path)).not.toContain('docs/mvp2/design/design-rules.md');
+      expect(backend.firstPartyKnowledge).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -64,6 +70,7 @@ describe('repository UI instruction context', () => {
       expect(pack.instructionContext.contracts.map(contract => contract.path)).toContain('docs/design/design-rules.md');
       expect(pack.instructionContext.contracts.find(contract => contract.path === 'DESIGN.md')?.content)
         .toContain('No ornamental shadows');
+      expect(pack.instructionContext.firstPartyKnowledge?.content).toContain('real rendered screen');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -89,6 +96,7 @@ describe('repository UI instruction context', () => {
       expect(paths).toContain('AGENTS.md');
       expect(paths).toContain('DESIGN.md');
       expect(paths).toContain('docs/design/design-rules.md');
+      expect(pack.instructionContext.firstPartyKnowledge?.status).toBe('ready');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -117,6 +125,20 @@ describe('repository UI instruction context', () => {
       expect(paths).toContain('docs/mvp2/AGENTS.md');
       expect(paths).toContain('DESIGN.md');
       expect(paths).toContain('docs/mvp2/design/design-rules.md');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('UI-only intent loads first-party guidance even before any implementation path is known', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-first-party-ui-bootstrap-'));
+    try {
+      const guidance = buildRepositoryInstructionContext(root, getToolPolicy('controller', { repoRoot: root }), [], { uiIntent: '药箱导出图标视觉对齐' });
+      expect(guidance.firstPartyKnowledge?.status).toBe('ready');
+      expect(guidance.firstPartyKnowledge?.content).toContain('Optical centering differs from geometry');
+      expect(guidance.contracts).toEqual([]);
+      const notUi = buildRepositoryInstructionContext(root, getToolPolicy('controller', { repoRoot: root }), [], { uiIntent: 'repair SQL index' });
+      expect(notUi.firstPartyKnowledge).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
