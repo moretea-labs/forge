@@ -2855,6 +2855,23 @@ requireText(
 );
 requireMissing('adapters/mcp/runtime-gateway/work-semantic-operations.ts');
 requireMissing('adapters/mcp/runtime-gateway/work-list-projection.ts');
+requireMissing('adapters/mcp/runtime-gateway/work-detail-projection.ts');
+forbid(
+  'adapters/mcp/tool-mapping/legacy-tool-service.ts',
+  /getWorkContract\s*\(/,
+  'legacy MCP tools must never invoke historical WorkContract reads',
+);
+forbid(
+  'src/runtime/control-plane/workspace/semantic-sync-service.ts',
+  /\bWorkContract\b|work_contract|projectHistoricalWorkSemantic|HistoricalWorkSemanticView/,
+  'semantic sync must not read or compare retired Work',
+);
+forbid(
+  'packages/kernel/identity/domain/semantic-sync.ts',
+  /'work'|"work"/,
+  'semantic sync protocol must not advertise retired Work kind',
+);
+requireText('src/runtime/control-plane/workspace/semantic-sync-service.ts', 'SEMANTIC_SYNC_WORK_RETIRED');
 forbid(
   'adapters/mcp/runtime-gateway/context-adapter.ts',
   /getWorkContract|historicalWorkContext|historicalWorkSelected/,

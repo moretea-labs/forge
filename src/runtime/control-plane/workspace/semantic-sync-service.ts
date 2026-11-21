@@ -13,8 +13,6 @@ import {
   type SemanticSyncRecordKind,
 } from '../../../../packages/kernel/identity/api/index';
 import { readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
-import type { WorkContract } from '../../../../packages/kernel/work/api/index';
-import { semanticScopeRefForWork } from '../../../../packages/kernel/work/api/index';
 import type { PlanContract } from '../facade/types';
 import { SEMANTIC_SCOPE_KEY } from '../../../effects/controller-home';
 import type { Requirement } from '../persistence/requirement-store';
@@ -77,30 +75,6 @@ export interface PlanSemanticView {
   supersedes?: string[];
   supersededBy?: string;
   supersessionReason?: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface HistoricalWorkSemanticView {
-  schemaVersion: 1;
-  workId: string;
-  semanticScope: ReturnType<typeof semanticScopeRefForWork>;
-  objective: string;
-  acceptanceCriteria: string[];
-  state: WorkContract['semanticState'];
-  phase: WorkContract['phase'];
-  workKind: WorkContract['workKind'];
-  lifecycleRole?: WorkContract['lifecycleRole'];
-  requirementId?: string;
-  planId?: string;
-  planStepId?: string;
-  semanticParentWorkId?: string;
-  dependsOnWorkIds?: string[];
-  predecessorWorkId?: string;
-  supersedes?: string[];
-  supersededBy?: string;
-  supersessionReason?: string;
-  completionOutcome?: WorkContract['completionOutcome'];
   createdAt: string;
   updatedAt: string;
 }
@@ -193,32 +167,6 @@ export function projectPlanSemantic(plan: PlanContract): PlanSemanticView {
     ...(plan.supersessionReason ? { supersessionReason: plan.supersessionReason } : {}),
     createdAt: plan.createdAt,
     updatedAt: plan.updatedAt,
-  };
-}
-
-function projectHistoricalWorkSemantic(work: WorkContract): HistoricalWorkSemanticView {
-  return {
-    schemaVersion: 1,
-    workId: work.workId,
-    semanticScope: semanticScopeRefForWork(work),
-    objective: work.objective,
-    acceptanceCriteria: [...work.acceptanceCriteria],
-    state: work.semanticState,
-    phase: work.phase,
-    workKind: work.workKind,
-    ...(work.lifecycleRole ? { lifecycleRole: work.lifecycleRole } : {}),
-    ...(work.requirementId ? { requirementId: work.requirementId } : {}),
-    ...(work.planId ? { planId: work.planId } : {}),
-    ...(work.planStepId ? { planStepId: work.planStepId } : {}),
-    ...(work.semanticParentWorkId ? { semanticParentWorkId: work.semanticParentWorkId } : {}),
-    ...(work.dependsOnWorkIds?.length ? { dependsOnWorkIds: [...work.dependsOnWorkIds] } : {}),
-    ...(work.predecessorWorkId ? { predecessorWorkId: work.predecessorWorkId } : {}),
-    ...(work.supersedes ? { supersedes: [...work.supersedes] } : {}),
-    ...(work.supersededBy ? { supersededBy: work.supersededBy } : {}),
-    ...(work.supersessionReason ? { supersessionReason: work.supersessionReason } : {}),
-    ...(work.completionOutcome ? { completionOutcome: work.completionOutcome } : {}),
-    createdAt: work.createdAt,
-    updatedAt: work.updatedAt,
   };
 }
 
@@ -381,15 +329,6 @@ function localRecordWithinTransaction(
         : undefined)
     );
   }
-  if (input.kind === 'work') {
-    const semantic = readControlPlaneRecordWithinTransaction(database, 'work_contract', SEMANTIC_SCOPE_KEY, input.id);
-    return (
-      semantic ??
-      (input.repositoryId
-        ? readControlPlaneRecordWithinTransaction(database, 'work_contract', input.repositoryId, input.id)
-        : undefined)
-    );
-  }
   return undefined;
 }
 
@@ -397,9 +336,6 @@ function localSemanticValue(kind: SemanticSyncRecordKind, value: unknown): unkno
   if (kind === 'workspace' || kind === 'project') return value;
   if (kind === 'requirement') return projectRequirementSemantic(value as Requirement);
   if (kind === 'plan') return projectPlanSemantic(value as PlanContract);
-  // Historical sync bundles may still contain Work. Compare them only as
-  // read-only compatibility replicas; current export never emits Work records.
-  if (kind === 'work') return projectHistoricalWorkSemantic(value as WorkContract);
   return value;
 }
 
@@ -415,6 +351,10 @@ function assertBundle(bundle: SemanticSyncBundle): void {
     throw new Error('SEMANTIC_SYNC_BUNDLE_SCHEMA_INVALID');
   if (!bundle.workspaceId.trim() || !bundle.projectId.trim() || !bundle.sourceForgeInstanceId.trim())
     throw new Error('SEMANTIC_SYNC_BUNDLE_IDENTITY_REQUIRED');
+  // No historical Work compatibility or imported Work replicas are allowed.
+  if (bundle.records.some((entry) => (entry.kind as string) === 'work')) {
+    throw new Error('SEMANTIC_SYNC_WORK_RETIRED');
+  }
   assertSemanticSyncRecordBounds(bundle.records);
   assertControlPlaneMetadataPayload(bundle, 'semantic_sync_bundle');
   if (Buffer.byteLength(stableJson(bundle), 'utf8') > MAX_SEMANTIC_SYNC_BUNDLE_BYTES)

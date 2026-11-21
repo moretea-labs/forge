@@ -1,6 +1,6 @@
 import type { SemanticRecordEnvelope, SemanticRecordWriteCondition } from './scope';
 
-export const SEMANTIC_SYNC_RECORD_KINDS = ['workspace', 'project', 'requirement', 'plan', 'work'] as const;
+export const SEMANTIC_SYNC_RECORD_KINDS = ['workspace', 'project', 'requirement', 'plan'] as const;
 export type SemanticSyncRecordKind = (typeof SEMANTIC_SYNC_RECORD_KINDS)[number];
 
 export const MAX_SEMANTIC_SYNC_RECORDS = 1_000;
@@ -51,12 +51,14 @@ export interface SemanticSyncImportReceipt {
 
 export function semanticSyncRecordKey(kind: SemanticSyncRecordKind, id: string): string {
   const normalized = id.trim();
-  if (!SEMANTIC_SYNC_RECORD_KINDS.includes(kind) || !normalized || normalized.length > 512) throw new Error('SEMANTIC_SYNC_RECORD_ID_INVALID');
+  if (!SEMANTIC_SYNC_RECORD_KINDS.includes(kind) || !normalized || normalized.length > 512)
+    throw new Error('SEMANTIC_SYNC_RECORD_ID_INVALID');
   return `${kind}:${normalized}`;
 }
 
 export function assertSemanticSyncRecordBounds(records: readonly SemanticSyncRecord[]): void {
-  if (records.length < 1 || records.length > MAX_SEMANTIC_SYNC_RECORDS) throw new Error('SEMANTIC_SYNC_RECORD_COUNT_INVALID');
+  if (records.length < 1 || records.length > MAX_SEMANTIC_SYNC_RECORDS)
+    throw new Error('SEMANTIC_SYNC_RECORD_COUNT_INVALID');
   const keys = new Set<string>();
   for (const record of records) {
     if (record.schemaVersion !== 1) throw new Error('SEMANTIC_SYNC_RECORD_SCHEMA_INVALID');
@@ -67,13 +69,21 @@ export function assertSemanticSyncRecordBounds(records: readonly SemanticSyncRec
       throw new Error(`SEMANTIC_SYNC_SCOPE_MISMATCH: ${key}`);
     }
     const metadata = record.envelope.metadata;
-    if (metadata.schemaVersion !== 1 || !Number.isSafeInteger(metadata.revision) || metadata.revision < 0 || Number.isNaN(Date.parse(metadata.updatedAt))) {
+    if (
+      metadata.schemaVersion !== 1 ||
+      !Number.isSafeInteger(metadata.revision) ||
+      metadata.revision < 0 ||
+      Number.isNaN(Date.parse(metadata.updatedAt))
+    ) {
       throw new Error(`SEMANTIC_SYNC_METADATA_INVALID: ${key}`);
     }
     if (!['local', 'imported', 'synced', 'migration'].includes(metadata.origin)) {
       throw new Error(`SEMANTIC_SYNC_METADATA_ORIGIN_INVALID: ${key}`);
     }
-    if (record.condition.expectedRevision !== null && (!Number.isSafeInteger(record.condition.expectedRevision) || record.condition.expectedRevision < 0)) {
+    if (
+      record.condition.expectedRevision !== null &&
+      (!Number.isSafeInteger(record.condition.expectedRevision) || record.condition.expectedRevision < 0)
+    ) {
       throw new Error(`SEMANTIC_SYNC_EXPECTED_REVISION_INVALID: ${key}`);
     }
     if (!/^[a-f0-9]{64}$/i.test(record.fingerprint)) throw new Error(`SEMANTIC_SYNC_FINGERPRINT_INVALID: ${key}`);
