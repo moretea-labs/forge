@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import {
   getEditSession,
+  editSessionOwnedWorkspaceFingerprint,
   editSessionOutsideWorkspaceFingerprint,
   recordEditSessionProcessCheckReceipts,
   type EditSession,
@@ -10,7 +11,11 @@ import type { RepositoryRecord } from '../../../core/repository/types';
 import { repositoryGitStatus } from '../../repositories/structured-git';
 import { selectRepositoryCheckout } from '../../repositories/registry';
 import { executionIdentityForRepository } from './execution-identity';
-import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from './verification-evidence';
+import {
+  commandFingerprint,
+  verificationInputFingerprint,
+  workspaceValidationFingerprint,
+} from './verification-evidence';
 import {
   claimsForCheck,
   getProcessRecord,
@@ -21,10 +26,7 @@ import {
 } from '../../execution/process-runtime';
 import { projectTerminalCheckVerification } from '../../execution/process-runtime/check-result';
 import { resourceClaimsConflict } from '../../resources/claims/conflicts';
-import {
-  mutateControlPlaneRecord,
-  readControlPlaneRecord,
-} from '../persistence/sqlite-store';
+import { mutateControlPlaneRecord, readControlPlaneRecord } from '../persistence/sqlite-store';
 
 const EDIT_VALIDATION_RUN_NAMESPACE = 'execution_edit_validation_run';
 const EDIT_VALIDATION_INDEX_NAMESPACE = 'execution_edit_validation_index';
@@ -40,6 +42,11 @@ export interface EditValidationRunState {
   requestId: string;
   /** Exact Work verification source identity captured before any lane starts. */
   sourceRevision?: string;
+  /**
+   * Validation-input fingerprint. For sessions with tracked paths this is the
+   * owned-path identity (#713); unscoped sessions keep the whole-workspace
+   * fingerprint. Unrelated concurrent dirty must not invalidate the run.
+   */
   workspaceFingerprint?: string;
   outsideWorkspaceFingerprint?: string;
   checkIds: string[];
@@ -75,7 +82,14 @@ export interface EditValidationCoordinatorResult {
   editRevision: number;
   validationRequestId: string;
   validationId: string;
-  processes: Array<{ checkId: string; processId: string; requestId: string; completed?: boolean; ok?: boolean; status?: string }>;
+  processes: Array<{
+    checkId: string;
+    processId: string;
+    requestId: string;
+    completed?: boolean;
+    ok?: boolean;
+    status?: string;
+  }>;
   receipts?: ProcessCheckCompletionReceipt[];
   session?: EditSession;
   error?: { code: string; message: string };
@@ -124,12 +138,14 @@ function validationId(repositoryId: string, editSessionId: string, editRevision:
 }
 
 function readIndex(controllerHome: string, repositoryId: string): EditValidationIndex {
-  return readControlPlaneRecord<EditValidationIndex>(
-    controllerHome,
-    EDIT_VALIDATION_INDEX_NAMESPACE,
-    repositoryId,
-    EDIT_VALIDATION_INDEX_KEY,
-  )?.value ?? { schemaVersion: 1, updatedAt: now(), validationIds: [] };
+  return (
+    readControlPlaneRecord<EditValidationIndex>(
+      controllerHome,
+      EDIT_VALIDATION_INDEX_NAMESPACE,
+      repositoryId,
+      EDIT_VALIDATION_INDEX_KEY,
+    )?.value ?? { schemaVersion: 1, updatedAt: now(), validationIds: [] }
+  );
 }
 
 function setIndexMembership(controllerHome: string, repositoryId: string, id: string, active: boolean): void {
@@ -141,19 +157,16 @@ function setIndexMembership(controllerHome: string, repositoryId: string, id: st
     action: active ? 'edit_validation_index_add' : 'edit_validation_index_remove',
     mutate: (current) => {
       const ids = new Set(current?.value.validationIds ?? []);
-      if (active) ids.add(id); else ids.delete(id);
+      if (active) ids.add(id);
+      else ids.delete(id);
       return { schemaVersion: 1, updatedAt: now(), validationIds: [...ids].sort() };
     },
   });
 }
 
 function readRun(controllerHome: string, repositoryId: string, id: string): EditValidationRunState | undefined {
-  return readControlPlaneRecord<EditValidationRunState>(
-    controllerHome,
-    EDIT_VALIDATION_RUN_NAMESPACE,
-    repositoryId,
-    id,
-  )?.value;
+  return readControlPlaneRecord<EditValidationRunState>(controllerHome, EDIT_VALIDATION_RUN_NAMESPACE, repositoryId, id)
+    ?.value;
 }
 
 function saveRun(controllerHome: string, run: EditValidationRunState): EditValidationRunState {
@@ -178,13 +191,7 @@ function checkLanes(repository: RepositoryRecord, checkIds: string[]): string[][
   const checks = new Map(listControllerChecks(repository.canonicalRoot).map((check) => [check.id, check] as const));
   const claimSets = checkIds.map((checkId) => {
     const check = checks.get(checkId);
-    return claimsForCheck(
-      checkId,
-      check?.command,
-      repository.repoId,
-      repository.activeCheckoutId,
-      check?.effects,
-    );
+    return claimsForCheck(checkId, check?.command, repository.repoId, repository.activeCheckoutId, check?.effects);
   });
   const lanes: string[][] = [];
   const assigned = new Set<number>();
@@ -199,7 +206,8 @@ function checkLanes(repository: RepositoryRecord, checkIds: string[]): string[][
       for (let candidate = 0; candidate < checkIds.length; candidate += 1) {
         if (assigned.has(candidate)) continue;
         const conflicts = claimSets[current]!.some((left) =>
-          claimSets[candidate]!.some((right) => resourceClaimsConflict(left, right)));
+          claimSets[candidate]!.some((right) => resourceClaimsConflict(left, right)),
+        );
         if (!conflicts) continue;
         assigned.add(candidate);
         queue.push(candidate);
@@ -210,21 +218,28 @@ function checkLanes(repository: RepositoryRecord, checkIds: string[]): string[][
   return lanes;
 }
 
-function processSummaries(controllerHome: string, run: EditValidationRunState): EditValidationCoordinatorResult['processes'] {
+function processSummaries(
+  controllerHome: string,
+  run: EditValidationRunState,
+): EditValidationCoordinatorResult['processes'] {
   return run.checkIds.flatMap((checkId) => {
     const binding = run.processes[checkId];
     if (!binding) return [];
     const record = getProcessRecord(controllerHome, run.repositoryId, binding.processId);
-    return [{
-      checkId,
-      processId: binding.processId,
-      requestId: binding.requestId,
-      ...(record ? {
-        completed: !['starting', 'running', 'running_recovered'].includes(record.status),
-        ok: record.status === 'succeeded',
-        status: record.status,
-      } : {}),
-    }];
+    return [
+      {
+        checkId,
+        processId: binding.processId,
+        requestId: binding.requestId,
+        ...(record
+          ? {
+              completed: !['starting', 'running', 'running_recovered'].includes(record.status),
+              ok: record.status === 'succeeded',
+              status: record.status,
+            }
+          : {}),
+      },
+    ];
   });
 }
 
@@ -250,11 +265,12 @@ function coordinatorResult(
     ...(session ? { session } : {}),
     ...(run.error ? { error: run.error } : {}),
     ...(run.error ? { message: run.error.message } : {}),
-    next: run.status === 'running'
-      ? 'Validation is running in Process Runtime. Forge Scheduler will advance conflict lanes automatically; continue independent work and join once when validation becomes a real dependency.'
-      : run.status === 'completed'
-        ? 'Validation is complete for the exact edit revision.'
-        : 'Validation could not continue. Inspect the structured error before retrying or changing the edit revision.',
+    next:
+      run.status === 'running'
+        ? 'Validation is running in Process Runtime. Forge Scheduler will advance conflict lanes automatically; continue independent work and join once when validation becomes a real dependency.'
+        : run.status === 'completed'
+          ? 'Validation is complete for the exact edit revision.'
+          : 'Validation could not continue. Inspect the structured error before retrying or changing the edit revision.',
     durableSideEffects: ZERO_DURABLE_SIDE_EFFECTS,
   };
 }
@@ -278,10 +294,11 @@ export function resolveEditValidationRepository(
   repository: RepositoryRecord,
   editSessionId: string,
 ): { repository: RepositoryRecord; session: EditSession } {
-  const checkoutIds = [...new Set([
-    repository.activeCheckoutId,
-    ...repository.checkouts.map((checkout) => checkout.checkoutId),
-  ].filter(Boolean))];
+  const checkoutIds = [
+    ...new Set(
+      [repository.activeCheckoutId, ...repository.checkouts.map((checkout) => checkout.checkoutId)].filter(Boolean),
+    ),
+  ];
   for (const checkoutId of checkoutIds) {
     let candidate: RepositoryRecord;
     try {
@@ -300,17 +317,16 @@ export function resolveEditValidationRepository(
       throw new Error(`EDIT_VALIDATION_SESSION_IDENTITY_MISMATCH: repoId ${session.repoId} != ${candidate.repoId}`);
     }
     if (session.checkoutId && session.checkoutId !== candidate.activeCheckoutId) {
-      throw new Error(`EDIT_VALIDATION_SESSION_IDENTITY_MISMATCH: checkoutId ${session.checkoutId} != ${candidate.activeCheckoutId}`);
+      throw new Error(
+        `EDIT_VALIDATION_SESSION_IDENTITY_MISMATCH: checkoutId ${session.checkoutId} != ${candidate.activeCheckoutId}`,
+      );
     }
     return { repository: candidate, session };
   }
   throw new Error(`edit session not found: ${editSessionId}`);
 }
 
-function validationRunRepository(
-  repository: RepositoryRecord,
-  run: EditValidationRunState,
-): RepositoryRecord {
+function validationRunRepository(repository: RepositoryRecord, run: EditValidationRunState): RepositoryRecord {
   if (run.repositoryId !== repository.repoId) {
     throw new Error(`EDIT_VALIDATION_REPOSITORY_MISMATCH: ${run.repositoryId} != ${repository.repoId}`);
   }
@@ -359,32 +375,37 @@ function receiptFor(
     taskId: session.taskId,
     checkId,
     processId: binding.processId,
-    ...(persistedIdentity ? {
-      checkExecution: {
-        // The Process froze this physical identity at spawn against the exact
-        // execution root, which may intentionally be a Work verification
-        // snapshot rather than the live checkout. Recomputing these fields
-        // from the live checkout creates a second identity authority and
-        // rejects valid receipts whenever the snapshot excludes concurrent
-        // non-Work changes.
-        cacheKey: persistedIdentity.cacheKey,
-        revision: persistedIdentity.revision,
-        definitionDigest: persistedIdentity.definitionDigest,
-        environmentFingerprint: persistedIdentity.environmentFingerprint,
-        timeoutMs: persistedIdentity.timeoutMs,
-        // Consumer scope remains independently derived. This keeps shared
-        // physical Process reuse fenced to the exact checkout/edit
-        // binding instead of trusting the persisted scope key by tautology.
-        scopeKey: processCheckSemanticScopeKey({
-          checkoutId: repository.activeCheckoutId,
+    ...(persistedIdentity
+      ? {
+          checkExecution: {
+            // The Process froze this physical identity at spawn against the exact
+            // execution root, which may intentionally be a Work verification
+            // snapshot rather than the live checkout. Recomputing these fields
+            // from the live checkout creates a second identity authority and
+            // rejects valid receipts whenever the snapshot excludes concurrent
+            // non-Work changes.
+            cacheKey: persistedIdentity.cacheKey,
+            revision: persistedIdentity.revision,
+            definitionDigest: persistedIdentity.definitionDigest,
+            environmentFingerprint: persistedIdentity.environmentFingerprint,
+            timeoutMs: persistedIdentity.timeoutMs,
+            // Consumer scope remains independently derived. This keeps shared
+            // physical Process reuse fenced to the exact checkout/edit
+            // binding instead of trusting the persisted scope key by tautology.
+            scopeKey: processCheckSemanticScopeKey(
+              {
+                checkoutId: repository.activeCheckoutId,
                 requestSemanticFingerprint: editCheckInputFingerprint(run, checkId, requestedChecks),
-          verificationBinding: {
-            editSessionId: run.editSessionId,
-            editRevision: run.editRevision,
+                verificationBinding: {
+                  editSessionId: run.editSessionId,
+                  editRevision: run.editRevision,
+                },
+              },
+              persistedIdentity.reuseScope,
+            ),
           },
-        }, persistedIdentity.reuseScope),
-      },
-    } : {}),
+        }
+      : {}),
   });
 }
 
@@ -408,20 +429,46 @@ export async function reconcileEditValidationRun(
   }
   const session = getEditSession(validationRepository.canonicalRoot, run.editSessionId);
   if (session.currentRevision !== run.editRevision) {
-    return failedRun(controllerHome, run, 'EDIT_VALIDATION_STALE_REVISION', `Validation targets revision ${run.editRevision}, current edit revision is ${session.currentRevision}.`);
+    return failedRun(
+      controllerHome,
+      run,
+      'EDIT_VALIDATION_STALE_REVISION',
+      `Validation targets revision ${run.editRevision}, current edit revision is ${session.currentRevision}.`,
+    );
   }
 
   const status = repositoryGitStatus(validationRepository);
   const currentSourceRevision = status.head?.trim();
-  const currentWorkspaceFingerprint = workspaceValidationFingerprint(validationRepository.canonicalRoot, status);
   if (!run.workspaceFingerprint) {
-    return failedRun(controllerHome, run, 'EDIT_VALIDATION_WORKSPACE_IDENTITY_REQUIRED', 'Edit validation requires a persisted exact workspace fingerprint.');
+    return failedRun(
+      controllerHome,
+      run,
+      'EDIT_VALIDATION_WORKSPACE_IDENTITY_REQUIRED',
+      'Edit validation requires a persisted exact workspace fingerprint.',
+    );
   }
   if (run.sourceRevision && currentSourceRevision !== run.sourceRevision) {
-    return failedRun(controllerHome, run, 'EDIT_VALIDATION_SOURCE_CHANGED', `Validation source changed from ${run.sourceRevision} to ${currentSourceRevision ?? 'unavailable'}.`);
+    return failedRun(
+      controllerHome,
+      run,
+      'EDIT_VALIDATION_SOURCE_CHANGED',
+      `Validation source changed from ${run.sourceRevision} to ${currentSourceRevision ?? 'unavailable'}.`,
+    );
   }
-  if (currentWorkspaceFingerprint !== run.workspaceFingerprint) {
-    return failedRun(controllerHome, run, 'EDIT_VALIDATION_WORKSPACE_CHANGED', 'Validation workspace changed after the persisted Process identity was captured.');
+  // Bind validation to the session's owned input (#713). Runs that still carry
+  // a whole-workspace fingerprint (no tracked paths / legacy) compare the full
+  // tree; otherwise unrelated concurrent dirty must not fail the run.
+  const currentInputFingerprint =
+    run.outsideWorkspaceFingerprint !== undefined
+      ? editSessionOwnedWorkspaceFingerprint(validationRepository.canonicalRoot, run.editSessionId)
+      : workspaceValidationFingerprint(validationRepository.canonicalRoot, status);
+  if (currentInputFingerprint !== run.workspaceFingerprint) {
+    return failedRun(
+      controllerHome,
+      run,
+      'EDIT_VALIDATION_WORKSPACE_CHANGED',
+      'Validation workspace changed after the persisted Process identity was captured.',
+    );
   }
 
   for (const lane of run.lanes) {
@@ -429,7 +476,13 @@ export async function reconcileEditValidationRun(
       const binding = run.processes[checkId];
       if (binding) {
         const record = getProcessRecord(controllerHome, repository.repoId, binding.processId);
-        if (!record) return failedRun(controllerHome, run, 'EDIT_VALIDATION_PROCESS_RECORD_MISSING', `Process record is unavailable: ${binding.processId}`);
+        if (!record)
+          return failedRun(
+            controllerHome,
+            run,
+            'EDIT_VALIDATION_PROCESS_RECORD_MISSING',
+            `Process record is unavailable: ${binding.processId}`,
+          );
         if (['starting', 'running', 'running_recovered'].includes(record.status)) break;
         continue;
       }
@@ -447,7 +500,7 @@ export async function reconcileEditValidationRun(
         interactiveWaitMs: 0,
         requestId: checkRequestId,
         requestSemanticFingerprint: editCheckInputFingerprint(run, checkId, run.checkIds),
-            commandId: checkRequestId,
+        commandId: checkRequestId,
         verificationBinding: {
           editSessionId: run.editSessionId,
           editRevision: run.editRevision,
@@ -482,14 +535,21 @@ export async function reconcileEditValidationRun(
     return getProcessRecord(controllerHome, repository.repoId, binding.processId);
   });
   if (records.some((record) => !record)) {
-    return failedRun(controllerHome, run, 'EDIT_VALIDATION_PROCESS_RECORD_MISSING', 'One or more validation process records are unavailable.');
+    return failedRun(
+      controllerHome,
+      run,
+      'EDIT_VALIDATION_PROCESS_RECORD_MISSING',
+      'One or more validation process records are unavailable.',
+    );
   }
   if (records.some((record) => ['starting', 'running', 'running_recovered'].includes(record!.status))) {
     return coordinatorResult(controllerHome, run, session);
   }
 
   try {
-    const receipts = run.checkIds.map((checkId) => receiptFor(controllerHome, validationRepository, run, checkId, run.checkIds));
+    const receipts = run.checkIds.map((checkId) =>
+      receiptFor(controllerHome, validationRepository, run, checkId, run.checkIds),
+    );
     const projections = receipts.map((receipt, index) => {
       const record = records[index]!;
       const legacyEvidence = record.origin?.checkResultReceiptPath
@@ -497,11 +557,15 @@ export async function reconcileEditValidationRun(
         : readLatestControllerCheckEvidence(validationRepository.canonicalRoot, receipt.checkId);
       return projectTerminalCheckVerification(record, receipt.checkId, receipt, { legacyEvidence });
     });
-    const infrastructureProjectionIndex = projections.findIndex((projection) => projection.outcome === 'infrastructure_failure');
+    const infrastructureProjectionIndex = projections.findIndex(
+      (projection) => projection.outcome === 'infrastructure_failure',
+    );
     if (infrastructureProjectionIndex >= 0) {
       const receipt = receipts[infrastructureProjectionIndex]!;
       const projection = projections[infrastructureProjectionIndex]!;
-      throw new Error(`EDIT_VALIDATION_CHECK_INFRASTRUCTURE_FAILURE: ${receipt.checkId}: ${projection.infrastructureReason ?? projection.evidence.warning ?? receipt.summary}`);
+      throw new Error(
+        `EDIT_VALIDATION_CHECK_INFRASTRUCTURE_FAILURE: ${receipt.checkId}: ${projection.infrastructureReason ?? projection.evidence.warning ?? receipt.summary}`,
+      );
     }
     const checked = recordEditSessionProcessCheckReceipts(validationRepository.canonicalRoot, run.editSessionId, {
       repoId: validationRepository.repoId,
@@ -540,14 +604,20 @@ export async function startOrJoinEditValidation(
   const validationRepository = resolved.repository;
   const session = resolved.session;
   const checkIds = normalized(input.checkIds ?? session.requestedChecks);
-  const requestId = input.validationRequestId?.trim()
-    || input.requestId?.trim()
-    || `verify-edit:${session.sessionId}:r${session.currentRevision}:${createHash('sha256').update(JSON.stringify(checkIds)).digest('hex').slice(0, 16)}`;
+  const requestId =
+    input.validationRequestId?.trim() ||
+    input.requestId?.trim() ||
+    `verify-edit:${session.sessionId}:r${session.currentRevision}:${createHash('sha256').update(JSON.stringify(checkIds)).digest('hex').slice(0, 16)}`;
   const id = validationId(repository.repoId, session.sessionId, session.currentRevision, requestId);
   const existing = readRun(controllerHome, repository.repoId, id);
   if (existing) {
     if (existing.checkIds.join('\n') !== checkIds.join('\n')) {
-      return failedRun(controllerHome, existing, 'EDIT_VALIDATION_REQUEST_CONFLICT', 'The validation request id is already bound to a different check set.');
+      return failedRun(
+        controllerHome,
+        existing,
+        'EDIT_VALIDATION_REQUEST_CONFLICT',
+        'The validation request id is already bound to a different check set.',
+      );
     }
     return reconcileEditValidationRun(controllerHome, validationRepository, existing);
   }
@@ -603,14 +673,28 @@ export async function startOrJoinEditValidation(
         createdAt: now(),
         updatedAt: now(),
       };
-      return failedRun(controllerHome, run, 'EDIT_VALIDATION_EMPTY_RECEIPT_REJECTED', error instanceof Error ? error.message : String(error));
+      return failedRun(
+        controllerHome,
+        run,
+        'EDIT_VALIDATION_EMPTY_RECEIPT_REJECTED',
+        error instanceof Error ? error.message : String(error),
+      );
     }
   }
 
   const validationStatus = repositoryGitStatus(validationRepository);
   const validationSourceRevision = validationStatus.head?.trim();
-  const validationWorkspaceFingerprint = workspaceValidationFingerprint(validationRepository.canonicalRoot, validationStatus);
-  const validationOutsideFingerprint = editSessionOutsideWorkspaceFingerprint(validationRepository.canonicalRoot, session.sessionId);
+  const validationOutsideFingerprint = editSessionOutsideWorkspaceFingerprint(
+    validationRepository.canonicalRoot,
+    session.sessionId,
+  );
+  // Prefer owned-path input identity so concurrent Writers on other paths do
+  // not serialize validation (#713). Unscoped sessions still fingerprint the
+  // whole workspace.
+  const validationWorkspaceFingerprint = editSessionOwnedWorkspaceFingerprint(
+    validationRepository.canonicalRoot,
+    session.sessionId,
+  );
   const run = saveRun(controllerHome, {
     schemaVersion: 1,
     validationId: id,
@@ -623,12 +707,17 @@ export async function startOrJoinEditValidation(
     workspaceFingerprint: validationWorkspaceFingerprint,
     outsideWorkspaceFingerprint: validationOutsideFingerprint,
     checkIds,
-    expectedCheckReceipts: Object.fromEntries(checkIds.map((checkId) => {
-      const selected = session.checkResults.find((entry) => entry.checkId === checkId);
-      return [checkId, selected?.receiptId && selected.resultDigest
-        ? { receiptId: selected.receiptId, resultDigest: selected.resultDigest }
-        : null];
-    })),
+    expectedCheckReceipts: Object.fromEntries(
+      checkIds.map((checkId) => {
+        const selected = session.checkResults.find((entry) => entry.checkId === checkId);
+        return [
+          checkId,
+          selected?.receiptId && selected.resultDigest
+            ? { receiptId: selected.receiptId, resultDigest: selected.resultDigest }
+            : null,
+        ];
+      }),
+    ),
     lanes: checkLanes(validationRepository, checkIds),
     processes: {},
     reviewer: input.reviewer,
@@ -636,9 +725,10 @@ export async function startOrJoinEditValidation(
     timeoutMs: input.timeoutMs,
     // Device Checks may wait in the existing Process lease lane for hours.
     // Do not convert an unspecified queue budget into a hard 15s fail-fast.
-    leaseWaitMs: typeof input.leaseWaitMs === 'number' && Number.isFinite(input.leaseWaitMs)
-      ? Math.max(0, Math.min(Math.trunc(input.leaseWaitMs), 24 * 60 * 60_000))
-      : undefined,
+    leaseWaitMs:
+      typeof input.leaseWaitMs === 'number' && Number.isFinite(input.leaseWaitMs)
+        ? Math.max(0, Math.min(Math.trunc(input.leaseWaitMs), 24 * 60 * 60_000))
+        : undefined,
     status: 'running',
     createdAt: now(),
     updatedAt: now(),

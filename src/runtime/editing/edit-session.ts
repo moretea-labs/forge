@@ -15,7 +15,10 @@ import {
 import { tryAppendControllerWorklogEvent } from '../evidence/controller-worklog';
 import { globMatches, resolveMcpPath } from '../safe-tooling/path-policy';
 import type { ToolPolicy } from '../control-plane/tool-policy';
-import type { ProcessCheckCompletionReceipt, ProcessCheckReceiptStatus } from '../execution/process-runtime/check-receipt';
+import type {
+  ProcessCheckCompletionReceipt,
+  ProcessCheckReceiptStatus,
+} from '../execution/process-runtime/check-receipt';
 import { invalidateRepositoryReadCaches } from '../repositories/inspector';
 import type { EditOperation } from './edit-operation-contract';
 import { claimsConflict } from '../resources/claims/conflicts';
@@ -221,10 +224,12 @@ function hasDurableEditSessionStorageBinding(repoRoot: string, repoId: string): 
       binding?: unknown;
       managedBy?: unknown;
     };
-    return marker.schemaVersion === 1
-      && marker.repoId === repoId
-      && marker.binding === 'edit-sessions'
-      && marker.managedBy === 'forge';
+    return (
+      marker.schemaVersion === 1 &&
+      marker.repoId === repoId &&
+      marker.binding === 'edit-sessions' &&
+      marker.managedBy === 'forge'
+    );
   } catch (_error) {
     return false;
   }
@@ -246,37 +251,59 @@ function hash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
-const ASSURANCE_PROTECTED_PATH = /(^|\/)(\.github|\.git|package-lock\.json|bun\.lock|pnpm-lock\.yaml|yarn\.lock|.*\.xcodeproj|.*\.xcworkspace)(\/|$)/;
+const ASSURANCE_PROTECTED_PATH =
+  /(^|\/)(\.github|\.git|package-lock\.json|bun\.lock|pnpm-lock\.yaml|yarn\.lock|.*\.xcodeproj|.*\.xcworkspace)(\/|$)/;
 
 function workspaceFingerprint(repoRoot: string): string {
   const head = gitRevision(repoRoot) ?? 'unborn';
-  const status = runProcess('git', [
-    'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', '.',
-    ':(exclude).ai/harness/**',
-    ':(exclude).forge/**',
-    ':(exclude).repo-harness/**',
-    ':(exclude)_ops/**',
-  ], {
-    cwd: repoRoot,
-    timeoutMs: 10_000,
-    maxOutputBytes: 4 * 1024 * 1024,
-  });
+  const status = runProcess(
+    'git',
+    [
+      'status',
+      '--porcelain=v1',
+      '-z',
+      '--untracked-files=all',
+      '--',
+      '.',
+      ':(exclude).ai/harness/**',
+      ':(exclude).forge/**',
+      ':(exclude).repo-harness/**',
+      ':(exclude)_ops/**',
+    ],
+    {
+      cwd: repoRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 4 * 1024 * 1024,
+    },
+  );
   if (!status.ok) throw new Error(`EDIT_SESSION_WORKSPACE_FINGERPRINT_FAILED: ${status.error || status.stderr}`);
   return hash(`${head}\0${status.stdout}`);
 }
 
 /** Reuse the Check evidence owner's exact source identity, not Git status shape alone. */
 function verifiedWorkspaceInput(repoRoot: string, excludedPaths: string[] = []): string {
-  const status = runProcess('git', [
-    'status', '--porcelain=v1', ...(excludedPaths.length ? [] : ['--branch']), '--untracked-files=all', '--', '.',
-    ':(exclude).ai/harness/**', ...excludedPaths.map((path) => `:(exclude,literal)${path}`),
-  ], { cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024 });
+  const status = runProcess(
+    'git',
+    [
+      'status',
+      '--porcelain=v1',
+      ...(excludedPaths.length ? [] : ['--branch']),
+      '--untracked-files=all',
+      '--',
+      '.',
+      ':(exclude).ai/harness/**',
+      ...excludedPaths.map((path) => `:(exclude,literal)${path}`),
+    ],
+    { cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024 },
+  );
   const branch = runProcess('git', ['branch', '--show-current'], {
-    cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 1024,
+    cwd: repoRoot,
+    timeoutMs: 10_000,
+    maxOutputBytes: 1024,
   });
   if (!status.ok || !branch.ok) throw new Error('EDIT_VALIDATION_WORKSPACE_STATUS_UNAVAILABLE');
   return workspaceValidationFingerprint(repoRoot, {
-    head: excludedPaths.length ? null : gitRevision(repoRoot) ?? null,
+    head: excludedPaths.length ? null : (gitRevision(repoRoot) ?? null),
     branch: branch.stdout.trim() || null,
     porcelain: status.stdout,
     ...splitRepositoryGitStatus(status.stdout),
@@ -288,17 +315,44 @@ export function editSessionOutsideWorkspaceFingerprint(repoRoot: string, session
   return verifiedWorkspaceInput(repoRoot, sessionTrackedPaths(getEditSession(repoRoot, sessionId)));
 }
 
+/**
+ * Validation-input identity for one Edit Session (#713).
+ * Fingerprints only the session's tracked paths so unrelated concurrent dirty
+ * does not invalidate an in-flight validation. Sessions with no tracked paths
+ * fall back to the whole-workspace fingerprint (conservative).
+ */
+export function editSessionOwnedWorkspaceFingerprint(repoRoot: string, sessionId: string): string {
+  const paths = sessionTrackedPaths(getEditSession(repoRoot, sessionId));
+  if (paths.length === 0) return verifiedWorkspaceInput(repoRoot);
+  const status = runProcess('git', ['status', '--porcelain=v1', '--untracked-files=all', '--', ...paths], {
+    cwd: repoRoot,
+    timeoutMs: 10_000,
+    maxOutputBytes: 4 * 1024 * 1024,
+  });
+  if (!status.ok) throw new Error('EDIT_VALIDATION_WORKSPACE_STATUS_UNAVAILABLE');
+  return workspaceValidationFingerprint(repoRoot, {
+    head: null,
+    branch: null,
+    porcelain: status.stdout,
+    ...splitRepositoryGitStatus(status.stdout),
+  });
+}
+
 /** Only a descendant commit touching exactly the owned after-image paths may reconcile a checked edit. */
 function checkedAfterImageCommitted(repoRoot: string, session: EditSession): boolean {
   const head = gitRevision(repoRoot);
   const base = session.baseRevision;
   if (!base || !head || base === head) return false;
   const ancestor = runProcess('git', ['merge-base', '--is-ancestor', base, head], {
-    cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 1024,
+    cwd: repoRoot,
+    timeoutMs: 10_000,
+    maxOutputBytes: 1024,
   });
   if (!ancestor.ok) return false;
   const diff = runProcess('git', ['diff', '--name-only', '--no-renames', `${base}..${head}`, '--'], {
-    cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 512 * 1024,
+    cwd: repoRoot,
+    timeoutMs: 10_000,
+    maxOutputBytes: 512 * 1024,
   });
   if (!diff.ok) return false;
   const changed = diff.stdout.trim().split('\n').filter(Boolean);
@@ -310,21 +364,26 @@ function calculateAssurance(repoRoot: string, session: EditSession, at: string):
   const changedPaths = [...new Set(session.operations.map((operation) => operation.path))].sort();
   const protectedPaths = changedPaths.filter((path) => ASSURANCE_PROTECTED_PATH.test(path));
   const changedLines = session.operations.reduce((sum, operation) => sum + operation.changedLines, 0);
-  const semanticRisk: EditSessionAssurance['semanticRisk'] = protectedPaths.length > 0 || changedLines > 2_000
-    ? 'high'
-    : changedLines > 500 || changedPaths.length > 10
-      ? 'medium'
-      : 'low';
+  const semanticRisk: EditSessionAssurance['semanticRisk'] =
+    protectedPaths.length > 0 || changedLines > 2_000
+      ? 'high'
+      : changedLines > 500 || changedPaths.length > 10
+        ? 'medium'
+        : 'low';
   // Auto checks must be real executable repository checks. Swift repositories
   // do not acquire nonexistent Forge package:* checks merely for being risky.
   // Explicitly requested checks remain required (and reported unavailable by
   // the check runner); never silently turn them into a successful receipt.
   const available = new Set(listControllerChecks(repoRoot).map((check) => check.id));
-  const requiredChecks = [...new Set([
-    ...session.requestedChecks,
-    ...(semanticRisk !== 'low' && available.has('package:check:type') ? ['package:check:type'] : []),
-    ...(protectedPaths.length > 0 && available.has('package:check:runtime-architecture') ? ['package:check:runtime-architecture'] : []),
-  ])].sort();
+  const requiredChecks = [
+    ...new Set([
+      ...session.requestedChecks,
+      ...(semanticRisk !== 'low' && available.has('package:check:type') ? ['package:check:type'] : []),
+      ...(protectedPaths.length > 0 && available.has('package:check:runtime-architecture')
+        ? ['package:check:runtime-architecture']
+        : []),
+    ]),
+  ].sort();
   return {
     changedPaths,
     protectedPaths,
@@ -342,11 +401,7 @@ export function assertEditSessionDurableBinding(
   binding: EditSessionBinding | undefined,
   options: { requireBoundIdentity?: boolean } = {},
 ): void {
-  const hasDurableIdentity = Boolean(
-    session.repoId
-    || session.checkoutId
-    || session.principalId,
-  );
+  const hasDurableIdentity = Boolean(session.repoId || session.checkoutId || session.principalId);
   if (options.requireBoundIdentity === true && hasDurableIdentity && !binding) {
     throw new Error('EDIT_SESSION_IDENTITY_MISMATCH: binding');
   }
@@ -361,10 +416,7 @@ export function assertEditSessionDurableBinding(
   }
 }
 
-function assertBoundEditSession(
-  session: EditSession,
-  binding: EditSessionBinding | undefined,
-): EditSession {
+function assertBoundEditSession(session: EditSession, binding: EditSessionBinding | undefined): EditSession {
   assertEditSessionDurableBinding(session, binding);
   // Current mutation authority is repository/checkout/principal plus source fingerprints.
   return session;
@@ -400,7 +452,18 @@ function normalizeLegacyStatus(value: unknown): EditSessionStatus {
   if (value === 'applied') return 'dirty';
   if (value === 'verified') return 'checked';
   if (value === 'verification_failed') return 'check_failed';
-  if (['open', 'dirty', 'checked', 'check_failed', 'finalized', 'reconciled_unverified', 'superseded', 'rolled_back'].includes(String(value))) {
+  if (
+    [
+      'open',
+      'dirty',
+      'checked',
+      'check_failed',
+      'finalized',
+      'reconciled_unverified',
+      'superseded',
+      'rolled_back',
+    ].includes(String(value))
+  ) {
     return String(value) as EditSessionStatus;
   }
   return 'open';
@@ -413,17 +476,20 @@ function normalizeStoredSession(value: Partial<EditSession> & { sessionId: strin
     operationIndex: operation.operationIndex ?? index + 1,
   })) as EditSessionOperationRecord[];
   const inferredRevision = legacyOperations.reduce((max, operation) => Math.max(max, operation.revision), 0);
-  const legacyRevision = inferredRevision > 0 && (value.revisions ?? []).length === 0
-    ? [{
-        revision: inferredRevision,
-        operations: legacyOperations,
-        changedFiles: new Set(legacyOperations.map((operation) => operation.path)).size,
-        changedLines: legacyOperations.reduce((sum, operation) => sum + operation.changedLines, 0),
-        patchPath: value.diffPath ?? `${SESSION_ROOT}/${value.sessionId}/changes.patch`,
-        patchSha256: value.diffSha256 ?? '',
-        createdAt: value.appliedAt ?? value.updatedAt ?? value.createdAt ?? now(),
-      }]
-    : [];
+  const legacyRevision =
+    inferredRevision > 0 && (value.revisions ?? []).length === 0
+      ? [
+          {
+            revision: inferredRevision,
+            operations: legacyOperations,
+            changedFiles: new Set(legacyOperations.map((operation) => operation.path)).size,
+            changedLines: legacyOperations.reduce((sum, operation) => sum + operation.changedLines, 0),
+            patchPath: value.diffPath ?? `${SESSION_ROOT}/${value.sessionId}/changes.patch`,
+            patchSha256: value.diffSha256 ?? '',
+            createdAt: value.appliedAt ?? value.updatedAt ?? value.createdAt ?? now(),
+          },
+        ]
+      : [];
   return {
     schemaVersion: 3,
     sessionId: value.sessionId,
@@ -502,10 +568,14 @@ function uncommittedSessionPaths(repoRoot: string, paths: string[]): string[] {
   return paths.filter((path) => dirty.has(path));
 }
 
-function markEditSessionFinalized(repoRoot: string, session: EditSession, input: {
-  reviewer?: string;
-  note?: string;
-} = {}): EditSession {
+function markEditSessionFinalized(
+  repoRoot: string,
+  session: EditSession,
+  input: {
+    reviewer?: string;
+    note?: string;
+  } = {},
+): EditSession {
   session.status = 'finalized';
   session.reviewer = input.reviewer?.trim() || session.reviewer || 'chatgpt-controller';
   session.reviewNote = input.note?.trim() || session.reviewNote;
@@ -537,13 +607,15 @@ function changedLineEstimate(before: string, after: string): number {
   const beforeLines = before.split(/\r?\n/);
   const afterLines = after.split(/\r?\n/);
   let prefix = 0;
-  while (prefix < beforeLines.length && prefix < afterLines.length && beforeLines[prefix] === afterLines[prefix]) prefix += 1;
+  while (prefix < beforeLines.length && prefix < afterLines.length && beforeLines[prefix] === afterLines[prefix])
+    prefix += 1;
   let suffix = 0;
   while (
-    suffix < beforeLines.length - prefix
-    && suffix < afterLines.length - prefix
-    && beforeLines[beforeLines.length - 1 - suffix] === afterLines[afterLines.length - 1 - suffix]
-  ) suffix += 1;
+    suffix < beforeLines.length - prefix &&
+    suffix < afterLines.length - prefix &&
+    beforeLines[beforeLines.length - 1 - suffix] === afterLines[afterLines.length - 1 - suffix]
+  )
+    suffix += 1;
   const removed = beforeLines.length - prefix - suffix;
   const added = afterLines.length - prefix - suffix;
   return Math.max(removed, added);
@@ -558,10 +630,7 @@ function changedLinesByPathFromPatch(patch: string): Map<string, number> {
 
   const flushBlock = () => {
     if (currentPath && (removed > 0 || added > 0)) {
-      changedLines.set(
-        currentPath,
-        (changedLines.get(currentPath) ?? 0) + Math.max(removed, added),
-      );
+      changedLines.set(currentPath, (changedLines.get(currentPath) ?? 0) + Math.max(removed, added));
     }
     removed = 0;
     added = 0;
@@ -672,14 +741,18 @@ function currentHashMismatches(repoRoot: string, session: EditSession): string[]
     }
     const current = readFileSync(absolute, 'utf-8');
     const modeMismatch = operation.afterMode !== undefined && (statSync(absolute).mode & 0o777) !== operation.afterMode;
-    if ((operation.afterSha256 && hash(current) !== operation.afterSha256) || modeMismatch) mismatches.push(operation.path);
+    if ((operation.afterSha256 && hash(current) !== operation.afterSha256) || modeMismatch)
+      mismatches.push(operation.path);
   }
   return mismatches;
 }
 
 function assertCurrentHashes(repoRoot: string, session: EditSession): void {
   const [path] = currentHashMismatches(repoRoot, session);
-  if (path) throw new Error(`edited file changed outside the session after revision ${latestOperations(session).get(path)?.revision ?? session.currentRevision}: ${path}`);
+  if (path)
+    throw new Error(
+      `edited file changed outside the session after revision ${latestOperations(session).get(path)?.revision ?? session.currentRevision}: ${path}`,
+    );
 }
 
 function committedChangedPathsBetween(repoRoot: string, baseRevision: string, targetRevision: string): string[] {
@@ -689,15 +762,19 @@ function committedChangedPathsBetween(repoRoot: string, baseRevision: string, ta
     maxOutputBytes: 64 * 1024,
   });
   if (!ancestor.ok) throw new Error('EDIT_SESSION_SUCCESSOR_HEAD_NOT_DESCENDANT');
-  const diff = runProcess('git', ['diff', '--name-status', '-z', '--find-renames', baseRevision, targetRevision, '--'], {
-    cwd: repoRoot,
-    timeoutMs: 10_000,
-    maxOutputBytes: 4 * 1024 * 1024,
-  });
+  const diff = runProcess(
+    'git',
+    ['diff', '--name-status', '-z', '--find-renames', baseRevision, targetRevision, '--'],
+    {
+      cwd: repoRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 4 * 1024 * 1024,
+    },
+  );
   if (!diff.ok) throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_DIFF_FAILED: ${diff.error || diff.stderr}`);
   const tokens = diff.stdout.split('\0').filter(Boolean);
   const paths = new Set<string>();
-  for (let index = 0; index < tokens.length;) {
+  for (let index = 0; index < tokens.length; ) {
     const status = tokens[index++] ?? '';
     const first = tokens[index++];
     if (!first) break;
@@ -710,21 +787,30 @@ function committedChangedPathsBetween(repoRoot: string, baseRevision: string, ta
   return [...paths].sort((left, right) => left.localeCompare(right));
 }
 
-export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: string, input: {
-  binding?: EditSessionBinding;
-  controllerHome?: string;
-  expectedRevision: number;
-  leaseOwnerJobId?: string;
-  reviewer?: string;
-  note?: string;
-}): EditSession {
+export function adoptEditSessionSuccessorHead(
+  repoRoot: string,
+  sessionId: string,
+  input: {
+    binding?: EditSessionBinding;
+    controllerHome?: string;
+    expectedRevision: number;
+    leaseOwnerJobId?: string;
+    reviewer?: string;
+    note?: string;
+  },
+): EditSession {
   let session = getEditSession(repoRoot, sessionId);
   assertDurableEditSessionStorageBound(repoRoot, session.repoId);
-  if (!['dirty', 'checked', 'check_failed', 'reconciled_unverified'].includes(session.status) || session.operations.length === 0) {
+  if (
+    !['dirty', 'checked', 'check_failed', 'reconciled_unverified'].includes(session.status) ||
+    session.operations.length === 0
+  ) {
     throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_NOT_ELIGIBLE: ${session.status}`);
   }
   if (Math.trunc(input.expectedRevision) !== session.currentRevision) {
-    throw new Error(`EDIT_SESSION_REVISION_MISMATCH: expected ${Math.trunc(input.expectedRevision)}, got ${session.currentRevision}`);
+    throw new Error(
+      `EDIT_SESSION_REVISION_MISMATCH: expected ${Math.trunc(input.expectedRevision)}, got ${session.currentRevision}`,
+    );
   }
   assertEditSessionDurableBinding(session, input.binding, { requireBoundIdentity: true });
   // Work is not an edit-session admission prerequisite. A durable repo,
@@ -751,18 +837,23 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
   });
   const conflictsWithSession = (lease: ReturnType<typeof listActiveLeases>[number]) => {
     const leaseCheckoutId = lease.checkoutId ?? lease.ownerIdentity?.checkoutId;
-    return !leaseCheckoutId || leaseCheckoutId === 'unscoped'
-      || trackedPathClaims.some((claim) => claimsConflict(claim, lease));
+    return (
+      !leaseCheckoutId ||
+      leaseCheckoutId === 'unscoped' ||
+      trackedPathClaims.some((claim) => claimsConflict(claim, lease))
+    );
   };
   const ownedWriteLease = input.leaseOwnerJobId
-    ? checkoutLeases.find((lease) => lease.ownerJobId === input.leaseOwnerJobId
-      && lease.mode !== 'read' && conflictsWithSession(lease))
+    ? checkoutLeases.find(
+        (lease) => lease.ownerJobId === input.leaseOwnerJobId && lease.mode !== 'read' && conflictsWithSession(lease),
+      )
     : undefined;
   if (input.leaseOwnerJobId && !ownedWriteLease) {
     throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_OWNER_LEASE_MISSING: ${input.leaseOwnerJobId}`);
   }
-  const activeLease = checkoutLeases.find((lease) =>
-    lease.ownerJobId !== input.leaseOwnerJobId && conflictsWithSession(lease));
+  const activeLease = checkoutLeases.find(
+    (lease) => lease.ownerJobId !== input.leaseOwnerJobId && conflictsWithSession(lease),
+  );
   if (activeLease) {
     throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_ACTIVE_LEASE: ${activeLease.leaseId}:${activeLease.resourceKey}`);
   }
@@ -785,7 +876,9 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
       if (!operation) return true;
       if (operation.type === 'delete') {
         const tree = runProcess('git', ['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', path], {
-          cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024,
+          cwd: repoRoot,
+          timeoutMs: 10_000,
+          maxOutputBytes: 4 * 1024 * 1024,
         });
         return !tree.ok || tree.stdout.split('\0').includes(path);
       }
@@ -793,7 +886,10 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
       // Git blob bytes are integrity evidence, not user-visible output. Redaction
       // would corrupt credential-shaped source identifiers and cause false drift.
       const blob = runProcess('git', ['show', `HEAD:${path}`], {
-        cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024, structuredStdout: true,
+        cwd: repoRoot,
+        timeoutMs: 10_000,
+        maxOutputBytes: 4 * 1024 * 1024,
+        structuredStdout: true,
       });
       return !blob.ok || hash(blob.stdout) !== operation.afterSha256;
     });
@@ -864,13 +960,19 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
   return session;
 }
 
-function markEditSessionSuperseded(repoRoot: string, session: EditSession, paths: string[], input: {
-  reviewer?: string;
-  note?: string;
-} = {}): EditSession {
+function markEditSessionSuperseded(
+  repoRoot: string,
+  session: EditSession,
+  paths: string[],
+  input: {
+    reviewer?: string;
+    note?: string;
+  } = {},
+): EditSession {
   session.status = 'superseded';
   session.reviewer = input.reviewer?.trim() || session.reviewer || 'chatgpt-controller';
-  session.reviewNote = input.note?.trim() || session.reviewNote || 'Closed because newer workspace changes superseded this edit session.';
+  session.reviewNote =
+    input.note?.trim() || session.reviewNote || 'Closed because newer workspace changes superseded this edit session.';
   session.supersededAt = now();
   session.supersededPaths = paths;
   session.updatedAt = session.supersededAt;
@@ -888,10 +990,14 @@ function markEditSessionSuperseded(repoRoot: string, session: EditSession, paths
   return session;
 }
 
-export function revalidateEditSessionOwnership(repoRoot: string, sessionId: string, input: {
-  reviewer?: string;
-  note?: string;
-} = {}): EditSession {
+export function revalidateEditSessionOwnership(
+  repoRoot: string,
+  sessionId: string,
+  input: {
+    reviewer?: string;
+    note?: string;
+  } = {},
+): EditSession {
   const session = getEditSession(repoRoot, sessionId);
   if (['superseded', 'rolled_back'].includes(session.status)) return session;
   const emptyOpenSession = session.status === 'open' && session.operations.length === 0;
@@ -908,11 +1014,15 @@ export function revalidateEditSessionOwnership(repoRoot: string, sessionId: stri
  *   a dirty/checked session is finalized so committed work cannot permanently block follow-on edits.
  * - Sessions that still own unique uncommitted content stay open/dirty.
  */
-export function reconcileEditSession(repoRoot: string, sessionId: string, input: {
-  reviewer?: string;
-  note?: string;
-  approvalConfirmed?: boolean;
-} = {}): EditSession {
+export function reconcileEditSession(
+  repoRoot: string,
+  sessionId: string,
+  input: {
+    reviewer?: string;
+    note?: string;
+    approvalConfirmed?: boolean;
+  } = {},
+): EditSession {
   const session = getEditSession(repoRoot, sessionId);
   if (['finalized', 'reconciled_unverified', 'superseded', 'rolled_back'].includes(session.status)) return session;
 
@@ -931,11 +1041,18 @@ export function reconcileEditSession(repoRoot: string, sessionId: string, input:
   if (session.assurance?.approvalRequired && input.approvalConfirmed !== true) return session;
   if (session.requestedChecks.length > 0 && !requestedChecksPassed(session)) return session;
   if (session.requestedChecks.length > 0) {
-    const currentInputMatches = Boolean(session.validatedWorkspaceFingerprint &&
-      verifiedWorkspaceInput(repoRoot) === session.validatedWorkspaceFingerprint);
-    const committedOwnedEditOnly = !currentInputMatches && checkedAfterImageCommitted(repoRoot, session) &&
-      Boolean(session.validatedOutsideWorkspaceFingerprint &&
-        verifiedWorkspaceInput(repoRoot, sessionTrackedPaths(session)) === session.validatedOutsideWorkspaceFingerprint);
+    const currentInputMatches = Boolean(
+      session.validatedWorkspaceFingerprint &&
+        verifiedWorkspaceInput(repoRoot) === session.validatedWorkspaceFingerprint,
+    );
+    const committedOwnedEditOnly =
+      !currentInputMatches &&
+      checkedAfterImageCommitted(repoRoot, session) &&
+      Boolean(
+        session.validatedOutsideWorkspaceFingerprint &&
+          verifiedWorkspaceInput(repoRoot, sessionTrackedPaths(session)) ===
+            session.validatedOutsideWorkspaceFingerprint,
+      );
     if (!currentInputMatches && !committedOwnedEditOnly) return session;
   }
 
@@ -945,16 +1062,20 @@ export function reconcileEditSession(repoRoot: string, sessionId: string, input:
 
   return markEditSessionFinalized(repoRoot, session, {
     reviewer: input.reviewer,
-    note: input.note?.trim()
-      || 'Reconciled after commit: session content matches the workspace and Git has no uncommitted changes for session paths.',
+    note:
+      input.note?.trim() ||
+      'Reconciled after commit: session content matches the workspace and Git has no uncommitted changes for session paths.',
   });
 }
 
-export function reconcileOpenEditSessions(repoRoot: string, input: {
-  reviewer?: string;
-  note?: string;
-  limit?: number;
-} = {}): EditSessionSummary[] {
+export function reconcileOpenEditSessions(
+  repoRoot: string,
+  input: {
+    reviewer?: string;
+    note?: string;
+    limit?: number;
+  } = {},
+): EditSessionSummary[] {
   const limit = Math.max(1, Math.min(input.limit ?? 100, 500));
   const openLike = listEditSessions(repoRoot, limit).filter((entry) =>
     ['open', 'dirty', 'checked', 'check_failed'].includes(entry.status),
@@ -967,7 +1088,9 @@ export function reconcileOpenEditSessions(repoRoot: string, input: {
  * cleanup can complete without rewriting source or bypassing approval.
  */
 export function inspectIntegratedEditSession(
-  repoRoot: string, sessionId: string, input: { controllerHome: string; repoId: string },
+  repoRoot: string,
+  sessionId: string,
+  input: { controllerHome: string; repoId: string },
 ): { safe: boolean; reason: string; unverifiedChecks: string[] } {
   const reject = (reason: string) => ({ safe: false, reason, unverifiedChecks: [] as string[] });
   const session = getEditSession(repoRoot, sessionId);
@@ -987,39 +1110,51 @@ export function inspectIntegratedEditSession(
       unverifiedChecks: [],
     };
   }
-  if (session.assurance?.approvalRequired)
-    return reject('EDIT_SESSION_RECONCILIATION_APPROVAL_REQUIRED');
+  if (session.assurance?.approvalRequired) return reject('EDIT_SESSION_RECONCILIATION_APPROVAL_REQUIRED');
   if (uncommittedSessionPaths(repoRoot, sessionTrackedPaths(session)).length)
     return reject('EDIT_SESSION_RECONCILIATION_UNCOMMITTED_SOURCE');
   const head = gitRevision(repoRoot);
   if (!head || !session.baseRevision || head === session.baseRevision)
     return reject('EDIT_SESSION_RECONCILIATION_COMMITTED_HEAD_REQUIRED');
-  if (!runProcess('git', ['merge-base', '--is-ancestor', session.baseRevision, head], {
-    cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 1024,
-  }).ok) return reject('EDIT_SESSION_RECONCILIATION_NOT_DESCENDANT');
+  if (
+    !runProcess('git', ['merge-base', '--is-ancestor', session.baseRevision, head], {
+      cwd: repoRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 1024,
+    }).ok
+  )
+    return reject('EDIT_SESSION_RECONCILIATION_NOT_DESCENDANT');
   for (const operation of latestOperations(session).values()) {
     if (operation.type === 'delete') return reject('EDIT_SESSION_RECONCILIATION_DELETED_PATH_REQUIRES_VERIFICATION');
     const tracked = runProcess('git', ['ls-files', '--error-unmatch', '--', operation.path], {
-      cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 1024,
+      cwd: repoRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 1024,
     });
     if (tracked.ok) {
       // Hash the exact Git blob; redacted text is not a valid content digest input.
       const blob = runProcess('git', ['show', 'HEAD:' + operation.path], {
-        cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024, structuredStdout: true,
+        cwd: repoRoot,
+        timeoutMs: 10_000,
+        maxOutputBytes: 4 * 1024 * 1024,
+        structuredStdout: true,
       });
       if (!blob.ok || !operation.afterSha256 || operation.afterSha256 !== hash(blob.stdout))
         return reject('EDIT_SESSION_RECONCILIATION_HEAD_BLOB_MISMATCH: ' + operation.path);
     } else {
       const ignored = runProcess('git', ['check-ignore', '-q', '--', operation.path], {
-        cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 1024,
+        cwd: repoRoot,
+        timeoutMs: 10_000,
+        maxOutputBytes: 1024,
       });
       if (!session.assurance?.protectedPaths.includes(operation.path) || !ignored.ok)
         return reject('EDIT_SESSION_RECONCILIATION_PATH_NOT_COMMITTED: ' + operation.path);
     }
   }
   const available = new Set(listControllerChecks(repoRoot).map((check) => check.id));
-  const unverifiedChecks = session.requestedChecks.filter((id) =>
-    !session.checkResults.some((result) => result.checkId === id && result.ok));
+  const unverifiedChecks = session.requestedChecks.filter(
+    (id) => !session.checkResults.some((result) => result.checkId === id && result.ok),
+  );
   if (unverifiedChecks.some((id) => available.has(id)))
     return reject('EDIT_SESSION_RECONCILIATION_EXECUTABLE_CHECK_INCOMPLETE');
   if (!unverifiedChecks.length) {
@@ -1037,13 +1172,17 @@ export function inspectIntegratedEditSession(
 }
 
 /** Safe metadata cleanup, never a source rollback or a fabricated Check PASS. */
-export function cleanupEditSession(repoRoot: string, sessionId: string, input: {
-  reviewer?: string;
-  note?: string;
-  allowFinalized?: boolean;
-  controllerHome?: string;
-  repoId?: string;
-} = {}): EditSession {
+export function cleanupEditSession(
+  repoRoot: string,
+  sessionId: string,
+  input: {
+    reviewer?: string;
+    note?: string;
+    allowFinalized?: boolean;
+    controllerHome?: string;
+    repoId?: string;
+  } = {},
+): EditSession {
   const session = getEditSession(repoRoot, sessionId);
   if (['finalized', 'reconciled_unverified', 'superseded', 'rolled_back'].includes(session.status)) return session;
 
@@ -1052,7 +1191,8 @@ export function cleanupEditSession(repoRoot: string, sessionId: string, input: {
   }
 
   const reconciled = reconcileEditSession(repoRoot, sessionId, input);
-  if (['finalized', 'reconciled_unverified', 'superseded', 'rolled_back'].includes(reconciled.status)) return reconciled;
+  if (['finalized', 'reconciled_unverified', 'superseded', 'rolled_back'].includes(reconciled.status))
+    return reconciled;
 
   const paths = sessionTrackedPaths(reconciled);
   const mismatches = currentHashMismatches(repoRoot, reconciled);
@@ -1070,7 +1210,8 @@ export function cleanupEditSession(repoRoot: string, sessionId: string, input: {
   }
   if (input.controllerHome && input.repoId) {
     const inspection = inspectIntegratedEditSession(repoRoot, sessionId, {
-      controllerHome: input.controllerHome, repoId: input.repoId,
+      controllerHome: input.controllerHome,
+      repoId: input.repoId,
     });
     if (!inspection.safe) throw new Error(inspection.reason);
     reconciled.status = 'reconciled_unverified';
@@ -1078,16 +1219,22 @@ export function cleanupEditSession(repoRoot: string, sessionId: string, input: {
     reconciled.updatedAt = reconciled.reconciledAt;
     reconciled.unverifiedChecks = inspection.unverifiedChecks;
     reconciled.reviewer = input.reviewer?.trim() || 'runtime-maintenance';
-    reconciled.reviewNote = 'UNVERIFIED metadata-only reconciliation: ' + inspection.reason
-      + (input.note?.trim() ? ' ' + input.note.trim() : '');
+    reconciled.reviewNote =
+      'UNVERIFIED metadata-only reconciliation: ' +
+      inspection.reason +
+      (input.note?.trim() ? ' ' + input.note.trim() : '');
     writeSession(repoRoot, reconciled);
     tryAppendControllerWorklogEvent(repoRoot, {
-      category: 'edit', action: 'edit_session_reconciled_unverified',
+      category: 'edit',
+      action: 'edit_session_reconciled_unverified',
       summary: reconciled.purpose + ': integrated bytes retained; checks remain UNVERIFIED',
-      actor: reconciled.reviewer, issueId: reconciled.issueId,
-      taskId: reconciled.taskId, editSessionId: reconciled.sessionId,
+      actor: reconciled.reviewer,
+      issueId: reconciled.issueId,
+      taskId: reconciled.taskId,
+      editSessionId: reconciled.sessionId,
       details: {
-        head: gitRevision(repoRoot), files: sessionTrackedPaths(reconciled),
+        head: gitRevision(repoRoot),
+        files: sessionTrackedPaths(reconciled),
         unverifiedChecks: inspection.unverifiedChecks,
         approvalRequired: reconciled.assurance?.approvalRequired ?? false,
         currentLeaseObservation: 'none_at_reconciliation',
@@ -1146,10 +1293,9 @@ function normalizeNoIndexPatch(raw: string, item: PatchItem): string {
 }
 
 function buildLocalizedPatch(repoRoot: string, sessionId: string, label: string, items: PatchItem[]): string {
-  const patchItems = items.filter((item) =>
-    item.beforeExists !== item.afterExists
-    || item.before !== item.after
-    || item.beforeMode !== item.afterMode,
+  const patchItems = items.filter(
+    (item) =>
+      item.beforeExists !== item.afterExists || item.before !== item.after || item.beforeMode !== item.afterMode,
   );
   if (patchItems.length === 0) return '';
   const tempRoot = join(sessionDir(repoRoot, sessionId), 'diff-inputs', label);
@@ -1182,25 +1328,29 @@ function buildLocalizedPatch(repoRoot: string, sessionId: string, label: string,
 
 function baselinePatchItems(repoRoot: string, session: EditSession): PatchItem[] {
   const firstByPath = new Map<string, EditSessionOperationRecord>();
-  for (const operation of session.operations) if (!firstByPath.has(operation.path)) firstByPath.set(operation.path, operation);
-  return [...firstByPath.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([path, first]) => {
-    const beforeExists = first.type !== 'create';
-    const before = beforeExists && first.backupPath && existsSync(join(repoRoot, first.backupPath))
-      ? readFileSync(join(repoRoot, first.backupPath), 'utf-8')
-      : '';
-    const absolute = join(repoRoot, path);
-    const afterExists = existsSync(absolute);
-    const after = afterExists ? readFileSync(absolute, 'utf-8') : '';
-    return {
-      relativePath: path,
-      before,
-      after,
-      beforeExists,
-      afterExists,
-      beforeMode: first.beforeMode,
-      afterMode: afterExists ? statSync(absolute).mode & 0o777 : undefined,
-    };
-  });
+  for (const operation of session.operations)
+    if (!firstByPath.has(operation.path)) firstByPath.set(operation.path, operation);
+  return [...firstByPath.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([path, first]) => {
+      const beforeExists = first.type !== 'create';
+      const before =
+        beforeExists && first.backupPath && existsSync(join(repoRoot, first.backupPath))
+          ? readFileSync(join(repoRoot, first.backupPath), 'utf-8')
+          : '';
+      const absolute = join(repoRoot, path);
+      const afterExists = existsSync(absolute);
+      const after = afterExists ? readFileSync(absolute, 'utf-8') : '';
+      return {
+        relativePath: path,
+        before,
+        after,
+        beforeExists,
+        afterExists,
+        beforeMode: first.beforeMode,
+        afterMode: afterExists ? statSync(absolute).mode & 0o777 : undefined,
+      };
+    });
 }
 
 function persistAggregatePatchContent(repoRoot: string, session: EditSession, patch: string): void {
@@ -1228,11 +1378,15 @@ function checkRecord(result: ControllerCheckResult): EditSessionCheckRecord {
   };
 }
 
-function resolveVerificationRequest(repoRoot: string, sessionId: string, input: {
-  checkIds?: string[];
-  reviewer?: string;
-  note?: string;
-} = {}): {
+function resolveVerificationRequest(
+  repoRoot: string,
+  sessionId: string,
+  input: {
+    checkIds?: string[];
+    reviewer?: string;
+    note?: string;
+  } = {},
+): {
   session: EditSession;
   checkIds: string[];
   reviewer: string;
@@ -1245,7 +1399,9 @@ function resolveVerificationRequest(repoRoot: string, sessionId: string, input: 
   assertCurrentHashes(repoRoot, session);
   return {
     session,
-    checkIds: Array.from(new Set((input.checkIds ?? session.requestedChecks).map((item) => item.trim()).filter(Boolean))),
+    checkIds: Array.from(
+      new Set((input.checkIds ?? session.requestedChecks).map((item) => item.trim()).filter(Boolean)),
+    ),
     reviewer: input.reviewer?.trim() || 'chatgpt-controller',
     note: input.note?.trim() || undefined,
   };
@@ -1267,10 +1423,13 @@ function persistVerificationResult(
   if (input.results.length && input.results.every((result) => result.ok) && !input.validatedWorkspaceFingerprint) {
     throw new Error('EDIT_VALIDATION_WORKSPACE_IDENTITY_REQUIRED');
   }
-  session.validatedWorkspaceFingerprint = input.results.length && input.results.every((result) => result.ok)
-    ? input.validatedWorkspaceFingerprint : undefined;
+  session.validatedWorkspaceFingerprint =
+    input.results.length && input.results.every((result) => result.ok)
+      ? input.validatedWorkspaceFingerprint
+      : undefined;
   session.validatedOutsideWorkspaceFingerprint = session.validatedWorkspaceFingerprint
-    ? input.validatedOutsideWorkspaceFingerprint : undefined;
+    ? input.validatedOutsideWorkspaceFingerprint
+    : undefined;
   session.requestedChecks = input.checkIds;
   session.checkResults = input.results;
   session.reviewer = input.reviewer;
@@ -1319,19 +1478,36 @@ export function recordEditSessionProcessCheckReceipts(
   const session = resolved.session;
   const missingRequiredChecks = session.requestedChecks.filter((checkId) => !checkIds.includes(checkId));
   if (missingRequiredChecks.length > 0) {
-    throw new Error(`EDIT_CHECK_RECEIPT_REQUIRED_CHECK_MISSING: missing configured checks: ${missingRequiredChecks.join(', ')}`);
+    throw new Error(
+      `EDIT_CHECK_RECEIPT_REQUIRED_CHECK_MISSING: missing configured checks: ${missingRequiredChecks.join(', ')}`,
+    );
   }
   if (input.receipts.length) {
-    if (!input.validatedWorkspaceFingerprint || verifiedWorkspaceInput(repoRoot) !== input.validatedWorkspaceFingerprint) {
+    // Prefer session-owned input identity when the coordinator captured one
+    // (#713). Whole-workspace equality still applies for legacy callers that
+    // only pass validatedWorkspaceFingerprint.
+    if (input.validatedOutsideWorkspaceFingerprint !== undefined) {
+      const owned = editSessionOwnedWorkspaceFingerprint(repoRoot, session.sessionId);
+      if (!input.validatedWorkspaceFingerprint || owned !== input.validatedWorkspaceFingerprint) {
+        throw new Error('EDIT_VALIDATION_WORKSPACE_CHANGED');
+      }
+    } else if (
+      !input.validatedWorkspaceFingerprint ||
+      verifiedWorkspaceInput(repoRoot) !== input.validatedWorkspaceFingerprint
+    ) {
       throw new Error('EDIT_VALIDATION_WORKSPACE_CHANGED');
     }
   }
   const records = input.receipts.map((receipt): EditSessionCheckRecord => {
     if (receipt.repoId !== input.repoId || receipt.checkoutId !== input.checkoutId) {
-      throw new Error('EDIT_CHECK_RECEIPT_ROUTE_MISMATCH: receipt repository or checkout does not match the selected checkout');
+      throw new Error(
+        'EDIT_CHECK_RECEIPT_ROUTE_MISMATCH: receipt repository or checkout does not match the selected checkout',
+      );
     }
     if (receipt.editSessionId !== session.sessionId || receipt.editRevision !== session.currentRevision) {
-      throw new Error(`EDIT_CHECK_RECEIPT_STALE_REVISION: receipt targets ${receipt.editSessionId}@${String(receipt.editRevision)} but current session is ${session.sessionId}@${session.currentRevision}`);
+      throw new Error(
+        `EDIT_CHECK_RECEIPT_STALE_REVISION: receipt targets ${receipt.editSessionId}@${String(receipt.editRevision)} but current session is ${session.sessionId}@${session.currentRevision}`,
+      );
     }
     if (session.issueId !== undefined && receipt.issueId !== session.issueId) {
       throw new Error('EDIT_CHECK_RECEIPT_ISSUE_MISMATCH: receipt issue does not match the edit session');
@@ -1348,12 +1524,16 @@ export function recordEditSessionProcessCheckReceipts(
     if (expected !== undefined) {
       // Replace the selected result, never its immutable receipt. The predecessor
       // CAS prevents concurrent/older attempts overwriting a newer selection.
-      const matches = expected === null
-        ? !existing?.receiptId
-        : existing?.receiptId === expected.receiptId && existing.resultDigest === expected.resultDigest;
-      if (!matches) throw new Error(`EDIT_CHECK_RECEIPT_SELECTION_CHANGED: check ${receipt.checkId} has newer selected evidence`);
+      const matches =
+        expected === null
+          ? !existing?.receiptId
+          : existing?.receiptId === expected.receiptId && existing.resultDigest === expected.resultDigest;
+      if (!matches)
+        throw new Error(`EDIT_CHECK_RECEIPT_SELECTION_CHANGED: check ${receipt.checkId} has newer selected evidence`);
     } else if (existing?.receiptId) {
-      throw new Error(`EDIT_CHECK_RECEIPT_CONTRADICTION: check ${receipt.checkId} requires an explicit revalidation attempt`);
+      throw new Error(
+        `EDIT_CHECK_RECEIPT_CONTRADICTION: check ${receipt.checkId} requires an explicit revalidation attempt`,
+      );
     }
     return {
       checkId: receipt.checkId,
@@ -1369,10 +1549,12 @@ export function recordEditSessionProcessCheckReceipts(
       receipt,
     };
   });
-  const unchanged = records.length === session.checkResults.length && records.every((record, index) => {
-    const existing = session.checkResults[index];
-    return existing?.receiptId === record.receiptId && existing?.resultDigest === record.resultDigest;
-  });
+  const unchanged =
+    records.length === session.checkResults.length &&
+    records.every((record, index) => {
+      const existing = session.checkResults[index];
+      return existing?.receiptId === record.receiptId && existing?.resultDigest === record.resultDigest;
+    });
   if (unchanged) return session;
   return persistVerificationResult(repoRoot, session, {
     checkIds: resolved.checkIds,
@@ -1416,7 +1598,11 @@ export function findOccurrence(value: string, anchor: string, occurrence: number
   return -1;
 }
 
-function applyTextOperation(operation: Exclude<EditOperation, { type: 'create' | 'write' | 'delete' }>, before: string, path: string): string {
+function applyTextOperation(
+  operation: Exclude<EditOperation, { type: 'create' | 'write' | 'delete' }>,
+  before: string,
+  path: string,
+): string {
   if (operation.type === 'replace') {
     let after = before;
     for (const replacement of operation.replacements) {
@@ -1430,7 +1616,7 @@ function applyTextOperation(operation: Exclude<EditOperation, { type: 'create' |
   }
   if (operation.type === 'prepend') return `${operation.content}${before}`;
   if (operation.type === 'append') return `${before}${operation.content}`;
-  if (!("anchor" in operation) || !operation.anchor) throw new Error(`anchor is empty for ${path}`);
+  if (!('anchor' in operation) || !operation.anchor) throw new Error(`anchor is empty for ${path}`);
   const occurrence = Math.max(1, Math.trunc(operation.occurrence ?? 1));
   const index = findOccurrence(before, operation.anchor, occurrence);
   if (index < 0) throw new Error(`anchor occurrence ${occurrence} not found in ${path}`);
@@ -1438,16 +1624,19 @@ function applyTextOperation(operation: Exclude<EditOperation, { type: 'create' |
   return `${before.slice(0, insertion)}${operation.content}${before.slice(insertion)}`;
 }
 
-export function beginEditSession(repoRoot: string, input: {
-  purpose: string;
-  issueId?: string;
-  taskId?: string;
-  allowedPaths?: string[];
-  maxFiles?: number;
-  maxChangedLines?: number;
-  checks?: string[];
-  binding?: EditSessionBinding;
-}): EditSession {
+export function beginEditSession(
+  repoRoot: string,
+  input: {
+    purpose: string;
+    issueId?: string;
+    taskId?: string;
+    allowedPaths?: string[];
+    maxFiles?: number;
+    maxChangedLines?: number;
+    checks?: string[];
+    binding?: EditSessionBinding;
+  },
+): EditSession {
   const purpose = input.purpose.trim();
   if (!purpose) throw new Error('edit session purpose is required');
   assertDurableEditSessionStorageBound(repoRoot, input.binding?.repoId);
@@ -1492,7 +1681,9 @@ export function beginEditSession(repoRoot: string, input: {
 export function getEditSession(repoRoot: string, sessionId: string): EditSession {
   const path = sessionPath(repoRoot, sessionId);
   if (!existsSync(path)) throw new Error(`edit session not found: ${sessionId}`);
-  return normalizeStoredSession(JSON.parse(readFileSync(path, 'utf-8')) as Partial<EditSession> & { sessionId: string });
+  return normalizeStoredSession(
+    JSON.parse(readFileSync(path, 'utf-8')) as Partial<EditSession> & { sessionId: string },
+  );
 }
 
 export function listEditSessions(repoRoot: string, limit = 100): EditSessionSummary[] {
@@ -1512,7 +1703,6 @@ export function listEditSessions(repoRoot: string, limit = 100): EditSessionSumm
     })
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
-
 
 export interface EditSessionRetentionResult {
   removedSessionIds: string[];
@@ -1551,19 +1741,29 @@ function editSessionDirectoryBytes(path: string): { bytes: number; complete: boo
  * state and retention policy allow it. The repository-relative path may be the
  * runtime-storage compatibility link.
  */
-export function cleanupTerminalEditSessionRecords(repoRoot: string, input: {
-  nowMs?: number;
-  retentionMs?: number;
-  maxRetained?: number;
-  maxEntries?: number;
-  maxRemovals?: number;
-  sequence?: number;
-} = {}): EditSessionRetentionResult {
+export function cleanupTerminalEditSessionRecords(
+  repoRoot: string,
+  input: {
+    nowMs?: number;
+    retentionMs?: number;
+    maxRetained?: number;
+    maxEntries?: number;
+    maxRemovals?: number;
+    sequence?: number;
+  } = {},
+): EditSessionRetentionResult {
   const root = join(repoRoot, SESSION_ROOT);
   const result: EditSessionRetentionResult = {
-    removedSessionIds: [], reclaimedBytes: 0, unknownReclaimedByteCount: 0,
-    inspected: 0, eligible: 0, attempted: 0, retained: 0, budgetExhausted: false,
-    skippedByReason: {}, errors: [],
+    removedSessionIds: [],
+    reclaimedBytes: 0,
+    unknownReclaimedByteCount: 0,
+    inspected: 0,
+    eligible: 0,
+    attempted: 0,
+    retained: 0,
+    budgetExhausted: false,
+    skippedByReason: {},
+    errors: [],
   };
   if (!existsSync(root)) return result;
   const nowMs = input.nowMs ?? Date.now();
@@ -1592,9 +1792,12 @@ export function cleanupTerminalEditSessionRecords(repoRoot: string, input: {
   for (const entry of window) {
     result.inspected += 1;
     let session: EditSession;
-    try { session = getEditSession(repoRoot, entry.name); }
-    catch (error) {
-      result.errors.push(`edit_session_unreadable:${entry.name}:${error instanceof Error ? error.message : String(error)}`);
+    try {
+      session = getEditSession(repoRoot, entry.name);
+    } catch (error) {
+      result.errors.push(
+        `edit_session_unreadable:${entry.name}:${error instanceof Error ? error.message : String(error)}`,
+      );
       skip('session_unreadable');
       continue;
     }
@@ -1628,14 +1831,19 @@ export function cleanupTerminalEditSessionRecords(repoRoot: string, input: {
       rmSync(path, { recursive: true, force: true });
       result.removedSessionIds.push(session.sessionId);
     } catch (error) {
-      result.errors.push(`edit_session_remove_failed:${session.sessionId}:${error instanceof Error ? error.message : String(error)}`);
+      result.errors.push(
+        `edit_session_remove_failed:${session.sessionId}:${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
   result.removedSessionIds.sort();
   return result;
 }
 
-export function getEditSessionDiff(repoRoot: string, sessionId: string): {
+export function getEditSessionDiff(
+  repoRoot: string,
+  sessionId: string,
+): {
   sessionId: string;
   path?: string;
   sha256?: string;
@@ -1648,17 +1856,24 @@ export function getEditSessionDiff(repoRoot: string, sessionId: string): {
   return { sessionId, path: session.diffPath, sha256: session.diffSha256, revision: session.currentRevision, patch };
 }
 
-export function applyEditOperations(repoRoot: string, policy: ToolPolicy, sessionId: string, operations: EditOperation[], options: {
-  controllerHome?: string;
-  expectedRevision?: number;
-  maxBatchOperations?: number;
-  allowSuccessorHeadAdoption?: boolean;
-  leaseOwnerJobId?: string;
-  binding?: EditSessionBinding;
-} = {}): EditSession {
+export function applyEditOperations(
+  repoRoot: string,
+  policy: ToolPolicy,
+  sessionId: string,
+  operations: EditOperation[],
+  options: {
+    controllerHome?: string;
+    expectedRevision?: number;
+    maxBatchOperations?: number;
+    allowSuccessorHeadAdoption?: boolean;
+    leaseOwnerJobId?: string;
+    binding?: EditSessionBinding;
+  } = {},
+): EditSession {
   let session = getEditSession(repoRoot, sessionId);
   assertDurableEditSessionStorageBound(repoRoot, session.repoId);
-  if (['finalized', 'rolled_back'].includes(session.status)) throw new Error(`edit session is closed: ${session.status}`);
+  if (['finalized', 'rolled_back'].includes(session.status))
+    throw new Error(`edit session is closed: ${session.status}`);
   if (operations.length === 0) throw new Error('at least one edit operation is required');
   const maxBatchOperations = Math.max(1, Math.trunc(options.maxBatchOperations ?? MAX_EDIT_PATCH_BATCH_OPERATIONS));
   if (operations.length > maxBatchOperations) {
@@ -1668,10 +1883,12 @@ export function applyEditOperations(repoRoot: string, policy: ToolPolicy, sessio
       `one patch batch may contain at most ${maxBatchOperations} operations`,
       session,
       operations,
-      [{
-        code: 'BATCH_TOO_LARGE',
-        message: `split this patch into batches of ${PREFERRED_EDIT_PATCH_BATCH_OPERATIONS} operations or fewer`,
-      }],
+      [
+        {
+          code: 'BATCH_TOO_LARGE',
+          message: `split this patch into batches of ${PREFERRED_EDIT_PATCH_BATCH_OPERATIONS} operations or fewer`,
+        },
+      ],
       { expectedRevision: options.expectedRevision },
     );
   }
@@ -1682,10 +1899,12 @@ export function applyEditOperations(repoRoot: string, policy: ToolPolicy, sessio
       `edit session revision mismatch: expected ${Math.trunc(options.expectedRevision)}, got ${session.currentRevision}`,
       session,
       operations,
-      [{
-        code: 'REVISION_MISMATCH',
-        message: `refresh the edit session state before appending a new patch batch`,
-      }],
+      [
+        {
+          code: 'REVISION_MISMATCH',
+          message: `refresh the edit session state before appending a new patch batch`,
+        },
+      ],
       { expectedRevision: Math.trunc(options.expectedRevision) },
     );
   }
@@ -1724,8 +1943,12 @@ export function applyEditOperations(repoRoot: string, policy: ToolPolicy, sessio
     );
   }
 
-  const cumulativePaths = new Set([...session.operations.map((operation) => operation.path), ...operations.map((operation) => operation.path)]);
-  if (cumulativePaths.size > session.maxFiles) throw new Error(`changed file count ${cumulativePaths.size} exceeds session maxFiles (${session.maxFiles})`);
+  const cumulativePaths = new Set([
+    ...session.operations.map((operation) => operation.path),
+    ...operations.map((operation) => operation.path),
+  ]);
+  if (cumulativePaths.size > session.maxFiles)
+    throw new Error(`changed file count ${cumulativePaths.size} exceeds session maxFiles (${session.maxFiles})`);
 
   const failures: EditSessionPatchFailure[] = [];
   const prepared: PreparedEditOperation[] = [];
@@ -1803,16 +2026,48 @@ export function applyEditOperations(repoRoot: string, policy: ToolPolicy, sessio
       return;
     }
     if (operation.type === 'delete') {
-      prepared.push({ operationIndex, operation, relativePath: decision.relativePath, absolutePath: decision.absolutePath, before, after: '', beforeExists: true, afterExists: false, beforeMode });
+      prepared.push({
+        operationIndex,
+        operation,
+        relativePath: decision.relativePath,
+        absolutePath: decision.absolutePath,
+        before,
+        after: '',
+        beforeExists: true,
+        afterExists: false,
+        beforeMode,
+      });
       return;
     }
     if (operation.type === 'write') {
-      prepared.push({ operationIndex, operation, relativePath: decision.relativePath, absolutePath: decision.absolutePath, before, after: operation.content, beforeExists: true, afterExists: true, beforeMode, afterMode: beforeMode });
+      prepared.push({
+        operationIndex,
+        operation,
+        relativePath: decision.relativePath,
+        absolutePath: decision.absolutePath,
+        before,
+        after: operation.content,
+        beforeExists: true,
+        afterExists: true,
+        beforeMode,
+        afterMode: beforeMode,
+      });
       return;
     }
     try {
       const after = applyTextOperation(operation, before, decision.relativePath);
-      prepared.push({ operationIndex, operation, relativePath: decision.relativePath, absolutePath: decision.absolutePath, before, after, beforeExists: true, afterExists: true, beforeMode, afterMode: beforeMode });
+      prepared.push({
+        operationIndex,
+        operation,
+        relativePath: decision.relativePath,
+        absolutePath: decision.absolutePath,
+        before,
+        after,
+        beforeExists: true,
+        afterExists: true,
+        beforeMode,
+        afterMode: beforeMode,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       failures.push({
@@ -1851,21 +2106,30 @@ export function applyEditOperations(repoRoot: string, policy: ToolPolicy, sessio
   }
 
   const revision = session.currentRevision + 1;
-  const revisionPatch = buildLocalizedPatch(repoRoot, session.sessionId, `revision-${revision}`, prepared.map((item) => ({
-    relativePath: item.relativePath,
-    before: item.before,
-    after: item.after,
-    beforeExists: item.beforeExists,
-    afterExists: item.afterExists,
-    beforeMode: item.beforeMode,
-    afterMode: item.afterMode,
-  })));
+  const revisionPatch = buildLocalizedPatch(
+    repoRoot,
+    session.sessionId,
+    `revision-${revision}`,
+    prepared.map((item) => ({
+      relativePath: item.relativePath,
+      before: item.before,
+      after: item.after,
+      beforeExists: item.beforeExists,
+      afterExists: item.afterExists,
+      beforeMode: item.beforeMode,
+      afterMode: item.afterMode,
+    })),
+  );
   const changedLinesByPath = changedLinesByPathFromPatch(revisionPatch);
   const changedLinesFor = (item: PreparedEditOperation) =>
     changedLinesByPath.get(item.relativePath) ?? changedLineEstimate(item.before, item.after);
   const batchChangedLines = prepared.reduce((sum, item) => sum + changedLinesFor(item), 0);
-  const cumulativeChangedLines = session.operations.reduce((sum, operation) => sum + operation.changedLines, 0) + batchChangedLines;
-  if (cumulativeChangedLines > session.maxChangedLines) throw new Error(`estimated cumulative changed lines ${cumulativeChangedLines} exceeds session limit ${session.maxChangedLines}`);
+  const cumulativeChangedLines =
+    session.operations.reduce((sum, operation) => sum + operation.changedLines, 0) + batchChangedLines;
+  if (cumulativeChangedLines > session.maxChangedLines)
+    throw new Error(
+      `estimated cumulative changed lines ${cumulativeChangedLines} exceeds session limit ${session.maxChangedLines}`,
+    );
 
   const firstRevision = session.operations.length === 0;
   const records: EditSessionOperationRecord[] = [];
@@ -1882,10 +2146,11 @@ export function applyEditOperations(repoRoot: string, policy: ToolPolicy, sessio
       }
       mutationAttempted = true;
       if (item.operation.type === 'delete') rmSync(item.absolutePath);
-      else atomicWriteFile(repoRoot, item.relativePath, item.after, {
-        backupRoot: `${SESSION_ROOT}/${session.sessionId}/atomic-backups/r${revision}`,
-        ...(afterMode === undefined ? {} : { mode: afterMode }),
-      });
+      else
+        atomicWriteFile(repoRoot, item.relativePath, item.after, {
+          backupRoot: `${SESSION_ROOT}/${session.sessionId}/atomic-backups/r${revision}`,
+          ...(afterMode === undefined ? {} : { mode: afterMode }),
+        });
       records.push({
         revision,
         operationIndex: item.operationIndex,
@@ -1904,15 +2169,11 @@ export function applyEditOperations(repoRoot: string, policy: ToolPolicy, sessio
     for (const record of [...records].reverse()) {
       const absolute = join(repoRoot, record.path);
       if (record.type === 'create') rmSync(absolute, { force: true });
-      else if (record.backupPath && existsSync(join(repoRoot, record.backupPath))) atomicWriteFile(
-        repoRoot,
-        record.path,
-        readFileSync(join(repoRoot, record.backupPath), 'utf-8'),
-        {
+      else if (record.backupPath && existsSync(join(repoRoot, record.backupPath)))
+        atomicWriteFile(repoRoot, record.path, readFileSync(join(repoRoot, record.backupPath), 'utf-8'), {
           backupRoot: `${SESSION_ROOT}/${session.sessionId}/atomic-backups/apply-rollback-r${revision}`,
           ...(record.beforeMode === undefined ? {} : { mode: record.beforeMode }),
-        },
-      );
+        });
     }
     const message = error instanceof Error ? error.message : String(error);
     throw patchError(
@@ -1921,13 +2182,15 @@ export function applyEditOperations(repoRoot: string, policy: ToolPolicy, sessio
       message,
       session,
       operations,
-      [{
-        operationIndex: appliedOperationCount + 1,
-        type: operations[appliedOperationCount]?.type,
-        path: operations[appliedOperationCount]?.path,
-        code: 'APPLY_FAILED',
-        message,
-      }],
+      [
+        {
+          operationIndex: appliedOperationCount + 1,
+          type: operations[appliedOperationCount]?.type,
+          path: operations[appliedOperationCount]?.path,
+          code: 'APPLY_FAILED',
+          message,
+        },
+      ],
       {
         expectedRevision: options.expectedRevision,
         appliedOperationCount,
@@ -1972,19 +2235,29 @@ export function applyEditOperations(repoRoot: string, policy: ToolPolicy, sessio
     issueId: session.issueId,
     taskId: session.taskId,
     editSessionId: session.sessionId,
-    details: { revision, files: records.map((record) => record.path), revisionPatch: relative(repoRoot, absoluteRevisionPatch).replace(/\\/g, '/'), diffPath: session.diffPath, diffSha256: session.diffSha256 },
+    details: {
+      revision,
+      files: records.map((record) => record.path),
+      revisionPatch: relative(repoRoot, absoluteRevisionPatch).replace(/\\/g, '/'),
+      diffPath: session.diffPath,
+      diffSha256: session.diffSha256,
+    },
   });
   return session;
 }
 
 export function createEditSavepoint(repoRoot: string, sessionId: string, nameValue: string): EditSession {
   const session = getEditSession(repoRoot, sessionId);
-  if (['finalized', 'rolled_back'].includes(session.status)) throw new Error(`edit session is closed: ${session.status}`);
+  if (['finalized', 'rolled_back'].includes(session.status))
+    throw new Error(`edit session is closed: ${session.status}`);
   if (session.currentRevision === 0) throw new Error('cannot create a savepoint before the first edit revision');
   const name = nameValue.trim();
   if (!name) throw new Error('savepoint name is required');
   const at = now();
-  session.savepoints = [...session.savepoints.filter((savepoint) => savepoint.name !== name), { name, revision: session.currentRevision, createdAt: at }];
+  session.savepoints = [
+    ...session.savepoints.filter((savepoint) => savepoint.name !== name),
+    { name, revision: session.currentRevision, createdAt: at },
+  ];
   session.updatedAt = at;
   writeSession(repoRoot, session);
   tryAppendControllerWorklogEvent(repoRoot, {
@@ -1999,14 +2272,20 @@ export function createEditSavepoint(repoRoot: string, sessionId: string, nameVal
   return session;
 }
 
-export function verifyEditSession(repoRoot: string, sessionId: string, input: {
-  checkIds?: string[];
-  reviewer?: string;
-  note?: string;
-} = {}): EditSession {
+export function verifyEditSession(
+  repoRoot: string,
+  sessionId: string,
+  input: {
+    checkIds?: string[];
+    reviewer?: string;
+    note?: string;
+  } = {},
+): EditSession {
   const request = resolveVerificationRequest(repoRoot, sessionId, input);
   const checkedInput = request.checkIds.length ? verifiedWorkspaceInput(repoRoot) : undefined;
-  const checkedOutsideInput = checkedInput ? verifiedWorkspaceInput(repoRoot, sessionTrackedPaths(request.session)) : undefined;
+  const checkedOutsideInput = checkedInput
+    ? verifiedWorkspaceInput(repoRoot, sessionTrackedPaths(request.session))
+    : undefined;
   const results = request.checkIds.map((checkId) => {
     try {
       return checkRecord(runControllerCheck(repoRoot, checkId));
@@ -2024,23 +2303,31 @@ export function verifyEditSession(repoRoot: string, sessionId: string, input: {
     reviewer: request.reviewer,
     note: request.note,
     results,
-    validatedWorkspaceFingerprint: checkedInput && verifiedWorkspaceInput(repoRoot) === checkedInput ? checkedInput : undefined,
-    validatedOutsideWorkspaceFingerprint: checkedInput && verifiedWorkspaceInput(repoRoot) === checkedInput
-      ? checkedOutsideInput : undefined,
+    validatedWorkspaceFingerprint:
+      checkedInput && verifiedWorkspaceInput(repoRoot) === checkedInput ? checkedInput : undefined,
+    validatedOutsideWorkspaceFingerprint:
+      checkedInput && verifiedWorkspaceInput(repoRoot) === checkedInput ? checkedOutsideInput : undefined,
   });
 }
 
-export async function verifyEditSessionAsync(repoRoot: string, sessionId: string, input: {
-  checkIds?: string[];
-  reviewer?: string;
-  note?: string;
-} = {}, options: {
-  onCheckSpawn?: (checkId: string, pid: number) => void;
-  subscriberId?: string;
-} = {}): Promise<EditSession> {
+export async function verifyEditSessionAsync(
+  repoRoot: string,
+  sessionId: string,
+  input: {
+    checkIds?: string[];
+    reviewer?: string;
+    note?: string;
+  } = {},
+  options: {
+    onCheckSpawn?: (checkId: string, pid: number) => void;
+    subscriberId?: string;
+  } = {},
+): Promise<EditSession> {
   const request = resolveVerificationRequest(repoRoot, sessionId, input);
   const checkedInput = request.checkIds.length ? verifiedWorkspaceInput(repoRoot) : undefined;
-  const checkedOutsideInput = checkedInput ? verifiedWorkspaceInput(repoRoot, sessionTrackedPaths(request.session)) : undefined;
+  const checkedOutsideInput = checkedInput
+    ? verifiedWorkspaceInput(repoRoot, sessionTrackedPaths(request.session))
+    : undefined;
   const results: EditSessionCheckRecord[] = [];
   for (const checkId of request.checkIds) {
     try {
@@ -2064,9 +2351,10 @@ export async function verifyEditSessionAsync(repoRoot: string, sessionId: string
     reviewer: request.reviewer,
     note: request.note,
     results,
-    validatedWorkspaceFingerprint: checkedInput && verifiedWorkspaceInput(repoRoot) === checkedInput ? checkedInput : undefined,
-    validatedOutsideWorkspaceFingerprint: checkedInput && verifiedWorkspaceInput(repoRoot) === checkedInput
-      ? checkedOutsideInput : undefined,
+    validatedWorkspaceFingerprint:
+      checkedInput && verifiedWorkspaceInput(repoRoot) === checkedInput ? checkedInput : undefined,
+    validatedOutsideWorkspaceFingerprint:
+      checkedInput && verifiedWorkspaceInput(repoRoot) === checkedInput ? checkedOutsideInput : undefined,
   });
 }
 
@@ -2075,39 +2363,44 @@ function restoreOperation(repoRoot: string, operation: EditSessionOperationRecor
   if (operation.type === 'create') {
     if (existsSync(absolute)) {
       const current = readFileSync(absolute, 'utf-8');
-      if (operation.afterSha256 && hash(current) !== operation.afterSha256) throw new Error(`cannot rollback changed file: ${operation.path}`);
+      if (operation.afterSha256 && hash(current) !== operation.afterSha256)
+        throw new Error(`cannot rollback changed file: ${operation.path}`);
       rmSync(absolute);
     }
     return;
   }
-  if (!operation.backupPath || !existsSync(join(repoRoot, operation.backupPath))) throw new Error(`missing backup for ${operation.path}`);
+  if (!operation.backupPath || !existsSync(join(repoRoot, operation.backupPath)))
+    throw new Error(`missing backup for ${operation.path}`);
   if (operation.type === 'delete') {
     if (existsSync(absolute)) throw new Error(`cannot rollback deletion because path exists: ${operation.path}`);
   } else if (existsSync(absolute)) {
     const current = readFileSync(absolute, 'utf-8');
-    if (operation.afterSha256 && hash(current) !== operation.afterSha256) throw new Error(`cannot rollback changed file: ${operation.path}`);
+    if (operation.afterSha256 && hash(current) !== operation.afterSha256)
+      throw new Error(`cannot rollback changed file: ${operation.path}`);
   } else {
     throw new Error(`cannot rollback missing edited file: ${operation.path}`);
   }
-  atomicWriteFile(
-    repoRoot,
-    operation.path,
-    readFileSync(join(repoRoot, operation.backupPath), 'utf-8'),
-    {
-      backupRoot,
-      ...(operation.beforeMode === undefined ? {} : { mode: operation.beforeMode }),
-    },
-  );
+  atomicWriteFile(repoRoot, operation.path, readFileSync(join(repoRoot, operation.backupPath), 'utf-8'), {
+    backupRoot,
+    ...(operation.beforeMode === undefined ? {} : { mode: operation.beforeMode }),
+  });
 }
 
-export function rollbackEditSession(repoRoot: string, sessionId: string, input: {
-  toRevision?: number;
-  savepoint?: string;
-  allowFinalized?: boolean;
-} = {}): EditSession {
+export function rollbackEditSession(
+  repoRoot: string,
+  sessionId: string,
+  input: {
+    toRevision?: number;
+    savepoint?: string;
+    allowFinalized?: boolean;
+  } = {},
+): EditSession {
   const session = getEditSession(repoRoot, sessionId);
   assertDurableEditSessionStorageBound(repoRoot, session.repoId);
-  if ((session.status === 'open' || (session.status === 'finalized' && input.allowFinalized)) && session.operations.length === 0) {
+  if (
+    (session.status === 'open' || (session.status === 'finalized' && input.allowFinalized)) &&
+    session.operations.length === 0
+  ) {
     const at = now();
     session.status = 'rolled_back';
     session.rolledBackAt = at;
@@ -2129,10 +2422,13 @@ export function rollbackEditSession(repoRoot: string, sessionId: string, input: 
   }
   assertCurrentHashes(repoRoot, session);
   const savepoint = input.savepoint?.trim();
-  const savepointRevision = savepoint ? session.savepoints.find((entry) => entry.name === savepoint)?.revision : undefined;
+  const savepointRevision = savepoint
+    ? session.savepoints.find((entry) => entry.name === savepoint)?.revision
+    : undefined;
   if (savepoint && savepointRevision === undefined) throw new Error(`savepoint not found: ${savepoint}`);
   const target = savepointRevision ?? (input.toRevision === undefined ? 0 : Math.trunc(input.toRevision));
-  if (target < 0 || target >= session.currentRevision) throw new Error(`rollback target must be between 0 and ${session.currentRevision - 1}`);
+  if (target < 0 || target >= session.currentRevision)
+    throw new Error(`rollback target must be between 0 and ${session.currentRevision - 1}`);
   const reverted = session.operations.filter((operation) => operation.revision > target).reverse();
   let restoreAttempted = false;
   try {
@@ -2182,17 +2478,24 @@ export function rollbackEditSession(repoRoot: string, sessionId: string, input: 
   return session;
 }
 
-export function finalizeEditSession(repoRoot: string, sessionId: string, input: {
-  reviewer?: string;
-  note?: string;
-  approvalConfirmed?: boolean;
-  binding?: EditSessionBinding;
-} = {}): EditSession {
+export function finalizeEditSession(
+  repoRoot: string,
+  sessionId: string,
+  input: {
+    reviewer?: string;
+    note?: string;
+    approvalConfirmed?: boolean;
+    binding?: EditSessionBinding;
+  } = {},
+): EditSession {
   let session = getEditSession(repoRoot, sessionId);
   session = assertBoundEditSession(session, input.binding);
   const baseRevisionChanged = Boolean(session.baseRevision && gitRevision(repoRoot) !== session.baseRevision);
-  const workspaceFingerprintChanged = Boolean(session.workspaceFingerprint && workspaceFingerprint(repoRoot) !== session.workspaceFingerprint);
-  if (session.assurance?.approvalRequired && input.approvalConfirmed !== true) throw new Error('EDIT_SESSION_APPROVAL_REQUIRED');
+  const workspaceFingerprintChanged = Boolean(
+    session.workspaceFingerprint && workspaceFingerprint(repoRoot) !== session.workspaceFingerprint,
+  );
+  if (session.assurance?.approvalRequired && input.approvalConfirmed !== true)
+    throw new Error('EDIT_SESSION_APPROVAL_REQUIRED');
   if (baseRevisionChanged || workspaceFingerprintChanged) {
     // First reconcile exact committed after-images. Uncommitted owned changes
     // may still be valid after an unrelated commit or a foreign dirty edit.
@@ -2208,8 +2511,13 @@ export function finalizeEditSession(repoRoot: string, sessionId: string, input: 
     }
   }
   const emptyOpenSession = session.status === 'open' && session.operations.length === 0;
-  if (!emptyOpenSession && session.requestedChecks.length > 0 && requestedChecksPassed(session) &&
-      (!session.validatedWorkspaceFingerprint || verifiedWorkspaceInput(repoRoot) !== session.validatedWorkspaceFingerprint)) {
+  if (
+    !emptyOpenSession &&
+    session.requestedChecks.length > 0 &&
+    requestedChecksPassed(session) &&
+    (!session.validatedWorkspaceFingerprint ||
+      verifiedWorkspaceInput(repoRoot) !== session.validatedWorkspaceFingerprint)
+  ) {
     throw new Error('EDIT_SESSION_VALIDATED_WORKSPACE_CHANGED');
   }
   if (!emptyOpenSession && !['dirty', 'checked', 'check_failed'].includes(session.status)) {

@@ -9,6 +9,7 @@ import {
   applyEditOperations,
   beginEditSession,
   cleanupEditSession,
+  editSessionOwnedWorkspaceFingerprint,
   inspectIntegratedEditSession,
   finalizeEditSession,
   getEditSession,
@@ -1522,6 +1523,38 @@ test('integrated EditSession inspection hashes exact committed source bytes befo
       controllerHome: fx.controllerHome,
     }),
   ).toMatchObject({ safe: true, unverifiedChecks: [] });
+});
+
+test('owned validation fingerprint ignores unrelated concurrent dirty (#713)', () => {
+  const fx = fixture();
+  const binding = durableBinding();
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Validation input isolation',
+    allowedPaths: ['source.ts'],
+    binding,
+  });
+  applyEditOperations(
+    fx.repoRoot,
+    fx.policy,
+    session.sessionId,
+    [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        expectedSha256: sha256(fx.initial),
+        replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+      },
+    ],
+    { binding },
+  );
+
+  const before = editSessionOwnedWorkspaceFingerprint(fx.repoRoot, session.sessionId);
+  writeFileSync(join(fx.repoRoot, 'other-writer.ts'), 'export const foreign = 1;\n');
+  writeFileSync(join(fx.repoRoot, 'notes.md'), 'unrelated concurrent edit\n');
+  expect(editSessionOwnedWorkspaceFingerprint(fx.repoRoot, session.sessionId)).toBe(before);
+
+  writeFileSync(join(fx.repoRoot, 'source.ts'), 'export const value = 3;\n');
+  expect(editSessionOwnedWorkspaceFingerprint(fx.repoRoot, session.sessionId)).not.toBe(before);
 });
 
 function sha256(value: string): string {
