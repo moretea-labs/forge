@@ -1292,6 +1292,14 @@ function pruneRebuildableRecordAuditRows(
   const cursorNamespace = persisted?.namespace ?? '';
   const cursorScope = persisted?.scope ?? '';
   const cursorKey = persisted?.record_key ?? '';
+  // Depth-first selection: reclaim the fattest retained chains first. A
+  // lexicographic cursor alone parked on already-bounded work_contract rows and
+  // never revisited newly allowlisted process_recovery_index tails (#377).
+  // Floor advances make the same record reappear until keepTail is reached, so
+  // no lexicographic resume cursor is required for correctness.
+  void cursorNamespace;
+  void cursorScope;
+  void cursorKey;
   const candidates = withSqliteStatement(database, `
       SELECT record.namespace, record.scope, record.record_key, record.revision,
         COALESCE((
@@ -1311,76 +1319,79 @@ function pruneRebuildableRecordAuditRows(
         ) AS old_max
       FROM control_plane_records record
       WHERE record.namespace IN (${placeholders})
-        AND (record.namespace, record.scope, record.record_key) > (?, ?, ?)
-      ORDER BY record.namespace ASC, record.scope ASC, record.record_key ASC
+        AND (
+          record.revision - COALESCE((
+            SELECT retained.floor_revision
+            FROM ${AUDIT_FLOOR_TABLE} retained
+            WHERE retained.namespace = record.namespace
+              AND retained.scope = record.scope
+              AND retained.record_key = record.record_key
+          ), 1) + 1
+        ) > ?
+      ORDER BY
+        (record.revision - COALESCE((
+          SELECT retained.floor_revision
+          FROM ${AUDIT_FLOOR_TABLE} retained
+          WHERE retained.namespace = record.namespace
+            AND retained.scope = record.scope
+            AND retained.record_key = record.record_key
+        ), 1)) DESC,
+        record.namespace ASC, record.scope ASC, record.record_key ASC
       LIMIT ?
-    `, (statement) => statement.all(cutoff, ...namespaces, cursorNamespace, cursorScope, cursorKey, maxRecords)) as Array<{
+    `, (statement) => statement.all(cutoff, ...namespaces, keepTail, maxRecords)) as Array<{
       namespace: string; scope: string; record_key: string; revision: number;
       floor_revision: number; old_max: number | null;
     }>;
   let total = 0;
-  let lastProcessed: { namespace: string; scope: string; record_key: string } | undefined;
-  let completedAllCandidates = true;
   for (const candidate of candidates) {
-    if (total >= maxRows) {
-      completedAllCandidates = false;
-      break;
-    }
+    if (total >= maxRows) break;
     const floor = Number.isSafeInteger(Number(candidate.floor_revision)) ? Number(candidate.floor_revision) : 1;
     const oldMax = Number(candidate.old_max);
-    if (Number.isSafeInteger(oldMax)) {
-      const pruneThrough = Math.min(oldMax, Number(candidate.revision) - keepTail);
-      let cursorRevision = floor;
-      while (cursorRevision <= pruneThrough && total < maxRows) {
-        const end = Math.min(
-          pruneThrough,
-          cursorRevision + AUDIT_RETENTION_CHUNK_ROWS - 1,
-          cursorRevision + (maxRows - total) - 1,
-        );
-        database.exec('BEGIN IMMEDIATE');
-        try {
-          withSqliteStatement(database, `
-              DELETE FROM control_plane_audit
-              WHERE namespace = ? AND scope = ? AND record_key = ? AND revision BETWEEN ? AND ?
-            `, (statement) => statement.run(candidate.namespace, candidate.scope, candidate.record_key, cursorRevision, end));
-          const deleted = Number(withSqliteStatement(database, 'SELECT changes() AS count', (statement) => scalar(statement.get())) ?? 0);
-          if (deleted > 0) {
-            writeAuditFloor(database, candidate.namespace, candidate.scope, candidate.record_key, end + 1);
-            total += deleted;
-          }
-          database.exec('COMMIT');
-        } catch (error) {
-          try { database.exec('ROLLBACK'); } catch { /* preserve the original error */ }
-          throw error;
+    if (!Number.isSafeInteger(oldMax)) continue;
+    const pruneThrough = Math.min(oldMax, Number(candidate.revision) - keepTail);
+    let cursorRevision = floor;
+    while (cursorRevision <= pruneThrough && total < maxRows) {
+      const end = Math.min(
+        pruneThrough,
+        cursorRevision + AUDIT_RETENTION_CHUNK_ROWS - 1,
+        cursorRevision + (maxRows - total) - 1,
+      );
+      database.exec('BEGIN IMMEDIATE');
+      try {
+        withSqliteStatement(database, `
+            DELETE FROM control_plane_audit
+            WHERE namespace = ? AND scope = ? AND record_key = ? AND revision BETWEEN ? AND ?
+          `, (statement) => statement.run(candidate.namespace, candidate.scope, candidate.record_key, cursorRevision, end));
+        const deleted = Number(withSqliteStatement(database, 'SELECT changes() AS count', (statement) => scalar(statement.get())) ?? 0);
+        if (deleted > 0) {
+          writeAuditFloor(database, candidate.namespace, candidate.scope, candidate.record_key, end + 1);
+          total += deleted;
         }
-        cursorRevision = end + 1;
+        database.exec('COMMIT');
+      } catch (error) {
+        try { database.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+        throw error;
       }
-      if (total >= maxRows && cursorRevision <= pruneThrough) {
-        completedAllCandidates = false;
-        break;
-      }
+      cursorRevision = end + 1;
     }
-    lastProcessed = candidate;
   }
-  const wrapped = completedAllCandidates && candidates.length < maxRecords;
-  const next = wrapped ? { namespace: '', scope: '', record_key: '' } : lastProcessed;
-  if (next) {
-    database.exec('BEGIN IMMEDIATE');
-    try {
-      withSqliteStatement(database, `
-          INSERT INTO ${AUDIT_RECORD_CURSOR_TABLE} (name, namespace, scope, record_key, updated_at)
-          VALUES ('current', ?, ?, ?, ?)
-          ON CONFLICT(name) DO UPDATE SET
-            namespace = excluded.namespace,
-            scope = excluded.scope,
-            record_key = excluded.record_key,
-            updated_at = excluded.updated_at
-        `, (statement) => statement.run(next.namespace, next.scope, next.record_key, now()));
-      database.exec('COMMIT');
-    } catch (error) {
-      try { database.exec('ROLLBACK'); } catch { /* preserve the original error */ }
-      throw error;
-    }
+  // Clear any legacy lexicographic cursor so older Runtime builds cannot park
+  // future scans away from newly allowlisted namespaces.
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    withSqliteStatement(database, `
+        INSERT INTO ${AUDIT_RECORD_CURSOR_TABLE} (name, namespace, scope, record_key, updated_at)
+        VALUES ('current', '', '', '', ?)
+        ON CONFLICT(name) DO UPDATE SET
+          namespace = excluded.namespace,
+          scope = excluded.scope,
+          record_key = excluded.record_key,
+          updated_at = excluded.updated_at
+      `, (statement) => statement.run(now()));
+    database.exec('COMMIT');
+  } catch (error) {
+    try { database.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+    throw error;
   }
   return total;
 }
