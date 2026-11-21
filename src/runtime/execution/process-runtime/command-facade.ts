@@ -1,17 +1,16 @@
 /**
  * execute_command → three explicit execution lanes.
  *
- * - Ephemeral Direct: bounded ordinary reads and commands that finish inside
- *   the interactive budget.
+ * - Ephemeral Direct: ordinary reads and local workspace writes. No Process
+ *   record and no Lease. This is the agent path.
  * - Lightweight Managed: the same local command remains alive in memory and
  *   returns a bounded handle, without SQLite, Lease, or recovery membership.
- * - Durable: explicit Work/external/release boundaries only.
+ * - Durable / leased: shared Git index or refs, an explicit mutation scope,
+ *   a non-idempotent external effect, a destructive command, or a command
+ *   that must survive restart.
  */
 
-import {
-  commandExecutionScopeKey,
-  type RepositoryCommandScopeTarget,
-} from '../../repositories/command-scope';
+import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../repositories/command-scope';
 import { classifyRepositoryCommand, fixedShellWrapperCommand } from '../../../core/repository-command/classification';
 import {
   executeRepositoryCommandAsync,
@@ -24,18 +23,22 @@ import {
   assertRepositoryCommandNoPluginExecutionBypass,
   assertRepositoryCommandStableHostIdentity,
 } from '../../repositories/command-scope';
-import { claimsForRepositoryCommand, claimsRequireLiveDeviceAdmission, LIVE_DEVICE_ADMISSION_WAIT_MS, looksLikeBuildOrTest, scopeResourceClaims, toProcessClaims } from './resource-claims';
 import {
-  spawnWithQueuedAdmission,
-  getProcessHandle,
-  waitForProcess,
-  cancelProcess,
-  readProcessLogs,
-} from './runtime';
+  claimsForRepositoryCommand,
+  claimsRequireLiveDeviceAdmission,
+  LIVE_DEVICE_ADMISSION_WAIT_MS,
+  looksLikeBuildOrTest,
+  scopeResourceClaims,
+  toProcessClaims,
+} from './resource-claims';
+import { spawnWithQueuedAdmission, getProcessHandle, waitForProcess, cancelProcess, readProcessLogs } from './runtime';
 import type { ProcessHandle, ProcessCommandSpec } from './types';
 import { DEFAULT_INTERACTIVE_WAIT_MS } from './types';
 import { durationAwareInteractiveWaitMs } from './interactive-admission';
-import { assertExecutionIdentity, type ResolvedExecutionIdentity } from '../../control-plane/execution/execution-identity';
+import {
+  assertExecutionIdentity,
+  type ResolvedExecutionIdentity,
+} from '../../control-plane/execution/execution-identity';
 import {
   cancelLightweightProcess,
   getLightweightProcessHandle,
@@ -49,11 +52,7 @@ import {
 import { isForgeInstanceProcessScopeKey, processScopeKeyForHandle } from './process-scope';
 import { getProcessRequestBinding } from './store';
 
-export type RepositoryCommandRoute =
-  | 'process_direct'
-  | 'process_managed'
-  | 'durable'
-  | 'reject';
+export type RepositoryCommandRoute = 'process_direct' | 'process_managed' | 'durable' | 'reject';
 
 export interface RepositoryCommandProcessInput {
   controllerHome: string;
@@ -159,7 +158,10 @@ function recoveryLifecycleFromArgv(executable: string, args: readonly string[]):
 }
 
 function recoveryLifecycleFromShell(shellCommand: string): string | undefined {
-  const match = /^\s*(?:exec\s+)?(?:(?:\S*[\\/])?(?:bun|node|nodejs)\s+)?(?:\S*[\\/])?forge(?:\.mjs)?\s+recovery\s+([a-z-]+)\b/i.exec(shellCommand);
+  const match =
+    /^\s*(?:exec\s+)?(?:(?:\S*[\\/])?(?:bun|node|nodejs)\s+)?(?:\S*[\\/])?forge(?:\.mjs)?\s+recovery\s+([a-z-]+)\b/i.exec(
+      shellCommand,
+    );
   const subcommand = match?.[1]?.toLowerCase();
   return subcommand && STANDALONE_RECOVERY_LIFECYCLE_COMMANDS.has(subcommand) ? subcommand : undefined;
 }
@@ -189,6 +191,27 @@ function toProcessCommand(command: string | readonly string[], cwd: string): Pro
     shellCommand: normalized.shellCommand ?? String(command),
     cwd,
   };
+}
+
+const SHARED_GIT_MUTATION =
+  /\bgit\s+(?:add|commit|pull|fetch|merge|rebase|checkout|switch|cherry-pick|revert|stash|mv|restore|apply|am|bisect|branch|tag|rm)\b/i;
+
+function commandObservationText(command: string | readonly string[]): string {
+  const canonical = normalizeRepositoryCommand(command);
+  if (canonical.kind === 'shell') return canonical.shellCommand ?? '';
+  const argv = [canonical.executable ?? '', ...(canonical.args ?? [])];
+  return fixedShellWrapperCommand(argv) ?? argv.join(' ');
+}
+
+/** Git index/refs are one physical resource. Ordinary file writes are not. */
+function commandMutatesSharedGitResource(command: string | readonly string[]): boolean {
+  return SHARED_GIT_MUTATION.test(commandObservationText(command));
+}
+
+/** Network and download clients stay on the leased lane. Local eval does not. */
+function commandCarriesExternalEffect(command: string | readonly string[]): boolean {
+  const text = commandObservationText(command);
+  return /\b(?:curl|wget)\b/i.test(text) || /\bfetch\s*\(/i.test(text);
 }
 
 /**
@@ -223,7 +246,17 @@ export function classifyRepositoryCommandRoute(
   if (classification.risk === 'remote_write' || classification.risk === 'destructive') {
     return { route: 'process_managed', reason: 'effectful_command_managed' };
   }
-  return { route: 'process_managed', reason: 'workspace_write_requires_process_lease' };
+  if (hasDeclaredMutationScope) {
+    return { route: 'process_managed', reason: 'model_declared_mutation_scope' };
+  }
+  if (
+    commandMutatesSharedGitResource(command) ||
+    commandCarriesExternalEffect(command) ||
+    looksLikeBuildOrTest(command)
+  ) {
+    return { route: 'process_managed', reason: 'workspace_write_requires_process_lease' };
+  }
+  return { route: 'process_direct', reason: 'local_workspace_direct' };
 }
 
 /**
@@ -253,22 +286,27 @@ export async function executeRepositoryCommandViaProcessRuntime(
       route: decision.route,
       reason: decision.reason,
       durableSideEffects: emptyEffects,
-      suggestedOperation: decision.reason === 'standalone_recovery_lifecycle_required'
-        ? 'Use the standalone Forge Recovery connector for canonical Runtime/connector lifecycle operations.'
-        : 'execute_command via the explicit durable/release workflow',
-      externalEffect: decision.route === 'durable'
-        ? {
-            outcome: 'not_started',
-            replayPolicy: 'never_auto_retry',
-            reconciliation: 'If a separate external controller later loses the result after dispatch, report outcome_unknown and inspect remote state before any retry.',
-          }
-        : undefined,
+      suggestedOperation:
+        decision.reason === 'standalone_recovery_lifecycle_required'
+          ? 'Use the standalone Forge Recovery connector for canonical Runtime/connector lifecycle operations.'
+          : 'execute_command via the explicit durable/release workflow',
+      externalEffect:
+        decision.route === 'durable'
+          ? {
+              outcome: 'not_started',
+              replayPolicy: 'never_auto_retry',
+              reconciliation:
+                'If a separate external controller later loses the result after dispatch, report outcome_unknown and inspect remote state before any retry.',
+            }
+          : undefined,
       executionMetrics: { lane: 'durable_external', durableWrites: 0, leaseOperations: 0 },
     };
   }
 
   if (!input.executionIdentity) {
-    throw new Error('EXECUTION_IDENTITY_REQUIRED: repository command process path requires an immutable executionIdentity');
+    throw new Error(
+      'EXECUTION_IDENTITY_REQUIRED: repository command process path requires an immutable executionIdentity',
+    );
   }
   const executionIdentity = input.executionIdentity;
   if (executionIdentity.repositoryId !== commandExecutionScopeKey(input.repository)) {
@@ -324,8 +362,9 @@ export async function executeRepositoryCommandViaProcessRuntime(
       maxOutputBytes: input.maxOutputBytes,
       signal: input.signal,
       allowNonGitWorkspace: executionIdentity.authority === 'ephemeral_workspace',
-      allowOpaqueLocalScript: decision.reason === 'lightweight_local_shell_wrapper'
-        || decision.reason === 'lightweight_local_inline_interpreter',
+      allowOpaqueLocalScript:
+        decision.reason === 'lightweight_local_shell_wrapper' ||
+        decision.reason === 'lightweight_local_inline_interpreter',
     };
     const readonly = classifyRepositoryCommand(input.command, input.repository.defaultBranch).risk === 'readonly';
     if (readonly) {
@@ -363,21 +402,23 @@ export async function executeRepositoryCommandViaProcessRuntime(
       return {
         route: 'process_direct',
         reason: decision.reason,
-        ...(completed ? {
-          ok: completed.ok,
-          exitCode: completed.exitCode,
-          stdout: completed.stdout,
-          stderr: completed.stderr,
-          executionStatus: completed.status,
-          policyDecision: completed.policyDecision,
-          authorizationDecision: completed.authorizationDecision,
-          approvalRequestId: completed.approvalRequestId,
-        } : {
-          ok: handle.ok,
-          exitCode: handle.exitCode,
-          stdout: handle.stdout,
-          stderr: handle.stderr,
-        }),
+        ...(completed
+          ? {
+              ok: completed.ok,
+              exitCode: completed.exitCode,
+              stdout: completed.stdout,
+              stderr: completed.stderr,
+              executionStatus: completed.status,
+              policyDecision: completed.policyDecision,
+              authorizationDecision: completed.authorizationDecision,
+              approvalRequestId: completed.approvalRequestId,
+            }
+          : {
+              ok: handle.ok,
+              exitCode: handle.exitCode,
+              stdout: handle.stdout,
+              stderr: handle.stderr,
+            }),
         durableSideEffects: emptyEffects,
         executionMetrics: { ...lightweight.metrics, lane: 'ephemeral_direct' },
       };
@@ -391,10 +432,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
             input.returnHandleImmediately ? 0 : input.interactiveWaitMs,
             Math.min(DEFAULT_INTERACTIVE_WAIT_MS, 250),
           );
-      const timeoutMs = Math.max(
-        interactiveWaitMs + 1,
-        Math.min(input.timeoutMs ?? 15 * 60_000, 24 * 60 * 60_000),
-      );
+      const timeoutMs = Math.max(interactiveWaitMs + 1, Math.min(input.timeoutMs ?? 15 * 60_000, 24 * 60 * 60_000));
       const lightweight = await startLightweightRepositoryCommand({
         controllerHome: input.controllerHome,
         repository: input.repository,
@@ -472,34 +510,34 @@ export async function executeRepositoryCommandViaProcessRuntime(
     input.interactiveWaitMs,
     Math.min(DEFAULT_INTERACTIVE_WAIT_MS, 250),
   );
-  const timeoutMs = Math.max(
-    interactiveWaitMs + 1,
-    Math.min(input.timeoutMs ?? 15 * 60_000, 24 * 60 * 60_000),
-  );
+  const timeoutMs = Math.max(interactiveWaitMs + 1, Math.min(input.timeoutMs ?? 15 * 60_000, 24 * 60 * 60_000));
 
-  const handle = await spawnWithQueuedAdmission({
-    controllerHome: input.controllerHome,
-    repoId: executionIdentity.repositoryId,
-    checkoutId: executionIdentity.checkoutId,
-    executionIdentity,
-    ...(input.principalId ? { principalId: input.principalId } : {}),
-    commandId: input.commandId,
-    command: toProcessCommand(input.command, cwd),
-    // Short commands complete inside this budget; longer ones return a running handle.
-    interactiveWaitMs,
-    leaseWaitMs: usesLiveDevice ? LIVE_DEVICE_ADMISSION_WAIT_MS : undefined,
-    timeoutMs,
-    maxOutputBytes: input.maxOutputBytes,
-    resourceClaims: toProcessClaims(claims),
-    origin: {
-      surface: 'command',
-      toolName: 'execute_command',
-      requestId: input.requestId,
+  const handle = await spawnWithQueuedAdmission(
+    {
+      controllerHome: input.controllerHome,
+      repoId: executionIdentity.repositoryId,
+      checkoutId: executionIdentity.checkoutId,
+      executionIdentity,
+      ...(input.principalId ? { principalId: input.principalId } : {}),
+      commandId: input.commandId,
+      command: toProcessCommand(input.command, cwd),
+      // Short commands complete inside this budget; longer ones return a running handle.
+      interactiveWaitMs,
+      leaseWaitMs: usesLiveDevice ? LIVE_DEVICE_ADMISSION_WAIT_MS : undefined,
+      timeoutMs,
+      maxOutputBytes: input.maxOutputBytes,
+      resourceClaims: toProcessClaims(claims),
+      origin: {
+        surface: 'command',
+        toolName: 'execute_command',
+        requestId: input.requestId,
+      },
+      signal: input.signal,
+      reuseActiveEquivalent: looksLikeBuildOrTest(input.command),
+      returnHandleImmediately: input.returnHandleImmediately === true,
     },
-    signal: input.signal,
-    reuseActiveEquivalent: looksLikeBuildOrTest(input.command),
-    returnHandleImmediately: input.returnHandleImmediately === true,
-  }, usesLiveDevice);
+    usesLiveDevice,
+  );
 
   const route: RepositoryCommandRoute = handle.completed ? 'process_direct' : 'process_managed';
   return {
@@ -571,10 +609,13 @@ export function resolveRepositoryCommandProcessIdByRequestId(
   if (!normalizedRepoId || !normalizedCheckoutId || !normalizedRequestId) return undefined;
   const binding = getProcessRequestBinding(controllerHome, normalizedRepoId, normalizedCheckoutId, normalizedRequestId);
   if (binding) {
-    if (binding.repoId !== normalizedRepoId
-        || binding.checkoutId?.trim() !== normalizedCheckoutId
-        || binding.requestId !== normalizedRequestId
-        || typeof binding.processId !== 'string' || !binding.processId.trim()) {
+    if (
+      binding.repoId !== normalizedRepoId ||
+      binding.checkoutId?.trim() !== normalizedCheckoutId ||
+      binding.requestId !== normalizedRequestId ||
+      typeof binding.processId !== 'string' ||
+      !binding.processId.trim()
+    ) {
       throw new Error(`PROCESS_REQUEST_BINDING_SCOPE_MISMATCH: ${normalizedRequestId}`);
     }
     return binding.processId.trim();

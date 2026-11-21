@@ -1,6 +1,17 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawn, spawnSync } from 'child_process';
@@ -32,8 +43,16 @@ import {
   waitForProcess,
 } from '../../src/runtime/execution/process-runtime';
 import type { ProcessHandle } from '../../src/runtime/execution/process-runtime/types';
-import { createProcessRecord, deleteProcessRecord, listProcessRecords, updateProcessRecord } from '../../src/runtime/execution/process-runtime/store';
-import { resolveProcessRunnerEntryPath, resolveProcessRunnerInvocation } from '../../src/runtime/execution/process-runtime/runtime';
+import {
+  createProcessRecord,
+  deleteProcessRecord,
+  listProcessRecords,
+  updateProcessRecord,
+} from '../../src/runtime/execution/process-runtime/store';
+import {
+  resolveProcessRunnerEntryPath,
+  resolveProcessRunnerInvocation,
+} from '../../src/runtime/execution/process-runtime/runtime';
 import {
   forgeInstanceExecutionTarget,
   gcOrphanedProcessHandleIndexEntries,
@@ -71,13 +90,23 @@ import {
   waitForLightweightProcess,
 } from '../../src/runtime/execution/process-runtime/lightweight-managed';
 import { classifyGatewayExecutionPath } from '../../adapters/mcp/runtime-gateway/router';
-import { persistedCheckSemanticScopeKey, runPersistedCheckViaProcessRuntime } from '../../adapters/mcp/runtime-gateway/persisted-check-process';
-import { classifyPersistedCheckTerminalEvidence, readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
+import {
+  persistedCheckSemanticScopeKey,
+  runPersistedCheckViaProcessRuntime,
+} from '../../adapters/mcp/runtime-gateway/persisted-check-process';
+import {
+  classifyPersistedCheckTerminalEvidence,
+  readPersistedCheckResultReceipt,
+} from '../../src/runtime/execution/process-runtime/check-result';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
 import { withControllerLock } from '../../src/effects/controller-locks';
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { routeExecution } from '../../src/runtime/execution/thin-harness';
-import { listActiveLeases, acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
+import {
+  listActiveLeases,
+  acquireExecutionLeases,
+  releaseExecutionLeases,
+} from '../../src/runtime/resources/leases/store';
 import { resourceClaimsConflict } from '../../src/runtime/resources/claims/conflicts';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { ensureActiveRuntimeRelease, publishRuntimeRelease } from '../../src/runtime/root/release-store';
@@ -86,11 +115,19 @@ import {
   clearRuntimeWriteClaimForTests,
   currentRuntimeWriteClaimEnvironment,
 } from '../../src/runtime/root/write-fence';
-import { defaultProcessIdentityProbe, executableFingerprint, parseLinuxProcessStartTime, processIdentityMatches } from '../../src/runtime/shared/process-identity';
+import {
+  defaultProcessIdentityProbe,
+  executableFingerprint,
+  parseLinuxProcessStartTime,
+  processIdentityMatches,
+} from '../../src/runtime/shared/process-identity';
 import { ensureRepositoryRuntimeStorage } from '../../src/runtime/repositories/runtime-storage';
 import { resolveEphemeralWorkspaceTarget } from '../../src/runtime/repositories/ephemeral-workspace';
 import { sanitizeFileComponent } from '../../src/runtime/shared/json-files';
-import { callProcessTool, DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS } from '../../src/runtime/execution/process-runtime/tool-dispatch';
+import {
+  callProcessTool,
+  DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS,
+} from '../../src/runtime/execution/process-runtime/tool-dispatch';
 import { processToolDefinitions } from '../../adapters/mcp/runtime-gateway/process-tools';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { rebuildRepositoryProjection } from '../../src/runtime/projections/materialized-view';
@@ -113,20 +150,28 @@ afterEach(() => {
   }
 });
 
-function runtimeManifest(controllerHome: string, releaseId: string, artifactIdentity: string, workerProtocolVersion = 1): string {
+function runtimeManifest(
+  controllerHome: string,
+  releaseId: string,
+  artifactIdentity: string,
+  workerProtocolVersion = 1,
+): string {
   const path = join(controllerHome, `${releaseId}.manifest.json`);
-  writeFileSync(path, JSON.stringify({
-    schemaVersion: 1,
-    releaseId,
-    artifactIdentity,
-    entrypoint: 'forge-runtime',
-    arguments: [],
-    configurationSchemaVersion: 1,
-    controllerHome,
-    databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
-    workerProtocolVersion,
-    createdAt: new Date().toISOString(),
-  }));
+  writeFileSync(
+    path,
+    JSON.stringify({
+      schemaVersion: 1,
+      releaseId,
+      artifactIdentity,
+      entrypoint: 'forge-runtime',
+      arguments: [],
+      configurationSchemaVersion: 1,
+      controllerHome,
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+      workerProtocolVersion,
+      createdAt: new Date().toISOString(),
+    }),
+  );
   return path;
 }
 
@@ -145,9 +190,7 @@ function bindCanonicalRuntime(
   return { owner, authority, claim };
 }
 
-function bindTestRuntimeClaim(
-  input: Parameters<typeof bindRuntimeWriteClaim>[0] & { fencingToken?: string },
-) {
+function bindTestRuntimeClaim(input: Parameters<typeof bindRuntimeWriteClaim>[0] & { fencingToken?: string }) {
   const { fencingToken, ...canonical } = input;
   return bindRuntimeWriteClaim({
     ...canonical,
@@ -166,34 +209,48 @@ function fixture() {
   spawnSync('git', ['-C', repoRoot, 'config', 'user.name', 'Test'], { encoding: 'utf8' });
   spawnSync('git', ['-C', repoRoot, 'config', 'user.email', 'test@example.com'], { encoding: 'utf8' });
   writeFileSync(join(repoRoot, 'README.md'), 'process runtime fixture\n');
-  writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({
-    name: 'fixture',
-    scripts: {
-      'check:type': 'node -e "process.exit(0)"',
-      test: 'node -e "process.exit(0)"',
-    },
-  }, null, 2));
+  writeFileSync(
+    join(repoRoot, 'package.json'),
+    JSON.stringify(
+      {
+        name: 'fixture',
+        scripts: {
+          'check:type': 'node -e "process.exit(0)"',
+          test: 'node -e "process.exit(0)"',
+        },
+      },
+      null,
+      2,
+    ),
+  );
   mkdirSync(join(repoRoot, '.forge'), { recursive: true });
-  writeFileSync(join(repoRoot, '.forge', 'checks.json'), JSON.stringify({
-    version: 1,
-    checks: {
-      'quick-ok': {
-        description: 'instant ok',
-        command: ['node', '-e', 'process.exit(0)'],
-        timeoutMs: 30_000,
+  writeFileSync(
+    join(repoRoot, '.forge', 'checks.json'),
+    JSON.stringify(
+      {
+        version: 1,
+        checks: {
+          'quick-ok': {
+            description: 'instant ok',
+            command: ['node', '-e', 'process.exit(0)'],
+            timeoutMs: 30_000,
+          },
+          'quick-fail': {
+            description: 'instant acceptance failure',
+            command: ['node', '-e', 'process.exit(7)'],
+            timeoutMs: 30_000,
+          },
+          'quick-sleep': {
+            description: 'short sleep for managed handle',
+            command: ['node', '-e', 'setTimeout(() => process.exit(0), 2500)'],
+            timeoutMs: 30_000,
+          },
+        },
       },
-      'quick-fail': {
-        description: 'instant acceptance failure',
-        command: ['node', '-e', 'process.exit(7)'],
-        timeoutMs: 30_000,
-      },
-      'quick-sleep': {
-        description: 'short sleep for managed handle',
-        command: ['node', '-e', 'setTimeout(() => process.exit(0), 2500)'],
-        timeoutMs: 30_000,
-      },
-    },
-  }, null, 2));
+      null,
+      2,
+    ),
+  );
   spawnSync('git', ['-C', repoRoot, 'add', '.'], { encoding: 'utf8' });
   spawnSync('git', ['-C', repoRoot, 'commit', '-m', 'init'], { encoding: 'utf8' });
   ensureControllerHome(controllerHome);
@@ -219,14 +276,26 @@ describe('Unified Process Runtime', () => {
     writeFileSync(configuredRunner, 'configured runner\n');
 
     const mirroredExec = join(stableRoot, 'forge-runtime');
-    expect(resolveProcessRunnerEntryPath(mirroredExec, {
-      FORGE_RELEASE_PATH: releaseRoot,
-      FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: releaseRoot,
-    }, root)).toBe(releaseRunner);
-    expect(resolveProcessRunnerEntryPath(mirroredExec, {
-      FORGE_PROCESS_RUNNER_ENTRY: configuredRunner,
-      FORGE_RELEASE_PATH: releaseRoot,
-    }, root)).toBe(configuredRunner);
+    expect(
+      resolveProcessRunnerEntryPath(
+        mirroredExec,
+        {
+          FORGE_RELEASE_PATH: releaseRoot,
+          FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: releaseRoot,
+        },
+        root,
+      ),
+    ).toBe(releaseRunner);
+    expect(
+      resolveProcessRunnerEntryPath(
+        mirroredExec,
+        {
+          FORGE_PROCESS_RUNNER_ENTRY: configuredRunner,
+          FORGE_RELEASE_PATH: releaseRoot,
+        },
+        root,
+      ),
+    ).toBe(configuredRunner);
   });
 
   test('honors standalone-binary release authority for a .js-named compiled Process Runner', () => {
@@ -300,12 +369,14 @@ describe('Unified Process Runtime', () => {
       const beforeProcesses = listActiveProcessIds(fx.controllerHome, fx.repository.repoId);
       const beforeLeases = listActiveLeases(fx.controllerHome, fx.repository.repoId);
       const source = `import { executeBrowserPluginAction } from './src/runtime/plugins/browser-adapter'; await executeBrowserPluginAction({});`;
-      await expect(executeRepositoryCommandViaProcessRuntime({
-        controllerHome: fx.controllerHome,
-        repository: fx.repository,
-        command: ['bash', '-lc', `bun -e ${JSON.stringify(source)}`],
-        executionIdentity: executionIdentityForRepository(fx.repository),
-      })).rejects.toThrow('PLUGIN_ACTION_EXECUTION_REQUIRES_TYPED_PLUGIN_TOOL');
+      await expect(
+        executeRepositoryCommandViaProcessRuntime({
+          controllerHome: fx.controllerHome,
+          repository: fx.repository,
+          command: ['bash', '-lc', `bun -e ${JSON.stringify(source)}`],
+          executionIdentity: executionIdentityForRepository(fx.repository),
+        }),
+      ).rejects.toThrow('PLUGIN_ACTION_EXECUTION_REQUIRES_TYPED_PLUGIN_TOOL');
       expect(listActiveProcessIds(fx.controllerHome, fx.repository.repoId)).toEqual(beforeProcesses);
       expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toEqual(beforeLeases);
 
@@ -326,45 +397,68 @@ describe('Unified Process Runtime', () => {
   });
 
   test('default process identity probe reads command and start time together', () => {
-    if (process.platform !== 'win32') expect(defaultProcessIdentityProbe.inspect?.(process.pid)).toMatchObject({ command: expect.any(String), startTime: expect.any(String) });
+    if (process.platform !== 'win32')
+      expect(defaultProcessIdentityProbe.inspect?.(process.pid)).toMatchObject({
+        command: expect.any(String),
+        startTime: expect.any(String),
+      });
   });
 
   test('Linux process identity uses stable /proc start ticks and keeps legacy records readable', () => {
     if (process.platform !== 'linux') return;
 
-    const fields: string[] = Array.from({ length: 20 }, (_, index) => index === 0 ? 'S' : '0');
+    const fields: string[] = Array.from({ length: 20 }, (_, index) => (index === 0 ? 'S' : '0'));
     fields[19] = '987654';
-    expect(parseLinuxProcessStartTime('42 (worker ) with spaces) ' + fields.join(' '), '01234567-89ab-cdef-0123-456789abcdef'))
-      .toBe('linux-proc-start:01234567-89ab-cdef-0123-456789abcdef:987654');
+    expect(
+      parseLinuxProcessStartTime(
+        '42 (worker ) with spaces) ' + fields.join(' '),
+        '01234567-89ab-cdef-0123-456789abcdef',
+      ),
+    ).toBe('linux-proc-start:01234567-89ab-cdef-0123-456789abcdef:987654');
 
     const inspected = defaultProcessIdentityProbe.inspect?.(process.pid);
     const command = defaultProcessIdentityProbe.command(process.pid);
     expect(inspected?.startTime).toMatch(/^linux-proc-start:[0-9a-f-]{36}:\d+$/);
     expect(command).toBe(inspected?.command);
-    expect(processIdentityMatches({
-      pid: process.pid,
-      processStartTime: inspected!.startTime!,
-      executableFingerprint: executableFingerprint(command!),
-    }, process.pid)).toEqual({ matches: true });
+    expect(
+      processIdentityMatches(
+        {
+          pid: process.pid,
+          processStartTime: inspected!.startTime!,
+          executableFingerprint: executableFingerprint(command!),
+        },
+        process.pid,
+      ),
+    ).toEqual({ matches: true });
 
     const legacy = defaultProcessIdentityProbe.legacyInspect?.(process.pid);
     expect(legacy?.command && legacy.startTime).toBeTruthy();
-    expect(processIdentityMatches({
-      pid: process.pid,
-      processStartTime: legacy!.startTime!,
-      executableFingerprint: executableFingerprint(legacy!.command!),
-    }, process.pid)).toEqual({ matches: true });
+    expect(
+      processIdentityMatches(
+        {
+          pid: process.pid,
+          processStartTime: legacy!.startTime!,
+          executableFingerprint: executableFingerprint(legacy!.command!),
+        },
+        process.pid,
+      ),
+    ).toEqual({ matches: true });
   });
 
   test('executable fingerprint mismatch is rejected before a legacy start-time mismatch can be bridged', () => {
     if (process.platform !== 'linux') return;
     const legacy = defaultProcessIdentityProbe.legacyInspect?.(process.pid);
     expect(legacy?.command).toBeTruthy();
-    expect(processIdentityMatches({
-      pid: process.pid,
-      processStartTime: 'legacy-start-time-before-clock-correction',
-      executableFingerprint: 'wrong-executable-fingerprint',
-    }, process.pid).reason).toBe('executable_fingerprint_changed');
+    expect(
+      processIdentityMatches(
+        {
+          pid: process.pid,
+          processStartTime: 'legacy-start-time-before-clock-correction',
+          executableFingerprint: 'wrong-executable-fingerprint',
+        },
+        process.pid,
+      ).reason,
+    ).toBe('executable_fingerprint_changed');
   });
 
   test('ephemeral Process leases enforce conflicts without polluting durable projection readiness', () => {
@@ -405,10 +499,12 @@ describe('Unified Process Runtime', () => {
       },
     );
     expect(blocked.acquired).toBe(false);
-    expect(blocked.blockers).toContainEqual(expect.objectContaining({
-      resourceKey,
-      ownerJobId: 'process:ephemeral-projection-test',
-    }));
+    expect(blocked.blockers).toContainEqual(
+      expect.objectContaining({
+        resourceKey,
+        ownerJobId: 'process:ephemeral-projection-test',
+      }),
+    );
   });
 
   test('canonical Runtime incarnation generation is preserved in ephemeral lease ownership', () => {
@@ -424,7 +520,13 @@ describe('Unified Process Runtime', () => {
         fx.repository.repoId,
         'plugin:generation-env-fixture',
         [{ resourceKey: 'provider-state:generation-env-fixture', mode: 'write', repoId: fx.repository.repoId }],
-        { ttlMs: 300_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+        {
+          ttlMs: 300_000,
+          visibility: 'ephemeral',
+          notifyScheduler: false,
+          invalidateProjection: false,
+          emitRuntimeEvent: false,
+        },
       );
       expect(acquired.acquired).toBe(true);
       expect(acquired.leases[0]?.ownerIdentity?.controllerInstanceId).toBe(runtime.claim.runtimeInstanceId);
@@ -489,7 +591,13 @@ describe('Unified Process Runtime', () => {
         fx.repository.repoId,
         'plugin:release-after-cutover',
         [{ resourceKey, mode: 'write', repoId: fx.repository.repoId }],
-        { ttlMs: 300_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+        {
+          ttlMs: 300_000,
+          visibility: 'ephemeral',
+          notifyScheduler: false,
+          invalidateProjection: false,
+          emitRuntimeEvent: false,
+        },
       );
       expect(reacquired.acquired).toBe(true);
     } finally {
@@ -541,7 +649,9 @@ describe('Unified Process Runtime', () => {
         { ttlMs: 300_000 },
       );
       expect(blocked.acquired).toBe(false);
-      expect(blocked.blockers).toContainEqual(expect.objectContaining({ ownerJobId: 'durable:before-cutover', resourceKey }));
+      expect(blocked.blockers).toContainEqual(
+        expect.objectContaining({ ownerJobId: 'durable:before-cutover', resourceKey }),
+      );
     } finally {
       secondOwner.release();
       clearRuntimeWriteClaimForTests();
@@ -586,22 +696,26 @@ describe('Unified Process Runtime', () => {
       reuseScope: 'checkout' as const,
       scopeKey: `checkout:${fx.repository.activeCheckoutId}`,
     };
-    const run = (requestId: string) => spawnManagedProcess({
-      controllerHome: fx.controllerHome,
-      repoId: fx.repository.repoId,
-      checkoutId: fx.repository.activeCheckoutId,
-      executionIdentity: executionIdentityForRepository(fx.repository),
-      command: {
-        kind: 'argv',
-        executable: 'node',
-        args: ['-e', `require('fs').appendFileSync(${JSON.stringify(marker)}, 'x'); setTimeout(() => process.exit(0), 150)`],
-        cwd: fx.repoRoot,
-      },
-      interactiveWaitMs: 2_000,
-      timeoutMs: 15_000,
-      checkExecution,
-      origin: { surface: 'check', checkId: 'semantic-check', requestId },
-    });
+    const run = (requestId: string) =>
+      spawnManagedProcess({
+        controllerHome: fx.controllerHome,
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        executionIdentity: executionIdentityForRepository(fx.repository),
+        command: {
+          kind: 'argv',
+          executable: 'node',
+          args: [
+            '-e',
+            `require('fs').appendFileSync(${JSON.stringify(marker)}, 'x'); setTimeout(() => process.exit(0), 150)`,
+          ],
+          cwd: fx.repoRoot,
+        },
+        interactiveWaitMs: 2_000,
+        timeoutMs: 15_000,
+        checkExecution,
+        origin: { surface: 'check', checkId: 'semantic-check', requestId },
+      });
 
     const [first, second] = await Promise.all([run('semantic-request-a'), run('semantic-request-b')]);
     expect(second.processId).toBe(first.processId);
@@ -627,17 +741,18 @@ describe('Unified Process Runtime', () => {
       reuseScope: 'checkout' as const,
       scopeKey: `checkout:${fx.repository.activeCheckoutId}`,
     };
-    const run = (requestId: string) => spawnManagedProcess({
-      controllerHome: fx.controllerHome,
-      repoId: fx.repository.repoId,
-      checkoutId: fx.repository.activeCheckoutId,
-      executionIdentity: executionIdentityForRepository(fx.repository),
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(7)'], cwd: fx.repoRoot },
-      interactiveWaitMs: 2_000,
-      timeoutMs: 15_000,
-      checkExecution,
-      origin: { surface: 'check', checkId: 'semantic-fail', requestId },
-    });
+    const run = (requestId: string) =>
+      spawnManagedProcess({
+        controllerHome: fx.controllerHome,
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        executionIdentity: executionIdentityForRepository(fx.repository),
+        command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(7)'], cwd: fx.repoRoot },
+        interactiveWaitMs: 2_000,
+        timeoutMs: 15_000,
+        checkExecution,
+        origin: { surface: 'check', checkId: 'semantic-fail', requestId },
+      });
     const first = await run('semantic-fail-a');
     const second = await run('semantic-fail-b');
     expect(first.ok).toBe(false);
@@ -711,20 +826,22 @@ describe('Unified Process Runtime', () => {
       reusedExecution: true,
       checkCacheKey: 'cache-shared',
     });
-    expect(() => processCheckCompletionReceipt(record, {
-      repoId: fx.repository.repoId,
-      checkoutId: 'checkout-consumer',
-      checkId: 'shared-check',
-      processId,
-      checkExecution: {
-        cacheKey: 'cache-drifted',
-        revision: 'revision-shared',
-        definitionDigest: 'definition-shared',
-        environmentFingerprint: 'environment-shared',
-        timeoutMs: 15_000,
-        scopeKey: 'repository',
-      },
-    })).toThrow(/PROCESS_CHECK_RECEIPT_IDENTITY_MISMATCH/);
+    expect(() =>
+      processCheckCompletionReceipt(record, {
+        repoId: fx.repository.repoId,
+        checkoutId: 'checkout-consumer',
+        checkId: 'shared-check',
+        processId,
+        checkExecution: {
+          cacheKey: 'cache-drifted',
+          revision: 'revision-shared',
+          definitionDigest: 'definition-shared',
+          environmentFingerprint: 'environment-shared',
+          timeoutMs: 15_000,
+          scopeKey: 'repository',
+        },
+      }),
+    ).toThrow(/PROCESS_CHECK_RECEIPT_IDENTITY_MISMATCH/);
   });
 
   test('semantic binding key crosses checkout only when the caller deliberately uses repository scope', () => {
@@ -781,12 +898,10 @@ describe('Unified Process Runtime', () => {
     });
     expect(sameSemantic.status).toBe('existing');
     expect(sameSemantic.binding.processId).toBe(processId);
-    expect(readControlPlaneRecord(
-      fx.controllerHome,
-      'process_check_execution_binding',
-      fx.repository.repoId,
-      bindingKey,
-    )?.revision).toBe(claimedRevision);
+    expect(
+      readControlPlaneRecord(fx.controllerHome, 'process_check_execution_binding', fx.repository.repoId, bindingKey)
+        ?.revision,
+    ).toBe(claimedRevision);
   });
 
   test('retains successful semantic Check evidence past age cutoff but still enforces terminal record budget', () => {
@@ -877,26 +992,46 @@ describe('Unified Process Runtime', () => {
       const root = join(repositoryControllerRoot(fx.controllerHome, fx.repository.repoId), 'processes');
       mkdirSync(root, { recursive: true });
       const malformedId = 'proc_legacy_missing_command';
-      writeFileSync(join(root, `${malformedId}.json`), JSON.stringify({
-        schemaVersion: 1,
-        processId: malformedId,
-        repoId: fx.repository.repoId,
-        // Historical partial state deliberately has neither command nor status.
-        updatedAt: '2026-01-01T00:00:00.000Z',
-      }));
+      writeFileSync(
+        join(root, `${malformedId}.json`),
+        JSON.stringify({
+          schemaVersion: 1,
+          processId: malformedId,
+          repoId: fx.repository.repoId,
+          // Historical partial state deliberately has neither command nor status.
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        }),
+      );
       const terminalId = 'proc_gc_after_legacy';
       const terminalRecord: Record<string, unknown> = {
-        schemaVersion: 1, processId: terminalId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
-        controllerHome: fx.controllerHome, route: 'direct',
+        schemaVersion: 1,
+        processId: terminalId,
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        controllerHome: fx.controllerHome,
+        route: 'direct',
         command: { kind: 'argv', executable: '/usr/bin/true', args: [], cwd: fx.repoRoot },
-        status: 'succeeded', resourceClaims: [], interactiveWaitMs: 100, timeoutMs: 1_000, maxOutputBytes: 1_024,
-        startedAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:01.000Z', finishedAt: '2026-01-01T00:00:01.000Z',
-        exitCode: 0, terminalWritten: true, origin: { surface: 'mcp' },
+        status: 'succeeded',
+        resourceClaims: [],
+        interactiveWaitMs: 100,
+        timeoutMs: 1_000,
+        maxOutputBytes: 1_024,
+        startedAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:01.000Z',
+        finishedAt: '2026-01-01T00:00:01.000Z',
+        exitCode: 0,
+        terminalWritten: true,
+        origin: { surface: 'mcp' },
       };
       terminalRecord[['terminal', 'Fence', 'Token'].join('')] = 1;
       createProcessRecord(terminalRecord as unknown as Parameters<typeof createProcessRecord>[0]);
 
-      const gc = gcTerminalProcesses({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId, maxAgeMs: 0, maxTerminalRecords: 0 });
+      const gc = gcTerminalProcesses({
+        controllerHome: fx.controllerHome,
+        repoId: fx.repository.repoId,
+        maxAgeMs: 0,
+        maxTerminalRecords: 0,
+      });
       expect(gc).toMatchObject({ ok: true, removedRecords: 1, skippedInvalid: 1 });
       expect(existsSync(join(root, `${malformedId}.json`))).toBe(true);
       expect(existsSync(join(root, `${terminalId}.json`))).toBe(false);
@@ -941,7 +1076,11 @@ describe('Unified Process Runtime', () => {
     expect(handle.stderr).toContain('SAFE_STDERR => retained');
     expect(handleJson).toContain('[REDACTED]');
 
-    const rawRecordPath = join(repositoryControllerRoot(fx.controllerHome, fx.repository.repoId), 'processes', `${handle.processId}.json`);
+    const rawRecordPath = join(
+      repositoryControllerRoot(fx.controllerHome, fx.repository.repoId),
+      'processes',
+      `${handle.processId}.json`,
+    );
     const rawRecordJson = readFileSync(rawRecordPath, 'utf8');
     for (const secret of [syntheticKey, syntheticBearer, syntheticPassword, syntheticCliSecret]) {
       expect(rawRecordJson).not.toContain(secret);
@@ -979,7 +1118,9 @@ describe('Unified Process Runtime', () => {
       timeoutMs: 10_000,
     });
     expect(started.completed).toBe(false);
-    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, started.processId, { timeoutMs: 5_000 });
+    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, started.processId, {
+      timeoutMs: 5_000,
+    });
     expect(completed.completed).toBe(true);
     expect(JSON.stringify(completed)).not.toContain(syntheticSecret);
     expect(completed.stdout).toContain('SAFE_STATE => running');
@@ -990,12 +1131,19 @@ describe('Unified Process Runtime', () => {
     expect(existsSync(terminalRecord.exitReceiptPath!)).toBe(false);
     expect(existsSync(`${terminalRecord.exitReceiptPath!}.started.json`)).toBe(false);
     expect(terminalRecord.stdoutPath && existsSync(terminalRecord.stdoutPath)).toBe(true);
-    expect(readProcessLogs(fx.controllerHome, fx.repository.repoId, started.processId, 32 * 1024)?.stdout)
-      .toContain('SAFE_STATE => running');
+    expect(readProcessLogs(fx.controllerHome, fx.repository.repoId, started.processId, 32 * 1024)?.stdout).toContain(
+      'SAFE_STATE => running',
+    );
 
     const ctx = { controllerHome: fx.controllerHome, repo: fx.repoRoot } as unknown as MultiRepositoryMcpToolContext;
-    const got = await callProcessTool(ctx, 'process_get', { repo_id: fx.repository.repoId, process_id: started.processId });
-    const logs = await callProcessTool(ctx, 'process_logs', { repo_id: fx.repository.repoId, process_id: started.processId });
+    const got = await callProcessTool(ctx, 'process_get', {
+      repo_id: fx.repository.repoId,
+      process_id: started.processId,
+    });
+    const logs = await callProcessTool(ctx, 'process_logs', {
+      repo_id: fx.repository.repoId,
+      process_id: started.processId,
+    });
     expect(JSON.stringify(got?.structuredContent)).not.toContain(syntheticSecret);
     expect(JSON.stringify(logs?.structuredContent)).not.toContain(syntheticSecret);
     expect(JSON.stringify(logs?.structuredContent)).toContain('SAFE_STATE => running');
@@ -1039,7 +1187,9 @@ describe('Unified Process Runtime', () => {
       process_id: started.processId,
     });
     expect(got?.isError).not.toBe(true);
-    expect((got?.structuredContent as { process?: { processId?: string } })?.process?.processId).toBe(started.processId);
+    expect((got?.structuredContent as { process?: { processId?: string } })?.process?.processId).toBe(
+      started.processId,
+    );
 
     const waited = await callProcessTool(ctx, 'process_wait', {
       repo_id: target.workspaceId,
@@ -1047,8 +1197,12 @@ describe('Unified Process Runtime', () => {
       timeout_ms: 5_000,
     });
     expect(waited?.isError).not.toBe(true);
-    expect((waited?.structuredContent as { process?: { completed?: boolean; stdout?: string } })?.process?.completed).toBe(true);
-    expect((waited?.structuredContent as { process?: { stdout?: string } })?.process?.stdout).toContain('EPHEMERAL_DONE');
+    expect(
+      (waited?.structuredContent as { process?: { completed?: boolean; stdout?: string } })?.process?.completed,
+    ).toBe(true);
+    expect((waited?.structuredContent as { process?: { stdout?: string } })?.process?.stdout).toContain(
+      'EPHEMERAL_DONE',
+    );
 
     const logs = await callProcessTool(ctx, 'process_logs', {
       repo_id: target.workspaceId,
@@ -1064,7 +1218,12 @@ describe('Unified Process Runtime', () => {
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.stdout.write("initial-safe");'], cwd: fx.repoRoot },
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'process.stdout.write("initial-safe");'],
+        cwd: fx.repoRoot,
+      },
       interactiveWaitMs: 5_000,
       timeoutMs: 10_000,
     });
@@ -1083,7 +1242,9 @@ describe('Unified Process Runtime', () => {
     expect(refreshed.outputRedaction?.descriptorRemoved).toBe(true);
     const sanitizedAt = refreshed.outputRedaction?.sanitizedAt;
     readProcessLogs(fx.controllerHome, fx.repository.repoId, handle.processId, 32 * 1024);
-    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, handle.processId)?.outputRedaction?.sanitizedAt).toBe(sanitizedAt);
+    expect(
+      getProcessRecord(fx.controllerHome, fx.repository.repoId, handle.processId)?.outputRedaction?.sanitizedAt,
+    ).toBe(sanitizedAt);
   });
 
   test('long command returns managed handle for the same process', async () => {
@@ -1164,7 +1325,9 @@ describe('Unified Process Runtime', () => {
 
     const handle = await execution;
     expect(handle).toMatchObject({ completed: false, status: 'running', observationInterrupted: true, requestId });
-    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, { timeoutMs: 5_000 });
+    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, {
+      timeoutMs: 5_000,
+    });
     expect(completed).toMatchObject({ completed: true, status: 'succeeded', ok: true });
     expect(readFileSync(counter, 'utf8')).toBe('x');
     expect(readFileSync(finished, 'utf8')).toBe('finished');
@@ -1191,7 +1354,12 @@ describe('Unified Process Runtime', () => {
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 1500)'], cwd: fx.repoRoot },
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'setTimeout(() => process.exit(0), 1500)'],
+        cwd: fx.repoRoot,
+      },
       interactiveWaitMs: 0,
       timeoutMs: 10_000,
       returnHandleImmediately: true,
@@ -1216,7 +1384,9 @@ describe('Unified Process Runtime', () => {
     clearTimeout(restartTimer);
     expect(afterRestart).toMatchObject({ completed: false, status: 'running', observationInterrupted: true });
 
-    const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, { timeoutMs: 5_000 });
+    const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, {
+      timeoutMs: 5_000,
+    });
     expect(terminal).toMatchObject({ completed: true, status: 'succeeded', ok: true });
   }, 15_000);
 
@@ -1227,7 +1397,12 @@ describe('Unified Process Runtime', () => {
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 100)'], cwd: fx.repoRoot },
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'setTimeout(() => process.exit(0), 100)'],
+        cwd: fx.repoRoot,
+      },
       interactiveWaitMs: 0,
       timeoutMs: 10_000,
       returnHandleImmediately: true,
@@ -1255,7 +1430,12 @@ describe('Unified Process Runtime', () => {
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'require("fs").writeFileSync(process.argv[1], "ran")', marker], cwd: fx.repoRoot },
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'require("fs").writeFileSync(process.argv[1], "ran")', marker],
+        cwd: fx.repoRoot,
+      },
       interactiveWaitMs: 0,
       timeoutMs: 10_000,
       signal: signal.signal,
@@ -1278,16 +1458,17 @@ describe('Unified Process Runtime', () => {
       ],
       cwd: fx.repoRoot,
     };
-    const start = () => spawnManagedProcess({
-      controllerHome: fx.controllerHome,
-      repoId: fx.repository.repoId,
-      checkoutId: fx.repository.activeCheckoutId,
-      executionIdentity: executionIdentityForRepository(fx.repository),
-      command,
-      interactiveWaitMs: 25,
-      timeoutMs: 10_000,
-      origin: { surface: 'command' as const, toolName: 'execute_command', requestId },
-    });
+    const start = () =>
+      spawnManagedProcess({
+        controllerHome: fx.controllerHome,
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        executionIdentity: executionIdentityForRepository(fx.repository),
+        command,
+        interactiveWaitMs: 25,
+        timeoutMs: 10_000,
+        origin: { surface: 'command' as const, toolName: 'execute_command', requestId },
+      });
 
     const [first, retry] = await Promise.all([start(), start()]);
     expect(retry.processId).toBe(first.processId);
@@ -1327,14 +1508,13 @@ describe('Unified Process Runtime', () => {
       bindingKey,
     )?.revision;
     expect(claimProcessInvocation(input).status).toBe('existing');
-    expect(readControlPlaneRecord(
-      fx.controllerHome,
-      'process_invocation_binding',
-      fx.repository.repoId,
-      bindingKey,
-    )?.revision).toBe(claimedRevision);
-    expect(() => claimProcessInvocation({ ...input, invocationFingerprint: 'fingerprint-b' }))
-      .toThrow('PROCESS_REQUEST_ID_CONFLICT');
+    expect(
+      readControlPlaneRecord(fx.controllerHome, 'process_invocation_binding', fx.repository.repoId, bindingKey)
+        ?.revision,
+    ).toBe(claimedRevision);
+    expect(() => claimProcessInvocation({ ...input, invocationFingerprint: 'fingerprint-b' })).toThrow(
+      'PROCESS_REQUEST_ID_CONFLICT',
+    );
   });
 
   test('same request id with a different command fails closed', async () => {
@@ -1347,7 +1527,8 @@ describe('Unified Process Runtime', () => {
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
-        kind: 'argv', executable: 'node',
+        kind: 'argv',
+        executable: 'node',
         args: ['-e', 'require("fs").appendFileSync(process.argv[1], "a")', output],
         cwd: fx.repoRoot,
       },
@@ -1356,20 +1537,23 @@ describe('Unified Process Runtime', () => {
       origin: { surface: 'command', requestId },
     });
     expect(first.ok).toBe(true);
-    await expect(spawnManagedProcess({
-      controllerHome: fx.controllerHome,
-      repoId: fx.repository.repoId,
-      checkoutId: fx.repository.activeCheckoutId,
-      executionIdentity: executionIdentityForRepository(fx.repository),
-      command: {
-        kind: 'argv', executable: 'node',
-        args: ['-e', 'require("fs").appendFileSync(process.argv[1], "b")', output],
-        cwd: fx.repoRoot,
-      },
-      interactiveWaitMs: 5_000,
-      timeoutMs: 10_000,
-      origin: { surface: 'command', requestId },
-    })).rejects.toThrow('PROCESS_REQUEST_ID_CONFLICT');
+    await expect(
+      spawnManagedProcess({
+        controllerHome: fx.controllerHome,
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        executionIdentity: executionIdentityForRepository(fx.repository),
+        command: {
+          kind: 'argv',
+          executable: 'node',
+          args: ['-e', 'require("fs").appendFileSync(process.argv[1], "b")', output],
+          cwd: fx.repoRoot,
+        },
+        interactiveWaitMs: 5_000,
+        timeoutMs: 10_000,
+        origin: { surface: 'command', requestId },
+      }),
+    ).rejects.toThrow('PROCESS_REQUEST_ID_CONFLICT');
     expect(readFileSync(output, 'utf8')).toBe('a');
   });
 
@@ -1403,20 +1587,19 @@ describe('Unified Process Runtime', () => {
       bindingKey,
     )?.revision;
     expect(claimProcessRequest(claimInput).status).toBe('existing');
-    expect(readControlPlaneRecord(
-      fx.controllerHome,
-      'process_request_binding',
-      fx.repository.repoId,
-      bindingKey,
-    )?.revision).toBe(claimedRevision);
-    await expect(spawnManagedProcess({
-      controllerHome: fx.controllerHome,
-      repoId: fx.repository.repoId,
-      checkoutId: fx.repository.activeCheckoutId,
-      executionIdentity: executionIdentityForRepository(fx.repository),
-      command,
-      origin: { surface: 'command', requestId },
-    })).rejects.toThrow('PROCESS_REQUEST_INCOMPLETE');
+    expect(
+      readControlPlaneRecord(fx.controllerHome, 'process_request_binding', fx.repository.repoId, bindingKey)?.revision,
+    ).toBe(claimedRevision);
+    await expect(
+      spawnManagedProcess({
+        controllerHome: fx.controllerHome,
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        executionIdentity: executionIdentityForRepository(fx.repository),
+        command,
+        origin: { surface: 'command', requestId },
+      }),
+    ).rejects.toThrow('PROCESS_REQUEST_INCOMPLETE');
   });
 
   test('terminal fencing rejects second completion', async () => {
@@ -1435,13 +1618,10 @@ describe('Unified Process Runtime', () => {
       timeoutMs: 10_000,
     });
     expect(handle.completed).toBe(true);
-    const second = tryCompleteProcessRecord(
-      fx.controllerHome,
-      fx.repository.repoId,
-      handle.processId,
-      1,
-      { status: 'failed', exitCode: 99 },
-    );
+    const second = tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, handle.processId, 1, {
+      status: 'failed',
+      exitCode: 99,
+    });
     expect(second.ok).toBe(false);
     expect(second.reason).toBe('already_terminal');
   });
@@ -1469,36 +1649,45 @@ describe('Unified Process Runtime', () => {
     });
 
     const identity = createHash('sha256')
-      .update(JSON.stringify([fx.repository.repoId, processId])).digest('hex');
+      .update(JSON.stringify([fx.repository.repoId, processId]))
+      .digest('hex');
     const lock = { scope: 'global' as const, resource: `process-record-${identity}` };
     withControllerLock(fx.controllerHome, lock, 'competing-process-writer', () => {
-      expect(() => tryCompleteProcessRecord(
-        fx.controllerHome, fx.repository.repoId, processId, 41, { status: 'succeeded', exitCode: 0 },
-      )).toThrow('LOCK_HELD');
-      expect(() => updateProcessRecord(
-        fx.controllerHome, fx.repository.repoId, processId, { status: 'running_recovered' },
-      )).toThrow('LOCK_HELD');
-      expect(() => deleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId))
-        .toThrow('LOCK_HELD');
-      expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.status)
-        .toBe('running');
+      expect(() =>
+        tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 41, {
+          status: 'succeeded',
+          exitCode: 0,
+        }),
+      ).toThrow('LOCK_HELD');
+      expect(() =>
+        updateProcessRecord(fx.controllerHome, fx.repository.repoId, processId, { status: 'running_recovered' }),
+      ).toThrow('LOCK_HELD');
+      expect(() => deleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId)).toThrow('LOCK_HELD');
+      expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.status).toBe('running');
     });
 
-    const completed = tryCompleteProcessRecord(
-      fx.controllerHome, fx.repository.repoId, processId, 41, { status: 'succeeded', exitCode: 0 },
-    );
+    const completed = tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 41, {
+      status: 'succeeded',
+      exitCode: 0,
+    });
     expect(completed).toMatchObject({ ok: true, record: { status: 'succeeded', terminalWritten: true } });
-    expect(tryCompleteProcessRecord(
-      fx.controllerHome, fx.repository.repoId, processId, 41, { status: 'failed', exitCode: 1 },
-    )).toMatchObject({ ok: false, reason: 'already_terminal' });
+    expect(
+      tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 41, {
+        status: 'failed',
+        exitCode: 1,
+      }),
+    ).toMatchObject({ ok: false, reason: 'already_terminal' });
 
     // Stale active monitor writes must never revert the terminal outcome.
-    const stale = updateProcessRecord(
-      fx.controllerHome, fx.repository.repoId, processId, { status: 'running_recovered' },
-    );
+    const stale = updateProcessRecord(fx.controllerHome, fx.repository.repoId, processId, {
+      status: 'running_recovered',
+    });
     expect(stale).toMatchObject({ status: 'succeeded', terminalWritten: true, exitCode: 0 });
-    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId))
-      .toMatchObject({ status: 'succeeded', terminalWritten: true, exitCode: 0 });
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)).toMatchObject({
+      status: 'succeeded',
+      terminalWritten: true,
+      exitCode: 0,
+    });
   });
 
   test('independent Process Writer lock contention cannot strand a Runner exit or replay its receipt', async () => {
@@ -1509,22 +1698,29 @@ describe('Unified Process Runtime', () => {
       repoId: fx.repository.repoId,
       executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
-        kind: 'argv', executable: 'node', cwd: fx.repoRoot,
-        args: ['-e', [
-          'const fs = require("fs");',
-          'const started = Date.now();',
-          'const timer = setInterval(() => {',
-          '  if (fs.existsSync(process.argv[1])) { clearInterval(timer); process.exit(0); }',
-          '  if (Date.now() - started > 6000) { clearInterval(timer); process.exit(3); }',
-          '}, 20);',
-        ].join(' '), readyPath],
+        kind: 'argv',
+        executable: 'node',
+        cwd: fx.repoRoot,
+        args: [
+          '-e',
+          [
+            'const fs = require("fs");',
+            'const started = Date.now();',
+            'const timer = setInterval(() => {',
+            '  if (fs.existsSync(process.argv[1])) { clearInterval(timer); process.exit(0); }',
+            '  if (Date.now() - started > 6000) { clearInterval(timer); process.exit(3); }',
+            '}, 20);',
+          ].join(' '),
+          readyPath,
+        ],
       },
       interactiveWaitMs: 0,
       timeoutMs: 10_000,
     });
     expect(handle.completed).toBe(false);
     const identity = createHash('sha256')
-      .update(JSON.stringify([fx.repository.repoId, handle.processId])).digest('hex');
+      .update(JSON.stringify([fx.repository.repoId, handle.processId]))
+      .digest('hex');
     const lock = { scope: 'global' as const, resource: `process-record-${identity}` };
     const code = [
       `import { withControllerLock } from ${JSON.stringify(join(FORGE_ROOT, 'src/effects/controller-locks.ts'))};`,
@@ -1550,8 +1746,15 @@ describe('Unified Process Runtime', () => {
       const observed = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, {
         timeoutMs: 4_000,
       });
-      expect(observed).toMatchObject({ processId: handle.processId, status: 'succeeded', exitCode: 0, completed: true });
-      expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, handle.processId)?.terminalWritten).not.toBe(true);
+      expect(observed).toMatchObject({
+        processId: handle.processId,
+        status: 'succeeded',
+        exitCode: 0,
+        completed: true,
+      });
+      expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, handle.processId)?.terminalWritten).not.toBe(
+        true,
+      );
 
       await new Promise<void>((resolve) => {
         if (competingWriter.exitCode !== null) return resolve();
@@ -1560,9 +1763,17 @@ describe('Unified Process Runtime', () => {
       const recovered = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, {
         timeoutMs: 4_000,
       });
-      expect(recovered).toMatchObject({ processId: handle.processId, status: 'succeeded', exitCode: 0, completed: true });
-      expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, handle.processId))
-        .toMatchObject({ status: 'succeeded', exitCode: 0, terminalWritten: true });
+      expect(recovered).toMatchObject({
+        processId: handle.processId,
+        status: 'succeeded',
+        exitCode: 0,
+        completed: true,
+      });
+      expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, handle.processId)).toMatchObject({
+        status: 'succeeded',
+        exitCode: 0,
+        terminalWritten: true,
+      });
     } finally {
       if (competingWriter.exitCode === null) competingWriter.kill();
     }
@@ -1608,40 +1819,54 @@ describe('Unified Process Runtime', () => {
     expect(process.handle.processId.startsWith('lightweight:')).toBe(true);
     // Settle the producing Runtime first; a synchronous child inspection must
     // not block its exit-observation callback and manufacture an unknown outcome.
-    const settled = await waitForLightweightProcess(
-      fx.controllerHome, fx.repository.repoId, process.handle.processId, { timeoutMs: 5_000 },
-    );
+    const settled = await waitForLightweightProcess(fx.controllerHome, fx.repository.repoId, process.handle.processId, {
+      timeoutMs: 5_000,
+    });
     expect(settled).toMatchObject({ completed: true, ok: true, exitCode: 0 });
 
     const script = join(FORGE_ROOT, 'apps/desktop/src-tauri/resources/forge-local-tool.mjs');
     const inspect = (selectedCheckoutId: string) => {
       const child = spawnSync(globalThis.process.execPath, [script], {
         input: JSON.stringify({
-          tool: 'process_status', repoId: fx.repository.repoId,
-          checkoutId: selectedCheckoutId, conversationId: 'lightweight-receipt',
-          controllerHome: fx.controllerHome, sourceRoot: FORGE_ROOT,
-          allowEffects: false, arguments: { process_id: process.handle.processId, wait_ms: 5_000 },
+          tool: 'process_status',
+          repoId: fx.repository.repoId,
+          checkoutId: selectedCheckoutId,
+          conversationId: 'lightweight-receipt',
+          controllerHome: fx.controllerHome,
+          sourceRoot: FORGE_ROOT,
+          allowEffects: false,
+          arguments: { process_id: process.handle.processId, wait_ms: 5_000 },
         }),
-        encoding: 'utf8', timeout: 12_000,
+        encoding: 'utf8',
+        timeout: 12_000,
       });
       expect(child.status, child.stderr).toBe(0);
       return JSON.parse(child.stdout);
     };
     expect(inspect('checkout_foreign')).toEqual({
-      ok: false, error: 'LOCAL_FORGE_PROCESS_CHECKOUT_MISMATCH',
+      ok: false,
+      error: 'LOCAL_FORGE_PROCESS_CHECKOUT_MISMATCH',
     });
     const observed = inspect(checkoutId);
     expect(observed).toMatchObject({
-      ok: true, result: { processId: process.handle.processId, completed: true, status: 'succeeded', exitCode: 0 },
+      ok: true,
+      result: { processId: process.handle.processId, completed: true, status: 'succeeded', exitCode: 0 },
     });
-    const foreign = await callProcessTool({
-      controllerHome: fx.controllerHome, principalId: 'other-principal',
-    }, 'process_get', {
-      repo_id: fx.repository.repoId, process_id: process.handle.processId,
-    });
+    const foreign = await callProcessTool(
+      {
+        controllerHome: fx.controllerHome,
+        principalId: 'other-principal',
+      },
+      'process_get',
+      {
+        repo_id: fx.repository.repoId,
+        process_id: process.handle.processId,
+      },
+    );
     expect(foreign?.isError).toBe(true);
-    expect((foreign?.structuredContent?.error as { code?: string } | undefined)?.code)
-      .toBe('PROCESS_HANDLE_PRINCIPAL_MISMATCH');
+    expect((foreign?.structuredContent?.error as { code?: string } | undefined)?.code).toBe(
+      'PROCESS_HANDLE_PRINCIPAL_MISMATCH',
+    );
   });
 
   test('Native Agent local tool cancels a live managed Process through the canonical Process Runtime', async () => {
@@ -1665,28 +1890,38 @@ describe('Unified Process Runtime', () => {
     });
     expect(handle.completed).toBe(false);
 
-    async function runLocalTool(tool: 'process_status' | 'process_cancel', allowEffects: boolean, selectedCheckoutId = checkoutId) {
+    async function runLocalTool(
+      tool: 'process_status' | 'process_cancel',
+      allowEffects: boolean,
+      selectedCheckoutId = checkoutId,
+    ) {
       const script = join(FORGE_ROOT, 'apps/desktop/src-tauri/resources/forge-local-tool.mjs');
       const child = spawn(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] });
       let stdout = '';
       let stderr = '';
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
-      child.stdout.on('data', (chunk: string) => { stdout += chunk; });
-      child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+      child.stdout.on('data', (chunk: string) => {
+        stdout += chunk;
+      });
+      child.stderr.on('data', (chunk: string) => {
+        stderr += chunk;
+      });
       const exitCode = await new Promise<number>((resolve, reject) => {
         child.once('error', reject);
         child.once('close', (code) => resolve(code ?? -1));
-        child.stdin.end(JSON.stringify({
-          tool,
-          repoId: fx.repository.repoId,
-          checkoutId: selectedCheckoutId,
-          conversationId: 'native-agent-process-cancel-test',
-          controllerHome: fx.controllerHome,
-          sourceRoot: FORGE_ROOT,
-          allowEffects,
-          arguments: { process_id: handle.processId },
-        }));
+        child.stdin.end(
+          JSON.stringify({
+            tool,
+            repoId: fx.repository.repoId,
+            checkoutId: selectedCheckoutId,
+            conversationId: 'native-agent-process-cancel-test',
+            controllerHome: fx.controllerHome,
+            sourceRoot: FORGE_ROOT,
+            allowEffects,
+            arguments: { process_id: handle.processId },
+          }),
+        );
       });
       if (exitCode !== 0) throw new Error(`Native Agent local tool exited ${exitCode}: ${stderr}`);
       return JSON.parse(stdout) as { ok: boolean; error?: string; result?: Record<string, unknown> };
@@ -1694,20 +1929,27 @@ describe('Unified Process Runtime', () => {
 
     try {
       const before = await runLocalTool('process_status', false);
-      expect(before).toMatchObject({ ok: true, result: { processId: handle.processId, completed: false, status: 'running' } });
+      expect(before).toMatchObject({
+        ok: true,
+        result: { processId: handle.processId, completed: false, status: 'running' },
+      });
       expect(await runLocalTool('process_cancel', false)).toEqual({
-        ok: false, error: 'LOCAL_FORGE_TOOL_REQUIRES_USER_APPROVAL',
+        ok: false,
+        error: 'LOCAL_FORGE_TOOL_REQUIRES_USER_APPROVAL',
       });
       const afterDenied = await runLocalTool('process_status', false);
       expect(afterDenied).toMatchObject({
-        ok: true, result: { processId: handle.processId, completed: false, status: 'running' },
+        ok: true,
+        result: { processId: handle.processId, completed: false, status: 'running' },
       });
       expect(await runLocalTool('process_cancel', true, 'checkout_other')).toEqual({
-        ok: false, error: 'LOCAL_FORGE_PROCESS_CHECKOUT_MISMATCH',
+        ok: false,
+        error: 'LOCAL_FORGE_PROCESS_CHECKOUT_MISMATCH',
       });
       const afterWrongCheckout = await runLocalTool('process_status', false);
       expect(afterWrongCheckout).toMatchObject({
-        ok: true, result: { processId: handle.processId, completed: false, status: 'running' },
+        ok: true,
+        result: { processId: handle.processId, completed: false, status: 'running' },
       });
       const cancelled = await runLocalTool('process_cancel', true);
       expect(cancelled).toMatchObject({
@@ -1732,17 +1974,20 @@ describe('Unified Process Runtime', () => {
     const runnerEntry = join(fx.root, 'delayed-close-runner.mjs');
     const descendantPidPath = join(fx.root, 'runner-descendant.pid');
     const previousRunnerEntry = process.env.FORGE_PROCESS_RUNNER_ENTRY;
-    writeFileSync(runnerEntry, [
-      "import { readFileSync, writeFileSync } from 'node:fs';",
-      "import { spawn } from 'node:child_process';",
-      "const descriptorPath = process.argv[process.argv.indexOf('--descriptor') + 1];",
-      "const descriptor = JSON.parse(readFileSync(descriptorPath, 'utf8'));",
-      "writeFileSync(descriptor.exitReceiptPath, JSON.stringify({ schemaVersion: 1, processId: descriptor.processId, exitCode: 65, finishedAt: new Date().toISOString(), startedAt: descriptor.startedAt, stdoutBytes: 0, stderrBytes: 0, stdoutStoredBytes: 0, stderrStoredBytes: 0, logTruncated: false, runnerPid: process.pid, commandExecutedOnce: true }));",
-      `const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 5000)'], { detached: true, stdio: 'inherit' });`,
-      `writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));`,
-      'descendant.unref();',
-      'process.exit(1);',
-    ].join('\n'));
+    writeFileSync(
+      runnerEntry,
+      [
+        "import { readFileSync, writeFileSync } from 'node:fs';",
+        "import { spawn } from 'node:child_process';",
+        "const descriptorPath = process.argv[process.argv.indexOf('--descriptor') + 1];",
+        "const descriptor = JSON.parse(readFileSync(descriptorPath, 'utf8'));",
+        'writeFileSync(descriptor.exitReceiptPath, JSON.stringify({ schemaVersion: 1, processId: descriptor.processId, exitCode: 65, finishedAt: new Date().toISOString(), startedAt: descriptor.startedAt, stdoutBytes: 0, stderrBytes: 0, stdoutStoredBytes: 0, stderrStoredBytes: 0, logTruncated: false, runnerPid: process.pid, commandExecutedOnce: true }));',
+        `const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 5000)'], { detached: true, stdio: 'inherit' });`,
+        `writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));`,
+        'descendant.unref();',
+        'process.exit(1);',
+      ].join('\n'),
+    );
     process.env.FORGE_PROCESS_RUNNER_ENTRY = runnerEntry;
 
     try {
@@ -1758,16 +2003,23 @@ describe('Unified Process Runtime', () => {
       });
       process.env.FORGE_PROCESS_RUNNER_ENTRY = previousRunnerEntry ?? '';
       const observedAt = Date.now();
-      const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, { timeoutMs: 1_000 });
+      const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, {
+        timeoutMs: 1_000,
+      });
       expect(Date.now() - observedAt).toBeLessThan(1_000);
       expect(terminal).toMatchObject({ processId: handle.processId, status: 'failed', completed: true, exitCode: 65 });
       expect(processRuntimeResourceDiagnostics().activeProcessIds).not.toContain(handle.processId);
     } finally {
-      if (process.env.FORGE_PROCESS_RUNNER_ENTRY === runnerEntry) process.env.FORGE_PROCESS_RUNNER_ENTRY = previousRunnerEntry ?? '';
+      if (process.env.FORGE_PROCESS_RUNNER_ENTRY === runnerEntry)
+        process.env.FORGE_PROCESS_RUNNER_ENTRY = previousRunnerEntry ?? '';
       if (existsSync(descendantPidPath)) {
         const pid = Number(readFileSync(descendantPidPath, 'utf8'));
         if (Number.isInteger(pid) && pid > 0) {
-          try { process.kill(pid, 'SIGTERM'); } catch { /* descendant may have exited */ }
+          try {
+            process.kill(pid, 'SIGTERM');
+          } catch {
+            /* descendant may have exited */
+          }
         }
       }
     }
@@ -1777,38 +2029,61 @@ describe('Unified Process Runtime', () => {
     const fx = fixture();
     const runnerEntry = join(fx.root, 'no-receipt-runner.mjs');
     const previous = process.env.FORGE_PROCESS_RUNNER_ENTRY;
-    writeFileSync(runnerEntry, "import { spawn } from 'node:child_process'; spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' }); setInterval(() => {}, 1000);");
+    writeFileSync(
+      runnerEntry,
+      "import { spawn } from 'node:child_process'; spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' }); setInterval(() => {}, 1000);",
+    );
     process.env.FORGE_PROCESS_RUNNER_ENTRY = runnerEntry;
     let processId: string | undefined;
     try {
-      const handle = await spawnManagedProcess({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, executionIdentity: executionIdentityForRepository(fx.repository), command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot }, interactiveWaitMs: 0, timeoutMs: 60_000, returnHandleImmediately: true });
+      const handle = await spawnManagedProcess({
+        controllerHome: fx.controllerHome,
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        executionIdentity: executionIdentityForRepository(fx.repository),
+        command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
+        interactiveWaitMs: 0,
+        timeoutMs: 60_000,
+        returnHandleImmediately: true,
+      });
       process.env.FORGE_PROCESS_RUNNER_ENTRY = previous ?? '';
       processId = handle.processId;
       const cancelled = await cancelProcess(fx.controllerHome, fx.repository.repoId, processId);
       expect(cancelled).toMatchObject({ processId, status: 'cancelled', completed: true, cancelled: true });
       expect(processRuntimeResourceDiagnostics().activeProcessIds).not.toContain(processId);
     } finally {
-      if (process.env.FORGE_PROCESS_RUNNER_ENTRY === runnerEntry) process.env.FORGE_PROCESS_RUNNER_ENTRY = previous ?? '';
-      if (processId && getProcessHandle(fx.controllerHome, fx.repository.repoId, processId)?.completed !== true) await cancelProcess(fx.controllerHome, fx.repository.repoId, processId);
+      if (process.env.FORGE_PROCESS_RUNNER_ENTRY === runnerEntry)
+        process.env.FORGE_PROCESS_RUNNER_ENTRY = previous ?? '';
+      if (processId && getProcessHandle(fx.controllerHome, fx.repository.repoId, processId)?.completed !== true)
+        await cancelProcess(fx.controllerHome, fx.repository.repoId, processId);
     }
   });
 
   test('restart attach preserves a recovered runner success after monitor drop', async () => {
     const fx = fixture();
     const handle = await spawnManagedProcess({
-      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
       executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
-        kind: 'argv', executable: 'node',
-        args: ['-e', 'setTimeout(() => process.exit(0), 250)'], cwd: fx.repoRoot,
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'setTimeout(() => process.exit(0), 250)'],
+        cwd: fx.repoRoot,
       },
-      interactiveWaitMs: 0, timeoutMs: 10_000, returnHandleImmediately: true,
+      interactiveWaitMs: 0,
+      timeoutMs: 10_000,
+      returnHandleImmediately: true,
     });
     expect(handle.completed).toBe(false);
     __resetLiveMonitorsForTests();
     const recovery = recoverManagedProcesses(fx.controllerHome, fx.repository.repoId);
-    expect(recovery.recovered.includes(handle.processId) || recovery.completedFromReceipt.includes(handle.processId)).toBe(true);
-    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, { timeoutMs: 5_000 });
+    expect(
+      recovery.recovered.includes(handle.processId) || recovery.completedFromReceipt.includes(handle.processId),
+    ).toBe(true);
+    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, {
+      timeoutMs: 5_000,
+    });
     expect(completed).toMatchObject({ completed: true, ok: true, status: 'succeeded', exitCode: 0 });
   });
 });
@@ -1817,16 +2092,44 @@ describe('run_check Process Runtime facade', () => {
   test('semantic scope is physical Check scope, not consumer or transport identity', () => {
     const checkoutScope = persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a' }, 'checkout');
     expect(checkoutScope).toBe('checkout:checkout-a');
-    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a', verificationBinding: { executionSessionId: 'session-a' } }, 'checkout')).toBe(checkoutScope);
-    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a', verificationBinding: { editSessionId: 'edit-b', editRevision: 2 } }, 'checkout')).toBe(checkoutScope);
+    expect(
+      persistedCheckSemanticScopeKey(
+        { checkoutId: 'checkout-a', verificationBinding: { executionSessionId: 'session-a' } },
+        'checkout',
+      ),
+    ).toBe(checkoutScope);
+    expect(
+      persistedCheckSemanticScopeKey(
+        { checkoutId: 'checkout-a', verificationBinding: { editSessionId: 'edit-b', editRevision: 2 } },
+        'checkout',
+      ),
+    ).toBe(checkoutScope);
     expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-b' }, 'checkout')).not.toBe(checkoutScope);
     expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a' }, 'repository')).toBe('repository');
   });
   test('reuses identical Check Process evidence across Edit Session consumers', async () => {
     const fx = fixture();
-    const common = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, repoRoot: fx.repoRoot, executionIdentity: executionIdentityForRepository(fx.repository), checkId: 'quick-ok', interactiveWaitMs: 5_000 };
-    const first = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'edit-check-a', commandId: 'edit-check-a', verificationBinding: { editSessionId: 'edit-a', editRevision: 1 } });
-    const second = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'edit-check-b', commandId: 'edit-check-b', verificationBinding: { editSessionId: 'edit-b', editRevision: 1 } });
+    const common = {
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      repoRoot: fx.repoRoot,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      checkId: 'quick-ok',
+      interactiveWaitMs: 5_000,
+    };
+    const first = await runPersistedCheckViaProcessRuntime({
+      ...common,
+      requestId: 'edit-check-a',
+      commandId: 'edit-check-a',
+      verificationBinding: { editSessionId: 'edit-a', editRevision: 1 },
+    });
+    const second = await runPersistedCheckViaProcessRuntime({
+      ...common,
+      requestId: 'edit-check-b',
+      commandId: 'edit-check-b',
+      verificationBinding: { editSessionId: 'edit-b', editRevision: 1 },
+    });
     expect(first.process?.completed).toBe(true);
     expect(second.process?.completed).toBe(true);
     expect(second.process?.processId).toBe(first.process?.processId);
@@ -1866,20 +2169,26 @@ describe('run_check Process Runtime facade', () => {
       status: 'failed',
       failures: 1,
       failureClasses: ['infrastructure'],
-      failureDetails: [{
-        file: 'tests/failure-contract.test.ts',
-        failureClass: 'infrastructure',
-        failureCode: 'TEST_INFRA_FILE_WALL_TIMEOUT',
-        attempts: 2,
-        durationMs: 25,
-      }],
+      failureDetails: [
+        {
+          file: 'tests/failure-contract.test.ts',
+          failureClass: 'infrastructure',
+          failureCode: 'TEST_INFRA_FILE_WALL_TIMEOUT',
+          attempts: 2,
+          durationMs: 25,
+        },
+      ],
       failureDetailsTruncated: false,
       contaminated: false,
     };
     const encodedEvidence = JSON.stringify(evidence);
     checks.checks['package:test:full'] = {
       description: 'structured governed-test failure',
-      command: ['node', '-e', `const fs=require('fs');const p=process.env.FORGE_CHECK_STRUCTURED_RESULT_PATH;if(!p)throw new Error('missing structured result path');fs.writeFileSync(p,${JSON.stringify(encodedEvidence)});process.exit(1)`],
+      command: [
+        'node',
+        '-e',
+        `const fs=require('fs');const p=process.env.FORGE_CHECK_STRUCTURED_RESULT_PATH;if(!p)throw new Error('missing structured result path');fs.writeFileSync(p,${JSON.stringify(encodedEvidence)});process.exit(1)`,
+      ],
       timeoutMs: 30_000,
     };
     writeFileSync(checksPath, JSON.stringify(checks, null, 2));
@@ -1907,7 +2216,9 @@ describe('run_check Process Runtime facade', () => {
       failureEvidence: {
         gate: 'full',
         failureClasses: ['infrastructure'],
-        failureDetails: [{ file: 'tests/failure-contract.test.ts', failureCode: 'TEST_INFRA_FILE_WALL_TIMEOUT', attempts: 2 }],
+        failureDetails: [
+          { file: 'tests/failure-contract.test.ts', failureCode: 'TEST_INFRA_FILE_WALL_TIMEOUT', attempts: 2 },
+        ],
       },
     });
   });
@@ -1923,20 +2234,26 @@ describe('run_check Process Runtime facade', () => {
       status: 'failed',
       failures: 1,
       failureClasses: ['source'],
-      failureDetails: [{
-        file: 'tests/failure-contract.test.ts',
-        failureClass: 'source',
-        failureCode: 'TEST_SOURCE_ASSERTION_FAILED',
-        attempts: 1,
-        durationMs: 1,
-      }],
+      failureDetails: [
+        {
+          file: 'tests/failure-contract.test.ts',
+          failureClass: 'source',
+          failureCode: 'TEST_SOURCE_ASSERTION_FAILED',
+          attempts: 1,
+          durationMs: 1,
+        },
+      ],
       failureDetailsTruncated: false,
       contaminated: false,
     };
     const encodedEvidence = JSON.stringify(evidence);
     checks.checks['package:test:full'] = {
       description: 'structured source failure followed by signal',
-      command: ['sh', '-c', `node -e ${JSON.stringify(`const fs=require('fs');const p=process.env.FORGE_CHECK_STRUCTURED_RESULT_PATH;if(!p)throw new Error('missing structured result path');fs.writeFileSync(p,${JSON.stringify(encodedEvidence)})`)}; kill -TERM $$`],
+      command: [
+        'sh',
+        '-c',
+        `node -e ${JSON.stringify(`const fs=require('fs');const p=process.env.FORGE_CHECK_STRUCTURED_RESULT_PATH;if(!p)throw new Error('missing structured result path');fs.writeFileSync(p,${JSON.stringify(encodedEvidence)})`)}; kill -TERM $$`,
+      ],
       timeoutMs: 30_000,
     };
     writeFileSync(checksPath, JSON.stringify(checks, null, 2));
@@ -1989,11 +2306,14 @@ describe('run_check Process Runtime facade', () => {
 
   test('lightweight process joins the authoritative child exit when post-execution fingerprint evidence times out', async () => {
     const fx = fixture();
-    writeFileSync(join(fx.repoRoot, 'write-three.mjs'), [
-      "await Bun.write('terminal-a.txt', 'a\\n');",
-      "await Bun.write('terminal-b.txt', 'b\\n');",
-      "await Bun.write('terminal-c.txt', 'c\\n');",
-    ].join('\n'));
+    writeFileSync(
+      join(fx.repoRoot, 'write-three.mjs'),
+      [
+        "await Bun.write('terminal-a.txt', 'a\\n');",
+        "await Bun.write('terminal-b.txt', 'b\\n');",
+        "await Bun.write('terminal-c.txt', 'c\\n');",
+      ].join('\n'),
+    );
     spawnSync('git', ['-C', fx.repoRoot, 'add', 'write-three.mjs'], { encoding: 'utf8' });
     spawnSync('git', ['-C', fx.repoRoot, 'commit', '-m', 'add terminal timeout fixture'], { encoding: 'utf8' });
 
@@ -2008,7 +2328,9 @@ describe('run_check Process Runtime facade', () => {
       interactiveWaitMs: 0,
       timeoutMs: 10_000,
       commandId: 'post-snapshot-timeout-terminal',
-      onCompleted: (result) => { completedEvidence = result; },
+      onCompleted: (result) => {
+        completedEvidence = result;
+      },
     });
     expect(started.handle.processId).toStartWith('lightweight:');
 
@@ -2044,12 +2366,9 @@ describe('run_check Process Runtime facade', () => {
     });
     expect(denied.handle).toMatchObject({ completed: false, status: 'running' });
 
-    const terminal = await waitForLightweightProcess(
-      fx.controllerHome,
-      fx.repository.repoId,
-      denied.handle.processId,
-      { timeoutMs: 2_000 },
-    );
+    const terminal = await waitForLightweightProcess(fx.controllerHome, fx.repository.repoId, denied.handle.processId, {
+      timeoutMs: 2_000,
+    });
     expect(terminal).toMatchObject({
       completed: true,
       status: 'failed',
@@ -2085,10 +2404,16 @@ describe('run_check Process Runtime facade', () => {
     };
     writeFileSync(checkFile, JSON.stringify(registry, null, 2));
     const holder = await spawnManagedProcess({
-      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 1700)'], cwd: fx.repoRoot },
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'setTimeout(() => process.exit(0), 1700)'],
+        cwd: fx.repoRoot,
+      },
       resourceClaims: [{ resourceKey: 'host-service:ios-simulator-test', mode: 'write' }],
       interactiveWaitMs: 0,
       timeoutMs: 10_000,
@@ -2107,12 +2432,16 @@ describe('run_check Process Runtime facade', () => {
     expect(waiting.mode).toBe('managed');
     expect(Date.now() - started).toBeLessThan(1_500);
     expect(waiting.process).toMatchObject({
-      status: 'starting', completed: false,
+      status: 'starting',
+      completed: false,
       concurrencyWait: { source: 'resource_lease', disposition: 'wait' },
     });
-    expect((await waitForCheckProcess(fx.controllerHome, fx.repository.repoId, waiting.process!.processId, 15_000)))
-      .toMatchObject({ status: 'succeeded', completed: true, ok: true });
-    expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok).toBe(true);
+    expect(
+      await waitForCheckProcess(fx.controllerHome, fx.repository.repoId, waiting.process!.processId, 15_000),
+    ).toMatchObject({ status: 'succeeded', completed: true, ok: true });
+    expect(
+      (await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok,
+    ).toBe(true);
   }, 25_000);
 
   test('ordinary long check returns an in-memory lightweight handle without Process or Lease state', async () => {
@@ -2163,8 +2492,13 @@ describe('run_check Process Runtime facade', () => {
       interactiveWaitMs: 5,
     });
     expect(await cancelAllLightweightProcesses(fx.controllerHome)).toBe(1);
-    expect(getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, first.handle.processId)).toMatchObject({ completed: true, cancelled: true });
-    expect(getLightweightProcessHandle(other.controllerHome, other.repository.repoId, second.handle.processId)).toMatchObject({ completed: false });
+    expect(getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, first.handle.processId)).toMatchObject({
+      completed: true,
+      cancelled: true,
+    });
+    expect(
+      getLightweightProcessHandle(other.controllerHome, other.repository.repoId, second.handle.processId),
+    ).toMatchObject({ completed: false });
     await cancelAllLightweightProcesses(other.controllerHome);
     clearLightweightProcessMemoryForTest();
   });
@@ -2186,15 +2520,29 @@ describe('run_check Process Runtime facade', () => {
     clearLightweightProcessMemoryForTest();
 
     const recovered = getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId);
-    expect(recovered).toMatchObject({ processId: started.handle.processId, completed: false, status: 'running_recovered', route: 'managed' });
-    expect(readLightweightProcessLogs(fx.controllerHome, fx.repository.repoId, started.handle.processId)?.processId).toBe(started.handle.processId);
+    expect(recovered).toMatchObject({
+      processId: started.handle.processId,
+      completed: false,
+      status: 'running_recovered',
+      route: 'managed',
+    });
+    expect(
+      readLightweightProcessLogs(fx.controllerHome, fx.repository.repoId, started.handle.processId)?.processId,
+    ).toBe(started.handle.processId);
     expect(listProcessRecords(fx.controllerHome, fx.repository.repoId)).toHaveLength(before);
     expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toHaveLength(0);
 
     const cancelled = await cancelLightweightProcess(fx.controllerHome, fx.repository.repoId, started.handle.processId);
-    expect(cancelled).toMatchObject({ processId: started.handle.processId, completed: true, cancelled: true, status: 'cancelled' });
+    expect(cancelled).toMatchObject({
+      processId: started.handle.processId,
+      completed: true,
+      cancelled: true,
+      status: 'cancelled',
+    });
     clearLightweightProcessMemoryForTest();
-    expect(getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId)).toMatchObject({ completed: true, cancelled: true });
+    expect(
+      getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId),
+    ).toMatchObject({ completed: true, cancelled: true });
   });
 
   test('reattaches one request id after Runtime memory loss without replaying the command', async () => {
@@ -2204,7 +2552,10 @@ describe('run_check Process Runtime facade', () => {
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       executable: 'node',
-      args: ['-e', `require('fs').appendFileSync(${JSON.stringify(marker)}, 'run\\n'); setTimeout(() => process.exit(0), 150)`],
+      args: [
+        '-e',
+        `require('fs').appendFileSync(${JSON.stringify(marker)}, 'run\\n'); setTimeout(() => process.exit(0), 150)`,
+      ],
       cwd: fx.repoRoot,
       timeoutMs: 5_000,
       interactiveWaitMs: 5,
@@ -2239,30 +2590,54 @@ describe('run_check Process Runtime facade', () => {
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       executable: 'node',
-      args: ['-e', [
-        "process.stdout.write('Authorization: Bear');",
-        "setTimeout(() => process.stdout.write('er synthetic-bearer-value-0123456789\\nSAFE_LIGHTWEIGHT => running\\n'), 20);",
-        'setTimeout(() => process.exit(0), 500);',
-      ].join('')],
+      args: [
+        '-e',
+        [
+          "process.stdout.write('Authorization: Bear');",
+          "setTimeout(() => process.stdout.write('er synthetic-bearer-value-0123456789\\nSAFE_LIGHTWEIGHT => running\\n'), 20);",
+          'setTimeout(() => process.exit(0), 500);',
+        ].join(''),
+      ],
       cwd: fx.repoRoot,
       timeoutMs: 5_000,
       interactiveWaitMs: 5,
     });
     expect(started.handle.completed).toBe(false);
-    let activeLogs = readLightweightProcessLogs(fx.controllerHome, fx.repository.repoId, started.handle.processId, 32 * 1024)!;
+    let activeLogs = readLightweightProcessLogs(
+      fx.controllerHome,
+      fx.repository.repoId,
+      started.handle.processId,
+      32 * 1024,
+    )!;
     for (let attempt = 0; attempt < 20 && !activeLogs.stdout.includes('SAFE_LIGHTWEIGHT => running'); attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 20));
-      activeLogs = readLightweightProcessLogs(fx.controllerHome, fx.repository.repoId, started.handle.processId, 32 * 1024)!;
+      activeLogs = readLightweightProcessLogs(
+        fx.controllerHome,
+        fx.repository.repoId,
+        started.handle.processId,
+        32 * 1024,
+      )!;
     }
-    const activeHandle = getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId)!;
+    const activeHandle = getLightweightProcessHandle(
+      fx.controllerHome,
+      fx.repository.repoId,
+      started.handle.processId,
+    )!;
     expect(JSON.stringify(activeHandle)).not.toContain(expectedBearer);
     expect(JSON.stringify(activeLogs)).not.toContain(expectedBearer);
     expect(activeLogs.stdout).toContain('SAFE_LIGHTWEIGHT => running');
-    const terminal = await waitForLightweightProcess(fx.controllerHome, fx.repository.repoId, started.handle.processId, { timeoutMs: 2_000 });
+    const terminal = await waitForLightweightProcess(
+      fx.controllerHome,
+      fx.repository.repoId,
+      started.handle.processId,
+      { timeoutMs: 2_000 },
+    );
     expect(terminal.completed).toBe(true);
     expect(JSON.stringify(terminal)).not.toContain(expectedBearer);
     clearLightweightProcessMemoryForTest();
-    expect(JSON.stringify(getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId))).not.toContain(expectedBearer);
+    expect(
+      JSON.stringify(getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId)),
+    ).not.toContain(expectedBearer);
   });
 
   test('redacts quoted launchctl credentials across direct, lightweight, and managed output surfaces', async () => {
@@ -2272,12 +2647,17 @@ describe('run_check Process Runtime facade', () => {
     const launchctlOutput = `"${keyName}" => "${syntheticCredential}"\nSAFE_LAUNCHCTL => retained\n`;
     const directScript = `process.stdout.write(${JSON.stringify(launchctlOutput)})`;
 
-    const direct = await runCanonicalCommand({
-      kind: 'argv',
-      value: [process.execPath, '-e', directScript],
-      executable: process.execPath,
-      args: ['-e', directScript],
-    }, fx.repoRoot, 5_000, 32 * 1024);
+    const direct = await runCanonicalCommand(
+      {
+        kind: 'argv',
+        value: [process.execPath, '-e', directScript],
+        executable: process.execPath,
+        args: ['-e', directScript],
+      },
+      fx.repoRoot,
+      5_000,
+      32 * 1024,
+    );
     expect(direct.ok).toBe(true);
     expect(direct.stdout).not.toContain(syntheticCredential);
     expect(direct.stdout).toContain('[redacted]');
@@ -2294,10 +2674,20 @@ describe('run_check Process Runtime facade', () => {
       interactiveWaitMs: 5,
     });
     expect(JSON.stringify(started.handle)).not.toContain(syntheticCredential);
-    let activeLogs = readLightweightProcessLogs(fx.controllerHome, fx.repository.repoId, started.handle.processId, 32 * 1024)!;
+    let activeLogs = readLightweightProcessLogs(
+      fx.controllerHome,
+      fx.repository.repoId,
+      started.handle.processId,
+      32 * 1024,
+    )!;
     for (let attempt = 0; attempt < 20 && !activeLogs.stdout.includes('SAFE_LAUNCHCTL => retained'); attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 20));
-      activeLogs = readLightweightProcessLogs(fx.controllerHome, fx.repository.repoId, started.handle.processId, 32 * 1024)!;
+      activeLogs = readLightweightProcessLogs(
+        fx.controllerHome,
+        fx.repository.repoId,
+        started.handle.processId,
+        32 * 1024,
+      )!;
     }
     expect(JSON.stringify(activeLogs)).not.toContain(syntheticCredential);
     expect(activeLogs.stdout).toContain('[redacted]');
@@ -2335,7 +2725,9 @@ describe('run_check Process Runtime facade', () => {
     expect(managed.stdout).toContain('SAFE_LAUNCHCTL => retained');
     const managedRecord = getProcessRecord(fx.controllerHome, fx.repository.repoId, managed.processId)!;
     expect(JSON.stringify(managedRecord)).not.toContain(syntheticCredential);
-    expect(managedRecord.stdoutPath && readFileSync(managedRecord.stdoutPath, 'utf8')).not.toContain(syntheticCredential);
+    expect(managedRecord.stdoutPath && readFileSync(managedRecord.stdoutPath, 'utf8')).not.toContain(
+      syntheticCredential,
+    );
     expect(managedRecord.stdoutPath && readFileSync(managedRecord.stdoutPath, 'utf8')).toContain('[REDACTED]');
   });
 
@@ -2364,30 +2756,46 @@ describe('run_check Process Runtime facade', () => {
       timeoutMs: input.timeoutMs,
     });
     const startedAt = new Date().toISOString();
-    const runningRoot = join(repositoryControllerRoot(fx.controllerHome, fx.repository.repoId), 'process-runtime', 'lightweight-running');
+    const runningRoot = join(
+      repositoryControllerRoot(fx.controllerHome, fx.repository.repoId),
+      'process-runtime',
+      'lightweight-running',
+    );
     mkdirSync(runningRoot, { recursive: true });
-    writeFileSync(join(runningRoot, `${sanitizeFileComponent(processId)}.json`), `${JSON.stringify({
-      schemaVersion: 1,
-      repoId: fx.repository.repoId,
-      processId,
-      commandId,
-      requestFingerprint,
-      updatedAt: startedAt,
-      handle: {
-        processId,
-        commandId,
-        status: 'running',
-        contractStatus: 'running',
-        route: 'managed',
-        startedAt,
-        interactiveWaitMs: input.interactiveWaitMs,
-        timeoutMs: input.timeoutMs,
-        completed: false,
-        stdoutTail: '',
-        stderrTail: '',
-        durableSideEffects: { executionJobCount: 0, localJobCount: 0, workerSpawnCount: 0, projectionUpdateCount: 0 },
-      },
-    }, null, 2)}\n`);
+    writeFileSync(
+      join(runningRoot, `${sanitizeFileComponent(processId)}.json`),
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          repoId: fx.repository.repoId,
+          processId,
+          commandId,
+          requestFingerprint,
+          updatedAt: startedAt,
+          handle: {
+            processId,
+            commandId,
+            status: 'running',
+            contractStatus: 'running',
+            route: 'managed',
+            startedAt,
+            interactiveWaitMs: input.interactiveWaitMs,
+            timeoutMs: input.timeoutMs,
+            completed: false,
+            stdoutTail: '',
+            stderrTail: '',
+            durableSideEffects: {
+              executionJobCount: 0,
+              localJobCount: 0,
+              workerSpawnCount: 0,
+              projectionUpdateCount: 0,
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
 
     clearLightweightProcessMemoryForTest();
     const recovered = await startLightweightInternalProcess(input);
@@ -2399,13 +2807,22 @@ describe('run_check Process Runtime facade', () => {
       ok: false,
       exitCode: 1,
     });
-    expect(recovered.handle.stderr).toContain('PROCESS_RESULT_UNAVAILABLE_AFTER_RUNTIME_RESTART: PROCESS_IDENTITY_UNTRUSTED: identity_missing');
+    expect(recovered.handle.stderr).toContain(
+      'PROCESS_RESULT_UNAVAILABLE_AFTER_RUNTIME_RESTART: PROCESS_IDENTITY_UNTRUSTED: identity_missing',
+    );
     expect(recovered.handle.stderr).toContain('command was not replayed');
     expect(existsSync(marker)).toBe(false);
 
     clearLightweightProcessMemoryForTest();
     const attached = await startLightweightInternalProcess(input);
-    expect(attached.handle).toMatchObject({ processId, status: 'failed', contractStatus: 'failed', completed: true, ok: false, exitCode: 1 });
+    expect(attached.handle).toMatchObject({
+      processId,
+      status: 'failed',
+      contractStatus: 'failed',
+      completed: true,
+      ok: false,
+      exitCode: 1,
+    });
     expect(existsSync(marker)).toBe(false);
   });
 
@@ -2413,46 +2830,76 @@ describe('run_check Process Runtime facade', () => {
     const fx = fixture();
     let observed: Awaited<ReturnType<typeof runCanonicalCommand>> | undefined;
     const script = "process.stdout.write('EARLY_EXIT_OBSERVED\\n')";
-    const result = await runCanonicalCommand({
-      kind: 'argv',
-      value: [process.execPath, '-e', script],
-      executable: process.execPath,
-      args: ['-e', script],
-    }, fx.repoRoot, 5_000, 32 * 1024, {
-      onExit: (value) => { observed = value; },
-    });
+    const result = await runCanonicalCommand(
+      {
+        kind: 'argv',
+        value: [process.execPath, '-e', script],
+        executable: process.execPath,
+        args: ['-e', script],
+      },
+      fx.repoRoot,
+      5_000,
+      32 * 1024,
+      {
+        onExit: (value) => {
+          observed = value;
+        },
+      },
+    );
     expect(observed).toEqual(result);
-    expect(observed).toMatchObject({ ok: true, exitCode: 0, timedOut: false, cancelled: false, stdout: 'EARLY_EXIT_OBSERVED\n' });
+    expect(observed).toMatchObject({
+      ok: true,
+      exitCode: 0,
+      timedOut: false,
+      cancelled: false,
+      stdout: 'EARLY_EXIT_OBSERVED\n',
+    });
   });
 
   test('recovers an observed lightweight child exit instead of degrading to completed_unknown after Runtime memory loss', () => {
     const fx = fixture();
     const processId = 'lightweight:exit-observation-recovery';
     const startedAt = new Date().toISOString();
-    const runningRoot = join(repositoryControllerRoot(fx.controllerHome, fx.repository.repoId), 'process-runtime', 'lightweight-running');
+    const runningRoot = join(
+      repositoryControllerRoot(fx.controllerHome, fx.repository.repoId),
+      'process-runtime',
+      'lightweight-running',
+    );
     mkdirSync(runningRoot, { recursive: true });
     const runningPath = join(runningRoot, `${sanitizeFileComponent(processId)}.json`);
-    writeFileSync(runningPath, `${JSON.stringify({
-      schemaVersion: 1,
-      repoId: fx.repository.repoId,
-      processId,
-      updatedAt: startedAt,
-      handle: {
-        processId,
-        commandId: 'exit-observation-recovery',
-        status: 'running',
-        contractStatus: 'running',
-        route: 'managed',
-        startedAt,
-        interactiveWaitMs: 0,
-        timeoutMs: 30_000,
-        completed: false,
-        stdoutTail: 'EXIT_OBSERVATION_PASS\n',
-        stderrTail: '',
-        durableSideEffects: { executionJobCount: 0, localJobCount: 0, workerSpawnCount: 0, projectionUpdateCount: 0 },
-      },
-      exitObservation: { ok: true, exitCode: 0, timedOut: false, cancelled: false },
-    }, null, 2)}\n`);
+    writeFileSync(
+      runningPath,
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          repoId: fx.repository.repoId,
+          processId,
+          updatedAt: startedAt,
+          handle: {
+            processId,
+            commandId: 'exit-observation-recovery',
+            status: 'running',
+            contractStatus: 'running',
+            route: 'managed',
+            startedAt,
+            interactiveWaitMs: 0,
+            timeoutMs: 30_000,
+            completed: false,
+            stdoutTail: 'EXIT_OBSERVATION_PASS\n',
+            stderrTail: '',
+            durableSideEffects: {
+              executionJobCount: 0,
+              localJobCount: 0,
+              workerSpawnCount: 0,
+              projectionUpdateCount: 0,
+            },
+          },
+          exitObservation: { ok: true, exitCode: 0, timedOut: false, cancelled: false },
+        },
+        null,
+        2,
+      )}\n`,
+    );
 
     clearLightweightProcessMemoryForTest();
     const recovered = getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, processId);
@@ -2471,7 +2918,11 @@ describe('run_check Process Runtime facade', () => {
     expect(recovered?.stderr).not.toContain('PROCESS_RESULT_UNAVAILABLE_AFTER_RUNTIME_RESTART');
     expect(existsSync(runningPath)).toBe(false);
     clearLightweightProcessMemoryForTest();
-    expect(getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, processId)).toMatchObject({ completed: true, ok: true, exitCode: 0 });
+    expect(getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, processId)).toMatchObject({
+      completed: true,
+      ok: true,
+      exitCode: 0,
+    });
   });
 
   test('gateway classifies ordinary run_check as fast process path', () => {
@@ -2501,7 +2952,10 @@ describe('run_check Process Runtime facade', () => {
 
   test('single-flights equivalent active build/test commands across different request ids', async () => {
     const fx = fixture();
-    writeFileSync(join(fx.repoRoot, 'slow-build.test.ts'), "import { test } from 'bun:test'; test('slow build fixture', async () => { await Bun.sleep(500); });\n");
+    writeFileSync(
+      join(fx.repoRoot, 'slow-build.test.ts'),
+      "import { test } from 'bun:test'; test('slow build fixture', async () => { await Bun.sleep(500); });\n",
+    );
     const base = {
       controllerHome: fx.controllerHome,
       repository: fx.repository,
@@ -2565,8 +3019,14 @@ describe('run_check Process Runtime facade', () => {
       commandId: 'plugin-action:fixture',
     });
 
-    expect(getRepositoryCommandProcess(fx.controllerHome, undefined, processId)).toMatchObject({ processId, completed: true, status: 'completed_unknown' });
-    expect(readRepositoryCommandProcessLogs(fx.controllerHome, undefined, processId)?.stdout).toContain('sidecar completed');
+    expect(getRepositoryCommandProcess(fx.controllerHome, undefined, processId)).toMatchObject({
+      processId,
+      completed: true,
+      status: 'completed_unknown',
+    });
+    expect(readRepositoryCommandProcessLogs(fx.controllerHome, undefined, processId)?.stdout).toContain(
+      'sidecar completed',
+    );
     const terminal = await waitRepositoryCommandProcess(fx.controllerHome, undefined, processId, { timeoutMs: 500 });
     expect(terminal).toMatchObject({ processId, completed: true, status: 'completed_unknown' });
   });
@@ -2628,8 +3088,15 @@ describe('command classifier safe shell combinations', () => {
     ];
     for (const command of remoteWrites) {
       expect(classifyRepositoryCommand(command)).toMatchObject({ risk: 'remote_write', confirmation: 'authorization' });
-      expect(classifyRepositoryCommandReplay(command)).toMatchObject({ replayable: false, idempotent: false, retryPolicy: 'none' });
-      expect(classifyRepositoryCommandRoute(command)).toMatchObject({ route: 'process_managed', reason: 'effectful_command_managed' });
+      expect(classifyRepositoryCommandReplay(command)).toMatchObject({
+        replayable: false,
+        idempotent: false,
+        retryPolicy: 'none',
+      });
+      expect(classifyRepositoryCommandRoute(command)).toMatchObject({
+        route: 'process_managed',
+        reason: 'effectful_command_managed',
+      });
     }
 
     const readonly: string[][] = [
@@ -2654,7 +3121,10 @@ describe('command classifier safe shell combinations', () => {
     ];
     for (const command of readonly) {
       expect(classifyRepositoryCommand(command).risk).toBe('readonly');
-      expect(classifyRepositoryCommandRoute(command)).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
+      expect(classifyRepositoryCommandRoute(command)).toEqual({
+        route: 'process_direct',
+        reason: 'readonly_fast_path',
+      });
     }
 
     const mutations = [
@@ -2672,8 +3142,9 @@ describe('command classifier safe shell combinations', () => {
       risk: 'workspace_write',
       confirmation: 'authorization',
     });
-    expect(claimsForRepositoryCommand(['npm', 'version', '1.5.1', '--no-git-tag-version'], 'repo1', 'co1'))
-      .toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+    expect(
+      claimsForRepositoryCommand(['npm', 'version', '1.5.1', '--no-git-tag-version'], 'repo1', 'co1'),
+    ).toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
     expect(classifyRepositoryCommand(['npm', '--version']).risk).toBe('readonly');
     expect(classifyRepositoryCommand(['node', '--version']).risk).toBe('readonly');
     expect(classifyRepositoryCommand(['bun', 'test', '--help']).risk).toBe('readonly');
@@ -2681,20 +3152,40 @@ describe('command classifier safe shell combinations', () => {
   });
 
   test('keeps only mechanically constrained sqlite diagnostics on the readonly path', () => {
-    const typed = ['sqlite3', '--safe', '--readonly', '_ops/controller-home.noindex/control-plane.sqlite', 'SELECT count(*) FROM work_contracts;'];
-    const wrapped = ['bash', '-lc', "sqlite3 --safe --readonly _ops/controller-home.noindex/control-plane.sqlite 'SELECT work_id FROM work_contracts'"];
+    const typed = [
+      'sqlite3',
+      '--safe',
+      '--readonly',
+      '_ops/controller-home.noindex/control-plane.sqlite',
+      'SELECT count(*) FROM work_contracts;',
+    ];
+    const wrapped = [
+      'bash',
+      '-lc',
+      "sqlite3 --safe --readonly _ops/controller-home.noindex/control-plane.sqlite 'SELECT work_id FROM work_contracts'",
+    ];
     expect(classifyRepositoryCommand(typed).risk).toBe('readonly');
     expect(classifyRepositoryCommand(wrapped).risk).toBe('readonly');
-    expect(claimsForRepositoryCommand(wrapped, 'repo1', 'co1')).toEqual([{ resourceKey: 'workspace:co1', mode: 'read' }]);
+    expect(claimsForRepositoryCommand(wrapped, 'repo1', 'co1')).toEqual([
+      { resourceKey: 'workspace:co1', mode: 'read' },
+    ]);
 
     // -readonly alone does not constrain host-side sqlite CLI effects enough.
     expect(classifyRepositoryCommand(['sqlite3', '-readonly', 'db.sqlite', 'SELECT 1']).risk).toBe('workspace_write');
     // Safe-mode escape hatches and mutating/multi-statement SQL stay conservative.
-    expect(classifyRepositoryCommand(['sqlite3', '--safe', '--readonly', '--nonce', 'abc', 'db.sqlite', 'SELECT 1']).risk).toBe('workspace_write');
-    expect(classifyRepositoryCommand(['sqlite3', '--safe', '--readonly', 'db.sqlite', 'UPDATE t SET value = 1']).risk).toBe('workspace_write');
-    expect(classifyRepositoryCommand(['sqlite3', '--safe', '--readonly', 'db.sqlite', 'SELECT 1; DELETE FROM t;']).risk).toBe('workspace_write');
+    expect(
+      classifyRepositoryCommand(['sqlite3', '--safe', '--readonly', '--nonce', 'abc', 'db.sqlite', 'SELECT 1']).risk,
+    ).toBe('workspace_write');
+    expect(
+      classifyRepositoryCommand(['sqlite3', '--safe', '--readonly', 'db.sqlite', 'UPDATE t SET value = 1']).risk,
+    ).toBe('workspace_write');
+    expect(
+      classifyRepositoryCommand(['sqlite3', '--safe', '--readonly', 'db.sqlite', 'SELECT 1; DELETE FROM t;']).risk,
+    ).toBe('workspace_write');
     // Arbitrary interpreter scripts remain managed even when the caller intends diagnostics only.
-    expect(classifyRepositoryCommand(['bash', '-lc', "python3 - <<'PY'\nprint('read only')\nPY"]).risk).toBe('workspace_write');
+    expect(classifyRepositoryCommand(['bash', '-lc', "python3 - <<'PY'\nprint('read only')\nPY"]).risk).toBe(
+      'workspace_write',
+    );
   });
 
   test('rejects standalone Recovery lifecycle mutations from repository Process Runtime without blocking observations', () => {
@@ -2715,20 +3206,50 @@ describe('command classifier safe shell combinations', () => {
 
     expect(classifyRepositoryCommandRoute(['forge', 'recovery', 'status']).route).not.toBe('reject');
     expect(classifyRepositoryCommandRoute(['bun', 'bin/forge.mjs', 'recovery', 'verify']).route).not.toBe('reject');
-    expect(classifyRepositoryCommandRoute(['git', 'status', '--short'])).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
-    expect(classifyRepositoryCommandRoute(['git', 'status', '--short'])).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
-    expect(classifyRepositoryCommandRoute(['touch', 'marker.txt'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
-    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'printf work > marker.txt'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
-    expect(classifyRepositoryCommandRoute(['echo', 'forge recovery activate-runtime'])).not.toEqual({ route: 'reject', reason: 'standalone_recovery_lifecycle_required' });
+    expect(classifyRepositoryCommandRoute(['git', 'status', '--short'])).toEqual({
+      route: 'process_direct',
+      reason: 'readonly_fast_path',
+    });
+    expect(classifyRepositoryCommandRoute(['git', 'status', '--short'])).toEqual({
+      route: 'process_direct',
+      reason: 'readonly_fast_path',
+    });
+    expect(classifyRepositoryCommandRoute(['touch', 'marker.txt'])).toEqual({
+      route: 'process_direct',
+      reason: 'local_workspace_direct',
+    });
+    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'printf work > marker.txt'])).toEqual({
+      route: 'process_direct',
+      reason: 'local_workspace_direct',
+    });
+    expect(classifyRepositoryCommandRoute(['echo', 'forge recovery activate-runtime'])).not.toEqual({
+      route: 'reject',
+      reason: 'standalone_recovery_lifecycle_required',
+    });
   });
 
-  test('routes only CodeGraph status as a readonly observation', () => { const status = ['node_modules/.bin/codegraph', 'status', '.']; expect(classifyRepositoryCommand(status).risk).toBe('readonly'); expect(classifyRepositoryCommand('node_modules/.bin/codegraph status .').risk).toBe('readonly'); expect(classifyRepositoryCommandRoute(status)).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' }); for (const subcommand of ['init', 'sync']) { const mutation = ['node_modules/.bin/codegraph', subcommand, '.']; expect(classifyRepositoryCommand(mutation).risk).toBe('workspace_write'); expect(classifyRepositoryCommandRoute(mutation)).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' }); } });
+  test('routes only CodeGraph status as a readonly observation', () => {
+    const status = ['node_modules/.bin/codegraph', 'status', '.'];
+    expect(classifyRepositoryCommand(status).risk).toBe('readonly');
+    expect(classifyRepositoryCommand('node_modules/.bin/codegraph status .').risk).toBe('readonly');
+    expect(classifyRepositoryCommandRoute(status)).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
+    for (const subcommand of ['init', 'sync']) {
+      const mutation = ['node_modules/.bin/codegraph', subcommand, '.'];
+      expect(classifyRepositoryCommand(mutation).risk).toBe('workspace_write');
+      expect(classifyRepositoryCommandRoute(mutation)).toEqual({
+        route: 'process_direct',
+        reason: 'local_workspace_direct',
+      });
+    }
+  });
 
   test('recognizes common wrapped and host observation commands as readonly', () => {
     expect(classifyRepositoryCommand(['git', 'check-ignore', '-q', '.codegraph']).risk).toBe('readonly');
     expect(classifyRepositoryCommand(['find', 'src', '-type', 'f']).risk).toBe('readonly');
     expect(classifyRepositoryCommand(['sh', '-c', 'grep -R needle src']).risk).toBe('readonly');
-    expect(classifyRepositoryCommand(['launchctl', 'print', 'gui/501/com.moretea.forge.mcp-gateway']).risk).toBe('readonly');
+    expect(classifyRepositoryCommand(['launchctl', 'print', 'gui/501/com.moretea.forge.mcp-gateway']).risk).toBe(
+      'readonly',
+    );
     expect(classifyRepositoryCommand(['plutil', '-p', 'Info.plist']).risk).toBe('readonly');
     expect(classifyRepositoryCommand(['/usr/bin/log', 'show', '--last', '1m']).risk).toBe('readonly');
     expect(classifyRepositoryCommand(['bash', '-lc', 'git status --short && git diff --stat']).risk).toBe('readonly');
@@ -2759,27 +3280,47 @@ describe('fine-grained resource claims', () => {
     expect(probeClaims).toEqual([{ resourceKey: 'host-service:tcp-client:loopback', mode: 'read' }]);
     expect(serverClaims.some((left) => probeClaims.some((right) => resourceClaimsConflict(left, right)))).toBe(false);
 
-    expect(claimsForRepositoryCommand(['python3', '-m', 'http.server', '8000', '--cgi'], 'repo1', 'co1'))
-      .toEqual([{ resourceKey: 'workspace:co1', mode: 'write' }]);
-    expect(classifyRepositoryCommand(['curl', '-o', 'response.json', 'http://127.0.0.1:38417/health']).risk).toBe('workspace_write');
-    expect(classifyRepositoryCommand(['curl', '-X', 'POST', 'http://127.0.0.1:38417/action']).risk).toBe('workspace_write');
+    expect(claimsForRepositoryCommand(['python3', '-m', 'http.server', '8000', '--cgi'], 'repo1', 'co1')).toEqual([
+      { resourceKey: 'workspace:co1', mode: 'write' },
+    ]);
+    expect(classifyRepositoryCommand(['curl', '-o', 'response.json', 'http://127.0.0.1:38417/health']).risk).toBe(
+      'workspace_write',
+    );
+    expect(classifyRepositoryCommand(['curl', '-X', 'POST', 'http://127.0.0.1:38417/action']).risk).toBe(
+      'workspace_write',
+    );
   });
 
   test('simple Vite dev services claim cache and host process ownership instead of the source workspace', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-vite-claims-'));
     roots.push(root);
     writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { dev: 'vite --host 127.0.0.1' } }));
-    const claims = claimsForRepositoryCommand(['npm', 'run', 'dev', '--', '--host', '127.0.0.1'], 'repo1', 'co1', 'main', root);
-    expect(claims).toEqual(expect.arrayContaining([
-      { resourceKey: 'build-cache:repo1', mode: 'write' },
-      { resourceKey: 'host-service:vite:co1', mode: 'write' },
-    ]));
+    const claims = claimsForRepositoryCommand(
+      ['npm', 'run', 'dev', '--', '--host', '127.0.0.1'],
+      'repo1',
+      'co1',
+      'main',
+      root,
+    );
+    expect(claims).toEqual(
+      expect.arrayContaining([
+        { resourceKey: 'build-cache:repo1', mode: 'write' },
+        { resourceKey: 'host-service:vite:co1', mode: 'write' },
+      ]),
+    );
     expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
-    expect(claims.some((left) => resourceClaimsConflict(left, { resourceKey: 'workspace:co1', mode: 'write' }))).toBe(false);
+    expect(claims.some((left) => resourceClaimsConflict(left, { resourceKey: 'workspace:co1', mode: 'write' }))).toBe(
+      false,
+    );
 
-    writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { dev: 'node scripts/rewrite-source.js && vite' } }));
-    expect(claimsForRepositoryCommand(['npm', 'run', 'dev'], 'repo1', 'co1', 'main', root))
-      .toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+    writeFileSync(
+      join(root, 'package.json'),
+      JSON.stringify({ scripts: { dev: 'node scripts/rewrite-source.js && vite' } }),
+    );
+    expect(claimsForRepositoryCommand(['npm', 'run', 'dev'], 'repo1', 'co1', 'main', root)).toContainEqual({
+      resourceKey: 'workspace:co1',
+      mode: 'write',
+    });
   });
 
   test('host service mutation does not claim the Git checkout workspace', () => {
@@ -2872,11 +3413,14 @@ APPLESCRIPT`;
       'repo1',
       'co1',
     );
-    expect(claims.some((claim) => claim.resourceKey === 'path:co1:tests/ui/card.test.ts' && claim.mode === 'write')).toBe(true);
+    expect(
+      claims.some((claim) => claim.resourceKey === 'path:co1:tests/ui/card.test.ts' && claim.mode === 'write'),
+    ).toBe(true);
   });
 
   test('bun eval source containing .test and import paths never becomes a fake test/path claim', () => {
-    const source = "import { callExternalUnixSocket } from './src/runtime/plugins/external-unix-socket.ts'; const nodes=[]; const hits=nodes.filter(n=>/OAuth/i.test(String(n.title||'')));";
+    const source =
+      "import { callExternalUnixSocket } from './src/runtime/plugins/external-unix-socket.ts'; const nodes=[]; const hits=nodes.filter(n=>/OAuth/i.test(String(n.title||'')));";
     const claims = claimsForRepositoryCommand(['bun', '-e', source], 'repo1', 'co1');
     expect(claims).toEqual([{ resourceKey: 'workspace:co1', mode: 'write' }]);
     expect(claims.some((claim) => claim.resourceKey.startsWith('path:'))).toBe(false);
@@ -2884,13 +3428,15 @@ APPLESCRIPT`;
   });
 
   test('structured build/test argv remains recognized after eval filtering', () => {
-    expect(claimsForRepositoryCommand(['bun', 'test', 'tests/runtime/process-runtime.test.ts'], 'repo1', 'co1')).toEqual([
-      { resourceKey: 'workspace:co1', mode: 'read' },
-    ]);
-    expect(claimsForRepositoryCommand(['bun', 'run', 'build'], 'repo1', 'co1')).toEqual(expect.arrayContaining([
-      { resourceKey: 'workspace:co1', mode: 'write' },
-      { resourceKey: 'build-cache:repo1', mode: 'write' },
-    ]));
+    expect(
+      claimsForRepositoryCommand(['bun', 'test', 'tests/runtime/process-runtime.test.ts'], 'repo1', 'co1'),
+    ).toEqual([{ resourceKey: 'workspace:co1', mode: 'read' }]);
+    expect(claimsForRepositoryCommand(['bun', 'run', 'build'], 'repo1', 'co1')).toEqual(
+      expect.arrayContaining([
+        { resourceKey: 'workspace:co1', mode: 'write' },
+        { resourceKey: 'build-cache:repo1', mode: 'write' },
+      ]),
+    );
   });
 
   test('typecheck check takes heavy-check exclusive to isolate compiler-intensive latency gates', () => {
@@ -2902,7 +3448,6 @@ APPLESCRIPT`;
     const claims = claimsForCheck('check:release', undefined, 'repo1', 'co1');
     expect(claims.some((c) => c.resourceKey === 'heavy-check:repo1' && c.mode === 'exclusive')).toBe(true);
   });
-
 });
 
 describe('getProcessHandle after completion', () => {
@@ -2958,10 +3503,12 @@ describe('Process Runtime real lease contention', () => {
       returnHandleImmediately: true,
     });
     expect(hostWork.completed).toBe(false);
-    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toContainEqual(expect.objectContaining({
-      ownerJobId: `process:${hostWork.processId}`,
-      resourceKey: 'host-service:package-manager:homebrew',
-    }));
+    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toContainEqual(
+      expect.objectContaining({
+        ownerJobId: `process:${hostWork.processId}`,
+        resourceKey: 'host-service:package-manager:homebrew',
+      }),
+    );
 
     const repositoryWriteClaims = claimsForRepositoryCommand(
       ['touch', 'independent.txt'],
@@ -2987,8 +3534,9 @@ describe('Process Runtime real lease contention', () => {
     expect(repositoryWrite).toMatchObject({ completed: true, ok: true, status: 'succeeded' });
     expect(readFileSync(join(fx.repoRoot, 'independent.txt'), 'utf8')).toBe('ok');
 
-    expect(await waitForProcess(fx.controllerHome, fx.repository.repoId, hostWork.processId, { timeoutMs: 5_000 }))
-      .toMatchObject({ completed: true, ok: true, status: 'succeeded' });
+    expect(
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, hostWork.processId, { timeoutMs: 5_000 }),
+    ).toMatchObject({ completed: true, ok: true, status: 'succeeded' });
   });
 
   test('four independent simulator checks queue on one existing Process lease and all complete', async () => {
@@ -3007,7 +3555,12 @@ describe('Process Runtime real lease contention', () => {
         repoId: fx.repository.repoId,
         checkoutId: fx.repository.activeCheckoutId,
         executionIdentity: executionIdentityForRepository(fx.repository),
-        command: { kind: 'argv', executable: 'node', args: ['-e', command, eventsPath, String(index)], cwd: fx.repoRoot },
+        command: {
+          kind: 'argv',
+          executable: 'node',
+          args: ['-e', command, eventsPath, String(index)],
+          cwd: fx.repoRoot,
+        },
         origin: { surface: 'check', checkId: `device-${index}`, requestId: `device-request-${index}` },
         resourceClaims: [{ resourceKey: 'host-service:ios-simulator-test', mode: 'write' }],
         leaseWaitMs: 60_000,
@@ -3019,8 +3572,11 @@ describe('Process Runtime real lease contention', () => {
     const handles = await Promise.all(scripts);
     expect(new Set(handles.map((handle) => handle.processId)).size).toBe(4);
     expect(queued.length).toBeGreaterThanOrEqual(2);
-    const completions = await Promise.all(handles.map((handle) =>
-      waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, { timeoutMs: 20_000 })));
+    const completions = await Promise.all(
+      handles.map((handle) =>
+        waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, { timeoutMs: 20_000 }),
+      ),
+    );
     expect(completions.every((handle) => handle.completed && handle.ok && handle.status === 'succeeded')).toBe(true);
     const events = readFileSync(eventsPath, 'utf8').trim().split('\n');
     const active = new Set<string>();
@@ -3039,44 +3595,67 @@ describe('Process Runtime real lease contention', () => {
     expect(active.size).toBe(0);
     expect(seen.size).toBe(4);
     expect(events.length).toBe(8);
-    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)
-      .filter((lease) => lease.resourceKey === 'host-service:ios-simulator-test')).toHaveLength(0);
+    expect(
+      listActiveLeases(fx.controllerHome, fx.repository.repoId).filter(
+        (lease) => lease.resourceKey === 'host-service:ios-simulator-test',
+      ),
+    ).toHaveLength(0);
   }, 40_000);
 
   test('queued simulator Process returns a joinable handle and can cancel before device admission', async () => {
     const fx = fixture();
     const deviceClaim = [{ resourceKey: 'host-service:ios-simulator-test', mode: 'write' as const }];
     const holder = await spawnManagedProcess({
-      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
-      checkoutId: fx.repository.activeCheckoutId,
-      executionIdentity: executionIdentityForRepository(fx.repository),
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 1100)'], cwd: fx.repoRoot },
-      resourceClaims: deviceClaim, timeoutMs: 10_000, interactiveWaitMs: 0,
-    });
-    let signalQueued!: (handle: ProcessHandle) => void;
-    const queued = new Promise<ProcessHandle>((resolve) => { signalQueued = resolve; });
-    const output = join(fx.root, 'should-not-run.txt');
-    const execution = spawnManagedProcess({
-      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
-        kind: 'argv', executable: 'node',
-        args: ['-e', 'require("fs").writeFileSync(process.argv[1], "ran")', output], cwd: fx.repoRoot,
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'setTimeout(() => process.exit(0), 1100)'],
+        cwd: fx.repoRoot,
       },
-      resourceClaims: deviceClaim, timeoutMs: 10_000, interactiveWaitMs: 0,
-      leaseWaitMs: 60_000, onAdmissionWait: signalQueued,
+      resourceClaims: deviceClaim,
+      timeoutMs: 10_000,
+      interactiveWaitMs: 0,
+    });
+    let signalQueued!: (handle: ProcessHandle) => void;
+    const queued = new Promise<ProcessHandle>((resolve) => {
+      signalQueued = resolve;
+    });
+    const output = join(fx.root, 'should-not-run.txt');
+    const execution = spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'require("fs").writeFileSync(process.argv[1], "ran")', output],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims: deviceClaim,
+      timeoutMs: 10_000,
+      interactiveWaitMs: 0,
+      leaseWaitMs: 60_000,
+      onAdmissionWait: signalQueued,
     });
     const handle = await queued;
     expect(handle.status).toBe('starting');
     expect(handle.concurrencyWait?.resourceKeys).toContain('host-service:ios-simulator-test');
-    expect(getProcessHandle(fx.controllerHome, fx.repository.repoId, handle.processId))
-      .toMatchObject({ completed: false, status: 'starting' });
+    expect(getProcessHandle(fx.controllerHome, fx.repository.repoId, handle.processId)).toMatchObject({
+      completed: false,
+      status: 'starting',
+    });
     const cancelled = await cancelProcess(fx.controllerHome, fx.repository.repoId, handle.processId);
     expect(cancelled.status).toBe('cancelled');
     expect((await execution).status).toBe('cancelled');
     expect(existsSync(output)).toBe(false);
-    expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok).toBe(true);
+    expect(
+      (await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok,
+    ).toBe(true);
   }, 25_000);
 
   test('caller abort during resource admission leaves the durable queued Process joinable', async () => {
@@ -3087,14 +3666,21 @@ describe('Process Runtime real lease contention', () => {
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 900)'], cwd: fx.repoRoot },
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'setTimeout(() => process.exit(0), 900)'],
+        cwd: fx.repoRoot,
+      },
       resourceClaims: deviceClaim,
       timeoutMs: 10_000,
       interactiveWaitMs: 0,
       returnHandleImmediately: true,
     });
     let signalQueued!: (handle: ProcessHandle) => void;
-    const queued = new Promise<ProcessHandle>((resolve) => { signalQueued = resolve; });
+    const queued = new Promise<ProcessHandle>((resolve) => {
+      signalQueued = resolve;
+    });
     const output = join(fx.root, 'queued-after-observation-abort.txt');
     const signal = new AbortController();
     const execution = spawnManagedProcess({
@@ -3103,8 +3689,10 @@ describe('Process Runtime real lease contention', () => {
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
-        kind: 'argv', executable: 'node',
-        args: ['-e', 'require("fs").writeFileSync(process.argv[1], "ran")', output], cwd: fx.repoRoot,
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'require("fs").writeFileSync(process.argv[1], "ran")', output],
+        cwd: fx.repoRoot,
       },
       resourceClaims: deviceClaim,
       timeoutMs: 10_000,
@@ -3116,16 +3704,21 @@ describe('Process Runtime real lease contention', () => {
     const queuedHandle = await queued;
     expect(queuedHandle).toMatchObject({ status: 'starting', completed: false });
     signal.abort();
-    expect(getProcessHandle(fx.controllerHome, fx.repository.repoId, queuedHandle.processId))
-      .toMatchObject({ status: 'starting', completed: false });
+    expect(getProcessHandle(fx.controllerHome, fx.repository.repoId, queuedHandle.processId)).toMatchObject({
+      status: 'starting',
+      completed: false,
+    });
 
     const admitted = await execution;
     expect(admitted.processId).toBe(queuedHandle.processId);
-    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, admitted.processId, { timeoutMs: 5_000 });
+    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, admitted.processId, {
+      timeoutMs: 5_000,
+    });
     expect(completed).toMatchObject({ completed: true, status: 'succeeded', ok: true });
     expect(readFileSync(output, 'utf8')).toBe('ran');
-    expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 5_000 })).status)
-      .toBe('succeeded');
+    expect(
+      (await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 5_000 })).status,
+    ).toBe('succeeded');
   }, 15_000);
 
   test('execute_command scripted iOS journey joins the same device Process queue', async () => {
@@ -3133,12 +3726,19 @@ describe('Process Runtime real lease contention', () => {
     mkdirSync(join(fx.repoRoot, 'scripts'), { recursive: true });
     writeFileSync(join(fx.repoRoot, 'scripts', 'run_ios_test_layer.sh'), '#!/bin/bash\necho queued-script-complete\n');
     const holder = await spawnManagedProcess({
-      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 1300)'], cwd: fx.repoRoot },
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'setTimeout(() => process.exit(0), 1300)'],
+        cwd: fx.repoRoot,
+      },
       resourceClaims: [{ resourceKey: 'host-service:ios-simulator-test', mode: 'write' }],
-      timeoutMs: 10_000, interactiveWaitMs: 0,
+      timeoutMs: 10_000,
+      interactiveWaitMs: 0,
     });
     const started = Date.now();
     const command = await executeRepositoryCommandViaProcessRuntime({
@@ -3146,38 +3746,62 @@ describe('Process Runtime real lease contention', () => {
       repository: fx.repository,
       executionIdentity: executionIdentityForRepository(fx.repository),
       command: ['bash', 'scripts/run_ios_test_layer.sh', 'fast-journey'],
-      timeoutMs: 10_000, interactiveWaitMs: 10,
+      timeoutMs: 10_000,
+      interactiveWaitMs: 10,
       requestId: 'sim-queue-exec-command',
     });
     expect(command.route).toBe('process_managed');
     expect(Date.now() - started).toBeLessThan(1_100);
     expect(command.process).toMatchObject({ status: 'starting', completed: false });
-    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, command.process!.processId, { timeoutMs: 15_000 });
+    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, command.process!.processId, {
+      timeoutMs: 15_000,
+    });
     expect(completed).toMatchObject({ completed: true, status: 'succeeded', ok: true });
     expect(completed.stdout).toContain('queued-script-complete');
-    expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok).toBe(true);
+    expect(
+      (await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok,
+    ).toBe(true);
   }, 25_000);
 
   test('queued simulator check rejects stale checkout HEAD before starting the device command', async () => {
     const fx = fixture();
     const resourceClaims = [{ resourceKey: 'host-service:ios-simulator-test', mode: 'write' as const }];
     const holder = await spawnManagedProcess({
-      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 1500)'], cwd: fx.repoRoot },
-      resourceClaims, interactiveWaitMs: 0, timeoutMs: 10_000,
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'setTimeout(() => process.exit(0), 1500)'],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims,
+      interactiveWaitMs: 0,
+      timeoutMs: 10_000,
     });
     let signalQueued!: (handle: ProcessHandle) => void;
-    const queued = new Promise<ProcessHandle>((resolve) => { signalQueued = resolve; });
+    const queued = new Promise<ProcessHandle>((resolve) => {
+      signalQueued = resolve;
+    });
     const output = join(fx.root, 'stale-must-not-run.txt');
     const pending = spawnManagedProcess({
-      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'require("fs").writeFileSync(process.argv[1], "wrong-HEAD")', output], cwd: fx.repoRoot },
-      resourceClaims, interactiveWaitMs: 0, timeoutMs: 10_000,
-      leaseWaitMs: 20_000, onAdmissionWait: signalQueued,
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'require("fs").writeFileSync(process.argv[1], "wrong-HEAD")', output],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims,
+      interactiveWaitMs: 0,
+      timeoutMs: 10_000,
+      leaseWaitMs: 20_000,
+      onAdmissionWait: signalQueued,
     });
     expect((await queued).status).toBe('starting');
     writeFileSync(join(fx.repoRoot, 'README.md'), 'new revision during device queue\n');
@@ -3187,37 +3811,61 @@ describe('Process Runtime real lease contention', () => {
     expect(result.status).toBe('failed');
     expect(result.stderr).toContain('PROCESS_QUEUED_CHECK_SOURCE_CHANGED');
     expect(existsSync(output)).toBe(false);
-    expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok).toBe(true);
+    expect(
+      (await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok,
+    ).toBe(true);
   }, 25_000);
 
   test('explicit simulator queue admission remains alive beyond thirty seconds', async () => {
     const fx = fixture();
     const claim = [{ resourceKey: 'host-service:ios-simulator-test', mode: 'write' as const }];
     const holder = await spawnManagedProcess({
-      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 31_500)'], cwd: fx.repoRoot },
-      resourceClaims: claim, interactiveWaitMs: 0, timeoutMs: 40_000,
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'setTimeout(() => process.exit(0), 31_500)'],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims: claim,
+      interactiveWaitMs: 0,
+      timeoutMs: 40_000,
     });
     let signalQueued!: (handle: ProcessHandle) => void;
-    const queued = new Promise<ProcessHandle>((resolve) => { signalQueued = resolve; });
+    const queued = new Promise<ProcessHandle>((resolve) => {
+      signalQueued = resolve;
+    });
     const started = Date.now();
     const pending = spawnManagedProcess({
-      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.stdout.write("after-30-seconds")'], cwd: fx.repoRoot },
-      resourceClaims: claim, interactiveWaitMs: 0, timeoutMs: 10_000,
-      leaseWaitMs: 45_000, onAdmissionWait: signalQueued,
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'process.stdout.write("after-30-seconds")'],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims: claim,
+      interactiveWaitMs: 0,
+      timeoutMs: 10_000,
+      leaseWaitMs: 45_000,
+      onAdmissionWait: signalQueued,
     });
     const waiting = await queued;
     expect(waiting.status).toBe('starting');
     const passed = await pending;
     expect(Date.now() - started).toBeGreaterThan(30_000);
-    expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, passed.processId, { timeoutMs: 10_000 })))
-      .toMatchObject({ completed: true, ok: true, status: 'succeeded' });
-    expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok).toBe(true);
+    expect(
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, passed.processId, { timeoutMs: 10_000 }),
+    ).toMatchObject({ completed: true, ok: true, status: 'succeeded' });
+    expect(
+      (await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok,
+    ).toBe(true);
   }, 55_000);
 
   test('build-cache checks serialize within the bounded verification budget and still expose true admission timeout', async () => {
@@ -3241,10 +3889,12 @@ describe('Process Runtime real lease contention', () => {
       returnHandleImmediately: true,
     });
     expect(holder.completed).toBe(false);
-    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toContainEqual(expect.objectContaining({
-      ownerJobId: `process:${holder.processId}`,
-      resourceKey: buildCacheClaim.resourceKey,
-    }));
+    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toContainEqual(
+      expect.objectContaining({
+        ownerJobId: `process:${holder.processId}`,
+        resourceKey: buildCacheClaim.resourceKey,
+      }),
+    );
 
     const boundedOut = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
@@ -3291,8 +3941,9 @@ describe('Process Runtime real lease contention', () => {
       timeoutMs: 10_000,
     });
     expect(serialized).toMatchObject({ completed: true, ok: true, status: 'succeeded' });
-    expect(await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 5_000 }))
-      .toMatchObject({ completed: true, ok: true, status: 'succeeded' });
+    expect(
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 5_000 }),
+    ).toMatchObject({ completed: true, ok: true, status: 'succeeded' });
   });
 
   test('missing and terminal Process lease owners are unknown and never joinable', async () => {
@@ -3316,13 +3967,13 @@ describe('Process Runtime real lease contention', () => {
     expect(terminal).toMatchObject({ completed: true, ok: true, status: 'succeeded' });
 
     for (const ownerJobId of ['process:missing-process-record', `process:${terminal.processId}`]) {
-      const acquired = acquireExecutionLeases(
-        fx.controllerHome,
-        fx.repository.repoId,
-        ownerJobId,
-        [claim],
-        { visibility: 'durable', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false, ttlMs: 30_000 },
-      );
+      const acquired = acquireExecutionLeases(fx.controllerHome, fx.repository.repoId, ownerJobId, [claim], {
+        visibility: 'durable',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+        ttlMs: 30_000,
+      });
       expect(acquired.acquired).toBe(true);
       try {
         const blocked = await spawnManagedProcess({
@@ -3330,7 +3981,12 @@ describe('Process Runtime real lease contention', () => {
           repoId: fx.repository.repoId,
           checkoutId: fx.repository.activeCheckoutId,
           executionIdentity: executionIdentityForRepository(fx.repository),
-          command: { kind: 'argv', executable: 'node', args: ['-e', 'process.stdout.write("must-not-run")'], cwd: fx.repoRoot },
+          command: {
+            kind: 'argv',
+            executable: 'node',
+            args: ['-e', 'process.stdout.write("must-not-run")'],
+            cwd: fx.repoRoot,
+          },
           resourceClaims: [claim],
           timeoutMs: 10_000,
         });
@@ -3381,8 +4037,12 @@ describe('Process Runtime real lease contention', () => {
       checkoutId: fx.repository.activeCheckoutId,
     });
     const active = listActiveLeases(fx.controllerHome, fx.repository.repoId);
-    expect(active.some((lease) => lease.ownerJobId === `process:${first.processId}`
-      && lease.checkoutId === fx.repository.activeCheckoutId)).toBe(true);
+    expect(
+      active.some(
+        (lease) =>
+          lease.ownerJobId === `process:${first.processId}` && lease.checkoutId === fx.repository.activeCheckoutId,
+      ),
+    ).toBe(true);
 
     // Concurrent write must not spawn (lease conflict before runner).
     const blocked = await spawnManagedProcess({
@@ -3402,7 +4062,9 @@ describe('Process Runtime real lease contention', () => {
     });
     expect(blocked.completed).toBe(true);
     expect(blocked.ok).not.toBe(true);
-    expect(String(blocked.stderr ?? '') + String(blocked.stdout ?? '')).toMatch(/PROCESS_LEASE_CONFLICT|resource busy/i);
+    expect(String(blocked.stderr ?? '') + String(blocked.stdout ?? '')).toMatch(
+      /PROCESS_LEASE_CONFLICT|resource busy/i,
+    );
     expect(blocked.concurrencyWait).toMatchObject({
       source: 'resource_lease',
       blockingProcessId: first.processId,
@@ -3410,33 +4072,56 @@ describe('Process Runtime real lease contention', () => {
     });
 
     const sameWorkDenied = await spawnManagedProcess({
-      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.stdout.write("must-not-run")'], cwd: fx.repoRoot },
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'process.stdout.write("must-not-run")'],
+        cwd: fx.repoRoot,
+      },
       resourceClaims: [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'write' }],
       timeoutMs: 10_000,
     });
-    expect(sameWorkDenied).toMatchObject({ completed: true, ok: false, concurrencyWait: {
-      source: 'resource_lease',
-      blockingProcessId: first.processId,
-      blockingOwnerRelation: 'process_owner',
-    } });
+    expect(sameWorkDenied).toMatchObject({
+      completed: true,
+      ok: false,
+      concurrencyWait: {
+        source: 'resource_lease',
+        blockingProcessId: first.processId,
+        blockingOwnerRelation: 'process_owner',
+      },
+    });
     expect(sameWorkDenied.stdout).not.toContain('must-not-run');
     const { getWorkContract } = await import('../../packages/kernel/work/api');
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, 'work-lease-a')?.executionConcurrency).toBeUndefined();
+    expect(
+      getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, 'work-lease-a')
+        ?.executionConcurrency,
+    ).toBeUndefined();
 
     // Parallel reads against a different resource key (or after release) — hold write finished.
     await waitForProcess(fx.controllerHome, fx.repository.repoId, first.processId, { timeoutMs: 10_000 });
     const after = getProcessRecord(fx.controllerHome, fx.repository.repoId, first.processId);
     expect(after?.leasesReleased).toBe(true);
-    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId).some((l) => l.ownerJobId === `process:${first.processId}`)).toBe(false);
+    expect(
+      listActiveLeases(fx.controllerHome, fx.repository.repoId).some(
+        (l) => l.ownerJobId === `process:${first.processId}`,
+      ),
+    ).toBe(false);
 
     const next = await spawnManagedProcess({
-      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.stdout.write("next-action")'], cwd: fx.repoRoot },
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'process.stdout.write("next-action")'],
+        cwd: fx.repoRoot,
+      },
       resourceClaims: [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'write' }],
       timeoutMs: 10_000,
     });
@@ -3521,7 +4206,13 @@ describe('Process Runtime real lease contention', () => {
       fx.repository.repoId,
       `process:${staleProcessId}`,
       [{ resourceKey, mode: 'write', checkoutId: fx.repository.activeCheckoutId }],
-      { ttlMs: 120_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+      {
+        ttlMs: 120_000,
+        visibility: 'ephemeral',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+      },
     );
     expect(acquired.acquired).toBe(true);
     const staleRecord = {
@@ -3533,7 +4224,9 @@ describe('Process Runtime real lease contention', () => {
       status: 'running',
       route: 'managed',
       command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
-      resourceClaims: [{ resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId }],
+      resourceClaims: [
+        { resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId },
+      ],
       leaseRefs: acquired.leases,
       interactiveWaitMs: 0,
       timeoutMs: 120_000,
@@ -3544,13 +4237,16 @@ describe('Process Runtime real lease contention', () => {
       exitReceiptPath,
     } as unknown as Parameters<typeof createProcessRecord>[0];
     createProcessRecord(staleRecord);
-    writeFileSync(exitReceiptPath, JSON.stringify({
-      schemaVersion: 1,
-      processId: staleProcessId,
-      exitCode: 0,
-      finishedAt: new Date().toISOString(),
-      commandExecutedOnce: true,
-    }));
+    writeFileSync(
+      exitReceiptPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        processId: staleProcessId,
+        exitCode: 0,
+        finishedAt: new Date().toISOString(),
+        commandExecutedOnce: true,
+      }),
+    );
 
     const next = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
@@ -3574,7 +4270,11 @@ describe('Process Runtime real lease contention', () => {
       status: 'succeeded',
       leasesReleased: true,
     });
-    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId).some((lease) => lease.ownerJobId === `process:${staleProcessId}`)).toBe(false);
+    expect(
+      listActiveLeases(fx.controllerHome, fx.repository.repoId).some(
+        (lease) => lease.ownerJobId === `process:${staleProcessId}`,
+      ),
+    ).toBe(false);
   });
 
   test('startup recovery releases terminal leases that were removed from active-index', () => {
@@ -3586,7 +4286,13 @@ describe('Process Runtime real lease contention', () => {
       fx.repository.repoId,
       `process:${processId}`,
       [{ resourceKey, mode: 'write', checkoutId: fx.repository.activeCheckoutId }],
-      { ttlMs: 30_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+      {
+        ttlMs: 30_000,
+        visibility: 'ephemeral',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+      },
     );
     expect(acquired.acquired).toBe(true);
     createProcessRecord({
@@ -3598,10 +4304,17 @@ describe('Process Runtime real lease contention', () => {
       status: 'running',
       route: 'managed',
       command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
-      resourceClaims: [{ resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId }],
+      resourceClaims: [
+        { resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId },
+      ],
       // Legacy records may omit checkoutId in the lease ref. The exact
       // resourceKey plus repo-scoped leaseId still provides safe matching.
-      leaseRefs: acquired.leases.map((lease) => ({ leaseId: lease.leaseId, resourceKey: lease.resourceKey, fencingToken: lease.fencingToken, repoId: lease.repoId })),
+      leaseRefs: acquired.leases.map((lease) => ({
+        leaseId: lease.leaseId,
+        resourceKey: lease.resourceKey,
+        fencingToken: lease.fencingToken,
+        repoId: lease.repoId,
+      })),
       interactiveWaitMs: 0,
       timeoutMs: 30_000,
       maxOutputBytes: 1_024,
@@ -3616,30 +4329,37 @@ describe('Process Runtime real lease contention', () => {
     });
     expect(recoverManagedProcesses(fx.controllerHome, fx.repository.repoId).leasesReleased).toContain(processId);
     expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.leasesReleased).toBe(true);
-    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId).some((lease) => lease.ownerJobId === `process:${processId}`)).toBe(false);
+    expect(
+      listActiveLeases(fx.controllerHome, fx.repository.repoId).some(
+        (lease) => lease.ownerJobId === `process:${processId}`,
+      ),
+    ).toBe(false);
   });
 
   test('terminal recovery releases exact leases after the whole release changes', () => {
     const fx = fixture();
     const processId = 'proc_terminal_old_release';
     const resourceKey = `workspace:${fx.repository.activeCheckoutId}`;
-    const oldRuntime = bindCanonicalRuntime(
-      fx.controllerHome,
-      'runtime-old',
-      'release-old',
-      'artifact-old',
-    );
+    const oldRuntime = bindCanonicalRuntime(fx.controllerHome, 'runtime-old', 'release-old', 'artifact-old');
     const acquired = acquireExecutionLeases(
       fx.controllerHome,
       fx.repository.repoId,
       `process:${processId}`,
-      [{
-        resourceKey,
-        mode: 'write',
-        repoId: fx.repository.repoId,
-        checkoutId: fx.repository.activeCheckoutId,
-      }],
-      { ttlMs: 30_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+      [
+        {
+          resourceKey,
+          mode: 'write',
+          repoId: fx.repository.repoId,
+          checkoutId: fx.repository.activeCheckoutId,
+        },
+      ],
+      {
+        ttlMs: 30_000,
+        visibility: 'ephemeral',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+      },
     );
     expect(acquired.acquired).toBe(true);
     createProcessRecord({
@@ -3651,7 +4371,9 @@ describe('Process Runtime real lease contention', () => {
       status: 'running',
       route: 'managed',
       command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
-      resourceClaims: [{ resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId }],
+      resourceClaims: [
+        { resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId },
+      ],
       leaseRefs: acquired.leases.map((lease) => ({
         leaseId: lease.leaseId,
         resourceKey: lease.resourceKey,
@@ -3684,13 +4406,20 @@ describe('Process Runtime real lease contention', () => {
       'terminal-new-release',
     );
     clearRuntimeWriteClaimForTests();
-    bindRuntimeWriteClaim({ controllerHome: fx.controllerHome, owner: oldRuntime.owner.record, authority: newAuthority });
+    bindRuntimeWriteClaim({
+      controllerHome: fx.controllerHome,
+      owner: oldRuntime.owner.record,
+      authority: newAuthority,
+    });
 
     const recovery = recoverManagedProcesses(fx.controllerHome, fx.repository.repoId);
     expect(recovery.leasesReleased).toContain(processId);
     expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.leaseReleaseState).toBe('released');
-    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)
-      .some((lease) => lease.ownerJobId === `process:${processId}`)).toBe(false);
+    expect(
+      listActiveLeases(fx.controllerHome, fx.repository.repoId).some(
+        (lease) => lease.ownerJobId === `process:${processId}`,
+      ),
+    ).toBe(false);
     expect(recoverManagedProcesses(fx.controllerHome, fx.repository.repoId).leasesReleased).not.toContain(processId);
   });
 
@@ -3703,7 +4432,13 @@ describe('Process Runtime real lease contention', () => {
       fx.repository.repoId,
       `process:${processId}`,
       [{ resourceKey, mode: 'write', checkoutId: fx.repository.activeCheckoutId }],
-      { ttlMs: 30_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+      {
+        ttlMs: 30_000,
+        visibility: 'ephemeral',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+      },
     );
     expect(acquired.acquired).toBe(true);
     createProcessRecord({
@@ -3715,7 +4450,9 @@ describe('Process Runtime real lease contention', () => {
       status: 'running',
       route: 'managed',
       command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
-      resourceClaims: [{ resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId }],
+      resourceClaims: [
+        { resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId },
+      ],
       leaseRefs: acquired.leases.map((lease) => ({
         leaseId: lease.leaseId,
         resourceKey: lease.resourceKey,
@@ -3745,8 +4482,11 @@ describe('Process Runtime real lease contention', () => {
         attempts: 1,
       },
     });
-    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)
-      .some((lease) => lease.ownerJobId === `process:${processId}`)).toBe(true);
+    expect(
+      listActiveLeases(fx.controllerHome, fx.repository.repoId).some(
+        (lease) => lease.ownerJobId === `process:${processId}`,
+      ),
+    ).toBe(true);
   });
 
   test('terminal lease release failure remains visible and ordinary observation retry clears it', () => {
@@ -3758,7 +4498,13 @@ describe('Process Runtime real lease contention', () => {
       fx.repository.repoId,
       `process:${processId}`,
       [{ resourceKey, mode: 'write', checkoutId: fx.repository.activeCheckoutId }],
-      { ttlMs: 30_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+      {
+        ttlMs: 30_000,
+        visibility: 'ephemeral',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+      },
     );
     expect(acquired.acquired).toBe(true);
     createProcessRecord({
@@ -3770,7 +4516,9 @@ describe('Process Runtime real lease contention', () => {
       status: 'running',
       route: 'managed',
       command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
-      resourceClaims: [{ resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId }],
+      resourceClaims: [
+        { resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId },
+      ],
       leaseRefs: acquired.leases.map((lease) => ({
         leaseId: lease.leaseId,
         resourceKey: lease.resourceKey,
@@ -3797,15 +4545,21 @@ describe('Process Runtime real lease contention', () => {
       attempts: 1,
     });
 
-    updateProcessRecord(fx.controllerHome, fx.repository.repoId, processId, {
-      leaseRefs: acquired.leases.map((lease) => ({
-        leaseId: lease.leaseId,
-        resourceKey: lease.resourceKey,
-        fencingToken: lease.fencingToken,
-        repoId: lease.repoId,
-        checkoutId: lease.checkoutId,
-      })),
-    }, { allowTerminal: true });
+    updateProcessRecord(
+      fx.controllerHome,
+      fx.repository.repoId,
+      processId,
+      {
+        leaseRefs: acquired.leases.map((lease) => ({
+          leaseId: lease.leaseId,
+          resourceKey: lease.resourceKey,
+          fencingToken: lease.fencingToken,
+          repoId: lease.repoId,
+          checkoutId: lease.checkoutId,
+        })),
+      },
+      { allowTerminal: true },
+    );
     const observed = getProcessHandle(fx.controllerHome, fx.repository.repoId, processId);
     expect(observed).toMatchObject({ processId, completed: true });
     expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)).toMatchObject({
@@ -3813,8 +4567,11 @@ describe('Process Runtime real lease contention', () => {
       leasesReleased: true,
     });
     expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.leaseReleaseFailure).toBeUndefined();
-    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)
-      .some((lease) => lease.ownerJobId === `process:${processId}`)).toBe(false);
+    expect(
+      listActiveLeases(fx.controllerHome, fx.repository.repoId).some(
+        (lease) => lease.ownerJobId === `process:${processId}`,
+      ),
+    ).toBe(false);
   });
 
   test('recovery does not release a live process owned by another generation or instance', () => {
@@ -3826,18 +4583,19 @@ describe('Process Runtime real lease contention', () => {
       fx.repository.repoId,
       `process:${processId}`,
       [{ resourceKey, mode: 'write', checkoutId: fx.repository.activeCheckoutId }],
-      { ttlMs: 30_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+      {
+        ttlMs: 30_000,
+        visibility: 'ephemeral',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+      },
     );
     expect(acquired.acquired).toBe(true);
     const command = defaultProcessIdentityProbe.command(process.pid);
     const processStartTime = defaultProcessIdentityProbe.startTime(process.pid);
     expect(command && processStartTime).toBeTruthy();
-    const activeRuntime = bindCanonicalRuntime(
-      fx.controllerHome,
-      'runtime-new',
-      'release-new',
-      'artifact-new',
-    );
+    const activeRuntime = bindCanonicalRuntime(fx.controllerHome, 'runtime-new', 'release-new', 'artifact-new');
     createProcessRecord({
       schemaVersion: 1,
       processId,
@@ -3852,8 +4610,16 @@ describe('Process Runtime real lease contention', () => {
         processStartTime: processStartTime!,
         executableFingerprint: executableFingerprint(command!),
       },
-      resourceClaims: [{ resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId }],
-      leaseRefs: acquired.leases.map((lease) => ({ leaseId: lease.leaseId, resourceKey: lease.resourceKey, fencingToken: lease.fencingToken, repoId: lease.repoId, checkoutId: lease.checkoutId })),
+      resourceClaims: [
+        { resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId },
+      ],
+      leaseRefs: acquired.leases.map((lease) => ({
+        leaseId: lease.leaseId,
+        resourceKey: lease.resourceKey,
+        fencingToken: lease.fencingToken,
+        repoId: lease.repoId,
+        checkoutId: lease.checkoutId,
+      })),
       interactiveWaitMs: 0,
       timeoutMs: 30_000,
       maxOutputBytes: 1_024,
@@ -3869,7 +4635,11 @@ describe('Process Runtime real lease contention', () => {
     const recovery = recoverManagedProcesses(fx.controllerHome, fx.repository.repoId);
     expect(recovery.recovered).not.toContain(processId);
     expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.status).toBe('running');
-    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId).some((lease) => lease.ownerJobId === `process:${processId}`)).toBe(true);
+    expect(
+      listActiveLeases(fx.controllerHome, fx.repository.repoId).some(
+        (lease) => lease.ownerJobId === `process:${processId}`,
+      ),
+    ).toBe(true);
   });
 
   test('validated Runner receipt performs monotonic terminal CAS while runtime writer is fenced', () => {
@@ -3913,13 +4683,16 @@ describe('Process Runtime real lease contention', () => {
       exitReceiptPath,
     });
     expect(listActiveProcessIds(fx.controllerHome, fx.repository.repoId)).toContain(processId);
-    writeFileSync(exitReceiptPath, `${JSON.stringify({
-      schemaVersion: 1,
-      processId,
-      exitCode: 0,
-      finishedAt: new Date().toISOString(),
-      commandExecutedOnce: true,
-    })}\n`);
+    writeFileSync(
+      exitReceiptPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        processId,
+        exitCode: 0,
+        finishedAt: new Date().toISOString(),
+        commandExecutedOnce: true,
+      })}\n`,
+    );
 
     const handle = getProcessHandle(fx.controllerHome, fx.repository.repoId, processId);
     expect(handle).toMatchObject({ status: 'succeeded', contractStatus: 'succeeded', completed: true, ok: true });
@@ -3950,13 +4723,15 @@ describe('Process Runtime real lease contention', () => {
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       terminalFenceToken: 1,
-      leaseRefs: [{
-        leaseId: 'LEASE-recovery-index-test',
-        resourceKey: `workspace:${fx.repository.activeCheckoutId}`,
-        fencingToken: 1,
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        repoId: fx.repository.repoId,
-      }],
+      leaseRefs: [
+        {
+          leaseId: 'LEASE-recovery-index-test',
+          resourceKey: `workspace:${fx.repository.activeCheckoutId}`,
+          fencingToken: 1,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          repoId: fx.repository.repoId,
+        },
+      ],
     });
     expect(listActiveProcessIds(fx.controllerHome, fx.repository.repoId)).toEqual([processId]);
 
@@ -3966,12 +4741,20 @@ describe('Process Runtime real lease contention', () => {
     });
     expect(completed.ok).toBe(true);
     expect(listActiveProcessIds(fx.controllerHome, fx.repository.repoId)).toEqual([]);
-    expect(listRecoverableProcessRecords(fx.controllerHome, fx.repository.repoId).map((record) => record.processId)).toEqual([processId]);
+    expect(
+      listRecoverableProcessRecords(fx.controllerHome, fx.repository.repoId).map((record) => record.processId),
+    ).toEqual([processId]);
 
-    updateProcessRecord(fx.controllerHome, fx.repository.repoId, processId, {
-      leasesReleased: true,
-      leaseReleaseState: 'released',
-    }, { allowTerminal: true });
+    updateProcessRecord(
+      fx.controllerHome,
+      fx.repository.repoId,
+      processId,
+      {
+        leasesReleased: true,
+        leaseReleaseState: 'released',
+      },
+      { allowTerminal: true },
+    );
     expect(listRecoverableProcessRecords(fx.controllerHome, fx.repository.repoId)).toEqual([]);
 
     const settledIndex = readControlPlaneRecord(
@@ -3981,12 +4764,9 @@ describe('Process Runtime real lease contention', () => {
       'v2',
     );
     expect(deleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId)).toBe(true);
-    expect(readControlPlaneRecord(
-      fx.controllerHome,
-      'process_recovery_index',
-      fx.repository.repoId,
-      'v2',
-    )?.revision).toBe(settledIndex?.revision);
+    expect(
+      readControlPlaneRecord(fx.controllerHome, 'process_recovery_index', fx.repository.repoId, 'v2')?.revision,
+    ).toBe(settledIndex?.revision);
 
     const projectionPath = join(processLogDir(fx.controllerHome, fx.repository.repoId), '..', 'active-index.json');
     // SQLite is recovery authority. Ordinary lifecycle writes must not create
@@ -3998,12 +4778,7 @@ describe('Process Runtime real lease contention', () => {
     const fx = fixture();
     const processId = 'proc_stale_pre_spawn_abandonment';
     const startedAt = new Date('2026-08-05T09:00:00.000Z').toISOString();
-    bindCanonicalRuntime(
-      fx.controllerHome,
-      'runtime-pre-spawn',
-      'release-pre-spawn',
-      'artifact-pre-spawn',
-    );
+    bindCanonicalRuntime(fx.controllerHome, 'runtime-pre-spawn', 'release-pre-spawn', 'artifact-pre-spawn');
     clearRuntimeWriteClaimForTests();
     createProcessRecord({
       schemaVersion: 1,
@@ -4025,21 +4800,17 @@ describe('Process Runtime real lease contention', () => {
       commandDescriptorPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${processId}.command.json`),
     });
 
-    const fresh = reconcileAbandonedPreSpawnProcess(
-      fx.controllerHome,
-      fx.repository.repoId,
-      processId,
-      { nowMs: Date.parse(startedAt) + 60_000, minAgeMs: 5 * 60_000 },
-    );
+    const fresh = reconcileAbandonedPreSpawnProcess(fx.controllerHome, fx.repository.repoId, processId, {
+      nowMs: Date.parse(startedAt) + 60_000,
+      minAgeMs: 5 * 60_000,
+    });
     expect(fresh?.status).toBe('starting');
     expect(listActiveProcessIds(fx.controllerHome, fx.repository.repoId)).toContain(processId);
 
-    const reconciled = reconcileAbandonedPreSpawnProcess(
-      fx.controllerHome,
-      fx.repository.repoId,
-      processId,
-      { nowMs: Date.parse(startedAt) + 6 * 60_000, minAgeMs: 5 * 60_000 },
-    );
+    const reconciled = reconcileAbandonedPreSpawnProcess(fx.controllerHome, fx.repository.repoId, processId, {
+      nowMs: Date.parse(startedAt) + 6 * 60_000,
+      minAgeMs: 5 * 60_000,
+    });
     expect(reconciled).toMatchObject({ status: 'failed', terminalWritten: true, exitCode: 1 });
     expect(reconciled?.error?.message).toContain('PROCESS_PRESPAWN_ABANDONED');
     expect(listActiveProcessIds(fx.controllerHome, fx.repository.repoId)).not.toContain(processId);
@@ -4071,7 +4842,10 @@ describe('Process Runtime real lease contention', () => {
       startedAt: old,
       updatedAt: old,
       exitReceiptPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${staleStartingId}.exit.json`),
-      commandDescriptorPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${staleStartingId}.command.json`),
+      commandDescriptorPath: join(
+        processLogDir(fx.controllerHome, fx.repository.repoId),
+        `${staleStartingId}.command.json`,
+      ),
     });
     createProcessRecord({
       ...base,
@@ -4089,7 +4863,10 @@ describe('Process Runtime real lease contention', () => {
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       exitReceiptPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${freshStartingId}.exit.json`),
-      commandDescriptorPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${freshStartingId}.command.json`),
+      commandDescriptorPath: join(
+        processLogDir(fx.controllerHome, fx.repository.repoId),
+        `${freshStartingId}.command.json`,
+      ),
     });
 
     const gc = gcTerminalProcesses({
@@ -4103,8 +4880,14 @@ describe('Process Runtime real lease contention', () => {
 
     expect(gc.ok).toBe(true);
     expect(gc.reconciledStaleActive).toBe(2);
-    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, staleStartingId)).toMatchObject({ status: 'failed', terminalWritten: true });
-    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, staleRunningId)).toMatchObject({ status: 'completed_unknown', terminalWritten: true });
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, staleStartingId)).toMatchObject({
+      status: 'failed',
+      terminalWritten: true,
+    });
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, staleRunningId)).toMatchObject({
+      status: 'completed_unknown',
+      terminalWritten: true,
+    });
     const fresh = getProcessRecord(fx.controllerHome, fx.repository.repoId, freshStartingId);
     expect(fresh).toMatchObject({ status: 'starting' });
     expect(fresh?.terminalWritten).not.toBe(true);
@@ -4166,8 +4949,9 @@ describe('Process Runtime real lease contention', () => {
       returnHandleImmediately: true,
     });
     // With authority present and no claim, cancel must refuse before signal.
-    await expect(cancelProcess(fx.controllerHome, fx.repository.repoId, handle.processId))
-      .rejects.toThrow(/WRITER_FENCED:cancel_process/);
+    await expect(cancelProcess(fx.controllerHome, fx.repository.repoId, handle.processId)).rejects.toThrow(
+      /WRITER_FENCED:cancel_process/,
+    );
     // Clean up: bind the active canonical Runtime claim and cancel.
     bindTestRuntimeClaim({
       controllerHome: fx.controllerHome,
@@ -4187,27 +4971,58 @@ test('late Runner receipts refine an unknown outcome without replaying the Proce
     const marker = join(fx.root, 'must-not-reexecute');
     const startedAt = new Date(Date.now() - 60_000).toISOString();
     createProcessRecord({
-      schemaVersion: 1, processId, repoId: fx.repository.repoId, controllerHome: fx.controllerHome,
-      status: 'completed_unknown', route: 'managed', terminalWritten: true, terminalFenceToken: 7,
-      command: { kind: 'argv', executable: 'node', args: ['-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'replayed')`], cwd: fx.repoRoot },
-      resourceClaims: [], leasesReleased: true, interactiveWaitMs: 0, timeoutMs: 30_000, maxOutputBytes: 4096,
-      startedAt, updatedAt: startedAt, finishedAt: new Date().toISOString(), exitReceiptPath,
+      schemaVersion: 1,
+      processId,
+      repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome,
+      status: 'completed_unknown',
+      route: 'managed',
+      terminalWritten: true,
+      terminalFenceToken: 7,
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'replayed')`],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims: [],
+      leasesReleased: true,
+      interactiveWaitMs: 0,
+      timeoutMs: 30_000,
+      maxOutputBytes: 4096,
+      startedAt,
+      updatedAt: startedAt,
+      finishedAt: new Date().toISOString(),
+      exitReceiptPath,
       error: { code: 'COMPLETED_UNKNOWN', message: 'exit receipt was not yet visible' },
     });
     writeFileSync(`${exitReceiptPath}.started.json`, JSON.stringify({ processId }));
     expect(getProcessHandle(fx.controllerHome, fx.repository.repoId, processId)?.status).toBe('completed_unknown');
     expect(existsSync(`${exitReceiptPath}.started.json`)).toBe(true);
     const finishedAt = new Date(Date.now() - 1_000).toISOString();
-    writeFileSync(exitReceiptPath, JSON.stringify({
-      schemaVersion: 1, processId, commandExecutedOnce: true, finishedAt,
-      exitCode: status === 'succeeded' ? 0 : 1, timedOut: status === 'timed_out', cancelled: status === 'cancelled',
-    }));
-    const handle = status === 'failed'
-      ? await waitForProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 1 })
-      : getProcessHandle(fx.controllerHome, fx.repository.repoId, processId);
+    writeFileSync(
+      exitReceiptPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        processId,
+        commandExecutedOnce: true,
+        finishedAt,
+        exitCode: status === 'succeeded' ? 0 : 1,
+        timedOut: status === 'timed_out',
+        cancelled: status === 'cancelled',
+      }),
+    );
+    const handle =
+      status === 'failed'
+        ? await waitForProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 1 })
+        : getProcessHandle(fx.controllerHome, fx.repository.repoId, processId);
     expect(handle).toMatchObject({ processId, completed: true, status });
     expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)).toMatchObject({
-      status, terminalWritten: true, terminalFenceToken: 7, leasesReleased: true, finishedAt,
+      status,
+      terminalWritten: true,
+      terminalFenceToken: 7,
+      leasesReleased: true,
+      finishedAt,
     });
     expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.error).toBeUndefined();
     expect(existsSync(marker)).toBe(false);
@@ -4222,28 +5037,71 @@ test('unknown outcome refinement retains receipt validation and terminal fencing
   const exitReceiptPath = join(fx.root, `${processId}.exit.json`);
   const startedAt = new Date().toISOString();
   createProcessRecord({
-    schemaVersion: 1, processId, repoId: fx.repository.repoId, controllerHome: fx.controllerHome,
-    status: 'completed_unknown', route: 'managed', terminalWritten: true, terminalFenceToken: 7, leasesReleased: true,
+    schemaVersion: 1,
+    processId,
+    repoId: fx.repository.repoId,
+    controllerHome: fx.controllerHome,
+    status: 'completed_unknown',
+    route: 'managed',
+    terminalWritten: true,
+    terminalFenceToken: 7,
+    leasesReleased: true,
     command: { kind: 'argv', executable: 'node', args: ['--version'], cwd: fx.repoRoot },
-    resourceClaims: [], interactiveWaitMs: 0, timeoutMs: 30_000, maxOutputBytes: 4096,
-    startedAt, updatedAt: startedAt, exitReceiptPath,
+    resourceClaims: [],
+    interactiveWaitMs: 0,
+    timeoutMs: 30_000,
+    maxOutputBytes: 4096,
+    startedAt,
+    updatedAt: startedAt,
+    exitReceiptPath,
   });
   const receipt = { schemaVersion: 1, processId, commandExecutedOnce: true, exitCode: 0, finishedAt: startedAt };
   for (const invalid of [
-    { ...receipt, processId: 'another-process' }, { ...receipt, commandExecutedOnce: false },
+    { ...receipt, processId: 'another-process' },
+    { ...receipt, commandExecutedOnce: false },
     { ...receipt, commandExecutedOnce: undefined },
-    { ...receipt, finishedAt: 'invalid' }, { ...receipt, exitCode: 'not-a-code' },
+    { ...receipt, finishedAt: 'invalid' },
+    { ...receipt, exitCode: 'not-a-code' },
   ]) {
     writeFileSync(exitReceiptPath, JSON.stringify(invalid));
     expect(getProcessHandle(fx.controllerHome, fx.repository.repoId, processId)?.status).toBe('completed_unknown');
     expect(existsSync(exitReceiptPath)).toBe(true);
   }
-  expect(tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 7, { status: 'succeeded' }).reason).toBe('already_terminal');
-  expect(tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 8, { status: 'succeeded' }, { validatedExitReceipt: true }).reason).toBe('fence_mismatch');
-  expect(tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 7, { status: 'completed_unknown' }, { validatedExitReceipt: true }).reason).toBe('already_terminal');
+  expect(
+    tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 7, { status: 'succeeded' }).reason,
+  ).toBe('already_terminal');
+  expect(
+    tryCompleteProcessRecord(
+      fx.controllerHome,
+      fx.repository.repoId,
+      processId,
+      8,
+      { status: 'succeeded' },
+      { validatedExitReceipt: true },
+    ).reason,
+  ).toBe('fence_mismatch');
+  expect(
+    tryCompleteProcessRecord(
+      fx.controllerHome,
+      fx.repository.repoId,
+      processId,
+      7,
+      { status: 'completed_unknown' },
+      { validatedExitReceipt: true },
+    ).reason,
+  ).toBe('already_terminal');
   writeFileSync(exitReceiptPath, JSON.stringify(receipt));
   expect(getProcessHandle(fx.controllerHome, fx.repository.repoId, processId)?.status).toBe('succeeded');
-  expect(tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 7, { status: 'failed' }, { validatedExitReceipt: true }).reason).toBe('already_terminal');
+  expect(
+    tryCompleteProcessRecord(
+      fx.controllerHome,
+      fx.repository.repoId,
+      processId,
+      7,
+      { status: 'failed' },
+      { validatedExitReceipt: true },
+    ).reason,
+  ).toBe('already_terminal');
   expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.terminalFenceToken).toBe(7);
 });
 
@@ -4254,36 +5112,64 @@ test('recovered cancellation preserves real receipts and does not claim an unver
     const exitReceiptPath = join(fx.root, `${processId}.exit.json`);
     const startedAt = new Date(Date.now() - 60_000).toISOString();
     createProcessRecord({
-      schemaVersion: 1, processId, repoId: fx.repository.repoId,
-      controllerHome: fx.controllerHome, status: scenario === 'historical-unknown' ? 'completed_unknown' : 'running', route: 'managed',
+      schemaVersion: 1,
+      processId,
+      repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome,
+      status: scenario === 'historical-unknown' ? 'completed_unknown' : 'running',
+      route: 'managed',
       ...(scenario === 'historical-unknown' ? { terminalWritten: true, cancelled: true } : {}),
       command: { kind: 'argv', executable: 'node', args: ['--version'], cwd: fx.repoRoot },
-      resourceClaims: [], interactiveWaitMs: 0, timeoutMs: 30_000, maxOutputBytes: 4096,
-      startedAt, updatedAt: startedAt, terminalFenceToken: 1,
-      identity: { pid: 999_999, processStartTime: scenario === 'untrusted' ? 'untrusted:fixture' : 'Mon Jan  1 00:00:00 2001', executableFingerprint: 'missing-runner' },
-      identityUntrusted: scenario === 'untrusted', exitReceiptPath,
+      resourceClaims: [],
+      interactiveWaitMs: 0,
+      timeoutMs: 30_000,
+      maxOutputBytes: 4096,
+      startedAt,
+      updatedAt: startedAt,
+      terminalFenceToken: 1,
+      identity: {
+        pid: 999_999,
+        processStartTime: scenario === 'untrusted' ? 'untrusted:fixture' : 'Mon Jan  1 00:00:00 2001',
+        executableFingerprint: 'missing-runner',
+      },
+      identityUntrusted: scenario === 'untrusted',
+      exitReceiptPath,
     });
-    if (scenario === 'receipt') writeFileSync(exitReceiptPath, JSON.stringify({
-      schemaVersion: 1, processId, exitCode: 0, finishedAt: new Date().toISOString(), commandExecutedOnce: true,
-    }));
+    if (scenario === 'receipt')
+      writeFileSync(
+        exitReceiptPath,
+        JSON.stringify({
+          schemaVersion: 1,
+          processId,
+          exitCode: 0,
+          finishedAt: new Date().toISOString(),
+          commandExecutedOnce: true,
+        }),
+      );
     const cancelled = await cancelProcess(fx.controllerHome, fx.repository.repoId, processId);
     expect(cancelled.status, scenario).toBe(scenario === 'receipt' ? 'succeeded' : 'completed_unknown');
     expect(cancelled.cancelled, scenario).not.toBe(true);
     if (scenario === 'receipt') expect(cancelled.exitCode).toBe(0);
     else expect(existsSync(exitReceiptPath)).toBe(false);
     const response = await callProcessTool({ controllerHome: fx.controllerHome }, 'process_cancel', {
-      repo_id: fx.repository.repoId, process_id: processId,
+      repo_id: fx.repository.repoId,
+      process_id: processId,
     });
     expect(response?.structuredContent?.cancelled, scenario).toBe(false);
     expect((response?.structuredContent?.process as { cancelled?: boolean })?.cancelled, scenario).not.toBe(true);
-    if (scenario === 'historical-unknown') expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.cancelled).toBe(true);
+    if (scenario === 'historical-unknown')
+      expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.cancelled).toBe(true);
   }
 });
 
 test('recovered cancellation requires a delivered signal and confirmed termination', () => {
   for (const outcome of ['still-running', 'already-gone', 'stopped']) {
     const fx = fixture();
-    const child = spawnSync(process.execPath, ['-e', `
+    const child = spawnSync(
+      process.execPath,
+      [
+        '-e',
+        `
       import { mock } from 'bun:test';
       import * as tree from ${JSON.stringify(join(import.meta.dir, '../../src/runtime/shared/process-tree.ts'))};
       import * as identity from ${JSON.stringify(join(import.meta.dir, '../../src/runtime/shared/process-identity.ts'))};
@@ -4311,11 +5197,16 @@ test('recovered cancellation requires a delivered signal and confirmed terminati
       const handle = await cancelProcess(${JSON.stringify(fx.controllerHome)}, ${JSON.stringify(fx.repository.repoId)}, processId);
       const record = getProcessRecord(${JSON.stringify(fx.controllerHome)}, ${JSON.stringify(fx.repository.repoId)}, processId);
       console.log(JSON.stringify({ handle, terminalWritten: record.terminalWritten, signals }));
-    `], { encoding: 'utf8', timeout: 5_000 });
+    `,
+      ],
+      { encoding: 'utf8', timeout: 5_000 },
+    );
     expect(child.status, child.stderr).toBe(0);
     const result = JSON.parse(child.stdout);
     expect(result.signals).toBe(1);
-    expect(result.handle.status, outcome).toBe(outcome === 'still-running' ? 'running' : outcome === 'stopped' ? 'cancelled' : 'completed_unknown');
+    expect(result.handle.status, outcome).toBe(
+      outcome === 'still-running' ? 'running' : outcome === 'stopped' ? 'cancelled' : 'completed_unknown',
+    );
     expect(result.handle.completed).toBe(outcome !== 'still-running');
     expect(result.handle.cancelled === true).toBe(outcome === 'stopped');
     if (outcome === 'still-running') expect(result.terminalWritten).not.toBe(true);
@@ -4366,7 +5257,9 @@ describe('Process Runner exactly-once semantics', () => {
 
     const exited = await Promise.race([
       runnerExit,
-      Bun.sleep(1_000).then(() => { throw new Error(`Runner ${runner.pid} stayed alive after terminal receipt`); }),
+      Bun.sleep(1_000).then(() => {
+        throw new Error(`Runner ${runner.pid} stayed alive after terminal receipt`);
+      }),
     ]);
     expect(exited).toEqual({ code: 0, signal: null });
   }, 10_000);
@@ -4407,7 +5300,11 @@ describe('Process Runner exactly-once semantics', () => {
       pending.then((receipt) => ({ receipt })),
       Bun.sleep(800).then(() => ({ timedOut: true as const })),
     ]);
-    try { process.kill(grandchildPid, 'SIGTERM'); } catch { /* child may have exited naturally */ }
+    try {
+      process.kill(grandchildPid, 'SIGTERM');
+    } catch {
+      /* child may have exited naturally */
+    }
     const receipt = await pending;
     expect(observed).toHaveProperty('receipt');
     expect(receipt.exitCode).toBe(65);
@@ -4468,7 +5365,9 @@ describe('Process Runner exactly-once semantics', () => {
       safe: string | null;
     };
     expect(output.safe).toBe('preserved');
-    expect(Object.fromEntries(output.privateEntries)).toEqual(Object.fromEntries(privateKeys.map((key) => [key, null])));
+    expect(Object.fromEntries(output.privateEntries)).toEqual(
+      Object.fromEntries(privateKeys.map((key) => [key, null])),
+    );
   });
 
   test('redacts split secrets in runner files before controller reconciliation', async () => {
@@ -4484,11 +5383,14 @@ describe('Process Runner exactly-once semantics', () => {
       command: {
         kind: 'argv',
         executable: 'node',
-        args: ['-e', [
-          `process.stdout.write('SYNTHETIC_ACCESS_TOKEN => ');`,
-          `setTimeout(() => process.stdout.write(${JSON.stringify(`${syntheticSecret}\nSAFE_RUNNER_MARKER => retained\n`)}), 20);`,
-          'setTimeout(() => process.exit(0), 60);',
-        ].join('')],
+        args: [
+          '-e',
+          [
+            `process.stdout.write('SYNTHETIC_ACCESS_TOKEN => ');`,
+            `setTimeout(() => process.stdout.write(${JSON.stringify(`${syntheticSecret}\nSAFE_RUNNER_MARKER => retained\n`)}), 20);`,
+            'setTimeout(() => process.exit(0), 60);',
+          ].join(''),
+        ],
         cwd: root,
       },
       timeoutMs: 5_000,
@@ -4600,13 +5502,9 @@ describe('canonical Forge process storage', () => {
 
 describe('process MCP live surface', () => {
   test('process tools are defined and process_get/wait/logs work without re-exec', async () => {
-    expect(processToolDefinitions.map((t) => t.name).sort()).toEqual([
-      'process_cancel',
-      'process_get',
-      'process_logs',
-      'process_wait',
-      'run_check',
-    ].sort());
+    expect(processToolDefinitions.map((t) => t.name).sort()).toEqual(
+      ['process_cancel', 'process_get', 'process_logs', 'process_wait', 'run_check'].sort(),
+    );
     const fx = fixture();
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
@@ -4625,10 +5523,12 @@ describe('process MCP live surface', () => {
       controllerHome: fx.controllerHome,
       repo: fx.repoRoot,
     } as unknown as MultiRepositoryMcpToolContext;
-    expect(await callProcessTool(ctx, 'run_check', {
-      repo_id: fx.repository.repoId,
-      check_id: 'package:check:type',
-    })).toBeUndefined();
+    expect(
+      await callProcessTool(ctx, 'run_check', {
+        repo_id: fx.repository.repoId,
+        check_id: 'package:check:type',
+      }),
+    ).toBeUndefined();
     const got = await callProcessTool(ctx, 'process_get', {
       repo_id: fx.repository.repoId,
       process_id: handle.processId,
@@ -4691,11 +5591,15 @@ describe('process MCP live surface', () => {
       interactiveWaitMs: 0,
       timeoutMs: 10_000,
     });
-    expect(blocked).toMatchObject({ completed: true, ok: false, concurrencyWait: {
-      source: 'resource_lease',
-      blockingProcessId: first.processId,
-      blockingOwnerRelation: 'process_owner',
-    } });
+    expect(blocked).toMatchObject({
+      completed: true,
+      ok: false,
+      concurrencyWait: {
+        source: 'resource_lease',
+        blockingProcessId: first.processId,
+        blockingOwnerRelation: 'process_owner',
+      },
+    });
     expect(existsSync(marker)).toBe(false);
 
     const ctx = {
@@ -4707,7 +5611,9 @@ describe('process MCP live surface', () => {
       process_id: blocked.processId,
     });
     expect(got?.isError).not.toBe(true);
-    expect((got?.structuredContent as { process?: { concurrencyWait?: unknown } })?.process?.concurrencyWait).toMatchObject({
+    expect(
+      (got?.structuredContent as { process?: { concurrencyWait?: unknown } })?.process?.concurrencyWait,
+    ).toMatchObject({
       source: 'resource_lease',
       blockingProcessId: first.processId,
       blockingOwnerRelation: 'process_owner',
@@ -4719,7 +5625,9 @@ describe('process MCP live surface', () => {
       timeout_ms: 1_000,
     });
     expect(waited?.isError).not.toBe(true);
-    expect((waited?.structuredContent as { process?: { concurrencyWait?: unknown } })?.process?.concurrencyWait).toMatchObject({
+    expect(
+      (waited?.structuredContent as { process?: { concurrencyWait?: unknown } })?.process?.concurrencyWait,
+    ).toMatchObject({
       source: 'resource_lease',
       blockingProcessId: first.processId,
       blockingOwnerRelation: 'process_owner',
@@ -4758,7 +5666,10 @@ describe('process MCP live surface', () => {
       command: {
         kind: 'argv',
         executable: 'node',
-        args: ['-e', `require('fs').appendFileSync(${JSON.stringify(marker)}, '1'); setTimeout(() => process.exit(0), 250)`],
+        args: [
+          '-e',
+          `require('fs').appendFileSync(${JSON.stringify(marker)}, '1'); setTimeout(() => process.exit(0), 250)`,
+        ],
         cwd: fx.repoRoot,
       },
       interactiveWaitMs: 1,
@@ -4775,7 +5686,11 @@ describe('process MCP live surface', () => {
       timeout_ms: 1_000,
     });
     expect(first?.isError).not.toBe(true);
-    const firstPayload = first?.structuredContent as { process?: { status?: string; completed?: boolean }; requestedWaitMs?: number; attachBudgetMs?: number };
+    const firstPayload = first?.structuredContent as {
+      process?: { status?: string; completed?: boolean };
+      requestedWaitMs?: number;
+      attachBudgetMs?: number;
+    };
     expect(firstPayload.process).toMatchObject({ status: 'running', completed: false });
     expect(firstPayload).toMatchObject({ requestedWaitMs: 1_000, attachBudgetMs: 25 });
 
@@ -4789,7 +5704,8 @@ describe('process MCP live surface', () => {
       timeout_ms: 2_000,
     });
     expect(second?.isError).not.toBe(true);
-    expect((second?.structuredContent as { process?: { completed?: boolean } }).process?.completed).toBe(true);
+    const secondContent = second?.structuredContent as { process?: { completed?: boolean } } | undefined;
+    expect(secondContent?.process?.completed).toBe(true);
     expect(readFileSync(marker, 'utf8')).toBe('1');
   });
 
@@ -4800,7 +5716,12 @@ describe('process MCP live surface', () => {
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 1500)'], cwd: fx.repoRoot },
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'setTimeout(() => process.exit(0), 1500)'],
+        cwd: fx.repoRoot,
+      },
       interactiveWaitMs: 0,
       timeoutMs: 10_000,
       returnHandleImmediately: true,
@@ -4827,7 +5748,9 @@ describe('process MCP live surface', () => {
       reExecuted: false,
     });
 
-    const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, started.processId, { timeoutMs: 5_000 });
+    const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, started.processId, {
+      timeoutMs: 5_000,
+    });
     expect(terminal).toMatchObject({ completed: true, status: 'succeeded', ok: true });
   }, 15_000);
 });

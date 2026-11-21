@@ -125,7 +125,7 @@ src/runtime/resources/leases/
 src/runtime/control-plane/repo-actor/
 ```
 
-Claims describe the resource, not the conversation. Unrelated repositories and independent worktrees do not need a global lock. The same checkout remains a single-writer resource. Lease fencing prevents stale processes from continuing to mutate state after ownership changes.
+Claims describe the resource, not the conversation. Unrelated repositories and independent worktrees do not need a global lock. Ordinary local edits and local commands do not take a checkout-wide writer lease. Git index, Git refs, an explicit mutation scope, external effects, and destructive commands remain fenced. Lease fencing prevents stale processes from continuing to mutate those shared resources after ownership changes.
 
 ## 8. Checks and reusable evidence
 
