@@ -53,7 +53,7 @@ git --git-dir="$BARE" symbolic-ref HEAD refs/heads/main
 printf 'committed\n' >owned.txt
 printf 'uncommitted\n' >unrelated.txt
 printf 'new source\n' >new-source.ts
-bash scripts/sync-main.sh --commit --message 'test: path-scoped main sync' --check-command 'test "$TEST_BASE_REF" = origin/main' --path owned.txt --path new-source.ts >/dev/null
+bash scripts/sync-main.sh --commit --message 'test: path-scoped main sync' --check-command 'test "$TEST_BASE_REF" = origin/main && test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = workspace' --path owned.txt --path new-source.ts >/dev/null
 REMOTE_OWNED="$(git --git-dir="$BARE" show main:owned.txt)"
 REMOTE_NEW="$(git --git-dir="$BARE" show main:new-source.ts)"
 [[ "$REMOTE_OWNED" == committed ]] || fail "selected tracked path was not committed"
@@ -77,8 +77,17 @@ git commit -m 'test: first pending source commit' >/dev/null
 printf 'second source\n' >pending-second.ts
 git add pending-second.ts
 git commit -m 'test: second pending source commit' >/dev/null
-bash scripts/sync-main.sh --check-command 'test "$TEST_BASE_REF" = origin/main && git diff --name-only "$TEST_BASE_REF"...HEAD | grep -Fxq pending-first.ts && git diff --name-only "$TEST_BASE_REF"...HEAD | grep -Fxq pending-second.ts' >/dev/null
+bash scripts/sync-main.sh --check-command 'test "$TEST_BASE_REF" = origin/main && test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed && test "$FORGE_CHECK_CANDIDATE_SHA" = "$(git rev-parse HEAD)" && git diff --name-only "$TEST_BASE_REF"...HEAD | grep -Fxq pending-first.ts && git diff --name-only "$TEST_BASE_REF"...HEAD | grep -Fxq pending-second.ts' >/dev/null
 [[ "$(git rev-parse main)" == "$(git rev-parse origin/main)" ]] || fail "multi-commit candidate did not synchronize"
+
+# A second Writer must not sneak an unchecked successor commit into a validated push.
+printf 'new candidate\n' >pending-third.ts
+git add pending-third.ts
+git commit -m 'test: candidate before concurrent writer' >/dev/null
+REMOTE_BEFORE_CONCURRENT="$(git --git-dir="$BARE" rev-parse main)"
+expect_failure 'concurrent HEAD successor' 'HEAD changed during validation' bash scripts/sync-main.sh --check-command 'git commit --allow-empty -qm "test: concurrent writer successor"'
+[[ "$(git --git-dir="$BARE" rev-parse main)" == "$REMOTE_BEFORE_CONCURRENT" ]] || fail "unvalidated successor reached remote"
+bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed' >/dev/null
 
 # A remote-only fast-forward is synchronized without touching unrelated dirt.
 git clone "$BARE" "$OTHER" >/dev/null 2>&1

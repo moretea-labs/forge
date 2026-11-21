@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { execFileSync, spawnSync } from 'child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -12,6 +12,10 @@ import {
   workspaceMutationDigest,
 } from '../../src/testing/test-governance';
 import { gateDefinitionDigest, stepsFor } from '../../scripts/run-governed-gate';
+import {
+  committedSourceCandidate,
+  materializeCommittedSourceCandidate,
+} from '../../src/testing/source-quality-candidate';
 
 const ROOT = join(import.meta.dir, '../..');
 
@@ -105,6 +109,54 @@ describe('execution-speed test governance', () => {
     expect(source.indexOf('if (testContentDigest(ROOT) !== contentDigest)')).toBeLessThan(
       source.indexOf('atomicJson(cachePath, {'),
     );
+  });
+
+  test('checks committed blobs despite concurrent dirty files, but rejects committed bad formatting', () => {
+    const repo = temporaryRepository();
+    let snapshot: string | undefined;
+    try {
+      writeFileSync(join(repo, 'biome.json'), JSON.stringify({ formatter: { lineWidth: 120 } }) + '\n');
+      git(repo, 'add', 'biome.json');
+      git(repo, 'commit', '-qm', 'pin source quality config');
+      const base = git(repo, 'rev-parse', 'HEAD');
+
+      writeFileSync(join(repo, 'src/unrelated.ts'), 'export const unrelated = 2;\n');
+      git(repo, 'add', 'src/unrelated.ts');
+      git(repo, 'commit', '-qm', 'valid candidate');
+      const candidate = committedSourceCandidate(repo, base);
+      expect(candidate.paths).toEqual(['src/unrelated.ts']);
+
+      writeFileSync(join(repo, 'src/unrelated.ts'), 'export  const unrelated=3;\n');
+      writeFileSync(join(repo, 'src/other.ts'), 'export  const other=1;\n');
+      expect(committedSourceCandidate(repo, base)).toEqual(candidate);
+      snapshot = materializeCommittedSourceCandidate(repo, candidate.revision, candidate.paths);
+      expect(readFileSync(join(snapshot, 'src/unrelated.ts'), 'utf8')).toBe('export const unrelated = 2;\n');
+      expect(existsSync(join(snapshot, 'src/other.ts'))).toBe(false);
+      expect(existsSync(join(snapshot, '.git'))).toBe(false);
+      expect(
+        spawnSync(join(ROOT, 'node_modules/.bin/biome'), ['ci', '--vcs-enabled=false', 'src/unrelated.ts'], {
+          cwd: snapshot,
+          stdio: 'pipe',
+        }).status,
+      ).toBe(0);
+      rmSync(snapshot, { recursive: true, force: true });
+      snapshot = undefined;
+
+      git(repo, 'add', 'src/unrelated.ts');
+      git(repo, 'commit', '-qm', 'bad candidate');
+      const bad = committedSourceCandidate(repo, base);
+      snapshot = materializeCommittedSourceCandidate(repo, bad.revision, bad.paths);
+      expect(
+        spawnSync(join(ROOT, 'node_modules/.bin/biome'), ['ci', '--vcs-enabled=false', 'src/unrelated.ts'], {
+          cwd: snapshot,
+          stdio: 'pipe',
+        }).status,
+      ).not.toBe(0);
+      expect(() => committedSourceCandidate(repo, 'unknown-base-ref')).toThrow();
+    } finally {
+      if (snapshot) rmSync(snapshot, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   test('models task, main, and release as one reusable nested gate DAG', () => {

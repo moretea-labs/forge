@@ -158,18 +158,24 @@ read -r ahead behind < <(sync_refs)
 # commits; GitHub Actions then rejects changes that were reported PASS locally.
 # Respect an explicit caller baseline; otherwise pin the freshly fetched ref.
 CHECK_BASE_REF="${TEST_BASE_REF:-$REMOTE/$BRANCH}"
+# Pin the candidate before the check. A concurrent Writer may add a successor
+# commit, but it must never be published under a check for the earlier HEAD.
+VALIDATED_HEAD="$(git rev-parse HEAD)"
 if [[ "$COMMIT" -eq 1 ]]; then
   echo "[sync-main] running validation: $CHECK_COMMAND (base=$CHECK_BASE_REF)"
-  TEST_BASE_REF="$CHECK_BASE_REF" bash -lc "$CHECK_COMMAND"
+  TEST_BASE_REF="$CHECK_BASE_REF" FORGE_CHECK_SOURCE_QUALITY_MODE=workspace FORGE_CHECK_CANDIDATE_SHA="$VALIDATED_HEAD" bash -lc "$CHECK_COMMAND"
+  [[ "$(git rev-parse HEAD)" == "$VALIDATED_HEAD" ]] || fail "HEAD changed during validation; keep successor commits and recheck the new candidate"
   git diff --check -- "${PATHS[@]}"
   git add -- "${PATHS[@]}"
   git diff --cached --check -- "${PATHS[@]}"
   git diff --cached --quiet && fail "the selected paths contain no staged changes"
   echo "[sync-main] committing only the selected paths"
   git commit -m "$MESSAGE"
+  VALIDATED_HEAD="$(git rev-parse HEAD)"
 elif [[ "$ahead" -gt 0 ]]; then
   echo "[sync-main] validating already-committed changes before publication: $CHECK_COMMAND (base=$CHECK_BASE_REF)"
-  TEST_BASE_REF="$CHECK_BASE_REF" bash -lc "$CHECK_COMMAND"
+  TEST_BASE_REF="$CHECK_BASE_REF" FORGE_CHECK_SOURCE_QUALITY_MODE=committed FORGE_CHECK_CANDIDATE_SHA="$VALIDATED_HEAD" bash -lc "$CHECK_COMMAND"
+  [[ "$(git rev-parse HEAD)" == "$VALIDATED_HEAD" ]] || fail "HEAD changed during validation; keep successor commits and recheck the new candidate"
 fi
 
 # Re-fetch after validation/commit so a concurrent remote update cannot be
@@ -178,6 +184,7 @@ echo "[sync-main] refreshing $REMOTE/$BRANCH before publication"
 git fetch "$REMOTE" "$BRANCH"
 read -r ahead behind < <(sync_refs)
 if [[ "$ahead" -gt 0 ]]; then
+  [[ "$(git rev-parse HEAD)" == "$VALIDATED_HEAD" ]] || fail "HEAD changed since validation; refusing to push unvalidated successor commits"
   echo "[sync-main] pushing $ahead commit(s) to $REMOTE/$BRANCH (fast-forward only)"
   if push_output="$(git push "$REMOTE" "$BRANCH:$BRANCH" 2>&1)"; then
     printf '%s\n' "$push_output"
