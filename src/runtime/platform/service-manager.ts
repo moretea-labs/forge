@@ -44,14 +44,37 @@ export interface PlatformDetachedProcessInput {
 export interface PlatformServiceManagerHost {
   selection: PlatformServiceManagerSelection;
   renderSystemdUserUnit(input: SystemdUserUnitInput): string;
-  installSystemdUserUnit(input: { unitName: string; unit: SystemdUserUnitInput; env?: NodeJS.ProcessEnv; errorPrefix: string }): string;
+  installSystemdUserUnit(input: {
+    unitName: string;
+    unit: SystemdUserUnitInput;
+    env?: NodeJS.ProcessEnv;
+    errorPrefix: string;
+  }): string;
   writeSystemdUserUnit(unitName: string, unit: SystemdUserUnitInput, env?: NodeJS.ProcessEnv): string;
   systemdUserInstallCommands(unitName: string): string[][];
   launchdInstalledPath(label: string, accountHome?: string): string;
   installLaunchd(sourcePath: string, label: string): void;
-  bootstrapLaunchd(input: { label: string; plistPath: string }): Promise<{ ok: boolean; diagnostics: string[] }>;
-  bootoutLaunchd(input: { label: string; plistPath: string }): Promise<{ ok: boolean; diagnostics: string[] }>;
-  retireConflictingLaunchd(input: Parameters<typeof retireConflictingForgeLaunchAgents>[0]): ReturnType<typeof retireConflictingForgeLaunchAgents>;
+  bootstrapLaunchd(input: {
+    label: string;
+    plistPath: string;
+    domain?: string;
+    maxAttempts?: number;
+    retryDelayMs?: number;
+    maxBootoutWaitMs?: number;
+    oldPid?: number;
+    port?: number;
+  }): Promise<{ ok: boolean; diagnostics: string[] }>;
+  bootoutLaunchd(input: {
+    label: string;
+    plistPath: string;
+    domain?: string;
+    maxAttempts?: number;
+    retryDelayMs?: number;
+    maxBootoutWaitMs?: number;
+  }): Promise<{ ok: boolean; diagnostics: string[] }>;
+  retireConflictingLaunchd(
+    input: Parameters<typeof retireConflictingForgeLaunchAgents>[0],
+  ): ReturnType<typeof retireConflictingForgeLaunchAgents>;
   retireLaunchdExact(input: { label: string; accountHome?: string }): Promise<ExactLaunchAgentRetirementResult>;
   retireSystemdUserExact(input: { unitName: string; env?: NodeJS.ProcessEnv }): ExactSystemdUserUnitRetirementResult;
   launchdDomain(): string;
@@ -83,16 +106,22 @@ export function resolvePlatformServiceManager(input: {
   return { kind: 'portable', persistent: false, reason: 'platform_service_manager_unsupported' };
 }
 
-export function createPlatformServiceManagerHost(input: {
-  platform?: NodeJS.Platform;
-  env?: NodeJS.ProcessEnv;
-  forcePortable?: boolean;
-  systemdUserAvailable?: boolean;
-} = {}): PlatformServiceManagerHost {
+export function createPlatformServiceManagerHost(
+  input: {
+    platform?: NodeJS.Platform;
+    env?: NodeJS.ProcessEnv;
+    forcePortable?: boolean;
+    systemdUserAvailable?: boolean;
+  } = {},
+): PlatformServiceManagerHost {
   const platform = input.platform ?? process.platform;
   const env = input.env ?? process.env;
   const systemdAvailable = input.systemdUserAvailable ?? (platform === 'linux' ? systemdUserAvailable(env) : false);
-  const selection = resolvePlatformServiceManager({ platform, forcePortable: input.forcePortable, systemdUserAvailable: systemdAvailable });
+  const selection = resolvePlatformServiceManager({
+    platform,
+    forcePortable: input.forcePortable,
+    systemdUserAvailable: systemdAvailable,
+  });
   return {
     selection,
     renderSystemdUserUnit,
@@ -110,7 +139,9 @@ export function createPlatformServiceManagerHost(input: {
     detachLaunchdBootout(label: string): void {
       if (platform !== 'darwin') return;
       const child = spawn('/bin/launchctl', ['bootout', `${currentUserLaunchdDomain()}/${label}`], {
-        detached: true, stdio: 'ignore', env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+        detached: true,
+        stdio: 'ignore',
+        env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
       });
       child.unref();
     },
@@ -120,7 +151,9 @@ export function createPlatformServiceManagerHost(input: {
       const stderr = openSync(processInput.stderrPath, 'a', 0o600);
       try {
         const child = spawn(processInput.executable, processInput.args, {
-          detached: true, stdio: ['ignore', stdout, stderr], env: processInput.environment,
+          detached: true,
+          stdio: ['ignore', stdout, stderr],
+          env: processInput.environment,
         });
         if (!child.pid) throw new Error(`${processInput.errorCode}: child pid unavailable`);
         child.unref();
@@ -142,5 +175,7 @@ export function probeSystemdUserAvailable(env: NodeJS.ProcessEnv = process.env):
 }
 
 export function probeSystemdUserAvailableDirect(env: NodeJS.ProcessEnv = process.env): boolean {
-  return spawnSync('systemctl', ['--user', 'show-environment'], { encoding: 'utf8', env, timeout: 30_000 }).status === 0;
+  return (
+    spawnSync('systemctl', ['--user', 'show-environment'], { encoding: 'utf8', env, timeout: 30_000 }).status === 0
+  );
 }

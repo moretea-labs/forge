@@ -1,12 +1,27 @@
 import { writeAtomicTextFile } from '../shared/atomic-text-file';
 import { createHash } from 'crypto';
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from 'fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { loadMcpServiceLocalConfig } from '../../../adapters/mcp/auth';
 import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
 import type { PackageRuntimeRelease } from './package-runtime-release';
-import { createPlatformServiceManagerHost, platformLaunchdInstalledPath, type PlatformServiceManagerHost, type SystemdUserUnitInput } from '../platform/service-manager';
+import {
+  createPlatformServiceManagerHost,
+  platformLaunchdInstalledPath,
+  type PlatformServiceManagerHost,
+  type SystemdUserUnitInput,
+} from '../platform/service-manager';
 import { forgeConnectorPersistentServiceLabel } from '../platform/service-inventory';
 
 export interface PackageConnectorServicePaths {
@@ -20,7 +35,10 @@ export interface PackageConnectorServicePaths {
   activeEntrypointPath: string;
 }
 
-export type PackageConnectorReleaseBinding = Pick<PackageRuntimeRelease, 'releaseId' | 'releaseRoot' | 'packageRoot'> & {
+export type PackageConnectorReleaseBinding = Pick<
+  PackageRuntimeRelease,
+  'releaseId' | 'releaseRoot' | 'packageRoot'
+> & {
   connectorEntrypoint?: 'forge-mcp-gateway';
   connectorArtifactIdentity?: string;
 };
@@ -66,7 +84,10 @@ function xml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
 
-export function packageConnectorServicePaths(controllerHome: string, accountHome = process.env.HOME ?? homedir()): PackageConnectorServicePaths {
+export function packageConnectorServicePaths(
+  controllerHome: string,
+  accountHome = process.env.HOME ?? homedir(),
+): PackageConnectorServicePaths {
   const home = resolve(controllerHome);
   const label = forgeConnectorPersistentServiceLabel(home);
   const serviceRoot = join(home, 'runtime', 'connector-service');
@@ -83,6 +104,17 @@ export function packageConnectorServicePaths(controllerHome: string, accountHome
 }
 
 const PACKAGE_CONNECTOR_CUTOVER_DRAIN_TTL_MS = 10 * 60_000;
+
+/**
+ * launchd ExitTimeOut for the Connector LaunchAgent.
+ * Must cover Gateway POST drain (30s) + final observation flush (1s) + transport cleanup.
+ * Bootout observation windows that are shorter than this will fail closed while the
+ * service remains registered during an admitted-response drain (#640 activate path).
+ */
+export const PACKAGE_CONNECTOR_LAUNCHD_EXIT_TIMEOUT_SEC = 45;
+
+/** Bounded observation after bootout: ExitTimeOut plus reconcile/probe slack. */
+export const PACKAGE_CONNECTOR_LAUNCHD_BOOTOUT_OBSERVE_MS = (PACKAGE_CONNECTOR_LAUNCHD_EXIT_TIMEOUT_SEC + 10) * 1_000;
 
 export function packageConnectorCutoverDrainMarkerPath(controllerHome: string): string {
   return join(packageConnectorServicePaths(controllerHome).serviceRoot, 'cutover-draining.json');
@@ -102,19 +134,19 @@ function livePackageConnectorCutoverDrainMarker(
     const marker = JSON.parse(readFileSync(path, 'utf8')) as Partial<PackageConnectorCutoverDrainMarker>;
     const armedAt = typeof marker.armedAt === 'string' ? Date.parse(marker.armedAt) : Number.NaN;
     if (
-      marker.schemaVersion !== 1
-      || typeof marker.sessionId !== 'string'
-      || !marker.sessionId.trim()
-      || typeof marker.stableReleaseId !== 'string'
-      || !marker.stableReleaseId.trim()
-      || typeof marker.connectorEndpoint !== 'string'
-      || !marker.connectorEndpoint.trim()
-      || typeof marker.connectorInstalledAt !== 'string'
-      || !marker.connectorInstalledAt.trim()
-      || !Number.isInteger(marker.ownerPid)
-      || Number(marker.ownerPid) <= 0
-      || !Number.isFinite(armedAt)
-      || now - armedAt > PACKAGE_CONNECTOR_CUTOVER_DRAIN_TTL_MS
+      marker.schemaVersion !== 1 ||
+      typeof marker.sessionId !== 'string' ||
+      !marker.sessionId.trim() ||
+      typeof marker.stableReleaseId !== 'string' ||
+      !marker.stableReleaseId.trim() ||
+      typeof marker.connectorEndpoint !== 'string' ||
+      !marker.connectorEndpoint.trim() ||
+      typeof marker.connectorInstalledAt !== 'string' ||
+      !marker.connectorInstalledAt.trim() ||
+      !Number.isInteger(marker.ownerPid) ||
+      Number(marker.ownerPid) <= 0 ||
+      !Number.isFinite(armedAt) ||
+      now - armedAt > PACKAGE_CONNECTOR_CUTOVER_DRAIN_TTL_MS
     ) {
       removePackageConnectorCutoverDrainMarker(controllerHome);
       return undefined;
@@ -141,14 +173,16 @@ export function armPackageConnectorCutoverDrain(input: {
   connectorAuthority: PackageConnectorServiceAuthority;
 }): PackageConnectorCutoverDrainMarker {
   if (input.connectorAuthority.releaseId !== input.stableReleaseId) {
-    throw new Error(`PACKAGE_CONNECTOR_CUTOVER_DRAIN_STABLE_MISMATCH: expected ${input.stableReleaseId}, observed ${input.connectorAuthority.releaseId}`);
+    throw new Error(
+      `PACKAGE_CONNECTOR_CUTOVER_DRAIN_STABLE_MISMATCH: expected ${input.stableReleaseId}, observed ${input.connectorAuthority.releaseId}`,
+    );
   }
   const currentAuthority = readPackageConnectorServiceAuthority(input.controllerHome);
   if (
-    !currentAuthority
-    || currentAuthority.releaseId !== input.connectorAuthority.releaseId
-    || currentAuthority.endpoint !== input.connectorAuthority.endpoint
-    || currentAuthority.installedAt !== input.connectorAuthority.installedAt
+    !currentAuthority ||
+    currentAuthority.releaseId !== input.connectorAuthority.releaseId ||
+    currentAuthority.endpoint !== input.connectorAuthority.endpoint ||
+    currentAuthority.installedAt !== input.connectorAuthority.installedAt
   ) {
     throw new Error('PACKAGE_CONNECTOR_CUTOVER_DRAIN_AUTHORITY_CHANGED');
   }
@@ -185,30 +219,41 @@ export function packageConnectorCutoverDrainIsActive(
     return true;
   }
   if (!authority) return true;
-  return authority.releaseId === marker.stableReleaseId
-    && authority.endpoint === marker.connectorEndpoint
-    && authority.installedAt === marker.connectorInstalledAt;
+  return (
+    authority.releaseId === marker.stableReleaseId &&
+    authority.endpoint === marker.connectorEndpoint &&
+    authority.installedAt === marker.connectorInstalledAt
+  );
 }
 
-export function readPackageConnectorServiceAuthority(controllerHome: string): PackageConnectorServiceAuthority | undefined {
+export function readPackageConnectorServiceAuthority(
+  controllerHome: string,
+): PackageConnectorServiceAuthority | undefined {
   const path = packageConnectorServicePaths(controllerHome).authorityPath;
   if (!existsSync(path)) return undefined;
   const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<PackageConnectorServiceAuthority>;
   if (
-    parsed.schemaVersion !== 1
-    || typeof parsed.endpoint !== 'string'
-    || typeof parsed.releaseId !== 'string'
-    || typeof parsed.releaseRoot !== 'string'
-    || typeof parsed.packageRoot !== 'string'
-    || !['launchd', 'systemd-user', 'portable'].includes(String(parsed.mode))
-    || typeof parsed.persistent !== 'boolean'
-    || (parsed.connectorArtifactIdentity !== undefined && !/^sha256:[a-f0-9]{64}$/i.test(parsed.connectorArtifactIdentity))
-    || typeof parsed.installedAt !== 'string'
-  ) throw new Error('FORGE_PACKAGE_CONNECTOR_AUTHORITY_INVALID');
+    parsed.schemaVersion !== 1 ||
+    typeof parsed.endpoint !== 'string' ||
+    typeof parsed.releaseId !== 'string' ||
+    typeof parsed.releaseRoot !== 'string' ||
+    typeof parsed.packageRoot !== 'string' ||
+    !['launchd', 'systemd-user', 'portable'].includes(String(parsed.mode)) ||
+    typeof parsed.persistent !== 'boolean' ||
+    (parsed.connectorArtifactIdentity !== undefined &&
+      !/^sha256:[a-f0-9]{64}$/i.test(parsed.connectorArtifactIdentity)) ||
+    typeof parsed.installedAt !== 'string'
+  )
+    throw new Error('FORGE_PACKAGE_CONNECTOR_AUTHORITY_INVALID');
   return parsed as PackageConnectorServiceAuthority;
 }
 
-function writePackageConnectorServiceAuthority(input: { release: PackageConnectorReleaseBinding; controllerHome: string; result: PackageConnectorServiceResult; installedAt?: string }): void {
+function writePackageConnectorServiceAuthority(input: {
+  release: PackageConnectorReleaseBinding;
+  controllerHome: string;
+  result: PackageConnectorServiceResult;
+  installedAt?: string;
+}): void {
   const paths = packageConnectorServicePaths(input.controllerHome);
   const artifact = attestedCompiledConnector(input.release);
   const authority: PackageConnectorServiceAuthority = {
@@ -226,7 +271,10 @@ function writePackageConnectorServiceAuthority(input: { release: PackageConnecto
   writeAtomicTextFile(paths.authorityPath, `${JSON.stringify(authority, null, 2)}\n`);
 }
 
-export function packageConnectorEndpointStatusHealthy(status: number, authMode: PackageConnectorAuthMode = 'oauth'): boolean {
+export function packageConnectorEndpointStatusHealthy(
+  status: number,
+  authMode: PackageConnectorAuthMode = 'oauth',
+): boolean {
   // A Secure Tunnel owns external authentication and therefore its loopback
   // Connector must answer directly. Accepting an OAuth challenge in `none`
   // mode hides a stale service unit that was rewritten by an older lifecycle
@@ -252,7 +300,11 @@ async function defaultConnectorEndpointProbe(endpoint: string): Promise<boolean>
     // GET /mcp is a protocol request, not a liveness request: in auth:none it
     // correctly responds 400 without an MCP session. /transport-ready is the
     // in-memory, transport-scoped readiness surface used by Recovery.
-    const response = await fetch(packageConnectorReadinessEndpoint(endpoint), { method: 'GET', redirect: 'manual', signal: controller.signal });
+    const response = await fetch(packageConnectorReadinessEndpoint(endpoint), {
+      method: 'GET',
+      redirect: 'manual',
+      signal: controller.signal,
+    });
     return response.status === 200;
   } catch {
     return false;
@@ -291,12 +343,12 @@ export function packageConnectorAuthMode(controllerHome: string): PackageConnect
   // Connector must not advertise a loopback OAuth issuer to ChatGPT in that
   // topology. Keep OAuth as the default for existing HTTPS Connectors, and
   // require an explicit per-instance opt-in before disabling it.
-  return loadMcpServiceLocalConfig(controllerHome)?.auth?.mode?.trim().toLowerCase() === 'none'
-    ? 'none'
-    : 'oauth';
+  return loadMcpServiceLocalConfig(controllerHome)?.auth?.mode?.trim().toLowerCase() === 'none' ? 'none' : 'oauth';
 }
 
-function attestedCompiledConnector(release: PackageConnectorReleaseBinding): { target: string; identity: string } | undefined {
+function attestedCompiledConnector(
+  release: PackageConnectorReleaseBinding,
+): { target: string; identity: string } | undefined {
   const entrypoint = release.connectorEntrypoint;
   const identity = release.connectorArtifactIdentity?.trim();
   if (!entrypoint && !identity) return undefined;
@@ -325,12 +377,21 @@ function stableConnectorEntrypointMatches(path: string, target: string): boolean
   }
 }
 
-export function syncPackageConnectorActiveEntrypoint(input: { release: PackageConnectorReleaseBinding; controllerHome: string; accountHome?: string }): { path: string; target?: string; artifactIdentity?: string; changed: boolean } {
+export function syncPackageConnectorActiveEntrypoint(input: {
+  release: PackageConnectorReleaseBinding;
+  controllerHome: string;
+  accountHome?: string;
+}): { path: string; target?: string; artifactIdentity?: string; changed: boolean } {
   const paths = packageConnectorServicePaths(input.controllerHome, input.accountHome);
   const artifact = attestedCompiledConnector(input.release);
   if (!artifact) return { path: paths.activeEntrypointPath, changed: false };
   if (stableConnectorEntrypointMatches(paths.activeEntrypointPath, artifact.target)) {
-    return { path: paths.activeEntrypointPath, target: artifact.target, artifactIdentity: artifact.identity, changed: false };
+    return {
+      path: paths.activeEntrypointPath,
+      target: artifact.target,
+      artifactIdentity: artifact.identity,
+      changed: false,
+    };
   }
   mkdirSync(dirname(paths.activeEntrypointPath), { recursive: true, mode: 0o700 });
   const temporary = `${paths.activeEntrypointPath}.${process.pid}.tmp`;
@@ -345,24 +406,49 @@ export function syncPackageConnectorActiveEntrypoint(input: { release: PackageCo
   if (!stableConnectorEntrypointMatches(paths.activeEntrypointPath, artifact.target)) {
     throw new Error('FORGE_PACKAGE_CONNECTOR_STABLE_ENTRYPOINT_MIRROR_FAILED');
   }
-  return { path: paths.activeEntrypointPath, target: artifact.target, artifactIdentity: artifact.identity, changed: true };
+  return {
+    path: paths.activeEntrypointPath,
+    target: artifact.target,
+    artifactIdentity: artifact.identity,
+    changed: true,
+  };
 }
 
-export function packageConnectorLaunchSpec(input: { release: PackageConnectorReleaseBinding; controllerHome: string; endpoint: string; executable?: string }): { executable: string; args: string[]; environment: Record<string, string>; port: number; authMode: PackageConnectorAuthMode } {
+export function packageConnectorLaunchSpec(input: {
+  release: PackageConnectorReleaseBinding;
+  controllerHome: string;
+  endpoint: string;
+  executable?: string;
+}): {
+  executable: string;
+  args: string[];
+  environment: Record<string, string>;
+  port: number;
+  authMode: PackageConnectorAuthMode;
+} {
   const parsed = new URL(input.endpoint);
   const port = Number(parsed.port);
-  if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || parsed.pathname !== '/mcp' || !Number.isInteger(port) || port < 1 || port > 65_535) {
+  if (
+    parsed.protocol !== 'http:' ||
+    parsed.hostname !== '127.0.0.1' ||
+    parsed.pathname !== '/mcp' ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65_535
+  ) {
     throw new Error('FORGE_PACKAGE_CONNECTOR_ENDPOINT_INVALID');
   }
   const attestedConnector = attestedCompiledConnector(input.release);
   const legacyCompiledConnector = join(resolve(input.release.releaseRoot), 'forge-mcp-gateway');
   const hasLegacyCompiledConnector = !attestedConnector && existsSync(legacyCompiledConnector);
   const hasCompiledConnector = Boolean(attestedConnector) || hasLegacyCompiledConnector;
-  const executable = resolve(attestedConnector
-    ? packageConnectorServicePaths(input.controllerHome).activeEntrypointPath
-    : hasLegacyCompiledConnector
-      ? legacyCompiledConnector
-      : input.executable ?? process.env.FORGE_CONNECTOR_EXECUTABLE ?? process.execPath);
+  const executable = resolve(
+    attestedConnector
+      ? packageConnectorServicePaths(input.controllerHome).activeEntrypointPath
+      : hasLegacyCompiledConnector
+        ? legacyCompiledConnector
+        : (input.executable ?? process.env.FORGE_CONNECTOR_EXECUTABLE ?? process.execPath),
+  );
   if (/^forge-recovery-(?:gateway|watchdog)$/i.test(basename(executable))) {
     throw new Error('FORGE_PACKAGE_CONNECTOR_EXECUTABLE_INVALID');
   }
@@ -371,20 +457,37 @@ export function packageConnectorLaunchSpec(input: { release: PackageConnectorRel
   const nodeLoader = join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs');
   const executableName = basename(executable);
   const executableIsCurrentProcess = resolve(executable) === resolve(process.execPath);
-  const isBun = /(?:^|[/\\-])bun(?:$|[/\\]|\.exe$)/i.test(executableName)
-    || (executableIsCurrentProcess && Boolean(process.versions.bun));
+  const isBun =
+    /(?:^|[/\\-])bun(?:$|[/\\]|\.exe$)/i.test(executableName) ||
+    (executableIsCurrentProcess && Boolean(process.versions.bun));
   const instanceId = loadMcpServiceLocalConfig(input.controllerHome)?.identity?.forgeInstanceId?.trim();
   const authMode = packageConnectorAuthMode(input.controllerHome);
   const cliArgs = [
     // The package snapshot is executable code, never an adopted repository.
     // Supplying it as --repo makes the Gateway try to register a non-Git
     // directory and fail before it can proxy the Canonical Runtime.
-    'mcp', 'serve', '--controller-home', resolve(input.controllerHome),
-    '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'controller', '--auth', authMode,
+    'mcp',
+    'serve',
+    '--controller-home',
+    resolve(input.controllerHome),
+    '--transport',
+    'http',
+    '--host',
+    '127.0.0.1',
+    '--port',
+    String(port),
+    '--profile',
+    'controller',
+    '--auth',
+    authMode,
   ];
   return {
     executable,
-    args: hasCompiledConnector ? cliArgs : isBun ? [cliEntry, ...cliArgs] : ['--loader', nodeLoader, cliEntry, ...cliArgs],
+    args: hasCompiledConnector
+      ? cliArgs
+      : isBun
+        ? [cliEntry, ...cliArgs]
+        : ['--loader', nodeLoader, cliEntry, ...cliArgs],
     environment: {
       FORGE_CONTROLLER_HOME: resolve(input.controllerHome),
       FORGE_CONTROLLER_LIFECYCLE_OWNER: '1',
@@ -397,17 +500,23 @@ export function packageConnectorLaunchSpec(input: { release: PackageConnectorRel
 
 // Explicit service termination grace covers the Gateway POST drain (30s), final
 // observation-error flush (1s), and transport cleanup before launchd SIGKILL.
-export function renderPackageConnectorLaunchAgent(input: { paths: PackageConnectorServicePaths; launch: ReturnType<typeof packageConnectorLaunchSpec> }): string {
-  const environmentXml = Object.entries(input.launch.environment).sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, value]) => `    <key>${xml(key)}</key>\n    <string>${xml(value)}</string>`).join('\n');
+export function renderPackageConnectorLaunchAgent(input: {
+  paths: PackageConnectorServicePaths;
+  launch: ReturnType<typeof packageConnectorLaunchSpec>;
+}): string {
+  const environmentXml = Object.entries(input.launch.environment)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `    <key>${xml(key)}</key>\n    <string>${xml(value)}</string>`)
+    .join('\n');
   const args = [input.launch.executable, ...input.launch.args];
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${xml(input.paths.label)}</string>\n  <key>ProgramArguments</key>\n  <array>\n${args.map((arg) => `    <string>${xml(arg)}</string>`).join('\n')}\n  </array>\n  <key>EnvironmentVariables</key>\n  <dict>\n${environmentXml}\n  </dict>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <dict><key>SuccessfulExit</key><false/></dict>\n  <key>ExitTimeOut</key><integer>45</integer>\n  <key>ThrottleInterval</key><integer>5</integer>\n  <key>StandardOutPath</key><string>${xml(input.paths.stdoutPath)}</string>\n  <key>StandardErrorPath</key><string>${xml(input.paths.stderrPath)}</string>\n</dict>\n</plist>\n`;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${xml(input.paths.label)}</string>\n  <key>ProgramArguments</key>\n  <array>\n${args.map((arg) => `    <string>${xml(arg)}</string>`).join('\n')}\n  </array>\n  <key>EnvironmentVariables</key>\n  <dict>\n${environmentXml}\n  </dict>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <dict><key>SuccessfulExit</key><false/></dict>\n  <key>ExitTimeOut</key><integer>${PACKAGE_CONNECTOR_LAUNCHD_EXIT_TIMEOUT_SEC}</integer>\n  <key>ThrottleInterval</key><integer>5</integer>\n  <key>StandardOutPath</key><string>${xml(input.paths.stdoutPath)}</string>\n  <key>StandardErrorPath</key><string>${xml(input.paths.stderrPath)}</string>\n</dict>\n</plist>\n`;
 }
 
-export function packageConnectorSystemdUserUnitInput(input: { launch: ReturnType<typeof packageConnectorLaunchSpec> }): SystemdUserUnitInput {
-  const description = input.launch.authMode === 'oauth'
-    ? 'Forge ChatGPT OAuth Gateway'
-    : 'Forge ChatGPT Secure Tunnel Connector';
+export function packageConnectorSystemdUserUnitInput(input: {
+  launch: ReturnType<typeof packageConnectorLaunchSpec>;
+}): SystemdUserUnitInput {
+  const description =
+    input.launch.authMode === 'oauth' ? 'Forge ChatGPT OAuth Gateway' : 'Forge ChatGPT Secure Tunnel Connector';
   return {
     description,
     executable: input.launch.executable,
@@ -418,14 +527,21 @@ export function packageConnectorSystemdUserUnitInput(input: { launch: ReturnType
   };
 }
 
-export function renderPackageConnectorSystemdUserUnit(input: { launch: ReturnType<typeof packageConnectorLaunchSpec> }): string {
-  return createPlatformServiceManagerHost({ platform: 'linux', systemdUserAvailable: true })
-    .renderSystemdUserUnit(packageConnectorSystemdUserUnitInput(input));
+export function renderPackageConnectorSystemdUserUnit(input: {
+  launch: ReturnType<typeof packageConnectorLaunchSpec>;
+}): string {
+  return createPlatformServiceManagerHost({ platform: 'linux', systemdUserAvailable: true }).renderSystemdUserUnit(
+    packageConnectorSystemdUserUnitInput(input),
+  );
 }
 
 /** A rewritten user unit needs an explicit restart; enable --now preserves an already-running old process. */
 export function packageConnectorSystemdInstallCommands(unitName: string): string[][] {
-  return [['--user', 'daemon-reload'], ['--user', 'enable', unitName], ['--user', 'restart', unitName]];
+  return [
+    ['--user', 'daemon-reload'],
+    ['--user', 'enable', unitName],
+    ['--user', 'restart', unitName],
+  ];
 }
 
 export function packageConnectorServiceMatchesRelease(input: {
@@ -445,10 +561,11 @@ export function packageConnectorServiceMatchesRelease(input: {
       if (input.authority.connectorArtifactIdentity !== artifact.identity) return false;
       if (!stableConnectorEntrypointMatches(paths.activeEntrypointPath, artifact.target)) return false;
     } else if (
-      input.authority.releaseId !== input.release.releaseId
-      || resolve(input.authority.releaseRoot) !== resolve(input.release.releaseRoot)
-      || resolve(input.authority.packageRoot) !== resolve(input.release.packageRoot)
-    ) return false;
+      input.authority.releaseId !== input.release.releaseId ||
+      resolve(input.authority.releaseRoot) !== resolve(input.release.releaseRoot) ||
+      resolve(input.authority.packageRoot) !== resolve(input.release.packageRoot)
+    )
+      return false;
     const launch = packageConnectorLaunchSpec({
       release: input.release,
       controllerHome: input.controllerHome,
@@ -465,7 +582,10 @@ export function packageConnectorServiceMatchesRelease(input: {
     if (input.platform === 'linux') {
       if (input.authority.mode !== 'systemd-user' || !input.authority.servicePath) return false;
       const servicePath = resolve(input.authority.servicePath);
-      return existsSync(servicePath) && readFileSync(servicePath, 'utf8') === renderPackageConnectorSystemdUserUnit({ launch });
+      return (
+        existsSync(servicePath) &&
+        readFileSync(servicePath, 'utf8') === renderPackageConnectorSystemdUserUnit({ launch })
+      );
     }
     return false;
   } catch {
@@ -473,7 +593,12 @@ export function packageConnectorServiceMatchesRelease(input: {
   }
 }
 
-function installSystemd(paths: PackageConnectorServicePaths, launch: ReturnType<typeof packageConnectorLaunchSpec>, env: NodeJS.ProcessEnv, host: PlatformServiceManagerHost): string {
+function installSystemd(
+  paths: PackageConnectorServicePaths,
+  launch: ReturnType<typeof packageConnectorLaunchSpec>,
+  env: NodeJS.ProcessEnv,
+  host: PlatformServiceManagerHost,
+): string {
   return host.installSystemdUserUnit({
     unitName: `${paths.label}.service`,
     unit: packageConnectorSystemdUserUnitInput({ launch }),
@@ -482,7 +607,12 @@ function installSystemd(paths: PackageConnectorServicePaths, launch: ReturnType<
   });
 }
 
-function startPortable(paths: PackageConnectorServicePaths, launch: ReturnType<typeof packageConnectorLaunchSpec>, env: NodeJS.ProcessEnv, host: PlatformServiceManagerHost): number {
+function startPortable(
+  paths: PackageConnectorServicePaths,
+  launch: ReturnType<typeof packageConnectorLaunchSpec>,
+  env: NodeJS.ProcessEnv,
+  host: PlatformServiceManagerHost,
+): number {
   // A connector is not the Canonical Runtime writer. Never let a transient
   // installer/worker write claim escape into this long-lived process.
   const childEnv = runtimeAuthorityFreeEnvironment(env);
@@ -496,17 +626,31 @@ function startPortable(paths: PackageConnectorServicePaths, launch: ReturnType<t
   });
 }
 
-export async function installPackageConnectorService(input: { release: PackageConnectorReleaseBinding; controllerHome: string; endpoint: string; executable?: string; platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; forcePortable?: boolean; probeEndpoint?: (endpoint: string) => Promise<boolean> }): Promise<PackageConnectorServiceResult> {
+export async function installPackageConnectorService(input: {
+  release: PackageConnectorReleaseBinding;
+  controllerHome: string;
+  endpoint: string;
+  executable?: string;
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  forcePortable?: boolean;
+  probeEndpoint?: (endpoint: string) => Promise<boolean>;
+}): Promise<PackageConnectorServiceResult> {
   const paths = packageConnectorServicePaths(input.controllerHome, input.env?.HOME);
   mkdirSync(join(paths.serviceRoot, 'logs'), { recursive: true, mode: 0o700 });
-  syncPackageConnectorActiveEntrypoint({ release: input.release, controllerHome: input.controllerHome, accountHome: input.env?.HOME });
+  syncPackageConnectorActiveEntrypoint({
+    release: input.release,
+    controllerHome: input.controllerHome,
+    accountHome: input.env?.HOME,
+  });
   const launch = packageConnectorLaunchSpec({
     release: input.release,
     controllerHome: input.controllerHome,
     endpoint: input.endpoint,
     executable: input.executable,
   });
-  const platform = input.platform ?? process.platform, env = input.env ?? process.env;
+  const platform = input.platform ?? process.platform,
+    env = input.env ?? process.env;
   const serviceHost = createPlatformServiceManagerHost({ platform, env, forcePortable: input.forcePortable });
   const serviceManager = serviceHost.selection;
   if (serviceManager.kind === 'launchd') {
@@ -516,24 +660,68 @@ export async function installPackageConnectorService(input: { release: PackageCo
       labelPrefix: 'com.moretea.forge.mcp-gateway',
       port: launch.port,
       requiredArguments: ['mcp', 'serve', '--auth', launch.authMode],
+      maxBootoutWaitMs: PACKAGE_CONNECTOR_LAUNCHD_BOOTOUT_OBSERVE_MS,
     });
     writeAtomicTextFile(paths.sourcePlistPath, renderPackageConnectorLaunchAgent({ paths, launch }), 0o600);
     serviceHost.installLaunchd(paths.sourcePlistPath, paths.label);
-    const result = await serviceHost.bootstrapLaunchd({ label: paths.label, plistPath: paths.installedPlistPath });
+    // Bootout observation must outlast ExitTimeOut or drain-in-progress Connector
+    // cutovers fail with "exact launchd service remained registered" (#640).
+    const result = await serviceHost.bootstrapLaunchd({
+      label: paths.label,
+      plistPath: paths.installedPlistPath,
+      port: launch.port,
+      maxBootoutWaitMs: PACKAGE_CONNECTOR_LAUNCHD_BOOTOUT_OBSERVE_MS,
+    });
     if (!result.ok) throw new Error(`FORGE_PACKAGE_CONNECTOR_LAUNCHD_INSTALL_FAILED: ${result.diagnostics.join('; ')}`);
-    const endpointReady = await waitForPackageConnectorEndpointReady(input.endpoint, { authMode: launch.authMode, probeEndpoint: input.probeEndpoint });
+    const endpointReady = await waitForPackageConnectorEndpointReady(input.endpoint, {
+      authMode: launch.authMode,
+      probeEndpoint: input.probeEndpoint,
+    });
     if (!endpointReady) throw new Error(`FORGE_PACKAGE_CONNECTOR_ENDPOINT_NOT_READY: ${input.endpoint}`);
-    const installed = { endpoint: input.endpoint, mode: 'launchd' as const, persistent: true, servicePath: paths.installedPlistPath, releaseId: input.release.releaseId, releaseRoot: input.release.releaseRoot };
-    writePackageConnectorServiceAuthority({ release: input.release, controllerHome: input.controllerHome, result: installed });
+    const installed = {
+      endpoint: input.endpoint,
+      mode: 'launchd' as const,
+      persistent: true,
+      servicePath: paths.installedPlistPath,
+      releaseId: input.release.releaseId,
+      releaseRoot: input.release.releaseRoot,
+    };
+    writePackageConnectorServiceAuthority({
+      release: input.release,
+      controllerHome: input.controllerHome,
+      result: installed,
+    });
     return installed;
   }
   if (serviceManager.kind === 'systemd-user') {
-    const installed = { endpoint: input.endpoint, mode: 'systemd-user' as const, persistent: true, servicePath: installSystemd(paths, launch, env, serviceHost), releaseId: input.release.releaseId, releaseRoot: input.release.releaseRoot };
-    writePackageConnectorServiceAuthority({ release: input.release, controllerHome: input.controllerHome, result: installed });
+    const installed = {
+      endpoint: input.endpoint,
+      mode: 'systemd-user' as const,
+      persistent: true,
+      servicePath: installSystemd(paths, launch, env, serviceHost),
+      releaseId: input.release.releaseId,
+      releaseRoot: input.release.releaseRoot,
+    };
+    writePackageConnectorServiceAuthority({
+      release: input.release,
+      controllerHome: input.controllerHome,
+      result: installed,
+    });
     return installed;
   }
-  const portable = { endpoint: input.endpoint, mode: 'portable' as const, persistent: false, pid: startPortable(paths, launch, env, serviceHost), releaseId: input.release.releaseId, releaseRoot: input.release.releaseRoot };
-  writePackageConnectorServiceAuthority({ release: input.release, controllerHome: input.controllerHome, result: portable });
+  const portable = {
+    endpoint: input.endpoint,
+    mode: 'portable' as const,
+    persistent: false,
+    pid: startPortable(paths, launch, env, serviceHost),
+    releaseId: input.release.releaseId,
+    releaseRoot: input.release.releaseRoot,
+  };
+  writePackageConnectorServiceAuthority({
+    release: input.release,
+    controllerHome: input.controllerHome,
+    result: portable,
+  });
   return portable;
 }
 
@@ -560,16 +748,21 @@ export async function ensurePackageConnectorService(input: {
       labelPrefix: 'com.moretea.forge.mcp-gateway',
       port,
       requiredArguments: ['mcp', 'serve', '--auth', authMode],
+      maxBootoutWaitMs: PACKAGE_CONNECTOR_LAUNCHD_BOOTOUT_OBSERVE_MS,
     });
   }
   if (!input.refresh && !input.forcePortable) {
     let authority: PackageConnectorServiceAuthority | undefined;
-    try { authority = readPackageConnectorServiceAuthority(input.controllerHome); } catch { authority = undefined; }
+    try {
+      authority = readPackageConnectorServiceAuthority(input.controllerHome);
+    } catch {
+      authority = undefined;
+    }
     if (
-      authority?.persistent
-      && existsSync(authority.releaseRoot)
-      && existsSync(authority.packageRoot)
-      && packageConnectorServiceMatchesRelease({
+      authority?.persistent &&
+      existsSync(authority.releaseRoot) &&
+      existsSync(authority.packageRoot) &&
+      packageConnectorServiceMatchesRelease({
         authority,
         release: input.release,
         controllerHome: input.controllerHome,
@@ -577,12 +770,13 @@ export async function ensurePackageConnectorService(input: {
         platform,
         env: input.env,
         executable: input.executable,
-      })
-      && await (input.probeEndpoint ?? defaultConnectorEndpointProbe)(input.endpoint)
+      }) &&
+      (await (input.probeEndpoint ?? defaultConnectorEndpointProbe)(input.endpoint))
     ) {
-      const rebound = authority.releaseId !== input.release.releaseId
-        || resolve(authority.releaseRoot) !== resolve(input.release.releaseRoot)
-        || resolve(authority.packageRoot) !== resolve(input.release.packageRoot);
+      const rebound =
+        authority.releaseId !== input.release.releaseId ||
+        resolve(authority.releaseRoot) !== resolve(input.release.releaseRoot) ||
+        resolve(authority.packageRoot) !== resolve(input.release.packageRoot);
       const reused: PackageConnectorServiceResult = {
         endpoint: authority.endpoint,
         mode: authority.mode,

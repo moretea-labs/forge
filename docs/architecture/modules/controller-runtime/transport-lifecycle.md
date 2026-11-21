@@ -58,8 +58,12 @@ original durable request identity.
 The macOS Connector LaunchAgent explicitly reserves 45 seconds between SIGTERM
 and forced termination, covering the Gateway's 30-second admitted-response drain
 and one-second final observation-error flush before transport cleanup. This is
-service stop grace, not a longer request/execution timeout. Source rendering does
-not update an installed LaunchAgent or authorize a Runtime release/restart.
+service stop grace, not a longer request/execution timeout. Connector install and
+conflict retirement observe bootout for at least ExitTimeOut plus reconcile slack
+(`PACKAGE_CONNECTOR_LAUNCHD_BOOTOUT_OBSERVE_MS`); a shorter default launchd handoff
+window must not fail closed while the exact service remains registered during that
+drain. Source rendering does not update an installed LaunchAgent or authorize a
+Runtime release/restart.
 
 The HTTP acceptance fixture replaces a real Gateway child at the same endpoint
 while the original Runtime-owned Process remains running. Both graceful shutdown

@@ -1,4 +1,14 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, rmSync } from 'fs';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  writeFileSync,
+  rmSync,
+} from 'fs';
 import { basename, dirname, join } from 'path';
 import { homedir } from 'os';
 import { runProcess } from '../../effects/process-runner';
@@ -120,7 +130,11 @@ export function installLaunchAgent(sourcePath: string, label: string): LaunchAge
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
   const temporary = `${target}.${process.pid}.tmp`;
   writeFileSync(temporary, desiredContent, { mode: 0o600 });
-  try { chmodSync(temporary, 0o600); } catch { /* best effort */ }
+  try {
+    chmodSync(temporary, 0o600);
+  } catch {
+    /* best effort */
+  }
   renameSync(temporary, target);
   return snapshot;
 }
@@ -131,7 +145,11 @@ export function restoreLaunchAgent(snapshot: LaunchAgentFileSnapshot): void {
     return;
   }
   writeFileSync(snapshot.path, snapshot.content, { mode: 0o600 });
-  try { chmodSync(snapshot.path, 0o600); } catch { /* best effort */ }
+  try {
+    chmodSync(snapshot.path, 0o600);
+  } catch {
+    /* best effort */
+  }
 }
 
 /**
@@ -171,11 +189,17 @@ function sleep(ms: number): Promise<void> {
  */
 export async function safeLaunchdHandoff(
   options: SafeHandoffOptions,
-  dependencies: { run?: LaunchctlCommandRunner; probe?: LaunchdServiceProbe; wait?: (ms: number) => Promise<void> } = {},
+  dependencies: {
+    run?: LaunchctlCommandRunner;
+    probe?: LaunchdServiceProbe;
+    wait?: (ms: number) => Promise<void>;
+    now?: () => number;
+  } = {},
 ): Promise<SafeHandoffResult> {
   const run = dependencies.run ?? defaultRunner;
   const probe = dependencies.probe ?? defaultProbe;
   const wait = dependencies.wait ?? sleep;
+  const now = dependencies.now ?? Date.now;
 
   const maxBootoutWaitMs = options.maxBootoutWaitMs ?? 15_000;
   const maxBootstrapRetry = Math.max(1, Math.min(options.maxBootstrapRetry ?? 3, 5));
@@ -200,9 +224,9 @@ export async function safeLaunchdHandoff(
   // Step 2: Reconcile the bootout effect by waiting for the exact service to
   // disappear from launchd. This is authoritative even when the helper returned
   // an error after dispatching the effect.
-  const bootoutDeadline = Date.now() + maxBootoutWaitMs;
+  const bootoutDeadline = now() + maxBootoutWaitMs;
   let serviceGone = false;
-  while (Date.now() < bootoutDeadline) {
+  while (now() < bootoutDeadline) {
     const registered = probe.isServiceRegistered(options.domain, options.label);
     diagnostics.serviceProbeResults.push(registered);
     if (!registered) {
@@ -227,8 +251,8 @@ export async function safeLaunchdHandoff(
   // Step 3: Wait for old PID to exit
   let pidWaitClean = true;
   if (options.oldPid) {
-    const pidDeadline = Date.now() + maxBootoutWaitMs;
-    while (Date.now() < pidDeadline) {
+    const pidDeadline = now() + maxBootoutWaitMs;
+    while (now() < pidDeadline) {
       const alive = probe.isPidAlive(options.oldPid);
       diagnostics.pidAliveChecks.push(alive);
       if (!alive) break;
@@ -242,8 +266,8 @@ export async function safeLaunchdHandoff(
   // Step 4: Wait for port to be released
   let portWaitClean = true;
   if (options.port) {
-    const portDeadline = Date.now() + maxBootoutWaitMs;
-    while (Date.now() < portDeadline) {
+    const portDeadline = now() + maxBootoutWaitMs;
+    while (now() < portDeadline) {
       const listening = probe.isPortListening(options.port);
       diagnostics.portChecks.push(listening);
       if (!listening) break;
@@ -270,7 +294,6 @@ export async function safeLaunchdHandoff(
   // Step 5: Enable the service
   const enableResult = run(['enable', target]);
   if (!enableResult.ok) {
-    const detail = (enableResult.stderr || enableResult.stdout).trim();
     return {
       bootstrapAttempts: 0,
       bootoutClean: true,
@@ -292,7 +315,11 @@ export async function safeLaunchdHandoff(
       const kickstartResult = run(['kickstart', '-k', target]);
       if (!kickstartResult.ok) {
         const detail = (kickstartResult.stderr || kickstartResult.stdout).trim();
-        if (!/timed out|service could not be found|could not find service|no such process|operation now in progress/i.test(detail)) {
+        if (
+          !/timed out|service could not be found|could not find service|no such process|operation now in progress/i.test(
+            detail,
+          )
+        ) {
           // Non-fatal: bootstrap succeeded, kickstart may fail if RunAtLoad already started it
         }
       }
@@ -412,11 +439,17 @@ function decodePlistString(value: string): string {
 
 function readLaunchAgentIdentity(path: string): { label: string; arguments: string[] } | undefined {
   let content: string;
-  try { content = readFileSync(path, 'utf8'); } catch { return undefined; }
+  try {
+    content = readFileSync(path, 'utf8');
+  } catch {
+    return undefined;
+  }
   const label = content.match(/<key>\s*Label\s*<\/key>\s*<string>([\s\S]*?)<\/string>/)?.[1];
   const argumentsBlock = content.match(/<key>\s*ProgramArguments\s*<\/key>\s*<array>([\s\S]*?)<\/array>/)?.[1];
   if (!label || !argumentsBlock) return undefined;
-  const args = Array.from(argumentsBlock.matchAll(/<string>([\s\S]*?)<\/string>/g), (match) => decodePlistString(match[1] ?? ''));
+  const args = Array.from(argumentsBlock.matchAll(/<string>([\s\S]*?)<\/string>/g), (match) =>
+    decodePlistString(match[1] ?? ''),
+  );
   return { label: decodePlistString(label), arguments: args };
 }
 
@@ -432,6 +465,7 @@ export async function retireConflictingForgeLaunchAgents(
     labelPrefix: string;
     port: number;
     requiredArguments: string[];
+    maxBootoutWaitMs?: number;
   },
   dependencies: {
     bootout?: typeof bootoutLaunchAgentWithRetryV2;
@@ -451,16 +485,23 @@ export async function retireConflictingForgeLaunchAgents(
     if (!entry.endsWith('.plist')) continue;
     const plistPath = join(launchAgentsRoot, entry);
     const identity = readLaunchAgentIdentity(plistPath);
-    const forgeOwnedLabel = identity?.label === normalizedLabelPrefix || identity?.label.startsWith(`${normalizedLabelPrefix}.`);
+    const forgeOwnedLabel =
+      identity?.label === normalizedLabelPrefix || identity?.label.startsWith(`${normalizedLabelPrefix}.`);
     if (!identity || identity.label === input.desiredLabel || !forgeOwnedLabel) continue;
     if (basename(plistPath, '.plist') !== identity.label) continue;
     if (!input.requiredArguments.every((argument) => identity.arguments.includes(argument))) continue;
     const portIndex = identity.arguments.indexOf('--port');
     if (portIndex < 0 || identity.arguments[portIndex + 1] !== expectedPort) continue;
 
-    const stopped = await bootout({ label: identity.label, plistPath });
+    const stopped = await bootout({
+      label: identity.label,
+      plistPath,
+      ...(input.maxBootoutWaitMs !== undefined ? { maxBootoutWaitMs: input.maxBootoutWaitMs } : {}),
+    });
     if (!stopped.ok) {
-      throw new Error(`FORGE_LAUNCH_AGENT_CONFLICT_RETIRE_FAILED: ${identity.label}: ${stopped.diagnostics.join('; ')}`);
+      throw new Error(
+        `FORGE_LAUNCH_AGENT_CONFLICT_RETIRE_FAILED: ${identity.label}: ${stopped.diagnostics.join('; ')}`,
+      );
     }
     mkdirSync(retiredRoot, { recursive: true, mode: 0o700 });
     const backupPath = join(retiredRoot, `${identity.label}.${(dependencies.now ?? Date.now)()}.plist`);
@@ -471,16 +512,30 @@ export async function retireConflictingForgeLaunchAgents(
 }
 
 export function currentUserLaunchdDomain(): string {
-  const uid = typeof process.getuid === 'function'
-    ? process.getuid()
-    : Number(runProcess('id', ['-u'], { timeoutMs: 2_000, maxOutputBytes: 1_024 }).stdout.trim());
+  const uid =
+    typeof process.getuid === 'function'
+      ? process.getuid()
+      : Number(runProcess('id', ['-u'], { timeoutMs: 2_000, maxOutputBytes: 1_024 }).stdout.trim());
   if (!Number.isInteger(uid) || uid < 0) throw new Error('LAUNCHD_USER_DOMAIN_UNAVAILABLE');
   return `gui/${uid}`;
 }
 
 export async function bootstrapLaunchAgentWithRetryV2(
-  input: { label: string; plistPath: string; domain?: string; maxAttempts?: number; retryDelayMs?: number },
-  dependencies: { run?: LaunchctlCommandRunner; probe?: LaunchdServiceProbe; wait?: (ms: number) => Promise<void> } = {},
+  input: {
+    label: string;
+    plistPath: string;
+    domain?: string;
+    maxAttempts?: number;
+    retryDelayMs?: number;
+    maxBootoutWaitMs?: number;
+    oldPid?: number;
+    port?: number;
+  },
+  dependencies: {
+    run?: LaunchctlCommandRunner;
+    probe?: LaunchdServiceProbe;
+    wait?: (ms: number) => Promise<void>;
+  } = {},
 ): Promise<LaunchAgentLifecycleResult> {
   const domain = input.domain ?? currentUserLaunchdDomain();
   const result = await safeLaunchdHandoff(
@@ -488,6 +543,9 @@ export async function bootstrapLaunchAgentWithRetryV2(
       label: input.label,
       plistPath: input.plistPath,
       domain,
+      ...(input.oldPid !== undefined ? { oldPid: input.oldPid } : {}),
+      ...(input.port !== undefined ? { port: input.port } : {}),
+      ...(input.maxBootoutWaitMs !== undefined ? { maxBootoutWaitMs: input.maxBootoutWaitMs } : {}),
       maxBootstrapRetry: input.maxAttempts ?? 3,
       bootstrapRetryDelayMs: input.retryDelayMs ?? 250,
     },
@@ -497,16 +555,21 @@ export async function bootstrapLaunchAgentWithRetryV2(
   const bootout = result.diagnostics.bootoutResult;
   if (bootout && !bootout.ok && !isBootoutAlreadyGone(bootout)) {
     diagnostics.push(`bootout: ${(bootout.stderr || bootout.stdout || `exit=${bootout.exitCode}`).trim()}`);
-    if (result.bootoutClean) diagnostics.push('bootout-reconciled: exact launchd service is absent despite helper failure');
+    if (result.bootoutClean)
+      diagnostics.push('bootout-reconciled: exact launchd service is absent despite helper failure');
   }
   if (!result.bootoutClean && result.diagnostics.serviceProbeResults.length > 0) {
     diagnostics.push('bootout-reconcile: exact launchd service remained registered after bounded observation');
   }
-  if (!result.pidWaitClean) diagnostics.push('bootout-reconcile: prior service PID remained live after bounded observation');
-  if (!result.portWaitClean) diagnostics.push('bootout-reconcile: prior service port remained occupied after bounded observation');
-  diagnostics.push(...result.diagnostics.bootstrapResults.map((entry, index) =>
-    `bootstrap-${index + 1}: ${(entry.stderr || entry.stdout || `exit=${entry.exitCode}`).trim()}`,
-  ));
+  if (!result.pidWaitClean)
+    diagnostics.push('bootout-reconcile: prior service PID remained live after bounded observation');
+  if (!result.portWaitClean)
+    diagnostics.push('bootout-reconcile: prior service port remained occupied after bounded observation');
+  diagnostics.push(
+    ...result.diagnostics.bootstrapResults.map(
+      (entry, index) => `bootstrap-${index + 1}: ${(entry.stderr || entry.stdout || `exit=${entry.exitCode}`).trim()}`,
+    ),
+  );
   return {
     ok: result.bootoutClean && result.pidWaitClean && result.portWaitClean && result.serviceRegistered,
     attempts: result.bootstrapAttempts,
@@ -516,8 +579,19 @@ export async function bootstrapLaunchAgentWithRetryV2(
 }
 
 export async function bootoutLaunchAgentWithRetryV2(
-  input: { label: string; plistPath: string; domain?: string; maxAttempts?: number; retryDelayMs?: number },
-  dependencies: { run?: LaunchctlCommandRunner; probe?: LaunchdServiceProbe; wait?: (ms: number) => Promise<void> } = {},
+  input: {
+    label: string;
+    plistPath: string;
+    domain?: string;
+    maxAttempts?: number;
+    retryDelayMs?: number;
+    maxBootoutWaitMs?: number;
+  },
+  dependencies: {
+    run?: LaunchctlCommandRunner;
+    probe?: LaunchdServiceProbe;
+    wait?: (ms: number) => Promise<void>;
+  } = {},
 ): Promise<LaunchAgentLifecycleResult> {
   const run = dependencies.run ?? defaultRunner;
   const probe = dependencies.probe ?? defaultProbe;
@@ -526,6 +600,7 @@ export async function bootoutLaunchAgentWithRetryV2(
   const target = `${domain}/${input.label}`;
   const maxAttempts = Math.max(1, Math.min(input.maxAttempts ?? 3, 5));
   const retryDelayMs = Math.max(50, input.retryDelayMs ?? 250);
+  const maxBootoutWaitMs = Math.max(1_000, input.maxBootoutWaitMs ?? 10_000);
   const diagnostics: string[] = [];
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -538,7 +613,7 @@ export async function bootoutLaunchAgentWithRetryV2(
       }
       return { ok: false, attempts: attempt, serviceTarget: target, diagnostics };
     }
-    const deadline = Date.now() + 10_000;
+    const deadline = Date.now() + maxBootoutWaitMs;
     while (Date.now() < deadline) {
       if (!probe.isServiceRegistered(domain, input.label)) {
         return { ok: true, attempts: attempt, serviceTarget: target, diagnostics };

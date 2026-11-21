@@ -40,6 +40,8 @@ import {
 } from '../../src/runtime/root/package-runtime-service';
 import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import {
+  PACKAGE_CONNECTOR_LAUNCHD_BOOTOUT_OBSERVE_MS,
+  PACKAGE_CONNECTOR_LAUNCHD_EXIT_TIMEOUT_SEC,
   ensurePackageConnectorService,
   packageConnectorEndpointStatusHealthy,
   packageConnectorLaunchSpec,
@@ -952,6 +954,10 @@ describe('Forge Runtime service', () => {
     // 30s POST drain + 1s final error flush must precede launchd SIGKILL.
     const exitGrace = /<key>ExitTimeOut<\/key>\s*<integer>(\d+)<\/integer>/.exec(plist);
     expect(Number(exitGrace?.[1] ?? 0)).toBeGreaterThan(31);
+    expect(PACKAGE_CONNECTOR_LAUNCHD_EXIT_TIMEOUT_SEC).toBe(Number(exitGrace?.[1]));
+    expect(PACKAGE_CONNECTOR_LAUNCHD_BOOTOUT_OBSERVE_MS).toBeGreaterThan(
+      PACKAGE_CONNECTOR_LAUNCHD_EXIT_TIMEOUT_SEC * 1_000,
+    );
     expect(plist).toContain('<key>KeepAlive</key>');
     expect(plist).toContain('<string>8767</string>');
     expect(plist).toContain('<string>oauth</string>');
