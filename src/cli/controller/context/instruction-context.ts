@@ -93,6 +93,17 @@ export function buildRepositoryInstructionContext(
 
   const contractTargets = new Map<string, Set<string>>();
   const denied = new Set<string>();
+  // A UI request can arrive before any source path is discovered. Load the
+  // actual root project guidance now, not only the generic first-party pack;
+  // otherwise a frozen screen can be redesigned before its rules are read.
+  const isUiIntent = UI_UX_INTENT.test(options.uiIntent ?? '');
+  if (isUiIntent && targets.length === 0) {
+    for (const name of CONTRACT_NAMES) {
+      const readable = readableFile(repoRoot, policy, name);
+      if (readable.ok) contractTargets.set(readable.path, new Set());
+      else if (!readable.reason.startsWith('path does not exist')) denied.add(`${name}:${readable.reason}`);
+    }
+  }
   for (const target of targets) {
     for (const directory of directoryChain(target)) {
       for (const name of CONTRACT_NAMES) {
@@ -112,9 +123,9 @@ export function buildRepositoryInstructionContext(
   // design paths already declared by repository guidance, plus root DESIGN.md.
   // Policy and byte limits are the same as for AGENTS.md.
   const isUiTask =
-    UI_UX_INTENT.test(options.uiIntent ?? '') ||
+    isUiIntent ||
     targets.some((path) => /(?:\/Views?\/|(?:View|Screen)\.(?:swift|tsx|jsx)$)/i.test(path));
-  if (isUiTask && targets.length > 0) {
+  if (isUiTask) {
     const designPaths = new Set<string>();
     const declaredGuidance = [...contractTargets.keys()];
     // Never derive product facts or design requirements from the retriever.
@@ -171,11 +182,15 @@ export function buildRepositoryInstructionContext(
     if (leftDepth !== rightDepth) return leftDepth - rightDepth;
     const leftName = posix.basename(left);
     const rightName = posix.basename(right);
-    if (leftName !== rightName)
-      return (
-        CONTRACT_NAMES.indexOf(leftName as (typeof CONTRACT_NAMES)[number]) -
-        CONTRACT_NAMES.indexOf(rightName as (typeof CONTRACT_NAMES)[number])
-      );
+    if (leftName !== rightName) {
+      // AGENTS/CLAUDE instructions precede referenced design documents.
+      // indexOf=-1 must never accidentally promote DESIGN.md above them.
+      const leftIndex = CONTRACT_NAMES.indexOf(leftName as (typeof CONTRACT_NAMES)[number]);
+      const rightIndex = CONTRACT_NAMES.indexOf(rightName as (typeof CONTRACT_NAMES)[number]);
+      const leftRank = leftIndex < 0 ? CONTRACT_NAMES.length : leftIndex;
+      const rightRank = rightIndex < 0 ? CONTRACT_NAMES.length : rightIndex;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+    }
     return left.localeCompare(right);
   });
   const selectedPaths = orderedPaths.slice(0, maxContracts);

@@ -206,6 +206,31 @@ describe('repository UI instruction context', () => {
     }
   });
 
+  test('loads root design and frozen screen rules at UI task bootstrap before a source owner is known', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-ui-root-authority-'));
+    try {
+      mkdirSync(join(root, 'docs', 'design'), { recursive: true });
+      writeFileSync(join(root, 'AGENTS.md'), '# Product owner rules\nMedication detail layout is FROZEN until user approval.\nRead `docs/design/product-rules.md`.\n');
+      writeFileSync(join(root, 'DESIGN.md'), '# Project design\nKeep visible Archive and Delete buttons.\n');
+      writeFileSync(join(root, 'docs', 'design', 'product-rules.md'), 'Do not conceal the primary medication actions.\n');
+      const policy = getToolPolicy('controller', { repoRoot: root });
+      const ui = buildRepositoryInstructionContext(root, policy, [], { uiIntent: '优化药箱页面筛选导出区域' });
+      const paths = ui.contracts.map((contract) => contract.path);
+      expect(paths).toEqual(['AGENTS.md', 'DESIGN.md', 'docs/design/product-rules.md']);
+      expect(ui.contracts.find((contract) => contract.path === 'AGENTS.md')?.content).toContain('FROZEN');
+      expect(ui.contracts.find((contract) => contract.path === 'DESIGN.md')?.content).toContain('Archive and Delete');
+      expect(ui.contracts.find((contract) => contract.path === 'docs/design/product-rules.md')?.content).toContain('Do not conceal');
+      expect(ui.contracts.every((contract) => contract.appliesTo.length === 0)).toBe(true);
+      expect(ui.firstPartyKnowledge?.content).toContain('Optical centering differs from geometry');
+      expect(ui.status).toBe('ready');
+      const backend = buildRepositoryInstructionContext(root, policy, [], { uiIntent: 'repair database index' });
+      expect(backend.contracts).toEqual([]);
+      expect(backend.firstPartyKnowledge).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('preserves bounded truncation evidence for long design documents', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-design-bounds-'));
     try {
