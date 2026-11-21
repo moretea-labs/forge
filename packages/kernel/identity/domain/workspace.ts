@@ -7,6 +7,10 @@ export interface WorkspaceIdentity {
 
 export type ProjectStatus = 'active' | 'archived';
 
+/** Aligns with goal RequirementPriority without importing the goal domain. */
+export const PROJECT_DEFAULT_REQUIREMENT_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
+export type ProjectDefaultRequirementPriority = (typeof PROJECT_DEFAULT_REQUIREMENT_PRIORITIES)[number];
+
 export interface ProjectIdentity {
   schemaVersion: 1;
   projectId: string;
@@ -18,6 +22,11 @@ export interface ProjectIdentity {
   sourceFingerprint?: string;
   /** The single canonical root Requirement for this Project. Bound once through the Requirement transaction. */
   rootRequirementId?: string;
+  /**
+   * Optional Project-level default Requirement priority for cross-project
+   * dispatch selection (#707). Explicit Requirement.priority always wins.
+   */
+  defaultRequirementPriority?: ProjectDefaultRequirementPriority;
 }
 
 /** Node-local mapping from one portable Project to the repository/checkout used by this ForgeInstance. Never sync this record. */
@@ -50,13 +59,28 @@ export function projectIdentity(input: Omit<ProjectIdentity, 'schemaVersion'>): 
   const status = input.status ?? 'active';
   if (status !== 'active' && status !== 'archived') throw new Error('PROJECT_STATUS_INVALID');
   const sourceFingerprint = input.sourceFingerprint?.trim();
-  if (sourceFingerprint && !/^[a-f0-9]{64}$/i.test(sourceFingerprint)) throw new Error('PROJECT_SOURCE_FINGERPRINT_INVALID');
+  if (sourceFingerprint && !/^[a-f0-9]{64}$/i.test(sourceFingerprint))
+    throw new Error('PROJECT_SOURCE_FINGERPRINT_INVALID');
   const rootRequirementId = input.rootRequirementId?.trim();
   if (rootRequirementId && rootRequirementId.length > 160) throw new Error('PROJECT_ROOT_REQUIREMENT_ID_INVALID');
+  const defaultRequirementPriority = input.defaultRequirementPriority?.trim() as
+    | ProjectDefaultRequirementPriority
+    | undefined;
+  if (
+    defaultRequirementPriority &&
+    !(PROJECT_DEFAULT_REQUIREMENT_PRIORITIES as readonly string[]).includes(defaultRequirementPriority)
+  ) {
+    throw new Error('PROJECT_DEFAULT_REQUIREMENT_PRIORITY_INVALID');
+  }
   return {
-    schemaVersion: 1, projectId, workspaceId, displayName, status,
+    schemaVersion: 1,
+    projectId,
+    workspaceId,
+    displayName,
+    status,
     ...(sourceFingerprint ? { sourceFingerprint: sourceFingerprint.toLowerCase() } : {}),
     ...(rootRequirementId ? { rootRequirementId } : {}),
+    ...(defaultRequirementPriority ? { defaultRequirementPriority } : {}),
   };
 }
 

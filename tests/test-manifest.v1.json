@@ -971,6 +971,10 @@
       "module": "workflow",
       "resource": "controller-home-isolated",
       "smoke": false
+    },
+    "tests/runtime/cross-project-requirement-dispatch.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
     }
   }
 }
