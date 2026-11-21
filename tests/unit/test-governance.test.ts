@@ -6,6 +6,7 @@ import { join } from 'path';
 import { parseTestGovernanceArgs } from '../../scripts/test-governance';
 import {
   collectChangedPaths,
+  existingChangedFiles,
   loadTestManifest,
   selectTests,
   testContentDigest,
@@ -49,11 +50,13 @@ describe('test governance', () => {
   });
 
   test('parses explicit files without mistaking option values for focus', () => {
-    expect(parseTestGovernanceArgs(['affected', '--base', 'origin/main', 'tests/access-policy.test.ts'])).toMatchObject({
-      gate: 'affected',
-      baseRef: 'origin/main',
-      explicitTests: ['tests/access-policy.test.ts'],
-    });
+    expect(parseTestGovernanceArgs(['affected', '--base', 'origin/main', 'tests/access-policy.test.ts'])).toMatchObject(
+      {
+        gate: 'affected',
+        baseRef: 'origin/main',
+        explicitTests: ['tests/access-policy.test.ts'],
+      },
+    );
     expect(parseTestGovernanceArgs(['full', '--no-cache'])).toMatchObject({ gate: 'full', useCache: false });
   });
 
@@ -83,8 +86,66 @@ describe('test governance', () => {
       git(repo, 'add', 'staged.ts');
       writeFileSync(join(repo, 'untracked.ts'), 'untracked\n');
       expect(collectChangedPaths(repo, { baseRef: base })).toEqual([
-        'base.ts', 'committed.ts', 'staged.ts', 'untracked.ts',
+        'base.ts',
+        'committed.ts',
+        'staged.ts',
+        'untracked.ts',
       ]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('uses all commits and fails closed for invalid or shallow Git baselines', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'forge-multicommit-'));
+    const shallow = mkdtempSync(join(tmpdir(), 'forge-shallow-'));
+    try {
+      git(repo, 'init', '-q');
+      git(repo, 'config', 'user.email', 'tests@example.com');
+      git(repo, 'config', 'user.name', 'Tests');
+      writeFileSync(join(repo, 'initial.ts'), 'initial\n');
+      git(repo, 'add', '.');
+      git(repo, 'commit', '-qm', 'initial');
+      const base = git(repo, 'rev-parse', 'HEAD');
+      writeFileSync(join(repo, 'first.ts'), 'first\n');
+      git(repo, 'add', '.');
+      git(repo, 'commit', '-qm', 'first');
+      writeFileSync(join(repo, 'second.ts'), 'second\n');
+      git(repo, 'add', '.');
+      git(repo, 'commit', '-qm', 'second');
+      expect(collectChangedPaths(repo, { baseRef: base })).toEqual(['first.ts', 'second.ts']);
+      expect(collectChangedPaths(repo, { baseRef: '0'.repeat(40) })).toEqual(['first.ts', 'initial.ts', 'second.ts']);
+      expect(() => collectChangedPaths(repo, { baseRef: 'does-not-exist' })).toThrow(
+        /Cannot determine complete Git change baseline/,
+      );
+      git(shallow, 'clone', '--quiet', '--depth', '1', `file://${repo}`, '.');
+      expect(() => collectChangedPaths(shallow, { baseRef: base })).toThrow(
+        /Cannot determine complete Git change baseline/,
+      );
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(shallow, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps deleted and renamed-away paths for regressions but not formatter inputs', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'forge-source-delete-'));
+    try {
+      git(repo, 'init', '-q');
+      git(repo, 'config', 'user.email', 'tests@example.com');
+      git(repo, 'config', 'user.name', 'Tests');
+      for (const file of ['removed.ts', 'old.ts', 'restored.ts']) writeFileSync(join(repo, file), 'original\n');
+      git(repo, 'add', '.');
+      git(repo, 'commit', '-qm', 'base');
+      const base = git(repo, 'rev-parse', 'HEAD');
+      git(repo, 'rm', '-q', 'removed.ts');
+      git(repo, 'mv', 'old.ts', 'new.ts');
+      git(repo, 'rm', '-q', 'restored.ts');
+      writeFileSync(join(repo, 'restored.ts'), 'recreated\n');
+      const changed = collectChangedPaths(repo, { baseRef: base });
+      expect(changed).toEqual(['new.ts', 'old.ts', 'removed.ts', 'restored.ts']);
+      expect(existingChangedFiles(repo, changed)).toEqual(['new.ts', 'restored.ts']);
+      expect(collectChangedPaths(repo, { baseRef: base })).toContain('removed.ts');
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

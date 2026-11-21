@@ -3,13 +3,13 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { collectChangedPaths } from '../src/testing/test-governance.ts';
+import { collectChangedPaths, existingChangedFiles } from '../src/testing/test-governance.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const baseRef = process.env.TEST_BASE_REF?.trim();
 const changed = new Set(collectChangedPaths(ROOT, baseRef ? { baseRef } : {}));
-if (changed.size === 0) {
+if (changed.size === 0 && !baseRef) {
   const lastCommitPaths = execFileSync('git', ['diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD', '-z'], {
     cwd: ROOT,
     encoding: 'utf8',
@@ -19,7 +19,7 @@ if (changed.size === 0) {
   }
 }
 
-const sourcePaths = [...changed]
+const sourcePaths = existingChangedFiles(ROOT, changed)
   .filter((path) => /\.(?:[cm]?[jt]sx?|jsonc?|json5|css|html|graphql|swift|rs|sh|bash|zsh)$/i.test(path))
   .filter(
     (path) => !/(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|bun\.lock|bun\.lockb|pnpm-lock\.yaml)$/i.test(path),

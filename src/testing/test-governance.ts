@@ -1,14 +1,6 @@
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  statSync,
-  writeFileSync,
-} from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import {
   classifyTestSignal,
@@ -19,19 +11,36 @@ import {
   type TestFailureClass,
 } from '../../scripts/run-bun-test-file';
 import { runBoundedChild, type BoundedChildRunResult } from '../runtime/shared/bounded-child-supervisor';
-import { ensureRepositoryCheckStorage, type RepositoryCheckStorageAuthority } from '../runtime/execution/process-runtime/check-storage';
+import {
+  ensureRepositoryCheckStorage,
+  type RepositoryCheckStorageAuthority,
+} from '../runtime/execution/process-runtime/check-storage';
 import {
   MAX_STRUCTURED_CHECK_FAILURE_DETAILS,
   type StructuredCheckFailureEvidence,
 } from '../runtime/execution/process-runtime/check-result';
 
 export const TEST_MODULES = [
-  'core', 'controller', 'process-runtime', 'routing', 'repository',
-  'browser', 'ios', 'workflow', 'runner', 'release',
+  'core',
+  'controller',
+  'process-runtime',
+  'routing',
+  'repository',
+  'browser',
+  'ios',
+  'workflow',
+  'runner',
+  'release',
 ] as const;
 export const TEST_RESOURCES = [
-  'pure', 'temp-isolated', 'controller-home-isolated', 'git-worktree',
-  'process-tree', 'fixed-port', 'runtime-singleton', 'destructive',
+  'pure',
+  'temp-isolated',
+  'controller-home-isolated',
+  'git-worktree',
+  'process-tree',
+  'fixed-port',
+  'runtime-singleton',
+  'destructive',
 ] as const;
 
 export type TestModule = (typeof TEST_MODULES)[number];
@@ -72,15 +81,37 @@ const MANIFEST_PATH = 'tests/test-manifest.v1.json';
 const CHECKPOINT_SUBDIR = join('tests', 'checkpoints');
 const RECEIPT_SUBDIR = join('tests', 'receipts');
 const INFRASTRUCTURE_RESOURCES = new Set<TestResource>([
-  'git-worktree', 'process-tree', 'fixed-port', 'runtime-singleton',
+  'git-worktree',
+  'process-tree',
+  'fixed-port',
+  'runtime-singleton',
 ]);
 const CONTENT_EXCLUDES = [
-  '.ai/', '.git/', '.codegraph/', '.forge/', '_ops/', 'node_modules/', 'tasks/', 'plans/', 'references/',
-  'dist/', 'coverage/',
+  '.ai/',
+  '.git/',
+  '.codegraph/',
+  '.forge/',
+  '_ops/',
+  'node_modules/',
+  'tasks/',
+  'plans/',
+  'references/',
+  'dist/',
+  'coverage/',
 ];
 const CHANGE_EXCLUDES = [...CONTENT_EXCLUDES, 'tmp/', 'temp/'];
 const EPHEMERAL_SUFFIXES = [
-  '.log', '.tmp', '.temp', '.pid', '.lock', '.trace', '.out', '.cache', '.bak', '.swp', '.swo',
+  '.log',
+  '.tmp',
+  '.temp',
+  '.pid',
+  '.lock',
+  '.trace',
+  '.out',
+  '.cache',
+  '.bak',
+  '.swp',
+  '.swo',
 ];
 const TEST_INPUT_CONFIG = [MANIFEST_PATH, 'package.json', 'bun.lock', 'tsconfig.json'];
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.json'];
@@ -88,6 +119,16 @@ const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs',
 function git(repoRoot: string, args: string[]): string {
   const result = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
   if (result.status !== 0) return '';
+  return result.stdout ?? '';
+}
+
+function requiredGit(repoRoot: string, args: string[]): string {
+  const result = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  if (result.error || result.status !== 0) {
+    throw new Error(
+      `Cannot determine complete Git change baseline (${args[0]}): ${result.error?.message ?? result.stderr?.trim() ?? `exit ${result.status}`}`,
+    );
+  }
   return result.stdout ?? '';
 }
 
@@ -124,7 +165,10 @@ export function trackedTreeDigest(repoRoot: string): string {
 }
 
 export function isTestRelevantChangedPath(rawPath: string): boolean {
-  const path = String(rawPath ?? '').replace(/^\.\//, '').replace(/\\/g, '/').trim();
+  const path = String(rawPath ?? '')
+    .replace(/^\.\//, '')
+    .replace(/\\/g, '/')
+    .trim();
   if (!path || CHANGE_EXCLUDES.some((prefix) => path.startsWith(prefix))) return false;
   const name = path.split('/').at(-1) ?? '';
   if (!name || name === '.DS_Store') return false;
@@ -227,12 +271,15 @@ export function loadTestManifest(repoRoot: string): TestManifest {
 export function validateTestManifest(repoRoot: string, manifest = loadTestManifest(repoRoot)): string[] {
   const errors: string[] = [];
   if (manifest.version !== 1) errors.push(`unsupported manifest version: ${String(manifest.version)}`);
-  if (JSON.stringify(manifest.modules) !== JSON.stringify(TEST_MODULES)) errors.push('module catalog does not match v1 contract');
-  if (JSON.stringify(manifest.resources) !== JSON.stringify(TEST_RESOURCES)) errors.push('resource catalog does not match v1 contract');
+  if (JSON.stringify(manifest.modules) !== JSON.stringify(TEST_MODULES))
+    errors.push('module catalog does not match v1 contract');
+  if (JSON.stringify(manifest.resources) !== JSON.stringify(TEST_RESOURCES))
+    errors.push('resource catalog does not match v1 contract');
   const diskFiles = listTestsOnDisk(join(repoRoot, 'tests'), repoRoot).sort();
   const declaredFiles = Object.keys(manifest.tests).sort();
   for (const file of diskFiles) if (!manifest.tests[file]) errors.push(`test is not declared: ${file}`);
-  for (const file of declaredFiles) if (!diskFiles.includes(file)) errors.push(`manifest entry has no test file: ${file}`);
+  for (const file of declaredFiles)
+    if (!diskFiles.includes(file)) errors.push(`manifest entry has no test file: ${file}`);
   for (const [file, entry] of Object.entries(manifest.tests)) {
     if (!TEST_MODULES.includes(entry.module)) errors.push(`${file}: invalid module ${String(entry.module)}`);
     if (!TEST_RESOURCES.includes(entry.resource)) errors.push(`${file}: invalid resource ${String(entry.resource)}`);
@@ -249,19 +296,42 @@ export interface ChangedPathOptions {
 export function collectChangedPaths(repoRoot: string, options: ChangedPathOptions = {}): string[] {
   const paths = new Set((options.explicit ?? []).map((path) => path.replace(/^\.\//, '')));
   if (options.baseRef) {
-    const mergeBase = git(repoRoot, ['merge-base', options.baseRef, 'HEAD']).trim();
-    if (mergeBase) {
-      for (const path of git(repoRoot, ['diff', '--name-only', '-z', `${mergeBase}...HEAD`]).split('\0').filter(Boolean)) paths.add(path);
+    const baseRef = options.baseRef.trim();
+    if (/^0{40}(?:0{24})?$/.test(baseRef)) {
+      // The initial push has no before commit: check the full tracked tree.
+      for (const path of requiredGit(repoRoot, ['ls-files', '--cached', '-z']).split('\0').filter(Boolean))
+        paths.add(path);
+    } else {
+      // An unresolvable/shallow base must fail closed, never shrink to HEAD-only.
+      const mergeBase = requiredGit(repoRoot, ['merge-base', baseRef, 'HEAD']).trim();
+      if (!mergeBase) throw new Error(`Cannot determine complete Git change baseline for ${baseRef}`);
+      for (const path of requiredGit(repoRoot, ['diff', '--no-renames', '--name-only', '-z', `${mergeBase}...HEAD`])
+        .split('\0')
+        .filter(Boolean))
+        paths.add(path);
     }
   }
   for (const args of [
-    ['diff', '--name-only', '-z'],
-    ['diff', '--cached', '--name-only', '-z'],
+    ['diff', '--no-renames', '--name-only', '-z'],
+    ['diff', '--cached', '--no-renames', '--name-only', '-z'],
     ['ls-files', '--others', '--exclude-standard', '-z'],
   ]) {
     for (const path of git(repoRoot, args).split('\0').filter(Boolean)) paths.add(path);
   }
   return [...paths].filter(isTestRelevantChangedPath).sort();
+}
+
+/** Deleted and renamed-away paths still affect test selection, but cannot be formatted. */
+export function existingChangedFiles(repoRoot: string, changedPaths: Iterable<string>): string[] {
+  return [...changedPaths].filter((path) => {
+    const absolute = resolve(repoRoot, path);
+    if (relative(repoRoot, absolute).startsWith('..')) return false;
+    try {
+      return statSync(absolute).isFile();
+    } catch {
+      return false;
+    }
+  });
 }
 
 function modulesForChangedPath(path: string, manifest: TestManifest): TestModule[] {
@@ -284,30 +354,48 @@ export function selectTests(
   changedPaths: string[],
   explicitTestFiles: string[] = [],
 ): TestSelection {
-  const meaningfulChangedPaths = [...new Set(changedPaths.map((path) => path.replace(/^\.\//, '')).filter(isTestRelevantChangedPath))].sort();
+  const meaningfulChangedPaths = [
+    ...new Set(changedPaths.map((path) => path.replace(/^\.\//, '')).filter(isTestRelevantChangedPath)),
+  ].sort();
   const changedModules = new Set<TestModule>();
-  for (const path of meaningfulChangedPaths) for (const module of modulesForChangedPath(path, manifest)) changedModules.add(module);
+  for (const path of meaningfulChangedPaths)
+    for (const module of modulesForChangedPath(path, manifest)) changedModules.add(module);
   if (changedModules.size === 0) changedModules.add('core');
-  const direct = new Set(explicitTestFiles.length > 0
-    ? explicitTestFiles
-    : meaningfulChangedPaths.filter((path) => Boolean(manifest.tests[path])));
+  const direct = new Set(
+    explicitTestFiles.length > 0
+      ? explicitTestFiles
+      : meaningfulChangedPaths.filter((path) => Boolean(manifest.tests[path])),
+  );
   const entries = Object.entries(manifest.tests);
   let selected: string[];
   if (explicitTestFiles.length > 0) {
     selected = explicitTestFiles.filter((file) => Boolean(manifest.tests[file]));
   } else if (gate === 'core') {
-    selected = entries.filter(([, entry]) => entry.smoke || (entry.module === 'core' && entry.resource === 'pure')).map(([file]) => file);
+    selected = entries
+      .filter(([, entry]) => entry.smoke || (entry.module === 'core' && entry.resource === 'pure'))
+      .map(([file]) => file);
   } else if (gate === 'affected') {
-    selected = meaningfulChangedPaths.length === 0
-      ? entries.filter(([, entry]) => entry.smoke).map(([file]) => file)
-      : entries.filter(([file, entry]) => (
-          (direct.has(file) && !INFRASTRUCTURE_RESOURCES.has(entry.resource) && entry.resource !== 'destructive')
-          || entry.smoke
-          || (changedModules.has(entry.module) && entry.resource === 'pure')
-        )).map(([file]) => file);
+    selected =
+      meaningfulChangedPaths.length === 0
+        ? entries.filter(([, entry]) => entry.smoke).map(([file]) => file)
+        : entries
+            .filter(
+              ([file, entry]) =>
+                (direct.has(file) &&
+                  !INFRASTRUCTURE_RESOURCES.has(entry.resource) &&
+                  entry.resource !== 'destructive') ||
+                entry.smoke ||
+                (changedModules.has(entry.module) && entry.resource === 'pure'),
+            )
+            .map(([file]) => file);
   } else if (gate === 'integration') {
-    selected = entries.filter(([, entry]) => changedModules.has(entry.module)
-      && (entry.resource === 'temp-isolated' || entry.resource === 'controller-home-isolated')).map(([file]) => file);
+    selected = entries
+      .filter(
+        ([, entry]) =>
+          changedModules.has(entry.module) &&
+          (entry.resource === 'temp-isolated' || entry.resource === 'controller-home-isolated'),
+      )
+      .map(([file]) => file);
   } else if (gate === 'infrastructure') {
     selected = entries.filter(([, entry]) => INFRASTRUCTURE_RESOURCES.has(entry.resource)).map(([file]) => file);
   } else if (gate === 'fault') {
@@ -322,13 +410,18 @@ export function selectTests(
     changedPaths: meaningfulChangedPaths,
     modules: [...changedModules].sort(),
     files: selected,
-    reason: explicitTestFiles.length > 0
-      ? 'explicit test files'
-      : gate === 'full' ? 'full non-destructive suite'
-      : gate === 'infrastructure' ? 'infrastructure suite'
-      : gate === 'fault' ? 'fault-injection suite'
-      : noChanges ? 'no changes detected; core smoke only'
-      : `changed paths mapped to ${[...changedModules].sort().join(', ')}`,
+    reason:
+      explicitTestFiles.length > 0
+        ? 'explicit test files'
+        : gate === 'full'
+          ? 'full non-destructive suite'
+          : gate === 'infrastructure'
+            ? 'infrastructure suite'
+            : gate === 'fault'
+              ? 'fault-injection suite'
+              : noChanges
+                ? 'no changes detected; core smoke only'
+                : `changed paths mapped to ${[...changedModules].sort().join(', ')}`,
   };
 }
 
@@ -363,18 +456,25 @@ function toolchainSignature(): string {
 }
 
 function capabilitySignature(): string {
-  return createHash('sha256').update(JSON.stringify({
-    ci: process.env.CI ?? '',
-    controllerHome: Boolean(process.env.FORGE_CONTROLLER_HOME),
-    docker: Boolean(process.env.DOCKER_HOST),
-  })).digest('hex').slice(0, 16);
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        ci: process.env.CI ?? '',
+        controllerHome: Boolean(process.env.FORGE_CONTROLLER_HOME),
+        docker: Boolean(process.env.DOCKER_HOST),
+      }),
+    )
+    .digest('hex')
+    .slice(0, 16);
 }
 
 function readPassedCheckpoint(path: string, key: string): TestCheckpoint | undefined {
   if (!existsSync(path)) return undefined;
   try {
     const checkpoint = JSON.parse(readFileSync(path, 'utf8')) as TestCheckpoint;
-    return checkpoint.version === 2 && checkpoint.key === key && checkpoint.status === 'passed' ? checkpoint : undefined;
+    return checkpoint.version === 2 && checkpoint.key === key && checkpoint.status === 'passed'
+      ? checkpoint
+      : undefined;
   } catch (_error) {
     return undefined;
   }
@@ -383,12 +483,14 @@ function readPassedCheckpoint(path: string, key: string): TestCheckpoint | undef
 async function runPool<T>(items: T[], concurrency: number, run: (item: T) => Promise<void>): Promise<void> {
   let cursor = 0;
   const boundedConcurrency = Math.max(1, Math.trunc(Number.isFinite(concurrency) ? concurrency : 1));
-  await Promise.all(Array.from({ length: Math.min(boundedConcurrency, items.length) }, async () => {
-    while (cursor < items.length) {
-      const index = cursor++;
-      await run(items[index]!);
-    }
-  }));
+  await Promise.all(
+    Array.from({ length: Math.min(boundedConcurrency, items.length) }, async () => {
+      while (cursor < items.length) {
+        const index = cursor++;
+        await run(items[index]!);
+      }
+    }),
+  );
 }
 
 export interface TestRunReceipt {
@@ -418,7 +520,9 @@ export interface RunTestSelectionOptions {
   onReceipt?: (receipt: TestRunReceipt) => void;
 }
 
-function classifyIndependentTestChild(result: BoundedChildRunResult): Pick<BunTestFileRunResult, 'failureClass' | 'failureCode' | 'signal'> {
+function classifyIndependentTestChild(
+  result: BoundedChildRunResult,
+): Pick<BunTestFileRunResult, 'failureClass' | 'failureCode' | 'signal'> {
   const infrastructureFailure = mapTestSupervisorFailure(result.failureCode);
   if (infrastructureFailure) return { failureClass: 'infrastructure', failureCode: infrastructureFailure };
   const interrupted = classifyTestSignal(result.signal);
@@ -437,14 +541,18 @@ export async function runTestSelection(
   const storage = ensureRepositoryCheckStorage(repoRoot, options.storageAuthority);
   const baselineWorkspace = workspaceMutationDigest(repoRoot);
   const contentDigest = testContentDigest(repoRoot);
-  const runnerDigest = hashFiles(repoRoot, [
-    MANIFEST_PATH,
-    'scripts/run-bun-test-file.ts',
-    'scripts/test-governance.ts',
-    'src/testing/test-governance.ts',
-    'src/runtime/shared/bounded-child-supervisor.ts',
-    'src/runtime/shared/process-tree.ts',
-  ], 'test-runner-v1');
+  const runnerDigest = hashFiles(
+    repoRoot,
+    [
+      MANIFEST_PATH,
+      'scripts/run-bun-test-file.ts',
+      'scripts/test-governance.ts',
+      'src/testing/test-governance.ts',
+      'src/runtime/shared/bounded-child-supervisor.ts',
+      'src/runtime/shared/process-tree.ts',
+    ],
+    'test-runner-v1',
+  );
   const toolchain = toolchainSignature();
   const capability = capabilitySignature();
   let failures = 0;
@@ -471,9 +579,18 @@ export async function runTestSelection(
     const entry = manifest.tests[file]!;
     const testDigest = hashFiles(repoRoot, [file], 'test-file-v1');
     const inputDigest = testInputDigest(repoRoot, file);
-    const key = createHash('sha256').update(JSON.stringify({
-      inputDigest, runnerDigest, testDigest, toolchain, capability, file,
-    })).digest('hex');
+    const key = createHash('sha256')
+      .update(
+        JSON.stringify({
+          inputDigest,
+          runnerDigest,
+          testDigest,
+          toolchain,
+          capability,
+          file,
+        }),
+      )
+      .digest('hex');
     const checkpointPath = join(storage.physicalRoot, CHECKPOINT_SUBDIR, `${key}.json`);
     const cachedCheckpoint = useCache ? readPassedCheckpoint(checkpointPath, key) : undefined;
     if (cachedCheckpoint) {
@@ -491,7 +608,9 @@ export async function runTestSelection(
         durationMs: cachedCheckpoint.durationMs,
         attempts: cachedCheckpoint.attempts,
       });
-      console.error(`[tests] cache hit ${file} key=${cachedCheckpoint.key.slice(0, 16)} completedAt=${cachedCheckpoint.completedAt} evidence=${checkpointRelativePath}`);
+      console.error(
+        `[tests] cache hit ${file} key=${cachedCheckpoint.key.slice(0, 16)} completedAt=${cachedCheckpoint.completedAt} evidence=${checkpointRelativePath}`,
+      );
       return;
     }
 
@@ -517,15 +636,17 @@ export async function runTestSelection(
           ...classifyIndependentTestChild(independent),
         };
       } else if (file.startsWith('tests/infrastructure/')) {
-        const independent = await runBoundedChild(process.execPath, [
-          'test', '--timeout', process.env.BUN_TEST_TIMEOUT_MS ?? '60000', '--max-concurrency', '1', file,
-        ], {
-          cwd: repoRoot,
-          env: process.env,
-          timeoutMs: Number(process.env.BUN_TEST_FILE_WALL_TIMEOUT_MS ?? 120_000),
-          stdio: 'inherit',
-          forwardSignals: true,
-        });
+        const independent = await runBoundedChild(
+          process.execPath,
+          ['test', '--timeout', process.env.BUN_TEST_TIMEOUT_MS ?? '60000', '--max-concurrency', '1', file],
+          {
+            cwd: repoRoot,
+            env: process.env,
+            timeoutMs: Number(process.env.BUN_TEST_FILE_WALL_TIMEOUT_MS ?? 120_000),
+            stdio: 'inherit',
+            forwardSignals: true,
+          },
+        );
         result = {
           exitCode: independent.status,
           lingeringPids: independent.residualPids,
@@ -534,11 +655,10 @@ export async function runTestSelection(
           ...classifyIndependentTestChild(independent),
         };
       } else {
-        result = await runBunTestFile([
-          '--timeout', process.env.BUN_TEST_TIMEOUT_MS ?? '60000',
-          '--max-concurrency', '1',
-          file,
-        ], { forwardSignals: true, cwd: repoRoot });
+        result = await runBunTestFile(
+          ['--timeout', process.env.BUN_TEST_TIMEOUT_MS ?? '60000', '--max-concurrency', '1', file],
+          { forwardSignals: true, cwd: repoRoot },
+        );
       }
       if (workspaceMutationDigest(repoRoot) !== baselineWorkspace) {
         contaminated = true;
@@ -548,7 +668,9 @@ export async function runTestSelection(
           failureClass: 'infrastructure',
           failureCode: TEST_FAILURE_CODES.INFRA_WORKTREE_MUTATION,
         };
-        console.error(`[tests] ${TEST_FAILURE_CODES.INFRA_WORKTREE_MUTATION}: tracked tree changed while running ${file}`);
+        console.error(
+          `[tests] ${TEST_FAILURE_CODES.INFRA_WORKTREE_MUTATION}: tracked tree changed while running ${file}`,
+        );
         break;
       }
     } while (result.failureClass === 'infrastructure' && attempts < 2);
@@ -603,10 +725,12 @@ export async function runTestSelection(
     lane.push(file);
     serialLanes.set(resource, lane);
   }
-  await Promise.all([...serialLanes.entries()].map(async ([resource, files]) => {
-    console.error(`[tests] serial lane ${resource}: ${files.length} file(s)`);
-    for (const file of files) await runOne(file);
-  }));
+  await Promise.all(
+    [...serialLanes.entries()].map(async ([resource, files]) => {
+      console.error(`[tests] serial lane ${resource}: ${files.length} file(s)`);
+      for (const file of files) await runOne(file);
+    }),
+  );
 
   if (workspaceMutationDigest(repoRoot) !== baselineWorkspace) {
     contaminated = true;
@@ -614,11 +738,9 @@ export async function runTestSelection(
   }
 
   const durationMs = Math.round(performance.now() - runStartedAt);
-  const serialReduction = serialEquivalentMs > 0
-    ? Math.max(0, 1 - (durationMs / serialEquivalentMs))
-    : 0;
+  const serialReduction = serialEquivalentMs > 0 ? Math.max(0, 1 - durationMs / serialEquivalentMs) : 0;
 
-  const status = failures === 0 && !contaminated ? 'passed' as const : 'failed' as const;
+  const status = failures === 0 && !contaminated ? ('passed' as const) : ('failed' as const);
   const failureEvidence: StructuredCheckFailureEvidence = {
     schemaVersion: 1,
     producer: 'test-governance',
@@ -654,6 +776,8 @@ export async function runTestSelection(
   };
   atomicJson(join(storage.physicalRoot, RECEIPT_SUBDIR, `${contentDigest}-${selection.gate}.json`), receipt);
   options.onReceipt?.(receipt);
-  console.error(`[tests] ${receipt.status}: ${selection.files.length} selected, ${cacheHits} checkpoint hit(s), ${failures} failure(s), ${(serialReduction * 100).toFixed(1)}% vs serial`);
+  console.error(
+    `[tests] ${receipt.status}: ${selection.files.length} selected, ${cacheHits} checkpoint hit(s), ${failures} failure(s), ${(serialReduction * 100).toFixed(1)}% vs serial`,
+  );
   return receipt.status === 'passed' ? 0 : 1;
 }
