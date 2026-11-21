@@ -47,6 +47,7 @@ import {
   createProcessRecord,
   deleteProcessRecord,
   listProcessRecords,
+  repositoryProcessesRoot,
   updateProcessRecord,
 } from '../../src/runtime/execution/process-runtime/store';
 import {
@@ -2948,6 +2949,89 @@ describe('run_check Process Runtime facade', () => {
     expect(classification.path).toBe('fast');
     expect(classification.reasons).toContain('repository_command_process_runtime');
     expect(classification.reasons.some((reason) => reason.includes('timeout_exceeds_fast_cap'))).toBe(false);
+  });
+
+  test('reuses an old active Process even when over 100 newer terminal records exist (#714)', async () => {
+    const fx = fixture();
+    const identity = executionIdentityForRepository(fx.repository);
+    const command = {
+      kind: 'argv' as const,
+      executable: process.execPath,
+      args: ['--version'],
+      cwd: fx.repoRoot,
+    };
+    const processesDir = repositoryProcessesRoot(fx.controllerHome, fx.repository.repoId);
+    mkdirSync(processesDir, { recursive: true });
+    const base = {
+      schemaVersion: 1 as const,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: identity,
+      controllerHome: fx.controllerHome,
+      route: 'managed' as const,
+      command,
+      resourceClaims: [],
+      interactiveWaitMs: 0,
+      timeoutMs: 30_000,
+      maxOutputBytes: 65_536,
+      startedAt: '2020-01-01T00:00:00.000Z',
+      terminalFenceToken: 1,
+      origin: { surface: 'command' as const, toolName: 'execute_command' },
+    };
+    const activeId = 'proc_old_active_outside_top_100';
+    createProcessRecord({
+      ...base,
+      processId: activeId,
+      status: 'running',
+      updatedAt: '2020-01-01T00:00:00.000Z',
+    });
+    for (let index = 0; index < 125; index += 1) {
+      const processId = `proc_new_terminal_${String(index).padStart(3, '0')}`;
+      writeFileSync(
+        join(processesDir, `${processId}.json`),
+        JSON.stringify({
+          ...base,
+          processId,
+          status: 'succeeded',
+          terminalWritten: true,
+          exitCode: 0,
+          updatedAt: '2026-11-21T00:00:00.000Z',
+        }),
+      );
+    }
+
+    expect(
+      listProcessRecords(fx.controllerHome, fx.repository.repoId, 100).some((record) => record.processId === activeId),
+    ).toBe(false);
+    expect(
+      listRecoverableProcessRecords(fx.controllerHome, fx.repository.repoId).some(
+        (record) => record.processId === activeId,
+      ),
+    ).toBe(true);
+
+    const abort = new AbortController();
+    abort.abort(); // If no equivalent is found, the fallback cannot start another child.
+    const attached = await spawnManagedProcess({
+      signal: abort.signal,
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: identity,
+      command,
+      resourceClaims: [],
+      origin: { surface: 'command', toolName: 'execute_command' },
+      reuseActiveEquivalent: true,
+      returnHandleImmediately: true,
+      interactiveWaitMs: 0,
+    });
+    expect(attached).toMatchObject({
+      processId: activeId,
+      deduplicated: true,
+    });
+    // The synthetic record has no real Runner: attachment must not fabricate
+    // success or spawn a replacement when observation becomes unknown.
+    expect(attached.status).toBe('completed_unknown');
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId, 500).length).toBe(126);
   });
 
   test('single-flights equivalent active build/test commands across different request ids', async () => {

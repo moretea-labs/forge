@@ -79,10 +79,7 @@ import {
   type WaitProcessOptions,
   processContractStatus,
 } from './types';
-import type {
-  ProcessCommandDescriptor,
-  ProcessRunnerExitReceipt,
-} from './process-runner-entry';
+import type { ProcessCommandDescriptor, ProcessRunnerExitReceipt } from './process-runner-entry';
 import type { ResourceClaimSpec } from '../jobs/types';
 import { scopeResourceClaims, toProcessClaims } from './resource-claims';
 
@@ -139,8 +136,8 @@ function cleanupTerminalRunnerReceipts(record: ManagedProcessRecord): void {
   // Unknown is an observation, not proof that the Runner can never finish.
   if (record.status === 'completed_unknown') return;
   if (!isManagedProcessTerminal(record) || record.terminalWritten !== true || record.leasesReleased !== true) return;
-  const exitReceiptPath = record.exitReceiptPath
-    ?? receiptPathFor(record.controllerHome, record.repoId, record.processId);
+  const exitReceiptPath =
+    record.exitReceiptPath ?? receiptPathFor(record.controllerHome, record.repoId, record.processId);
   for (const path of [exitReceiptPath, `${exitReceiptPath}.started.json`]) {
     if (!path || !existsSync(path)) continue;
     try {
@@ -168,8 +165,8 @@ function sanitizeTerminalProcessArtifacts(record: ManagedProcessRecord): Managed
       /* Keep the original artifact untouched; a later read/recovery may retry. */
     }
   }
-  const descriptorPath = record.commandDescriptorPath
-    ?? descriptorPathFor(record.controllerHome, record.repoId, record.processId);
+  const descriptorPath =
+    record.commandDescriptorPath ?? descriptorPathFor(record.controllerHome, record.repoId, record.processId);
   let descriptorRemoved = false;
   if (descriptorPath && existsSync(descriptorPath)) {
     try {
@@ -182,16 +179,22 @@ function sanitizeTerminalProcessArtifacts(record: ManagedProcessRecord): Managed
   if (filesChanged === 0 && !descriptorRemoved && record.outputRedaction) return record;
   let updated: ManagedProcessRecord | undefined;
   try {
-    updated = updateProcessRecord(record.controllerHome, record.repoId, record.processId, {
-      outputRedaction: {
-        schemaVersion: 1,
-        sanitizedAt: nowIso(),
-        filesExamined,
-        filesChanged,
-        redactionCount,
-        descriptorRemoved: descriptorRemoved || record.outputRedaction?.descriptorRemoved === true,
+    updated = updateProcessRecord(
+      record.controllerHome,
+      record.repoId,
+      record.processId,
+      {
+        outputRedaction: {
+          schemaVersion: 1,
+          sanitizedAt: nowIso(),
+          filesExamined,
+          filesChanged,
+          redactionCount,
+          descriptorRemoved: descriptorRemoved || record.outputRedaction?.descriptorRemoved === true,
+        },
       },
-    }, { allowTerminal: true });
+      { allowTerminal: true },
+    );
   } catch (error) {
     if (!(error instanceof ControllerLockContentionError)) throw error;
     // The log/descriptor sanitation above has already run; a competing Writer
@@ -231,29 +234,37 @@ function canonicalProcessCommand(command: SpawnManagedProcessInput['command']): 
 
 /** Stable semantic command fingerprint used by request-id idempotency. */
 export function fingerprintProcessCommand(command: SpawnManagedProcessInput['command']): string {
-  return createHash('sha256').update(JSON.stringify(canonicalProcessCommand(command))).digest('hex');
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalProcessCommand(command)))
+    .digest('hex');
 }
 
 function processClaimsFingerprint(claims: readonly ProcessResourceClaim[]): string {
-  const normalized = claims.map((claim) => ({
-    resourceKey: claim.resourceKey,
-    mode: claim.mode,
-    repoId: claim.repoId ?? null,
-    checkoutId: claim.checkoutId ?? null,
-  })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  const normalized = claims
+    .map((claim) => ({
+      resourceKey: claim.resourceKey,
+      mode: claim.mode,
+      repoId: claim.repoId ?? null,
+      checkoutId: claim.checkoutId ?? null,
+    }))
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
   return createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
 }
 
 function executionIdentityFingerprint(identity: SpawnManagedProcessInput['executionIdentity']): string {
-  return createHash('sha256').update(JSON.stringify({
-    authority: identity.authority ?? 'repository',
-    repositoryId: identity.repositoryId,
-    checkoutId: identity.checkoutId,
-    canonicalRoot: identity.canonicalRoot,
-    branch: identity.branch ?? null,
-    expectedHead: identity.expectedHead ?? null,
-    allowArchived: identity.allowArchived === true,
-  })).digest('hex');
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        authority: identity.authority ?? 'repository',
+        repositoryId: identity.repositoryId,
+        checkoutId: identity.checkoutId,
+        canonicalRoot: identity.canonicalRoot,
+        branch: identity.branch ?? null,
+        expectedHead: identity.expectedHead ?? null,
+        allowArchived: identity.allowArchived === true,
+      }),
+    )
+    .digest('hex');
 }
 
 function tailText(buffer: Buffer, maxBytes: number): string {
@@ -347,7 +358,11 @@ function captureIdentity(pid: number | undefined): {
 
 function identityStillMatches(identity: ManagedProcessRecord['identity'] | undefined, untrusted?: boolean): boolean {
   if (!identity) return false;
-  if (untrusted || identity.processStartTime.startsWith('untrusted:') || identity.processStartTime.startsWith('fallback:')) {
+  if (
+    untrusted ||
+    identity.processStartTime.startsWith('untrusted:') ||
+    identity.processStartTime.startsWith('fallback:')
+  ) {
     return false;
   }
   if (!isProcessAlive(identity.pid)) return false;
@@ -441,14 +456,22 @@ function processRuntimeIdentityMatches(record: ManagedProcessRecord): boolean {
   const claim = getRuntimeWriteClaim();
   if (!claim) return false;
   if (expected.runtimeInstanceId && expected.runtimeInstanceId !== claim.runtimeInstanceId) return false;
-  if (expected.releaseAuthorityRevision !== undefined && expected.releaseAuthorityRevision !== claim.releaseAuthorityRevision) return false;
+  if (
+    expected.releaseAuthorityRevision !== undefined &&
+    expected.releaseAuthorityRevision !== claim.releaseAuthorityRevision
+  )
+    return false;
   if (expected.releaseId && expected.releaseId !== claim.releaseId) return false;
   if (expected.artifactIdentity && expected.artifactIdentity !== claim.artifactIdentity) return false;
-  if (expected.workerProtocolVersion !== undefined && expected.workerProtocolVersion !== claim.workerProtocolVersion) return false;
+  if (expected.workerProtocolVersion !== undefined && expected.workerProtocolVersion !== claim.workerProtocolVersion)
+    return false;
   return true;
 }
 
-function expectedLeaseRefsForProcess(record: ManagedProcessRecord, repoId: string): Array<{
+function expectedLeaseRefsForProcess(
+  record: ManagedProcessRecord,
+  repoId: string,
+): Array<{
   leaseId: string;
   fencingToken: number;
   repoId: string;
@@ -461,14 +484,16 @@ function expectedLeaseRefsForProcess(record: ManagedProcessRecord, repoId: strin
     if (!ref.leaseId || !ref.resourceKey || (ref.repoId && ref.repoId !== repoId)) return [];
     if (ref.checkoutId && record.checkoutId && ref.checkoutId !== record.checkoutId) return [];
     if (ref.workId && record.workId && ref.workId !== record.workId) return [];
-    return [{
-      leaseId: ref.leaseId,
-      fencingToken: ref.fencingToken,
-      repoId,
-      ...(ref.checkoutId ? { checkoutId: ref.checkoutId } : {}),
-      ...(ref.workId ? { workId: ref.workId } : {}),
-      resourceKey: ref.resourceKey,
-    }];
+    return [
+      {
+        leaseId: ref.leaseId,
+        fencingToken: ref.fencingToken,
+        repoId,
+        ...(ref.checkoutId ? { checkoutId: ref.checkoutId } : {}),
+        ...(ref.workId ? { workId: ref.workId } : {}),
+        resourceKey: ref.resourceKey,
+      },
+    ];
   });
 }
 
@@ -482,16 +507,24 @@ function recordLeaseReleaseFailure(
   const message = redactSensitiveText(rawMessage).text;
   const separator = message.indexOf(':');
   const code = separator > 0 ? message.slice(0, separator) : 'TERMINAL_PROCESS_LEASE_RELEASE_FAILED';
-  return updateProcessRecord(controllerHome, repoId, record.processId, {
-    leasesReleased: false,
-    leaseReleaseState: 'pending',
-    leaseReleaseFailure: {
-      code,
-      message,
-      attemptedAt: nowIso(),
-      attempts: (record.leaseReleaseFailure?.attempts ?? 0) + 1,
-    },
-  }, { allowTerminal: true }) ?? record;
+  return (
+    updateProcessRecord(
+      controllerHome,
+      repoId,
+      record.processId,
+      {
+        leasesReleased: false,
+        leaseReleaseState: 'pending',
+        leaseReleaseFailure: {
+          code,
+          message,
+          attemptedAt: nowIso(),
+          attempts: (record.leaseReleaseFailure?.attempts ?? 0) + 1,
+        },
+      },
+      { allowTerminal: true },
+    ) ?? record
+  );
 }
 
 /**
@@ -528,20 +561,20 @@ export function releaseProcessLeasesOnce(
     );
   }
   try {
-    releaseTerminalProcessLeases(
-      controllerHome,
-      repoId,
-      processId,
-      expectedRefs,
-      { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
-    );
+    releaseTerminalProcessLeases(controllerHome, repoId, processId, expectedRefs, {
+      visibility: 'ephemeral',
+      notifyScheduler: false,
+      invalidateProjection: false,
+      emitRuntimeEvent: false,
+    });
   } catch (error) {
     // Exact-set or token mismatch remains pending and retryable. Failed cleanup
     // must never become a durable released claim.
     return recordLeaseReleaseFailure(controllerHome, repoId, record, error);
   }
-  const remaining = listActiveLeases(controllerHome, repoId)
-    .some((lease) => lease.ownerJobId === processOwnerJobId(processId));
+  const remaining = listActiveLeases(controllerHome, repoId).some(
+    (lease) => lease.ownerJobId === processOwnerJobId(processId),
+  );
   if (remaining) {
     return recordLeaseReleaseFailure(
       controllerHome,
@@ -550,13 +583,15 @@ export function releaseProcessLeasesOnce(
       new Error(`TERMINAL_PROCESS_LEASES_REMAIN_ACTIVE: ${processId} still owns active leases after cleanup`),
     );
   }
-  return updateProcessRecord(
-    controllerHome,
-    repoId,
-    processId,
-    { leasesReleased: true, leaseReleaseState: 'released', leaseReleaseFailure: undefined },
-    { allowTerminal: true },
-  ) ?? getProcessRecord(controllerHome, repoId, processId);
+  return (
+    updateProcessRecord(
+      controllerHome,
+      repoId,
+      processId,
+      { leasesReleased: true, leaseReleaseState: 'released', leaseReleaseFailure: undefined },
+      { allowTerminal: true },
+    ) ?? getProcessRecord(controllerHome, repoId, processId)
+  );
 }
 
 /**
@@ -609,13 +644,19 @@ export function completeProcessFromEvidence(
     stdoutTail?: string;
     stderrTail?: string;
   },
-  options: { authority?: 'runtime_writer' | 'durable_exit_receipt' | 'durable_pre_spawn_abandonment' | 'durable_stale_active_reconciliation' } = {},
+  options: {
+    authority?:
+      | 'runtime_writer'
+      | 'durable_exit_receipt'
+      | 'durable_pre_spawn_abandonment'
+      | 'durable_stale_active_reconciliation';
+  } = {},
 ): ManagedProcessRecord | undefined {
   // Validated independent evidence may only perform the monotonic,
   // fence-token-bound terminal CAS below. It does not grant general writer
   // authority, queue access, process signalling, or arbitrary record updates.
-  let mayWriteTerminal = options.authority === 'durable_exit_receipt'
-    || options.authority === 'durable_pre_spawn_abandonment';
+  let mayWriteTerminal =
+    options.authority === 'durable_exit_receipt' || options.authority === 'durable_pre_spawn_abandonment';
   if (!mayWriteTerminal) {
     mayWriteTerminal = assertRuntimeMayWrite('write_process_terminal', controllerHome).allowed;
   }
@@ -654,7 +695,10 @@ export function completeProcessFromEvidence(
   // Always attempt exactly-once lease release after terminal evidence, including
   // already-terminal races (second caller still needs to clear leases once).
   const afterTerminal = completion.record ?? getProcessRecord(controllerHome, repoId, processId);
-  if (afterTerminal && (completion.ok || completion.reason === 'already_terminal' || afterTerminal.terminalWritten === true)) {
+  if (
+    afterTerminal &&
+    (completion.ok || completion.reason === 'already_terminal' || afterTerminal.terminalWritten === true)
+  ) {
     const released = releaseProcessLeasesOnce(controllerHome, repoId, processId) ?? afterTerminal;
     recordTerminalProcessXcodeEvidenceOwner(released);
     cleanupTerminalRunnerReceipts(released);
@@ -685,17 +729,22 @@ export function reconcileAbandonedPreSpawnProcess(
   const nowMs = options.nowMs ?? Date.now();
   const minAgeMs = Math.max(1_000, options.minAgeMs ?? DEFAULT_PRE_SPAWN_ABANDONMENT_MS);
   if (!Number.isFinite(updatedAtMs) || nowMs - updatedAtMs < minAgeMs) return record;
-  const descriptorPath = record.commandDescriptorPath
-    ?? descriptorPathFor(controllerHome, repoId, processId);
-  const exitReceiptPath = record.exitReceiptPath
-    ?? receiptPathFor(controllerHome, repoId, processId);
+  const descriptorPath = record.commandDescriptorPath ?? descriptorPathFor(controllerHome, repoId, processId);
+  const exitReceiptPath = record.exitReceiptPath ?? receiptPathFor(controllerHome, repoId, processId);
   if (existsSync(descriptorPath) || existsSync(exitReceiptPath)) return record;
-  return completeProcessFromEvidence(controllerHome, repoId, processId, record.terminalFenceToken, {
-    status: 'failed',
-    exitCode: 1,
-    finishedAt: new Date(nowMs).toISOString(),
-    errorMessage: 'PROCESS_PRESPAWN_ABANDONED: no lease, descriptor, receipt, or PID after startup grace period',
-  }, { authority: 'durable_pre_spawn_abandonment' });
+  return completeProcessFromEvidence(
+    controllerHome,
+    repoId,
+    processId,
+    record.terminalFenceToken,
+    {
+      status: 'failed',
+      exitCode: 1,
+      finishedAt: new Date(nowMs).toISOString(),
+      errorMessage: 'PROCESS_PRESPAWN_ABANDONED: no lease, descriptor, receipt, or PID after startup grace period',
+    },
+    { authority: 'durable_pre_spawn_abandonment' },
+  );
 }
 
 /**
@@ -730,11 +779,19 @@ export function reconcileStaleManagedProcessForMaintenance(
   if (!isManagedProcessActive(record) || liveMonitors.has(processId)) return record;
   if (identityStillMatches(record.identity, record.identityUntrusted)) return record;
 
-  return completeProcessFromEvidence(controllerHome, repoId, processId, record.terminalFenceToken, {
-    status: 'completed_unknown',
-    finishedAt: new Date(nowMs).toISOString(),
-    errorMessage: 'PROCESS_STALE_ACTIVE_RECONCILED: stale active record has no live matching process identity or durable exit receipt',
-  }, { authority: 'durable_stale_active_reconciliation' });
+  return completeProcessFromEvidence(
+    controllerHome,
+    repoId,
+    processId,
+    record.terminalFenceToken,
+    {
+      status: 'completed_unknown',
+      finishedAt: new Date(nowMs).toISOString(),
+      errorMessage:
+        'PROCESS_STALE_ACTIVE_RECONCILED: stale active record has no live matching process identity or durable exit receipt',
+    },
+    { authority: 'durable_stale_active_reconciliation' },
+  );
 }
 
 async function killTree(child: ChildProcess): Promise<void> {
@@ -781,9 +838,7 @@ export function resolveProcessRunnerEntryPath(
   if (existsSync(releaseSibling)) return releaseSibling;
 
   try {
-    const here = typeof __dirname !== 'undefined'
-      ? __dirname
-      : dirname(fileURLToPath(import.meta.url));
+    const here = typeof __dirname !== 'undefined' ? __dirname : dirname(fileURLToPath(import.meta.url));
     const installed = join(here, 'process-runner.js');
     if (existsSync(installed)) return installed;
     const sourceSibling = join(here, 'process-runner-entry.ts');
@@ -807,30 +862,35 @@ export function resolveProcessRunnerRuntime(
   return resolveBunExecutable(execPath, env);
 }
 
-export function resolveProcessRunnerInvocation(entry: string, descriptorPath: string): { command: string; args: string[] } {
+export function resolveProcessRunnerInvocation(
+  entry: string,
+  descriptorPath: string,
+): { command: string; args: string[] } {
   const scriptEntry = /\.(?:[cm]?js|tsx?)$/i.test(entry);
   let standalone = !scriptEntry && process.env.FORGE_RUNTIME_EXECUTION === 'standalone-binary';
   try {
-    const manifest = JSON.parse(readFileSync(join(dirname(entry), 'manifest.json'), 'utf8')) as { executionMode?: unknown };
+    const manifest = JSON.parse(readFileSync(join(dirname(entry), 'manifest.json'), 'utf8')) as {
+      executionMode?: unknown;
+    };
     if (manifest.executionMode === 'standalone-binary') standalone = true;
   } catch {
     /* source and legacy script releases have no execution manifest */
   }
   const args = ['--descriptor', descriptorPath];
-  return standalone
-    ? { command: entry, args }
-    : { command: resolveProcessRunnerRuntime(), args: [entry, ...args] };
+  return standalone ? { command: entry, args } : { command: resolveProcessRunnerRuntime(), args: [entry, ...args] };
 }
 
 function commandFingerprint(command: ManagedProcessRecord['command']): string {
   return createHash('sha256')
-    .update(JSON.stringify({
-      kind: command.kind,
-      executable: command.executable,
-      args: command.args,
-      shellCommand: command.shellCommand,
-      cwd: command.cwd,
-    }))
+    .update(
+      JSON.stringify({
+        kind: command.kind,
+        executable: command.executable,
+        args: command.args,
+        shellCommand: command.shellCommand,
+        cwd: command.cwd,
+      }),
+    )
     .digest('hex')
     .slice(0, 24);
 }
@@ -1030,13 +1090,16 @@ function attachRunnerMonitor(
   pollTimer?.unref?.();
 
   // Controller-side timeout is a safety net; runner also enforces timeout.
-  monitor.timeoutHandle = setTimeout(() => {
-    monitor.terminalIntent = 'timed_out';
-    void killTree(runner).finally(() => {
-      if (pollTimer) clearInterval(pollTimer);
-      finalizeMonitor(monitor, 'timed_out', 1, true, false, `process timed out after ${options.timeoutMs}ms`);
-    });
-  }, Math.max(1, options.timeoutMs + 2_000));
+  monitor.timeoutHandle = setTimeout(
+    () => {
+      monitor.terminalIntent = 'timed_out';
+      void killTree(runner).finally(() => {
+        if (pollTimer) clearInterval(pollTimer);
+        finalizeMonitor(monitor, 'timed_out', 1, true, false, `process timed out after ${options.timeoutMs}ms`);
+      });
+    },
+    Math.max(1, options.timeoutMs + 2_000),
+  );
   monitor.timeoutHandle.unref?.();
 
   const finalizeFromRunnerExit = () => {
@@ -1063,7 +1126,14 @@ function attachRunnerMonitor(
     if (monitor.terminalIntent) return;
     // Runner exited without receipt. The actual command may have succeeded or
     // failed, so do not fabricate a deterministic failure.
-    finalizeMonitor(monitor, 'completed_unknown', 1, false, false, 'process runner exited without receipt; outcome unknown');
+    finalizeMonitor(
+      monitor,
+      'completed_unknown',
+      1,
+      false,
+      false,
+      'process runner exited without receipt; outcome unknown',
+    );
   };
 
   runner.on('error', (error) => {
@@ -1100,18 +1170,24 @@ function recordToHandle(
   // bounded log file was persisted before the exit receipt. A terminal handle
   // must therefore fall back to the durable log, including after Controller
   // recreation, for both output and its compact tail projection.
-  const persistedStdout = completed && !(extras?.stdout || safeRecord.stdoutTail) && safeRecord.stdoutPath
-    ? readFileTailBytes(safeRecord.stdoutPath, PROCESS_LOG_TAIL_BYTES).text
-    : undefined;
-  const persistedStderr = completed && !(extras?.stderr || safeRecord.stderrTail) && safeRecord.stderrPath
-    ? readFileTailBytes(safeRecord.stderrPath, PROCESS_LOG_TAIL_BYTES).text
-    : undefined;
+  const persistedStdout =
+    completed && !(extras?.stdout || safeRecord.stdoutTail) && safeRecord.stdoutPath
+      ? readFileTailBytes(safeRecord.stdoutPath, PROCESS_LOG_TAIL_BYTES).text
+      : undefined;
+  const persistedStderr =
+    completed && !(extras?.stderr || safeRecord.stderrTail) && safeRecord.stderrPath
+      ? readFileTailBytes(safeRecord.stderrPath, PROCESS_LOG_TAIL_BYTES).text
+      : undefined;
   const stdout = extras?.stdout
     ? safeProcessText(extras.stdout)
-    : completed ? safeProcessText(safeRecord.stdoutTail || persistedStdout || '') : undefined;
+    : completed
+      ? safeProcessText(safeRecord.stdoutTail || persistedStdout || '')
+      : undefined;
   const stderr = extras?.stderr
     ? safeProcessText(extras.stderr)
-    : completed ? safeProcessText(safeRecord.stderrTail || persistedStderr || '') : undefined;
+    : completed
+      ? safeProcessText(safeRecord.stderrTail || persistedStderr || '')
+      : undefined;
   return {
     processId: safeRecord.processId,
     workId: safeRecord.workId,
@@ -1204,10 +1280,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     requestedCheckoutId: input.checkoutId,
   });
   const command = { ...input.command, cwd: guardedIdentity.resolvedCwd };
-  const interactiveWaitMs = Math.max(
-    0,
-    Math.min(input.interactiveWaitMs ?? DEFAULT_INTERACTIVE_WAIT_MS, 120_000),
-  );
+  const interactiveWaitMs = Math.max(0, Math.min(input.interactiveWaitMs ?? DEFAULT_INTERACTIVE_WAIT_MS, 120_000));
   const timeoutMs = Math.max(
     interactiveWaitMs + 1,
     Math.min(input.timeoutMs ?? DEFAULT_PROCESS_TIMEOUT_MS, 24 * 60 * 60_000),
@@ -1216,27 +1289,22 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   const candidateProcessId = newProcessId();
   const requestId = input.origin?.requestId?.trim() || undefined;
   const commandFingerprint = fingerprintProcessCommand(command);
-  const resourceClaims = toProcessClaims(scopeResourceClaims(
-    toResourceClaimSpecs(input.resourceClaims ?? []),
-    input.repoId,
-    input.checkoutId,
-  ));
+  const resourceClaims = toProcessClaims(
+    scopeResourceClaims(toResourceClaimSpecs(input.resourceClaims ?? []), input.repoId, input.checkoutId),
+  );
 
   // Request-id idempotency is stronger than active-command reuse.
   if (requestId) {
-    const existingBinding = getProcessRequestBinding(
-      input.controllerHome,
-      input.repoId,
-      input.checkoutId,
-      requestId,
-    );
+    const existingBinding = getProcessRequestBinding(input.controllerHome, input.repoId, input.checkoutId, requestId);
     if (existingBinding) {
       if (existingBinding.commandFingerprint !== commandFingerprint) {
         throw new Error(`PROCESS_REQUEST_ID_CONFLICT: ${requestId}`);
       }
       const existing = getProcessHandle(input.controllerHome, input.repoId, existingBinding.processId);
       if (!existing) {
-        throw new Error(`PROCESS_REQUEST_INCOMPLETE: request ${requestId} is bound to missing process ${existingBinding.processId}; refusing re-execution`);
+        throw new Error(
+          `PROCESS_REQUEST_INCOMPLETE: request ${requestId} is bound to missing process ${existingBinding.processId}; refusing re-execution`,
+        );
       }
       return { ...existing, deduplicated: true, requestId };
     }
@@ -1248,17 +1316,20 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   if (input.reuseActiveEquivalent === true && !input.checkExecution) {
     const identityKey = executionIdentityFingerprint(input.executionIdentity);
     const claimsKey = processClaimsFingerprint(resourceClaims);
-    const equivalent = listProcessRecords(input.controllerHome, input.repoId, 100).find((record) => (
-      isManagedProcessActive(record)
-      && record.checkoutId === input.checkoutId
-      && (record.principalId ?? undefined) === (input.principalId ?? undefined)
-      && record.origin?.surface === 'command'
-      && record.origin?.toolName === 'execute_command'
-      && record.executionIdentity !== undefined
-      && executionIdentityFingerprint(record.executionIdentity) === identityKey
-      && fingerprintProcessCommand(record.command) === commandFingerprint
-      && processClaimsFingerprint(record.resourceClaims) === claimsKey
-    ));
+    // The latest 100 records can all be terminal while an older build still runs.
+    // Use the existing active recovery index, not a bounded history page.
+    const equivalent = listRecoverableProcessRecords(input.controllerHome, input.repoId).find(
+      (record) =>
+        isManagedProcessActive(record) &&
+        record.checkoutId === input.checkoutId &&
+        (record.principalId ?? undefined) === (input.principalId ?? undefined) &&
+        record.origin?.surface === 'command' &&
+        record.origin?.toolName === 'execute_command' &&
+        record.executionIdentity !== undefined &&
+        executionIdentityFingerprint(record.executionIdentity) === identityKey &&
+        fingerprintProcessCommand(record.command) === commandFingerprint &&
+        processClaimsFingerprint(record.resourceClaims) === claimsKey,
+    );
     if (equivalent) {
       let selectedProcessId = equivalent.processId;
       if (requestId) {
@@ -1274,7 +1345,9 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       }
       const existing = getProcessHandle(input.controllerHome, input.repoId, selectedProcessId);
       if (!existing) {
-        throw new Error(`PROCESS_ACTIVE_EQUIVALENT_INCOMPLETE: process ${selectedProcessId} disappeared before attachment`);
+        throw new Error(
+          `PROCESS_ACTIVE_EQUIVALENT_INCOMPLETE: process ${selectedProcessId} disappeared before attachment`,
+        );
       }
       return { ...existing, deduplicated: true, requestId };
     }
@@ -1307,9 +1380,16 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     if (claim.status === 'existing') {
       const existing = getProcessHandle(input.controllerHome, input.repoId, processId);
       if (!existing) {
-        throw new Error(`PROCESS_REQUEST_INCOMPLETE: request ${requestId} is bound to missing process ${processId}; refusing re-execution`);
+        throw new Error(
+          `PROCESS_REQUEST_INCOMPLETE: request ${requestId} is bound to missing process ${processId}; refusing re-execution`,
+        );
       }
-      return { ...existing, deduplicated: true, semanticDeduplicated: semanticExisting || existing.semanticDeduplicated, requestId };
+      return {
+        ...existing,
+        deduplicated: true,
+        semanticDeduplicated: semanticExisting || existing.semanticDeduplicated,
+        requestId,
+      };
     }
   }
   if (semanticExisting) {
@@ -1319,7 +1399,9 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       existing = getProcessHandle(input.controllerHome, input.repoId, processId);
     }
     if (!existing) {
-      throw new Error(`PROCESS_CHECK_EXECUTION_INCOMPLETE: semantic Check binding points to missing process ${processId}; refusing duplicate execution`);
+      throw new Error(
+        `PROCESS_CHECK_EXECUTION_INCOMPLETE: semantic Check binding points to missing process ${processId}; refusing duplicate execution`,
+      );
     }
     return { ...existing, deduplicated: true, semanticDeduplicated: true, requestId };
   }
@@ -1445,12 +1527,19 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const failed = completeProcessFromEvidence(input.controllerHome, input.repoId, processId, fenceToken, {
-        status: 'failed',
-        exitCode: 1,
-        errorMessage: `PROCESS_LEASE_ACQUISITION_FAILED_BEFORE_SPAWN: ${message}`,
-        exitReceiptPath,
-      }, { authority: 'durable_pre_spawn_abandonment' });
+      const failed = completeProcessFromEvidence(
+        input.controllerHome,
+        input.repoId,
+        processId,
+        fenceToken,
+        {
+          status: 'failed',
+          exitCode: 1,
+          errorMessage: `PROCESS_LEASE_ACQUISITION_FAILED_BEFORE_SPAWN: ${message}`,
+          exitReceiptPath,
+        },
+        { authority: 'durable_pre_spawn_abandonment' },
+      );
       return recordToHandle(failed ?? record, { completed: true, stdout: '', stderr: message });
     }
     if (!acquisition.acquired) {
@@ -1460,9 +1549,15 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       // recovery. Reconcile only the exact Process owners that block this
       // acquisition, then retry once. Live/identity-matching processes remain
       // active and keep their leases; no fence is bypassed.
-      const blockingProcessIds = [...new Set(acquisition.blockers
-        .map((blocker) => blocker.ownerJobId.startsWith('process:') ? blocker.ownerJobId.slice('process:'.length) : '')
-        .filter(Boolean))];
+      const blockingProcessIds = [
+        ...new Set(
+          acquisition.blockers
+            .map((blocker) =>
+              blocker.ownerJobId.startsWith('process:') ? blocker.ownerJobId.slice('process:'.length) : '',
+            )
+            .filter(Boolean),
+        ),
+      ];
       if (blockingProcessIds.length > 0) {
         for (const blockingProcessId of blockingProcessIds) {
           getProcessHandle(input.controllerHome, input.repoId, blockingProcessId);
@@ -1499,7 +1594,8 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       // return a managed handle while this original request continues waiting.
       // No second Job/Queue/Controller is created.
       const queued = updateProcessRecord(input.controllerHome, input.repoId, processId, {
-        route: 'managed', concurrencyWait: wait,
+        route: 'managed',
+        concurrencyWait: wait,
       });
       if (queued) input.onAdmissionWait?.(recordToHandle(queued, { completed: false }));
       const leaseDeadline = Date.now() + leaseWaitMs;
@@ -1545,12 +1641,15 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       // A missing or terminal Process record cannot be joined. Keep unknown
       // ownership distinct from a known non-Work owner; only a live Process
       // may be projected as the exact join target.
-      const activeBlockingProcess = blockingProcess && isManagedProcessActive(blockingProcess)
-        ? blockingProcess : undefined;
-      const blockingOwnerRelation: ExecutionConcurrencyWaitProjection['blockingOwnerRelation'] = !ownerId ? 'unknown'
-        : !isProcessOwner ? 'non_process_owner'
-        : !blockingProcess || !activeBlockingProcess ? 'unknown'
-        : 'process_owner';
+      const activeBlockingProcess =
+        blockingProcess && isManagedProcessActive(blockingProcess) ? blockingProcess : undefined;
+      const blockingOwnerRelation: ExecutionConcurrencyWaitProjection['blockingOwnerRelation'] = !ownerId
+        ? 'unknown'
+        : !isProcessOwner
+          ? 'non_process_owner'
+          : !blockingProcess || !activeBlockingProcess
+            ? 'unknown'
+            : 'process_owner';
       const wait = processConcurrencyWaitProjection({
         source: 'resource_lease',
         blockerCode: 'resource_claim_conflict',
@@ -1564,9 +1663,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       // The rejected request never spawned; the Process record itself is the
       // durable admission receipt. Do not mirror this conflict into semantic state.
       updateProcessRecord(input.controllerHome, input.repoId, processId, { concurrencyWait: wait });
-      const blockers = acquisition.blockers
-        .map((b) => `${b.resourceKey}@${b.ownerJobId}`)
-        .join(', ');
+      const blockers = acquisition.blockers.map((b) => `${b.resourceKey}@${b.ownerJobId}`).join(', ');
       completeProcessFromEvidence(input.controllerHome, input.repoId, processId, fenceToken, {
         status: 'failed',
         exitCode: 1,
@@ -1585,10 +1682,14 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       // Cancellation can race the precise moment the final conflicting owner
       // releases. Release only the newly obtained fenced set, never dispatch.
       releaseExecutionLeases(
-        input.controllerHome, input.repoId, processOwnerJobId(processId),
+        input.controllerHome,
+        input.repoId,
+        processOwnerJobId(processId),
         acquisition.leases.map((lease) => ({
-          leaseId: lease.leaseId, fencingToken: lease.fencingToken,
-          repoId: lease.repoId, checkoutId: lease.checkoutId,
+          leaseId: lease.leaseId,
+          fencingToken: lease.fencingToken,
+          repoId: lease.repoId,
+          checkoutId: lease.checkoutId,
           resourceKey: lease.resourceKey,
         })),
         { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
@@ -1618,16 +1719,29 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
         requestedRepoId: input.repoId,
         requestedCheckoutId: input.checkoutId,
       });
-      if (leaseWaitMs > 0 && guardedIdentity.currentHead
-        && resumedIdentity.currentHead !== guardedIdentity.currentHead) {
+      if (
+        leaseWaitMs > 0 &&
+        guardedIdentity.currentHead &&
+        resumedIdentity.currentHead !== guardedIdentity.currentHead
+      ) {
         throw new Error('PROCESS_QUEUED_CHECK_SOURCE_CHANGED: checkout HEAD changed while waiting for device');
       }
     } catch (error) {
       releaseProcessLeasesOnce(input.controllerHome, input.repoId, processId);
       const message = error instanceof Error ? error.message : String(error);
-      const failed = completeProcessFromEvidence(input.controllerHome, input.repoId, processId, fenceToken, {
-        status: 'failed', exitCode: 1, errorMessage: message, exitReceiptPath,
-      }, { authority: 'durable_pre_spawn_abandonment' });
+      const failed = completeProcessFromEvidence(
+        input.controllerHome,
+        input.repoId,
+        processId,
+        fenceToken,
+        {
+          status: 'failed',
+          exitCode: 1,
+          errorMessage: message,
+          exitReceiptPath,
+        },
+        { authority: 'durable_pre_spawn_abandonment' },
+      );
       return recordToHandle(failed ?? record, { completed: true, stderr: message });
     }
   }
@@ -1747,18 +1861,21 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     if (current.terminalWritten) return recordToHandle(current, { completed: true });
     updateProcessRecord(input.controllerHome, input.repoId, processId, { route: 'managed' });
     const managed = getProcessRecord(input.controllerHome, input.repoId, processId)!;
-    return recordToHandle({ ...managed, route: 'managed' }, {
-      completed: false,
-      ...(completed === 'interrupted' ? { observationInterrupted: true } : {}),
-    });
+    return recordToHandle(
+      { ...managed, route: 'managed' },
+      {
+        completed: false,
+        ...(completed === 'interrupted' ? { observationInterrupted: true } : {}),
+      },
+    );
   }
 
   const stdout = monitor.stdoutTail.length
     ? capProcessOutput(safeProcessText(monitor.stdoutTail.toString('utf8')), maxOutputBytes)
-    : completed.stdoutTail ?? '';
+    : (completed.stdoutTail ?? '');
   const stderr = monitor.stderrTail.length
     ? capProcessOutput(safeProcessText(monitor.stderrTail.toString('utf8')), maxOutputBytes)
-    : completed.stderrTail ?? '';
+    : (completed.stderrTail ?? '');
   return recordToHandle(completed, { completed: true, stdout, stderr });
 }
 
@@ -1772,7 +1889,9 @@ export async function spawnWithQueuedAdmission(
 ): Promise<ProcessHandle> {
   if (!usesLiveDevice) return spawnManagedProcess(input);
   let notifyQueued: (handle: ProcessHandle) => void = () => {};
-  const queuedHandle = new Promise<ProcessHandle>((resolve) => { notifyQueued = resolve; });
+  const queuedHandle = new Promise<ProcessHandle>((resolve) => {
+    notifyQueued = resolve;
+  });
   const execution = spawnManagedProcess({ ...input, onAdmissionWait: notifyQueued });
   return Promise.race([execution, queuedHandle]);
 }
@@ -1783,28 +1902,36 @@ function applyReceiptIfPresent(
   processId: string,
   record: ManagedProcessRecord,
 ): ManagedProcessRecord | undefined {
-  const receipt = readExitReceipt(record.exitReceiptPath) ?? readExitReceipt(receiptPathFor(controllerHome, repoId, processId));
+  const receipt =
+    readExitReceipt(record.exitReceiptPath) ?? readExitReceipt(receiptPathFor(controllerHome, repoId, processId));
   if (!receipt) return undefined;
   if (receipt.processId !== processId) return undefined;
   if (!receipt.finishedAt || !Number.isFinite(Date.parse(receipt.finishedAt))) return undefined;
   if (receipt.commandExecutedOnce === false) return undefined;
-  if (record.status === 'completed_unknown' && record.terminalWritten === true && receipt.commandExecutedOnce !== true) return undefined;
+  if (record.status === 'completed_unknown' && record.terminalWritten === true && receipt.commandExecutedOnce !== true)
+    return undefined;
   if (receipt.exitCode !== null && !Number.isInteger(receipt.exitCode)) return undefined;
-  return completeProcessFromEvidence(controllerHome, repoId, processId, record.terminalFenceToken, {
-    status: statusFromReceipt(receipt),
-    exitCode: receipt.exitCode,
-    timedOut: receipt.timedOut,
-    cancelled: receipt.cancelled,
-    finishedAt: receipt.finishedAt,
-    exitReceiptPath: record.exitReceiptPath ?? receiptPathFor(controllerHome, repoId, processId),
-    stdoutBytes: receipt.stdoutBytes,
-    stderrBytes: receipt.stderrBytes,
-    stdoutStoredBytes: receipt.stdoutStoredBytes,
-    stderrStoredBytes: receipt.stderrStoredBytes,
-    logTruncated: receipt.logTruncated,
-  }, { authority: 'durable_exit_receipt' });
+  return completeProcessFromEvidence(
+    controllerHome,
+    repoId,
+    processId,
+    record.terminalFenceToken,
+    {
+      status: statusFromReceipt(receipt),
+      exitCode: receipt.exitCode,
+      timedOut: receipt.timedOut,
+      cancelled: receipt.cancelled,
+      finishedAt: receipt.finishedAt,
+      exitReceiptPath: record.exitReceiptPath ?? receiptPathFor(controllerHome, repoId, processId),
+      stdoutBytes: receipt.stdoutBytes,
+      stderrBytes: receipt.stderrBytes,
+      stdoutStoredBytes: receipt.stdoutStoredBytes,
+      stderrStoredBytes: receipt.stderrStoredBytes,
+      logTruncated: receipt.logTruncated,
+    },
+    { authority: 'durable_exit_receipt' },
+  );
 }
-
 
 function reconcileObservedTerminalProcess(
   controllerHome: string,
@@ -1821,11 +1948,7 @@ function reconcileObservedTerminalProcess(
   return reconciled;
 }
 
-export function getProcessHandle(
-  controllerHome: string,
-  repoId: string,
-  processId: string,
-): ProcessHandle | undefined {
+export function getProcessHandle(controllerHome: string, repoId: string, processId: string): ProcessHandle | undefined {
   const record = getProcessRecord(controllerHome, repoId, processId);
   if (!record) return undefined;
   if (record.terminalWritten === true) {
@@ -1920,7 +2043,8 @@ export async function waitForProcess(
   while (Date.now() < deadline) {
     const current = getProcessRecord(controllerHome, repoId, processId);
     if (!current) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
-    if (current.terminalWritten) return recordToHandle(reconcileObservedTerminalProcess(controllerHome, repoId, current), { completed: true });
+    if (current.terminalWritten)
+      return recordToHandle(reconcileObservedTerminalProcess(controllerHome, repoId, current), { completed: true });
     const fromReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, current);
     if (fromReceipt) return recordToHandle(fromReceipt, { completed: true });
     if (options.signal?.aborted) return recordToHandle(current, { completed: false, observationInterrupted: true });
@@ -1939,7 +2063,8 @@ export async function waitForProcess(
         await new Promise((r) => setTimeout(r, PROCESS_RECOVERY_RECEIPT_POLL_MS));
         const latest = getProcessRecord(controllerHome, repoId, processId);
         if (!latest) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
-        if (latest.terminalWritten) return recordToHandle(reconcileObservedTerminalProcess(controllerHome, repoId, latest), { completed: true });
+        if (latest.terminalWritten)
+          return recordToHandle(reconcileObservedTerminalProcess(controllerHome, repoId, latest), { completed: true });
         const delayedReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, latest);
         if (delayedReceipt) return recordToHandle(delayedReceipt, { completed: true });
         if (options.signal?.aborted) return recordToHandle(latest, { completed: false, observationInterrupted: true });
@@ -1956,7 +2081,8 @@ export async function waitForProcess(
       if (identityStillMatches(latest.identity, latest.identityUntrusted)) continue;
       const completed = completeProcessFromEvidence(controllerHome, repoId, processId, latest.terminalFenceToken, {
         status: 'completed_unknown',
-        errorMessage: 'process exited while controller was offline and no exit receipt was found after receipt grace period',
+        errorMessage:
+          'process exited while controller was offline and no exit receipt was found after receipt grace period',
       });
       return recordToHandle(completed!, { completed: true });
     }
@@ -1965,7 +2091,8 @@ export async function waitForProcess(
   }
   const finalRecord = getProcessRecord(controllerHome, repoId, processId);
   if (!finalRecord) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
-  if (finalRecord.terminalWritten) return recordToHandle(reconcileObservedTerminalProcess(controllerHome, repoId, finalRecord), { completed: true });
+  if (finalRecord.terminalWritten)
+    return recordToHandle(reconcileObservedTerminalProcess(controllerHome, repoId, finalRecord), { completed: true });
   const finalReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, finalRecord);
   if (finalReceipt) return recordToHandle(finalReceipt, { completed: true });
   return recordToHandle(finalRecord, {
@@ -1974,11 +2101,7 @@ export async function waitForProcess(
   });
 }
 
-export async function cancelProcess(
-  controllerHome: string,
-  repoId: string,
-  processId: string,
-): Promise<ProcessHandle> {
+export async function cancelProcess(controllerHome: string, repoId: string, processId: string): Promise<ProcessHandle> {
   const record = getProcessRecord(controllerHome, repoId, processId);
   if (!record) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
   if (record.terminalWritten) {
@@ -2119,7 +2242,13 @@ export function sanitizeHistoricalProcessArtifacts(
 export function recoverManagedProcesses(
   controllerHome: string,
   repoId: string,
-): { recovered: string[]; orphaned: string[]; completedUnknown: string[]; completedFromReceipt: string[]; leasesReleased: string[] } {
+): {
+  recovered: string[];
+  orphaned: string[];
+  completedUnknown: string[];
+  completedFromReceipt: string[];
+  leasesReleased: string[];
+} {
   const recovered: string[] = [];
   const orphaned: string[] = [];
   const completedUnknown: string[] = [];
@@ -2163,10 +2292,16 @@ export function recoverManagedProcesses(
     }
 
     if (identityStillMatches(record.identity, record.identityUntrusted)) {
-      updateProcessRecord(controllerHome, repoId, processId, {
-        status: 'running_recovered',
-        route: 'managed',
-      }, { allowTerminal: false });
+      updateProcessRecord(
+        controllerHome,
+        repoId,
+        processId,
+        {
+          status: 'running_recovered',
+          route: 'managed',
+        },
+        { allowTerminal: false },
+      );
       // Renew leases for recovered running processes when possible.
       if ((record.leaseRefs?.length ?? 0) > 0) {
         try {
@@ -2189,7 +2324,11 @@ export function recoverManagedProcesses(
       continue;
     }
 
-    if (record.identityUntrusted || record.identity?.processStartTime?.startsWith('untrusted:') || record.identity?.processStartTime?.startsWith('fallback:')) {
+    if (
+      record.identityUntrusted ||
+      record.identity?.processStartTime?.startsWith('untrusted:') ||
+      record.identity?.processStartTime?.startsWith('fallback:')
+    ) {
       const completed = completeProcessFromEvidence(controllerHome, repoId, processId, record.terminalFenceToken, {
         status: 'completed_unknown',
         errorMessage: 'process identity was untrusted; exit code cannot be recovered after restart',
