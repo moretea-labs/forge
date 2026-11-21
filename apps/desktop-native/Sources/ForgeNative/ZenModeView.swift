@@ -2842,6 +2842,7 @@ struct ZenProjectDirectorySheet: View {
     @State private var restoreRepositoryId: String?
     @State private var restoreRequirementId: String?
     @State private var saving = false
+    @State private var hoveredProjectId: String?
 
     init(
         model:NativeWorkspace,
@@ -2907,17 +2908,51 @@ struct ZenProjectDirectorySheet: View {
 
     private var projectDirectory: some View {
         VStack(alignment:.leading,spacing:12) {
-            HStack {
-                Text("项目").font(.system(size:19,weight:.semibold))
-                Spacer()
+            HStack(spacing:10) {
+                Text("项目")
+                    .font(.system(size:18,weight:.semibold))
+                Spacer(minLength:8)
+                Button {
+                    Task { await model.refreshSemanticProjects() }
+                } label: {
+                    Image(systemName:"arrow.clockwise")
+                        .frame(width:28,height:28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(model.semanticProjectsLoading || saving)
+                .help("刷新项目")
+                .accessibilityLabel("刷新项目")
+                .accessibilityIdentifier("zen.projects.refresh")
                 Button("完成") { dismiss() }
+                    .buttonStyle(.plain)
                     .keyboardShortcut(.cancelAction)
             }
 
-            HStack(spacing:12) {
-                TextField("搜索项目",text:$query)
-                    .accessibilityLabel("搜索项目")
-                    .accessibilityIdentifier("zen.projects.search")
+            HStack(spacing:10) {
+                HStack(spacing:7) {
+                    Image(systemName:"magnifyingglass")
+                        .font(.system(size:11))
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    TextField("搜索项目",text:$query)
+                        .textFieldStyle(.plain)
+                        .font(.system(size:12))
+                        .accessibilityLabel("搜索项目")
+                        .accessibilityIdentifier("zen.projects.search")
+                    if !query.isEmpty {
+                        Button { query="" } label: {
+                            Image(systemName:"xmark.circle.fill")
+                                .foregroundStyle(.tertiary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("清除搜索")
+                        .accessibilityLabel("清除项目搜索")
+                    }
+                }
+                .padding(.horizontal,10).frame(height:32)
+                .background(Color.primary.opacity(0.035),
+                            in:RoundedRectangle(cornerRadius:8,style:.continuous))
                 Button {
                     editingProjectId = nil
                     creating = true
@@ -2926,7 +2961,9 @@ struct ZenProjectDirectorySheet: View {
                     model.error = nil
                 } label: {
                     Label("新建项目",systemImage:"plus")
+                        .font(.system(size:11.5,weight:.medium))
                 }
+                .buttonStyle(.plain)
                 .disabled(saving || model.busy)
                 .accessibilityIdentifier("zen.projects.create")
             }
@@ -3092,11 +3129,20 @@ struct ZenProjectDirectorySheet: View {
                         .disabled(saving || model.busy)
                         .accessibilityLabel("\(project.displayName) 的操作")
                     }
-                    .padding(.vertical,4)
+                    .padding(.horizontal,8).padding(.vertical,9)
+                    .background(hoveredProjectId == project.projectId
+                                ? Color.primary.opacity(0.045) : Color.clear,
+                                in:RoundedRectangle(cornerRadius:9,style:.continuous))
+                    .onHover { hovering in
+                        hoveredProjectId = hovering ? project.projectId : nil
+                    }
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                     .accessibilityIdentifier("zen.projects.row.\(project.projectId)")
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
             .overlay {
                 if visibleProjects.isEmpty && !model.semanticProjectsLoading {
                     VStack(spacing:10) {
@@ -3107,16 +3153,11 @@ struct ZenProjectDirectorySheet: View {
                     }
                 }
             }
-            HStack {
-                Text(model.semanticProjects.count >= 100 ? "当前显示前 100 个项目" :
-                     "共 \(model.semanticProjects.count) 个项目")
-                    .font(.system(size:11)).foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    Task { await model.refreshSemanticProjects() }
-                } label: { Label("刷新",systemImage:"arrow.clockwise") }
-                    .disabled(model.semanticProjectsLoading || saving)
-            }
+            Text(model.semanticProjects.count >= 100 ? "当前显示前 100 个项目" :
+                 "共 \(model.semanticProjects.count) 个项目")
+                .font(.system(size:10.5))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth:.infinity,alignment:.trailing)
         }
         .padding(22)
     }
