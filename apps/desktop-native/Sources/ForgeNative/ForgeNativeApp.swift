@@ -7530,8 +7530,6 @@ private struct SettingsPane: View {
                 }
                 .padding(.vertical,10)
 
-                Divider()
-
                 VStack(alignment:.leading,spacing:14) {
                     HStack {
                         VStack(alignment:.leading,spacing:4) {
@@ -7588,86 +7586,71 @@ private struct SettingsPane: View {
                         }
                         .frame(maxWidth:.infinity,minHeight:190)
                     } else {
-                        HStack(alignment:.top,spacing:22) {
-                            VStack(alignment:.leading,spacing:5) {
-                                Text("模型服务")
-                                    .font(.system(size:11,weight:.semibold))
-                                    .foregroundStyle(ForgePalette.secondary)
-                                    .padding(.bottom,7)
-                                ForEach(profiles) { profile in
-                                    Button {
-                                        selectedProfileId=profile.id
-                                    } label: {
-                                        HStack(spacing:10) {
-                                            Image(systemName:profile.endpoint.contains("deepseek") || profile.endpoint.contains("zro.moonmath")
-                                                  ? "sparkle" : "server.rack")
-                                                .font(.system(size:13))
-                                                .frame(width:22)
-                                            VStack(alignment:.leading,spacing:4) {
-                                                Text(profile.label)
-                                                    .font(.system(size:12,weight:.semibold))
-                                                    .lineLimit(1)
-                                                Text(profile.model)
-                                                    .font(.system(size:10,design:.monospaced))
-                                                    .foregroundStyle(ForgePalette.secondary)
-                                                    .lineLimit(1)
-                                            }
-                                            Spacer(minLength:0)
-                                            if defaultProvider == profile.providerId {
-                                                Image(systemName:"checkmark.circle.fill")
-                                                    .foregroundStyle(.green)
-                                            } else if profileReady(profile) {
-                                                Circle().fill(.green).frame(width:6,height:6)
-                                            }
-                                        }
-                                        .padding(.horizontal,11).padding(.vertical,11)
-                                        .frame(maxWidth:.infinity,alignment:.leading)
-                                        .background(selectedProfileId == profile.id
-                                            ? ForgePalette.softFill : Color.clear,
-                                            in:RoundedRectangle(cornerRadius:9))
-                                        .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityIdentifier("settings.profile.\(profile.id)")
-                                }
-                            }
-                            .frame(width:210,alignment:.leading)
-
-                            Rectangle().fill(ForgePalette.softFill).frame(width:1)
-
-                            VStack(alignment:.leading,spacing:14) {
-                                if let index=selectedProfileIndex {
-                                    HStack {
-                                        VStack(alignment:.leading,spacing:4) {
-                                            Text(profiles[index].label)
-                                                .font(.system(size:16,weight:.semibold))
-                                            Text(profileReadiness(profiles[index]))
-                                                .font(.system(size:11))
-                                                .foregroundStyle(profileReady(profiles[index]) ? Color.green : ForgePalette.secondary)
-                                        }
-                                        Spacer()
-                                        Menu {
-                                            Button("设为新会话默认") {
-                                                defaultProvider=profiles[index].providerId
-                                            }
-                                            Button("删除配置",role:.destructive) {
-                                                deleteProfile(index)
-                                            }
-                                            .accessibilityIdentifier("settings.profile.delete")
+                        VStack(alignment:.leading,spacing:16) {
+                            // One content column rather than a second fixed sidebar.
+                            ScrollView(.horizontal) {
+                                HStack(spacing:6) {
+                                    ForEach(profiles) { profile in
+                                        let selected=selectedProfileId == profile.id
+                                        Button {
+                                            selectedProfileId=profile.id
                                         } label: {
-                                            Image(systemName:"ellipsis")
-                                                .frame(width:28,height:28)
+                                            HStack(spacing:6) {
+                                                Text(profile.label)
+                                                    .font(.system(size:11.5,weight:selected ? .semibold : .medium))
+                                                    .lineLimit(1)
+                                                if defaultProvider == profile.providerId {
+                                                    Image(systemName:"checkmark")
+                                                        .font(.system(size:9,weight:.semibold))
+                                                } else if profileReady(profile) {
+                                                    Circle().fill(Color.green).frame(width:5,height:5)
+                                                }
+                                            }
+                                            .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
+                                            .padding(.horizontal,12).frame(height:30)
+                                            .background(selected ? ForgePalette.selectionStrong : Color.clear,
+                                                        in:Capsule())
+                                            .contentShape(Capsule())
                                         }
-                                        .menuStyle(.borderlessButton)
+                                        .buttonStyle(.plain)
+                                        .accessibilityAddTraits(selected ? [.isSelected] : [])
+                                        .accessibilityIdentifier("settings.profile.\(profile.id)")
                                     }
-                                    providerEditor(index:index)
                                 }
+                                .padding(.vertical,3)
                             }
-                            .frame(maxWidth:.infinity,alignment:.leading)
+                            .scrollIndicators(.hidden)
+                            .accessibilityIdentifier("settings.profile.selector")
+
+                            if let index=selectedProfileIndex {
+                                HStack {
+                                    VStack(alignment:.leading,spacing:4) {
+                                        Text(profiles[index].label)
+                                            .font(.system(size:15,weight:.semibold))
+                                        Text(profileReadiness(profiles[index]))
+                                            .font(.system(size:11))
+                                            .foregroundStyle(profileReady(profiles[index]) ?
+                                                              Color.green : ForgePalette.secondary)
+                                    }
+                                    Spacer()
+                                    Menu {
+                                        Button("设为新会话默认") {
+                                            defaultProvider=profiles[index].providerId
+                                        }
+                                        Button("删除配置",role:.destructive) {
+                                            deleteProfile(index)
+                                        }
+                                        .accessibilityIdentifier("settings.profile.delete")
+                                    } label: {
+                                        Image(systemName:"ellipsis")
+                                            .frame(width:28,height:28)
+                                    }
+                                    .menuStyle(.borderlessButton)
+                                }
+                                providerEditor(index:index)
+                            }
                         }
                     }
-
-                    Divider()
 
                     DisclosureGroup("JoyCode") {
                         VStack(alignment:.leading,spacing:10) {
@@ -7704,7 +7687,6 @@ private struct SettingsPane: View {
                 }
                 .padding(.vertical,10)
 
-                Divider()
                 RuntimeSettingsSection(model:model)
             }
             .padding(26)
