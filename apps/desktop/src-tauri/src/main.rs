@@ -4371,17 +4371,6 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
                 Some(LocalEffectOutcome::TerminalFailure | LocalEffectOutcome::Unknown) => false,
                 None => result.get("ok").and_then(Value::as_bool) == Some(true),
             };
-            // A cancel that arrives during a Forge tool must wait for the tool
-            // receipt. Never report the effect itself as rolled back.
-            if *cancel_receiver.borrow() {
-                let cancellation = if effectful {
-                    format!("FORGE_DESKTOP_API_TURN_CANCELLED_AFTER_TOOL:{}",
-                        effect_request_id.as_deref().unwrap_or("unknown"))
-                } else { "FORGE_DESKTOP_API_TURN_CANCELLED".into() };
-                return Err(contextualize_api_turn_error(
-                    cancellation, last_effect_request_id.as_deref()
-                ));
-            }
             let process_id = result.pointer("/result/processId").and_then(Value::as_str);
             total_calls += 1;
             if verification_attempt && ok {
@@ -4412,11 +4401,21 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
             tool_events.push(json!({ "name": name, "ok": ok,
                 "processId":process_id, "requestId": effect_request_id, "toolCallId": id }));
             if effect_outcome == Some(LocalEffectOutcome::Unknown) {
-                // Only a missing or ambiguous terminal receipt requires reconciliation.
-                // Known failures and partial outcomes are sent back to the model verbatim
-                // so it can inspect the canonical Forge receipt without blind replay.
+                // Even when cancelled, an ambiguous tool outcome needs reconciliation.
                 return Err(format!("FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:{}",
                     effect_request_id.as_deref().unwrap_or("unknown")));
+            }
+            // Publish the tool's actual output and terminal event before stopping
+            // the model turn. Cancellation cannot roll back a completed effect,
+            // nor should it leave a completed tool visibly stuck in "started".
+            if *cancel_receiver.borrow() {
+                let cancellation = if effectful {
+                    format!("FORGE_DESKTOP_API_TURN_CANCELLED_AFTER_TOOL:{}",
+                        effect_request_id.as_deref().unwrap_or("unknown"))
+                } else { "FORGE_DESKTOP_API_TURN_CANCELLED".into() };
+                return Err(contextualize_api_turn_error(
+                    cancellation, last_effect_request_id.as_deref()
+                ));
             }
             if effectful {
                 last_effect_request_id = effect_request_id.clone();
@@ -4581,15 +4580,26 @@ mod tests {
         sequence: std::sync::atomic::AtomicU64,
         events: std::sync::Mutex<Vec<Value>>,
         tool_calls: std::sync::Mutex<Vec<Value>>,
+        cancel_on_tool_start: std::sync::Mutex<Option<(String, tokio::sync::watch::Sender<bool>)>>,
     }
     impl LocalApiHost for ScriptedAgentLoopHost {
         fn packaged_tool_script(&self) -> Result<PathBuf, String> {
             Err("scripted loop uses the test tool executor".into())
         }
         fn emit_tool_progress(&self, payload: Value) {
+            let tool_started = payload["phase"] == "started";
+            let tool_name = payload["name"].as_str().map(str::to_owned);
             self.events.lock().unwrap().push(json!({
                 "channel":"tool", "payload":sequence_local_api_event(payload, &self.sequence)
             }));
+            if tool_started {
+                let mut cancel = self.cancel_on_tool_start.lock().unwrap();
+                if cancel.as_ref().is_some_and(|(name, _)| Some(name.as_str()) == tool_name.as_deref()) {
+                    if let Some((_, sender)) = cancel.take() {
+                        let _ = sender.send(true);
+                    }
+                }
+            }
         }
         fn emit_model_progress(&self, payload: Value) {
             self.events.lock().unwrap().push(json!({
@@ -5014,7 +5024,7 @@ mod tests {
                     frames.pop();
                     frames.push("[DONE]".into());
                 } else if protocol != "responses" && stop_reason != Some("missing-finish") {
-                    let reason = stop_reason.filter(|reason| !matches!(*reason, "duplicate-tools" | "invalid-tool-name" | "invalid-tool-args" | "duplicate-block-index" | "orphan-tool-input")).unwrap_or(if round < 3 {
+                    let reason = stop_reason.filter(|reason| !matches!(*reason, "duplicate-tools" | "invalid-tool-name" | "invalid-tool-args" | "duplicate-block-index" | "orphan-tool-input" | "cancel-after-tool" | "cancel-after-edit")).unwrap_or(if round < 3 {
                         if protocol == "anthropic" { "tool_use" } else { "tool_calls" }
                     } else if protocol == "anthropic" { "end_turn" } else { "stop" });
                     let terminal = if protocol == "anthropic" {
@@ -5030,7 +5040,9 @@ mod tests {
                     payload.len()
                 ).as_bytes()).unwrap();
                 socket.write_all(payload.as_bytes()).unwrap();
-                if stop_reason.is_some() { break; }
+                if stop_reason.is_some() && (stop_reason != Some("cancel-after-edit") || round == 1) {
+                    break;
+                }
             }
             requests
         });
@@ -5231,6 +5243,81 @@ mod tests {
             assert!(requests[1].to_string().contains("before"), "read receipt must return to the same model loop");
             assert!(requests[2].to_string().contains("applied"), "edit receipt must return to the same model loop");
             assert!(requests[3].to_string().contains("tests passed"), "test receipt must return to the same model loop");
+        }
+    }
+
+    #[test]
+    fn cancelled_native_tool_turn_emits_terminal_before_stop() {
+        for protocol in ["openai", "anthropic", "responses"] {
+            let (endpoint, server) = spawn_scripted_agent_provider(
+                protocol, "bun", Some("cancel-after-tool")
+            );
+            let host = ScriptedAgentLoopHost::default();
+            let (sender, mut receiver) = tokio::sync::watch::channel(false);
+            *host.cancel_on_tool_start.lock().unwrap() = Some(("read_file".into(), sender));
+            let config = json!({"apiProfiles":[{
+                "id":"cancel-test", "endpoint":endpoint,
+                "model":"test-model", "apiProtocol":protocol
+            }]});
+            let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+                &host, config, vec![json!({"role":"user","content":"Read fixture.txt"})],
+                Some("repo_test".into()), Some("checkout_test".into()),
+                format!("conv-cancel-{protocol}"), Some("api:cancel-test".into()),
+                None, true, &mut receiver,
+            ));
+            assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TURN_CANCELLED",
+                "{protocol} must cancel the turn without cancelling a completed read");
+            assert_eq!(server.join().unwrap().len(), 1, "{protocol}: no extra model round");
+            assert_eq!(host.tool_calls.lock().unwrap().len(), 1);
+            let events = host.events.lock().unwrap();
+            let lifecycle = events.iter().filter(|event|
+                event["channel"] == "tool" && event["payload"]["toolCallId"] == "call-read"
+            ).collect::<Vec<_>>();
+            assert_eq!(lifecycle.iter().map(|event|
+                event["payload"]["phase"].as_str().unwrap()
+            ).collect::<Vec<_>>(), vec!["started", "output", "completed"],
+                "{protocol}: cancellation cannot orphan the tool's terminal event");
+            let sequences = events.iter().filter_map(|event|
+                event.pointer("/payload/sequence").and_then(Value::as_u64)
+            ).collect::<Vec<_>>();
+            assert!(sequences.windows(2).all(|items| items[0] < items[1]));
+        }
+    }
+
+    #[test]
+    fn cancellation_after_file_edit_reports_completed_effect_before_stopping() {
+        for protocol in ["openai", "anthropic", "responses"] {
+            let (endpoint, server) = spawn_scripted_agent_provider(
+                protocol, "bun", Some("cancel-after-edit")
+            );
+            let host = ScriptedAgentLoopHost::default();
+            let (sender, mut receiver) = tokio::sync::watch::channel(false);
+            *host.cancel_on_tool_start.lock().unwrap() = Some(("apply_patch".into(), sender));
+            let config = json!({"apiProfiles":[{
+                "id":"cancel-edit", "endpoint":endpoint, "model":"test-model",
+                "apiProtocol":protocol
+            }]});
+            let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+                &host, config, vec![json!({"role":"user","content":"Edit fixture.txt"})],
+                Some("repo_test".into()), Some("checkout_test".into()),
+                format!("conv-cancel-edit-{protocol}"), Some("api:cancel-edit".into()),
+                None, true, &mut receiver,
+            ));
+            let error = result.unwrap_err();
+            assert!(error.starts_with("FORGE_DESKTOP_API_TURN_CANCELLED_AFTER_TOOL:forge-desktop-api-"),
+                "{protocol}: a completed edit must keep its effect identity: {error}");
+            assert_eq!(server.join().unwrap().len(), 2, "{protocol}: no post-cancel model request");
+            assert_eq!(host.tool_calls.lock().unwrap().len(), 2);
+            let events = host.events.lock().unwrap();
+            let edit_events = events.iter().filter(|event|
+                event["channel"] == "tool" && event["payload"]["toolCallId"] == "call-patch"
+            ).collect::<Vec<_>>();
+            assert_eq!(edit_events.iter().map(|event|
+                event["payload"]["phase"].as_str().unwrap()
+            ).collect::<Vec<_>>(), vec!["started", "output", "completed"],
+                "{protocol}: completed edit must not remain visibly running");
+            let request_id = edit_events.last().unwrap()["payload"]["requestId"].as_str().unwrap();
+            assert!(error.ends_with(request_id), "{protocol}: cancellation retains the same effect ID");
         }
     }
 
