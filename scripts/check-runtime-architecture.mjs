@@ -1222,6 +1222,16 @@ requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts
 requireMissing('src/runtime/control-plane/execution/work-revision-diff.ts');
 requireMissing('src/runtime/control-plane/execution/work-lifecycle-audit.ts');
 forbid(
+  'packages/kernel/work/domain/state-machine.ts',
+  /validateWorkSemanticTransition|transitionPhaseEvidence|DISPATCH_TRANSITIONS|EVIDENCE_TRANSITIONS/,
+  'historical Work row validation must not expose retired lifecycle transition writers',
+);
+forbid(
+  'packages/kernel/work/domain/implementation-review.ts',
+  /assertImplementationReviewHistoryAppendOnly|MAX_IMPLEMENTATION_REVIEW_HISTORY/,
+  'historical Work review data must not retain lifecycle append-only mutation constraints',
+);
+forbid(
   'src/runtime/control-plane/facade/repository-tool-dispatch.ts',
   /historicalReadOnlyWorkContext|historicalWorkContext/,
   'repository command execution must never query or emit historical Work context',
