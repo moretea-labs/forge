@@ -539,7 +539,6 @@ export async function runTestSelection(
 ): Promise<number> {
   const useCache = options.useCache ?? true;
   const storage = ensureRepositoryCheckStorage(repoRoot, options.storageAuthority);
-  const baselineWorkspace = workspaceMutationDigest(repoRoot);
   const contentDigest = testContentDigest(repoRoot);
   const runnerDigest = hashFiles(
     repoRoot,
@@ -619,6 +618,10 @@ export async function runTestSelection(
     const startedAt = performance.now();
     do {
       attempts += 1;
+      // Ignore changes between child runs, but preserve the strict workspace
+      // mutation veto during each child. A simultaneous external Writer cannot
+      // be distinguished from test mutation here without process isolation.
+      const testWorkspaceBefore = workspaceMutationDigest(repoRoot);
       console.error(`[tests] ${file}${attempts > 1 ? ' (infrastructure retry)' : ''}`);
       if (file.endsWith('.test.mjs')) {
         const independent = await runBoundedChild('node', ['--test', file], {
@@ -660,7 +663,10 @@ export async function runTestSelection(
           { forwardSignals: true, cwd: repoRoot },
         );
       }
-      if (workspaceMutationDigest(repoRoot) !== baselineWorkspace) {
+      if (
+        workspaceMutationDigest(repoRoot) !== testWorkspaceBefore ||
+        testInputDigest(repoRoot, file) !== inputDigest
+      ) {
         contaminated = true;
         result = {
           ...result,
@@ -732,11 +738,8 @@ export async function runTestSelection(
     }),
   );
 
-  if (workspaceMutationDigest(repoRoot) !== baselineWorkspace) {
-    contaminated = true;
-    failureClasses.add('infrastructure');
-  }
-
+  // A completed suite is not invalidated by edits made after its last child
+  // exited. Each executed child was checked against its own pre-run baseline.
   const durationMs = Math.round(performance.now() - runStartedAt);
   const serialReduction = serialEquivalentMs > 0 ? Math.max(0, 1 - durationMs / serialEquivalentMs) : 0;
 

@@ -207,6 +207,15 @@ describe('execution-speed test governance', () => {
     }
   });
 
+  test('test-runner checks mutation per child, not between unrelated test runs', () => {
+    const source = readFileSync(join(ROOT, 'src/testing/test-governance.ts'), 'utf8');
+    expect(source).toContain('const testWorkspaceBefore = workspaceMutationDigest(repoRoot);');
+    expect(source).toContain('workspaceMutationDigest(repoRoot) !== testWorkspaceBefore');
+    expect(source).toContain('testInputDigest(repoRoot, file) !== inputDigest');
+    expect(source).not.toContain('const baselineWorkspace = workspaceMutationDigest(repoRoot)');
+    expect(source).not.toContain('workspaceMutationDigest(repoRoot) !== baselineWorkspace');
+  });
+
   test('models task, main, and release as one reusable nested gate DAG', () => {
     expect(stepsFor('task')[0]).toEqual({
       label: 'typecheck',
