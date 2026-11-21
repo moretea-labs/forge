@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { execFileSync, spawnSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -15,6 +15,7 @@ import { gateDefinitionDigest, stepsFor } from '../../scripts/run-governed-gate'
 import {
   committedSourceCandidate,
   materializeCommittedSourceCandidate,
+  materializeCommittedTypeScriptCandidate,
 } from '../../src/testing/source-quality-candidate';
 
 const ROOT = join(import.meta.dir, '../..');
@@ -159,7 +160,60 @@ describe('execution-speed test governance', () => {
     }
   });
 
+  test('pinned TypeScript candidate ignores unrelated Writer dirty and rejects committed type errors', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'forge-committed-type-test-'));
+    let snapshot: string | undefined;
+    try {
+      git(repo, 'init', '-q');
+      git(repo, 'config', 'user.email', 'tests@example.com');
+      git(repo, 'config', 'user.name', 'Tests');
+      mkdirSync(join(repo, 'src'), { recursive: true });
+      writeFileSync(
+        join(repo, 'tsconfig.json'),
+        JSON.stringify({
+          compilerOptions: { strict: true, noEmit: true, types: [] },
+          include: ['src/*.ts'],
+        }),
+      );
+      writeFileSync(join(repo, 'src/value.ts'), 'export const value: number = 1;\n');
+      git(repo, 'add', 'tsconfig.json', 'src/value.ts');
+      git(repo, 'commit', '-qm', 'good TypeScript candidate');
+      symlinkSync(join(ROOT, 'node_modules'), join(repo, 'node_modules'), 'dir');
+
+      // Uncommitted tracked and untracked TypeScript errors must not corrupt the
+      // verified committed source. No Git worktree or branch is created.
+      writeFileSync(join(repo, 'src/value.ts'), 'export const value: number = "wrong";\n');
+      writeFileSync(join(repo, 'src/untracked.ts'), 'export const extra: number = "wrong";\n');
+      snapshot = materializeCommittedTypeScriptCandidate(repo, 'HEAD');
+      expect(existsSync(join(snapshot, '.git'))).toBe(false);
+      expect(existsSync(join(snapshot, 'src/untracked.ts'))).toBe(false);
+      expect(readFileSync(join(snapshot, 'src/value.ts'), 'utf8')).toBe('export const value: number = 1;\n');
+      expect(
+        spawnSync(join(ROOT, 'node_modules/.bin/tsc'), ['--noEmit'], { cwd: snapshot, stdio: 'pipe' }).status,
+      ).toBe(0);
+      rmSync(snapshot, { recursive: true, force: true });
+      snapshot = undefined;
+
+      git(repo, 'add', 'src/value.ts');
+      git(repo, 'commit', '-qm', 'bad TypeScript candidate');
+      snapshot = materializeCommittedTypeScriptCandidate(repo, 'HEAD');
+      expect(
+        spawnSync(join(ROOT, 'node_modules/.bin/tsc'), ['--noEmit'], { cwd: snapshot, stdio: 'pipe' }).status,
+      ).not.toBe(0);
+      expect(() => materializeCommittedTypeScriptCandidate(repo, 'not-a-git-ref')).toThrow();
+    } finally {
+      if (snapshot) rmSync(snapshot, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   test('models task, main, and release as one reusable nested gate DAG', () => {
+    expect(stepsFor('task')[0]).toEqual({
+      label: 'typecheck',
+      command: 'bun',
+      args: ['scripts/check-candidate-type.ts'],
+      timeoutMs: 10 * 60_000,
+    });
     expect(
       stepsFor('task').some(
         (step) =>

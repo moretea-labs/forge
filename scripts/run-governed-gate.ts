@@ -26,7 +26,7 @@ const CACHE_ROOT = join(resolveControllerHome(), 'cache', 'governed-gates', REPO
 export function stepsFor(gate: Gate): Step[] {
   if (gate === 'task')
     return [
-      { label: 'typecheck', command: 'bun', args: ['run', 'check:type'], timeoutMs: 10 * 60_000 },
+      { label: 'typecheck', command: 'bun', args: ['scripts/check-candidate-type.ts'], timeoutMs: 10 * 60_000 },
       {
         label: 'source quality (format, lint, complexity)',
         command: 'bun',
