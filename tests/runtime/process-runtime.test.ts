@@ -4097,9 +4097,11 @@ describe('Process Runtime real lease contention', () => {
     expect(sameWorkDenied.stdout).not.toContain('must-not-run');
     const { getWorkContract } = await import('../../packages/kernel/work/api');
     expect(
-      getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, 'work-lease-a')
-        ?.executionConcurrency,
-    ).toBeUndefined();
+      Object.hasOwn(
+        getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, 'work-lease-a') ?? {},
+        'executionConcurrency',
+      ),
+    ).toBe(false);
 
     // Parallel reads against a different resource key (or after release) — hold write finished.
     await waitForProcess(fx.controllerHome, fx.repository.repoId, first.processId, { timeoutMs: 10_000 });

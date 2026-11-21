@@ -4,8 +4,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { InMemoryTransport, Server } from "@modelcontextprotocol/server";
-import { Client, SdkError, SdkErrorCode, SdkHttpError, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { InMemoryTransport, Server } from '@modelcontextprotocol/server';
+import {
+  Client,
+  SdkError,
+  SdkErrorCode,
+  SdkHttpError,
+  StreamableHTTPClientTransport,
+} from '@modelcontextprotocol/client';
 import { forgeToolSurfaceFingerprint } from '../../src/runtime/shared/runtime-config';
 import { mcpToolDefinitionToSdk } from '../../packages/protocols/mcp/tool-contract';
 import {
@@ -53,7 +59,11 @@ import { waitRepositoryCommandProcess } from '../../src/runtime/execution/proces
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
 import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
-import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
+import {
+  writeProjectIdentity,
+  writeProjectPlacement,
+  writeWorkspaceIdentity,
+} from '../../src/runtime/control-plane/workspace/workspace-store';
 import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 import { processToolDefinitions } from '../../adapters/mcp/runtime-gateway/process-tools';
 import { routeDurableMcpCall } from '../../adapters/mcp/runtime-gateway/router';
@@ -81,13 +91,19 @@ describe('MCP ordinary tool cognition settlement', () => {
     const workspaceId = 'workspace-mcp-cognition-settlement';
     const projectId = 'project-mcp-cognition-settlement';
     writeWorkspaceIdentity({ controllerHome, value: { workspaceId, title: 'MCP Cognition Settlement Workspace' } });
-    writeProjectIdentity({ controllerHome, value: { projectId, workspaceId, displayName: 'MCP Cognition Settlement Project' } });
-    writeProjectPlacement({ controllerHome, value: {
-      projectId,
-      forgeInstanceId: instance.instanceId,
-      repositoryId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-    } });
+    writeProjectIdentity({
+      controllerHome,
+      value: { projectId, workspaceId, displayName: 'MCP Cognition Settlement Project' },
+    });
+    writeProjectPlacement({
+      controllerHome,
+      value: {
+        projectId,
+        forgeInstanceId: instance.instanceId,
+        repositoryId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+      },
+    });
 
     const context = {
       ...createMcpToolContext({ controllerHome, profile: 'controller' }),
@@ -103,7 +119,7 @@ describe('MCP ordinary tool cognition settlement', () => {
     await client.connect(clientTransport);
     try {
       const listed = await client.listTools();
-      const repositoryRead = listed.tools.find(tool => tool.name === 'read_repository_file');
+      const repositoryRead = listed.tools.find((tool) => tool.name === 'read_repository_file');
       expect((repositoryRead?.inputSchema as any)?.properties?.cognition_settlement).toBeDefined();
 
       const result = await client.callTool({
@@ -112,19 +128,22 @@ describe('MCP ordinary tool cognition settlement', () => {
           repo_id: repository.repoId,
           path: 'README.md',
           cognition_settlement: {
-              learning_signals: [{
-              scope_kind: 'project',
-              kind: 'principle',
-              valence: 'positive',
-              summary: 'Ordinary repository outcomes can settle reusable learning without a separate learning lifecycle.',
-              concepts: ['mcp.cognition.settlement', 'ordinary-repository'],
-              facets: ['architecture'],
-              admission_source: 'controller_observation',
-              portability: 'local',
-              salience: 0.9,
-              confidence: 0.9,
-              utility: 0.9,
-            }],
+            learning_signals: [
+              {
+                scope_kind: 'project',
+                kind: 'principle',
+                valence: 'positive',
+                summary:
+                  'Ordinary repository outcomes can settle reusable learning without a separate learning lifecycle.',
+                concepts: ['mcp.cognition.settlement', 'ordinary-repository'],
+                facets: ['architecture'],
+                admission_source: 'controller_observation',
+                portability: 'local',
+                salience: 0.9,
+                confidence: 0.9,
+                utility: 0.9,
+              },
+            ],
           },
         },
       });
@@ -215,30 +234,51 @@ describe('MCP canonical Runtime proxy routing', () => {
     expect(canonicalRuntimeToolCallIsReplaySafe('execute_command', args)).toBe(true);
     expect(canonicalRuntimeToolCallIsReplaySafe('execute_command', { ...args, request_id: '' })).toBe(false);
     expect(canonicalRuntimeToolCallIsReplaySafe('rh_work', args)).toBe(false);
-    expect(canonicalRuntimeToolCallIsReplaySafe('computer_console_unlock_prepare', { confirm_authorization: true })).toBe(false);
-    for (const name of ['computer_console_unlock_enroll', 'computer_console_unlock_status', 'computer_console_unlock_recover', 'computer_console_unlock_revoke']) {
+    expect(
+      canonicalRuntimeToolCallIsReplaySafe('computer_console_unlock_prepare', { confirm_authorization: true }),
+    ).toBe(false);
+    for (const name of [
+      'computer_console_unlock_enroll',
+      'computer_console_unlock_status',
+      'computer_console_unlock_recover',
+      'computer_console_unlock_revoke',
+    ]) {
       expect(canonicalRuntimeToolCallIsReplaySafe(name, { confirm_authorization: true })).toBe(false);
     }
-    expect(canonicalRuntimeToolCallIsReplaySafe('computer_console_unlock', { credential_handle: '11111111-1111-4111-8111-111111111111', confirm_authorization: true })).toBe(false);
-    expect(canonicalRuntimeToolCallFailureIsTransient(new SdkError(SdkErrorCode.ConnectionClosed, 'connection closed'))).toBe(true);
-    expect(canonicalRuntimeToolCallFailureIsTransient(Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }))).toBe(true);
-    expect(canonicalRuntimeToolCallFailureIsTransient(new SdkHttpError(
-      SdkErrorCode.ConnectionClosed,
-      'expired inner Runtime session',
-      { status: 404, statusText: 'Not Found' },
-    ))).toBe(true);
-    const cutoverOutcomeUnknown = new SdkHttpError(
-      SdkErrorCode.ConnectionClosed,
-      'runtime cutover outcome unknown',
-      { status: 409, statusText: 'Conflict' },
-    );
+    expect(
+      canonicalRuntimeToolCallIsReplaySafe('computer_console_unlock', {
+        credential_handle: '11111111-1111-4111-8111-111111111111',
+        confirm_authorization: true,
+      }),
+    ).toBe(false);
+    expect(
+      canonicalRuntimeToolCallFailureIsTransient(new SdkError(SdkErrorCode.ConnectionClosed, 'connection closed')),
+    ).toBe(true);
+    expect(
+      canonicalRuntimeToolCallFailureIsTransient(Object.assign(new Error('socket reset'), { code: 'ECONNRESET' })),
+    ).toBe(true);
+    expect(
+      canonicalRuntimeToolCallFailureIsTransient(
+        new SdkHttpError(SdkErrorCode.ConnectionClosed, 'expired inner Runtime session', {
+          status: 404,
+          statusText: 'Not Found',
+        }),
+      ),
+    ).toBe(true);
+    const cutoverOutcomeUnknown = new SdkHttpError(SdkErrorCode.ConnectionClosed, 'runtime cutover outcome unknown', {
+      status: 409,
+      statusText: 'Conflict',
+    });
     expect(canonicalRuntimeToolCallFailureIsTransient(cutoverOutcomeUnknown)).toBe(false);
     expect(canonicalRuntimeToolCallFailureIsCutoverOutcomeUnknown(cutoverOutcomeUnknown)).toBe(true);
-    expect(canonicalRuntimeToolCallFailureIsCutoverOutcomeUnknown(new SdkHttpError(
-      SdkErrorCode.ConnectionClosed,
-      'semantic HTTP conflict',
-      { status: 409, statusText: 'Conflict' },
-    ))).toBe(false);
+    expect(
+      canonicalRuntimeToolCallFailureIsCutoverOutcomeUnknown(
+        new SdkHttpError(SdkErrorCode.ConnectionClosed, 'semantic HTTP conflict', {
+          status: 409,
+          statusText: 'Conflict',
+        }),
+      ),
+    ).toBe(false);
     expect(canonicalRuntimeToolCallFailureIsCutoverOutcomeUnknown(new Error('Connection closed'))).toBe(false);
     expect(canonicalRuntimeToolCallFailureIsTransient(new Error('WORK_CONTROLLER_CLAIM_REQUIRED'))).toBe(false);
 
@@ -252,7 +292,9 @@ describe('MCP canonical Runtime proxy routing', () => {
         if (calls === 1) throw new SdkError(SdkErrorCode.ConnectionClosed, 'Connection closed');
         return 'original-process';
       },
-      reconnect: async () => { reconnects += 1; },
+      reconnect: async () => {
+        reconnects += 1;
+      },
     });
     expect(result).toBe('original-process');
     expect(calls).toBe(2);
@@ -260,30 +302,40 @@ describe('MCP canonical Runtime proxy routing', () => {
 
     let unkeyedCalls = 0;
     let unkeyedReconnects = 0;
-    await expect(callCanonicalRuntimeToolWithReplay({
-      name: 'execute_command',
-      args: { ...args, request_id: '' },
-      call: async () => { unkeyedCalls += 1; throw new Error('Connection closed'); },
-      reconnect: async () => { unkeyedReconnects += 1; },
-    })).rejects.toThrow('Connection closed');
+    await expect(
+      callCanonicalRuntimeToolWithReplay({
+        name: 'execute_command',
+        args: { ...args, request_id: '' },
+        call: async () => {
+          unkeyedCalls += 1;
+          throw new Error('Connection closed');
+        },
+        reconnect: async () => {
+          unkeyedReconnects += 1;
+        },
+      }),
+    ).rejects.toThrow('Connection closed');
     expect(unkeyedCalls).toBe(1);
     expect(unkeyedReconnects).toBe(0);
 
     let cutoverCalls = 0;
     let cutoverReconnects = 0;
-    await expect(callCanonicalRuntimeToolWithReplay({
-      name: 'execute_command',
-      args,
-      call: async () => {
-        cutoverCalls += 1;
-        throw new SdkHttpError(
-          SdkErrorCode.ConnectionClosed,
-          'runtime cutover outcome unknown',
-          { status: 409, statusText: 'Conflict' },
-        );
-      },
-      reconnect: async () => { cutoverReconnects += 1; },
-    })).rejects.toThrow(RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN);
+    await expect(
+      callCanonicalRuntimeToolWithReplay({
+        name: 'execute_command',
+        args,
+        call: async () => {
+          cutoverCalls += 1;
+          throw new SdkHttpError(SdkErrorCode.ConnectionClosed, 'runtime cutover outcome unknown', {
+            status: 409,
+            statusText: 'Conflict',
+          });
+        },
+        reconnect: async () => {
+          cutoverReconnects += 1;
+        },
+      }),
+    ).rejects.toThrow(RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN);
     expect(cutoverCalls).toBe(1);
     expect(cutoverReconnects).toBe(0);
   });
@@ -306,11 +358,14 @@ describe('MCP canonical Runtime proxy routing', () => {
       repoId = repository.repoId;
       const effectPath = join(repoRoot, 'effect.log');
       const scriptPath = join(root, 'effect.cjs');
-      writeFileSync(scriptPath, [
-        "const { appendFileSync } = require('node:fs');",
-        "appendFileSync(" + JSON.stringify(effectPath) + ", 'effect\\n');",
-        "setTimeout(() => process.stdout.write('done\\n'), 250);",
-      ].join('\n'));
+      writeFileSync(
+        scriptPath,
+        [
+          "const { appendFileSync } = require('node:fs');",
+          'appendFileSync(' + JSON.stringify(effectPath) + ", 'effect\\n');",
+          "setTimeout(() => process.stdout.write('done\\n'), 250);",
+        ].join('\n'),
+      );
       const args = {
         repo_id: repoId,
         checkout_id: repository.activeCheckoutId,
@@ -338,7 +393,9 @@ describe('MCP canonical Runtime proxy routing', () => {
           }
           return response;
         },
-        reconnect: async () => { reconnects += 1; },
+        reconnect: async () => {
+          reconnects += 1;
+        },
       });
       expect((observed?.structuredContent as { processId?: string } | undefined)?.processId).toBe(processId);
       expect(calls).toBe(2);
@@ -350,7 +407,10 @@ describe('MCP canonical Runtime proxy routing', () => {
       expect((later?.structuredContent as { processId?: string } | undefined)?.processId).toBe(processId);
       expect(readFileSync(effectPath, 'utf8')).toBe('effect\n');
     } finally {
-      if (processId) await waitRepositoryCommandProcess(controllerHome, repoId, processId, { timeoutMs: 5_000 }).catch(() => undefined);
+      if (processId)
+        await waitRepositoryCommandProcess(controllerHome, repoId, processId, { timeoutMs: 5_000 }).catch(
+          () => undefined,
+        );
       rmSync(root, { recursive: true, force: true });
     }
   }, 20_000);
@@ -359,23 +419,37 @@ describe('MCP canonical Runtime proxy routing', () => {
     const args = { request_id: 'stable-bound', command: ['true'] };
     let semanticCalls = 0;
     let semanticReconnects = 0;
-    await expect(callCanonicalRuntimeToolWithReplay({
-      name: 'execute_command',
-      args,
-      call: async () => { semanticCalls += 1; throw new Error('WORK_CONTROLLER_OWNERSHIP_MISMATCH'); },
-      reconnect: async () => { semanticReconnects += 1; },
-    })).rejects.toThrow('WORK_CONTROLLER_OWNERSHIP_MISMATCH');
+    await expect(
+      callCanonicalRuntimeToolWithReplay({
+        name: 'execute_command',
+        args,
+        call: async () => {
+          semanticCalls += 1;
+          throw new Error('WORK_CONTROLLER_OWNERSHIP_MISMATCH');
+        },
+        reconnect: async () => {
+          semanticReconnects += 1;
+        },
+      }),
+    ).rejects.toThrow('WORK_CONTROLLER_OWNERSHIP_MISMATCH');
     expect(semanticCalls).toBe(1);
     expect(semanticReconnects).toBe(0);
 
     let repeatedCalls = 0;
     let repeatedReconnects = 0;
-    await expect(callCanonicalRuntimeToolWithReplay({
-      name: 'execute_command',
-      args,
-      call: async () => { repeatedCalls += 1; throw new SdkError(SdkErrorCode.ConnectionClosed, 'Connection closed'); },
-      reconnect: async () => { repeatedReconnects += 1; },
-    })).rejects.toThrow('Connection closed');
+    await expect(
+      callCanonicalRuntimeToolWithReplay({
+        name: 'execute_command',
+        args,
+        call: async () => {
+          repeatedCalls += 1;
+          throw new SdkError(SdkErrorCode.ConnectionClosed, 'Connection closed');
+        },
+        reconnect: async () => {
+          repeatedReconnects += 1;
+        },
+      }),
+    ).rejects.toThrow('Connection closed');
     expect(repeatedCalls).toBe(2);
     expect(repeatedReconnects).toBe(1);
   });
@@ -400,7 +474,9 @@ describe('MCP canonical Runtime proxy routing', () => {
           structuredContent: { ok: true },
         };
       },
-      close: async () => { closeCalls += 1; },
+      close: async () => {
+        closeCalls += 1;
+      },
     };
     const invoke = async (sessionId: string, requestId?: string): Promise<void> => {
       const context = {
@@ -433,7 +509,10 @@ describe('MCP canonical Runtime proxy routing', () => {
             },
           });
         }
-        const currentTool = await client.callTool({ name: 'rh_status', arguments: requestId ? { request_id: requestId } : {} });
+        const currentTool = await client.callTool({
+          name: 'rh_status',
+          arguments: requestId ? { request_id: requestId } : {},
+        });
         expect(currentTool.structuredContent).toMatchObject({ ok: true });
       } finally {
         await client.close();
@@ -484,7 +563,9 @@ describe('MCP canonical Runtime proxy routing', () => {
           { name: 'fixture-runtime', version: '1.0.0' },
           { capabilities: { tools: { listChanged: false } } },
         );
-        server.setRequestHandler('tools/list', async () => ({ tools: runtimeSchema.definitions.map(mcpToolDefinitionToSdk) }));
+        server.setRequestHandler('tools/list', async () => ({
+          tools: runtimeSchema.definitions.map(mcpToolDefinitionToSdk),
+        }));
         server.setRequestHandler('tools/call', async () => ({
           content: [{ type: 'text', text: '{"ok":true}' }],
           structuredContent: { ok: true },
@@ -519,12 +600,16 @@ describe('MCP canonical Runtime proxy routing', () => {
     const baseContext = createMcpToolContext({ controllerHome, profile: 'controller' });
     const proxy = createCanonicalRuntimeProxy(baseContext);
     const invokeOuterSession = async (sessionId: string, schema: CanonicalRuntimeToolSchema): Promise<void> => {
-      const server = createForgeMcpServerFromContext({
-        ...baseContext,
-        principalId: 'oauth-client:fixture',
-        sessionId,
-        controllerType: 'chatgpt',
-      }, schema, proxy);
+      const server = createForgeMcpServerFromContext(
+        {
+          ...baseContext,
+          principalId: 'oauth-client:fixture',
+          sessionId,
+          controllerType: 'chatgpt',
+        },
+        schema,
+        proxy,
+      );
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
       await server.connect(serverTransport);
       const client = new Client({ name: `real-proxy-client-${sessionId}`, version: '1.0.0' }, { capabilities: {} });
@@ -558,7 +643,9 @@ describe('MCP canonical Runtime proxy routing', () => {
     const processId = 'proc-fixture-observation-only';
     const schema: CanonicalRuntimeToolSchema = {
       definitions: ['process_wait', 'process_get', 'execute_command'].map((name) => ({
-        name, description: 'fixture call', inputSchema: { type: 'object' },
+        name,
+        description: 'fixture call',
+        inputSchema: { type: 'object' },
       })),
       toolNames: ['process_wait', 'process_get', 'execute_command'],
       fingerprint: 'fixture-observation-cancel',
@@ -570,14 +657,20 @@ describe('MCP canonical Runtime proxy routing', () => {
     let mutationCompleted = false;
     let signalWaitAdmitted!: () => void;
     let signalMutationAdmitted!: () => void;
-    const waitAdmitted = new Promise<void>((resolve) => { signalWaitAdmitted = resolve; });
-    const mutationAdmitted = new Promise<void>((resolve) => { signalMutationAdmitted = resolve; });
+    const waitAdmitted = new Promise<void>((resolve) => {
+      signalWaitAdmitted = resolve;
+    });
+    const mutationAdmitted = new Promise<void>((resolve) => {
+      signalMutationAdmitted = resolve;
+    });
     const runtimeTransport = await startRuntimeMcpTransport({
       host: '127.0.0.1',
       port: 0,
       authToken: runtimeToken,
       readiness: () => ({
-        ready: true, reasonCodes: [], observedAt: new Date().toISOString(),
+        ready: true,
+        reasonCodes: [],
+        observedAt: new Date().toISOString(),
         diagnostics: {
           database: { outcome: 'pass' },
           scheduler: { outcome: 'pass' },
@@ -590,7 +683,9 @@ describe('MCP canonical Runtime proxy routing', () => {
           { name: 'fixture-runtime-observation-cancel', version: '1.0.0' },
           { capabilities: { tools: { listChanged: false } } },
         );
-        runtimeServer.setRequestHandler('tools/list', async () => ({ tools: schema.definitions.map(mcpToolDefinitionToSdk) }));
+        runtimeServer.setRequestHandler('tools/list', async () => ({
+          tools: schema.definitions.map(mcpToolDefinitionToSdk),
+        }));
         runtimeServer.setRequestHandler('tools/call', async (request, ctx) => {
           if (request.params.name === 'process_wait') {
             waitCalls += 1;
@@ -603,11 +698,15 @@ describe('MCP canonical Runtime proxy routing', () => {
                 clearTimeout(timeout);
                 resolve();
               } else {
-                signal.addEventListener('abort', () => {
-                  waitCancelled = true;
-                  clearTimeout(timeout);
-                  resolve();
-                }, { once: true });
+                signal.addEventListener(
+                  'abort',
+                  () => {
+                    waitCancelled = true;
+                    clearTimeout(timeout);
+                    resolve();
+                  },
+                  { once: true },
+                );
               }
             });
           }
@@ -637,7 +736,9 @@ describe('MCP canonical Runtime proxy routing', () => {
       artifactIdentity: 'artifact-observation-cancel-fixture',
       endpoint: runtimeTransport.endpoint,
       readiness: {
-        ready: true, reasonCodes: [], observedAt,
+        ready: true,
+        reasonCodes: [],
+        observedAt,
         diagnostics: {
           database: { outcome: 'pass' },
           scheduler: { outcome: 'pass' },
@@ -650,11 +751,7 @@ describe('MCP canonical Runtime proxy routing', () => {
     });
     const baseContext = createMcpToolContext({ controllerHome, profile: 'controller' });
     const proxy = createCanonicalRuntimeProxy(baseContext);
-    const gateway = createModernMcpHttpHandler(
-      { controllerHome, profile: 'controller' },
-      async () => schema,
-      proxy,
-    );
+    const gateway = createModernMcpHttpHandler({ controllerHome, profile: 'controller' }, async () => schema, proxy);
     let gatewayResponseClosed = 0;
     let activeToolResponse: ServerResponse | undefined;
     const gatewayServer = createServer((request, response) => {
@@ -678,9 +775,13 @@ describe('MCP canonical Runtime proxy routing', () => {
     const gatewayUrl = new URL(`http://127.0.0.1:${gatewayAddress.port}/mcp`);
     const createOuterSession = async (sessionId: string) => {
       const transport = new StreamableHTTPClientTransport(gatewayUrl);
-      const client = new Client({ name: sessionId, version: '1.0.0' }, {
-        capabilities: {}, versionNegotiation: { mode: { pin: '2026-07-28' } },
-      });
+      const client = new Client(
+        { name: sessionId, version: '1.0.0' },
+        {
+          capabilities: {},
+          versionNegotiation: { mode: { pin: '2026-07-28' } },
+        },
+      );
       await client.connect(transport);
       return { client, transport };
     };
@@ -705,7 +806,8 @@ describe('MCP canonical Runtime proxy routing', () => {
       first = undefined;
       second = await createOuterSession('outer-observation-readback');
       const readback = await second.client.callTool({
-        name: 'process_get', arguments: { process_id: processId },
+        name: 'process_get',
+        arguments: { process_id: processId },
       });
       expect(readback.structuredContent).toMatchObject({ processId, completed: true, ok: true });
       expect(waitCalls).toBe(1);
@@ -730,7 +832,7 @@ describe('MCP canonical Runtime proxy routing', () => {
       await second?.client.close().catch(() => undefined);
       if (gatewayServer.listening) {
         await new Promise<void>((resolve, reject) => {
-          gatewayServer.close((error) => error ? reject(error) : resolve());
+          gatewayServer.close((error) => (error ? reject(error) : resolve()));
         });
       }
       await proxy.close();
@@ -752,16 +854,27 @@ describe('MCP canonical Runtime proxy routing', () => {
     runPostFinalizeGit(repoRoot, ['commit', '-m', 'init']);
     mkdirSync(join(repoRoot, '.forge'), { recursive: true });
     const marker = join(root, 'session-replacement-process-ran.txt');
-    writeFileSync(join(repoRoot, '.forge', 'checks.json'), JSON.stringify({
-      version: 1,
-      checks: {
-        session_survival: {
-          description: 'long check survives MCP transport session replacement',
-          command: [process.execPath, '-e', `setTimeout(() => { require('node:fs').appendFileSync(${JSON.stringify(marker)}, '1'); console.log('session-survived'); }, 3_000);`],
-          timeoutMs: 10_000,
+    writeFileSync(
+      join(repoRoot, '.forge', 'checks.json'),
+      JSON.stringify(
+        {
+          version: 1,
+          checks: {
+            session_survival: {
+              description: 'long check survives MCP transport session replacement',
+              command: [
+                process.execPath,
+                '-e',
+                `setTimeout(() => { require('node:fs').appendFileSync(${JSON.stringify(marker)}, '1'); console.log('session-survived'); }, 3_000);`,
+              ],
+              timeoutMs: 10_000,
+            },
+          },
         },
-      },
-    }, null, 2));
+        null,
+        2,
+      ),
+    );
     const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
     const context = {
       ...createMcpToolContext({ controllerHome, profile: 'controller', repo: repoRoot }),
@@ -770,7 +883,9 @@ describe('MCP canonical Runtime proxy routing', () => {
       controllerInstanceId: 'runtime-session-replacement-fixture',
       controllerType: 'chatgpt' as const,
     };
-    const definitions = processToolDefinitions.filter((tool) => ['run_check', 'process_get', 'process_wait'].includes(tool.name));
+    const definitions = processToolDefinitions.filter((tool) =>
+      ['run_check', 'process_get', 'process_wait'].includes(tool.name),
+    );
     const runtimeSchema: CanonicalRuntimeToolSchema = {
       definitions,
       toolNames: definitions.map((tool) => tool.name),
@@ -808,13 +923,16 @@ describe('MCP canonical Runtime proxy routing', () => {
             { name: 'fixture-runtime-process-session-replacement', version: '1.0.0' },
             { capabilities: { tools: { listChanged: false } } },
           );
-          runtimeServer.setRequestHandler('tools/list', async () => ({ tools: definitions.map(mcpToolDefinitionToSdk) }));
+          runtimeServer.setRequestHandler('tools/list', async () => ({
+            tools: definitions.map(mcpToolDefinitionToSdk),
+          }));
           runtimeServer.setRequestHandler('tools/call', async (request) => {
             const name = request.params.name;
             const args = (request.params.arguments ?? {}) as Record<string, unknown>;
-            const result = name === 'run_check'
-              ? await routeDurableMcpCall(context, name, args)
-              : await callProcessTool(context, name, args);
+            const result =
+              name === 'run_check'
+                ? await routeDurableMcpCall(context, name, args)
+                : await callProcessTool(context, name, args);
             if (!result) throw new Error(`test Runtime did not handle ${name}`);
             return {
               content: result.content,
@@ -852,19 +970,26 @@ describe('MCP canonical Runtime proxy routing', () => {
         async () => runtimeSchema,
         proxy,
       );
-      gatewayServer = createServer((request, response) => { void gateway.nodeHandler(request, response); });
+      gatewayServer = createServer((request, response) => {
+        void gateway.nodeHandler(request, response);
+      });
       await new Promise<void>((resolve, reject) => {
         gatewayServer!.once('error', reject);
         gatewayServer!.listen(0, '127.0.0.1', resolve);
       });
       const gatewayAddress = gatewayServer.address();
-      if (!gatewayAddress || typeof gatewayAddress === 'string') throw new Error('session replacement Gateway did not bind');
+      if (!gatewayAddress || typeof gatewayAddress === 'string')
+        throw new Error('session replacement Gateway did not bind');
       const gatewayUrl = new URL(`http://127.0.0.1:${gatewayAddress.port}/mcp`);
       const createOuterSession = async (name: string) => {
         const transport = new StreamableHTTPClientTransport(gatewayUrl);
-        const client = new Client({ name, version: '1.0.0' }, {
-          capabilities: {}, versionNegotiation: { mode: { pin: '2026-07-28' } },
-        });
+        const client = new Client(
+          { name, version: '1.0.0' },
+          {
+            capabilities: {},
+            versionNegotiation: { mode: { pin: '2026-07-28' } },
+          },
+        );
         await client.connect(transport);
         return { client, transport };
       };
@@ -896,7 +1021,9 @@ describe('MCP canonical Runtime proxy routing', () => {
         arguments: { repo_id: repository.repoId, process_id: processId },
       });
       expect(stillRunning.isError).not.toBe(true);
-      expect(stillRunning.structuredContent).toMatchObject({ process: { processId, completed: false, status: 'running' } });
+      expect(stillRunning.structuredContent).toMatchObject({
+        process: { processId, completed: false, status: 'running' },
+      });
 
       const waited = await second.client.callTool({
         name: 'process_wait',
@@ -945,9 +1072,10 @@ describe('MCP canonical Runtime proxy routing', () => {
           replacementServer.setRequestHandler('tools/call', async (request) => {
             const name = request.params.name;
             const args = (request.params.arguments ?? {}) as Record<string, unknown>;
-            const result = name === 'run_check'
-              ? await routeDurableMcpCall(context, name, args)
-              : await callProcessTool(context, name, args);
+            const result =
+              name === 'run_check'
+                ? await routeDurableMcpCall(context, name, args)
+                : await callProcessTool(context, name, args);
             if (!result) throw new Error('replacement Runtime did not handle ' + name);
             return {
               content: result.content,
@@ -995,11 +1123,21 @@ describe('MCP canonical Runtime proxy routing', () => {
         await canaryClient.close().catch(() => undefined);
       }
       const proxyTiming: Parameters<CanonicalRuntimeProxy['callTool']>[3] = {};
-      const proxyReadback = await proxy!.callTool(context, 'process_get', {
-        repo_id: repository.repoId, process_id: processId,
-      }, proxyTiming).catch((error: unknown) => {
-        throw new Error(`DIRECT_PROXY_RECONNECT_FAILED state=${proxyTiming.gatewayProxyConnectionState ?? 'unset'} active=${runtimeTransport?.sessionSnapshot?.().active ?? -1} cause=${error instanceof Error ? error.stack : String(error)}`);
-      });
+      const proxyReadback = await proxy!
+        .callTool(
+          context,
+          'process_get',
+          {
+            repo_id: repository.repoId,
+            process_id: processId,
+          },
+          proxyTiming,
+        )
+        .catch((error: unknown) => {
+          throw new Error(
+            `DIRECT_PROXY_RECONNECT_FAILED state=${proxyTiming.gatewayProxyConnectionState ?? 'unset'} active=${runtimeTransport?.sessionSnapshot?.().active ?? -1} cause=${error instanceof Error ? error.stack : String(error)}`,
+          );
+        });
       expect(proxyReadback.structuredContent).toMatchObject({
         process: { processId, completed: true, ok: true },
       });
@@ -1026,18 +1164,18 @@ describe('MCP canonical Runtime proxy routing', () => {
         process: { processId, completed: true, ok: true },
       });
       expect(readFileSync(marker, 'utf8')).toBe('1');
-
     } finally {
       await first?.client.close().catch(() => undefined);
       await second?.client.close().catch(() => undefined);
-      if (processId) await callProcessTool(context, 'process_wait', {
-        repo_id: repository.repoId,
-        process_id: processId,
-        timeout_ms: 10_000,
-      }).catch(() => undefined);
+      if (processId)
+        await callProcessTool(context, 'process_wait', {
+          repo_id: repository.repoId,
+          process_id: processId,
+          timeout_ms: 10_000,
+        }).catch(() => undefined);
       if (gatewayServer?.listening) {
         await new Promise<void>((resolve, reject) => {
-          gatewayServer!.close((error) => error ? reject(error) : resolve());
+          gatewayServer!.close((error) => (error ? reject(error) : resolve()));
         });
       }
       await proxy?.close();
@@ -1091,17 +1229,18 @@ describe('MCP canonical Runtime proxy routing', () => {
       });
       writeFileSync(readyFile, JSON.stringify({ pid: process.pid, endpoint: handle.endpoint }));
     `;
-    const startRuntime = (label: string, readyFile: string) => Bun.spawn(['bun', '-e', runtimeScript], {
-      cwd: process.cwd(),
-      stdout: 'ignore',
-      stderr: 'ignore',
-      env: {
-        ...process.env,
-        FORGE_TEST_RUNTIME_LABEL: label,
-        FORGE_TEST_RUNTIME_READY_FILE: readyFile,
-        FORGE_TEST_RUNTIME_TOKEN: runtimeToken,
-      },
-    });
+    const startRuntime = (label: string, readyFile: string) =>
+      Bun.spawn(['bun', '-e', runtimeScript], {
+        cwd: process.cwd(),
+        stdout: 'ignore',
+        stderr: 'ignore',
+        env: {
+          ...process.env,
+          FORGE_TEST_RUNTIME_LABEL: label,
+          FORGE_TEST_RUNTIME_READY_FILE: readyFile,
+          FORGE_TEST_RUNTIME_TOKEN: runtimeToken,
+        },
+      });
     const waitForRuntime = async (readyFile: string): Promise<{ pid: number; endpoint: string }> => {
       const deadline = Date.now() + 5_000;
       while (Date.now() < deadline) {
@@ -1147,41 +1286,66 @@ describe('MCP canonical Runtime proxy routing', () => {
     try {
       mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
       writeFileSync(join(controllerHome, 'mcp', 'runtime-token'), runtimeToken, 'utf8');
-      ensureForgeInstanceIdentity({ controllerHome, preferredInstanceId: 'forge-mcp-runtime-process-restart', label: 'MCP Runtime Process Restart Test' });
+      ensureForgeInstanceIdentity({
+        controllerHome,
+        preferredInstanceId: 'forge-mcp-runtime-process-restart',
+        label: 'MCP Runtime Process Restart Test',
+      });
 
       const firstReadyFile = join(root, 'runtime-before.json');
       const startedFirstRuntime = startRuntime('runtime-before-process-restart', firstReadyFile);
       firstRuntime = startedFirstRuntime;
       const firstReady = await waitForRuntime(firstReadyFile);
       expect(firstReady.pid).toBe(startedFirstRuntime.pid);
-      writeRuntimeStatusSnapshot(controllerHome, runtimeSnapshot('runtime-before-process-restart', firstReady.pid, firstReady.endpoint));
+      writeRuntimeStatusSnapshot(
+        controllerHome,
+        runtimeSnapshot('runtime-before-process-restart', firstReady.pid, firstReady.endpoint),
+      );
 
-      const context = { ...createMcpToolContext({ controllerHome, profile: 'controller' }), principalId: 'oauth-client:runtime-process-restart-fixture', sessionId: 'runtime-process-restart-fixture', controllerInstanceId: 'runtime-process-restart-fixture', controllerType: 'chatgpt' as const };
-      const definitions = [{
-        name: 'runtime_probe',
-        description: 'Read the active Canonical Runtime process identity.',
-        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-        annotations: { readOnlyHint: true },
-      }];
+      const context = {
+        ...createMcpToolContext({ controllerHome, profile: 'controller' }),
+        principalId: 'oauth-client:runtime-process-restart-fixture',
+        sessionId: 'runtime-process-restart-fixture',
+        controllerInstanceId: 'runtime-process-restart-fixture',
+        controllerType: 'chatgpt' as const,
+      };
+      const definitions = [
+        {
+          name: 'runtime_probe',
+          description: 'Read the active Canonical Runtime process identity.',
+          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+          annotations: { readOnlyHint: true },
+        },
+      ];
       const runtimeSchema: CanonicalRuntimeToolSchema = {
         definitions,
         toolNames: ['runtime_probe'],
         fingerprint: forgeToolSurfaceFingerprint(definitions),
       };
       proxy = createCanonicalRuntimeProxy(context);
-      const gateway = createModernMcpHttpHandler({ controllerHome, profile: 'controller' }, async () => runtimeSchema, proxy);
-      gatewayServer = createServer((request, response) => { void gateway.nodeHandler(request, response); });
+      const gateway = createModernMcpHttpHandler(
+        { controllerHome, profile: 'controller' },
+        async () => runtimeSchema,
+        proxy,
+      );
+      gatewayServer = createServer((request, response) => {
+        void gateway.nodeHandler(request, response);
+      });
       await new Promise<void>((resolve, reject) => {
         gatewayServer!.once('error', reject);
         gatewayServer!.listen(0, '127.0.0.1', resolve);
       });
       const gatewayAddress = gatewayServer.address();
-      if (!gatewayAddress || typeof gatewayAddress === 'string') throw new Error('Runtime restart Gateway did not bind');
+      if (!gatewayAddress || typeof gatewayAddress === 'string')
+        throw new Error('Runtime restart Gateway did not bind');
       const gatewayUrl = new URL(`http://127.0.0.1:${gatewayAddress.port}/mcp`);
-      client = new Client({ name: 'runtime-process-restart-client', version: '1.0.0' }, {
-        capabilities: {},
-        versionNegotiation: { mode: { pin: '2026-07-28' } },
-      });
+      client = new Client(
+        { name: 'runtime-process-restart-client', version: '1.0.0' },
+        {
+          capabilities: {},
+          versionNegotiation: { mode: { pin: '2026-07-28' } },
+        },
+      );
       await client.connect(new StreamableHTTPClientTransport(gatewayUrl));
       const beforeRestart = await client.callTool({ name: 'runtime_probe', arguments: {} });
       expect(beforeRestart.isError).not.toBe(true);
@@ -1198,7 +1362,10 @@ describe('MCP canonical Runtime proxy routing', () => {
       const secondReady = await waitForRuntime(secondReadyFile);
       expect(secondReady.pid).toBe(startedSecondRuntime.pid);
       expect(secondReady.pid).not.toBe(previousPid);
-      writeRuntimeStatusSnapshot(controllerHome, runtimeSnapshot('runtime-after-process-restart', secondReady.pid, secondReady.endpoint));
+      writeRuntimeStatusSnapshot(
+        controllerHome,
+        runtimeSnapshot('runtime-after-process-restart', secondReady.pid, secondReady.endpoint),
+      );
 
       const afterRestart = await client.callTool({ name: 'runtime_probe', arguments: {} });
       expect(afterRestart.isError).not.toBe(true);
@@ -1208,7 +1375,7 @@ describe('MCP canonical Runtime proxy routing', () => {
       await client?.close().catch(() => undefined);
       if (gatewayServer?.listening) {
         await new Promise<void>((resolve, reject) => {
-          gatewayServer!.close((error) => error ? reject(error) : resolve());
+          gatewayServer!.close((error) => (error ? reject(error) : resolve()));
         });
       }
       await proxy?.close();
@@ -1274,10 +1441,9 @@ describe('MCP canonical Runtime proxy routing', () => {
       startedAt: observedAt,
       updatedAt: observedAt,
     });
-    const proxy = createCanonicalRuntimeProxy(
-      createMcpToolContext({ controllerHome, profile: 'controller' }),
-      { idleTtlMs: 5 },
-    );
+    const proxy = createCanonicalRuntimeProxy(createMcpToolContext({ controllerHome, profile: 'controller' }), {
+      idleTtlMs: 5,
+    });
     try {
       await proxy.listTools();
       expect(initializedRuntimeSessions).toBe(1);
@@ -1369,8 +1535,12 @@ describe('MCP canonical Runtime proxy routing', () => {
     const runtimeToken = 'runtime-session-protection-fixture';
     let releaseCall!: () => void;
     let markCallStarted!: () => void;
-    const callStarted = new Promise<void>((resolve) => { markCallStarted = resolve; });
-    const callReleased = new Promise<void>((resolve) => { releaseCall = resolve; });
+    const callStarted = new Promise<void>((resolve) => {
+      markCallStarted = resolve;
+    });
+    const callReleased = new Promise<void>((resolve) => {
+      releaseCall = resolve;
+    });
     const runtimeTransport = await startRuntimeMcpTransport({
       host: '127.0.0.1',
       port: 0,
@@ -1434,8 +1604,12 @@ describe('MCP canonical Runtime proxy routing', () => {
     const runtimeToken = 'runtime-cutover-token';
     let releaseCall!: () => void;
     let markCallStarted!: () => void;
-    const callStarted = new Promise<void>((resolve) => { markCallStarted = resolve; });
-    const callReleased = new Promise<void>((resolve) => { releaseCall = resolve; });
+    const callStarted = new Promise<void>((resolve) => {
+      markCallStarted = resolve;
+    });
+    const callReleased = new Promise<void>((resolve) => {
+      releaseCall = resolve;
+    });
     const runtimeTransport = await startRuntimeMcpTransport({
       host: '127.0.0.1',
       port: 0,
@@ -1476,7 +1650,11 @@ describe('MCP canonical Runtime proxy routing', () => {
       await callStarted;
       const closing = runtimeTransport.close();
       let observed: unknown;
-      try { await activeCall; } catch (error) { observed = error; }
+      try {
+        await activeCall;
+      } catch (error) {
+        observed = error;
+      }
       expect(observed).toBeDefined();
       expect(canonicalRuntimeToolCallFailureIsCutoverOutcomeUnknown(observed)).toBe(true);
       releaseCall();
@@ -1489,22 +1667,26 @@ describe('MCP canonical Runtime proxy routing', () => {
   });
 
   test('accepts only bounded internal Runtime forwarding identity metadata', () => {
-    expect(canonicalRuntimeForwardingIdentity({
-      forgeRuntimeForwarding: {
-        principalId: ' oauth-client:fixture ',
-        sessionId: ' session-a ',
-        controllerType: 'chatgpt',
-        hostConversationSessionId: ' host-session-a ',
-      },
-    })).toEqual({
+    expect(
+      canonicalRuntimeForwardingIdentity({
+        forgeRuntimeForwarding: {
+          principalId: ' oauth-client:fixture ',
+          sessionId: ' session-a ',
+          controllerType: 'chatgpt',
+          hostConversationSessionId: ' host-session-a ',
+        },
+      }),
+    ).toEqual({
       principalId: 'oauth-client:fixture',
       sessionId: 'session-a',
       controllerType: 'chatgpt',
       hostConversationSessionId: 'host-session-a',
     });
-    expect(canonicalRuntimeForwardingIdentity({
-      forgeRuntimeForwarding: { principalId: 'fixture', sessionId: 'session-b', controllerType: 'root' },
-    })).toEqual({ principalId: 'fixture', sessionId: 'session-b' });
+    expect(
+      canonicalRuntimeForwardingIdentity({
+        forgeRuntimeForwarding: { principalId: 'fixture', sessionId: 'session-b', controllerType: 'root' },
+      }),
+    ).toEqual({ principalId: 'fixture', sessionId: 'session-b' });
     expect(canonicalRuntimeForwardingIdentity({ forgeRuntimeForwarding: 'invalid' })).toEqual({});
     expect(chatgptHostSessionIdFromMcpMeta({ 'openai/session': ' chat-session-1 ' })).toBe('chat-session-1');
     expect(chatgptHostSessionIdFromMcpMeta({ 'openai/session': 42 })).toBeUndefined();
@@ -1515,8 +1697,12 @@ describe('MCP canonical Runtime proxy routing', () => {
     const events: string[] = [];
     let releaseRequest!: () => void;
     let releaseListener!: () => void;
-    const requestDrain = new Promise<void>((resolve) => { releaseRequest = resolve; });
-    const listenerClosed = new Promise<void>((resolve) => { releaseListener = resolve; });
+    const requestDrain = new Promise<void>((resolve) => {
+      releaseRequest = resolve;
+    });
+    const listenerClosed = new Promise<void>((resolve) => {
+      releaseListener = resolve;
+    });
     const closing = closeRuntimeMcpTransportResources({
       closeListener: async () => {
         events.push('listener');
@@ -1526,7 +1712,11 @@ describe('MCP canonical Runtime proxy routing', () => {
         events.push('request-drain');
         await requestDrain;
       },
-      closeSessions: [async () => { events.push('session'); }],
+      closeSessions: [
+        async () => {
+          events.push('session');
+        },
+      ],
       forceCloseConnections: () => {
         events.push('force');
         releaseListener();
@@ -1545,8 +1735,12 @@ describe('MCP canonical Runtime proxy routing', () => {
     const events: string[] = [];
     let releaseRequest!: () => void;
     let releaseListener!: () => void;
-    const requestDrain = new Promise<void>((resolve) => { releaseRequest = resolve; });
-    const listenerClosed = new Promise<void>((resolve) => { releaseListener = resolve; });
+    const requestDrain = new Promise<void>((resolve) => {
+      releaseRequest = resolve;
+    });
+    const listenerClosed = new Promise<void>((resolve) => {
+      releaseListener = resolve;
+    });
     await closeRuntimeMcpTransportResources({
       closeListener: async () => {
         events.push('listener');
@@ -1560,7 +1754,11 @@ describe('MCP canonical Runtime proxy routing', () => {
         events.push('settle');
         releaseRequest();
       },
-      closeSessions: [async () => { events.push('session'); }],
+      closeSessions: [
+        async () => {
+          events.push('session');
+        },
+      ],
       forceCloseConnections: () => {
         events.push('force');
         releaseListener();
@@ -1580,44 +1778,74 @@ describe('MCP canonical Runtime proxy routing', () => {
 
   test('recognizes only recent Canonical Runtime release handoff states', () => {
     const nowMs = Date.parse('2026-08-18T04:00:30.000Z');
-    expect(canonicalRuntimeReleaseHandoffInProgress({
-      authorityReleaseId: 'release-new', authorityCommittedAt: '2026-08-18T04:00:25.000Z',
-      runtimeReleaseId: 'release-old', runtimeRunning: false, runtimeReady: false,
-      runtimeUpdatedAt: '2026-08-18T04:00:24.000Z', nowMs,
-    })).toBe(true);
-    expect(canonicalRuntimeReleaseHandoffInProgress({
-      authorityReleaseId: 'release-new', authorityCommittedAt: '2026-08-18T04:00:25.000Z',
-      runtimeReleaseId: 'release-new', runtimeRunning: true, runtimeReady: false,
-      runtimeStartedAt: '2026-08-18T04:00:26.000Z', nowMs,
-    })).toBe(true);
-    expect(canonicalRuntimeReleaseHandoffInProgress({
-      authorityReleaseId: 'release-old', authorityCommittedAt: '2026-08-17T04:00:00.000Z',
-      runtimeReleaseId: 'release-old', runtimeRunning: false, runtimeReady: false,
-      runtimeUpdatedAt: '2026-08-18T04:00:24.000Z', recoveryActivationInProgress: true, nowMs,
-    })).toBe(true);
-    expect(canonicalRuntimeReleaseHandoffInProgress({
-      authorityReleaseId: 'release-old', authorityCommittedAt: '2026-08-17T04:00:00.000Z',
-      runtimeReleaseId: 'release-old', runtimeRunning: false, runtimeReady: false,
-      runtimeUpdatedAt: '2026-08-18T04:00:29.000Z', recoveryActivationInProgress: false, nowMs,
-    })).toBe(false);
-    expect(canonicalRuntimeReleaseHandoffInProgress({
-      runtimeReleaseId: 'release-old', runtimeRunning: false, runtimeReady: false,
-      runtimeUpdatedAt: '2026-08-18T04:00:29.000Z', nowMs,
-    })).toBe(false);
+    expect(
+      canonicalRuntimeReleaseHandoffInProgress({
+        authorityReleaseId: 'release-new',
+        authorityCommittedAt: '2026-08-18T04:00:25.000Z',
+        runtimeReleaseId: 'release-old',
+        runtimeRunning: false,
+        runtimeReady: false,
+        runtimeUpdatedAt: '2026-08-18T04:00:24.000Z',
+        nowMs,
+      }),
+    ).toBe(true);
+    expect(
+      canonicalRuntimeReleaseHandoffInProgress({
+        authorityReleaseId: 'release-new',
+        authorityCommittedAt: '2026-08-18T04:00:25.000Z',
+        runtimeReleaseId: 'release-new',
+        runtimeRunning: true,
+        runtimeReady: false,
+        runtimeStartedAt: '2026-08-18T04:00:26.000Z',
+        nowMs,
+      }),
+    ).toBe(true);
+    expect(
+      canonicalRuntimeReleaseHandoffInProgress({
+        authorityReleaseId: 'release-old',
+        authorityCommittedAt: '2026-08-17T04:00:00.000Z',
+        runtimeReleaseId: 'release-old',
+        runtimeRunning: false,
+        runtimeReady: false,
+        runtimeUpdatedAt: '2026-08-18T04:00:24.000Z',
+        recoveryActivationInProgress: true,
+        nowMs,
+      }),
+    ).toBe(true);
+    expect(
+      canonicalRuntimeReleaseHandoffInProgress({
+        authorityReleaseId: 'release-old',
+        authorityCommittedAt: '2026-08-17T04:00:00.000Z',
+        runtimeReleaseId: 'release-old',
+        runtimeRunning: false,
+        runtimeReady: false,
+        runtimeUpdatedAt: '2026-08-18T04:00:29.000Z',
+        recoveryActivationInProgress: false,
+        nowMs,
+      }),
+    ).toBe(false);
+    expect(
+      canonicalRuntimeReleaseHandoffInProgress({
+        runtimeReleaseId: 'release-old',
+        runtimeRunning: false,
+        runtimeReady: false,
+        runtimeUpdatedAt: '2026-08-18T04:00:29.000Z',
+        nowMs,
+      }),
+    ).toBe(false);
   });
 
   test('waits boundedly for a release handoff to settle', async () => {
     let nowMs = 0;
     let observations = 0;
-    const result = await waitForCanonicalRuntimeReleaseHandoff(
-      () => ++observations < 4,
-      {
-        maxWaitMs: 1_000,
-        intervalMs: 100,
-        now: () => nowMs,
-        sleep: async (ms) => { nowMs += ms; },
+    const result = await waitForCanonicalRuntimeReleaseHandoff(() => ++observations < 4, {
+      maxWaitMs: 1_000,
+      intervalMs: 100,
+      now: () => nowMs,
+      sleep: async (ms) => {
+        nowMs += ms;
       },
-    );
+    });
     expect(result.waited).toBe(true);
     expect(result.settled).toBe(true);
     expect(nowMs).toBe(300);
@@ -1643,7 +1871,10 @@ describe('MCP canonical Runtime proxy routing', () => {
         maxWaitMs: 1_000,
         intervalMs: 100,
         now: () => nowMs,
-        sleep: async (ms) => { nowMs += ms; handoff = false; },
+        sleep: async (ms) => {
+          nowMs += ms;
+          handoff = false;
+        },
       },
     );
     expect(value).toBe('connected');
@@ -1652,11 +1883,16 @@ describe('MCP canonical Runtime proxy routing', () => {
 
   test('keeps ordinary Canonical Runtime outages fail-fast when no handoff is active', async () => {
     let attempts = 0;
-    await expect(retryCanonicalRuntimeConnectDuringHandoff(
-      async () => { attempts += 1; throw new Error('ECONNREFUSED'); },
-      () => false,
-      { maxWaitMs: 1_000 },
-    )).rejects.toThrow('ECONNREFUSED');
+    await expect(
+      retryCanonicalRuntimeConnectDuringHandoff(
+        async () => {
+          attempts += 1;
+          throw new Error('ECONNREFUSED');
+        },
+        () => false,
+        { maxWaitMs: 1_000 },
+      ),
+    ).rejects.toThrow('ECONNREFUSED');
     expect(attempts).toBe(1);
   });
 
@@ -1670,11 +1906,13 @@ describe('MCP canonical Runtime proxy routing', () => {
         },
       },
     };
-    expect(deriveCanonicalForwardingTiming({
-      gatewayCallStartedAtMs: Date.parse('2026-08-17T03:31:41.699Z'),
-      gatewayCallDurationMs: 4701.36,
-      response,
-    })).toEqual({
+    expect(
+      deriveCanonicalForwardingTiming({
+        gatewayCallStartedAtMs: Date.parse('2026-08-17T03:31:41.699Z'),
+        gatewayCallDurationMs: 4701.36,
+        response,
+      }),
+    ).toEqual({
       gatewayProxyCanonicalDispatchLagMs: 4633,
       gatewayProxyCanonicalDurationMs: 66.22,
       gatewayProxyReturnMs: 2.14,
@@ -1685,24 +1923,30 @@ describe('MCP canonical Runtime proxy routing', () => {
 describe('MCP canonical Runtime schema fencing', () => {
   test('recognizes only pure tools/list refresh requests', () => {
     expect(isMcpToolsListRequest({ jsonrpc: '2.0', id: 1, method: 'tools/list' })).toBe(true);
-    expect(isMcpToolsListRequest([
-      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
-      { jsonrpc: '2.0', id: 2, method: 'tools/list' },
-    ])).toBe(true);
+    expect(
+      isMcpToolsListRequest([
+        { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+        { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+      ]),
+    ).toBe(true);
     expect(isMcpToolsListRequest({ jsonrpc: '2.0', id: 1, method: 'tools/call' })).toBe(false);
-    expect(isMcpToolsListRequest([
-      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
-      { jsonrpc: '2.0', id: 2, method: 'tools/call' },
-    ])).toBe(false);
+    expect(
+      isMcpToolsListRequest([
+        { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call' },
+      ]),
+    ).toBe(false);
   });
 
   test('changes only when the exposed schema changes, not when a release identity changes', () => {
-    const surface = [{
-      name: 'rh_work',
-      description: 'Stable facade.',
-      inputSchema: { type: 'object', properties: { operation: { type: 'string' } } },
-      annotations: { readOnlyHint: false },
-    }];
+    const surface = [
+      {
+        name: 'rh_work',
+        description: 'Stable facade.',
+        inputSchema: { type: 'object', properties: { operation: { type: 'string' } } },
+        annotations: { readOnlyHint: false },
+      },
+    ];
     const baseline = forgeToolSurfaceFingerprint(surface);
     expect(forgeToolSurfaceFingerprint(structuredClone(surface))).toBe(baseline);
     expect(mcpSessionToolSurfaceFingerprintIsCurrent(baseline, baseline)).toBe(true);
@@ -1738,7 +1982,6 @@ describe('MCP canonical Runtime schema fencing', () => {
   });
 });
 
-
 function runPostFinalizeGit(root: string, args: string[]): string {
   const executed = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
   if (executed.status !== 0) throw new Error(executed.stderr || `git ${args.join(' ')} failed`);
@@ -1761,39 +2004,42 @@ function postFinalizeAttributionFixture() {
   const workId = 'WORK-POST-FINALIZE-READONLY';
   const principalId = 'principal-post-finalize';
   const recordedAt = '2026-08-28T00:18:00.000Z';
-  seedHistoricalWorkContract({ controllerHome, repoId: repository.repoId }, {
-    workId,
-    repoId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
-    principalId,
-    controllerInstanceId: 'runtime-post-finalize',
-    objective: 'Exercise post-finalize readonly attribution.',
-    acceptanceCriteria: ['readonly observation remains attributable after lifecycle close'],
-    checks: [],
-    constraints: {},
-    requestedBy: 'chatgpt',
-    workKind: 'completed_no_change',
-    dispatchState: 'terminal',
-    semanticState: 'completed',
-    semanticRevision: 2,
-    phase: 'cleanup',
-    completionOutcome: 'completed_no_change',
-    completionReceipt: {
-      schemaVersion: 1,
-      receiptId: 'receipt-post-finalize-readonly',
-      source: 'controller_work',
-      issueId: 'post-finalize-attribution',
-      taskId: workId,
+  seedHistoricalWorkContract(
+    { controllerHome, repoId: repository.repoId },
+    {
       workId,
-      targetBranch: 'main',
-      targetRevision,
-      changedPaths: [],
-      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
-      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
-      verifiedAt: recordedAt,
-      recordedAt,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      principalId,
+      controllerInstanceId: 'runtime-post-finalize',
+      objective: 'Exercise post-finalize readonly attribution.',
+      acceptanceCriteria: ['readonly observation remains attributable after lifecycle close'],
+      checks: [],
+      constraints: {},
+      requestedBy: 'chatgpt',
+      workKind: 'completed_no_change',
+      dispatchState: 'terminal',
+      semanticState: 'completed',
+      semanticRevision: 2,
+      phase: 'cleanup',
+      completionOutcome: 'completed_no_change',
+      completionReceipt: {
+        schemaVersion: 1,
+        receiptId: 'receipt-post-finalize-readonly',
+        source: 'controller_work',
+        issueId: 'post-finalize-attribution',
+        taskId: workId,
+        workId,
+        targetBranch: 'main',
+        targetRevision,
+        changedPaths: [],
+        delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
+        cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
+        verifiedAt: recordedAt,
+        recordedAt,
+      },
     },
-  });
+  );
   return {
     root,
     controllerHome,
@@ -1885,10 +2131,13 @@ test('plugin_action_execute honors an exact checkout_id for iOS repository path 
   }
 });
 
-describe('MCP terminal Work command context', () => {
-  test('keeps completed Work as historical context through the canonical MCP command entry', async () => {
+describe('MCP retired Work command attribution', () => {
+  test('rejects historical Work provenance on read-only repository commands', async () => {
     const fx = postFinalizeAttributionFixture();
-    const context = { ...createMcpToolContext({ controllerHome: fx.controllerHome, profile: 'controller' }), ...fx.caller };
+    const context = {
+      ...createMcpToolContext({ controllerHome: fx.controllerHome, profile: 'controller' }),
+      ...fx.caller,
+    };
     const server = createForgeMcpServerFromContext(context);
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
@@ -1905,19 +2154,8 @@ describe('MCP terminal Work command context', () => {
           request_id: 'post-finalize-status',
         },
       });
-      const structured = (response.structuredContent ?? {}) as Record<string, unknown>;
-      expect(response.isError).not.toBe(true);
-      expect(structured.accepted).toBe(true);
-      expect(structured.ok).toBe(true);
-      expect(structured.checkoutId).toBe(fx.repository.activeCheckoutId);
-      expect(structured.historicalWorkContext).toEqual({
-        workId: fx.workId,
-        state: 'completed',
-        mode: 'historical_read_only_observation',
-        attribution: 'historical_only',
-      });
-      expect(structured.processId).toBeUndefined();
-      expect(String(structured.stdout)).toContain('## main');
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.structuredContent ?? response)).toContain('WORK_MUTATION_AUTHORITY_RETIRED');
     } finally {
       await client.close();
       await server.close();
@@ -1929,13 +2167,21 @@ describe('MCP terminal Work command context', () => {
     const fx = postFinalizeAttributionFixture();
     try {
       const mutationPath = join(fx.repoRoot, 'must-not-exist.txt');
-      for (const command of [['touch', 'must-not-exist.txt'], ['git', 'push', 'origin', 'main']]) {
-        const response = await callRepositoryTool(fx.controllerHome, 'execute_command', {
-          repo_id: fx.repository.repoId,
-          work_id: fx.workId,
-          command,
-          request_id: `post-finalize-${command[0]}`,
-        }, fx.caller);
+      for (const command of [
+        ['touch', 'must-not-exist.txt'],
+        ['git', 'push', 'origin', 'main'],
+      ]) {
+        const response = await callRepositoryTool(
+          fx.controllerHome,
+          'execute_command',
+          {
+            repo_id: fx.repository.repoId,
+            work_id: fx.workId,
+            command,
+            request_id: `post-finalize-${command[0]}`,
+          },
+          fx.caller,
+        );
         expect(response?.isError).toBe(true);
         expect(JSON.stringify(response?.structuredContent ?? response)).toContain('WORK_MUTATION_AUTHORITY_RETIRED');
       }

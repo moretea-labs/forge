@@ -11,7 +11,6 @@ import { bootstrapLocalProject, diagnoseLatestLocalProjectSource } from '../../r
 import { resolveEphemeralWorkspaceTarget } from '../../repositories/ephemeral-workspace';
 import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../repositories/command-scope';
 import type { ResolvedExecutionIdentity } from '../execution/execution-identity';
-import { getWorkContract, type WorkContract } from '../../../../packages/kernel/work/api';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../../repositories/command-executor';
 import { withControllerLock } from '../../../effects/controller-locks';
 import { withRepositoryMutationExclusion } from '../../resources/leases/store';
@@ -44,10 +43,7 @@ import {
   repositoryGitStatus,
   repositoryGitSwitchBranch,
 } from '../../repositories/structured-git';
-import {
-  readRepositoryGitStatusSample,
-  writeRepositoryGitStatusSample,
-} from '../../projections/git-status-sampler';
+import { readRepositoryGitStatusSample, writeRepositoryGitStatusSample } from '../../projections/git-status-sampler';
 import {
   executeLightweightLanes,
   executeRepositoryBatch,
@@ -113,7 +109,9 @@ function safePatchEditBinding(
 ): EditSessionBinding | undefined {
   const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
   if (explicitWorkId) {
-    throw new Error(`WORK_MUTATION_AUTHORITY_RETIRED: ${explicitWorkId}; omit work_id and use repository/checkout/EditSession/resource authorities directly`);
+    throw new Error(
+      `WORK_MUTATION_AUTHORITY_RETIRED: ${explicitWorkId}; omit work_id and use repository/checkout/EditSession/resource authorities directly`,
+    );
   }
   return undefined;
 }
@@ -128,7 +126,9 @@ function resolveRepositorySelectionWithoutWorkAuthority(
   const checkoutId = typeof args.checkout_id === 'string' ? args.checkout_id.trim() : '';
   const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
   if (explicitWorkId && allowCheckoutMutation) {
-    throw new Error(`WORK_MUTATION_AUTHORITY_RETIRED: ${explicitWorkId}; Work cannot select, recover, relocate, or own a mutation checkout`);
+    throw new Error(
+      `WORK_MUTATION_AUTHORITY_RETIRED: ${explicitWorkId}; Work cannot select, recover, relocate, or own a mutation checkout`,
+    );
   }
   return resolveRepositorySelection({
     repoId: repoIdValue || undefined,
@@ -138,7 +138,10 @@ function resolveRepositorySelectionWithoutWorkAuthority(
   });
 }
 
-function rawDefaultBranchMergeCommand(repository: ReturnType<typeof resolveRepositorySelection>, command: unknown): boolean {
+function rawDefaultBranchMergeCommand(
+  repository: ReturnType<typeof resolveRepositorySelection>,
+  command: unknown,
+): boolean {
   if (!repository.defaultBranch) return false;
   const checkout = repository.checkouts.find((entry) => entry.checkoutId === repository.activeCheckoutId);
   if (checkout?.branch !== repository.defaultBranch) return false;
@@ -148,32 +151,6 @@ function rawDefaultBranchMergeCommand(repository: ReturnType<typeof resolveRepos
     return executable === 'git' && normalized.args?.[0] === 'merge';
   }
   return /(?:^|[;&|]\s*)git\s+merge\b/.test(normalized.shellCommand ?? '');
-}
-
-interface HistoricalReadOnlyWorkContext {
-  workId: string;
-  state: WorkContract['semanticState'];
-  mode: 'historical_read_only_observation';
-  attribution: 'historical_only';
-}
-
-function historicalReadOnlyWorkContext(
-  controllerHome: string,
-  repository: ReturnType<typeof resolveRepositorySelection>,
-  args: Record<string, unknown>,
-): HistoricalReadOnlyWorkContext | undefined {
-  const requestedWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-  if (!requestedWorkId) return undefined;
-  const work = getWorkContract({ controllerHome, repoId: repository.repoId }, requestedWorkId);
-  if (!work) throw new Error(`HISTORICAL_WORK_NOT_FOUND: ${requestedWorkId}`);
-  const classification = classifyRepositoryCommand(args.command as string | string[], repository.defaultBranch);
-  if (classification.risk !== 'readonly') return undefined;
-  return {
-    workId: work.workId,
-    state: work.semanticState,
-    mode: 'historical_read_only_observation',
-    attribution: 'historical_only',
-  };
 }
 
 function resolveRepositoryCommandTarget(
@@ -188,13 +165,20 @@ function resolveRepositoryCommandTarget(
   commandTarget: RepositoryCommandScopeTarget;
   executionIdentity: ResolvedExecutionIdentity;
   workspace?: { workspaceId: string; root: string; registered: false };
-  historicalWorkContext?: HistoricalReadOnlyWorkContext;
 } {
+  const deprecatedWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+  if (deprecatedWorkId) {
+    throw new Error(
+      `WORK_MUTATION_AUTHORITY_RETIRED: ${deprecatedWorkId}; execute_command never uses historical Work identity. Use rh_work get/get_contract for archival inspection`,
+    );
+  }
   const workspaceRoot = typeof args.workspace_root === 'string' ? args.workspace_root.trim() : '';
   const checkoutId = typeof args.checkout_id === 'string' ? args.checkout_id.trim() : '';
   if (workspaceRoot) {
     if (repoIdValue || checkoutId) {
-      throw new Error('EPHEMERAL_WORKSPACE_TARGET_CONFLICT: workspace_root cannot be combined with repo_id or checkout_id');
+      throw new Error(
+        'EPHEMERAL_WORKSPACE_TARGET_CONFLICT: workspace_root cannot be combined with repo_id or checkout_id',
+      );
     }
     const target = resolveEphemeralWorkspaceTarget(workspaceRoot, controllerHome);
     return {
@@ -209,36 +193,22 @@ function resolveRepositoryCommandTarget(
       workspace: { workspaceId: target.workspaceId, root: target.canonicalRoot, registered: false },
     };
   }
-  // A terminal Work no longer owns mutation or checkout authority. An exact
-  // terminal work_id may still accompany a read-only observation immediately
-  // after finalize, so preserve it as explicit historical context while
-  // executing against the caller-selected/current repository checkout. Any
-  // non-read-only command rejects Work authority and uses repository/checkout/resource owners only.
   const selectedRepository = resolveRepositorySelection({
     repoId: repoIdValue || undefined,
     checkoutId: checkoutId || undefined,
     controllerHome,
     allowSoleRepository: true,
   });
-  const historicalWorkContext = historicalReadOnlyWorkContext(controllerHome, selectedRepository, args);
-  if (historicalWorkContext) {
-    return {
-      repository: selectedRepository,
-      commandTarget: selectedRepository,
-      executionIdentity: {
-        schemaVersion: 1,
-        authority: 'repository',
-        repositoryId: selectedRepository.repoId,
-        checkoutId: selectedRepository.activeCheckoutId,
-        canonicalRoot: selectedRepository.canonicalRoot,
-      },
-      historicalWorkContext,
-    };
-  }
-
   // Observation must not reconstruct a checkout or re-arm mutation authority.
-  const readonly = classifyRepositoryCommand(args.command as string | string[], selectedRepository.defaultBranch).risk === 'readonly';
-  const repository = resolveRepositorySelectionWithoutWorkAuthority(controllerHome, args, repoIdValue, caller, !readonly);
+  const readonly =
+    classifyRepositoryCommand(args.command as string | string[], selectedRepository.defaultBranch).risk === 'readonly';
+  const repository = resolveRepositorySelectionWithoutWorkAuthority(
+    controllerHome,
+    args,
+    repoIdValue,
+    caller,
+    !readonly,
+  );
   return {
     repository,
     commandTarget: repository,
@@ -331,11 +301,18 @@ export function summarizeRepositoryInspection(
 function failure(error: unknown): RepositoryToolResult {
   const message = compactErrorMessage(error);
   const code = leadingErrorCode(message, 'REPOSITORY_TOOL_FAILED');
-  const details = typeof error === 'object' && error !== null && 'details' in error ? (error as { details?: unknown }).details : undefined;
-  const compactDetails = details !== undefined && Buffer.byteLength(JSON.stringify(details) ?? '', 'utf8') > RESPONSE_BUDGET.previewBytes
-    ? { omitted: true, message: 'Error details exceeded budget; inspect job/artifact/result refs.' }
-    : details;
-  return { ...result({ error: { code, message, ...(compactDetails !== undefined ? { details: compactDetails } : {}) } }), isError: true };
+  const details =
+    typeof error === 'object' && error !== null && 'details' in error
+      ? (error as { details?: unknown }).details
+      : undefined;
+  const compactDetails =
+    details !== undefined && Buffer.byteLength(JSON.stringify(details) ?? '', 'utf8') > RESPONSE_BUDGET.previewBytes
+      ? { omitted: true, message: 'Error details exceeded budget; inspect job/artifact/result refs.' }
+      : details;
+  return {
+    ...result({ error: { code, message, ...(compactDetails !== undefined ? { details: compactDetails } : {}) } }),
+    isError: true,
+  };
 }
 
 function compactProcessCommandPayload(input: {
@@ -351,7 +328,6 @@ function compactProcessCommandPayload(input: {
   scopeId?: string;
   checkoutId?: string;
   workspace?: { workspaceId: string; root: string; registered: false };
-  historicalWorkContext?: HistoricalReadOnlyWorkContext;
   processId?: string;
   process?: unknown;
   completed?: boolean;
@@ -389,7 +365,6 @@ function compactProcessCommandPayload(input: {
       repoId: input.repoId,
       ...(input.checkoutId ? { checkoutId: input.checkoutId } : {}),
       ...(input.workspace ? { workspace: input.workspace } : {}),
-      ...(input.historicalWorkContext ? { historicalWorkContext: input.historicalWorkContext } : {}),
       ...(input.processId ? { processId: input.processId } : {}),
       ...(completed ? { exitCode: input.exitCode ?? (ok ? 0 : 1) } : {}),
       // A running default response otherwise loses its only dependency-bound
@@ -429,7 +404,6 @@ function compactProcessCommandPayload(input: {
     repoId: input.repoId,
     ...(input.checkoutId ? { checkoutId: input.checkoutId } : {}),
     ...(input.workspace ? { workspace: input.workspace } : {}),
-    ...(input.historicalWorkContext ? { historicalWorkContext: input.historicalWorkContext } : {}),
     ...(input.processId ? { processId: input.processId } : {}),
     ok: input.ok,
     exitCode: input.exitCode,
@@ -437,14 +411,14 @@ function compactProcessCommandPayload(input: {
     // Nested process only in detail mode; never duplicate stdout/stderr there.
     ...(input.process && typeof input.process === 'object'
       ? {
-        process: (() => {
-          const record = { ...(input.process as Record<string, unknown>) };
-          delete record.stdout;
-          delete record.stderr;
-          delete record.durableSideEffects;
-          return record;
-        })(),
-      }
+          process: (() => {
+            const record = { ...(input.process as Record<string, unknown>) };
+            delete record.stdout;
+            delete record.stderr;
+            delete record.durableSideEffects;
+            return record;
+          })(),
+        }
       : {}),
     durableSideEffects: effects,
     next: input.next,
@@ -454,8 +428,8 @@ function compactProcessCommandPayload(input: {
 
 function emptyRepositoryMigration(repository: ReturnType<typeof registerRepository>) {
   return {
-  repoId: repository.repoId,
-  checkoutId: repository.activeCheckoutId,
+    repoId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
     scanned: 0,
     updated: 0,
     unresolved: 0,
@@ -464,22 +438,17 @@ function emptyRepositoryMigration(repository: ReturnType<typeof registerReposito
   };
 }
 
-function registrationOnlyMetadataRefresh(
-  match: ReturnType<typeof findIdenticalRepositoryRegistration>,
-): boolean {
+function registrationOnlyMetadataRefresh(match: ReturnType<typeof findIdenticalRepositoryRegistration>): boolean {
   if (!match || match.identical || match.reasons.length === 0) return false;
-  const metadataReasons = new Set([
-    'remote_identity_changed',
-    'default_branch_changed',
-    'display_name_changed',
-  ]);
+  const metadataReasons = new Set(['remote_identity_changed', 'default_branch_changed', 'display_name_changed']);
   return match.reasons.every((reason) => metadataReasons.has(reason));
 }
 
 function registrationOnlyAttachedExistingWorktree(repository: ReturnType<typeof registerRepository>): boolean {
   const selected = repository.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
-  return selected?.worktree === true
-    && repository.checkouts.some((checkout) => checkout.checkoutId !== selected.checkoutId);
+  return (
+    selected?.worktree === true && repository.checkouts.some((checkout) => checkout.checkoutId !== selected.checkoutId)
+  );
 }
 
 export async function callRepositoryTool(
@@ -488,7 +457,8 @@ export async function callRepositoryTool(
   args: Record<string, unknown>,
   caller?: RepositoryToolCallerContext,
 ): Promise<RepositoryToolResult | undefined> {
-  if (!name.startsWith('repository_') && name !== 'read_repository_file' && name !== 'execute_command') return undefined;
+  if (!name.startsWith('repository_') && name !== 'read_repository_file' && name !== 'execute_command')
+    return undefined;
   try {
     const repoIdValue = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
     switch (name) {
@@ -531,10 +501,12 @@ export async function callRepositoryTool(
           // No legacy migration / edit-session migration / historical issue
           // scan / old issue rebinding runs on this hot path.
           const migration = emptyRepositoryMigration(repository);
-          return result(withResponseMeta(
-            summarizeRepositoryRegistration(repository, migration, args.detail_level === 'detail', true),
-            startedAt,
-          ));
+          return result(
+            withResponseMeta(
+              summarizeRepositoryRegistration(repository, migration, args.detail_level === 'detail', true),
+              startedAt,
+            ),
+          );
         }
         const metadataRefresh = registrationOnlyMetadataRefresh(identical);
         const repository = registerRepository(registerInput);
@@ -542,13 +514,16 @@ export async function callRepositoryTool(
         // metadata preserves repository + checkout authority. Existing entities
         // are already bound to the stable repoId, so a historical migration scan
         // would only add latency and stale unresolved diagnostics.
-        const migration = registrationOnlyAttachedExistingWorktree(repository) || metadataRefresh
-          ? emptyRepositoryMigration(repository)
-          : bindRepositoryEntities(repository);
-        return result(withResponseMeta(
-          summarizeRepositoryRegistration(repository, migration, args.detail_level === 'detail', metadataRefresh),
-          startedAt,
-        ));
+        const migration =
+          registrationOnlyAttachedExistingWorktree(repository) || metadataRefresh
+            ? emptyRepositoryMigration(repository)
+            : bindRepositoryEntities(repository);
+        return result(
+          withResponseMeta(
+            summarizeRepositoryRegistration(repository, migration, args.detail_level === 'detail', metadataRefresh),
+            startedAt,
+          ),
+        );
       }
       case 'repository_latest_source_diagnose':
         return result({
@@ -565,20 +540,30 @@ export async function callRepositoryTool(
             controllerHome,
             displayName: typeof args.display_name === 'string' ? args.display_name : undefined,
             defaultBranch: typeof args.default_branch === 'string' ? args.default_branch : undefined,
-            mode: typeof args.mode === 'string' ? args.mode as 'init_git_only' | 'init_git_and_register' | 'replace_registration' : undefined,
-            replaceRegisteredRepoId: typeof args.replace_registered_repo_id === 'string' ? args.replace_registered_repo_id : undefined,
+            mode:
+              typeof args.mode === 'string'
+                ? (args.mode as 'init_git_only' | 'init_git_and_register' | 'replace_registration')
+                : undefined,
+            replaceRegisteredRepoId:
+              typeof args.replace_registered_repo_id === 'string' ? args.replace_registered_repo_id : undefined,
             confirmAuthorization: args.confirm_authorization === true,
           }),
         });
       case 'repository_list':
-        return result({ repositories: listRepositories(controllerHome, { includeRemoved: args.include_removed === true }).map(repositorySummary) });
+        return result({
+          repositories: listRepositories(controllerHome, { includeRemoved: args.include_removed === true }).map(
+            repositorySummary,
+          ),
+        });
       case 'repository_get': {
         // Repository inspection is also the bounded reconciliation point for
         // checkout lifecycle drift caused by worktrees being removed outside
         // Forge. Reuse the existing registry reconciler so stale worktrees are
         // not exposed as lifecycle=active to automation callers.
         reconcileRepositoryCheckouts(repoIdValue, controllerHome);
-        const repository = getRepository(repoIdValue, controllerHome, { includeRemoved: args.include_removed === true });
+        const repository = getRepository(repoIdValue, controllerHome, {
+          includeRemoved: args.include_removed === true,
+        });
         return result(summarizeRepositoryInspection(repository, args.detail_level === 'detail'));
       }
       case 'repository_validate': {
@@ -595,17 +580,25 @@ export async function callRepositoryTool(
         const startedAt = performance.now();
         const repository = refreshRepository(repoIdValue, controllerHome);
         const migration = bindRepositoryEntities(repository);
-        return result(withResponseMeta(
-          summarizeRepositoryRegistration(repository, migration, args.detail_level === 'detail'),
-          startedAt,
-        ));
+        return result(
+          withResponseMeta(
+            summarizeRepositoryRegistration(repository, migration, args.detail_level === 'detail'),
+            startedAt,
+          ),
+        );
       }
       case 'repository_update':
-        return result({ repository: updateRepository(repoIdValue, {
-          displayName: typeof args.display_name === 'string' ? args.display_name : undefined,
-          defaultBranch: typeof args.default_branch === 'string' ? args.default_branch : undefined,
-          enabled: typeof args.enabled === 'boolean' ? args.enabled : undefined,
-        }, controllerHome) });
+        return result({
+          repository: updateRepository(
+            repoIdValue,
+            {
+              displayName: typeof args.display_name === 'string' ? args.display_name : undefined,
+              defaultBranch: typeof args.default_branch === 'string' ? args.default_branch : undefined,
+              enabled: typeof args.enabled === 'boolean' ? args.enabled : undefined,
+            },
+            controllerHome,
+          ),
+        });
       case 'repository_disable':
         return result({ repository: disableRepository(repoIdValue, controllerHome) });
       case 'repository_remove':
@@ -637,9 +630,8 @@ export async function callRepositoryTool(
             },
           });
         }
-        const payload = typeof args.payload === 'object' && args.payload !== null
-          ? args.payload as Record<string, unknown>
-          : {};
+        const payload =
+          typeof args.payload === 'object' && args.payload !== null ? (args.payload as Record<string, unknown>) : {};
         const internalTool = {
           batch_execute: 'repository_batch_execute',
           lanes_execute: 'repository_lanes_execute',
@@ -658,14 +650,20 @@ export async function callRepositoryTool(
         });
       }
       case 'repository_git_status': {
-        const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
-        const status = args.refresh !== false
-          ? await writeRepositoryGitStatusSample(controllerHome, repository)
-          : readRepositoryGitStatusSample(controllerHome, repository.repoId, repository.activeCheckoutId);
+        const repository = resolveRepositorySelection({
+          repoId: repoIdValue || undefined,
+          checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
+          controllerHome,
+          allowSoleRepository: true,
+        });
+        const status =
+          args.refresh !== false
+            ? await writeRepositoryGitStatusSample(controllerHome, repository)
+            : readRepositoryGitStatusSample(controllerHome, repository.repoId, repository.activeCheckoutId);
         return result({
           status: status ?? {
-  repoId: repository.repoId,
-  checkoutId: repository.activeCheckoutId,
+            repoId: repository.repoId,
+            checkoutId: repository.activeCheckoutId,
             sampleSource: 'daemon-sample',
             sampled: false,
             observedAt: null,
@@ -676,45 +674,129 @@ export async function callRepositoryTool(
       }
 
       case 'repository_git_diff': {
-        const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
-        return result({ diff: repositoryGitDiff(repository, { staged: args.staged, paths: args.paths, maxBytes: args.max_bytes }) });
+        const repository = resolveRepositorySelection({
+          repoId: repoIdValue || undefined,
+          checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
+          controllerHome,
+          allowSoleRepository: true,
+        });
+        return result({
+          diff: repositoryGitDiff(repository, { staged: args.staged, paths: args.paths, maxBytes: args.max_bytes }),
+        });
       }
       case 'repository_git_create_branch': {
-        const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
-        return result({ repoId: repository.repoId, checkoutId: repository.activeCheckoutId, ...repositoryGitCreateBranch(controllerHome, repository, { branch: args.branch, startPoint: args.start_point, switchTo: args.switch_to }) as unknown as Record<string, unknown> });
+        const repository = resolveRepositorySelection({
+          repoId: repoIdValue || undefined,
+          checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
+          controllerHome,
+          allowSoleRepository: true,
+        });
+        return result({
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          ...(repositoryGitCreateBranch(controllerHome, repository, {
+            branch: args.branch,
+            startPoint: args.start_point,
+            switchTo: args.switch_to,
+          }) as unknown as Record<string, unknown>),
+        });
       }
       case 'repository_git_switch_branch': {
-        const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
-        return result({ repoId: repository.repoId, checkoutId: repository.activeCheckoutId, ...repositoryGitSwitchBranch(controllerHome, repository, { branch: args.branch }) as unknown as Record<string, unknown> });
+        const repository = resolveRepositorySelection({
+          repoId: repoIdValue || undefined,
+          checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
+          controllerHome,
+          allowSoleRepository: true,
+        });
+        return result({
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          ...(repositoryGitSwitchBranch(controllerHome, repository, { branch: args.branch }) as unknown as Record<
+            string,
+            unknown
+          >),
+        });
       }
       case 'repository_git_merge_branch': {
-        const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
-        return result({ repoId: repository.repoId, checkoutId: repository.activeCheckoutId, ...repositoryGitMergeBranch(controllerHome, repository, { branch: args.branch, noFf: args.no_ff }) as unknown as Record<string, unknown> });
+        const repository = resolveRepositorySelection({
+          repoId: repoIdValue || undefined,
+          checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
+          controllerHome,
+          allowSoleRepository: true,
+        });
+        return result({
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          ...(repositoryGitMergeBranch(controllerHome, repository, {
+            branch: args.branch,
+            noFf: args.no_ff,
+          }) as unknown as Record<string, unknown>),
+        });
       }
       case 'repository_git_delete_branch': {
-        const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
-        return result({ repoId: repository.repoId, checkoutId: repository.activeCheckoutId, ...repositoryGitDeleteBranch(controllerHome, repository, { branch: args.branch, force: args.force, remote: args.remote, expectedRemoteSha: args.expected_remote_sha, approvalRequestId: typeof args.approval_request_id === 'string' ? args.approval_request_id : undefined }) as unknown as Record<string, unknown> });
+        const repository = resolveRepositorySelection({
+          repoId: repoIdValue || undefined,
+          checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
+          controllerHome,
+          allowSoleRepository: true,
+        });
+        return result({
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          ...(repositoryGitDeleteBranch(controllerHome, repository, {
+            branch: args.branch,
+            force: args.force,
+            remote: args.remote,
+            expectedRemoteSha: args.expected_remote_sha,
+            approvalRequestId: typeof args.approval_request_id === 'string' ? args.approval_request_id : undefined,
+          }) as unknown as Record<string, unknown>),
+        });
       }
 
       case 'repository_git_remove_worktree': {
         if (!repoIdValue) throw new Error('REPOSITORY_ID_REQUIRED');
         const repository = getRepository(repoIdValue, controllerHome);
         if (!repository) throw new Error('REPOSITORY_NOT_FOUND');
-        return result({ cleanup: repositoryGitRemoveWorktree(controllerHome, repository, {
-          checkoutId: String(args.checkout_id ?? '').trim(),
-          expectedHead: typeof args.expected_head === 'string' ? args.expected_head : undefined,
-          expectedIdentity: typeof args.expected_identity === 'string' ? args.expected_identity : undefined,
-          previewToken: typeof args.preview_token === 'string' ? args.preview_token : undefined,
-          confirmCleanup: args.confirm_cleanup === true,
-        }) });
+        return result({
+          cleanup: repositoryGitRemoveWorktree(controllerHome, repository, {
+            checkoutId: String(args.checkout_id ?? '').trim(),
+            expectedHead: typeof args.expected_head === 'string' ? args.expected_head : undefined,
+            expectedIdentity: typeof args.expected_identity === 'string' ? args.expected_identity : undefined,
+            previewToken: typeof args.preview_token === 'string' ? args.preview_token : undefined,
+            confirmCleanup: args.confirm_cleanup === true,
+          }),
+        });
       }
       case 'repository_git_commit': {
-        const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
-        return result({ commit: repositoryGitCommit(controllerHome, repository, { message: args.message, paths: args.paths, allowEmpty: args.allow_empty }) });
+        const repository = resolveRepositorySelection({
+          repoId: repoIdValue || undefined,
+          checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
+          controllerHome,
+          allowSoleRepository: true,
+        });
+        return result({
+          commit: repositoryGitCommit(controllerHome, repository, {
+            message: args.message,
+            paths: args.paths,
+            allowEmpty: args.allow_empty,
+          }),
+        });
       }
       case 'repository_git_finish_workflow': {
-        const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
-        return result({ finish: repositoryGitFinishWorkflow(controllerHome, repository, { featureBranch: args.feature_branch, targetBranch: args.target_branch, deleteBranch: args.delete_branch, noFf: args.no_ff }) });
+        const repository = resolveRepositorySelection({
+          repoId: repoIdValue || undefined,
+          checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
+          controllerHome,
+          allowSoleRepository: true,
+        });
+        return result({
+          finish: repositoryGitFinishWorkflow(controllerHome, repository, {
+            featureBranch: args.feature_branch,
+            targetBranch: args.target_branch,
+            deleteBranch: args.delete_branch,
+            noFf: args.no_ff,
+          }),
+        });
       }
       case 'repository_safe_patch_plan': {
         const repository = resolveRepositorySelection({
@@ -724,8 +806,8 @@ export async function callRepositoryTool(
           allowSoleRepository: true,
         });
         return result({
-  repoId: repository.repoId,
-  checkoutId: repository.activeCheckoutId,
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
           plan: buildSafePatchPlan(repository, { operations: args.operations, chunkSize: args.chunk_size }),
         });
       }
@@ -733,11 +815,12 @@ export async function callRepositoryTool(
         const repository = resolveRepositorySelectionWithoutWorkAuthority(controllerHome, args, repoIdValue, caller);
         const binding = safePatchEditBinding(repository, args);
         const patchPaths = extractPatchPaths(args.operations);
-        const mutationClaims = args.validation_only === true
-          ? []
-          : patchPaths.length > 0
-            ? patchPaths.map((path) => claimPathWrite(path, repository.activeCheckoutId, repository.repoId))
-            : undefined;
+        const mutationClaims =
+          args.validation_only === true
+            ? []
+            : patchPaths.length > 0
+              ? patchPaths.map((path) => claimPathWrite(path, repository.activeCheckoutId, repository.repoId))
+              : undefined;
         const applied = withRepositoryMutationExclusion(
           controllerHome,
           repository.repoId,
@@ -761,34 +844,30 @@ export async function callRepositoryTool(
           60_000,
           mutationClaims,
         );
-        const changedFiles = [
-          ...new Set(
-            (applied.appliedChunks ?? []).flatMap((chunk) => chunk.paths ?? []),
-          ),
-        ];
+        const changedFiles = [...new Set((applied.appliedChunks ?? []).flatMap((chunk) => chunk.paths ?? []))];
         const ok = applied.status === 'applied';
         const firstFailure = applied.failures?.[0];
-        const editDiff = applied.appliedChunks.length > 0
-          ? getEditSessionDiff(repository.canonicalRoot, applied.session.sessionId)
-          : undefined;
-        const boundedEditDiff = editDiff
-          ? boundUtf8(editDiff.patch, RESPONSE_BUDGET.inlineOutputBytes)
-          : undefined;
-        const reviewEvidence = editDiff && boundedEditDiff
-          ? {
-              source: 'edit_session' as const,
-              sessionId: editDiff.sessionId,
-              revision: editDiff.revision,
-              sha256: editDiff.sha256,
-              patchPreview: boundedEditDiff.text,
-              truncated: boundedEditDiff.truncated,
-              byteLength: boundedEditDiff.byteLength,
-              semanticReviewAuthority: 'chatgpt' as const,
-              next: boundedEditDiff.truncated
-                ? 'The edit diff exceeds the inline budget. Expand only the affected ranges or diff needed for semantic review.'
-                : 'Review this exact edit-session diff before deciding whether more edits or focused validation are needed.',
-            }
-          : undefined;
+        const editDiff =
+          applied.appliedChunks.length > 0
+            ? getEditSessionDiff(repository.canonicalRoot, applied.session.sessionId)
+            : undefined;
+        const boundedEditDiff = editDiff ? boundUtf8(editDiff.patch, RESPONSE_BUDGET.inlineOutputBytes) : undefined;
+        const reviewEvidence =
+          editDiff && boundedEditDiff
+            ? {
+                source: 'edit_session' as const,
+                sessionId: editDiff.sessionId,
+                revision: editDiff.revision,
+                sha256: editDiff.sha256,
+                patchPreview: boundedEditDiff.text,
+                truncated: boundedEditDiff.truncated,
+                byteLength: boundedEditDiff.byteLength,
+                semanticReviewAuthority: 'chatgpt' as const,
+                next: boundedEditDiff.truncated
+                  ? 'The edit diff exceeds the inline budget. Expand only the affected ranges or diff needed for semantic review.'
+                  : 'Review this exact edit-session diff before deciding whether more edits or focused validation are needed.',
+              }
+            : undefined;
         const digest = buildSyncOperationDigest({
           ok,
           operation: 'repository_safe_patch_apply',
@@ -798,17 +877,19 @@ export async function callRepositoryTool(
               ? `补丁部分应用：${changedFiles.length} 个文件成功，存在失败 chunk。`
               : `补丁应用失败：${firstFailure?.message || '请检查 failures 摘要'}`,
           changedFiles,
-          errorClass: ok ? undefined : classifyUserFacingError({
-            code: firstFailure?.code,
-            message: firstFailure?.message,
-            infrastructure: firstFailure?.code === 'APPLY_FAILED',
-          }),
+          errorClass: ok
+            ? undefined
+            : classifyUserFacingError({
+                code: firstFailure?.code,
+                message: firstFailure?.message,
+                infrastructure: firstFailure?.code === 'APPLY_FAILED',
+              }),
           errorMessage: firstFailure?.message,
         });
         const payload = {
-  repoId: repository.repoId,
-  checkoutId: repository.activeCheckoutId,
-          ...applied as unknown as Record<string, unknown>,
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          ...(applied as unknown as Record<string, unknown>),
           phase: digest.phase,
           statusLabel: digest.statusLabel,
           summary: digest.summary,
@@ -821,8 +902,10 @@ export async function callRepositoryTool(
         return ok ? result(payload) : { ...result(payload), isError: true };
       }
       case 'execute_command': {
-        if (args.scope !== undefined && args.scope !== 'repository') throw new Error('COMMAND_SCOPE_INVALID: host scope uses the authorized host command lane');
-        if (args.shell_command !== undefined) throw new Error('COMMAND_SCOPE_INVALID: shell_command requires scope=host');
+        if (args.scope !== undefined && args.scope !== 'repository')
+          throw new Error('COMMAND_SCOPE_INVALID: host scope uses the authorized host command lane');
+        if (args.shell_command !== undefined)
+          throw new Error('COMMAND_SCOPE_INVALID: shell_command requires scope=host');
         if (args.command === undefined) throw new Error('COMMAND_REQUIRED: repository commands require command');
         if (args.dry_run === true) {
           const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
@@ -831,23 +914,28 @@ export async function callRepositoryTool(
             controllerHome,
             { scope: 'repository', repoId: commandExecutionScopeKey(commandTarget) },
             'mcp:execute_command:preview',
-            () => executeRepositoryCommand(controllerHome, commandTarget, {
-              command: args.command as string | string[],
-              cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
-              dryRun: true,
-              allowNonGitWorkspace: target.workspace !== undefined,
-            }),
+            () =>
+              executeRepositoryCommand(controllerHome, commandTarget, {
+                command: args.command as string | string[],
+                cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
+                dryRun: true,
+                allowNonGitWorkspace: target.workspace !== undefined,
+              }),
             60_000,
           );
-          const { repoId: _previewRepoId, checkoutId: _previewCheckoutId, ...workspacePreviewFields } = execution as unknown as Record<string, unknown>;
+          const {
+            repoId: _previewRepoId,
+            checkoutId: _previewCheckoutId,
+            ...workspacePreviewFields
+          } = execution as unknown as Record<string, unknown>;
           return result({
-            ...(commandTarget.repoId ? execution as unknown as Record<string, unknown> : workspacePreviewFields),
+            ...(commandTarget.repoId ? (execution as unknown as Record<string, unknown>) : workspacePreviewFields),
             ...(commandTarget.repoId ? {} : { scopeId: commandExecutionScopeKey(commandTarget) }),
             ...(target.workspace ? { workspace: target.workspace } : {}),
           });
         }
         let target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
-        let { repository, commandTarget, executionIdentity, historicalWorkContext } = target;
+        let { repository, commandTarget, executionIdentity } = target;
         // Repository targets keep their established identity fields. An arbitrary
         // workspace target reports a workspace scope id and never a repository id.
         const commandScopeKey = commandExecutionScopeKey(commandTarget);
@@ -856,44 +944,49 @@ export async function callRepositoryTool(
           : { scopeId: commandScopeKey };
         const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
         const mutationPaths = Array.isArray(args.mutation_paths)
-          ? args.mutation_paths.map(String).map((path) => path.trim()).filter(Boolean)
+          ? args.mutation_paths
+              .map(String)
+              .map((path) => path.trim())
+              .filter(Boolean)
           : undefined;
         if (args.mutation_paths !== undefined && (!mutationPaths || mutationPaths.length === 0)) {
-          throw new Error('COMMAND_MUTATION_PATHS_INVALID: mutation_paths must contain at least one repository-relative path');
+          throw new Error(
+            'COMMAND_MUTATION_PATHS_INVALID: mutation_paths must contain at least one repository-relative path',
+          );
         }
         // Work context is optional. Repository mutation safety is decided by
         // Git/Process/Lease and physical-checkout fences, never by an old
         // session repository/checkout focus.
-        const mutationClassification = classifyRepositoryCommand(args.command as string | string[], commandTarget.defaultBranch);
+        const mutationClassification = classifyRepositoryCommand(
+          args.command as string | string[],
+          commandTarget.defaultBranch,
+        );
         const hasDeclaredMutationScope = Boolean(mutationPaths?.length);
         // Git integration is a capability with its own repository, scope and
         // concurrency checks.  A Work's semantic completion and any optional
         // verification/review evidence never admit or deny this operation.
-        const timeoutMs = typeof args.timeout_ms === 'number'
-          ? args.timeout_ms
-          : typeof args.timeout_ms === 'string'
-            ? Number(args.timeout_ms)
-            : undefined;
-        const maxOutputBytes = typeof args.max_output_bytes === 'number'
-          ? args.max_output_bytes
-          : typeof args.max_output_bytes === 'string'
-            ? Number(args.max_output_bytes)
-            : undefined;
+        const timeoutMs =
+          typeof args.timeout_ms === 'number'
+            ? args.timeout_ms
+            : typeof args.timeout_ms === 'string'
+              ? Number(args.timeout_ms)
+              : undefined;
+        const maxOutputBytes =
+          typeof args.max_output_bytes === 'number'
+            ? args.max_output_bytes
+            : typeof args.max_output_bytes === 'string'
+              ? Number(args.max_output_bytes)
+              : undefined;
         // Worker-owned durable executions must not re-enter Fast Path or create a
         // nested ExecutionJob. Local Job remains the worker settlement surface.
-        const fromDurableWorker = args.__from_durable_worker === true
-          || typeof args.__execution_job_id === 'string';
+        const fromDurableWorker = args.__from_durable_worker === true || typeof args.__execution_job_id === 'string';
         // Process Runtime owns local async execution. apply_mode=async means
         // return its Process handle immediately; it must not promote a local
         // command into the retired ExecutionJob path. Explicit mode=durable
         // remains a separate external-Controller boundary.
-        const returnHandleImmediately = args.apply_mode === 'async'
-          || args.mode === 'async'
-          || args.async === true
-          || args.background === true;
-        const forceDurable = fromDurableWorker
-          || args.mode === 'durable'
-          || args.force_durable === true;
+        const returnHandleImmediately =
+          args.apply_mode === 'async' || args.mode === 'async' || args.async === true || args.background === true;
+        const forceDurable = fromDurableWorker || args.mode === 'durable' || args.force_durable === true;
         const routeClass = classifyRepositoryCommandRoute(args.command as string | string[], {
           forceDurable,
           defaultBranch: commandTarget.defaultBranch,
@@ -943,12 +1036,14 @@ export async function callRepositoryTool(
                 status: 'rejected',
                 ...scopeFields,
                 workspace: target.workspace,
-                message: routeClass.reason === 'standalone_recovery_lifecycle_required'
-                  ? 'Canonical Runtime and connector lifecycle operations must be submitted to the standalone Forge Recovery owner, not executed as a child of repository Process Runtime.'
-                  : 'Repository command execution was rejected by Process Runtime routing policy.',
-                suggestedOperation: routeClass.reason === 'standalone_recovery_lifecycle_required'
-                  ? 'Use the standalone Forge Recovery connector.'
-                  : routingDecision.suggestedOperation,
+                message:
+                  routeClass.reason === 'standalone_recovery_lifecycle_required'
+                    ? 'Canonical Runtime and connector lifecycle operations must be submitted to the standalone Forge Recovery owner, not executed as a child of repository Process Runtime.'
+                    : 'Repository command execution was rejected by Process Runtime routing policy.',
+                suggestedOperation:
+                  routeClass.reason === 'standalone_recovery_lifecycle_required'
+                    ? 'Use the standalone Forge Recovery connector.'
+                    : routingDecision.suggestedOperation,
                 durableSideEffects: {
                   executionJobCount: 0,
                   localJobCount: 0,
@@ -964,11 +1059,16 @@ export async function callRepositoryTool(
                 path: 'ephemeral_workspace_promotion_required',
                 ...scopeFields,
                 workspace: target.workspace,
-                message: 'Ephemeral workspaces must be registered before durable remote effects so Process identity and reconciliation have a stable repository authority.',
+                message:
+                  'Ephemeral workspaces must be registered before durable remote effects so Process identity and reconciliation have a stable repository authority.',
                 suggestedOperation: 'repository_register',
               });
             }
-            if (routeClass.route === 'process_direct' || routeClass.route === 'process_managed' || routeClass.route === 'durable') {
+            if (
+              routeClass.route === 'process_direct' ||
+              routeClass.route === 'process_managed' ||
+              routeClass.route === 'durable'
+            ) {
               const processResult = await executeRepositoryCommandViaProcessRuntime({
                 controllerHome,
                 repository: commandTarget,
@@ -978,7 +1078,9 @@ export async function callRepositoryTool(
                 timeoutMs,
                 interactiveWaitMs: returnHandleImmediately
                   ? 0
-                  : typeof args.interactive_wait_ms === 'number' ? args.interactive_wait_ms : undefined,
+                  : typeof args.interactive_wait_ms === 'number'
+                    ? args.interactive_wait_ms
+                    : undefined,
                 maxOutputBytes,
                 returnHandleImmediately,
                 requestId: processRequestId || undefined,
@@ -988,13 +1090,12 @@ export async function callRepositoryTool(
               });
               if (processResult.route === 'process_direct' || processResult.route === 'process_managed') {
                 const handle = processResult.process;
-                const detailLevel = args.detail_level === 'detail' || args.detail === true
-                  ? 'detail'
-                  : 'summary';
+                const detailLevel = args.detail_level === 'detail' || args.detail === true ? 'detail' : 'summary';
                 const directWithoutHandle = processResult.route === 'process_direct' && !handle;
-                const directNotExecuted = directWithoutHandle
-                  && processResult.executionStatus !== undefined
-                  && processResult.executionStatus !== 'executed';
+                const directNotExecuted =
+                  directWithoutHandle &&
+                  processResult.executionStatus !== undefined &&
+                  processResult.executionStatus !== 'executed';
                 if (directNotExecuted) {
                   const authorization = processResult.authorizationDecision ?? {
                     decision: 'deny' as const,
@@ -1011,19 +1112,28 @@ export async function callRepositoryTool(
                     policyDecision: processResult.policyDecision ?? 'approval_required',
                     authorization,
                     ...(processResult.approvalRequestId ? { approvalRequestId: processResult.approvalRequestId } : {}),
-                    message: authorization.decision === 'user_confirmation_required'
-                      ? authorization.humanSummary
-                      : authorization.reason,
+                    message:
+                      authorization.decision === 'user_confirmation_required'
+                        ? authorization.humanSummary
+                        : authorization.reason,
                     suggestedOperation: 'execute_command(dry_run=true)',
                   });
                 }
                 const completed = directWithoutHandle || handle?.completed === true;
                 const status = directWithoutHandle
-                  ? (processResult.ok === true ? 'succeeded' : 'failed')
+                  ? processResult.ok === true
+                    ? 'succeeded'
+                    : 'failed'
                   : !handle
                     ? 'rejected'
                     : completed
-                      ? (handle.cancelled ? 'cancelled' : handle.timedOut ? 'timed_out' : processResult.ok === true ? 'succeeded' : 'failed')
+                      ? handle.cancelled
+                        ? 'cancelled'
+                        : handle.timedOut
+                          ? 'timed_out'
+                          : processResult.ok === true
+                            ? 'succeeded'
+                            : 'failed'
                       : 'running';
                 const payload = compactProcessCommandPayload({
                   accepted: true,
@@ -1034,7 +1144,6 @@ export async function callRepositoryTool(
                   decision: detailLevel === 'detail' ? routingDecision : undefined,
                   ...scopeFields,
                   workspace: target.workspace,
-                  historicalWorkContext,
                   processId: handle?.processId,
                   process: detailLevel === 'detail' ? handle : undefined,
                   completed,
@@ -1062,13 +1171,15 @@ export async function callRepositoryTool(
                     : 'Repository command executed through Unified Process Runtime.',
                 };
                 if (directWithoutHandle && processResult.reason !== 'readonly_fast_path') {
-                  payload.authorization = processResult.authorizationDecision?.decision === 'allow'
-                    ? processResult.authorizationDecision
-                    : {
-                        decision: 'allow',
-                        source: 'ephemeral_workspace_direct',
-                        reason: 'Bounded ephemeral workspace command executed through the non-persistent direct path.',
-                      };
+                  payload.authorization =
+                    processResult.authorizationDecision?.decision === 'allow'
+                      ? processResult.authorizationDecision
+                      : {
+                          decision: 'allow',
+                          source: 'ephemeral_workspace_direct',
+                          reason:
+                            'Bounded ephemeral workspace command executed through the non-persistent direct path.',
+                        };
                 }
                 if (handle?.processId) {
                   payload.resultRef = { kind: 'process_logs', processId: handle.processId };
@@ -1096,7 +1207,8 @@ export async function callRepositoryTool(
             path: 'ephemeral_workspace_promotion_required',
             ...scopeFields,
             workspace: target.workspace,
-            message: 'Ephemeral workspaces support bounded local Direct/Managed execution only. Register the directory before durable, remote, release, or resumable Work.',
+            message:
+              'Ephemeral workspaces support bounded local Direct/Managed execution only. Register the directory before durable, remote, release, or resumable Work.',
             suggestedOperation: 'repository_register',
           });
         }
@@ -1161,14 +1273,20 @@ export async function callRepositoryTool(
           accepted: false,
           mode: 'durable',
           path: 'external_controller_required',
-          routing: compactRoutingSummary({ path: 'durable', mode: 'durable', reasons: [routingDecision.reasons.join(','), 'local_bridge_execution_retired'] }),
-          message: 'This command requires explicit external Controller handling; Local Bridge Jobs are retired for repository commands.',
+          routing: compactRoutingSummary({
+            path: 'durable',
+            mode: 'durable',
+            reasons: [routingDecision.reasons.join(','), 'local_bridge_execution_retired'],
+          }),
+          message:
+            'This command requires explicit external Controller handling; Local Bridge Jobs are retired for repository commands.',
           next: 'This execution boundary requires separate external authority; the model chooses an authorized domain capability or alternative command based on the task.',
           externalEffect: {
             outcome: 'not_started',
             ambiguousFailureOutcome: 'outcome_unknown',
             replayPolicy: 'never_auto_retry',
-            reconciliation: 'After an ambiguous dispatch failure, inspect the remote ref/registry/release state before deciding whether to retry.',
+            reconciliation:
+              'After an ambiguous dispatch failure, inspect the remote ref/registry/release state before deciding whether to retry.',
           },
         });
       }
@@ -1181,29 +1299,30 @@ export async function callRepositoryTool(
         });
         const steps = Array.isArray(args.steps)
           ? args.steps
-            .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
-            .map((entry) => ({
-              id: typeof entry.id === 'string' ? entry.id : undefined,
-              kind: String(entry.kind ?? '') as
-                | 'read_file'
-                | 'search'
-                | 'git_status'
-                | 'git_diff'
-                | 'apply_patch'
-                | 'run_short_command'
-                | 'run_focused_check'
-                | 'stage_paths'
-                | 'commit_paths',
-              input: (typeof entry.input === 'object' && entry.input !== null
-                ? entry.input
-                : {}) as Record<string, unknown>,
-            }))
+              .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+              .map((entry) => ({
+                id: typeof entry.id === 'string' ? entry.id : undefined,
+                kind: String(entry.kind ?? '') as
+                  | 'read_file'
+                  | 'search'
+                  | 'git_status'
+                  | 'git_diff'
+                  | 'apply_patch'
+                  | 'run_short_command'
+                  | 'run_focused_check'
+                  | 'stage_paths'
+                  | 'commit_paths',
+                input: (typeof entry.input === 'object' && entry.input !== null ? entry.input : {}) as Record<
+                  string,
+                  unknown
+                >,
+              }))
           : [];
         const batch = await executeRepositoryBatch(
           { controllerHome, repository },
           {
-    repoId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
+            repoId: repository.repoId,
+            checkoutId: repository.activeCheckoutId,
             mode: args.mode === 'fast' || args.mode === 'durable' || args.mode === 'auto' ? args.mode : 'auto',
             steps,
             stopOnError: args.stop_on_error !== false,
@@ -1227,31 +1346,37 @@ export async function callRepositoryTool(
         const lanes = await executeLightweightLanes(
           { controllerHome, repository },
           {
-    repoId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
+            repoId: repository.repoId,
+            checkoutId: repository.activeCheckoutId,
             readLanes: Array.isArray(args.read_lanes)
               ? args.read_lanes
-                .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
-                .map((entry) => ({
-                  id: typeof entry.id === 'string' ? entry.id : undefined,
-                  kind: String(entry.kind ?? 'search') as 'search' | 'read_file' | 'git_status' | 'git_diff' | 'run_short_command',
-                  input: (typeof entry.input === 'object' && entry.input !== null
-                    ? entry.input
-                    : {}) as Record<string, unknown>,
-                }))
+                  .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+                  .map((entry) => ({
+                    id: typeof entry.id === 'string' ? entry.id : undefined,
+                    kind: String(entry.kind ?? 'search') as
+                      | 'search'
+                      | 'read_file'
+                      | 'git_status'
+                      | 'git_diff'
+                      | 'run_short_command',
+                    input: (typeof entry.input === 'object' && entry.input !== null ? entry.input : {}) as Record<
+                      string,
+                      unknown
+                    >,
+                  }))
               : undefined,
             patchProposalLanes: Array.isArray(args.patch_proposal_lanes)
               ? args.patch_proposal_lanes
-                .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
-                .map((entry) => ({
-                  id: typeof entry.id === 'string' ? entry.id : undefined,
-                  readPaths: Array.isArray(entry.read_paths) ? entry.read_paths.map(String) : [],
-                  writePaths: Array.isArray(entry.write_paths) ? entry.write_paths.map(String) : [],
-                  proposedOperations: Array.isArray(entry.proposed_operations) ? entry.proposed_operations : [],
-                  assumptions: Array.isArray(entry.assumptions) ? entry.assumptions.map(String) : undefined,
-                  riskNotes: Array.isArray(entry.risk_notes) ? entry.risk_notes.map(String) : undefined,
-                  suggestedFocusedCheck: entry.suggested_focused_check as string | string[] | undefined,
-                }))
+                  .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+                  .map((entry) => ({
+                    id: typeof entry.id === 'string' ? entry.id : undefined,
+                    readPaths: Array.isArray(entry.read_paths) ? entry.read_paths.map(String) : [],
+                    writePaths: Array.isArray(entry.write_paths) ? entry.write_paths.map(String) : [],
+                    proposedOperations: Array.isArray(entry.proposed_operations) ? entry.proposed_operations : [],
+                    assumptions: Array.isArray(entry.assumptions) ? entry.assumptions.map(String) : undefined,
+                    riskNotes: Array.isArray(entry.risk_notes) ? entry.risk_notes.map(String) : undefined,
+                    suggestedFocusedCheck: entry.suggested_focused_check as string | string[] | undefined,
+                  }))
               : undefined,
             failFast: args.fail_fast === true,
             maxConcurrency: typeof args.max_concurrency === 'number' ? args.max_concurrency : undefined,
@@ -1270,33 +1395,30 @@ export async function callRepositoryTool(
         });
         const proposals = Array.isArray(args.proposals)
           ? args.proposals
-            .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
-            .map((entry) => ({
-              id: String(entry.id ?? 'proposal'),
-              ok: entry.ok !== false,
-              durationMs: 0,
-              readPaths: Array.isArray(entry.read_paths) ? entry.read_paths.map(String) : [],
-              writePaths: Array.isArray(entry.write_paths) ? entry.write_paths.map(String) : [],
-              proposedOperations: Array.isArray(entry.proposed_operations) ? entry.proposed_operations : [],
-              analysisOnly: entry.analysis_only === true,
-              proposalId: typeof entry.proposal_id === 'string'
-                ? entry.proposal_id
-                : typeof entry.proposalId === 'string'
-                  ? entry.proposalId
-                  : undefined,
-            }))
+              .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+              .map((entry) => ({
+                id: String(entry.id ?? 'proposal'),
+                ok: entry.ok !== false,
+                durationMs: 0,
+                readPaths: Array.isArray(entry.read_paths) ? entry.read_paths.map(String) : [],
+                writePaths: Array.isArray(entry.write_paths) ? entry.write_paths.map(String) : [],
+                proposedOperations: Array.isArray(entry.proposed_operations) ? entry.proposed_operations : [],
+                analysisOnly: entry.analysis_only === true,
+                proposalId:
+                  typeof entry.proposal_id === 'string'
+                    ? entry.proposal_id
+                    : typeof entry.proposalId === 'string'
+                      ? entry.proposalId
+                      : undefined,
+              }))
           : [];
-        const integrated = await integratePatchProposals(
-          { controllerHome, repository },
-          proposals,
-          {
-            sessionId: typeof args.session_id === 'string' ? args.session_id : undefined,
-            allowedPaths: Array.isArray(args.allowed_paths) ? args.allowed_paths.map(String) : undefined,
-            purpose: typeof args.purpose === 'string' ? args.purpose : undefined,
-            requestId: typeof args.request_id === 'string' ? args.request_id.trim() || undefined : undefined,
-            continueOnError: args.continue_on_error === true,
-          },
-        );
+        const integrated = await integratePatchProposals({ controllerHome, repository }, proposals, {
+          sessionId: typeof args.session_id === 'string' ? args.session_id : undefined,
+          allowedPaths: Array.isArray(args.allowed_paths) ? args.allowed_paths.map(String) : undefined,
+          purpose: typeof args.purpose === 'string' ? args.purpose : undefined,
+          requestId: typeof args.request_id === 'string' ? args.request_id.trim() || undefined : undefined,
+          continueOnError: args.continue_on_error === true,
+        });
         const payload = integrated as unknown as Record<string, unknown>;
         return integrated.ok ? result(payload) : { ...result(payload), isError: true };
       }

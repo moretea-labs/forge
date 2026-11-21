@@ -13,33 +13,20 @@ export interface EvidenceRef {
   summary?: string;
   detailLevel?: FacadeDetailLevel;
 }
-export interface WorkExecutionConcurrencyProjection {
-  schemaVersion: 1;
-  /** Projection only. Concrete Process/resource owners remain execution authority. */
-  status: 'waiting' | 'invalid';
-  source: 'work_compatibility' | 'resource_lease' | 'scheduler_capacity';
-  attemptId?: string;
-  blockerCode: string;
-  blockingWorkId?: string;
-  semanticScopeKeys: string[];
-  resourceKeys: string[];
-  /** Node-local resource authority scope used only to re-evaluate the wake condition. */
-  leaseRepoId?: string;
-  resourceIntents: Array<{ resourceKey: string; mode: 'read' | 'write' | 'exclusive' }>;
-  wakeTrigger:
-    | { kind: 'work_terminal'; workId: string }
-    | { kind: 'resource_release'; resourceKeys: string[] }
-    | { kind: 'scheduler_capacity'; capacityKey: string }
-    | { kind: 'work_contract_change'; workId: string };
-  recordedAt: string;
-}
-
 export interface SuggestedNextAction {
   label: string;
   tool: 'rh_access' | 'rh_status' | 'rh_inbox' | 'rh_context' | 'rh_work' | 'capability_execute';
   operation: string;
   payload?: Record<string, unknown>;
-  risk: 'readonly' | 'local_repo_write' | 'workspace_write' | 'remote_write' | 'destructive_remote' | 'destructive' | 'raw_secret_config' | 'unknown';
+  risk:
+    | 'readonly'
+    | 'local_repo_write'
+    | 'workspace_write'
+    | 'remote_write'
+    | 'destructive_remote'
+    | 'destructive'
+    | 'raw_secret_config'
+    | 'unknown';
   confidence?: 'low' | 'medium' | 'high';
   reason?: string;
   fallback?: string;
@@ -104,10 +91,7 @@ export type WorkPhaseEvidenceMap = Record<WorkPhase, WorkPhaseEvidence>;
 export const WORK_RISKS = ['readonly', 'low', 'medium', 'high', 'destructive'] as const;
 export type WorkRisk = (typeof WORK_RISKS)[number];
 
-export const TERMINAL_SEMANTIC_WORK_STATES: readonly SemanticWorkState[] = [
-  'completed',
-  'cancelled',
-] as const;
+export const TERMINAL_SEMANTIC_WORK_STATES: readonly SemanticWorkState[] = ['completed', 'cancelled'] as const;
 
 /** Independent execution/evidence classifications; none are Work lifecycle state. */
 export const WORK_KINDS = [
@@ -128,7 +112,13 @@ export type DispatchState = (typeof DISPATCH_STATES)[number];
 export const EVIDENCE_STATES = ['none', 'partial', 'valid', 'stale', 'contradictory', 'failed'] as const;
 export type EvidenceState = (typeof EVIDENCE_STATES)[number];
 
-export const COMPLETION_OUTCOMES = ['completed_changed', 'completed_no_change', 'completed_local', 'completed_remote', 'superseded'] as const;
+export const COMPLETION_OUTCOMES = [
+  'completed_changed',
+  'completed_no_change',
+  'completed_local',
+  'completed_remote',
+  'superseded',
+] as const;
 export type CompletionOutcome = (typeof COMPLETION_OUTCOMES)[number];
 
 /** Source-bound semantic evidence accumulated by a recoverable read-only review. */
@@ -232,15 +222,20 @@ export interface DirectEditWorkCompletionReceipt {
   recordedAt: string;
 }
 
-export type WorkCompletionReceipt = RepositoryCompletionReceipt | DirectEditWorkCompletionReceipt | ReadOnlyReviewCompletionReceipt | LocalEffectCompletionReceipt | RemoteEffectCompletionReceipt;
+export type WorkCompletionReceipt =
+  | RepositoryCompletionReceipt
+  | DirectEditWorkCompletionReceipt
+  | ReadOnlyReviewCompletionReceipt
+  | LocalEffectCompletionReceipt
+  | RemoteEffectCompletionReceipt;
 
-export function isRepositoryCompletionReceipt(
-  receipt: WorkCompletionReceipt,
-): receipt is RepositoryCompletionReceipt {
-  return receipt.source !== 'local_effect'
-    && receipt.source !== 'remote_effect'
-    && receipt.source !== 'direct_edit_work'
-    && receipt.source !== 'read_only_review';
+export function isRepositoryCompletionReceipt(receipt: WorkCompletionReceipt): receipt is RepositoryCompletionReceipt {
+  return (
+    receipt.source !== 'local_effect' &&
+    receipt.source !== 'remote_effect' &&
+    receipt.source !== 'direct_edit_work' &&
+    receipt.source !== 'read_only_review'
+  );
 }
 
 export function isReadOnlyReviewCompletionReceipt(
@@ -403,8 +398,6 @@ export interface WorkContract {
   risk: WorkRisk;
   /** Versioned engineering-governance requirements and exact source-bound evidence state for this Work. */
   engineeringContext?: EngineeringContextReceipt;
-  /** Actionable concurrency wait projection. Absence means no currently known semantic/resource blocker. */
-  executionConcurrency?: WorkExecutionConcurrencyProjection;
   /** Repository-execution phase observation. Never semantic Work authority. */
   phase: WorkPhase;
   /** Mechanical phase evidence for execution/delivery observation only. */

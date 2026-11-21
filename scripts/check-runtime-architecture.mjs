@@ -1222,6 +1222,16 @@ requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts
 requireMissing('src/runtime/control-plane/execution/work-revision-diff.ts');
 requireMissing('src/runtime/control-plane/execution/work-lifecycle-audit.ts');
 forbid(
+  'src/runtime/control-plane/facade/repository-tool-dispatch.ts',
+  /historicalReadOnlyWorkContext|historicalWorkContext/,
+  'repository command execution must never query or emit historical Work context',
+);
+forbid(
+  'packages/kernel/work/domain/types.ts',
+  /WorkExecutionConcurrencyProjection|executionConcurrency/,
+  'retired Work concurrency admission projection must not be part of active domain types',
+);
+forbid(
   'src/runtime/control-plane/execution/work-handle-store.ts',
   /readOrImportControlPlaneRecord|\b(?:writeControlPlaneRecord|mutateControlPlaneRecord)\s*\(/,
   'legacy WorkHandle readers must never import or mutate persisted historical records',
