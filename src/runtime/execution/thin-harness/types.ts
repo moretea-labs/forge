@@ -1,17 +1,22 @@
 /**
  * Thin Harness V1 — shared types for Fast Path routing, receipts, batch, and lanes.
- * Durable Work (ExecutionJob / Scheduler / Worker) remains the escalation path.
+ * Prefer Direct Edit / repository_safe_patch_apply / execute_command on the current checkout.
+ * Durable ExecutionJob / Scheduler / Worker is last-resort escalation when Fast Path policy rejects,
+ * not the default coding or progress path (Work lifecycle remains retired).
  */
 
 export type ExecutionMode = 'fast' | 'durable' | 'reject';
-export type ExecutionRisk =
-  | 'readonly'
-  | 'workspace_write'
-  | 'remote_write'
-  | 'destructive'
-  | 'unknown';
+export type ExecutionRisk = 'readonly' | 'workspace_write' | 'remote_write' | 'destructive' | 'unknown';
 export type EstimatedClass = 'short' | 'long' | 'unknown';
-export type FastOutcome = 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'escalated' | 'rejected' | 'busy' | 'unknown';
+export type FastOutcome =
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'timed_out'
+  | 'escalated'
+  | 'rejected'
+  | 'busy'
+  | 'unknown';
 export type ReceiptMode = 'none' | 'standalone';
 
 export type FastOperationKind =

@@ -14,7 +14,14 @@ import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/co
 import { createMcpToolContext } from '../../adapters/mcp/server';
 import { callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/effects/controller-home';
-import { addRepositoryCheckout, getRepository, refreshRepositoryCheckoutGitMetadata, registerRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../src/runtime/repositories/registry';
+import {
+  addRepositoryCheckout,
+  getRepository,
+  refreshRepositoryCheckoutGitMetadata,
+  registerRepository,
+  selectRepositoryCheckout,
+  setRepositoryCheckoutLifecycle,
+} from '../../src/runtime/repositories/registry';
 import { repositoryGitStatus } from '../../src/runtime/repositories/structured-git';
 import { commitSelectedPaths } from '../../src/runtime/repositories/selected-path-actions';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/runtime/repositories/runtime-storage';
@@ -26,7 +33,10 @@ import { callExecutionTool } from '../../adapters/mcp/runtime-gateway/execution-
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { callProcessTool } from '../../src/runtime/execution/process-runtime/tool-dispatch';
 import { classifyRepositoryCommand } from '../../src/cli/repositories/command-classifier';
-import { classifyRepositoryCommandRoute, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
+import {
+  classifyRepositoryCommandRoute,
+  waitRepositoryCommandProcess,
+} from '../../src/runtime/execution/process-runtime/command-facade';
 import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/thin-harness';
 import { getProcessRecord, listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { getProcessHandle, waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
@@ -34,7 +44,11 @@ import { readControlPlaneRecord } from '../../src/runtime/control-plane/persiste
 import { runPersistedCheckViaProcessRuntime } from '../../src/runtime/execution/process-runtime/persisted-check';
 import { readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
 import { resolveRepositoryCheckStorage } from '../../src/runtime/execution/process-runtime/check-storage';
-import { appendControllerWorklogEvent, listControllerWorklogEvents, resolveControllerWorklogStorage } from '../../src/runtime/evidence/controller-worklog';
+import {
+  appendControllerWorklogEvent,
+  listControllerWorklogEvents,
+  resolveControllerWorklogStorage,
+} from '../../src/runtime/evidence/controller-worklog';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
 import { MCP_SERVER_INSTRUCTIONS } from '../../adapters/mcp/instructions';
@@ -56,10 +70,18 @@ import { getWorkContract } from '../../packages/kernel/work/api';
 import { snapshotControllerCheck } from '../../src/runtime/execution/process-runtime/check-runner';
 import { readWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { principalFor } from '../../src/runtime/control-plane/execution/session-execution-support';
-import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
+import {
+  verificationInputFingerprint,
+  workspaceValidationFingerprint,
+} from '../../src/runtime/control-plane/execution/verification-evidence';
 import { resolveAuthorizationRequest } from '../../src/runtime/control-plane/governance/authorization';
 
-import { startExecutionSession, updateExecutionSession, readExecutionSession, type ExecutionSessionContext } from '../../src/runtime/control-plane/execution/session-store';
+import {
+  startExecutionSession,
+  updateExecutionSession,
+  readExecutionSession,
+  type ExecutionSessionContext,
+} from '../../src/runtime/control-plane/execution/session-store';
 import { listActiveLeases } from '../../src/runtime/resources/leases/store';
 import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
@@ -85,21 +107,28 @@ function fixture() {
   git(repoRoot, ['config', 'user.email', 'test@example.com']);
   writeFileSync(join(repoRoot, 'README.md'), 'gateway routing fixture\n');
   writeFileSync(join(repoRoot, 'src', 'lib.ts'), 'export const n = 1;\n');
-  writeFileSync(join(repoRoot, '.forge', 'checks.json'), JSON.stringify({
-    version: 1,
-    checks: {
-      slow: {
-        description: 'slow managed check',
-        command: [process.execPath, '-e', 'setTimeout(() => { console.log("slow-ok"); process.exit(0); }, 1200)'],
-        timeoutMs: 10_000,
+  writeFileSync(
+    join(repoRoot, '.forge', 'checks.json'),
+    JSON.stringify(
+      {
+        version: 1,
+        checks: {
+          slow: {
+            description: 'slow managed check',
+            command: [process.execPath, '-e', 'setTimeout(() => { console.log("slow-ok"); process.exit(0); }, 1200)'],
+            timeoutMs: 10_000,
+          },
+          'type-focused': {
+            description: 'fast TypeScript focused check',
+            command: [process.execPath, '-e', 'process.exit(0)'],
+            timeoutMs: 10_000,
+          },
+        },
       },
-      'type-focused': {
-        description: 'fast TypeScript focused check',
-        command: [process.execPath, '-e', 'process.exit(0)'],
-        timeoutMs: 10_000,
-      },
-    },
-  }, null, 2));
+      null,
+      2,
+    ),
+  );
   git(repoRoot, ['add', '.']);
   git(repoRoot, ['commit', '-m', 'init']);
   git(repoRoot, ['remote', 'add', 'origin', originRoot]);
@@ -126,41 +155,49 @@ describe('Runtime AgentJob read model', () => {
     mkdirSync(jobRoot, { recursive: true });
     mkdirSync(indexRoot, { recursive: true });
 
-    writeFileSync(join(indexRoot, 'active.json'), JSON.stringify({
-      schemaVersion: 1,
-      updatedAt: '2026-11-12T00:00:00.000Z',
-      runs: [{
+    writeFileSync(
+      join(indexRoot, 'active.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        updatedAt: '2026-11-12T00:00:00.000Z',
+        runs: [
+          {
+            runId,
+            issueId: 'ISSUE-1',
+            taskId: 'TASK-1',
+            status: 'running',
+            createdAt: '2026-11-12T00:00:00.000Z',
+            updatedAt: '2026-11-12T00:01:00.000Z',
+            executionMode: 'worktree',
+          },
+        ],
+      }),
+    );
+    writeFileSync(
+      join(jobRoot, 'meta.json'),
+      JSON.stringify({
+        schemaVersion: 1,
         runId,
         issueId: 'ISSUE-1',
         taskId: 'TASK-1',
+        agent: 'codex',
         status: 'running',
+        repoRoot: fx.repoRoot,
+        worktree: join(fx.repoRoot, '.ai', 'harness', 'worktrees', runId),
+        promptPath: '',
+        stdoutPath: '',
+        stderrPath: '',
+        resultPath: '',
         createdAt: '2026-11-12T00:00:00.000Z',
-        updatedAt: '2026-11-12T00:01:00.000Z',
-        executionMode: 'worktree',
-      }],
-    }));
-    writeFileSync(join(jobRoot, 'meta.json'), JSON.stringify({
-      schemaVersion: 1,
-      runId,
-      issueId: 'ISSUE-1',
-      taskId: 'TASK-1',
-      agent: 'codex',
-      status: 'running',
-      repoRoot: fx.repoRoot,
-      worktree: join(fx.repoRoot, '.ai', 'harness', 'worktrees', runId),
-      promptPath: '',
-      stdoutPath: '',
-      stderrPath: '',
-      resultPath: '',
-      createdAt: '2026-11-12T00:00:00.000Z',
-      lastHeartbeatAt: '2026-11-12T00:01:00.000Z',
-      progress: {
-        phase: 'editing',
-        currentActivity: 'Editing source',
-        lastActivityAt: '2026-11-12T00:01:00.000Z',
-        activityCount: 1,
-      },
-    }));
+        lastHeartbeatAt: '2026-11-12T00:01:00.000Z',
+        progress: {
+          phase: 'editing',
+          currentActivity: 'Editing source',
+          lastActivityAt: '2026-11-12T00:01:00.000Z',
+          activityCount: 1,
+        },
+      }),
+    );
 
     const activeIndexPath = join(indexRoot, 'active.json');
     const metaPath = join(jobRoot, 'meta.json');
@@ -185,7 +222,6 @@ describe('Runtime AgentJob read model', () => {
     });
   });
 });
-
 
 beforeEach(() => {
   // no-op; fixtures cleaned in afterEach
@@ -225,11 +261,13 @@ describe('repository.direct_edit capability', () => {
       request_id: 'direct-edit-capability-apply',
       arguments: {
         purpose: 'Exercise the canonical direct-edit capability route.',
-        operations: [{
-          type: 'replace',
-          path: 'src/lib.ts',
-          replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 2;' }],
-        }],
+        operations: [
+          {
+            type: 'replace',
+            path: 'src/lib.ts',
+            replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 2;' }],
+          },
+        ],
       },
     });
 
@@ -277,54 +315,86 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
   });
 
   test('ordinary safe patch is Work-free despite a historical active execution session', async () => {
-    const fx = fixture(); roots.push(fx.root);
-    const caller = { sessionId: 'historic-session', principalId: 'historic-principal', controllerInstanceId: 'historic-instance' };
+    const fx = fixture();
+    roots.push(fx.root);
+    const caller = {
+      sessionId: 'historic-session',
+      principalId: 'historic-principal',
+      controllerInstanceId: 'historic-instance',
+    };
     startExecutionSession(fx.controllerHome, caller);
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     const historical = seedHistoricalWorkContract(store, {
-      workId: 'work-session-context-not-mutation-owner', repoId: fx.repository.repoId,
+      workId: 'work-session-context-not-mutation-owner',
+      repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
-      workKind: 'investigation', objective: 'Historical optional semantic context.',
-      acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
-      constraints: {}, requestedBy: 'chatgpt',
+      workKind: 'investigation',
+      objective: 'Historical optional semantic context.',
+      acceptanceCriteria: [],
+      allowedPaths: ['**'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: {},
+      requestedBy: 'chatgpt',
     });
     updateExecutionSession(fx.controllerHome, caller, {
       activeRepositoryId: fx.repository.repoId,
       activeCheckoutId: fx.repository.activeCheckoutId,
     });
 
-    const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
-      repo_id: fx.repository.repoId,
-      purpose: 'Requirement-first edit unrelated to a historical Work',
-      operations: [{
-        type: 'replace', path: 'src/lib.ts',
-        replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 3;' }],
-      }],
-    }, caller);
+    const response = await callRepositoryTool(
+      fx.controllerHome,
+      'repository_safe_patch_apply',
+      {
+        repo_id: fx.repository.repoId,
+        purpose: 'Requirement-first edit unrelated to a historical Work',
+        operations: [
+          {
+            type: 'replace',
+            path: 'src/lib.ts',
+            replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 3;' }],
+          },
+        ],
+      },
+      caller,
+    );
     expect(response?.isError).not.toBe(true);
     const payload = response?.structuredContent as { status?: string; session?: { workId?: string } };
     expect(payload.status).toBe('applied');
     expect(payload.session?.workId).toBeUndefined();
     expect(readFileSync(join(fx.repoRoot, 'src/lib.ts'), 'utf8')).toBe('export const n = 3;\n');
     const beforeHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
-    const committed = await callRepositoryTool(fx.controllerHome, 'repository_git_commit', {
-      repo_id: fx.repository.repoId,
-      message: 'test: commit without Work ownership',
-      paths: ['src/lib.ts'],
-    }, caller);
+    const committed = await callRepositoryTool(
+      fx.controllerHome,
+      'repository_git_commit',
+      {
+        repo_id: fx.repository.repoId,
+        message: 'test: commit without Work ownership',
+        paths: ['src/lib.ts'],
+      },
+      caller,
+    );
     expect(committed?.isError).not.toBe(true);
     expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).not.toBe(beforeHead);
     expect(git(fx.repoRoot, ['status', '--porcelain', '--', 'src/lib.ts'])).toBe('');
-    const launched = await callRepositoryTool(fx.controllerHome, 'execute_command', {
-      repo_id: fx.repository.repoId,
-      command: ['touch', 'unattributed-command.txt'],
-      apply_mode: 'async', request_id: 'session-unattributed-command-write',
-      timeout_ms: 10_000,
-    }, caller);
+    const launched = await callRepositoryTool(
+      fx.controllerHome,
+      'execute_command',
+      {
+        repo_id: fx.repository.repoId,
+        command: ['touch', 'unattributed-command.txt'],
+        apply_mode: 'async',
+        request_id: 'session-unattributed-command-write',
+        timeout_ms: 10_000,
+      },
+      caller,
+    );
     expect(launched?.isError).not.toBe(true);
-    const processId = String((launched?.structuredContent as { processId?: string }).processId ?? '');
+    const processId = String(((launched?.structuredContent ?? {}) as { processId?: string }).processId ?? '');
     expect(processId).toBeTruthy();
-    const settled = await waitRepositoryCommandProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 10_000 });
+    const settled = await waitRepositoryCommandProcess(fx.controllerHome, fx.repository.repoId, processId, {
+      timeoutMs: 10_000,
+    });
     expect(settled).toMatchObject({ completed: true, ok: true });
     expect(existsSync(join(fx.repoRoot, 'unattributed-command.txt'))).toBe(true);
     expect(readExecutionSession(fx.controllerHome, caller)).not.toHaveProperty('activeWorkId');
@@ -332,34 +402,62 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
   });
 
   test('historical Work session does not block Workbench read/search or ordinary focused checks', async () => {
-    const fx = fixture(); roots.push(fx.root);
-    const caller = { sessionId: 'check-session', principalId: 'check-principal', controllerInstanceId: 'check-instance' };
+    const fx = fixture();
+    roots.push(fx.root);
+    const caller = {
+      sessionId: 'check-session',
+      principalId: 'check-principal',
+      controllerInstanceId: 'check-instance',
+    };
     startExecutionSession(fx.controllerHome, caller);
-    const historical = seedHistoricalWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
-      workId: 'work-old-check-carrier', repoId: fx.repository.repoId,
-      checkoutId: fx.repository.activeCheckoutId, objective: 'Unrelated historical work',
-      workKind: 'investigation', acceptanceCriteria: [], allowedPaths: [],
-      forbiddenPaths: [], checks: [], constraints: {}, requestedBy: 'chatgpt',
-    });
+    const historical = seedHistoricalWorkContract(
+      { controllerHome: fx.controllerHome, repoId: fx.repository.repoId },
+      {
+        workId: 'work-old-check-carrier',
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        objective: 'Unrelated historical work',
+        workKind: 'investigation',
+        acceptanceCriteria: [],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: {},
+        requestedBy: 'chatgpt',
+      },
+    );
     updateExecutionSession(fx.controllerHome, caller, {
       activeRepositoryId: fx.repository.repoId,
       activeCheckoutId: fx.repository.activeCheckoutId,
     });
-    const workbench = await callRepositoryTool(fx.controllerHome, 'repository_workbench', {
-      repo_id: fx.repository.repoId,
-      operation: 'batch_execute',
-      payload: { steps: [
-        { kind: 'git_status', input: {} },
-        { kind: 'search', input: { query: 'export' } },
-        { kind: 'read_file', input: { path: 'src/lib.ts' } },
-      ] },
-    }, caller);
+    const workbench = await callRepositoryTool(
+      fx.controllerHome,
+      'repository_workbench',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'batch_execute',
+        payload: {
+          steps: [
+            { kind: 'git_status', input: {} },
+            { kind: 'search', input: { query: 'export' } },
+            { kind: 'read_file', input: { path: 'src/lib.ts' } },
+          ],
+        },
+      },
+      caller,
+    );
     expect(workbench?.isError).not.toBe(true);
     expect(workbench?.structuredContent).toMatchObject({ ok: true, mode: 'fast' });
-    const check = await executeGatewayRoutedOperation(fx.ctx, 'run_check', {
-      repo_id: fx.repository.repoId, check_id: 'type-focused',
-      request_id: 'work-free-focused-check',
-    }, { path: 'fast', reasons: ['run_check_process_runtime'] });
+    const check = await executeGatewayRoutedOperation(
+      fx.ctx,
+      'run_check',
+      {
+        repo_id: fx.repository.repoId,
+        check_id: 'type-focused',
+        request_id: 'work-free-focused-check',
+      },
+      { path: 'fast', reasons: ['run_check_process_runtime'] },
+    );
     expect(check?.isError).not.toBe(true);
     expect(check?.structuredContent).toMatchObject({ accepted: true });
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, historical.workId)).toBeUndefined();
@@ -367,35 +465,41 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(git(fx.repoRoot, ['status', '--porcelain', '--', 'src/lib.ts'])).toBe('');
   });
 
-
   test('selected-path commit rejects a stale checkout HEAD before staging', () => {
-    const fx = fixture(); roots.push(fx.root);
+    const fx = fixture();
+    roots.push(fx.root);
     writeFileSync(join(fx.repoRoot, 'selected.txt'), 'selected content\n');
-    expect(() => commitSelectedPaths(fx.controllerHome, fx.repository, {
-      paths: ['selected.txt'],
-      message: 'must not stage after checkout drift',
-      beforeStageGuard: () => {
-        writeFileSync(join(fx.repoRoot, 'concurrent.txt'), 'concurrent content\n');
-        git(fx.repoRoot, ['add', 'concurrent.txt']);
-        git(fx.repoRoot, ['commit', '-m', 'concurrent HEAD advance']);
-      },
-    })).toThrow('SELECTED_PATH_COMMIT_HEAD_CHANGED');
+    expect(() =>
+      commitSelectedPaths(fx.controllerHome, fx.repository, {
+        paths: ['selected.txt'],
+        message: 'must not stage after checkout drift',
+        beforeStageGuard: () => {
+          writeFileSync(join(fx.repoRoot, 'concurrent.txt'), 'concurrent content\n');
+          git(fx.repoRoot, ['add', 'concurrent.txt']);
+          git(fx.repoRoot, ['commit', '-m', 'concurrent HEAD advance']);
+        },
+      }),
+    ).toThrow('SELECTED_PATH_COMMIT_HEAD_CHANGED');
     expect(git(fx.repoRoot, ['diff', '--cached', '--name-only'])).toBe('');
     expect(git(fx.repoRoot, ['status', '--porcelain', '--', 'selected.txt'])).toContain('?? selected.txt');
   });
 
   test('routes bounded runtime maintenance writes directly but preserves explicit async durable routing', () => {
-    expect(classifyGatewayExecutionPath('runtime_maintenance_apply', {
-      action_id: 'full_maintenance_pass',
-      confirm_maintenance: true,
-      authorization: 'full_maintenance_pass',
-    })).toMatchObject({ path: 'direct', reasons: ['bounded_direct_control_write'] });
-    expect(classifyGatewayExecutionPath('runtime_maintenance_apply', {
-      action_id: 'full_maintenance_pass',
-      confirm_maintenance: true,
-      authorization: 'full_maintenance_pass',
-      apply_mode: 'async',
-    }).path).toBe('durable');
+    expect(
+      classifyGatewayExecutionPath('runtime_maintenance_apply', {
+        action_id: 'full_maintenance_pass',
+        confirm_maintenance: true,
+        authorization: 'full_maintenance_pass',
+      }),
+    ).toMatchObject({ path: 'direct', reasons: ['bounded_direct_control_write'] });
+    expect(
+      classifyGatewayExecutionPath('runtime_maintenance_apply', {
+        action_id: 'full_maintenance_pass',
+        confirm_maintenance: true,
+        authorization: 'full_maintenance_pass',
+        apply_mode: 'async',
+      }).path,
+    ).toBe('durable');
   });
 
   test('Process Runtime async stays local while explicit durable / release work remains durable', () => {
@@ -414,54 +518,83 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
   });
 
   test('registered async workspace writer is idempotent under one managed Process resource lease', async () => {
-    const fx = fixture(); roots.push(fx.root);
+    const fx = fixture();
+    roots.push(fx.root);
     const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
     const localBefore = listLocalBridgeJobSnapshots(fx.repoRoot).length;
     const processesBefore = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
-    writeFileSync(join(fx.repoRoot, 'async-fixture.mjs'), 'setTimeout(() => { console.log("async-ok"); process.exit(0); }, 250);\n');
-    const args = { repo_id: fx.repository.repoId, command: [process.execPath, 'async-fixture.mjs'], apply_mode: 'async', timeout_ms: 5_000, request_id: 'registered-async-process' } as const;
+    writeFileSync(
+      join(fx.repoRoot, 'async-fixture.mjs'),
+      'setTimeout(() => { console.log("async-ok"); process.exit(0); }, 250);\n',
+    );
+    const args = {
+      repo_id: fx.repository.repoId,
+      command: [process.execPath, 'async-fixture.mjs'],
+      apply_mode: 'async',
+      timeout_ms: 5_000,
+      request_id: 'registered-async-process',
+    } as const;
     const first = await callRepositoryTool(fx.controllerHome, 'execute_command', args);
     const firstPayload = first?.structuredContent as Record<string, unknown>;
-    expect(first?.isError).not.toBe(true); expect(firstPayload.path).toBe('process_managed'); expect(firstPayload.status).toBe('running');
-    const processId = String(firstPayload.processId ?? ''); expect(processId).toBeTruthy();
-    const sideEffects = firstPayload.durableSideEffects as { executionJobCount?: number; localJobCount?: number; workerSpawnCount?: number } | undefined;
-    expect([sideEffects?.executionJobCount ?? 0, sideEffects?.localJobCount ?? 0, sideEffects?.workerSpawnCount ?? 0]).toEqual([0, 0, 0]);
+    expect(first?.isError).not.toBe(true);
+    expect(firstPayload.path).toBe('process_managed');
+    expect(firstPayload.status).toBe('running');
+    const processId = String(firstPayload.processId ?? '');
+    expect(processId).toBeTruthy();
+    const sideEffects = firstPayload.durableSideEffects as
+      | { executionJobCount?: number; localJobCount?: number; workerSpawnCount?: number }
+      | undefined;
+    expect([
+      sideEffects?.executionJobCount ?? 0,
+      sideEffects?.localJobCount ?? 0,
+      sideEffects?.workerSpawnCount ?? 0,
+    ]).toEqual([0, 0, 0]);
     const retry = await callRepositoryTool(fx.controllerHome, 'execute_command', args);
-    expect(retry?.isError).not.toBe(true); expect(String((retry?.structuredContent as Record<string, unknown>).processId ?? '')).toBe(processId);
+    expect(retry?.isError).not.toBe(true);
+    expect(String(((retry?.structuredContent ?? {}) as Record<string, unknown>).processId ?? '')).toBe(processId);
     expect(processId).not.toStartWith('lightweight:');
     expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBeGreaterThan(processesBefore);
-    const terminal = await waitRepositoryCommandProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 10_000 });
-    expect(terminal).toMatchObject({ completed: true, ok: true }); expect(terminal.stdout).toContain('async-ok');
-    expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore); expect(listLocalBridgeJobSnapshots(fx.repoRoot).length).toBe(localBefore);
+    const terminal = await waitRepositoryCommandProcess(fx.controllerHome, fx.repository.repoId, processId, {
+      timeoutMs: 10_000,
+    });
+    expect(terminal).toMatchObject({ completed: true, ok: true });
+    expect(terminal.stdout).toContain('async-ok');
+    expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
+    expect(listLocalBridgeJobSnapshots(fx.repoRoot).length).toBe(localBefore);
   });
 
   test('reattaches the same durable Process from a replacement MCP tool context without re-execution', async () => {
-    const fx = fixture(); roots.push(fx.root);
+    const fx = fixture();
+    roots.push(fx.root);
     const startedPath = join(fx.root, 'mcp-process-started');
     const releasePath = join(fx.root, 'mcp-process-release');
     const invocationsPath = join(fx.root, 'mcp-process-invocations');
-    writeFileSync(join(fx.repoRoot, 'mcp-session-process.mjs'), [
-      "import { appendFileSync, existsSync, writeFileSync } from 'node:fs';",
-      `appendFileSync(${JSON.stringify(invocationsPath)}, 'x');`,
-      `writeFileSync(${JSON.stringify(startedPath)}, 'x');`,
-      `const releasePath = ${JSON.stringify(releasePath)};`,
-      'const deadline = Date.now() + 5_000;',
-      'const finish = () => {',
-      "  if (existsSync(releasePath)) { console.log('session-replacement-ok'); process.exit(0); }",
-      "  if (Date.now() >= deadline) { console.error('release marker was not written'); process.exit(70); }",
-      '  setTimeout(finish, 10);',
-      '};',
-      'finish();',
-    ].join('\n') + '\n');
+    writeFileSync(
+      join(fx.repoRoot, 'mcp-session-process.mjs'),
+      [
+        "import { appendFileSync, existsSync, writeFileSync } from 'node:fs';",
+        `appendFileSync(${JSON.stringify(invocationsPath)}, 'x');`,
+        `writeFileSync(${JSON.stringify(startedPath)}, 'x');`,
+        `const releasePath = ${JSON.stringify(releasePath)};`,
+        'const deadline = Date.now() + 5_000;',
+        'const finish = () => {',
+        "  if (existsSync(releasePath)) { console.log('session-replacement-ok'); process.exit(0); }",
+        "  if (Date.now() >= deadline) { console.error('release marker was not written'); process.exit(70); }",
+        '  setTimeout(finish, 10);',
+        '};',
+        'finish();',
+      ].join('\n') + '\n',
+    );
     const principalId = 'mcp-session-replacement-principal';
-    const context = (sessionId: string) => createMcpToolContext({
-      controllerHome: fx.controllerHome,
-      profile: 'controller',
-      repo: fx.repoRoot,
-      sessionId,
-      principalId,
-      controllerInstanceId: 'mcp-session-replacement-controller',
-    });
+    const context = (sessionId: string) =>
+      createMcpToolContext({
+        controllerHome: fx.controllerHome,
+        profile: 'controller',
+        repo: fx.repoRoot,
+        sessionId,
+        principalId,
+        controllerInstanceId: 'mcp-session-replacement-controller',
+      });
     const originalContext = context('transport-session-before-replacement');
     const args = {
       repo_id: fx.repository.repoId,
@@ -489,12 +622,12 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       process_id: processId,
     });
     expect(attached?.isError).not.toBe(true);
-    const attachedProcess = (attached?.structuredContent as { process?: Record<string, unknown> }).process;
+    const attachedProcess = ((attached?.structuredContent ?? {}) as { process?: Record<string, unknown> }).process;
     expect(attachedProcess).toMatchObject({ processId, status: 'running', completed: false });
 
     const retry = await callRepositoryTool(fx.controllerHome, 'execute_command', args);
     expect(retry?.isError).not.toBe(true);
-    expect((retry?.structuredContent as Record<string, unknown>).processId).toBe(processId);
+    expect(((retry?.structuredContent ?? {}) as Record<string, unknown>).processId).toBe(processId);
     expect(readFileSync(invocationsPath, 'utf8')).toHaveLength(1);
 
     writeFileSync(releasePath, 'x');
@@ -504,7 +637,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       timeout_ms: 10_000,
     });
     expect(waited?.isError).not.toBe(true);
-    const terminal = (waited?.structuredContent as { process?: Record<string, unknown> }).process;
+    const terminal = ((waited?.structuredContent ?? {}) as { process?: Record<string, unknown> }).process;
     expect(terminal).toMatchObject({ processId, completed: true, ok: true });
     expect(String(terminal?.stdout ?? '')).toContain('session-replacement-ok');
     expect(readFileSync(invocationsPath, 'utf8')).toHaveLength(1);
@@ -519,7 +652,14 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
 
     const response = await callRepositoryTool(fx.controllerHome, 'execute_command', {
       repo_id: fx.repository.repoId,
-      command: ['bun', 'bin/forge.mjs', 'recovery', 'activate-runtime', '--release-manifest', '/tmp/release/manifest.json'],
+      command: [
+        'bun',
+        'bin/forge.mjs',
+        'recovery',
+        'activate-runtime',
+        '--release-manifest',
+        '/tmp/release/manifest.json',
+      ],
       timeout_ms: 5_000,
     });
     expect(response?.isError).not.toBe(true);
@@ -589,14 +729,18 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     mkdirSync(join(fx.repoRoot, '.ai/harness/controller'), { recursive: true });
     writeFileSync(projection, JSON.stringify({ attention: [{ status: 'orphaned', jobId: 'old-job' }] }));
     const args = {
-      repo_id: fx.repository.repoId, request_id: 'cleanup-apply-once', apply_mode: 'async',
-      confirm_cleanup: true, include_temp_dirs: false, include_historical_attention: true,
+      repo_id: fx.repository.repoId,
+      request_id: 'cleanup-apply-once',
+      apply_mode: 'async',
+      confirm_cleanup: true,
+      include_temp_dirs: false,
+      include_historical_attention: true,
       interactive_wait_ms: 5_000,
     };
     expect(classifyGatewayExecutionPath('runtime_cleanup_apply', args).path).toBe('fast');
     const call = async () => {
       const routed = await routeDurableMcpCall(fx.ctx, 'runtime_cleanup_apply', args);
-      return routed ?? await callRuntimeTool(fx.ctx, 'runtime_cleanup_apply', args);
+      return routed ?? (await callRuntimeTool(fx.ctx, 'runtime_cleanup_apply', args));
     };
     const first = await call();
     expect(first?.isError).not.toBe(true);
@@ -604,7 +748,9 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(JSON.stringify(payload)).not.toContain('EXECUTION_JOB_RETIRED');
     const execution = (payload.diagnosticExecution ?? payload) as { processId: string };
     expect((payload.result as { reason?: string }).reason).toBe('caller_requested_async');
-    const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, execution.processId, { timeoutMs: 10_000 });
+    const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, execution.processId, {
+      timeoutMs: 10_000,
+    });
     expect(terminal.ok).toBe(true);
     const acknowledgement = join(fx.repoRoot, '.ai/harness/controller/acknowledged-attention.jsonl');
     expect(readFileSync(acknowledgement, 'utf8').trim().split('\n')).toHaveLength(1);
@@ -612,15 +758,31 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const replay = second?.structuredContent as Record<string, unknown>;
     expect(((replay.diagnosticExecution ?? replay) as { processId: string }).processId).toBe(execution.processId);
     expect(readFileSync(acknowledgement, 'utf8').trim().split('\n')).toHaveLength(1);
-    const denied = await callRuntimeTool(fx.ctx, 'runtime_cleanup_apply', { ...args, request_id: 'cleanup-denied', confirm_cleanup: false });
+    const denied = await callRuntimeTool(fx.ctx, 'runtime_cleanup_apply', {
+      ...args,
+      request_id: 'cleanup-denied',
+      confirm_cleanup: false,
+    });
     expect(denied?.isError).toBe(true);
     expect(listProcessRecords(fx.controllerHome, fx.repository.repoId)).toHaveLength(1);
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId)).toHaveLength(0);
-    const readEntry = spawnSync(process.execPath, [
-      join(import.meta.dir, '../../src/cli/diagnostic-entry.ts'), 'runtime', 'diagnostic-read',
-      '--controller-home', fx.controllerHome, '--repo-id', fx.repository.repoId,
-      '--tool', 'runtime_cleanup_apply', '--args-base64', Buffer.from(JSON.stringify(args)).toString('base64url'),
-    ], { encoding: 'utf8', timeout: 5_000 });
+    const readEntry = spawnSync(
+      process.execPath,
+      [
+        join(import.meta.dir, '../../src/cli/diagnostic-entry.ts'),
+        'runtime',
+        'diagnostic-read',
+        '--controller-home',
+        fx.controllerHome,
+        '--repo-id',
+        fx.repository.repoId,
+        '--tool',
+        'runtime_cleanup_apply',
+        '--args-base64',
+        Buffer.from(JSON.stringify(args)).toString('base64url'),
+      ],
+      { encoding: 'utf8', timeout: 5_000 },
+    );
     expect(readEntry.status).not.toBe(0);
     expect(readEntry.stderr).toContain('DIAGNOSTIC_TOOL_UNSUPPORTED');
   });
@@ -631,22 +793,32 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
     const processesBefore = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
 
-    for (const [index, [tool, args]] of ([
-      ['workflow_watchdog_report', { repo_id: fx.repository.repoId, include_processes: false }],
-      ['runtime_maintenance_status', { repo_id: fx.repository.repoId }],
-      ['runtime_cleanup_preview', { repo_id: fx.repository.repoId, include_temp_dirs: false }],
-      ['runtime_performance_diagnostics', {
-        repo_id: fx.repository.repoId,
-        include_processes: false,
-        include_temp_dirs: false,
-      }],
-      ['capability_recovery_probe', { repo_id: fx.repository.repoId }],
-    ] as const).entries()) {
+    for (const [index, [tool, args]] of (
+      [
+        ['workflow_watchdog_report', { repo_id: fx.repository.repoId, include_processes: false }],
+        ['runtime_maintenance_status', { repo_id: fx.repository.repoId }],
+        ['runtime_cleanup_preview', { repo_id: fx.repository.repoId, include_temp_dirs: false }],
+        [
+          'runtime_performance_diagnostics',
+          {
+            repo_id: fx.repository.repoId,
+            include_processes: false,
+            include_temp_dirs: false,
+          },
+        ],
+        ['capability_recovery_probe', { repo_id: fx.repository.repoId }],
+      ] as const
+    ).entries()) {
       const requestId = `diagnostic-${index}`;
-      const routed = await routeDurableMcpCall(fx.ctx, tool, { ...args, request_id: requestId }, {
-        allowReadOnly: true,
-        forceDurable: true,
-      });
+      const routed = await routeDurableMcpCall(
+        fx.ctx,
+        tool,
+        { ...args, request_id: requestId },
+        {
+          allowReadOnly: true,
+          forceDurable: true,
+        },
+      );
       expect(routed).toBeDefined();
       expect(routed?.isError).not.toBe(true);
       const payload = routed?.structuredContent as Record<string, unknown>;
@@ -662,29 +834,42 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
         expect((payload.runtimeIdentity as { profile?: string }).profile).toBe('controller');
       }
       if (tool === 'capability_recovery_probe' && payload.diagnosticExecution) {
-        const capabilities = (payload.recovery as {
-          capabilities?: Array<{ id?: string; evidence?: Array<{ details?: Record<string, unknown> }> }>;
-        }).capabilities ?? [];
+        const capabilities =
+          (
+            payload.recovery as {
+              capabilities?: Array<{ id?: string; evidence?: Array<{ details?: Record<string, unknown> }> }>;
+            }
+          ).capabilities ?? [];
         const contextCapability = capabilities.find((capability) => capability.id === 'context.projection');
         expect(typeof contextCapability?.evidence?.[0]?.details?.stale).toBe('boolean');
       }
 
-      const retry = await routeDurableMcpCall(fx.ctx, tool, { ...args, request_id: requestId }, {
-        allowReadOnly: true,
-        forceDurable: true,
-      });
+      const retry = await routeDurableMcpCall(
+        fx.ctx,
+        tool,
+        { ...args, request_id: requestId },
+        {
+          allowReadOnly: true,
+          forceDurable: true,
+        },
+      );
       const retryPayload = retry?.structuredContent as Record<string, unknown>;
-      const processId = String((execution.processId ?? payload.processId) ?? '');
+      const processId = String(execution.processId ?? payload.processId ?? '');
       const retryExecution = (retryPayload.diagnosticExecution ?? retryPayload) as Record<string, unknown>;
-      expect(String((retryExecution.processId ?? retryPayload.processId) ?? '')).toBe(processId);
+      expect(String(retryExecution.processId ?? retryPayload.processId ?? '')).toBe(processId);
     }
 
-    const managed = await routeDurableMcpCall(fx.ctx, 'runtime_cleanup_preview', {
-      repo_id: fx.repository.repoId,
-      include_temp_dirs: false,
-      apply_mode: 'async',
-      request_id: 'diagnostic-managed',
-    }, { allowReadOnly: true, forceDurable: true });
+    const managed = await routeDurableMcpCall(
+      fx.ctx,
+      'runtime_cleanup_preview',
+      {
+        repo_id: fx.repository.repoId,
+        include_temp_dirs: false,
+        apply_mode: 'async',
+        request_id: 'diagnostic-managed',
+      },
+      { allowReadOnly: true, forceDurable: true },
+    );
     expect(managed?.isError).not.toBe(true);
     const managedPayload = managed?.structuredContent as Record<string, unknown>;
     expect(managedPayload.path).toBe('process_managed');
@@ -716,13 +901,20 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect((oversized.result as { bytes?: number }).bytes ?? 0).toBeGreaterThan(1);
     expect((oversized.result as { inlineLimitBytes?: number }).inlineLimitBytes).toBe(1);
 
-    const conflict = await routeDurableMcpCall(fx.ctx, 'runtime_cleanup_preview', {
-      repo_id: fx.repository.repoId,
-      include_temp_dirs: true,
-      request_id: 'diagnostic-2',
-    }, { allowReadOnly: true, forceDurable: true });
+    const conflict = await routeDurableMcpCall(
+      fx.ctx,
+      'runtime_cleanup_preview',
+      {
+        repo_id: fx.repository.repoId,
+        include_temp_dirs: true,
+        request_id: 'diagnostic-2',
+      },
+      { allowReadOnly: true, forceDurable: true },
+    );
     expect(conflict?.isError).toBe(true);
-    expect((conflict?.structuredContent as { error?: { code?: string } }).error?.code).toBe('PROCESS_REQUEST_ID_CONFLICT');
+    expect(((conflict?.structuredContent ?? {}) as { error?: { code?: string } }).error?.code).toBe(
+      'PROCESS_REQUEST_ID_CONFLICT',
+    );
 
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
     expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore + 7);
@@ -745,25 +937,27 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       displayName: 'explicit-repository',
     });
 
-    const routed = await routeDurableMcpCall(fx.ctx, 'runtime_performance_diagnostics', {
-      repo_id: explicitRepository.repoId,
-      apply_mode: 'async',
-      include_processes: false,
-      include_temp_dirs: false,
-      request_id: 'explicit-repository-diagnostic',
-    }, { allowReadOnly: true, forceDurable: true });
+    const routed = await routeDurableMcpCall(
+      fx.ctx,
+      'runtime_performance_diagnostics',
+      {
+        repo_id: explicitRepository.repoId,
+        apply_mode: 'async',
+        include_processes: false,
+        include_temp_dirs: false,
+        request_id: 'explicit-repository-diagnostic',
+      },
+      { allowReadOnly: true, forceDurable: true },
+    );
     expect(routed?.isError).not.toBe(true);
     const payload = routed?.structuredContent as Record<string, unknown>;
     const processId = String(payload.processId ?? '');
     expect(processId).toBeTruthy();
     expect(getProcessHandle(fx.controllerHome, explicitRepository.repoId, processId)).toBeTruthy();
     expect(getProcessHandle(fx.controllerHome, fx.repository.repoId, processId)).toBeUndefined();
-    const completed = await waitForProcess(
-      fx.controllerHome,
-      explicitRepository.repoId,
-      processId,
-      { timeoutMs: 10_000 },
-    );
+    const completed = await waitForProcess(fx.controllerHome, explicitRepository.repoId, processId, {
+      timeoutMs: 10_000,
+    });
     expect(completed.ok).toBe(true);
   });
 
@@ -771,11 +965,14 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const fx = fixture();
     roots.push(fx.root);
     const slowEntry = join(fx.root, 'late diagnostic.ts');
-    writeFileSync(slowEntry, [
-      'setTimeout(() => {',
-      '  process.stdout.write(JSON.stringify({ status: "normal", terminalReceipt: "late" }));',
-      '}, 120);',
-    ].join('\n'));
+    writeFileSync(
+      slowEntry,
+      [
+        'setTimeout(() => {',
+        '  process.stdout.write(JSON.stringify({ status: "normal", terminalReceipt: "late" }));',
+        '}, 120);',
+      ].join('\n'),
+    );
 
     const started = await runReadOnlyDiagnosticViaProcessRuntime({
       controllerHome: fx.controllerHome,
@@ -825,18 +1022,22 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const processesBefore = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
 
     writeFileSync(join(fx.repoRoot, 'src', 'commit.ts'), 'export const committed = true;\n');
-    expect(await routeDurableMcpCall(fx.ctx, 'repository_git_commit', {
-      repo_id: fx.repository.repoId,
-      message: 'commit structured change',
-      paths: ['src/commit.ts'],
-    })).toBeUndefined();
+    expect(
+      await routeDurableMcpCall(fx.ctx, 'repository_git_commit', {
+        repo_id: fx.repository.repoId,
+        message: 'commit structured change',
+        paths: ['src/commit.ts'],
+      }),
+    ).toBeUndefined();
     const committed = await callRepositoryTool(fx.controllerHome, 'repository_git_commit', {
       repo_id: fx.repository.repoId,
       message: 'commit structured change',
       paths: ['src/commit.ts'],
     });
     expect(committed?.isError).not.toBe(true);
-    expect(((committed?.structuredContent as Record<string, unknown>).commit as { committed?: boolean }).committed).toBe(true);
+    expect(
+      (((committed?.structuredContent ?? {}) as Record<string, unknown>).commit as { committed?: boolean }).committed,
+    ).toBe(true);
 
     git(fx.repoRoot, ['switch', '-c', 'feature/merge-fixture']);
     writeFileSync(join(fx.repoRoot, 'src', 'merge.ts'), 'export const merged = true;\n');
@@ -844,27 +1045,35 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     git(fx.repoRoot, ['commit', '-m', 'feature merge fixture']);
     git(fx.repoRoot, ['switch', 'main']);
 
-    expect(await routeDurableMcpCall(fx.ctx, 'repository_git_merge_branch', {
-      repo_id: fx.repository.repoId,
-      branch: 'feature/merge-fixture',
-    })).toBeUndefined();
+    expect(
+      await routeDurableMcpCall(fx.ctx, 'repository_git_merge_branch', {
+        repo_id: fx.repository.repoId,
+        branch: 'feature/merge-fixture',
+      }),
+    ).toBeUndefined();
     const merged = await callRepositoryTool(fx.controllerHome, 'repository_git_merge_branch', {
       repo_id: fx.repository.repoId,
       branch: 'feature/merge-fixture',
     });
     expect(merged?.isError).not.toBe(true);
-    expect(((merged?.structuredContent as Record<string, unknown>).execution as { ok?: boolean }).ok).toBe(true);
+    expect((((merged?.structuredContent ?? {}) as Record<string, unknown>).execution as { ok?: boolean }).ok).toBe(
+      true,
+    );
 
-    expect(await routeDurableMcpCall(fx.ctx, 'repository_git_delete_branch', {
-      repo_id: fx.repository.repoId,
-      branch: 'feature/merge-fixture',
-    })).toBeUndefined();
+    expect(
+      await routeDurableMcpCall(fx.ctx, 'repository_git_delete_branch', {
+        repo_id: fx.repository.repoId,
+        branch: 'feature/merge-fixture',
+      }),
+    ).toBeUndefined();
     const deleted = await callRepositoryTool(fx.controllerHome, 'repository_git_delete_branch', {
       repo_id: fx.repository.repoId,
       branch: 'feature/merge-fixture',
     });
     expect(deleted?.isError).not.toBe(true);
-    expect(((deleted?.structuredContent as Record<string, unknown>).execution as { ok?: boolean }).ok).toBe(true);
+    expect((((deleted?.structuredContent ?? {}) as Record<string, unknown>).execution as { ok?: boolean }).ok).toBe(
+      true,
+    );
 
     const remoteBranch = 'review/merged-pr-469';
     git(fx.repoRoot, ['push', 'origin', 'HEAD:refs/heads/' + remoteBranch]);
@@ -876,9 +1085,12 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       expected_remote_sha: remoteHead,
     });
     expect(remoteDeletePreview?.isError).not.toBe(true);
-    const approvalRequestId = String((((remoteDeletePreview?.structuredContent as Record<string, unknown>).execution as Record<string, unknown>).approvalRequestId ?? ''));
+    const approvalRequestId = String(
+      (((remoteDeletePreview?.structuredContent ?? {}) as Record<string, unknown>).execution as Record<string, unknown>)
+        .approvalRequestId ?? '',
+    );
     expect(approvalRequestId).toStartWith('apr_');
-    expect((remoteDeletePreview?.structuredContent as Record<string, unknown>)).toMatchObject({
+    expect((remoteDeletePreview?.structuredContent ?? {}) as Record<string, unknown>).toMatchObject({
       branch: remoteBranch,
       remote: 'origin',
       expectedRemoteSha: remoteHead,
@@ -901,7 +1113,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       approval_request_id: approvalRequestId,
     });
     expect(remoteDeleted?.isError).not.toBe(true);
-    expect((remoteDeleted?.structuredContent as Record<string, unknown>)).toMatchObject({
+    expect((remoteDeleted?.structuredContent ?? {}) as Record<string, unknown>).toMatchObject({
       branch: remoteBranch,
       remote: 'origin',
       expectedRemoteSha: remoteHead,
@@ -909,7 +1121,11 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       outcome: 'deleted',
       reconciled: true,
     });
-    expect(spawnSync('git', ['-C', fx.repoRoot, 'ls-remote', '--heads', 'origin', 'refs/heads/' + remoteBranch], { encoding: 'utf8' }).stdout.trim()).toBe('');
+    expect(
+      spawnSync('git', ['-C', fx.repoRoot, 'ls-remote', '--heads', 'origin', 'refs/heads/' + remoteBranch], {
+        encoding: 'utf8',
+      }).stdout.trim(),
+    ).toBe('');
 
     const replay = await callRepositoryTool(fx.controllerHome, 'repository_git_delete_branch', {
       repo_id: fx.repository.repoId,
@@ -918,7 +1134,11 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       expected_remote_sha: remoteHead,
     });
     expect(replay?.isError).not.toBe(true);
-    expect((replay?.structuredContent as Record<string, unknown>)).toMatchObject({ deleted: true, outcome: 'already_absent', reconciled: true });
+    expect((replay?.structuredContent ?? {}) as Record<string, unknown>).toMatchObject({
+      deleted: true,
+      outcome: 'already_absent',
+      reconciled: true,
+    });
 
     git(fx.repoRoot, ['push', 'origin', 'HEAD:refs/heads/review/sha-drift-469']);
     const driftHead = git(fx.originRoot, ['rev-parse', 'refs/heads/review/sha-drift-469']);
@@ -944,18 +1164,22 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     git(fx.repoRoot, ['add', 'src/finish.ts']);
     git(fx.repoRoot, ['commit', '-m', 'feature finish fixture']);
 
-    expect(await routeDurableMcpCall(fx.ctx, 'repository_git_finish_workflow', {
-      repo_id: fx.repository.repoId,
-      target_branch: 'main',
-      delete_branch: true,
-    })).toBeUndefined();
+    expect(
+      await routeDurableMcpCall(fx.ctx, 'repository_git_finish_workflow', {
+        repo_id: fx.repository.repoId,
+        target_branch: 'main',
+        delete_branch: true,
+      }),
+    ).toBeUndefined();
     const finished = await callRepositoryTool(fx.controllerHome, 'repository_git_finish_workflow', {
       repo_id: fx.repository.repoId,
       target_branch: 'main',
       delete_branch: true,
     });
     expect(finished?.isError).not.toBe(true);
-    expect(((finished?.structuredContent as Record<string, unknown>).finish as { completed?: boolean }).completed).toBe(true);
+    expect(
+      (((finished?.structuredContent ?? {}) as Record<string, unknown>).finish as { completed?: boolean }).completed,
+    ).toBe(true);
 
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
     expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore);
@@ -967,7 +1191,9 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const linked = join(fx.root, 'linked-cleanup-target');
     git(fx.repoRoot, ['worktree', 'add', '--detach', linked, 'HEAD']);
     const registered = addRepositoryCheckout({
-      repoId: fx.repository.repoId, path: linked, controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      path: linked,
+      controllerHome: fx.controllerHome,
     });
     const target = registered.checkouts.find((item) => item.localRoot === realpathSync(linked));
     expect(target).toBeDefined();
@@ -978,17 +1204,27 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(getRepository(fx.repository.repoId, fx.controllerHome)?.canonicalRoot).toBe(fx.repository.canonicalRoot);
     expect(getRepository(fx.repository.repoId, fx.controllerHome)?.displayName).toBe(fx.repository.displayName);
     const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
-    expect(await routeDurableMcpCall(fx.ctx, 'repository_git_remove_worktree', {
-      repo_id: fx.repository.repoId, checkout_id: target!.checkoutId,
-    })).toBeUndefined();
+    expect(
+      await routeDurableMcpCall(fx.ctx, 'repository_git_remove_worktree', {
+        repo_id: fx.repository.repoId,
+        checkout_id: target!.checkoutId,
+      }),
+    ).toBeUndefined();
     const preview = await callRepositoryTool(fx.controllerHome, 'repository_git_remove_worktree', {
-      repo_id: fx.repository.repoId, checkout_id: target!.checkoutId,
+      repo_id: fx.repository.repoId,
+      checkout_id: target!.checkoutId,
     });
     expect(preview?.isError).not.toBe(true);
-    const state = (preview?.structuredContent as { cleanup: {
-      status: string; expectedHead: string; physicalIdentity: string;
-      execution: { approvalToken: string };
-    } }).cleanup;
+    const state = (
+      (preview?.structuredContent ?? {}) as {
+        cleanup: {
+          status: string;
+          expectedHead: string;
+          physicalIdentity: string;
+          execution: { approvalToken: string };
+        };
+      }
+    ).cleanup;
     expect(state.status).toBe('preview');
     expect(existsSync(linked)).toBe(true);
     const removed = await callRepositoryTool(fx.controllerHome, 'repository_git_remove_worktree', {
@@ -1000,11 +1236,14 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       preview_token: state.execution.approvalToken,
     });
     expect(removed?.isError).not.toBe(true);
-    expect(((removed?.structuredContent as { cleanup: { status: string } }).cleanup).status).toBe('removed');
+    expect(((removed?.structuredContent ?? {}) as { cleanup: { status: string } }).cleanup.status).toBe('removed');
     expect(existsSync(linked)).toBe(false);
     expect(getRepository(fx.repository.repoId, fx.controllerHome)?.canonicalRoot).toBe(fx.repository.canonicalRoot);
-    expect(getRepository(fx.repository.repoId, fx.controllerHome)?.checkouts
-      .find((item) => item.checkoutId === target!.checkoutId)?.lifecycle).toBe('removed');
+    expect(
+      getRepository(fx.repository.repoId, fx.controllerHome)?.checkouts.find(
+        (item) => item.checkoutId === target!.checkoutId,
+      )?.lifecycle,
+    ).toBe('removed');
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
   });
 
@@ -1023,15 +1262,19 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const payload = started?.structuredContent as Record<string, unknown>;
     expect(payload.path).toBe('process_managed');
     expect(typeof payload.processId).toBe('string');
-    const completed = await waitForProcess(
-      fx.controllerHome,
-      fx.repository.repoId,
-      String(payload.processId),
-      { timeoutMs: 10_000 },
-    );
+    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, String(payload.processId), {
+      timeoutMs: 10_000,
+    });
     expect(completed.ok).toBe(true);
     expect(completed.exitCode).toBe(0);
-    const artifactPath = join(fx.controllerHome, 'repositories', fx.repository.repoId, 'checks', 'controller', 'latest-slow.json');
+    const artifactPath = join(
+      fx.controllerHome,
+      'repositories',
+      fx.repository.repoId,
+      'checks',
+      'controller',
+      'latest-slow.json',
+    );
     expect(existsSync(join(fx.repoRoot, '.ai', 'harness', 'checks'))).toBe(false);
     expect(existsSync(artifactPath)).toBe(true);
     const artifact = JSON.parse(readFileSync(artifactPath, 'utf8')) as {
@@ -1052,16 +1295,27 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const fx = fixture();
     roots.push(fx.root);
     const marker = join(fx.root, 'physical-execution-count.txt');
-    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
-      version: 1,
-      checks: {
-        overlap: {
-          description: 'managed check overlap fixture',
-          command: [process.execPath, '-e', `require('fs').appendFileSync(${JSON.stringify(marker)}, '1'); setTimeout(() => process.exit(0), 450);`],
-          timeoutMs: 10_000,
+    writeFileSync(
+      join(fx.repoRoot, '.forge', 'checks.json'),
+      JSON.stringify(
+        {
+          version: 1,
+          checks: {
+            overlap: {
+              description: 'managed check overlap fixture',
+              command: [
+                process.execPath,
+                '-e',
+                `require('fs').appendFileSync(${JSON.stringify(marker)}, '1'); setTimeout(() => process.exit(0), 450);`,
+              ],
+              timeoutMs: 10_000,
+            },
+          },
         },
-      },
-    }, null, 2));
+        null,
+        2,
+      ),
+    );
 
     const started = await routeDurableMcpCall(fx.ctx, 'run_check', {
       repo_id: fx.repository.repoId,
@@ -1108,28 +1362,34 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(readFileSync(marker, 'utf8')).toBe('1');
   });
 
-
   test('batch run_check launches one resource-compatible wave concurrently in one gateway call', async () => {
     const fx = fixture();
     roots.push(fx.root);
     const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
-    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
-      version: 1,
-      checks: {
-        parallel_a: {
-          description: 'parallel check A',
-          command: [process.execPath, '-e', 'setTimeout(() => { console.log("a-ok"); process.exit(0); }, 1200)'],
-          timeoutMs: 10_000,
-          effects: { reads: ['src/a'] },
+    writeFileSync(
+      join(fx.repoRoot, '.forge', 'checks.json'),
+      JSON.stringify(
+        {
+          version: 1,
+          checks: {
+            parallel_a: {
+              description: 'parallel check A',
+              command: [process.execPath, '-e', 'setTimeout(() => { console.log("a-ok"); process.exit(0); }, 1200)'],
+              timeoutMs: 10_000,
+              effects: { reads: ['src/a'] },
+            },
+            parallel_b: {
+              description: 'parallel check B',
+              command: [process.execPath, '-e', 'setTimeout(() => { console.log("b-ok"); process.exit(0); }, 1200)'],
+              timeoutMs: 10_000,
+              effects: { reads: ['src/b'] },
+            },
+          },
         },
-        parallel_b: {
-          description: 'parallel check B',
-          command: [process.execPath, '-e', 'setTimeout(() => { console.log("b-ok"); process.exit(0); }, 1200)'],
-          timeoutMs: 10_000,
-          effects: { reads: ['src/b'] },
-        },
-      },
-    }, null, 2));
+        null,
+        2,
+      ),
+    );
 
     const started = await routeDurableMcpCall(fx.ctx, 'run_check', {
       repo_id: fx.repository.repoId,
@@ -1153,49 +1413,55 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(String(payload.next ?? '')).toContain('Continue independent work');
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId)).toHaveLength(jobsBefore);
 
-    const completed = await Promise.all(processes.map((process) => waitForProcess(
-      fx.controllerHome,
-      fx.repository.repoId,
-      process.processId,
-      { timeoutMs: 10_000 },
-    )));
+    const completed = await Promise.all(
+      processes.map((process) =>
+        waitForProcess(fx.controllerHome, fx.repository.repoId, process.processId, { timeoutMs: 10_000 }),
+      ),
+    );
     expect(completed.every((handle) => handle.ok === true)).toBe(true);
   });
 
   test('batch run_check rejects cross-wave, invalid, and durable requests without partial execution', async () => {
     const fx = fixture();
     roots.push(fx.root);
-    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
-      version: 1,
-      checks: {
-        conflict_a: {
-          description: 'conflicting check A',
-          command: [process.execPath, '-e', 'setTimeout(() => process.exit(0), 100)'],
-          timeoutMs: 10_000,
-          effects: { writes: ['src/shared'] },
+    writeFileSync(
+      join(fx.repoRoot, '.forge', 'checks.json'),
+      JSON.stringify(
+        {
+          version: 1,
+          checks: {
+            conflict_a: {
+              description: 'conflicting check A',
+              command: [process.execPath, '-e', 'setTimeout(() => process.exit(0), 100)'],
+              timeoutMs: 10_000,
+              effects: { writes: ['src/shared'] },
+            },
+            conflict_b: {
+              description: 'conflicting check B',
+              command: [process.execPath, '-e', 'setTimeout(() => process.exit(0), 100)'],
+              timeoutMs: 10_000,
+              effects: { writes: ['src/shared'] },
+            },
+            'release-fixture': {
+              description: 'release check must stay durable',
+              command: [process.execPath, '-e', 'process.exit(0)'],
+              timeoutMs: 10_000,
+              effects: { reads: ['src/release'] },
+              selection: { costClass: 'L4', riskFloor: 'high', phases: ['release'] },
+            },
+            'release-named-simulator-compile': {
+              description: 'release migration deploy wording around an ordinary Simulator compile',
+              command: [process.execPath, '-e', 'process.exit(0)'],
+              timeoutMs: 10_000,
+              effects: { reads: ['src'] },
+              selection: { costClass: 'L2', riskFloor: 'medium', phases: ['post_edit', 'pre_finalize'] },
+            },
+          },
         },
-        conflict_b: {
-          description: 'conflicting check B',
-          command: [process.execPath, '-e', 'setTimeout(() => process.exit(0), 100)'],
-          timeoutMs: 10_000,
-          effects: { writes: ['src/shared'] },
-        },
-        'release-fixture': {
-          description: 'release check must stay durable',
-          command: [process.execPath, '-e', 'process.exit(0)'],
-          timeoutMs: 10_000,
-          effects: { reads: ['src/release'] },
-          selection: { costClass: 'L4', riskFloor: 'high', phases: ['release'] },
-        },
-        'release-named-simulator-compile': {
-          description: 'release migration deploy wording around an ordinary Simulator compile',
-          command: [process.execPath, '-e', 'process.exit(0)'],
-          timeoutMs: 10_000,
-          effects: { reads: ['src'] },
-          selection: { costClass: 'L2', riskFloor: 'medium', phases: ['post_edit', 'pre_finalize'] },
-        },
-      },
-    }, null, 2));
+        null,
+        2,
+      ),
+    );
     const processesBefore = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
 
     const crossWave = await routeDurableMcpCall(fx.ctx, 'run_check', {
@@ -1241,24 +1507,35 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(MCP_SERVER_INSTRUCTIONS).toContain('never as periodic polling');
     expect(MCP_SERVER_INSTRUCTIONS).toContain('report the running operation and pending acceptance');
     expect(MCP_SERVER_INSTRUCTIONS).toContain('never re-execute it merely because observation is incomplete');
-    expect(MCP_SERVER_INSTRUCTIONS).toContain('Requirement/Plan context never implies a Git topology or commit boundary, and legacy Work/Controller records never grant current execution authority.');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain(
+      'Requirement/Plan are optional semantic snapshots and never gate edits/commits or replace GitHub Issue progress; legacy Work/Controller records never grant current execution authority.',
+    );
+    expect(MCP_SERVER_INSTRUCTIONS).toContain(
+      'Do not mandatorily preflight rh_status/plan_list/context lists/Writer inventory',
+    );
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('Known source paths use exact reads or Direct Edit first');
   });
-
-
 
   test('run_check Process status and persisted failure Artifact agree', async () => {
     const fx = fixture();
     roots.push(fx.root);
-    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
-      version: 1,
-      checks: {
-        failing: {
-          description: 'persisted failing check',
-          command: [process.execPath, '-e', 'process.stderr.write("expected-failure\\n"); process.exit(7)'],
-          timeoutMs: 10_000,
+    writeFileSync(
+      join(fx.repoRoot, '.forge', 'checks.json'),
+      JSON.stringify(
+        {
+          version: 1,
+          checks: {
+            failing: {
+              description: 'persisted failing check',
+              command: [process.execPath, '-e', 'process.stderr.write("expected-failure\\n"); process.exit(7)'],
+              timeoutMs: 10_000,
+            },
+          },
         },
-      },
-    }, null, 2));
+        null,
+        2,
+      ),
+    );
 
     const started = await routeDurableMcpCall(fx.ctx, 'run_check', {
       repo_id: fx.repository.repoId,
@@ -1266,22 +1543,18 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       interactive_wait_ms: 100,
     });
     const payload = started?.structuredContent as Record<string, unknown>;
-    const completed = await waitForProcess(
-      fx.controllerHome,
-      fx.repository.repoId,
-      String(payload.processId),
-      { timeoutMs: 10_000 },
-    );
+    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, String(payload.processId), {
+      timeoutMs: 10_000,
+    });
     expect(completed.ok).toBe(false);
     expect(completed.exitCode).toBe(7);
     const checkStorage = resolveRepositoryCheckStorage(fx.repoRoot, {
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
     });
-    const artifact = JSON.parse(readFileSync(
-      join(checkStorage.physicalRoot, 'controller', 'latest-failing.json'),
-      'utf8',
-    )) as { ok: boolean; status: number; stderr: string };
+    const artifact = JSON.parse(
+      readFileSync(join(checkStorage.physicalRoot, 'controller', 'latest-failing.json'), 'utf8'),
+    ) as { ok: boolean; status: number; stderr: string };
     expect(existsSync(join(fx.repoRoot, '.ai', 'harness', 'checks'))).toBe(false);
     expect(artifact.ok).toBe(false);
     expect(artifact.status).toBe(7);
@@ -1292,40 +1565,46 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const fx = fixture();
     roots.push(fx.root);
     const authority = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
-    const event = appendControllerWorklogEvent(fx.repoRoot, {
-      category: 'edit',
-      action: 'controller_home_worklog_regression',
-      summary: 'Controller-owned runtime evidence',
-    }, authority);
+    const event = appendControllerWorklogEvent(
+      fx.repoRoot,
+      {
+        category: 'edit',
+        action: 'controller_home_worklog_regression',
+        summary: 'Controller-owned runtime evidence',
+      },
+      authority,
+    );
     const storage = resolveControllerWorklogStorage(fx.repoRoot, authority);
 
-    expect(storage.physicalPath).toBe(join(
-      fx.controllerHome,
-      'repositories',
-      fx.repository.repoId,
-      'controller',
-      'worklog.jsonl',
-    ));
+    expect(storage.physicalPath).toBe(
+      join(fx.controllerHome, 'repositories', fx.repository.repoId, 'controller', 'worklog.jsonl'),
+    );
     expect(existsSync(storage.physicalPath)).toBe(true);
     expect(existsSync(join(fx.repoRoot, '.ai', 'harness', 'controller', 'worklog.jsonl'))).toBe(false);
     expect(listControllerWorklogEvents(fx.repoRoot, { limit: 1 }, authority)[0]?.id).toBe(event.id);
   });
 
-
   test('safe patch starts opt-in validation and joins later without replaying the edit', async () => {
     const fx = fixture();
     roots.push(fx.root);
-    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
-      version: 1,
-      checks: {
-        verify: {
-          description: 'managed direct-edit validation',
-          command: [process.execPath, '-e', 'setTimeout(() => process.exit(0), 250)'],
-          timeoutMs: 10_000,
-          effects: { reads: ['src/lib.ts'] },
+    writeFileSync(
+      join(fx.repoRoot, '.forge', 'checks.json'),
+      JSON.stringify(
+        {
+          version: 1,
+          checks: {
+            verify: {
+              description: 'managed direct-edit validation',
+              command: [process.execPath, '-e', 'setTimeout(() => process.exit(0), 250)'],
+              timeoutMs: 10_000,
+              effects: { reads: ['src/lib.ts'] },
+            },
+          },
         },
-      },
-    }, null, 2));
+        null,
+        2,
+      ),
+    );
     const sourcePath = join(fx.repoRoot, 'src', 'lib.ts');
     const before = readFileSync(sourcePath, 'utf8');
     const validationRequestId = 'safe-patch-validation-smoke';
@@ -1335,13 +1614,15 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       checkout_id: fx.repository.activeCheckoutId,
       purpose: 'safe patch with opt-in validation',
       allowed_paths: ['src/**'],
-      operations: [{
-        type: 'replace',
-        path: 'src/lib.ts',
-        expected_sha256: createHash('sha256').update(before).digest('hex'),
-        old_text: 'n = 1',
-        new_text: 'n = 2',
-      }],
+      operations: [
+        {
+          type: 'replace',
+          path: 'src/lib.ts',
+          expected_sha256: createHash('sha256').update(before).digest('hex'),
+          old_text: 'n = 1',
+          new_text: 'n = 2',
+        },
+      ],
       check_ids: ['verify'],
       validation_request_id: validationRequestId,
       interactive_wait_ms: 0,
@@ -1352,14 +1633,18 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(startedPayload.validationStarted).toBe(true);
     expect(startedPayload.validationCompleted).toBe(false);
     expect(startedPayload.acceptanceReady).toBe(false);
-    expect(startedPayload.reviewEvidence).toEqual(expect.objectContaining({
-      source: 'edit_session',
-      semanticReviewAuthority: 'chatgpt',
-    }));
+    expect(startedPayload.reviewEvidence).toEqual(
+      expect.objectContaining({
+        source: 'edit_session',
+        semanticReviewAuthority: 'chatgpt',
+      }),
+    );
     expect(startedPayload.validationRequestId).toBe(validationRequestId);
     const validation = startedPayload.validation as { processes: Array<{ processId: string }> };
     expect(validation.processes).toHaveLength(1);
-    await waitForProcess(fx.controllerHome, fx.repository.repoId, validation.processes[0]!.processId, { timeoutMs: 10_000 });
+    await waitForProcess(fx.controllerHome, fx.repository.repoId, validation.processes[0]!.processId, {
+      timeoutMs: 10_000,
+    });
     const afterEdit = readFileSync(sourcePath, 'utf8');
     expect(afterEdit).toContain('n = 2');
     const sessionId = String((startedPayload.session as { sessionId: string }).sessionId);
@@ -1416,7 +1701,6 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(readFileSync(sourcePath, 'utf8')).toBe(afterEdit);
   });
 
-
   test('a checked ordinary edit reconciles after its verified after-image is committed', async () => {
     const fx = fixture();
     roots.push(fx.root);
@@ -1433,15 +1717,24 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     git(owner, ['worktree', 'add', '--detach', linked, 'HEAD']);
     const nestedIndex = git(linked, ['rev-parse', '--git-path', 'index']);
     const originalIndex = readFileSync(nestedIndex);
-    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
-      version: 1,
-      checks: { [checkId]: {
-        description: 'verify integrated after-image and nested source',
-        command: [process.execPath, '-e', "const fs = require('fs'); if (fs.readFileSync('nested-linked/source.txt', 'utf8') !== 'baseline\\\\n') process.exit(9)"],
-        timeoutMs: 10_000,
-        effects: { reads: ['src/lib.ts', 'nested-linked/source.txt'] },
-      } },
-    }));
+    writeFileSync(
+      join(fx.repoRoot, '.forge', 'checks.json'),
+      JSON.stringify({
+        version: 1,
+        checks: {
+          [checkId]: {
+            description: 'verify integrated after-image and nested source',
+            command: [
+              process.execPath,
+              '-e',
+              "const fs = require('fs'); if (fs.readFileSync('nested-linked/source.txt', 'utf8') !== 'baseline\\\\n') process.exit(9)",
+            ],
+            timeoutMs: 10_000,
+            effects: { reads: ['src/lib.ts', 'nested-linked/source.txt'] },
+          },
+        },
+      }),
+    );
     const binding = {
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
@@ -1455,13 +1748,27 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       checks: [checkId],
       binding,
     });
-    applyEditOperations(fx.repoRoot, getToolPolicy('controller'), edit.sessionId, [{
-      type: 'replace',
-      path: 'src/lib.ts',
-      expectedSha256: createHash('sha256').update(readFileSync(join(fx.repoRoot, 'src', 'lib.ts'))).digest('hex'),
-      replacements: [{ oldText: 'n = 1', newText: 'n = 2' }],
-    }], { binding });
-    const request = { editSessionId: edit.sessionId, checkIds: [checkId], validationRequestId: 'checked-afterimage-commit' };
+    applyEditOperations(
+      fx.repoRoot,
+      getToolPolicy('controller'),
+      edit.sessionId,
+      [
+        {
+          type: 'replace',
+          path: 'src/lib.ts',
+          expectedSha256: createHash('sha256')
+            .update(readFileSync(join(fx.repoRoot, 'src', 'lib.ts')))
+            .digest('hex'),
+          replacements: [{ oldText: 'n = 1', newText: 'n = 2' }],
+        },
+      ],
+      { binding },
+    );
+    const request = {
+      editSessionId: edit.sessionId,
+      checkIds: [checkId],
+      validationRequestId: 'checked-afterimage-commit',
+    };
     const started = await startOrJoinEditValidation(fx.controllerHome, fx.repository, request);
     for (const process of started.processes) {
       await waitForProcess(fx.controllerHome, fx.repository.repoId, process.processId, { timeoutMs: 10_000 });
@@ -1496,18 +1803,22 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     git(owner, ['worktree', 'add', '--detach', linked, 'HEAD']);
     const nestedIndex = git(linked, ['rev-parse', '--git-path', 'index']);
     const originalIndex = readFileSync(nestedIndex);
-    const checkSource = "const fs = require('fs'); if (fs.readFileSync('nested-linked/source.txt', 'utf8') !== 'baseline\\\\n') process.exit(9)";
-    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
-      version: 1,
-      checks: {
-        verify: {
-          description: 'verify the real linked source content',
-          command: [process.execPath, '-e', checkSource],
-          timeoutMs: 10_000,
-          effects: { reads: ['nested-linked/source.txt'] },
+    const checkSource =
+      "const fs = require('fs'); if (fs.readFileSync('nested-linked/source.txt', 'utf8') !== 'baseline\\\\n') process.exit(9)";
+    writeFileSync(
+      join(fx.repoRoot, '.forge', 'checks.json'),
+      JSON.stringify({
+        version: 1,
+        checks: {
+          verify: {
+            description: 'verify the real linked source content',
+            command: [process.execPath, '-e', checkSource],
+            timeoutMs: 10_000,
+            effects: { reads: ['nested-linked/source.txt'] },
+          },
         },
-      },
-    }));
+      }),
+    );
     const binding = {
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
@@ -1521,12 +1832,22 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       checks: ['verify'],
       binding,
     });
-    applyEditOperations(fx.repoRoot, getToolPolicy('controller'), edit.sessionId, [{
-      type: 'replace',
-      path: 'src/lib.ts',
-      expectedSha256: createHash('sha256').update(readFileSync(join(fx.repoRoot, 'src', 'lib.ts'))).digest('hex'),
-      replacements: [{ oldText: 'n = 1', newText: 'n = 2' }],
-    }], { binding });
+    applyEditOperations(
+      fx.repoRoot,
+      getToolPolicy('controller'),
+      edit.sessionId,
+      [
+        {
+          type: 'replace',
+          path: 'src/lib.ts',
+          expectedSha256: createHash('sha256')
+            .update(readFileSync(join(fx.repoRoot, 'src', 'lib.ts')))
+            .digest('hex'),
+          replacements: [{ oldText: 'n = 1', newText: 'n = 2' }],
+        },
+      ],
+      { binding },
+    );
     const args = {
       editSessionId: edit.sessionId,
       checkIds: ['verify'],
@@ -1545,8 +1866,9 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     writeFileSync(join(linked, 'source.txt'), 'changed after receipt\\n');
     expect(git(fx.repoRoot, ['status', '--porcelain=v1', '--untracked-files=all'])).toBe(parentStatus);
     expect(spawnSync(process.execPath, ['-e', checkSource], { cwd: fx.repoRoot }).status).toBe(9);
-    expect(() => finalizeEditSession(fx.repoRoot, edit.sessionId, { binding }))
-      .toThrow('EDIT_SESSION_VALIDATED_WORKSPACE_CHANGED');
+    expect(() => finalizeEditSession(fx.repoRoot, edit.sessionId, { binding })).toThrow(
+      'EDIT_SESSION_VALIDATED_WORKSPACE_CHANGED',
+    );
     expect(getEditSession(fx.repoRoot, edit.sessionId).status).toBe('checked');
     expect(readFileSync(nestedIndex)).toEqual(originalIndex);
 
@@ -1561,7 +1883,10 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const changedEnd = await startOrJoinEditValidation(fx.controllerHome, fx.repository, changedRequest);
     expect(changedEnd).toMatchObject({ completed: true, ok: false });
     const changedRecord = getProcessRecord(fx.controllerHome, fx.repository.repoId, changedEnd.processes[0]!.processId);
-    expect(readPersistedCheckResultReceipt(changedRecord?.origin?.checkResultReceiptPath)).toMatchObject({ ok: false, status: 9 });
+    expect(readPersistedCheckResultReceipt(changedRecord?.origin?.checkResultReceiptPath)).toMatchObject({
+      ok: false,
+      status: 9,
+    });
 
     writeFileSync(join(linked, 'source.txt'), 'baseline\\n');
     const restoredRequest = { ...args, validationRequestId: 'no-work-linked-git-receipt-restored-input' };
@@ -1594,14 +1919,26 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     });
 
     expect(() => assertEditSessionDurableBinding(session, binding, { requireBoundIdentity: true })).not.toThrow();
-    expect(() => assertEditSessionDurableBinding(session, { ...binding, repoId: 'repo-other' }, { requireBoundIdentity: true }))
-      .toThrow('EDIT_SESSION_IDENTITY_MISMATCH: repoId');
-    expect(() => assertEditSessionDurableBinding(session, { ...binding, principalId: 'principal-other' }, { requireBoundIdentity: true }))
-      .toThrow('EDIT_SESSION_IDENTITY_MISMATCH: principalId');
-    expect(() => assertEditSessionDurableBinding(session, { ...binding, checkoutId: 'checkout_other' }, { requireBoundIdentity: true }))
-      .toThrow('EDIT_SESSION_IDENTITY_MISMATCH: checkoutId');
-    expect(() => assertEditSessionDurableBinding(session, undefined, { requireBoundIdentity: true }))
-      .toThrow('EDIT_SESSION_IDENTITY_MISMATCH: binding');
+    expect(() =>
+      assertEditSessionDurableBinding(session, { ...binding, repoId: 'repo-other' }, { requireBoundIdentity: true }),
+    ).toThrow('EDIT_SESSION_IDENTITY_MISMATCH: repoId');
+    expect(() =>
+      assertEditSessionDurableBinding(
+        session,
+        { ...binding, principalId: 'principal-other' },
+        { requireBoundIdentity: true },
+      ),
+    ).toThrow('EDIT_SESSION_IDENTITY_MISMATCH: principalId');
+    expect(() =>
+      assertEditSessionDurableBinding(
+        session,
+        { ...binding, checkoutId: 'checkout_other' },
+        { requireBoundIdentity: true },
+      ),
+    ).toThrow('EDIT_SESSION_IDENTITY_MISMATCH: checkoutId');
+    expect(() => assertEditSessionDurableBinding(session, undefined, { requireBoundIdentity: true })).toThrow(
+      'EDIT_SESSION_IDENTITY_MISMATCH: binding',
+    );
   });
 
   test('run_check preserves Process Runtime request conflicts instead of masking them', async () => {
@@ -1609,16 +1946,23 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     roots.push(fx.root);
     const checksPath = join(fx.repoRoot, '.forge', 'checks.json');
     const localBefore = listLocalBridgeJobSnapshots(fx.repoRoot).length;
-    writeFileSync(checksPath, JSON.stringify({
-      version: 1,
-      checks: {
-        stable: {
-          description: 'stable request binding check',
-          command: [process.execPath, '-e', 'process.stdout.write("first")'],
-          timeoutMs: 10_000,
+    writeFileSync(
+      checksPath,
+      JSON.stringify(
+        {
+          version: 1,
+          checks: {
+            stable: {
+              description: 'stable request binding check',
+              command: [process.execPath, '-e', 'process.stdout.write("first")'],
+              timeoutMs: 10_000,
+            },
+          },
         },
-      },
-    }, null, 2));
+        null,
+        2,
+      ),
+    );
 
     const first = await routeDurableMcpCall(fx.ctx, 'run_check', {
       repo_id: fx.repository.repoId,
@@ -1627,21 +1971,30 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     });
     expect(first?.isError).not.toBe(true);
 
-    writeFileSync(checksPath, JSON.stringify({
-      version: 1,
-      checks: {
-        stable: {
-          description: 'changed request binding check',
-          command: [process.execPath, '-e', 'process.stdout.write("changed")'],
-          timeoutMs: 10_000,
+    writeFileSync(
+      checksPath,
+      JSON.stringify(
+        {
+          version: 1,
+          checks: {
+            stable: {
+              description: 'changed request binding check',
+              command: [process.execPath, '-e', 'process.stdout.write("changed")'],
+              timeoutMs: 10_000,
+            },
+          },
         },
-      },
-    }, null, 2));
-    await expect(routeDurableMcpCall(fx.ctx, 'run_check', {
-      repo_id: fx.repository.repoId,
-      check_id: 'stable',
-      request_id: 'run-check-stable-request',
-    })).rejects.toThrow('PROCESS_REQUEST_ID_CONFLICT');
+        null,
+        2,
+      ),
+    );
+    await expect(
+      routeDurableMcpCall(fx.ctx, 'run_check', {
+        repo_id: fx.repository.repoId,
+        check_id: 'stable',
+        request_id: 'run-check-stable-request',
+      }),
+    ).rejects.toThrow('PROCESS_REQUEST_ID_CONFLICT');
     expect(listLocalBridgeJobSnapshots(fx.repoRoot).length).toBe(localBefore);
   });
 
@@ -1653,7 +2006,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
 
     const unknown = await routeDurableMcpCall(fx.ctx, 'definitely_not_a_tool', {});
     expect(unknown?.isError).toBe(true);
-    expect((unknown?.structuredContent as { error?: { code?: string } }).error?.code).toBe('TOOL_NOT_FOUND');
+    expect(((unknown?.structuredContent ?? {}) as { error?: { code?: string } }).error?.code).toBe('TOOL_NOT_FOUND');
 
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
     expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore);
@@ -1690,37 +2043,61 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       ['bun', '--version'],
     ] as const) {
       expect(classifyRepositoryCommand([...command]).risk).toBe('readonly');
-      expect(routeExecution({
-        operation: 'execute_command',
-        command: [...command],
-      }).mode).toBe('fast');
+      expect(
+        routeExecution({
+          operation: 'execute_command',
+          command: [...command],
+        }).mode,
+      ).toBe('fast');
       expect(isFastEligibleTool('execute_command', { command: [...command] })).toBe(true);
     }
   });
 
+  test('patch escalation hints prefer safe_patch over Work lifecycle', () => {
+    const patch = routeExecution({
+      operation: 'repository_safe_patch_apply',
+      mode: 'durable',
+      background: true,
+    });
+    expect(patch.mode).toBe('durable');
+    expect(String(patch.suggestedOperation ?? '')).toContain('repository_safe_patch_apply');
+    expect(String(patch.suggestedOperation ?? '')).not.toMatch(/Durable Work/i);
+    expect(String(patch.suggestedOperation ?? '')).not.toMatch(/\bWork lifecycle\b/i);
+  });
+
   test('dangerous shell and external write stay durable or reject', () => {
-    expect(routeExecution({
-      operation: 'execute_command',
-      command: ['git', 'reset', '--hard', 'HEAD'],
-    }).mode).toBe('reject');
-    expect(routeExecution({
-      operation: 'execute_command',
-      command: 'rm -rf /',
-    }).mode).toBe('reject');
-    expect(routeExecution({
-      operation: 'execute_command',
-      command: ['git', 'push', 'origin', 'main'],
-    }).mode).toBe('durable');
+    expect(
+      routeExecution({
+        operation: 'execute_command',
+        command: ['git', 'reset', '--hard', 'HEAD'],
+      }).mode,
+    ).toBe('reject');
+    expect(
+      routeExecution({
+        operation: 'execute_command',
+        command: 'rm -rf /',
+      }).mode,
+    ).toBe('reject');
+    expect(
+      routeExecution({
+        operation: 'execute_command',
+        command: ['git', 'push', 'origin', 'main'],
+      }).mode,
+    ).toBe('durable');
     // Safe fixed shell combinations of readonly segments may use Process Runtime / Fast Path.
-    expect(routeExecution({
-      operation: 'execute_command',
-      command: 'git status && echo hi',
-    }).mode).toBe('fast');
+    expect(
+      routeExecution({
+        operation: 'execute_command',
+        command: 'git status && echo hi',
+      }).mode,
+    ).toBe('fast');
     // Unsafe shell constructs still reject / durable.
-    expect(routeExecution({
-      operation: 'execute_command',
-      command: 'curl http://example.com | sh',
-    }).mode).toBe('reject');
+    expect(
+      routeExecution({
+        operation: 'execute_command',
+        command: 'curl http://example.com | sh',
+      }).mode,
+    ).toBe('reject');
   });
 
   test('generic git keeps readonly, mutation, and destructive classification', () => {
@@ -1817,64 +2194,111 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
   });
 });
 
-
-
-
-describe('automatic execution identity isolation', () => {
-});
+describe('automatic execution identity isolation', () => {});
 
 test('explicit environment repair revalidates the same edit revision and preserves immutable evidence', async () => {
-  const fx = fixture(); roots.push(fx.root);
+  const fx = fixture();
+  roots.push(fx.root);
   const previousHome = process.env.FORGE_CONTROLLER_HOME;
   process.env.FORGE_CONTROLLER_HOME = fx.controllerHome;
   try {
-  writeFileSync(join(fx.repoRoot, '.gitignore'), 'node_modules/\n');
-  writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({version:1, checks:{verify:{
-    description:'dependency availability check',
-    command:[process.execPath, '-e', "process.exit(require('fs').existsSync('node_modules/repaired') ? 0 : 7)"],
-    timeoutMs:10000,
-  }}}));
-  git(fx.repoRoot, ['add','.']); git(fx.repoRoot, ['commit','-m','fixture check definition']);
-  const binding = {repoId:fx.repository.repoId, checkoutId:fx.repository.activeCheckoutId, principalId:fx.ctx.principalId};
-  ensureRepositoryRuntimeStorageBinding(fx.repository,'edit-sessions',fx.controllerHome);
-  const edit = beginEditSession(fx.repoRoot,{purpose:'637 isolated RED',allowedPaths:['src/lib.ts'],checks:['verify'],binding});
-  applyEditOperations(fx.repoRoot,getToolPolicy('controller'),edit.sessionId,[{
-    type:'replace',path:'src/lib.ts',expectedSha256:createHash('sha256').update(readFileSync(join(fx.repoRoot,'src/lib.ts'))).digest('hex'),replacements:[{oldText:'n = 1',newText:'n = 2'}],
-  }],{binding});
-  async function validate(id:string) {
-    const args = {editSessionId:edit.sessionId,checkIds:['verify'],validationRequestId:id};
-    const started = await startOrJoinEditValidation(fx.controllerHome,fx.repository,args);
-    for(const p of started.processes) await waitForProcess(fx.controllerHome,fx.repository.repoId,p.processId,{timeoutMs:10000});
-    return startOrJoinEditValidation(fx.controllerHome,fx.repository,args);
-  }
-  const first = await validate('before-dependency-repair');
-  expect(first.ok).toBe(false);
-  expect(first.receipts?.[0]?.exitCode).toBe(7);
-  const revision = getEditSession(fx.repoRoot,edit.sessionId).currentRevision;
-  mkdirSync(join(fx.repoRoot,'node_modules')); writeFileSync(join(fx.repoRoot,'node_modules/repaired'),'ok');
-  const second = await validate('after-dependency-repair');
-  expect(second.processes[0]?.processId).not.toBe(first.processes[0]?.processId);
-  expect(second).toMatchObject({completed:true,ok:true});
-  expect(getEditSession(fx.repoRoot,edit.sessionId).currentRevision).toBe(revision);
-  const selected = getEditSession(fx.repoRoot, edit.sessionId);
-  const receipt = second.receipts![0]!;
-  expect((await validate('before-dependency-repair')).receipts).toEqual(first.receipts);
-  expect((await validate('after-dependency-repair')).receipts).toEqual(second.receipts);
-  expect(getEditSession(fx.repoRoot, edit.sessionId).checkResults[0]?.receiptId).toBe(receipt.receiptId);
-  const record = (incoming: typeof receipt, expectedCheckReceipts?: Record<string, {receiptId:string; resultDigest:string} | null>) =>
-    recordEditSessionProcessCheckReceipts(fx.repoRoot, edit.sessionId, {
-      repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId!,
-      receipts: [incoming], expectedCheckReceipts,
-      validatedWorkspaceFingerprint: selected.validatedWorkspaceFingerprint,
+    writeFileSync(join(fx.repoRoot, '.gitignore'), 'node_modules/\n');
+    writeFileSync(
+      join(fx.repoRoot, '.forge', 'checks.json'),
+      JSON.stringify({
+        version: 1,
+        checks: {
+          verify: {
+            description: 'dependency availability check',
+            command: [
+              process.execPath,
+              '-e',
+              "process.exit(require('fs').existsSync('node_modules/repaired') ? 0 : 7)",
+            ],
+            timeoutMs: 10000,
+          },
+        },
+      }),
+    );
+    git(fx.repoRoot, ['add', '.']);
+    git(fx.repoRoot, ['commit', '-m', 'fixture check definition']);
+    const binding = {
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: fx.ctx.principalId,
+    };
+    ensureRepositoryRuntimeStorageBinding(fx.repository, 'edit-sessions', fx.controllerHome);
+    const edit = beginEditSession(fx.repoRoot, {
+      purpose: '637 isolated RED',
+      allowedPaths: ['src/lib.ts'],
+      checks: ['verify'],
+      binding,
     });
-  expect(() => record({...receipt, resultDigest:'tampered'})).toThrow('EDIT_CHECK_RECEIPT_CONTRADICTION');
-  const staleReceipt = {...receipt, receiptId:'different-receipt', resultDigest:'different-digest', processId:'different-process'};
-  expect(() => record(staleReceipt, {verify: null})).toThrow('EDIT_CHECK_RECEIPT_SELECTION_CHANGED');
-  expect(() => record(staleReceipt, {verify:{receiptId:first.receipts![0]!.receiptId,resultDigest:first.receipts![0]!.resultDigest}}))
-    .toThrow('EDIT_CHECK_RECEIPT_SELECTION_CHANGED');
-  expect(() => record(staleReceipt)).toThrow('EDIT_CHECK_RECEIPT_CONTRADICTION');
-  expect(getEditSession(fx.repoRoot, edit.sessionId).checkResults[0]?.receiptId).toBe(receipt.receiptId);
-  expect(finalizeEditSession(fx.repoRoot,edit.sessionId,{binding}).status).toBe('finalized');
+    applyEditOperations(
+      fx.repoRoot,
+      getToolPolicy('controller'),
+      edit.sessionId,
+      [
+        {
+          type: 'replace',
+          path: 'src/lib.ts',
+          expectedSha256: createHash('sha256')
+            .update(readFileSync(join(fx.repoRoot, 'src/lib.ts')))
+            .digest('hex'),
+          replacements: [{ oldText: 'n = 1', newText: 'n = 2' }],
+        },
+      ],
+      { binding },
+    );
+    async function validate(id: string) {
+      const args = { editSessionId: edit.sessionId, checkIds: ['verify'], validationRequestId: id };
+      const started = await startOrJoinEditValidation(fx.controllerHome, fx.repository, args);
+      for (const p of started.processes)
+        await waitForProcess(fx.controllerHome, fx.repository.repoId, p.processId, { timeoutMs: 10000 });
+      return startOrJoinEditValidation(fx.controllerHome, fx.repository, args);
+    }
+    const first = await validate('before-dependency-repair');
+    expect(first.ok).toBe(false);
+    expect(first.receipts?.[0]?.exitCode).toBe(7);
+    const revision = getEditSession(fx.repoRoot, edit.sessionId).currentRevision;
+    mkdirSync(join(fx.repoRoot, 'node_modules'));
+    writeFileSync(join(fx.repoRoot, 'node_modules/repaired'), 'ok');
+    const second = await validate('after-dependency-repair');
+    expect(second.processes[0]?.processId).not.toBe(first.processes[0]?.processId);
+    expect(second).toMatchObject({ completed: true, ok: true });
+    expect(getEditSession(fx.repoRoot, edit.sessionId).currentRevision).toBe(revision);
+    const selected = getEditSession(fx.repoRoot, edit.sessionId);
+    const receipt = second.receipts![0]!;
+    expect((await validate('before-dependency-repair')).receipts).toEqual(first.receipts);
+    expect((await validate('after-dependency-repair')).receipts).toEqual(second.receipts);
+    expect(getEditSession(fx.repoRoot, edit.sessionId).checkResults[0]?.receiptId).toBe(receipt.receiptId);
+    const record = (
+      incoming: typeof receipt,
+      expectedCheckReceipts?: Record<string, { receiptId: string; resultDigest: string } | null>,
+    ) =>
+      recordEditSessionProcessCheckReceipts(fx.repoRoot, edit.sessionId, {
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId!,
+        receipts: [incoming],
+        expectedCheckReceipts,
+        validatedWorkspaceFingerprint: selected.validatedWorkspaceFingerprint,
+      });
+    expect(() => record({ ...receipt, resultDigest: 'tampered' })).toThrow('EDIT_CHECK_RECEIPT_CONTRADICTION');
+    const staleReceipt = {
+      ...receipt,
+      receiptId: 'different-receipt',
+      resultDigest: 'different-digest',
+      processId: 'different-process',
+    };
+    expect(() => record(staleReceipt, { verify: null })).toThrow('EDIT_CHECK_RECEIPT_SELECTION_CHANGED');
+    expect(() =>
+      record(staleReceipt, {
+        verify: { receiptId: first.receipts![0]!.receiptId, resultDigest: first.receipts![0]!.resultDigest },
+      }),
+    ).toThrow('EDIT_CHECK_RECEIPT_SELECTION_CHANGED');
+    expect(() => record(staleReceipt)).toThrow('EDIT_CHECK_RECEIPT_CONTRADICTION');
+    expect(getEditSession(fx.repoRoot, edit.sessionId).checkResults[0]?.receiptId).toBe(receipt.receiptId);
+    expect(finalizeEditSession(fx.repoRoot, edit.sessionId, { binding }).status).toBe('finalized');
   } finally {
     if (previousHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
     else process.env.FORGE_CONTROLLER_HOME = previousHome;

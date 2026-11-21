@@ -25,7 +25,7 @@ import {
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import { sha256FileBounded } from '../../src/runtime/root/known-good-recovery';
-import { parseOpenAiSecureTunnelRuntimeStatus } from '../../adapters/mcp/tunnels/openai-secure-tunnel';
+import { parseOpenAiSecureTunnelRuntimeStatus } from '../../src/runtime/standalone-recovery/openai-secure-tunnel';
 import {
   probeOpenAiApiReachability,
   probeRuntimeGateway,

@@ -17,7 +17,7 @@ import {
 import type { RuntimeReleaseExecutionCanaryDependencies, StagedRuntimeRelease } from '../root/release-materialize';
 import type { RuntimePerformanceEvidence } from './performance';
 import type { KnownGoodRecoveryBundle } from '../root/known-good-recovery';
-import type { OpenAiSecureTunnelRuntimeObservation } from '../../../adapters/mcp/tunnels/openai-secure-tunnel';
+import type { OpenAiSecureTunnelRuntimeObservation } from './openai-secure-tunnel';
 import type { ReleaseSession } from '../release/release-session';
 
 /**

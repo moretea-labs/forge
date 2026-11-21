@@ -14,7 +14,7 @@ import {
   openAiSecureTunnelStatusArgs,
   parseOpenAiSecureTunnelRuntimeStatus,
   type OpenAiSecureTunnelRuntimeObservation,
-} from '../../../adapters/mcp/tunnels/openai-secure-tunnel';
+} from './openai-secure-tunnel';
 import type { OpenAiSecureTunnelServiceConfig, RecoveryConfig, ReleaseEvidence, VerifyResult } from './recovery-shared';
 import {
   audit,

@@ -2,8 +2,14 @@ import { createHash } from 'crypto';
 import { isAbsolute, join, resolve } from 'path';
 import { hostname } from 'os';
 import { systemdUserUnitName } from '../src/runtime/platform/systemd-user';
-import { openAiSecureTunnelConnectArgs } from '../adapters/mcp/tunnels/openai-secure-tunnel';
-import { loadRecoveryConfig, type OpenAiSecureTunnelServiceConfig, type PrimaryConnectorServiceConfig, type PublicTunnelServiceConfig, type RecoveryTunnelServiceConfig } from '../src/runtime/standalone-recovery/core';
+import { openAiSecureTunnelConnectArgs } from '../src/runtime/standalone-recovery/openai-secure-tunnel';
+import {
+  loadRecoveryConfig,
+  type OpenAiSecureTunnelServiceConfig,
+  type PrimaryConnectorServiceConfig,
+  type PublicTunnelServiceConfig,
+  type RecoveryTunnelServiceConfig,
+} from '../src/runtime/standalone-recovery/core';
 import { installStandaloneRecovery } from '../src/runtime/standalone-recovery/installer';
 
 function option(name: string): string | undefined {
@@ -14,7 +20,8 @@ function option(name: string): string | undefined {
 function integerOption(name: string, fallback: number, minimum: number, maximum: number): number {
   const raw = option(name);
   const value = raw === undefined ? fallback : Number(raw);
-  if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(`${name.slice(2).replace(/-/g, '_').toUpperCase()}_INVALID`);
+  if (!Number.isInteger(value) || value < minimum || value > maximum)
+    throw new Error(`${name.slice(2).replace(/-/g, '_').toUpperCase()}_INVALID`);
   return value;
 }
 
@@ -22,7 +29,8 @@ function endpointOption(name: string): string | undefined {
   const value = option(name);
   if (!value) return undefined;
   const parsed = new URL(value);
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error(`${name.slice(2).replace(/-/g, '_').toUpperCase()}_INVALID`);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+    throw new Error(`${name.slice(2).replace(/-/g, '_').toUpperCase()}_INVALID`);
   parsed.hash = '';
   return parsed.toString();
 }
@@ -46,10 +54,13 @@ function openAiTunnelService(input: {
   defaultAlias: string;
   role: string;
 }): OpenAiSecureTunnelServiceConfig | undefined {
-  const supplied = Boolean(input.tunnelId || input.alias || input.runtimeApiKeyRef || input.profile || input.profileDir || input.adminProfile);
+  const supplied = Boolean(
+    input.tunnelId || input.alias || input.runtimeApiKeyRef || input.profile || input.profileDir || input.adminProfile,
+  );
   if (!supplied) return undefined;
   if (!input.tunnelId) throw new Error(`${input.role}_OPENAI_TUNNEL_ID_REQUIRED`);
-  if (input.profileDir && !isAbsolute(input.profileDir)) throw new Error(`${input.role}_OPENAI_PROFILE_DIR_ABSOLUTE_REQUIRED`);
+  if (input.profileDir && !isAbsolute(input.profileDir))
+    throw new Error(`${input.role}_OPENAI_PROFILE_DIR_ABSOLUTE_REQUIRED`);
   const service: OpenAiSecureTunnelServiceConfig = {
     platform: 'openai-secure-tunnel',
     alias: input.alias?.trim() || input.defaultAlias,
@@ -60,7 +71,9 @@ function openAiTunnelService(input: {
     ...(input.profileDir ? { profileDir: resolve(input.profileDir) } : {}),
     ...(input.adminProfile?.trim() ? { adminProfile: input.adminProfile.trim() } : {}),
   };
-  try { openAiSecureTunnelConnectArgs(service); } catch (error) {
+  try {
+    openAiSecureTunnelConnectArgs(service);
+  } catch (error) {
     throw new Error(`${input.role}_${error instanceof Error ? error.message : 'OPENAI_TUNNEL_CONFIG_INVALID'}`);
   }
   return service;
@@ -92,7 +105,8 @@ const existingRecoveryConfig = loadRecoveryConfig(controllerHome);
 const primaryRuntimeSourceRoot = existingRecoveryConfig.primaryRuntimeSourceRoot;
 const primaryRuntimeSourceRepositoryId = existingRecoveryConfig.primaryRuntimeSourceRepositoryId;
 if (!stageOnly && !primaryRuntimeSourceRoot) throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_ROOT_REQUIRED');
-if (!stageOnly && !primaryRuntimeSourceRepositoryId) throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_REPOSITORY_ID_REQUIRED');
+if (!stageOnly && !primaryRuntimeSourceRepositoryId)
+  throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_REPOSITORY_ID_REQUIRED');
 const publicMcpUrl = endpointOption('--public-mcp-url');
 const recoveryPublicUrl = endpointOption('--recovery-public-url');
 
@@ -106,8 +120,10 @@ const recoverySystemdTunnelService = recoverySystemdUnitRaw
   ? { platform: 'systemd-user' as const, unitName: systemdUserUnitName(recoverySystemdUnitRaw) }
   : undefined;
 if (recoveryLaunchdTunnelService && recoverySystemdTunnelService) throw new Error('RECOVERY_TUNNEL_OWNER_CONFLICT');
-if (recoveryLaunchdTunnelService && process.platform === 'linux') throw new Error('RECOVERY_TUNNEL_LAUNCHD_UNSUPPORTED_ON_LINUX');
-if (recoverySystemdTunnelService && process.platform !== 'linux') throw new Error('RECOVERY_TUNNEL_SYSTEMD_UNSUPPORTED_ON_THIS_PLATFORM');
+if (recoveryLaunchdTunnelService && process.platform === 'linux')
+  throw new Error('RECOVERY_TUNNEL_LAUNCHD_UNSUPPORTED_ON_LINUX');
+if (recoverySystemdTunnelService && process.platform !== 'linux')
+  throw new Error('RECOVERY_TUNNEL_SYSTEMD_UNSUPPORTED_ON_THIS_PLATFORM');
 const recoveryLocalMcpUrl = `http://127.0.0.1:${port}/recovery/mcp`;
 const recoveryOpenAiTunnelService = openAiTunnelService({
   tunnelId: option('--recovery-openai-tunnel-id'),
@@ -120,14 +136,20 @@ const recoveryOpenAiTunnelService = openAiTunnelService({
   defaultAlias: recoveryOpenAiTunnelDefaultAlias(controllerHome),
   role: 'RECOVERY',
 });
-const recoveryTunnelOwners = [recoverySystemdTunnelService, recoveryLaunchdTunnelService, recoveryOpenAiTunnelService].filter(Boolean);
+const recoveryTunnelOwners = [
+  recoverySystemdTunnelService,
+  recoveryLaunchdTunnelService,
+  recoveryOpenAiTunnelService,
+].filter(Boolean);
 if (recoveryTunnelOwners.length > 1) throw new Error('RECOVERY_TUNNEL_OWNER_CONFLICT');
-const recoveryTunnelService = recoveryOpenAiTunnelService ?? recoverySystemdTunnelService ?? recoveryLaunchdTunnelService;
+const recoveryTunnelService =
+  recoveryOpenAiTunnelService ?? recoverySystemdTunnelService ?? recoveryLaunchdTunnelService;
 if (recoveryOpenAiTunnelService && recoveryPublicUrl) throw new Error('RECOVERY_OPENAI_TUNNEL_PUBLIC_URL_CONFLICT');
 if ((recoverySystemdTunnelService || recoveryLaunchdTunnelService) && !recoveryPublicUrl) {
   throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
 }
-if (!recoveryTunnelService && recoveryPublicUrl) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
+if (!recoveryTunnelService && recoveryPublicUrl)
+  throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
 const primaryConnectorLocalUrl = endpointOption('--primary-connector-local-url');
 const primaryConnectorBase = launchdService(
   option('--primary-connector-service-label'),
@@ -137,9 +159,12 @@ const primaryConnectorBase = launchdService(
 let primaryConnectorService: PrimaryConnectorServiceConfig | undefined;
 if (process.platform === 'linux') {
   if (primaryConnectorBase) throw new Error('RECOVERY_PRIMARY_CONNECTOR_LAUNCHD_UNSUPPORTED_ON_LINUX');
-  primaryConnectorService = primaryConnectorLocalUrl ? { platform: 'systemd-user', localMcpUrl: primaryConnectorLocalUrl } : undefined;
+  primaryConnectorService = primaryConnectorLocalUrl
+    ? { platform: 'systemd-user', localMcpUrl: primaryConnectorLocalUrl }
+    : undefined;
 } else {
-  if (primaryConnectorLocalUrl && !primaryConnectorBase) throw new Error('RECOVERY_PRIMARY_CONNECTOR_LABEL_REQUIRED_FOR_LOCAL_URL');
+  if (primaryConnectorLocalUrl && !primaryConnectorBase)
+    throw new Error('RECOVERY_PRIMARY_CONNECTOR_LABEL_REQUIRED_FOR_LOCAL_URL');
   primaryConnectorService = primaryConnectorBase
     ? { ...primaryConnectorBase, ...(primaryConnectorLocalUrl ? { localMcpUrl: primaryConnectorLocalUrl } : {}) }
     : undefined;
@@ -148,26 +173,35 @@ const primaryLaunchdTunnelService = launchdService(
   option('--primary-tunnel-service-label'),
   option('--primary-tunnel-service-plist'),
   'RECOVERY_PRIMARY_TUNNEL',
- ) as PublicTunnelServiceConfig | undefined;
-const primaryOpenAiTunnelService = primaryConnectorLocalUrl ? openAiTunnelService({
-  tunnelId: option('--primary-openai-tunnel-id'),
-  alias: option('--primary-openai-tunnel-alias'),
-  runtimeApiKeyRef: option('--primary-openai-runtime-api-key-ref'),
-  profile: option('--primary-openai-profile'),
-  profileDir: option('--primary-openai-profile-dir'),
-  adminProfile: option('--primary-openai-admin-profile'),
-  mcpServerUrl: primaryConnectorLocalUrl,
-  defaultAlias: 'forge',
-  role: 'RECOVERY_PRIMARY',
-}) : undefined;
+) as PublicTunnelServiceConfig | undefined;
+const primaryOpenAiTunnelService = primaryConnectorLocalUrl
+  ? openAiTunnelService({
+      tunnelId: option('--primary-openai-tunnel-id'),
+      alias: option('--primary-openai-tunnel-alias'),
+      runtimeApiKeyRef: option('--primary-openai-runtime-api-key-ref'),
+      profile: option('--primary-openai-profile'),
+      profileDir: option('--primary-openai-profile-dir'),
+      adminProfile: option('--primary-openai-admin-profile'),
+      mcpServerUrl: primaryConnectorLocalUrl,
+      defaultAlias: 'forge',
+      role: 'RECOVERY_PRIMARY',
+    })
+  : undefined;
 const primaryOpenAiOptionsSupplied = Boolean(
-  option('--primary-openai-tunnel-id') || option('--primary-openai-tunnel-alias') || option('--primary-openai-runtime-api-key-ref')
-  || option('--primary-openai-profile') || option('--primary-openai-profile-dir') || option('--primary-openai-admin-profile'),
+  option('--primary-openai-tunnel-id') ||
+    option('--primary-openai-tunnel-alias') ||
+    option('--primary-openai-runtime-api-key-ref') ||
+    option('--primary-openai-profile') ||
+    option('--primary-openai-profile-dir') ||
+    option('--primary-openai-admin-profile'),
 );
-if (primaryOpenAiOptionsSupplied && !primaryConnectorLocalUrl) throw new Error('RECOVERY_PRIMARY_CONNECTOR_LOCAL_URL_REQUIRED_FOR_OPENAI_TUNNEL');
-if (primaryLaunchdTunnelService && primaryOpenAiTunnelService) throw new Error('RECOVERY_PRIMARY_TUNNEL_OWNER_CONFLICT');
+if (primaryOpenAiOptionsSupplied && !primaryConnectorLocalUrl)
+  throw new Error('RECOVERY_PRIMARY_CONNECTOR_LOCAL_URL_REQUIRED_FOR_OPENAI_TUNNEL');
+if (primaryLaunchdTunnelService && primaryOpenAiTunnelService)
+  throw new Error('RECOVERY_PRIMARY_TUNNEL_OWNER_CONFLICT');
 const primaryPublicTunnelService = primaryOpenAiTunnelService ?? primaryLaunchdTunnelService;
-if (primaryPublicTunnelService && !primaryConnectorService) throw new Error('RECOVERY_PRIMARY_CONNECTOR_REQUIRED_FOR_PRIMARY_TUNNEL');
+if (primaryPublicTunnelService && !primaryConnectorService)
+  throw new Error('RECOVERY_PRIMARY_CONNECTOR_REQUIRED_FOR_PRIMARY_TUNNEL');
 assertDistinctOpenAiTunnelIdentity(recoveryTunnelService, primaryPublicTunnelService);
 
 const result = await installStandaloneRecovery({
@@ -185,35 +219,74 @@ const result = await installStandaloneRecovery({
   primaryConnectorService,
 });
 const config = result.config;
-console.log(JSON.stringify({
-  status: stageOnly ? 'staged' : 'installed',
-  controllerHome,
-  stagedRelease: result.staged.release,
-  activation: result.activated,
-  binary: join(controllerHome, 'recovery', 'bin', 'forge-recovery'),
-  config: {
-    controllerHome: config.controllerHome,
-    primaryRuntimeSourceRoot: config.primaryRuntimeSourceRoot,
-    primaryRuntimeSourceRepositoryId: config.primaryRuntimeSourceRepositoryId,
-    gateway: { host: config.gateway?.host, port: config.gateway?.port },
-    publicMcpUrl: config.publicMcpUrl,
-    recoveryPublicUrl: config.recoveryPublicUrl,
-    recoveryTunnelService: config.recoveryTunnelService
-      ? config.recoveryTunnelService.platform === 'launchd'
-        ? { platform: config.recoveryTunnelService.platform, label: config.recoveryTunnelService.label, plistPath: config.recoveryTunnelService.plistPath }
-        : config.recoveryTunnelService.platform === 'systemd-user'
-          ? { platform: config.recoveryTunnelService.platform, unitName: config.recoveryTunnelService.unitName }
-          : { platform: config.recoveryTunnelService.platform, alias: config.recoveryTunnelService.alias, tunnelId: config.recoveryTunnelService.tunnelId, mcpServerUrl: config.recoveryTunnelService.mcpServerUrl, runtimeApiKeyRef: config.recoveryTunnelService.runtimeApiKeyRef, profile: config.recoveryTunnelService.profile, profileDir: config.recoveryTunnelService.profileDir }
-      : undefined,
-    primaryConnectorService: config.primaryConnectorService
-      ? config.primaryConnectorService.platform === 'launchd'
-        ? { platform: config.primaryConnectorService.platform, label: config.primaryConnectorService.label, plistPath: config.primaryConnectorService.plistPath, localMcpUrl: config.primaryConnectorService.localMcpUrl }
-        : { platform: config.primaryConnectorService.platform, label: config.primaryConnectorService.label, localMcpUrl: config.primaryConnectorService.localMcpUrl }
-      : undefined,
-    primaryPublicTunnelService: config.primaryPublicTunnelService
-      ? config.primaryPublicTunnelService.platform === 'launchd'
-        ? { platform: config.primaryPublicTunnelService.platform, label: config.primaryPublicTunnelService.label, plistPath: config.primaryPublicTunnelService.plistPath }
-        : { platform: config.primaryPublicTunnelService.platform, alias: config.primaryPublicTunnelService.alias, tunnelId: config.primaryPublicTunnelService.tunnelId, mcpServerUrl: config.primaryPublicTunnelService.mcpServerUrl, runtimeApiKeyRef: config.primaryPublicTunnelService.runtimeApiKeyRef, profile: config.primaryPublicTunnelService.profile, profileDir: config.primaryPublicTunnelService.profileDir }
-      : undefined,
-  },
-}, null, 2));
+console.log(
+  JSON.stringify(
+    {
+      status: stageOnly ? 'staged' : 'installed',
+      controllerHome,
+      stagedRelease: result.staged.release,
+      activation: result.activated,
+      binary: join(controllerHome, 'recovery', 'bin', 'forge-recovery'),
+      config: {
+        controllerHome: config.controllerHome,
+        primaryRuntimeSourceRoot: config.primaryRuntimeSourceRoot,
+        primaryRuntimeSourceRepositoryId: config.primaryRuntimeSourceRepositoryId,
+        gateway: { host: config.gateway?.host, port: config.gateway?.port },
+        publicMcpUrl: config.publicMcpUrl,
+        recoveryPublicUrl: config.recoveryPublicUrl,
+        recoveryTunnelService: config.recoveryTunnelService
+          ? config.recoveryTunnelService.platform === 'launchd'
+            ? {
+                platform: config.recoveryTunnelService.platform,
+                label: config.recoveryTunnelService.label,
+                plistPath: config.recoveryTunnelService.plistPath,
+              }
+            : config.recoveryTunnelService.platform === 'systemd-user'
+              ? { platform: config.recoveryTunnelService.platform, unitName: config.recoveryTunnelService.unitName }
+              : {
+                  platform: config.recoveryTunnelService.platform,
+                  alias: config.recoveryTunnelService.alias,
+                  tunnelId: config.recoveryTunnelService.tunnelId,
+                  mcpServerUrl: config.recoveryTunnelService.mcpServerUrl,
+                  runtimeApiKeyRef: config.recoveryTunnelService.runtimeApiKeyRef,
+                  profile: config.recoveryTunnelService.profile,
+                  profileDir: config.recoveryTunnelService.profileDir,
+                }
+          : undefined,
+        primaryConnectorService: config.primaryConnectorService
+          ? config.primaryConnectorService.platform === 'launchd'
+            ? {
+                platform: config.primaryConnectorService.platform,
+                label: config.primaryConnectorService.label,
+                plistPath: config.primaryConnectorService.plistPath,
+                localMcpUrl: config.primaryConnectorService.localMcpUrl,
+              }
+            : {
+                platform: config.primaryConnectorService.platform,
+                label: config.primaryConnectorService.label,
+                localMcpUrl: config.primaryConnectorService.localMcpUrl,
+              }
+          : undefined,
+        primaryPublicTunnelService: config.primaryPublicTunnelService
+          ? config.primaryPublicTunnelService.platform === 'launchd'
+            ? {
+                platform: config.primaryPublicTunnelService.platform,
+                label: config.primaryPublicTunnelService.label,
+                plistPath: config.primaryPublicTunnelService.plistPath,
+              }
+            : {
+                platform: config.primaryPublicTunnelService.platform,
+                alias: config.primaryPublicTunnelService.alias,
+                tunnelId: config.primaryPublicTunnelService.tunnelId,
+                mcpServerUrl: config.primaryPublicTunnelService.mcpServerUrl,
+                runtimeApiKeyRef: config.primaryPublicTunnelService.runtimeApiKeyRef,
+                profile: config.primaryPublicTunnelService.profile,
+                profileDir: config.primaryPublicTunnelService.profileDir,
+              }
+          : undefined,
+      },
+    },
+    null,
+    2,
+  ),
+);

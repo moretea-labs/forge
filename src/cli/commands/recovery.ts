@@ -10,7 +10,7 @@ import {
   openAiSecureTunnelStatusArgs,
   parseOpenAiSecureTunnelRuntimeStatus,
   type OpenAiSecureTunnelRuntimeObservation,
-} from '../../../adapters/mcp/tunnels/openai-secure-tunnel';
+} from '../../runtime/standalone-recovery/openai-secure-tunnel';
 import { findRegisteredRepositoryByCheckoutRoot } from '../../runtime/repositories/registry';
 import {
   resolveControllerHome,
@@ -77,7 +77,11 @@ function endpoint(value: string | undefined, optionName: string): string | undef
   return parsed.toString();
 }
 
-function launchdService(label?: string, plistPath?: string, role = 'RECOVERY_TUNNEL'): PublicTunnelServiceConfig | PrimaryConnectorServiceConfig | undefined {
+function launchdService(
+  label?: string,
+  plistPath?: string,
+  role = 'RECOVERY_TUNNEL',
+): PublicTunnelServiceConfig | PrimaryConnectorServiceConfig | undefined {
   if (plistPath && !label) throw new Error(`${role}_SERVICE_LABEL_REQUIRED`);
   if (!label) return undefined;
   if (!/^com\.[A-Za-z0-9._-]{1,180}$/.test(label)) throw new Error(`${role}_SERVICE_LABEL_INVALID`);
@@ -97,7 +101,10 @@ export function recoveryOpenAiTunnelDefaultAlias(
   platform: NodeJS.Platform = process.platform,
   host = hostname(),
 ): string {
-  const suffix = createHash('sha256').update(`${host}\0${platform}\0${resolve(controllerHome)}`).digest('hex').slice(0, 12);
+  const suffix = createHash('sha256')
+    .update(`${host}\0${platform}\0${resolve(controllerHome)}`)
+    .digest('hex')
+    .slice(0, 12);
   return `forge-recovery-${suffix}`;
 }
 
@@ -121,10 +128,13 @@ function openAiTunnelService(input: {
   defaultAlias: string;
   role: string;
 }): OpenAiSecureTunnelServiceConfig | undefined {
-  const supplied = Boolean(input.tunnelId || input.alias || input.runtimeApiKeyRef || input.profile || input.profileDir || input.adminProfile);
+  const supplied = Boolean(
+    input.tunnelId || input.alias || input.runtimeApiKeyRef || input.profile || input.profileDir || input.adminProfile,
+  );
   if (!supplied) return undefined;
   if (!input.tunnelId) throw new Error(`${input.role}_OPENAI_TUNNEL_ID_REQUIRED`);
-  if (input.profileDir && !isAbsolute(input.profileDir)) throw new Error(`${input.role}_OPENAI_PROFILE_DIR_ABSOLUTE_REQUIRED`);
+  if (input.profileDir && !isAbsolute(input.profileDir))
+    throw new Error(`${input.role}_OPENAI_PROFILE_DIR_ABSOLUTE_REQUIRED`);
   const service: OpenAiSecureTunnelServiceConfig = {
     platform: 'openai-secure-tunnel',
     alias: input.alias?.trim() || input.defaultAlias,
@@ -135,12 +145,13 @@ function openAiTunnelService(input: {
     profileDir: input.profileDir ? resolve(input.profileDir) : undefined,
     adminProfile: input.adminProfile?.trim(),
   };
-  try { openAiSecureTunnelConnectArgs(service); } catch (error) {
+  try {
+    openAiSecureTunnelConnectArgs(service);
+  } catch (error) {
     throw new Error(`${input.role}_${error instanceof Error ? error.message : 'OPENAI_TUNNEL_CONFIG_INVALID'}`);
   }
   return service;
 }
-
 
 export { recoveryControllerHomeMigrationPreflight };
 export type { RecoveryControllerHomeMigrationPreflight };
@@ -218,7 +229,14 @@ export interface RecoveryConnectorDescriptor {
   };
   healthUrl: string;
   services: {
-    recovery: { label: string; platform: 'launchd' | 'systemd-user'; serviceInstalled: boolean; plistInstalled: boolean; running: boolean; pid?: number };
+    recovery: {
+      label: string;
+      platform: 'launchd' | 'systemd-user';
+      serviceInstalled: boolean;
+      plistInstalled: boolean;
+      running: boolean;
+      pid?: number;
+    };
     tunnel: {
       configured: boolean;
       platform?: 'launchd' | 'systemd-user' | 'openai-secure-tunnel';
@@ -258,7 +276,7 @@ export function recoveryConnectorDescriptor(
   const pathExists = dependencies.pathExists ?? existsSync;
   const launchdPid = dependencies.launchdPid ?? recoveryLaunchdPid;
   const systemdPid = dependencies.systemdPid ?? ((_role: 'daemon') => systemdUserServicePid(RECOVERY_DAEMON_LABEL));
-  const managedPid = () => servicePlatform === 'systemd-user' ? systemdPid('daemon') : launchdPid('daemon');
+  const managedPid = () => (servicePlatform === 'systemd-user' ? systemdPid('daemon') : launchdPid('daemon'));
   const processAlive = dependencies.processAlive ?? isProcessAlive;
   const serviceOwnsRuntimeProcess = (managedPid: number | undefined, runtimePid: number | undefined) =>
     recoveryManagedServiceOwnsRuntimeProcess(managedPid, runtimePid, {
@@ -275,22 +293,40 @@ export function recoveryConnectorDescriptor(
     : undefined;
   const tunnelPlistInstalled = Boolean(tunnelContract?.plistPath && pathExists(tunnelContract.plistPath));
   const systemdTunnelUnitName = systemdTunnelService?.unitName.trim();
-  const systemdTunnelIdentityValid = Boolean(systemdTunnelUnitName && /^[A-Za-z0-9_.@-]{1,180}\.service$/.test(systemdTunnelUnitName));
-  const systemdTunnelInstalled = Boolean(systemdTunnelIdentityValid && pathExists(systemdUserUnitPath(systemdTunnelUnitName!)));
+  const systemdTunnelIdentityValid = Boolean(
+    systemdTunnelUnitName && /^[A-Za-z0-9_.@-]{1,180}\.service$/.test(systemdTunnelUnitName),
+  );
+  const systemdTunnelInstalled = Boolean(
+    systemdTunnelIdentityValid && pathExists(systemdUserUnitPath(systemdTunnelUnitName!)),
+  );
   const systemdTunnelPid = systemdTunnelIdentityValid
     ? (dependencies.tunnelSystemdPid ?? ((unitName: string) => systemdUserServicePid(unitName)))(systemdTunnelUnitName!)
     : undefined;
   const openAiTunnelStatus = openAiTunnelService
-    ? (dependencies.openAiTunnelStatus ?? ((service: OpenAiSecureTunnelServiceConfig) => {
-        const status = spawnSync('tunnel-client', openAiSecureTunnelStatusArgs(service.alias, service), {
-          encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000,
-        });
-        return parseOpenAiSecureTunnelRuntimeStatus(status.stdout || '{}', { alias: service.alias, tunnelId: service.tunnelId, mcpServerUrl: service.mcpServerUrl });
-      }))(openAiTunnelService)
+    ? (
+        dependencies.openAiTunnelStatus ??
+        ((service: OpenAiSecureTunnelServiceConfig) => {
+          const status = spawnSync('tunnel-client', openAiSecureTunnelStatusArgs(service.alias, service), {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: 15_000,
+          });
+          return parseOpenAiSecureTunnelRuntimeStatus(status.stdout || '{}', {
+            alias: service.alias,
+            tunnelId: service.tunnelId,
+            mcpServerUrl: service.mcpServerUrl,
+          });
+        })
+      )(openAiTunnelService)
     : undefined;
   let openAiRestartSafe = false;
   if (openAiTunnelService) {
-    try { openAiSecureTunnelConnectArgs(openAiTunnelService); openAiRestartSafe = true; } catch { openAiRestartSafe = false; }
+    try {
+      openAiSecureTunnelConnectArgs(openAiTunnelService);
+      openAiRestartSafe = true;
+    } catch {
+      openAiRestartSafe = false;
+    }
   }
   const tunnelRestartSafe = openAiTunnelService
     ? openAiRestartSafe
@@ -305,36 +341,60 @@ export function recoveryConnectorDescriptor(
   const tunnelHealthy = openAiTunnelService ? openAiTunnelStatus?.healthy === true : tunnelRunning;
   const tunnelReady = openAiTunnelService ? openAiTunnelStatus?.ok === true : tunnelRestartSafe && tunnelRunning;
   const recoveryPlistInstalled = pathExists(authority.daemonLaunchAgent);
-  const recoveryServiceInstalled = servicePlatform === 'systemd-user'
-    ? pathExists(systemdUserUnitPath(RECOVERY_DAEMON_LABEL))
-    : recoveryPlistInstalled;
+  const recoveryServiceInstalled =
+    servicePlatform === 'systemd-user'
+      ? pathExists(systemdUserUnitPath(RECOVERY_DAEMON_LABEL))
+      : recoveryPlistInstalled;
   const recoveryManagedPid = managedPid();
   const recoveryRunning = Boolean(
-    recoveryIdentity
-    && serviceOwnsRuntimeProcess(recoveryManagedPid, recoveryIdentity.pid)
-    && authority.current
-    && recoveryIdentity.releaseRevision === authority.current.releaseRevision
-    && recoveryIdentity.manifestSha256 === authority.current.manifestSha256,
+    recoveryIdentity &&
+      serviceOwnsRuntimeProcess(recoveryManagedPid, recoveryIdentity.pid) &&
+      authority.current &&
+      recoveryIdentity.releaseRevision === authority.current.releaseRevision &&
+      recoveryIdentity.manifestSha256 === authority.current.manifestSha256,
   );
   const installed = Boolean(authority.current && recoveryServiceInstalled);
   const publicEndpoint = Boolean(configuredUrl?.startsWith('https://'));
   const warnings: string[] = [];
-  if (!authority.current) warnings.push('No current immutable Forge Recovery release is installed. Run forge recovery install.');
-  if (!recoveryServiceInstalled) warnings.push(`Forge Recovery ${servicePlatform} service is not installed. Run forge recovery install.`);
+  if (!authority.current)
+    warnings.push('No current immutable Forge Recovery release is installed. Run forge recovery install.');
+  if (!recoveryServiceInstalled)
+    warnings.push(`Forge Recovery ${servicePlatform} service is not installed. Run forge recovery install.`);
   if (!recoveryRunning) warnings.push('Forge Recovery service is not running on the current Recovery release.');
-  if (!configuredTunnel) warnings.push('Recovery is loopback-only. Configure a dedicated OpenAI Secure MCP Tunnel or an HTTPS tunnel service before adding it to ChatGPT.');
+  if (!configuredTunnel)
+    warnings.push(
+      'Recovery is loopback-only. Configure a dedicated OpenAI Secure MCP Tunnel or an HTTPS tunnel service before adding it to ChatGPT.',
+    );
   else if (openAiTunnelService) {
-    if (!tunnelRestartSafe) warnings.push('The dedicated OpenAI Recovery tunnel must use a valid alias, tunnel id, loopback MCP endpoint, and env:/file: runtime API key reference.');
-    else if (!tunnelRunning) warnings.push(`The dedicated OpenAI Recovery tunnel runtime ${openAiTunnelService.alias} is not running.`);
-    else if (!tunnelHealthy || !tunnelReady) warnings.push(`The dedicated OpenAI Recovery tunnel runtime ${openAiTunnelService.alias} is not healthy and ready.`);
+    if (!tunnelRestartSafe)
+      warnings.push(
+        'The dedicated OpenAI Recovery tunnel must use a valid alias, tunnel id, loopback MCP endpoint, and env:/file: runtime API key reference.',
+      );
+    else if (!tunnelRunning)
+      warnings.push(`The dedicated OpenAI Recovery tunnel runtime ${openAiTunnelService.alias} is not running.`);
+    else if (!tunnelHealthy || !tunnelReady)
+      warnings.push(
+        `The dedicated OpenAI Recovery tunnel runtime ${openAiTunnelService.alias} is not healthy and ready.`,
+      );
   } else if (!configuredUrl) warnings.push('The configured Recovery tunnel requires --recovery-public-url.');
-  else if (!publicEndpoint) warnings.push('ChatGPT Recovery Connector requires an HTTPS public endpoint for managed public tunnels.');
-  else if (systemdTunnelService && !systemdTunnelInstalled) warnings.push(`The dedicated Forge Recovery systemd-user tunnel unit ${systemdTunnelUnitName ?? systemdTunnelService.unitName} is not installed.`);
-  else if (systemdTunnelService && !tunnelRunning) warnings.push(`The dedicated Forge Recovery systemd-user tunnel unit ${systemdTunnelUnitName} is not running.`);
-  else if (!systemdTunnelService && !tunnelPlistInstalled) warnings.push('The dedicated Forge Recovery tunnel plist is not installed.');
-  else if (!systemdTunnelService && !tunnelRestartSafe) warnings.push('The dedicated Forge Recovery tunnel plist must use RunAtLoad=true and unconditional KeepAlive=true.');
-  else if (!systemdTunnelService && !tunnelRunning) warnings.push('The dedicated Forge Recovery tunnel service is not running.');
-  if (!passphraseConfigured) warnings.push('MCP OAuth passphrase is not configured. Run forge mcp setup chatgpt first.');
+  else if (!publicEndpoint)
+    warnings.push('ChatGPT Recovery Connector requires an HTTPS public endpoint for managed public tunnels.');
+  else if (systemdTunnelService && !systemdTunnelInstalled)
+    warnings.push(
+      `The dedicated Forge Recovery systemd-user tunnel unit ${systemdTunnelUnitName ?? systemdTunnelService.unitName} is not installed.`,
+    );
+  else if (systemdTunnelService && !tunnelRunning)
+    warnings.push(`The dedicated Forge Recovery systemd-user tunnel unit ${systemdTunnelUnitName} is not running.`);
+  else if (!systemdTunnelService && !tunnelPlistInstalled)
+    warnings.push('The dedicated Forge Recovery tunnel plist is not installed.');
+  else if (!systemdTunnelService && !tunnelRestartSafe)
+    warnings.push(
+      'The dedicated Forge Recovery tunnel plist must use RunAtLoad=true and unconditional KeepAlive=true.',
+    );
+  else if (!systemdTunnelService && !tunnelRunning)
+    warnings.push('The dedicated Forge Recovery tunnel service is not running.');
+  if (!passphraseConfigured)
+    warnings.push('MCP OAuth passphrase is not configured. Run forge mcp setup chatgpt first.');
 
   return {
     name: 'Forge Recovery',
@@ -342,7 +402,12 @@ export function recoveryConnectorDescriptor(
     transport: 'streamable_http',
     url,
     public: publicEndpoint,
-    readyForChatGPT: installed && recoveryRunning && tunnelReady && (openAiTunnelService ? true : publicEndpoint) && passphraseConfigured,
+    readyForChatGPT:
+      installed &&
+      recoveryRunning &&
+      tunnelReady &&
+      (openAiTunnelService ? true : publicEndpoint) &&
+      passphraseConfigured,
     installed,
     currentRelease: authority.current?.releaseRevision,
     previousRelease: authority.previous?.releaseRevision,
@@ -367,7 +432,11 @@ export function recoveryConnectorDescriptor(
         ...(tunnelService ? { label: tunnelService.label } : {}),
         ...(systemdTunnelService ? { unitName: systemdTunnelUnitName ?? systemdTunnelService.unitName } : {}),
         ...(openAiTunnelService ? { alias: openAiTunnelService.alias, tunnelId: openAiTunnelService.tunnelId } : {}),
-        serviceInstalled: openAiTunnelService ? openAiRestartSafe : systemdTunnelService ? systemdTunnelInstalled : tunnelPlistInstalled,
+        serviceInstalled: openAiTunnelService
+          ? openAiRestartSafe
+          : systemdTunnelService
+            ? systemdTunnelInstalled
+            : tunnelPlistInstalled,
         plistInstalled: tunnelPlistInstalled,
         restartSafe: tunnelRestartSafe,
         running: tunnelRunning,
@@ -425,7 +494,7 @@ export interface RecoveryConnectorVerificationResult {
 }
 
 function jsonObject(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 async function responseJson(response: Response): Promise<Record<string, unknown>> {
@@ -467,14 +536,17 @@ export async function verifyRecoveryConnector(
     oauthPkce: { ok: false },
     mcp: { ok: false },
   };
-  const request = (url: string, init: RequestInit = {}) => fetcher(url, {
-    ...init,
-    signal: AbortSignal.timeout(20_000),
-  });
+  const request = (url: string, init: RequestInit = {}) =>
+    fetcher(url, {
+      ...init,
+      signal: AbortSignal.timeout(20_000),
+    });
 
   if (!connector.readyForChatGPT) failures.push(...connector.warnings.map((warning) => `readiness: ${warning}`));
   if (!recoveryConnectorHasExternalTransport(connector)) {
-    failures.push('readiness: Recovery Connector has neither an HTTPS public endpoint nor a dedicated OpenAI Secure MCP Tunnel.');
+    failures.push(
+      'readiness: Recovery Connector has neither an HTTPS public endpoint nor a dedicated OpenAI Secure MCP Tunnel.',
+    );
   }
 
   const origin = new URL(connector.url).origin;
@@ -483,24 +555,34 @@ export async function verifyRecoveryConnector(
     const body = await responseJson(response);
     const version = typeof body.version === 'string' ? body.version : undefined;
     const releaseRevision = typeof body.releaseRevision === 'string' ? body.releaseRevision : undefined;
-    const ok = response.status === 200
-      && body.status === 'ok'
-      && version === FORGE_VERSION
-      && (!connector.currentRelease || releaseRevision === connector.currentRelease);
-    probes.publicHealth = { ok, status: response.status, ...(version ? { version } : {}), ...(releaseRevision ? { releaseRevision } : {}) };
-    if (!ok) failures.push(`publicHealth: expected HTTP 200, Forge ${FORGE_VERSION}, and current Recovery release identity.`);
+    const ok =
+      response.status === 200 &&
+      body.status === 'ok' &&
+      version === FORGE_VERSION &&
+      (!connector.currentRelease || releaseRevision === connector.currentRelease);
+    probes.publicHealth = {
+      ok,
+      status: response.status,
+      ...(version ? { version } : {}),
+      ...(releaseRevision ? { releaseRevision } : {}),
+    };
+    if (!ok)
+      failures.push(`publicHealth: expected HTTP 200, Forge ${FORGE_VERSION}, and current Recovery release identity.`);
   } catch (error) {
     failures.push(`publicHealth: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   try {
-    const response = await request(connector.oauth.authorizationServerMetadataUrl, { headers: { accept: 'application/json' } });
+    const response = await request(connector.oauth.authorizationServerMetadataUrl, {
+      headers: { accept: 'application/json' },
+    });
     const body = await responseJson(response);
-    const ok = response.status === 200
-      && body.issuer === origin
-      && body.authorization_endpoint === `${origin}/recovery/oauth/authorize`
-      && body.token_endpoint === `${origin}/recovery/oauth/token`
-      && body.registration_endpoint === `${origin}/recovery/oauth/register`;
+    const ok =
+      response.status === 200 &&
+      body.issuer === origin &&
+      body.authorization_endpoint === `${origin}/recovery/oauth/authorize` &&
+      body.token_endpoint === `${origin}/recovery/oauth/token` &&
+      body.registration_endpoint === `${origin}/recovery/oauth/register`;
     probes.authorizationMetadata = { ok, status: response.status };
     if (!ok) failures.push('authorizationMetadata: OAuth authorization-server metadata is incomplete or inconsistent.');
   } catch (error) {
@@ -508,12 +590,15 @@ export async function verifyRecoveryConnector(
   }
 
   try {
-    const response = await request(connector.oauth.protectedResourceMetadataUrl, { headers: { accept: 'application/json' } });
+    const response = await request(connector.oauth.protectedResourceMetadataUrl, {
+      headers: { accept: 'application/json' },
+    });
     const body = await responseJson(response);
     const authorizationServers = Array.isArray(body.authorization_servers) ? body.authorization_servers : [];
     const ok = response.status === 200 && body.resource === connector.url && authorizationServers.includes(origin);
     probes.protectedResourceMetadata = { ok, status: response.status };
-    if (!ok) failures.push('protectedResourceMetadata: OAuth protected-resource metadata is incomplete or inconsistent.');
+    if (!ok)
+      failures.push('protectedResourceMetadata: OAuth protected-resource metadata is incomplete or inconsistent.');
   } catch (error) {
     failures.push(`protectedResourceMetadata: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -535,12 +620,14 @@ export async function verifyRecoveryConnector(
       body: initializeBody,
     });
     const challenge = response.headers.get('www-authenticate') ?? '';
-    const ok = response.status === 401
-      && /\bBearer\b/i.test(challenge)
-      && challenge.includes('error="invalid_token"')
-      && challenge.includes('oauth-protected-resource');
+    const ok =
+      response.status === 401 &&
+      /\bBearer\b/i.test(challenge) &&
+      challenge.includes('error="invalid_token"') &&
+      challenge.includes('oauth-protected-resource');
     probes.unauthenticatedChallenge = { ok, status: response.status };
-    if (!ok) failures.push('unauthenticatedChallenge: Recovery MCP did not return the expected OAuth Bearer challenge.');
+    if (!ok)
+      failures.push('unauthenticatedChallenge: Recovery MCP did not return the expected OAuth Bearer challenge.');
   } catch (error) {
     failures.push(`unauthenticatedChallenge: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -567,7 +654,11 @@ export async function verifyRecoveryConnector(
       const clientId = typeof registrationBody.client_id === 'string' ? registrationBody.client_id : '';
       const clientOwner = registrationBody.forge_client_owner;
       const clientReused = registrationBody.forge_client_reused === true;
-      if (registration.status !== 201 || clientId !== RECOVERY_VERIFIER_OAUTH_CLIENT_ID || clientOwner !== 'recovery_verifier') {
+      if (
+        registration.status !== 201 ||
+        clientId !== RECOVERY_VERIFIER_OAUTH_CLIENT_ID ||
+        clientOwner !== 'recovery_verifier'
+      ) {
         throw new Error(`dynamic verifier registration HTTP ${registration.status}`);
       }
 
@@ -636,7 +727,12 @@ export async function verifyRecoveryConnector(
             'content-type': 'application/json',
             'mcp-protocol-version': '2025-06-18',
           },
-          body: JSON.stringify({ jsonrpc: '2.0', ...(id === undefined ? {} : { id }), method, ...(params ? { params } : {}) }),
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            ...(id === undefined ? {} : { id }),
+            method,
+            ...(params ? { params } : {}),
+          }),
         });
         if (response.headers.get('mcp-session-id')?.trim()) {
           throw new Error(`${method} unexpectedly established transport session state`);
@@ -648,7 +744,9 @@ export async function verifyRecoveryConnector(
         const body = await responseJson(response);
         const rpcError = jsonObject(body.error);
         if (response.status !== 200 || Object.keys(rpcError).length > 0) {
-          throw new Error(`${method} HTTP ${response.status}${typeof rpcError.message === 'string' ? `: ${rpcError.message}` : ''}`);
+          throw new Error(
+            `${method} HTTP ${response.status}${typeof rpcError.message === 'string' ? `: ${rpcError.message}` : ''}`,
+          );
         }
         return { response, result: jsonObject(body.result) };
       };
@@ -661,33 +759,40 @@ export async function verifyRecoveryConnector(
       const initializedNotification = await rpc(undefined, 'notifications/initialized');
       const listed = await rpc(12, 'tools/list');
       const tools = Array.isArray(listed.result.tools)
-        ? listed.result.tools.map((tool) => jsonObject(tool).name).filter((name): name is string => typeof name === 'string')
+        ? listed.result.tools
+            .map((tool) => jsonObject(tool).name)
+            .filter((name): name is string => typeof name === 'string')
         : [];
       const expectedTools = RECOVERY_TOOLS.map((tool) => tool.name);
       const runtimeStatusCall = await rpc(13, 'tools/call', { name: 'runtime_status', arguments: {} });
       const listReleasesCall = await rpc(14, 'tools/call', { name: 'list_releases', arguments: {} });
       const initializedResult = initialized.result;
       const serverInfo = jsonObject(initializedResult.serverInfo);
-      const mcpOk = initialized.response.status === 200
-        && initializedNotification.response.status === 202
-        && initializedResult.protocolVersion === '2025-06-18'
-        && serverInfo.name === 'forge-standalone-recovery'
-        && serverInfo.version === FORGE_VERSION
-        && JSON.stringify(tools) === JSON.stringify(expectedTools)
-        && runtimeStatusCall.response.status === 200
-        && listReleasesCall.response.status === 200;
+      const mcpOk =
+        initialized.response.status === 200 &&
+        initializedNotification.response.status === 202 &&
+        initializedResult.protocolVersion === '2025-06-18' &&
+        serverInfo.name === 'forge-standalone-recovery' &&
+        serverInfo.version === FORGE_VERSION &&
+        JSON.stringify(tools) === JSON.stringify(expectedTools) &&
+        runtimeStatusCall.response.status === 200 &&
+        listReleasesCall.response.status === 200;
       probes.mcp = {
         ok: mcpOk,
         initializeStatus: initialized.response.status,
         initializedNotificationStatus: initializedNotification.response.status,
-        protocolVersion: typeof initializedResult.protocolVersion === 'string' ? initializedResult.protocolVersion : undefined,
+        protocolVersion:
+          typeof initializedResult.protocolVersion === 'string' ? initializedResult.protocolVersion : undefined,
         serverName: typeof serverInfo.name === 'string' ? serverInfo.name : undefined,
         serverVersion: typeof serverInfo.version === 'string' ? serverInfo.version : undefined,
         tools,
         runtimeStatusCall: runtimeStatusCall.response.status === 200,
         listReleasesCall: listReleasesCall.response.status === 200,
       };
-      if (!mcpOk) failures.push('mcp: stateless initialize, Forge version, tool surface, or read-only calls did not match the Recovery contract.');
+      if (!mcpOk)
+        failures.push(
+          'mcp: stateless initialize, Forge version, tool surface, or read-only calls did not match the Recovery contract.',
+        );
     } catch (error) {
       failures.push(`oauthPkce/mcp: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -697,16 +802,20 @@ export async function verifyRecoveryConnector(
 }
 
 export function buildRecoveryCommand(): Command {
-  const command = new Command('recovery').description('Install, inspect, and configure the independent Forge Recovery Connector');
+  const command = new Command('recovery').description(
+    'Install, inspect, and configure the independent Forge Recovery Connector',
+  );
 
-  command.command('connector')
+  command
+    .command('connector')
     .description('Print the exact ChatGPT Recovery Connector URL, OAuth metadata, services, and readiness')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .action((opts: { controllerHome: string }) => {
       output(recoveryConnectorDescriptor(opts.controllerHome));
     });
 
-  command.command('verify-connector')
+  command
+    .command('verify-connector')
     .description('Verify the public Recovery tunnel, OAuth PKCE flow, MCP handshake, tools, and read-only calls')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .action(async (opts: { controllerHome: string }) => {
@@ -715,7 +824,8 @@ export function buildRecoveryCommand(): Command {
       if (!result.ok) process.exitCode = 1;
     });
 
-  command.command('status')
+  command
+    .command('status')
     .description('Read independent Recovery and canonical Runtime status')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .action(async (opts: { controllerHome: string }) => {
@@ -723,7 +833,8 @@ export function buildRecoveryCommand(): Command {
       output({ connector: recoveryConnectorDescriptor(home), runtime: await runtimeStatus(loadRecoveryConfig(home)) });
     });
 
-  command.command('verify')
+  command
+    .command('verify')
     .description('Run independent whole-Runtime, release, MCP, and Recovery verification')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .action(async (opts: { controllerHome: string }) => {
@@ -733,7 +844,8 @@ export function buildRecoveryCommand(): Command {
       if (!result.ok) process.exitCode = 1;
     });
 
-  command.command('restart-runtime')
+  command
+    .command('restart-runtime')
     .description('Restart the canonical Forge Runtime service and require whole-Runtime verification')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .action(async (opts: { controllerHome: string }) => {
@@ -743,8 +855,11 @@ export function buildRecoveryCommand(): Command {
       if (!result.ok) process.exitCode = 1;
     });
 
-  command.command('restart-connector')
-    .description('Restart the explicitly configured primary OAuth/Connector launchd service through standalone Recovery')
+  command
+    .command('restart-connector')
+    .description(
+      'Restart the explicitly configured primary OAuth/Connector launchd service through standalone Recovery',
+    )
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .action(async (opts: { controllerHome: string }) => {
       const home = resolveControllerHome(opts.controllerHome);
@@ -753,8 +868,11 @@ export function buildRecoveryCommand(): Command {
       if (!result.ok) process.exitCode = 1;
     });
 
-  command.command('prepare-runtime-release-session')
-    .description('Freeze the configured Runtime source and build one immutable release into the canonical durable ReleaseSession')
+  command
+    .command('prepare-runtime-release-session')
+    .description(
+      'Freeze the configured Runtime source and build one immutable release into the canonical durable ReleaseSession',
+    )
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .action(async (opts: { controllerHome: string }) => {
       const home = resolveControllerHome(opts.controllerHome);
@@ -763,8 +881,11 @@ export function buildRecoveryCommand(): Command {
       if (!result.ok) process.exitCode = 1;
     });
 
-  command.command('recover')
-    .description('Stop the canonical Runtime, restore the attested previous whole release and SQLite backup, restart it, and require verification')
+  command
+    .command('recover')
+    .description(
+      'Stop the canonical Runtime, restore the attested previous whole release and SQLite backup, restart it, and require verification',
+    )
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .action(async (opts: { controllerHome: string }) => {
       const home = resolveControllerHome(opts.controllerHome);
@@ -773,8 +894,11 @@ export function buildRecoveryCommand(): Command {
       if (!result.ok) process.exitCode = 1;
     });
 
-  command.command('rollback')
-    .description('While the Canonical Runtime is stopped, atomically restore its attested previous whole-Runtime release and SQLite backup')
+  command
+    .command('rollback')
+    .description(
+      'While the Canonical Runtime is stopped, atomically restore its attested previous whole-Runtime release and SQLite backup',
+    )
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .action(async (opts: { controllerHome: string }) => {
       const home = resolveControllerHome(opts.controllerHome);
@@ -783,7 +907,8 @@ export function buildRecoveryCommand(): Command {
       if (!result.ok) process.exitCode = 1;
     });
 
-  command.command('restart')
+  command
+    .command('restart')
     .description('Restart the independent Forge Recovery Gateway and require its local health endpoint')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .action(async (opts: { controllerHome: string }) => {
@@ -793,30 +918,56 @@ export function buildRecoveryCommand(): Command {
       if (!result.ok) process.exitCode = 1;
     });
 
-  command.command('activate-runtime')
-    .description('Activate one staged immutable Runtime release only while exact accepted source and observed Runtime authority still match')
+  command
+    .command('activate-runtime')
+    .description(
+      'Activate one staged immutable Runtime release only while exact accepted source and observed Runtime authority still match',
+    )
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .requiredOption('--release-manifest <path>', 'Absolute manifest.json of the staged immutable Runtime release')
     .requiredOption('--expected-source-revision <sha>', 'Exact accepted 40-hex source commit')
     .requiredOption('--expected-active-release-id <id>', 'Active Runtime release observed before activation')
-    .requiredOption('--expected-authority-revision <revision>', 'RuntimeReleaseAuthority revision observed before activation')
-    .action(async (opts: { controllerHome: string; releaseManifest: string; expectedSourceRevision: string; expectedActiveReleaseId: string; expectedAuthorityRevision: string }) => {
-      const home = resolveControllerHome(opts.controllerHome);
-      const authorityRevision = Number(opts.expectedAuthorityRevision);
-      if (!/^[a-f0-9]{40}$/i.test(opts.expectedSourceRevision) || !Number.isInteger(authorityRevision) || authorityRevision < 1) {
-        throw new Error('RECOVERY_RUNTIME_RELEASE_ACTIVATION_FENCE_INVALID');
-      }
-      const result = await activateRuntimeRelease(loadRecoveryConfig(home), resolve(opts.releaseManifest), {}, {
-        expectedSourceRevision: opts.expectedSourceRevision,
-        expectedActiveReleaseId: opts.expectedActiveReleaseId,
-        expectedAuthorityRevision: authorityRevision,
-      });
-      output(result);
-      if (!result.ok) process.exitCode = 1;
-    });
+    .requiredOption(
+      '--expected-authority-revision <revision>',
+      'RuntimeReleaseAuthority revision observed before activation',
+    )
+    .action(
+      async (opts: {
+        controllerHome: string;
+        releaseManifest: string;
+        expectedSourceRevision: string;
+        expectedActiveReleaseId: string;
+        expectedAuthorityRevision: string;
+      }) => {
+        const home = resolveControllerHome(opts.controllerHome);
+        const authorityRevision = Number(opts.expectedAuthorityRevision);
+        if (
+          !/^[a-f0-9]{40}$/i.test(opts.expectedSourceRevision) ||
+          !Number.isInteger(authorityRevision) ||
+          authorityRevision < 1
+        ) {
+          throw new Error('RECOVERY_RUNTIME_RELEASE_ACTIVATION_FENCE_INVALID');
+        }
+        const result = await activateRuntimeRelease(
+          loadRecoveryConfig(home),
+          resolve(opts.releaseManifest),
+          {},
+          {
+            expectedSourceRevision: opts.expectedSourceRevision,
+            expectedActiveReleaseId: opts.expectedActiveReleaseId,
+            expectedAuthorityRevision: authorityRevision,
+          },
+        );
+        output(result);
+        if (!result.ok) process.exitCode = 1;
+      },
+    );
 
-  command.command('migrate-controller-home')
-    .description('Transactionally relocate Forge Controller Home on Linux/WSL through an independent transient systemd worker')
+  command
+    .command('migrate-controller-home')
+    .description(
+      'Transactionally relocate Forge Controller Home on Linux/WSL through an independent transient systemd worker',
+    )
     .requiredOption('--from <path>', 'Current Controller Home authority')
     .requiredOption('--controller-home <path>', 'Destination user-level Controller Home')
     .option('--archive-suffix <suffix>', 'Stable suffix for an authority-free destination shell archive')
@@ -845,7 +996,8 @@ export function buildRecoveryCommand(): Command {
       });
     });
 
-  command.command('migrate-controller-home-worker')
+  command
+    .command('migrate-controller-home-worker')
     .description('Internal Linux/WSL transient worker for a durable Controller Home migration request')
     .requiredOption('--request <path>', 'Durable migration request written before service cutover')
     .action(async (opts: { request: string }) => {
@@ -856,7 +1008,8 @@ export function buildRecoveryCommand(): Command {
       output(receipt);
     });
 
-  command.command('rollback-controller-home-migration')
+  command
+    .command('rollback-controller-home-migration')
     .description('Rollback a stopped Controller Home relocation before any writer is restarted')
     .requiredOption('--from <path>', 'Original Controller Home path')
     .requiredOption('--controller-home <path>', 'Relocated user-level Controller Home path')
@@ -867,7 +1020,9 @@ export function buildRecoveryCommand(): Command {
       const destinationHome = resolveControllerHome(opts.controllerHome);
       const preflight = recoveryControllerHomeMigrationPreflight(destinationHome, sourceHome);
       if (preflight.liveOwners.length > 0) {
-        throw new Error(`RECOVERY_CONTROLLER_HOME_MIGRATION_OWNERS_LIVE: ${preflight.liveOwners.map((entry) => `${entry.label}:${entry.pid}`).join(',')}`);
+        throw new Error(
+          `RECOVERY_CONTROLLER_HOME_MIGRATION_OWNERS_LIVE: ${preflight.liveOwners.map((entry) => `${entry.label}:${entry.pid}`).join(',')}`,
+        );
       }
       const relocation: StoppedControllerHomeAuthorityRelocation = {
         migrated: true,
@@ -879,7 +1034,8 @@ export function buildRecoveryCommand(): Command {
       output({ status: 'rolled_back', relocation });
     });
 
-  command.command('windows-host-register')
+  command
+    .command('windows-host-register')
     .description('Register the Windows-host Recovery provider using discovered or explicitly bound host paths')
     .option('--controller-home <path>', 'Override Controller Home')
     .option('--rescue-root <path>', 'Override the local Recovery helper root')
@@ -901,7 +1057,8 @@ export function buildRecoveryCommand(): Command {
       output({ status: 'registered', ...result });
     });
 
-  command.command('install')
+  command
+    .command('install')
     .description('Build Forge Recovery artifacts and activate only the explicitly selected persistent Recovery profile')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .option('--profile <profile>', 'Recovery install profile: manual, gateway, or self-healing', 'manual')
@@ -912,151 +1069,230 @@ export function buildRecoveryCommand(): Command {
     .option('--recovery-tunnel-service-plist <path>', 'Absolute Recovery tunnel launchd plist path')
     .option('--recovery-tunnel-systemd-unit <unit>', 'Dedicated Recovery systemd --user tunnel unit (Linux only)')
     .option('--recovery-openai-tunnel-id <id>', 'Dedicated Recovery OpenAI Secure MCP Tunnel id')
-    .option('--recovery-openai-tunnel-alias <alias>', 'Dedicated Recovery tunnel-client runtime alias (default: machine-specific forge-recovery-<id>)')
-    .option('--recovery-openai-runtime-api-key-ref <ref>', 'Recovery tunnel runtime API key reference (env:NAME or file:/absolute/path)')
+    .option(
+      '--recovery-openai-tunnel-alias <alias>',
+      'Dedicated Recovery tunnel-client runtime alias (default: machine-specific forge-recovery-<id>)',
+    )
+    .option(
+      '--recovery-openai-runtime-api-key-ref <ref>',
+      'Recovery tunnel runtime API key reference (env:NAME or file:/absolute/path)',
+    )
     .option('--recovery-openai-profile <profile>', 'Optional tunnel-client runtime profile name for Recovery')
     .option('--recovery-openai-profile-dir <path>', 'Optional absolute tunnel-client profile directory for Recovery')
-    .option('--recovery-openai-admin-profile <profile>', 'Optional tunnel-client admin profile used for Recovery runtime connect')
-    .option('--primary-connector-service-label <label>', 'Primary OAuth/Connector launchd label managed by standalone Recovery')
+    .option(
+      '--recovery-openai-admin-profile <profile>',
+      'Optional tunnel-client admin profile used for Recovery runtime connect',
+    )
+    .option(
+      '--primary-connector-service-label <label>',
+      'Primary OAuth/Connector launchd label managed by standalone Recovery',
+    )
     .option('--primary-connector-service-plist <path>', 'Absolute primary OAuth/Connector launchd plist path')
-    .option('--primary-connector-local-url <url>', 'Local primary OAuth/Connector MCP endpoint used to distinguish Connector from tunnel failures')
-    .option('--primary-tunnel-service-label <label>', 'Primary public MCP tunnel launchd label managed by standalone Recovery')
+    .option(
+      '--primary-connector-local-url <url>',
+      'Local primary OAuth/Connector MCP endpoint used to distinguish Connector from tunnel failures',
+    )
+    .option(
+      '--primary-tunnel-service-label <label>',
+      'Primary public MCP tunnel launchd label managed by standalone Recovery',
+    )
     .option('--primary-tunnel-service-plist <path>', 'Absolute primary public MCP tunnel launchd plist path')
     .option('--primary-openai-tunnel-id <id>', 'Primary OpenAI Secure MCP Tunnel id managed by Recovery')
     .option('--primary-openai-tunnel-alias <alias>', 'Primary tunnel-client runtime alias (default: forge)')
-    .option('--primary-openai-runtime-api-key-ref <ref>', 'Primary tunnel runtime API key reference (env:NAME or file:/absolute/path)')
+    .option(
+      '--primary-openai-runtime-api-key-ref <ref>',
+      'Primary tunnel runtime API key reference (env:NAME or file:/absolute/path)',
+    )
     .option('--primary-openai-profile <profile>', 'Optional tunnel-client runtime profile name for primary Forge')
-    .option('--primary-openai-profile-dir <path>', 'Optional absolute tunnel-client profile directory for primary Forge')
-    .option('--primary-openai-admin-profile <profile>', 'Optional tunnel-client admin profile used for primary runtime connect')
-    .option('--primary-runtime-source-root <path>', 'Stable canonical/package source used by Recovery for future Runtime staging')
-    .option('--stage-only', 'Compatibility alias: build/canary only and do not mutate installed Recovery config or services')
-    .action(async (opts: {
-      controllerHome: string;
-      port: string;
-      publicMcpUrl?: string;
-      recoveryPublicUrl?: string;
-      recoveryTunnelServiceLabel?: string;
-      recoveryTunnelServicePlist?: string;
-      recoveryTunnelSystemdUnit?: string;
-      recoveryOpenaiTunnelId?: string;
-      recoveryOpenaiTunnelAlias?: string;
-      recoveryOpenaiRuntimeApiKeyRef?: string;
-      recoveryOpenaiProfile?: string;
-      recoveryOpenaiProfileDir?: string;
-      recoveryOpenaiAdminProfile?: string;
-      primaryConnectorServiceLabel?: string;
-      primaryConnectorServicePlist?: string;
-      primaryConnectorLocalUrl?: string;
-      primaryTunnelServiceLabel?: string;
-      primaryTunnelServicePlist?: string;
-      primaryOpenaiTunnelId?: string;
-      primaryOpenaiTunnelAlias?: string;
-      primaryOpenaiRuntimeApiKeyRef?: string;
-      primaryOpenaiProfile?: string;
-      primaryOpenaiProfileDir?: string;
-      primaryOpenaiAdminProfile?: string;
-      primaryRuntimeSourceRoot?: string;
-      profile: string;
-      stageOnly?: boolean;
-    }) => {
-      const home = resolveControllerHome(opts.controllerHome);
-      const profile = normalizeRecoveryInstallProfile(opts.stageOnly ? 'manual' : opts.profile, 'manual');
-      if (opts.stageOnly && opts.profile !== 'manual') throw new Error('RECOVERY_STAGE_ONLY_PROFILE_CONFLICT');
-      const port = Number(opts.port);
-      if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('RECOVERY_PORT_INVALID');
-      const recoveryLaunchdTunnel = launchdService(opts.recoveryTunnelServiceLabel, opts.recoveryTunnelServicePlist, 'RECOVERY_TUNNEL') as PublicTunnelServiceConfig | undefined;
-      const recoverySystemdTunnel = systemdRecoveryTunnelService(opts.recoveryTunnelSystemdUnit);
-      if (recoveryLaunchdTunnel && process.platform === 'linux') throw new Error('RECOVERY_TUNNEL_LAUNCHD_UNSUPPORTED_ON_LINUX');
-      if (recoverySystemdTunnel && process.platform !== 'linux') throw new Error('RECOVERY_TUNNEL_SYSTEMD_UNSUPPORTED_ON_THIS_PLATFORM');
-      const recoveryLocalMcpUrl = `http://127.0.0.1:${port}/recovery/mcp`;
-      const recoveryOpenAiTunnel = openAiTunnelService({
-        tunnelId: opts.recoveryOpenaiTunnelId,
-        alias: opts.recoveryOpenaiTunnelAlias,
-        runtimeApiKeyRef: opts.recoveryOpenaiRuntimeApiKeyRef,
-        profile: opts.recoveryOpenaiProfile,
-        profileDir: opts.recoveryOpenaiProfileDir,
-        adminProfile: opts.recoveryOpenaiAdminProfile,
-        mcpServerUrl: recoveryLocalMcpUrl,
-        defaultAlias: recoveryOpenAiTunnelDefaultAlias(home),
-        role: 'RECOVERY',
-      });
-      const recoveryTunnelOwners = [recoveryLaunchdTunnel, recoverySystemdTunnel, recoveryOpenAiTunnel].filter(Boolean);
-      if (recoveryTunnelOwners.length > 1) throw new Error('RECOVERY_TUNNEL_OWNER_CONFLICT');
-      const recoveryTunnelService: RecoveryTunnelServiceConfig | undefined = recoveryOpenAiTunnel ?? recoverySystemdTunnel ?? recoveryLaunchdTunnel;
+    .option(
+      '--primary-openai-profile-dir <path>',
+      'Optional absolute tunnel-client profile directory for primary Forge',
+    )
+    .option(
+      '--primary-openai-admin-profile <profile>',
+      'Optional tunnel-client admin profile used for primary runtime connect',
+    )
+    .option(
+      '--primary-runtime-source-root <path>',
+      'Stable canonical/package source used by Recovery for future Runtime staging',
+    )
+    .option(
+      '--stage-only',
+      'Compatibility alias: build/canary only and do not mutate installed Recovery config or services',
+    )
+    .action(
+      async (opts: {
+        controllerHome: string;
+        port: string;
+        publicMcpUrl?: string;
+        recoveryPublicUrl?: string;
+        recoveryTunnelServiceLabel?: string;
+        recoveryTunnelServicePlist?: string;
+        recoveryTunnelSystemdUnit?: string;
+        recoveryOpenaiTunnelId?: string;
+        recoveryOpenaiTunnelAlias?: string;
+        recoveryOpenaiRuntimeApiKeyRef?: string;
+        recoveryOpenaiProfile?: string;
+        recoveryOpenaiProfileDir?: string;
+        recoveryOpenaiAdminProfile?: string;
+        primaryConnectorServiceLabel?: string;
+        primaryConnectorServicePlist?: string;
+        primaryConnectorLocalUrl?: string;
+        primaryTunnelServiceLabel?: string;
+        primaryTunnelServicePlist?: string;
+        primaryOpenaiTunnelId?: string;
+        primaryOpenaiTunnelAlias?: string;
+        primaryOpenaiRuntimeApiKeyRef?: string;
+        primaryOpenaiProfile?: string;
+        primaryOpenaiProfileDir?: string;
+        primaryOpenaiAdminProfile?: string;
+        primaryRuntimeSourceRoot?: string;
+        profile: string;
+        stageOnly?: boolean;
+      }) => {
+        const home = resolveControllerHome(opts.controllerHome);
+        const profile = normalizeRecoveryInstallProfile(opts.stageOnly ? 'manual' : opts.profile, 'manual');
+        if (opts.stageOnly && opts.profile !== 'manual') throw new Error('RECOVERY_STAGE_ONLY_PROFILE_CONFLICT');
+        const port = Number(opts.port);
+        if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('RECOVERY_PORT_INVALID');
+        const recoveryLaunchdTunnel = launchdService(
+          opts.recoveryTunnelServiceLabel,
+          opts.recoveryTunnelServicePlist,
+          'RECOVERY_TUNNEL',
+        ) as PublicTunnelServiceConfig | undefined;
+        const recoverySystemdTunnel = systemdRecoveryTunnelService(opts.recoveryTunnelSystemdUnit);
+        if (recoveryLaunchdTunnel && process.platform === 'linux')
+          throw new Error('RECOVERY_TUNNEL_LAUNCHD_UNSUPPORTED_ON_LINUX');
+        if (recoverySystemdTunnel && process.platform !== 'linux')
+          throw new Error('RECOVERY_TUNNEL_SYSTEMD_UNSUPPORTED_ON_THIS_PLATFORM');
+        const recoveryLocalMcpUrl = `http://127.0.0.1:${port}/recovery/mcp`;
+        const recoveryOpenAiTunnel = openAiTunnelService({
+          tunnelId: opts.recoveryOpenaiTunnelId,
+          alias: opts.recoveryOpenaiTunnelAlias,
+          runtimeApiKeyRef: opts.recoveryOpenaiRuntimeApiKeyRef,
+          profile: opts.recoveryOpenaiProfile,
+          profileDir: opts.recoveryOpenaiProfileDir,
+          adminProfile: opts.recoveryOpenaiAdminProfile,
+          mcpServerUrl: recoveryLocalMcpUrl,
+          defaultAlias: recoveryOpenAiTunnelDefaultAlias(home),
+          role: 'RECOVERY',
+        });
+        const recoveryTunnelOwners = [recoveryLaunchdTunnel, recoverySystemdTunnel, recoveryOpenAiTunnel].filter(
+          Boolean,
+        );
+        if (recoveryTunnelOwners.length > 1) throw new Error('RECOVERY_TUNNEL_OWNER_CONFLICT');
+        const recoveryTunnelService: RecoveryTunnelServiceConfig | undefined =
+          recoveryOpenAiTunnel ?? recoverySystemdTunnel ?? recoveryLaunchdTunnel;
 
-      const primaryConnectorLaunchd = launchdService(opts.primaryConnectorServiceLabel, opts.primaryConnectorServicePlist, 'RECOVERY_PRIMARY_CONNECTOR') as PrimaryConnectorServiceConfig | undefined;
-      const primaryConnectorLocalUrl = endpoint(opts.primaryConnectorLocalUrl, 'RECOVERY_PRIMARY_CONNECTOR_LOCAL_URL');
-      let primaryConnectorService: PrimaryConnectorServiceConfig | undefined;
-      if (process.platform === 'linux') {
-        if (primaryConnectorLaunchd) throw new Error('RECOVERY_PRIMARY_CONNECTOR_LAUNCHD_UNSUPPORTED_ON_LINUX');
-        primaryConnectorService = primaryConnectorLocalUrl ? { platform: 'systemd-user', localMcpUrl: primaryConnectorLocalUrl } : undefined;
-      } else {
-        if (primaryConnectorLocalUrl && !primaryConnectorLaunchd) throw new Error('RECOVERY_PRIMARY_CONNECTOR_LABEL_REQUIRED_FOR_LOCAL_URL');
-        primaryConnectorService = primaryConnectorLaunchd
-          ? { ...primaryConnectorLaunchd, ...(primaryConnectorLocalUrl ? { localMcpUrl: primaryConnectorLocalUrl } : {}) }
+        const primaryConnectorLaunchd = launchdService(
+          opts.primaryConnectorServiceLabel,
+          opts.primaryConnectorServicePlist,
+          'RECOVERY_PRIMARY_CONNECTOR',
+        ) as PrimaryConnectorServiceConfig | undefined;
+        const primaryConnectorLocalUrl = endpoint(
+          opts.primaryConnectorLocalUrl,
+          'RECOVERY_PRIMARY_CONNECTOR_LOCAL_URL',
+        );
+        let primaryConnectorService: PrimaryConnectorServiceConfig | undefined;
+        if (process.platform === 'linux') {
+          if (primaryConnectorLaunchd) throw new Error('RECOVERY_PRIMARY_CONNECTOR_LAUNCHD_UNSUPPORTED_ON_LINUX');
+          primaryConnectorService = primaryConnectorLocalUrl
+            ? { platform: 'systemd-user', localMcpUrl: primaryConnectorLocalUrl }
+            : undefined;
+        } else {
+          if (primaryConnectorLocalUrl && !primaryConnectorLaunchd)
+            throw new Error('RECOVERY_PRIMARY_CONNECTOR_LABEL_REQUIRED_FOR_LOCAL_URL');
+          primaryConnectorService = primaryConnectorLaunchd
+            ? {
+                ...primaryConnectorLaunchd,
+                ...(primaryConnectorLocalUrl ? { localMcpUrl: primaryConnectorLocalUrl } : {}),
+              }
+            : undefined;
+        }
+
+        const primaryLaunchdTunnel = launchdService(
+          opts.primaryTunnelServiceLabel,
+          opts.primaryTunnelServicePlist,
+          'RECOVERY_PRIMARY_TUNNEL',
+        ) as PublicTunnelServiceConfig | undefined;
+        const primaryOpenAiTunnel = primaryConnectorLocalUrl
+          ? openAiTunnelService({
+              tunnelId: opts.primaryOpenaiTunnelId,
+              alias: opts.primaryOpenaiTunnelAlias,
+              runtimeApiKeyRef: opts.primaryOpenaiRuntimeApiKeyRef,
+              profile: opts.primaryOpenaiProfile,
+              profileDir: opts.primaryOpenaiProfileDir,
+              adminProfile: opts.primaryOpenaiAdminProfile,
+              mcpServerUrl: primaryConnectorLocalUrl,
+              defaultAlias: 'forge',
+              role: 'RECOVERY_PRIMARY',
+            })
           : undefined;
-      }
+        const primaryOpenAiOptionsSupplied = Boolean(
+          opts.primaryOpenaiTunnelId ||
+            opts.primaryOpenaiTunnelAlias ||
+            opts.primaryOpenaiRuntimeApiKeyRef ||
+            opts.primaryOpenaiProfile ||
+            opts.primaryOpenaiProfileDir ||
+            opts.primaryOpenaiAdminProfile,
+        );
+        if (primaryOpenAiOptionsSupplied && !primaryConnectorLocalUrl)
+          throw new Error('RECOVERY_PRIMARY_CONNECTOR_LOCAL_URL_REQUIRED_FOR_OPENAI_TUNNEL');
+        if (primaryLaunchdTunnel && primaryOpenAiTunnel) throw new Error('RECOVERY_PRIMARY_TUNNEL_OWNER_CONFLICT');
+        const primaryPublicTunnelService = primaryOpenAiTunnel ?? primaryLaunchdTunnel;
+        if (primaryPublicTunnelService && !primaryConnectorService)
+          throw new Error('RECOVERY_PRIMARY_CONNECTOR_REQUIRED_FOR_PRIMARY_TUNNEL');
+        assertDistinctRecoveryOpenAiTunnelIdentity(recoveryTunnelService, primaryPublicTunnelService);
 
-      const primaryLaunchdTunnel = launchdService(opts.primaryTunnelServiceLabel, opts.primaryTunnelServicePlist, 'RECOVERY_PRIMARY_TUNNEL') as PublicTunnelServiceConfig | undefined;
-      const primaryOpenAiTunnel = primaryConnectorLocalUrl ? openAiTunnelService({
-        tunnelId: opts.primaryOpenaiTunnelId,
-        alias: opts.primaryOpenaiTunnelAlias,
-        runtimeApiKeyRef: opts.primaryOpenaiRuntimeApiKeyRef,
-        profile: opts.primaryOpenaiProfile,
-        profileDir: opts.primaryOpenaiProfileDir,
-        adminProfile: opts.primaryOpenaiAdminProfile,
-        mcpServerUrl: primaryConnectorLocalUrl,
-        defaultAlias: 'forge',
-        role: 'RECOVERY_PRIMARY',
-      }) : undefined;
-      const primaryOpenAiOptionsSupplied = Boolean(opts.primaryOpenaiTunnelId || opts.primaryOpenaiTunnelAlias || opts.primaryOpenaiRuntimeApiKeyRef || opts.primaryOpenaiProfile || opts.primaryOpenaiProfileDir || opts.primaryOpenaiAdminProfile);
-      if (primaryOpenAiOptionsSupplied && !primaryConnectorLocalUrl) throw new Error('RECOVERY_PRIMARY_CONNECTOR_LOCAL_URL_REQUIRED_FOR_OPENAI_TUNNEL');
-      if (primaryLaunchdTunnel && primaryOpenAiTunnel) throw new Error('RECOVERY_PRIMARY_TUNNEL_OWNER_CONFLICT');
-      const primaryPublicTunnelService = primaryOpenAiTunnel ?? primaryLaunchdTunnel;
-      if (primaryPublicTunnelService && !primaryConnectorService) throw new Error('RECOVERY_PRIMARY_CONNECTOR_REQUIRED_FOR_PRIMARY_TUNNEL');
-      assertDistinctRecoveryOpenAiTunnelIdentity(recoveryTunnelService, primaryPublicTunnelService);
+        const recoveryPublicUrl = endpoint(opts.recoveryPublicUrl, 'RECOVERY_PUBLIC_URL');
+        if (profile === 'manual' && (recoveryTunnelService || recoveryPublicUrl))
+          throw new Error('RECOVERY_PROFILE_GATEWAY_REQUIRED');
+        if (recoveryOpenAiTunnel && recoveryPublicUrl) throw new Error('RECOVERY_OPENAI_TUNNEL_PUBLIC_URL_CONFLICT');
+        if ((recoveryLaunchdTunnel || recoverySystemdTunnel) && !recoveryPublicUrl)
+          throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
+        if (!recoveryTunnelService && recoveryPublicUrl)
+          throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
 
-      const recoveryPublicUrl = endpoint(opts.recoveryPublicUrl, 'RECOVERY_PUBLIC_URL');
-      if (profile === 'manual' && (recoveryTunnelService || recoveryPublicUrl)) throw new Error('RECOVERY_PROFILE_GATEWAY_REQUIRED');
-      if (recoveryOpenAiTunnel && recoveryPublicUrl) throw new Error('RECOVERY_OPENAI_TUNNEL_PUBLIC_URL_CONFLICT');
-      if ((recoveryLaunchdTunnel || recoverySystemdTunnel) && !recoveryPublicUrl) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
-      if (!recoveryTunnelService && recoveryPublicUrl) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
-
-      const packageRoot = resolve(import.meta.dir, '..', '..', '..');
-      const primaryRuntimeSourceRoot = opts.primaryRuntimeSourceRoot ? resolve(opts.primaryRuntimeSourceRoot) : packageRoot;
-      const primaryRuntimeSourceRepository = findRegisteredRepositoryByCheckoutRoot(primaryRuntimeSourceRoot, home);
-      if (!opts.stageOnly && !primaryRuntimeSourceRepository) {
-        throw new Error(`RECOVERY_PRIMARY_RUNTIME_SOURCE_REPOSITORY_NOT_REGISTERED: ${primaryRuntimeSourceRoot}`);
-      }
-      if (!opts.stageOnly && /[\\/]\.forge[\\/]managed-worktrees[\\/]/.test(primaryRuntimeSourceRoot)) {
-        throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_ROOT_DURABLE_REQUIRED');
-      }
-      const result = await installStandaloneRecovery({
-        controllerHome: home,
-        repoRoot: primaryRuntimeSourceRoot,
-        ...(primaryRuntimeSourceRepository ? { primaryRuntimeSourceRepositoryId: primaryRuntimeSourceRepository.repoId } : {}),
-        // The package root is only the CLI's location. A package installation
-        // is not a Git checkout, while the explicitly registered primary
-        // Runtime source is the immutable Recovery release's provenance.
-        sourceRoot: primaryRuntimeSourceRoot,
-        port,
-        profile,
-        stageOnly: opts.stageOnly === true,
-        primaryRuntimeService: defaultPrimaryRuntimeServiceConfig(),
-        publicMcpUrl: endpoint(opts.publicMcpUrl, 'PUBLIC_MCP_URL'),
-        recoveryPublicUrl,
-        recoveryTunnelService,
-        primaryPublicTunnelService,
-        primaryConnectorService,
-      });
-      output({
-        status: opts.stageOnly ? 'staged' : 'installed',
-        profile: result.profile,
-        staged: result.staged.release,
-        activation: result.activated,
-        connector: recoveryConnectorDescriptor(home),
-      });
-    });
+        const packageRoot = resolve(import.meta.dir, '..', '..', '..');
+        const primaryRuntimeSourceRoot = opts.primaryRuntimeSourceRoot
+          ? resolve(opts.primaryRuntimeSourceRoot)
+          : packageRoot;
+        const primaryRuntimeSourceRepository = findRegisteredRepositoryByCheckoutRoot(primaryRuntimeSourceRoot, home);
+        if (!opts.stageOnly && !primaryRuntimeSourceRepository) {
+          throw new Error(`RECOVERY_PRIMARY_RUNTIME_SOURCE_REPOSITORY_NOT_REGISTERED: ${primaryRuntimeSourceRoot}`);
+        }
+        if (!opts.stageOnly && /[\\/]\.forge[\\/]managed-worktrees[\\/]/.test(primaryRuntimeSourceRoot)) {
+          throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_ROOT_DURABLE_REQUIRED');
+        }
+        const result = await installStandaloneRecovery({
+          controllerHome: home,
+          repoRoot: primaryRuntimeSourceRoot,
+          ...(primaryRuntimeSourceRepository
+            ? { primaryRuntimeSourceRepositoryId: primaryRuntimeSourceRepository.repoId }
+            : {}),
+          // The package root is only the CLI's location. A package installation
+          // is not a Git checkout, while the explicitly registered primary
+          // Runtime source is the immutable Recovery release's provenance.
+          sourceRoot: primaryRuntimeSourceRoot,
+          port,
+          profile,
+          stageOnly: opts.stageOnly === true,
+          primaryRuntimeService: defaultPrimaryRuntimeServiceConfig(),
+          publicMcpUrl: endpoint(opts.publicMcpUrl, 'PUBLIC_MCP_URL'),
+          recoveryPublicUrl,
+          recoveryTunnelService,
+          primaryPublicTunnelService,
+          primaryConnectorService,
+        });
+        output({
+          status: opts.stageOnly ? 'staged' : 'installed',
+          profile: result.profile,
+          staged: result.staged.release,
+          activation: result.activated,
+          connector: recoveryConnectorDescriptor(home),
+        });
+      },
+    );
 
   return command;
 }

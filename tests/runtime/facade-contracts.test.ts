@@ -115,8 +115,12 @@ describe('handoff and facade contracts', () => {
     expect(guidance).toContain('NOT RUN or BLOCKED');
     expect(guidance).toContain('no fixed search quota');
     expect(guidance).toContain('Forge source uses GitHub Issue/Project');
+    expect(guidance).toContain('Do not mandatorily preflight rh_status/plan_list/context lists/Writer inventory');
+    expect(guidance).toContain('Known source paths use exact reads or Direct Edit first');
+    expect(guidance).toContain('Requirement/Plan are optional semantic snapshots');
     const repositoryGuidance = readFileSync(join(import.meta.dir, '../../AGENTS.md'), 'utf8');
     expect(repositoryGuidance).toContain('then end the ChatGPT response rather than holding the turn in');
+    expect(repositoryGuidance).toContain('Small-fix light path is the default');
     expect(guidance).toContain('end the ChatGPT response rather than holding the turn in thinking or polling');
     expect(guidance).toContain('continue_independent_work');
     expect(guidance).not.toContain('The Writer cannot self-approve final issue closure.');
@@ -331,6 +335,8 @@ describe('handoff and facade contracts', () => {
 
   test('local controller retrieves current guidance without Work or a known source file', () => {
     const attached = conversationPrompt('继续优化用药 UI', 'repo-medication', 'checkout-medication');
+    expect(attached).toContain('Prefer the light path');
+    expect(attached).toContain('do not mandatorily call rh_context or rh_status before every edit');
     expect(attached).toContain('rh_context');
     expect(attached).toContain('known_paths=["AGENTS.md"]');
     expect(attached).toContain('relevant module guidance');

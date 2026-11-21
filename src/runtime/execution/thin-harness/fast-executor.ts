@@ -13,10 +13,7 @@ import { getLeaseSideEffectMetrics } from '../../resources/leases/store';
 import { runBoundedGit, runBoundedProcess } from './async-process';
 import { extractPatchPaths, pathAllowed, routeExecution } from './execution-router';
 import { LatencyTrace } from './latency-trace';
-import {
-  hashRequestInput,
-  writeFastReceipt,
-} from './fast-receipt';
+import { hashRequestInput, writeFastReceipt } from './fast-receipt';
 import {
   mutationGateBusyMessage,
   withCheckoutMutationGate,
@@ -127,9 +124,9 @@ async function executeFastGitCommit(
   if (message.length > 4_000 || message.includes('\0')) {
     throw new Error('GIT_COMMIT_MESSAGE_INVALID: message is too long or contains a null byte');
   }
-  const paths = [...new Set((stringList(input.paths) ?? [])
-    .map((path) => path.trim().replace(/\\/g, '/'))
-    .filter(Boolean))].sort();
+  const paths = [
+    ...new Set((stringList(input.paths) ?? []).map((path) => path.trim().replace(/\\/g, '/')).filter(Boolean)),
+  ].sort();
   if (paths.length > 200) throw new Error('GIT_PATHS_INVALID: at most 200 paths are allowed');
   const allowEmpty = input.allow_empty === true;
 
@@ -160,7 +157,9 @@ async function executeFastGitCommit(
   }
 
   const commitArgs = [
-    'commit', '-m', message,
+    'commit',
+    '-m',
+    message,
     ...(allowEmpty ? ['--allow-empty'] : []),
     ...(paths.length > 0 ? ['--only', '--', ...paths] : []),
   ];
@@ -184,11 +183,13 @@ async function executeFastGitCommit(
     committed: true,
     head: head.stdout.trim(),
     paths,
-    stage: stage ? {
-      exitCode: stage.exitCode,
-      stdout: stage.stdout,
-      stderr: stage.stderr,
-    } : undefined,
+    stage: stage
+      ? {
+          exitCode: stage.exitCode,
+          stdout: stage.stdout,
+          stderr: stage.stderr,
+        }
+      : undefined,
     commit: {
       exitCode: commit.exitCode,
       stdout: commit.stdout,
@@ -219,14 +220,19 @@ function observedSideEffects(before: ReturnType<typeof getLeaseSideEffectMetrics
     // Real instrumentation — ephemeral Fast leases must keep these at 0.
     projectionUpdateCount: Math.max(0, after.projectionDirtyMarks - before.projectionDirtyMarks),
     schedulerWakeCount: Math.max(0, after.schedulerWakes - before.schedulerWakes),
-    runtimeEventCount: Math.max(0,
-      (after.durableAcquireEvents + after.durableReleaseEvents)
-      - (before.durableAcquireEvents + before.durableReleaseEvents)),
+    runtimeEventCount: Math.max(
+      0,
+      after.durableAcquireEvents +
+        after.durableReleaseEvents -
+        (before.durableAcquireEvents + before.durableReleaseEvents),
+    ),
     ephemeralLeaseAcquireCount: Math.max(0, after.ephemeralAcquires - before.ephemeralAcquires),
   };
 }
 
-function emptyDecision(partial: Partial<ExecutionDecision> & Pick<ExecutionDecision, 'mode' | 'reasons'>): ExecutionDecision {
+function emptyDecision(
+  partial: Partial<ExecutionDecision> & Pick<ExecutionDecision, 'mode' | 'reasons'>,
+): ExecutionDecision {
   return {
     risk: 'unknown',
     estimatedClass: 'short',
@@ -250,14 +256,26 @@ async function asyncGitStatus(
   signal?: AbortSignal,
 ) {
   const [porcelain, branch, head, shortStatus] = await Promise.all([
-    runBoundedGit(repoRoot, ['status', '--porcelain=v1', '--branch', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**'], {
-      timeoutMs, maxOutputBytes: FAST_PATH_MAX_OUTPUT_BYTES, signal,
-    }),
+    runBoundedGit(
+      repoRoot,
+      ['status', '--porcelain=v1', '--branch', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**'],
+      {
+        timeoutMs,
+        maxOutputBytes: FAST_PATH_MAX_OUTPUT_BYTES,
+        signal,
+      },
+    ),
     runBoundedGit(repoRoot, ['branch', '--show-current'], { timeoutMs, maxOutputBytes: 4_096, signal }),
     runBoundedGit(repoRoot, ['rev-parse', '--verify', 'HEAD'], { timeoutMs, maxOutputBytes: 4_096, signal }),
-    runBoundedGit(repoRoot, ['status', '--short', '--branch', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**'], {
-      timeoutMs, maxOutputBytes: FAST_PATH_MAX_OUTPUT_BYTES, signal,
-    }),
+    runBoundedGit(
+      repoRoot,
+      ['status', '--short', '--branch', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**'],
+      {
+        timeoutMs,
+        maxOutputBytes: FAST_PATH_MAX_OUTPUT_BYTES,
+        signal,
+      },
+    ),
   ]);
 
   const required = [porcelain, head];
@@ -310,7 +328,10 @@ async function asyncGitDiff(
 ) {
   const staged = input.staged === true;
   const paths = stringList(input.paths) ?? [];
-  const maxBytes = typeof input.max_bytes === 'number' ? Math.min(input.max_bytes, FAST_PATH_MAX_OUTPUT_BYTES) : FAST_PATH_MAX_OUTPUT_BYTES;
+  const maxBytes =
+    typeof input.max_bytes === 'number'
+      ? Math.min(input.max_bytes, FAST_PATH_MAX_OUTPUT_BYTES)
+      : FAST_PATH_MAX_OUTPUT_BYTES;
   const prefix = ['diff', ...(staged ? ['--cached'] : [])];
   const separator = paths.length > 0 ? ['--', ...paths] : [];
   const [nameOnly, stat, patch, branch, head] = await Promise.all([
@@ -337,7 +358,10 @@ async function asyncGitDiff(
       head: head.ok ? head.stdout.trim() || null : null,
       staged,
       paths,
-      nameOnly: nameOnly.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
+      nameOnly: nameOnly.stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean),
       stat: stat.stdout,
       patch: patch.stdout,
       truncated: false,
@@ -352,23 +376,33 @@ async function runSearchInWorker(
   maxFiles: number,
   signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
-  const rg = await runBoundedProcess('rg', [
-    '--line-number',
-    '--no-heading',
-    '--color', 'never',
-    '--max-count', String(maxResults),
-    '--max-filesize', '512K',
-    '-g', '!node_modules',
-    '-g', '!.git',
-    '-g', '!.ai/harness',
-    query,
-    '.',
-  ], {
-    cwd: repoRoot,
-    timeoutMs: FAST_PATH_DEFAULT_TIMEOUT_MS,
-    maxOutputBytes: FAST_PATH_MAX_OUTPUT_BYTES,
-    signal,
-  });
+  const rg = await runBoundedProcess(
+    'rg',
+    [
+      '--line-number',
+      '--no-heading',
+      '--color',
+      'never',
+      '--max-count',
+      String(maxResults),
+      '--max-filesize',
+      '512K',
+      '-g',
+      '!node_modules',
+      '-g',
+      '!.git',
+      '-g',
+      '!.ai/harness',
+      query,
+      '.',
+    ],
+    {
+      cwd: repoRoot,
+      timeoutMs: FAST_PATH_DEFAULT_TIMEOUT_MS,
+      maxOutputBytes: FAST_PATH_MAX_OUTPUT_BYTES,
+      signal,
+    },
+  );
   if (rg.ok || rg.exitCode === 1) {
     const results = rg.stdout
       .split(/\r?\n/)
@@ -411,9 +445,8 @@ function ownershipOptionsFor(
   ];
   return {
     writePaths: writePaths.length ? writePaths : undefined,
-    mutatesGitRefs: decision.effects.mutatesGitRefs
-      || operation.includes('commit')
-      || operation === 'repository_git_commit',
+    mutatesGitRefs:
+      decision.effects.mutatesGitRefs || operation.includes('commit') || operation === 'repository_git_commit',
     mutatesGitIndex: decision.effects.mutatesWorkspace || decision.effects.mutatesGitRefs,
   };
 }
@@ -421,10 +454,7 @@ function ownershipOptionsFor(
 /**
  * Execute one Fast Path operation without ExecutionJob / Local Job / Worker.
  */
-export async function executeFast(
-  ctx: FastExecutorContext,
-  request: FastExecuteInput,
-): Promise<FastExecuteResult> {
+export async function executeFast(ctx: FastExecutorContext, request: FastExecuteInput): Promise<FastExecuteResult> {
   const startedAt = new Date().toISOString();
   const trace = new LatencyTrace('fast');
   const sideEffectsBefore = getLeaseSideEffectMetrics();
@@ -434,24 +464,26 @@ export async function executeFast(
   const owner = `fast:${ctx.sessionId ?? 'anon'}:${request.operation}:${requestId ?? Date.now()}`;
 
   const patchPaths = extractPatchPaths(request.input.operations);
-  const decision = trace.measureSync('routingMs', () => routeExecution({
-    operation: request.operation,
-    mode: request.mode ?? 'auto',
-    background: request.background,
-    timeoutMs: request.timeoutMs,
-    command: request.input.command as string | string[] | undefined,
-    paths: stringList(request.input.paths) ?? stringList(request.input.changed_paths),
-    patchPaths,
-    allowedPaths: request.allowedPaths ?? stringList(request.input.allowed_paths),
-    patchOperationCount: Array.isArray(request.input.operations) ? request.input.operations.length : undefined,
-    defaultBranch: ctx.repository.defaultBranch,
-    requiresIsolation: request.input.requires_isolation === true,
-    requiresRecovery: request.input.requires_recovery === true,
-    requiresWorktree: request.input.isolation === 'new_worktree',
-    agentRun: request.input.agent_run === true,
-    remoteWrite: request.input.remote_write === true,
-    concurrentWriteLanes: request.input.concurrent_write_lanes === true,
-  }));
+  const decision = trace.measureSync('routingMs', () =>
+    routeExecution({
+      operation: request.operation,
+      mode: request.mode ?? 'auto',
+      background: request.background,
+      timeoutMs: request.timeoutMs,
+      command: request.input.command as string | string[] | undefined,
+      paths: stringList(request.input.paths) ?? stringList(request.input.changed_paths),
+      patchPaths,
+      allowedPaths: request.allowedPaths ?? stringList(request.input.allowed_paths),
+      patchOperationCount: Array.isArray(request.input.operations) ? request.input.operations.length : undefined,
+      defaultBranch: ctx.repository.defaultBranch,
+      requiresIsolation: request.input.requires_isolation === true,
+      requiresRecovery: request.input.requires_recovery === true,
+      requiresWorktree: request.input.isolation === 'new_worktree',
+      agentRun: request.input.agent_run === true,
+      remoteWrite: request.input.remote_write === true,
+      concurrentWriteLanes: request.input.concurrent_write_lanes === true,
+    }),
+  );
 
   if (decision.mode === 'reject') {
     return {
@@ -471,14 +503,15 @@ export async function executeFast(
       latency: trace.snapshot(ctx.includeLatencyBreakdown === true),
       escalation: {
         reason: decision.reasons.join('; '),
-        suggestedOperation: decision.suggestedOperation ?? 'Durable Work',
+        suggestedOperation: decision.suggestedOperation ?? 'retry with explicit mode=durable only when required',
       },
       durableSideEffects: observedSideEffects(sideEffectsBefore),
       result: {
         mode: 'durable',
         reason: decision.reasons.join('; '),
         suggestedOperation: decision.suggestedOperation,
-        message: 'Fast Path declined. Open an explicit Durable Work request; partial fast steps were not executed.',
+        message:
+          'Fast Path declined. Retry with the suggested repository/Process operation or explicit mode=durable; partial fast steps were not executed. Do not create Work lifecycle records.',
       },
     };
   }
@@ -497,13 +530,23 @@ export async function executeFast(
   const operation = request.operation;
   const needsMutation = decision.effects.mutatesWorkspace || decision.effects.mutatesGitRefs;
   const isExplicitWriteOp = [
-    'apply_patch', 'repository_safe_patch_apply', 'apply_edit_operations',
-    'stage_paths', 'git_stage_paths', 'commit_paths', 'git_commit_paths', 'repository_git_commit',
+    'apply_patch',
+    'repository_safe_patch_apply',
+    'apply_edit_operations',
+    'stage_paths',
+    'git_stage_paths',
+    'commit_paths',
+    'git_commit_paths',
+    'repository_git_commit',
   ].includes(String(operation));
 
   // Mutations without requestId must not default to Fast for non-idempotent ops.
   if (needsMutation && isExplicitWriteOp && !requestId && receiptMode === 'standalone' && !request.externalMutation) {
-    if (['commit_paths', 'git_commit_paths', 'repository_git_commit', 'stage_paths', 'git_stage_paths'].includes(String(operation))) {
+    if (
+      ['commit_paths', 'git_commit_paths', 'repository_git_commit', 'stage_paths', 'git_stage_paths'].includes(
+        String(operation),
+      )
+    ) {
       return {
         ok: false,
         decision: emptyDecision({
@@ -511,14 +554,14 @@ export async function executeFast(
           reasons: ['mutation_requires_request_id_for_idempotency'],
           risk: 'workspace_write',
           effects: decision.effects,
-          suggestedOperation: 're-issue with request_id or Durable Work',
+          suggestedOperation: 're-issue with request_id (preferred) or explicit mode=durable',
         }),
         operationSucceeded: false,
         latency: trace.snapshot(ctx.includeLatencyBreakdown === true),
         durableSideEffects: observedSideEffects(sideEffectsBefore),
         escalation: {
           reason: 'stage/commit require request_id for Fast Path idempotency',
-          suggestedOperation: 'provide request_id or use Durable Work',
+          suggestedOperation: 'provide request_id (preferred) or explicit mode=durable',
         },
         result: {
           error: {
@@ -631,7 +674,9 @@ export async function executeFast(
     }
   }
 
-  const timeoutMs = boundedTimeout(request.timeoutMs ?? (typeof request.input.timeout_ms === 'number' ? request.input.timeout_ms : undefined));
+  const timeoutMs = boundedTimeout(
+    request.timeoutMs ?? (typeof request.input.timeout_ms === 'number' ? request.input.timeout_ms : undefined),
+  );
   const root = ctx.repository.canonicalRoot;
 
   const runBody = async (
@@ -679,31 +724,28 @@ export async function executeFast(
           }) as unknown as Record<string, unknown>;
         });
       } else if (operation === 'search') {
-        resultPayload = await trace.measure('executionMs', async () => runSearchInWorker(
-          root,
-          String(request.input.query ?? ''),
-          typeof request.input.max_results === 'number' ? request.input.max_results : 50,
-          typeof request.input.max_files === 'number' ? request.input.max_files : 2_000,
-          signal,
-        ));
+        resultPayload = await trace.measure('executionMs', async () =>
+          runSearchInWorker(
+            root,
+            String(request.input.query ?? ''),
+            typeof request.input.max_results === 'number' ? request.input.max_results : 50,
+            typeof request.input.max_files === 'number' ? request.input.max_files : 2_000,
+            signal,
+          ),
+        );
       } else if (operation === 'git_status' || operation === 'repository_git_status') {
-        resultPayload = await trace.measure('snapshotMs', async () => asyncGitStatus(
-          root,
-          ctx.repository.repoId,
-          ctx.repository.activeCheckoutId,
-          timeoutMs,
-          signal,
-        ));
+        resultPayload = await trace.measure('snapshotMs', async () =>
+          asyncGitStatus(root, ctx.repository.repoId, ctx.repository.activeCheckoutId, timeoutMs, signal),
+        );
       } else if (operation === 'git_diff' || operation === 'repository_git_diff' || operation === 'git_diff_paths') {
-        resultPayload = await trace.measure('executionMs', async () => asyncGitDiff(
-          root,
-          ctx.repository.repoId,
-          ctx.repository.activeCheckoutId,
-          request.input,
-          timeoutMs,
-          signal,
-        ));
-      } else if (operation === 'apply_patch' || operation === 'repository_safe_patch_apply' || operation === 'apply_edit_operations') {
+        resultPayload = await trace.measure('executionMs', async () =>
+          asyncGitDiff(root, ctx.repository.repoId, ctx.repository.activeCheckoutId, request.input, timeoutMs, signal),
+        );
+      } else if (
+        operation === 'apply_patch' ||
+        operation === 'repository_safe_patch_apply' ||
+        operation === 'apply_edit_operations'
+      ) {
         helpers?.assert();
         if (signal?.aborted) throw new Error('CANCELLED: ownership or request aborted');
         const allowed = request.allowedPaths ?? stringList(request.input.allowed_paths);
@@ -724,26 +766,26 @@ export async function executeFast(
             paths: opPaths,
           });
         } catch (error) {
-          throw new Error(
-            `SAVEPOINT_CREATE_FAILED: ${error instanceof Error ? error.message : String(error)}`,
-          );
+          throw new Error(`SAVEPOINT_CREATE_FAILED: ${error instanceof Error ? error.message : String(error)}`);
         }
         let applied: ReturnType<typeof applySafePatch>;
         try {
           helpers?.assert();
-          applied = await trace.measure('executionMs', async () => applySafePatch(ctx.repository, {
-            controllerHome: ctx.controllerHome,
-            sessionId: request.input.session_id,
-            purpose: request.input.purpose ?? 'fast-path-patch',
-            operations: request.input.operations,
-            chunkSize: request.input.chunk_size,
-            expectedRevision: request.input.expected_revision,
-            allowedPaths: allowed,
-            continueOnError: false,
-            refreshFingerprints: request.input.refresh_fingerprints === true,
-            recoverStaleSession: request.input.recover_stale_session !== false,
-            leaseOwnerJobId: helpers?.getGate().ownerJobId,
-          }));
+          applied = await trace.measure('executionMs', async () =>
+            applySafePatch(ctx.repository, {
+              controllerHome: ctx.controllerHome,
+              sessionId: request.input.session_id,
+              purpose: request.input.purpose ?? 'fast-path-patch',
+              operations: request.input.operations,
+              chunkSize: request.input.chunk_size,
+              expectedRevision: request.input.expected_revision,
+              allowedPaths: allowed,
+              continueOnError: false,
+              refreshFingerprints: request.input.refresh_fingerprints === true,
+              recoverStaleSession: request.input.recover_stale_session !== false,
+              leaseOwnerJobId: helpers?.getGate().ownerJobId,
+            }),
+          );
         } catch (error) {
           const restored = restoreWorkspaceSavepoint(savepoint);
           const verified = verifySavepointRestored(root, savepoint);
@@ -784,23 +826,18 @@ export async function executeFast(
         outcome = ok ? 'succeeded' : 'failed';
         policyDecision = ok ? 'allowed' : 'failed';
 
-        const needsRollback = !ok || (allowed?.length
-          ? changedPaths.some((path) => !pathAllowed(path, allowed))
-          : false);
+        const needsRollback =
+          !ok || (allowed?.length ? changedPaths.some((path) => !pathAllowed(path, allowed)) : false);
 
         if (needsRollback) {
-          const outOfScope = allowed?.length
-            ? changedPaths.filter((path) => !pathAllowed(path, allowed))
-            : [];
+          const outOfScope = allowed?.length ? changedPaths.filter((path) => !pathAllowed(path, allowed)) : [];
           const restored = restoreWorkspaceSavepoint(savepoint);
           const verified = verifySavepointRestored(root, savepoint);
           const rollbackOk = restored.ok && verified.ok;
           ok = false;
           outcome = 'failed';
           if (rollbackOk) {
-            policyDecision = outOfScope.length
-              ? 'path_scope_violation_rolled_back'
-              : 'patch_failed_rolled_back';
+            policyDecision = outOfScope.length ? 'path_scope_violation_rolled_back' : 'patch_failed_rolled_back';
             repositoryChanged = false;
             changedPaths = [];
             discardWorkspaceSavepoint(savepoint);
@@ -866,94 +903,106 @@ export async function executeFast(
         repositoryChanged = true;
         ok = true;
         outcome = 'succeeded';
-      } else if (operation === 'commit_paths' || operation === 'git_commit_paths' || operation === 'repository_git_commit') {
+      } else if (
+        operation === 'commit_paths' ||
+        operation === 'git_commit_paths' ||
+        operation === 'repository_git_commit'
+      ) {
         helpers?.assert();
-        const commit = await trace.measure('executionMs', async () => executeFastGitCommit(
-          root,
-          request.input,
-          timeoutMs,
-          signal,
-        ));
+        const commit = await trace.measure('executionMs', async () =>
+          executeFastGitCommit(root, request.input, timeoutMs, signal),
+        );
         resultPayload = { commit, fencingToken, baseHead };
         changedPaths = (commit.paths as string[] | undefined) ?? stringList(request.input.paths) ?? [];
         repositoryChanged = true;
       } else if (
-        operation === 'run_short_command'
-        || operation === 'run_focused_check'
-        || operation === 'execute_command'
+        operation === 'run_short_command' ||
+        operation === 'run_focused_check' ||
+        operation === 'execute_command'
       ) {
         const command = request.input.command as string | string[];
-        const preview = await trace.measure('policyMs', async () => previewRepositoryCommandExecutionAsync(ctx.repository, {
-          command,
-          cwd: typeof request.input.cwd === 'string' ? request.input.cwd : undefined,
-          authorization: 'confirmed_plan',
-          approvalToken: typeof request.input.approval_token === 'string' ? request.input.approval_token : undefined,
-          approvalRequestId: typeof request.input.approval_request_id === 'string' ? request.input.approval_request_id : undefined,
-          timeoutMs,
-          maxOutputBytes: FAST_PATH_MAX_OUTPUT_BYTES,
-          sessionId: ctx.sessionId,
-          principalId: ctx.principalId,
-          signal,
-        }, ctx.controllerHome));
-        const approvalToken = typeof request.input.approval_token === 'string' && request.input.approval_token.trim()
-          ? request.input.approval_token.trim()
-          : preview.execution.approvalToken;
+        const preview = await trace.measure('policyMs', async () =>
+          previewRepositoryCommandExecutionAsync(
+            ctx.repository,
+            {
+              command,
+              cwd: typeof request.input.cwd === 'string' ? request.input.cwd : undefined,
+              authorization: 'confirmed_plan',
+              approvalToken:
+                typeof request.input.approval_token === 'string' ? request.input.approval_token : undefined,
+              approvalRequestId:
+                typeof request.input.approval_request_id === 'string' ? request.input.approval_request_id : undefined,
+              timeoutMs,
+              maxOutputBytes: FAST_PATH_MAX_OUTPUT_BYTES,
+              sessionId: ctx.sessionId,
+              principalId: ctx.principalId,
+              signal,
+            },
+            ctx.controllerHome,
+          ),
+        );
+        const approvalToken =
+          typeof request.input.approval_token === 'string' && request.input.approval_token.trim()
+            ? request.input.approval_token.trim()
+            : preview.execution.approvalToken;
         let sealed = preview;
         let reuseSnapshot: RepositoryCommandSnapshot | undefined = preview.before;
         if (!preview.executable) {
           // Second seal only when approval token was injected; reuse snapshot.
-          sealed = await previewRepositoryCommandExecutionAsync(ctx.repository, {
-            command,
-            cwd: typeof request.input.cwd === 'string' ? request.input.cwd : undefined,
-            authorization: 'confirmed_plan',
-            approvalToken,
-            approvalRequestId: typeof request.input.approval_request_id === 'string' ? request.input.approval_request_id : undefined,
-            timeoutMs,
-            maxOutputBytes: FAST_PATH_MAX_OUTPUT_BYTES,
-            sessionId: ctx.sessionId,
-            principalId: ctx.principalId,
-            signal,
-            reuseSnapshot: preview.before,
-          }, ctx.controllerHome);
+          sealed = await previewRepositoryCommandExecutionAsync(
+            ctx.repository,
+            {
+              command,
+              cwd: typeof request.input.cwd === 'string' ? request.input.cwd : undefined,
+              authorization: 'confirmed_plan',
+              approvalToken,
+              approvalRequestId:
+                typeof request.input.approval_request_id === 'string' ? request.input.approval_request_id : undefined,
+              timeoutMs,
+              maxOutputBytes: FAST_PATH_MAX_OUTPUT_BYTES,
+              sessionId: ctx.sessionId,
+              principalId: ctx.principalId,
+              signal,
+              reuseSnapshot: preview.before,
+            },
+            ctx.controllerHome,
+          );
           reuseSnapshot = sealed.before;
         }
         if (!sealed.executable) {
           throw Object.assign(
-            new Error(sealed.execution.policyDecision === 'rejected'
-              ? `COMMAND_REJECTED: ${sealed.execution.classification.reasons.join('; ')}`
-              : `COMMAND_APPROVAL_REQUIRED: use Durable Work / approval_resolve`),
+            new Error(
+              sealed.execution.policyDecision === 'rejected'
+                ? `COMMAND_REJECTED: ${sealed.execution.classification.reasons.join('; ')}`
+                : `COMMAND_APPROVAL_REQUIRED: use approval_resolve or explicit mode=durable`,
+            ),
             { preview: sealed },
           );
         }
-        authorizationDecision = String(sealed.execution.authorizationDecision?.decision
-          ?? sealed.execution.authorization
-          ?? (sealed.execution.classification.risk === 'readonly' ? 'readonly' : 'confirmed_plan'));
+        authorizationDecision = String(
+          sealed.execution.authorizationDecision?.decision ??
+            sealed.execution.authorization ??
+            (sealed.execution.classification.risk === 'readonly' ? 'readonly' : 'confirmed_plan'),
+        );
         helpers?.assert();
-        const execution = await trace.measure('executionMs', async () => executeRepositoryCommandAsync(
-          ctx.controllerHome,
-          ctx.repository,
-          {
+        const execution = await trace.measure('executionMs', async () =>
+          executeRepositoryCommandAsync(ctx.controllerHome, ctx.repository, {
             command,
             cwd: typeof request.input.cwd === 'string' ? request.input.cwd : undefined,
             authorization: 'confirmed_plan',
             approvalToken,
-            approvalRequestId: typeof request.input.approval_request_id === 'string' ? request.input.approval_request_id : undefined,
+            approvalRequestId:
+              typeof request.input.approval_request_id === 'string' ? request.input.approval_request_id : undefined,
             timeoutMs,
             maxOutputBytes: FAST_PATH_MAX_OUTPUT_BYTES,
             sessionId: ctx.sessionId,
             principalId: ctx.principalId,
             signal,
             reuseSnapshot,
-          },
-        ));
+          }),
+        );
         ok = execution.ok === true && execution.status === 'executed' && !execution.cancelled;
-        outcome = execution.cancelled
-          ? 'cancelled'
-          : execution.timedOut
-            ? 'timed_out'
-            : ok
-              ? 'succeeded'
-              : 'failed';
+        outcome = execution.cancelled ? 'cancelled' : execution.timedOut ? 'timed_out' : ok ? 'succeeded' : 'failed';
         changedPaths = execution.changedPaths ?? [];
         repositoryChanged = execution.repositoryChanged === true;
         policyDecision = execution.policyDecision ?? 'allowed';
@@ -1034,10 +1083,12 @@ export async function executeFast(
           ownerIdentity: {
             repositoryId: ctx.repository.repoId,
             checkoutId: ctx.repository.activeCheckoutId,
-            worktreeId: ctx.repository.checkouts.find((checkout) => checkout.checkoutId === ctx.repository.activeCheckoutId)?.canonicalRoot
-              ?? ctx.repository.canonicalRoot,
-            branch: ctx.repository.checkouts.find((checkout) => checkout.checkoutId === ctx.repository.activeCheckoutId)?.branch
-              ?? 'detached',
+            worktreeId:
+              ctx.repository.checkouts.find((checkout) => checkout.checkoutId === ctx.repository.activeCheckoutId)
+                ?.canonicalRoot ?? ctx.repository.canonicalRoot,
+            branch:
+              ctx.repository.checkouts.find((checkout) => checkout.checkoutId === ctx.repository.activeCheckoutId)
+                ?.branch ?? 'detached',
             principalId: ctx.principalId ?? ctx.sessionId ?? `request:${owner}`,
           },
           ttlMs: timeoutMs + 10_000,
@@ -1052,11 +1103,7 @@ export async function executeFast(
               head: gate.baseHead,
               statusHash: gate.baseStatusHash,
             });
-            const bound = bindFastRequestBaseSnapshot(
-              ctx.controllerHome,
-              acquiredLedger,
-              baseSnapshot,
-            );
+            const bound = bindFastRequestBaseSnapshot(ctx.controllerHome, acquiredLedger, baseSnapshot);
             if (!bound.ok) {
               throw new Error(`LEDGER_BASE_SNAPSHOT_FAILED: ${bound.warning ?? bound.code ?? 'unknown error'}`);
             }
@@ -1065,12 +1112,15 @@ export async function executeFast(
             if (beat.entry) acquiredLedger = beat.entry;
           }
           // Align ledger heartbeat with ownership renews.
-          const ledgerHeartbeat = setInterval(() => {
-            if (acquiredLedger) {
-              const beat = heartbeatFastRequest(ctx.controllerHome, acquiredLedger, gate.ttlMs);
-              if (beat.entry) acquiredLedger = beat.entry;
-            }
-          }, Math.max(500, Math.floor(gate.ttlMs / 3)));
+          const ledgerHeartbeat = setInterval(
+            () => {
+              if (acquiredLedger) {
+                const beat = heartbeatFastRequest(ctx.controllerHome, acquiredLedger, gate.ttlMs);
+                if (beat.entry) acquiredLedger = beat.entry;
+              }
+            },
+            Math.max(500, Math.floor(gate.ttlMs / 3)),
+          );
           ledgerHeartbeat.unref?.();
           try {
             return await runBody(gate.fencingToken, gate.baseHead, helpers, helpers.signal);
@@ -1093,7 +1143,7 @@ export async function executeFast(
             reasons: ['checkout_mutation_busy', gated.busy.reason],
             risk: 'workspace_write',
             effects: decision.effects,
-            suggestedOperation: 'retry after durable writer finishes, or use Durable Work',
+            suggestedOperation: 'retry after durable writer finishes, or re-issue with mode=durable',
           }),
           operationSucceeded: false,
           latency: trace.snapshot(ctx.includeLatencyBreakdown === true),
@@ -1107,7 +1157,7 @@ export async function executeFast(
           },
           escalation: {
             reason: mutationGateBusyMessage(gated.busy),
-            suggestedOperation: 'wait or use Durable Work',
+            suggestedOperation: 'wait, then retry or re-issue with mode=durable',
           },
         };
       }
@@ -1148,12 +1198,7 @@ export async function executeFast(
     const helpers = request.externalHelpers;
     fencingToken = request.externalGate?.fencingToken ?? helpers?.getGate().fencingToken;
     baseHead = request.externalGate?.baseHead ?? helpers?.getGate().baseHead;
-    bodyResult = await runBody(
-      fencingToken,
-      baseHead,
-      helpers,
-      helpers?.signal ?? request.signal,
-    );
+    bodyResult = await runBody(fencingToken, baseHead, helpers, helpers?.signal ?? request.signal);
   } else {
     bodyResult = await runBody(undefined, undefined, undefined, request.signal);
   }
@@ -1208,29 +1253,30 @@ export async function executeFast(
     }
   }
 
-  const resultError = bodyResult.resultPayload.error as {
-    message?: string;
-    reconciliationRequired?: boolean;
-    cleanupRequired?: boolean;
-    repositoryChanged?: boolean;
-  } | undefined;
-  const outcomeUnknown = processStopUnconfirmed
-    || bodyResult.outcome === 'cancelled' && bodyResult.repositoryChanged
-    || resultError?.reconciliationRequired === true && !bodyResult.ok && bodyResult.repositoryChanged;
+  const resultError = bodyResult.resultPayload.error as
+    | {
+        message?: string;
+        reconciliationRequired?: boolean;
+        cleanupRequired?: boolean;
+        repositoryChanged?: boolean;
+      }
+    | undefined;
+  const outcomeUnknown =
+    processStopUnconfirmed ||
+    (bodyResult.outcome === 'cancelled' && bodyResult.repositoryChanged) ||
+    (resultError?.reconciliationRequired === true && !bodyResult.ok && bodyResult.repositoryChanged);
 
   if (ledgerEntry?.kind === 'acquired' || acquiredLedger) {
     const expected = acquiredLedger ?? ledgerEntry!.entry;
     const ledgerStatus = bodyResult.ok
-      ? 'succeeded' as const
+      ? ('succeeded' as const)
       : outcomeUnknown || processStopUnconfirmed
-        ? 'unknown' as const
-        : 'failed' as const;
+        ? ('unknown' as const)
+        : ('failed' as const);
     const completed = completeFastRequest(ctx.controllerHome, expected, {
       status: ledgerStatus,
       resultSummary: summaryFrom(bodyResult.resultPayload, 1_024),
-      error: bodyResult.ok
-        ? undefined
-        : resultError?.message,
+      error: bodyResult.ok ? undefined : resultError?.message,
       receiptExecutionId: receipt?.executionId,
     });
     ledgerPersisted = completed.ok;
@@ -1238,9 +1284,8 @@ export async function executeFast(
   }
 
   const cleanupRequired = resultError?.cleanupRequired === true;
-  const reconciliationRequired = resultError?.reconciliationRequired === true
-    || processStopUnconfirmed
-    || outcomeUnknown;
+  const reconciliationRequired =
+    resultError?.reconciliationRequired === true || processStopUnconfirmed || outcomeUnknown;
 
   // Mutation success is independent of receipt/ledger persistence failures.
   return {

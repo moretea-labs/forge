@@ -47,14 +47,16 @@ export async function executeRepositoryBatch(
   const requestId = request.requestId?.trim() || undefined;
   const inputHash = hashRequestInput({ steps, mode: request.mode, allowedPaths: request.allowedPaths });
 
-  const decision = trace.measureSync('routingMs', () => routeExecution({
-    operation: 'batch',
-    mode: request.mode ?? 'auto',
-    steps,
-    timeoutMs: request.timeoutMs,
-    allowedPaths: request.allowedPaths,
-    defaultBranch: ctx.repository.defaultBranch,
-  }));
+  const decision = trace.measureSync('routingMs', () =>
+    routeExecution({
+      operation: 'batch',
+      mode: request.mode ?? 'auto',
+      steps,
+      timeoutMs: request.timeoutMs,
+      allowedPaths: request.allowedPaths,
+      defaultBranch: ctx.repository.defaultBranch,
+    }),
+  );
 
   if (decision.mode === 'reject') {
     return {
@@ -72,23 +74,26 @@ export async function executeRepositoryBatch(
     return {
       ok: false,
       mode: 'durable',
-      decision: decision.mode === 'durable' ? decision : {
-        mode: 'durable',
-        reasons: ['caller_requested_durable_batch'],
-        risk: 'unknown',
-        estimatedClass: 'long',
-        requiresIsolation: false,
-        requiresRecovery: false,
-        effects: decision.effects,
-        suggestedOperation: 'Durable Work batch / individual durable tools',
-      },
+      decision:
+        decision.mode === 'durable'
+          ? decision
+          : {
+              mode: 'durable',
+              reasons: ['caller_requested_durable_batch'],
+              risk: 'unknown',
+              estimatedClass: 'long',
+              requiresIsolation: false,
+              requiresRecovery: false,
+              effects: decision.effects,
+              suggestedOperation: 'batch via repository tools with explicit mode=durable when required',
+            },
       steps: [],
       stoppedEarly: true,
       partialFailure: false,
       latency: trace.snapshot(request.includeLatencyBreakdown === true),
       escalation: {
         reason: (decision.mode === 'durable' ? decision.reasons : ['caller_requested_durable_batch']).join('; '),
-        suggestedOperation: decision.suggestedOperation ?? 'Durable Work',
+        suggestedOperation: decision.suggestedOperation ?? 'retry with explicit mode=durable when required',
       },
     };
   }
@@ -143,12 +148,13 @@ export async function executeRepositoryBatch(
         stoppedEarly: true,
         partialFailure: false,
         latency: trace.snapshot(request.includeLatencyBreakdown === true),
-        escalation: stepDecision.mode === 'durable'
-          ? {
-            reason: stepDecision.reasons.join('; '),
-            suggestedOperation: stepDecision.suggestedOperation ?? 'Durable Work',
-          }
-          : undefined,
+        escalation:
+          stepDecision.mode === 'durable'
+            ? {
+                reason: stepDecision.reasons.join('; '),
+                suggestedOperation: stepDecision.suggestedOperation ?? 'retry with explicit mode=durable when required',
+              }
+            : undefined,
       };
     }
   }
@@ -264,10 +270,7 @@ export async function executeRepositoryBatch(
     }
   }
 
-  const batchDeadlineMs = Math.min(
-    request.timeoutMs ?? FAST_BATCH_MAX_TOTAL_MS,
-    FAST_BATCH_MAX_TOTAL_MS,
-  );
+  const batchDeadlineMs = Math.min(request.timeoutMs ?? FAST_BATCH_MAX_TOTAL_MS, FAST_BATCH_MAX_TOTAL_MS);
 
   const runSteps = async (
     gate?: import('./mutation-gate').CheckoutMutationGate,
@@ -330,7 +333,9 @@ export async function executeRepositoryBatch(
       const stepId = step.id?.trim() || `step_${index + 1}`;
       const remainingMs = Math.max(100, batchDeadlineMs - (performance.now() - wallStart));
       const stepTimeout = Math.min(
-        typeof step.input.timeout_ms === 'number' ? step.input.timeout_ms : request.timeoutMs ?? FAST_PATH_MAX_TIMEOUT_MS,
+        typeof step.input.timeout_ms === 'number'
+          ? step.input.timeout_ms
+          : (request.timeoutMs ?? FAST_PATH_MAX_TIMEOUT_MS),
         remainingMs,
         FAST_PATH_MAX_TIMEOUT_MS,
       );
@@ -405,11 +410,12 @@ export async function executeRepositoryBatch(
         error: executed.ok
           ? undefined
           : {
-            code: executed.escalation ? 'STEP_ESCALATED' : 'STEP_FAILED',
-            message: executed.escalation?.reason
-              ?? (executed.result?.error as { message?: string } | undefined)?.message
-              ?? 'step failed',
-          },
+              code: executed.escalation ? 'STEP_ESCALATED' : 'STEP_FAILED',
+              message:
+                executed.escalation?.reason ??
+                (executed.result?.error as { message?: string } | undefined)?.message ??
+                'step failed',
+            },
         changedPaths: nestedChanged,
       };
       stepResults.push(stepResult);
@@ -454,10 +460,12 @@ export async function executeRepositoryBatch(
           ownerIdentity: {
             repositoryId: ctx.repository.repoId,
             checkoutId: ctx.repository.activeCheckoutId,
-            worktreeId: ctx.repository.checkouts.find((checkout) => checkout.checkoutId === ctx.repository.activeCheckoutId)?.canonicalRoot
-              ?? ctx.repository.canonicalRoot,
-            branch: ctx.repository.checkouts.find((checkout) => checkout.checkoutId === ctx.repository.activeCheckoutId)?.branch
-              ?? 'detached',
+            worktreeId:
+              ctx.repository.checkouts.find((checkout) => checkout.checkoutId === ctx.repository.activeCheckoutId)
+                ?.canonicalRoot ?? ctx.repository.canonicalRoot,
+            branch:
+              ctx.repository.checkouts.find((checkout) => checkout.checkoutId === ctx.repository.activeCheckoutId)
+                ?.branch ?? 'detached',
             principalId: ctx.principalId ?? ctx.sessionId ?? `request:${requestId ?? 'batch'}`,
           },
           ttlMs: batchDeadlineMs + 15_000,
@@ -474,11 +482,7 @@ export async function executeRepositoryBatch(
               head: gate.baseHead,
               statusHash: gate.baseStatusHash,
             });
-            const bound = bindFastRequestBaseSnapshot(
-              ctx.controllerHome,
-              ledger.entry,
-              baseSnapshot,
-            );
+            const bound = bindFastRequestBaseSnapshot(ctx.controllerHome, ledger.entry, baseSnapshot);
             if (!bound.ok) {
               throw new Error(`LEDGER_BASE_SNAPSHOT_FAILED: ${bound.warning ?? bound.code ?? 'unknown error'}`);
             }
@@ -520,7 +524,7 @@ export async function executeRepositoryBatch(
           latency: trace.snapshot(request.includeLatencyBreakdown === true),
           escalation: {
             reason: mutationGateBusyMessage(gated.busy),
-            suggestedOperation: 'wait or use Durable Work',
+            suggestedOperation: 'wait, then retry or re-issue with mode=durable',
           },
         };
       }
@@ -596,18 +600,20 @@ export async function executeRepositoryBatch(
     if (request.includeLatencyBreakdown === true) written.receipt.latency = latency;
   }
 
-  const reconciliationRequired = processStopUnconfirmed
-    || (partialFailure && repositoryChanged)
-    || stepResults.some((step) => step.error?.code === 'MUTATION_OWNERSHIP_LOST'
-      || step.error?.code === 'MUTATION_RENEW_FAILED');
+  const reconciliationRequired =
+    processStopUnconfirmed ||
+    (partialFailure && repositoryChanged) ||
+    stepResults.some(
+      (step) => step.error?.code === 'MUTATION_OWNERSHIP_LOST' || step.error?.code === 'MUTATION_RENEW_FAILED',
+    );
   let ledgerPersisted: boolean | undefined;
   let ledgerWarning: string | undefined;
   if (ledger?.kind === 'acquired') {
     const ledgerStatus = ok
-      ? 'succeeded' as const
-      : processStopUnconfirmed || reconciliationRequired && !stepResults.some((s) => s.ok)
-        ? 'unknown' as const
-        : 'failed' as const;
+      ? ('succeeded' as const)
+      : processStopUnconfirmed || (reconciliationRequired && !stepResults.some((s) => s.ok))
+        ? ('unknown' as const)
+        : ('failed' as const);
     const completed = completeFastRequest(ctx.controllerHome, ledger.entry, {
       status: ledgerStatus,
       resultSummary: `batch ok=${ok} steps=${stepResults.length} partial=${partialFailure}`,

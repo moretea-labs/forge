@@ -50,5 +50,5 @@ Owns packaged workflow/compatibility contract assets. Mutable execution lifecycl
 - Semantic diagram source: `docs/architecture/modules/workflow-engine/contract-assets.md`
 - Latest human diagram: `(none yet)`
 - Pending architecture request: `(none)`
-- Runtime progress authority: Forge Controller Home Requirement/Plan/Work/Evidence; this repository block contains authored architecture context only.
+- Development progress authority: GitHub Issue/Project; Requirement/Plan are optional semantic context; Work lifecycle is retired. This repository block contains authored architecture context only.
 <!-- END ARCHITECTURE CONTRACT -->

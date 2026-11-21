@@ -5,10 +5,17 @@ import { loadMcpServiceLocalConfig } from '../../../adapters/mcp/auth';
 import { resolveControllerHome } from '../../effects/controller-home';
 import { observeRuntimeStatus } from '../../runtime/root/status';
 import { dirname, join, resolve } from 'path';
-import { openAiSecureTunnelStatusArgs, parseOpenAiSecureTunnelRuntimeStatus, tunnelRuntimeProfileTargetsEndpoint } from '../../../adapters/mcp/tunnels/openai-secure-tunnel';
+import {
+  openAiSecureTunnelStatusArgs,
+  parseOpenAiSecureTunnelRuntimeStatus,
+  tunnelRuntimeProfileTargetsEndpoint,
+} from '../../runtime/standalone-recovery/openai-secure-tunnel';
 import { discoverExecutable, type ExecutableDiscoveryResult } from '../../runtime/platform/executable-discovery';
 import { resolvePlatformServiceManager, type PlatformServiceManagerKind } from '../../runtime/platform/service-manager';
-import { deriveRuntimeDeploymentTopology, type RuntimeDeploymentTopology } from '../../runtime/root/deployment-topology';
+import {
+  deriveRuntimeDeploymentTopology,
+  type RuntimeDeploymentTopology,
+} from '../../runtime/root/deployment-topology';
 
 export type SetupControllerKind = 'chatgpt' | 'codex' | 'claude' | 'mcp';
 export type SetupTunnelProvider = 'auto' | 'openai' | 'cloudflare' | 'tailscale' | 'existing' | 'none';
@@ -106,7 +113,8 @@ function normalizeCapabilityIntent(value: string): string {
 function normalizeTunnelId(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
-  if (!/^tunnel_[0-9a-f]{32}$/.test(trimmed)) throw new Error('invalid OpenAI tunnel id: expected tunnel_ followed by 32 lowercase hexadecimal characters');
+  if (!/^tunnel_[0-9a-f]{32}$/.test(trimmed))
+    throw new Error('invalid OpenAI tunnel id: expected tunnel_ followed by 32 lowercase hexadecimal characters');
   return trimmed;
 }
 
@@ -114,8 +122,19 @@ function normalizeEndpoint(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
   let parsed: URL;
-  try { parsed = new URL(trimmed); } catch { throw new Error(`invalid setup endpoint "${value}": expected HTTPS URL ending in /mcp`); }
-  if (parsed.protocol !== 'https:' || parsed.pathname !== '/mcp' || parsed.search || parsed.hash || parsed.username || parsed.password) {
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`invalid setup endpoint "${value}": expected HTTPS URL ending in /mcp`);
+  }
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.pathname !== '/mcp' ||
+    parsed.search ||
+    parsed.hash ||
+    parsed.username ||
+    parsed.password
+  ) {
     throw new Error(`invalid setup endpoint "${value}": expected HTTPS URL ending in /mcp`);
   }
   return parsed.toString();
@@ -128,8 +147,16 @@ export function readSetupProfile(options: SetupProfileOptions = {}): SetupProfil
     const controllers = Array.isArray(value.controllers)
       ? value.controllers.filter((entry): entry is SetupControllerKind => CONTROLLERS.includes(entry))
       : [];
-    const capabilityIntents = Array.isArray(value.capabilityIntents) ? value.capabilityIntents.filter((entry): entry is string => typeof entry === 'string').map(normalizeCapabilityIntent) : [];
-    return { ...value, controllers: Array.from(new Set([value.primaryController, ...controllers])), capabilityIntents: Array.from(new Set(capabilityIntents)).sort() };
+    const capabilityIntents = Array.isArray(value.capabilityIntents)
+      ? value.capabilityIntents
+          .filter((entry): entry is string => typeof entry === 'string')
+          .map(normalizeCapabilityIntent)
+      : [];
+    return {
+      ...value,
+      controllers: Array.from(new Set([value.primaryController, ...controllers])),
+      capabilityIntents: Array.from(new Set(capabilityIntents)).sort(),
+    };
   } catch {
     return undefined;
   }
@@ -137,22 +164,32 @@ export function readSetupProfile(options: SetupProfileOptions = {}): SetupProfil
 
 export function configureSetupProfile(options: ConfigureSetupProfileOptions): SetupProfile {
   const previous = readSetupProfile(options);
-  const primaryController = normalizeController(options.controller, 'forge setup configure --controller')
-    ?? previous?.primaryController
-    ?? 'chatgpt';
-  const additions = (options.addControllers ?? []).map((entry) => normalizeController(entry, 'forge setup configure --add-controller')!);
+  const primaryController =
+    normalizeController(options.controller, 'forge setup configure --controller') ??
+    previous?.primaryController ??
+    'chatgpt';
+  const additions = (options.addControllers ?? []).map(
+    (entry) => normalizeController(entry, 'forge setup configure --add-controller')!,
+  );
   const controllers = Array.from(new Set([primaryController, ...(previous?.controllers ?? []), ...additions]));
-  const capabilityIntents = Array.from(new Set([...(previous?.capabilityIntents ?? []), ...(options.capabilities ?? []).map(normalizeCapabilityIntent)])).sort();
-  const provider = normalizeTunnel(options.tunnel)
-    ?? previous?.tunnel.provider
-    ?? (controllers.some((entry) => entry === 'chatgpt' || entry === 'mcp') ? 'auto' : 'none');
+  const capabilityIntents = Array.from(
+    new Set([...(previous?.capabilityIntents ?? []), ...(options.capabilities ?? []).map(normalizeCapabilityIntent)]),
+  ).sort();
+  const provider =
+    normalizeTunnel(options.tunnel) ??
+    previous?.tunnel.provider ??
+    (controllers.some((entry) => entry === 'chatgpt' || entry === 'mcp') ? 'auto' : 'none');
   const explicitTunnel = normalizeTunnel(options.tunnel);
-  const endpoint = provider === 'openai' || provider === 'none'
-    ? undefined
-    : normalizeEndpoint(options.endpoint) ?? (previous?.tunnel.provider === provider ? previous.tunnel.endpoint : undefined);
-  const tunnelId = provider === 'openai'
-    ? normalizeTunnelId(options.tunnelId) ?? (previous?.tunnel.provider === 'openai' ? previous.tunnel.tunnelId : undefined)
-    : undefined;
+  const endpoint =
+    provider === 'openai' || provider === 'none'
+      ? undefined
+      : (normalizeEndpoint(options.endpoint) ??
+        (previous?.tunnel.provider === provider ? previous.tunnel.endpoint : undefined));
+  const tunnelId =
+    provider === 'openai'
+      ? (normalizeTunnelId(options.tunnelId) ??
+        (previous?.tunnel.provider === 'openai' ? previous.tunnel.tunnelId : undefined))
+      : undefined;
   if (provider === 'existing' && !endpoint) {
     throw new Error('forge setup configure --tunnel existing requires --endpoint https://.../mcp');
   }
@@ -203,12 +240,9 @@ export function setupConnectorAuthMode(profile: SetupProfile | undefined): Setup
 }
 
 function chatgptConnectorRepairCommand(profile: SetupProfile, controllerHome: string): string {
-  const endpoint = profile.tunnel.endpoint
-    ? ` --endpoint ${profile.tunnel.endpoint}`
-    : ' --clear-endpoint';
+  const endpoint = profile.tunnel.endpoint ? ` --endpoint ${profile.tunnel.endpoint}` : ' --clear-endpoint';
   return `forge mcp setup chatgpt --user-level --controller-home ${JSON.stringify(controllerHome)} --connector-auth ${setupConnectorAuthMode(profile)}${endpoint}`;
 }
-
 
 function commandExists(command: string, platform = process.platform, env: NodeJS.ProcessEnv = process.env): boolean {
   return discoverExecutable({ id: command, candidates: [command], platform, env }).status === 'ready';
@@ -216,27 +250,99 @@ function commandExists(command: string, platform = process.platform, env: NodeJS
 
 function isWsl(env: NodeJS.ProcessEnv): boolean {
   if (env.WSL_DISTRO_NAME || env.WSL_INTEROP) return true;
-  try { return /microsoft/i.test(readFileSync('/proc/version', 'utf8')); } catch { return false; }
+  try {
+    return /microsoft/i.test(readFileSync('/proc/version', 'utf8'));
+  } catch {
+    return false;
+  }
 }
 
-export function detectSetupPlatform(options: { platform?: NodeJS.Platform; arch?: string; env?: NodeJS.ProcessEnv } = {}): SetupPlatformSnapshot {
+export function detectSetupPlatform(
+  options: { platform?: NodeJS.Platform; arch?: string; env?: NodeJS.ProcessEnv } = {},
+): SetupPlatformSnapshot {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
   const wsl = platform === 'linux' && isWsl(env);
   const prerequisites = Object.fromEntries([
-    ['brew', discoverExecutable({ id: 'brew', candidates: ['brew'], platform, env, supportedPlatforms: ['darwin'], recovery: 'Install Homebrew only when a selected provider requires it.' })],
-    ['cloudflared', discoverExecutable({ id: 'cloudflared', candidates: ['cloudflared'], platform, env, recovery: 'Install cloudflared or choose another tunnel provider.' })],
-    ['tailscale', discoverExecutable({ id: 'tailscale', candidates: ['tailscale'], platform, env, recovery: 'Install Tailscale or choose another tunnel provider.' })],
-    ['tunnelClient', discoverExecutable({ id: 'tunnel-client', candidates: ['tunnel-client'], platform, env, recovery: 'Install the selected tunnel client or configure an existing HTTPS endpoint.' })],
-    ['systemctl', discoverExecutable({ id: 'systemctl', candidates: ['systemctl'], platform, env, supportedPlatforms: ['linux'], recovery: 'Use portable service mode when systemd-user is unavailable.' })],
-    ['winget', discoverExecutable({ id: 'winget', candidates: ['winget'], platform, env, supportedPlatforms: ['win32'], recovery: 'Install prerequisites manually or provide an explicit executable path.' })],
+    [
+      'brew',
+      discoverExecutable({
+        id: 'brew',
+        candidates: ['brew'],
+        platform,
+        env,
+        supportedPlatforms: ['darwin'],
+        recovery: 'Install Homebrew only when a selected provider requires it.',
+      }),
+    ],
+    [
+      'cloudflared',
+      discoverExecutable({
+        id: 'cloudflared',
+        candidates: ['cloudflared'],
+        platform,
+        env,
+        recovery: 'Install cloudflared or choose another tunnel provider.',
+      }),
+    ],
+    [
+      'tailscale',
+      discoverExecutable({
+        id: 'tailscale',
+        candidates: ['tailscale'],
+        platform,
+        env,
+        recovery: 'Install Tailscale or choose another tunnel provider.',
+      }),
+    ],
+    [
+      'tunnelClient',
+      discoverExecutable({
+        id: 'tunnel-client',
+        candidates: ['tunnel-client'],
+        platform,
+        env,
+        recovery: 'Install the selected tunnel client or configure an existing HTTPS endpoint.',
+      }),
+    ],
+    [
+      'systemctl',
+      discoverExecutable({
+        id: 'systemctl',
+        candidates: ['systemctl'],
+        platform,
+        env,
+        supportedPlatforms: ['linux'],
+        recovery: 'Use portable service mode when systemd-user is unavailable.',
+      }),
+    ],
+    [
+      'winget',
+      discoverExecutable({
+        id: 'winget',
+        candidates: ['winget'],
+        platform,
+        env,
+        supportedPlatforms: ['win32'],
+        recovery: 'Install prerequisites manually or provide an explicit executable path.',
+      }),
+    ],
   ]);
   const systemctl = prerequisites.systemctl?.status === 'ready';
   const serviceManager = resolvePlatformServiceManager({ platform, systemdUserAvailable: systemctl });
   return {
     platform,
     arch: options.arch ?? process.arch,
-    environment: platform === 'darwin' ? 'macos' : platform === 'linux' ? (wsl ? 'wsl2' : 'linux') : platform === 'win32' ? 'windows' : 'other',
+    environment:
+      platform === 'darwin'
+        ? 'macos'
+        : platform === 'linux'
+          ? wsl
+            ? 'wsl2'
+            : 'linux'
+          : platform === 'win32'
+            ? 'windows'
+            : 'other',
     serviceManager: serviceManager.kind,
     commands: {
       brew: prerequisites.brew?.status === 'ready',
@@ -250,16 +356,17 @@ export function detectSetupPlatform(options: { platform?: NodeJS.Platform; arch?
   };
 }
 
-
 function isLoopbackMcpEndpoint(value: string | undefined): value is string {
   if (!value) return false;
   try {
     const parsed = new URL(value);
-    return parsed.protocol === 'http:'
-      && (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost' || parsed.hostname === '::1')
-      && parsed.pathname === '/mcp'
-      && !parsed.search
-      && !parsed.hash;
+    return (
+      parsed.protocol === 'http:' &&
+      (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost' || parsed.hostname === '::1') &&
+      parsed.pathname === '/mcp' &&
+      !parsed.search &&
+      !parsed.hash
+    );
   } catch {
     return false;
   }
@@ -280,12 +387,18 @@ function codexUserControllerConfigured(home = homedir()): boolean {
     const text = readFileSync(path, 'utf8');
     const block = text.match(/\[mcp_servers\.forge\][\s\S]*?(?=\n\[|$)/)?.[0] ?? '';
     return block.includes('"mcp"') && block.includes('"serve"') && block.includes('"controller"');
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 function claudeUserControllerConfigured(): boolean {
   if (!commandExists('claude')) return false;
-  const probe = spawnSync('claude', ['mcp', 'get', 'forge'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000 });
+  const probe = spawnSync('claude', ['mcp', 'get', 'forge'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10_000,
+  });
   if (probe.status !== 0) return false;
   const text = `${probe.stdout ?? ''}\n${probe.stderr ?? ''}`;
   return /forge\s+mcp\s+serve|"mcp".*"serve"/is.test(text) && /controller/i.test(text);
@@ -300,9 +413,10 @@ export function resolveControllerGuidance(
   const localConfig = loadMcpServiceLocalConfig(controllerHome);
   for (const controller of profile.controllers) {
     if (controller === 'chatgpt' || controller === 'mcp') {
-      const localReady = localConfig?.profile === 'controller'
-        && localConfig.server?.host === '127.0.0.1'
-        && Number.isInteger(localConfig.server?.port);
+      const localReady =
+        localConfig?.profile === 'controller' &&
+        localConfig.server?.host === '127.0.0.1' &&
+        Number.isInteger(localConfig.server?.port);
       const connectorReady = controller !== 'chatgpt' || isLoopbackMcpEndpoint(localConfig?.chatgpt?.localEndpoint);
       const endpointReady = !profile.tunnel.endpoint || localConfig?.chatgpt?.endpoint === profile.tunnel.endpoint;
       const authReady = localConfig?.auth?.mode === setupConnectorAuthMode(profile);
@@ -310,8 +424,12 @@ export function resolveControllerGuidance(
         return {
           controller,
           ready: false,
-          title: controller === 'chatgpt' ? 'Configure the ChatGPT controller endpoint' : 'Configure the remote MCP controller endpoint',
-          detail: 'Create or refresh the transport-aware Forge MCP configuration in the selected Controller Home. Secure Tunnel uses tunnel authority at the loopback Connector; public HTTPS connectors retain OAuth.',
+          title:
+            controller === 'chatgpt'
+              ? 'Configure the ChatGPT controller endpoint'
+              : 'Configure the remote MCP controller endpoint',
+          detail:
+            'Create or refresh the transport-aware Forge MCP configuration in the selected Controller Home. Secure Tunnel uses tunnel authority at the loopback Connector; public HTTPS connectors retain OAuth.',
           command: chatgptConnectorRepairCommand(profile, controllerHome),
         };
       }
@@ -320,7 +438,9 @@ export function resolveControllerGuidance(
     if (controller === 'codex') {
       if (!codexUserControllerConfigured(options.home)) {
         return {
-          controller, ready: false, title: 'Configure Codex as a Forge controller',
+          controller,
+          ready: false,
+          title: 'Configure Codex as a Forge controller',
           detail: 'Codex is optional. Configure it only because it was explicitly selected as a controller entry.',
           command: 'forge mcp setup codex --scope user --profile controller',
         };
@@ -329,13 +449,17 @@ export function resolveControllerGuidance(
     }
     if (!commandExists('claude')) {
       return {
-        controller, ready: false, title: 'Install Claude Code only for this selected controller',
+        controller,
+        ready: false,
+        title: 'Install Claude Code only for this selected controller',
         detail: 'Claude is not a Forge dependency. Install and authenticate Claude Code, then continue setup.',
       };
     }
     if (!claudeUserControllerConfigured()) {
       return {
-        controller, ready: false, title: 'Configure Claude Code as a Forge controller',
+        controller,
+        ready: false,
+        title: 'Configure Claude Code as a Forge controller',
         detail: 'Forge delegates MCP registration to the official Claude CLI at user scope.',
         command: 'forge mcp setup claude --scope user --profile controller',
       };
@@ -343,7 +467,6 @@ export function resolveControllerGuidance(
   }
   return undefined;
 }
-
 
 export interface RuntimeGuidance {
   ready: boolean;
@@ -371,7 +494,8 @@ export function resolveRuntimeGuidance(
   return {
     ready: false,
     title: 'Install the user-level Forge Runtime',
-    detail: 'Use the packaged Runtime path. It does not require a Git checkout, Bun compilation, CodeGraph, or Standalone Recovery.',
+    detail:
+      'Use the packaged Runtime path. It does not require a Git checkout, Bun compilation, CodeGraph, or Standalone Recovery.',
     command: `forge runtime service install-package --controller-home ${JSON.stringify(controllerHome)}`,
   };
 }
@@ -382,7 +506,12 @@ export function resolveTunnelGuidance(
   options: { controllerHome?: string; env?: NodeJS.ProcessEnv } = {},
 ): TunnelGuidance {
   if (!profile || !setupNeedsRemoteAccess(profile)) {
-    return { provider: 'none', ready: true, title: 'Remote controller connection', detail: 'Not required by the configured local controller set.' };
+    return {
+      provider: 'none',
+      ready: true,
+      title: 'Remote controller connection',
+      detail: 'Not required by the configured local controller set.',
+    };
   }
   let provider = profile.tunnel.provider;
   if (provider === 'auto') {
@@ -401,24 +530,36 @@ export function resolveTunnelGuidance(
         provider,
         ready: false,
         title: 'Restore the public HTTPS Connector OAuth boundary',
-        detail: 'Public HTTPS MCP transport must terminate at the OAuth-protected Connector rather than the bearer-only Runtime.',
+        detail:
+          'Public HTTPS MCP transport must terminate at the OAuth-protected Connector rather than the bearer-only Runtime.',
         command: chatgptConnectorRepairCommand(profile, controllerHome),
       };
     }
-    return { provider, ready: true, title: 'HTTPS endpoint configured', detail: `Configured: ${profile.tunnel.endpoint}. Live connector reachability is verified in the ChatGPT connection step.` };
+    return {
+      provider,
+      ready: true,
+      title: 'HTTPS endpoint configured',
+      detail: `Configured: ${profile.tunnel.endpoint}. Live connector reachability is verified in the ChatGPT connection step.`,
+    };
   }
   if (provider === 'openai') {
     if (!profile.tunnel.tunnelId) {
       return {
-        provider, ready: false, title: 'Create an OpenAI Secure MCP Tunnel',
-        detail: 'Create a tunnel in OpenAI Platform Tunnels, associate it with the target ChatGPT workspace, then record the non-secret tunnel_id in Forge. Do not paste a runtime API key into Forge setup.',
+        provider,
+        ready: false,
+        title: 'Create an OpenAI Secure MCP Tunnel',
+        detail:
+          'Create a tunnel in OpenAI Platform Tunnels, associate it with the target ChatGPT workspace, then record the non-secret tunnel_id in Forge. Do not paste a runtime API key into Forge setup.',
         command: 'forge setup configure --controller chatgpt --tunnel openai --tunnel-id tunnel_...',
       };
     }
     if (!platform.commands.tunnelClient) {
       return {
-        provider, ready: false, title: 'Install OpenAI tunnel-client',
-        detail: 'Install the supported tunnel-client binary from OpenAI Platform Tunnels or the official openai/tunnel-client release. The runtime API key remains an environment/file reference owned by tunnel-client; Forge does not store it.',
+        provider,
+        ready: false,
+        title: 'Install OpenAI tunnel-client',
+        detail:
+          'Install the supported tunnel-client binary from OpenAI Platform Tunnels or the official openai/tunnel-client release. The runtime API key remains an environment/file reference owned by tunnel-client; Forge does not store it.',
       };
     }
     if (localConfig && localConfig.auth?.mode !== expectedAuthMode) {
@@ -426,22 +567,31 @@ export function resolveTunnelGuidance(
         provider,
         ready: false,
         title: 'Align the Secure Tunnel Connector authorization boundary',
-        detail: 'OpenAI Secure MCP Tunnel must terminate at a loopback Connector using tunnel/workspace authority, not a loopback browser OAuth issuer.',
+        detail:
+          'OpenAI Secure MCP Tunnel must terminate at a loopback Connector using tunnel/workspace authority, not a loopback browser OAuth issuer.',
         command: chatgptConnectorRepairCommand(profile, controllerHome),
       };
     }
     const localEndpoint = localConfig?.chatgpt?.localEndpoint;
     if (!isLoopbackMcpEndpoint(localEndpoint)) {
       return {
-        provider, ready: false, title: 'Prepare the local ChatGPT Secure Tunnel Connector',
-        detail: 'Secure Tunnel must terminate at Forge’s loopback transport-authorized Connector, not the bearer-only Canonical Runtime and not a browser-facing loopback OAuth issuer. Refresh the user-level ChatGPT MCP configuration first.',
+        provider,
+        ready: false,
+        title: 'Prepare the local ChatGPT Secure Tunnel Connector',
+        detail:
+          'Secure Tunnel must terminate at Forge’s loopback transport-authorized Connector, not the bearer-only Canonical Runtime and not a browser-facing loopback OAuth issuer. Refresh the user-level ChatGPT MCP configuration first.',
         command: chatgptConnectorRepairCommand(profile, controllerHome),
       };
     }
     const tunnelClient = platform.prerequisites?.tunnelClient?.executable ?? 'tunnel-client';
     const preferredAlias = 'forge';
     const configuredAliases: string[] = [];
-    const listed = spawnSync(tunnelClient, ['runtimes', 'list', '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, env: options.env ?? process.env });
+    const listed = spawnSync(tunnelClient, ['runtimes', 'list', '--json'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 15_000,
+      env: options.env ?? process.env,
+    });
     if (listed.status === 0) {
       try {
         const value = JSON.parse(listed.stdout || '{}') as { aliases?: Array<{ alias?: string; tunnel_id?: string }> };
@@ -454,13 +604,24 @@ export function resolveTunnelGuidance(
     }
     const aliases = Array.from(new Set([...configuredAliases, preferredAlias]));
     for (const alias of aliases) {
-      const status = spawnSync(tunnelClient, openAiSecureTunnelStatusArgs(alias), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, env: options.env ?? process.env });
+      const status = spawnSync(tunnelClient, openAiSecureTunnelStatusArgs(alias), {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 15_000,
+        env: options.env ?? process.env,
+      });
       if (status.status !== 0) continue;
       try {
-        const value = parseOpenAiSecureTunnelRuntimeStatus(status.stdout || '{}', { alias, tunnelId: profile.tunnel.tunnelId, mcpServerUrl: localEndpoint });
+        const value = parseOpenAiSecureTunnelRuntimeStatus(status.stdout || '{}', {
+          alias,
+          tunnelId: profile.tunnel.tunnelId,
+          mcpServerUrl: localEndpoint,
+        });
         if (value.ok) {
           return {
-            provider, ready: true, title: 'OpenAI Secure MCP Tunnel',
+            provider,
+            ready: true,
+            title: 'OpenAI Secure MCP Tunnel',
             detail: `Managed runtime ${alias} is running, healthy, and bound to ${profile.tunnel.tunnelId} -> ${localEndpoint}.`,
           };
         }
@@ -473,57 +634,77 @@ export function resolveTunnelGuidance(
     // legitimately refer to a different tunnel from an earlier setup.
     const alias = configuredAliases[0] ?? preferredAlias;
     return {
-      provider, ready: false, title: 'Connect OpenAI Secure MCP Tunnel',
-      detail: 'Create a supervised tunnel-client runtime and verify its tunnel id and MCP target with runtimes status. Keep the runtime API key in an environment or file reference owned by tunnel-client; Forge never reads or stores the key.',
+      provider,
+      ready: false,
+      title: 'Connect OpenAI Secure MCP Tunnel',
+      detail:
+        'Create a supervised tunnel-client runtime and verify its tunnel id and MCP target with runtimes status. Keep the runtime API key in an environment or file reference owned by tunnel-client; Forge never reads or stores the key.',
       command: `tunnel-client runtimes connect --alias ${alias} --tunnel-id ${profile.tunnel.tunnelId} --runtime-api-key env:CONTROL_PLANE_API_KEY --mcp-server-url ${localEndpoint}`,
     };
   }
   if (provider === 'none') {
     return {
-      provider, ready: false, title: 'Remote controller access is deferred',
+      provider,
+      ready: false,
+      title: 'Remote controller access is deferred',
       detail: 'The selected controller set includes ChatGPT/remote MCP, but remote connectivity is deferred.',
       command: 'forge setup configure --controller chatgpt --tunnel auto',
     };
   }
   if (provider === 'existing') {
     return {
-      provider, ready: false, title: 'Record existing HTTPS endpoint',
+      provider,
+      ready: false,
+      title: 'Record existing HTTPS endpoint',
       detail: 'Provide the existing public HTTPS URL ending in /mcp.',
       command: 'forge setup configure --tunnel existing --endpoint https://forge.example.com/mcp',
     };
   }
   if (provider === 'cloudflare') {
     if (!platform.commands.cloudflared) {
-      const install = platform.environment === 'macos' && platform.commands.brew ? 'brew install cloudflared' : undefined;
+      const install =
+        platform.environment === 'macos' && platform.commands.brew ? 'brew install cloudflared' : undefined;
       return {
-        provider, ready: false, title: 'Install Cloudflare Tunnel',
-        detail: platform.environment === 'windows'
-          ? 'Install the official cloudflared executable or MSI, then run forge setup next.'
-          : platform.environment === 'linux' || platform.environment === 'wsl2'
-            ? 'Install cloudflared from Cloudflare’s official package repository for this Linux distribution, then run forge setup next.'
-            : 'Install cloudflared, then run forge setup next.',
+        provider,
+        ready: false,
+        title: 'Install Cloudflare Tunnel',
+        detail:
+          platform.environment === 'windows'
+            ? 'Install the official cloudflared executable or MSI, then run forge setup next.'
+            : platform.environment === 'linux' || platform.environment === 'wsl2'
+              ? 'Install cloudflared from Cloudflare’s official package repository for this Linux distribution, then run forge setup next.'
+              : 'Install cloudflared, then run forge setup next.',
         ...(install ? { command: install } : {}),
       };
     }
     return {
-      provider, ready: false, title: 'Create a stable Cloudflare Tunnel',
-      detail: 'Authenticate cloudflared, create/route a named tunnel to the loopback OAuth Connector (normally 127.0.0.1:8767), then record its HTTPS /mcp URL. Never expose the bearer-only Canonical Runtime directly.',
+      provider,
+      ready: false,
+      title: 'Create a stable Cloudflare Tunnel',
+      detail:
+        'Authenticate cloudflared, create/route a named tunnel to the loopback OAuth Connector (normally 127.0.0.1:8767), then record its HTTPS /mcp URL. Never expose the bearer-only Canonical Runtime directly.',
       command: 'cloudflared tunnel login',
     };
   }
   if (!platform.commands.tailscale) {
     return {
-      provider: 'tailscale', ready: false, title: 'Install Tailscale',
-      detail: platform.environment === 'macos'
-        ? 'Install Tailscale for macOS and enable CLI integration, then run forge setup next.'
-        : platform.environment === 'windows'
-          ? 'Install the official Tailscale Windows client, sign in, then run forge setup next.'
-          : 'Install Tailscale for Linux, sign in, then run forge setup next.',
+      provider: 'tailscale',
+      ready: false,
+      title: 'Install Tailscale',
+      detail:
+        platform.environment === 'macos'
+          ? 'Install Tailscale for macOS and enable CLI integration, then run forge setup next.'
+          : platform.environment === 'windows'
+            ? 'Install the official Tailscale Windows client, sign in, then run forge setup next.'
+            : 'Install Tailscale for Linux, sign in, then run forge setup next.',
     };
   }
   return {
-    provider: 'tailscale', ready: false, title: 'Enable Tailscale Funnel',
-    detail: 'Expose only the loopback OAuth Connector and then record the generated HTTPS /mcp URL. Never expose the bearer-only Canonical Runtime directly.',
+    provider: 'tailscale',
+    ready: false,
+    title: 'Enable Tailscale Funnel',
+    detail:
+      'Expose only the loopback OAuth Connector and then record the generated HTTPS /mcp URL. Never expose the bearer-only Canonical Runtime directly.',
     command: 'tailscale funnel --bg 8767',
   };
 }
@@ -534,7 +715,7 @@ export function formatSetupProfile(profile: SetupProfile, platform = detectSetup
     `Primary controller: ${profile.primaryController}`,
     `Configured controllers: ${profile.controllers.join(', ')}`,
     `Platform: ${platform.environment}/${platform.arch}; service=${platform.serviceManager}`,
-    `Remote access: ${profile.tunnel.provider}${profile.tunnel.endpoint ? ` (${profile.tunnel.endpoint})` : profile.tunnel.tunnelId ? ` (${profile.tunnel.tunnelId})` : ''}`, 
+    `Remote access: ${profile.tunnel.provider}${profile.tunnel.endpoint ? ` (${profile.tunnel.endpoint})` : profile.tunnel.tunnelId ? ` (${profile.tunnel.tunnelId})` : ''}`,
     `Tunnel readiness: ${tunnel.ready ? 'ready' : 'needs setup'} — ${tunnel.detail}`,
     'Forge itself remains the execution/runtime layer; it does not choose semantic actions without an external controller.',
   ].join('\n');

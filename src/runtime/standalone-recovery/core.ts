@@ -63,7 +63,7 @@ import {
   openAiSecureTunnelStatusArgs,
   parseOpenAiSecureTunnelRuntimeStatus,
   type OpenAiSecureTunnelRuntimeObservation,
-} from '../../../adapters/mcp/tunnels/openai-secure-tunnel';
+} from './openai-secure-tunnel';
 import {
   renderPackageRuntimeSystemdUserService,
   systemdRuntimeInstallCommands,

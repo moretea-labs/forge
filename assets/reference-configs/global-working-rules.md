@@ -1,6 +1,6 @@
 # Global Working Rules
 
-Use this content for user-level `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md` as concise reasoning guidance. Prompt text improves attention but is not correctness or lifecycle authority: Forge admission, persisted contracts, scoped policy, checks, and review receipts enforce the workflow. Keep mutable Runtime/Plan/Work/session/check state in Controller Home; keep repositories for authored/declarative content.
+Use this content for user-level `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md` as concise reasoning guidance. Prompt text improves attention but is not correctness or lifecycle authority: Forge admission, persisted contracts, scoped policy, checks, and review receipts enforce the workflow. Keep optional Requirement/Plan semantic context in Controller Home when explicitly useful; keep repositories for authored/declarative content. GitHub Issue/Project is the only development progress ledger. Work lifecycle and ControllerRound are retired.
 
 ```md
 # Global Working Rules
@@ -9,24 +9,30 @@ Use this content for user-level `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md` a
 - Act as an engineering collaborator: finish the concrete task, verify it, then report conclusion, actual change, reason, verification, and residual risk.
 - Prefer direct execution over repeated confirmation. Stop to ask only when continuing would likely produce output contrary to the user's intent.
 
+## Light Default Path
+
+- For understood small fixes: read Issue decision + exact source once → Direct Edit (or one safe patch) → focused tests → one commit → one Issue evidence note.
+- Do not preflight `rh_status` / plan_list / context lists / Writer inventory unless the next mutation depends on them or a failure requires them.
+- Do not create Work, ControllerRound, or Requirement/Plan progress theater for ordinary edits. Requirement revise, if used at all, is optional post-delivery semantic snapshot—never a second progress ledger.
+- Prefer IDE/terminal Direct Edit when the path is known. Use `repository_safe_patch_apply` when MCP-only write or explicit CAS/diff evidence is required. Legacy begin/apply/finalize EditSession is recovery/compatibility, not the default loop.
+
 ## Delivery Transaction Discipline
 
-### Current Task Lineage Isolation
+### Current Task Isolation
 
-- Select the current task from explicit user intent plus the exact Work/Requirement/Plan lineage. Never treat repository-wide active Work as the current task queue.
-- Global status/inventory exists for conflict, ownership, blocker, and release-admission checks only. Unrelated active Work must not trigger discovery, edits, validation, review, release, cleanup, or progress accounting in the current controller round.
-- Switch tasks only on explicit user intent or an explicit typed lineage transition. Similar files, shared broad Requirements, urgency, or mere visibility in status are not lineage.
-- Report current-task progress from the current lineage only; label unrelated repository activity separately if it materially blocks the task.
+- Select the current task from explicit user intent plus the live GitHub Issue (and optional Requirement/Plan only when present or explicitly requested). Never treat repository-wide inventory as the current task queue.
+- Global status/inventory exists for conflict, ownership, blocker, and release-admission checks only. Unrelated activity must not trigger discovery, edits, validation, review, release, cleanup, or progress accounting for the current slice.
+- Switch tasks only on explicit user intent or an explicit typed transition. Similar files, shared broad Requirements, urgency, or mere visibility in status are not lineage.
+- Report current-task progress on the Issue only; label unrelated repository activity separately if it materially blocks the task.
 
 For architecture migrations, self-hosting work, and other multi-file system changes, optimize for one bounded delivery transaction instead of repeated micro-lifecycles.
 
-- Batch facts first, decide the root cause/owner once, freeze the delivery scope, implement the coherent candidate, review the whole diff, run one focused validation wave, run canonical gates once, then deliver and clean up.
-- A newly observed symptom or affected file does not justify a new Work. Extend the current candidate when the same architecture invariant/root cause still owns the change; create a sibling Work only for a genuinely independent authority, security boundary, delivery, or architecture decision.
-- Do not use Git commits as scratch savepoints. Prefer Work/edit-session/savepoint state during implementation and one coherent candidate commit at the delivery boundary.
+- Batch facts first, decide the root cause/owner once, freeze the delivery scope, implement the coherent candidate, review the whole diff, run one focused validation wave, run canonical gates once, then deliver and update the Issue.
+- A newly observed symptom or affected file does not justify a new lifecycle record. Extend the current candidate when the same architecture invariant/root cause still owns the change; open a sibling Issue only for a genuinely independent authority, security boundary, delivery, or architecture decision.
+- Do not use Git commits as scratch savepoints. Keep one coherent candidate commit at the delivery boundary.
 - Do not repeatedly run baseline checks, broad suites, Candidate builds, canaries, or Runtime activation while source-changing work for the same delivery remains active. Release begins only after the source candidate is frozen.
-- After a check failure, repair the same candidate and rerun the affected check set unless the evidence invalidates the architecture; do not restart the whole lifecycle by default.
-- Retire superseded/covered Work and Plan state promptly. Active lifecycle records must describe real remaining work, not historical debris.
-- When the workflow machinery itself has a design problem, capture a bounded follow-up Plan. If the current version can still converge safely, defer that machinery refactor until after the release instead of expanding the release scope.
+- After a check failure, repair the same candidate and rerun the affected check set unless the evidence invalidates the architecture; do not restart a heavy control-plane ritual by default.
+- When the workflow machinery itself has a design problem, capture a bounded follow-up on the Issue (optional Plan only when useful). If the current version can still converge safely, defer that machinery refactor until after the release instead of expanding the release scope.
 
 ## Progressive Due Diligence
 
@@ -70,12 +76,10 @@ Reports must be concise and grounded in files, commands, runtime behavior, obser
 
 ## Completion Summary Rule
 
-For non-trivial completed tasks, include a short `下一刀` section at the end of the final delivery report unless there is genuinely no meaningful follow-up.
 For non-trivial completed tasks, include a short `下一刀` section only when verified state shows a concrete next bottleneck, unresolved risk, failing check, deployment gap, review gap, or active-plan item that materially affects the user's stated goal.
 
 Do not manufacture follow-up work just to keep slicing. If the task is reasonably complete and the remaining work would be speculative, low-value polish, or over-engineering, omit `下一刀` and stop at the completion report.
 
-The recommendation is not a question. It must be one concrete, bounded next slice derived from verified state: active plan, todo, handoff, failing checks, review gaps, deployment state, unresolved risk, or observed system behavior.
 When included, the recommendation is not a question. It must be one concrete, bounded next slice derived from verified state: active plan, todo, handoff, failing checks, review gaps, deployment state, unresolved risk, or observed system behavior.
 
 Format:

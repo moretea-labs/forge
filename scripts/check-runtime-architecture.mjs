@@ -45,15 +45,35 @@ function forbidBetween(path, startNeedle, endNeedle, expression, description) {
 }
 // The duplicate iOS MCP aliases were retired after typed ios plugin cutover.
 // Do not recreate a second execution schema for these names.
-forbid('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', /definition\('ios_(?:xcode_status|simulators_list|project_discover|schemes_list|simulator_boot|app_build|app_install|app_launch|simulator_screenshot|simulator_log_tail|ui_smoke_test)'/, 'retired iOS MCP aliases must not be re-exposed');
+forbid(
+  'adapters/mcp/runtime-gateway/runtime-tool-definitions.ts',
+  /definition\('ios_(?:xcode_status|simulators_list|project_discover|schemes_list|simulator_boot|app_build|app_install|app_launch|simulator_screenshot|simulator_log_tail|ui_smoke_test)'/,
+  'retired iOS MCP aliases must not be re-exposed',
+);
 // The orchestrator MCP profile and unregistered run_agent_goal operation were retired.
 // Do not allow a second model runner or legacy profile to reappear as a bypass.
-forbid('src/runtime/control-plane/tool-policy.ts', /profile === 'orchestrator'|value === 'orchestrator'/, 'orchestrator MCP policy must stay retired');
+forbid(
+  'src/runtime/control-plane/tool-policy.ts',
+  /profile === 'orchestrator'|value === 'orchestrator'/,
+  'orchestrator MCP policy must stay retired',
+);
 // The desktop native Agent local harness must execute tools through the
 // protocol-neutral dispatchers, never through the MCP adapter surface.
-forbid('apps/desktop/src-tauri/resources/forge-local-tool.mjs', /adapters\/mcp/, 'local Agent harness must not import the MCP adapter execution owner');
-forbid('src/runtime/control-plane/facade/repository-tool-dispatch.ts', /from\s+['"][^'"]*(?:adapters\/mcp|packages\/protocols\/mcp)\//, 'protocol-neutral Repository dispatch must not import MCP adapter or SDK types');
-forbid('src/runtime/execution/process-runtime/tool-dispatch.ts', /from\s+['"][^'"]*(?:adapters\/mcp|packages\/protocols\/mcp)\//, 'protocol-neutral Process dispatch must not import MCP adapter or SDK types');
+forbid(
+  'apps/desktop/src-tauri/resources/forge-local-tool.mjs',
+  /adapters\/mcp/,
+  'local Agent harness must not import the MCP adapter execution owner',
+);
+forbid(
+  'src/runtime/control-plane/facade/repository-tool-dispatch.ts',
+  /from\s+['"][^'"]*(?:adapters\/mcp|packages\/protocols\/mcp)\//,
+  'protocol-neutral Repository dispatch must not import MCP adapter or SDK types',
+);
+forbid(
+  'src/runtime/execution/process-runtime/tool-dispatch.ts',
+  /from\s+['"][^'"]*(?:adapters\/mcp|packages\/protocols\/mcp)\//,
+  'protocol-neutral Process dispatch must not import MCP adapter or SDK types',
+);
 // The neutral tool authority sits below every transport; it must never depend
 // back on a transport adapter.
 for (const path of [
@@ -65,19 +85,33 @@ for (const path of [
 }
 // Exactly one dispatcher owns execution; the MCP surfaces keep schema
 // definitions only.
-forbid('adapters/mcp/tool-mapping/repository-tools.ts', /export async function callRepositoryTool/, 'repository tool dispatch must stay in the protocol-neutral dispatcher');
-forbid('adapters/mcp/runtime-gateway/process-tools.ts', /export async function callProcessTool/, 'process attachment dispatch must stay in the protocol-neutral dispatcher');
-forbid('adapters/mcp/tool-mapping/legacy-tool-service.ts', /\bfunction runAgentGoal\b|case "run_agent_goal"/, 'legacy in-process model runner must stay removed');
+forbid(
+  'adapters/mcp/tool-mapping/repository-tools.ts',
+  /export async function callRepositoryTool/,
+  'repository tool dispatch must stay in the protocol-neutral dispatcher',
+);
+forbid(
+  'adapters/mcp/runtime-gateway/process-tools.ts',
+  /export async function callProcessTool/,
+  'process attachment dispatch must stay in the protocol-neutral dispatcher',
+);
+forbid(
+  'adapters/mcp/tool-mapping/legacy-tool-service.ts',
+  /\bfunction runAgentGoal\b|case "run_agent_goal"/,
+  'legacy in-process model runner must stay removed',
+);
 // Legacy Agent Run and Local Bridge submission tool names must stay absent:
-forbid('adapters/mcp/tool-mapping/legacy-tool-service.ts', /name:\s*["'](?:quick_agent_session|submit_local_job)["']/, 'retired Agent/Local Job submit schemas must remain deleted');
-forbid('adapters/mcp/tool-mapping/legacy-tool-service.ts', /RETIRED_LEGACY_PUBLIC_TOOLS|AGENT_RUN_DEPRECATED|LOCAL_BRIDGE_JOB_RETIRED/, 'dead per-name compatibility code must not return');
-const GENERATED_SOURCE_DIRECTORY_NAMES = new Set([
-  'node_modules',
-  'dist',
-  'build',
-  'coverage',
-  'target',
-]);
+forbid(
+  'adapters/mcp/tool-mapping/legacy-tool-service.ts',
+  /name:\s*["'](?:quick_agent_session|submit_local_job)["']/,
+  'retired Agent/Local Job submit schemas must remain deleted',
+);
+forbid(
+  'adapters/mcp/tool-mapping/legacy-tool-service.ts',
+  /RETIRED_LEGACY_PUBLIC_TOOLS|AGENT_RUN_DEPRECATED|LOCAL_BRIDGE_JOB_RETIRED/,
+  'dead per-name compatibility code must not return',
+);
+const GENERATED_SOURCE_DIRECTORY_NAMES = new Set(['node_modules', 'dist', 'build', 'coverage', 'target']);
 
 function sourceFiles(directory) {
   const absolute = resolve(root, directory);
@@ -110,7 +144,9 @@ function loadTypeScriptCompiler() {
   try {
     typeScriptCompiler = createRequire(import.meta.url)('typescript');
   } catch (error) {
-    failures.push(`TypeScript dependency is required for architecture import analysis: ${error instanceof Error ? error.message : String(error)}`);
+    failures.push(
+      `TypeScript dependency is required for architecture import analysis: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   return typeScriptCompiler;
 }
@@ -119,11 +155,13 @@ const WORK_LIFECYCLE_PATCH_FIELDS = new Set(['status', 'phase', 'dispatchState',
 
 function unwrapTypeScriptExpression(ts, node) {
   let current = node;
-  while (ts.isParenthesizedExpression(current)
-      || ts.isAsExpression(current)
-      || ts.isTypeAssertionExpression(current)
-      || ts.isNonNullExpression(current)
-      || (typeof ts.isSatisfiesExpression === 'function' && ts.isSatisfiesExpression(current))) {
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    (typeof ts.isSatisfiesExpression === 'function' && ts.isSatisfiesExpression(current))
+  ) {
     current = current.expression;
   }
   return current;
@@ -144,11 +182,16 @@ function inlineWorkLifecyclePatchFields(ts, node) {
       for (const field of inlineWorkLifecyclePatchFields(ts, property.expression)) fields.add(field);
       continue;
     }
-    if (!(ts.isPropertyAssignment(property)
-        || ts.isShorthandPropertyAssignment(property)
-        || ts.isMethodDeclaration(property)
-        || ts.isGetAccessorDeclaration(property)
-        || ts.isSetAccessorDeclaration(property))) continue;
+    if (
+      !(
+        ts.isPropertyAssignment(property) ||
+        ts.isShorthandPropertyAssignment(property) ||
+        ts.isMethodDeclaration(property) ||
+        ts.isGetAccessorDeclaration(property) ||
+        ts.isSetAccessorDeclaration(property)
+      )
+    )
+      continue;
     const name = staticTypeScriptPropertyName(ts, property.name);
     if (name && WORK_LIFECYCLE_PATCH_FIELDS.has(name)) fields.add(name);
   }
@@ -192,19 +235,25 @@ function staticTypeScriptImportRecords(files) {
     const sourceFile = ts.createSourceFile(path, text(path), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     function visit(node) {
       let specifier;
-      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
-          && node.moduleSpecifier
-          && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      if (
+        (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+        node.moduleSpecifier &&
+        ts.isStringLiteralLike(node.moduleSpecifier)
+      ) {
         specifier = node.moduleSpecifier.text;
-      } else if (ts.isImportEqualsDeclaration(node)
-          && ts.isExternalModuleReference(node.moduleReference)
-          && node.moduleReference.expression
-          && ts.isStringLiteralLike(node.moduleReference.expression)) {
+      } else if (
+        ts.isImportEqualsDeclaration(node) &&
+        ts.isExternalModuleReference(node.moduleReference) &&
+        node.moduleReference.expression &&
+        ts.isStringLiteralLike(node.moduleReference.expression)
+      ) {
         specifier = node.moduleReference.expression.text;
-      } else if (ts.isCallExpression(node)
-          && node.expression.kind === ts.SyntaxKind.ImportKeyword
-          && node.arguments.length === 1
-          && ts.isStringLiteralLike(node.arguments[0])) {
+      } else if (
+        ts.isCallExpression(node) &&
+        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        node.arguments.length === 1 &&
+        ts.isStringLiteralLike(node.arguments[0])
+      ) {
         specifier = node.arguments[0].text;
       }
       if (specifier) records.push({ from: path, specifier });
@@ -227,9 +276,10 @@ function staticTypeScriptDependencyGraph(files) {
     const withoutRuntimeExtension = ['.js', '.mjs', '.cjs'].includes(extension)
       ? base.slice(0, -extension.length)
       : base;
-    const candidates = extension === '.ts'
-      ? [base]
-      : [withoutRuntimeExtension, `${withoutRuntimeExtension}.ts`, `${withoutRuntimeExtension}/index.ts`];
+    const candidates =
+      extension === '.ts'
+        ? [base]
+        : [withoutRuntimeExtension, `${withoutRuntimeExtension}.ts`, `${withoutRuntimeExtension}/index.ts`];
     return candidates.find((candidate) => known.has(candidate));
   }
 
@@ -279,7 +329,10 @@ function requireExactShrinkingDebt(label, actual, allowed) {
     if (!allowed.has(edge)) failures.push(`${label} introduced forbidden dependency: ${edge}`);
   }
   for (const edge of allowed) {
-    if (!actual.has(edge)) failures.push(`${label} allowlist contains retired dependency; remove it so the debt ledger only shrinks: ${edge}`);
+    if (!actual.has(edge))
+      failures.push(
+        `${label} allowlist contains retired dependency; remove it so the debt ledger only shrinks: ${edge}`,
+      );
   }
 }
 
@@ -288,49 +341,99 @@ function requireExactShrinkingInventory(label, actual, allowed) {
     if (!allowed.has(entry)) failures.push(`${label} introduced forbidden entry: ${entry}`);
   }
   for (const entry of allowed) {
-    if (!actual.has(entry)) failures.push(`${label} allowlist contains retired entry; remove it so the debt ledger only shrinks: ${entry}`);
+    if (!actual.has(entry))
+      failures.push(`${label} allowlist contains retired entry; remove it so the debt ledger only shrinks: ${entry}`);
   }
 }
 
 // Thin rh_work boundary: semantic Requirement/Plan/Work records and explicit
 // launcher/schedule/workflow intent only. Repository execution, checks and Git
 // delivery stay on their typed capability surfaces; old lifecycle verbs are gone.
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "if (name === 'rh_work') return callWorkAdapter(ctx, args);");
-requireText('adapters/mcp/runtime-gateway/work-controller-operations.ts', "const RH_WORK_CONTROLLER_OPERATIONS = new Set(['launcher_start']);");
+requireText(
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
+  "if (name === 'rh_work') return callWorkAdapter(ctx, args);",
+);
+requireText(
+  'adapters/mcp/runtime-gateway/work-controller-operations.ts',
+  "const RH_WORK_CONTROLLER_OPERATIONS = new Set(['launcher_start']);",
+);
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "if (operation === 'launcher_start')");
-requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'export async function callRhWorkRequirementOperation');
+requireText(
+  'adapters/mcp/runtime-gateway/work-requirement-operations.ts',
+  'export async function callRhWorkRequirementOperation',
+);
 requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'export async function callRhWorkPlanOperation');
-requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'export async function callRhWorkPlanCreateOperation');
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkRequirementOperation(ctx, repository, operation, args)');
+requireText(
+  'adapters/mcp/runtime-gateway/work-plan-operations.ts',
+  'export async function callRhWorkPlanCreateOperation',
+);
+requireText(
+  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'callRhWorkRequirementOperation(ctx, repository, operation, args)',
+);
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkPlanOperation(store, operation, args)');
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkPlanCreateOperation(store, operation, args');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /operation === ['"](?:continue|verify|review|finalize|stop|delegate|controller_get_owner|controller_claim|controller_disposition|controller_release)['"]/, 'thin rh_work must not route retired lifecycle/controller operations');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:transitionWorkHandle|writeWorkHandle|markWorkHandleFailed|executeWorkVerification|requestWorkImplementationReview)\b/, 'rh_work must not own mechanical execution, verification or review authority');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /repositoryGit(?:Commit|FinishWorkflow|MergeBranch|DeleteBranch|RebaseOnto)\s*\(/, 'rh_work must not perform physical Git delivery');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/, 'rh_work must consume canonical semantic APIs instead of persistence infrastructure');
-forbid('adapters/mcp/runtime-gateway/work-plan-operations.ts', /plan_approve|plan_accept_step|plan_supersede|approvePlanContractAsync|acceptPlanStepEvidence|supersedePlanContract/, 'retired Plan approval/acceptance/supersession APIs must not remain on the runtime surface');
-forbid('src/runtime/control-plane/facade/plan-contract-store.ts', /approvePlanContract|approvePendingPlanRevision|supersedePlanContract|plan_revision_approved/, 'legacy Plan approval/supersession writers must stay retired');
-forbid('src/runtime/control-plane/facade/plan-contract-store.ts', /planContractRoot|planContractStorePath|planRevisionStorePath|planSemanticRevisionStorePath|appendJsonPlanRevisionRecord|appendJsonPlanSemanticRevisionRecord|plan_contract_legacy_import|readJsonFile|writeJsonAtomic/, 'Plan contract and revision persistence must use Controller Home SQLite only');
-forbid('packages/kernel/work/infrastructure/work-contract-store.ts', /workContractRoot|workContractStorePath|workSemanticRevisionStorePath|readWorkSemanticRevisionStore|readLegacyWorkContractStore|work_contract_legacy_import|sqliteBacked/, 'Work contract and semantic revision persistence must use Controller Home SQLite only');
+forbid(
+  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  /operation === ['"](?:continue|verify|review|finalize|stop|delegate|controller_get_owner|controller_claim|controller_disposition|controller_release)['"]/,
+  'thin rh_work must not route retired lifecycle/controller operations',
+);
+forbid(
+  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  /\b(?:transitionWorkHandle|writeWorkHandle|markWorkHandleFailed|executeWorkVerification|requestWorkImplementationReview)\b/,
+  'rh_work must not own mechanical execution, verification or review authority',
+);
+forbid(
+  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  /repositoryGit(?:Commit|FinishWorkflow|MergeBranch|DeleteBranch|RebaseOnto)\s*\(/,
+  'rh_work must not perform physical Git delivery',
+);
+forbid(
+  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/,
+  'rh_work must consume canonical semantic APIs instead of persistence infrastructure',
+);
+forbid(
+  'adapters/mcp/runtime-gateway/work-plan-operations.ts',
+  /plan_approve|plan_accept_step|plan_supersede|approvePlanContractAsync|acceptPlanStepEvidence|supersedePlanContract/,
+  'retired Plan approval/acceptance/supersession APIs must not remain on the runtime surface',
+);
+forbid(
+  'src/runtime/control-plane/facade/plan-contract-store.ts',
+  /approvePlanContract|approvePendingPlanRevision|supersedePlanContract|plan_revision_approved/,
+  'legacy Plan approval/supersession writers must stay retired',
+);
+forbid(
+  'src/runtime/control-plane/facade/plan-contract-store.ts',
+  /planContractRoot|planContractStorePath|planRevisionStorePath|planSemanticRevisionStorePath|appendJsonPlanRevisionRecord|appendJsonPlanSemanticRevisionRecord|plan_contract_legacy_import|readJsonFile|writeJsonAtomic/,
+  'Plan contract and revision persistence must use Controller Home SQLite only',
+);
+forbid(
+  'packages/kernel/work/infrastructure/work-contract-store.ts',
+  /workContractRoot|workContractStorePath|workSemanticRevisionStorePath|readWorkSemanticRevisionStore|readLegacyWorkContractStore|work_contract_legacy_import|sqliteBacked/,
+  'Work contract and semantic revision persistence must use Controller Home SQLite only',
+);
 
 // #197 MCP mega-adapter decomposition. These are debt ledgers, not target
 // architecture: entries may only disappear. New domain-authority imports or
 // switch cases must be implemented in the owning domain adapter/application API,
 // never added to runtime-tools/router while decomposition is in progress.
-const MCP_GATEWAY_AUTHORITY_IMPORT_PATTERN = /(?:packages\/kernel\/|src\/runtime\/|src\/cli\/(?:repositories|editing)\/)/;
+const MCP_GATEWAY_AUTHORITY_IMPORT_PATTERN =
+  /(?:packages\/kernel\/|src\/runtime\/|src\/cli\/(?:repositories|editing)\/)/;
 
 function gatewayAuthorityImportInventoryFromSources(sources, importPattern = MCP_GATEWAY_AUTHORITY_IMPORT_PATTERN) {
-
   const ts = loadTypeScriptCompiler();
   if (!ts) return new Set();
   const records = new Set();
   for (const { path, source } of sources) {
     const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     function visit(node) {
-      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
-          && node.moduleSpecifier
-          && ts.isStringLiteralLike(node.moduleSpecifier)
-          && importPattern.test(node.moduleSpecifier.text)) {
+      if (
+        (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+        node.moduleSpecifier &&
+        ts.isStringLiteralLike(node.moduleSpecifier) &&
+        importPattern.test(node.moduleSpecifier.text)
+      ) {
         records.add(`${path}::${node.moduleSpecifier.text}`);
       }
       ts.forEachChild(node, visit);
@@ -347,7 +450,8 @@ function runtimeToolSwitchCaseInventory(source) {
   return new Set([...source.slice(start).matchAll(/case\s+['"]([^'"]+)['"]\s*:/g)].map((match) => match[1]));
 }
 
-const SUPERVISOR_CONCRETE_BROWSER_TRANSPORT_IMPORT_PATTERN = /(?:browser-macos-bridge|browser-adapter|chrome-extension|native-messaging)/;
+const SUPERVISOR_CONCRETE_BROWSER_TRANSPORT_IMPORT_PATTERN =
+  /(?:browser-macos-bridge|browser-adapter|chrome-extension|native-messaging)/;
 
 function supervisorConcreteBrowserTransportImportsFromSources(sources) {
   return gatewayAuthorityImportInventoryFromSources(sources, SUPERVISOR_CONCRETE_BROWSER_TRANSPORT_IMPORT_PATTERN);
@@ -360,7 +464,10 @@ if (supervisorComputerBoundaryFixture) {
   const actual = supervisorConcreteBrowserTransportImportsFromSources(sources);
   if (actual.size > 0) {
     console.error('[supervisor-computer-boundary-guardrail] FAILED');
-    for (const record of actual) console.error(`- Workflow Supervisor semantic code must depend on Computer target ports, never concrete Browser transports: ${record}`);
+    for (const record of actual)
+      console.error(
+        `- Workflow Supervisor semantic code must depend on Computer target ports, never concrete Browser transports: ${record}`,
+      );
     process.exit(1);
   }
   console.log('[supervisor-computer-boundary-guardrail] OK');
@@ -382,7 +489,8 @@ if (mcpAdapterBoundaryFixture) {
     gatewayAuthorityImportInventoryFromSources(sources),
     new Set(Array.isArray(fixture.allowedImports) ? fixture.allowedImports : []),
   );
-  const runtimeSource = sources.find((entry) => entry.path === 'adapters/mcp/runtime-gateway/runtime-tools.ts')?.source ?? '';
+  const runtimeSource =
+    sources.find((entry) => entry.path === 'adapters/mcp/runtime-gateway/runtime-tools.ts')?.source ?? '';
   requireExactShrinkingInventory(
     'MCP runtime-tools switch-case fixture debt',
     runtimeToolSwitchCaseInventory(runtimeSource),
@@ -400,7 +508,10 @@ if (mcpAdapterBoundaryFixture) {
 requireExactShrinkingDebt(
   'MCP runtime mega-adapter direct domain-authority import debt',
   gatewayAuthorityImportInventoryFromSources([
-    { path: 'adapters/mcp/runtime-gateway/runtime-tools.ts', source: text('adapters/mcp/runtime-gateway/runtime-tools.ts') },
+    {
+      path: 'adapters/mcp/runtime-gateway/runtime-tools.ts',
+      source: text('adapters/mcp/runtime-gateway/runtime-tools.ts'),
+    },
     { path: 'adapters/mcp/runtime-gateway/router.ts', source: text('adapters/mcp/runtime-gateway/router.ts') },
   ]),
   MCP_RUNTIME_GATEWAY_AUTHORITY_IMPORT_DEBT,
@@ -413,10 +524,19 @@ requireExactShrinkingInventory(
 const MCP_PURE_TRANSPORT_FORBIDDEN_IMPORT_PATTERN = /(?:packages\/kernel\/|src\/runtime\/)/;
 requireExactShrinkingDebt(
   'MCP pure transport adapter authority imports',
-  gatewayAuthorityImportInventoryFromSources([
-    { path: 'adapters/mcp/runtime-gateway/shared-adapter.ts', source: text('adapters/mcp/runtime-gateway/shared-adapter.ts') },
-    { path: 'adapters/mcp/runtime-gateway/result-adapter.ts', source: text('adapters/mcp/runtime-gateway/result-adapter.ts') },
-  ], MCP_PURE_TRANSPORT_FORBIDDEN_IMPORT_PATTERN),
+  gatewayAuthorityImportInventoryFromSources(
+    [
+      {
+        path: 'adapters/mcp/runtime-gateway/shared-adapter.ts',
+        source: text('adapters/mcp/runtime-gateway/shared-adapter.ts'),
+      },
+      {
+        path: 'adapters/mcp/runtime-gateway/result-adapter.ts',
+        source: text('adapters/mcp/runtime-gateway/result-adapter.ts'),
+      },
+    ],
+    MCP_PURE_TRANSPORT_FORBIDDEN_IMPORT_PATTERN,
+  ),
   new Set(),
 );
 
@@ -429,7 +549,8 @@ for (const path of [
   'adapters/mcp/runtime-gateway/work-controller-recovery-operations.ts',
   'adapters/mcp/controller-round-compatibility.ts',
   'adapters/mcp/frozen-client-semantic-compatibility.ts',
-]) requireMissing(path);
+])
+  requireMissing(path);
 requireText(
   'adapters/mcp/runtime-gateway/work-input-wire-migration.ts',
   "const FROZEN_SEMANTIC_V1_PREFIX = 'semantic.v1:';",
@@ -466,24 +587,29 @@ const HUMAN_READABLE_STRING_MATCH_METHODS = new Set(['includes', 'startsWith', '
 function humanReadableSemanticExpression(ts, node) {
   if (ts.isIdentifier(node)) return HUMAN_READABLE_SEMANTIC_FIELDS.has(node.text);
   if (ts.isPropertyAccessExpression(node)) return HUMAN_READABLE_SEMANTIC_FIELDS.has(node.name.text);
-  if (ts.isElementAccessExpression(node)
-      && node.argumentExpression
-      && ts.isStringLiteralLike(node.argumentExpression)) {
+  if (
+    ts.isElementAccessExpression(node) &&
+    node.argumentExpression &&
+    ts.isStringLiteralLike(node.argumentExpression)
+  ) {
     return HUMAN_READABLE_SEMANTIC_FIELDS.has(node.argumentExpression.text);
   }
-  if (ts.isParenthesizedExpression(node)
-      || ts.isAsExpression(node)
-      || ts.isTypeAssertionExpression(node)
-      || ts.isNonNullExpression(node)) {
+  if (
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isTypeAssertionExpression(node) ||
+    ts.isNonNullExpression(node)
+  ) {
     return humanReadableSemanticExpression(ts, node.expression);
   }
   if (ts.isConditionalExpression(node)) {
-    return humanReadableSemanticExpression(ts, node.whenTrue)
-      || humanReadableSemanticExpression(ts, node.whenFalse);
+    return humanReadableSemanticExpression(ts, node.whenTrue) || humanReadableSemanticExpression(ts, node.whenFalse);
   }
-  if (ts.isCallExpression(node)
-      && ts.isPropertyAccessExpression(node.expression)
-      && ['trim', 'toLowerCase', 'toUpperCase'].includes(node.expression.name.text)) {
+  if (
+    ts.isCallExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression) &&
+    ['trim', 'toLowerCase', 'toUpperCase'].includes(node.expression.name.text)
+  ) {
     return humanReadableSemanticExpression(ts, node.expression.expression);
   }
   return false;
@@ -492,8 +618,11 @@ function humanReadableSemanticExpression(ts, node) {
 function isHumanReadableSemanticMatcherCall(ts, node) {
   if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return false;
   const method = node.expression.name.text;
-  if (HUMAN_READABLE_STRING_MATCH_METHODS.has(method)
-      && humanReadableSemanticExpression(ts, node.expression.expression)) return true;
+  if (
+    HUMAN_READABLE_STRING_MATCH_METHODS.has(method) &&
+    humanReadableSemanticExpression(ts, node.expression.expression)
+  )
+    return true;
   return method === 'test' && node.arguments.some((argument) => humanReadableSemanticExpression(ts, argument));
 }
 
@@ -513,7 +642,8 @@ function semanticAuthorityStringMatchRecordsFromSources(sources) {
       visitCondition(expression);
     }
     function visit(node) {
-      if (ts.isIfStatement(node) || ts.isWhileStatement(node) || ts.isDoStatement(node)) collectCondition(node.expression);
+      if (ts.isIfStatement(node) || ts.isWhileStatement(node) || ts.isDoStatement(node))
+        collectCondition(node.expression);
       else if (ts.isConditionalExpression(node)) collectCondition(node.condition);
       else if (ts.isForStatement(node) && node.condition) collectCondition(node.condition);
       ts.forEachChild(node, visit);
@@ -528,7 +658,8 @@ function semanticAuthorityProductionStringMatchRecords() {
   return semanticAuthorityStringMatchRecordsFromSources(paths.map((path) => ({ path, source: text(path) })));
 }
 
-const LEGACY_INTERACTION_AUTHORITY_OWNER_DECLARATION = /\b(?:class|interface|type|function|const)\s+\w*(?:Browser|Desktop)\w*(?:Authority|Persistence)\b/;
+const LEGACY_INTERACTION_AUTHORITY_OWNER_DECLARATION =
+  /\b(?:class|interface|type|function|const)\s+\w*(?:Browser|Desktop)\w*(?:Authority|Persistence)\b/;
 function legacyInteractionAuthorityOwnerRecordsFromSources(sources) {
   const records = new Set();
   for (const { path, source } of sources) {
@@ -542,10 +673,15 @@ function legacyInteractionAuthorityOwnerRecordsFromSources(sources) {
 const interactionAuthorityGuardrailFixture = process.env.FORGE_INTERACTION_AUTHORITY_GUARDRAIL_FIXTURE;
 if (interactionAuthorityGuardrailFixture) {
   const fixture = JSON.parse(interactionAuthorityGuardrailFixture);
-  const actual = legacyInteractionAuthorityOwnerRecordsFromSources(Array.isArray(fixture.sources) ? fixture.sources : []);
+  const actual = legacyInteractionAuthorityOwnerRecordsFromSources(
+    Array.isArray(fixture.sources) ? fixture.sources : [],
+  );
   if (actual.size > 0) {
     console.error('[interaction-authority-guardrail] FAILED');
-    for (const record of actual) console.error(`- Browser/Desktop durable interaction authority must live only in Computer target authority: ${record}`);
+    for (const record of actual)
+      console.error(
+        `- Browser/Desktop durable interaction authority must live only in Computer target authority: ${record}`,
+      );
     process.exit(1);
   }
   console.log('[interaction-authority-guardrail] OK');
@@ -640,8 +776,8 @@ function stronglyConnectedComponents(graph) {
 
 function requireAcyclicProductionTypeScript() {
   const graph = productionStaticTypeScriptDependencyGraph();
-  const cyclic = stronglyConnectedComponents(graph).filter((component) =>
-    component.length > 1 || (component.length === 1 && graph.get(component[0])?.has(component[0])),
+  const cyclic = stronglyConnectedComponents(graph).filter(
+    (component) => component.length > 1 || (component.length === 1 && graph.get(component[0])?.has(component[0])),
   );
   for (const component of cyclic) {
     failures.push(`production TypeScript import cycle: ${component.join(' -> ')}`);
@@ -655,14 +791,20 @@ const architectureRootMarkdown = readdirSync(resolve(root, 'docs/architecture'),
   .sort();
 for (const name of architectureRootMarkdown) {
   if (!allowedArchitectureRootMarkdown.has(name)) {
-    failures.push(`docs/architecture/${name} must be merged into CURRENT.md/EVOLUTION.md or deleted instead of acting as parallel root architecture authority; Git history is the archive`);
+    failures.push(
+      `docs/architecture/${name} must be merged into CURRENT.md/EVOLUTION.md or deleted instead of acting as parallel root architecture authority; Git history is the archive`,
+    );
   }
 }
 
 for (const path of ['README.md', 'docs/ROADMAP.md', 'docs/architecture/CURRENT.md', 'docs/architecture/index.md']) {
   forbid(path, /\/Users\//, 'maintained documentation must not contain personal absolute macOS paths');
   forbid(path, /\bRepo Harness\b/i, 'maintained documentation must use the current Forge product identity');
-  forbid(path, /(?:^|\n)\s*(?:>\s*)?(?:\*\*)?Status(?:\*\*)?\s*:\s*[^\n]*(?:implementation in progress|Phase\s+\d+)/i, 'maintained documentation must not carry transient execution status; use Plan/Work/evidence or history');
+  forbid(
+    path,
+    /(?:^|\n)\s*(?:>\s*)?(?:\*\*)?Status(?:\*\*)?\s*:\s*[^\n]*(?:implementation in progress|Phase\s+\d+)/i,
+    'maintained documentation must not carry transient execution status; use Plan/Work/evidence or history',
+  );
 }
 
 const required = [
@@ -777,38 +919,61 @@ const stage7fKernelMemoryConsumers = new Set([
   'src/runtime/control-plane/persistence/experience-store.ts',
   'src/cli/commands/brain-assistant.ts',
 ]);
-const stage7fOperationalStoreConsumers = new Set([
-  'src/runtime/execution/process-runtime/check-facade.ts',
-]);
+const stage7fOperationalStoreConsumers = new Set(['src/runtime/execution/process-runtime/check-facade.ts']);
 for (const { from, specifier } of stage7fMemoryImports) {
-  if (from.startsWith('packages/kernel/memory/') && /(?:src\/runtime|control-plane|sqlite-store|context-plane)/.test(specifier)) {
+  if (
+    from.startsWith('packages/kernel/memory/') &&
+    /(?:src\/runtime|control-plane|sqlite-store|context-plane)/.test(specifier)
+  ) {
     failures.push(`Stage7F Kernel Memory must remain pure and persistence-free: ${from} -> ${specifier}`);
   }
-  if (/packages\/kernel\/memory/.test(specifier)
-      && !stage7fKernelMemoryConsumers.has(from)
-      && !from.startsWith('packages/kernel/memory/')) {
+  if (
+    /packages\/kernel\/memory/.test(specifier) &&
+    !stage7fKernelMemoryConsumers.has(from) &&
+    !from.startsWith('packages/kernel/memory/')
+  ) {
     failures.push(`Stage7F Memory has an unauthorized production consumer: ${from} -> ${specifier}`);
   }
-  if (/operational-shadow/.test(specifier) && from !== 'src/runtime/control-plane/persistence/operational-prior-store.ts') {
-    failures.push(`Stage7F typed operational extractor may feed only the derived persistence adapter: ${from} -> ${specifier}`);
+  if (
+    /operational-shadow/.test(specifier) &&
+    from !== 'src/runtime/control-plane/persistence/operational-prior-store.ts'
+  ) {
+    failures.push(
+      `Stage7F typed operational extractor may feed only the derived persistence adapter: ${from} -> ${specifier}`,
+    );
   }
   if (/operational-prior-store/.test(specifier) && !stage7fOperationalStoreConsumers.has(from)) {
     failures.push(`Stage7F operational Memory store has an unauthorized active consumer: ${from} -> ${specifier}`);
   }
 }
-forbid('src/runtime/control-plane/persistence/operational-prior-store.ts', /context-plane|brain|pks|requirement-authority|plan-contract|approval|authorization/, 'Stage7F operational Memory must remain mechanical derived state only');
-requireText('src/runtime/control-plane/persistence/operational-prior-store.ts', "OPERATIONAL_MEMORY_NAMESPACE = 'operational_memory_prior'");
+forbid(
+  'src/runtime/control-plane/persistence/operational-prior-store.ts',
+  /context-plane|brain|pks|requirement-authority|plan-contract|approval|authorization/,
+  'Stage7F operational Memory must remain mechanical derived state only',
+);
+requireText(
+  'src/runtime/control-plane/persistence/operational-prior-store.ts',
+  "OPERATIONAL_MEMORY_NAMESPACE = 'operational_memory_prior'",
+);
 requireText('src/runtime/control-plane/persistence/operational-prior-store.ts', 'resolveCheckCompletionGraceWaitMs');
 requireText('src/runtime/execution/process-runtime/check-facade.ts', 'resolveCheckCompletionGraceWaitMs');
 for (const path of sourceFiles('src/runtime/control-plane')) {
-  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])(?:\.\.\/)+gateway\//, 'control-plane domain/application code must not depend on Gateway transport');
+  forbid(
+    path,
+    /(?:from\s+['"]|import\s*\(\s*['"])(?:\.\.\/)+gateway\//,
+    'control-plane domain/application code must not depend on Gateway transport',
+  );
 }
 for (const path of [
   'adapters/mcp/tool-mapping/repository-tools.ts',
   'adapters/mcp/tool-mapping/legacy-tool-service.ts',
   'adapters/mcp/runtime-gateway/runtime-observation-adapter.ts',
 ]) {
-  forbid(path, /assessWorkMode|parseExplicitTaskMode|assess_work_mode|assess_work_request|recommendedMode\s*:/, 'production capability/context surfaces must not expose or infer engineering work modes');
+  forbid(
+    path,
+    /assessWorkMode|parseExplicitTaskMode|assess_work_mode|assess_work_request|recommendedMode\s*:/,
+    'production capability/context surfaces must not expose or infer engineering work modes',
+  );
 }
 // Engineering execution strategy belongs to the model. Forge must not carry a
 // route/mode/driver vocabulary, a task-size or complexity heuristic, or a
@@ -851,17 +1016,18 @@ forbid(
   'plugin capability execution must not manufacture semantic Work from action risk',
 );
 for (const path of [...sourceFiles('src'), ...sourceFiles('adapters')]) {
-  forbid(path, /operation:\s*['"](?:plan_approve|plan_accept_step|plan_supersede)['"]/, 'retired Plan approval/acceptance/supersession operations must not be advertised or suggested');
+  forbid(
+    path,
+    /operation:\s*['"](?:plan_approve|plan_accept_step|plan_supersede)['"]/,
+    'retired Plan approval/acceptance/supersession operations must not be advertised or suggested',
+  );
 }
 forbid(
   'src/runtime/control-plane/facade/rh-work-operation-contract.ts',
   /plan_approve|plan_accept_step|plan_supersede/,
   'retired Plan lifecycle operations must not remain accepted rh_work ABI operations',
 );
-for (const path of [
-  'src/cli/local-bridge/facade-api.ts',
-  'src/cli/local-bridge/server.ts',
-]) {
+for (const path of ['src/cli/local-bridge/facade-api.ts', 'src/cli/local-bridge/server.ts']) {
   forbid(path, /force_mode|forceMode/, 'retired mode-override tokens must not return as caller-visible input');
 }
 requireText('src/runtime/plugins/capability-authorization-grants.ts', 'migrateLegacyPluginCapabilityGrants');
@@ -872,13 +1038,18 @@ forbid(
   /saveStore\(|writeJsonAtomic\(\s*pluginCapabilityAuthorizationGrantStorePath|writeFileSync/,
   'the legacy plugin capability authorization file is migration input only; the canonical Grant authority is the single writer',
 );
-for (const path of [
-  ...sourceFiles('src/runtime/control-plane'),
-  ...sourceFiles('adapters/mcp'),
-]) {
-  forbid(path, /directEditWithinBoundary|DirectEditBoundary/, 'task-size authorization shortcuts must not be reintroduced');
+for (const path of [...sourceFiles('src/runtime/control-plane'), ...sourceFiles('adapters/mcp')]) {
+  forbid(
+    path,
+    /directEditWithinBoundary|DirectEditBoundary/,
+    'task-size authorization shortcuts must not be reintroduced',
+  );
 }
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /executeWorkVerification|recordWorkCheckEvidence/, 'rh_work must not execute or attribute repository checks');
+forbid(
+  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  /executeWorkVerification|recordWorkCheckEvidence/,
+  'rh_work must not execute or attribute repository checks',
+);
 forbid(
   'src/cli/local-bridge/facade-api.ts',
   /runControllerCheck\s*\(/,
@@ -892,9 +1063,15 @@ forbid(
 
 // Historical Work records retain their stored open/completed/cancelled values for
 // audit/migration reads only. No current execution, review, verification, Git,
- // cleanup, liveness, or semantic writer may consume those values as authority.
-requireText('packages/kernel/work/domain/types.ts', "export const SEMANTIC_WORK_STATES = ['open', 'completed', 'cancelled'] as const;");
-requireText('packages/kernel/work/domain/types.ts', 'export type SemanticWorkState = (typeof SEMANTIC_WORK_STATES)[number];');
+// cleanup, liveness, or semantic writer may consume those values as authority.
+requireText(
+  'packages/kernel/work/domain/types.ts',
+  "export const SEMANTIC_WORK_STATES = ['open', 'completed', 'cancelled'] as const;",
+);
+requireText(
+  'packages/kernel/work/domain/types.ts',
+  'export type SemanticWorkState = (typeof SEMANTIC_WORK_STATES)[number];',
+);
 requireText('packages/kernel/work/api/index.ts', "export * from '../application/work-service'");
 requireText('src/runtime/repositories/selected-path-actions.ts', 'beforeCommitGuard');
 requireMissing('src/runtime/control-plane/execution/direct-edit-work-completion.ts');
@@ -904,8 +1081,16 @@ requireMissing('src/runtime/control-plane/execution/work-delivery-service.ts');
 requireMissing('src/runtime/control-plane/facade/goal-workloop.ts');
 requireMissing('src/runtime/control-plane/facade/goal-workloop-access.ts');
 requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /ImplementationReview|executeWorkVerification|work_finalize/, 'rh_work must not regain review, verification, or finalization behavior authority');
-forbid('src/runtime/repositories/selected-path-actions.ts', /ImplementationReview|workRequiresImplementationReview|requestWorkImplementationReview/, 'repository Git safety must not depend on Work review methodology');
+forbid(
+  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  /ImplementationReview|executeWorkVerification|work_finalize/,
+  'rh_work must not regain review, verification, or finalization behavior authority',
+);
+forbid(
+  'src/runtime/repositories/selected-path-actions.ts',
+  /ImplementationReview|workRequiresImplementationReview|requestWorkImplementationReview/,
+  'repository Git safety must not depend on Work review methodology',
+);
 
 // The model-facing rh_work surface is the thin semantic ABI: the schema enum must
 // come from the single operation registry, that registry's model list must not
@@ -924,12 +1109,24 @@ if (!rhWorkOperations.trim()) {
   failures.push('rh_work operation contract must define RH_WORK_OPERATIONS as the single operation registry');
 }
 if (!/export const RH_WORK_MODEL_OPERATIONS\s*=\s*RH_WORK_OPERATIONS\s*;/.test(rhWorkOperationContract)) {
-  failures.push('RH_WORK_MODEL_OPERATIONS must alias RH_WORK_OPERATIONS instead of defining a second model-facing registry');
+  failures.push(
+    'RH_WORK_MODEL_OPERATIONS must alias RH_WORK_OPERATIONS instead of defining a second model-facing registry',
+  );
 }
 for (const legacyModelVerb of [
-  'start', 'revise', 'complete',
-  'continue', 'verify', 'review', 'finalize', 'stop', 'delegate',
-  'controller_claim', 'controller_release', 'controller_disposition', 'controller_get_owner',
+  'start',
+  'revise',
+  'complete',
+  'continue',
+  'verify',
+  'review',
+  'finalize',
+  'stop',
+  'delegate',
+  'controller_claim',
+  'controller_release',
+  'controller_disposition',
+  'controller_get_owner',
 ]) {
   if (new RegExp(`['"]${legacyModelVerb}['"]`).test(rhWorkOperations)) {
     failures.push(`RH_WORK_OPERATIONS must not re-advertise the legacy engineering lifecycle verb: ${legacyModelVerb}`);
@@ -948,8 +1145,12 @@ for (const retiredControllerPath of [
   'packages/kernel/controller/domain/execution-quality.ts',
   'adapters/controller-process/controller-host.ts',
   'adapters/controller-process/binding-store.ts',
-]) requireMissing(retiredControllerPath);
-requireText('packages/kernel/controller/domain/types.ts', "export type ControllerType = 'chatgpt' | 'codex' | 'grok' | 'claude' | 'human'");
+])
+  requireMissing(retiredControllerPath);
+requireText(
+  'packages/kernel/controller/domain/types.ts',
+  "export type ControllerType = 'chatgpt' | 'codex' | 'grok' | 'claude' | 'human'",
+);
 requireText('packages/kernel/controller/api/index.ts', "export type { ControllerType } from '../domain/types'");
 requireMissing('src/runtime/control-plane/launcher/chatgpt-work-continuation.ts');
 requireMissing('adapters/chatgpt/controller-host.ts');
@@ -975,9 +1176,17 @@ requireMissing('src/runtime/control-plane/facade/goal-workloop.ts');
 requireMissing('src/runtime/control-plane/facade/goal-workloop-access.ts');
 requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts');
 requireMissing('src/cli/controller/work-mode.ts');
-forbid('src/runtime/control-plane/facade/types.ts', /repeated_infrastructure_failure|codex_worker_requires_review/, 'Handoff compatibility types may represent only genuine human blockers');
+forbid(
+  'src/runtime/control-plane/facade/types.ts',
+  /repeated_infrastructure_failure|codex_worker_requires_review/,
+  'Handoff compatibility types may represent only genuine human blockers',
+);
 for (const path of sourceFiles('src')) {
-  forbid(path, /export function decideRoute\s*\(/, 'Route Policy was deleted; Forge must not regain an execution-strategy router');
+  forbid(
+    path,
+    /export function decideRoute\s*\(/,
+    'Route Policy was deleted; Forge must not regain an execution-strategy router',
+  );
   forbid(path, /requirePlanForGoalWorkloop\s*:\s*true/, 'never restore mandatory Plan gating in production');
 }
 for (const path of sourceFiles('src/runtime/control-plane')) {
@@ -990,11 +1199,21 @@ for (const path of sourceFiles('src/runtime/control-plane')) {
 // B2 ownership fence: production code may consume only the Kernel Work API/domain,
 // never the retired facade store/state-machine or Kernel persistence implementation.
 for (const path of sourceFiles('src')) {
-  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*(?:work-contract-store|work-implementation-review)['"]/, 'production source must consume packages/kernel/work instead of retired Work facade authority');
-  forbid(path, /packages\/kernel\/work\/infrastructure\/work-contract-store/, 'production source must consume the Work application/API boundary, not persistence infrastructure');
+  forbid(
+    path,
+    /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*(?:work-contract-store|work-implementation-review)['"]/,
+    'production source must consume packages/kernel/work instead of retired Work facade authority',
+  );
+  forbid(
+    path,
+    /packages\/kernel\/work\/infrastructure\/work-contract-store/,
+    'production source must consume the Work application/API boundary, not persistence infrastructure',
+  );
 }
 for (const record of genericWorkLifecycleMutationRecords([...sourceFiles('src'), ...sourceFiles('adapters')])) {
-  failures.push(`${record.path}:${record.line} reintroduces retired Work lifecycle mutation via updateWorkContract fields ${record.fields.join(', ')}`);
+  failures.push(
+    `${record.path}:${record.line} reintroduces retired Work lifecycle mutation via updateWorkContract fields ${record.fields.join(', ')}`,
+  );
 }
 forbid(
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
@@ -1018,17 +1237,46 @@ requireText('src/runtime/control-plane/persistence/requirement-store.ts', 'packa
 requireText('src/runtime/control-plane/facade/types.ts', 'packages/kernel/goal/api/index');
 requireText('src/runtime/control-plane/persistence/requirement-store.ts', 'reviseRequirementSemantic');
 requireText('src/runtime/control-plane/facade/plan-contract-store.ts', 'revisePlanSemanticContext');
-requireText('docs/architecture/decisions/20260924-thin-semantic-working-context.md', 'only three cross-domain model-authored semantic records');
-requireText('docs/architecture/decisions/20260924-thin-semantic-working-context.md', 'semantic revision must be applied to the latest persisted aggregate inside the same storage transaction');
-forbid('src/runtime/control-plane/facade/requirement-authority.ts', /continueRequirement|acceptRequirementOutcome|completeRequirementGoal|requirement_semantic_acceptance|requirement_semantic_continue/, 'Requirement semantic state changes must use revisioned requirement_revise CAS only');
+requireText(
+  'docs/architecture/decisions/20260924-thin-semantic-working-context.md',
+  'only three cross-domain model-authored semantic records',
+);
+requireText(
+  'docs/architecture/decisions/20260924-thin-semantic-working-context.md',
+  'semantic revision must be applied to the latest persisted aggregate inside the same storage transaction',
+);
+forbid(
+  'src/runtime/control-plane/facade/requirement-authority.ts',
+  /continueRequirement|acceptRequirementOutcome|completeRequirementGoal|requirement_semantic_acceptance|requirement_semantic_continue/,
+  'Requirement semantic state changes must use revisioned requirement_revise CAS only',
+);
 requireText('src/runtime/control-plane/facade/plan-contract-store.ts', 'PLAN_REQUIREMENT_TERMINAL');
-forbid('adapters/mcp/runtime-gateway/work-controller-operations.ts', /completeRequirementGoal|requirementAcceptance/, 'Controller disposition must not complete or accept Requirement semantics');
-forbid('adapters/mcp/runtime-gateway/runtime-tools.ts', /\bacceptRequirementOutcome\s*\(/, 'MCP transport must never own Requirement semantic completion');
-forbid('src/runtime/control-plane/facade/rh-work-operation-contract.ts', /requirement_continue/, 'retired Requirement lifecycle compatibility operation must not remain accepted');
+forbid(
+  'adapters/mcp/runtime-gateway/work-controller-operations.ts',
+  /completeRequirementGoal|requirementAcceptance/,
+  'Controller disposition must not complete or accept Requirement semantics',
+);
+forbid(
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
+  /\bacceptRequirementOutcome\s*\(/,
+  'MCP transport must never own Requirement semantic completion',
+);
+forbid(
+  'src/runtime/control-plane/facade/rh-work-operation-contract.ts',
+  /requirement_continue/,
+  'retired Requirement lifecycle compatibility operation must not remain accepted',
+);
 requireMissing('adapters/mcp/tool-mapping/post-finalize-work-attribution.ts');
-forbid('adapters/mcp/runtime-gateway/work-controller-operations.ts', /goal_complete[^\n]{0,200}requirementId|requirementId[^\n]{0,200}goal_complete/, 'Controller goal_complete may settle continuation but must not own Requirement completion');
+forbid(
+  'adapters/mcp/runtime-gateway/work-controller-operations.ts',
+  /goal_complete[^\n]{0,200}requirementId|requirementId[^\n]{0,200}goal_complete/,
+  'Controller goal_complete may settle continuation but must not own Requirement completion',
+);
 // B3 Work-keyed Controller lifecycle is retired. Controller kernel retains provider classification only.
-requireText('packages/kernel/controller/domain/types.ts', 'Work-bound ControllerSession/ControllerRound lifecycle is retired');
+requireText(
+  'packages/kernel/controller/domain/types.ts',
+  'Work-bound ControllerSession/ControllerRound lifecycle is retired',
+);
 requireText('packages/kernel/controller/api/index.ts', 'ControllerType');
 forbid('packages/kernel/controller/index.ts', /infrastructure\//, 'Kernel module root must expose only its public API');
 // B4 Scheduler authority is occurrence-only. Work-bound Controller continuation
@@ -1038,8 +1286,12 @@ requireText('packages/kernel/scheduler/domain/schedule.ts', 'export interface Sc
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences'");
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'saveScheduleDecision');
 requireText('packages/kernel/scheduler/application/schedule-service.ts', 'createSchedule');
-requireText('packages/kernel/scheduler/api/index.ts', "../application/schedule-service");
-forbid('packages/kernel/scheduler/api/index.ts', /\.\.\/infrastructure\//, 'Scheduler public API must expose application/domain surfaces, not infrastructure stores');
+requireText('packages/kernel/scheduler/api/index.ts', '../application/schedule-service');
+forbid(
+  'packages/kernel/scheduler/api/index.ts',
+  /\.\.\/infrastructure\//,
+  'Scheduler public API must expose application/domain surfaces, not infrastructure stores',
+);
 requireText('packages/kernel/scheduler/application/eligibility.ts', 'evaluateScheduleTriggerEligibility');
 requireText('packages/kernel/scheduler/application/eligibility.ts', 'evaluateScheduleOccurrenceAdmission');
 requireText('packages/kernel/scheduler/application/eligibility.ts', 'scheduleTriggerWindowKey');
@@ -1058,30 +1310,75 @@ requireMissing('src/runtime/root/controller-progression-composition.ts');
 requireMissing('src/runtime/root/scheduled-controller-composition.ts');
 requireMissing('scripts/smoke-user-request-continuation-restart.ts');
 requireMissing('tests/runtime/computer-chatgpt-reasoning-control.test.ts');
-forbid('src/runtime/diagnostics/incident-repair.ts', /ensureAutomaticContinuation|createWorkContinuationSchedule|touchSchedulerWakeSignal/, 'recurring incident detection must not create or dispatch autonomous model continuation');
-forbid('src/runtime/control-plane/facade/handoff-inbox-application.ts', /triggerResolvedContinuation|rearmControllerRoundAfterProviderUserAction/, 'resolved handoff must not auto rearm or wake a model turn');
+forbid(
+  'src/runtime/diagnostics/incident-repair.ts',
+  /ensureAutomaticContinuation|createWorkContinuationSchedule|touchSchedulerWakeSignal/,
+  'recurring incident detection must not create or dispatch autonomous model continuation',
+);
+forbid(
+  'src/runtime/control-plane/facade/handoff-inbox-application.ts',
+  /triggerResolvedContinuation|rearmControllerRoundAfterProviderUserAction/,
+  'resolved handoff must not auto rearm or wake a model turn',
+);
 requireMissing('src/runtime/workflow/schedules/work-continuation.ts');
 requireMissing('src/runtime/workflow/schedules/chatgpt-automation-migration.ts');
 requireMissing('scripts/migrate-chatgpt-automation-schedules.ts');
 requireMissing('tests/runtime/controller-progression-continuation.test.ts');
 requireMissing('adapters/controller-process/controller-host.ts');
 requireMissing('adapters/controller-process/binding-store.ts');
-requireText('docs/architecture/CURRENT.md', 'Historical Work records are read-only compatibility and never current task authority.');
-requireText('src/runtime/workflow/schedules/engine.ts', "const RETIRED_AUTONOMOUS_CONTINUATION_OPERATIONS = new Set(['external_controller_wake', 'controller_progression']);");
-requireText('packages/kernel/scheduler/application/eligibility.ts', 'return value >= min && value <= max && (value - min) % step === 0;');
-forbid('packages/kernel/scheduler/infrastructure/schedule-store.ts', /external_controller_wake|controller_progression|WORK_CONTINUATION_/, 'current Schedule policy must not special-case retired Work continuation operations');
-requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'const schedule: RepositorySchedule = { ...candidate, policy: boundedSchedulePolicy(candidate) };');
+requireText(
+  'docs/architecture/CURRENT.md',
+  'Historical Work records are read-only compatibility and never current task authority.',
+);
+requireText(
+  'src/runtime/workflow/schedules/engine.ts',
+  "const RETIRED_AUTONOMOUS_CONTINUATION_OPERATIONS = new Set(['external_controller_wake', 'controller_progression']);",
+);
+requireText(
+  'packages/kernel/scheduler/application/eligibility.ts',
+  'return value >= min && value <= max && (value - min) % step === 0;',
+);
+forbid(
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts',
+  /external_controller_wake|controller_progression|WORK_CONTINUATION_/,
+  'current Schedule policy must not special-case retired Work continuation operations',
+);
+requireText(
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts',
+  'const schedule: RepositorySchedule = { ...candidate, policy: boundedSchedulePolicy(candidate) };',
+);
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'policy: boundedSchedulePolicy(candidate),');
-forbid('src/runtime/workflow/schedules/browser-observation.ts', /external_controller_wake|controller_progression|historicalWorkId|work_id/, 'current browser scheduling API must not expose retired Work continuation identity');
-forbid('src/cli/local-bridge/console-automations.ts', /external_controller_wake|controller_progression|historicalWorkId|work_id/, 'Console automation must use the Engine retirement classifier instead of re-declaring legacy Work schedule vocabulary');
-requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cronDue('0 8 * * *', Date.parse('2026-10-17T00:00:00.000Z'), 'Asia/Shanghai')");
-requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cronDue('0 8 * * *', Date.parse('2026-10-18T00:00:00.000Z'), 'Asia/Shanghai')");
+forbid(
+  'src/runtime/workflow/schedules/browser-observation.ts',
+  /external_controller_wake|controller_progression|historicalWorkId|work_id/,
+  'current browser scheduling API must not expose retired Work continuation identity',
+);
+forbid(
+  'src/cli/local-bridge/console-automations.ts',
+  /external_controller_wake|controller_progression|historicalWorkId|work_id/,
+  'Console automation must use the Engine retirement classifier instead of re-declaring legacy Work schedule vocabulary',
+);
+requireText(
+  'tests/runtime/rh-work-scheduler-adapter.test.ts',
+  "cronDue('0 8 * * *', Date.parse('2026-10-17T00:00:00.000Z'), 'Asia/Shanghai')",
+);
+requireText(
+  'tests/runtime/rh-work-scheduler-adapter.test.ts',
+  "cronDue('0 8 * * *', Date.parse('2026-10-18T00:00:00.000Z'), 'Asia/Shanghai')",
+);
 requireText('src/runtime/workflow/schedules/engine.ts', "return 'RETIRED_AUTONOMOUS_CONTINUATION_SCHEDULE';");
-forbid('adapters/mcp/runtime-gateway/scheduler-adapter.ts', /historicalWorkId|SCHEDULE_AUTONOMOUS_CONTINUATION_RETIRED/, 'current Scheduler facade must not expose legacy continuation as a selectable mode');
+forbid(
+  'adapters/mcp/runtime-gateway/scheduler-adapter.ts',
+  /historicalWorkId|SCHEDULE_AUTONOMOUS_CONTINUATION_RETIRED/,
+  'current Scheduler facade must not expose legacy continuation as a selectable mode',
+);
 requireMissing('src/runtime/workflow/schedules/pending-activation.ts');
 requireMissing('tools/cleanup-works.ts');
 requireText('src/runtime/plugins/gmail-adapter.ts', 'actualEmail !== configuredEmail');
-requireText('src/runtime/plugins/gmail-adapter.ts', "export const GMAIL_AUTOMATION_CAPABILITY_ID = 'scheduled-gmail-automation';");
+requireText(
+  'src/runtime/plugins/gmail-adapter.ts',
+  "export const GMAIL_AUTOMATION_CAPABILITY_ID = 'scheduled-gmail-automation';",
+);
 requireText('src/runtime/plugins/gmail-adapter.ts', "actionId: 'authorize_scheduled_gmail_automation'");
 requireText('src/runtime/plugins/gmail-adapter.ts', "requiredConfirmationText: 'authorize-scheduled-gmail-automation'");
 requireText('src/runtime/plugins/store.ts', 'if (action.requiredConfirmationText)');
@@ -1092,41 +1389,99 @@ requireText('src/runtime/plugins/gmail-adapter.ts', 'requiresExplicitCapabilityG
 requireText('src/runtime/plugins/gmail-adapter.ts', 'expiresInMinutes: GMAIL_AUTOMATION_GRANT_MINUTES');
 requireText('src/runtime/plugins/store.ts', 'if (action.requiresExplicitCapabilityGrant && !activeAuthorizationGrant)');
 requireText('src/runtime/plugins/store.ts', 'PLUGIN_CAPABILITY_GRANT_REQUIRED');
-requireText('tests/runtime/thin-capability-substrate.test.ts', 'Direct activity retains exact identity beyond a 200-item projection window');
-requireText('packages/kernel/identity/infrastructure/activity-projection-store.ts', 'export function getDirectActivity(');
+requireText(
+  'tests/runtime/thin-capability-substrate.test.ts',
+  'Direct activity retains exact identity beyond a 200-item projection window',
+);
+requireText(
+  'packages/kernel/identity/infrastructure/activity-projection-store.ts',
+  'export function getDirectActivity(',
+);
 requireText('adapters/mcp/runtime-gateway/scheduler-adapter.ts', "operation === 'schedule_resume'");
-forbid('adapters/mcp/runtime-gateway/scheduler-adapter.ts', /bindSupervisorWakeForSchedule|bindWorkflowSupervisorScheduledWakeForWork/, 'Schedule must not bind an autonomous Supervisor on create or resume');
-forbid('adapters/mcp/runtime-gateway/work-controller-operations.ts', /reconcileControllerProgression|bindWorkflowSupervisorConversationForWork|wakeWorkflowSupervisor/, 'Launch Session must not enroll, wake, or reconcile autonomous Supervisor');
-for (const path of ['adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 'adapters/mcp/runtime-gateway/runtime-tools.ts', 'adapters/mcp/runtime-gateway/core-capability-adapter.ts', 'src/runtime/control-plane/facade/capability-registry.ts']) {
-  forbid(path, /supervisor_task|callWorkflowSupervisorAdapter|controller\.workflow_supervisor/, 'retired autonomous Supervisor must not be a callable or advertised MCP capability');
+forbid(
+  'adapters/mcp/runtime-gateway/scheduler-adapter.ts',
+  /bindSupervisorWakeForSchedule|bindWorkflowSupervisorScheduledWakeForWork/,
+  'Schedule must not bind an autonomous Supervisor on create or resume',
+);
+forbid(
+  'adapters/mcp/runtime-gateway/work-controller-operations.ts',
+  /reconcileControllerProgression|bindWorkflowSupervisorConversationForWork|wakeWorkflowSupervisor/,
+  'Launch Session must not enroll, wake, or reconcile autonomous Supervisor',
+);
+for (const path of [
+  'adapters/mcp/runtime-gateway/runtime-tool-definitions.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/core-capability-adapter.ts',
+  'src/runtime/control-plane/facade/capability-registry.ts',
+]) {
+  forbid(
+    path,
+    /supervisor_task|callWorkflowSupervisorAdapter|controller\.workflow_supervisor/,
+    'retired autonomous Supervisor must not be a callable or advertised MCP capability',
+  );
 }
 requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', 'retired autonomous Schedule actions');
-requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', 'stops once without dispatching or creating an occurrence');
+requireText(
+  'tests/runtime/rh-work-scheduler-adapter.test.ts',
+  'stops once without dispatching or creating an occurrence',
+);
 requireText('src/runtime/workflow/schedules/engine.ts', 'RETIRED_AUTONOMOUS_CONTINUATION_SCHEDULE');
-forbidBetween('src/runtime/plugins/gmail-adapter.ts', "actionId: 'send_owner_notification'", "actionId: 'modify_message_labels',", /\b(?:to|recipient|cc|bcc)\s*:/i, 'scheduled Gmail owner notification must not accept a caller-selected recipient');
+forbidBetween(
+  'src/runtime/plugins/gmail-adapter.ts',
+  "actionId: 'send_owner_notification'",
+  "actionId: 'modify_message_labels',",
+  /\b(?:to|recipient|cc|bcc)\s*:/i,
+  'scheduled Gmail owner notification must not accept a caller-selected recipient',
+);
 // Recovery's three typed live/unknown provider states are read-only
 // observations; none may become a sticky preflight failure or spend Send.
 requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleTriggerEligibility');
 requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleOccurrenceAdmission');
-forbid('src/runtime/workflow/schedules/engine.ts', /executeControllerProgression|reconcileControllerProgression|workflow_supervisor_owns_outer_turn|CONTROLLER_WAKE_TOTAL_TIMEOUT/, 'Schedule cannot dispatch retired autonomous Controller wake');
+forbid(
+  'src/runtime/workflow/schedules/engine.ts',
+  /executeControllerProgression|reconcileControllerProgression|workflow_supervisor_owns_outer_turn|CONTROLLER_WAKE_TOTAL_TIMEOUT/,
+  'Schedule cannot dispatch retired autonomous Controller wake',
+);
 requireText('src/runtime/workflow/schedules/store.ts', '@deprecated Kernel V2 compatibility shim');
 requireText('src/runtime/workflow/schedules/store.ts', 'packages/kernel/scheduler/api/index');
-forbid('src/runtime/workflow/schedules/store.ts', /scheduler\/infrastructure\//, 'legacy Schedule shim must route through the Kernel Scheduler public API');
+forbid(
+  'src/runtime/workflow/schedules/store.ts',
+  /scheduler\/infrastructure\//,
+  'legacy Schedule shim must route through the Kernel Scheduler public API',
+);
 for (const path of sourceFiles('packages/kernel/scheduler')) {
-  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*adapters\//, 'Kernel Scheduler must not import provider adapters');
-  forbid(path, /\b(?:runWorkChatgptContinuation|launchSuperController|getChatgptWorkConversationBinding)\b|\bbrowser_session_id\b|\bconversation_url\b|\blaunch_args\b/, 'Kernel Scheduler must not own provider transport or provider binding payload fields');
+  forbid(
+    path,
+    /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*adapters\//,
+    'Kernel Scheduler must not import provider adapters',
+  );
+  forbid(
+    path,
+    /\b(?:runWorkChatgptContinuation|launchSuperController|getChatgptWorkConversationBinding)\b|\bbrowser_session_id\b|\bconversation_url\b|\blaunch_args\b/,
+    'Kernel Scheduler must not own provider transport or provider binding payload fields',
+  );
 }
-forbid('src/runtime/workflow/schedules/engine.ts', /\brunWorkChatgptContinuation\b|\blaunchSuperController\b/, 'Schedule execution must dispatch Controller continuation through Kernel Scheduler + ControllerHost, never launch providers directly');
+forbid(
+  'src/runtime/workflow/schedules/engine.ts',
+  /\brunWorkChatgptContinuation\b|\blaunchSuperController\b/,
+  'Schedule execution must dispatch Controller continuation through Kernel Scheduler + ControllerHost, never launch providers directly',
+);
 for (const path of sourceFiles('src')) {
-  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*workflow\/schedules\/(?:store|types|settlement)['"]/, 'production source must consume packages/kernel/scheduler instead of retired Schedule store/types/settlement authority');
+  forbid(
+    path,
+    /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*workflow\/schedules\/(?:store|types|settlement)['"]/,
+    'production source must consume packages/kernel/scheduler instead of retired Schedule store/types/settlement authority',
+  );
 }
 for (const path of sourceFiles('src')) {
-  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*controller-session-store['"]/, 'production source must consume packages/kernel/controller instead of retired ControllerSession facade authority');
+  forbid(
+    path,
+    /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*controller-session-store['"]/,
+    'production source must consume packages/kernel/controller instead of retired ControllerSession facade authority',
+  );
 }
 requireMissing('src/runtime/control-plane/facade/work-contract-store.ts');
-const B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS = new Set([
-  'src/runtime/control-plane/facade/types.ts',
-]);
+const B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS = new Set(['src/runtime/control-plane/facade/types.ts']);
 // The compatibility-shim ledger may only shrink. A shim with no remaining
 // importer at all is migration debt, not a boundary: delete the file and its
 // entry in the same slice instead of keeping an unused authority surface alive.
@@ -1135,18 +1490,31 @@ const B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS = new Set([
 const shimImportRecords = staticTypeScriptImportRecords([...productionTypeScriptFiles(), ...sourceFiles('tests')]);
 for (const shim of B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS) {
   const shimBasename = shim.slice(shim.lastIndexOf('/') + 1).replace(/\.ts$/, '');
-  const importedBy = shimImportRecords.filter((record) => record.from !== shim
-    && (record.specifier === `./${shimBasename}` || record.specifier.endsWith(`/${shimBasename}`)));
+  const importedBy = shimImportRecords.filter(
+    (record) =>
+      record.from !== shim &&
+      (record.specifier === `./${shimBasename}` || record.specifier.endsWith(`/${shimBasename}`)),
+  );
   if (importedBy.length === 0) {
-    failures.push(`${shim} is a dead compatibility shim with no importer; delete it and remove its compatibility-shim entry`);
+    failures.push(
+      `${shim} is a dead compatibility shim with no importer; delete it and remove its compatibility-shim entry`,
+    );
   }
 }
 for (const path of sourceFiles('src')) {
   if (B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS.has(path)) continue;
-  forbid(path, /packages\/kernel\/[^'"/]+\/(?:domain|application|infrastructure)\//, 'active legacy Runtime code must consume Kernel public api/index surfaces; direct internals are compatibility-boundary-only');
+  forbid(
+    path,
+    /packages\/kernel\/[^'"/]+\/(?:domain|application|infrastructure)\//,
+    'active legacy Runtime code must consume Kernel public api/index surfaces; direct internals are compatibility-boundary-only',
+  );
 }
 requireText('src/runtime/control-plane/facade/types.ts', 'packages/kernel/work/domain/types');
-forbid('src/runtime/control-plane/facade/types.ts', /ControllerSession|ControllerLease|ControllerRoundContext|ControllerBinding|ControllerHost/, 'Facade must not re-export retired Work-keyed Controller lifecycle contracts');
+forbid(
+  'src/runtime/control-plane/facade/types.ts',
+  /ControllerSession|ControllerLease|ControllerRoundContext|ControllerBinding|ControllerHost/,
+  'Facade must not re-export retired Work-keyed Controller lifecycle contracts',
+);
 forbid(
   'src/runtime/plugins/browser-handoff-host.ts',
   /browser\/sessions|saveBrowserSession|writeBrowserSession|sessionPath/,
@@ -1179,12 +1547,24 @@ forbid(
   'keep the legacy MCP surface as translation over canonical Work admission authority',
 );
 requireMissing('src/runtime/control-plane/routing/workspace-admission.ts');
-forbid('packages/kernel/work/domain/types.ts', /requireHandoffOnAmbiguity|requireWorktree|directMainProhibited/, 'retired Work placement/handoff policy fields must not return as durable authority');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /require_handoff_on_ambiguity|require_worktree|direct_main_prohibited/, 'retired placement/handoff wire flags must not drive repository topology');
+forbid(
+  'packages/kernel/work/domain/types.ts',
+  /requireHandoffOnAmbiguity|requireWorktree|directMainProhibited/,
+  'retired Work placement/handoff policy fields must not return as durable authority',
+);
+forbid(
+  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  /require_handoff_on_ambiguity|require_worktree|direct_main_prohibited/,
+  'retired placement/handoff wire flags must not drive repository topology',
+);
 requireMissing('src/runtime/control-plane/execution/work-execution-support.ts');
 requireMissing('src/runtime/control-plane/execution/work-preparation-service.ts');
 requireMissing('src/runtime/control-plane/execution/validation.ts');
-forbid('src/cli/controller/execution-policy.ts', /requiresHumanAcceptance|autoRunDeclaredChecks|autoCompleteAfterSuccessfulRun|requiresScopedPaths|requiresDiffEvidence|requiresAnyVerificationEvidence|requiresAcceptanceEvidence|READ_ONLY_INTENT|DESTRUCTIVE_INTENT|SENSITIVE_PATH_PATTERNS/, 'task risk/text/path classification must not decide workflow, placement, verification, scope, or acceptance authority');
+forbid(
+  'src/cli/controller/execution-policy.ts',
+  /requiresHumanAcceptance|autoRunDeclaredChecks|autoCompleteAfterSuccessfulRun|requiresScopedPaths|requiresDiffEvidence|requiresAnyVerificationEvidence|requiresAcceptanceEvidence|READ_ONLY_INTENT|DESTRUCTIVE_INTENT|SENSITIVE_PATH_PATTERNS/,
+  'task risk/text/path classification must not decide workflow, placement, verification, scope, or acceptance authority',
+);
 requireMissing('src/runtime/control-plane/daemon-entry.ts');
 requireMissing('scripts/smoke-runtime-control-plane.ts');
 requireMissing('src/cli/controller/lifecycle.ts');
@@ -1216,20 +1596,44 @@ requireMissing('src/runtime/root/workflow-supervisor-runtime.ts');
 requireMissing('src/runtime/root/workflow-supervisor-composition.ts');
 requireMissing('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts');
 
-forbid('src/runtime/root/runtime.ts', /startWorkflowSupervisorRuntime|WORKFLOW_SUPERVISOR_STOPPED|this\.workflowSupervisor/, 'Canonical Runtime must not start, stop, or require autonomous Workflow Supervisor; Launcher and Scheduler remain independent');
+forbid(
+  'src/runtime/root/runtime.ts',
+  /startWorkflowSupervisorRuntime|WORKFLOW_SUPERVISOR_STOPPED|this\.workflowSupervisor/,
+  'Canonical Runtime must not start, stop, or require autonomous Workflow Supervisor; Launcher and Scheduler remain independent',
+);
 requireMissing('adapters/computer/chatgpt-target-router.ts');
 requireMissing('src/runtime/plugins/computer-chatgpt-macos-target.ts');
 requireMissing('src/runtime/plugins/browser-provider-registry.ts');
 requireText('src/runtime/plugins/browser-runtime.ts', 'options.providers.length !== 1');
-forbid('src/runtime/plugins/browser-runtime.ts', /excludedProviderIds|BrowserProviderUnavailableBeforeActionError/, 'Browser Runtime must not retry an action through another provider');
+forbid(
+  'src/runtime/plugins/browser-runtime.ts',
+  /excludedProviderIds|BrowserProviderUnavailableBeforeActionError/,
+  'Browser Runtime must not retry an action through another provider',
+);
 requireMissing('adapters/chatgpt/controller-round-host.ts');
-forbid('src/runtime/plugins/browser-macos-bridge.ts', /PLUGIN_BROWSER_NATIVE_PROCESS_AMBIGUOUS|pids\.length\s*!==\s*1/, 'Chrome GUI PID selection has one authority: Desktop Operator');
-requireText('src/runtime/plugins/browser-macos-bridge.ts', '() => assertMacOsBrowserApplicationRunning(request.product, timeoutMs)');
+forbid(
+  'src/runtime/plugins/browser-macos-bridge.ts',
+  /PLUGIN_BROWSER_NATIVE_PROCESS_AMBIGUOUS|pids\.length\s*!==\s*1/,
+  'Chrome GUI PID selection has one authority: Desktop Operator',
+);
+requireText(
+  'src/runtime/plugins/browser-macos-bridge.ts',
+  '() => assertMacOsBrowserApplicationRunning(request.product, timeoutMs)',
+);
 requireText('src/runtime/plugins/browser-macos-bridge.ts', 'await precondition?.()');
 requireText('src/runtime/plugins/browser-macos-bridge.ts', 'await precondition()');
-requireText('src/runtime/plugins/browser-adapter.ts', "browserMode: browserMode(raw.browserMode) ?? 'attach_preferred'");
-requireText('src/runtime/plugins/browser-adapter.ts', "nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'auto'");
-requireText('docs/architecture/CURRENT.md', 'A STOPPED bootstrap draft may be replaced only from the canonical Supervisor ledger');
+requireText(
+  'src/runtime/plugins/browser-adapter.ts',
+  "browserMode: browserMode(raw.browserMode) ?? 'attach_preferred'",
+);
+requireText(
+  'src/runtime/plugins/browser-adapter.ts',
+  "nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'auto'",
+);
+requireText(
+  'docs/architecture/CURRENT.md',
+  'A STOPPED bootstrap draft may be replaced only from the canonical Supervisor ledger',
+);
 
 requireMissing('docs/architecture/current/stable-external-runtime-supervisor.md');
 requireMissing('docs/architecture/modules/controller-runtime/stable-supervisor.md');
@@ -1311,13 +1715,19 @@ for (const projectionPath of [
   );
 }
 requireText('src/runtime/projections/invalidation.ts', 'runtimeInstanceId?: string');
-requireText('src/runtime/projections/materialized-view.ts', 'currentOwner.runtimeInstanceId !== owner.runtimeInstanceId');
+requireText(
+  'src/runtime/projections/materialized-view.ts',
+  'currentOwner.runtimeInstanceId !== owner.runtimeInstanceId',
+);
 requireText('src/runtime/projections/task-ledger-types.ts', 'export interface TaskLedgerProjection');
 requireText('src/runtime/projections/task-ledger-types.ts', 'TASK_LEDGER_SCHEMA_VERSION');
 requireText('src/core/repository-command/normalization.ts', 'export interface CanonicalRepositoryCommand');
 requireText('src/core/repository-command/normalization.ts', 'export function normalizeRepositoryCommand');
 requireMissing('src/cli/repositories/command-normalization.ts');
-requireText('src/runtime/control-plane/global-scheduler/projection-refresh.ts', 'getRuntimeWriteClaim()?.runtimeInstanceId');
+requireText(
+  'src/runtime/control-plane/global-scheduler/projection-refresh.ts',
+  'getRuntimeWriteClaim()?.runtimeInstanceId',
+);
 forbid(
   'src/runtime/execution/jobs/receipt-store.ts',
   /ownerEpoch|releaseFencingToken/,
@@ -1326,13 +1736,27 @@ forbid(
 
 requireText('docs/architecture/CURRENT.md', 'Canonical Runtime is activated as one immutable whole release');
 requireText('src/runtime/root/release-execution-canary.ts', 'releaseScriptRequiresBun');
-forbid('src/runtime/root/package-runtime-release.ts', /ownsProcessRuntimeCanary|PROCESS_RUNTIME_RELEASE_CANARY_ARG/, 'package Runtime wrappers must delegate release canaries to the attested Process Runner/Check Runner implementation');
-requireText('scripts/migrate-windows-wsl-controller-home.ts', 'assertRuntimeReleaseExecutionCanaries(stagedRelease.manifestPath, destination);');
+forbid(
+  'src/runtime/root/package-runtime-release.ts',
+  /ownsProcessRuntimeCanary|PROCESS_RUNTIME_RELEASE_CANARY_ARG/,
+  'package Runtime wrappers must delegate release canaries to the attested Process Runner/Check Runner implementation',
+);
+requireText(
+  'scripts/migrate-windows-wsl-controller-home.ts',
+  'assertRuntimeReleaseExecutionCanaries(stagedRelease.manifestPath, destination);',
+);
 requireText('docs/architecture/CURRENT.md', 'Runtime availability/recovery keeps Forge itself healthy');
-requireText('docs/architecture/CURRENT.md', 'Historical Issue/Task/Local Job and compatibility projections must not become second mutable authorities.');
+requireText(
+  'docs/architecture/CURRENT.md',
+  'Historical Issue/Task/Local Job and compatibility projections must not become second mutable authorities.',
+);
 requireText('src/runtime/root/runtime.ts', 'export class CanonicalForgeRuntime');
-forbid('src/runtime/control-plane/runtime-status-client.ts', /ensureControllerDaemon|child_process|daemon-entry|StableSupervisor|ownerEpoch|slot\?:/, 'keep Forge Runtime status observation read-only and free of legacy lifecycle authority');
-requireText('src/runtime/root/runtime.ts', "startInProcessScheduler");
+forbid(
+  'src/runtime/control-plane/runtime-status-client.ts',
+  /ensureControllerDaemon|child_process|daemon-entry|StableSupervisor|ownerEpoch|slot\?:/,
+  'keep Forge Runtime status observation read-only and free of legacy lifecycle authority',
+);
+requireText('src/runtime/root/runtime.ts', 'startInProcessScheduler');
 requireText('src/runtime/root/runtime.ts', 'startRuntimeMcpTransport');
 forbid(
   'src/runtime/root/runtime.ts',
@@ -1369,7 +1793,7 @@ forbid(
   'the public root CLI must not expose the legacy Supervisor lifecycle',
 );
 requireMissing('src/cli/commands/controller.ts');
-requireText('src/runtime/root/release-manifest.ts', "entrypoint must be forge-runtime");
+requireText('src/runtime/root/release-manifest.ts', 'entrypoint must be forge-runtime');
 requireText('src/runtime/root/release-manifest.ts', 'databaseSchemaCompatibility');
 requireText('src/runtime/root/release-manifest.ts', 'workerProtocolVersion');
 requireText('src/runtime/root/service.ts', 'RunAtLoad');
@@ -1377,7 +1801,32 @@ requireText('src/runtime/root/service.ts', 'SuccessfulExit');
 requireText('src/runtime/root/service.ts', 'ThrottleInterval');
 requireText('src/runtime/root/service-runner.ts', 'activeRuntimeReleaseManifest');
 requireText('src/runtime/standalone-recovery/core.ts', 'restartPrimaryRuntime');
-forbid('src/runtime/standalone-recovery/core.ts', /\bopenSync\s*\([^,]+,\s*['"]wx['"]/, 'Recovery Core must not create a second exclusive mutation lock writer');
+forbid(
+  'src/runtime/standalone-recovery/core.ts',
+  /\bopenSync\s*\([^,]+,\s*['"]wx['"]/,
+  'Recovery Core must not create a second exclusive mutation lock writer',
+);
+forbid(
+  'src/runtime/standalone-recovery/core.ts',
+  /from\s+['"][^'"]*adapters\/mcp\//,
+  'Recovery Core must not import MCP adapters; use Runtime-owned tunnel helpers',
+);
+forbid(
+  'src/runtime/standalone-recovery/probe-observation.ts',
+  /from\s+['"][^'"]*adapters\/mcp\//,
+  'Recovery probe observation must not import MCP adapters; use Runtime-owned tunnel helpers',
+);
+forbid(
+  'src/runtime/standalone-recovery/recovery-shared.ts',
+  /from\s+['"][^'"]*adapters\/mcp\//,
+  'Recovery shared helpers must not import MCP adapters; use Runtime-owned tunnel helpers',
+);
+forbid(
+  'src/runtime/standalone-recovery/openai-secure-tunnel.ts',
+  /from\s+['"][^'"]*adapters\//,
+  'OpenAI secure tunnel helpers are Runtime-owned and must not import adapters',
+);
+
 requireText('src/runtime/standalone-recovery/core.ts', 'recoverPrimaryRuntime');
 requireText('src/runtime/standalone-recovery/core.ts', "action: 'restart_primary_runtime'");
 requireText('src/runtime/standalone-recovery/core.ts', 'restartAttempts >= maximumRestartAttempts');
@@ -1385,7 +1834,11 @@ requireText('src/runtime/standalone-recovery/core.ts', 'rollbackPreviousLocked')
 requireText('src/runtime/standalone-recovery/entry.ts', "'restart_primary_runtime'");
 requireText('src/runtime/standalone-recovery/entry.ts', "'recover_primary_runtime'");
 requireText('src/runtime/standalone-recovery/core.ts', 'armPackageConnectorCutoverDrain');
-forbid('src/runtime/standalone-recovery/entry.ts', /if\s*\(decision\.required\s*&&\s*decision\.action\s*===\s*['"]cutover['"]\)\s*\{\s*const gate = await probeReleaseCutoverReadiness/, 'Automatic Recovery must enter the canonical fenced drain transaction rather than block cutover before the drain can be armed');
+forbid(
+  'src/runtime/standalone-recovery/entry.ts',
+  /if\s*\(decision\.required\s*&&\s*decision\.action\s*===\s*['"]cutover['"]\)\s*\{\s*const gate = await probeReleaseCutoverReadiness/,
+  'Automatic Recovery must enter the canonical fenced drain transaction rather than block cutover before the drain can be armed',
+);
 
 forbid(
   'src/runtime/standalone-recovery/core.ts',
@@ -1394,7 +1847,7 @@ forbid(
 );
 requireText('src/cli/commands/init-hook.ts', "new Command('setup')");
 requireText('src/cli/commands/init-hook.ts', "['open', 'next']");
-requireText('src/cli/commands/init-hook.ts', "command(name)");
+requireText('src/cli/commands/init-hook.ts', 'command(name)');
 requireText('src/cli/commands/init-hook.ts', "command('close')");
 requireText('src/cli/commands/init-hook.ts', "'.forge'");
 // CLI setup/adoption must use one process/environment implementation, not three writers.
@@ -1420,25 +1873,52 @@ for (const path of [
 
 // Job recovery and Scheduler must not drift on delegated-operation replay safety.
 requireText('src/runtime/execution/jobs/child-reference.ts', 'export function isAgentDelegationJob');
-for (const path of ['src/runtime/control-plane/global-scheduler/reconciliation.ts', 'src/runtime/execution/jobs/receipt-recovery.ts']) {
-  forbid(path, /^function\s+isAgentDelegationJob\s*\(/m, 'delegation classification must stay in the shared child-reference owner');
+for (const path of [
+  'src/runtime/control-plane/global-scheduler/reconciliation.ts',
+  'src/runtime/execution/jobs/receipt-recovery.ts',
+]) {
+  forbid(
+    path,
+    /^function\s+isAgentDelegationJob\s*\(/m,
+    'delegation classification must stay in the shared child-reference owner',
+  );
 }
 // Live and sampled Git snapshots share the same porcelain partitioning semantics.
 requireText('src/runtime/repositories/structured-git.ts', 'export function splitRepositoryGitStatus');
-forbid('src/runtime/projections/git-status-sampler.ts', /^function\s+splitStatus\s*\(/m, 'Git projection must not duplicate the live porcelain parser');
-for (const path of ['src/cli/commands/init.ts', 'src/cli/commands/init-hook.ts', 'src/cli/commands/global-runtime.ts']) {
-  forbid(path, /^function\s+(?:withProcessEnv|runProcess)(?:<|\()/m, 'setup commands must import their canonical synchronous process/environment owner');
+forbid(
+  'src/runtime/projections/git-status-sampler.ts',
+  /^function\s+splitStatus\s*\(/m,
+  'Git projection must not duplicate the live porcelain parser',
+);
+for (const path of [
+  'src/cli/commands/init.ts',
+  'src/cli/commands/init-hook.ts',
+  'src/cli/commands/global-runtime.ts',
+]) {
+  forbid(
+    path,
+    /^function\s+(?:withProcessEnv|runProcess)(?:<|\()/m,
+    'setup commands must import their canonical synchronous process/environment owner',
+  );
 }
 requireText('src/runtime/editing/edit-session.ts', 'export function findOccurrence');
-forbid('src/runtime/repositories/safe-patch.ts', /^function\s+findOccurrence\s*\(/m, 'Safe Patch preflight must reuse Direct Edit anchor occurrence matching');
+forbid(
+  'src/runtime/repositories/safe-patch.ts',
+  /^function\s+findOccurrence\s*\(/m,
+  'Safe Patch preflight must reuse Direct Edit anchor occurrence matching',
+);
 requireText('src/runtime/editing/edit-session.ts', 'beforeMode');
 requireText('src/runtime/editing/edit-session.ts', 'afterMode');
 requireText('src/runtime/editing/edit-session.ts', '{ mode: record.beforeMode }');
-requireText('src/cli/editing/executable-modes.ts', "mode | 0o111");
+requireText('src/cli/editing/executable-modes.ts', 'mode | 0o111');
 requireText('scripts/repair-executable-modes.ts', "process.argv.includes('--check')");
 requireText('package.json', 'check:executable-modes');
 requireText('package.json', 'repair:executable-modes');
-forbid('src/cli/index.ts', /forge-mode-repair-request|repairExecutableModes/, 'keep executable-mode repair explicit instead of hiding it in normal CLI startup');
+forbid(
+  'src/cli/index.ts',
+  /forge-mode-repair-request|repairExecutableModes/,
+  'keep executable-mode repair explicit instead of hiding it in normal CLI startup',
+);
 
 forbid(
   'scripts/smoke-runtime-recovery.ts',
@@ -1467,18 +1947,23 @@ const runtimeCall = server.indexOf('callRuntimeTool(ctx, name, args)');
 const durableCall = server.indexOf('routeDurableMcpCall(ctx, name, args)');
 const legacyCall = server.indexOf('callMultiRepositoryTool(ctx, name, args)');
 if (!(runtimeCall >= 0 && durableCall > runtimeCall && legacyCall > durableCall)) {
-  failures.push('MCP routing must evaluate runtime reads/control, then durable acceptance, before the legacy Worker-only implementation');
+  failures.push(
+    'MCP routing must evaluate runtime reads/control, then durable acceptance, before the legacy Worker-only implementation',
+  );
 }
 const executionToolCall = server.indexOf('const executionResult = await callExecutionTool(ctx, name, args)');
 const durableCallAfterExecution = server.indexOf('const durableResult = await routeDurableMcpCall(ctx, name, args)');
 if (!(executionToolCall >= 0 && durableCallAfterExecution > executionToolCall)) {
-  failures.push('Public MCP Work mutations must execute through callExecutionTool before any durable Operation admission');
+  failures.push(
+    'Public MCP Work mutations must execute through callExecutionTool before any durable Operation admission',
+  );
 }
 // SuperController peer model: Work mutations are owned by WorkContract + Process Runtime.
 // They must not be forced back onto the retired ExecutionJob durable path at the gateway.
-const executionRegion = executionToolCall >= 0 && durableCallAfterExecution > executionToolCall
-  ? server.slice(executionToolCall, durableCallAfterExecution)
-  : '';
+const executionRegion =
+  executionToolCall >= 0 && durableCallAfterExecution > executionToolCall
+    ? server.slice(executionToolCall, durableCallAfterExecution)
+    : '';
 if (executionRegion.includes('forceDurable: true') && executionRegion.includes('isDurableWorkOperation')) {
   failures.push('Public MCP Work mutations must not force the retired durable ExecutionJob path');
 }
@@ -1487,22 +1972,69 @@ forbid(
   /\bcreateExecutionJob\b|\bgetExecutionJob\b/,
   'Gateway Router must not retain dormant ExecutionJob creation or lookup paths',
 );
-requireText('adapters/mcp/runtime-gateway/router.ts', "classification.path === 'durable' && name !== 'execute_command'");
-forbid('adapters/mcp/runtime-gateway/router.ts', /shouldCreateDurableJob|function executionJobCreationRetired/, 'MCP Gateway must not own a duplicate retired-ExecutionJob creation decision');
+requireText(
+  'adapters/mcp/runtime-gateway/router.ts',
+  "classification.path === 'durable' && name !== 'execute_command'",
+);
+forbid(
+  'adapters/mcp/runtime-gateway/router.ts',
+  /shouldCreateDurableJob|function executionJobCreationRetired/,
+  'MCP Gateway must not own a duplicate retired-ExecutionJob creation decision',
+);
 requireText('adapters/mcp/runtime-gateway/router.ts', "'EXECUTION_JOB_RETIRED'");
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'isDurableWorkOperation');
-forbid('adapters/mcp/runtime-gateway/execution-tools.ts', /'work_execute'/, 'A Work-bound execution helper must not be a second public command tool');
+forbid(
+  'adapters/mcp/runtime-gateway/execution-tools.ts',
+  /'work_execute'/,
+  'A Work-bound execution helper must not be a second public command tool',
+);
 requireText('adapters/mcp/tool-mapping/repository-tools.ts', "definition('execute_command'");
 requireText('adapters/mcp/toolset-names.ts', "'execute_command'");
-forbid('adapters/mcp/toolset-names.ts', /'process_exec'|'repository_command_execute'|'work_execute'/, 'Only execute_command is a public generic command entry');
-forbid('adapters/mcp/runtime-gateway/process-tools.ts', /definition\(\s*'process_exec'/, 'The host command must not re-expose a separate process_exec schema');
-forbid('adapters/mcp/tool-mapping/repository-tools.ts', /definition\('repository_command_preview'/, 'Command dry_run preview must use execute_command rather than a second tool');
-forbid('src/runtime/plugins/local-system-adapter.ts', /actionId:\s*'execute_command'/, 'Do not reintroduce a duplicate local_system generic terminal capability');
-forbid('adapters/mcp/runtime-gateway/execution-tools.ts', /work_prepare|work_validate|work_finalize/, 'execution tool surface must not expose retired Work lifecycle operations');
-forbid('adapters/mcp/runtime-gateway/execution-tools.ts', /work_finalize/, 'execution tools must not restore a Work finalization operation');
-forbid('src/runtime/execution/workers/executor.ts', /work_execute|job\.payload\.operation === 'work_validate'/, 'Execution Worker must not retain retired Work execution routes');
-forbid('src/runtime/execution/thin-harness/execution-router.ts', /work_finalize/, 'Thin execution router must not retain retired Work finalization');
-forbid('src/runtime/execution/workers/executor.ts', /\b(?:executeWork|validateWork)\s*\(/, 'Execution Worker must not restore retired Work-bound execute/validate services');
+forbid(
+  'adapters/mcp/toolset-names.ts',
+  /'process_exec'|'repository_command_execute'|'work_execute'/,
+  'Only execute_command is a public generic command entry',
+);
+forbid(
+  'adapters/mcp/runtime-gateway/process-tools.ts',
+  /definition\(\s*'process_exec'/,
+  'The host command must not re-expose a separate process_exec schema',
+);
+forbid(
+  'adapters/mcp/tool-mapping/repository-tools.ts',
+  /definition\('repository_command_preview'/,
+  'Command dry_run preview must use execute_command rather than a second tool',
+);
+forbid(
+  'src/runtime/plugins/local-system-adapter.ts',
+  /actionId:\s*'execute_command'/,
+  'Do not reintroduce a duplicate local_system generic terminal capability',
+);
+forbid(
+  'adapters/mcp/runtime-gateway/execution-tools.ts',
+  /work_prepare|work_validate|work_finalize/,
+  'execution tool surface must not expose retired Work lifecycle operations',
+);
+forbid(
+  'adapters/mcp/runtime-gateway/execution-tools.ts',
+  /work_finalize/,
+  'execution tools must not restore a Work finalization operation',
+);
+forbid(
+  'src/runtime/execution/workers/executor.ts',
+  /work_execute|job\.payload\.operation === 'work_validate'/,
+  'Execution Worker must not retain retired Work execution routes',
+);
+forbid(
+  'src/runtime/execution/thin-harness/execution-router.ts',
+  /work_finalize/,
+  'Thin execution router must not retain retired Work finalization',
+);
+forbid(
+  'src/runtime/execution/workers/executor.ts',
+  /\b(?:executeWork|validateWork)\s*\(/,
+  'Execution Worker must not restore retired Work-bound execute/validate services',
+);
 forbid(
   'src/runtime/execution/workers/executor.ts',
   /gateway\/mcp\/execution-tools|callExecutionTool\s*\(/,
@@ -1560,7 +2092,10 @@ forbid(
 requireText('src/runtime/execution/workers/executor.ts', 'localBridge.dispatchJob(repoRoot, jobId)');
 requireText('src/runtime/execution/workers/executor.ts', 'localBridge.getJob(repoRoot, jobId)');
 requireText('src/cli/execution/worker-entry.ts', 'dispatchJob: dispatchLocalBridgeJob');
-requireText('src/cli/controller/legacy-issue-cutover.ts', 'findRegisteredRepositoryByCheckoutRoot(repoRoot, controllerHome)');
+requireText(
+  'src/cli/controller/legacy-issue-cutover.ts',
+  'findRegisteredRepositoryByCheckoutRoot(repoRoot, controllerHome)',
+);
 forbid(
   'src/cli/controller/issue-store.ts',
   /\b(?:planIssue|appendTask|splitTask|supersedeTask|bindTaskToWork|nextTaskId)\b/,
@@ -1584,26 +2119,60 @@ requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'GRANT_ID_
 requireText('src/runtime/safe-tooling/mac-keychain-write.ts', "spawnSync('/usr/bin/security', ['-i']");
 requireText('src/runtime/safe-tooling/google-credential-store.ts', 'writeMacKeychainGenericPassword(');
 requireText('src/runtime/safe-tooling/resend-oauth.ts', 'writeMacKeychainGenericPassword(');
-forbid('src/runtime/safe-tooling/google-credential-store.ts', /add-generic-password/, 'Google tokens must never enter security CLI argv');
-forbid('src/runtime/safe-tooling/resend-oauth.ts', /add-generic-password/, 'Resend tokens must never enter security CLI argv');
+forbid(
+  'src/runtime/safe-tooling/google-credential-store.ts',
+  /add-generic-password/,
+  'Google tokens must never enter security CLI argv',
+);
+forbid(
+  'src/runtime/safe-tooling/resend-oauth.ts',
+  /add-generic-password/,
+  'Resend tokens must never enter security CLI argv',
+);
 requireText('src/runtime/safe-tooling/mac-keychain-write.ts', "stdio: ['pipe', 'ignore', 'ignore']");
-requireText('src/runtime/safe-tooling/mac-keychain-write.ts', "'find-generic-password', '-s', service, '-a', account, '-w'");
+requireText(
+  'src/runtime/safe-tooling/mac-keychain-write.ts',
+  "'find-generic-password', '-s', service, '-a', account, '-w'",
+);
 requireText('src/runtime/safe-tooling/mac-keychain-write.ts', "throw new Error('MAC_KEYCHAIN_WRITE_FAILED')");
 requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'grant.expiresAt = priorId.expiresAt;');
-requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'isDeepStrictEqual(priorId.constraints ?? {}, grant.constraints ?? {})');
-requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'sameConstraints = isDeepStrictEqual(entry.constraints ?? {}, grant.constraints ?? {})');
-requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'isDeepStrictEqual(grant.constraints ?? {}, query.constraints ?? {})');
-requireText('src/runtime/plugins/capability-authorization-grants.ts', "constraints: { kind: 'plugin_capability_authorization', pluginId, capabilityId },");
+requireText(
+  'packages/kernel/identity/infrastructure/grant-store.ts',
+  'isDeepStrictEqual(priorId.constraints ?? {}, grant.constraints ?? {})',
+);
+requireText(
+  'packages/kernel/identity/infrastructure/grant-store.ts',
+  'sameConstraints = isDeepStrictEqual(entry.constraints ?? {}, grant.constraints ?? {})',
+);
+requireText(
+  'packages/kernel/identity/infrastructure/grant-store.ts',
+  'isDeepStrictEqual(grant.constraints ?? {}, query.constraints ?? {})',
+);
+requireText(
+  'src/runtime/plugins/capability-authorization-grants.ts',
+  "constraints: { kind: 'plugin_capability_authorization', pluginId, capabilityId },",
+);
 requireText('adapters/mcp/runtime-gateway/status-inbox-adapter.ts', 'gatewayLatencySummaries(repository.repoId)');
 requireText('src/cli/local-bridge/server.ts', 'withRepositoryMutationExclusionAsync(');
-requireText('src/runtime/resources/leases/store.ts', 'assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner, mutationClaims)');
-forbid('src/cli/local-bridge/server.ts', /\b(?:rollbackEditSession|finalizeEditSession)\s*\(/, 'Local Bridge edit mutations must run off-thread under the existing repository lock');
+requireText(
+  'src/runtime/resources/leases/store.ts',
+  'assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner, mutationClaims)',
+);
+forbid(
+  'src/cli/local-bridge/server.ts',
+  /\b(?:rollbackEditSession|finalizeEditSession)\s*\(/,
+  'Local Bridge edit mutations must run off-thread under the existing repository lock',
+);
 forbid(
   'adapters/mcp/tool-mapping/legacy-tool-service.ts',
   /\bretryAgentJob\b/,
   'Legacy MCP must not call Agent Run retry',
 );
-forbid('adapters/mcp/runtime-gateway/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
+forbid(
+  'adapters/mcp/runtime-gateway/router.ts',
+  /Use process_get \/ process_wait \/ process_logs/,
+  'Gateway follow-up instructions must use an always-exposed neutral Work facade',
+);
 requireMatch(
   'adapters/mcp/runtime-gateway/routing-policy.ts',
   /const DIRECT_REPOSITORY_TOOLS = new Set\(\[[\s\S]*?'repository_list'[\s\S]*?'repository_get'[\s\S]*?'repository_workbench'[\s\S]*?\]\);/,
@@ -1613,7 +2182,11 @@ requireText('adapters/mcp/runtime-gateway/runtime-observation-adapter.ts', "case
 requireText('adapters/mcp/runtime-gateway/runtime-observation-adapter.ts', "case 'local_bridge_status'");
 requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'connectorExposedTools');
 requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'currentCallableTools');
-forbid('adapters/mcp/runtime-gateway/runtime-observation-adapter.ts', /inspectAgentExecutableReadiness|resolveAgentExecutable|writeAgentExecutableReadinessSnapshot/, 'Runtime observation adapter must not perform Agent executable discovery or mutate readiness snapshots');
+forbid(
+  'adapters/mcp/runtime-gateway/runtime-observation-adapter.ts',
+  /inspectAgentExecutableReadiness|resolveAgentExecutable|writeAgentExecutableReadinessSnapshot/,
+  'Runtime observation adapter must not perform Agent executable discovery or mutate readiness snapshots',
+);
 forbidBetween(
   'adapters/mcp/runtime-gateway/runtime-observation-adapter.ts',
   "case 'repository_runtime_snapshot':",
@@ -1630,8 +2203,16 @@ forbid(
 requireText('src/runtime/projections/controller-context.ts', 'controllerContextProjectionPayloadMatchesSourceIdentity');
 requireText('src/runtime/projections/controller-context.ts', 'sourceIdentityMatches');
 requireText('adapters/mcp/runtime-gateway/runtime-observation-adapter.ts', 'CONTEXT_PROJECTION_SOURCE_MISMATCH');
-forbid('adapters/mcp/runtime-gateway/router.ts', /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"]controller_context['"][\s\S]*?\);/, 'controller_context must use a materialized projection or Durable Job, never the legacy Gateway path');
-forbid('adapters/mcp/runtime-gateway/router.ts', /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"](?:local_bridge_status|get_local_job|get_local_job_output)['"][\s\S]*?\);/, 'Local Bridge observations must use bounded snapshots, never reconciliation in the Gateway');
+forbid(
+  'adapters/mcp/runtime-gateway/router.ts',
+  /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"]controller_context['"][\s\S]*?\);/,
+  'controller_context must use a materialized projection or Durable Job, never the legacy Gateway path',
+);
+forbid(
+  'adapters/mcp/runtime-gateway/router.ts',
+  /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"](?:local_bridge_status|get_local_job|get_local_job_output)['"][\s\S]*?\);/,
+  'Local Bridge observations must use bounded snapshots, never reconciliation in the Gateway',
+);
 requireText('src/runtime/execution/jobs/types.ts', 'requestId: string');
 requireText('src/runtime/execution/jobs/types.ts', 'semanticKey: string');
 requireText('src/runtime/execution/jobs/types.ts', 'admissionTimeoutMs: number');
@@ -1643,7 +2224,11 @@ requireText('src/runtime/control-plane/facade/operation-digest.ts', 'operationId
 requireText('src/runtime/control-plane/facade/operation-digest.ts', 'resultRef');
 requireText('src/runtime/control-plane/facade/operation-digest.ts', 'nextActions');
 requireText('src/runtime/control-plane/facade/operation-digest.ts', 'admissionTimeoutMs');
-forbid('adapters/mcp/runtime-gateway/router.ts', /Math\.min\(\s*typeof args\.timeout_ms[\s\S]{0,140}?,\s*120_000\s*\)/, 'Agent parent timeout must never silently truncate timeout_ms to 120 seconds');
+forbid(
+  'adapters/mcp/runtime-gateway/router.ts',
+  /Math\.min\(\s*typeof args\.timeout_ms[\s\S]{0,140}?,\s*120_000\s*\)/,
+  'Agent parent timeout must never silently truncate timeout_ms to 120 seconds',
+);
 requireText('src/runtime/execution/jobs/store.ts', "'active.json'");
 requireText('src/runtime/execution/jobs/store.ts', "'recent.json'");
 requireText('src/runtime/execution/jobs/store.ts', "'requests'");
@@ -1663,7 +2248,10 @@ requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'writeSch
 requireText('src/runtime/control-plane/global-scheduler/state.ts', 'writeSchedulerHealthSnapshot');
 requireText('src/runtime/control-plane/global-scheduler/worker-launch.ts', 'buildSchedulerWorkerLaunchDescriptor');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'refreshSchedulerRepositoryProjections');
-requireText('src/runtime/control-plane/global-scheduler/projection-refresh.ts', 'refreshRepositoryProjectionForRepository');
+requireText(
+  'src/runtime/control-plane/global-scheduler/projection-refresh.ts',
+  'refreshRepositoryProjectionForRepository',
+);
 requireText('src/runtime/control-plane/global-scheduler/worker-lifecycle.ts', 'buildSchedulerWorkerExitFailure');
 requireText('src/runtime/control-plane/global-scheduler/worker-stderr.ts', 'MAX_SCHEDULER_WORKER_STDERR_BYTES');
 requireText('src/runtime/control-plane/global-scheduler/worker-attachment.ts', 'attachExecutionWorker');
@@ -1675,14 +2263,33 @@ requireMatch(
   'route periodic maintenance through the canonical Runtime cleanup owner',
 );
 requireText('src/runtime/control-plane/runtime-cleanup.ts', 'cleanupControllerReleaseHistory');
-requireText('src/runtime/control-plane/release-retention.ts', "releasePaths.add(releasePathFromAuthorityRecord(releasesRoot, parsed.active, 'active'))");
-requireText('src/runtime/control-plane/release-retention.ts', 'const connectorRelease = loadPackageConnectorReleaseProtection(controllerHome, releasesRoot);');
-requireText('src/runtime/control-plane/release-retention.ts', 'const databaseBackup = (previous as Record<string, unknown>).databaseBackup;');
+requireText(
+  'src/runtime/control-plane/release-retention.ts',
+  "releasePaths.add(releasePathFromAuthorityRecord(releasesRoot, parsed.active, 'active'))",
+);
+requireText(
+  'src/runtime/control-plane/release-retention.ts',
+  'const connectorRelease = loadPackageConnectorReleaseProtection(controllerHome, releasesRoot);',
+);
+requireText(
+  'src/runtime/control-plane/release-retention.ts',
+  'const databaseBackup = (previous as Record<string, unknown>).databaseBackup;',
+);
 requireText('src/runtime/root/scheduler.ts', 'isolatePeriodicCleanup: true');
-forbid('src/runtime/control-plane/global-scheduler/scheduler.ts', /planSchedulerSourceSampling|lastGitStatusSampleAt/, 'Scheduler must not restore periodic Git polling');
-requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'persistSchedulerTerminalWorkerLifecycle');
+forbid(
+  'src/runtime/control-plane/global-scheduler/scheduler.ts',
+  /planSchedulerSourceSampling|lastGitStatusSampleAt/,
+  'Scheduler must not restore periodic Git polling',
+);
+requireText(
+  'src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts',
+  'persistSchedulerTerminalWorkerLifecycle',
+);
 requireText('src/runtime/control-plane/global-scheduler/worker-lifecycle-store.ts', 'TERMINAL_JOB_STATUSES');
-requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'evaluateSchedulerWorkerExitCandidate');
+requireText(
+  'src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts',
+  'evaluateSchedulerWorkerExitCandidate',
+);
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-decision.ts', 'TERMINAL_JOB_STATUSES');
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'releaseExecutionLeases');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'cleanupSchedulerWorkerProcesses');
@@ -1719,9 +2326,19 @@ forbidBetween(
 requireText('src/runtime/control-plane/execution/session-store.ts', 'lastValidatedAt: now');
 requireText('src/runtime/control-plane/execution/session-repository-binding.ts', 'currentPermissionSnapshotVersion');
 requireText('src/runtime/control-plane/execution/session-store.ts', '_retiredWorkFocus');
-forbid('src/runtime/control-plane/execution/session-store.ts', /activeWorkId\?:\s*string/, 'ExecutionSession must not restore Work focus as current authority');
-requireText('src/runtime/control-plane/execution/work-handle-store.ts', 'Historical SQLite envelope revision retained for read compatibility.');
-requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "from '../../../src/runtime/control-plane/execution/session-repository-binding'");
+forbid(
+  'src/runtime/control-plane/execution/session-store.ts',
+  /activeWorkId\?:\s*string/,
+  'ExecutionSession must not restore Work focus as current authority',
+);
+requireText(
+  'src/runtime/control-plane/execution/work-handle-store.ts',
+  'Historical SQLite envelope revision retained for read compatibility.',
+);
+requireText(
+  'adapters/mcp/runtime-gateway/execution-tools.ts',
+  "from '../../../src/runtime/control-plane/execution/session-repository-binding'",
+);
 forbid(
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /repositoryGit(?:Commit|FinishWorkflow|MergeBranch|DeleteBranch|RebaseOnto)\s*\(/,
@@ -1762,7 +2379,8 @@ for (const retiredWorkBoundProviderPath of [
   'adapters/chatgpt/browser-delivery-host.ts',
   'adapters/chatgpt/wsl-bridge-delivery-host.ts',
   'scripts/canary-chatgpt-provider-delivery.ts',
-]) requireMissing(retiredWorkBoundProviderPath);
+])
+  requireMissing(retiredWorkBoundProviderPath);
 forbid(
   'src/runtime/control-plane/launcher/thin-launcher.ts',
   /\bworkId\b|getWorkContract|WorkContractStoreOptions|launchSuperController|ExternalControllerLaunchReservation/,
@@ -1817,7 +2435,8 @@ for (const retiredShim of [
   'src/cli/mcp/toolset.ts',
   'src/cli/mcp/toolset-names.ts',
   'src/cli/mcp/toolset-selection.ts',
-]) requireMissing(retiredShim);
+])
+  requireMissing(retiredShim);
 
 for (const path of [
   'adapters/mcp/runtime-gateway/router.ts',
@@ -1845,24 +2464,40 @@ for (const { from, specifier } of b7ProductionImports) {
   if (from.startsWith('packages/kernel/') && specifier.startsWith('@modelcontextprotocol/')) {
     failures.push(`Kernel modules must remain independent of MCP SDK transport contracts: ${from} -> ${specifier}`);
   }
-  if (from.startsWith('packages/kernel/')
-      && ['adapters/mcp', 'src/cli/mcp', 'runtime/gateway/mcp'].some((segment) => specifier.includes(segment))) {
-    failures.push(`Kernel modules must never depend on MCP adapters or retired MCP gateway paths: ${from} -> ${specifier}`);
+  if (
+    from.startsWith('packages/kernel/') &&
+    ['adapters/mcp', 'src/cli/mcp', 'runtime/gateway/mcp'].some((segment) => specifier.includes(segment))
+  ) {
+    failures.push(
+      `Kernel modules must never depend on MCP adapters or retired MCP gateway paths: ${from} -> ${specifier}`,
+    );
   }
-  if (from.startsWith('packages/plugin-runtime/')
-      && ['adapters/', 'src/runtime/'].some((segment) => specifier.includes(segment))) {
-    failures.push(`Plugin Runtime provider dispatch must not depend on concrete adapters or Runtime implementations: ${from} -> ${specifier}`);
+  if (
+    from.startsWith('packages/plugin-runtime/') &&
+    ['adapters/', 'src/runtime/'].some((segment) => specifier.includes(segment))
+  ) {
+    failures.push(
+      `Plugin Runtime provider dispatch must not depend on concrete adapters or Runtime implementations: ${from} -> ${specifier}`,
+    );
   }
   if (from.startsWith('adapters/computer/') && specifier.includes('src/runtime/')) {
-    failures.push(`Computer adapters must consume provider-neutral ports and contracts rather than depend on Runtime implementations: ${from} -> ${specifier}`);
+    failures.push(
+      `Computer adapters must consume provider-neutral ports and contracts rather than depend on Runtime implementations: ${from} -> ${specifier}`,
+    );
   }
-  if (from.startsWith('packages/plugin-runtime/computer/')
-      && (['controller-home', 'external-registration'].some((segment) => specifier.includes(segment))
-        || ['node:fs', 'fs', 'node:path', 'path'].includes(specifier))) {
-    failures.push(`Computer provider runtime must remain independent of Controller Home and filesystem-backed provider discovery: ${from} -> ${specifier}`);
+  if (
+    from.startsWith('packages/plugin-runtime/computer/') &&
+    (['controller-home', 'external-registration'].some((segment) => specifier.includes(segment)) ||
+      ['node:fs', 'fs', 'node:path', 'path'].includes(specifier))
+  ) {
+    failures.push(
+      `Computer provider runtime must remain independent of Controller Home and filesystem-backed provider discovery: ${from} -> ${specifier}`,
+    );
   }
   if (from !== 'src/runtime/plugins/macos-capability-broker.ts' && specifier.includes('macos-capability-broker')) {
-    failures.push(`Deprecated macOS capability broker is compatibility/test-only and must have no production consumers: ${from} -> ${specifier}`);
+    failures.push(
+      `Deprecated macOS capability broker is compatibility/test-only and must have no production consumers: ${from} -> ${specifier}`,
+    );
   }
 }
 for (const edge of dependencyEdges(b7ProductionGraph)) {
@@ -1883,22 +2518,34 @@ for (const edge of dependencyEdges(b7ProductionGraph)) {
       failures.push(`adapters must consume Kernel public APIs, not internal implementation: ${edge}`);
     }
   }
-  if (from.startsWith('packages/kernel/')
-      && (to.startsWith('adapters/mcp/') || to.startsWith('src/cli/mcp/') || to.startsWith('src/runtime/gateway/mcp/'))) {
+  if (
+    from.startsWith('packages/kernel/') &&
+    (to.startsWith('adapters/mcp/') || to.startsWith('src/cli/mcp/') || to.startsWith('src/runtime/gateway/mcp/'))
+  ) {
     failures.push(`Kernel modules must never depend on MCP adapters or retired MCP gateway paths: ${edge}`);
   }
   if (/^packages\/kernel\/[^/]+\/(?:domain|application)\//.test(from) && to.startsWith('src/')) {
-    failures.push(`Kernel domain/application must depend only on Kernel/protocol ports, never legacy src mechanisms: ${edge}`);
+    failures.push(
+      `Kernel domain/application must depend only on Kernel/protocol ports, never legacy src mechanisms: ${edge}`,
+    );
   }
   if (from.startsWith('packages/plugin-runtime/') && (to.startsWith('adapters/') || to.startsWith('src/runtime/'))) {
-    failures.push(`Plugin Runtime provider dispatch must not depend on concrete adapters or Runtime implementations: ${edge}`);
+    failures.push(
+      `Plugin Runtime provider dispatch must not depend on concrete adapters or Runtime implementations: ${edge}`,
+    );
   }
-  if (from.startsWith('packages/plugin-runtime/computer/')
-      && (to.includes('/controller-home') || to.endsWith('/external-registration.ts'))) {
-    failures.push(`Computer provider runtime must remain independent of Controller Home and provider discovery implementations: ${edge}`);
+  if (
+    from.startsWith('packages/plugin-runtime/computer/') &&
+    (to.includes('/controller-home') || to.endsWith('/external-registration.ts'))
+  ) {
+    failures.push(
+      `Computer provider runtime must remain independent of Controller Home and provider discovery implementations: ${edge}`,
+    );
   }
   if (to === 'src/runtime/plugins/macos-capability-broker.ts' && from !== to) {
-    failures.push(`Deprecated macOS capability broker is compatibility/test-only and must have no production consumers: ${edge}`);
+    failures.push(
+      `Deprecated macOS capability broker is compatibility/test-only and must have no production consumers: ${edge}`,
+    );
   }
 }
 requireMissing('src/runtime/root/controller-round-composition.ts');
@@ -1922,14 +2569,19 @@ const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
 requireExactShrinkingDebt('Kernel -> legacy src dependency debt', b7KernelLegacyEdges, B7_ALLOWED_KERNEL_LEGACY_EDGES);
 requireMissing('src/cli/repositories/locks.ts');
 const b7ProductionEdges = new Set(dependencyEdges(b7ProductionGraph));
-if (!b7ProductionEdges.has('src/runtime/standalone-recovery/core.ts -> src/runtime/standalone-recovery/operation-lock.ts')) {
+if (
+  !b7ProductionEdges.has('src/runtime/standalone-recovery/core.ts -> src/runtime/standalone-recovery/operation-lock.ts')
+) {
   failures.push('Recovery Core must consume the single shared operation-lock authority');
 }
 for (const requiredEdge of [
   'packages/kernel/work/domain/types.ts -> packages/kernel/identity/api/index.ts',
   'packages/kernel/scheduler/domain/schedule.ts -> packages/kernel/identity/api/index.ts',
 ]) {
-  if (!b7ProductionEdges.has(requiredEdge)) failures.push(`Portable semantic identity contract must be consumed through the Kernel Identity boundary: ${requiredEdge}`);
+  if (!b7ProductionEdges.has(requiredEdge))
+    failures.push(
+      `Portable semantic identity contract must be consumed through the Kernel Identity boundary: ${requiredEdge}`,
+    );
 }
 
 const b7LifecycleOwnerMarkers = new Map([
@@ -1941,15 +2593,14 @@ for (const [label, owners] of b7LifecycleOwnerMarkers) {
   for (const owner of owners) text(owner);
   if (new Set(owners).size !== 1) failures.push(`${label} must have exactly one declared durable owner`);
 }
-const b7UniqueMutationSymbols = new Map([
-  ['ensureForgeInstanceIdentity', 'Forge instance identity creation'],
-]);
+const b7UniqueMutationSymbols = new Map([['ensureForgeInstanceIdentity', 'Forge instance identity creation']]);
 for (const [symbol, label] of b7UniqueMutationSymbols) {
   let count = 0;
   for (const path of productionTypeScriptFiles()) {
     count += (text(path).match(new RegExp(`export\\s+(?:async\\s+)?function\\s+${symbol}\\s*\\(`, 'g')) ?? []).length;
   }
-  if (count !== 1) failures.push(`${label} must have exactly one exported production owner; found ${count} for ${symbol}`);
+  if (count !== 1)
+    failures.push(`${label} must have exactly one exported production owner; found ${count} for ${symbol}`);
 }
 // Thin Plan authority: Plan items are authored working memory. Work execution,
 // Plan admission and Plan revision must never re-acquire PlanStep execution
@@ -1971,10 +2622,12 @@ const retiredPlanExecutionSymbols = [
 for (const path of productionTypeScriptFiles()) {
   const source = text(path);
   for (const symbol of retiredPlanExecutionSymbols) {
-    if (new RegExp(`\\b${symbol}\\b`).test(source)) failures.push(`${path} must not reintroduce retired PlanStep execution writer ${symbol}`);
+    if (new RegExp(`\\b${symbol}\\b`).test(source))
+      failures.push(`${path} must not reintroduce retired PlanStep execution writer ${symbol}`);
   }
 }
-const retiredPlanGateCodes = /PLAN_STEP_(?:SEMANTIC_ACCEPTANCE_REQUIRED|TERMINAL_WORK_RECONCILIATION_REQUIRED|DEPENDENCIES_PENDING|ALREADY_ACTIVE|ALREADY_COMPLETED|MULTIPLE_PRIMARY_WORKS|BOUND_WORK_MISSING|REUSES_ACTIVE_WORK|WORK_CONTRACT_MISMATCH)|PLAN_NOT_EXECUTABLE|PLAN_EXECUTION_BASELINE_LOCKED|PLAN_OBLIGATION_CONTINUITY_REQUIRED|PLAN_STEP_SEMANTIC_ACCEPTANCE/;
+const retiredPlanGateCodes =
+  /PLAN_STEP_(?:SEMANTIC_ACCEPTANCE_REQUIRED|TERMINAL_WORK_RECONCILIATION_REQUIRED|DEPENDENCIES_PENDING|ALREADY_ACTIVE|ALREADY_COMPLETED|MULTIPLE_PRIMARY_WORKS|BOUND_WORK_MISSING|REUSES_ACTIVE_WORK|WORK_CONTRACT_MISMATCH)|PLAN_NOT_EXECUTABLE|PLAN_EXECUTION_BASELINE_LOCKED|PLAN_OBLIGATION_CONTINUITY_REQUIRED|PLAN_STEP_SEMANTIC_ACCEPTANCE/;
 for (const path of [
   'src/runtime/control-plane/facade/plan-contract-store.ts',
   'src/runtime/control-plane/facade/requirement-authority.ts',
@@ -1985,7 +2638,8 @@ for (const path of [
 }
 for (const path of ['packages/kernel/progression/api/index.ts']) requireMissing(path);
 for (const path of productionTypeScriptFiles()) {
-  if (/packages\/kernel\/progression/.test(text(path))) failures.push(`${path} must not depend on the retired PlanStep progression engine`);
+  if (/packages\/kernel\/progression/.test(text(path)))
+    failures.push(`${path} must not depend on the retired PlanStep progression engine`);
 }
 for (const retiredPath of [
   'src/runtime/control-plane/execution/work-finalization-service.ts',
@@ -1995,35 +2649,85 @@ for (const retiredPath of [
   'adapters/mcp/frozen-client-semantic-compatibility.ts',
   'adapters/mcp/runtime-gateway/work-controller-recovery-operations.ts',
   'adapters/mcp/runtime-gateway/work-plan-repair-operations.ts',
-]) requireMissing(retiredPath);
+])
+  requireMissing(retiredPath);
 for (const path of [...sourceFiles('src'), ...sourceFiles('adapters')]) {
-  forbid(path, /tool:\s*['"]rh_work['"][\s\S]{0,180}?operation:\s*['"](?:continue|verify|review|finalize|stop|plan_approve|plan_accept_step|controller_claim|controller_release|controller_disposition)['"]/, 'retired Work lifecycle operations must not return as current rh_work behavioral authority');
+  forbid(
+    path,
+    /tool:\s*['"]rh_work['"][\s\S]{0,180}?operation:\s*['"](?:continue|verify|review|finalize|stop|plan_approve|plan_accept_step|controller_claim|controller_release|controller_disposition)['"]/,
+    'retired Work lifecycle operations must not return as current rh_work behavioral authority',
+  );
 }
 // Historical Work records retain stored semantic states for audit/migration only.
 // Current rh_work exposes no Work lifecycle mutation operation.
-requireText('packages/kernel/work/domain/types.ts', "export const SEMANTIC_WORK_STATES = ['open', 'completed', 'cancelled'] as const;");
-requireText('packages/kernel/work/domain/types.ts', 'export type SemanticWorkState = (typeof SEMANTIC_WORK_STATES)[number];');
-requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', "const RH_WORK_SEMANTIC_OPERATIONS = new Set(['get', 'get_contract']);");
-forbid('src/runtime/control-plane/facade/rh-work-operation-contract.ts', /'start'|'revise'|'complete'|'outcome_record'|'experience_record'/, 'retired Work lifecycle/write vocabulary must not remain in the accepted rh_work ABI');
+requireText(
+  'packages/kernel/work/domain/types.ts',
+  "export const SEMANTIC_WORK_STATES = ['open', 'completed', 'cancelled'] as const;",
+);
+requireText(
+  'packages/kernel/work/domain/types.ts',
+  'export type SemanticWorkState = (typeof SEMANTIC_WORK_STATES)[number];',
+);
+requireText(
+  'adapters/mcp/runtime-gateway/work-semantic-operations.ts',
+  "const RH_WORK_SEMANTIC_OPERATIONS = new Set(['get', 'get_contract']);",
+);
+forbid(
+  'src/runtime/control-plane/facade/rh-work-operation-contract.ts',
+  /'start'|'revise'|'complete'|'outcome_record'|'experience_record'/,
+  'retired Work lifecycle/write vocabulary must not remain in the accepted rh_work ABI',
+);
 requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', "if (operation === 'get_contract') {");
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "operation === 'get_contract'");
-forbid('packages/kernel/work/domain/state-machine.ts', /READ_ONLY_REVIEW_CLEAN_SCOPE|cleanReadOnlyReviewEvidence|READ_ONLY_REVIEW_FINDINGS_BLOCK/, 'historical Work state parsing must not retain review-completion gates');
+forbid(
+  'packages/kernel/work/domain/state-machine.ts',
+  /READ_ONLY_REVIEW_CLEAN_SCOPE|cleanReadOnlyReviewEvidence|READ_ONLY_REVIEW_FINDINGS_BLOCK/,
+  'historical Work state parsing must not retain review-completion gates',
+);
 requireMissing('src/runtime/control-plane/execution/work-evidence-policy.ts');
 // Work is historical read-only compatibility data. Requirement/Plan/Run/Git
 // own current mutable state; no Work lifecycle writer may return.
-requireText('packages/kernel/identity/infrastructure/user-request-store.ts', "throw new Error('USER_REQUEST_WORK_SCOPE_RETIRED')");
-forbid('src/runtime/context/cognitive-attention.ts', /resolveCognitiveAttentionForWork|renderCognitiveAttentionForWork/, 'current cognition must not expose Work-scoped convenience APIs');
-forbid('packages/kernel/scheduler/domain/schedule.ts', /scheduleOwnsWork|\bworkId\b/, 'current Scheduler domain must not expose Work ownership in ScheduleResourceClaim or helper APIs');
-forbid('src/runtime/editing/edit-session.ts', /\bworkId\b/, 'current EditSession schema, summary and worklog must not expose legacy Work identity');
-forbid('src/cli/controller/task-ledger.ts', /active_work|Work in progress/, 'current TaskLedger schema must use Run terminology, not first-class Work terminology');
-forbid('src/cli/controller/task-ledger.ts', /export interface TaskLedgerProjection|export type TaskLedgerStatusKind/, 'TaskLedger projection schema must be owned by Runtime projections, not the CLI builder');
-forbid('src/cli/controller/operational-plan.ts', /Current Work/, 'current controller UI projection must expose Current Run, not Current Work');
+requireText(
+  'packages/kernel/identity/infrastructure/user-request-store.ts',
+  "throw new Error('USER_REQUEST_WORK_SCOPE_RETIRED')",
+);
+forbid(
+  'src/runtime/context/cognitive-attention.ts',
+  /resolveCognitiveAttentionForWork|renderCognitiveAttentionForWork/,
+  'current cognition must not expose Work-scoped convenience APIs',
+);
+forbid(
+  'packages/kernel/scheduler/domain/schedule.ts',
+  /scheduleOwnsWork|\bworkId\b/,
+  'current Scheduler domain must not expose Work ownership in ScheduleResourceClaim or helper APIs',
+);
+forbid(
+  'src/runtime/editing/edit-session.ts',
+  /\bworkId\b/,
+  'current EditSession schema, summary and worklog must not expose legacy Work identity',
+);
+forbid(
+  'src/cli/controller/task-ledger.ts',
+  /active_work|Work in progress/,
+  'current TaskLedger schema must use Run terminology, not first-class Work terminology',
+);
+forbid(
+  'src/cli/controller/task-ledger.ts',
+  /export interface TaskLedgerProjection|export type TaskLedgerStatusKind/,
+  'TaskLedger projection schema must be owned by Runtime projections, not the CLI builder',
+);
+forbid(
+  'src/cli/controller/operational-plan.ts',
+  /Current Work/,
+  'current controller UI projection must expose Current Run, not Current Work',
+);
 forbid(
   'src/runtime/evidence/result-store.ts',
   /writeControllerResult\([\s\S]{0,500}\bworkId\??:|readControllerResult\([\s\S]{0,500}\bworkId\??:|searchControllerResult\([\s\S]{0,500}\bworkId\??:/,
   'current Result Store API must remain session/principal scoped, not Work-scoped',
 );
-const retiredWorkBusinessWriter = /\b(?:writeWorkContractStore|createWorkSemanticContext|createWorkContract|acceptSubmittedWorkContract|supersedeWorkContract|reviseWorkSemanticContext|updateWorkContract|updateWorkContractPlacementAtomically|updateWorkContractPlacement|promoteWorkToRepositoryChange|recordWorkEvidenceState|activateWorkContract|failWorkContract|cancelWorkContract|recordCancelledWorkCleanupCompleted|recordWorkScopeEvidence|transitionWorkContractPhase|recordWorkImplementationReview|appendWorkEvidence|appendWorkHandoffRef|appendVerificationRecord|recordWorkCompletionReceipt)\b/;
+const retiredWorkBusinessWriter =
+  /\b(?:writeWorkContractStore|createWorkSemanticContext|createWorkContract|acceptSubmittedWorkContract|supersedeWorkContract|reviseWorkSemanticContext|updateWorkContract|updateWorkContractPlacementAtomically|updateWorkContractPlacement|promoteWorkToRepositoryChange|recordWorkEvidenceState|activateWorkContract|failWorkContract|cancelWorkContract|recordCancelledWorkCleanupCompleted|recordWorkScopeEvidence|transitionWorkContractPhase|recordWorkImplementationReview|appendWorkEvidence|appendWorkHandoffRef|appendVerificationRecord|recordWorkCompletionReceipt)\b/;
 for (const path of [
   'packages/kernel/work/infrastructure/work-contract-store.ts',
   'packages/kernel/work/application/work-service.ts',
@@ -2044,11 +2748,12 @@ forbid(
   /WORK_PHASE_EVIDENCE_|WORK_COMPLETION_PHASE_/,
   'legacy phase evidence must not regain semantic Work authority',
 );
-for (const path of [
-  'adapters/mcp/runtime-gateway/work-workflow-operations.ts',
-  'src/runtime/workflows/runtime.ts',
-]) {
-  forbid(path, /assertFacadeControllerRoundAuthority|getControllerSession|getControllerRoundRelay|controllerSessionAuthorityMatches|WORKFLOW_CONTROLLER_AUTHORITY|WORKFLOW_CONTROLLER_NOT_OWNER/, 'ordinary Workflow execution must not depend on Work-wide Controller authority');
+for (const path of ['adapters/mcp/runtime-gateway/work-workflow-operations.ts', 'src/runtime/workflows/runtime.ts']) {
+  forbid(
+    path,
+    /assertFacadeControllerRoundAuthority|getControllerSession|getControllerRoundRelay|controllerSessionAuthorityMatches|WORKFLOW_CONTROLLER_AUTHORITY|WORKFLOW_CONTROLLER_NOT_OWNER/,
+    'ordinary Workflow execution must not depend on Work-wide Controller authority',
+  );
 }
 forbid(
   'adapters/mcp/runtime-gateway/work-adapter.ts',
@@ -2064,11 +2769,12 @@ requireMissing('src/runtime/control-plane/cleanup-artifact-retention.ts');
 requireMissing('src/runtime/control-plane/execution/work-verification-service.ts');
 requireMissing('src/runtime/control-plane/execution/work-verification-context.ts');
 requireMissing('src/runtime/control-plane/execution/work-check-evidence.ts');
-for (const path of [
-  'packages/kernel/work/domain/types.ts',
-  'src/runtime/execution/process-runtime/types.ts',
-]) {
-  forbid(path, /controller_release/, 'Work/Process concurrency must wake on concrete Work/resource/scheduler facts, not Controller ownership release');
+for (const path of ['packages/kernel/work/domain/types.ts', 'src/runtime/execution/process-runtime/types.ts']) {
+  forbid(
+    path,
+    /controller_release/,
+    'Work/Process concurrency must wake on concrete Work/resource/scheduler facts, not Controller ownership release',
+  );
 }
 requireMissing('packages/kernel/work/domain/execution-concurrency.ts');
 requireMissing('packages/kernel/work/domain/current-task-lineage.ts');
@@ -2076,7 +2782,8 @@ for (const path of [
   'src/runtime/control-plane/execution/work-execution-support.ts',
   'src/runtime/control-plane/execution/work-preparation-service.ts',
   'src/runtime/control-plane/execution/validation.ts',
-]) requireMissing(path);
+])
+  requireMissing(path);
 forbid(
   'src/runtime/recovery/maintenance-executor.ts',
   /withControllerSessionTerminalizationFence|listControllerSessions|getControllerSession|controllerWorkIds|controller_session/,
@@ -2085,19 +2792,39 @@ forbid(
 requireText('src/runtime/control-plane/facade/handoff-inbox-store.ts', 'migrateLegacyHandoffInbox');
 requireText('src/runtime/control-plane/facade/handoff-inbox-store.ts', 'HANDOFF_LEGACY_STORE_READ_ONLY');
 requireText('src/runtime/control-plane/facade/handoff-inbox-store.ts', 'UserRequest owns the durable write');
-forbid('src/runtime/control-plane/facade/handoff-inbox-store.ts', /writeLegacyHandoffInboxStore|export function writeHandoffInboxStore/, 'legacy Handoff store must never remain a writable second authority');
-forbid('src/runtime/plugins/store.ts', /status:\s*terminalRemoteEffect\s*\?\s*['\"]completed['\"]/, 'plugin/effect delivery results must never claim semantic Work completion');
+forbid(
+  'src/runtime/control-plane/facade/handoff-inbox-store.ts',
+  /writeLegacyHandoffInboxStore|export function writeHandoffInboxStore/,
+  'legacy Handoff store must never remain a writable second authority',
+);
+forbid(
+  'src/runtime/plugins/store.ts',
+  /status:\s*terminalRemoteEffect\s*\?\s*['\"]completed['\"]/,
+  'plugin/effect delivery results must never claim semantic Work completion',
+);
 requireText('src/runtime/plugins/store.ts', "throw new Error('PLUGIN_WORK_ATTRIBUTION_RETIRED')");
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /case ['\"](?:start|revise|complete)['\"]|createWorkContract|reviseWorkSemanticContext|updateWorkContract|cancelWorkContract/, 'rh_work adapter must not expose retired Work lifecycle writers');
+forbid(
+  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  /case ['\"](?:start|revise|complete)['\"]|createWorkContract|reviseWorkSemanticContext|updateWorkContract|cancelWorkContract/,
+  'rh_work adapter must not expose retired Work lifecycle writers',
+);
 forbid(
   'packages/kernel/work/application/work-service.ts',
   /export\s*\{[\s\S]{0,400}\b(?:createWorkContract|reviseWorkSemanticContext|updateWorkContract|cancelWorkContract|recordWorkCompletionReceipt)\b/,
   'public Work service must expose historical reads only',
 );
 for (const path of sourceFiles('src')) {
-  forbid(path, /\bcancelWorkContract\s*\(/, 'runtime/maintenance code must never auto-cancel semantic Work; cancellation belongs to explicit semantic CAS');
+  forbid(
+    path,
+    /\bcancelWorkContract\s*\(/,
+    'runtime/maintenance code must never auto-cancel semantic Work; cancellation belongs to explicit semantic CAS',
+  );
 }
-forbid('src/runtime/recovery/maintenance-executor.ts', /stale_work_contract|work_semantic_completion_required|applyStaleWorkContractMaintenanceCandidate/, 'runtime maintenance must not revive retired Work lifecycle cleanup or semantic completion gates');
+forbid(
+  'src/runtime/recovery/maintenance-executor.ts',
+  /stale_work_contract|work_semantic_completion_required|applyStaleWorkContractMaintenanceCandidate/,
+  'runtime maintenance must not revive retired Work lifecycle cleanup or semantic completion gates',
+);
 forbid(
   'src/runtime/recovery/maintenance-executor.ts',
   /readWorkContractStore|semanticWorkState|readWorkHandle|resolveWorkDeliveryTargetBranch|retained_migrated_work|activeWorkAuthorityRefs/,
@@ -2137,19 +2864,34 @@ for (const path of [
   'adapters/mcp/runtime-gateway/work-adapter.ts',
   'adapters/mcp/runtime-gateway/repository-compat-adapter.ts',
 ]) {
-  forbid(path, /lifecycleClosed|finalStatus:\s*['"]completed['"]|directEditWorkCompletion/, 'mechanical delivery/finalize responses must not masquerade as semantic Work completion');
+  forbid(
+    path,
+    /lifecycleClosed|finalStatus:\s*['"]completed['"]|directEditWorkCompletion/,
+    'mechanical delivery/finalize responses must not masquerade as semantic Work completion',
+  );
 }
 // Work-keyed ControllerRound/provider dispatch authority is retired. Current
 // provider effects are fenced by Plugin/Computer/Workflow receipts instead.
 requireMissing('packages/kernel/controller/domain/controller-round-transition-policy.ts');
 requireMissing('packages/kernel/controller/infrastructure/controller-round-store.ts');
-requireText('packages/plugin-runtime/computer/conversation-target.ts', "observation?: ComputerChatgptConversationObservation");
+requireText(
+  'packages/plugin-runtime/computer/conversation-target.ts',
+  'observation?: ComputerChatgptConversationObservation',
+);
 // Cognitive Plane stays one advisory application path: all Controller tools expose the
 // same optional settlement metadata, and the MCP server settles it after the primary outcome.
 requireText('adapters/mcp/toolset.ts', 'injectCognitionSettlementFields(injectDurableCommandFields(definition))');
 requireText('adapters/mcp/server.ts', 'settleCognitionAfterTool(ctx, name, args, localResult)');
-forbid('adapters/mcp/runtime-gateway/runtime-tools.ts', /settleCognitionEnvelope/, 'cognition settlement belongs to the canonical all-tool MCP boundary, not the rh_* facade only');
-forbid('src/runtime/control-plane/launcher/thin-launcher.ts', /renderCognitiveAttentionForWork|renderAssistantWorkContext/, 'pure launcher utilities must not own Work-scoped cognition or assistant context');
+forbid(
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
+  /settleCognitionEnvelope/,
+  'cognition settlement belongs to the canonical all-tool MCP boundary, not the rh_* facade only',
+);
+forbid(
+  'src/runtime/control-plane/launcher/thin-launcher.ts',
+  /renderCognitiveAttentionForWork|renderAssistantWorkContext/,
+  'pure launcher utilities must not own Work-scoped cognition or assistant context',
+);
 requireText('packages/kernel/cognition/application/activation-service.ts', 'structuredConceptAliasCueScore');
 requireText('packages/kernel/cognition/application/activation-service.ts', 'fairScopedRead');
 requireText('packages/kernel/cognition/application/activation-service.ts', 'seenFamilies');
@@ -2158,7 +2900,11 @@ for (const path of [
   'adapters/mcp/runtime-gateway/work-learning-operations.ts',
   'src/runtime/control-plane/persistence/experience-store.ts',
 ]) {
-  forbid(path, /assertFacadeControllerRoundAuthority|controllerSessionAuthorityMatches|getControllerSession|EXPERIENCE_CONTROLLER_NOT_OWNER|EXPERIENCE_ROUND_AUTHORITY_MISMATCH|EXPERIENCE_CLAIM_AUTHORITY_MISMATCH/, 'advisory learning writes must use Work provenance and evidence, not Controller ownership');
+  forbid(
+    path,
+    /assertFacadeControllerRoundAuthority|controllerSessionAuthorityMatches|getControllerSession|EXPERIENCE_CONTROLLER_NOT_OWNER|EXPERIENCE_ROUND_AUTHORITY_MISMATCH|EXPERIENCE_CLAIM_AUTHORITY_MISMATCH/,
+    'advisory learning writes must use Work provenance and evidence, not Controller ownership',
+  );
 }
 forbid(
   'src/cli/commands/brain-assistant.ts',
@@ -2196,14 +2942,26 @@ for (const path of [
   'src/runtime/gateway/mcp/runtime-tool-definitions.ts',
   'src/runtime/gateway/mcp/runtime-tools.ts',
   'src/runtime/gateway/mcp/work-validation-reconciler.ts',
-]) requireMissing(path);
-requireText('src/runtime/control-plane/execution/session-execution-support.ts', 'packages/protocols/mcp/execution-context');
-requireText('src/runtime/control-plane/execution/session-repository-binding.ts', 'packages/protocols/mcp/execution-context');
+])
+  requireMissing(path);
+requireText(
+  'src/runtime/control-plane/execution/session-execution-support.ts',
+  'packages/protocols/mcp/execution-context',
+);
+requireText(
+  'src/runtime/control-plane/execution/session-repository-binding.ts',
+  'packages/protocols/mcp/execution-context',
+);
 for (const path of [
   'adapters/mcp/transports/http.ts',
   'adapters/mcp/transports/session-registry.ts',
   'adapters/mcp/transports/stdio.ts',
-]) forbid(path, /recordWorkCompletionReceipt|transitionWorkContractPhase|releaseControllerSessionWithAuthority|recordWorkImplementationReview/, 'MCP transport/session lifecycle must never terminalize Work or Controller authority');
+])
+  forbid(
+    path,
+    /recordWorkCompletionReceipt|transitionWorkContractPhase|releaseControllerSessionWithAuthority|recordWorkImplementationReview/,
+    'MCP transport/session lifecycle must never terminalize Work or Controller authority',
+  );
 
 // Kernel V2 B6: semantic Forge identity is independent of Runtime processes,
 // transport sessions, OAuth credentials, tunnel ids, and endpoint rotation.
@@ -2212,8 +2970,15 @@ for (const path of [
   'packages/kernel/identity/application/identity-service.ts',
   'packages/kernel/identity/infrastructure/identity-store.ts',
   'packages/kernel/identity/api/index.ts',
-]) text(path);
-for (const symbol of ['ForgeInstanceIdentity', 'Principal', 'CredentialReference', 'CapabilityGrant', 'ConnectionIdentity']) {
+])
+  text(path);
+for (const symbol of [
+  'ForgeInstanceIdentity',
+  'Principal',
+  'CredentialReference',
+  'CapabilityGrant',
+  'ConnectionIdentity',
+]) {
   requireText('packages/kernel/identity/domain/types.ts', `interface ${symbol}`);
 }
 requireText('packages/kernel/identity/application/identity-service.ts', 'export function connectionIdentity');
@@ -2239,7 +3004,11 @@ forbidBetween(
   'ForgeInstanceIdentity creation must remain independent of process and adapter transport/auth metadata',
 );
 requireText('adapters/mcp/auth.ts', 'forgeInstanceId?: string');
-forbid('adapters/mcp/auth.ts', /server:\s*\{[\s\S]{0,512}?instanceId\??:\s*string/, 'MCP server process identity must not share semantic Forge instanceId naming');
+forbid(
+  'adapters/mcp/auth.ts',
+  /server:\s*\{[\s\S]{0,512}?instanceId\??:\s*string/,
+  'MCP server process identity must not share semantic Forge instanceId naming',
+);
 requireText('adapters/mcp/setup.ts', 'ensureForgeInstanceIdentity');
 requireText('adapters/mcp/setup.ts', 'MCP_FORGE_INSTANCE_ID_MISMATCH');
 requireText('src/runtime/root/types.ts', 'forgeInstanceId: string');
@@ -2250,32 +3019,72 @@ requireText('src/cli/runtime/entry.ts', 'forgeInstanceId: runtime.forgeInstanceI
 requireText('src/cli/runtime/entry.ts', 'startLocalBridge: startConfiguredRuntimeLocalBridge');
 requireText('adapters/mcp/transports/http.ts', 'forgeInstanceId: forgeInstance.instanceId');
 requireText('adapters/mcp/transports/http-observation.ts', 'controllerInstanceId: process.env.FORGE_MCP_INSTANCE_ID');
-forbid('adapters/mcp/transports/http.ts', /\{\s*instanceId:\s*process\.env\.FORGE_MCP_INSTANCE_ID/, 'MCP process identity must not be exposed as semantic Forge instanceId');
+forbid(
+  'adapters/mcp/transports/http.ts',
+  /\{\s*instanceId:\s*process\.env\.FORGE_MCP_INSTANCE_ID/,
+  'MCP process identity must not be exposed as semantic Forge instanceId',
+);
 requireText('adapters/mcp/transports/http.ts', "adapterId: 'mcp-http'");
 requireText('adapters/mcp/transports/session-registry.ts', 'connectionId: string');
 requireText('adapters/mcp/transports/session-registry.ts', 'reservation.connectionId !== input.connectionId');
-requireText('adapters/mcp/tunnels/openai-secure-tunnel.ts', 'tunnelMatches: boolean');
-requireText('adapters/mcp/tunnels/openai-secure-tunnel.ts', 'credentialReference(config.runtimeApiKeyRef');
-forbid('adapters/mcp/tunnels/openai-secure-tunnel.ts', /\bidentityMatches\b/, 'tunnel binding match must not masquerade as Forge semantic identity');
+requireText('src/runtime/standalone-recovery/openai-secure-tunnel.ts', 'tunnelMatches: boolean');
+requireText('src/runtime/standalone-recovery/openai-secure-tunnel.ts', 'credentialReference(config.runtimeApiKeyRef');
+forbid(
+  'src/runtime/standalone-recovery/openai-secure-tunnel.ts',
+  /\bidentityMatches\b/,
+  'tunnel binding match must not masquerade as Forge semantic identity',
+);
+requireText(
+  'adapters/mcp/tunnels/openai-secure-tunnel.ts',
+  "from '../../../src/runtime/standalone-recovery/openai-secure-tunnel'",
+);
+forbid(
+  'adapters/mcp/tunnels/openai-secure-tunnel.ts',
+  /credentialReference\(|function parseOpenAiSecureTunnelRuntimeStatus/,
+  'MCP tunnel adapter must re-export Runtime-owned helpers only',
+);
 
 // C0 Computer capability boundary: Browser and Desktop remain separate providers.
 // Controller-scoped plugins are owned by the serving ForgeInstance. A synthetic
 // RepositoryRecord must not reappear as a canonical execution or manifest path.
 const controllerRepoCallPattern = new RegExp(['controllerPlugin', 'Repository\\s*\\('].join(''));
-const legacyControllerRepoPattern = new RegExp(['CONTROLLER_SCOPE_REPO_ID|__controller__|controllerPlugin', 'Repository'].join(''));
+const legacyControllerRepoPattern = new RegExp(
+  ['CONTROLLER_SCOPE_REPO_ID|__controller__|controllerPlugin', 'Repository'].join(''),
+);
 for (const path of productionTypeScriptFiles()) {
-  forbid(path, controllerRepoCallPattern, 'production controller-plugin paths must not recreate a fake controller RepositoryRecord');
+  forbid(
+    path,
+    controllerRepoCallPattern,
+    'production controller-plugin paths must not recreate a fake controller RepositoryRecord',
+  );
 }
 requireText('src/runtime/plugins/store.ts', 'const CONTROLLER_PLUGIN_SCOPE_KEY = FORGE_INSTANCE_SCOPE_KEY');
-requireText('src/runtime/plugins/config-store.ts', "return join(controllerSystemRoot(controllerHome), 'plugins', 'config', controllerPluginConfigFileName(pluginId));");
-forbid('adapters/mcp/runtime-gateway/plugin-adapter.ts', /controller_with_repository_overlay/, 'retired plugin overlay scope must not be selected by MCP');
+requireText(
+  'src/runtime/plugins/config-store.ts',
+  "return join(controllerSystemRoot(controllerHome), 'plugins', 'config', controllerPluginConfigFileName(pluginId));",
+);
+forbid(
+  'adapters/mcp/runtime-gateway/plugin-adapter.ts',
+  /controller_with_repository_overlay/,
+  'retired plugin overlay scope must not be selected by MCP',
+);
 forbid('src/runtime/plugins/types.ts', /controller_with_repository_overlay/, 'plugin scope has one authority');
 requireText('src/runtime/plugins/store.ts', 'ensureControllerPluginStateMigrated(controllerHome');
-for (const path of ['src/runtime/plugins/gmail-adapter.ts', 'src/runtime/plugins/google-calendar-adapter.ts', 'src/runtime/plugins/google-tasks-adapter.ts', 'src/runtime/plugins/resend-adapter.ts', 'src/runtime/plugins/browser-registration.ts', 'src/runtime/plugins/app-store-connect-adapter.ts']) {
+for (const path of [
+  'src/runtime/plugins/gmail-adapter.ts',
+  'src/runtime/plugins/google-calendar-adapter.ts',
+  'src/runtime/plugins/google-tasks-adapter.ts',
+  'src/runtime/plugins/resend-adapter.ts',
+  'src/runtime/plugins/browser-registration.ts',
+  'src/runtime/plugins/app-store-connect-adapter.ts',
+]) {
   requireText(path, "scope: 'controller'");
 }
 requireText('src/runtime/plugins/store.ts', 'export function preflightPluginActionWorkBinding(');
-requireText('src/runtime/plugins/action-application.ts', 'preflightPluginActionWorkBinding(input.controllerHome, input.scope, action, input.request);');
+requireText(
+  'src/runtime/plugins/action-application.ts',
+  'preflightPluginActionWorkBinding(input.controllerHome, input.scope, action, input.request);',
+);
 forbidBetween(
   'src/runtime/plugins/store.ts',
   'function controllerPluginActionScope',
@@ -2284,10 +3093,22 @@ forbidBetween(
   'the canonical controller action scope must use the ForgeInstance scope, not the legacy controller repository sentinel',
 );
 for (const [start, end, description] of [
-  ['export function listControllerPluginManifests(', 'function getControllerPluginManifestForExecution', 'controller manifest listing'],
+  [
+    'export function listControllerPluginManifests(',
+    'function getControllerPluginManifestForExecution',
+    'controller manifest listing',
+  ],
   ['export function getControllerPluginManifest(', 'function writeControllerRegistry', 'controller manifest lookup'],
-  ['export function submitControllerPluginAction(', 'async function executePluginActionInScope', 'controller action submission'],
-  ['export function executeControllerScopedPluginAction(', 'export function executeAssistantPluginAction', 'controller action execution'],
+  [
+    'export function submitControllerPluginAction(',
+    'async function executePluginActionInScope',
+    'controller action submission',
+  ],
+  [
+    'export function executeControllerScopedPluginAction(',
+    'export function executeAssistantPluginAction',
+    'controller action execution',
+  ],
 ]) {
   forbidBetween(
     'src/runtime/plugins/store.ts',
@@ -2301,39 +3122,69 @@ for (const [start, end, description] of [
 // or explicit rejection paths; they are not allowed to become new write paths.
 requireText('src/runtime/plugins/store.ts', 'One-way read compatibility for pre-cutover controller receipts only.');
 requireText('adapters/mcp/runtime-gateway/plugin-adapter.ts', 'PLUGIN_CONTROLLER_REPOSITORY_SENTINEL_RETIRED');
-forbid('src/runtime/plugins/app-store-connect-adapter.ts', /readRepositoryPluginConfig|writeRepositoryPluginConfig|APP_STORE_CONNECT_LEGACY_CONTROLLER_SCOPE_WRITE_RETIRED/, 'App Store Connect must use the one Controller-global config path');
+forbid(
+  'src/runtime/plugins/app-store-connect-adapter.ts',
+  /readRepositoryPluginConfig|writeRepositoryPluginConfig|APP_STORE_CONNECT_LEGACY_CONTROLLER_SCOPE_WRITE_RETIRED/,
+  'App Store Connect must use the one Controller-global config path',
+);
 requireText('packages/protocols/computer/contract.ts', 'COMPUTER_BROWSER_AUTOMATION_CAPABILITY');
 requireText('packages/protocols/computer/contract.ts', 'ComputerRuntimeProviderCapabilityId');
 requireText('packages/plugin-runtime/computer/provider.ts', 'ComputerRuntimeProviderCapabilityId');
 requireText('packages/plugin-runtime/computer/provider-registry.ts', 'COMPUTER_PROVIDER_AMBIGUOUS');
 requireText('packages/plugin-runtime/computer/provider-registry.ts', 'COMPUTER_PROVIDER_DUPLICATE_ID');
-forbid('packages/plugin-runtime/computer/provider-registry.ts', /throw new Error\(/, 'Computer provider resolution must expose typed provider errors rather than raw order-dependent failures');
+forbid(
+  'packages/plugin-runtime/computer/provider-registry.ts',
+  /throw new Error\(/,
+  'Computer provider resolution must expose typed provider errors rather than raw order-dependent failures',
+);
 
 requireText('packages/protocols/computer/contract.ts', 'COMPUTER_CAPABILITY_PROTOCOL_VERSION');
 requireText('packages/protocols/computer/contract.ts', 'COMPUTER_CAPABILITY_EXECUTION_METHOD');
 requireText('packages/protocols/computer/contract.ts', 'export interface ComputerCapabilityAdvertisement');
-forbid('adapters/computer/desktop-operator-negotiation.ts', /interface\s+ComputerCapabilityAdvertisement/, 'Desktop Operator negotiation must consume the provider-neutral Computer capability advertisement contract instead of redefining it');
+forbid(
+  'adapters/computer/desktop-operator-negotiation.ts',
+  /interface\s+ComputerCapabilityAdvertisement/,
+  'Desktop Operator negotiation must consume the provider-neutral Computer capability advertisement contract instead of redefining it',
+);
 requireText('packages/plugin-runtime/computer/provider.ts', 'export interface ComputerProvider');
 requireText('packages/plugin-runtime/computer/provider-registry.ts', 'export class ComputerProviderRegistry');
 requireText('src/runtime/plugins/computer-registration.ts', 'return executeIosPhysicalDeviceAction(input)');
 requireText('scripts/smoke-ios-physical-device.ts', "pluginId: 'computer'");
 requireText('scripts/smoke-ios-physical-device.ts', 'artifact?.sha256 !== screenshotSha256');
 requireText('scripts/smoke-ios-physical-device.ts', 'semanticPriceVerified: false');
-requireText('src/runtime/plugins/computer-registration.ts', 'observationReady: physicalReady, inputReady: physicalInputReady');
-requireText('src/runtime/plugins/computer-registration.ts', 'const hidStatus = physicalReady && context ? remoteXpcHidCachedStatus(context.controllerHome) : undefined;');
+requireText(
+  'src/runtime/plugins/computer-registration.ts',
+  'observationReady: physicalReady, inputReady: physicalInputReady',
+);
+requireText(
+  'src/runtime/plugins/computer-registration.ts',
+  'const hidStatus = physicalReady && context ? remoteXpcHidCachedStatus(context.controllerHome) : undefined;',
+);
 requireText('src/runtime/plugins/ios/remote-xpc-hid.ts', 'probeHidToolchain(python)');
 requireText('src/runtime/plugins/ios/remote-xpc-hid.ts', "'--expected-version', IOS_HID_TOOLCHAIN_VERSION");
 requireText('scripts/install-ios-hid-toolchain.sh', 'pymobiledevice3==$version');
 requireText('src/runtime/plugins/ios/remote-xpc-hid.ts', 'return hidToolchainStatus(controllerHome, env, false);');
 requireText('src/runtime/plugins/ios/remote-xpc-hid.ts', 'return hidToolchainStatus(controllerHome, env, true);');
-requireText('src/runtime/plugins/ios-physical-device.ts', 'const confirmed = requireObservedPhysicalTargetForeground(state)');
-requireText('src/runtime/plugins/ios-physical-device.ts', 'const reusable = reusablePhysicalSession(input, selected, bundleId);');
+requireText(
+  'src/runtime/plugins/ios-physical-device.ts',
+  'const confirmed = requireObservedPhysicalTargetForeground(state)',
+);
+requireText(
+  'src/runtime/plugins/ios-physical-device.ts',
+  'const reusable = reusablePhysicalSession(input, selected, bundleId);',
+);
 requireText('src/runtime/plugins/ios-physical-device.ts', "appendEvent(input, reusable.interactionId, 'app_activated'");
 requireText('src/runtime/plugins/ios-physical-device.ts', "state: 'deferred_to_first_input'");
-requireText('src/runtime/plugins/ios-physical-device.ts', 'input.args.prewarm_input === true && input.args.observe_after_open !== true');
-requireText('tests/runtime/ios-physical-device.test.ts', "it('reuses the same session but always reactivates its target app'");
+requireText(
+  'src/runtime/plugins/ios-physical-device.ts',
+  'input.args.prewarm_input === true && input.args.observe_after_open !== true',
+);
+requireText(
+  'tests/runtime/ios-physical-device.test.ts',
+  "it('reuses the same session but always reactivates its target app'",
+);
 requireText('src/runtime/plugins/ios-physical-device.ts', "'IOS_DEVICE_LOCK_STATE_UNVERIFIED'");
-requireText('src/runtime/plugins/ios-physical-device.ts', "if (lockState.passcodeRequired === false) return;");
+requireText('src/runtime/plugins/ios-physical-device.ts', 'if (lockState.passcodeRequired === false) return;');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'if (!selected.connected) {');
 requireText('src/runtime/plugins/ios-physical-device.ts', "'IOS_DEVICE_SCREENSHOT_INVALID'");
 requireText('src/runtime/plugins/ios-physical-device.ts', 'chmodSync(path, 0o700);');
@@ -2345,30 +3196,64 @@ requireText('src/runtime/plugins/ios-physical-device.ts', 'sawImageData && lengt
 requireText('src/runtime/plugins/ios-physical-device.ts', 'screenshotSha256, screenshotBytes: image.length');
 requireText('src/runtime/plugins/ios-physical-device.ts', "requiredConfirmationText: 'list-iphone-app-documents'");
 requireText('src/runtime/plugins/ios-physical-device.ts', "'IOS_DEVICE_DOCUMENT_LIST_UNVERIFIED'");
-requireText('src/runtime/plugins/ios-physical-device.ts', "listedNames.some((name) => typeof name !== 'string' || !name.trim())");
+requireText(
+  'src/runtime/plugins/ios-physical-device.ts',
+  "listedNames.some((name) => typeof name !== 'string' || !name.trim())",
+);
 requireText('src/runtime/plugins/ios-physical-device.ts', "requiredConfirmationText: 'export-iphone-app-document'");
 requireText('src/runtime/plugins/ios-physical-device.ts', "const indexPath = join(dir, 'index.json')");
 requireText('src/runtime/plugins/ios-physical-device.ts', 'const MAX_DOCUMENT_INDEX_BYTES = 512 * 1024;');
-requireText('src/runtime/plugins/ios-physical-device.ts', 'indexFile.size <= 0 || indexFile.size > MAX_DOCUMENT_INDEX_BYTES');
-requireText('src/runtime/plugins/ios-physical-device.ts', 'index.interactionId !== record.interactionId || !validEntries');
+requireText(
+  'src/runtime/plugins/ios-physical-device.ts',
+  'indexFile.size <= 0 || indexFile.size > MAX_DOCUMENT_INDEX_BYTES',
+);
+requireText(
+  'src/runtime/plugins/ios-physical-device.ts',
+  'index.interactionId !== record.interactionId || !validEntries',
+);
 requireText('src/runtime/plugins/ios-physical-device.ts', 'pngDisplayGeometry(bytes) !== undefined');
-requireText('src/runtime/plugins/ios-physical-device.ts', 'bytes.subarray(-2).toString(\'hex\') === \'ffd9\'');
-requireText('src/runtime/plugins/ios-physical-device.ts', 'bytes.readUInt32BE(0) >= 16 && bytes.readUInt32BE(0) <= bytes.length');
+requireText('src/runtime/plugins/ios-physical-device.ts', "bytes.subarray(-2).toString('hex') === 'ffd9'");
+requireText(
+  'src/runtime/plugins/ios-physical-device.ts',
+  'bytes.readUInt32BE(0) >= 16 && bytes.readUInt32BE(0) <= bytes.length',
+);
 requireText('src/runtime/plugins/ios-physical-device.ts', 'entries: [...entries, entry] }, { mode: 0o600 });');
-requireText('src/runtime/plugins/ios-physical-device.ts', 'organizedIndex: { localArtifact: indexPath, entryCount: entries.length + 1 }');
+requireText(
+  'src/runtime/plugins/ios-physical-device.ts',
+  'organizedIndex: { localArtifact: indexPath, entryCount: entries.length + 1 }',
+);
 requireText('src/runtime/plugins/ios-physical-device.ts', 'requireBundleId(input.args.bundle_id) !== state.bundleId');
-requireText('src/runtime/plugins/ios-physical-device.ts', "'--domain-type', 'appDataContainer', '--domain-identifier', state.bundleId");
-forbid('src/runtime/plugins/ios-physical-device.ts', /source:\s*'atomic_screenshot'/, 'bare iPhone screenshot IDs must never bypass explicit target-foreground confirmation');
-forbid('src/runtime/plugins/ios-adapter.ts', /\bexecuteIosPhysicalDeviceAction\b/, 'CoreDevice iPhone App mutations must have a single public Computer owner, not a retained iOS-adapter writer');
+requireText(
+  'src/runtime/plugins/ios-physical-device.ts',
+  "'--domain-type', 'appDataContainer', '--domain-identifier', state.bundleId",
+);
+forbid(
+  'src/runtime/plugins/ios-physical-device.ts',
+  /source:\s*'atomic_screenshot'/,
+  'bare iPhone screenshot IDs must never bypass explicit target-foreground confirmation',
+);
+forbid(
+  'src/runtime/plugins/ios-adapter.ts',
+  /\bexecuteIosPhysicalDeviceAction\b/,
+  'CoreDevice iPhone App mutations must have a single public Computer owner, not a retained iOS-adapter writer',
+);
 requireText('adapters/computer/desktop-operator-contract.ts', 'DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID');
 requireText('adapters/computer/desktop-operator-negotiation.ts', 'negotiateDesktopOperatorComputerHandshake');
 requireText('adapters/computer/desktop-operator-negotiation.ts', 'buildDesktopOperatorComputerInvocation');
 requireText('adapters/computer/desktop-operator-provider.ts', 'createDesktopOperatorComputerProvider');
 requireText('adapters/computer/desktop-operator-discovery.ts', 'ComputerProviderRegistrationLookup');
 requireText('adapters/computer/desktop-operator-discovery.ts', "source: 'registration'");
-requireText('adapters/computer/desktop-operator-discovery.ts', "PLUGIN_COMPUTER_PROVIDER_REGISTRATION_REQUIRED");
-forbid('adapters/computer/desktop-operator-discovery.ts', /legacy_fallback|DesktopOperatorLegacyFallbackMode|unregistered_v0_2/, 'Computer provider discovery must not bypass canonical Desktop Operator registration with a legacy socket fallback');
-forbid('src/runtime/root/computer-composition.ts', /legacyFallback|unregistered_v0_2/, 'Computer Runtime composition must not enable an unregistered Desktop Operator compatibility provider');
+requireText('adapters/computer/desktop-operator-discovery.ts', 'PLUGIN_COMPUTER_PROVIDER_REGISTRATION_REQUIRED');
+forbid(
+  'adapters/computer/desktop-operator-discovery.ts',
+  /legacy_fallback|DesktopOperatorLegacyFallbackMode|unregistered_v0_2/,
+  'Computer provider discovery must not bypass canonical Desktop Operator registration with a legacy socket fallback',
+);
+forbid(
+  'src/runtime/root/computer-composition.ts',
+  /legacyFallback|unregistered_v0_2/,
+  'Computer Runtime composition must not enable an unregistered Desktop Operator compatibility provider',
+);
 requireText('src/cli/commands/computer.ts', "new Command('computer')");
 requireText('src/cli/commands/computer.ts', 'installOfficialPlugin(COMPUTER_PROVIDER_PLUGIN_ID');
 requireText('src/cli/commands/computer.ts', 'provider release: independent');
@@ -2377,7 +3262,11 @@ requireText('src/cli/commands/computer.ts', 'readControllerStoredPluginManifest'
 requireText('src/cli/commands/computer.ts', 'syncControllerPluginManifest');
 requireText('src/cli/commands/computer.ts', 'removeControllerPluginManifestProjection');
 requireText('src/cli/commands/computer.ts', 'withOfficialPluginLifecycleLock');
-forbid('src/cli/commands/computer.ts', new RegExp(`${controllerRepoCallPattern.source}|syncAssistantPluginRegistry|getAssistantPluginManifest\\s*\\(`), 'Computer status/doctor must use Controller-scoped stored/targeted provider APIs rather than a fake repository or global execution-style manifest lookup');
+forbid(
+  'src/cli/commands/computer.ts',
+  new RegExp(`${controllerRepoCallPattern.source}|syncAssistantPluginRegistry|getAssistantPluginManifest\\s*\\(`),
+  'Computer status/doctor must use Controller-scoped stored/targeted provider APIs rather than a fake repository or global execution-style manifest lookup',
+);
 requireText('src/cli/commands/plugin.ts', 'external-plugin:${pluginId}');
 requireText('src/runtime/plugins/store.ts', 'export function readControllerStoredPluginManifest');
 requireText('src/runtime/plugins/store.ts', 'export function syncControllerPluginManifest');
@@ -2388,51 +3277,120 @@ requireText('src/runtime/plugins/store.ts', 'export function removeAssistantPlug
 requireText('src/cli/index.ts', 'buildComputerCommand');
 requireText('src/cli/index.ts', "'computer'");
 
-forbid('adapters/computer/desktop-operator-provider.ts', /getExternalPluginRegistration|controller-home|computerCapabilities|internalCapabilities|browserAutomationProtocolVersion|browserAutomationActions|macos_browser_automation|computer_execute/, 'Desktop Operator provider transport must consume discovery and negotiation results rather than own Controller lookup or wire negotiation');
-forbid('adapters/computer/desktop-operator-negotiation.ts', /getExternalPluginRegistration|controller-home|desktop-operator-discovery/, 'Desktop Operator negotiation must depend on protocol/contract facts, not endpoint discovery');
-forbid('adapters/computer/desktop-operator-discovery.ts', /macos_browser_automation|LEGACY_BROWSER_AUTOMATION/, 'Desktop Operator discovery must own endpoint resolution only, not compatibility protocol negotiation');
-forbid('adapters/computer/desktop-operator-provider.ts', /getExternalPluginAdapter|AssistantPluginActionExecutionInput|desktop_session_open|NATIVE_BROWSER_BUNDLE_IDS|activateDesktopOperatorBrowserApplication/, 'Desktop Operator Computer transport adapter must not own Runtime plugin-action application activation glue');
+forbid(
+  'adapters/computer/desktop-operator-provider.ts',
+  /getExternalPluginRegistration|controller-home|computerCapabilities|internalCapabilities|browserAutomationProtocolVersion|browserAutomationActions|macos_browser_automation|computer_execute/,
+  'Desktop Operator provider transport must consume discovery and negotiation results rather than own Controller lookup or wire negotiation',
+);
+forbid(
+  'adapters/computer/desktop-operator-negotiation.ts',
+  /getExternalPluginRegistration|controller-home|desktop-operator-discovery/,
+  'Desktop Operator negotiation must depend on protocol/contract facts, not endpoint discovery',
+);
+forbid(
+  'adapters/computer/desktop-operator-discovery.ts',
+  /macos_browser_automation|LEGACY_BROWSER_AUTOMATION/,
+  'Desktop Operator discovery must own endpoint resolution only, not compatibility protocol negotiation',
+);
+forbid(
+  'adapters/computer/desktop-operator-provider.ts',
+  /getExternalPluginAdapter|AssistantPluginActionExecutionInput|desktop_session_open|NATIVE_BROWSER_BUNDLE_IDS|activateDesktopOperatorBrowserApplication/,
+  'Desktop Operator Computer transport adapter must not own Runtime plugin-action application activation glue',
+);
 for (const path of sourceFiles('adapters/computer')) {
-  forbid(path, /AssistantPluginError/, 'Computer adapters must expose provider errors through plugin-runtime rather than depend on Runtime plugin error types');
+  forbid(
+    path,
+    /AssistantPluginError/,
+    'Computer adapters must expose provider errors through plugin-runtime rather than depend on Runtime plugin error types',
+  );
 }
 requireText('src/runtime/root/computer-composition.ts', 'lookupRegistration: (providerPluginId) =>');
 requireText('src/runtime/root/computer-composition.ts', 'computerProviderRegistrationSnapshot(registration)');
-requireText('src/runtime/root/computer-composition.ts', 'getExternalPluginAdapter(input.controllerHome, DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID)');
+requireText(
+  'src/runtime/root/computer-composition.ts',
+  'getExternalPluginAdapter(input.controllerHome, DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID)',
+);
 requireText('src/runtime/plugins/browser-automation-service.ts', 'executeRuntimeComputerBrowserAutomation');
 requireText('src/runtime/plugins/browser-adapter.ts', 'activateRuntimeComputerBrowserApplication');
-forbid('src/runtime/plugins/browser-automation-service.ts', /desktop_operator|macos-capability-broker|desktop-operator\.sock|macos_browser_automation/, 'Browser automation must depend on the provider-neutral Computer boundary, not Desktop Operator transport details');
-forbid('src/runtime/plugins/browser-adapter.ts', /desktop_operator|Desktop Operator|getExternalPluginAdapter|desktop_session_open/, 'Browser adapter must not know the concrete Desktop Operator application provider');
-for (const path of sourceFiles('src/runtime/plugins').filter((entry) => /\/browser-(?!registration\.ts)[^/]+\.ts$/.test(entry))) {
-  forbid(path, /desktop_operator|Desktop Operator|desktop-operator\.sock|macos_browser_automation/, 'Browser modules must depend on Computer capabilities rather than concrete Desktop Operator transport identity');
+forbid(
+  'src/runtime/plugins/browser-automation-service.ts',
+  /desktop_operator|macos-capability-broker|desktop-operator\.sock|macos_browser_automation/,
+  'Browser automation must depend on the provider-neutral Computer boundary, not Desktop Operator transport details',
+);
+forbid(
+  'src/runtime/plugins/browser-adapter.ts',
+  /desktop_operator|Desktop Operator|getExternalPluginAdapter|desktop_session_open/,
+  'Browser adapter must not know the concrete Desktop Operator application provider',
+);
+for (const path of sourceFiles('src/runtime/plugins').filter((entry) =>
+  /\/browser-(?!registration\.ts)[^/]+\.ts$/.test(entry),
+)) {
+  forbid(
+    path,
+    /desktop_operator|Desktop Operator|desktop-operator\.sock|macos_browser_automation/,
+    'Browser modules must depend on Computer capabilities rather than concrete Desktop Operator transport identity',
+  );
 }
 requireText('src/runtime/plugins/macos-capability-broker.ts', '@deprecated C0 compatibility shim');
 requireText('src/runtime/plugins/macos-capability-broker.ts', 'executeRuntimeComputerBrowserAutomation');
-forbid('src/runtime/plugins/macos-capability-broker.ts', /callDesktopOperatorComputerBrowserAutomation/, 'Deprecated macOS broker execution must delegate to Runtime Computer composition rather than call the concrete provider directly');
+forbid(
+  'src/runtime/plugins/macos-capability-broker.ts',
+  /callDesktopOperatorComputerBrowserAutomation/,
+  'Deprecated macOS broker execution must delegate to Runtime Computer composition rather than call the concrete provider directly',
+);
 requireText('src/runtime/control-plane/facade/types.ts', 'semanticCapabilities?: string[]');
-forbid('src/runtime/control-plane/facade/capability-registry.ts', /plugin\.desktop_operator/, 'Control Plane capability discovery must rank provider-declared semantic capabilities rather than concrete Desktop Operator plugin identity');
+forbid(
+  'src/runtime/control-plane/facade/capability-registry.ts',
+  /plugin\.desktop_operator/,
+  'Control Plane capability discovery must rank provider-declared semantic capabilities rather than concrete Desktop Operator plugin identity',
+);
 requireText('src/runtime/plugins/external-provider-policy.ts', 'resolveExternalProviderPolicy');
 requireText('src/runtime/plugins/desktop-operator-external-policy.ts', 'verifyExactForegroundDesktopSession');
-forbid('src/runtime/plugins/external-adapter.ts', /desktop_operator|desktopOperator|DESKTOP_|['\"]desktop_[a-z_]|desktop-operator-external-policy/, 'Generic external plugin adapter must delegate provider-specific Desktop policy through ExternalProviderPolicy');
+forbid(
+  'src/runtime/plugins/external-adapter.ts',
+  /desktop_operator|desktopOperator|DESKTOP_|['\"]desktop_[a-z_]|desktop-operator-external-policy/,
+  'Generic external plugin adapter must delegate provider-specific Desktop policy through ExternalProviderPolicy',
+);
 requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_OBSERVE_CAPABILITY');
 requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_INPUT_CAPABILITY');
 requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_CAPTURE_CAPABILITY');
 requireText('src/runtime/plugins/desktop-operator-registration.ts', 'pluginVersion: options.pluginVersion');
-forbid('src/runtime/plugins/desktop-operator-registration.ts', /pluginVersion:\s*options\.pluginVersion\s*\?\?|pluginVersion:\s*['"]0\./, 'Forge must not invent the Desktop Operator provider release version');
+forbid(
+  'src/runtime/plugins/desktop-operator-registration.ts',
+  /pluginVersion:\s*options\.pluginVersion\s*\?\?|pluginVersion:\s*['"]0\./,
+  'Forge must not invent the Desktop Operator provider release version',
+);
 requireText('packages/plugin-runtime/external/unix-jsonl-transport.ts', 'EXTERNAL_RPC_METHOD_PATTERN');
 requireText('src/runtime/plugins/external-unix-socket.ts', 'callExternalUnixJsonl');
-forbid('src/runtime/plugins/external-unix-socket.ts', /createConnection|EXTERNAL_RPC_METHOD_PATTERN|packages\/protocols\/computer|computer_execute|macos_browser_automation/, 'Runtime external Unix socket compatibility layer must delegate async transport and must not own Computer/Desktop provider method identities');
-forbid('adapters/computer/desktop-operator-provider.ts', /src\/runtime\/plugins\/external-unix-socket|callExternalUnixSocket/, 'Computer provider adapters must consume provider-neutral plugin-runtime transport rather than Runtime socket implementation');
+forbid(
+  'src/runtime/plugins/external-unix-socket.ts',
+  /createConnection|EXTERNAL_RPC_METHOD_PATTERN|packages\/protocols\/computer|computer_execute|macos_browser_automation/,
+  'Runtime external Unix socket compatibility layer must delegate async transport and must not own Computer/Desktop provider method identities',
+);
+forbid(
+  'adapters/computer/desktop-operator-provider.ts',
+  /src\/runtime\/plugins\/external-unix-socket|callExternalUnixSocket/,
+  'Computer provider adapters must consume provider-neutral plugin-runtime transport rather than Runtime socket implementation',
+);
 
 // C0 Browser runtime authority: contracts and provider selection belong to plugin-runtime/protocols.
 requireText('packages/plugin-runtime/browser/runtime-contract.ts', 'export interface BrowserTransaction');
 requireText('packages/plugin-runtime/browser/provider-registry.ts', 'export class BrowserProviderRegistry');
 requireText('packages/plugin-runtime/browser/provider-registry.ts', 'export class BrowserProviderSelectionError');
-forbid('packages/plugin-runtime/browser/provider-registry.ts', /AssistantPluginError|src\/runtime|adapters\//, 'Browser provider selection must remain provider-neutral inside plugin-runtime');
+forbid(
+  'packages/plugin-runtime/browser/provider-registry.ts',
+  /AssistantPluginError|src\/runtime|adapters\//,
+  'Browser provider selection must remain provider-neutral inside plugin-runtime',
+);
 requireText('packages/protocols/browser/session.ts', 'export interface BrowserSessionState');
 requireText('src/runtime/plugins/browser-runtime-contract.ts', '@deprecated C0 compatibility shim');
 for (const path of sourceFiles('src/runtime/plugins')) {
   if (path === 'src/runtime/plugins/browser-runtime-contract.ts') continue;
-  forbid(path, /from\s+['"]\.\/browser-(?:runtime-contract|provider-registry|session-types)['"]/, 'active Browser runtime code must consume plugin-runtime/protocol Browser contracts, not retired local owners');
+  forbid(
+    path,
+    /from\s+['"]\.\/browser-(?:runtime-contract|provider-registry|session-types)['"]/,
+    'active Browser runtime code must consume plugin-runtime/protocol Browser contracts, not retired local owners',
+  );
 }
 // Computer SurfaceTarget is the only durable interaction-target authority. Browser
 // compatibility may retain old type/API names, but it must not recreate a Browser
@@ -2446,18 +3404,42 @@ requireMissing('src/runtime/root/browser-session-persistence.ts');
 // Scheduler must not recreate a Work scanner or ControllerRound dispatch loop.
 requireMissing('src/runtime/control-plane/global-scheduler/autonomous-continuation.ts');
 for (const path of sourceFiles('src/runtime/control-plane/global-scheduler')) {
-  forbid(path, /readActiveWorkCandidates|ensureWorkflowSupervisorEnrollmentForWork|getRetainedControllerSession/, 'Work-bound liveness continuation must not be reintroduced');
+  forbid(
+    path,
+    /readActiveWorkCandidates|ensureWorkflowSupervisorEnrollmentForWork|getRetainedControllerSession/,
+    'Work-bound liveness continuation must not be reintroduced',
+  );
 }
-forbid('packages/plugin-runtime/browser/session-authority.ts', /\bBrowserSession(?:Authority|Persistence)Port\b/, 'Browser compatibility contracts must not expose a second durable authority or persistence port');
+forbid(
+  'packages/plugin-runtime/browser/session-authority.ts',
+  /\bBrowserSession(?:Authority|Persistence)Port\b/,
+  'Browser compatibility contracts must not expose a second durable authority or persistence port',
+);
 requireText('src/runtime/plugins/browser-session-authority.ts', 'findComputerBackedBrowserSession');
 requireText('src/runtime/plugins/browser-session-authority.ts', 'saveComputerBackedBrowserSession');
-forbid('src/runtime/plugins/browser-session-authority.ts', /\b(?:writeControlPlaneRecord|deleteControlPlaneRecord|withControlPlaneTransaction|createBrowserSessionAuthority|runtimeBrowserSessionAuthority)\b/, 'Browser compatibility facade must delegate semantic identity to Computer and cannot persist its own authority');
+forbid(
+  'src/runtime/plugins/browser-session-authority.ts',
+  /\b(?:writeControlPlaneRecord|deleteControlPlaneRecord|withControlPlaneTransaction|createBrowserSessionAuthority|runtimeBrowserSessionAuthority)\b/,
+  'Browser compatibility facade must delegate semantic identity to Computer and cannot persist its own authority',
+);
 requireText('src/runtime/plugins/browser-session-legacy-migration.ts', 'readLegacyBrowserSessionMigrationEntries');
 requireText('src/runtime/plugins/browser-session-store.ts', 'PLUGIN_BROWSER_SESSION_CONTEXT_REQUIRED');
-forbid('src/runtime/plugins/browser-session-store.ts', /writeJsonAtomic\(sessionPath|readLegacyBrowserSessionJson|rmSync\(sessionPath/, 'steady-state Browser session identity must never fall back to repository-local JSON outside Computer target authority');
-forbid('src/runtime/plugins/browser-session-legacy-migration.ts', /\b(?:writeControlPlaneRecord|deleteControlPlaneRecord|withControlPlaneTransaction|createBrowserSessionAuthority|runtimeBrowserSessionAuthority)\b/, 'legacy Browser migration may read retired state but cannot mutate or recreate Browser durable authority');
+forbid(
+  'src/runtime/plugins/browser-session-store.ts',
+  /writeJsonAtomic\(sessionPath|readLegacyBrowserSessionJson|rmSync\(sessionPath/,
+  'steady-state Browser session identity must never fall back to repository-local JSON outside Computer target authority',
+);
+forbid(
+  'src/runtime/plugins/browser-session-legacy-migration.ts',
+  /\b(?:writeControlPlaneRecord|deleteControlPlaneRecord|withControlPlaneTransaction|createBrowserSessionAuthority|runtimeBrowserSessionAuthority)\b/,
+  'legacy Browser migration may read retired state but cannot mutate or recreate Browser durable authority',
+);
 requireText('src/runtime/root/browser-session-composition.ts', 'BrowserSessionExecutionContext');
-forbid('src/runtime/root/browser-session-composition.ts', /\b(?:createBrowserSessionAuthority|runtimeBrowserSessionAuthority|createRuntimeBrowserSessionPersistence)\b/, 'Browser Runtime composition may carry execution context but cannot compose a second durable interaction authority');
+forbid(
+  'src/runtime/root/browser-session-composition.ts',
+  /\b(?:createBrowserSessionAuthority|runtimeBrowserSessionAuthority|createRuntimeBrowserSessionPersistence)\b/,
+  'Browser Runtime composition may carry execution context but cannot compose a second durable interaction authority',
+);
 for (const path of [
   ...sourceFiles('adapters/browser'),
   ...sourceFiles('packages/plugin-runtime/browser'),
@@ -2465,28 +3447,61 @@ for (const path of [
   ...sourceFiles('src/runtime/root'),
 ]) {
   if (path === 'src/runtime/plugins/browser-session-legacy-migration.ts') continue;
-  forbid(path, LEGACY_INTERACTION_AUTHORITY_OWNER_DECLARATION, 'Browser/Desktop durable interaction authority must live only in Computer target authority');
+  forbid(
+    path,
+    LEGACY_INTERACTION_AUTHORITY_OWNER_DECLARATION,
+    'Browser/Desktop durable interaction authority must live only in Computer target authority',
+  );
 }
 // Workflow Asset authority: editable content stays in files; machine registry stays metadata-only.
 requireText('packages/workflow-runtime/domain/workflow-asset.ts', 'export interface WorkflowAssetDefinition');
 requireText('packages/workflow-runtime/domain/workflow-asset.ts', 'workflowAssetContentDigest');
 requireText('src/runtime/control-plane/persistence/workflow-content-store.ts', 'ensureControllerWorkflowContentRoot');
-requireText('src/runtime/control-plane/persistence/workflow-registry-store.ts', "WORKFLOW_REGISTRY_NAMESPACE = 'workflow_registry'");
-requireText('src/runtime/control-plane/persistence/workflow-registry-store.ts', 'WORKFLOW_REGISTRY_CONTENT_IDENTITY_CHANGED');
-forbid('src/runtime/control-plane/persistence/workflow-registry-store.ts', /\b(?:prompts|scripts|templates|selectors|resources)\s*:/, 'Workflow machine registry must not persist editable prompt/script/template/selector/resource bodies');
+requireText(
+  'src/runtime/control-plane/persistence/workflow-registry-store.ts',
+  "WORKFLOW_REGISTRY_NAMESPACE = 'workflow_registry'",
+);
+requireText(
+  'src/runtime/control-plane/persistence/workflow-registry-store.ts',
+  'WORKFLOW_REGISTRY_CONTENT_IDENTITY_CHANGED',
+);
+forbid(
+  'src/runtime/control-plane/persistence/workflow-registry-store.ts',
+  /\b(?:prompts|scripts|templates|selectors|resources)\s*:/,
+  'Workflow machine registry must not persist editable prompt/script/template/selector/resource bodies',
+);
 for (const path of sourceFiles('packages/workflow-runtime')) {
-  forbid(path, /xiaohongshu|douyin|instagram|reddit|facebook/i, 'generic Workflow Runtime contracts must not own site/business choreography');
-  forbid(path, /from\s+['"][^'"]*(?:src\/runtime|adapters)\//, 'Workflow Runtime package contracts must remain independent from Runtime/adapters implementation authority');
+  forbid(
+    path,
+    /xiaohongshu|douyin|instagram|reddit|facebook/i,
+    'generic Workflow Runtime contracts must not own site/business choreography',
+  );
+  forbid(
+    path,
+    /from\s+['"][^'"]*(?:src\/runtime|adapters)\//,
+    'Workflow Runtime package contracts must remain independent from Runtime/adapters implementation authority',
+  );
 }
 requireText('src/runtime/plugins/first-party-registry.ts', "from './computer-registration'");
-requireText('src/runtime/plugins/computer-registration.ts', 'buildBrowserPluginManifest(previousRevision, previousUpdatedAt, repoRoot, context, true)');
+requireText(
+  'src/runtime/plugins/computer-registration.ts',
+  'buildBrowserPluginManifest(previousRevision, previousUpdatedAt, repoRoot, context, true)',
+);
 requireText('src/runtime/plugins/computer-registration.ts', '__forge_computer_native_only: true');
 requireText('src/runtime/plugins/browser-adapter.ts', 'if (computerNativeOnly) return normalizeConfig({');
 requireText('src/runtime/plugins/browser-adapter.ts', 'if (computerNativeOnly) {');
 requireText('src/runtime/plugins/browser-registration.ts', 'export const browserPluginAdapter');
 requireText('src/runtime/plugins/first-party-registry.ts', "from './browser-registration'");
-forbid('src/runtime/plugins/first-party-registry.ts', /from\s+['"]\.\/browser-adapter['"]/, 'first-party registry must depend on the thin Browser registration entrypoint, not the action implementation');
-forbid('src/runtime/plugins/browser-adapter.ts', /export\s+const\s+browserPluginAdapter/, 'Browser action implementation must not also own first-party plugin registration');
+forbid(
+  'src/runtime/plugins/first-party-registry.ts',
+  /from\s+['"]\.\/browser-adapter['"]/,
+  'first-party registry must depend on the thin Browser registration entrypoint, not the action implementation',
+);
+forbid(
+  'src/runtime/plugins/browser-adapter.ts',
+  /export\s+const\s+browserPluginAdapter/,
+  'Browser action implementation must not also own first-party plugin registration',
+);
 
 if (failures.length) {
   console.error('[runtime-architecture] FAILED');
