@@ -36,7 +36,7 @@ Forge 默认 Direct-first：仅调查不会创建 durable Work；只有真正需
 - [核心概念](wiki/Core-Concepts.md)
 - [架构](wiki/Architecture.md)
 - [Runtime 架构](wiki/Runtime-Architecture.md)
-- [工作生命周期](wiki/Work-Lifecycle.md)
+- [执行与验证生命周期](wiki/Execution-Lifecycle.md)
 - [实现地图](wiki/Implementation.md)
 
 ### 集成能力
