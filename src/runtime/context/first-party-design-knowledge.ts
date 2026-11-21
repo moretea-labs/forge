@@ -1,17 +1,35 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // One digest-checked, first-party Context source. No Design plugin, approval
 // lifecycle, or repository-specific authority is created by these assets.
-const DEFAULT_PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const MANIFEST_PATH = 'assets/knowledge-packs/v1/manifest.json';
 const MAX_PACK_CHARS = 12_000;
 const PACK_PATHS = {
   'design-ui-ux': 'assets/knowledge-packs/v1/design-ui-ux.md',
   'ios-engineering': 'assets/knowledge-packs/v1/ios-engineering.md',
 } as const;
+
+/**
+ * Compiled Runtime binaries do not keep this module next to `assets/`. Prefer the
+ * active immutable release package root from the Runtime environment, then fall
+ * back to the source/package layout used by tests and unpacked checkouts (#640).
+ */
+export function resolveFirstPartyKnowledgePackageRoot(
+  env: NodeJS.ProcessEnv = process.env,
+  moduleUrl: string = import.meta.url,
+): string {
+  for (const key of ['FORGE_RELEASE_PATH', 'FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT'] as const) {
+    const releaseRoot = env[key]?.trim();
+    if (!releaseRoot) continue;
+    const packaged = resolve(releaseRoot, 'package');
+    if (existsSync(resolve(packaged, MANIFEST_PATH))) return packaged;
+    if (existsSync(resolve(releaseRoot, MANIFEST_PATH))) return releaseRoot;
+  }
+  return resolve(dirname(fileURLToPath(moduleUrl)), '../../..');
+}
 
 export type FirstPartyKnowledgeId = keyof typeof PACK_PATHS;
 export const UI_UX_INTENT =
@@ -37,7 +55,7 @@ export interface FirstPartyDesignKnowledge {
 // manifest. A missing or tampered pack becomes visible degraded evidence.
 export function readFirstPartyKnowledge(
   id: FirstPartyKnowledgeId,
-  packageRoot = DEFAULT_PACKAGE_ROOT,
+  packageRoot = resolveFirstPartyKnowledgePackageRoot(),
 ): FirstPartyDesignKnowledge {
   const path = PACK_PATHS[id];
   const base = { id, authority: 'advisory' as const, source: 'forge_first_party' as const, path };
@@ -82,10 +100,14 @@ export function readFirstPartyKnowledge(
   };
 }
 
-export function readFirstPartyDesignKnowledge(packageRoot = DEFAULT_PACKAGE_ROOT): FirstPartyDesignKnowledge {
+export function readFirstPartyDesignKnowledge(
+  packageRoot = resolveFirstPartyKnowledgePackageRoot(),
+): FirstPartyDesignKnowledge {
   return readFirstPartyKnowledge('design-ui-ux', packageRoot);
 }
 
-export function readFirstPartyIosEngineeringKnowledge(packageRoot = DEFAULT_PACKAGE_ROOT): FirstPartyDesignKnowledge {
+export function readFirstPartyIosEngineeringKnowledge(
+  packageRoot = resolveFirstPartyKnowledgePackageRoot(),
+): FirstPartyDesignKnowledge {
   return readFirstPartyKnowledge('ios-engineering', packageRoot);
 }

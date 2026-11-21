@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   readFirstPartyDesignKnowledge,
   readFirstPartyIosEngineeringKnowledge,
+  resolveFirstPartyKnowledgePackageRoot,
 } from '../../src/runtime/context/first-party-design-knowledge';
 
 const root = resolve(import.meta.dir, '../..');
@@ -74,6 +76,32 @@ describe('first-party Design knowledge package', () => {
     expect(ios.sourceProvenance).toContain('moretea-labs/forge:docs/architecture/CURRENT.md');
     expect(ios.content).toContain('Simulator build is not a physical-device build');
     expect(ios.content).toContain('Optical centering is not proof');
+  });
+
+  test('resolves packaged assets from FORGE_RELEASE_PATH when import.meta no longer sits beside assets (#640)', () => {
+    const releaseRoot = mkdtempSync(resolve(tmpdir(), 'forge-design-release-'));
+    const packageRoot = join(releaseRoot, 'package');
+    const assetDir = join(packageRoot, 'assets', 'knowledge-packs', 'v1');
+    try {
+      mkdirSync(assetDir, { recursive: true });
+      for (const name of ['manifest.json', 'design-ui-ux.md', 'ios-engineering.md']) {
+        copyFileSync(resolve(root, 'assets/knowledge-packs/v1', name), join(assetDir, name));
+      }
+      const orphanModuleUrl = pathToFileURL(
+        join(releaseRoot, 'compiled', 'context', 'first-party-design-knowledge.js'),
+      ).href;
+      const resolved = resolveFirstPartyKnowledgePackageRoot({ FORGE_RELEASE_PATH: releaseRoot }, orphanModuleUrl);
+      expect(resolved).toBe(packageRoot);
+      expect(readFirstPartyDesignKnowledge(resolved)).toMatchObject({
+        status: 'ready',
+        digest: `sha256:${manifest.packages[0]!.sha256}`,
+      });
+      expect(readFirstPartyIosEngineeringKnowledge(resolved).status).toBe('ready');
+      // Without the release env, an orphan compiled module path must not invent a ready pack.
+      expect(resolveFirstPartyKnowledgePackageRoot({}, orphanModuleUrl)).not.toBe(packageRoot);
+    } finally {
+      rmSync(releaseRoot, { recursive: true, force: true });
+    }
   });
 
   test('fails visibly on corrupt or path-forged manifests; never follows an injected path', () => {
