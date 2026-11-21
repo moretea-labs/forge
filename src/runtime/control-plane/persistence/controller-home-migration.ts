@@ -27,7 +27,18 @@ const IMPORTABLE_REFERENCED_NAMESPACES = [
   'controller_round_relay',
   'external_controller_launch_reservation',
 ] as const;
-const TERMINAL_WORK_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+// A canonical WorkContract uses semanticState; pre-compatibility snapshots can use status.
+// Unknown historical records are retained rather than silently dropped.
+const TERMINAL_WORK_SEMANTIC_STATES = new Set(['completed', 'cancelled']);
+const TERMINAL_LEGACY_WORK_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+
+function workRecordNeedsMigration(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return true;
+  const record = value as { semanticState?: unknown; status?: unknown };
+  if (typeof record.semanticState === 'string') return !TERMINAL_WORK_SEMANTIC_STATES.has(record.semanticState);
+  if (typeof record.status === 'string') return !TERMINAL_LEGACY_WORK_STATUSES.has(record.status);
+  return true;
+}
 
 export interface ControllerHomeMigrationRecordRef {
   namespace: string;
@@ -102,49 +113,47 @@ export interface AppliedControllerHomeMigration {
 }
 
 /**
- * Archives imported Work that cannot be routed because its repository was not
- * migrated. This is a migration operation, not a Work execution transition:
- * original payloads remain in the frozen source SQLite and each target record
- * receives a new auditable terminal revision.
+ * Read-only audit of imported historical Work without inventing terminal
+ * Work/WorkHandle transitions. Unregistered repositories do not revive Work.
  */
-export function archiveUnroutableMigratedWork(input: {
-  destinationHome: string;
+export function inspectUnroutableMigratedWork(input: { destinationHome: string; migrationId: string }): {
   migrationId: string;
-}): { migrationId: string; archivedWorkIds: string[]; archivedHandleIds: string[]; skipped: string[] } {
+  readOnly: true;
+  unroutableWorkIds: string[];
+  unroutableHandleIds: string[];
+} {
   const destinationHome = resolve(input.destinationHome);
-  const migration = readControlPlaneRecord<ControllerHomeMigrationRecord>(destinationHome, MIGRATION_NAMESPACE, MIGRATION_SCOPE, input.migrationId);
-  if (!migration?.value || migration.value.status !== 'applied') throw new Error(`CONTROLLER_HOME_MIGRATION_NOT_APPLIED: ${input.migrationId}`);
-  const knownRepositories = new Set(listRepositories(destinationHome, { includeRemoved: false }).map((repository) => repository.repoId));
-  const imported = new Set(migration.value.imported.map((record) => recordIdentity({ namespace: record.namespace, scope: record.scope, key: record.key })));
-  const archivedWorkIds: string[] = [];
-  const archivedHandleIds: string[] = [];
-  const skipped: string[] = [];
-  withControlPlaneTransaction(destinationHome, (database) => {
-    for (const record of listControlPlaneRecords<unknown>(destinationHome, { namespace: 'work_contract', limit: 5_000 })) {
-      if (!imported.has(recordIdentity(record)) || knownRepositories.has(record.scope)) continue;
-      const value = record.value as Record<string, unknown>;
-      if (TERMINAL_WORK_STATUSES.has(String(value.status ?? ''))) { skipped.push(record.key); continue; }
-      writeControlPlaneRecordWithinTransaction(database, {
-        namespace: record.namespace, scope: record.scope, key: record.key, schemaVersion: record.schemaVersion,
-        value: { ...value, status: 'cancelled', updatedAt: new Date().toISOString(), terminalReason: 'CONTROLLER_HOME_MIGRATION_UNROUTABLE_REPOSITORY_ARCHIVED' },
-        action: 'controller_home_migration_archive_unroutable_work', expectedRevision: record.revision,
-      });
-      archivedWorkIds.push(record.key);
-    }
-    for (const record of listControlPlaneRecords<unknown>(destinationHome, { namespace: 'execution_work_handle', limit: 5_000 })) {
-      if (!imported.has(recordIdentity(record)) || knownRepositories.has(record.scope)) continue;
-      const value = record.value as Record<string, unknown>;
-      if (String(value.state ?? '') === 'cleaned') { skipped.push(record.key); continue; }
-      const finalization = typeof value.finalization === 'object' && value.finalization ? value.finalization : {};
-      writeControlPlaneRecordWithinTransaction(database, {
-        namespace: record.namespace, scope: record.scope, key: record.key, schemaVersion: record.schemaVersion,
-        value: { ...value, state: 'cleaned', updatedAt: new Date().toISOString(), failureReason: 'CONTROLLER_HOME_MIGRATION_UNROUTABLE_REPOSITORY_ARCHIVED', finalization: { ...finalization, validation: 'skipped', commit: 'skipped', merge: 'skipped', branchCleanup: 'skipped', worktreeCleanup: 'skipped' } },
-        action: 'controller_home_migration_archive_unroutable_handle', expectedRevision: record.revision,
-      });
-      archivedHandleIds.push(record.key);
-    }
-  });
-  return { migrationId: input.migrationId, archivedWorkIds, archivedHandleIds, skipped };
+  const migration = readControlPlaneRecord<ControllerHomeMigrationRecord>(
+    destinationHome,
+    MIGRATION_NAMESPACE,
+    MIGRATION_SCOPE,
+    input.migrationId,
+  );
+  if (!migration?.value || migration.value.status !== 'applied')
+    throw new Error('CONTROLLER_HOME_MIGRATION_NOT_APPLIED: ' + input.migrationId);
+  const knownRepositories = new Set(
+    listRepositories(destinationHome, { includeRemoved: false }).map((repository) => repository.repoId),
+  );
+  const imported = new Set(
+    migration.value.imported.map((record) =>
+      recordIdentity({
+        namespace: record.namespace,
+        scope: record.scope,
+        key: record.key,
+      }),
+    ),
+  );
+  const unroutable = (namespace: string): string[] =>
+    listControlPlaneRecords<unknown>(destinationHome, { namespace, limit: 5_000 })
+      .filter((record) => imported.has(recordIdentity(record)) && !knownRepositories.has(record.scope))
+      .map((record) => record.key)
+      .sort();
+  return {
+    migrationId: input.migrationId,
+    readOnly: true,
+    unroutableWorkIds: unroutable('work_contract'),
+    unroutableHandleIds: unroutable('execution_work_handle'),
+  };
 }
 
 function databasePath(home: string): string {
@@ -177,10 +186,7 @@ function referencesOneOf(value: unknown, ids: ReadonlySet<string>): boolean {
   return Object.values(value as Record<string, unknown>).some((entry) => referencesOneOf(entry, ids));
 }
 
-function addRecord(
-  selected: Map<string, ControlPlaneRecord<unknown>>,
-  record: ControlPlaneRecord<unknown>,
-): void {
+function addRecord(selected: Map<string, ControlPlaneRecord<unknown>>, record: ControlPlaneRecord<unknown>): void {
   selected.set(recordIdentity(record), record);
 }
 
@@ -194,10 +200,7 @@ function sourceSelection(sourceHome: string): {
 } {
   const selected = new Map<string, ControlPlaneRecord<unknown>>();
   const workContracts = allRecords(sourceHome, 'work_contract');
-  const activeWork = workContracts.filter((record) => {
-    const status = (record.value as { status?: unknown }).status;
-    return typeof status === 'string' && !TERMINAL_WORK_STATUSES.has(status);
-  });
+  const activeWork = workContracts.filter((record) => workRecordNeedsMigration(record.value));
   for (const record of activeWork) addRecord(selected, record);
 
   const planIds = new Set(
@@ -212,8 +215,10 @@ function sourceSelection(sourceHome: string): {
   const workIds = new Set(activeWork.map((record) => record.key));
   const workHandles = allRecords(sourceHome, 'execution_work_handle').filter((record) => {
     const value = record.value as { workId?: unknown; workContractId?: unknown };
-    return (typeof value.workId === 'string' && workIds.has(value.workId))
-      || (typeof value.workContractId === 'string' && workIds.has(value.workContractId));
+    return (
+      (typeof value.workId === 'string' && workIds.has(value.workId)) ||
+      (typeof value.workContractId === 'string' && workIds.has(value.workContractId))
+    );
   });
   for (const record of workHandles) addRecord(selected, record);
 
@@ -224,7 +229,8 @@ function sourceSelection(sourceHome: string): {
   );
   for (const record of allRecords(sourceHome, 'execution_session')) {
     const sessionId = (record.value as { sessionId?: unknown }).sessionId;
-    if (sessionIds.has(record.key) || (typeof sessionId === 'string' && sessionIds.has(sessionId))) addRecord(selected, record);
+    if (sessionIds.has(record.key) || (typeof sessionId === 'string' && sessionIds.has(sessionId)))
+      addRecord(selected, record);
   }
 
   const referenceIds = new Set<string>([...workIds, ...planIds, ...sessionIds]);
@@ -274,7 +280,8 @@ export async function previewControllerHomeMigration(input: {
   const destinationHome = resolve(input.destinationHome);
   if (sourceHome === destinationHome) throw new Error('CONTROLLER_HOME_MIGRATION_SAME_HOME');
   const sourceDatabase = databasePath(sourceHome);
-  if (!existsSync(sourceDatabase)) throw new Error(`CONTROLLER_HOME_MIGRATION_SOURCE_DATABASE_MISSING: ${sourceDatabase}`);
+  if (!existsSync(sourceDatabase))
+    throw new Error(`CONTROLLER_HOME_MIGRATION_SOURCE_DATABASE_MISSING: ${sourceDatabase}`);
   const sourceWal = `${sourceDatabase}-wal`;
   const sourceWalExists = existsSync(sourceWal);
 
@@ -311,7 +318,14 @@ export async function previewControllerHomeMigration(input: {
     conflicts,
     archivedOnly: {
       terminalWorkContracts: selection.terminalWorkContracts,
-      excludedNamespaces: ['mcp credentials', 'runtime release authority', 'runtime owner', 'Recovery state', 'plugin configuration', 'process bindings and logs'],
+      excludedNamespaces: [
+        'mcp credentials',
+        'runtime release authority',
+        'runtime owner',
+        'Recovery state',
+        'plugin configuration',
+        'process bindings and logs',
+      ],
       auditChain: 'retained_in_source_sqlite',
     },
   };
@@ -345,14 +359,20 @@ export async function applyControllerHomeMigration(input: {
   );
   backupControlPlaneDatabase(preview.destinationHome, destinationBackupPath);
   const sourceMode = statSync(preview.sourceDatabase.path).mode & 0o777;
-  const sourceWalMode = preview.sourceDatabase.walPath && existsSync(preview.sourceDatabase.walPath)
-    ? statSync(preview.sourceDatabase.walPath).mode & 0o777
-    : undefined;
+  const sourceWalMode =
+    preview.sourceDatabase.walPath && existsSync(preview.sourceDatabase.walPath)
+      ? statSync(preview.sourceDatabase.walPath).mode & 0o777
+      : undefined;
   const imported: ImportedRecord[] = [];
   const selectedRecords = sourceSelection(preview.sourceHome).records;
   const migration = withControlPlaneTransaction(preview.destinationHome, (database) => {
     for (const record of selectedRecords) {
-      const current = readControlPlaneRecordWithinTransaction<unknown>(database, record.namespace, record.scope, record.key);
+      const current = readControlPlaneRecordWithinTransaction<unknown>(
+        database,
+        record.namespace,
+        record.scope,
+        record.key,
+      );
       if (current) {
         if (sameRecord(record, current)) continue;
         throw new Error(`CONTROLLER_HOME_MIGRATION_CONFLICT: ${record.namespace}/${record.scope}/${record.key}`);
@@ -405,7 +425,8 @@ export async function applyControllerHomeMigration(input: {
   const readOnlyMode = sourceMode & ~0o222;
   chmodSync(preview.sourceDatabase.path, readOnlyMode);
   const readOnlyWalMode = sourceWalMode === undefined ? undefined : sourceWalMode & ~0o222;
-  if (preview.sourceDatabase.walPath && readOnlyWalMode !== undefined) chmodSync(preview.sourceDatabase.walPath, readOnlyWalMode);
+  if (preview.sourceDatabase.walPath && readOnlyWalMode !== undefined)
+    chmodSync(preview.sourceDatabase.walPath, readOnlyWalMode);
   const archived = {
     ...migration,
     sourceArchive: {
@@ -445,18 +466,29 @@ export function rollbackControllerHomeMigration(input: {
 
   const rolledBack = withControlPlaneTransaction(destinationHome, (database) => {
     for (const imported of current.value.imported) {
-      const record = readControlPlaneRecordWithinTransaction<unknown>(database, imported.namespace, imported.scope, imported.key);
+      const record = readControlPlaneRecordWithinTransaction<unknown>(
+        database,
+        imported.namespace,
+        imported.scope,
+        imported.key,
+      );
       if (!record || record.revision !== imported.destinationRevision) {
-        throw new Error(`CONTROLLER_HOME_MIGRATION_ROLLBACK_CONFLICT: ${imported.namespace}/${imported.scope}/${imported.key}`);
+        throw new Error(
+          `CONTROLLER_HOME_MIGRATION_ROLLBACK_CONFLICT: ${imported.namespace}/${imported.scope}/${imported.key}`,
+        );
       }
-      database.prepare(`
+      database
+        .prepare(`
         DELETE FROM control_plane_audit
         WHERE namespace = ? AND scope = ? AND record_key = ?
-      `).run(imported.namespace, imported.scope, imported.key);
-      database.prepare(`
+      `)
+        .run(imported.namespace, imported.scope, imported.key);
+      database
+        .prepare(`
         DELETE FROM control_plane_records
         WHERE namespace = ? AND scope = ? AND record_key = ?
-      `).run(imported.namespace, imported.scope, imported.key);
+      `)
+        .run(imported.namespace, imported.scope, imported.key);
     }
     const value: ControllerHomeMigrationRecord = {
       ...current.value,
