@@ -588,6 +588,14 @@ export async function runTestSelection(
     // their external dependencies can be isolated without changing semantics.
     const isolated = options.isolatedCandidateRoot && (entry.resource === 'pure' || entry.resource === 'temp-isolated');
     const testRoot = isolated ? options.isolatedCandidateRoot! : repoRoot;
+    // The isolated Git fixture has its own commit identity. Outer publication
+    // baseline variables refer to the canonical repo, not this test fixture.
+    const testEnv = isolated ? { ...process.env } : process.env;
+    if (isolated) {
+      delete testEnv.TEST_BASE_REF;
+      delete testEnv.FORGE_CHECK_CANDIDATE_SHA;
+      delete testEnv.FORGE_CHECK_SOURCE_QUALITY_MODE;
+    }
     const checkRunnerDigest = isolated ? isolatedRunnerDigest! : runnerDigest;
     const testDigest = hashFiles(testRoot, [file], 'test-file-v1');
     const inputDigest = testInputDigest(testRoot, file);
@@ -639,7 +647,7 @@ export async function runTestSelection(
       if (file.endsWith('.test.mjs')) {
         const independent = await runBoundedChild('node', ['--test', file], {
           cwd: testRoot,
-          env: process.env,
+          env: testEnv,
           timeoutMs: Number(process.env.BUN_TEST_FILE_WALL_TIMEOUT_MS ?? 120_000),
           stdio: 'inherit',
           forwardSignals: true,
@@ -657,7 +665,7 @@ export async function runTestSelection(
           ['test', '--timeout', process.env.BUN_TEST_TIMEOUT_MS ?? '60000', '--max-concurrency', '1', file],
           {
             cwd: testRoot,
-            env: process.env,
+            env: testEnv,
             timeoutMs: Number(process.env.BUN_TEST_FILE_WALL_TIMEOUT_MS ?? 120_000),
             stdio: 'inherit',
             forwardSignals: true,
@@ -673,7 +681,7 @@ export async function runTestSelection(
       } else {
         result = await runBunTestFile(
           ['--timeout', process.env.BUN_TEST_TIMEOUT_MS ?? '60000', '--max-concurrency', '1', file],
-          { forwardSignals: true, cwd: testRoot },
+          { forwardSignals: true, cwd: testRoot, env: testEnv },
         );
       }
       if (

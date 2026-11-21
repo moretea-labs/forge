@@ -128,7 +128,16 @@ export function committedChangedPaths(repoRoot: string, baseRef: string, revisio
 export function materializeCommittedTestCandidate(repoRoot: string, revision: string): string {
   const root = materializeCommittedTypeScriptCandidate(repoRoot, revision);
   const runGit = (args: string[]): void => {
-    const result = spawnSync('git', args, { cwd: root });
+    const result = spawnSync('git', args, {
+      cwd: root,
+      // Stable temporary Git identities ensure test caches never depend on
+      // incidental time-of-day fixture commits.
+      env: {
+        ...process.env,
+        GIT_AUTHOR_DATE: '2000-01-01T00:00:00+00:00',
+        GIT_COMMITTER_DATE: '2000-01-01T00:00:00+00:00',
+      },
+    });
     if (result.error || result.status !== 0) {
       throw new Error(
         `Cannot initialize committed test fixture: ${result.error?.message ?? result.stderr?.toString() ?? result.status}`,
@@ -137,6 +146,19 @@ export function materializeCommittedTestCandidate(repoRoot: string, revision: st
   };
   try {
     runGit(['init', '-q', '-b', 'main']);
+    // A real test checkout has history. Give the disposable source fixture a
+    // deterministic parent so HEAD~1 checks do not fail for lack of ancestry.
+    runGit([
+      '-c',
+      'user.name=Forge Test Fixture',
+      '-c',
+      'user.email=forge-test@invalid.local',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'fixture parent',
+    ]);
     // Preserve even tracked files matched by ignore rules in the source archive.
     // The node_modules symlink is a dependency only, never a test-source input.
     runGit(['add', '-f', '-A', '--', '.', ':!node_modules']);

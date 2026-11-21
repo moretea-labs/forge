@@ -43,15 +43,24 @@ function parseTimeout(value: string | undefined, fallback: number): number {
 }
 
 function fileLabel(args: string[]): string {
-  return [...args].reverse().find((arg) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(arg))
-    ?? [...args].reverse().find((arg) => !arg.startsWith('-'))
-    ?? 'Bun test file';
+  return (
+    [...args].reverse().find((arg) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(arg)) ??
+    [...args].reverse().find((arg) => !arg.startsWith('-')) ??
+    'Bun test file'
+  );
 }
 
-export function classifyBunTestExit(exitCode: number, output = ''): {
-  failureClass: 'source' | 'fixture';
-  failureCode: typeof TEST_FAILURE_CODES.SOURCE_ASSERTION_FAILED | typeof TEST_FAILURE_CODES.FIXTURE_OR_FLAKY_FAILED;
-} | undefined {
+export function classifyBunTestExit(
+  exitCode: number,
+  output = '',
+):
+  | {
+      failureClass: 'source' | 'fixture';
+      failureCode:
+        | typeof TEST_FAILURE_CODES.SOURCE_ASSERTION_FAILED
+        | typeof TEST_FAILURE_CODES.FIXTURE_OR_FLAKY_FAILED;
+    }
+  | undefined {
   if (exitCode === 0) return undefined;
   if (/\b(?:TEST_FIXTURE_FAILURE|TEST_FLAKY_FAILURE|FIXTURE_SETUP_FAILED)\b/.test(output)) {
     return { failureClass: 'fixture', failureCode: TEST_FAILURE_CODES.FIXTURE_OR_FLAKY_FAILED };
@@ -59,10 +68,12 @@ export function classifyBunTestExit(exitCode: number, output = ''): {
   return { failureClass: 'source', failureCode: TEST_FAILURE_CODES.SOURCE_ASSERTION_FAILED };
 }
 
-export function classifyTestSignal(signal: NodeJS.Signals | null | undefined): {
-  failureClass: 'interrupted';
-  failureCode: typeof TEST_FAILURE_CODES.INTERRUPTED_SIGNAL;
-} | undefined {
+export function classifyTestSignal(signal: NodeJS.Signals | null | undefined):
+  | {
+      failureClass: 'interrupted';
+      failureCode: typeof TEST_FAILURE_CODES.INTERRUPTED_SIGNAL;
+    }
+  | undefined {
   if (!signal) return undefined;
   return { failureClass: 'interrupted', failureCode: TEST_FAILURE_CODES.INTERRUPTED_SIGNAL };
 }
@@ -103,6 +114,8 @@ export async function cleanupClosedChildProcessGroup(
 
 export interface RunBunTestFileOptions {
   fileWallTimeoutMs?: number;
+  /** Per-child test environment; never mutate the parent process environment. */
+  env?: NodeJS.ProcessEnv;
   forwardSignals?: boolean;
   cwd?: string;
 }
@@ -113,12 +126,12 @@ export async function runBunTestFile(
 ): Promise<BunTestFileRunResult> {
   if (args.length === 0) throw new Error('run-bun-test-file requires Bun test arguments');
   const label = fileLabel(args);
-  const wallTimeoutMs = options.fileWallTimeoutMs
-    ?? parseTimeout(process.env.BUN_TEST_FILE_WALL_TIMEOUT_MS, DEFAULT_FILE_WALL_TIMEOUT_MS);
+  const wallTimeoutMs =
+    options.fileWallTimeoutMs ?? parseTimeout(process.env.BUN_TEST_FILE_WALL_TIMEOUT_MS, DEFAULT_FILE_WALL_TIMEOUT_MS);
   const startedAt = performance.now();
   const result = await runBoundedChild(process.execPath, ['test', ...args], {
     cwd: options.cwd ?? process.cwd(),
-    env: process.env,
+    env: options.env ?? process.env,
     timeoutMs: wallTimeoutMs,
     stdio: 'capture',
     forwardSignals: options.forwardSignals ?? true,
@@ -162,7 +175,10 @@ export async function runBunTestFile(
     };
   }
 
-  if (result.status !== 0 && /(?:EADDRINUSE|address already in use|Failed to listen at)/i.test(`${result.stdout}\n${result.stderr}`)) {
+  if (
+    result.status !== 0 &&
+    /(?:EADDRINUSE|address already in use|Failed to listen at)/i.test(`${result.stdout}\n${result.stderr}`)
+  ) {
     console.error(`[tests] ${TEST_FAILURE_CODES.INFRA_PORT_CONFLICT}: ${label}`);
     return {
       exitCode: 1,
