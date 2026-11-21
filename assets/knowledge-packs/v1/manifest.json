@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "packVersion": "v1",
+  "packages": [
+    {
+      "id": "design-ui-ux",
+      "path": "assets/knowledge-packs/v1/design-ui-ux.md",
+      "sha256": "00f31f277911d5f54d4916f902314a93f243c556160529b3ec7a7a3bb418efa3",
+      "scope": "general_ui_ux_guidance",
+      "authority": "advisory",
+      "pluginRequired": false,
+      "sourceProvenance": [
+        "moretea-labs/forge-design:docs/PRODUCT_DESIGN_WORKFLOW.md",
+        "moretea-labs/forge-design:docs/studio-visual-quality-workflow.md",
+        "moretea-labs/forge:adapters/mcp/instructions.ts",
+        "Avela user optical-alignment correction 2026-11-21"
+      ]
+    }
+  ]
+}
