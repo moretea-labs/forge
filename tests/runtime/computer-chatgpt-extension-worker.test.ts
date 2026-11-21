@@ -482,3 +482,141 @@ test('MV3 fallback alarm uses the measured three-second cadence and wakes the ex
   expect(source).toContain("await nativeRpc('computer_extension_complete', { provider_instance_id: instanceId, command_id: command.commandId, result });");
   expect(target).toContain('const COMMAND_TIMEOUT_MS = 12_000;');
 });
+
+test('MV3 alarm event wakes the native claim pump with no focused ChatGPT tab', async () => {
+  const source = readFileSync(
+    new URL('../../adapters/computer/chatgpt-provider-extension/background.js', import.meta.url),
+    'utf8',
+  );
+  const worker = source
+    .replace("importScripts('core.js');", '')
+    // Isolate the registered alarm event from the eager top-level startup tick.
+    .replace(/\nvoid providerTick\(\)\.catch\(\(\) => undefined\);\s*$/, '\n');
+  expect(worker).not.toBe(source);
+
+  const alarmRegistrations: Array<{ name: string; periodInMinutes: number }> = [];
+  let onAlarm: ((alarm: { name: string }) => void) | undefined;
+  const rpcCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const nativeListeners: Array<(response: { id: string; ok: boolean; result: Record<string, unknown> }) => void> = [];
+  const port = {
+    onMessage: {
+      addListener(listener: (response: { id: string; ok: boolean; result: Record<string, unknown> }) => void) {
+        nativeListeners.push(listener);
+      },
+    },
+    onDisconnect: { addListener() {} },
+    postMessage(message: { id: string; method: string; params: Record<string, unknown> }) {
+      rpcCalls.push(message);
+      const result =
+        message.method === 'computer_extension_heartbeat'
+          ? { recorded: true }
+          : message.method === 'computer_extension_claim'
+            ? { command: null }
+            : {};
+      queueMicrotask(() => {
+        for (const listener of nativeListeners) listener({ id: message.id, ok: true, result });
+      });
+    },
+    disconnect() {},
+  };
+
+  let timerId = 0;
+  const timers = new Map<number, number>();
+  const setTimeoutFake = (_callback: () => void, delay = 0) => {
+    const id = ++timerId;
+    timers.set(id, delay);
+    return id;
+  };
+  const clearTimeoutFake = (id: number) => {
+    timers.delete(id);
+  };
+  const tabQueries: Array<Record<string, unknown>> = [];
+
+  const sandbox = {
+    ForgeComputerChatgptCore: { parseConversation: () => null, projectId: () => undefined },
+    navigator: { userAgent: 'CentBrowser/134' },
+    crypto: {
+      randomUUID: (() => {
+        let id = 0;
+        return () => 'alarm-wake-' + ++id;
+      })(),
+    },
+    chrome: {
+      runtime: {
+        lastError: null,
+        connectNative: () => port,
+        onMessage: { addListener() {} },
+        onInstalled: { addListener() {} },
+        onStartup: { addListener() {} },
+      },
+      storage: {
+        local: {
+          async get() {
+            return { forgeComputerProviderInstanceId: 'centbrowser-profile' };
+          },
+          async set() {},
+        },
+        session: {
+          async get() {
+            return {};
+          },
+          async set() {},
+          async remove() {},
+        },
+      },
+      tabs: {
+        async query(query: Record<string, unknown>) {
+          tabQueries.push(query);
+          return [];
+        },
+        onUpdated: { addListener() {} },
+        onActivated: { addListener() {} },
+        onRemoved: { addListener() {} },
+      },
+      windows: { onFocusChanged: { addListener() {} } },
+      alarms: {
+        create(name: string, options: { periodInMinutes: number }) {
+          alarmRegistrations.push({ name, ...options });
+        },
+        onAlarm: {
+          addListener(listener: (alarm: { name: string }) => void) {
+            onAlarm = listener;
+          },
+        },
+      },
+    },
+    URL,
+    Date,
+    Map,
+    Promise,
+    setTimeout: setTimeoutFake,
+    clearTimeout: clearTimeoutFake,
+    queueMicrotask,
+    console: { warn() {} },
+  };
+
+  runInNewContext(worker, sandbox);
+  expect(onAlarm).toBeDefined();
+  expect(alarmRegistrations).toEqual([{ name: 'forge-computer-chatgpt-provider', periodInMinutes: 0.05 }]);
+
+  onAlarm!({ name: 'unrelated-alarm' });
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  expect(rpcCalls).toHaveLength(0);
+
+  // Simulate the MV3 worker being woken in the background with no focused tab.
+  onAlarm!({ name: 'forge-computer-chatgpt-provider' });
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  expect(tabQueries).toContainEqual({ url: 'https://chatgpt.com/*' });
+  expect(tabQueries).toContainEqual({
+    active: true,
+    lastFocusedWindow: true,
+    url: 'https://chatgpt.com/*',
+  });
+  expect(rpcCalls.map((call) => call.method)).toEqual(['computer_extension_heartbeat', 'computer_extension_claim']);
+  expect(rpcCalls[1]?.params).toEqual({ provider_instance_id: 'centbrowser-profile' });
+
+  // A second alarm during the same pump must not create a duplicate claim/effect.
+  onAlarm!({ name: 'forge-computer-chatgpt-provider' });
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  expect(rpcCalls.map((call) => call.method)).toEqual(['computer_extension_heartbeat', 'computer_extension_claim']);
+});
