@@ -175,7 +175,7 @@ private struct ForgeWorkspaceView: View {
     var body: some View {
         NavigationSplitView(columnVisibility:$visibility) {
             unifiedSidebar
-                .navigationSplitViewColumnWidth(min:250,ideal:278,max:310)
+                .navigationSplitViewColumnWidth(min:238,ideal:252,max:286)
         } detail: {
             if model.zenMode {
                 ZenWorkspacePane(model:model,screen:$model.zenScreen,
@@ -303,12 +303,12 @@ private struct ForgeWorkspaceView: View {
             openSidebarDestination(destination)
         } label: {
             Image(systemName:destination.symbol)
-                .font(.system(size:16,weight:selected ? .semibold : .regular))
+                .font(.system(size:14,weight:selected ? .semibold : .regular))
                 .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
-                .frame(width:42,height:40)
+                .frame(width:32,height:31)
                 .background(selected ? ForgePalette.selectionStrong : .clear,
-                            in:RoundedRectangle(cornerRadius:11,style:.continuous))
-                .contentShape(RoundedRectangle(cornerRadius:11,style:.continuous))
+                            in:RoundedRectangle(cornerRadius:9,style:.continuous))
+                .contentShape(RoundedRectangle(cornerRadius:9,style:.continuous))
         }
         .buttonStyle(.plain)
         .help(destination.title)
@@ -352,68 +352,55 @@ private struct ForgeWorkspaceView: View {
     }
 
     private var unifiedSidebar: some View {
-        HStack(alignment:.top,spacing:0) {
-            // Persistent icon rail: navigation never competes with the
-            // contextual conversation/project content for vertical space.
-            VStack(spacing:0) {
-                Image(systemName:"square.stack.3d.up.fill")
-                    .font(.system(size:19,weight:.medium))
-                    .foregroundStyle(ForgePalette.ink)
-                    .frame(height:58)
-                    .accessibilityLabel("Forge")
+        // One navigation surface, not two permanently nested sidebars.
+        // The project, destinations and conversations share the same column.
+        VStack(alignment:.leading,spacing:0) {
+            projectSwitcher
+                .padding(.horizontal,10)
+                .padding(.top,8)
+                .padding(.bottom,2)
 
-                VStack(spacing:5) {
-                    ForEach(ForgeSidebarDestination.allCases.filter { $0 != .settings },id:\.self) { destination in
-                        sidebarDestinationButton(destination)
-                    }
+            HStack(spacing:3) {
+                ForEach(ForgeSidebarDestination.allCases,id:\.self) { destination in
+                    sidebarDestinationButton(destination)
+                        .frame(maxWidth:.infinity)
                 }
-                Spacer(minLength:12)
-                sidebarDestinationButton(.settings)
-                    .padding(.bottom,14)
             }
-            .frame(width:62)
-            .frame(maxHeight:.infinity)
-            .background(.ultraThinMaterial)
+            .padding(.horizontal,10)
+            .padding(.bottom,6)
+            .accessibilityIdentifier("forge.navigation.integrated")
 
-            VStack(alignment:.leading,spacing:0) {
-                projectSwitcher
-                    .padding(.horizontal,10)
-                    .padding(.top,8)
-                    .padding(.bottom,8)
-
-                // Keep contextual panes mounted across destination changes so
-                // conversation search, thread scroll, and Zen state survive.
-                ZStack(alignment:.topLeading) {
-                    ZenSidebar(model:model,screen:$model.zenScreen,
-                               focusedRequirementId:$model.zenFocusedRequirementId,
-                               decisionCount:model.relevantUserRequests.count,
-                               onInbox:{
-                        inboxShown = true
-                        Task { await model.loadUserRequests() }
-                    })
-                    .opacity(model.zenMode ? 1 : 0)
-                    .allowsHitTesting(model.zenMode)
-                    .accessibilityHidden(!model.zenMode)
-                    .popover(isPresented:$inboxShown,arrowEdge:.trailing) {
-                        inboxPanel
-                    }
-
-                    sidebar
-                        .opacity(!model.zenMode && model.page == .agent ? 1 : 0)
-                        .allowsHitTesting(!model.zenMode && model.page == .agent)
-                        .accessibilityHidden(model.zenMode || model.page != .agent)
-
-                    contextualSidebar
-                        .opacity(!model.zenMode && model.page != .agent ? 1 : 0)
-                        .allowsHitTesting(!model.zenMode && model.page != .agent)
-                        .accessibilityHidden(model.zenMode || model.page == .agent)
+            // Keep contextual panes mounted across destination changes so
+            // conversation search, thread scroll, and Zen state survive.
+            ZStack(alignment:.topLeading) {
+                ZenSidebar(model:model,screen:$model.zenScreen,
+                           focusedRequirementId:$model.zenFocusedRequirementId,
+                           decisionCount:model.relevantUserRequests.count,
+                           onInbox:{
+                    inboxShown = true
+                    Task { await model.loadUserRequests() }
+                })
+                .opacity(model.zenMode ? 1 : 0)
+                .allowsHitTesting(model.zenMode)
+                .accessibilityHidden(!model.zenMode)
+                .popover(isPresented:$inboxShown,arrowEdge:.trailing) {
+                    inboxPanel
                 }
-                .frame(maxWidth:.infinity,maxHeight:.infinity)
+
+                sidebar
+                    .opacity(!model.zenMode && model.page == .agent ? 1 : 0)
+                    .allowsHitTesting(!model.zenMode && model.page == .agent)
+                    .accessibilityHidden(model.zenMode || model.page != .agent)
+
+                contextualSidebar
+                    .opacity(!model.zenMode && model.page != .agent ? 1 : 0)
+                    .allowsHitTesting(!model.zenMode && model.page != .agent)
+                    .accessibilityHidden(model.zenMode || model.page == .agent)
             }
             .frame(maxWidth:.infinity,maxHeight:.infinity)
-            .background(Color(nsColor:.windowBackgroundColor))
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+        .background(.ultraThinMaterial)
     }
 
     private var sidebar: some View {
@@ -481,7 +468,7 @@ private struct ForgeWorkspaceView: View {
             }
             .padding(.horizontal,18)
             .frame(height:34)
-            .padding(.top,17).padding(.bottom,6)
+            .padding(.top,9).padding(.bottom,4)
 
             if model.showSearch {
                 HStack(spacing:7) {
@@ -1622,6 +1609,7 @@ private struct ForgeWorkspaceView: View {
 }
 
 private enum AgentSemanticContextInspector: String, Identifiable {
+    case changes
     case planning
     case knowledge
     var id: String { rawValue }
@@ -1648,7 +1636,6 @@ private struct AgentPane: View {
     @ObservedObject var model: NativeWorkspace
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let onChooseProject: () -> Void
-    @State private var showChanges = false
     @State private var showActivityDetails = false
     @State private var expandedMessageActivities: Set<String> = []
     @State private var pendingAgentCommand: String?
@@ -1663,6 +1650,12 @@ private struct AgentPane: View {
     @FocusState private var composerFocused: Bool
 
     var body: some View {
+        GeometryReader { geometry in
+            agentContent(availableWidth:geometry.size.width)
+        }
+    }
+
+    private func agentContent(availableWidth:CGFloat) -> some View {
         VStack(spacing:0) {
             agentWorkspaceBar
             ScrollViewReader { reader in
@@ -1897,7 +1890,7 @@ private struct AgentPane: View {
                                                 }
                                                 Spacer(minLength:6)
                                                 Button("查看改动") {
-                                                    showChanges = true
+                                                    semanticInspector = .changes
                                                     Task { await model.refreshAgentChanges() }
                                                 }
                                                 .buttonStyle(.plain)
@@ -2019,7 +2012,6 @@ private struct AgentPane: View {
                                     ? allActivityEvents
                                     : Array(allActivityEvents.suffix(4))
                                 if !activityEvents.isEmpty {
-                                    Divider().opacity(0.45)
                                     VStack(alignment:.leading,spacing:7) {
                                         ForEach(activityEvents) { event in
                                             activityTrailRow(event)
@@ -2028,8 +2020,6 @@ private struct AgentPane: View {
                                 }
                             }
                             .padding(.vertical,9).padding(.horizontal,12)
-                            .background(ForgePalette.softFill.opacity(0.55),
-                                        in:RoundedRectangle(cornerRadius:9,style:.continuous))
                             .id("pending")
                         }
                     }
@@ -2383,16 +2373,28 @@ private struct AgentPane: View {
         }
         .background(ForgePalette.canvas)
         .safeAreaInset(edge:.trailing,spacing:0) {
-            if showChanges {
-                HStack(spacing:0) {
-                    Divider()
-                    AgentChangesPane(model:model,isPresented:$showChanges)
-                        .frame(width:340)
-                }
-                .transition(reduceMotion ? .identity : .move(edge:.trailing).combined(with:.opacity))
+            if availableWidth >= 900, let inspector = semanticInspector {
+                semanticInspectorContent(inspector,inline:true)
+                    .frame(width:320)
+                    .frame(maxHeight:.infinity)
+                    .background(.regularMaterial)
+                    .transition(reduceMotion ? .identity
+                                : .move(edge:.trailing).combined(with:.opacity))
+                    .accessibilityIdentifier("agent.context-inspector")
             }
         }
-        .animation(reduceMotion ? nil : .easeOut(duration:0.18),value:showChanges)
+        // Compact windows float contextual tools to protect chat and composer width.
+        .popover(isPresented:Binding(
+            get:{ availableWidth < 900 && semanticInspector != nil },
+            set:{ if !$0 { semanticInspector = nil } }
+        ),arrowEdge:.trailing) {
+            if let inspector=semanticInspector {
+                semanticInspectorContent(inspector,inline:false)
+                    .frame(width:inspector == .changes ? 440 : nil)
+                    .frame(height:inspector == .changes ? 500 : nil)
+            }
+        }
+        .animation(reduceMotion ? nil : .easeOut(duration:0.20),value:semanticInspector)
         .confirmationDialog(
             "将命令交给 Forge Agent？",
             isPresented:Binding(
@@ -2421,7 +2423,7 @@ private struct AgentPane: View {
             // The draft binding already targets the newly selected thread here.
             // Clear only transient recorder state; the old thread keeps its partial transcript.
             voiceDictation.cancel()
-            showChanges = false
+            semanticInspector = nil
             if !model.busy && !model.zenRefinementActive { composerFocused = true }
         }
         .onChange(of:voiceDictation.transcript) { transcript in
@@ -2495,8 +2497,10 @@ private struct AgentPane: View {
                 .accessibilityIdentifier("agent.navigation.back")
             }
 
-            Text("Agent")
+            Text(model.thread?.title ?? "新会话")
                 .font(.system(size:13,weight:.semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
                 .accessibilityAddTraits(.isHeader)
 
             Spacer(minLength:12)
@@ -2513,8 +2517,6 @@ private struct AgentPane: View {
             }
 
             workspaceChangesControl
-
-            Divider().frame(height:18)
 
             Button { Task { await model.refresh() } } label: {
                 HStack(spacing:6) {
@@ -2555,8 +2557,10 @@ private struct AgentPane: View {
 
     private var workspaceChangesControl: some View {
         Button {
-            withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) { showChanges.toggle() }
-            if showChanges {
+            withAnimation(reduceMotion ? nil : .easeOut(duration:0.20)) {
+                semanticInspector = semanticInspector == .changes ? nil : .changes
+            }
+            if semanticInspector == .changes {
                 Task { await model.refreshAgentChanges() }
             }
         } label: {
@@ -2569,10 +2573,10 @@ private struct AgentPane: View {
                         .monospacedDigit()
                 }
             }
-            .foregroundStyle(showChanges ? ForgePalette.ink : ForgePalette.secondary)
+            .foregroundStyle(semanticInspector == .changes ? ForgePalette.ink : ForgePalette.secondary)
             .padding(.horizontal,7)
             .frame(minWidth:25,minHeight:24)
-            .background(showChanges ? ForgePalette.selectionStrong : Color.clear,
+            .background(semanticInspector == .changes ? ForgePalette.selectionStrong : Color.clear,
                         in:RoundedRectangle(cornerRadius:8,style:.continuous))
             .contentShape(Rectangle())
         }
@@ -2595,12 +2599,15 @@ private struct AgentPane: View {
     }
 
     @ViewBuilder
-    private func semanticInspectorContent(_ kind: AgentSemanticContextInspector) -> some View {
+    private func semanticInspectorContent(_ kind: AgentSemanticContextInspector,
+                                          inline:Bool) -> some View {
         switch kind {
+        case .changes:
+            AgentChangesPane(model:model,isPresented:semanticInspectorBinding(.changes))
         case .planning:
-            AgentPlanningInspector(model:model) { semanticInspector = nil }
+            AgentPlanningInspector(model:model,inline:inline) { semanticInspector = nil }
         case .knowledge:
-            AgentKnowledgeInspector(model:model) { semanticInspector = nil }
+            AgentKnowledgeInspector(model:model,inline:inline) { semanticInspector = nil }
         }
     }
 
@@ -2644,9 +2651,6 @@ private struct AgentPane: View {
                             : (requirementId?.isEmpty == false ? "已关联需求" : "未关联"))
         .accessibilityHint("在当前会话中打开规划上下文，不切换工作区页面")
         .accessibilityIdentifier("agent.semantic-context.planning")
-        .popover(isPresented:semanticInspectorBinding(.planning),arrowEdge:.top) {
-            semanticInspectorContent(.planning)
-        }
     }
 
     private func semanticContextButton(_ title: String, kind: AgentSemanticContextInspector, systemImage: String,
@@ -2670,9 +2674,6 @@ private struct AgentPane: View {
         .accessibilityLabel(title)
         .accessibilityHint("在当前会话中打开上下文，不切换工作区页面")
         .accessibilityIdentifier("agent.semantic-context.\(kind.rawValue)")
-        .popover(isPresented:semanticInspectorBinding(kind),arrowEdge:.top) {
-            semanticInspectorContent(kind)
-        }
     }
 
     private func starterPromptButton(
@@ -3625,6 +3626,7 @@ private struct AutopilotApprovalContext: Identifiable {
 
 private struct AgentPlanningInspector: View {
     @ObservedObject var model: NativeWorkspace
+    var inline: Bool = false
     let dismiss: () -> Void
     @State private var records: [ForgeRecord] = []
     @State private var loading = false
@@ -3654,7 +3656,7 @@ private struct AgentPlanningInspector: View {
             }
             .padding(.horizontal,14).padding(.vertical,12)
 
-            Divider()
+            Color.clear.frame(height:6)
             HStack(alignment:.top,spacing:9) {
                 Image(systemName:currentBoundRecord == nil ? "paperclip" : "paperclip.circle.fill")
                     .font(.system(size:10,weight:.medium))
@@ -3696,7 +3698,7 @@ private struct AgentPlanningInspector: View {
             .padding(.horizontal,14).padding(.vertical,11)
             .accessibilityIdentifier("agent.planning-inspector.current")
 
-            Divider()
+            Color.clear.frame(height:6)
 
             HStack(spacing:7) {
                 Image(systemName:"magnifyingglass")
@@ -3751,14 +3753,13 @@ private struct AgentPlanningInspector: View {
                     LazyVStack(alignment:.leading,spacing:0) {
                         ForEach(Array(availableRecords.prefix(10))) { record in
                             planningRow(record)
-                            Divider().padding(.leading,38)
                         }
                     }
                 }
                 .scrollIndicators(.automatic)
             }
 
-            Divider()
+            Color.clear.frame(height:6)
             HStack {
                 Text("关联只影响当前会话，不会修改需求或计划。")
                     .font(.system(size:9.5)).foregroundStyle(.tertiary)
@@ -3767,7 +3768,7 @@ private struct AgentPlanningInspector: View {
             }
             .padding(.horizontal,14).frame(height:34)
         }
-        .frame(width:390,height:455)
+        .frame(width:inline ? nil : 390,height:inline ? nil : 455)
         .task(id:planningScopeKey) { await reload() }
     }
 
@@ -3906,6 +3907,7 @@ private struct AgentPlanningInspector: View {
 
 private struct AgentKnowledgeInspector: View {
     @ObservedObject var model: NativeWorkspace
+    var inline: Bool = false
     let dismiss: () -> Void
     @State private var query = ""
     @State private var result: KnowledgeAuditDetail?
@@ -3935,7 +3937,7 @@ private struct AgentKnowledgeInspector: View {
                 .accessibilityIdentifier("agent.knowledge-inspector.close")
             }
             .padding(.horizontal,14).padding(.vertical,12)
-            Divider()
+            Color.clear.frame(height:6)
 
             HStack(spacing:7) {
                 Image(systemName:"magnifyingglass")
@@ -3995,14 +3997,13 @@ private struct AgentKnowledgeInspector: View {
                     LazyVStack(alignment:.leading,spacing:0) {
                         ForEach(memories) { memory in
                             knowledgeRow(memory)
-                            Divider().padding(.leading,14)
                         }
                     }
                 }
                 .scrollIndicators(.automatic)
             }
 
-            Divider()
+            Color.clear.frame(height:6)
             HStack(spacing:6) {
                 if let result {
                     Text("\(result.items.count) 条结果")
@@ -4017,7 +4018,7 @@ private struct AgentKnowledgeInspector: View {
             .font(.system(size:9.5)).foregroundStyle(.tertiary)
             .padding(.horizontal,14).frame(height:34)
         }
-        .frame(width:410,height:455)
+        .frame(width:inline ? nil : 410,height:inline ? nil : 455)
         .task(id:[model.repoId ?? "", model.checkoutId ?? "", model.selectedThreadId ?? ""]) { await reload() }
     }
 
