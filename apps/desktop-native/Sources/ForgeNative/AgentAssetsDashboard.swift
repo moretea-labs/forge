@@ -150,7 +150,7 @@ struct AgentAssetsDashboard: View {
       let chosen = items.first(where: { $0.id == focusedResourceId })
 
       VStack(spacing: 0) {
-        resourceToolbar(count: items.count)
+        resourceToolbar(count: items.count, compact: geometry.size.width < 640)
 
         if items.isEmpty {
           VStack(spacing: 10) {
@@ -196,68 +196,123 @@ struct AgentAssetsDashboard: View {
     }
   }
 
-  private func resourceToolbar(count: Int) -> some View {
-    HStack(spacing: 12) {
-      Text("\(count) 项")
-        .font(.system(size: 11, weight: .medium))
-        .foregroundStyle(.secondary)
-        .monospacedDigit()
-
-      HStack(spacing: 7) {
-        Image(systemName: "magnifyingglass")
-          .font(.system(size: 11))
-          .foregroundStyle(.secondary)
-        TextField("搜索文件、图片或会话", text: $searchQuery)
-          .textFieldStyle(.plain)
-          .font(.system(size: 11.5))
-          .accessibilityLabel("搜索资源")
-          .accessibilityIdentifier("agent.assets.search")
-        if !searchQuery.isEmpty {
-          Button {
-            searchQuery = ""
-          } label: {
-            Image(systemName: "xmark.circle.fill")
-              .foregroundStyle(.tertiary)
+  /// On a narrow work surface, filters belong in a plain toolbar row and
+  /// search gets its own line instead of forcing 600pt of controls into 400pt.
+  private func resourceToolbar(count: Int, compact: Bool) -> some View {
+    Group {
+      if compact {
+        VStack(alignment: .leading, spacing: 8) {
+          HStack(spacing: 10) {
+            resourceCount(count)
+            Spacer(minLength: 8)
+            resourceFilters
+            resourceRepositoryMenu
           }
-          .buttonStyle(.plain)
-          .help("清除搜索")
-          .accessibilityLabel("清除资源搜索")
+          resourceSearch
+        }
+      } else {
+        HStack(spacing: 12) {
+          resourceCount(count)
+          resourceSearch.frame(maxWidth: 330)
+          Spacer(minLength: 0)
+          resourceFilters
+          resourceRepositoryPicker
         }
       }
-      .padding(.horizontal, 10)
-      .frame(maxWidth: 330)
-      .frame(height: 30)
-      .background(
-        Color.primary.opacity(0.035),
-        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-      Spacer(minLength: 0)
-      Menu {
-        Toggle("我的附件", isOn: $showLocalResources)
-          .accessibilityIdentifier("agent.assets.filter.local")
-        Toggle("回复图片", isOn: $showRemoteImages)
-          .accessibilityIdentifier("agent.assets.filter.remote")
-      } label: {
-        Image(systemName: "line.3.horizontal.decrease")
-          .frame(width: 28, height: 28)
-      }
-      .menuStyle(.borderlessButton)
-      .fixedSize()
-      .help("筛选资源")
-      .accessibilityLabel("筛选资源")
-
-      Picker("项目", selection: $selectedRepoId) {
-        Text("全部项目").tag("")
-        ForEach(model.projects) { project in
-          Text(project.label).tag(project.repoId)
-        }
-      }
-      .labelsHidden()
-      .frame(maxWidth: 160)
-      .accessibilityIdentifier("agent.assets.project-filter")
     }
-    .padding(.horizontal, 18).padding(.vertical, 10)
+    .padding(.horizontal, compact ? 12 : 18)
+    .padding(.vertical, 10)
     .accessibilityIdentifier("agent.assets.toolbar")
+  }
+
+  private func resourceCount(_ count: Int) -> some View {
+    Text("\(count) 项")
+      .font(.system(size: 11, weight: .medium))
+      .foregroundStyle(.secondary)
+      .monospacedDigit()
+  }
+
+  private var resourceSearch: some View {
+    HStack(spacing: 7) {
+      Image(systemName: "magnifyingglass")
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+      TextField("搜索文件、图片或会话", text: $searchQuery)
+        .textFieldStyle(.plain)
+        .font(.system(size: 11.5))
+        .accessibilityLabel("搜索资源")
+        .accessibilityIdentifier("agent.assets.search")
+      if !searchQuery.isEmpty {
+        Button {
+          searchQuery = ""
+        } label: {
+          Image(systemName: "xmark.circle.fill")
+            .foregroundStyle(.tertiary)
+        }
+        .buttonStyle(.plain)
+        .help("清除搜索")
+        .accessibilityLabel("清除资源搜索")
+      }
+    }
+    .padding(.horizontal, 10)
+    .frame(height: 30)
+    // An input well is a real content surface, not a button-card.
+    .background(Color.primary.opacity(0.035),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+  }
+
+  private var resourceFilters: some View {
+    Menu {
+      Toggle("我的附件", isOn: $showLocalResources)
+        .accessibilityIdentifier("agent.assets.filter.local")
+      Toggle("回复图片", isOn: $showRemoteImages)
+        .accessibilityIdentifier("agent.assets.filter.remote")
+    } label: {
+      Image(systemName: "line.3.horizontal.decrease")
+        .frame(width: 28, height: 28)
+    }
+    .menuStyle(.borderlessButton)
+    .fixedSize()
+    .help("筛选资源")
+    .accessibilityLabel("筛选资源")
+  }
+
+  private var resourceRepositoryPicker: some View {
+    Picker("代码仓库", selection: $selectedRepoId) {
+      Text("全部仓库").tag("")
+      ForEach(model.projects) { project in
+        Text(project.label).tag(project.repoId)
+      }
+    }
+    .labelsHidden()
+    .frame(maxWidth: 160)
+    .accessibilityIdentifier("agent.assets.project-filter")
+  }
+
+  private var resourceRepositoryMenu: some View {
+    Menu {
+      Button("全部仓库") { selectedRepoId = "" }
+      ForEach(model.projects) { project in
+        Button {
+          selectedRepoId = project.repoId
+        } label: {
+          if selectedRepoId == project.repoId {
+            Label(project.label, systemImage: "checkmark")
+          } else {
+            Text(project.label)
+          }
+        }
+      }
+    } label: {
+      Label(model.projects.first(where: { $0.repoId == selectedRepoId })?.label ?? "全部仓库",
+            systemImage: "folder")
+        .font(.system(size: 11))
+        .lineLimit(1)
+    }
+    .menuStyle(.borderlessButton)
+    .frame(maxWidth: 155)
+    .accessibilityLabel("代码仓库筛选")
+    .accessibilityIdentifier("agent.assets.project-filter")
   }
 
   private func resourceIcon(_ item: Resource) -> String {
