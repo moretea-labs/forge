@@ -830,7 +830,6 @@ describe('runtime observability', () => {
         outcome: 'error',
         errorCode: 'PUBLIC_STABLE_ENDPOINT_UNHEALTHY',
         repoId: 'repo-fixture',
-        workId: 'work-fixture',
         processId: 'proc-fixture',
         route: 'process_managed',
         totalToolDurationMs: 12,
@@ -860,7 +859,6 @@ describe('runtime observability', () => {
         hostConversationSessionId: 'chat-session-fixture',
         outcome: 'error',
         repoId: 'repo-fixture',
-        workId: 'work-fixture',
         processId: 'proc-fixture',
         route: 'process_managed',
       });
@@ -891,7 +889,6 @@ describe('runtime observability', () => {
         });
       }
       expect(latest).toMatchObject({ eligible: true, recurrent: true });
-      expect(latest?.workId).toBeUndefined();
       expect(latest?.reason).toContain('source authority');
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });

@@ -30,8 +30,6 @@ export interface ForgeIncidentRepairRegistration {
   fingerprint?: string;
   rootCode?: string;
   repairRepoId?: string;
-  workId?: string;
-  reusedExistingWork?: boolean;
   reason: string;
 }
 
@@ -42,7 +40,6 @@ export interface ForgeActionableFailureObservation {
   message: string;
   at?: string;
   repoId?: string;
-  workId?: string;
 }
 
 interface PersistedMcpIncident extends McpIncident {
@@ -51,7 +48,10 @@ interface PersistedMcpIncident extends McpIncident {
 }
 
 function transportFailureMessage(message: string): boolean {
-  const transportFailure = /(?:ECONNREFUSED|ECONNRESET|EPIPE|socket hang up|connection failed|fetch failed|network error|timed? out|timeout)/i.test(message);
+  const transportFailure =
+    /(?:ECONNREFUSED|ECONNRESET|EPIPE|socket hang up|connection failed|fetch failed|network error|timed? out|timeout)/i.test(
+      message,
+    );
   const forgeTransport = /(?:canonical runtime|runtime mcp|mcp transport|forge gateway|forge tunnel)/i.test(message);
   return transportFailure && forgeTransport;
 }
@@ -73,7 +73,8 @@ export function classifyForgeIncidentForRepair(incident: McpIncident): ForgeInci
   }
 
   const rootCode = (() => {
-    if (code === 'MCP_REQUEST_EXCEPTION' && transportFailureMessage(incident.message)) return 'MCP_TRANSPORT_UNAVAILABLE';
+    if (code === 'MCP_REQUEST_EXCEPTION' && transportFailureMessage(incident.message))
+      return 'MCP_TRANSPORT_UNAVAILABLE';
     if (code === 'CONTROLLER_AUTHENTICATED_SESSION_REQUIRED') return code;
     if (code === 'WORK_CONTROLLER_SCOPE_MISMATCH') return code;
     if (code.startsWith('CANONICAL_RUNTIME_')) return code;
@@ -109,14 +110,17 @@ function readBoundedJsonLines<T>(path: string, maxBytes = INCIDENT_TAIL_BYTES): 
       const newline = text.indexOf('\n');
       text = newline >= 0 ? text.slice(newline + 1) : '';
     }
-    return text.split(/\r?\n/).filter(Boolean).flatMap((line) => {
-      try {
-        const parsed = JSON.parse(line) as T;
-        return parsed && typeof parsed === 'object' ? [parsed] : [];
-      } catch {
-        return [];
-      }
-    });
+    return text
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .flatMap((line) => {
+        try {
+          const parsed = JSON.parse(line) as T;
+          return parsed && typeof parsed === 'object' ? [parsed] : [];
+        } catch {
+          return [];
+        }
+      });
   } catch {
     return [];
   } finally {
@@ -150,12 +154,14 @@ function actionableFailureLedgerPath(controllerHome: string, repoId: string): st
 }
 
 function readActionableFailureEvents(controllerHome: string, repoId: string): RuntimeEntityEvent[] {
-  return readBoundedJsonLines<RuntimeEntityEvent>(actionableFailureLedgerPath(controllerHome, repoId))
-    .filter((event) => event.eventType === ACTIONABLE_FAILURE_EVENT && event.entityType === 'portfolio');
+  return readBoundedJsonLines<RuntimeEntityEvent>(actionableFailureLedgerPath(controllerHome, repoId)).filter(
+    (event) => event.eventType === ACTIONABLE_FAILURE_EVENT && event.entityType === 'portfolio',
+  );
 }
 
 function normalizedFailureMessage(message: string): string {
-  return message.toUpperCase()
+  return message
+    .toUpperCase()
     .replace(/[A-F0-9]{16,64}/g, '<ID>')
     .replace(/\b\d{2,}\b/g, '<N>')
     .replace(/\s+/g, ' ')
@@ -164,40 +170,52 @@ function normalizedFailureMessage(message: string): string {
 }
 
 export function deriveForgeActionableFailureCode(prefix: string, message: string): string {
-  const normalizedPrefix = prefix.toUpperCase().replace(/[^A-Z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || 'FORGE_FAILURE';
+  const normalizedPrefix =
+    prefix
+      .toUpperCase()
+      .replace(/[^A-Z0-9_]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'FORGE_FAILURE';
   const normalizedMessage = normalizedFailureMessage(message);
   const explicit = normalizedMessage.match(/\b(?:[A-Z][A-Z0-9]*_){1,}[A-Z0-9_]+\b/)?.[0];
   if (explicit) return explicit.slice(0, 120);
-  const digest = createHash('sha256').update(normalizedMessage || normalizedPrefix).digest('hex').slice(0, 12).toUpperCase();
+  const digest = createHash('sha256')
+    .update(normalizedMessage || normalizedPrefix)
+    .digest('hex')
+    .slice(0, 12)
+    .toUpperCase();
   return `${normalizedPrefix}_${digest}`.slice(0, 120);
 }
 
-export function classifyForgeActionableFailureForRepair(observation: ForgeActionableFailureObservation): ForgeIncidentRepairClassification {
+export function classifyForgeActionableFailureForRepair(
+  observation: ForgeActionableFailureObservation,
+): ForgeIncidentRepairClassification {
   const code = observation.code.trim().toUpperCase();
   if (!code) return { eligible: false, reason: 'actionable failure code is empty' };
   const blockerText = `${code} ${observation.message}`.toUpperCase();
   if (
-    blockerText.includes('EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED')
-    || blockerText.includes('PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED')
-    || blockerText.includes('LOGIN_REQUIRED')
-    || blockerText.includes('PERMISSION_REQUIRED')
-    || blockerText.includes('CONSENT_REQUIRED')
-    || blockerText.includes('WAITING_FOR_USER')
-    || blockerText.includes('USER_ACTION_REQUIRED')
-    || blockerText.includes('OUTCOME_UNKNOWN')
-  ) return { eligible: false, reason: `explicit user/ambiguity blocker ${code}` };
+    blockerText.includes('EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED') ||
+    blockerText.includes('PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED') ||
+    blockerText.includes('LOGIN_REQUIRED') ||
+    blockerText.includes('PERMISSION_REQUIRED') ||
+    blockerText.includes('CONSENT_REQUIRED') ||
+    blockerText.includes('WAITING_FOR_USER') ||
+    blockerText.includes('USER_ACTION_REQUIRED') ||
+    blockerText.includes('OUTCOME_UNKNOWN')
+  )
+    return { eligible: false, reason: `explicit user/ambiguity blocker ${code}` };
 
-  const rootCode = (
-    code.startsWith('CONTROLLER_')
-    || code.startsWith('SCHEDULER_')
-    || code.startsWith('WORKFLOW_SUPERVISOR_')
-    || code.startsWith('RUNTIME_')
-    || code.startsWith('RECOVERY_')
-    || code.startsWith('PROCESS_')
-    || code.startsWith('RELEASE_SESSION_')
-    || code.startsWith('MAINTENANCE_')
-    || /^PLUGIN_[A-Z0-9_]+_(?:UNAVAILABLE|MISSING|MISMATCH|FAILED)$/.test(code)
-  ) ? code : undefined;
+  const rootCode =
+    code.startsWith('CONTROLLER_') ||
+    code.startsWith('SCHEDULER_') ||
+    code.startsWith('WORKFLOW_SUPERVISOR_') ||
+    code.startsWith('RUNTIME_') ||
+    code.startsWith('RECOVERY_') ||
+    code.startsWith('PROCESS_') ||
+    code.startsWith('RELEASE_SESSION_') ||
+    code.startsWith('MAINTENANCE_') ||
+    /^PLUGIN_[A-Z0-9_]+_(?:UNAVAILABLE|MISSING|MISMATCH|FAILED)$/.test(code)
+      ? code
+      : undefined;
   if (!rootCode) return { eligible: false, reason: `non-infrastructure actionable failure class ${code}` };
   const fingerprint = createHash('sha256').update(`forge-infrastructure:${rootCode}`).digest('hex').slice(0, 24);
   return { eligible: true, rootCode, fingerprint, reason: `eligible Forge infrastructure root ${rootCode}` };
@@ -234,7 +252,6 @@ function actionableEvidence(event: RuntimeEntityEvent, rootCode: string, ordinal
   const observationId = typeof data.observationId === 'string' ? data.observationId : event.eventId;
   const source = typeof data.source === 'string' ? data.source : 'unknown';
   const affectedRepo = typeof data.affectedRepoId === 'string' ? data.affectedRepoId : undefined;
-  const workId = typeof data.workId === 'string' ? data.workId : undefined;
   return {
     evidenceId: `FAILOBS-${createHash('sha256').update(observationId).digest('hex').slice(0, 24)}`,
     title: `recurrent Forge failure ${rootCode}`,
@@ -242,23 +259,30 @@ function actionableEvidence(event: RuntimeEntityEvent, rootCode: string, ordinal
       `Occurrence ${ordinal} for ${rootCode}.`,
       `source=${source}`,
       ...(affectedRepo ? [`affectedRepo=${affectedRepo}`] : []),
-      ...(workId ? [`work=${workId}`] : []),
       `observation=${observationId}`,
-    ].join(' ').slice(0, 1_000),
+    ]
+      .join(' ')
+      .slice(0, 1_000),
     detailLevel: 'summary' as const,
   };
 }
 
 function gitHead(root: string): string | undefined {
   const result = spawnSync('git', ['-C', root, 'rev-parse', '--verify', 'HEAD'], {
-    encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 10_000,
   });
   const head = result.status === 0 ? result.stdout.trim() : '';
   return /^[a-f0-9]{40}$/i.test(head) ? head : undefined;
 }
 
 function samePath(left: string, right: string): boolean {
-  try { return realpathSync(left) === realpathSync(right); } catch { return resolve(left) === resolve(right); }
+  try {
+    return realpathSync(left) === realpathSync(right);
+  } catch {
+    return resolve(left) === resolve(right);
+  }
 }
 
 /**
@@ -275,10 +299,12 @@ export function resolveRuntimeSourceRepairRepository(
 ): RepositoryRecord | undefined {
   const root = runtimeSourceRoot?.trim();
   if (!root) return undefined;
-  const repositories = listRepositories(controllerHome).filter((repository) => repository.enabled && !repository.removedAt);
-  const exact = repositories.filter((repository) => repository.checkouts.some((checkout) => (
-    checkout.lifecycle !== 'removed' && samePath(checkout.canonicalRoot, root)
-  )));
+  const repositories = listRepositories(controllerHome).filter(
+    (repository) => repository.enabled && !repository.removedAt,
+  );
+  const exact = repositories.filter((repository) =>
+    repository.checkouts.some((checkout) => checkout.lifecycle !== 'removed' && samePath(checkout.canonicalRoot, root)),
+  );
   if (exact.length === 1) return selectRepositoryCheckout(exact[0]!, exact[0]!.activeCheckoutId);
   if (exact.length > 1) return undefined;
 
@@ -305,7 +331,9 @@ function incidentEvidence(incident: PersistedMcpIncident, rootCode: string, ordi
       `tool=${incident.tool}`,
       `trace=${incident.traceId}`,
       ...(incident.repoId ? [`affectedRepo=${incident.repoId}`] : []),
-    ].join(' ').slice(0, 1_000),
+    ]
+      .join(' ')
+      .slice(0, 1_000),
     detailLevel: 'summary' as const,
   };
 }
@@ -331,18 +359,24 @@ function registerRecurringForgeRepair(input: {
   }
   if (input.occurrenceCount < RECURRENCE_THRESHOLD) {
     return {
-      eligible: true, recurrent: false, occurrenceCount: input.occurrenceCount,
-      fingerprint: classification.fingerprint, rootCode: classification.rootCode,
+      eligible: true,
+      recurrent: false,
+      occurrenceCount: input.occurrenceCount,
+      fingerprint: classification.fingerprint,
+      rootCode: classification.rootCode,
       reason: `waiting for ${RECURRENCE_THRESHOLD} occurrences within ${RECURRENCE_WINDOW_MS / 60_000} minutes`,
     };
   }
 
-  const repairRepository = input.repairRepository
-    ?? resolveRuntimeSourceRepairRepository(input.controllerHome, input.runtimeSourceRoot);
+  const repairRepository =
+    input.repairRepository ?? resolveRuntimeSourceRepairRepository(input.controllerHome, input.runtimeSourceRoot);
   if (!repairRepository) {
     return {
-      eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
-      fingerprint: classification.fingerprint, rootCode: classification.rootCode,
+      eligible: true,
+      recurrent: true,
+      occurrenceCount: input.occurrenceCount,
+      fingerprint: classification.fingerprint,
+      rootCode: classification.rootCode,
       reason: 'runtime source authority could not be mapped unambiguously to one registered repository',
     };
   }
@@ -358,7 +392,8 @@ function registerRecurringForgeRepair(input: {
     fingerprint: classification.fingerprint,
     rootCode: classification.rootCode,
     repairRepoId: repairRepository.repoId,
-    reason: 'recurrent Forge incident recorded; automatic Work promotion is retired and follow-up belongs to Issue/Requirement/Run authorities',
+    reason:
+      'recurrent Forge incident recorded; automatic Work promotion is retired and follow-up belongs to Issue/Requirement/Run authorities',
   };
 }
 
@@ -395,11 +430,15 @@ export function maybeRegisterForgeActionableFailureRepair(input: {
 
   const runtimeSourceRoot = input.runtimeSourceRoot ?? activeRuntimeSourceRoot(input.controllerHome);
   const repairRepository = resolveRuntimeSourceRepairRepository(input.controllerHome, runtimeSourceRoot);
-  if (!repairRepository) return {
-    eligible: true, recurrent: false, occurrenceCount: 0,
-    fingerprint: classification.fingerprint, rootCode: classification.rootCode,
-    reason: 'runtime source authority could not be mapped unambiguously to one registered repository',
-  };
+  if (!repairRepository)
+    return {
+      eligible: true,
+      recurrent: false,
+      occurrenceCount: 0,
+      fingerprint: classification.fingerprint,
+      rootCode: classification.rootCode,
+      reason: 'runtime source authority could not be mapped unambiguously to one registered repository',
+    };
 
   const nowMs = input.now?.() ?? Date.now();
   const observedAt = input.observation.at?.trim() || new Date(nowMs).toISOString();
@@ -419,7 +458,6 @@ export function maybeRegisterForgeActionableFailureRepair(input: {
         message: input.observation.message.slice(0, 2_000),
         observedAt,
         ...(input.observation.repoId ? { affectedRepoId: input.observation.repoId } : {}),
-        ...(input.observation.workId ? { workId: input.observation.workId } : {}),
       },
     });
   }
@@ -440,13 +478,14 @@ export function maybeRegisterFailedReleaseSessionRepairs(input: {
   runtimeSourceRoot?: string;
   now?: () => number;
 }): ForgeIncidentRepairRegistration[] {
-  return listReleaseSessions(input.controllerHome, { maxEntries: 128 }).sessions
-    .filter((session) => session.phase === 'failed')
+  return listReleaseSessions(input.controllerHome, { maxEntries: 128 })
+    .sessions.filter((session) => session.phase === 'failed')
     .slice(-32)
     .map((session) => {
       const lastReceipt = session.receipts.at(-1);
-      const message = lastReceipt?.summary?.trim()
-        || `ReleaseSession ${session.sessionId} entered failed phase without a diagnostic receipt.`;
+      const message =
+        lastReceipt?.summary?.trim() ||
+        `ReleaseSession ${session.sessionId} entered failed phase without a diagnostic receipt.`;
       return maybeRegisterForgeActionableFailureRepair({
         controllerHome: input.controllerHome,
         runtimeSourceRoot: input.runtimeSourceRoot,

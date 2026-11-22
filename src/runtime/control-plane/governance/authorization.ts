@@ -18,8 +18,18 @@ export type AuthorizationRiskClass =
   | 'outside_repository';
 
 export type AuthorizationDecision =
-  | { decision: 'allow'; source: 'policy' | 'full_access' | 'goal_delegation' | 'gpt_risk_delegate' | 'user_confirmation'; reason: string }
-  | { decision: 'user_confirmation_required'; approvalRequestId: string; humanSummary: string; consequences: string[]; continuation: string }
+  | {
+      decision: 'allow';
+      source: 'policy' | 'full_access' | 'goal_delegation' | 'gpt_risk_delegate' | 'user_confirmation';
+      reason: string;
+    }
+  | {
+      decision: 'user_confirmation_required';
+      approvalRequestId: string;
+      humanSummary: string;
+      consequences: string[];
+      continuation: string;
+    }
   | { decision: 'deny'; reason: string };
 
 export interface GoalDelegation {
@@ -42,8 +52,6 @@ export interface AuthorizationRequestRecord {
   repositoryId: string;
   sessionId?: string;
   principalId?: string;
-  /** Historical read-only provenance from pre-#483 approval records. New requests never write this field. */
-  workId?: string;
   goalId?: string;
   command?: string | string[];
   approvalToken?: string;
@@ -118,11 +126,14 @@ function scopeMatches(context: AuthorizationContext): boolean {
 
 function delegationMatches(context: AuthorizationContext): boolean {
   const delegation = context.delegation;
-  if (!delegation || delegation.sessionId !== context.sessionId || delegation.repositoryId !== context.repositoryId) return false;
-  if (delegation.goalId && delegation.goalId !== context.goalId && delegation.goalId !== context.boundGoalId) return false;
+  if (!delegation || delegation.sessionId !== context.sessionId || delegation.repositoryId !== context.repositoryId)
+    return false;
+  if (delegation.goalId && delegation.goalId !== context.goalId && delegation.goalId !== context.boundGoalId)
+    return false;
   if (delegation.permissionSnapshotVersion !== context.permissionSnapshotVersion) return false;
   if (delegation.expiresAt && Date.parse(delegation.expiresAt) <= Date.now()) return false;
-  if (delegation.deniedRiskClasses.includes(context.risk) || !delegation.allowedRiskClasses.includes(context.risk)) return false;
+  if (delegation.deniedRiskClasses.includes(context.risk) || !delegation.allowedRiskClasses.includes(context.risk))
+    return false;
   return scopeMatches(context);
 }
 
@@ -143,10 +154,7 @@ function requestDecision(context: AuthorizationContext, reason: string): Authori
     risk: context.risk,
     permissionSnapshotVersion: context.permissionSnapshotVersion,
     humanSummary: reason,
-    consequences: [
-      `Operation risk class: ${context.risk}`,
-      `Repository: ${context.repositoryId}`,
-    ],
+    consequences: [`Operation risk class: ${context.risk}`, `Repository: ${context.repositoryId}`],
     continuation: context.command
       ? `After confirming approvalRequestId=${approvalRequestId}, retry the same command with the returned approval request; changed commands require a new approval.`
       : `After confirming approvalRequestId=${approvalRequestId}, retry the original operation in this session.`,
@@ -154,51 +162,109 @@ function requestDecision(context: AuthorizationContext, reason: string): Authori
     createdAt: new Date().toISOString(),
   };
   writeJsonAtomic(requestPath(context.controllerHome, context.repositoryId, approvalRequestId), record);
-  return { decision: 'user_confirmation_required', approvalRequestId, humanSummary: record.humanSummary, consequences: record.consequences, continuation: record.continuation };
+  return {
+    decision: 'user_confirmation_required',
+    approvalRequestId,
+    humanSummary: record.humanSummary,
+    consequences: record.consequences,
+    continuation: record.continuation,
+  };
 }
 
 export function decideAuthorization(context: AuthorizationContext): AuthorizationDecision {
-  if (context.risk === 'secret_access') return { decision: 'deny', reason: 'Credential, keychain, token, and raw secret access is always denied.' };
-  if (!scopeMatches(context)) return requestDecision(context, 'The operation is outside the active repository, checkout/worktree, or Goal scope.');
+  if (context.risk === 'secret_access')
+    return { decision: 'deny', reason: 'Credential, keychain, token, and raw secret access is always denied.' };
+  if (!scopeMatches(context))
+    return requestDecision(
+      context,
+      'The operation is outside the active repository, checkout/worktree, or Goal scope.',
+    );
   if (['outside_repository', 'destructive'].includes(context.risk)) {
-    return context.approvedByUser ? { decision: 'allow', source: 'user_confirmation', reason: 'The user explicitly confirmed the scoped catastrophic operation.' } : requestDecision(context, `Explicit user confirmation is required for ${context.risk}.`);
+    return context.approvedByUser
+      ? {
+          decision: 'allow',
+          source: 'user_confirmation',
+          reason: 'The user explicitly confirmed the scoped catastrophic operation.',
+        }
+      : requestDecision(context, `Explicit user confirmation is required for ${context.risk}.`);
   }
   if (delegationMatches(context)) {
-    return { decision: 'allow', source: context.delegation?.source ?? 'gpt_risk_delegate', reason: 'The operation is within the current Goal and repository scope.' };
+    return {
+      decision: 'allow',
+      source: context.delegation?.source ?? 'gpt_risk_delegate',
+      reason: 'The operation is within the current Goal and repository scope.',
+    };
   }
-  return { decision: 'allow', source: 'policy', reason: 'Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects.' };
+  return {
+    decision: 'allow',
+    source: 'policy',
+    reason: 'Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects.',
+  };
 }
 
-export function createGoalDelegation(input: Omit<GoalDelegation, 'schemaVersion' | 'createdAt' | 'version'> & { expiresAt?: string }): GoalDelegation {
+export function createGoalDelegation(
+  input: Omit<GoalDelegation, 'schemaVersion' | 'createdAt' | 'version'> & { expiresAt?: string },
+): GoalDelegation {
   return { schemaVersion: 1, ...input, createdAt: new Date().toISOString(), version: 1 };
 }
 
-export function readAuthorizationRequest(controllerHome: string, repositoryId: string, approvalRequestId: string): AuthorizationRequestRecord {
+export function readAuthorizationRequest(
+  controllerHome: string,
+  repositoryId: string,
+  approvalRequestId: string,
+): AuthorizationRequestRecord {
   const path = readableRequestPath(controllerHome, repositoryId, approvalRequestId);
   if (!existsSync(path)) throw new Error(`APPROVAL_REQUEST_NOT_FOUND: ${approvalRequestId}`);
   const request = readJsonFile<AuthorizationRequestRecord>(path);
-  if (request.repositoryId !== repositoryId || request.approvalRequestId !== approvalRequestId) throw new Error('APPROVAL_REQUEST_IDENTITY_MISMATCH');
+  if (request.repositoryId !== repositoryId || request.approvalRequestId !== approvalRequestId)
+    throw new Error('APPROVAL_REQUEST_IDENTITY_MISMATCH');
   return request;
 }
 
-export function resolveAuthorizationRequest(input: { controllerHome: string; repositoryId: string; approvalRequestId: string; sessionId?: string; principalId?: string; permissionSnapshotVersion: number; confirm: boolean }): AuthorizationRequestRecord {
+export function resolveAuthorizationRequest(input: {
+  controllerHome: string;
+  repositoryId: string;
+  approvalRequestId: string;
+  sessionId?: string;
+  principalId?: string;
+  permissionSnapshotVersion: number;
+  confirm: boolean;
+}): AuthorizationRequestRecord {
   const request = readAuthorizationRequest(input.controllerHome, input.repositoryId, input.approvalRequestId);
-  if (!input.confirm) throw new Error('USER_CONFIRMATION_REQUIRED: confirm_authorization=true is required to resolve the approval request');
-  if (request.status === 'invalidated') throw new Error(`APPROVAL_REQUEST_INVALIDATED: ${request.invalidatedReason ?? 'approval request is stale'}`);
+  if (!input.confirm)
+    throw new Error(
+      'USER_CONFIRMATION_REQUIRED: confirm_authorization=true is required to resolve the approval request',
+    );
+  if (request.status === 'invalidated')
+    throw new Error(`APPROVAL_REQUEST_INVALIDATED: ${request.invalidatedReason ?? 'approval request is stale'}`);
   if (request.sessionId && request.sessionId !== input.sessionId) throw new Error('APPROVAL_REQUEST_SESSION_MISMATCH');
-  if (request.principalId && request.principalId !== input.principalId) throw new Error('APPROVAL_REQUEST_PRINCIPAL_MISMATCH');
-  if (request.permissionSnapshotVersion !== input.permissionSnapshotVersion) throw new Error('APPROVAL_REQUEST_STALE_PERMISSION');
+  if (request.principalId && request.principalId !== input.principalId)
+    throw new Error('APPROVAL_REQUEST_PRINCIPAL_MISMATCH');
+  if (request.permissionSnapshotVersion !== input.permissionSnapshotVersion)
+    throw new Error('APPROVAL_REQUEST_STALE_PERMISSION');
   const resolved = { ...request, status: 'resolved' as const, resolvedAt: new Date().toISOString() };
   writeJsonAtomic(requestPath(input.controllerHome, input.repositoryId, input.approvalRequestId), resolved);
   return resolved;
 }
 
-export function assertResolvedAuthorization(input: { controllerHome: string; repositoryId: string; approvalRequestId: string; sessionId?: string; principalId?: string; permissionSnapshotVersion: number; command?: string | string[] }): AuthorizationRequestRecord {
+export function assertResolvedAuthorization(input: {
+  controllerHome: string;
+  repositoryId: string;
+  approvalRequestId: string;
+  sessionId?: string;
+  principalId?: string;
+  permissionSnapshotVersion: number;
+  command?: string | string[];
+}): AuthorizationRequestRecord {
   const request = readAuthorizationRequest(input.controllerHome, input.repositoryId, input.approvalRequestId);
-  if (request.status !== 'resolved') throw new Error('APPROVAL_REQUEST_NOT_RESOLVED: confirm the approval request in the current conversation first');
+  if (request.status !== 'resolved')
+    throw new Error('APPROVAL_REQUEST_NOT_RESOLVED: confirm the approval request in the current conversation first');
   if (request.sessionId && request.sessionId !== input.sessionId) throw new Error('APPROVAL_REQUEST_SESSION_MISMATCH');
-  if (request.principalId && request.principalId !== input.principalId) throw new Error('APPROVAL_REQUEST_PRINCIPAL_MISMATCH');
-  if (request.permissionSnapshotVersion !== input.permissionSnapshotVersion) throw new Error('APPROVAL_REQUEST_STALE_PERMISSION');
-  if (request.command && input.command && JSON.stringify(request.command) !== JSON.stringify(input.command)) throw new Error('APPROVAL_REQUEST_COMMAND_CHANGED: request a new approval for changed parameters');
+  if (request.principalId && request.principalId !== input.principalId)
+    throw new Error('APPROVAL_REQUEST_PRINCIPAL_MISMATCH');
+  if (request.permissionSnapshotVersion !== input.permissionSnapshotVersion)
+    throw new Error('APPROVAL_REQUEST_STALE_PERMISSION');
+  if (request.command && input.command && JSON.stringify(request.command) !== JSON.stringify(input.command))
+    throw new Error('APPROVAL_REQUEST_COMMAND_CHANGED: request a new approval for changed parameters');
   return request;
 }

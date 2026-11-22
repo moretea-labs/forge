@@ -26,7 +26,12 @@ import {
   resolveTaskDependencies,
 } from './task-status-resolver';
 import { tryAppendControllerWorklogEvent } from '../../runtime/evidence/controller-worklog';
-import { completionEvidenceComplete, executionScopesConflict, taskExecutionPolicy, verificationEvidencePassed } from './execution-policy';
+import {
+  completionEvidenceComplete,
+  executionScopesConflict,
+  taskExecutionPolicy,
+  verificationEvidencePassed,
+} from './execution-policy';
 import { resolveCompletionTargetBranch } from './completion-target';
 import { listControllerChecks } from '../../runtime/execution/process-runtime/check-runner';
 import { normalizeCheckIds } from '../../runtime/control-plane/facade/check-normalization';
@@ -48,7 +53,14 @@ const ISSUE_SUMMARY_NOTE_CHARS = 280;
 const ISSUE_SUMMARY_RUN_ID_LIMIT = 10;
 
 function slugify(value: string): string {
-  return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'issue';
+  return (
+    value
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 64) || 'issue'
+  );
 }
 
 function dateStamp(date = new Date()): string {
@@ -107,9 +119,7 @@ function renderGitHubLink(link?: GitHubIssueLink): string[] {
 }
 
 function inlineArtifactText(value: unknown): string {
-  return typeof value === 'string'
-    ? value.replace(/\s+/g, ' ').trim()
-    : '';
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 }
 
 function renderRelatedArtifact(item: unknown): string {
@@ -131,21 +141,24 @@ function renderRelatedArtifact(item: unknown): string {
 }
 
 function renderIssueMarkdown(issue: ControllerIssue): string {
-  const taskLines = issue.tasks.length === 0
-    ? ['- No tasks planned yet.']
-    : issue.tasks.flatMap((task) => [
-      `### ${task.id} — ${task.title}`,
-      '',
-      `- Status: \`${task.status}\``,
-      `- Objective: ${task.objective}`,
-      `- Depends on: ${task.dependsOn.length ? task.dependsOn.map((item) => `\`${item}\``).join(', ') : 'none'}`,
-      `- Allowed paths: ${task.allowedPaths.length ? task.allowedPaths.map((item) => `\`${item}\``).join(', ') : 'not defined'}`,
-      `- Checks: ${task.checks.length ? task.checks.map((item) => `\`${item}\``).join(', ') : 'not defined'}`,
-      `- Execution hint: ${task.recommendedAgent ? `agent / ${task.recommendedAgent}` : 'selected at runtime'}`,
-      ...(task.github ? [`- GitHub: ${task.github.url}`] : []),
-      ...(task.supersededBy?.length ? [`- Superseded by: ${task.supersededBy.map((item) => `\`${item}\``).join(', ')}`] : []),
-      '',
-    ]);
+  const taskLines =
+    issue.tasks.length === 0
+      ? ['- No tasks planned yet.']
+      : issue.tasks.flatMap((task) => [
+          `### ${task.id} — ${task.title}`,
+          '',
+          `- Status: \`${task.status}\``,
+          `- Objective: ${task.objective}`,
+          `- Depends on: ${task.dependsOn.length ? task.dependsOn.map((item) => `\`${item}\``).join(', ') : 'none'}`,
+          `- Allowed paths: ${task.allowedPaths.length ? task.allowedPaths.map((item) => `\`${item}\``).join(', ') : 'not defined'}`,
+          `- Checks: ${task.checks.length ? task.checks.map((item) => `\`${item}\``).join(', ') : 'not defined'}`,
+          `- Execution hint: ${task.recommendedAgent ? `agent / ${task.recommendedAgent}` : 'selected at runtime'}`,
+          ...(task.github ? [`- GitHub: ${task.github.url}`] : []),
+          ...(task.supersededBy?.length
+            ? [`- Superseded by: ${task.supersededBy.map((item) => `\`${item}\``).join(', ')}`]
+            : []),
+          '',
+        ]);
   return [
     '---',
     `id: ${JSON.stringify(issue.id)}`,
@@ -170,7 +183,9 @@ function renderIssueMarkdown(issue: ControllerIssue): string {
     '',
     '## Acceptance Criteria',
     '',
-    ...(issue.acceptanceCriteria.length ? issue.acceptanceCriteria.map((item) => `- [ ] ${item}`) : ['- [ ] Define issue-level acceptance criteria.']),
+    ...(issue.acceptanceCriteria.length
+      ? issue.acceptanceCriteria.map((item) => `- [ ] ${item}`)
+      : ['- [ ] Define issue-level acceptance criteria.']),
     '',
     '## GitHub',
     '',
@@ -188,6 +203,7 @@ function renderIssueMarkdown(issue: ControllerIssue): string {
 
 function writeIssue(repoRoot: string, issue: ControllerIssue): ControllerIssue {
   assertLegacyIssueWritesAllowed(repoRoot, issue);
+  normalizeLoadedIssue(issue);
   const root = join(repoRoot, issueRoot(issue));
   mkdirSync(root, { recursive: true });
   issue.schemaVersion = 5;
@@ -210,23 +226,28 @@ function writeIssue(repoRoot: string, issue: ControllerIssue): ControllerIssue {
 
 function normalizeLoadedIssue(issue: ControllerIssue): ControllerIssue {
   issue.schemaVersion = issue.schemaVersion ?? 1;
-  issue.tasks = (issue.tasks ?? []).map((task) => ({
-    ...task,
-    allowedPaths: task.allowedPaths ?? [],
-    forbiddenPaths: task.forbiddenPaths ?? [],
-    checks: task.checks ?? [],
-    acceptanceCriteria: task.acceptanceCriteria ?? [],
-    risk: task.risk ?? 'medium',
-    recommendedAgent: task.recommendedAgent,
-    notes: task.notes ?? [],
-    runIds: task.runIds ?? [],
-  }));
+  issue.tasks = (issue.tasks ?? []).map((task) => {
+    const { workId: _retiredWorkId, ...rest } = task as ControllerTask & { workId?: unknown };
+    return {
+      ...rest,
+      allowedPaths: rest.allowedPaths ?? [],
+      forbiddenPaths: rest.forbiddenPaths ?? [],
+      checks: rest.checks ?? [],
+      acceptanceCriteria: rest.acceptanceCriteria ?? [],
+      risk: rest.risk ?? 'medium',
+      recommendedAgent: rest.recommendedAgent,
+      notes: rest.notes ?? [],
+      runIds: rest.runIds ?? [],
+    };
+  });
   return issue;
 }
 
 export function listIssues(repoRoot: string, options: { includeEphemeral?: boolean } = {}): ControllerIssue[] {
   return issueFiles(repoRoot, options.includeEphemeral ?? false)
-    .map(({ root, name }) => normalizeLoadedIssue(JSON.parse(readFileSync(join(repoRoot, root, name), 'utf-8')) as ControllerIssue))
+    .map(({ root, name }) =>
+      normalizeLoadedIssue(JSON.parse(readFileSync(join(repoRoot, root, name), 'utf-8')) as ControllerIssue),
+    )
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
@@ -312,13 +333,7 @@ function summarizeVerification(verification?: TaskVerification) {
 }
 
 function summarizeEffectiveTaskView(task: ReturnType<typeof projectIssueEffectiveView>['tasks'][number]) {
-  const {
-    notes,
-    runIds,
-    verification,
-    historicalRunOutcomes,
-    ...rest
-  } = task;
+  const { notes, runIds, verification, historicalRunOutcomes, ...rest } = task;
   return {
     ...rest,
     notes: summarizeNotes(notes),
@@ -334,11 +349,7 @@ export function getIssueEffectiveView(repoRoot: string, id: string) {
   return projectIssueEffectiveView(repoRoot, getIssue(repoRoot, id));
 }
 
-export function getIssueReadView(
-  repoRoot: string,
-  id: string,
-  detailLevel: 'summary' | 'full' = 'summary',
-) {
+export function getIssueReadView(repoRoot: string, id: string, detailLevel: 'summary' | 'full' = 'summary') {
   const frozen = frozenLegacyIssueProjection(repoRoot, id, detailLevel);
   if (frozen) return frozen;
   const full = getIssueEffectiveView(repoRoot, id);
@@ -444,38 +455,67 @@ function buildTaskReadiness(
   if (task.risk === 'high' && task.recommendedAgent === 'github-copilot') {
     add('HIGH_RISK_CLOUD_AGENT', 'warning', 'High-risk cloud execution requires explicit review before merge.');
   }
-  if (state.multipleActiveRuns) add('MULTIPLE_ACTIVE_RUNS', 'blocker', `Task has multiple active Runs: ${state.activeRunIds.join(', ')}.`);
-  else if (state.activeRunIds.length > 0) add('ACTIVE_RUN_CONFLICT', 'blocker', `Task already has active Run evidence: ${state.activeRunIds.join(', ')}.`);
+  if (state.multipleActiveRuns)
+    add('MULTIPLE_ACTIVE_RUNS', 'blocker', `Task has multiple active Runs: ${state.activeRunIds.join(', ')}.`);
+  else if (state.activeRunIds.length > 0)
+    add('ACTIVE_RUN_CONFLICT', 'blocker', `Task already has active Run evidence: ${state.activeRunIds.join(', ')}.`);
 
   if (policy.executionClass !== 'read_only' && task.allowedPaths.length > 0) {
     for (const run of options.activeRuns ?? readActiveRunEvidence(repoRoot)) {
       if (run.issueId === issue.id && run.taskId === task.id) continue;
       if (!run.executionClass || !run.allowedPaths) continue;
-      if (!executionScopesConflict(
-        { executionClass: policy.executionClass, allowedPaths: task.allowedPaths },
-        { executionClass: run.executionClass, allowedPaths: run.allowedPaths },
-      )) continue;
-      add('ACTIVE_SCOPE_CONFLICT', 'blocker', `Declared write scope overlaps active Run ${run.runId} (${run.issueId}/${run.taskId}).`);
+      if (
+        !executionScopesConflict(
+          { executionClass: policy.executionClass, allowedPaths: task.allowedPaths },
+          { executionClass: run.executionClass, allowedPaths: run.allowedPaths },
+        )
+      )
+        continue;
+      add(
+        'ACTIVE_SCOPE_CONFLICT',
+        'blocker',
+        `Declared write scope overlaps active Run ${run.runId} (${run.issueId}/${run.taskId}).`,
+      );
     }
   }
 
-  const retryAuthorized = state.requiresExplicitRetry && state.retryable && options.retryFromRunId === state.latestRunId;
+  const retryAuthorized =
+    state.requiresExplicitRetry && state.retryable && options.retryFromRunId === state.latestRunId;
   if (state.requiresExplicitRetry && !retryAuthorized) {
-    add('EXPLICIT_RETRY_REQUIRED', 'blocker', `Latest Run ${state.latestRunId ?? 'unknown'} requires an explicit retry.`);
+    add(
+      'EXPLICIT_RETRY_REQUIRED',
+      'blocker',
+      `Latest Run ${state.latestRunId ?? 'unknown'} requires an explicit retry.`,
+    );
   } else if (!state.dispatchable && !retryAuthorized) {
-    add('TASK_NOT_DISPATCHABLE', 'blocker', `Effective status ${state.effectiveStatus} is not dispatchable: ${state.reason}`);
+    add(
+      'TASK_NOT_DISPATCHABLE',
+      'blocker',
+      `Effective status ${state.effectiveStatus} is not dispatchable: ${state.reason}`,
+    );
   }
 
   const dependencies = resolveTaskDependencies(issue, task, states);
-  for (const id of dependencies.pendingTaskIds) add('PENDING_DEPENDENCY', 'blocker', `Dependency ${id} is not complete.`);
-  for (const id of dependencies.cancelledTaskIds) add('CANCELLED_DEPENDENCY', 'blocker', `Dependency ${id} is cancelled or inactive.`);
-  for (const id of dependencies.missingTaskIds) add('MISSING_DEPENDENCY', 'blocker', `Dependency ${id} does not exist.`);
+  for (const id of dependencies.pendingTaskIds)
+    add('PENDING_DEPENDENCY', 'blocker', `Dependency ${id} is not complete.`);
+  for (const id of dependencies.cancelledTaskIds)
+    add('CANCELLED_DEPENDENCY', 'blocker', `Dependency ${id} is cancelled or inactive.`);
+  for (const id of dependencies.missingTaskIds)
+    add('MISSING_DEPENDENCY', 'blocker', `Dependency ${id} does not exist.`);
   for (const migration of dependencies.supersededMigrations) {
-    add('SUPERSEDED_DEPENDENCY_MIGRATION', 'warning', `Dependency ${migration.dependencyTaskId} was superseded by ${migration.replacementTaskIds.join(', ')}; replacement states are authoritative.`);
+    add(
+      'SUPERSEDED_DEPENDENCY_MIGRATION',
+      'warning',
+      `Dependency ${migration.dependencyTaskId} was superseded by ${migration.replacementTaskIds.join(', ')}; replacement states are authoritative.`,
+    );
   }
 
   if (policy.approval === 'manual-only' && !options.approveDestructive) {
-    add('DESTRUCTIVE_APPROVAL_REQUIRED', 'blocker', 'A destructive or irreversible operation requires explicit authorization.');
+    add(
+      'DESTRUCTIVE_APPROVAL_REQUIRED',
+      'blocker',
+      'A destructive or irreversible operation requires explicit authorization.',
+    );
   }
 
   const approvalBlockerCodes = new Set(['DESTRUCTIVE_APPROVAL_REQUIRED']);
@@ -526,9 +566,6 @@ function refreshReadiness(repoRoot: string, issue: ControllerIssue): void {
   const states = resolveIssueTaskStates(issue, readIssueRunEvidence(repoRoot, issue));
   const activeRuns = readActiveRunEvidence(repoRoot);
   for (const task of issue.tasks) {
-    // A Work-backed Task is a compatibility projection. Its status is owned by
-    // Work and must never be rewritten by legacy readiness refresh logic.
-    if (task.workId) continue;
     const state = states.get(task.id)!;
     if (state.terminal || state.inactive || state.requiresExplicitRetry || state.activeRunIds.length > 0) continue;
     if (!['planned', 'ready', 'launch_blocked'].includes(task.status)) continue;
@@ -542,11 +579,12 @@ function refreshReadiness(repoRoot: string, issue: ControllerIssue): void {
     const nonApprovalBlockers = readiness.blockers.filter(
       (entry) => entry.code !== 'DESTRUCTIVE_APPROVAL_REQUIRED' && !transitionalBlockerCodes.has(entry.code),
     );
-    task.status = nonApprovalBlockers.length === 0
-      ? 'ready'
-      : nonApprovalBlockers.some((entry) => ['CANCELLED_DEPENDENCY', 'MISSING_DEPENDENCY'].includes(entry.code))
-        ? 'launch_blocked'
-        : 'planned';
+    task.status =
+      nonApprovalBlockers.length === 0
+        ? 'ready'
+        : nonApprovalBlockers.some((entry) => ['CANCELLED_DEPENDENCY', 'MISSING_DEPENDENCY'].includes(entry.code))
+          ? 'launch_blocked'
+          : 'planned';
   }
 
   const refreshedStates = resolveIssueTaskStates(issue, readIssueRunEvidence(repoRoot, issue));
@@ -554,46 +592,79 @@ function refreshReadiness(repoRoot: string, issue: ControllerIssue): void {
     const state = refreshedStates.get(task.id)!;
     return !state.terminal && !state.inactive;
   });
-  if (issue.tasks.length > 0 && issue.tasks.every((task) => refreshedStates.get(task.id)?.effectiveStatus === 'done')) issue.status = 'done';
-  else if (active.some((task) => ['queued', 'running', 'waiting_for_user', 'review', 'verifying', 'ready_to_integrate', 'integrating', 'integration_blocked', 'integrated', 'cleanup_pending', 'cleanup_blocked', 'changes_requested', 'verified', 'done'].includes(refreshedStates.get(task.id)!.effectiveStatus))) issue.status = 'in_progress';
+  if (issue.tasks.length > 0 && issue.tasks.every((task) => refreshedStates.get(task.id)?.effectiveStatus === 'done'))
+    issue.status = 'done';
+  else if (
+    active.some((task) =>
+      [
+        'queued',
+        'running',
+        'waiting_for_user',
+        'review',
+        'verifying',
+        'ready_to_integrate',
+        'integrating',
+        'integration_blocked',
+        'integrated',
+        'cleanup_pending',
+        'cleanup_blocked',
+        'changes_requested',
+        'verified',
+        'done',
+      ].includes(refreshedStates.get(task.id)!.effectiveStatus),
+    )
+  )
+    issue.status = 'in_progress';
   else {
-    const executable = active.some((task) => buildTaskReadiness(repoRoot, issue, task, refreshedStates, {
-      approveRisk: true,
-      approveDestructive: true,
-      activeRuns,
-    }).ready);
+    const executable = active.some(
+      (task) =>
+        buildTaskReadiness(repoRoot, issue, task, refreshedStates, {
+          approveRisk: true,
+          approveDestructive: true,
+          activeRuns,
+        }).ready,
+    );
     issue.status = executable || active.length > 0 ? 'planned' : 'launch_blocked';
   }
 }
-export function createIssue(repoRoot: string, input: {
-  title: string;
-  kind?: IssueKind;
-  summary?: string;
-  goals?: string[];
-  nonGoals?: string[];
-  acceptanceCriteria?: string[];
-  relatedArtifacts?: string[];
-  tasks?: TaskDraft[];
-  allowWhileFocused?: boolean;
-  allowDuplicate?: boolean;
-  allowWhenPaused?: boolean;
-  ephemeral?: boolean;
-  ephemeralOwnerJobId?: string;
-}): ControllerIssue {
+export function createIssue(
+  repoRoot: string,
+  input: {
+    title: string;
+    kind?: IssueKind;
+    summary?: string;
+    goals?: string[];
+    nonGoals?: string[];
+    acceptanceCriteria?: string[];
+    relatedArtifacts?: string[];
+    tasks?: TaskDraft[];
+    allowWhileFocused?: boolean;
+    allowDuplicate?: boolean;
+    allowWhenPaused?: boolean;
+    ephemeral?: boolean;
+    ephemeralOwnerJobId?: string;
+  },
+): ControllerIssue {
   if (!input.ephemeral) assertLegacyIssueWritesAllowed(repoRoot);
   const title = input.title.trim();
   if (!title) throw new Error('issue title is required');
   const projectState = loadControllerProjectState(repoRoot);
   const existingIssues = listIssues(repoRoot);
   const normalizedTitle = title.toLowerCase().replace(/[^a-z0-9\u3400-\u9fff]+/g, '');
-  const duplicate = existingIssues.find((entry) => !entry.archivedAt && !['done', 'cancelled'].includes(entry.status)
-    && entry.title.toLowerCase().replace(/[^a-z0-9\u3400-\u9fff]+/g, '') === normalizedTitle);
+  const duplicate = existingIssues.find(
+    (entry) =>
+      !entry.archivedAt &&
+      !['done', 'cancelled'].includes(entry.status) &&
+      entry.title.toLowerCase().replace(/[^a-z0-9\u3400-\u9fff]+/g, '') === normalizedTitle,
+  );
   // Duplicate and focus signals are governance hints, not execution gates.
   const duplicateHint = !input.ephemeral && duplicate && !input.allowDuplicate ? duplicate.id : undefined;
   if (!input.ephemeral && projectState.issueCreationMode === 'paused' && !input.allowWhenPaused) {
     throw new Error('Issue creation is paused; resume the creation policy or explicitly override it');
   }
-  const activeExisting = existingIssues.filter((entry) => !entry.archivedAt && !['done', 'cancelled'].includes(entry.status));
+  const activeExisting = existingIssues.filter(
+    (entry) => !entry.archivedAt && !['done', 'cancelled'].includes(entry.status),
+  );
   const focused = projectState.currentIssueId
     ? activeExisting.find((entry) => entry.id === projectState.currentIssueId)
     : undefined;
@@ -612,7 +683,9 @@ export function createIssue(repoRoot: string, input: {
     acceptanceCriteria: normalizeStrings(input.acceptanceCriteria),
     relatedArtifacts: normalizeStrings(input.relatedArtifacts),
     tasks: buildTasks(input.tasks ?? [], now),
-    ...(input.ephemeral ? { ephemeral: true, ephemeralOwnerJobId: input.ephemeralOwnerJobId?.trim() || undefined } : {}),
+    ...(input.ephemeral
+      ? { ephemeral: true, ephemeralOwnerJobId: input.ephemeralOwnerJobId?.trim() || undefined }
+      : {}),
     createdAt: now,
     updatedAt: now,
   };
@@ -640,34 +713,51 @@ export function createIssue(repoRoot: string, input: {
   return written;
 }
 
-export function setTaskDependencies(repoRoot: string, issueIdValue: string, taskId: string, dependsOn: string[]): ControllerIssue {
+export function setTaskDependencies(
+  repoRoot: string,
+  issueIdValue: string,
+  taskId: string,
+  dependsOn: string[],
+): ControllerIssue {
   assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
   assertIssueExecutionActive(issue, 'set_task_dependencies');
   const state = effectiveTaskState(repoRoot, issue, task);
-  if (state.terminal || state.inactive) throw new Error(`cannot change dependencies for effective status ${state.effectiveStatus}`);
+  if (state.terminal || state.inactive)
+    throw new Error(`cannot change dependencies for effective status ${state.effectiveStatus}`);
   task.dependsOn = normalizeStrings(dependsOn);
   validateTaskGraph(issue.tasks);
   task.updatedAt = new Date().toISOString();
   issue.updatedAt = task.updatedAt;
   refreshReadiness(repoRoot, issue);
   const written = writeIssue(repoRoot, issue);
-  tryAppendControllerWorklogEvent(repoRoot, { category: 'task', action: 'task_dependencies_changed', summary: `Updated dependencies for ${taskId}.`, issueId: issue.id, taskId, details: { dependsOn: task.dependsOn } });
+  tryAppendControllerWorklogEvent(repoRoot, {
+    category: 'task',
+    action: 'task_dependencies_changed',
+    summary: `Updated dependencies for ${taskId}.`,
+    issueId: issue.id,
+    taskId,
+    details: { dependsOn: task.dependsOn },
+  });
   return written;
 }
 
-export function updateIssue(repoRoot: string, id: string, patch: {
-  title?: string;
-  status?: IssueStatus;
-  summary?: string;
-  goals?: string[];
-  nonGoals?: string[];
-  acceptanceCriteria?: string[];
-  relatedArtifacts?: string[];
-  github?: GitHubIssueLink;
-}): ControllerIssue {
+export function updateIssue(
+  repoRoot: string,
+  id: string,
+  patch: {
+    title?: string;
+    status?: IssueStatus;
+    summary?: string;
+    goals?: string[];
+    nonGoals?: string[];
+    acceptanceCriteria?: string[];
+    relatedArtifacts?: string[];
+    github?: GitHubIssueLink;
+  },
+): ControllerIssue {
   assertLegacyIssueWritesAllowed(repoRoot, { id });
   const issue = getIssue(repoRoot, id);
   const previousStatus = issue.status;
@@ -687,7 +777,10 @@ export function updateIssue(repoRoot: string, id: string, patch: {
   tryAppendControllerWorklogEvent(repoRoot, {
     category: patch.github ? 'github' : 'issue',
     action: patch.github ? 'issue_github_linked' : 'issue_updated',
-    summary: patch.status && patch.status !== previousStatus ? `Issue ${issue.id} moved from ${previousStatus} to ${patch.status}.` : `Updated ${issue.id}: ${issue.title}`,
+    summary:
+      patch.status && patch.status !== previousStatus
+        ? `Issue ${issue.id} moved from ${previousStatus} to ${patch.status}.`
+        : `Updated ${issue.id}: ${issue.title}`,
     issueId: issue.id,
     statusFrom: previousStatus,
     statusTo: issue.status,
@@ -696,36 +789,41 @@ export function updateIssue(repoRoot: string, id: string, patch: {
   return written;
 }
 
-export function updateTask(repoRoot: string, issueIdValue: string, taskId: string, patch: {
-  status?: TaskStatus;
-  note?: string;
-  runId?: string;
-  github?: GitHubIssueLink;
-  verification?: TaskVerification;
-  transition?: 'normal' | 'run_sync' | 'retry' | 'restore';
-}): ControllerIssue {
+export function updateTask(
+  repoRoot: string,
+  issueIdValue: string,
+  taskId: string,
+  patch: {
+    status?: TaskStatus;
+    note?: string;
+    runId?: string;
+    github?: GitHubIssueLink;
+    verification?: TaskVerification;
+    transition?: 'normal' | 'run_sync' | 'retry' | 'restore';
+  },
+): ControllerIssue {
   assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
   const previousStatus = task.status;
   const previousState = resolveEffectiveTaskState({ issue, task, runs: readTaskRunEvidence(repoRoot, task) });
-  if (task.workId && patch.status !== undefined) {
-    throw new Error(`TASK_STATUS_WORK_OWNED: ${issue.id}/${task.id} is projected from Work ${task.workId}`);
-  }
-  if (task.workId && patch.verification !== undefined) {
-    throw new Error(`TASK_VERIFICATION_WORK_OWNED: ${issue.id}/${task.id} is projected from Work ${task.workId}`);
-  }
   if (patch.status && patch.status !== previousStatus) {
     const executableTarget = !['done', 'cancelled', 'superseded'].includes(patch.status);
     if ((task.supersededBy?.length ?? 0) > 0 && patch.status !== 'superseded') {
-      throw new Error(`cannot move superseded Task ${task.id} to ${patch.status}; use an explicit replacement/restore operation`);
+      throw new Error(
+        `cannot move superseded Task ${task.id} to ${patch.status}; use an explicit replacement/restore operation`,
+      );
     }
     if (previousState.issueLifecycleStatus !== 'active' && executableTarget) {
-      throw new Error(`cannot move Task ${task.id} to ${patch.status} while parent Issue is ${previousState.issueLifecycleStatus}`);
+      throw new Error(
+        `cannot move Task ${task.id} to ${patch.status} while parent Issue is ${previousState.issueLifecycleStatus}`,
+      );
     }
     if (['done', 'cancelled', 'superseded'].includes(previousStatus) && patch.transition !== 'restore') {
-      throw new Error(`explicit terminal Task ${task.id} cannot transition from ${previousStatus} to ${patch.status} without restore/reopen`);
+      throw new Error(
+        `explicit terminal Task ${task.id} cannot transition from ${previousStatus} to ${patch.status} without restore/reopen`,
+      );
     }
     if (patch.transition === 'run_sync' && (previousState.terminal || previousState.inactive)) {
       throw new Error(`Run reconciliation cannot override effective terminal state ${previousState.effectiveStatus}`);
@@ -741,12 +839,53 @@ export function updateTask(repoRoot: string, issueIdValue: string, taskId: strin
   refreshReadiness(repoRoot, issue);
   const written = writeIssue(repoRoot, issue);
   if (patch.status && patch.status !== previousStatus) {
-    tryAppendControllerWorklogEvent(repoRoot, { category: 'task', action: 'task_status_changed', summary: `${task.id} moved from ${previousStatus} to ${task.status}.`, issueId: issue.id, taskId: task.id, statusFrom: previousStatus, statusTo: task.status, details: { title: task.title } });
+    tryAppendControllerWorklogEvent(repoRoot, {
+      category: 'task',
+      action: 'task_status_changed',
+      summary: `${task.id} moved from ${previousStatus} to ${task.status}.`,
+      issueId: issue.id,
+      taskId: task.id,
+      statusFrom: previousStatus,
+      statusTo: task.status,
+      details: { title: task.title },
+    });
   }
-  if (patch.note?.trim()) tryAppendControllerWorklogEvent(repoRoot, { category: 'task', action: 'task_note_added', summary: patch.note.trim(), issueId: issue.id, taskId: task.id });
-  if (patch.runId?.trim()) tryAppendControllerWorklogEvent(repoRoot, { category: 'run', action: 'run_linked_to_task', summary: `Linked ${patch.runId.trim()} to ${task.id}.`, issueId: issue.id, taskId: task.id, runId: patch.runId.trim() });
-  if (patch.github) tryAppendControllerWorklogEvent(repoRoot, { category: 'github', action: 'task_github_linked', summary: `Linked ${task.id} to GitHub.`, issueId: issue.id, taskId: task.id, details: { url: patch.github.url } });
-  if (patch.verification) tryAppendControllerWorklogEvent(repoRoot, { category: 'verification', action: task.status === 'verified' ? 'verification_passed' : 'verification_recorded', summary: `${task.id} verification recorded by ${patch.verification.reviewer}.`, issueId: issue.id, taskId: task.id, runId: patch.verification.runId, details: { checks: patch.verification.checkResults, acceptance: patch.verification.acceptanceResults } });
+  if (patch.note?.trim())
+    tryAppendControllerWorklogEvent(repoRoot, {
+      category: 'task',
+      action: 'task_note_added',
+      summary: patch.note.trim(),
+      issueId: issue.id,
+      taskId: task.id,
+    });
+  if (patch.runId?.trim())
+    tryAppendControllerWorklogEvent(repoRoot, {
+      category: 'run',
+      action: 'run_linked_to_task',
+      summary: `Linked ${patch.runId.trim()} to ${task.id}.`,
+      issueId: issue.id,
+      taskId: task.id,
+      runId: patch.runId.trim(),
+    });
+  if (patch.github)
+    tryAppendControllerWorklogEvent(repoRoot, {
+      category: 'github',
+      action: 'task_github_linked',
+      summary: `Linked ${task.id} to GitHub.`,
+      issueId: issue.id,
+      taskId: task.id,
+      details: { url: patch.github.url },
+    });
+  if (patch.verification)
+    tryAppendControllerWorklogEvent(repoRoot, {
+      category: 'verification',
+      action: task.status === 'verified' ? 'verification_passed' : 'verification_recorded',
+      summary: `${task.id} verification recorded by ${patch.verification.reviewer}.`,
+      issueId: issue.id,
+      taskId: task.id,
+      runId: patch.verification.runId,
+      details: { checks: patch.verification.checkResults, acceptance: patch.verification.acceptanceResults },
+    });
   return written;
 }
 
@@ -756,22 +895,40 @@ function finding(code: string, level: 'blocker' | 'warning', message: string, ta
 
 export function inspectIssueReadiness(repoRoot: string, issueIdValue: string): IssueReadiness {
   if (legacyIssueAuthorityRetired(repoRoot)) {
-    throw new Error('LEGACY_ISSUE_READINESS_RETIRED: use Requirement Board, Plan and Work diagnostics from controller-home SQLite.');
+    throw new Error(
+      'LEGACY_ISSUE_READINESS_RETIRED: use Requirement Board, Plan and Work diagnostics from controller-home SQLite.',
+    );
   }
   const issue = getIssue(repoRoot, issueIdValue);
   const lifecycle = resolveIssueLifecycleStatus(issue);
   const states = resolveIssueTaskStates(issue, readIssueRunEvidence(repoRoot, issue));
   const issueFindings: IssueReadinessFinding[] = [];
-  if (lifecycle !== 'active') issueFindings.push(finding('ISSUE_INACTIVE', 'blocker', `Issue lifecycle is ${lifecycle}.`));
-  if (!issue.summary.trim()) issueFindings.push(finding('ISSUE_SUMMARY_MISSING', 'warning', 'Issue summary is absent; Task execution remains allowed.'));
-  if (issue.goals.length === 0) issueFindings.push(finding('ISSUE_GOALS_MISSING', 'warning', 'Issue has no explicit goals.'));
-  if (issue.acceptanceCriteria.length === 0) issueFindings.push(finding('ISSUE_ACCEPTANCE_MISSING', 'warning', 'Issue-level acceptance criteria are absent; Task-local evidence is authoritative.'));
-  try { validateTaskGraph(issue.tasks); } catch (error) {
-    issueFindings.push(finding(
-      'TASK_GRAPH_INVALID',
-      'warning',
-      `${error instanceof Error ? error.message : String(error)} Task-local dependency findings remain authoritative for launch.`,
-    ));
+  if (lifecycle !== 'active')
+    issueFindings.push(finding('ISSUE_INACTIVE', 'blocker', `Issue lifecycle is ${lifecycle}.`));
+  if (!issue.summary.trim())
+    issueFindings.push(
+      finding('ISSUE_SUMMARY_MISSING', 'warning', 'Issue summary is absent; Task execution remains allowed.'),
+    );
+  if (issue.goals.length === 0)
+    issueFindings.push(finding('ISSUE_GOALS_MISSING', 'warning', 'Issue has no explicit goals.'));
+  if (issue.acceptanceCriteria.length === 0)
+    issueFindings.push(
+      finding(
+        'ISSUE_ACCEPTANCE_MISSING',
+        'warning',
+        'Issue-level acceptance criteria are absent; Task-local evidence is authoritative.',
+      ),
+    );
+  try {
+    validateTaskGraph(issue.tasks);
+  } catch (error) {
+    issueFindings.push(
+      finding(
+        'TASK_GRAPH_INVALID',
+        'warning',
+        `${error instanceof Error ? error.message : String(error)} Task-local dependency findings remain authoritative for launch.`,
+      ),
+    );
   }
 
   const activeRuns = readActiveRunEvidence(repoRoot);
@@ -794,9 +951,10 @@ export function inspectIssueReadiness(repoRoot: string, issueIdValue: string): I
   // Global blockers are reserved for Issue-wide conditions. Task blockers remain local.
   const blockers = issueBlockers;
   const warnings = [...issueFindings.filter((entry) => entry.level === 'warning'), ...taskWarnings];
-  const score = taskReadiness.length === 0
-    ? Math.max(0, 100 - issueBlockers.length * 30 - warnings.length * 3)
-    : Math.round(taskReadiness.reduce((sum, entry) => sum + entry.score, 0) / taskReadiness.length);
+  const score =
+    taskReadiness.length === 0
+      ? Math.max(0, 100 - issueBlockers.length * 30 - warnings.length * 3)
+      : Math.round(taskReadiness.reduce((sum, entry) => sum + entry.score, 0) / taskReadiness.length);
   return {
     issueId: issue.id,
     score,
@@ -832,14 +990,23 @@ export function removeEphemeralIssue(repoRoot: string, issueIdValue: string): bo
 export function archiveIssue(repoRoot: string, issueIdValue: string): ControllerIssue {
   assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
   const issue = getIssue(repoRoot, issueIdValue);
-  if (!['done', 'cancelled'].includes(issue.status)) throw new Error(`only done or cancelled Issues can be archived (current: ${issue.status})`);
+  if (!['done', 'cancelled'].includes(issue.status))
+    throw new Error(`only done or cancelled Issues can be archived (current: ${issue.status})`);
   if (issue.archivedAt) return issue;
   issue.archivedAt = new Date().toISOString();
   issue.updatedAt = issue.archivedAt;
   const written = writeIssue(repoRoot, issue);
   const projectState = loadControllerProjectState(repoRoot);
-  if (projectState.currentIssueId === issue.id) saveControllerProjectState(repoRoot, { currentIssueId: '' }, 'issue-archive');
-  tryAppendControllerWorklogEvent(repoRoot, { category: 'issue', action: 'issue_archived', summary: `Archived ${issue.id}: ${issue.title}`, issueId: issue.id, statusFrom: issue.status, statusTo: issue.status });
+  if (projectState.currentIssueId === issue.id)
+    saveControllerProjectState(repoRoot, { currentIssueId: '' }, 'issue-archive');
+  tryAppendControllerWorklogEvent(repoRoot, {
+    category: 'issue',
+    action: 'issue_archived',
+    summary: `Archived ${issue.id}: ${issue.title}`,
+    issueId: issue.id,
+    statusFrom: issue.status,
+    statusTo: issue.status,
+  });
   return written;
 }
 
@@ -851,7 +1018,13 @@ export function restoreIssue(repoRoot: string, issueIdValue: string): Controller
   delete issue.archivedAt;
   issue.updatedAt = new Date().toISOString();
   const written = writeIssue(repoRoot, issue);
-  tryAppendControllerWorklogEvent(repoRoot, { category: 'issue', action: 'issue_restored', summary: `Restored ${issue.id}: ${issue.title}`, issueId: issue.id, details: { archivedAt } });
+  tryAppendControllerWorklogEvent(repoRoot, {
+    category: 'issue',
+    action: 'issue_restored',
+    summary: `Restored ${issue.id}: ${issue.title}`,
+    issueId: issue.id,
+    details: { archivedAt },
+  });
   return written;
 }
 
@@ -900,11 +1073,10 @@ function historicalTaskCompletionReceipt(
   if (!currentBranch || currentBranch !== targetBranch) return undefined;
   const targetRevision = verification.integratedRevision ?? verification.integrationEvidence?.targetRevision;
   if (!targetRevision) return undefined;
-  const reachable = spawnSync(
-    'git',
-    ['merge-base', '--is-ancestor', targetRevision, targetBranch],
-    { cwd: repoRoot, encoding: 'utf-8' },
-  );
+  const reachable = spawnSync('git', ['merge-base', '--is-ancestor', targetRevision, targetBranch], {
+    cwd: repoRoot,
+    encoding: 'utf-8',
+  });
   if (reachable.status !== 0 || reachable.error) return undefined;
   const unrelatedChanges = unrelatedWorkspaceChanges(repoRoot, issue);
   if (!unrelatedChanges || unrelatedChanges.length > 0) return undefined;
@@ -925,9 +1097,14 @@ function historicalTaskCompletionReceipt(
     delivery: {
       kind: verification.integrationEvidence?.kind ?? 'commit',
       status: 'integrated',
-      strategy: verification.integrationEvidence?.strategy === 'no_change' ? 'no_change'
-        : verification.integrationEvidence?.strategy === 'already_integrated' ? 'already_integrated'
-          : verification.runId ? 'already_integrated' : 'remote',
+      strategy:
+        verification.integrationEvidence?.strategy === 'no_change'
+          ? 'no_change'
+          : verification.integrationEvidence?.strategy === 'already_integrated'
+            ? 'already_integrated'
+            : verification.runId
+              ? 'already_integrated'
+              : 'remote',
       reachable: true,
       recordedAt,
     },
@@ -942,22 +1119,31 @@ function historicalTaskCompletionReceipt(
   };
 }
 
-export function acceptVerifiedTask(repoRoot: string, issueIdValue: string, taskId: string, note = 'Accepted after controller verification.'): ControllerIssue {
+export function acceptVerifiedTask(
+  repoRoot: string,
+  issueIdValue: string,
+  taskId: string,
+  note = 'Accepted after controller verification.',
+): ControllerIssue {
   assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
-  if (task.workId) throw new Error(`TASK_COMPLETION_WORK_OWNED: ${issueIdValue}/${taskId} is projected from Work ${task.workId}`);
   if (task.status === 'done') return issue;
-  if (task.status !== 'verified' || !task.verification) throw new Error(`task must have passed required verification before acceptance (current: ${task.status})`);
+  if (task.status !== 'verified' || !task.verification)
+    throw new Error(`task must have passed required verification before acceptance (current: ${task.status})`);
   const verification = task.verification;
-  if (!completionEvidenceComplete(verification, {
-    issueId: issue.id,
-    taskId: task.id,
-    runId: verification.runId,
-    targetBranch: resolveCompletionTargetBranch(repoRoot),
-  })) {
-    throw new Error('task completion requires a complete delivery receipt bound to this Task and integration target, or compatible legacy Run evidence');
+  if (
+    !completionEvidenceComplete(verification, {
+      issueId: issue.id,
+      taskId: task.id,
+      runId: verification.runId,
+      targetBranch: resolveCompletionTargetBranch(repoRoot),
+    })
+  ) {
+    throw new Error(
+      'task completion requires a complete delivery receipt bound to this Task and integration target, or compatible legacy Run evidence',
+    );
   }
   const integration = verification.completionReceipt
     ? {
@@ -972,7 +1158,9 @@ export function acceptVerifiedTask(repoRoot: string, issueIdValue: string, taskI
     { cwd: repoRoot, encoding: 'utf-8' },
   );
   if (reachable.status !== 0 || reachable.error) {
-    throw new Error(`integrated revision ${integration.targetRevision} is not reachable from ${integration.targetBranch}`);
+    throw new Error(
+      `integrated revision ${integration.targetRevision} is not reachable from ${integration.targetBranch}`,
+    );
   }
   return updateTask(repoRoot, issueIdValue, taskId, { status: 'done', note });
 }
@@ -988,7 +1176,6 @@ export function recordTaskVerification(
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
-  if (task.workId) throw new Error(`TASK_VERIFICATION_WORK_OWNED: ${issueIdValue}/${taskId} is projected from Work ${task.workId}`);
   const taskState = effectiveTaskState(repoRoot, issue, task);
   const doneEvidenceBackfill = task.status === 'done' && taskState.reason === 'completion_evidence_missing';
   if ((taskState.terminal || taskState.inactive) && !doneEvidenceBackfill) {
@@ -997,16 +1184,39 @@ export function recordTaskVerification(
   const completingRunOwnsVerification = Boolean(
     options.completingRunId && verification.runId === options.completingRunId,
   );
-  const blockingRunIds = taskState.activeRunIds.filter((runId) =>
-    !(completingRunOwnsVerification && runId === options.completingRunId),
+  const blockingRunIds = taskState.activeRunIds.filter(
+    (runId) => !(completingRunOwnsVerification && runId === options.completingRunId),
   );
-  if (blockingRunIds.length > 0) throw new Error(`task cannot be verified while Run(s) are active: ${blockingRunIds.join(', ')}`);
-  if (!doneEvidenceBackfill && !['planned', 'ready', 'launch_blocked', 'review', 'verifying', 'ready_to_integrate', 'integrating', 'integration_blocked', 'integrated', 'cleanup_pending', 'cleanup_blocked', 'changes_requested', 'verified'].includes(task.status)) {
+  if (blockingRunIds.length > 0)
+    throw new Error(`task cannot be verified while Run(s) are active: ${blockingRunIds.join(', ')}`);
+  if (
+    !doneEvidenceBackfill &&
+    ![
+      'planned',
+      'ready',
+      'launch_blocked',
+      'review',
+      'verifying',
+      'ready_to_integrate',
+      'integrating',
+      'integration_blocked',
+      'integrated',
+      'cleanup_pending',
+      'cleanup_blocked',
+      'changes_requested',
+      'verified',
+    ].includes(task.status)
+  ) {
     throw new Error(`task cannot be verified from status ${task.status}`);
   }
   if (!verification.reviewer.trim()) throw new Error('verification reviewer is required');
-  if (verification.checkResults.some((entry) => !entry.checkId.trim())) throw new Error('verification check IDs cannot be empty');
-  if ((verification.commandEvidence ?? []).some((entry) => entry.command.length === 0 || entry.command.some((part) => !part.trim()))) {
+  if (verification.checkResults.some((entry) => !entry.checkId.trim()))
+    throw new Error('verification check IDs cannot be empty');
+  if (
+    (verification.commandEvidence ?? []).some(
+      (entry) => entry.command.length === 0 || entry.command.some((part) => !part.trim()),
+    )
+  ) {
     throw new Error('reported command evidence must contain a non-empty argv');
   }
   const normalizedDeclaredChecks = normalizeCheckIds(task.checks, listControllerChecks(repoRoot));
@@ -1015,11 +1225,15 @@ export function recordTaskVerification(
   const successful = outcome.status === 'passed';
   if (doneEvidenceBackfill) {
     if (!successful) {
-      throw new Error(`done Task completion-evidence backfill requires passing verification: ${outcome.reasons.join(' ')}`);
+      throw new Error(
+        `done Task completion-evidence backfill requires passing verification: ${outcome.reasons.join(' ')}`,
+      );
     }
     const completionReceipt = historicalTaskCompletionReceipt(repoRoot, issue, task, verification);
     if (!completionReceipt) {
-      throw new Error('done Task completion-evidence backfill requires a reachable integrated revision, target branch checkout, no active Run, and no unrelated workspace changes');
+      throw new Error(
+        'done Task completion-evidence backfill requires a reachable integrated revision, target branch checkout, no active Run, and no unrelated workspace changes',
+      );
     }
     verification.autoCompleted = true;
     verification.completionReceipt = completionReceipt;
@@ -1028,17 +1242,14 @@ export function recordTaskVerification(
       note: `Reconciled missing completion evidence with receipt ${completionReceipt.receiptId}; declared Task status remains done.`,
     });
   }
-  const verificationStatus = successful
-    ? 'verified'
-    : outcome.status === 'failed'
-      ? 'changes_requested'
-      : 'verifying';
+  const verificationStatus = successful ? 'verified' : outcome.status === 'failed' ? 'changes_requested' : 'verifying';
   // Run-backed verification must stop at verified. Integration and cleanup
   // evidence are finalized by the completion orchestrator before Task done.
   const autoComplete = false;
-  const invalidCheckNote = normalizedDeclaredChecks.invalidCheckIds.length > 0
-    ? ` Ignored unregistered check id(s): ${normalizedDeclaredChecks.invalidCheckIds.join(', ')}. Invalid check ids are verification infrastructure metadata, not actual check failures.`
-    : '';
+  const invalidCheckNote =
+    normalizedDeclaredChecks.invalidCheckIds.length > 0
+      ? ` Ignored unregistered check id(s): ${normalizedDeclaredChecks.invalidCheckIds.join(', ')}. Invalid check ids are verification infrastructure metadata, not actual check failures.`
+      : '';
   verification.autoCompleted = autoComplete;
   return updateTask(repoRoot, issueIdValue, taskId, {
     status: verificationStatus,
@@ -1064,10 +1275,14 @@ export function projectBoard(repoRoot: string): {
   assertLegacyProjectBoardAvailable(repoRoot);
   const issues = listIssues(repoRoot);
   const projectState = loadControllerProjectState(repoRoot);
-  const currentIssueId = projectState.currentIssueId
-    && issues.some((issue) => issue.id === projectState.currentIssueId && !issue.archivedAt && !['done', 'cancelled'].includes(issue.status))
-    ? projectState.currentIssueId
-    : undefined;
+  const currentIssueId =
+    projectState.currentIssueId &&
+    issues.some(
+      (issue) =>
+        issue.id === projectState.currentIssueId && !issue.archivedAt && !['done', 'cancelled'].includes(issue.status),
+    )
+      ? projectState.currentIssueId
+      : undefined;
   const counts: Record<string, number> = {};
   const declaredCounts: Record<string, number> = {};
   const archivedCounts: Record<string, number> = {};
@@ -1093,7 +1308,7 @@ export function projectBoard(repoRoot: string): {
         issueId: issue.id,
         taskId: task.id,
         title: task.title,
-        agent: task.recommendedAgent ?? "runtime-selected",
+        agent: task.recommendedAgent ?? 'runtime-selected',
         effectiveStatus: state.effectiveStatus,
         executionClass: readiness.executionClass,
         approval: readiness.approval,
@@ -1148,7 +1363,7 @@ export function projectBoard(repoRoot: string): {
             dependsOn: task.dependsOn,
             dependencyState: resolveTaskDependencies(issue, task, states),
             supersededBy: task.supersededBy,
-            agent: task.recommendedAgent ?? "runtime-selected",
+            agent: task.recommendedAgent ?? 'runtime-selected',
             runIds: task.runIds,
             github: task.github,
           };

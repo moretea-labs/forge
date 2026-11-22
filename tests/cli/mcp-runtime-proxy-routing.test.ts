@@ -2029,7 +2029,6 @@ function postFinalizeAttributionFixture() {
         source: 'controller_work',
         issueId: 'post-finalize-attribution',
         taskId: workId,
-        workId,
         targetBranch: 'main',
         targetRevision,
         changedPaths: [],

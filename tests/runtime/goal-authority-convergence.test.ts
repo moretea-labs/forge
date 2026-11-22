@@ -33,14 +33,13 @@ function home(): string {
   return value;
 }
 
-function completionReceipt(workId: string, targetRevision: string) {
+function completionReceipt(receiptKey: string, targetRevision: string) {
   return {
     schemaVersion: 1 as const,
-    receiptId: `receipt-${workId}`,
+    receiptId: `receipt-${receiptKey}`,
     source: 'controller_work' as const,
     issueId: 'ISS-goal-authority',
     taskId: 'T1',
-    workId,
     targetBranch: 'main',
     targetRevision,
     changedPaths: ['src/example.ts'],

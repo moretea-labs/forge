@@ -45,11 +45,9 @@ export interface McpTimingTrace {
   /** Request-scoped ChatGPT conversation correlation from MCP host metadata; diagnostic only, never semantic authority. */
   hostConversationSessionId?: string;
   repoId?: string;
-  workId?: string;
   processId?: string;
   route?: string;
 }
-
 
 export type McpTransportEventKind = 'interruption' | 'session_closed' | 'session_initialized';
 
@@ -74,7 +72,6 @@ export interface McpIncident {
   message: string;
   repoId?: string;
   sessionId?: string;
-  workId?: string;
   details?: Record<string, unknown>;
 }
 
@@ -179,9 +176,11 @@ export async function flushMcpDiagnostics(controllerHome?: string): Promise<void
   const ledgers = controllerHome
     ? [...diagnosticLedgers.values()].filter((ledger) => ledger.root === join(resolve(controllerHome), 'audit'))
     : [...diagnosticLedgers.values()];
-  await Promise.all(ledgers.map(async (ledger) => {
-    while (ledger.drain) await ledger.drain;
-  }));
+  await Promise.all(
+    ledgers.map(async (ledger) => {
+      while (ledger.drain) await ledger.drain;
+    }),
+  );
 }
 
 export function recordMcpTiming(controllerHome: string, trace: McpTimingTrace): void {
@@ -227,7 +226,6 @@ export function recentMcpIncidents(controllerHome: string): Array<McpIncident & 
   return [...(recentIncidents.get(resolve(controllerHome)) ?? [])];
 }
 
-
 function readDiagnosticTail<T>(controllerHome: string, fileName: string, maxBytes: number): T[] {
   const path = join(resolve(controllerHome), 'audit', fileName);
   if (!existsSync(path)) return [];
@@ -244,14 +242,17 @@ function readDiagnosticTail<T>(controllerHome: string, fileName: string, maxByte
       const newline = text.indexOf('\n');
       text = newline >= 0 ? text.slice(newline + 1) : '';
     }
-    return text.split(/\r?\n/).filter(Boolean).flatMap((line) => {
-      try {
-        const parsed = JSON.parse(line) as T;
-        return parsed && typeof parsed === 'object' ? [parsed] : [];
-      } catch {
-        return [];
-      }
-    });
+    return text
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .flatMap((line) => {
+        try {
+          const parsed = JSON.parse(line) as T;
+          return parsed && typeof parsed === 'object' ? [parsed] : [];
+        } catch {
+          return [];
+        }
+      });
   } catch {
     return [];
   } finally {
@@ -306,17 +307,18 @@ export function readRecentMcpTransportEvents(
   const memory = recentTransportEvents.get(resolve(controllerHome)) ?? [];
   const unique = new Map<string, McpTransportEvent>();
   for (const event of [...durable, ...memory]) {
-    if (event.schemaVersion !== 1
-      || (event.kind !== 'interruption' && event.kind !== 'session_closed' && event.kind !== 'session_initialized')
-      || typeof event.at !== 'string'
-      || !Number.isFinite(Date.parse(event.at))
-      || typeof event.sessionId !== 'string'
-      || typeof event.connectionId !== 'string'
-      || typeof event.route !== 'string'
-      || typeof event.principalId !== 'string') continue;
+    if (
+      event.schemaVersion !== 1 ||
+      (event.kind !== 'interruption' && event.kind !== 'session_closed' && event.kind !== 'session_initialized') ||
+      typeof event.at !== 'string' ||
+      !Number.isFinite(Date.parse(event.at)) ||
+      typeof event.sessionId !== 'string' ||
+      typeof event.connectionId !== 'string' ||
+      typeof event.route !== 'string' ||
+      typeof event.principalId !== 'string'
+    )
+      continue;
     unique.set(`${event.at}\0${event.kind}\0${event.sessionId}`, event);
   }
-  return [...unique.values()]
-    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
-    .slice(0, boundedLimit);
+  return [...unique.values()].sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, boundedLimit);
 }

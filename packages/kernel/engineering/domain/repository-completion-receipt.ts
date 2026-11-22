@@ -45,7 +45,6 @@ export interface RepositoryCompletionReceipt {
   issueId: string;
   taskId: string;
   runId?: string;
-  workId?: string;
   editSessionId?: string;
   targetBranch: string;
   targetRevision: string;

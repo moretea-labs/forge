@@ -1,9 +1,19 @@
-import { Server } from "@modelcontextprotocol/server";
-import type { Tool } from "@modelcontextprotocol/server";
-import { Client, SdkError, SdkErrorCode, SdkHttpError, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { Server } from '@modelcontextprotocol/server';
+import type { Tool } from '@modelcontextprotocol/server';
+import {
+  Client,
+  SdkError,
+  SdkErrorCode,
+  SdkHttpError,
+  StreamableHTTPClientTransport,
+} from '@modelcontextprotocol/client';
 import { mcpServerInstructions } from './instructions';
 import { buildMcpToolDefinitions, callMcpTool, type CallToolResult, type McpToolContext } from './tool-mapping/tools';
-import { mcpToolDefinitionFromSdk, mcpToolDefinitionToSdk, type McpToolDefinition } from '../../packages/protocols/mcp/tool-contract';
+import {
+  mcpToolDefinitionFromSdk,
+  mcpToolDefinitionToSdk,
+  type McpToolDefinition,
+} from '../../packages/protocols/mcp/tool-contract';
 import { createLegacyMcpToolContext } from './legacy-context';
 import {
   buildMultiRepositoryToolDefinitions,
@@ -64,24 +74,26 @@ function firstTimingString(...values: unknown[]): string | undefined {
 
 function timingIdentity(value: CallToolResult | undefined): {
   repoId?: string;
-  workId?: string;
   processId?: string;
   route?: string;
 } {
-  if (!value?.structuredContent || typeof value.structuredContent !== 'object' || Array.isArray(value.structuredContent)) return {};
+  if (
+    !value?.structuredContent ||
+    typeof value.structuredContent !== 'object' ||
+    Array.isArray(value.structuredContent)
+  )
+    return {};
   const structured = value.structuredContent as Record<string, unknown>;
-  const work = structured.work && typeof structured.work === 'object' && !Array.isArray(structured.work)
-    ? structured.work as Record<string, unknown>
-    : undefined;
-  const process = structured.process && typeof structured.process === 'object' && !Array.isArray(structured.process)
-    ? structured.process as Record<string, unknown>
-    : undefined;
-  const resultRef = structured.resultRef && typeof structured.resultRef === 'object' && !Array.isArray(structured.resultRef)
-    ? structured.resultRef as Record<string, unknown>
-    : undefined;
+  const process =
+    structured.process && typeof structured.process === 'object' && !Array.isArray(structured.process)
+      ? (structured.process as Record<string, unknown>)
+      : undefined;
+  const resultRef =
+    structured.resultRef && typeof structured.resultRef === 'object' && !Array.isArray(structured.resultRef)
+      ? (structured.resultRef as Record<string, unknown>)
+      : undefined;
   return {
-    repoId: firstTimingString(structured.repoId, structured.repo_id, work?.repositoryId, work?.repoId),
-    workId: firstTimingString(structured.workId, structured.work_id, work?.workId),
+    repoId: firstTimingString(structured.repoId, structured.repo_id),
     processId: firstTimingString(structured.processId, structured.process_id, process?.processId, resultRef?.processId),
     route: firstTimingString(structured.route, structured.path, structured.mode, process?.route),
   };
@@ -93,13 +105,19 @@ function tracedResult(
   requestId: string,
   serverTiming?: { startedAt: string; durationMs: number },
 ): CallToolResult | undefined {
-  if (!value || !value.structuredContent || typeof value.structuredContent !== 'object' || Array.isArray(value.structuredContent)) return value;
+  if (
+    !value ||
+    !value.structuredContent ||
+    typeof value.structuredContent !== 'object' ||
+    Array.isArray(value.structuredContent)
+  )
+    return value;
   const originalStructuredContent = value.structuredContent as Record<string, unknown>;
   const structuredContent = {
     ...originalStructuredContent,
     responseMeta: {
       ...(originalStructuredContent.responseMeta && typeof originalStructuredContent.responseMeta === 'object'
-        ? originalStructuredContent.responseMeta as Record<string, unknown>
+        ? (originalStructuredContent.responseMeta as Record<string, unknown>)
         : {}),
       traceId,
       requestId,
@@ -109,9 +127,9 @@ function tracedResult(
   return {
     ...value,
     structuredContent,
-    content: value.content.map((block, index) => index === 0 && block.type === 'text'
-      ? { ...block, text: JSON.stringify(structuredContent) }
-      : block),
+    content: value.content.map((block, index) =>
+      index === 0 && block.type === 'text' ? { ...block, text: JSON.stringify(structuredContent) } : block,
+    ),
   };
 }
 
@@ -135,16 +153,19 @@ async function traceControllerMcpRequest(
     executionIdentity = timingIdentity(value);
     if (value?.isError) {
       outcome = 'error';
-      const error = value.structuredContent && typeof value.structuredContent === 'object'
-        ? (value.structuredContent as Record<string, unknown>).error
-        : undefined;
-      if (error && typeof error === 'object' && !Array.isArray(error)) {
-        errorCode = typeof (error as Record<string, unknown>).code === 'string'
-          ? (error as Record<string, unknown>).code as string
-          : 'MCP_TOOL_ERROR';
-        const structuredRepoId = typeof (value.structuredContent as Record<string, unknown>).repoId === 'string'
-          ? (value.structuredContent as Record<string, unknown>).repoId as string
+      const error =
+        value.structuredContent && typeof value.structuredContent === 'object'
+          ? (value.structuredContent as Record<string, unknown>).error
           : undefined;
+      if (error && typeof error === 'object' && !Array.isArray(error)) {
+        errorCode =
+          typeof (error as Record<string, unknown>).code === 'string'
+            ? ((error as Record<string, unknown>).code as string)
+            : 'MCP_TOOL_ERROR';
+        const structuredRepoId =
+          typeof (value.structuredContent as Record<string, unknown>).repoId === 'string'
+            ? ((value.structuredContent as Record<string, unknown>).repoId as string)
+            : undefined;
         const incident = {
           traceId,
           requestId,
@@ -152,9 +173,10 @@ async function traceControllerMcpRequest(
           tool: name,
           kind: 'tool_error' as const,
           code: errorCode,
-          message: typeof (error as Record<string, unknown>).message === 'string'
-            ? (error as Record<string, unknown>).message as string
-            : 'MCP tool returned an error.',
+          message:
+            typeof (error as Record<string, unknown>).message === 'string'
+              ? ((error as Record<string, unknown>).message as string)
+              : 'MCP tool returned an error.',
           ...(structuredRepoId
             ? { repoId: structuredRepoId }
             : typeof args.repo_id === 'string' && args.repo_id.trim()
@@ -176,7 +198,10 @@ async function traceControllerMcpRequest(
       }
     }
     const serverDurationMs = Math.round((performance.now() - startedAt) * 100) / 100;
-    return tracedResult(value, traceId, requestId, { startedAt: startedAtWall, durationMs: serverDurationMs }) as CallToolResult;
+    return tracedResult(value, traceId, requestId, {
+      startedAt: startedAtWall,
+      durationMs: serverDurationMs,
+    }) as CallToolResult;
   } catch (error) {
     outcome = 'exception';
     errorCode = 'MCP_REQUEST_EXCEPTION';
@@ -213,7 +238,9 @@ async function traceControllerMcpRequest(
       ...(rpcId === undefined ? {} : { rpcId }),
       layer: ctx.runtimeSourceRoot ? 'canonical_runtime' : 'public_gateway',
       startedAt: startedAtWall,
-      ...(ctx.hostConversationSessionId?.trim() ? { hostConversationSessionId: ctx.hostConversationSessionId.trim() } : {}),
+      ...(ctx.hostConversationSessionId?.trim()
+        ? { hostConversationSessionId: ctx.hostConversationSessionId.trim() }
+        : {}),
       outcome,
       ...(errorCode ? { errorCode } : {}),
       ...executionIdentity,
@@ -224,7 +251,7 @@ async function traceControllerMcpRequest(
 }
 
 export function createMcpToolContext(
-  opts: McpServerOptions & { profile?: "controller" },
+  opts: McpServerOptions & { profile?: 'controller' },
 ): MultiRepositoryMcpToolContext;
 export function createMcpToolContext(opts: McpServerOptions): ServerToolContext;
 export function createMcpToolContext(opts: McpServerOptions): ServerToolContext {
@@ -288,9 +315,7 @@ function timestampIsRecent(value: string | undefined, nowMs: number, maxAgeMs: n
  * must not keep the public Gateway waiting forever, so every transition signal
  * is time-bounded. This is observability, never release authority.
  */
-export function canonicalRuntimeReleaseHandoffInProgress(
-  input: CanonicalRuntimeReleaseHandoffObservation,
-): boolean {
+export function canonicalRuntimeReleaseHandoffInProgress(input: CanonicalRuntimeReleaseHandoffObservation): boolean {
   if (!input.authorityReleaseId) return false;
   const sameRelease = input.runtimeReleaseId === input.authorityReleaseId;
   const authorityRecent = timestampIsRecent(
@@ -411,7 +436,6 @@ function canonicalRuntimeReleaseHandoffActive(controllerHome: string): boolean {
   });
 }
 
-
 const CANONICAL_RUNTIME_FORWARD_META_KEY = 'forgeRuntimeForwarding';
 
 type ForwardedControllerType = NonNullable<McpToolContext['controllerType']>;
@@ -458,7 +482,9 @@ function canonicalRuntimeForwardingMeta(ctx: MultiRepositoryMcpToolContext): Rec
       ...(ctx.principalId?.trim() ? { principalId: ctx.principalId.trim() } : {}),
       ...(ctx.sessionId?.trim() ? { sessionId: ctx.sessionId.trim() } : {}),
       ...(ctx.controllerType ? { controllerType: ctx.controllerType } : {}),
-      ...(ctx.hostConversationSessionId?.trim() ? { hostConversationSessionId: ctx.hostConversationSessionId.trim() } : {}),
+      ...(ctx.hostConversationSessionId?.trim()
+        ? { hostConversationSessionId: ctx.hostConversationSessionId.trim() }
+        : {}),
     },
   };
 }
@@ -502,9 +528,11 @@ export function sameCanonicalRuntimeProxyIdentity(
   left: CanonicalRuntimeProxyIdentity,
   right: CanonicalRuntimeProxyIdentity,
 ): boolean {
-  return left.endpoint.href === right.endpoint.href
-    && left.token === right.token
-    && left.runtimeInstanceId === right.runtimeInstanceId;
+  return (
+    left.endpoint.href === right.endpoint.href &&
+    left.token === right.token &&
+    left.runtimeInstanceId === right.runtimeInstanceId
+  );
 }
 
 export function canonicalRuntimeToolCallIsReplaySafe(name: string, args: Record<string, unknown>): boolean {
@@ -518,10 +546,11 @@ export function canonicalRuntimeToolCallFailureIsCutoverOutcomeUnknown(error: un
   const record = error as { code?: unknown; message?: unknown; data?: unknown };
   const message = typeof record.message === 'string' ? record.message : '';
   if (SdkHttpError.isInstance(error)) {
-    return error.status === 409 && (
-      message.includes(RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN)
-      || message.toLowerCase().includes('runtime cutover outcome unknown')
-      || JSON.stringify(record.data ?? '').includes(RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN)
+    return (
+      error.status === 409 &&
+      (message.includes(RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN) ||
+        message.toLowerCase().includes('runtime cutover outcome unknown') ||
+        JSON.stringify(record.data ?? '').includes(RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN))
     );
   }
   return record.code === -32000 && message === RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN;
@@ -537,9 +566,9 @@ export function canonicalRuntimeToolCallFailureIsTransient(error: unknown): bool
       SdkErrorCode.RequestTimeout,
     ].includes(error.code);
   }
-  const record = error && typeof error === 'object' ? error as { code?: unknown; cause?: unknown } : undefined;
+  const record = error && typeof error === 'object' ? (error as { code?: unknown; cause?: unknown }) : undefined;
   const directCode = typeof record?.code === 'string' ? record.code : undefined;
-  const cause = record?.cause && typeof record.cause === 'object' ? record.cause as { code?: unknown } : undefined;
+  const cause = record?.cause && typeof record.cause === 'object' ? (record.cause as { code?: unknown }) : undefined;
   const causeCode = typeof cause?.code === 'string' ? cause.code : undefined;
   return ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'UND_ERR_SOCKET'].includes(directCode ?? causeCode ?? '');
 }
@@ -554,10 +583,14 @@ export async function callCanonicalRuntimeToolWithReplay<T>(input: {
     return await input.call();
   } catch (error) {
     if (canonicalRuntimeToolCallFailureIsCutoverOutcomeUnknown(error)) {
-      throw new Error(`${RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN}: Canonical Runtime entered cutover after request admission; reconcile the original request/effect identity before retrying.`);
+      throw new Error(
+        `${RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN}: Canonical Runtime entered cutover after request admission; reconcile the original request/effect identity before retrying.`,
+      );
     }
-    if (!canonicalRuntimeToolCallIsReplaySafe(input.name, input.args)
-      || !canonicalRuntimeToolCallFailureIsTransient(error)) {
+    if (
+      !canonicalRuntimeToolCallIsReplaySafe(input.name, input.args) ||
+      !canonicalRuntimeToolCallFailureIsTransient(error)
+    ) {
       throw error;
     }
     await input.reconnect();
@@ -567,7 +600,12 @@ export async function callCanonicalRuntimeToolWithReplay<T>(input: {
 
 export interface CanonicalRuntimeProxy {
   listTools(): Promise<{ tools: Tool[] }>;
-  callTool(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>, timing?: MutableGatewayProxyTiming): Promise<CallToolResult>;
+  callTool(
+    ctx: MultiRepositoryMcpToolContext,
+    name: string,
+    args: Record<string, unknown>,
+    timing?: MutableGatewayProxyTiming,
+  ): Promise<CallToolResult>;
   close(): Promise<void>;
 }
 
@@ -600,7 +638,8 @@ export async function readCanonicalRuntimeToolSchema(
   }
 }
 
-type GatewayProxyTiming = Pick<McpTimingTrace,
+type GatewayProxyTiming = Pick<
+  McpTimingTrace,
   | 'gatewayProxyResolveMs'
   | 'gatewayProxyLaneWaitMs'
   | 'gatewayProxyHandoffWaitMs'
@@ -623,24 +662,32 @@ export function deriveCanonicalForwardingTiming(input: {
   gatewayCallStartedAtMs: number;
   gatewayCallDurationMs: number;
   response: CallToolResult;
-}): Pick<GatewayProxyTiming, 'gatewayProxyCanonicalDispatchLagMs' | 'gatewayProxyCanonicalDurationMs' | 'gatewayProxyCanonicalTraceId' | 'gatewayProxyReturnMs'> {
+}): Pick<
+  GatewayProxyTiming,
+  | 'gatewayProxyCanonicalDispatchLagMs'
+  | 'gatewayProxyCanonicalDurationMs'
+  | 'gatewayProxyCanonicalTraceId'
+  | 'gatewayProxyReturnMs'
+> {
   const structured = input.response.structuredContent;
-  const responseMeta = structured && typeof structured === 'object' && !Array.isArray(structured)
-    && (structured as Record<string, unknown>).responseMeta
-    && typeof (structured as Record<string, unknown>).responseMeta === 'object'
-    ? (structured as Record<string, unknown>).responseMeta as Record<string, unknown>
-    : undefined;
+  const responseMeta =
+    structured &&
+    typeof structured === 'object' &&
+    !Array.isArray(structured) &&
+    (structured as Record<string, unknown>).responseMeta &&
+    typeof (structured as Record<string, unknown>).responseMeta === 'object'
+      ? ((structured as Record<string, unknown>).responseMeta as Record<string, unknown>)
+      : undefined;
   // Only retain the Runtime's opaque UUID, never arbitrary returned metadata.
   const traceId = responseMeta?.traceId;
-  const correlation = typeof traceId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(traceId)
-    ? { gatewayProxyCanonicalTraceId: traceId }
-    : {};
-  const canonicalStartedAt = typeof responseMeta?.serverStartedAt === 'string'
-    ? Date.parse(responseMeta.serverStartedAt)
-    : Number.NaN;
-  const canonicalDurationMs = typeof responseMeta?.serverDurationMs === 'number'
-    ? responseMeta.serverDurationMs
-    : Number.NaN;
+  const correlation =
+    typeof traceId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(traceId)
+      ? { gatewayProxyCanonicalTraceId: traceId }
+      : {};
+  const canonicalStartedAt =
+    typeof responseMeta?.serverStartedAt === 'string' ? Date.parse(responseMeta.serverStartedAt) : Number.NaN;
+  const canonicalDurationMs =
+    typeof responseMeta?.serverDurationMs === 'number' ? responseMeta.serverDurationMs : Number.NaN;
   if (!Number.isFinite(canonicalStartedAt) || !Number.isFinite(canonicalDurationMs)) return correlation;
   const dispatchLagMs = roundedMs(canonicalStartedAt - input.gatewayCallStartedAtMs);
   const boundedCanonicalDurationMs = roundedMs(canonicalDurationMs);
@@ -678,13 +725,20 @@ export const RESERVED_INTERACTIVE_CANONICAL_RUNTIME_PROXY_LANES = 2;
  * Long process_wait calls are capped below total capacity so they can never
  * consume every lane. Interactive waiters are handed released lanes first.
  */
-export function createCanonicalRuntimeLaneScheduler(maxLanes = canonicalRuntimeProxyLaneLimit()): CanonicalRuntimeLaneScheduler {
+export function createCanonicalRuntimeLaneScheduler(
+  maxLanes = canonicalRuntimeProxyLaneLimit(),
+): CanonicalRuntimeLaneScheduler {
   const boundedMax = Math.max(1, Math.min(Math.trunc(maxLanes), MAX_CANONICAL_RUNTIME_PROXY_LANES));
-  const maxWaitLanes = boundedMax <= RESERVED_INTERACTIVE_CANONICAL_RUNTIME_PROXY_LANES
-    ? Math.max(1, boundedMax - 1)
-    : boundedMax - RESERVED_INTERACTIVE_CANONICAL_RUNTIME_PROXY_LANES;
+  const maxWaitLanes =
+    boundedMax <= RESERVED_INTERACTIVE_CANONICAL_RUNTIME_PROXY_LANES
+      ? Math.max(1, boundedMax - 1)
+      : boundedMax - RESERVED_INTERACTIVE_CANONICAL_RUNTIME_PROXY_LANES;
   const idle: number[] = [];
-  const waiters: Array<{ laneClass: CanonicalRuntimeLaneClass; resolve: (laneId: number) => void; reject: (error: Error) => void }> = [];
+  const waiters: Array<{
+    laneClass: CanonicalRuntimeLaneClass;
+    resolve: (laneId: number) => void;
+    reject: (error: Error) => void;
+  }> = [];
   const activeClasses = new Map<number, CanonicalRuntimeLaneClass>();
   let waitLaneCount = 0;
   let laneCount = 0;
@@ -830,7 +884,10 @@ export function createCanonicalRuntimeProxy(
   const connect = async (identity: CanonicalRuntimeProxyIdentity): Promise<CanonicalRuntimeProxyConnection> => {
     const connectOnce = async (): Promise<CanonicalRuntimeProxyConnection> => {
       const abort = new AbortController();
-      const timeout = setTimeout(() => abort.abort(new Error('CANONICAL_RUNTIME_TIMEOUT')), CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS);
+      const timeout = setTimeout(
+        () => abort.abort(new Error('CANONICAL_RUNTIME_TIMEOUT')),
+        CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS,
+      );
       const headers: Record<string, string> = {
         Authorization: `Bearer ${identity.token}`,
       };
@@ -848,9 +905,8 @@ export function createCanonicalRuntimeProxy(
         clearTimeout(timeout);
       }
     };
-    return await retryCanonicalRuntimeConnectDuringHandoff(
-      connectOnce,
-      () => canonicalRuntimeReleaseHandoffActive(ctx.controllerHome),
+    return await retryCanonicalRuntimeConnectDuringHandoff(connectOnce, () =>
+      canonicalRuntimeReleaseHandoffActive(ctx.controllerHome),
     );
   };
 
@@ -895,8 +951,8 @@ export function createCanonicalRuntimeProxy(
   ): Promise<{ laneId: number; client: Client }> => {
     if (closed) throw new Error('CANONICAL_RUNTIME_PROXY_CLOSED');
     const handoffStarted = performance.now();
-    const handoff = await waitForCanonicalRuntimeReleaseHandoff(
-      () => canonicalRuntimeReleaseHandoffActive(ctx.controllerHome),
+    const handoff = await waitForCanonicalRuntimeReleaseHandoff(() =>
+      canonicalRuntimeReleaseHandoffActive(ctx.controllerHome),
     );
     if (handoff.waited) await closeAllLanes();
     timing.gatewayProxyHandoffWaitMs = roundedMs(performance.now() - handoffStarted);
@@ -916,7 +972,7 @@ export function createCanonicalRuntimeProxy(
     async listTools() {
       const { laneId, client } = await prepareLane({});
       try {
-        return await client.listTools() as { tools: Tool[] };
+        return (await client.listTools()) as { tools: Tool[] };
       } catch (error) {
         await closeLane(laneId, client);
         throw error;
@@ -945,9 +1001,8 @@ export function createCanonicalRuntimeProxy(
         const response = await callCanonicalRuntimeToolWithReplay({
           name,
           args,
-          call: async () => await activeClient.callTool(
-            forwardedRequest,
-            {
+          call: async () =>
+            await activeClient.callTool(forwardedRequest, {
               timeout: CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS,
               // A disconnected caller may stop observing, but never cancel or
               // replay an external mutation. Only read-only Process observations
@@ -955,8 +1010,7 @@ export function createCanonicalRuntimeProxy(
               ...(canonicalRuntimeProcessObservationToolNames.has(name) && callerContext.signal
                 ? { signal: callerContext.signal }
                 : {}),
-            },
-          ),
+            }),
           reconnect: async () => {
             await closeLane(laneId, activeClient);
             activeClient = await clientForCurrentRuntime(laneId, timing);
@@ -964,11 +1018,14 @@ export function createCanonicalRuntimeProxy(
         });
         const result = response as unknown as CallToolResult;
         timing.gatewayProxyCallMs = roundedMs(performance.now() - callStarted);
-        Object.assign(timing, deriveCanonicalForwardingTiming({
-          gatewayCallStartedAtMs,
-          gatewayCallDurationMs: timing.gatewayProxyCallMs,
-          response: result,
-        }));
+        Object.assign(
+          timing,
+          deriveCanonicalForwardingTiming({
+            gatewayCallStartedAtMs,
+            gatewayCallDurationMs: timing.gatewayProxyCallMs,
+            response: result,
+          }),
+        );
         return result;
       } catch (error) {
         timing.gatewayProxyCallMs = roundedMs(performance.now() - callStarted);
@@ -1002,10 +1059,9 @@ function processObservationTransportFailureResult(
   args: Record<string, unknown>,
   error: unknown,
 ): CallToolResult {
-  const record = error && typeof error === 'object' ? error as { code?: unknown; message?: unknown } : undefined;
+  const record = error && typeof error === 'object' ? (error as { code?: unknown; message?: unknown }) : undefined;
   const message = error instanceof Error ? error.message : String(error);
-  const cause = typeof record?.code === 'string' ? record.code
-    : /^([A-Z][A-Z0-9_]+)[:\s]/.exec(message)?.[1];
+  const cause = typeof record?.code === 'string' ? record.code : /^([A-Z][A-Z0-9_]+)[:\s]/.exec(message)?.[1];
   const processId = typeof args.process_id === 'string' ? args.process_id : undefined;
   const value = {
     error: {
@@ -1043,11 +1099,13 @@ function toolNotFoundResult(name: string): CallToolResult {
         : `${name} is not available in this session's tools/list. Refresh tool discovery before retrying.`,
       recoverable: true,
       action: 'refresh_tools_list',
-      ...(retiredWorkLifecycle ? {
-        reason: 'retired_tool_catalog_stale',
-        replacement: 'direct_capabilities',
-        semanticContext: 'rh_work',
-      } : {}),
+      ...(retiredWorkLifecycle
+        ? {
+            reason: 'retired_tool_catalog_stale',
+            replacement: 'direct_capabilities',
+            semanticContext: 'rh_work',
+          }
+        : {}),
     },
   };
   return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value, isError: true };
@@ -1057,7 +1115,8 @@ function toolSurfaceMismatchResult(): CallToolResult {
   const value = {
     error: {
       code: 'MCP_TOOL_SURFACE_MISMATCH',
-      message: 'Gateway and Canonical Runtime tool surfaces differ. The session must reinitialize against a matching Runtime release.',
+      message:
+        'Gateway and Canonical Runtime tool surfaces differ. The session must reinitialize against a matching Runtime release.',
       recoverable: true,
       action: 'reinitialize',
     },
@@ -1075,9 +1134,10 @@ export function createForgeMcpServerFromContext(
     { capabilities: { tools: { listChanged: true } }, instructions: mcpServerInstructions(baseContext.policy.profile) },
   );
   const ownsRuntimeProxy = isMultiRepositoryContext(baseContext) && !getRuntimeWriteClaim() && !sharedRuntimeProxy;
-  const runtimeProxy = isMultiRepositoryContext(baseContext) && !getRuntimeWriteClaim()
-    ? sharedRuntimeProxy ?? createCanonicalRuntimeProxy(baseContext)
-    : undefined;
+  const runtimeProxy =
+    isMultiRepositoryContext(baseContext) && !getRuntimeWriteClaim()
+      ? (sharedRuntimeProxy ?? createCanonicalRuntimeProxy(baseContext))
+      : undefined;
   server.onclose = () => {
     if (ownsRuntimeProxy) void runtimeProxy?.close();
   };
@@ -1088,12 +1148,21 @@ export function createForgeMcpServerFromContext(
     void server.sendToolListChanged().catch(() => undefined);
   };
   server.setRequestHandler('tools/list', async () => {
-    if (isMultiRepositoryContext(baseContext) && !runtimeSchema && !getRuntimeWriteClaim() && !canonicalRuntimeSchemaMatchesGateway(baseContext)) {
+    if (
+      isMultiRepositoryContext(baseContext) &&
+      !runtimeSchema &&
+      !getRuntimeWriteClaim() &&
+      !canonicalRuntimeSchemaMatchesGateway(baseContext)
+    ) {
       throw new Error('MCP_TOOL_SURFACE_MISMATCH: Gateway source does not match the Canonical Runtime schema.');
     }
-    const definitions = runtimeSchema?.definitions ?? (isMultiRepositoryContext(baseContext)
-      ? controllerExposureSnapshot(baseContext).definitions
-      : buildMcpToolDefinitions(baseContext.policy, { enableChatgptBrowser: baseContext.enableChatgptBrowser === true }));
+    const definitions =
+      runtimeSchema?.definitions ??
+      (isMultiRepositoryContext(baseContext)
+        ? controllerExposureSnapshot(baseContext).definitions
+        : buildMcpToolDefinitions(baseContext.policy, {
+            enableChatgptBrowser: baseContext.enableChatgptBrowser === true,
+          }));
     return { tools: definitions.map(mcpToolDefinitionToSdk) };
   });
   server.setRequestHandler('tools/call', async (request, handlerContext) => {
@@ -1106,82 +1175,122 @@ export function createForgeMcpServerFromContext(
     const ctx: ServerToolContext = { ...forwardedBaseContext, signal: handlerContext.mcpReq.signal };
     if (isMultiRepositoryContext(ctx)) {
       const rpcId = handlerContext.mcpReq.id;
-      return traceControllerMcpRequest(ctx, name, args, typeof rpcId === 'string' || typeof rpcId === 'number' ? rpcId : undefined, async (requestId, _traceId, phaseTimings) => {
-        // The public Gateway serves one complete canonical tool schema. It may
-        // proxy execution, but it never discovers one Runtime schema and
-        // validates calls against another source checkout.
-        if (!getRuntimeWriteClaim() && !runtimeSchema && !canonicalRuntimeSchemaMatchesGateway(ctx)) {
-          return toolSurfaceMismatchResult();
-        }
-        if (runtimeSchema && !runtimeSchema.toolNames.includes(name)) return toolNotFoundResult(name);
-        if (!runtimeSchema && !isControllerToolExposed(ctx, name)) return toolNotFoundResult(name);
-        // The public OAuth Gateway is intentionally thin. If this process does
-        // not own the Canonical Runtime write claim, forward the complete tool
-        // call to the loopback Runtime MCP endpoint. This prevents source-checkout
-        // Gateway processes from acquiring Process Runtime leases or evaluating
-        // Runtime source coherence against their own checkout.
-        if (!getRuntimeWriteClaim()) {
-          // Keep trace correlation separate from Tool Contract idempotency. Only
-          // a caller-supplied request_id may authorize semantic replay/dedup.
-          const forwardedArgs = args;
-          if (runtimeProxy && canonicalRuntimeProcessObservationToolNames.has(name)
-            && (runtimeSchema || observeRuntimeStatus(ctx.controllerHome).ready)) {
-            // A read-only process observation (get/wait/logs) that cannot be
-            // forwarded is a typed recoverable observation failure, never a raw
-            // JSON-RPC internal error: the managed process identity is
-            // preserved and the failure must not restart or duplicate execution.
-            try {
-              return await runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
-            } catch (error) {
-              return processObservationTransportFailureResult(name, forwardedArgs, error);
+      return traceControllerMcpRequest(
+        ctx,
+        name,
+        args,
+        typeof rpcId === 'string' || typeof rpcId === 'number' ? rpcId : undefined,
+        async (requestId, _traceId, phaseTimings) => {
+          // The public Gateway serves one complete canonical tool schema. It may
+          // proxy execution, but it never discovers one Runtime schema and
+          // validates calls against another source checkout.
+          if (!getRuntimeWriteClaim() && !runtimeSchema && !canonicalRuntimeSchemaMatchesGateway(ctx)) {
+            return toolSurfaceMismatchResult();
+          }
+          if (runtimeSchema && !runtimeSchema.toolNames.includes(name)) return toolNotFoundResult(name);
+          if (!runtimeSchema && !isControllerToolExposed(ctx, name)) return toolNotFoundResult(name);
+          // The public OAuth Gateway is intentionally thin. If this process does
+          // not own the Canonical Runtime write claim, forward the complete tool
+          // call to the loopback Runtime MCP endpoint. This prevents source-checkout
+          // Gateway processes from acquiring Process Runtime leases or evaluating
+          // Runtime source coherence against their own checkout.
+          if (!getRuntimeWriteClaim()) {
+            // Keep trace correlation separate from Tool Contract idempotency. Only
+            // a caller-supplied request_id may authorize semantic replay/dedup.
+            const forwardedArgs = args;
+            if (
+              runtimeProxy &&
+              canonicalRuntimeProcessObservationToolNames.has(name) &&
+              (runtimeSchema || observeRuntimeStatus(ctx.controllerHome).ready)
+            ) {
+              // A read-only process observation (get/wait/logs) that cannot be
+              // forwarded is a typed recoverable observation failure, never a raw
+              // JSON-RPC internal error: the managed process identity is
+              // preserved and the failure must not restart or duplicate execution.
+              try {
+                return await runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
+              } catch (error) {
+                return processObservationTransportFailureResult(name, forwardedArgs, error);
+              }
             }
+            if (runtimeProxy && runtimeSchema) return runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
+            if (runtimeProxy && observeRuntimeStatus(ctx.controllerHome).ready)
+              return runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
           }
-          if (runtimeProxy && runtimeSchema) return runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
-          if (runtimeProxy && observeRuntimeStatus(ctx.controllerHome).ready) return runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
-        }
-        const executeLocalTool = async (): Promise<CallToolResult> => {
-          if (name === 'execute_command' && args.scope === 'host') {
-            if (args.dry_run === true) {
-              return { content: [{ type: 'text', text: 'HOST_COMMAND_PREVIEW_UNSUPPORTED: host command preview requires a separate explicit grant-aware facility' }], structuredContent: { error: { code: 'HOST_COMMAND_PREVIEW_UNSUPPORTED' } }, isError: true };
+          const executeLocalTool = async (): Promise<CallToolResult> => {
+            if (name === 'execute_command' && args.scope === 'host') {
+              if (args.dry_run === true) {
+                return {
+                  content: [
+                    {
+                      type: 'text',
+                      text: 'HOST_COMMAND_PREVIEW_UNSUPPORTED: host command preview requires a separate explicit grant-aware facility',
+                    },
+                  ],
+                  structuredContent: { error: { code: 'HOST_COMMAND_PREVIEW_UNSUPPORTED' } },
+                  isError: true,
+                };
+              }
+              if (args.repo_id !== undefined || args.checkout_id !== undefined || args.workspace_root !== undefined) {
+                return {
+                  content: [
+                    {
+                      type: 'text',
+                      text: 'COMMAND_SCOPE_CONFLICT: host execution cannot claim repository or workspace targeting',
+                    },
+                  ],
+                  structuredContent: {
+                    error: {
+                      code: 'COMMAND_SCOPE_CONFLICT',
+                      message: 'Host execution cannot claim repository or workspace targeting',
+                    },
+                  },
+                  isError: true,
+                };
+              }
+              // The existing explicitly selected Full Access is the single
+              // ordinary host-command permission authority.
+              return executeAuthorizedHostCommand(ctx, args);
             }
-            if (args.repo_id !== undefined || args.checkout_id !== undefined || args.workspace_root !== undefined) {
-              return { content: [{ type: 'text', text: 'COMMAND_SCOPE_CONFLICT: host execution cannot claim repository or workspace targeting' }], structuredContent: { error: { code: 'COMMAND_SCOPE_CONFLICT', message: 'Host execution cannot claim repository or workspace targeting' } }, isError: true };
+            const accessResult = callAccessTool(ctx, name, args);
+            if (accessResult) return accessResult;
+            const executionResult = await callExecutionTool(ctx, name, args);
+            if (executionResult) return executionResult;
+            const processResult = await callProcessTool(ctx, name, args);
+            if (processResult) return processResult;
+            if (isGatewayIsolatedTool(name)) {
+              const isolatedResult = await routeDurableMcpCall(ctx, name, args, {
+                allowReadOnly: true,
+                forceDurable: true,
+              });
+              if (isolatedResult) return isolatedResult;
             }
-            // The existing explicitly selected Full Access is the single
-            // ordinary host-command permission authority.
-            return executeAuthorizedHostCommand(ctx, args);
-          }
-          const accessResult = callAccessTool(ctx, name, args);
-          if (accessResult) return accessResult;
-          const executionResult = await callExecutionTool(ctx, name, args);
-          if (executionResult) return executionResult;
-          const processResult = await callProcessTool(ctx, name, args);
-          if (processResult) return processResult;
-          if (isGatewayIsolatedTool(name)) {
-            const isolatedResult = await routeDurableMcpCall(ctx, name, args, { allowReadOnly: true, forceDurable: true });
-            if (isolatedResult) return isolatedResult;
-          }
-          const runtimeResult = await callRuntimeTool(ctx, name, args);
-          if (runtimeResult) return runtimeResult;
-          const durableResult = await routeDurableMcpCall(ctx, name, args);
-          if (durableResult) return durableResult;
-          const repositoryResult = await callRepositoryTool(ctx.controllerHome, name, args, ctx);
-          if (repositoryResult) return repositoryResult;
-          if (name === 'controller_capabilities') {
-            // Legacy read-only diagnostics consume the authoritative tools/list
-            // snapshot; legacy handlers must not import Runtime registries.
-            return await callMultiRepositoryTool({
-              ...ctx,
-              publishedToolNames: controllerExposureSnapshot(ctx).actualToolNames,
-            }, name, args);
-          }
-          return await callMultiRepositoryTool(ctx, name, args);
-        };
-        const localResult = await executeLocalTool();
-        // MCP calls are intermediate. Only the provider-observed final assistant
-        // response can close a Supervisor turn.
-        return settleCognitionAfterTool(ctx, name, args, localResult) ?? localResult;
-      });
+            const runtimeResult = await callRuntimeTool(ctx, name, args);
+            if (runtimeResult) return runtimeResult;
+            const durableResult = await routeDurableMcpCall(ctx, name, args);
+            if (durableResult) return durableResult;
+            const repositoryResult = await callRepositoryTool(ctx.controllerHome, name, args, ctx);
+            if (repositoryResult) return repositoryResult;
+            if (name === 'controller_capabilities') {
+              // Legacy read-only diagnostics consume the authoritative tools/list
+              // snapshot; legacy handlers must not import Runtime registries.
+              return await callMultiRepositoryTool(
+                {
+                  ...ctx,
+                  publishedToolNames: controllerExposureSnapshot(ctx).actualToolNames,
+                },
+                name,
+                args,
+              );
+            }
+            return await callMultiRepositoryTool(ctx, name, args);
+          };
+          const localResult = await executeLocalTool();
+          // MCP calls are intermediate. Only the provider-observed final assistant
+          // response can close a Supervisor turn.
+          return settleCognitionAfterTool(ctx, name, args, localResult) ?? localResult;
+        },
+      );
     }
     return callMcpTool(ctx, name, args);
   });

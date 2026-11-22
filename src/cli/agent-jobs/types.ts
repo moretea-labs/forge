@@ -1,66 +1,66 @@
-import type { CleanupEvidence, IntegrationEvidence } from "../controller/types";
-import type { AgentExecutableIdentity, ControllerAgent } from "../../runtime/agents/types";
-import type { TaskExecutionClass } from "../controller/execution-policy";
-import type { ExecutorHealth } from "./executor-health";
-import type { ManagedResource } from "../../runtime/resources";
+import type { CleanupEvidence, IntegrationEvidence } from '../controller/types';
+import type { AgentExecutableIdentity, ControllerAgent } from '../../runtime/agents/types';
+import type { TaskExecutionClass } from '../controller/execution-policy';
+import type { ExecutorHealth } from './executor-health';
+import type { ManagedResource } from '../../runtime/resources';
 
 export type AgentJobStatus =
-  | "queued"
-  | "starting"
-  | "running"
-  | "waiting_for_user"
-  | "succeeded"
-  | "failed"
-  | "cancelled"
-  | "unknown";
+  | 'queued'
+  | 'starting'
+  | 'running'
+  | 'waiting_for_user'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'unknown';
 export type AgentJobClosureState =
-  | "none"
-  | "ready_to_integrate"
-  | "integration_pending"
-  | "integrating"
-  | "integration_blocked"
-  | "integrated"
-  | "cleanup_pending"
-  | "cleaning"
-  | "cleanup_blocked"
-  | "preserved"
-  | "completed";
+  | 'none'
+  | 'ready_to_integrate'
+  | 'integration_pending'
+  | 'integrating'
+  | 'integration_blocked'
+  | 'integrated'
+  | 'cleanup_pending'
+  | 'cleaning'
+  | 'cleanup_blocked'
+  | 'preserved'
+  | 'completed';
 export type AgentJobPreservationReason =
-  | "dirty_worktree"
-  | "active_worktree"
-  | "protected_branch"
-  | "unknown_worktree_state"
-  | "unmerged_branch"
-  | "main_workspace_occupied"
-  | "integration_review_required"
-  | "integration_failed"
-  | "target_branch_drift"
-  | "verification_stale"
-  | "ownership_unknown"
-  | "overlapping_unmerged_work"
-  | "cleanup_failed"
-  | "untracked_user_files"
-  | "active_worker"
-  | "active_lease"
-  | "active_job"
-  | "active_edit_session"
-  | "waiting_for_user"
-  | "canonical_main_occupied"
-  | "worktree_path_mismatch"
-  | "branch_not_reachable_from_target"
-  | "cleanup_receipt_missing";
-export type AgentExecutionProvider = "local" | "github";
-export type AgentExecutionMode = "workspace" | "worktree" | "github";
+  | 'dirty_worktree'
+  | 'active_worktree'
+  | 'protected_branch'
+  | 'unknown_worktree_state'
+  | 'unmerged_branch'
+  | 'main_workspace_occupied'
+  | 'integration_review_required'
+  | 'integration_failed'
+  | 'target_branch_drift'
+  | 'verification_stale'
+  | 'ownership_unknown'
+  | 'overlapping_unmerged_work'
+  | 'cleanup_failed'
+  | 'untracked_user_files'
+  | 'active_worker'
+  | 'active_lease'
+  | 'active_job'
+  | 'active_edit_session'
+  | 'waiting_for_user'
+  | 'canonical_main_occupied'
+  | 'worktree_path_mismatch'
+  | 'branch_not_reachable_from_target'
+  | 'cleanup_receipt_missing';
+export type AgentExecutionProvider = 'local' | 'github';
+export type AgentExecutionMode = 'workspace' | 'worktree' | 'github';
 export type AgentProgressPhase =
-  | "queued"
-  | "starting"
-  | "inspecting"
-  | "editing"
-  | "testing"
-  | "finalizing"
-  | "waiting"
-  | "completed"
-  | "failed";
+  | 'queued'
+  | 'starting'
+  | 'inspecting'
+  | 'editing'
+  | 'testing'
+  | 'finalizing'
+  | 'waiting'
+  | 'completed'
+  | 'failed';
 
 export interface AgentJobProgress {
   phase: AgentProgressPhase;
@@ -73,25 +73,24 @@ export interface AgentJobEvent {
   at: string;
   eventId?: string;
   requestId?: string;
-  workId?: string;
   commandId?: string;
   executionId?: string;
   type:
-    | "run_created"
-    | "run_started"
-    | "run_activity"
-    | "run_heartbeat"
-    | "log_updated"
-    | "run_waiting"
-    | "run_succeeded"
-    | "run_failed"
-    | "run_cancelled"
-    | "run_cleanup_completed"
-    | "run_cleanup_failed"
-    | "run_integrated"
-    | "run_auto_integrated"
-    | "run_worktree_cleaned"
-    | "run_verified";
+    | 'run_created'
+    | 'run_started'
+    | 'run_activity'
+    | 'run_heartbeat'
+    | 'log_updated'
+    | 'run_waiting'
+    | 'run_succeeded'
+    | 'run_failed'
+    | 'run_cancelled'
+    | 'run_cleanup_completed'
+    | 'run_cleanup_failed'
+    | 'run_integrated'
+    | 'run_auto_integrated'
+    | 'run_worktree_cleaned'
+    | 'run_verified';
   message?: string;
   data?: Record<string, unknown>;
 }
@@ -144,12 +143,12 @@ export interface AgentJobMeta {
   worktreeCleanedAt?: string;
   cleanupBranchDeletedAt?: string;
   diffArtifactPath?: string;
-  changeOutcome?: "changed" | "no_change" | "already_integrated";
+  changeOutcome?: 'changed' | 'no_change' | 'already_integrated';
   changedFiles?: string[];
   integrationReviewPath?: string;
   preservationReason?: AgentJobPreservationReason;
   preservationDetails?: string;
-  terminationReason?: "timeout" | "cancelled" | "signal" | "spawn_error";
+  terminationReason?: 'timeout' | 'cancelled' | 'signal' | 'spawn_error';
   cancellationRequestedAt?: string;
   cancellationPids?: number[];
   cleanupPending?: boolean;
@@ -182,7 +181,7 @@ export interface AgentJobMeta {
 
 export interface AgentJobWorkerConfig {
   metaPath: string;
-  agent: Exclude<ControllerAgent, "github-copilot">;
+  agent: Exclude<ControllerAgent, 'github-copilot'>;
   worktree: string;
   promptPath: string;
   stdoutPath: string;
