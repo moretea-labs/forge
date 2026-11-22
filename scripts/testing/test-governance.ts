@@ -296,6 +296,18 @@ function resolveLocalDependency(repoRoot: string, importer: string, specifier: s
   return undefined;
 }
 
+function sourceDependencySpecifiers(source: string): Set<string> {
+  const specifiers = new Set<string>();
+  for (const pattern of [
+    /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)['"]([^'"]+)['"]/g,
+    /['"]((?:src|scripts|tests|assets)\/[^'"]+)['"]/g,
+  ]) {
+    pattern.lastIndex = 0;
+    for (let match = pattern.exec(source); match; match = pattern.exec(source)) specifiers.add(match[1]!);
+  }
+  return specifiers;
+}
+
 export function testInputPaths(repoRoot: string, testFile: string): string[] {
   const pending = [testFile.replace(/^\.\//, '')];
   const inputs = new Set<string>();
@@ -309,15 +321,7 @@ export function testInputPaths(repoRoot: string, testFile: string): string[] {
     } catch (_error) {
       continue;
     }
-    const specifiers = new Set<string>();
-    for (const pattern of [
-      /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)['"]([^'"]+)['"]/g,
-      /['"]((?:src|scripts|tests|assets)\/[^'"]+)['"]/g,
-    ]) {
-      pattern.lastIndex = 0;
-      for (let match = pattern.exec(source); match; match = pattern.exec(source)) specifiers.add(match[1]!);
-    }
-    for (const specifier of specifiers) {
+    for (const specifier of sourceDependencySpecifiers(source)) {
       if (!specifier.startsWith('.') && !/^(?:src|scripts|tests|assets)\//.test(specifier)) continue;
       const dependency = resolveLocalDependency(repoRoot, file, specifier);
       if (dependency && !inputs.has(dependency)) pending.push(dependency);
