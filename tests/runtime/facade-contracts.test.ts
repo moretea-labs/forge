@@ -38,11 +38,11 @@ import {
   isRhWorkAcceptedOperation,
 } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
+import { callWorkAdapter } from '../../adapters/mcp/runtime-gateway/work-adapter';
 import { mcpServerInstructions } from '../../adapters/mcp/instructions';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { normalizeRhWorkInputWireMigration } from '../../adapters/mcp/runtime-gateway/work-input-wire-migration';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../src/runtime/context/automatic-learning';
 import {
   FACADE_TOOLS,
@@ -516,22 +516,25 @@ describe('handoff and facade contracts', () => {
     expect(allowedFacadeOperations('rh_work')).not.toContain('controller_disposition');
   });
 
+  test('rejects retired wire carriers and unsafe object keys instead of translating them', async () => {
+    const legacy = await callWorkAdapter({} as never, {
+      operation: 'requirement_get',
+      capability_id: 'semantic.v1:{"operation":"requirement_get"}',
+    });
+    expect(JSON.stringify(legacy)).toContain('WORK_RETIRED');
+    const polluted = JSON.parse('{"operation":"repair","nested":{"__proto__":{"polluted":true}}}');
+    const blocked = await callWorkAdapter({} as never, polluted);
+    expect(JSON.stringify(blocked)).toContain('MCP_INPUT_UNSAFE_KEY');
+    expect({}).not.toHaveProperty('polluted');
+  });
+
   test('keeps retired Work relations and writers out of the current typed rh_work schema', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, any> | undefined;
     expect(properties).not.toHaveProperty('semantic_parent_work_id');
     expect(properties).not.toHaveProperty('depends_on_work_ids');
 
-    expect(
-      normalizeRhWorkInputWireMigration({
-        operation: 'repair',
-        capability_id: `semantic.v1:${JSON.stringify({ operation: 'work_revise', work_id: 'WORK-1', expected_revision: 1, semantic_parent_work_id: 'WORK-0' })}`,
-      }),
-    ).toMatchObject({
-      ok: false,
-      summary: 'FROZEN_MCP_SEMANTIC_V1_OPERATION_UNSUPPORTED',
-      data: { operation: 'work_revise' },
-    });
+    expect(properties).not.toHaveProperty('capability_id');
   });
 
   test('keeps cognition cadence model-owned without adding another lifecycle', () => {
@@ -593,7 +596,7 @@ describe('handoff and facade contracts', () => {
     expect(properties).not.toHaveProperty('controller_authority_id');
     expect(properties).not.toHaveProperty('relay_scope_id');
     expect(properties).not.toHaveProperty('plan_step_id');
-    expect(properties?.capability_id?.description).not.toContain('compatibility');
+    expect(properties).not.toHaveProperty('capability_id');
     for (const operation of [
       'start',
       'revise',
@@ -611,92 +614,6 @@ describe('handoff and facade contracts', () => {
     ]) {
       expect(isRhWorkAcceptedOperation(operation)).toBe(false);
     }
-  });
-
-  test('keeps frozen MCP carriers bounded and transport-only', () => {
-    const retired = normalizeRhWorkInputWireMigration({
-      operation: 'repair',
-      repo_id: 'repo-current',
-      request_id: 'frozen-semantic-read',
-      capability_id: 'semantic.v1:' + JSON.stringify({ operation: 'work_get', work_id: 'WORK-1' }),
-    });
-    expect(retired).toMatchObject({
-      ok: false,
-      summary: 'FROZEN_MCP_SEMANTIC_V1_OPERATION_UNSUPPORTED',
-      data: { operation: 'work_get' },
-    });
-
-    expect(
-      normalizeRhWorkInputWireMigration({
-        operation: 'repair',
-        work_id: 'WORK-OUTER',
-        capability_id: 'controller.current_conversation.enroll',
-      }),
-    ).toMatchObject({
-      ok: false,
-      summary: 'WORK_RETIRED',
-      data: { retiredField: 'work_id' },
-    });
-
-    expect(
-      normalizeRhWorkInputWireMigration({
-        operation: 'repair',
-        capability_id: `semantic.v1:${JSON.stringify({ operation: 'work_get', work_id: 'WORK-1', lifecycle_phase: 'review' })}`,
-      }),
-    ).toMatchObject({
-      ok: false,
-      summary: 'FROZEN_MCP_SEMANTIC_V1_OPERATION_UNSUPPORTED',
-      data: { operation: 'work_get' },
-    });
-
-    expect(
-      normalizeRhWorkInputWireMigration({
-        operation: 'repair',
-        capability_id: `semantic.v1:${'x'.repeat(8 * 1024 + 1)}`,
-      }),
-    ).toMatchObject({
-      ok: false,
-      summary: 'FROZEN_MCP_SEMANTIC_V1_TOO_LARGE',
-    });
-
-    const enrollment = normalizeRhWorkInputWireMigration({
-      operation: 'repair',
-      repo_id: 'repo-current',
-      request_id: 'frozen-current-conversation',
-      capability_id: 'controller.current_conversation.enroll',
-    });
-    expect(enrollment).toMatchObject({
-      ok: true,
-      operation: 'launcher_start',
-      args: {
-        operation: 'launcher_start',
-        controller_type: 'chatgpt',
-        transport_conversation: 'bound',
-        enroll_current_conversation: true,
-      },
-    });
-
-    expect(
-      normalizeRhWorkInputWireMigration({
-        operation: 'repair',
-        controller_type: 'codex',
-        capability_id: 'controller.current_conversation.enroll',
-      }),
-    ).toMatchObject({
-      ok: false,
-      summary: 'FROZEN_MCP_CURRENT_CONVERSATION_FIELD_CONFLICT',
-      data: { field: 'controller_type' },
-    });
-
-    const retiredLifecycle = normalizeRhWorkInputWireMigration({
-      operation: 'repair',
-      capability_id: `semantic.v1:${JSON.stringify({ operation: 'review', work_id: 'WORK-1' })}`,
-    });
-    expect(retiredLifecycle).toMatchObject({
-      ok: false,
-      summary: 'FROZEN_MCP_SEMANTIC_V1_OPERATION_UNSUPPORTED',
-    });
-    expect(isRhWorkAcceptedOperation('review')).toBe(false);
   });
 
   test('exposes task-bound launcher fields without restoring Work lifecycle operations', () => {

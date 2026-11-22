@@ -11,7 +11,6 @@ import {
 import { result } from './result-adapter';
 import { selected, selectedOptional } from './shared-adapter';
 import { invalidFacadeOperation } from './status-inbox-adapter';
-import { normalizeRhWorkInputWireMigration } from './work-input-wire-migration';
 import { callRhWorkScheduleAdapter, isRhWorkScheduleOperation } from './scheduler-adapter';
 import { callRhWorkRequirementOperation, isRhWorkRequirementOperation } from './work-requirement-operations';
 import { callRhWorkProjectOperation, isRhWorkProjectOperation } from './work-project-operations';
@@ -123,28 +122,59 @@ async function routeStableSemanticOperation(
   return callRhWorkPlanOperation(planStore, operation, args);
 }
 
-/**
- * Frozen rh_work MCP carrier supports Project, Requirement, Plan, Schedule
- * and Workflow only. There is no Work execution or historical read surface.
- */
+/** Reject prototype-polluting input while keeping the direct typed operation path. */
+function unsafeInputKey(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const unsafe = unsafeInputKey(item);
+      if (unsafe) return unsafe;
+    }
+    return undefined;
+  }
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (key === '__proto__' || key === 'prototype' || key === 'constructor') return key;
+    const unsafe = unsafeInputKey(child);
+    if (unsafe) return unsafe;
+  }
+  return undefined;
+}
+
+/** Direct semantic operations only; Work-era carrier translation is retired. */
 export async function callWorkAdapter(
   ctx: MultiRepositoryMcpToolContext,
   input: Record<string, unknown>,
 ): Promise<CallToolResult> {
-  const wireMigration = normalizeRhWorkInputWireMigration(input);
-  if (!wireMigration.ok) {
+  const unsafe = unsafeInputKey(input);
+  if (unsafe) {
     return result(
       buildFacadeResult({
         status: 'blocked',
-        summary: wireMigration.summary,
-        data: wireMigration.data,
+        summary: 'MCP_INPUT_UNSAFE_KEY',
+        data: { key: unsafe },
       }) as unknown as Record<string, unknown>,
       true,
     );
   }
-
-  const args = wireMigration.args;
-  const operation = wireMigration.operation;
+  // Retired carriers are not translated to a live operation. Typed direct
+  // fields are the only accepted interface; no Work-era wire fallback.
+  const retiredField = Object.hasOwn(input, 'work_id')
+    ? 'work_id'
+    : Object.hasOwn(input, 'capability_id')
+      ? 'capability_id'
+      : undefined;
+  if (retiredField) {
+    return result(
+      buildFacadeResult({
+        status: 'blocked',
+        summary: 'WORK_RETIRED',
+        data: { retiredField },
+      }) as unknown as Record<string, unknown>,
+      true,
+    );
+  }
+  const args = input;
+  const operation = typeof args.operation === 'string' ? args.operation.trim() : '';
   if (!isRhWorkAcceptedOperation(operation)) return invalidFacadeOperation('rh_work', operation);
 
   if (isRhWorkProjectOperation(operation)) {

@@ -369,11 +369,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
         description:
           'Model-authored Plan goal for plan_create/plan_revise. On plan_revise this replaces the canonical Plan goal under expected_revision CAS.',
       },
-      capability_id: {
-        type: 'string',
-        description:
-          'Compatibility-only carrier. Current callers should use typed rh_work fields directly. The outer adapter accepts only the bounded frozen semantic.v1 bridge and current-conversation enrollment, validates them without persistence, and routes them into the same Thin owners.',
-      },
       workflow_id: {
         type: 'string',
         description:

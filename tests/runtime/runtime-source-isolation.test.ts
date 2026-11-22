@@ -285,20 +285,16 @@ describe('runtime source isolation', () => {
     );
     expect((plan.data as { plan?: { planId?: string } })?.plan?.planId).toBe(planId);
 
-    // The public rh_work schema is frozen. Forward-compatible Requirement progress
-    // travels in the existing bounded semantic carrier; no extra MCP fields.
+    // Requirement progress is sent as direct typed fields; no legacy carrier.
     const revisedRequirement = structured(
       await callRuntimeTool(unscoped, 'rh_work', {
-        operation: 'repair',
-        capability_id: `semantic.v1:${JSON.stringify({
-          operation: 'requirement_revise',
-          requirement_id: requirementId,
-          expected_revision: 1,
-          requirement_outcome: 'Revise Requirement directly by stable id without repository selection.',
-          requirement_progress_summary: 'Source under review',
-          requirement_remaining_work: ['Runtime acceptance'],
-          requirement_accepted_evidence_refs: ['git:reviewed'],
-        })}`,
+        operation: 'requirement_revise',
+        requirement_id: requirementId,
+        expected_revision: 1,
+        requirement_outcome: 'Revise Requirement directly by stable id without repository selection.',
+        requirement_progress_summary: 'Source under review',
+        requirement_remaining_work: ['Runtime acceptance'],
+        requirement_accepted_evidence_refs: ['git:reviewed'],
       }),
     );
     const revisedPlan = structured(
@@ -335,40 +331,31 @@ describe('runtime source isolation', () => {
       },
     );
     const incompleteCompletion = await callRuntimeTool(unscoped, 'rh_work', {
-      operation: 'repair',
-      capability_id: `semantic.v1:${JSON.stringify({
-        operation: 'requirement_revise',
-        requirement_id: requirementId,
-        expected_revision: 2,
-        requirement_state: 'completed',
-        requirement_remaining_work: ['Runtime acceptance'],
-      })}`,
+      operation: 'requirement_revise',
+      requirement_id: requirementId,
+      expected_revision: 2,
+      requirement_state: 'completed',
+      requirement_remaining_work: ['Runtime acceptance'],
     });
     expect(JSON.stringify(incompleteCompletion)).toContain('REQUIREMENT_SEMANTIC_ACCEPTANCE_EVIDENCE_REQUIRED');
     const missingEvidenceCompletion = await callRuntimeTool(unscoped, 'rh_work', {
-      operation: 'repair',
-      capability_id: `semantic.v1:${JSON.stringify({
-        operation: 'requirement_revise',
-        requirement_id: requirementId,
-        expected_revision: 2,
-        requirement_state: 'completed',
-        requirement_remaining_work: [],
-        requirement_accepted_evidence_refs: [],
-      })}`,
+      operation: 'requirement_revise',
+      requirement_id: requirementId,
+      expected_revision: 2,
+      requirement_state: 'completed',
+      requirement_remaining_work: [],
+      requirement_accepted_evidence_refs: [],
     });
     expect(JSON.stringify(missingEvidenceCompletion)).toContain('REQUIREMENT_SEMANTIC_ACCEPTANCE_EVIDENCE_REQUIRED');
     const acceptedRequirement = structured(
       await callRuntimeTool(unscoped, 'rh_work', {
-        operation: 'repair',
-        capability_id: `semantic.v1:${JSON.stringify({
-          operation: 'requirement_revise',
-          requirement_id: requirementId,
-          expected_revision: 2,
-          requirement_state: 'completed',
-          requirement_progress_summary: 'Accepted through the public rh_work path',
-          requirement_remaining_work: [],
-          requirement_accepted_evidence_refs: ['git:reviewed', 'review:accepted'],
-        })}`,
+        operation: 'requirement_revise',
+        requirement_id: requirementId,
+        expected_revision: 2,
+        requirement_state: 'completed',
+        requirement_progress_summary: 'Accepted through the public rh_work path',
+        requirement_remaining_work: [],
+        requirement_accepted_evidence_refs: ['git:reviewed', 'review:accepted'],
       }),
     );
     expect((acceptedRequirement.data as { requirement?: Record<string, unknown> })?.requirement).toMatchObject({
