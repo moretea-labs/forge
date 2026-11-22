@@ -2052,4 +2052,3 @@ test('plugin_action_execute honors an exact checkout_id for iOS repository path 
     rmSync(root, { recursive: true, force: true });
   }
 });
-
