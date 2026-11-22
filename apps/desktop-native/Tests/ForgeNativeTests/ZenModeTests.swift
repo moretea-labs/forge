@@ -320,6 +320,10 @@ extension ZenModeTests {
   func testUnifiedSidebarSelectionUsesCurrentPageWithoutDuplicateModeState() {
     XCTAssertEqual(ForgeSidebarDestination.resolve(zenMode: true, page: .requirement), .workbench)
     XCTAssertEqual(ForgeSidebarDestination.resolve(zenMode: true, page: .agent), .workbench)
+    XCTAssertEqual(ForgeSidebarDestination.agent.title, "会话")
+    XCTAssertEqual(ForgeSidebarDestination.projects.title, "项目")
+    XCTAssertEqual(ForgeSidebarDestination.workbench.title, "看板")
+    XCTAssertEqual(ForgeSidebarDestination.primaryRail, [.agent, .projects, .workbench])
 
     let cases: [(NativePage, ForgeSidebarDestination)] = [
       (.agent, .agent), (.schedule, .automations),

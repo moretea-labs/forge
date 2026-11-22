@@ -13,12 +13,16 @@ enum ForgePalette {
         ? NSColor.controlAccentColor
         : NSColor.labelColor
     })
-  static let selection = Color.primary.opacity(0.072)
+  static let selection = Color.primary.opacity(0.065)
   static let selectionStrong = Color.primary.opacity(0.095)
-  static let userBubble = Color.primary.opacity(0.055)
+  static let userBubble = Color.primary.opacity(0.05)
   static let raisedSurface = Color(nsColor: .controlBackgroundColor)
   static let softFill = Color.primary.opacity(0.045)
   static let composer = Color(nsColor: .controlBackgroundColor).opacity(0.95)
+  /// Near-invisible edge for floating surfaces (composer, popovers).
+  static let hairline = Color.primary.opacity(0.08)
+  /// Tonal side panel: separates by value, not by a rule.
+  static let sidePanel = Color.primary.opacity(0.025)
 }
 
 /// Shared native form vocabulary: semantic system colors, no parallel theme engine.
@@ -38,10 +42,17 @@ enum ForgeClientDesign {
     static let identifier: Font = .system(size: 11, design: .monospaced)
   }
   enum Shell {
-    static let sidebarMin: CGFloat = 238
-    static let sidebarIdeal: CGFloat = 252
-    static let sidebarMax: CGFloat = 286
+    /// Narrow left icon rail (会话 / 项目 / 看板).
+    static let iconRailWidth: CGFloat = 52
+    static let listMin: CGFloat = 200
+    static let listIdeal: CGFloat = 240
+    static let listMax: CGFloat = 280
+    static let sidebarMin: CGFloat = iconRailWidth + listMin
+    static let sidebarIdeal: CGFloat = iconRailWidth + listIdeal
+    static let sidebarMax: CGFloat = iconRailWidth + listMax
     static let workSurfaceMin: CGFloat = 360
+    /// Centered reading column shared by transcript and composer (Cursor/Claude style).
+    static let readingColumn: CGFloat = 780
     static let destinationRowHeight: CGFloat = 31
     static let sessionTitle: Font = .system(size: 13.5, weight: .semibold)
     static let body: Font = .system(size: 12.5)

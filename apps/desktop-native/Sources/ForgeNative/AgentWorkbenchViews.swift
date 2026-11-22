@@ -71,13 +71,162 @@ struct AgentPane: View {
         }
         .task(id: workSurfaceVisible && selectedWorkSurface == .changes
               ? model.checkoutId : nil) {
-            // On a wide desktop the native shell opens three columns by
-            // default. Load real review data instead of a placeholder pane.
+            // Right pane stays hidden until Changes/Files is opened.
             guard workSurfaceVisible,
                   selectedWorkSurface == .changes,
                   model.checkoutId != nil else { return }
             await model.refreshAgentChanges(staged:model.agentChanges?.staged ?? false)
         }
+    }
+
+    private var agentScopeLabel: String {
+        [model.semanticProject?.displayName, model.project?.label, model.checkoutBranch]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator:" › ")
+    }
+
+    private var agentWorkspaceStatusColor: Color {
+        if model.busy || model.zenRefinementActive { return .orange }
+        if model.selectedProviderReady { return .green }
+        return ForgePalette.secondary
+    }
+
+    private func agentWorkspaceBar(compact: Bool) -> some View {
+        HStack(spacing:10) {
+            if model.canNavigateBack {
+                Button { model.goBack() } label: {
+                    Image(systemName:"chevron.left")
+                        .font(.system(size:11,weight:.medium))
+                        .frame(width:24,height:28)
+                }
+                .buttonStyle(.plain)
+                .disabled(model.busy)
+                .help("返回 \(model.navigationBackLabel ?? "上一页")")
+                .accessibilityLabel("返回 \(model.navigationBackLabel ?? "上一页")")
+                .accessibilityIdentifier("agent.navigation.back")
+            }
+            Text(model.thread?.title ?? "新会话")
+                .font(.system(size:13,weight:.semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth:.infinity,alignment:.leading)
+                .help(agentScopeLabel.isEmpty ? model.agentWorkspaceStatusDetail : agentScopeLabel)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("agent.workspace-scope")
+            if !compact {
+                HStack(spacing:12) {
+                    workspaceChangesControl
+                    workspaceFilesControl
+                    additionalAgentTools
+                }
+                .fixedSize(horizontal:true,vertical:false)
+            }
+            Button { Task { await model.refresh() } } label: {
+                HStack(spacing:5) {
+                    Circle().fill(agentWorkspaceStatusColor).frame(width:6,height:6)
+                    if !compact {
+                        Text(model.agentWorkspaceStatusLabel)
+                            .font(.system(size:11,weight:.medium))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(minWidth:18,minHeight:28)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("\(model.agentWorkspaceStatusDetail)\n点击刷新会话状态和模型服务")
+            .accessibilityLabel("Agent 状态")
+            .accessibilityValue(model.agentWorkspaceStatusLabel)
+            .accessibilityIdentifier("agent.workspace-refresh")
+        }
+        .padding(.horizontal,compact ? 14 : 22)
+        .frame(height:44)
+        .background(ForgePalette.canvas)
+        .accessibilityElement(children:.contain)
+        .accessibilityIdentifier("agent.workspace-context")
+    }
+
+    private var workspaceReviewFileCount: Int {
+        model.agentChanges?.reviewScopeFileCount ?? 0
+    }
+
+    private var workspaceReviewSummary: String {
+        guard let changes = model.agentChanges else { return "尚未读取改动" }
+        let scope = changes.staged ? "已暂存" : "未暂存"
+        let count = changes.reviewScopeFileCount
+        return count > 0 ? "\(scope) \(count) 个文件" : "\(scope)范围无改动"
+    }
+
+    private var workspaceChangesControl: some View {
+        Button {
+            if workSurfaceVisible && selectedWorkSurface == .changes {
+                closeWorkSurface()
+            } else {
+                openWorkSurface(.changes)
+            }
+        } label: {
+            HStack(spacing:5) {
+                Label("改动",systemImage:"doc.text.magnifyingglass")
+                if workspaceReviewFileCount > 0 {
+                    Text("\(workspaceReviewFileCount)").monospacedDigit()
+                }
+            }
+            .font(.system(size:11,weight:.medium))
+            .foregroundStyle(workSurfaceVisible && selectedWorkSurface == .changes
+                             ? ForgePalette.ink : ForgePalette.secondary)
+        }
+        .buttonStyle(.plain)
+        .disabled(model.checkoutId == nil)
+        .help("查看当前工作区改动：\(workspaceReviewSummary)")
+        .accessibilityLabel("改动审查")
+        .accessibilityValue(workspaceReviewSummary)
+        .accessibilityIdentifier("agent.changes")
+    }
+
+    private var workspaceFilesControl: some View {
+        Button {
+            if workSurfaceVisible && selectedWorkSurface == .files {
+                closeWorkSurface()
+            } else {
+                openWorkSurface(.files)
+            }
+        } label: {
+            Label("附件",systemImage:"paperclip")
+                .font(.system(size:11,weight:.medium))
+                .foregroundStyle(workSurfaceVisible && selectedWorkSurface == .files
+                                 ? ForgePalette.ink : ForgePalette.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("查看会话文件与图片")
+        .accessibilityIdentifier("agent.files")
+    }
+
+    private var additionalAgentTools: some View {
+        Menu {
+            Button("规划上下文") {
+                semanticInspector = semanticInspector == .planning ? nil : .planning
+                if semanticInspector != nil { closeWorkSurface() }
+            }
+            .disabled(model.thread?.projectId == nil)
+            Button("知识上下文") {
+                semanticInspector = semanticInspector == .knowledge ? nil : .knowledge
+                if semanticInspector != nil { closeWorkSurface() }
+            }
+            .disabled(model.repoId == nil)
+            Divider()
+            Button("浏览器（尚未接入）") {}
+                .disabled(true)
+        } label: {
+            Label("更多",systemImage:"ellipsis")
+                .font(.system(size:11,weight:.medium))
+                .foregroundStyle(ForgePalette.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("更多会话工具；浏览器尚未接入")
+        .accessibilityIdentifier("agent.tools.more")
     }
 
     private var composerInputHeight: CGFloat {
@@ -92,6 +241,7 @@ struct AgentPane: View {
                 ZStack {
                     // Keep the composer and transcript mounted during review.
                     VStack(spacing:0) {
+                        agentWorkspaceBar(compact:workSurfaceVisible && availableWidth >= 960 && !workSurfaceMaximized)
                         ScrollViewReader { reader in
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:20) {
@@ -250,9 +400,9 @@ struct AgentPane: View {
                                         }
                                     }
                                     .frame(maxWidth:isLongInstruction ? 740 : 880,alignment:.leading)
-                                    .padding(.horizontal,13).padding(.vertical,10)
+                                    .padding(.horizontal,15).padding(.vertical,10)
                                     .background(ForgePalette.userBubble,
-                                                in:RoundedRectangle(cornerRadius:12,style:.continuous))
+                                                in:RoundedRectangle(cornerRadius:16,style:.continuous))
                                     .contextMenu {
                                         Button { copyAgentText(message.text) } label: {
                                             Label("复制",systemImage:"doc.on.doc")
@@ -263,16 +413,11 @@ struct AgentPane: View {
                                         .disabled(model.busy)
                                     }
                                 }
-                                .frame(maxWidth:920,alignment:.trailing)
+                                .frame(maxWidth:ForgeClientDesign.Shell.readingColumn * 0.82,alignment:.trailing)
                                 .frame(maxWidth:.infinity,alignment:.trailing)
                                 .id(message.id)
                             } else {
-                                HStack(alignment:.top,spacing:10) {
-                                    Image(systemName:"bolt.circle")
-                                        .foregroundStyle(ForgePalette.accent)
-                                        .font(.system(size:17))
-                                        .padding(.top,1)
-                                        .accessibilityHidden(true)
+                                HStack(alignment:.top,spacing:0) {
                                     VStack(alignment:.leading,spacing:8) {
                                         AgentAssistantMessageBody(
                                             text:message.text,
@@ -393,12 +538,10 @@ struct AgentPane: View {
                                                     activityTrailRow(event)
                                                 }
                                             }
-                                            .padding(.horizontal,9).padding(.vertical,7)
-                                            .background(ForgePalette.softFill,
-                                                        in:RoundedRectangle(cornerRadius:9,style:.continuous))
+                                            .padding(.leading,4).padding(.vertical,4)
                                         }
                                     }
-                                    Spacer(minLength:56)
+                                    Spacer(minLength:0)
                                 }
                                 .frame(maxWidth:.infinity,alignment:.leading)
                                 .id(message.id)
@@ -487,9 +630,9 @@ struct AgentPane: View {
                             .id("pending")
                         }
                     }
-                    .frame(maxWidth:1320,alignment:.leading)
+                    .frame(maxWidth:ForgeClientDesign.Shell.readingColumn,alignment:.leading)
                     .frame(maxWidth:.infinity)
-                    .padding(.horizontal,28).padding(.top,18).padding(.bottom,22)
+                    .padding(.horizontal,32).padding(.top,32).padding(.bottom,22)
                     .background {
                         GeometryReader { content in
                             Color.clear.preference(
@@ -599,7 +742,7 @@ struct AgentPane: View {
                         Text("输入消息或描述目标…")
                             .font(.system(size:13))
                             .foregroundStyle(.tertiary)
-                            .padding(.leading,16).padding(.top,14)
+                            .padding(.leading,18).padding(.top,16)
                             .allowsHitTesting(false)
                     }
                     TextEditor(text:$model.draft)
@@ -608,7 +751,7 @@ struct AgentPane: View {
                         .foregroundStyle(ForgePalette.ink)
                         .scrollContentBackground(.hidden)
                         .frame(height:composerInputHeight)
-                        .padding(.horizontal,10).padding(.top,5)
+                        .padding(.horizontal,12).padding(.top,8)
                         .disabled(voiceDictation.isRecording || voiceDictation.isStarting || model.zenRefinementActive)
                         .accessibilityLabel("Agent 消息")
                         .accessibilityHint("输入任务描述，按 Command Return 发送")
@@ -788,11 +931,13 @@ struct AgentPane: View {
                     }
                 }.padding(.horizontal,13).padding(.bottom,8)
                 if !model.busy,!model.zenRefinementActive,let reason = model.agentSendBlockReason {
-                    HStack(alignment:.firstTextBaseline,spacing:6) {
-                        Image(systemName:"info.circle")
+                    HStack(alignment:.firstTextBaseline,spacing:5) {
+                        Circle().fill(Color.orange.opacity(0.7)).frame(width:5,height:5)
                             .accessibilityHidden(true)
                         Text(reason)
-                            .lineLimit(2)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help(reason)
                         Spacer(minLength:6)
                         if !model.selectedProviderReady {
                             Button(model.selectedProvider == "codex" ? "刷新状态" : "打开设置") {
@@ -808,21 +953,22 @@ struct AgentPane: View {
                             .accessibilityIdentifier("agent.configure-provider")
                         }
                     }
-                    .font(.system(size:10.5))
-                    .foregroundStyle(ForgePalette.secondary)
-                    .padding(.horizontal,16).padding(.bottom,11)
+                    .font(.system(size:10))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal,18).padding(.bottom,10)
                     .frame(maxWidth:.infinity,alignment:.leading)
                     .accessibilityIdentifier("agent.send-block-reason")
                 }
             }
             .background(.regularMaterial,
-                        in:RoundedRectangle(cornerRadius:17,style:.continuous))
+                        in:RoundedRectangle(cornerRadius:20,style:.continuous))
             .overlay {
-                if isComposerDropTarget {
-                    RoundedRectangle(cornerRadius:17,style:.continuous)
-                        .strokeBorder(ForgePalette.accent.opacity(0.5),lineWidth:1)
-                }
+                RoundedRectangle(cornerRadius:20,style:.continuous)
+                    .strokeBorder(isComposerDropTarget ? ForgePalette.accent.opacity(0.5) : ForgePalette.hairline,
+                                  lineWidth:isComposerDropTarget ? 1 : 0.5)
             }
+            .shadow(color:.black.opacity(0.06),radius:14,x:0,y:4)
+            .shadow(color:.black.opacity(0.04),radius:2,x:0,y:1)
             .dropDestination(for:URL.self) { urls, _ in
                 guard !model.busy,!model.zenRefinementActive,!urls.isEmpty else { return false }
                 model.addDroppedAttachments(urls)
@@ -830,8 +976,8 @@ struct AgentPane: View {
             } isTargeted: { targeted in
                 isComposerDropTarget = targeted && !model.busy && !model.zenRefinementActive
             }
-                    .frame(maxWidth:980)
-                    .padding(.horizontal,16).padding(.bottom,12)
+                    .frame(maxWidth:ForgeClientDesign.Shell.readingColumn + 24)
+                    .padding(.horizontal,16).padding(.bottom,16)
                     .frame(maxWidth:.infinity)
                 }
                 // Compact and maximized work surfaces replace the *presentation*,
@@ -864,7 +1010,7 @@ struct AgentPane: View {
                 semanticInspectorContent(inspector,inline:true)
                     .frame(width:320)
                     .frame(maxHeight:.infinity)
-                    .background(.regularMaterial)
+                    .background(ForgePalette.sidePanel)
                     .transition(reduceMotion ? .identity
                                 : .move(edge:.trailing).combined(with:.opacity))
                     .accessibilityIdentifier("agent.context-inspector")
@@ -1020,11 +1166,53 @@ struct AgentPane: View {
     }
 
     private func workSurfacePane() -> some View {
-        ZStack {
+        VStack(spacing:0) {
+            HStack(spacing:10) {
+                ForEach(AgentWorkSurface.allCases) { surface in
+                    let selected = selectedWorkSurface == surface
+                    Button { openWorkSurface(surface) } label: {
+                        Label(surface.title,systemImage:surface.symbol)
+                            .font(.system(size:11.5,weight:selected ? .semibold : .medium))
+                            .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
+                            .frame(height:36)
+                            .overlay(alignment:.bottom) {
+                                if selected { Rectangle().fill(ForgePalette.ink).frame(height:2) }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(selected ? [.isSelected] : [])
+                    .accessibilityIdentifier("agent.work-surface.tab.\(surface.rawValue)")
+                }
+                Spacer(minLength:6)
+                Button {
+                    withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
+                        workSurfaceMaximized.toggle()
+                    }
+                } label: {
+                    Image(systemName:workSurfaceMaximized
+                          ? "arrow.down.right.and.arrow.up.left"
+                          : "arrow.up.left.and.arrow.down.right")
+                        .frame(width:25,height:28)
+                }
+                .buttonStyle(.plain)
+                .help(workSurfaceMaximized ? "退出扩展视图" : "扩展右侧分栏")
+                .accessibilityIdentifier("agent.work-surface.maximize")
+                Button { closeWorkSurface() } label: {
+                    Image(systemName:"xmark").frame(width:25,height:28)
+                }
+                .buttonStyle(.plain)
+                .help("关闭右侧分栏")
+                .accessibilityIdentifier("agent.work-surface.close")
+            }
+            .padding(.horizontal,14)
+            .frame(height:44)
+            .background(ForgePalette.canvas)
+
+            ZStack {
                 AgentChangesPane(model:model)
-                .opacity(selectedWorkSurface == .changes ? 1 : 0)
-                .allowsHitTesting(selectedWorkSurface == .changes)
-                .accessibilityHidden(selectedWorkSurface != .changes)
+                    .opacity(selectedWorkSurface == .changes ? 1 : 0)
+                    .allowsHitTesting(selectedWorkSurface == .changes)
+                    .accessibilityHidden(selectedWorkSurface != .changes)
 
                 AgentAssetsDashboard(
                     model:model,
@@ -1037,8 +1225,9 @@ struct AgentPane: View {
                 .opacity(selectedWorkSurface == .files ? 1 : 0)
                 .allowsHitTesting(selectedWorkSurface == .files)
                 .accessibilityHidden(selectedWorkSurface != .files)
+            }
+            .frame(maxWidth:.infinity,maxHeight:.infinity)
         }
-        .frame(maxWidth:.infinity,maxHeight:.infinity)
         .background(ForgePalette.canvas)
     }
 
