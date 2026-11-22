@@ -653,6 +653,30 @@ describe('Process Runtime fine-grained resource claims', () => {
     }
   });
 
+  test('known read-only architecture scanner composes without checkout lock, unknown Node remains fenced (#713)', () => {
+    const safe = claimsForRepositoryCommand(
+      ['bash', '-lc', 'set -euo pipefail; bun run check:type && node scripts/check-runtime-architecture.mjs'],
+      'repo1',
+      'co1',
+    );
+    expect(safe).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
+    expect(safe).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
+    expect(safe.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+    expect(safe.some((claim) => claim.resourceKey === 'path:co1:scripts/check-runtime-architecture.mjs')).toBe(false);
+
+    for (const unsafe of [
+      'bun run check:type && node scripts/unknown-script.mjs',
+      'bun run check:type && node scripts/check-runtime-architecture.mjs --write',
+      'bun run check:type && node scripts/check-runtime-architecture.mjs > out.txt',
+      'bun run check:type && node scripts/check-runtime-architecture.mjs && touch out.txt',
+    ]) {
+      expect(claimsForRepositoryCommand(['bash', '-lc', unsafe], 'repo1', 'co1')).toContainEqual({
+        resourceKey: 'workspace:co1',
+        mode: 'write',
+      });
+    }
+  });
+
   test('path-scoped git add and git commit do not take checkout-wide writer (#713)', () => {
     const staged = claimsForRepositoryCommand(['git', 'add', 'src/alpha.ts', 'src/beta.ts'], 'repo1', 'co1');
     expect(staged).toContainEqual({ resourceKey: 'git-index:co1', mode: 'exclusive' });

@@ -657,6 +657,12 @@ function segmentHasFileRedirection(segment: string): boolean {
   return /(?:^|[^>&])>(?!&)|(?:^|[^<&])<(?!&)/.test(segment);
 }
 
+/** This repository-owned architecture scanner only reads source; no arbitrary Node script inherits this claim. */
+function isKnownReadOnlyArchitectureCheck(segment: string): boolean {
+  const words = shellWordsPreservingQuotes(segment);
+  return words.length === 2 && words[0] === 'node' && words[1] === 'scripts/check-runtime-architecture.mjs';
+}
+
 /**
  * Pure validation composition may observe source + shared build cache without a
  * checkout-wide writer (#713). Any non-build segment, file redirection, or
@@ -679,7 +685,11 @@ function isPureBuildOrTestComposition(command: string | readonly string[]): bool
   for (const segment of segments) {
     if (isShellOptionPrelude(segment)) continue;
     if (segmentHasFileRedirection(segment)) return false;
-    if (!looksLikeBuildOrTest(segment) || isPotentiallyEmittingTypeScript(segment)) return false;
+    if (
+      !isKnownReadOnlyArchitectureCheck(segment) &&
+      (!looksLikeBuildOrTest(segment) || isPotentiallyEmittingTypeScript(segment))
+    )
+      return false;
     sawValidation = true;
   }
   return sawValidation;
@@ -993,8 +1003,18 @@ function repositoryCommandClaims(
   // Heuristic build/test softens for simple argv and for pure composed validation
   // shells (`set -euo pipefail; bun run check:type`). Redirection, emitting tsc,
   // and unknown side-effect segments keep checkout-wide writers (#713).
-  if (explicitXcodeCache || isPureBuildOrTestComposition(command)) {
-    const paths = extractLikelyPaths(command);
+  const pureValidation = isPureBuildOrTestComposition(command);
+  if (explicitXcodeCache || pureValidation) {
+    const validationShell =
+      canonical.kind === 'shell'
+        ? canonical.shellCommand
+        : fixedShellWrapperCommand([canonical.executable!, ...(canonical.args ?? [])]);
+    // A verified all-readonly composition has no file output. A shell wrapper's
+    // script text is never a path to claim as a checkout writer.
+    const paths =
+      pureValidation && validationShell && shellSegments(validationShell).some(isKnownReadOnlyArchitectureCheck)
+        ? []
+        : extractLikelyPaths(command);
     if (paths.length === 0) {
       // Opaque build/test observes source and may write shared build cache only.
       // Do not take a checkout-wide writer as the Agent admission gate (#713).
