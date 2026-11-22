@@ -1077,6 +1077,60 @@ describe('repository command execution lifecycle', () => {
     expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
   });
 
+  test('real Git fetch proceeds with an unrelated same-checkout source Writer (#713)', async () => {
+    const controllerHome = tempRoot('forge-713-fetch-home-');
+    const repoRoot = tempRoot('forge-713-fetch-repo-');
+    const remoteRoot = tempRoot('forge-713-fetch-remote-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
+    git(remoteRoot, ['init', '--bare']);
+    git(repoRoot, ['remote', 'add', 'origin', remoteRoot]);
+    git(repoRoot, ['push', 'origin', 'HEAD:refs/heads/main']);
+    const headBefore = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
+    const opts = {
+      visibility: 'ephemeral' as const,
+      notifyScheduler: false,
+      invalidateProjection: false,
+      emitRuntimeEvent: false,
+    };
+    const foreign = acquireExecutionLeases(
+      controllerHome,
+      repository.repoId,
+      'foreign-source-writer',
+      [{ resourceKey: `path:${repository.activeCheckoutId}:README.md`, mode: 'write' }],
+      opts,
+    );
+    expect(foreign.acquired).toBe(true);
+    try {
+      const result = await executeRepositoryCommandViaProcessRuntime({
+        controllerHome,
+        repository,
+        command: ['git', 'fetch', 'origin'],
+        timeoutMs: 10_000,
+        executionIdentity: executionIdentityForRepository(repository),
+      });
+      const terminal = result.process?.completed
+        ? result.process
+        : result.process
+          ? await waitRepositoryCommandProcess(controllerHome, repository.repoId, result.process.processId, {
+              timeoutMs: 10_000,
+            })
+          : undefined;
+      expect(terminal?.ok ?? result.ok).toBe(true);
+      expect(gitOutput(repoRoot, ['rev-parse', 'HEAD'])).toBe(headBefore);
+      expect(readFileSync(join(repoRoot, 'README.md'), 'utf8')).toBe('hello\n');
+      expect(
+        listActiveLeases(controllerHome, repository.repoId).some(
+          (lease) => lease.ownerJobId === 'foreign-source-writer',
+        ),
+      ).toBe(true);
+    } finally {
+      if (foreign.acquired)
+        releaseExecutionLeases(controllerHome, repository.repoId, 'foreign-source-writer', foreign.leases, opts);
+    }
+    expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
+  });
+
   test('ordinary remote writes execute through managed Process Runtime without external-controller delegation', async () => {
     const controllerHome = tempRoot('forge-cmd-external-home-');
     const repoRoot = tempRoot('forge-cmd-external-repo-');

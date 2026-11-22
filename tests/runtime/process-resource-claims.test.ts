@@ -936,6 +936,33 @@ describe('Process Runtime fine-grained resource claims', () => {
     }
   });
 
+  test('Git fetch owns remote refs, not source checkout or index (#713)', () => {
+    const sourceLease = lease('workspace:co1', 'write');
+    const sourcePath = lease('path:co1:src/feature.ts', 'write');
+    const refsLease = lease('git-refs:repo1', 'exclusive');
+    for (const command of [
+      ['git', 'fetch', 'origin'],
+      ['git', 'fetch', '--prune', 'origin', 'main'],
+      'git fetch --tags origin',
+      ['bash', '-lc', 'git fetch origin main'],
+    ]) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims).toEqual([{ resourceKey: 'git-refs:repo1', mode: 'exclusive' }]);
+      expect(claims.some((claim) => claimsConflict(claim, sourceLease))).toBe(false);
+      expect(claims.some((claim) => claimsConflict(claim, sourcePath))).toBe(false);
+      expect(claims.some((claim) => claimsConflict(claim, refsLease))).toBe(true);
+    }
+    for (const command of [
+      ['git', 'fetch', '--recurse-submodules=yes', 'origin'],
+      ['git', 'fetch', '--recurse-submodules', 'origin'],
+      ['git', 'pull', '--ff-only'],
+      ['bash', '-lc', 'git fetch origin && touch src/file.ts'],
+    ]) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(true);
+    }
+  });
+
   test('commands that change Git worktree still explicitly claim index/refs (#713)', () => {
     for (const command of [
       ['git', 'checkout', 'another-branch'],

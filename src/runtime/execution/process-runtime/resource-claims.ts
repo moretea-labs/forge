@@ -984,6 +984,12 @@ function gitMetadataOnlyClaims(
     return [claimGitIndex(checkoutId, repoId)];
   }
   if (sub === 'branch' || sub === 'tag') return [claimGitRefs(repoId)];
+  // Fetch updates object storage and remote-tracking refs, not the checked-out
+  // worktree. Recursive submodule fetch can touch other Git stores, so those
+  // explicit modes retain the conservative fallback (#713).
+  if (sub === 'fetch' && !args.some((arg) => /^--(?:recurse-submodules|submodule-prefix)(?:=|$)/.test(arg))) {
+    return [claimGitRefs(repoId)];
+  }
   if (sub === 'restore' && args.includes('--staged') && !args.includes('--worktree')) {
     return [claimGitIndex(checkoutId, repoId)];
   }
