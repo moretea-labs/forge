@@ -5,7 +5,6 @@ import type { MultiRepositoryMcpToolContext } from "../multi-repository";
 import { controllerExposureSnapshot, controllerToolSurfaceStatus } from "../toolset";
 import { result } from "./result-adapter";
 import { selected, selectedOptional } from "./shared-adapter";
-import { SEMANTIC_SCOPE_KEY } from "../../../src/effects/controller-home";
 import { getProcessRecord, isManagedProcessActive, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
 import { gatewayLatencySummaries } from '../../../src/core/observability/gateway-contention-metrics';
 import { formatRuntimeSourceDriftMessage, readRuntimeGeneration } from "../../../src/runtime/control-plane/runtime-generation";
@@ -14,7 +13,7 @@ import { buildCheckExecutionSchedule } from "../../../src/runtime/execution/proc
 import { listAssistantPluginManifests } from "../../../src/runtime/plugins/store";
 import { cachedGitIdentity, gitSnapshot } from "../../../src/runtime/repositories/inspector";
 import { buildRuntimeMaintenanceStatus } from "../../../src/runtime/recovery";
-import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, normalizeCheckIds, listPlanContracts, summarizePlanContract, runHandoffInboxApplication, type FacadeTool } from "../../../src/runtime/control-plane/facade";
+import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, normalizeCheckIds, runHandoffInboxApplication, type FacadeTool } from "../../../src/runtime/control-plane/facade";
 import { observeRuntimeStatus } from "../../../src/runtime/root/status";
 import { summarizeHandoffItem } from '../../../src/runtime/control-plane/facade';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
@@ -221,12 +220,9 @@ export async function callStatusInboxAdapter(
             : 'RUNTIME_SOURCE_SNAPSHOT_STALE');
         const runtimeReadiness = observation.snapshot?.readiness;
         const releaseDiagnostic = runtimeReadiness?.diagnostics.releaseCoherence;
-        // Plans are authored semantic context: without a repository target the
-        // instance-level semantic scope carries them.
-        const activePlanSnapshot = (repository && store
-          ? listPlanContracts({ ...store, status: 'active', limit: 3 })
-          : listPlanContracts({ controllerHome: ctx.controllerHome, scopeKey: SEMANTIC_SCOPE_KEY, status: 'active', limit: 3 })
-        ).map(summarizePlanContract);
+        // Status is execution readiness, not a Plan-query facade. Legacy Plan
+        // data must not block bounded execution or be implicitly migrated here.
+        // Callers needing Plan semantics use the explicit Plan authority.
         const pendingHandoffAttention = store ? listHandoffAttentionItems(store, 100) : [];
         const pendingHandoffSnapshot = pendingHandoffAttention.slice(0, 4);
         const pendingHandoffCount = pendingHandoffAttention.length;
@@ -314,7 +310,6 @@ export async function callStatusInboxAdapter(
               schemaStableAcrossAccessModes: exposure.schemaStableAcrossAccessModes,
             },
             controllerSnapshot: {
-              activePlans: activePlanSnapshot,
               pendingHandoffCount,
               pendingHandoffs: pendingHandoffSnapshot.slice(0, 3).map((item) => ({
                 id: item.id,

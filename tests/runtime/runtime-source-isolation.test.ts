@@ -844,12 +844,12 @@ printf '{"ok":true}\\n'
       readiness: { ready: boolean; reasonCodes: string[] };
       repositoryState?: { branch?: string | null };
       runtime?: { source?: { canonicalRoot?: string; branch?: string | null } };
-      controllerSnapshot?: { activePlans?: unknown[]; pendingHandoffs?: unknown[]; bounded?: boolean };
+      controllerSnapshot?: { pendingHandoffs?: unknown[]; bounded?: boolean };
     };
     expect(data.readiness.reasonCodes.some((code) => code.startsWith('RUNTIME_SOURCE'))).toBe(false);
     expect(JSON.stringify(payload)).not.toContain('runtime source root moved');
     expect(data.controllerSnapshot).toMatchObject({ bounded: true });
-    expect(Array.isArray(data.controllerSnapshot?.activePlans)).toBe(true);
+    expect(data.controllerSnapshot).not.toHaveProperty('activePlans');
     // repository state still reflects the business checkout
     if (data.repositoryState?.branch) {
       expect(data.repositoryState.branch).toBe('perf-i18n-global-opt');
