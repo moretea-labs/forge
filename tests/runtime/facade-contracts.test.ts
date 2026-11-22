@@ -521,7 +521,7 @@ describe('handoff and facade contracts', () => {
       operation: 'requirement_get',
       capability_id: 'semantic.v1:{"operation":"requirement_get"}',
     });
-    expect(JSON.stringify(legacy)).toContain('WORK_RETIRED');
+    expect(JSON.stringify(legacy)).toContain('CAPABILITY_ID_RETIRED');
     const polluted = JSON.parse('{"operation":"repair","nested":{"__proto__":{"polluted":true}}}');
     const blocked = await callRhWorkAdapter({} as never, polluted);
     expect(JSON.stringify(blocked)).toContain('MCP_INPUT_UNSAFE_KEY');

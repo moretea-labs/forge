@@ -790,7 +790,6 @@ function callCanonicalUserRequestInbox(
           ? args.reason.trim()
           : '';
     if (!title || !summary) throw new Error('USER_REQUEST_TITLE_SUMMARY_REQUIRED');
-    if (typeof args.work_id === 'string' && args.work_id.trim()) throw new Error('USER_REQUEST_WORK_SCOPE_RETIRED');
     const repoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
     const explicitId = typeof args.handoff_id === 'string' ? args.handoff_id.trim() : '';
     const actionRequired = (typeof args.action_required === 'string' ? args.action_required : 'product_decision') as

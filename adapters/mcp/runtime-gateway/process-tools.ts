@@ -147,9 +147,6 @@ export async function executeAuthorizedHostCommand(
       throw new Error('HOST_COMMAND_REQUIRED: provide command (argv) or shell_command');
     }
     const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
-    if (typeof args.work_id === 'string' && args.work_id.trim()) {
-      throw new Error(`WORK_PROCESS_ATTRIBUTION_RETIRED: ${args.work_id}`);
-    }
     const cwd = typeof args.cwd === 'string' ? args.cwd.trim() : '';
     const executed = await executeHostCommand({
       controllerHome: ctx.controllerHome,

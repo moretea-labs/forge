@@ -49,8 +49,6 @@ export async function callRhWorkScheduleAdapter(
   options: { scheduleIdOverride?: string } = {},
 ): Promise<CallToolResult> {
   try {
-    const workId = String(args.work_id ?? '').trim();
-    if (workId) throw new Error('WORK_BOUND_SCHEDULE_OPERATION_RETIRED');
     const scheduleId = options.scheduleIdOverride?.trim() || String(args.schedule_id ?? '').trim();
     if (operation === 'schedule_create') {
       const retiredAutonomousFields = [

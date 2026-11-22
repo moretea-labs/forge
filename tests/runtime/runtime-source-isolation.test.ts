@@ -155,7 +155,7 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 }
 
 describe('runtime source isolation', () => {
-  test('rh_context source routing uses explicit checkout identity and denies retired work_id', async () => {
+  test('rh_context source routing uses explicit checkout identity', async () => {
     const controllerHome = tempRoot('forge-context-explicit-checkout-home-');
     const repoRoot = tempRoot('forge-context-explicit-checkout-repo-');
     initGitRepo(repoRoot, 'context-explicit-checkout');
@@ -218,16 +218,6 @@ describe('runtime source isolation', () => {
     expect(explicitCheckoutData.contextClosure?.repository?.branch).toBe('work/context-exact-source');
     expect(explicitCheckoutSource).toContain('ISOLATED');
     expect(explicitCheckoutSource).not.toContain('CANONICAL');
-
-    const retiredWork = structured(
-      await callRuntimeTool(context, 'rh_context', {
-        ...baseArgs,
-        work_id: 'retired-work-context',
-      }),
-    );
-    expect(retiredWork.status).toBe('blocked');
-    expect(retiredWork.summary).toContain('WORK_RETIRED');
-    expect(retiredWork.data).not.toHaveProperty('files');
   });
   test('stable semantic ids resolve without synthetic repository ownership in a multi-repository Controller Home', async () => {
     const controllerHome = tempRoot('forge-home-stable-semantic-id-');
@@ -365,14 +355,6 @@ describe('runtime source isolation', () => {
       acceptedEvidenceRefs: ['git:reviewed', 'review:accepted'],
     });
     expect(revisedPlanData?.plan).toMatchObject({ planId, revision: 2 });
-    const retiredWorkWrite = structured(
-      await callRuntimeTool(unscoped, 'rh_work', {
-        operation: 'revise',
-        work_id: 'retired-work',
-      }),
-    );
-    expect(retiredWorkWrite.status).not.toBe('ok');
-    expect(JSON.stringify(retiredWorkWrite)).toContain('WORK_RETIRED');
   });
 
   test('stable semantic Plan id routing disambiguates across repository scopes', async () => {

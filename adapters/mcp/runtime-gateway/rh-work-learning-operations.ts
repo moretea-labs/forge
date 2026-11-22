@@ -25,7 +25,6 @@ export function callRhWorkLearningOperation(
 ): CallToolResult | undefined {
   if (!['learning_record', 'learning_feedback'].includes(operation)) return undefined;
   try {
-    if (typeof args.work_id === 'string' && args.work_id.trim()) throw new Error('COGNITION_WORK_SCOPE_RETIRED');
     const requirementId =
       typeof args.requirement_id === 'string' && args.requirement_id.trim() ? args.requirement_id.trim() : undefined;
     if (operation === 'learning_feedback') {

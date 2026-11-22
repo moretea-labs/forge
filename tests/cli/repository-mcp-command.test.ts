@@ -363,7 +363,7 @@ describe('repository MCP command tools', () => {
       });
       const payload = JSON.parse(String(response?.content?.[0]?.text ?? '{}'));
       expect(payload.status).toBe('blocked');
-      expect(payload.summary).toContain('WORK_RETIRED');
+      expect(payload.summary).toContain('CAPABILITY_ID_RETIRED');
       expect(payload.data?.executionStarted).not.toBe(true);
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);

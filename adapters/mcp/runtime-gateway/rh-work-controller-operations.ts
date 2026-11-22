@@ -286,9 +286,6 @@ export async function callRhWorkControllerOperation(
   try {
     const controllerType = String(args.controller_type ?? 'chatgpt');
     if (controllerType !== 'chatgpt') throw new Error('WORK_BOUND_CONTROLLER_LAUNCH_RETIRED');
-    if (typeof args.work_id === 'string' && args.work_id.trim()) {
-      throw new Error('WORK_BOUND_CONTROLLER_LAUNCH_RETIRED');
-    }
 
     const launch = chatgptLaunchSessionRequest(args, repository.repoId);
     const taskId = typeof args.task_id === 'string' ? args.task_id.trim() : '';

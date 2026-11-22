@@ -160,8 +160,6 @@ export async function callPluginAdapter(
     }
     case 'plugin_action_execute': {
       const pluginId = String(args.plugin_id ?? '').trim();
-      const workId = typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined;
-      if (workId) throw new Error(`WORK_PLUGIN_RECEIPT_AUTHORITY_RETIRED: ${workId}`);
       const scope = pluginTransportScope(ctx, args, pluginId);
       const actionId = String(args.action_id ?? '').trim();
       const requestId = String(args.request_id ?? '').trim();

@@ -598,19 +598,6 @@ export async function callContextAdapter(
   args: Record<string, unknown>,
 ): Promise<CallToolResult | undefined> {
   if (name !== 'rh_context') return undefined;
-  // Work is fully retired, including historical records. Frozen schema fields
-  // do not establish a new read, source-routing or recovery capability.
-  if (typeof args.work_id === 'string' && args.work_id.trim()) {
-    return result(
-      buildFacadeResult({
-        status: 'blocked',
-        summary: 'WORK_RETIRED: work_id is no longer supported; use Requirement, Plan or repository context.',
-        data: { retiredField: 'work_id' },
-        suggestedNextActions: [],
-      }) as unknown as Record<string, unknown>,
-      true,
-    );
-  }
   const operation = String(args.operation ?? 'get');
   const repository = selected(ctx, args);
   if (!allowedFacadeOperations('rh_context').includes(operation)) {

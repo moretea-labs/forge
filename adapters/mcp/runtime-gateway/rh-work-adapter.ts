@@ -157,18 +157,13 @@ export async function callRhWorkAdapter(
     );
   }
   // Retired carriers are not translated to a live operation. Typed direct
-  // fields are the only accepted interface; no Work-era wire fallback.
-  const retiredField = Object.hasOwn(input, 'work_id')
-    ? 'work_id'
-    : Object.hasOwn(input, 'capability_id')
-      ? 'capability_id'
-      : undefined;
-  if (retiredField) {
+  // fields are the only accepted interface.
+  if (Object.hasOwn(input, 'capability_id')) {
     return result(
       buildFacadeResult({
         status: 'blocked',
-        summary: 'WORK_RETIRED',
-        data: { retiredField },
+        summary: 'CAPABILITY_ID_RETIRED',
+        data: { retiredField: 'capability_id' },
       }) as unknown as Record<string, unknown>,
       true,
     );
@@ -238,8 +233,6 @@ export async function callRhWorkAdapter(
   if (planCreate) return planCreate;
 
   if (operation === 'repair') {
-    if (typeof args.work_id === 'string' && args.work_id.trim())
-      return invalidFacadeOperation('rh_work', 'repair_with_work_id');
     return runFacadeRepair(ctx, repository, args);
   }
 
