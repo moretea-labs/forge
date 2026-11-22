@@ -542,7 +542,20 @@ export async function runTestSelection(
 ): Promise<number> {
   const useCache = options.useCache ?? true;
   const storage = ensureRepositoryCheckStorage(repoRoot, options.storageAuthority);
-  const contentDigest = testContentDigest(repoRoot);
+  const fullyIsolated = Boolean(
+    options.isolatedCandidateRoot &&
+      selection.files.every(
+        (file) => manifest.tests[file]?.resource === 'pure' || manifest.tests[file]?.resource === 'temp-isolated',
+      ),
+  );
+  // A fixed Git tree identifies committed test sources without rehashing
+  // unrelated Writer dirty. Shared/mixed suites retain the workspace digest.
+  const committedTree = fullyIsolated
+    ? requiredGit(options.isolatedCandidateRoot!, ['rev-parse', '--verify', 'HEAD^{tree}']).trim()
+    : undefined;
+  const contentDigest = committedTree
+    ? createHash('sha256').update(`forge-test-content-git-tree-v1\n${committedTree}`).digest('hex')
+    : testContentDigest(repoRoot);
   const runnerInputs = [
     MANIFEST_PATH,
     'scripts/run-bun-test-file.ts',
@@ -551,14 +564,22 @@ export async function runTestSelection(
     'src/runtime/shared/bounded-child-supervisor.ts',
     'src/runtime/shared/process-tree.ts',
   ];
-  const runnerDigest = hashFiles(repoRoot, runnerInputs, 'test-runner-v1');
-  const isolatedRunnerDigest = options.isolatedCandidateRoot
+  const runnerDigest = fullyIsolated
     ? hashFiles(
-        options.isolatedCandidateRoot,
+        options.isolatedCandidateRoot!,
         runnerInputs,
         `test-runner-v1:committed:${options.isolatedCandidateRevision ?? 'unknown'}`,
       )
-    : undefined;
+    : hashFiles(repoRoot, runnerInputs, 'test-runner-v1');
+  const isolatedRunnerDigest = fullyIsolated
+    ? runnerDigest
+    : options.isolatedCandidateRoot
+      ? hashFiles(
+          options.isolatedCandidateRoot,
+          runnerInputs,
+          `test-runner-v1:committed:${options.isolatedCandidateRevision ?? 'unknown'}`,
+        )
+      : undefined;
   const toolchain = toolchainSignature();
   const capability = capabilitySignature();
   let failures = 0;

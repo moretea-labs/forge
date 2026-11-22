@@ -232,7 +232,18 @@ describe('test runner infrastructure', () => {
       });
       expect(await runTestSelection(repo, manifest, selection('tests/reads.test.ts'), options)).toBe(0);
       expect(outcome?.failureEvidence).toMatchObject({ status: 'passed', contaminated: false });
+      const pinnedContentDigest = outcome!.contentDigest;
+      const pinnedRunnerDigest = outcome!.runnerDigest;
       expect(readFileSync(join(repo, 'src/value.ts'), 'utf8')).toBe('export const value = 2;\n');
+      // A concurrent Writer may change the canonical checkout. That must
+      // not change receipt identity for exactly the same committed source.
+      writeFileSync(join(repo, 'src/value.ts'), 'export const value = 3;\n');
+      writeFileSync(join(repo, 'src/untracked.ts'), 'another Writer edit\n');
+      expect(await runTestSelection(repo, manifest, selection('tests/reads.test.ts'), options)).toBe(0);
+      expect(outcome?.contentDigest).toBe(pinnedContentDigest);
+      expect(outcome?.runnerDigest).toBe(pinnedRunnerDigest);
+      writeFileSync(join(repo, 'src/value.ts'), 'export const value = 2;\n');
+      writeFileSync(join(repo, 'src/untracked.ts'), 'untracked\n');
 
       expect(await runTestSelection(repo, manifest, selection('tests/mutates.test.ts'), options)).toBe(1);
       expect(outcome?.failureEvidence).toMatchObject({
