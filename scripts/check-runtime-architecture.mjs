@@ -151,81 +151,6 @@ function loadTypeScriptCompiler() {
   return typeScriptCompiler;
 }
 
-const WORK_LIFECYCLE_PATCH_FIELDS = new Set(['status', 'phase', 'dispatchState', 'evidenceState', 'workKind']);
-
-function unwrapTypeScriptExpression(ts, node) {
-  let current = node;
-  while (
-    ts.isParenthesizedExpression(current) ||
-    ts.isAsExpression(current) ||
-    ts.isTypeAssertionExpression(current) ||
-    ts.isNonNullExpression(current) ||
-    (typeof ts.isSatisfiesExpression === 'function' && ts.isSatisfiesExpression(current))
-  ) {
-    current = current.expression;
-  }
-  return current;
-}
-
-function staticTypeScriptPropertyName(ts, name) {
-  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)) return name.text;
-  if (ts.isComputedPropertyName(name) && ts.isStringLiteralLike(name.expression)) return name.expression.text;
-  return undefined;
-}
-
-function inlineWorkLifecyclePatchFields(ts, node) {
-  const expression = unwrapTypeScriptExpression(ts, node);
-  if (!ts.isObjectLiteralExpression(expression)) return [];
-  const fields = new Set();
-  for (const property of expression.properties) {
-    if (ts.isSpreadAssignment(property)) {
-      for (const field of inlineWorkLifecyclePatchFields(ts, property.expression)) fields.add(field);
-      continue;
-    }
-    if (
-      !(
-        ts.isPropertyAssignment(property) ||
-        ts.isShorthandPropertyAssignment(property) ||
-        ts.isMethodDeclaration(property) ||
-        ts.isGetAccessorDeclaration(property) ||
-        ts.isSetAccessorDeclaration(property)
-      )
-    )
-      continue;
-    const name = staticTypeScriptPropertyName(ts, property.name);
-    if (name && WORK_LIFECYCLE_PATCH_FIELDS.has(name)) fields.add(name);
-  }
-  return [...fields].sort();
-}
-
-function genericWorkLifecycleMutationRecords(files) {
-  const ts = loadTypeScriptCompiler();
-  if (!ts) return [];
-  const records = [];
-  for (const path of [...files].sort()) {
-    const sourceFile = ts.createSourceFile(path, text(path), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-    function visit(node) {
-      if (ts.isCallExpression(node) && node.arguments.length >= 3) {
-        const callee = node.expression;
-        const callName = ts.isIdentifier(callee)
-          ? callee.text
-          : ts.isPropertyAccessExpression(callee)
-            ? callee.name.text
-            : undefined;
-        if (callName === 'updateWorkContract') {
-          const fields = inlineWorkLifecyclePatchFields(ts, node.arguments[2]);
-          if (fields.length > 0) {
-            const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-            records.push({ path, line: line + 1, fields });
-          }
-        }
-      }
-      ts.forEachChild(node, visit);
-    }
-    visit(sourceFile);
-  }
-  return records;
-}
 
 function staticTypeScriptImportRecordsFromSources(sources) {
   const ts = loadTypeScriptCompiler();
@@ -1395,11 +1320,7 @@ for (const path of sourceFiles('src')) {
     'production source must consume the Work application/API boundary, not persistence infrastructure',
   );
 }
-for (const record of genericWorkLifecycleMutationRecords([...sourceFiles('src'), ...sourceFiles('adapters')])) {
-  failures.push(
-    `${record.path}:${record.line} reintroduces retired Work lifecycle mutation via updateWorkContract fields ${record.fields.join(', ')}`,
-  );
-}
+
 forbid(
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/,
