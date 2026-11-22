@@ -5,9 +5,6 @@
     "packages/kernel/scheduler/infrastructure/schedule-store.ts|../../../../src/effects/controller-locks",
     "packages/kernel/scheduler/infrastructure/schedule-store.ts|../../../../src/runtime/control-plane/facade/handoff-inbox-store",
     "packages/kernel/scheduler/infrastructure/schedule-store.ts|../../../../src/runtime/evidence/event-ledger",
-    "packages/kernel/scheduler/infrastructure/schedule-store.ts|../../../../src/runtime/shared/json-files",
-    "packages/kernel/work/infrastructure/work-contract-store.ts|../../../../src/effects/controller-home",
-    "packages/kernel/work/infrastructure/work-contract-store.ts|../../../../src/runtime/control-plane/persistence/sqlite-store",
-    "packages/kernel/work/infrastructure/work-contract-store.ts|../../../../src/runtime/shared/json-files"
+    "packages/kernel/scheduler/infrastructure/schedule-store.ts|../../../../src/runtime/shared/json-files"
   ]
 }
