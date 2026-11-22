@@ -79,13 +79,6 @@ export function claimValidationObservation(checkoutId?: string, repoId?: string)
   return { resourceKey: `validation-input:${checkoutScope(checkoutId, repoId)}`, mode: 'read' };
 }
 
-export function claimPathRead(path: string, checkoutId?: string, repoId?: string): ResourceClaimSpec {
-  if (path === '.') return claimWorkspaceRead(checkoutId, repoId);
-  const normalized = normalizeClaimPath(path);
-  if (!normalized) return claimWorkspaceRead(checkoutId, repoId);
-  return { resourceKey: `path:${checkoutScope(checkoutId, repoId)}:${normalized}`, mode: 'read' };
-}
-
 export function claimPathWrite(path: string, checkoutId?: string, repoId?: string): ResourceClaimSpec {
   const normalized = normalizeClaimPath(path);
   if (!normalized) {
@@ -349,7 +342,7 @@ function iosSimulatorTestCommandClaims(
   }
   if (!matches) return undefined;
   return normalizeClaims([
-    claimWorkspaceRead(checkoutId, repoId),
+    claimValidationObservation(checkoutId, repoId),
     ...cacheClaims,
     { resourceKey: iosSimulatorResourceKey(exactXcodebuildSimulatorUdid(command)), mode: 'write' },
   ]);
@@ -582,7 +575,7 @@ function claimsForDeclaredCheckEffects(
   // Missing read scope is unknown, so custom checks fail closed. An explicit
   // reads: [] means the command does not inspect repository content.
   if (effects.reads === undefined) claims.push(claimWorkspaceWrite(checkoutId, repoId));
-  else for (const path of effects.reads) claims.push(claimPathRead(path, checkoutId, repoId));
+  else if (effects.reads.length > 0) claims.push(claimValidationObservation(checkoutId, repoId));
   for (const path of effects.writes ?? []) claims.push(claimPathWrite(path, checkoutId, repoId));
 
   if (effects.cache === 'read') claims.push(claimBuildCacheRead(repoId));
@@ -903,7 +896,11 @@ function repositoryCommandClaims(
   if (iosSimulatorClaims) return iosSimulatorClaims;
   const deviceClaims = validationDeviceClaims(command);
   if (deviceClaims.length > 0)
-    return normalizeClaims([claimWorkspaceRead(checkoutId, repoId), claimBuildCacheWrite(repoId), ...deviceClaims]);
+    return normalizeClaims([
+      claimValidationObservation(checkoutId, repoId),
+      claimBuildCacheWrite(repoId),
+      ...deviceClaims,
+    ]);
   const hostClaims = hostOnlyCommandClaims(command, repoId, checkoutId, repoRoot);
   if (hostClaims) return hostClaims;
 

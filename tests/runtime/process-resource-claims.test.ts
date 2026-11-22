@@ -533,9 +533,26 @@ describe('Process Runtime fine-grained resource claims', () => {
       temp: 'isolated',
       git: 'read',
     });
-    expect(declared).toContainEqual({ resourceKey: 'workspace:co1', mode: 'read' });
+    expect(declared).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
     expect(declared).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
     expect(declared.some((claim) => claim.resourceKey === 'workspace:co1' && claim.mode === 'write')).toBe(false);
+  });
+
+  test('declared source reads observe without blocking another session source edit (#713)', () => {
+    const checks = claimsForCheck('custom:report', ['node', 'report.js'], 'repo1', 'co1', {
+      reads: ['src'],
+      writes: ['reports'],
+    });
+    expect(checks).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
+    expect(checks.some((claim) => claimsConflict(claim, lease('path:co1:src/index.ts', 'write')))).toBe(false);
+    expect(checks.some((claim) => claimsConflict(claim, lease('path:co1:reports/output.json', 'write')))).toBe(true);
+    const observer = claimsForCheck('custom:scan', ['node', 'scan.js'], 'repo1', 'co1', { reads: ['src'] });
+    expect(observer.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(false);
+
+    const device = claimsForRepositoryCommand(['bash', 'scripts/run_android_check.sh', 'fast-journey'], 'repo1', 'co1');
+    expect(device).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
+    expect(device).toContainEqual({ resourceKey: 'host-service:android-emulator-test', mode: 'write' });
+    expect(device.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(false);
   });
 
   test('workspace observation does not monopolize path writes or short Git mutations (#713)', () => {
@@ -749,7 +766,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims).toContainEqual({ resourceKey: 'release:runtime-authority', mode: 'exclusive' });
     expect(claims).toContainEqual({ resourceKey: 'host-service:canonical-runtime', mode: 'write' });
     expect(claims).toContainEqual({ resourceKey: 'host-service:forge-recovery', mode: 'write' });
-    expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'read' });
+    expect(claims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
   });
 
   test('raw typed tsc --noEmit uses validation observation plus cache instead of a workspace lease', () => {
@@ -874,7 +891,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       'co1',
     );
     expect(claims).toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
-    expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'read' });
+    expect(claims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
     expect(claims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
     expect(claims.some((claim) => claim.resourceKey === 'workspace:co1' && claim.mode !== 'read')).toBe(false);
   });
@@ -890,7 +907,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       'co2',
     );
     expect(claims).toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
-    expect(claims).toContainEqual({ resourceKey: 'workspace:co2', mode: 'read' });
+    expect(claims).toContainEqual({ resourceKey: 'validation-input:co2', mode: 'read' });
     expect(claims.some((claim) => claim.resourceKey === 'workspace:co2' && claim.mode !== 'read')).toBe(false);
   });
 
@@ -1049,7 +1066,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       network: 'read',
       hostServices: ['ios-simulator-test'],
     });
-    expect(claims).toContainEqual({ resourceKey: 'path:co1:src', mode: 'read' });
+    expect(claims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
     expect(claims).toContainEqual({ resourceKey: 'path:co1:reports', mode: 'write' });
     expect(claims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
     expect(claims).toContainEqual({ resourceKey: 'temp:co1:custom-report', mode: 'write' });
@@ -1082,7 +1099,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     );
     const typecheck = claimsForCheck('package:check:type', ['bun', 'run', 'check:type'], 'repo1', 'co-type');
 
-    expect(browserA).toContainEqual({ resourceKey: 'workspace:co-browser-a', mode: 'read' });
+    expect(browserA).toContainEqual({ resourceKey: 'validation-input:co-browser-a', mode: 'read' });
     expect(browserA).toContainEqual({ resourceKey: 'temp:co-browser-a:package-test-browser-live', mode: 'write' });
     expect(browserA).toContainEqual({ resourceKey: 'host-service:browser-live', mode: 'write' });
     expect(browserA.some((claim) => claim.resourceKey === 'build-cache:repo1')).toBe(false);
