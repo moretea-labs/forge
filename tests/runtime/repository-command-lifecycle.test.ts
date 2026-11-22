@@ -595,24 +595,34 @@ describe('repository command execution lifecycle', () => {
     const repoRoot = tempRoot('forge-713-selected-commit-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
     persistControllerAccessMode(controllerHome, 'full_access');
-    const opts = { visibility: 'ephemeral' as const, notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false };
-    const acquire = (owner: string, key: string) => acquireExecutionLeases(
-      controllerHome, repository.repoId, owner, [{ resourceKey: key, mode: 'write' }], opts,
-    );
+    const opts = {
+      visibility: 'ephemeral' as const,
+      notifyScheduler: false,
+      invalidateProjection: false,
+      emitRuntimeEvent: false,
+    };
+    const acquire = (owner: string, key: string) =>
+      acquireExecutionLeases(controllerHome, repository.repoId, owner, [{ resourceKey: key, mode: 'write' }], opts);
 
     writeFileSync(join(repoRoot, 'README.md'), 'new reviewed content\n');
     writeFileSync(join(repoRoot, 'unrelated.txt'), 'foreign untracked dirty\n');
     const unrelated = acquire('foreign-unrelated', `path:${repository.activeCheckoutId}:unrelated.txt`);
     expect(unrelated.acquired).toBe(true);
     try {
-      const committed = commitSelectedPaths(controllerHome, repository, { paths: ['README.md'], message: 'only README' });
+      const committed = commitSelectedPaths(controllerHome, repository, {
+        paths: ['README.md'],
+        message: 'only README',
+      });
       expect(committed.error).toBeUndefined();
       expect(committed.commit?.ok).toBe(true);
       expect(gitOutput(repoRoot, ['show', '--pretty=format:', '--name-only', 'HEAD'])).toBe('README.md');
       expect(readFileSync(join(repoRoot, 'unrelated.txt'), 'utf8')).toBe('foreign untracked dirty\n');
-      expect(listActiveLeases(controllerHome, repository.repoId).some((lease) => lease.ownerJobId === 'foreign-unrelated')).toBe(true);
+      expect(
+        listActiveLeases(controllerHome, repository.repoId).some((lease) => lease.ownerJobId === 'foreign-unrelated'),
+      ).toBe(true);
     } finally {
-      if (unrelated.acquired) releaseExecutionLeases(controllerHome, repository.repoId, 'foreign-unrelated', unrelated.leases, opts);
+      if (unrelated.acquired)
+        releaseExecutionLeases(controllerHome, repository.repoId, 'foreign-unrelated', unrelated.leases, opts);
     }
 
     writeFileSync(join(repoRoot, 'README.md'), 'another reviewed change\n');
@@ -624,11 +634,15 @@ describe('repository command execution lifecycle', () => {
       const held = acquire('foreign-overlap', key);
       expect(held.acquired).toBe(true);
       try {
-        expect(() => commitSelectedPaths(controllerHome, repository, {
-          paths: ['README.md'], message: 'must not race',
-        })).toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+        expect(() =>
+          commitSelectedPaths(controllerHome, repository, {
+            paths: ['README.md'],
+            message: 'must not race',
+          }),
+        ).toThrow('REPOSITORY_PROCESS_LEASE_HELD');
       } finally {
-        if (held.acquired) releaseExecutionLeases(controllerHome, repository.repoId, 'foreign-overlap', held.leases, opts);
+        if (held.acquired)
+          releaseExecutionLeases(controllerHome, repository.repoId, 'foreign-overlap', held.leases, opts);
       }
     }
   });
@@ -638,18 +652,23 @@ describe('repository command execution lifecycle', () => {
     const repoRoot = tempRoot('forge-713-selected-restore-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
     persistControllerAccessMode(controllerHome, 'full_access');
-    const opts = { visibility: 'ephemeral' as const, notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false };
-    const acquire = (owner: string, key: string) => acquireExecutionLeases(
-      controllerHome, repository.repoId, owner, [{ resourceKey: key, mode: 'write' }], opts,
-    );
+    const opts = {
+      visibility: 'ephemeral' as const,
+      notifyScheduler: false,
+      invalidateProjection: false,
+      emitRuntimeEvent: false,
+    };
+    const acquire = (owner: string, key: string) =>
+      acquireExecutionLeases(controllerHome, repository.repoId, owner, [{ resourceKey: key, mode: 'write' }], opts);
     const preview = () => selectedPathDiff(repository, { paths: ['README.md'], staged: false, maxBytes: 20_000 });
-    const restore = (reviewed: ReturnType<typeof preview>) => restoreSelectedPaths(controllerHome, repository, {
-      paths: ['README.md'],
-      expectedHead: reviewed.head,
-      expectedBranch: reviewed.branch,
-      expectedPatch: reviewed.diff,
-      confirmAuthorization: true,
-    });
+    const restore = (reviewed: ReturnType<typeof preview>) =>
+      restoreSelectedPaths(controllerHome, repository, {
+        paths: ['README.md'],
+        expectedHead: reviewed.head,
+        expectedBranch: reviewed.branch,
+        expectedPatch: reviewed.diff,
+        confirmAuthorization: true,
+      });
 
     writeFileSync(join(repoRoot, 'README.md'), 'reviewed rollback\n');
     const reviewed = preview();
@@ -661,7 +680,8 @@ describe('repository command execution lifecycle', () => {
       expect(result.execution?.ok).toBe(true);
       expect(readFileSync(join(repoRoot, 'README.md'), 'utf8')).toBe('hello\n');
     } finally {
-      if (unrelated.acquired) releaseExecutionLeases(controllerHome, repository.repoId, 'foreign-restore-unrelated', unrelated.leases, opts);
+      if (unrelated.acquired)
+        releaseExecutionLeases(controllerHome, repository.repoId, 'foreign-restore-unrelated', unrelated.leases, opts);
     }
 
     writeFileSync(join(repoRoot, 'README.md'), 'must preserve until lease exits\n');
@@ -677,7 +697,8 @@ describe('repository command execution lifecycle', () => {
         expect(() => restore(nextReview)).toThrow('REPOSITORY_PROCESS_LEASE_HELD');
         expect(readFileSync(join(repoRoot, 'README.md'), 'utf8')).toBe('must preserve until lease exits\n');
       } finally {
-        if (held.acquired) releaseExecutionLeases(controllerHome, repository.repoId, 'foreign-restore-overlap', held.leases, opts);
+        if (held.acquired)
+          releaseExecutionLeases(controllerHome, repository.repoId, 'foreign-restore-overlap', held.leases, opts);
       }
     }
   });
