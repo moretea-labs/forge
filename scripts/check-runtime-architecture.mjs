@@ -1109,11 +1109,7 @@ requireMissing('src/runtime/control-plane/facade/goal-workloop-access.ts');
 requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts');
 requireMissing('src/runtime/control-plane/execution/work-revision-diff.ts');
 requireMissing('src/runtime/control-plane/execution/work-lifecycle-audit.ts');
-forbid(
-  'tests/helpers/historical-implementation-review.ts',
-  /assertImplementationReviewHistoryAppendOnly|MAX_IMPLEMENTATION_REVIEW_HISTORY/,
-  'historical Work review fixtures must not retain lifecycle append-only mutation constraints',
-);
+requireMissing('tests/helpers/historical-implementation-review.ts');
 forbid(
   'src/runtime/control-plane/facade/repository-tool-dispatch.ts',
   /historicalReadOnlyWorkContext|historicalWorkContext/,
