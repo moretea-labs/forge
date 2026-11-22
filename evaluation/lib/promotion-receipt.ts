@@ -3,11 +3,8 @@ import {
   buildEvaluationPromotionReceipt,
   validateEvaluationPromotionReceipt,
   type EvaluationPromotionReceipt,
-} from '../../packages/kernel/work/api/index.ts';
-import {
-  buildCrossVersionPairedStatistics,
-  type CrossVersionPairedStatistics,
-} from './metrics.ts';
+} from './promotion-receipt-core.ts';
+import { buildCrossVersionPairedStatistics, type CrossVersionPairedStatistics } from './metrics.ts';
 import {
   freezeCandidateIdentity,
   type EvaluationCandidateIdentity,
@@ -26,7 +23,7 @@ import {
   type V2CertificationManifest,
 } from './certification.ts';
 
-export type { EvaluationPromotionReceipt } from '../../packages/kernel/work/api/index.ts';
+export type { EvaluationPromotionReceipt } from './promotion-receipt-core.ts';
 
 export interface EvaluationPromotionInput {
   baseline: EvaluationCandidateIdentity;
@@ -56,10 +53,12 @@ function canonicalPairedEvidence(runs: readonly PairedCandidateRun[]): unknown {
     .sort((left, right) => left.scenarioId.localeCompare(right.scenarioId))
     .map((run) => ({
       ...run,
-      trials: [...run.trials].sort((left, right) =>
-        left.cacheMode.localeCompare(right.cacheMode)
-        || left.repetition - right.repetition
-        || left.candidateIndex - right.candidateIndex),
+      trials: [...run.trials].sort(
+        (left, right) =>
+          left.cacheMode.localeCompare(right.cacheMode) ||
+          left.repetition - right.repetition ||
+          left.candidateIndex - right.candidateIndex,
+      ),
     }));
 }
 
@@ -67,28 +66,19 @@ function canonicalShadowEvidence(pairs: readonly OperationalShadowPair[]): unkno
   return [...pairs].sort((left, right) => left.scenarioId.localeCompare(right.scenarioId));
 }
 
-function deepFreeze<T>(value: T): T {
-  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
-    for (const nested of Object.values(value as Record<string, unknown>)) deepFreeze(nested);
-    Object.freeze(value);
-  }
-  return value;
-}
-
 function candidateKey(value: EvaluationCandidateIdentity): string {
-  return JSON.stringify(freezeCandidateIdentity({
-    candidateId: value.candidateId,
-    versionLabel: value.versionLabel,
-    artifactDigest: value.artifactDigest,
-    sourceRevision: value.sourceRevision,
-    executionSurface: value.executionSurface,
-  }));
+  return JSON.stringify(
+    freezeCandidateIdentity({
+      candidateId: value.candidateId,
+      versionLabel: value.versionLabel,
+      artifactDigest: value.artifactDigest,
+      sourceRevision: value.sourceRevision,
+      executionSurface: value.executionSurface,
+    }),
+  );
 }
 
-function observedCandidate(
-  runs: readonly PairedCandidateRun[],
-  candidateIndex: 0 | 1,
-): EvaluationCandidateIdentity {
+function observedCandidate(runs: readonly PairedCandidateRun[], candidateIndex: 0 | 1): EvaluationCandidateIdentity {
   let observed: EvaluationCandidateIdentity | undefined;
   let observedKey: string | undefined;
   for (const run of runs) {
@@ -107,7 +97,11 @@ function observedCandidate(
   return observed;
 }
 
-function assertIdentity(expected: EvaluationCandidateIdentity, observed: EvaluationCandidateIdentity, label: string): void {
+function assertIdentity(
+  expected: EvaluationCandidateIdentity,
+  observed: EvaluationCandidateIdentity,
+  label: string,
+): void {
   if (candidateKey(expected) !== candidateKey(observed)) {
     throw new Error(`EVALUATION_PROMOTION_${label.toUpperCase()}_IDENTITY_MISMATCH`);
   }
@@ -135,7 +129,10 @@ function assertShadowEligible(
   report: OperationalShadowEvaluationReport,
 ): void {
   if (!candidate.sourceRevision) throw new Error('EVALUATION_PROMOTION_CANDIDATE_SOURCE_REVISION_REQUIRED');
-  if (protocol.candidateRevision !== candidate.sourceRevision || report.candidateRevision !== candidate.sourceRevision) {
+  if (
+    protocol.candidateRevision !== candidate.sourceRevision ||
+    report.candidateRevision !== candidate.sourceRevision
+  ) {
     throw new Error('EVALUATION_PROMOTION_SHADOW_CANDIDATE_MISMATCH');
   }
   if (!report.passed) throw new Error('EVALUATION_PROMOTION_SHADOW_NOT_ELIGIBLE');
@@ -150,16 +147,16 @@ function assertCertificationIdentity(
     throw new Error('EVALUATION_PROMOTION_CERTIFICATION_SOURCE_REVISION_REQUIRED');
   }
   if (
-    manifest.baseline.sourceRevision !== baseline.sourceRevision
-    || manifest.baseline.artifactDigest !== baseline.artifactDigest
-    || manifest.baseline.versionLabel !== baseline.versionLabel
+    manifest.baseline.sourceRevision !== baseline.sourceRevision ||
+    manifest.baseline.artifactDigest !== baseline.artifactDigest ||
+    manifest.baseline.versionLabel !== baseline.versionLabel
   ) {
     throw new Error('EVALUATION_PROMOTION_CERTIFICATION_BASELINE_MISMATCH');
   }
   if (
-    manifest.candidate.sourceRevision !== candidate.sourceRevision
-    || manifest.candidate.artifactDigest !== candidate.artifactDigest
-    || manifest.candidate.versionLabel !== candidate.versionLabel
+    manifest.candidate.sourceRevision !== candidate.sourceRevision ||
+    manifest.candidate.artifactDigest !== candidate.artifactDigest ||
+    manifest.candidate.versionLabel !== candidate.versionLabel
   ) {
     throw new Error('EVALUATION_PROMOTION_CERTIFICATION_CANDIDATE_MISMATCH');
   }
@@ -174,14 +171,15 @@ function assertCertificationIdentity(
  * Produce an immutable evidence receipt only after existing evaluators pass.
  *
  * The receipt is not a lifecycle or policy authority. It cannot mutate source,
- * Cognitive memory, Requirement, Plan, or Work. Callers that want to act on the
+ * Cognitive memory, Requirement, Plan, or execution. Callers that want to act on the
  * evidence must carry receiptId into an existing authority such as
  * Requirement.requiredDeliveryReferences.
  */
 export function mintEvaluationPromotionReceipt(input: EvaluationPromotionInput): EvaluationPromotionReceipt {
   const baseline = freezeCandidateIdentity(input.baseline);
   const candidate = freezeCandidateIdentity(input.candidate);
-  if (candidateKey(baseline) === candidateKey(candidate)) throw new Error('EVALUATION_PROMOTION_CANDIDATES_MUST_DIFFER');
+  if (candidateKey(baseline) === candidateKey(candidate))
+    throw new Error('EVALUATION_PROMOTION_CANDIDATES_MUST_DIFFER');
 
   const pairedStatistics = buildCrossVersionPairedStatistics({
     protocol: input.paired.protocol,
@@ -189,7 +187,10 @@ export function mintEvaluationPromotionReceipt(input: EvaluationPromotionInput):
   });
   assertIdentity(baseline, observedCandidate(input.paired.runs, 0), 'baseline');
   assertIdentity(candidate, observedCandidate(input.paired.runs, 1), 'candidate');
-  if (pairedStatistics.baselineCandidateId !== baseline.candidateId || pairedStatistics.candidateId !== candidate.candidateId) {
+  if (
+    pairedStatistics.baselineCandidateId !== baseline.candidateId ||
+    pairedStatistics.candidateId !== candidate.candidateId
+  ) {
     throw new Error('EVALUATION_PROMOTION_PAIRED_CANDIDATE_SET_MISMATCH');
   }
   assertPairedEligible(pairedStatistics);
@@ -229,9 +230,11 @@ export function mintEvaluationPromotionReceipt(input: EvaluationPromotionInput):
           pairs: canonicalShadowEvidence(input.shadow.pairs),
         }),
       },
-      ...(certificationManifestDigest ? {
-        certification: { manifestDigest: certificationManifestDigest },
-      } : {}),
+      ...(certificationManifestDigest
+        ? {
+            certification: { manifestDigest: certificationManifestDigest },
+          }
+        : {}),
     },
   });
 }

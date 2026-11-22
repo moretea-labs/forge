@@ -1,5 +1,4 @@
 import { createHash } from 'crypto';
-import type { WorkImplementationReviewEvidenceIdentity } from './implementation-review';
 
 export const EVALUATION_PROMOTION_RECEIPT_SCHEMA = 'forge-evaluation-promotion-receipt/v1' as const;
 export const EVALUATION_PROMOTION_RECEIPT_AUTHORITY = 'evaluation_evidence_only' as const;
@@ -64,9 +63,8 @@ function candidateIdentity(value: unknown, field: 'baseline' | 'candidate'): Eva
   if (input.executionSurface !== 'public_cli' && input.executionSurface !== 'public_mcp') {
     throw new Error(`EVALUATION_PROMOTION_RECEIPT_${field.toUpperCase()}_SURFACE_INVALID`);
   }
-  const sourceRevision = typeof input.sourceRevision === 'string' && input.sourceRevision.trim()
-    ? input.sourceRevision.trim()
-    : undefined;
+  const sourceRevision =
+    typeof input.sourceRevision === 'string' && input.sourceRevision.trim() ? input.sourceRevision.trim() : undefined;
   return {
     schemaVersion: EVALUATION_CANDIDATE_IDENTITY_SCHEMA,
     candidateId: requiredText(input.candidateId, `${field}_candidate_id`),
@@ -102,7 +100,11 @@ function receiptCore(value: unknown): EvaluationPromotionReceiptCore {
   const shadow = evidence.shadow as Record<string, unknown>;
   let certification: EvaluationPromotionReceipt['evidence']['certification'];
   if (evidence.certification !== undefined) {
-    if (!evidence.certification || typeof evidence.certification !== 'object' || Array.isArray(evidence.certification)) {
+    if (
+      !evidence.certification ||
+      typeof evidence.certification !== 'object' ||
+      Array.isArray(evidence.certification)
+    ) {
       throw new Error('EVALUATION_PROMOTION_RECEIPT_CERTIFICATION_INVALID');
     }
     certification = {
@@ -172,12 +174,14 @@ export function validateEvaluationPromotionReceipt(value: unknown): EvaluationPr
 export function evaluationPromotionReceiptArchitectureEvidence(
   value: unknown,
   expectedSourceRevision: string,
-): WorkImplementationReviewEvidenceIdentity {
+): { evidenceId: string; digest: string } {
   const receipt = validateEvaluationPromotionReceipt(value);
   const sourceRevision = receipt.candidate.sourceRevision?.trim() ?? '';
   const expected = expectedSourceRevision.trim();
   if (!expected || !sourceRevision || sourceRevision !== expected) {
-    throw new Error(`EVALUATION_PROMOTION_RECEIPT_CANDIDATE_SOURCE_MISMATCH: expected=${expected || 'missing'} actual=${sourceRevision || 'missing'}`);
+    throw new Error(
+      `EVALUATION_PROMOTION_RECEIPT_CANDIDATE_SOURCE_MISMATCH: expected=${expected || 'missing'} actual=${sourceRevision || 'missing'}`,
+    );
   }
   return {
     evidenceId: receipt.receiptId,

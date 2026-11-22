@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   evaluationPromotionReceiptArchitectureEvidence,
   validateEvaluationPromotionReceipt,
-} from '../packages/kernel/work/api/index';
+} from './lib/promotion-receipt-core.ts';
 import type { PairedCandidateRun } from './lib/candidate-runner.ts';
 import {
   REQUIRED_ARMS,
@@ -22,14 +22,8 @@ import {
   CROSS_VERSION_EVALUATION_AUTHORITY,
   type EvaluationCandidateIdentity,
 } from './lib/protocol.ts';
-import {
-  freezeOperationalShadowProtocol,
-  type OperationalShadowPair,
-} from './lib/shadow-operational-prior.ts';
-import {
-  mintEvaluationPromotionReceipt,
-  promotionReceiptReference,
-} from './lib/promotion-receipt.ts';
+import { freezeOperationalShadowProtocol, type OperationalShadowPair } from './lib/shadow-operational-prior.ts';
+import { mintEvaluationPromotionReceipt, promotionReceiptReference } from './lib/promotion-receipt.ts';
 
 const candidateCommit = 'a'.repeat(40);
 const baselineCommit = 'b'.repeat(40);
@@ -74,8 +68,21 @@ function protocol() {
       timeoutMs: 1_000,
     },
     metrics: [
-      { id: 'task_correctness', tier: 'correctness_reliability', direction: 'higher_is_better', unit: 'ratio', gate: 'p0_p1_blocking' },
-      { id: 'latency_ms', tier: 'performance', direction: 'lower_is_better', unit: 'ms', gate: 'non_blocking', regressionTolerance: 0 },
+      {
+        id: 'task_correctness',
+        tier: 'correctness_reliability',
+        direction: 'higher_is_better',
+        unit: 'ratio',
+        gate: 'p0_p1_blocking',
+      },
+      {
+        id: 'latency_ms',
+        tier: 'performance',
+        direction: 'lower_is_better',
+        unit: 'ms',
+        gate: 'non_blocking',
+        regressionTolerance: 0,
+      },
     ],
     failureTaxonomy: ['candidate_failure', 'candidate_timeout'],
   });
@@ -102,18 +109,20 @@ function report(scenarioId: string, correctness: number, latencyMs: number) {
       contextRetrieval: [],
       inspectedEvidence: [],
       changedFiles: [],
-      commands: [{
-        kind: 'forge' as const,
-        command: 'fixture',
-        arguments: [],
-        cwd: '/tmp',
-        exitCode: 0,
-        startedAt: '2026-09-20T00:00:00.000Z',
-        durationMs: latencyMs,
-        stdout: '',
-        stderr: '',
-        timedOut: false,
-      }],
+      commands: [
+        {
+          kind: 'forge' as const,
+          command: 'fixture',
+          arguments: [],
+          cwd: '/tmp',
+          exitCode: 0,
+          startedAt: '2026-09-20T00:00:00.000Z',
+          durationMs: latencyMs,
+          stdout: '',
+          stderr: '',
+          timedOut: false,
+        },
+      ],
       checks: [],
       toolInteractions: [],
       finalResult: { status: 'passed' as const, summary: 'passed' },
@@ -145,7 +154,7 @@ function runs(input: { candidateCorrectness?: number; candidateLatencyMs?: numbe
     toolchain: { bun: 'test' },
   });
   return (['scenario-a', 'scenario-b'] as const).map((scenarioId) => {
-    const trials = Array.from({ length: 2 }, (_, repetition) => ([
+    const trials = Array.from({ length: 2 }, (_, repetition) => [
       {
         sequence: repetition * 2,
         repetition,
@@ -157,7 +166,7 @@ function runs(input: { candidateCorrectness?: number; candidateLatencyMs?: numbe
         report: report(scenarioId, 1, 100),
       },
       {
-        sequence: (repetition * 2) + 1,
+        sequence: repetition * 2 + 1,
         repetition,
         cacheMode: 'cold' as const,
         candidateIndex: 1 as const,
@@ -166,7 +175,7 @@ function runs(input: { candidateCorrectness?: number; candidateLatencyMs?: numbe
         warmupCommands: [],
         report: report(scenarioId, input.candidateCorrectness ?? 1, input.candidateLatencyMs ?? 80),
       },
-    ])).flat();
+    ]).flat();
     return {
       schemaVersion: 'forge-paired-candidate-run/v1' as const,
       authority: CROSS_VERSION_EVALUATION_AUTHORITY,
@@ -217,20 +226,38 @@ function certification(pairedProtocolDigest: string, noGo = false): V2Certificat
     candidate: { sourceRevision: candidateCommit, artifactDigest: candidateDigest, versionLabel: 'v2-candidate' },
     baseline: { sourceRevision: baselineCommit, artifactDigest: baselineDigest, versionLabel: 'v1.7.2' },
     integrated: { threeStep: passEvidence(), failureFencing: passEvidence() },
-    platforms: Object.fromEntries(REQUIRED_PLATFORMS.map((platform) => [platform, {
-      evidence: Object.fromEntries(REQUIRED_PLATFORM_EVIDENCE.map((kind) => [kind, passEvidence()])),
-      engineering: Object.fromEntries(REQUIRED_ARMS.map((arm) => [arm, Object.fromEntries(
-        REQUIRED_ENGINEERING_TASKS.map((task) => [task, { repetitions: 2, passed: 2, receiptDigest: evidenceDigest }]),
-      )])),
-    }])) as V2CertificationManifest['platforms'],
+    platforms: Object.fromEntries(
+      REQUIRED_PLATFORMS.map((platform) => [
+        platform,
+        {
+          evidence: Object.fromEntries(REQUIRED_PLATFORM_EVIDENCE.map((kind) => [kind, passEvidence()])),
+          engineering: Object.fromEntries(
+            REQUIRED_ARMS.map((arm) => [
+              arm,
+              Object.fromEntries(
+                REQUIRED_ENGINEERING_TASKS.map((task) => [
+                  task,
+                  { repetitions: 2, passed: 2, receiptDigest: evidenceDigest },
+                ]),
+              ),
+            ]),
+          ),
+        },
+      ]),
+    ) as V2CertificationManifest['platforms'],
     quality: { openP0P1: noGo ? 1 : 0, candidateRegressions: 0 },
     performance: {
       confidenceLevel: 0.95,
-      platforms: Object.fromEntries(REQUIRED_PLATFORMS.map((platform) => [platform, {
-        coreRegressionRatio: 0.05,
-        discoveryBoundedMutationImprovementRatio: 0.2,
-        evidenceDigest,
-      }])) as V2CertificationManifest['performance']['platforms'],
+      platforms: Object.fromEntries(
+        REQUIRED_PLATFORMS.map((platform) => [
+          platform,
+          {
+            coreRegressionRatio: 0.05,
+            discoveryBoundedMutationImprovementRatio: 0.2,
+            evidenceDigest,
+          },
+        ]),
+      ) as V2CertificationManifest['performance']['platforms'],
     },
     ab: {
       manifestDigest: evidenceDigest,
@@ -242,7 +269,9 @@ function certification(pairedProtocolDigest: string, noGo = false): V2Certificat
   };
 }
 
-function promotionInput(options: { pairedRegression?: boolean; shadowRegression?: boolean; certificationNoGo?: boolean } = {}) {
+function promotionInput(
+  options: { pairedRegression?: boolean; shadowRegression?: boolean; certificationNoGo?: boolean } = {},
+) {
   const frozen = protocol();
   const { baseline, candidate } = candidates();
   const shadowProtocol = freezeOperationalShadowProtocol({
@@ -288,12 +317,15 @@ describe('evaluation promotion receipt', () => {
   });
 
   test('fails closed on regressed or inconclusive evidence instead of minting promotion authority', () => {
-    expect(() => mintEvaluationPromotionReceipt(promotionInput({ pairedRegression: true })))
-      .toThrow(/EVALUATION_PROMOTION_PAIRED_/);
-    expect(() => mintEvaluationPromotionReceipt(promotionInput({ shadowRegression: true })))
-      .toThrow('EVALUATION_PROMOTION_SHADOW_NOT_ELIGIBLE');
-    expect(() => mintEvaluationPromotionReceipt(promotionInput({ certificationNoGo: true })))
-      .toThrow('EVALUATION_PROMOTION_CERTIFICATION_NOT_ELIGIBLE');
+    expect(() => mintEvaluationPromotionReceipt(promotionInput({ pairedRegression: true }))).toThrow(
+      /EVALUATION_PROMOTION_PAIRED_/,
+    );
+    expect(() => mintEvaluationPromotionReceipt(promotionInput({ shadowRegression: true }))).toThrow(
+      'EVALUATION_PROMOTION_SHADOW_NOT_ELIGIBLE',
+    );
+    expect(() => mintEvaluationPromotionReceipt(promotionInput({ certificationNoGo: true }))).toThrow(
+      'EVALUATION_PROMOTION_CERTIFICATION_NOT_ELIGIBLE',
+    );
   });
 
   test('binds the receipt to exact candidate identity and paired protocol', () => {
@@ -302,19 +334,25 @@ describe('evaluation promotion receipt', () => {
     expect(() => mintEvaluationPromotionReceipt(input)).toThrow('EVALUATION_PROMOTION_CANDIDATE_IDENTITY_MISMATCH');
 
     const mismatched = promotionInput();
-    mismatched.certification = { ...mismatched.certification, ab: { ...mismatched.certification.ab, protocolDigest: evidenceDigest } };
-    expect(() => mintEvaluationPromotionReceipt(mismatched)).toThrow('EVALUATION_PROMOTION_CERTIFICATION_PROTOCOL_MISMATCH');
+    mismatched.certification = {
+      ...mismatched.certification,
+      ab: { ...mismatched.certification.ab, protocolDigest: evidenceDigest },
+    };
+    expect(() => mintEvaluationPromotionReceipt(mismatched)).toThrow(
+      'EVALUATION_PROMOTION_CERTIFICATION_PROTOCOL_MISMATCH',
+    );
   });
 
-  test('projects only the exact evaluated candidate into Work review architecture evidence', () => {
+  test('projects only the exact evaluated candidate into architecture evidence', () => {
     const receipt = mintEvaluationPromotionReceipt(promotionInput());
     expect(validateEvaluationPromotionReceipt(receipt)).toEqual(receipt);
     expect(evaluationPromotionReceiptArchitectureEvidence(receipt, candidateCommit)).toEqual({
       evidenceId: receipt.receiptId,
       digest: receipt.receiptId.slice('evaluation-promotion:'.length),
     });
-    expect(() => evaluationPromotionReceiptArchitectureEvidence(receipt, 'f'.repeat(40)))
-      .toThrow('EVALUATION_PROMOTION_RECEIPT_CANDIDATE_SOURCE_MISMATCH');
+    expect(() => evaluationPromotionReceiptArchitectureEvidence(receipt, 'f'.repeat(40))).toThrow(
+      'EVALUATION_PROMOTION_RECEIPT_CANDIDATE_SOURCE_MISMATCH',
+    );
 
     const tampered = {
       ...receipt,
