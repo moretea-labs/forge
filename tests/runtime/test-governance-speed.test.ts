@@ -388,6 +388,75 @@ describe('execution-speed test governance', () => {
     }
   });
 
+  test('generated-authority validates pinned Git projections despite live Writer edits (#714)', () => {
+    const repo = temporaryRepository();
+    try {
+      const script = readFileSync(join(ROOT, 'scripts/sync-generated-authority.mjs'), 'utf8');
+      const filenames = (constant: string) => {
+        const marker = `const ${constant} = [`;
+        const start = script.indexOf(marker);
+        const end = start < 0 ? -1 : script.indexOf('];', start + marker.length);
+        if (end < 0) throw new Error(`missing ${constant} definition`);
+        return [...script.slice(start + marker.length, end).matchAll(/'([^']+)'/g)].map((match) => match[1]);
+      };
+      const referenceNames = filenames('REFERENCE_CONFIG_FILES');
+      const templateNames = filenames('CLAUDE_TEMPLATE_FILES');
+      for (const dir of ['scripts', 'assets', 'docs/reference-configs', 'assets/templates', '.claude/templates']) {
+        mkdirSync(join(repo, dir), { recursive: true });
+      }
+      writeFileSync(join(repo, 'scripts/sync-generated-authority.mjs'), script);
+      writeFileSync(join(repo, 'package.json'), '{"version":"1.2.3"}\n');
+      writeFileSync(join(repo, 'assets/workflow-contract.v1.json'), '{"helpers":{"scripts":["fixture.sh"]}}\n');
+      writeFileSync(join(repo, 'scripts/fixture.sh'), 'placeholder\n');
+      for (const name of referenceNames) {
+        writeFileSync(join(repo, 'docs/reference-configs', name), 'placeholder\n');
+      }
+      for (const name of templateNames) {
+        writeFileSync(
+          join(repo, '.claude/templates', name),
+          name === 'contract.template.md' ? '    - bun run typecheck\n' : 'template source\n',
+        );
+        writeFileSync(join(repo, 'assets/templates', name), 'placeholder\n');
+      }
+      const generated = spawnSync('node', ['scripts/sync-generated-authority.mjs'], { cwd: repo, encoding: 'utf8' });
+      expect(generated.status).toBe(0);
+      git(repo, 'add', '.');
+      git(repo, 'commit', '-qm', 'valid generated-authority candidate');
+      const validRevision = git(repo, 'rev-parse', 'HEAD');
+
+      const check = (mode: 'committed' | 'workspace', revision = validRevision) => {
+        const env = { ...process.env };
+        if (mode === 'committed') {
+          env.FORGE_CHECK_SOURCE_QUALITY_MODE = 'committed';
+          env.FORGE_CHECK_CANDIDATE_SHA = revision;
+        } else {
+          delete env.FORGE_CHECK_SOURCE_QUALITY_MODE;
+          delete env.FORGE_CHECK_CANDIDATE_SHA;
+        }
+        return spawnSync('node', ['scripts/sync-generated-authority.mjs', '--check'], {
+          cwd: repo,
+          env,
+          encoding: 'utf8',
+        });
+      };
+      const target = join(repo, 'docs/reference-configs/AGENTS.md');
+      writeFileSync(target, 'other Writer temporary edit\n');
+      expect(check('committed').status).toBe(0);
+      const dirty = check('workspace');
+      expect(dirty.status).toBe(1);
+      expect(dirty.stderr).toContain('drift(content)');
+      git(repo, 'add', 'docs/reference-configs/AGENTS.md');
+      git(repo, 'commit', '-qm', 'submitted invalid projection');
+      const submitted = check('committed', 'HEAD');
+      expect(submitted.status).toBe(1);
+      expect(submitted.stderr).toContain('drift(content)');
+      expect(check('committed', 'unknown-ref').status).not.toBe(0);
+      expect(check('committed', '').status).not.toBe(0);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   test('models task, main, and release as one reusable nested gate DAG', () => {
     expect(stepsFor('task')[0]).toEqual({
       label: 'typecheck',

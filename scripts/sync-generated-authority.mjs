@@ -1,16 +1,56 @@
 #!/usr/bin/env node
-import { chmodSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const WORKSPACE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CHECK_ONLY = process.argv.includes('--check');
+
+// A publication Gate checks immutable Git objects, not concurrent Writer
+// edits to template sources, wrappers or generated targets. Everyday generation
+// remains a workspace operation and is never redirected into a snapshot.
+function sourceRootForCheck() {
+  if (process.env.FORGE_CHECK_SOURCE_QUALITY_MODE !== 'committed') return WORKSPACE_ROOT;
+  if (!CHECK_ONLY) throw new Error('[generated-authority] committed candidate supports --check only');
+  const revision = process.env.FORGE_CHECK_CANDIDATE_SHA?.trim();
+  if (!revision) throw new Error('[generated-authority] committed check requires candidate SHA');
+  const resolved = spawnSync('git', ['rev-parse', '--verify', '--end-of-options', revision + '^{commit}'], {
+    cwd: WORKSPACE_ROOT,
+    encoding: 'utf8',
+  });
+  if (resolved.error || resolved.status !== 0 || !/^[0-9a-f]{40,64}$/.test(resolved.stdout.trim())) {
+    throw new Error('[generated-authority] could not resolve committed candidate');
+  }
+  const root = mkdtempSync(join(tmpdir(), 'forge-generated-authority-'));
+  process.once('exit', () => rmSync(root, { recursive: true, force: true }));
+  const archivePath = join(root, 'source.tar');
+  const archive = spawnSync('git', ['archive', '--format=tar', '--output', archivePath, resolved.stdout.trim()], {
+    cwd: WORKSPACE_ROOT,
+  });
+  if (archive.error || archive.status !== 0) {
+    throw new Error('[generated-authority] could not archive committed candidate');
+  }
+  const extract = spawnSync('tar', ['-xf', archivePath, '-C', root], { cwd: WORKSPACE_ROOT });
+  if (extract.error || extract.status !== 0) {
+    throw new Error('[generated-authority] could not materialize committed candidate');
+  }
+  unlinkSync(archivePath);
+  console.error('[generated-authority] checking pinned candidate ' + resolved.stdout.trim().slice(0, 12));
+  return root;
+}
+
+const ROOT = sourceRootForCheck();
 
 const WORKFLOW_CONTRACT = JSON.parse(readFileSync(join(ROOT, 'assets/workflow-contract.v1.json'), 'utf8'));
 const HELPER_FILES = Array.isArray(WORKFLOW_CONTRACT?.helpers?.scripts)
-  ? WORKFLOW_CONTRACT.helpers.scripts.filter((value) => typeof value === 'string' && value.trim()).map((value) => value.trim())
+  ? WORKFLOW_CONTRACT.helpers.scripts
+      .filter((value) => typeof value === 'string' && value.trim())
+      .map((value) => value.trim())
   : [];
-if (HELPER_FILES.length === 0) throw new Error('[generated-authority] assets/workflow-contract.v1.json must declare helpers.scripts');
+if (HELPER_FILES.length === 0)
+  throw new Error('[generated-authority] assets/workflow-contract.v1.json must declare helpers.scripts');
 
 const REFERENCE_CONFIG_FILES = [
   'AGENTS.md',
@@ -56,7 +96,12 @@ function replaceExact(text, before, after, label) {
 
 function projectClaudeTemplate(name, source) {
   if (name === 'contract.template.md') {
-    return replaceExact(source, '    - bun run typecheck\n', '    - bun run check:type\n', `${name}: downstream typecheck command`);
+    return replaceExact(
+      source,
+      '    - bun run typecheck\n',
+      '    - bun run check:type\n',
+      `${name}: downstream typecheck command`,
+    );
   }
   return source;
 }
@@ -91,11 +136,7 @@ function shellCompatibilityWrapper(name) {
   return `#!/bin/bash\nset -euo pipefail\nSCRIPT_DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"\nexec "$SCRIPT_DIR/lib/run-forge-helper.sh" "${name}" "$@"\n`;
 }
 
-const MODULE_HELPERS = new Set([
-  'workflow-contract.ts',
-  'inspect-project-state.ts',
-  'migrate-workflow-docs.ts',
-]);
+const MODULE_HELPERS = new Set(['workflow-contract.ts', 'inspect-project-state.ts', 'migrate-workflow-docs.ts']);
 
 function typescriptCompatibilityWrapper(name) {
   const reexport = MODULE_HELPERS.has(name)
@@ -109,7 +150,7 @@ function typescriptCompatibilityWrapper(name) {
 // executable bit, so ignore that one local permission bit while keeping
 // owner/world permissions and executable intent strict.
 function comparableMode(mode) {
-  return (mode & 0o777) & ~0o020;
+  return mode & 0o777 & ~0o020;
 }
 
 function syncGeneratedText(targetRel, expected, expectedMode = 0o755) {
@@ -120,7 +161,12 @@ function syncGeneratedText(targetRel, expected, expectedMode = 0o755) {
   const modeDrift = actualMode !== expectedMode;
   if (!contentDrift && !modeDrift) return false;
   if (CHECK_ONLY) {
-    const reasons = [contentDrift ? 'content' : '', modeDrift ? `mode:${actualMode.toString(8)}!=${expectedMode.toString(8)}` : ''].filter(Boolean).join(',');
+    const reasons = [
+      contentDrift ? 'content' : '',
+      modeDrift ? `mode:${actualMode.toString(8)}!=${expectedMode.toString(8)}` : '',
+    ]
+      .filter(Boolean)
+      .join(',');
     console.error(`[generated-authority] drift(${reasons}): ${targetRel} != generated compatibility wrapper`);
     return true;
   }
@@ -148,7 +194,12 @@ function syncText(sourceRel, targetRel, transform = (value) => value) {
   const modeDrift = actualMode !== expectedMode;
   if (!contentDrift && !modeDrift) return false;
   if (CHECK_ONLY) {
-    const reasons = [contentDrift ? 'content' : '', modeDrift ? `mode:${actualMode.toString(8)}!=${expectedMode.toString(8)}` : ''].filter(Boolean).join(',');
+    const reasons = [
+      contentDrift ? 'content' : '',
+      modeDrift ? `mode:${actualMode.toString(8)}!=${expectedMode.toString(8)}` : '',
+    ]
+      .filter(Boolean)
+      .join(',');
     console.error(`[generated-authority] drift(${reasons}): ${targetRel} != projection(${sourceRel})`);
     return true;
   }
@@ -166,17 +217,20 @@ function syncText(sourceRel, targetRel, transform = (value) => value) {
 
 let drift = false;
 for (const name of HELPER_FILES) {
-  const expected = name.endsWith('.sh')
-    ? shellCompatibilityWrapper(name)
-    : typescriptCompatibilityWrapper(name);
+  const expected = name.endsWith('.sh') ? shellCompatibilityWrapper(name) : typescriptCompatibilityWrapper(name);
   drift = syncGeneratedText(`scripts/${name}`, expected) || drift;
 }
 for (const name of REFERENCE_CONFIG_FILES) {
   drift = syncGeneratedText(`docs/reference-configs/${name}`, referenceConfigStub(name), 0o644) || drift;
 }
 for (const name of CLAUDE_TEMPLATE_FILES) {
-  drift = syncText(`.claude/templates/${name}`, `assets/templates/${name}`, (source) => projectClaudeTemplate(name, source)) || drift;
+  drift =
+    syncText(`.claude/templates/${name}`, `assets/templates/${name}`, (source) =>
+      projectClaudeTemplate(name, source),
+    ) || drift;
 }
 
 if (CHECK_ONLY && drift) process.exit(1);
-console.log(`[generated-authority] ${CHECK_ONLY ? 'verified' : 'synchronized'} ${HELPER_FILES.length + REFERENCE_CONFIG_FILES.length + CLAUDE_TEMPLATE_FILES.length} projections`);
+console.log(
+  `[generated-authority] ${CHECK_ONLY ? 'verified' : 'synchronized'} ${HELPER_FILES.length + REFERENCE_CONFIG_FILES.length + CLAUDE_TEMPLATE_FILES.length} projections`,
+);
