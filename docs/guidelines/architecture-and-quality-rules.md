@@ -207,17 +207,17 @@ function prepareEverything(args) {
 ✅ **好的做法**：
 ```typescript
 // 明确的操作和返回值
-const result = work_prepare({ isolation: 'reuse', lightweight: true });
-if (result.mode === 'lightweight') {
-  // 明确知道使用了轻量级模式
+const result = await executeCommand({ command, mutation_paths: ['src/a.ts'] });
+if (result.mode === 'process_managed') {
+  // 明确知道由 Process Runtime 托管，并只声明了真实写入路径
 }
 ```
 
 ❌ **避免**：
 ```typescript
 // 隐式的智能行为
-const result = work_prepare({ objective: '...' });
-// 不知道内部是否创建了 Work、是否使用了缓存、是否重用了现有状态
+const result = await runSmart({ objective: '...' });
+// 不知道内部是否创建了持久状态、是否使用了缓存、是否锁住了整个 checkout
 ```
 
 **检查点**：

@@ -84,33 +84,14 @@ git commit -am "fix: issue"
 ```
 
 **无需**：
-- work_prepare
-- 复杂的 Work 生命周期
+- 任何准备/生命周期步骤（Work / WorkHandle / WorkContract 已物理退役）
 - 多层验证
 
-#### 中等任务
+#### 中等与复杂任务
 
-```typescript
-// 使用轻量级会话
-work_prepare({
-  isolation: 'reuse',
-  lightweight: true,  // 快速准备
-  objective: 'Quick refactor'
-})
-
-// 编辑、测试、提交
-```
-
-#### 复杂任务
-
-```typescript
-// 使用完整 Work（需要隔离）
-work_prepare({
-  isolation: 'new_worktree',
-  objective: 'Long-running feature',
-  acceptance_criteria: [...]
-})
-```
+同样直接在 canonical checkout 上工作：读取最新源码 → 编辑 → 运行定向检查 → 精确路径提交。
+长期目标、用户决策与进度只记录在现有 GitHub Issue/Project；不要为隔离而新建任务分支、worktree 或 Work Queue。
+并发 Writer 修改同一文件时，写入前重新读取最新内容并语义合并，不覆盖他人改动（#713）。
 
 ## 常见场景指南
 
@@ -270,10 +251,7 @@ git checkout -b feature/new-feature
 git branch -d old-branch
 ```
 
-**何时创建 Work**：
-- 需要长期跟踪
-- 需要独立的工作树
-- 需要完整的审计日志
+**长期跟踪**：使用现有 GitHub Issue；审计依据是 Git 提交历史本身，不创建 Work。
 
 ## 命令组合示例
 
@@ -298,7 +276,7 @@ git commit -m "fix: resolve issue with buggy function"
 ```
 
 **耗时**：< 5 分钟  
-**无需**：work_prepare、复杂验证
+**无需**：准备步骤、复杂验证
 
 ### 示例 2: 功能重构
 
@@ -308,53 +286,30 @@ codegraph_explore({
   query: "target module structure"
 })
 
-# 2. 创建轻量级会话
-work_prepare({
-  isolation: 'reuse',
-  lightweight: true,
-  objective: 'Refactor target module'
-})
-
-# 3. 批量修改
+# 2. 批量修改
 find src -name "*.ts" -exec sed -i 's/oldAPI/newAPI/g' {} +
 
-# 4. 测试
+# 3. 测试
 npm test
 
-# 5. 提交
+# 4. 提交
 git add src/
 git commit -m "refactor: modernize API"
 ```
 
 **耗时**：10-30 分钟  
-**使用**：轻量级会话追踪变更
+**使用**：Git diff 本身即变更证据
 
 ### 示例 3: 新功能开发
 
-```typescript
-// 1. 创建完整 Work（需要隔离）
-work_prepare({
-  isolation: 'new_worktree',
-  objective: 'Implement new feature X',
-  acceptance_criteria: [
-    'Feature works correctly',
-    'Tests pass',
-    'Documentation updated'
-  ]
-})
-
-// 2. 开发和测试
-// ... 多次迭代
-
-// 3. 完成
-work_complete({
-  work_id: '...',
-  summary: 'Feature X implemented and tested'
-})
+```bash
+# 1. 在现有 GitHub Issue 记录目标与验收标准
+# 2. 在 canonical main 上分小步开发、测试、精确路径提交（多次迭代）
+# 3. 在 Issue 中记录交付证据并关闭
 ```
 
 **耗时**：数小时到数天  
-**使用**：完整 Work 隔离和追踪
+**使用**：GitHub Issue 追踪 + Git 历史
 
 ## 性能最佳实践
 
