@@ -1152,9 +1152,6 @@ private struct ForgeWorkspaceView: View {
         let currentThreads=Array(ordered.filter { $0.repoId == currentRepoId }.prefix(12))
         var result:[SidebarThreadSection]=[]
         if !currentThreads.isEmpty {
-            let title = currentRepoId.flatMap { id in
-                model.projects.first(where:{ $0.repoId == id })?.label
-            } ?? "未绑定项目"
             result.append(SidebarThreadSection(
                 id:"__current__",
                 title:"当前项目",
