@@ -429,9 +429,10 @@ describe('Process Runtime fine-grained resource claims', () => {
     }
   });
 
-  test('readonly commands claim workspace read only', () => {
+  test('readonly commands observe source without taking the legacy checkout lease', () => {
     const claims = claimsForRepositoryCommand(['git', 'status'], 'repo1', 'co1');
-    expect(claims).toEqual([{ resourceKey: 'workspace:co1', mode: 'read' }]);
+    expect(claims).toEqual([{ resourceKey: 'validation-input:co1', mode: 'read' }]);
+    expect(claims.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(false);
   });
 
   test('governed source gates observe candidate content without owning the workspace', () => {
@@ -487,11 +488,11 @@ describe('Process Runtime fine-grained resource claims', () => {
       'repo1',
       'co1',
     );
-    expect(focusedTest).toContainEqual({ resourceKey: 'workspace:co1', mode: 'read' });
+    expect(focusedTest).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
     expect(focusedTest.some((claim) => claimsConflict(claim, lease('path:co1:src/runtime/example.ts', 'write')))).toBe(
       false,
     );
-    expect(focusedTest.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(true);
+    expect(focusedTest.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(false);
   });
 
   test('Cargo focused validation observes source and shares checkout with existing global writer (#713)', () => {
@@ -541,6 +542,27 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(buildClaims.some((claim) => claim.resourceKey === 'validation-input:co1')).toBe(false);
   });
 
+  test('read/search and focused tests proceed while an unrelated legacy workspace writer exists (#713)', () => {
+    const legacyWriter = lease('workspace:co1', 'write');
+    for (const command of [
+      ['git', 'status'],
+      ['rg', 'TODO', 'src'],
+      ['bun', 'test', 'tests/runtime/process-resource-claims.test.ts'],
+      ['tsc', '--noEmit'],
+    ] as const) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
+      expect(claims.some((claim) => claimsConflict(claim, legacyWriter))).toBe(false);
+    }
+    const typecheck = claimsForCheck('package:check:type', ['bun', 'run', 'check:type'], 'repo1', 'co1');
+    expect(typecheck.some((claim) => claimsConflict(claim, legacyWriter))).toBe(false);
+    // Unknown source writes remain protected until the caller can provide an exact mutation scope.
+    expect(claimsForRepositoryCommand(['node', 'generate.js'], 'repo1', 'co1')).toContainEqual({
+      resourceKey: 'workspace:co1',
+      mode: 'write',
+    });
+  });
+
   test('ordinary xcodebuild log redirection does not acquire unrelated Git-ref ownership', () => {
     const command =
       "cd /worktrees/ocr && xcodebuild -project ios/App.xcodeproj -derivedDataPath .forge/ios/ocr -jobs 2 build > .forge/ios/build.log 2>&1; rc=$?; grep 'BUILD' .forge/ios/build.log | tail -2; exit $rc";
@@ -586,11 +608,11 @@ describe('Process Runtime fine-grained resource claims', () => {
     });
   });
 
-  test('scoped claims retain conflict keys and exact repository/checkout ownership without Work', () => {
+  test('scoped source observation retains exact repository/checkout identity without Work', () => {
     const claims = scopeResourceClaims(claimsForRepositoryCommand(['git', 'status'], 'repo1', 'co1'), 'repo1', 'co1');
-    expect(claims).toEqual([
+    expect(claims).toMatchObject([
       {
-        resourceKey: 'workspace:co1',
+        resourceKey: 'validation-input:co1',
         mode: 'read',
         repoId: 'repo1',
         checkoutId: 'co1',
@@ -598,9 +620,10 @@ describe('Process Runtime fine-grained resource claims', () => {
     ]);
   });
 
-  test('typecheck uses workspace read plus cache and the compiler-heavy serialization fence', () => {
+  test('typecheck observes source plus cache and keeps the compiler-heavy serialization fence', () => {
     const claims = claimsForCheck('package:check:type', ['bun', 'run', 'check:type'], 'repo1', 'co1');
-    expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'read' });
+    expect(claims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
+    expect(claims.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(false);
     expect(claims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
     expect(claims).toContainEqual({ resourceKey: 'heavy-check:repo1', mode: 'exclusive' });
     expect(claims.some((claim) => claim.resourceKey === 'workspace:co1' && claim.mode !== 'read')).toBe(false);
@@ -621,16 +644,16 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'read' });
   });
 
-  test('raw typed tsc --noEmit uses workspace read plus cache instead of a workspace writer', () => {
+  test('raw typed tsc --noEmit uses validation observation plus cache instead of a workspace lease', () => {
     for (const command of [
       ['tsc', '--noEmit'],
       ['bun', 'x', 'tsc', '--noEmit'],
       ['/opt/bun/bin/bun', 'x', '/repo/node_modules/.bin/tsc', '--noEmit', '--pretty', 'false'],
     ]) {
       const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
-      expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'read' });
+      expect(claims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
       expect(claims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
-      expect(claims.some((claim) => claim.resourceKey === 'workspace:co1' && claim.mode !== 'read')).toBe(false);
+      expect(claims.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(false);
     }
   });
 

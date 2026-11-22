@@ -897,7 +897,9 @@ function repositoryCommandClaims(
   }
 
   if (classification.risk === 'readonly') {
-    return [claimWorkspaceRead(checkoutId, repoId)];
+    // A command observing repository content does not own the checkout. This
+    // must remain compatible with pre-retirement workspace-wide write leases.
+    return [claimValidationObservation(checkoutId, repoId)];
   }
   // An exact leased remote-only delete cannot alter this checkout. Claim its
   // remote ref, not all remote branches; broad/opaque Git writers still overlap
@@ -925,10 +927,10 @@ function repositoryCommandClaims(
   // while ordinary focused tests are observation unless snapshot-update mode is
   // explicit. Both can share repository source reads without a workspace writer.
   if (isTypedTypeScriptNoEmit(command)) {
-    return [claimWorkspaceRead(checkoutId, repoId), claimBuildCacheWrite(repoId)];
+    return [claimValidationObservation(checkoutId, repoId), claimBuildCacheWrite(repoId)];
   }
   if (focused) {
-    if (!focusedTestRequestsWorkspaceMutation(command)) return [claimWorkspaceRead(checkoutId, repoId)];
+    if (!focusedTestRequestsWorkspaceMutation(command)) return [claimValidationObservation(checkoutId, repoId)];
     const claims: ResourceClaimSpec[] = [claimWorkspaceRead(checkoutId, repoId)];
     for (const path of extractLikelyPaths(command).slice(0, 16)) claims.push(claimPathWrite(path, checkoutId, repoId));
     return normalizeClaims(claims);
@@ -1036,7 +1038,7 @@ export function claimsForCheck(
   const baseClaims = effects
     ? claimsForDeclaredCheckEffects(checkId, effects, repoId, checkoutId)
     : staticAnalysisCheckId(checkId)
-      ? [claimWorkspaceRead(checkoutId, repoId), claimBuildCacheWrite(repoId)]
+      ? [claimValidationObservation(checkoutId, repoId), claimBuildCacheWrite(repoId)]
       : command && command.length > 0
         ? claimsForRepositoryCommand(command, repoId, checkoutId)
         : [claimWorkspaceWrite(checkoutId, repoId)];
