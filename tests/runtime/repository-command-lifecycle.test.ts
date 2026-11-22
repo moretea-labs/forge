@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { seedHistoricalWorkHandle } from '../helpers/historical-work-handle';
 import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import {
   closeSync,
@@ -60,7 +59,6 @@ import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { terminateProcessTree } from '../../src/runtime/shared/process-tree';
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from './process-hygiene';
 import { trustedEngineeringEvidence } from '../helpers/engineering-evidence';
-import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const roots: string[] = [];
 const tracked: ChildProcess[] = [];
@@ -250,21 +248,6 @@ describe('structured registered worktree cleanup (#41)', () => {
     expect(fx.current().checkouts.find((item) => item.checkoutId === fx.target.checkoutId)?.lifecycle).toBe('removed');
   });
 
-  test('historical WorkHandle does not veto a safe worktree preview without current OwnedResource', () => {
-    const fx = fixture();
-    const previous = seedWorkHandle(fx.controllerHome, fx.repository, 'work-old-checkout-identity');
-    seedHistoricalWorkHandle(fx.controllerHome, {
-      ...previous,
-      checkoutId: fx.target.checkoutId,
-      worktreePath: fx.linked,
-      managedWorktree: true,
-      branch: 'legacy-work-source',
-    });
-    expect(fx.cleanup().status).toBe('preview');
-    expect(existsSync(fx.linked)).toBe(true);
-    expect(fx.current().checkouts.find((item) => item.checkoutId === fx.target.checkoutId)?.lifecycle).toBe('active');
-  });
-
   test('does not delete an explicitly Forge-owned linked worktree, even if its HEAD is merged and tree is clean', () => {
     const fx = fixture();
     recordOwnedResource(fx.controllerHome, {
@@ -289,53 +272,6 @@ test('macOS temporary repository and Controller Home aliases are accepted consis
   const registered = seedRepo(controllerHome, repoRoot);
   expect(registered.canonicalRoot).toBe(realpathSync(repoRoot));
 });
-
-function seedWorkHandle(controllerHome: string, repository: ReturnType<typeof seedRepo>, workId: string) {
-  const now = new Date().toISOString();
-  const head = gitOutput(repository.canonicalRoot, ['rev-parse', 'HEAD']);
-  seedHistoricalWorkContract(
-    { controllerHome, repoId: repository.repoId },
-    {
-      workId,
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      workKind: 'repository_change',
-      objective: `Execute repository command lifecycle fixture for ${workId}.`,
-      acceptanceCriteria: [],
-      allowedPaths: ['**'],
-      forbiddenPaths: [],
-      checks: [],
-      constraints: { workspaceMode: 'current' },
-      requestedBy: 'chatgpt',
-      dispatchState: 'running',
-    },
-  );
-  return seedHistoricalWorkHandle(controllerHome, {
-    schemaVersion: 1,
-    workId,
-    sessionId: `session-${workId}`,
-    principalId: 'principal-test',
-    repositoryId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
-    worktreePath: repository.canonicalRoot,
-    branch: 'main',
-    managedWorktree: false,
-    baseCommit: head,
-    deliveryBaseCommit: head,
-    expectedHead: head,
-    permissionSnapshotVersion: 1,
-    state: 'editing',
-    createdAt: now,
-    updatedAt: now,
-    finalization: {
-      validation: 'pending',
-      commit: 'pending',
-      merge: 'pending',
-      branchCleanup: 'pending',
-      worktreeCleanup: 'pending',
-    },
-  });
-}
 
 function listLocalJobIds(repoRoot: string): string[] {
   const jobsDir = join(repoRoot, '.ai/harness/local-jobs');

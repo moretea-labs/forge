@@ -29,7 +29,6 @@ import { cleanupRetiredExecutionJobs, executionJobRoot } from '../../src/runtime
 import { writeExecutionArtifact } from '../../src/runtime/evidence/artifact-store';
 import { recordIosTestEvidenceOwner } from '../../src/runtime/control-plane/generated-cache-retention';
 import { getOwnedResource, recordOwnedResource } from '../../packages/kernel/identity/api/index';
-import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const homes: string[] = [];
 
@@ -342,12 +341,6 @@ fi
     expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
     expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
     const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'edit-session-retention' });
-    seedHistoricalWorkContract({ controllerHome: home, repoId: repository.repoId }, {
-      workId: 'WORK-ACTIVE', repoId: repository.repoId, checkoutId: repository.checkouts[0]!.checkoutId,
-      objective: 'historical Work provenance must not protect terminal edit-session evidence',
-      acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: {}, requestedBy: 'system', phase: 'verification',
-    });
     const storage = ensureRepositoryRuntimeStorage(repository, home);
     expect(storage.readyForExecution).toBe(true);
     const editRoot = join(repositoryRoot, '.ai', 'harness', 'edit-sessions');

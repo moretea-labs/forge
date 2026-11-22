@@ -54,20 +54,12 @@ import {
   previewExternalFilesystemGrant,
   readExternalFilesystemSnapshot,
 } from '../../src/runtime/safe-tooling';
-import { replaceHistoricalWorkContract, seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const temporaryRoots: string[] = [];
 
 afterEach(() => {
   for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
-
-function createCancelledWork(
-  options: Parameters<typeof seedHistoricalWorkContract>[0],
-  input: Parameters<typeof seedHistoricalWorkContract>[1],
-) {
-  return seedHistoricalWorkContract(options, { ...input, semanticState: 'cancelled' });
-}
 
 describe('capability recovery classifier', () => {
   it('classifies platform blocks without treating them as local failures', () => {
@@ -324,52 +316,6 @@ describe('authorized recovery actions', () => {
 });
 
 describe('runtime maintenance executor', () => {
-  function advanceWorkToCleanup(
-    store: { controllerHome: string; repoId: string; now?: () => string },
-    workId: string,
-  ): void {
-    replaceHistoricalWorkContract(store, {
-      workId,
-      phase: 'cleanup',
-      phaseEvidence: {
-        implementation: {
-          state: 'satisfied',
-          source: 'recorded',
-          summary: 'Historical fixture implementation complete.',
-          evidenceRefs: [],
-          recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z',
-        },
-        verification: {
-          state: 'satisfied',
-          source: 'recorded',
-          summary: 'Historical fixture verification complete.',
-          evidenceRefs: [],
-          recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z',
-        },
-        review: {
-          state: 'satisfied',
-          source: 'recorded',
-          summary: 'Historical fixture review complete.',
-          evidenceRefs: [],
-          recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z',
-        },
-        delivery: {
-          state: 'satisfied',
-          source: 'recorded',
-          summary: 'Historical fixture delivery complete.',
-          evidenceRefs: [],
-          recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z',
-        },
-        cleanup: {
-          state: 'satisfied',
-          source: 'recorded',
-          summary: 'Historical fixture cleanup state.',
-          evidenceRefs: [],
-          recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z',
-        },
-      },
-    });
-  }
   function tempRepo() {
     const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-test-'));
     temporaryRoots.push(root);
@@ -377,60 +323,6 @@ describe('runtime maintenance executor', () => {
     const localJobs = join(root, '.ai/harness/local-jobs');
     mkdirSync(localJobs, { recursive: true });
     return { root, controllerHome, localJobs, repository: { repoId: 'repo-test', canonicalRoot: root } };
-  }
-
-  function staleManagedWorkFixture(source: 'clean' | 'dirty' | 'committed') {
-    const root = mkdtempSync(join(tmpdir(), `forge-maintenance-stale-managed-${source}-`));
-    temporaryRoots.push(root);
-    const controllerHome = join(root, 'controller');
-    const repoRoot = join(root, 'repo');
-    const repoId = `repo-stale-managed-${source}`;
-    const workId = `work-stale-managed-${source}`;
-    const worktree = join(root, '.forge', 'controller', 'managed-worktrees', repoId, `work-${source}`);
-    mkdirSync(controllerHome, { recursive: true });
-    mkdirSync(repoRoot, { recursive: true });
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), '# stale managed work\n');
-    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
-    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
-    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
-    mkdirSync(join(root, '.forge', 'controller', 'managed-worktrees', repoId), { recursive: true });
-    execFileSync('git', ['worktree', 'add', '-q', '-b', `work/${source}`, worktree, 'HEAD'], { cwd: repoRoot });
-    seedHistoricalWorkContract(
-      { controllerHome, repoId, now: () => '2026-01-01T00:00:00.000Z' },
-      {
-        workId,
-        repoId,
-        objective: `stale managed ${source} work`,
-        acceptanceCriteria: ['preserve unique source'],
-        allowedPaths: ['**'],
-        forbiddenPaths: [],
-        checks: [],
-        constraints: {},
-        requestedBy: 'chatgpt',
-        phase: 'verification',
-        checkoutId: `checkout-${source}`,
-        worktreeRef: worktree,
-        baseRevision,
-      },
-    );
-    if (source === 'dirty') {
-      mkdirSync(join(worktree, 'docs', 'architecture'), { recursive: true });
-      writeFileSync(join(worktree, 'docs', 'architecture', 'global-hook-runtime.md'), '# recent successful write\n');
-    } else if (source === 'committed') {
-      writeFileSync(join(worktree, 'unique.txt'), 'unique commit\n');
-      execFileSync('git', ['add', 'unique.txt'], { cwd: worktree });
-      execFileSync('git', ['commit', '-qm', 'unique stale work source'], { cwd: worktree });
-    }
-    return {
-      controllerHome,
-      repoRoot,
-      repository: { repoId, canonicalRoot: repoRoot, defaultBranch: 'main' },
-      workId,
-      worktree,
-    };
   }
 
   function editFixture(
@@ -467,25 +359,6 @@ describe('runtime maintenance executor', () => {
       : input.createWork === false
         ? 'work-missing'
         : `work-${requestedWorkState}`;
-    if (input.createWork !== false && workId) {
-      seedHistoricalWorkContract(
-        { controllerHome, repoId },
-        {
-          workId,
-          repoId,
-          checkoutId,
-          objective: 'Characterize stale Edit Session maintenance.',
-          acceptanceCriteria: [],
-          allowedPaths: ['src/**'],
-          forbiddenPaths: [],
-          checks: [],
-          constraints: { workspaceMode: 'current' },
-          requestedBy: 'chatgpt',
-          ...(requestedWorkState === 'running' ? { dispatchState: 'running' as const } : {}),
-          ...(requestedWorkState === 'cancelled' ? { semanticState: 'cancelled' as const } : {}),
-        },
-      );
-    }
     const binding = {
       workId,
       repoId,

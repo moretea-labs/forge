@@ -15,7 +15,6 @@ import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tool
 import { cronDue } from '../../packages/kernel/scheduler/application/eligibility';
 import { getSchedule, saveSchedule } from '../../packages/kernel/scheduler/api/index';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
-import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const roots: string[] = [];
 
@@ -47,25 +46,6 @@ function fixture() {
   ensureControllerHome(controllerHome);
   const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'rh_work schedule fixture' });
   const workId = 'work-schedule-fixture';
-  seedHistoricalWorkContract(
-    { controllerHome, repoId: repository.repoId },
-    {
-      workId,
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      baseRevision: git(repoRoot, 'rev-parse', 'HEAD'),
-      objective: 'Exercise the rh_work Scheduler transport boundary.',
-      acceptanceCriteria: ['Schedule transport preserves Scheduler authority.'],
-      allowedPaths: [],
-      forbiddenPaths: [],
-      checks: [],
-      constraints: {},
-      requestedBy: 'chatgpt',
-      workKind: 'local_effect',
-      dispatchState: 'running',
-      phase: 'implementation',
-    },
-  );
   const ctx = {
     repoRoot: repository.canonicalRoot,
     controllerHome,

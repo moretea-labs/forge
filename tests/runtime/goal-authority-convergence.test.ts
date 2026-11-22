@@ -19,7 +19,6 @@ import {
   reviseRequirementSemantic,
   updateRequirement,
 } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { implementationReviewChangedPathDigest } from '../helpers/historical-implementation-review';
 
 const homes: string[] = [];
 afterEach(() => {

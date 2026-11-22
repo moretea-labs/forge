@@ -30,7 +30,6 @@ import {
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 import { RH_WORK_MODEL_OPERATIONS } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
-import { readHistoricalWorkContract, seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const roots: string[] = [];
 

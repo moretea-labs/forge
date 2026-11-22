@@ -19,7 +19,6 @@ import { createHandoffItem } from '../../src/runtime/control-plane/facade/handof
 import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { settleCognitionAfterTool } from '../../adapters/mcp/runtime-gateway/cognition-settlement';
-import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -87,20 +86,6 @@ function fixture(name: string, options: { knowledge?: boolean } = {}) {
   let now = time(0);
   const store = { controllerHome, repoId: repository.repoId, now: () => now };
   const workId = `work-${name}`;
-  seedHistoricalWorkContract(store, {
-    workId,
-    repoId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
-    scopeRef: { schemaVersion: 1, kind: 'project', id: 'project-learning-loop' },
-    objective: '小红书 推广 真实指标 经验 下一轮使用，并根据执行证据持续改进。',
-    acceptanceCriteria: ['Two learning loops close on durable evidence.'],
-    constraints: { workspaceMode: 'current' },
-    allowedPaths: [],
-    forbiddenPaths: [],
-    checks: [],
-    requestedBy: 'chatgpt',
-    dispatchState: 'running',
-  });
   return {
     controllerHome, repoRoot, repository, store, workId, workspaceId, forgeInstanceId: instance.instanceId,
     setNow(value: string) { now = value; },
@@ -424,20 +409,6 @@ describe('connected assistant learning loops', () => {
       recorded: true,
       storedMemoryIds: [expect.any(String)],
     });
-
-    const legacyWorkLearning = await callRuntimeTool(ctx, 'rh_work', {
-      repo_id: fx.repository.repoId,
-      operation: 'learning_record',
-      work_id: fx.workId,
-      learning_signals: [{
-        scope_kind: 'project', kind: 'legacy-work-router', valence: 'neutral',
-        summary: 'A legacy Work identifier must not route lifecycle-free learning.',
-        concepts: ['legacy.work.router'], facets: [], admission_source: 'controller_observation',
-        portability: 'local', salience: 0.5, confidence: 0.5, utility: 0.5,
-      }],
-    });
-    expect(legacyWorkLearning?.isError).toBe(true);
-    expect((legacyWorkLearning?.structuredContent as Record<string, any>).summary).toContain('COGNITION_WORK_SCOPE_RETIRED');
 
     const primarySuccessWithSettlementFailure = settleCognitionAfterTool(ctx, 'repository_git_status', {
       repo_id: fx.repository.repoId,
