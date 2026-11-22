@@ -25,13 +25,19 @@ export {
   type PlanStepStatus,
 } from '../../../../packages/kernel/goal/api/index';
 
-export const FACADE_TOOLS = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute'] as const;
+export const FACADE_TOOLS = [
+  'rh_access',
+  'rh_status',
+  'rh_inbox',
+  'rh_context',
+  'rh_work',
+  'capability_execute',
+] as const;
 export type FacadeTool = (typeof FACADE_TOOLS)[number];
 export type CapabilityExecutionSurface = FacadeTool | 'plugin_action_execute';
 
 export const FACADE_STATUSES = ['ok', 'blocked', 'failed', 'approval_required', 'not_found'] as const;
 export type FacadeStatus = (typeof FACADE_STATUSES)[number];
-
 
 export const CAPABILITY_DOMAINS = ['repository', 'plugin', 'controller', 'evidence', 'maintenance'] as const;
 export type CapabilityDomain = (typeof CAPABILITY_DOMAINS)[number];
@@ -73,7 +79,12 @@ export type PolicyDecisionKind = (typeof POLICY_DECISIONS)[number];
 export const HANDOFF_SEVERITIES = ['info', 'needs_review', 'blocked', 'failed', 'ready_to_continue'] as const;
 export type HandoffSeverity = (typeof HANDOFF_SEVERITIES)[number];
 
-export { HANDOFF_STATUSES, TERMINAL_HANDOFF_STATUSES, isTerminalHandoffStatus, type HandoffStatus } from '../../../../packages/protocols/handoff/index';
+export {
+  HANDOFF_STATUSES,
+  TERMINAL_HANDOFF_STATUSES,
+  isTerminalHandoffStatus,
+  type HandoffStatus,
+} from '../../../../packages/protocols/handoff/index';
 import type { HandoffStatus } from '../../../../packages/protocols/handoff/index';
 
 // Kernel V2: Work domain contracts are owned by packages/kernel/work/domain.
@@ -126,7 +137,6 @@ export type {
   WorkReconciliationRecord,
   WorkContract,
   SubmittedWorkOperation,
-  WorkContractStore,
 } from '../../../../packages/kernel/work/domain/types';
 export const HANDOFF_CREATION_REASONS = [
   'policy_approval_required',
@@ -159,7 +169,10 @@ export interface HandoffCurrentState {
   changedFiles?: string[];
   checks?: Array<{ checkId: string; ok: boolean; summary?: string; outcome?: VerificationOutcome }>;
   /** Bounded durable Work semantics for a fresh controller session. */
-  workSemantics?: Pick<WorkContract, 'semanticState' | 'phase' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome'>;
+  workSemantics?: Pick<
+    WorkContract,
+    'semanticState' | 'phase' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome'
+  >;
   reconciliationRequired?: boolean;
   nextSafeAction?: string;
 }
@@ -244,10 +257,7 @@ export interface PlanStep {
   evidenceRefs: EvidenceRef[];
 }
 
-/**
- * A durable pre-execution decision record. WorkContract remains the unit that
- * owns dispatch, workspace, worker, and verification lifecycle.
- */
+/** Revisioned Plan obligation disposition is semantic guidance only. */
 export const PLAN_OBLIGATION_DISPOSITIONS = ['keep', 'change', 'defer', 'drop'] as const;
 export type PlanObligationDispositionKind = (typeof PLAN_OBLIGATION_DISPOSITIONS)[number];
 

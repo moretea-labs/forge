@@ -516,12 +516,6 @@ export function executionPlacementForWork(
   };
 }
 
-export interface WorkContractStore {
-  schemaVersion: 1 | 2 | 3 | 4;
-  updatedAt: string;
-  contracts: WorkContract[];
-}
-
 export function isTerminalSemanticWorkState(state: SemanticWorkState): boolean {
   return TERMINAL_SEMANTIC_WORK_STATES.includes(state);
 }

@@ -970,7 +970,6 @@ const required = [
   'src/runtime/control-plane/facade/requirement-authority.ts',
   'packages/protocols/handoff/status.ts',
   'packages/kernel/work/domain/implementation-review.ts',
-  'packages/kernel/work/domain/state-machine.ts',
   'packages/kernel/identity/domain/scope.ts',
   'packages/kernel/memory/domain/operational-prior.ts',
   'packages/kernel/memory/api/index.ts',
@@ -1214,11 +1213,6 @@ requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts
 requireMissing('src/runtime/control-plane/execution/work-revision-diff.ts');
 requireMissing('src/runtime/control-plane/execution/work-lifecycle-audit.ts');
 forbid(
-  'packages/kernel/work/domain/state-machine.ts',
-  /validateWorkSemanticTransition|transitionPhaseEvidence|DISPATCH_TRANSITIONS|EVIDENCE_TRANSITIONS/,
-  'historical Work row validation must not expose retired lifecycle transition writers',
-);
-forbid(
   'packages/kernel/work/domain/implementation-review.ts',
   /assertImplementationReviewHistoryAppendOnly|MAX_IMPLEMENTATION_REVIEW_HISTORY/,
   'historical Work review data must not retain lifecycle append-only mutation constraints',
@@ -1237,6 +1231,8 @@ requireMissing('src/runtime/control-plane/execution/work-handle-store.ts');
 requireMissing('packages/kernel/work/application/work-service.ts');
 requireMissing('packages/kernel/work/ports/work-contract-store.ts');
 requireMissing('packages/kernel/work/infrastructure/work-contract-store.ts');
+requireMissing('packages/kernel/work/domain/state-machine.ts');
+requireMissing('packages/kernel/work/domain/objective-relations.ts');
 forbid(
   'src/runtime/root/controller-services.ts',
   /initializeWorkCandidateIndex|readActiveWorkCandidates/,
@@ -2748,7 +2744,6 @@ requireExactShrinkingInventory(
 );
 
 const b7LifecycleOwnerMarkers = new Map([
-  ['WorkContract transition authority', ['packages/kernel/work/domain/state-machine.ts']],
   ['Schedule occurrence authority', ['packages/kernel/scheduler/infrastructure/schedule-store.ts']],
   ['Forge instance identity authority', ['packages/kernel/identity/infrastructure/identity-store.ts']],
 ]);
@@ -2871,11 +2866,6 @@ requireText(
   "const WORK_REPLICA_NAMESPACE = 'semantic_sync_replica';",
 );
 requireText('src/runtime/control-plane/persistence/retired-work-purge.ts', 'journalWorkReferences(db, true)');
-forbid(
-  'packages/kernel/work/domain/state-machine.ts',
-  /READ_ONLY_REVIEW_CLEAN_SCOPE|cleanReadOnlyReviewEvidence|READ_ONLY_REVIEW_FINDINGS_BLOCK/,
-  'historical Work state parsing must not retain review-completion gates',
-);
 requireMissing('src/runtime/control-plane/execution/work-evidence-policy.ts');
 // Work and WorkHandle are fully retired, including historical data.
 // Requirement/Plan/Run/Git own their separate current state.
@@ -2922,11 +2912,6 @@ forbid(
 // semantic CAS plus concrete target/resource/effect owners, never by a
 // Work-wide ControllerSession lease. Explicit autonomous-continuation round
 // operations retain their narrow dispatch/effect authority until Slice 4.
-forbid(
-  'packages/kernel/work/domain/state-machine.ts',
-  /WORK_PHASE_EVIDENCE_|WORK_COMPLETION_PHASE_/,
-  'legacy phase evidence must not regain semantic Work authority',
-);
 for (const path of ['adapters/mcp/runtime-gateway/work-workflow-operations.ts', 'src/runtime/workflows/runtime.ts']) {
   forbid(
     path,

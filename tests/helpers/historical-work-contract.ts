@@ -2,7 +2,6 @@ import {
   readControlPlaneRecord,
   writeControlPlaneRecord,
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { validateWorkSemantics } from '../../packages/kernel/work/domain/state-machine';
 import {
   WORK_PHASES,
   type WorkContract,
@@ -115,7 +114,7 @@ function historicalContract(input: HistoricalWorkInput, at: string): WorkContrac
     implementationReviews: input.implementationReviews ?? [],
     reconciliations: input.reconciliations ?? [],
   };
-  return validateWorkSemantics(value);
+  return value;
 }
 
 /** Test-only physical read, not a runtime admission or Work API. */

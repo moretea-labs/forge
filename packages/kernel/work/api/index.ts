@@ -2,7 +2,6 @@
 export * from '../domain/implementation-review';
 export * from '../domain/check-receipt';
 export * from '../domain/context-closure-receipt';
-export * from '../domain/objective-relations';
 export * from '../domain/execution-snapshot';
 export * from '../domain/engineering-contracts';
 export * from '../domain/engineering-design';
