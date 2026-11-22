@@ -157,6 +157,57 @@ describe('Process Runtime fine-grained resource claims', () => {
     }
   });
 
+  test('two scoped editor transactions overlap in time on different paths without repository lock (#713)', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-713-parallel-editors-'));
+    const pathA = [{ resourceKey: 'path:co1:src/alpha.ts', mode: 'write' as const }];
+    const pathB = [{ resourceKey: 'path:co1:src/beta.ts', mode: 'write' as const }];
+    const samePath = [{ resourceKey: 'path:co1:src/alpha.ts', mode: 'write' as const }];
+    const opts = { visibility: 'ephemeral' as const, notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false };
+    try {
+      ensureControllerHome(home);
+      const output = withRepositoryMutationExclusion(home, 'repo1', 'writer-alpha', () => {
+        const alphaLease = listActiveLeases(home, 'repo1').find((lease) => lease.resourceKey === pathA[0]!.resourceKey);
+        expect(alphaLease).toMatchObject({ checkoutId: 'co1', ownerIdentity: { checkoutId: 'co1' } });
+        const nested = withRepositoryMutationExclusion(home, 'repo1', 'writer-beta', () => {
+          expect(listActiveLeases(home, 'repo1').some((lease) => lease.resourceKey === pathB[0]!.resourceKey)).toBe(true);
+          expect(() => withRepositoryMutationExclusion(home, 'repo1', 'writer-overlap', () => 'no', undefined, samePath))
+            .toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+          return 'beta-ok';
+        }, undefined, pathB);
+        expect(nested).toBe('beta-ok');
+        expect(() => withRepositoryMutationExclusion(home, 'repo1', 'legacy-unknown', () => 'no'))
+          .toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+        const process = acquireExecutionLeases(home, 'repo1', 'managed-process', pathB, opts);
+        expect(process.acquired).toBe(true);
+        if (process.acquired) releaseExecutionLeases(home, 'repo1', 'managed-process', process.leases, opts);
+        return 'alpha-ok';
+      }, undefined, pathA);
+      expect(output).toBe('alpha-ok');
+      expect(listActiveLeases(home, 'repo1')).toHaveLength(0);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('scoped editor releases only its own resource lease after mutation throws (#713)', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-713-scoped-editor-throw-'));
+    const opts = { visibility: 'ephemeral' as const, notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false };
+    try {
+      ensureControllerHome(home);
+      const foreign = acquireExecutionLeases(home, 'repo1', 'foreign', [{ resourceKey: 'path:co1:src/foreign.ts', mode: 'write' }], opts);
+      expect(foreign.acquired).toBe(true);
+      expect(() => withRepositoryMutationExclusion(home, 'repo1', 'writer-throw', () => {
+        throw new Error('test failure');
+      }, undefined, [{ resourceKey: 'path:co1:src/alpha.ts', mode: 'write' }])).toThrow('test failure');
+      const active = listActiveLeases(home, 'repo1');
+      expect(active).toHaveLength(1);
+      expect(active[0]?.ownerJobId).toBe('foreign');
+      if (foreign.acquired) releaseExecutionLeases(home, 'repo1', 'foreign', foreign.leases, opts);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('model-declared mutation paths narrow source claims without platform inference (#478)', () => {
     const command = ['bash', 'scripts/run_module_check.sh', 'integration'];
     const inferred = claimsForRepositoryCommand(command, 'repo1', 'co1');

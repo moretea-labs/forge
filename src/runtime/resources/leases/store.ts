@@ -287,10 +287,67 @@ export function withRepositoryMutationExclusion<T>(
   ttlMs?: number,
   mutationClaims?: ResourceClaimSpec[],
 ): T {
-  return withControllerLock(controllerHome, { scope: 'repository', repoId }, owner, () => {
-    assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner, mutationClaims);
+  // Exact source paths already participate in Process Runtime's atomic lease
+  // authority. Holding an additional repository ControllerLock serializes
+  // unrelated Writers and reintroduces the checkout-wide gate (#713).
+  // Legacy callers without an explicit scope keep the old conservative path.
+  if (mutationClaims === undefined) {
+    return withControllerLock(controllerHome, { scope: 'repository', repoId }, owner, () => {
+      assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner);
+      return mutate();
+    }, ttlMs);
+  }
+  if (mutationClaims.length === 0) return mutate();
+
+  const leaseOwner = `editor:${owner}:${randomUUID()}`;
+  const effects = {
+    visibility: 'ephemeral' as const,
+    notifyScheduler: false,
+    invalidateProjection: false,
+    emitRuntimeEvent: false,
+  };
+  // Preserve checkout placement from the exact resource keys so successor
+  // session recovery does not mistake local source writers for "unscoped".
+  const scopedClaims = mutationClaims.map((claim) => {
+    const checkoutFromKey = /^(?:path|workspace|git-index|git-head):([^:]+)/.exec(claim.resourceKey)?.[1];
+    if (claim.checkoutId && checkoutFromKey && claim.checkoutId !== checkoutFromKey) {
+      throw new Error('LEASE_CHECKOUT_SCOPE_MISMATCH');
+    }
+    return {
+      ...claim,
+      repoId: claim.repoId ?? repoId,
+      ...(claim.checkoutId || checkoutFromKey ? { checkoutId: claim.checkoutId ?? checkoutFromKey } : {}),
+    };
+  });
+  const acquired = acquireExecutionLeases(controllerHome, repoId, leaseOwner, scopedClaims, {
+    ...effects,
+    ttlMs: ttlMs ?? 60_000,
+  });
+  if (!acquired.acquired) {
+    const blocker = acquired.blockers[0];
+    throw new Error(
+      `REPOSITORY_PROCESS_LEASE_HELD: ${blocker?.resourceKey ?? 'unknown-resource'}` +
+        ` owned by ${blocker?.ownerJobId ?? 'unknown-owner'}; refusing overlapping source mutation`,
+    );
+  }
+  try {
     return mutate();
-  }, ttlMs);
+  } finally {
+    releaseExecutionLeases(
+      controllerHome,
+      repoId,
+      leaseOwner,
+      acquired.leases.map((lease) => ({
+        leaseId: lease.leaseId,
+        fencingToken: lease.fencingToken,
+        repoId: lease.repoId,
+        checkoutId: lease.checkoutId,
+        resourceKey: lease.resourceKey,
+        ownerIdentityDigest: lease.ownerIdentityDigest,
+      })),
+      effects,
+    );
+  }
 }
 
 /** The same lock and lease handshake for awaited worker-backed edit mutations. */
