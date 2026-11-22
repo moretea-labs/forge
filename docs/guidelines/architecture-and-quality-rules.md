@@ -51,13 +51,13 @@ class StatusManager {
 
 ✅ **好的做法**：
 ```typescript
-// 轻量级操作不创建 Work
+// 轻量级操作直接执行，不创建额外持久化状态
 if (isSimpleOperation(args)) {
   return executeDirectly(args);
 }
 
-// 仅复杂操作创建完整状态
-return createFullWork(args);
+// 仅复杂操作才创建必需的持久化状态（Issue / EditSession / Process 等原生 Authority）
+return beginRequiredEditSession(args);
 ```
 
 ❌ **避免**：
@@ -168,30 +168,30 @@ function prepareLightweight(args) {
 ❌ **避免**：
 ```typescript
 // 一个函数做太多事
-function prepareWorkWithEverything(args) {
+function prepareEverything(args) {
   // 验证
   validatePermissions();
   validateCheckout();
   validateLeases();
   
-  // 创建状态
-  const work = createWork();
+  // 创建多余平行状态
+  const session = createSession();
   const handle = createHandle();
   const contract = createContract();
   
   // 绑定
   bindSession();
-  bindWork();
+  bindParallelState();
   
   // 激活
-  activateWork();
+  activateSession();
   notifyObservers();
   
   // 记录
   recordMetrics();
   writeAuditLog();
   
-  return { work, handle, contract };
+  return { session, handle, contract };
 }
 ```
 
