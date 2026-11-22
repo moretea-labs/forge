@@ -31,7 +31,12 @@ import {
 import { repositoryGitRemoveWorktree } from '../../repositories/structured-worktree-cleanup';
 import { buildControllerWorkbench } from '../../repositories/workbench';
 import { applySafePatch, buildSafePatchPlan } from '../../repositories/safe-patch';
-import { getEditSessionDiff, type EditSessionBinding } from '../../editing/edit-session';
+import {
+  assertEditSessionDurableBinding,
+  getEditSession,
+  getEditSessionDiff,
+  type EditSessionBinding,
+} from '../../editing/edit-session';
 import { buildSyncOperationDigest, classifyUserFacingError } from './operation-digest';
 import {
   repositoryGitCommit,
@@ -106,8 +111,22 @@ export interface RepositoryToolCallerContext {
 function safePatchEditBinding(
   repository: ReturnType<typeof resolveRepositorySelection>,
   args: Record<string, unknown>,
+  caller?: RepositoryToolCallerContext,
 ): EditSessionBinding | undefined {
-  return undefined;
+  // Identity comes exclusively from the authenticated transport context,
+  // never from model-authored tool arguments. Unbound internal/legacy callers
+  // remain supported, but cannot resume a principal-bound session (#713).
+  const principalId = caller?.principalId?.trim();
+  if (caller && !principalId) throw new Error('SAFE_PATCH_PRINCIPAL_REQUIRED');
+  const binding: EditSessionBinding | undefined = principalId
+    ? { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, principalId }
+    : undefined;
+  const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
+  if (sessionId) {
+    const existing = getEditSession(repository.canonicalRoot, sessionId);
+    assertEditSessionDurableBinding(existing, binding, { requireBoundIdentity: true });
+  }
+  return binding;
 }
 
 function resolveRepositorySelectionWithoutWorkAuthority(
@@ -795,7 +814,7 @@ export async function callRepositoryTool(
       }
       case 'repository_safe_patch_apply': {
         const repository = resolveRepositorySelectionWithoutWorkAuthority(controllerHome, args, repoIdValue, caller);
-        const binding = safePatchEditBinding(repository, args);
+        const binding = safePatchEditBinding(repository, args, caller);
         const patchPaths = extractPatchPaths(args.operations);
         const mutationClaims =
           args.validation_only === true
@@ -807,9 +826,10 @@ export async function callRepositoryTool(
           controllerHome,
           repository.repoId,
           'mcp:repository_safe_patch_apply',
-          () => {
+          (leaseOwnerJobId) => {
             const patchResult = applySafePatch(repository, {
               controllerHome,
+              leaseOwnerJobId,
               sessionId: args.session_id,
               purpose: args.purpose,
               operations: args.operations,

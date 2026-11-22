@@ -317,7 +317,7 @@ export function withRepositoryMutationExclusion<T>(
   controllerHome: string,
   repoId: string,
   owner: string,
-  mutate: () => T,
+  mutate: (leaseOwnerJobId?: string) => T,
   ttlMs?: number,
   mutationClaims?: ResourceClaimSpec[],
 ): T {
@@ -371,7 +371,9 @@ export function withRepositoryMutationExclusion<T>(
     );
   }
   try {
-    return mutate();
+    // Successor-HEAD reconciliation must recognize its own exact-path editor
+    // lease, not mistake it for an unrelated active Writer (#713).
+    return mutate(leaseOwner);
   } finally {
     releaseExecutionLeases(
       controllerHome,
@@ -461,7 +463,10 @@ export async function withRepositoryMutationExclusionAsync<T>(
         try {
           renewExecutionLeases(controllerHome, repoId, leaseOwner, leaseTtlMs, expected);
         } catch (error) {
-          renewalFailure = error;
+          // The lease mutex is deliberately non-waiting. A competing short
+          // critical section is retryable; only a real fencing/runtime/store
+          // failure should poison the long-running mutation.
+          if (!(error instanceof ControllerLockContentionError)) renewalFailure = error;
         }
       },
       Math.max(1_000, Math.min(10_000, Math.trunc(leaseTtlMs / 3))),
