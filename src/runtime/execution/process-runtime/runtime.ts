@@ -2029,7 +2029,14 @@ export async function waitForProcess(
       }
       return recordToHandle(current, { completed: false, observationInterrupted: true });
     }
-    return recordToHandle(reconcileObservedTerminalProcess(controllerHome, repoId, done), { completed: true });
+    // A validated Runner exit may arrive while another Process writer holds the
+    // exact record CAS lock. Return that receipt-backed outcome to this waiter;
+    // only durable terminal records may run lease/receipt cleanup. A later
+    // get/wait reconciles the same receipt after the lock is released.
+    return recordToHandle(
+      done.terminalWritten ? reconcileObservedTerminalProcess(controllerHome, repoId, done) : done,
+      { completed: true },
+    );
   }
 
   // No live monitor — poll receipt / identity (Controller restart attach path).
