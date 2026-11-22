@@ -428,7 +428,7 @@ if (architectureOwnerGraphFixture) {
   process.exit(0);
 }
 
-function relativeStaticTypeScriptDependencyGraph(directory = 'src') {
+function _relativeStaticTypeScriptDependencyGraph(directory = 'src') {
   return staticTypeScriptDependencyGraph(sourceFiles(directory));
 }
 
@@ -976,11 +976,11 @@ const required = [
   'src/runtime/evidence/operational-shadow.ts',
   'src/runtime/control-plane/persistence/operational-prior-store.ts',
   'evaluation/lib/shadow-operational-prior.ts',
-  'packages/kernel/work/domain/check-receipt.ts',
-  'packages/kernel/work/domain/execution-snapshot.ts',
-  'packages/kernel/work/domain/repository-completion-receipt.ts',
-  'packages/kernel/work/domain/types.ts',
-  'packages/kernel/work/api/index.ts',
+  'packages/kernel/engineering/domain/check-receipt.ts',
+  'packages/kernel/engineering/domain/execution-snapshot.ts',
+  'packages/kernel/engineering/domain/repository-completion-receipt.ts',
+  'packages/kernel/engineering/domain/types.ts',
+  'packages/kernel/engineering/api/index.ts',
   'packages/kernel/controller/domain/types.ts',
   'packages/kernel/controller/api/index.ts',
   'src/runtime/control-plane/execution/session-execution-support.ts',
@@ -1123,7 +1123,7 @@ for (const path of [...sourceFiles('src'), ...sourceFiles('adapters'), ...source
   );
 }
 forbid(
-  'packages/kernel/work/domain/types.ts',
+  'packages/kernel/engineering/domain/types.ts',
   /\bmode:\s*ExecutionMode\b|\bdriver:\s*WorkContractDriverPolicy\b|routeDecision/,
   'WorkContract must persist no engineering-mode, driver, or route-decision authority',
 );
@@ -1188,7 +1188,7 @@ forbid(
 // Historical Work records retain their stored open/completed/cancelled values for
 // old Work lifecycle and archival type definitions are not a production API.
 forbid(
-  'packages/kernel/work/api/index.ts',
+  'packages/kernel/engineering/api/index.ts',
   /application\/work-service/,
   'retired WorkContract service cannot remain publicly exported',
 );
@@ -1213,7 +1213,7 @@ forbid(
   'repository command execution must never query or emit historical Work context',
 );
 forbid(
-  'packages/kernel/work/domain/types.ts',
+  'packages/kernel/engineering/domain/types.ts',
   /WorkExecutionConcurrencyProjection|executionConcurrency/,
   'retired Work concurrency admission projection must not be part of active domain types',
 );
@@ -1223,7 +1223,7 @@ requireMissing('packages/kernel/work/ports/work-contract-store.ts');
 requireMissing('packages/kernel/work/infrastructure/work-contract-store.ts');
 requireMissing('packages/kernel/work/domain/state-machine.ts');
 forbid(
-  'packages/kernel/work/domain/types.ts',
+  'packages/kernel/engineering/domain/types.ts',
   /export (?:interface|type) (?:WorkContract|WorkContractConstraints|WorkSemanticView)\b|function (?:semanticScopeRefForWork|executionPlacementForWork)\b/,
   'retired WorkContract schema must exist only in test fixtures, not public production types',
 );
@@ -1233,12 +1233,12 @@ forbid(
   'Facade cannot expose historical WorkContract',
 );
 forbid(
-  'packages/kernel/work/domain/types.ts',
+  'packages/kernel/engineering/domain/types.ts',
   /\b(?:SEMANTIC_WORK_STATES|WORK_PHASES|WORK_KINDS|WorkCompletionReceipt|WorkPhaseEvidenceMap|WorkReconciliationRecord|SubmittedWorkOperation)\b/,
   'retired Work lifecycle enums and receipts belong in test-only fixtures',
 );
 forbid(
-  'packages/kernel/work/domain/types.ts',
+  'packages/kernel/engineering/domain/types.ts',
   /\b(?:WORK_RISKS|WorkRisk)\b/,
   'risk enum must represent current engineering capability, not retired Work',
 );
@@ -1389,7 +1389,7 @@ for (const path of sourceFiles('src')) {
   forbid(
     path,
     /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*(?:work-contract-store|work-implementation-review)['"]/,
-    'production source must consume packages/kernel/work instead of retired Work facade authority',
+    'production source must consume packages/kernel/engineering instead of retired Work facade authority',
   );
   forbid(
     path,
@@ -1413,7 +1413,7 @@ forbid(
   'MCP Gateway must submit Work application commands instead of writing lifecycle/evidence records directly',
 );
 forbid(
-  'packages/kernel/work/domain/types.ts',
+  'packages/kernel/engineering/domain/types.ts',
   /predecessorWorkId\?: string/,
   'old Work lineage does not belong in production',
 );
@@ -1527,10 +1527,12 @@ forbid(
   'architecture authority must not advertise deleted historical Work readers',
 );
 requireMissing('packages/kernel/work/domain/implementation-review.ts');
+requireMissing('packages/kernel/work/index.ts');
+requireMissing('packages/kernel/work/api/index.ts');
 forbid(
-  'packages/kernel/work/api/index.ts',
-  /implementation-review/,
-  'production Work kernel API must not export historical implementation-review types',
+  'packages/kernel/engineering/api/index.ts',
+  /implementation-review|packages\/kernel\/work/,
+  'engineering package must not export historical implementation-review or retired Work package paths',
 );
 requireText(
   'src/runtime/workflow/schedules/engine.ts',
@@ -1711,7 +1713,7 @@ for (const path of sourceFiles('src')) {
     'active legacy Runtime code must consume Kernel public api/index surfaces; direct internals are compatibility-boundary-only',
   );
 }
-requireText('src/runtime/control-plane/facade/types.ts', 'packages/kernel/work/domain/types');
+requireText('src/runtime/control-plane/facade/types.ts', 'packages/kernel/engineering/domain/types');
 forbid(
   'src/runtime/control-plane/facade/types.ts',
   /ControllerSession|ControllerLease|ControllerRoundContext|ControllerBinding|ControllerHost/,
@@ -1750,7 +1752,7 @@ forbid(
 );
 requireMissing('src/runtime/control-plane/routing/workspace-admission.ts');
 forbid(
-  'packages/kernel/work/domain/types.ts',
+  'packages/kernel/engineering/domain/types.ts',
   /requireHandoffOnAmbiguity|requireWorktree|directMainProhibited/,
   'retired Work placement/handoff policy fields must not return as durable authority',
 );
@@ -2960,7 +2962,7 @@ requireMissing('src/runtime/control-plane/cleanup-artifact-retention.ts');
 requireMissing('src/runtime/control-plane/execution/work-verification-service.ts');
 requireMissing('src/runtime/control-plane/execution/work-verification-context.ts');
 requireMissing('src/runtime/control-plane/execution/work-check-evidence.ts');
-for (const path of ['packages/kernel/work/domain/types.ts', 'src/runtime/execution/process-runtime/types.ts']) {
+for (const path of ['packages/kernel/engineering/domain/types.ts', 'src/runtime/execution/process-runtime/types.ts']) {
   forbid(
     path,
     /controller_release/,

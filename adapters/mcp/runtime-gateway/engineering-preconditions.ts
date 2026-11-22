@@ -8,7 +8,7 @@ import {
   type EngineeringDecisionArea,
   type IndependentCritiqueFinding,
   type ProjectEngineeringContractReceipt,
-} from '../../../packages/kernel/work/api/index';
+} from '../../../packages/kernel/engineering/api/index';
 import { loadProjectEngineeringContract } from '../../../src/runtime/context/project-engineering-contract';
 import { validateRuntimeIssuedContextClosureReceipt } from '../../../src/runtime/context/context-closure';
 import { ENGINEERING_DECISION_INPUT_ENTRIES, engineeringDecisionInputKey } from './engineering-tool-contract';
@@ -41,9 +41,14 @@ export function mintEngineeringAdmissionEvidence(input: {
 }): EngineeringAdmissionEvidence {
   const draft = object(input.draft, 'ENGINEERING_PRECONDITIONS_INVALID');
   const sourceRevision = text(input.sourceRevision, 'ENGINEERING_PRECONDITIONS_SOURCE_REQUIRED');
-  const closure = validateRuntimeIssuedContextClosureReceipt(object(draft.context_closure, 'ENGINEERING_CONTEXT_CLOSURE_REQUIRED') as unknown as ContextClosureReceipt);
+  const closure = validateRuntimeIssuedContextClosureReceipt(
+    object(draft.context_closure, 'ENGINEERING_CONTEXT_CLOSURE_REQUIRED') as unknown as ContextClosureReceipt,
+  );
   if (closure.sourceRevision !== sourceRevision) throw new Error('ENGINEERING_CONTEXT_CLOSURE_SOURCE_DRIFT');
-  if (closure.readiness.status !== 'ready') throw new Error(`ENGINEERING_CONTEXT_CLOSURE_NOT_READY: ${closure.readiness.reasonCodes.join(',') || closure.readiness.status}`);
+  if (closure.readiness.status !== 'ready')
+    throw new Error(
+      `ENGINEERING_CONTEXT_CLOSURE_NOT_READY: ${closure.readiness.reasonCodes.join(',') || closure.readiness.status}`,
+    );
 
   const loadedProject = input.existingProjectContractReceipt
     ? { status: 'ready' as const, receipt: input.existingProjectContractReceipt }
@@ -66,10 +71,12 @@ export function mintEngineeringAdmissionEvidence(input: {
 
   const design = object(draft.design_decision, 'ENGINEERING_DESIGN_DECISION_REQUIRED');
   const decisionsInput = object(design.decisions, 'ENGINEERING_DESIGN_DECISIONS_REQUIRED');
-  const decisions = Object.fromEntries(ENGINEERING_DECISION_INPUT_ENTRIES.map(({ area, field }) => [
-    area,
-    text(decisionsInput[field], engineeringDecisionErrorCode(area)),
-  ])) as Record<EngineeringDecisionArea, string>;
+  const decisions = Object.fromEntries(
+    ENGINEERING_DECISION_INPUT_ENTRIES.map(({ area, field }) => [
+      area,
+      text(decisionsInput[field], engineeringDecisionErrorCode(area)),
+    ]),
+  ) as Record<EngineeringDecisionArea, string>;
   const budgetInput = object(design.complexity_budget, 'ENGINEERING_COMPLEXITY_BUDGET_REQUIRED');
   const complexityBudget = {
     addedWriters: Number(budgetInput.added_writers ?? 0),
@@ -81,7 +88,12 @@ export function mintEngineeringAdmissionEvidence(input: {
     notes: Array.isArray(budgetInput.notes) ? budgetInput.notes.map(String) : [],
   };
   const mutationClass = design.mutation_class;
-  if (mutationClass !== 'readonly' && mutationClass !== 'isolated_write' && mutationClass !== 'integration_write' && mutationClass !== 'external_effect') {
+  if (
+    mutationClass !== 'readonly' &&
+    mutationClass !== 'isolated_write' &&
+    mutationClass !== 'integration_write' &&
+    mutationClass !== 'external_effect'
+  ) {
     throw new Error('ENGINEERING_MUTATION_CLASS_INVALID');
   }
   const designDecisionReceipt = buildDesignDecisionContractReceipt({
@@ -92,19 +104,32 @@ export function mintEngineeringAdmissionEvidence(input: {
     mutationClass,
     decisions,
     complexityBudget,
-    ...(typeof design.supersedes_receipt_id === 'string' && design.supersedes_receipt_id.trim() ? { supersedesReceiptId: design.supersedes_receipt_id.trim() } : {}),
+    ...(typeof design.supersedes_receipt_id === 'string' && design.supersedes_receipt_id.trim()
+      ? { supersedesReceiptId: design.supersedes_receipt_id.trim() }
+      : {}),
     recordedAt,
   });
 
   const critique = object(draft.independent_critique, 'ENGINEERING_INDEPENDENT_CRITIQUE_REQUIRED');
   const decision = critique.decision;
-  if (decision !== 'approved' && decision !== 'changes_required' && decision !== 'blocked') throw new Error('ENGINEERING_CRITIQUE_DECISION_INVALID');
+  if (decision !== 'approved' && decision !== 'changes_required' && decision !== 'blocked')
+    throw new Error('ENGINEERING_CRITIQUE_DECISION_INVALID');
   const findings = Array.isArray(critique.findings)
     ? critique.findings.map((entry) => {
         const finding = object(entry, 'ENGINEERING_CRITIQUE_FINDING_INVALID');
         const severity = finding.severity;
-        if (severity !== 'critical' && severity !== 'high' && severity !== 'medium' && severity !== 'low' && severity !== 'info') throw new Error('ENGINEERING_CRITIQUE_SEVERITY_INVALID');
-        return { severity: severity as IndependentCritiqueFinding['severity'], summary: text(finding.summary, 'ENGINEERING_CRITIQUE_SUMMARY_REQUIRED') };
+        if (
+          severity !== 'critical' &&
+          severity !== 'high' &&
+          severity !== 'medium' &&
+          severity !== 'low' &&
+          severity !== 'info'
+        )
+          throw new Error('ENGINEERING_CRITIQUE_SEVERITY_INVALID');
+        return {
+          severity: severity as IndependentCritiqueFinding['severity'],
+          summary: text(finding.summary, 'ENGINEERING_CRITIQUE_SUMMARY_REQUIRED'),
+        };
       })
     : [];
   const independentCritiqueReceipt = buildIndependentCritiqueReceipt({

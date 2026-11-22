@@ -1,7 +1,7 @@
 import {
   ENGINEERING_DECISION_AREAS,
   type EngineeringDecisionArea,
-} from '../../../packages/kernel/work/api/index';
+} from '../../../packages/kernel/engineering/api/index';
 
 export function engineeringDecisionInputKey(area: EngineeringDecisionArea): string {
   return area.replace(/[A-Z]/g, (character) => `_${character.toLowerCase()}`);

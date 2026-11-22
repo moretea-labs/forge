@@ -5,8 +5,11 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { buildContextClosureReceipt, validateRuntimeIssuedContextClosureReceipt } from '../../src/runtime/context/context-closure';
-import { validateProjectEngineeringContract } from '../../packages/kernel/work/domain/project-engineering-contract';
+import {
+  buildContextClosureReceipt,
+  validateRuntimeIssuedContextClosureReceipt,
+} from '../../src/runtime/context/context-closure';
+import { validateProjectEngineeringContract } from '../../packages/kernel/engineering/domain/project-engineering-contract';
 
 const roots: string[] = [];
 function temp(prefix: string): string {
@@ -14,7 +17,9 @@ function temp(prefix: string): string {
   roots.push(root);
   return root;
 }
-afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
+afterEach(() => {
+  while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
+});
 
 function pack(sourceRevision: string, files: string[], tests: string[] = []) {
   return {
@@ -23,7 +28,12 @@ function pack(sourceRevision: string, files: string[], tests: string[] = []) {
     git: { branch: 'kernel-v2/architecture', dirty: false },
     instructionContext: { status: 'ready' as const, contracts: [{ path: 'AGENTS.md' }] },
     structuralContext: { status: 'ready' as const },
-    readiness: { sourceRevision, rawSource: { status: 'current' as const }, status: 'ready' as const, unresolvedReasonCodes: [] },
+    readiness: {
+      sourceRevision,
+      rawSource: { status: 'current' as const },
+      status: 'ready' as const,
+      unresolvedReasonCodes: [],
+    },
     files: files.map((path) => ({ path })),
     coverage: { relevantTests: tests, inspectedFiles: files },
   };
@@ -35,25 +45,34 @@ function skill(root: string, id: string) {
   writeFileSync(join(folder, 'SKILL.md'), `---\nname: ${id}\n---\n\nInstructions`);
 }
 
-function projectContract(root: string, input: {
-  projectId: string;
-  platforms?: string[];
-  skillRefs?: string[];
-  skillBindings?: Array<{ id: string; version?: string; kinds: string[] }>;
-  tooling?: Array<{ id: string; purpose?: string }>;
-}) {
+function projectContract(
+  root: string,
+  input: {
+    projectId: string;
+    platforms?: string[];
+    skillRefs?: string[];
+    skillBindings?: Array<{ id: string; version?: string; kinds: string[] }>;
+    tooling?: Array<{ id: string; purpose?: string }>;
+  },
+) {
   mkdirSync(join(root, '.forge'), { recursive: true });
-  writeFileSync(join(root, '.forge/project-engineering.json'), JSON.stringify({
-    schemaVersion: 1,
-    contractId: `${input.projectId}-engineering`,
-    contractVersion: '1',
-    projectId: input.projectId,
-    authority: {}, quality: {}, checks: [], journeys: [],
-    platforms: input.platforms ?? [],
-    skillRefs: input.skillRefs ?? [],
-    skillBindings: input.skillBindings ?? [],
-    tooling: input.tooling ?? [],
-  }));
+  writeFileSync(
+    join(root, '.forge/project-engineering.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      contractId: `${input.projectId}-engineering`,
+      contractVersion: '1',
+      projectId: input.projectId,
+      authority: {},
+      quality: {},
+      checks: [],
+      journeys: [],
+      platforms: input.platforms ?? [],
+      skillRefs: input.skillRefs ?? [],
+      skillBindings: input.skillBindings ?? [],
+      tooling: input.tooling ?? [],
+    }),
+  );
 }
 
 describe('Context Closure', () => {
@@ -61,7 +80,8 @@ describe('Context Closure', () => {
     const root = temp('context-closure-ts-');
     writeFileSync(join(root, 'package.json'), '{}');
     writeFileSync(join(root, 'tsconfig.json'), '{}');
-    mkdirSync(join(root, 'src')); mkdirSync(join(root, 'tests'));
+    mkdirSync(join(root, 'src'));
+    mkdirSync(join(root, 'tests'));
     writeFileSync(join(root, 'src/service.ts'), 'export const value = 1;');
     writeFileSync(join(root, 'tests/service.test.ts'), '');
     projectContract(root, { projectId: 'ts-app', skillRefs: ['typescript-engineering@2'] });
@@ -72,11 +92,20 @@ describe('Context Closure', () => {
       query: 'Change the cross-file protocol ownership contract',
       pack: pack('rev-ts', ['src/service.ts'], ['tests/service.test.ts']),
       semanticProviders: [{ id: 'typescript-language-service', languages: ['typescript'] }],
-      semanticNavigation: { requested: 1, results: [{ result: { providerId: 'typescript-language-service' } }], errors: [], freshness: 'current' },
+      semanticNavigation: {
+        requested: 1,
+        results: [{ result: { providerId: 'typescript-language-service' } }],
+        errors: [],
+        freshness: 'current',
+      },
     });
     expect(receipt.detected.languages).toContain('typescript');
     expect(receipt.skills).toMatchObject({ status: 'ready', unresolvedKinds: [] });
-    expect(receipt.skills.resolved[0]).toMatchObject({ id: 'typescript-engineering', version: '2', matchedKinds: ['typescript'] });
+    expect(receipt.skills.resolved[0]).toMatchObject({
+      id: 'typescript-engineering',
+      version: '2',
+      matchedKinds: ['typescript'],
+    });
     expect(receipt.semanticTools).toMatchObject({ required: true, status: 'ready', compilerEvidenceRequired: false });
     expect(receipt.projectContract).toMatchObject({ sourceRevision: 'rev-ts', projectId: 'ts-app' });
     expect(receipt.readiness.status).toBe('ready');
@@ -155,23 +184,32 @@ describe('Context Closure', () => {
       contractId: 'skill-binding-contract',
       contractVersion: '1',
       projectId: 'skill-binding-project',
-      authority: {}, quality: {}, checks: [], journeys: [],
+      authority: {},
+      quality: {},
+      checks: [],
+      journeys: [],
     };
-    expect(() => validateProjectEngineeringContract({
-      ...base,
-      skillBindings: [{ id: 'ios-engineering', kinds: [] }],
-    })).toThrow('PROJECT_ENGINEERING_CONTRACT_SKILL_KINDS_INVALID');
-    expect(() => validateProjectEngineeringContract({
-      ...base,
-      skillBindings: [
-        { id: 'ios-engineering', kinds: ['swift'] },
-        { id: 'ios-engineering', kinds: ['ios'] },
-      ],
-    })).toThrow('PROJECT_ENGINEERING_CONTRACT_SKILL_BINDING_ID_DUPLICATE');
-    expect(validateProjectEngineeringContract({
-      ...base,
-      skillBindings: [{ id: 'ios-engineering', kinds: ['Swift', 'IOS'] }],
-    }).skillBindings).toEqual([{ id: 'ios-engineering', kinds: ['swift', 'ios'] }]);
+    expect(() =>
+      validateProjectEngineeringContract({
+        ...base,
+        skillBindings: [{ id: 'ios-engineering', kinds: [] }],
+      }),
+    ).toThrow('PROJECT_ENGINEERING_CONTRACT_SKILL_KINDS_INVALID');
+    expect(() =>
+      validateProjectEngineeringContract({
+        ...base,
+        skillBindings: [
+          { id: 'ios-engineering', kinds: ['swift'] },
+          { id: 'ios-engineering', kinds: ['ios'] },
+        ],
+      }),
+    ).toThrow('PROJECT_ENGINEERING_CONTRACT_SKILL_BINDING_ID_DUPLICATE');
+    expect(
+      validateProjectEngineeringContract({
+        ...base,
+        skillBindings: [{ id: 'ios-engineering', kinds: ['Swift', 'IOS'] }],
+      }).skillBindings,
+    ).toEqual([{ id: 'ios-engineering', kinds: ['swift', 'ios'] }]);
   });
 
   test('discovers a symlinked installed ios-engineering without a project contract', () => {
@@ -203,7 +241,11 @@ describe('Context Closure', () => {
 
   test('uninstalled project skill bindings cannot claim available skills', () => {
     const root = temp('context-closure-phantom-skill-');
-    projectContract(root, { projectId: 'ios-app', skillBindings: [{ id: 'ios-engineering', kinds: ['swift', 'ios'] }], platforms: ['ios'] });
+    projectContract(root, {
+      projectId: 'ios-app',
+      skillBindings: [{ id: 'ios-engineering', kinds: ['swift', 'ios'] }],
+      platforms: ['ios'],
+    });
     const receipt = buildContextClosureReceipt({
       repoRoot: root,
       skillHomeDir: join(root, 'no-user-skills'),
@@ -261,12 +303,11 @@ describe('Context Closure', () => {
     expect(validateRuntimeIssuedContextClosureReceipt(reordered).receiptId).toBe(issued.receiptId);
 
     const tampered = { ...issued, generatedAt: '2026-09-03T00:00:01.000Z' };
-    expect(() => validateRuntimeIssuedContextClosureReceipt(tampered)).toThrow('CONTEXT_CLOSURE_RECEIPT_NOT_ISSUED_BY_RUNTIME');
-
+    expect(() => validateRuntimeIssuedContextClosureReceipt(tampered)).toThrow(
+      'CONTEXT_CLOSURE_RECEIPT_NOT_ISSUED_BY_RUNTIME',
+    );
   });
-
 });
-
 
 test('fresh source identity sampling yields while a real Git fsmonitor is slow', async () => {
   const root = temp('forge-context-slow-git-');
@@ -288,7 +329,10 @@ test('fresh source identity sampling yields while a real Git fsmonitor is slow',
   let heartbeat = false;
   let heartbeatAt = 0;
   const startedAt = performance.now();
-  const timer = setTimeout(() => { heartbeat = true; heartbeatAt = performance.now(); }, 20);
+  const timer = setTimeout(() => {
+    heartbeat = true;
+    heartbeatAt = performance.now();
+  }, 20);
   try {
     const identity = await freshGitIdentityAsync(root);
     expect(heartbeat).toBe(true);
@@ -296,9 +340,17 @@ test('fresh source identity sampling yields while a real Git fsmonitor is slow',
     const synchronous = freshGitIdentity(root);
     expect(identity.head).toBe(synchronous.head);
     expect(identity.workingTreeFingerprint).toBe(synchronous.workingTreeFingerprint);
-    console.info(JSON.stringify({ fixture: 'slow-git-identity', heartbeatMs: Number((heartbeatAt - startedAt).toFixed(2)) }));
+    console.info(
+      JSON.stringify({ fixture: 'slow-git-identity', heartbeatMs: Number((heartbeatAt - startedAt).toFixed(2)) }),
+    );
     writeFileSync(join(root, 'tracked.txt'), 'changed again');
     expect((await freshGitIdentityAsync(root)).workingTreeFingerprint).not.toBe(identity.workingTreeFingerprint);
-    expect(await freshGitIdentityAsync(join(root, 'missing'))).toMatchObject({ head: null, branch: null, dirty: false });
-  } finally { clearTimeout(timer); }
+    expect(await freshGitIdentityAsync(join(root, 'missing'))).toMatchObject({
+      head: null,
+      branch: null,
+      dirty: false,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 });

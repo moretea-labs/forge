@@ -145,7 +145,7 @@ Equivalent checks can single-flight, coalesce subscribers, and reuse successful 
 Primary code:
 
 ```text
-packages/kernel/work/api/index.ts
+packages/kernel/engineering/api/index.ts
 src/runtime/control-plane/repo-actor/
 src/runtime/scheduler/
 src/runtime/execution/workers/

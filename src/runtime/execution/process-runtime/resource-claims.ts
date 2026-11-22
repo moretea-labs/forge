@@ -649,6 +649,40 @@ export function looksLikeBuildOrTest(command: string | readonly string[]): boole
 }
 
 /**
+ * True when the command is a single argv-like invocation without shell
+ * composition, redirection or interpolation. Soft claim narrowing (#713) is
+ * only safe for that shape; composed shells keep the checkout-wide writer.
+ */
+function isSimpleNonComposedCommand(command: string | readonly string[]): boolean {
+  const canonical = normalizeRepositoryCommand(command);
+  const shell =
+    canonical.kind === 'shell'
+      ? canonical.shellCommand
+      : fixedShellWrapperCommand([canonical.executable!, ...(canonical.args ?? [])]);
+  if (shell === undefined) return true;
+  if (/[;&|<>\x60$\n\r]/.test(shell)) return false;
+  return shellSegments(shell).length === 1;
+}
+
+/**
+ * Emitting `tsc` (including bun x / npx wrappers) can write `.js` beside sources.
+ * Soft observation claims are reserved for `--noEmit` via isTypedTypeScriptNoEmit.
+ */
+function isPotentiallyEmittingTypeScript(command: string | readonly string[]): boolean {
+  if (isTypedTypeScriptNoEmit(command)) return false;
+  if (!Array.isArray(command) || command.length === 0) {
+    const lower = String(command).toLowerCase();
+    return /(?:^|[;&|]\s*)(?:bun\s+x\s+|npx\s+)?tsc\b/.test(lower);
+  }
+  const words = command.map((value) => String(value));
+  const base = (value: string): string => value.replace(/\\/g, '/').split('/').at(-1)?.toLowerCase() ?? '';
+  const program = base(words[0] ?? '');
+  if (program === 'bun' && words[1]?.toLowerCase() === 'x' && base(words[2] ?? '') === 'tsc') return true;
+  if (program === 'npx' && base(words[1] ?? '') === 'tsc') return true;
+  return program === 'tsc';
+}
+
+/**
  * A typed argv TypeScript --noEmit invocation reads source/config and may still
  * update incremental build metadata. Model that metadata as build-cache rather
  * than claiming the whole checkout as a writer. Shell strings and package-script
@@ -935,13 +969,20 @@ function repositoryCommandClaims(
     for (const path of extractLikelyPaths(command).slice(0, 16)) claims.push(claimPathWrite(path, checkoutId, repoId));
     return normalizeClaims(claims);
   }
-  if (explicitXcodeCache || looksLikeBuildOrTest(command)) {
+  // Explicit Xcode derived-data identity already models cache narrowly.
+  // Heuristic build/test softens only for simple argv-like shapes: shell
+  // composition, redirection and emitting tsc keep checkout-wide writers (#713).
+  if (
+    explicitXcodeCache ||
+    (looksLikeBuildOrTest(command) && isSimpleNonComposedCommand(command) && !isPotentiallyEmittingTypeScript(command))
+  ) {
     const paths = extractLikelyPaths(command);
     if (paths.length === 0) {
-      // Broad or opaque build/test commands may create arbitrary artifacts.
-      return [claimWorkspaceWrite(checkoutId, repoId), ...cacheClaims];
+      // Opaque build/test observes source and may write shared build cache only.
+      // Do not take a checkout-wide writer as the Agent admission gate (#713).
+      return normalizeClaims([claimValidationObservation(checkoutId, repoId), ...cacheClaims]);
     }
-    const claims: ResourceClaimSpec[] = [claimWorkspaceRead(checkoutId, repoId), ...cacheClaims];
+    const claims: ResourceClaimSpec[] = [claimValidationObservation(checkoutId, repoId), ...cacheClaims];
     for (const path of paths.slice(0, 16)) claims.push(claimPathWrite(path, checkoutId, repoId));
     return normalizeClaims(claims);
   }
@@ -979,7 +1020,10 @@ function repositoryCommandClaims(
   // Opaque mutating commands keep the conservative checkout fence. Prefer
   // declared mutation_paths / exact Git path claims above so ordinary Agent
   // work does not inherit this fallback as a global admission lock (#713).
-  return [claimWorkspaceWrite(checkoutId, repoId)];
+  // Composed/unsafe build-like shells still serialize the shared build cache.
+  return looksLikeBuildOrTest(command)
+    ? normalizeClaims([claimWorkspaceWrite(checkoutId, repoId), claimBuildCacheWrite(repoId)])
+    : [claimWorkspaceWrite(checkoutId, repoId)];
 }
 
 /** One native build at a time per host, using the existing Lease owner. */

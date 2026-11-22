@@ -1,37 +1,23 @@
-import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { describe, expect, test } from 'bun:test';
 import {
   applyEngineeringBlockerDisposition,
   buildEngineeringContextReceipt,
   engineeringWorkProfileForRisk,
   evaluateEngineeringAdmission,
-} from '../../packages/kernel/work/domain/engineering-profile';
+} from '../../packages/kernel/engineering/domain/engineering-profile';
 import {
   buildDesignDecisionContractReceipt,
   buildEngineeringBlockerDispositionReceipt,
   buildIndependentCritiqueReceipt,
   buildProductDoDReceipt,
-} from '../../packages/kernel/work/domain/engineering-design';
-import { contextClosureReceiptIdentity } from '../../packages/kernel/work/domain/context-closure-receipt';
+} from '../../packages/kernel/engineering/domain/engineering-design';
+import { contextClosureReceiptIdentity } from '../../packages/kernel/engineering/domain/context-closure-receipt';
 import type {
   ContextClosureReceipt,
   EngineeringAdmissionEvidence,
-} from '../../packages/kernel/work/domain/engineering-contracts';
-import { trustedEngineeringEvidence } from '../helpers/engineering-evidence';
+} from '../../packages/kernel/engineering/domain/engineering-contracts';
 
 const recordedAt = '2026-09-03T00:00:00.000Z';
-
-const roots: string[] = [];
-function temp(prefix: string): string {
-  const root = mkdtempSync(join(tmpdir(), prefix));
-  roots.push(root);
-  return root;
-}
-afterEach(() => {
-  while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
-});
 
 function projectContract(sourceRevision = 'revision-a') {
   return {

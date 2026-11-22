@@ -599,6 +599,20 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(checkClaims.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(false);
   });
 
+  test('opaque build/test observes source without checkout-wide writer (#713)', () => {
+    const legacyWriter = lease('workspace:co1', 'write');
+    for (const command of [
+      ['bun', 'run', 'build'],
+      ['npm', 'test'],
+      ['cargo', 'build'],
+    ] as const) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
+      expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+      expect(claims.some((claim) => claimsConflict(claim, legacyWriter))).toBe(false);
+    }
+  });
+
   test('path-scoped git add and git commit do not take checkout-wide writer (#713)', () => {
     const staged = claimsForRepositoryCommand(['git', 'add', 'src/alpha.ts', 'src/beta.ts'], 'repo1', 'co1');
     expect(staged).toContainEqual({ resourceKey: 'git-index:co1', mode: 'exclusive' });
@@ -641,7 +655,8 @@ describe('Process Runtime fine-grained resource claims', () => {
       resourceKey: 'path:co1:apps/desktop/src-tauri/Cargo.toml',
       mode: 'write',
     });
-    expect(buildClaims.some((claim) => claim.resourceKey === 'validation-input:co1')).toBe(false);
+    expect(buildClaims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
+    expect(buildClaims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
   });
 
   test('read/search and focused tests proceed while an unrelated legacy workspace writer exists (#713)', () => {

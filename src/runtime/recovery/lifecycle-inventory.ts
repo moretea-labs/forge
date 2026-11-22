@@ -146,7 +146,7 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
       'src/runtime/execution/process-runtime/check-receipt.ts',
       'src/runtime/execution/process-runtime/gc.ts',
       'src/runtime/execution/process-runtime/check-result-retention.ts',
-      'packages/kernel/work/api/index.ts',
+      'packages/kernel/engineering/api/index.ts',
       'tests/runtime/check-result-retention.test.ts',
     ],
   }),

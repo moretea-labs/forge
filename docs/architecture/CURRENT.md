@@ -317,7 +317,7 @@ packages/plugin-runtime/* --> neutral plugin/provider contracts
 
 Current mutable domains expose one intentional public API and do not deep-import sibling persistence internals. Scheduler owns Schedule facts; Identity/Resources own portable identity and physical resource facts; Execution/Process owns command execution facts. Requirement and Plan keep their existing semantic stores and expected-revision CAS.
 
-`packages/kernel/work` is a historical read/query compatibility package. It may normalize legacy Work rows for reads and migration evidence, but it exposes no current Work lifecycle writer and cannot be used to create placement, ownership, scheduling, delivery, completion or recovery authority. New code must not add mutable Work operations back through a different package or adapter.
+`packages/kernel/engineering` is a historical read/query compatibility package. It may normalize legacy Work rows for reads and migration evidence, but it exposes no current Work lifecycle writer and cannot be used to create placement, ownership, scheduling, delivery, completion or recovery authority. New code must not add mutable Work operations back through a different package or adapter.
 
 ### Single-authority rule
 
@@ -675,7 +675,7 @@ Review this standard against real development outcomes. Change it when evidence 
 | Responsibility          | Canonical source area                                 | Ownership                                                                     |
 | ----------------------- | ----------------------------------------------------- | ----------------------------------------------------------------------------- |
 | Requirement / Plan      | existing semantic stores and facades                  | stable semantic outcome/progress and optional planning context                |
-| Historical Work         | `packages/kernel/work` read API                       | compatibility/audit queries only; no current lifecycle writer                 |
+| Historical Work         | `packages/kernel/engineering` read API                       | compatibility/audit queries only; no current lifecycle writer                 |
 | Repository source/edit  | Git, Checkout Registry, EditSession                   | source, placement, bounded patch transaction and CAS fences                   |
 | Process / Check         | Process Runtime and Check evidence                    | command execution identity, attachment and exact-input validation receipts    |
 | Scheduling              | `packages/kernel/scheduler`                           | trigger, occurrence and one bounded action; not model workflow decisions      |

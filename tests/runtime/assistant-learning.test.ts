@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { validateProjectKnowledgeSources } from '../../packages/kernel/work/api/index';
+import { validateProjectKnowledgeSources } from '../../packages/kernel/engineering/api/index';
 import { memoryAddressKey, type ActivationPack, type MemoryUnit } from '../../packages/kernel/cognition/api/index';
 import { fileKnowledgeSourcePort, resolveAssistantContext } from '../../src/runtime/context/assistant-context';
 

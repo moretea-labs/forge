@@ -2,9 +2,12 @@ import {
   buildDesignDecisionContractReceipt,
   buildIndependentCritiqueReceipt,
   buildProductDoDReceipt,
-} from '../../packages/kernel/work/domain/engineering-design';
-import { contextClosureReceiptIdentity } from '../../packages/kernel/work/domain/context-closure-receipt';
-import type { ContextClosureReceipt, EngineeringAdmissionEvidence } from '../../packages/kernel/work/domain/engineering-contracts';
+} from '../../packages/kernel/engineering/domain/engineering-design';
+import { contextClosureReceiptIdentity } from '../../packages/kernel/engineering/domain/context-closure-receipt';
+import type {
+  ContextClosureReceipt,
+  EngineeringAdmissionEvidence,
+} from '../../packages/kernel/engineering/domain/engineering-contracts';
 
 const RECORDED_AT = '2026-09-03T00:00:00.000Z';
 
@@ -20,7 +23,13 @@ export function trustedEngineeringEvidence(sourceRevision = 'revision-a'): Engin
     guidance: { status: 'none', paths: [] },
     detected: { languages: ['typescript'], platforms: [] },
     skills: { status: 'not_required', requiredKinds: [], resolved: [], unresolvedKinds: [] },
-    semanticTools: { required: false, status: 'not_required', providers: [], reasonCodes: [], compilerEvidenceRequired: false },
+    semanticTools: {
+      required: false,
+      status: 'not_required',
+      providers: [],
+      reasonCodes: [],
+      compilerEvidenceRequired: false,
+    },
     sourceEvidence: {
       currentPaths: ['src/runtime/example.ts'],
       testPaths: ['tests/runtime/example.test.ts'],
@@ -61,19 +70,28 @@ export function trustedEngineeringEvidence(sourceRevision = 'revision-a'): Engin
       performance: 'No duplicate source scan is required.',
       compatibility: 'Legacy ids are audit-only.',
       semanticScopeIdentity: 'Semantic identity and placement identity are explicit and cannot drift.',
-      authorizationTrust: 'Principal, authorization source, target, lifetime, invalidation, and revocation are explicit.',
+      authorizationTrust:
+        'Principal, authorization source, target, lifetime, invalidation, and revocation are explicit.',
       resourceFencing: 'Semantic resources use explicit claims/fencing rather than incidental repository placement.',
       deploymentTopology: 'Controller Home and ForgeInstance writer topology and transfer boundaries are explicit.',
-      schemaEvolutionDurability: 'Durable state defines schema evolution, integrity, backup/restore, and corruption behavior.',
-      idempotencyReplay: 'Side effects define request identity, receipt, retry, outcome_unknown, and reconciliation semantics.',
-      retentionGc: 'Every persisted class defines retention, quota/compaction, terminal cleanup, and active-state protection.',
-      observabilityEvidence: 'Evidence, audit, operational receipts, and verbose diagnostics have distinct authority and retention.',
-      recoveryFailureDomain: 'Recovery diagnoses and repairs fenced authority without becoming semantic success authority.',
-      capacityBackpressure: 'Capacity, fairness, starvation resistance, queue bounds, and overload degradation are explicit.',
-      releaseUpgradeRollback: 'Release activation, compatibility, rollback, failed-upgrade recovery, and retention are explicit.',
+      schemaEvolutionDurability:
+        'Durable state defines schema evolution, integrity, backup/restore, and corruption behavior.',
+      idempotencyReplay:
+        'Side effects define request identity, receipt, retry, outcome_unknown, and reconciliation semantics.',
+      retentionGc:
+        'Every persisted class defines retention, quota/compaction, terminal cleanup, and active-state protection.',
+      observabilityEvidence:
+        'Evidence, audit, operational receipts, and verbose diagnostics have distinct authority and retention.',
+      recoveryFailureDomain:
+        'Recovery diagnoses and repairs fenced authority without becoming semantic success authority.',
+      capacityBackpressure:
+        'Capacity, fairness, starvation resistance, queue bounds, and overload degradation are explicit.',
+      releaseUpgradeRollback:
+        'Release activation, compatibility, rollback, failed-upgrade recovery, and retention are explicit.',
       securityPrivacy: 'Secrets and sensitive outputs are bounded, redacted, and never promoted to semantic authority.',
       portability: 'No machine, path, browser, repository shape, or OS-service assumption becomes semantic authority.',
-      migrationRetirement: 'Compatibility is one-way with write prohibition, observability, and an explicit removal trigger.',
+      migrationRetirement:
+        'Compatibility is one-way with write prohibition, observability, and an explicit removal trigger.',
     },
     complexityBudget: {
       addedWriters: 0,

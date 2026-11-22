@@ -6,18 +6,24 @@ import {
   validateProjectEngineeringContract,
   type ProjectEngineeringContract,
   type ProjectEngineeringContractReceipt,
-} from '../../../packages/kernel/work/api/index';
+} from '../../../packages/kernel/engineering/api/index';
 
 export type ProjectEngineeringContractLoadResult =
   | { status: 'missing'; contractPath: string }
-  | { status: 'ready'; contractPath: string; contract: ProjectEngineeringContract; receipt: ProjectEngineeringContractReceipt };
+  | {
+      status: 'ready';
+      contractPath: string;
+      contract: ProjectEngineeringContract;
+      receipt: ProjectEngineeringContractReceipt;
+    };
 
 function boundedRepositoryPath(repoRoot: string, requested: string): { absolute: string; relative: string } {
   if (isAbsolute(requested)) throw new Error('PROJECT_ENGINEERING_CONTRACT_PATH_MUST_BE_REPOSITORY_RELATIVE');
   const root = resolve(repoRoot);
   const absolute = resolve(root, requested);
   const rel = relative(root, absolute).split(sep).join('/');
-  if (!rel || rel.startsWith('../') || rel === '..') throw new Error('PROJECT_ENGINEERING_CONTRACT_PATH_OUTSIDE_REPOSITORY');
+  if (!rel || rel.startsWith('../') || rel === '..')
+    throw new Error('PROJECT_ENGINEERING_CONTRACT_PATH_OUTSIDE_REPOSITORY');
   return { absolute, relative: rel };
 }
 

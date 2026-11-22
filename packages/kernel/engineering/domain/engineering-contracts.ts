@@ -96,7 +96,6 @@ export interface EngineeringContextReceipt {
   recordedAt: string;
 }
 
-
 export type ContextClosureReadinessStatus = 'ready' | 'degraded' | 'insufficient';
 export type ContextClosureSkillStatus = 'ready' | 'degraded' | 'unavailable' | 'not_required';
 export type ContextClosureSemanticStatus = 'ready' | 'degraded' | 'unavailable' | 'not_required';

@@ -3,14 +3,13 @@ import type {
   FacadeDetailLevel,
   EvidenceRef,
   SuggestedNextAction,
-  PolicyDecision,
-} from '../../../../packages/kernel/work/domain/types';
+} from '../../../../packages/kernel/engineering/domain/types';
 export type {
   FacadeDetailLevel,
   EvidenceRef,
   SuggestedNextAction,
   PolicyDecision,
-} from '../../../../packages/kernel/work/domain/types';
+} from '../../../../packages/kernel/engineering/domain/types';
 import {
   TERMINAL_PLAN_CONTRACT_STATUSES,
   type PlanContractStatus,
@@ -87,12 +86,12 @@ export {
 import type { HandoffStatus } from '../../../../packages/protocols/handoff/index';
 
 // Shared Facade/check types; the historical Work schema is test-only.
-export { ENGINEERING_RISKS, VERIFICATION_OUTCOMES } from '../../../../packages/kernel/work/domain/types';
+export { ENGINEERING_RISKS, VERIFICATION_OUTCOMES } from '../../../../packages/kernel/engineering/domain/types';
 export type {
   EngineeringRisk,
   VerificationOutcome,
   VerificationRecord,
-} from '../../../../packages/kernel/work/domain/types';
+} from '../../../../packages/kernel/engineering/domain/types';
 
 export const HANDOFF_CREATION_REASONS = [
   'policy_approval_required',

@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, realpathSync } from 'fs';
 import { dirname, isAbsolute, resolve, sep } from 'path';
-import { DEFAULT_PROJECT_ENGINEERING_CONTRACT_PATH } from '../../../packages/kernel/work/api/index';
+import { DEFAULT_PROJECT_ENGINEERING_CONTRACT_PATH } from '../../../packages/kernel/engineering/api/index';
 import type { ToolPolicy } from '../control-plane/tool-policy';
 
 export interface McpPathDecision {
@@ -33,8 +33,13 @@ function escapeRegex(value: string): string {
 }
 
 export function globMatches(pattern: string, relativePath: string): boolean {
-  const normalizedPattern = toPosixPath(pattern.trim()).replace(/^\.\/+/, '').replace(/\/{2,}/g, '/');
-  const normalizedPath = toPosixPath(relativePath).replace(/^\.\/+/, '').replace(/\/{2,}/g, '/').replace(/\/$/, '');
+  const normalizedPattern = toPosixPath(pattern.trim())
+    .replace(/^\.\/+/, '')
+    .replace(/\/{2,}/g, '/');
+  const normalizedPath = toPosixPath(relativePath)
+    .replace(/^\.\/+/, '')
+    .replace(/\/{2,}/g, '/')
+    .replace(/\/$/, '');
   if (normalizedPattern === '**' || normalizedPattern === '**/*') return true;
   let expression = '';
   for (let index = 0; index < normalizedPattern.length; index += 1) {
@@ -57,7 +62,10 @@ export function globMatches(pattern: string, relativePath: string): boolean {
     } else if (char === '{') {
       const close = normalizedPattern.indexOf('}', index + 1);
       if (close > index) {
-        const alternatives = normalizedPattern.slice(index + 1, close).split(',').map((part) => escapeRegex(part));
+        const alternatives = normalizedPattern
+          .slice(index + 1, close)
+          .split(',')
+          .map((part) => escapeRegex(part));
         expression += `(?:${alternatives.join('|')})`;
         index = close;
       } else {
@@ -114,8 +122,8 @@ export function resolveMcpPath(
   if (!normalized.ok || !normalized.relativePath) return normalized;
 
   const relativePath = normalized.relativePath;
-  const isControllerProjectEngineeringContract = policy.profile === 'controller'
-    && relativePath === DEFAULT_PROJECT_ENGINEERING_CONTRACT_PATH;
+  const isControllerProjectEngineeringContract =
+    policy.profile === 'controller' && relativePath === DEFAULT_PROJECT_ENGINEERING_CONTRACT_PATH;
   if (!isControllerProjectEngineeringContract && anyDenyGlobMatches(policy.denyGlobs, relativePath)) {
     return { ok: false, relativePath, reason: `path is denied by MCP policy: ${relativePath}` };
   }

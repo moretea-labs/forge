@@ -6,17 +6,18 @@ import { basename, extname, join } from 'path';
 import {
   validateContextClosureReceipt,
   type ContextClosureReceipt,
-  ContextClosureSemanticToolResolution,
-  ContextClosureSkillResolution,
-  ProjectEngineeringContract,
-} from '../../../packages/kernel/work/api/index';
+  type ContextClosureSemanticToolResolution,
+  type ContextClosureSkillResolution,
+  type ProjectEngineeringContract,
+} from '../../../packages/kernel/engineering/api/index';
 import { loadProjectEngineeringContract } from './project-engineering-contract';
 
 const MAX_CLOSURE_PATHS = 48;
 const MAX_RECENT_CHANGES = 6;
 const MAX_ISSUED_CONTEXT_CLOSURES = 256;
 const issuedContextClosures = new Map<string, { sourceRevision: string; fullDigest: string }>();
-const MATERIAL_SEMANTIC_INTENT = /\b(architecture|ownership|authority|authorization|permission|trust|identity|scope|protocol|cross[- ]?file|refactor|interface|contract|persistence|schema|migration|backup|restore|corruption|concurrency|resource|lease|fenc(?:e|ing)|lifecycle|retention|gc|replay|idempoten(?:cy|t)|receipt|evidence|audit|recovery|failure[- ]?domain|topology|instance|capacity|backpressure|fairness|starvation|security|privacy|secret|portability|release|rollback|writer|transaction|performance)\b/i;
+const MATERIAL_SEMANTIC_INTENT =
+  /\b(architecture|ownership|authority|authorization|permission|trust|identity|scope|protocol|cross[- ]?file|refactor|interface|contract|persistence|schema|migration|backup|restore|corruption|concurrency|resource|lease|fenc(?:e|ing)|lifecycle|retention|gc|replay|idempoten(?:cy|t)|receipt|evidence|audit|recovery|failure[- ]?domain|topology|instance|capacity|backpressure|fairness|starvation|security|privacy|secret|portability|release|rollback|writer|transaction|performance)\b/i;
 
 type ContextPackLike = {
   schemaVersion: number;
@@ -24,7 +25,12 @@ type ContextPackLike = {
   git: { branch: string | null; dirty: boolean };
   instructionContext: { status: 'none' | 'ready' | 'degraded'; contracts: Array<{ path: string }> };
   structuralContext: { status: 'disabled' | 'ready' | 'stale' | 'unavailable' | 'degraded' };
-  readiness: { sourceRevision: string | null; rawSource: { status: 'current' | 'partial' | 'unavailable' }; status: 'ready' | 'degraded' | 'insufficient'; unresolvedReasonCodes: string[] };
+  readiness: {
+    sourceRevision: string | null;
+    rawSource: { status: 'current' | 'partial' | 'unavailable' };
+    status: 'ready' | 'degraded' | 'insufficient';
+    unresolvedReasonCodes: string[];
+  };
   files: Array<{ path: string }>;
   coverage: { relevantTests: string[]; inspectedFiles: string[] };
 };
@@ -35,18 +41,23 @@ function canonicalReceiptValue(value: unknown): unknown {
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
       .filter(([, entry]) => entry !== undefined)
-      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([key, entry]) => [key, canonicalReceiptValue(entry)]),
   );
 }
 
 function fullReceiptDigest(receipt: ContextClosureReceipt): string {
-  return createHash('sha256').update(JSON.stringify(canonicalReceiptValue(receipt))).digest('hex');
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalReceiptValue(receipt)))
+    .digest('hex');
 }
 
 function recordIssuedContextClosure(receipt: ContextClosureReceipt): ContextClosureReceipt {
   issuedContextClosures.delete(receipt.receiptId);
-  issuedContextClosures.set(receipt.receiptId, { sourceRevision: receipt.sourceRevision, fullDigest: fullReceiptDigest(receipt) });
+  issuedContextClosures.set(receipt.receiptId, {
+    sourceRevision: receipt.sourceRevision,
+    fullDigest: fullReceiptDigest(receipt),
+  });
   while (issuedContextClosures.size > MAX_ISSUED_CONTEXT_CLOSURES) {
     const oldest = issuedContextClosures.keys().next().value as string | undefined;
     if (!oldest) break;
@@ -101,7 +112,8 @@ function detectedLanguages(repoRoot: string, paths: string[]): string[] {
     else if (['.py', '.pyi'].includes(ext)) values.add('python');
     else if (['.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.hxx'].includes(ext)) values.add('cpp');
   }
-  if (existsSync(join(repoRoot, 'tsconfig.json')) || existsSync(join(repoRoot, 'package.json'))) values.add('typescript');
+  if (existsSync(join(repoRoot, 'tsconfig.json')) || existsSync(join(repoRoot, 'package.json')))
+    values.add('typescript');
   if (existsSync(join(repoRoot, 'Package.swift'))) values.add('swift');
   return [...values].sort();
 }
@@ -109,7 +121,11 @@ function detectedLanguages(repoRoot: string, paths: string[]): string[] {
 function detectedPlatforms(repoRoot: string, contract: ProjectEngineeringContract | undefined): string[] {
   const values = new Set<string>(contract?.platforms ?? []);
   let entries: string[] = [];
-  try { entries = readdirSync(repoRoot).slice(0, 512); } catch { /* bounded best effort */ }
+  try {
+    entries = readdirSync(repoRoot).slice(0, 512);
+  } catch {
+    /* bounded best effort */
+  }
   if (entries.some((entry) => entry.endsWith('.xcodeproj') || entry.endsWith('.xcworkspace'))) values.add('ios');
   if (existsSync(join(repoRoot, 'package.json'))) values.add('node');
   return [...values].sort();
@@ -151,7 +167,11 @@ function discoverInstalledSkills(repoRoot: string, skillHomeDir: string): Map<st
   for (const directory of directories) {
     if (!existsSync(directory.path)) continue;
     let names: string[];
-    try { names = readdirSync(directory.path).sort().slice(0, 128); } catch { continue; }
+    try {
+      names = readdirSync(directory.path).sort().slice(0, 128);
+    } catch {
+      continue;
+    }
     for (const name of names) {
       if (installed.has(name.toLowerCase()) || !existsSync(join(directory.path, name, 'SKILL.md'))) continue;
       installed.set(name.toLowerCase(), { id: name, source: directory.source });
@@ -180,13 +200,24 @@ function resolveSkills(
   requiredKinds: string[],
   installed: Map<string, InstalledSkill>,
 ) {
-  if (requiredKinds.length === 0) return { status: 'not_required' as const, requiredKinds, resolved: [] as ContextClosureSkillResolution[], unresolvedKinds: [] as string[] };
+  if (requiredKinds.length === 0)
+    return {
+      status: 'not_required' as const,
+      requiredKinds,
+      resolved: [] as ContextClosureSkillResolution[],
+      unresolvedKinds: [] as string[],
+    };
   const resolvedByKey = new Map<string, ContextClosureSkillResolution>();
   const covered = new Set<string>();
-  const record = (id: string, version: string | undefined, kinds: string[], source: ContextClosureSkillResolution['source']) => {
+  const record = (
+    id: string,
+    version: string | undefined,
+    kinds: string[],
+    source: ContextClosureSkillResolution['source'],
+  ) => {
     const matchedKinds = requiredKinds.filter((kind) => kinds.includes(kind));
     if (!matchedKinds.length) return;
-    matchedKinds.forEach((kind) => covered.add(kind));
+    for (const kind of matchedKinds) covered.add(kind);
     const key = id.toLowerCase();
     const existing = resolvedByKey.get(key);
     resolvedByKey.set(key, {
@@ -201,7 +232,13 @@ function resolveSkills(
   // SKILL.md can satisfy availability. No phantom "ready" from names alone.
   for (const binding of contract?.skillBindings ?? []) {
     const found = installed.get(binding.id.toLowerCase());
-    if (found) record(found.id, binding.version, binding.kinds.map((kind) => kind.toLowerCase()), 'project_contract');
+    if (found)
+      record(
+        found.id,
+        binding.version,
+        binding.kinds.map((kind) => kind.toLowerCase()),
+        'project_contract',
+      );
   }
   for (const ref of (contract?.skillRefs ?? []).map(parseSkillRef)) {
     const found = installed.get(ref.id.toLowerCase());
@@ -215,7 +252,12 @@ function resolveSkills(
 
   const resolved = [...resolvedByKey.values()].slice(0, 32);
   const unresolvedKinds = requiredKinds.filter((kind) => !covered.has(kind));
-  const status = unresolvedKinds.length === 0 ? 'ready' as const : resolved.length > 0 ? 'degraded' as const : 'unavailable' as const;
+  const status =
+    unresolvedKinds.length === 0
+      ? ('ready' as const)
+      : resolved.length > 0
+        ? ('degraded' as const)
+        : ('unavailable' as const);
   return { status, requiredKinds, resolved, unresolvedKinds };
 }
 
@@ -224,28 +266,44 @@ function semanticResultProviderIds(results: unknown[]): string[] {
   for (const value of results) {
     if (!value || typeof value !== 'object') continue;
     const record = value as Record<string, unknown>;
-    const nested = record.result && typeof record.result === 'object' ? record.result as Record<string, unknown> : undefined;
-    const id = typeof record.provider === 'string'
-      ? record.provider
-      : typeof record.providerId === 'string'
-        ? record.providerId
-        : typeof nested?.provider === 'string'
-          ? nested.provider
-          : typeof nested?.providerId === 'string'
-            ? nested.providerId
-            : undefined;
+    const nested =
+      record.result && typeof record.result === 'object' ? (record.result as Record<string, unknown>) : undefined;
+    const id =
+      typeof record.provider === 'string'
+        ? record.provider
+        : typeof record.providerId === 'string'
+          ? record.providerId
+          : typeof nested?.provider === 'string'
+            ? nested.provider
+            : typeof nested?.providerId === 'string'
+              ? nested.providerId
+              : undefined;
     if (id) ids.push(id);
   }
   return unique(ids);
 }
 
-function resolveSemanticTools(input: BuildContextClosureInput, languages: string[], contract: ProjectEngineeringContract | undefined) {
+function resolveSemanticTools(
+  input: BuildContextClosureInput,
+  languages: string[],
+  contract: ProjectEngineeringContract | undefined,
+) {
   const toolingSignals = (contract?.tooling ?? []).map((item) => `${item.id} ${item.purpose ?? ''}`).join(' ');
-  const required = MATERIAL_SEMANTIC_INTENT.test(input.query) || /\b(lsp|language[- ]?service|sourcekit|semantic)\b/i.test(toolingSignals);
+  const required =
+    MATERIAL_SEMANTIC_INTENT.test(input.query) ||
+    /\b(lsp|language[- ]?service|sourcekit|semantic)\b/i.test(toolingSignals);
   if (!required) {
-    return { required, status: 'not_required' as const, providers: [] as ContextClosureSemanticToolResolution[], reasonCodes: [] as string[], compilerEvidenceRequired: false };
+    return {
+      required,
+      status: 'not_required' as const,
+      providers: [] as ContextClosureSemanticToolResolution[],
+      reasonCodes: [] as string[],
+      compilerEvidenceRequired: false,
+    };
   }
-  const applicable = input.semanticProviders.filter((provider) => provider.languages.some((language) => languages.includes(language)));
+  const applicable = input.semanticProviders.filter((provider) =>
+    provider.languages.some((language) => languages.includes(language)),
+  );
   const resultProviderIds = new Set(semanticResultProviderIds(input.semanticNavigation.results));
   const providers: ContextClosureSemanticToolResolution[] = applicable.map((provider) => ({
     providerId: provider.id,
@@ -253,24 +311,33 @@ function resolveSemanticTools(input: BuildContextClosureInput, languages: string
     status: resultProviderIds.has(provider.id)
       ? 'ready'
       : input.semanticNavigation.requested > 0
-        ? input.semanticNavigation.errors.length > 0 ? 'degraded' : 'registered'
+        ? input.semanticNavigation.errors.length > 0
+          ? 'degraded'
+          : 'registered'
         : 'registered',
     evidenceCount: resultProviderIds.has(provider.id) ? 1 : 0,
   }));
-  const readyLanguages = new Set(providers.filter((provider) => provider.status === 'ready').flatMap((provider) => provider.languages));
-  const unresolvedLanguages = languages.filter((language) => applicable.some((provider) => provider.languages.includes(language)) && !readyLanguages.has(language));
+  const readyLanguages = new Set(
+    providers.filter((provider) => provider.status === 'ready').flatMap((provider) => provider.languages),
+  );
+  const unresolvedLanguages = languages.filter(
+    (language) => applicable.some((provider) => provider.languages.includes(language)) && !readyLanguages.has(language),
+  );
   const reasonCodes = unique([
     ...(applicable.length === 0 ? ['semantic.provider_unavailable'] : []),
     ...(input.semanticNavigation.requested === 0 ? ['semantic.navigation_not_requested'] : []),
-    ...input.semanticNavigation.errors.map((error) => `semantic.${String(error.code ?? 'provider_error').toLowerCase()}`),
+    ...input.semanticNavigation.errors.map(
+      (error) => `semantic.${String(error.code ?? 'provider_error').toLowerCase()}`,
+    ),
     ...(unresolvedLanguages.length > 0 ? unresolvedLanguages.map((language) => `semantic.${language}_unproven`) : []),
     ...(input.semanticNavigation.freshness === 'changed_during_query' ? ['semantic.source_changed_during_query'] : []),
   ]);
-  const status = applicable.length === 0
-    ? 'unavailable' as const
-    : reasonCodes.length === 0 && unresolvedLanguages.length === 0
-      ? 'ready' as const
-      : 'degraded' as const;
+  const status =
+    applicable.length === 0
+      ? ('unavailable' as const)
+      : reasonCodes.length === 0 && unresolvedLanguages.length === 0
+        ? ('ready' as const)
+        : ('degraded' as const);
   return { required, status, providers, reasonCodes, compilerEvidenceRequired: status !== 'ready' };
 }
 
@@ -280,10 +347,15 @@ function recentChanges(repoRoot: string, paths: string[]): ContextClosureReceipt
   if (selected.length > 0) args.push('--', ...selected);
   const result = spawnSync('git', args, { encoding: 'utf8', timeout: 2_000, maxBuffer: 64 * 1024 });
   if (result.status !== 0 || !result.stdout) return [];
-  return result.stdout.split(/\r?\n/).filter(Boolean).slice(0, MAX_RECENT_CHANGES).map((line) => {
-    const [revision = '', committedAt = '', ...summary] = line.split('	');
-    return { revision, committedAt, summary: summary.join('	').slice(0, 500) };
-  }).filter((entry) => entry.revision.length > 0);
+  return result.stdout
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .slice(0, MAX_RECENT_CHANGES)
+    .map((line) => {
+      const [revision = '', committedAt = '', ...summary] = line.split('	');
+      return { revision, committedAt, summary: summary.join('	').slice(0, 500) };
+    })
+    .filter((entry) => entry.revision.length > 0);
 }
 
 export function buildContextClosureReceipt(input: BuildContextClosureInput): ContextClosureReceipt {
@@ -291,25 +363,41 @@ export function buildContextClosureReceipt(input: BuildContextClosureInput): Con
   if (!sourceRevision) throw new Error('CONTEXT_CLOSURE_SOURCE_REVISION_REQUIRED');
   const project = loadProjectEngineeringContract({ repoRoot: input.repoRoot, sourceRevision });
   const contract = project.status === 'ready' ? project.contract : undefined;
-  const currentPaths = unique([...input.pack.coverage.inspectedFiles, ...input.pack.files.map((file) => file.path)], MAX_CLOSURE_PATHS);
-  const testPaths = unique(input.pack.coverage.relevantTests.length > 0
-    ? input.pack.coverage.relevantTests
-    : currentPaths.filter((path) => /(^|\/)(tests?|__tests__)(\/|$)|\.(test|spec)\./i.test(path)), 24);
+  const currentPaths = unique(
+    [...input.pack.coverage.inspectedFiles, ...input.pack.files.map((file) => file.path)],
+    MAX_CLOSURE_PATHS,
+  );
+  const testPaths = unique(
+    input.pack.coverage.relevantTests.length > 0
+      ? input.pack.coverage.relevantTests
+      : currentPaths.filter((path) => /(^|\/)(tests?|__tests__)(\/|$)|\.(test|spec)\./i.test(path)),
+    24,
+  );
   const languages = detectedLanguages(input.repoRoot, currentPaths);
   const platforms = detectedPlatforms(input.repoRoot, contract);
-  const skills = resolveSkills(contract, requiredSkillKinds(languages, platforms), discoverInstalledSkills(input.repoRoot, input.skillHomeDir ?? homedir()));
+  const skills = resolveSkills(
+    contract,
+    requiredSkillKinds(languages, platforms),
+    discoverInstalledSkills(input.repoRoot, input.skillHomeDir ?? homedir()),
+  );
   const semanticTools = resolveSemanticTools(input, languages, contract);
-  const reasonCodes = unique([
-    ...input.pack.readiness.unresolvedReasonCodes,
-    ...(project.status === 'missing' ? ['project_contract.missing'] : []),
-    ...(skills.status === 'degraded' || skills.status === 'unavailable' ? skills.unresolvedKinds.map((kind) => `skill.${kind}_unresolved`) : []),
-    ...semanticTools.reasonCodes,
-  ], 80);
-  const status = input.pack.readiness.rawSource.status === 'unavailable' || input.pack.readiness.status === 'insufficient'
-    ? 'insufficient' as const
-    : reasonCodes.length > 0 || input.pack.readiness.status === 'degraded'
-      ? 'degraded' as const
-      : 'ready' as const;
+  const reasonCodes = unique(
+    [
+      ...input.pack.readiness.unresolvedReasonCodes,
+      ...(project.status === 'missing' ? ['project_contract.missing'] : []),
+      ...(skills.status === 'degraded' || skills.status === 'unavailable'
+        ? skills.unresolvedKinds.map((kind) => `skill.${kind}_unresolved`)
+        : []),
+      ...semanticTools.reasonCodes,
+    ],
+    80,
+  );
+  const status =
+    input.pack.readiness.rawSource.status === 'unavailable' || input.pack.readiness.status === 'insufficient'
+      ? ('insufficient' as const)
+      : reasonCodes.length > 0 || input.pack.readiness.status === 'degraded'
+        ? ('degraded' as const)
+        : ('ready' as const);
   const core = {
     sourceRevision,
     projectContractDigest: project.status === 'ready' ? project.receipt.contentDigest : null,
@@ -336,7 +424,10 @@ export function buildContextClosureReceipt(input: BuildContextClosureInput): Con
     projectContractStatus: project.status,
     guidance: {
       status: input.pack.instructionContext.status,
-      paths: unique(input.pack.instructionContext.contracts.map((contractEntry) => contractEntry.path), 24),
+      paths: unique(
+        input.pack.instructionContext.contracts.map((contractEntry) => contractEntry.path),
+        24,
+      ),
     },
     detected: { languages, platforms },
     skills,

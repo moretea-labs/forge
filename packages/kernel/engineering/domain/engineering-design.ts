@@ -1,10 +1,24 @@
 import { createHash } from 'crypto';
 
-export const ENGINEERING_MUTATION_CLASSES = ['readonly', 'isolated_write', 'integration_write', 'external_effect'] as const;
+export const ENGINEERING_MUTATION_CLASSES = [
+  'readonly',
+  'isolated_write',
+  'integration_write',
+  'external_effect',
+] as const;
 export type EngineeringMutationClass = (typeof ENGINEERING_MUTATION_CLASSES)[number];
 export const ENGINEERING_DECISION_AREAS_V1 = [
-  'ownership', 'singleWriter', 'transaction', 'lifecycle', 'concurrency', 'persistence',
-  'failure', 'projectionCache', 'time', 'performance', 'compatibility',
+  'ownership',
+  'singleWriter',
+  'transaction',
+  'lifecycle',
+  'concurrency',
+  'persistence',
+  'failure',
+  'projectionCache',
+  'time',
+  'performance',
+  'compatibility',
 ] as const;
 
 /**
@@ -64,7 +78,10 @@ function receiptId(prefix: string, payload: unknown): string {
   return `${prefix}_${createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 32)}`;
 }
 
-export function engineeringRequirementContextDigest(input: { objective: string; acceptanceCriteria: string[] }): string {
+export function engineeringRequirementContextDigest(input: {
+  objective: string;
+  acceptanceCriteria: string[];
+}): string {
   const objective = text(input.objective, 'ENGINEERING_REQUIREMENT_OBJECTIVE_REQUIRED');
   const acceptanceCriteria = list(input.acceptanceCriteria, 'ENGINEERING_REQUIREMENT_ACCEPTANCE_REQUIRED', false);
   return createHash('sha256').update(JSON.stringify({ objective, acceptanceCriteria })).digest('hex');
@@ -126,7 +143,10 @@ function normalizeComplexityBudget(value: EngineeringComplexityBudget): Engineer
     projectionPaths: count(value.projectionPaths, 'ENGINEERING_COMPLEXITY_PROJECTION_INVALID'),
     globalInvalidations: count(value.globalInvalidations, 'ENGINEERING_COMPLEXITY_INVALIDATIONS_INVALID'),
     lifecycleHooks: count(value.lifecycleHooks, 'ENGINEERING_COMPLEXITY_LIFECYCLE_INVALID'),
-    synchronousCriticalPathWork: count(value.synchronousCriticalPathWork, 'ENGINEERING_COMPLEXITY_CRITICAL_PATH_INVALID'),
+    synchronousCriticalPathWork: count(
+      value.synchronousCriticalPathWork,
+      'ENGINEERING_COMPLEXITY_CRITICAL_PATH_INVALID',
+    ),
     notes: list(value.notes ?? [], 'ENGINEERING_COMPLEXITY_NOTES_INVALID', false),
   };
 }
@@ -144,7 +164,8 @@ export interface DesignDecisionContractReceipt {
   supersedesReceiptId?: string;
   recordedAt: string;
 }
-export interface DesignDecisionContractDraft extends Omit<DesignDecisionContractReceipt, 'schemaVersion' | 'receiptId'> {
+export interface DesignDecisionContractDraft
+  extends Omit<DesignDecisionContractReceipt, 'schemaVersion' | 'receiptId'> {
   decisions: Record<EngineeringDecisionArea, string>;
 }
 type NormalizedDesignDecision = Omit<DesignDecisionContractDraft, 'decisions'> & { decisions: Record<string, string> };
@@ -152,9 +173,14 @@ function normalizeDesignDecision(
   input: DesignDecisionContractDraft | DesignDecisionContractReceipt,
   areas: readonly EngineeringDecisionArea[] = ENGINEERING_DECISION_AREAS,
 ): NormalizedDesignDecision {
-  if (!ENGINEERING_MUTATION_CLASSES.includes(input.mutationClass)) throw new Error('ENGINEERING_MUTATION_CLASS_INVALID');
+  if (!ENGINEERING_MUTATION_CLASSES.includes(input.mutationClass))
+    throw new Error('ENGINEERING_MUTATION_CLASS_INVALID');
   const decisions: Record<string, string> = {};
-  for (const area of areas) decisions[area] = text((input.decisions as Record<string, unknown> | undefined)?.[area], `DESIGN_DECISION_${area.toUpperCase()}_REQUIRED`);
+  for (const area of areas)
+    decisions[area] = text(
+      (input.decisions as Record<string, unknown> | undefined)?.[area],
+      `DESIGN_DECISION_${area.toUpperCase()}_REQUIRED`,
+    );
   const supersedesReceiptId = input.supersedesReceiptId?.trim() || undefined;
   return {
     sourceRevision: text(input.sourceRevision, 'DESIGN_DECISION_SOURCE_REQUIRED'),
@@ -174,7 +200,9 @@ export function buildDesignDecisionContractReceipt(input: DesignDecisionContract
   if (normalized.supersedesReceiptId === id) throw new Error('DESIGN_DECISION_CANNOT_SUPERSEDE_SELF');
   return { schemaVersion: 2, receiptId: id, ...normalized } as DesignDecisionContractReceipt;
 }
-export function validateDesignDecisionContractReceipt(value: DesignDecisionContractReceipt): DesignDecisionContractReceipt {
+export function validateDesignDecisionContractReceipt(
+  value: DesignDecisionContractReceipt,
+): DesignDecisionContractReceipt {
   if (value.schemaVersion === 1) {
     const normalized = normalizeDesignDecision(value, ENGINEERING_DECISION_AREAS_V1);
     const expectedId = receiptId('design_decision', normalized);
@@ -187,7 +215,10 @@ export function validateDesignDecisionContractReceipt(value: DesignDecisionContr
   return expected;
 }
 
-export interface IndependentCritiqueFinding { severity: 'critical' | 'high' | 'medium' | 'low' | 'info'; summary: string; }
+export interface IndependentCritiqueFinding {
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  summary: string;
+}
 export interface IndependentCritiqueReceipt {
   schemaVersion: 1;
   receiptId: string;
@@ -202,12 +233,18 @@ export interface IndependentCritiqueReceipt {
   findings: IndependentCritiqueFinding[];
   recordedAt: string;
 }
-export interface IndependentCritiqueDraft extends Omit<IndependentCritiqueReceipt, 'schemaVersion' | 'receiptId' | 'framing'> {}
-function normalizeCritique(input: IndependentCritiqueDraft): Omit<IndependentCritiqueReceipt, 'schemaVersion' | 'receiptId'> {
-  if (!['approved', 'changes_required', 'blocked'].includes(input.decision)) throw new Error('ENGINEERING_CRITIQUE_DECISION_INVALID');
-  if (!Array.isArray(input.findings) || input.findings.length > MAX_ITEMS) throw new Error('ENGINEERING_CRITIQUE_FINDINGS_INVALID');
+export interface IndependentCritiqueDraft
+  extends Omit<IndependentCritiqueReceipt, 'schemaVersion' | 'receiptId' | 'framing'> {}
+function normalizeCritique(
+  input: IndependentCritiqueDraft,
+): Omit<IndependentCritiqueReceipt, 'schemaVersion' | 'receiptId'> {
+  if (!['approved', 'changes_required', 'blocked'].includes(input.decision))
+    throw new Error('ENGINEERING_CRITIQUE_DECISION_INVALID');
+  if (!Array.isArray(input.findings) || input.findings.length > MAX_ITEMS)
+    throw new Error('ENGINEERING_CRITIQUE_FINDINGS_INVALID');
   const findings = input.findings.map((finding) => {
-    if (!['critical', 'high', 'medium', 'low', 'info'].includes(finding.severity)) throw new Error('ENGINEERING_CRITIQUE_SEVERITY_INVALID');
+    if (!['critical', 'high', 'medium', 'low', 'info'].includes(finding.severity))
+      throw new Error('ENGINEERING_CRITIQUE_SEVERITY_INVALID');
     return { severity: finding.severity, summary: text(finding.summary, 'ENGINEERING_CRITIQUE_SUMMARY_REQUIRED') };
   });
   if (input.decision !== 'approved' && findings.length === 0) throw new Error('ENGINEERING_CRITIQUE_FINDINGS_REQUIRED');
@@ -256,20 +293,23 @@ export function buildEngineeringBlockerDispositionReceipt(input: {
   rationale: string;
   recordedAt: string;
 }): EngineeringBlockerDispositionReceipt {
-  if (!['same_root_cause', 'same_root_cause_scope_extension', 'unrelated'].includes(input.classification)) throw new Error('ENGINEERING_BLOCKER_CLASSIFICATION_INVALID');
+  if (!['same_root_cause', 'same_root_cause_scope_extension', 'unrelated'].includes(input.classification))
+    throw new Error('ENGINEERING_BLOCKER_CLASSIFICATION_INVALID');
   const linkedWorkId = input.linkedWorkId?.trim() || undefined;
   const sameRootCause = input.classification !== 'unrelated';
-  if (input.classification === 'unrelated' && !linkedWorkId) throw new Error('ENGINEERING_BLOCKER_LINKED_WORK_REQUIRED');
+  if (input.classification === 'unrelated' && !linkedWorkId)
+    throw new Error('ENGINEERING_BLOCKER_LINKED_WORK_REQUIRED');
   if (sameRootCause && linkedWorkId) throw new Error('ENGINEERING_BLOCKER_LINKED_WORK_FORBIDDEN');
   const core = {
     sourceRevision: text(input.sourceRevision, 'ENGINEERING_BLOCKER_SOURCE_REQUIRED'),
     blockerId: text(input.blockerId, 'ENGINEERING_BLOCKER_ID_REQUIRED'),
     classification: input.classification,
-    action: input.classification === 'same_root_cause'
-      ? 'return_to_design' as const
-      : input.classification === 'same_root_cause_scope_extension'
-        ? 'extend_candidate' as const
-        : 'linked_work' as const,
+    action:
+      input.classification === 'same_root_cause'
+        ? ('return_to_design' as const)
+        : input.classification === 'same_root_cause_scope_extension'
+          ? ('extend_candidate' as const)
+          : ('linked_work' as const),
     semanticScopeKeys: list(input.semanticScopeKeys ?? [], 'ENGINEERING_BLOCKER_SCOPE_INVALID', false),
     ...(linkedWorkId ? { linkedWorkId: text(linkedWorkId, 'ENGINEERING_BLOCKER_LINKED_WORK_INVALID') } : {}),
     rationale: text(input.rationale, 'ENGINEERING_BLOCKER_RATIONALE_REQUIRED'),
@@ -278,9 +318,12 @@ export function buildEngineeringBlockerDispositionReceipt(input: {
   return { schemaVersion: 1, receiptId: receiptId('engineering_blocker', core), ...core };
 }
 
-export function validateEngineeringBlockerDispositionReceipt(value: EngineeringBlockerDispositionReceipt): EngineeringBlockerDispositionReceipt {
+export function validateEngineeringBlockerDispositionReceipt(
+  value: EngineeringBlockerDispositionReceipt,
+): EngineeringBlockerDispositionReceipt {
   if (value.schemaVersion !== 1) throw new Error('ENGINEERING_BLOCKER_SCHEMA_INVALID');
   const expected = buildEngineeringBlockerDispositionReceipt(value);
-  if (value.receiptId !== expected.receiptId || value.action !== expected.action) throw new Error('ENGINEERING_BLOCKER_RECEIPT_ID_INVALID');
+  if (value.receiptId !== expected.receiptId || value.action !== expected.action)
+    throw new Error('ENGINEERING_BLOCKER_RECEIPT_ID_INVALID');
   return expected;
 }

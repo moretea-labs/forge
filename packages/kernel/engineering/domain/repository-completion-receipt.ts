@@ -55,7 +55,13 @@ export interface RepositoryCompletionReceipt {
   delivery: {
     kind: CompletionReceiptDeliveryKind;
     status: CompletionReceiptDeliveryStatus;
-    strategy: 'edit_session_commit' | 'work_fast_forward' | 'work_merge_commit' | 'already_integrated' | 'no_change' | 'remote';
+    strategy:
+      | 'edit_session_commit'
+      | 'work_fast_forward'
+      | 'work_merge_commit'
+      | 'already_integrated'
+      | 'no_change'
+      | 'remote';
     reachable: boolean;
     recordedAt: string;
   };

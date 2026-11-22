@@ -1,6 +1,6 @@
 // Test-only legacy Work schema, never imported by production.
-import type { ProcessCheckReceiptEvidence } from '../../packages/kernel/work/domain/check-receipt';
-import type { RepositoryCompletionReceipt } from '../../packages/kernel/work/domain/repository-completion-receipt';
+import type { ProcessCheckReceiptEvidence } from '../../packages/kernel/engineering/domain/check-receipt';
+import type { RepositoryCompletionReceipt } from '../../packages/kernel/engineering/domain/repository-completion-receipt';
 
 export type FacadeDetailLevel = 'summary' | 'detail' | 'raw';
 export interface EvidenceRef {
