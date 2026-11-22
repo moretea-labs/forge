@@ -1250,7 +1250,10 @@ forbid(
   /initializeWorkCandidateIndex|readActiveWorkCandidates/,
   'Runtime startup must not initialize legacy Work active-admission indexes',
 );
-requireText('AGENTS.md', '**Work lifecycle is retired (no opt-in).**');
+requireText(
+  'AGENTS.md',
+  '**Work / WorkHandle / WorkContract requires complete physical removal, including historical records.**',
+);
 forbid(
   'AGENTS.md',
   /Work is explicit opt-in|Work may provide bounded verification and Work-scoped identity/,
