@@ -62,10 +62,10 @@ return createFullWork(args);
 
 ❌ **避免**：
 ```typescript
-// 总是创建完整状态，即使不需要
-const work = await createWork(args);
-const handle = await createWorkHandle(work);
-const contract = await createWorkContract(work);
+// 总是创建完整状态，即使不需要（且 Work / WorkHandle / WorkContract 已全面退役）
+const session = await createFullExecutionSession(args);
+const handle = await createParallelHandle(session);
+const contract = await createParallelContract(session);
 // ... 然后可能根本不用这些状态
 ```
 
@@ -424,10 +424,10 @@ bun run format:check
 
 示例：
 ```typescript
-// DEBT: [过度抽象] WorkHandle 和 WorkContract 职责重叠
-// WHY: 历史演进导致，最初分开是为了隔离关注点
-// PLAN: Phase 3 合并为统一的 Work 实体
-// IMPACT: 高 - 影响所有 Work 相关代码
+// DEBT: [职责重叠] 两个模块对同一资源写入竞争状态
+// WHY: 历史演进导致双写，缺少单一 Authority
+// PLAN: 删除旁路写入，收敛到现有 Canonical owner
+// IMPACT: 高 - 影响并发正确性与审计
 ```
 
 ### 技术债务优先级

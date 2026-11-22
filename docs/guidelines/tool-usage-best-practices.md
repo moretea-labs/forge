@@ -64,7 +64,7 @@ rh_context.search({
 **示例**：
 ```typescript
 codegraph_explore({
-  query: "prepareWork WorkHandle WorkContract",
+  query: "beginEditSession ResourceLease Process Runtime",
   maxFiles: 10
 })
 ```
