@@ -232,7 +232,8 @@
     },
     "tests/cli/controller-isolation-guard.test.ts": {
       "module": "controller",
-      "resource": "controller-home-isolated"
+      "resource": "controller-home-isolated",
+      "committedSnapshot": true
     },
     "tests/cli/controller-lifecycle-authority.test.ts": {
       "module": "controller",

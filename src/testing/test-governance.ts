@@ -59,6 +59,8 @@ export interface TestManifestEntry {
   module: TestModule;
   resource: TestResource;
   smoke?: boolean;
+  /** Explicit authorization to exercise this test on a pinned source snapshot. */
+  committedSnapshot?: boolean;
 }
 
 export interface TestManifest {
@@ -283,6 +285,11 @@ export function validateTestManifest(repoRoot: string, manifest = loadTestManife
   for (const [file, entry] of Object.entries(manifest.tests)) {
     if (!TEST_MODULES.includes(entry.module)) errors.push(`${file}: invalid module ${String(entry.module)}`);
     if (!TEST_RESOURCES.includes(entry.resource)) errors.push(`${file}: invalid resource ${String(entry.resource)}`);
+    if (
+      entry.committedSnapshot !== undefined &&
+      (entry.committedSnapshot !== true || entry.resource !== 'controller-home-isolated')
+    )
+      errors.push(`${file}: committedSnapshot requires a controller-home-isolated opt-in`);
   }
   if (!Object.values(manifest.tests).some((entry) => entry.smoke)) errors.push('manifest has no core smoke tests');
   return errors;
@@ -542,11 +549,12 @@ export async function runTestSelection(
 ): Promise<number> {
   const useCache = options.useCache ?? true;
   const storage = ensureRepositoryCheckStorage(repoRoot, options.storageAuthority);
+  const eligibleForSnapshot = (entry: TestManifestEntry): boolean =>
+    entry.resource === 'pure' ||
+    entry.resource === 'temp-isolated' ||
+    (entry.resource === 'controller-home-isolated' && entry.committedSnapshot === true);
   const fullyIsolated = Boolean(
-    options.isolatedCandidateRoot &&
-      selection.files.every(
-        (file) => manifest.tests[file]?.resource === 'pure' || manifest.tests[file]?.resource === 'temp-isolated',
-      ),
+    options.isolatedCandidateRoot && selection.files.every((file) => eligibleForSnapshot(manifest.tests[file]!)),
   );
   // A fixed Git tree identifies committed test sources without rehashing
   // unrelated Writer dirty. Shared/mixed suites retain the workspace digest.
@@ -607,7 +615,7 @@ export async function runTestSelection(
     // Only independent resource classes run against an immutable candidate
     // copy. Shared/host-dependent tests retain the registered checkout until
     // their external dependencies can be isolated without changing semantics.
-    const isolated = options.isolatedCandidateRoot && (entry.resource === 'pure' || entry.resource === 'temp-isolated');
+    const isolated = options.isolatedCandidateRoot && eligibleForSnapshot(entry);
     const testRoot = isolated ? options.isolatedCandidateRoot! : repoRoot;
     // The isolated Git fixture has its own commit identity. Outer publication
     // baseline variables refer to the canonical repo, not this test fixture.

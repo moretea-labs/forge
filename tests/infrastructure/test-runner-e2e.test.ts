@@ -208,7 +208,11 @@ describe('test runner infrastructure', () => {
       const manifest = {
         ...original,
         tests: {
-          'tests/reads.test.ts': { module: 'runner' as const, resource: 'pure' as const },
+          'tests/reads.test.ts': {
+            module: 'runner' as const,
+            resource: 'controller-home-isolated' as const,
+            committedSnapshot: true as const,
+          },
           'tests/mutates.test.ts': { module: 'runner' as const, resource: 'pure' as const },
         },
       };
@@ -242,6 +246,17 @@ describe('test runner infrastructure', () => {
       expect(await runTestSelection(repo, manifest, selection('tests/reads.test.ts'), options)).toBe(0);
       expect(outcome?.contentDigest).toBe(pinnedContentDigest);
       expect(outcome?.runnerDigest).toBe(pinnedRunnerDigest);
+      // Opt-in matters: without it, the same controller-home test reads the
+      // shared working tree and rejects the other Writer's changed input.
+      const noOptInManifest = {
+        ...manifest,
+        tests: {
+          ...manifest.tests,
+          'tests/reads.test.ts': { module: 'runner' as const, resource: 'controller-home-isolated' as const },
+        },
+      };
+      expect(await runTestSelection(repo, noOptInManifest, selection('tests/reads.test.ts'), options)).toBe(1);
+      expect(outcome?.failureEvidence).toMatchObject({ status: 'failed', contaminated: false });
       writeFileSync(join(repo, 'src/value.ts'), 'export const value = 2;\n');
       writeFileSync(join(repo, 'src/untracked.ts'), 'untracked\n');
 
