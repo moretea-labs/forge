@@ -98,6 +98,48 @@ test('adopts a non-overlapping successor HEAD in the same durable edit session a
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
 });
 
+test('empty open session survives another Writer HEAD commit and resumes exact-source patch (#713)', () => {
+  const fx = fixture();
+  const binding = durableBinding({ principalId: 'writer-resuming-empty-open-session' });
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Open Writer B survives unrelated Writer A commit',
+    allowedPaths: ['source.ts'],
+    binding,
+  });
+  expect(session.status).toBe('open');
+  expect(session.currentRevision).toBe(0);
+
+  writeFileSync(join(fx.repoRoot, 'other-writer.txt'), 'writer A\n');
+  spawnSync('git', ['add', '--', 'other-writer.txt'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'independent Writer A commit'], { cwd: fx.repoRoot });
+  const successor = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).stdout.trim();
+  writeFileSync(join(fx.repoRoot, 'untracked-writer.txt'), 'another Writer remains dirty\n');
+
+  const resumed = applySafePatch(fx.repository, {
+    controllerHome: fx.controllerHome,
+    sessionId: session.sessionId,
+    expectedRevision: session.currentRevision,
+    binding,
+    operations: [{
+      type: 'replace',
+      path: 'source.ts',
+      expected_sha256: sha256(fx.initial),
+      old_text: 'value = 1',
+      new_text: 'value = 2',
+    }],
+  });
+  expect(resumed.status).toBe('applied');
+  expect(resumed.recoveredSession).toMatchObject({
+    previousSessionId: session.sessionId,
+    newSessionId: session.sessionId,
+  });
+  expect(resumed.session.baseRevision).toBe(successor);
+  expect(resumed.session.currentRevision).toBe(2);
+  expect(resumed.session.status).toBe('dirty');
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 2;\n');
+  expect(readFileSync(join(fx.repoRoot, 'untracked-writer.txt'), 'utf8')).toBe('another Writer remains dirty\n');
+});
+
 test('adopts a non-overlapping successor HEAD for an ordinary Safe Patch session', () => {
   const fx = fixture();
   const binding: EditSessionBinding = {

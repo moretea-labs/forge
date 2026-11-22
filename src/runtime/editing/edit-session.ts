@@ -907,9 +907,14 @@ export function adoptEditSessionSuccessorHead(
 ): EditSession {
   let session = getEditSession(repoRoot, sessionId);
   assertDurableEditSessionStorageBound(repoRoot, session.repoId);
+  // An open session with no writes has no owned source to reconcile. A
+  // proven descendant HEAD may be adopted without forcing a new session
+  // just because another Writer committed first (#713).
+  const emptyOpenSession = session.status === 'open' && session.operations.length === 0;
   if (
-    !['dirty', 'checked', 'check_failed', 'reconciled_unverified'].includes(session.status) ||
-    session.operations.length === 0
+    !emptyOpenSession &&
+    (!['dirty', 'checked', 'check_failed', 'reconciled_unverified'].includes(session.status) ||
+      session.operations.length === 0)
   ) {
     throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_NOT_ELIGIBLE: ${session.status}`);
   }
@@ -1027,7 +1032,7 @@ export function adoptEditSessionSuccessorHead(
   });
   session.currentRevision = revision;
   session.baseRevision = successorRevision;
-  session.status = 'dirty';
+  session.status = emptyOpenSession ? 'open' : 'dirty';
   session.verifiedAt = undefined;
   session.validatedWorkspaceFingerprint = undefined;
   session.validatedOutsideWorkspaceFingerprint = undefined;
