@@ -1157,7 +1157,7 @@ private struct ForgeWorkspaceView: View {
             } ?? "未绑定项目"
             result.append(SidebarThreadSection(
                 id:"__current__",
-                title:"当前 · \(title)",
+                title:"当前项目",
                 repoId:currentRepoId,
                 threads:currentThreads
             ))
@@ -1174,7 +1174,7 @@ private struct ForgeWorkspaceView: View {
         if !recentOther.isEmpty {
             result.append(SidebarThreadSection(
                 id:"__recent-other__",
-                title:"其他项目 · 最近",
+                title:"其他项目",
                 repoId:nil,
                 threads:recentOther
             ))
@@ -1714,6 +1714,7 @@ private struct AgentPane: View {
     let onChooseProject: () -> Void
     @State private var showActivityDetails = false
     @State private var expandedMessageActivities: Set<String> = []
+    @State private var expandedUserInstructions: Set<String> = []
     @State private var pendingAgentCommand: String?
     @State private var showProviderThinking = false
     @State private var isComposerDropTarget = false
@@ -1819,12 +1820,42 @@ private struct AgentPane: View {
                         }
                         ForEach(model.thread?.messages ?? []) { message in
                             if message.role == "user" {
+                                // Long Requirement instructions stay intact but
+                                // no longer consume the whole conversation viewport.
+                                let isLongInstruction = message.text.count > 480
+                                    || message.text.filter { $0 == "\n" }.count > 10
+                                let instructionExpanded = expandedUserInstructions.contains(message.id)
                                 HStack(alignment:.top) {
                                     Spacer(minLength:0)
                                     VStack(alignment:.leading,spacing:7) {
+                                        if isLongInstruction {
+                                            HStack(spacing:7) {
+                                                Label("已发送指令",systemImage:"text.alignleft")
+                                                    .font(.system(size:11,weight:.semibold))
+                                                    .foregroundStyle(ForgePalette.secondary)
+                                                Text("\(message.text.count) 字")
+                                                    .font(.system(size:10))
+                                                    .foregroundStyle(.tertiary)
+                                                    .monospacedDigit()
+                                                Spacer(minLength:6)
+                                                Button(instructionExpanded ? "收起" : "展开全文") {
+                                                    if instructionExpanded {
+                                                        expandedUserInstructions.remove(message.id)
+                                                    } else {
+                                                        expandedUserInstructions.insert(message.id)
+                                                    }
+                                                }
+                                                .font(.system(size:11,weight:.medium))
+                                                .buttonStyle(.plain)
+                                                .foregroundStyle(ForgePalette.secondary)
+                                                .accessibilityLabel(instructionExpanded ? "收起原始指令" : "展开原始指令")
+                                                .accessibilityIdentifier("agent.message.\(message.id).expand")
+                                            }
+                                        }
                                         Text(message.text)
                                             .font(.system(size:13))
-                                            .lineSpacing(5)
+                                            .lineSpacing(4)
+                                            .lineLimit(isLongInstruction && !instructionExpanded ? 4 : nil)
                                             .textSelection(.enabled)
                                         if let contextPaths = message.contextPaths, !contextPaths.isEmpty {
                                             HStack(alignment:.center,spacing:8) {
@@ -1884,9 +1915,10 @@ private struct AgentPane: View {
                                                 .lineLimit(1)
                                         }
                                     }
-                                    .padding(.horizontal,14).padding(.vertical,11)
+                                    .frame(maxWidth:isLongInstruction ? 740 : 880,alignment:.leading)
+                                    .padding(.horizontal,13).padding(.vertical,10)
                                     .background(ForgePalette.userBubble,
-                                                in:RoundedRectangle(cornerRadius:14,style:.continuous))
+                                                in:RoundedRectangle(cornerRadius:12,style:.continuous))
                                     .contextMenu {
                                         Button { copyAgentText(message.text) } label: {
                                             Label("复制",systemImage:"doc.on.doc")
@@ -2486,7 +2518,6 @@ private struct AgentPane: View {
                     .frame(minWidth:360,
                            idealWidth:max(390,availableWidth * 0.43),
                            maxWidth:max(480,availableWidth * 0.60))
-                    .accessibilityIdentifier("agent.work-surface.split")
             }
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
@@ -2882,7 +2913,6 @@ private struct AgentPane: View {
             .padding(.horizontal,14)
             .frame(height:44)
             .background(ForgePalette.canvas)
-            .accessibilityIdentifier("agent.work-surface.toolbar")
 
             ZStack {
                 AgentChangesPane(
@@ -2912,7 +2942,6 @@ private struct AgentPane: View {
             .frame(maxWidth:.infinity,maxHeight:.infinity)
         }
         .background(ForgePalette.canvas)
-        .accessibilityIdentifier("agent.work-surface")
     }
 
     private func semanticInspectorBinding(_ kind: AgentSemanticContextInspector) -> Binding<Bool> {
