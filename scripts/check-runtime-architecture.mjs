@@ -2104,7 +2104,11 @@ forbid(
   'MCP Gateway must not own a duplicate retired-ExecutionJob creation decision',
 );
 requireText('adapters/mcp/runtime-gateway/router.ts', "'EXECUTION_JOB_RETIRED'");
-requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'isDurableWorkOperation');
+forbid(
+  'adapters/mcp/runtime-gateway/execution-tools.ts',
+  /\bisDurableWorkOperation\b/,
+  'retired Work operation dispatch helper must not return (#483)',
+);
 forbid(
   'adapters/mcp/runtime-gateway/execution-tools.ts',
   /'work_execute'/,
