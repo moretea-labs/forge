@@ -47,8 +47,6 @@ export interface ProcessHandleIndexEntry {
   target: ProcessExecutionTarget;
   /** Authenticated principal that owns the handle; opaque ids never authorize by themselves. */
   principalId?: string;
-  /** Historical compatibility only; new index writers never accept Work attribution. */
-  workId?: string;
   commandId?: string;
   recordedAt: string;
   updatedAt: string;
@@ -100,12 +98,14 @@ export function workspaceExecutionTarget(controllerHome: string, workspaceId: st
 }
 
 function sameProcessExecutionTarget(left: ProcessExecutionTarget, right: ProcessExecutionTarget): boolean {
-  return left.schemaVersion === right.schemaVersion
-    && left.scope === right.scope
-    && left.forgeInstanceId === right.forgeInstanceId
-    && left.repositoryId === right.repositoryId
-    && left.workspaceId === right.workspaceId
-    && left.checkoutId === right.checkoutId;
+  return (
+    left.schemaVersion === right.schemaVersion &&
+    left.scope === right.scope &&
+    left.forgeInstanceId === right.forgeInstanceId &&
+    left.repositoryId === right.repositoryId &&
+    left.workspaceId === right.workspaceId &&
+    left.checkoutId === right.checkoutId
+  );
 }
 
 function processRecordPathForHandle(controllerHome: string, entry: ProcessHandleIndexEntry): string | undefined {
@@ -127,7 +127,7 @@ function processRecordPathForHandle(controllerHome: string, entry: ProcessHandle
 
 export function recordProcessHandleIndexEntry(
   controllerHome: string,
-  input: Omit<ProcessHandleIndexEntry, 'schemaVersion' | 'recordedAt' | 'updatedAt' | 'workId'> & { now?: string },
+  input: Omit<ProcessHandleIndexEntry, 'schemaVersion' | 'recordedAt' | 'updatedAt'> & { now?: string },
 ): ProcessHandleIndexEntry | undefined {
   const processId = boundedId(input.processId);
   if (!processId) return undefined;
@@ -143,21 +143,23 @@ export function recordProcessHandleIndexEntry(
       action: 'process_handle_index_record',
       skipWriteWhenMutationReturnsCurrent: true,
       mutate: (current) => {
-        const nextPrincipal = principalId
-          ?? (current?.value.principalId ? current.value.principalId : undefined);
-        const nextCommand = commandId ?? current?.value.commandId;
+        const currentValue = current?.value as (ProcessHandleIndexEntry & { workId?: unknown }) | undefined;
+        const nextPrincipal = principalId ?? (currentValue?.principalId ? currentValue.principalId : undefined);
+        const nextCommand = commandId ?? currentValue?.commandId;
         if (
-          current
-          && current.schemaVersion === PROCESS_HANDLE_INDEX_SCHEMA_VERSION
-          && current.value.processId === processId
-          && current.value.lane === input.lane
-          && sameProcessExecutionTarget(current.value.target, input.target)
-          && current.value.principalId === nextPrincipal
-          && current.value.commandId === nextCommand
+          current &&
+          current.schemaVersion === PROCESS_HANDLE_INDEX_SCHEMA_VERSION &&
+          currentValue &&
+          currentValue.processId === processId &&
+          currentValue.lane === input.lane &&
+          sameProcessExecutionTarget(currentValue.target, input.target) &&
+          currentValue.principalId === nextPrincipal &&
+          currentValue.commandId === nextCommand &&
+          !('workId' in currentValue && currentValue.workId !== undefined)
         ) {
           // Locator identity unchanged: keep the current value object so the
           // control-plane writer skips revision/audit amplification (#377).
-          return current.value;
+          return currentValue;
         }
         return {
           schemaVersion: PROCESS_HANDLE_INDEX_SCHEMA_VERSION,
@@ -165,9 +167,8 @@ export function recordProcessHandleIndexEntry(
           lane: input.lane,
           target: input.target,
           ...(nextPrincipal ? { principalId: nextPrincipal } : {}),
-          ...(current?.value.workId ? { workId: current.value.workId } : {}),
           ...(nextCommand ? { commandId: nextCommand } : {}),
-          recordedAt: current?.value.recordedAt ?? now,
+          recordedAt: currentValue?.recordedAt ?? now,
           updatedAt: now,
         };
       },
@@ -240,7 +241,8 @@ export function readProcessHandleIndexEntry(
       key,
     );
     const value = record?.value;
-    if (!value || value.schemaVersion !== PROCESS_HANDLE_INDEX_SCHEMA_VERSION || value.processId !== key) return undefined;
+    if (!value || value.schemaVersion !== PROCESS_HANDLE_INDEX_SCHEMA_VERSION || value.processId !== key)
+      return undefined;
     if (!value.target || value.target.schemaVersion !== 1) return undefined;
     return value;
   } catch {

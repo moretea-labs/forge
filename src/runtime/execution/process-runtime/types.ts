@@ -34,7 +34,11 @@ export type ProcessRuntimeStatus =
   | 'completed_unknown'
   | 'unknown';
 
-export const ACTIVE_PROCESS_RUNTIME_STATUSES = ['starting', 'running', 'running_recovered'] as const satisfies readonly ProcessRuntimeStatus[];
+export const ACTIVE_PROCESS_RUNTIME_STATUSES = [
+  'starting',
+  'running',
+  'running_recovered',
+] as const satisfies readonly ProcessRuntimeStatus[];
 export const TERMINAL_PROCESS_RUNTIME_STATUSES = [
   'succeeded',
   'failed',
@@ -56,28 +60,25 @@ export function isTerminalProcessStatus(status: ProcessRuntimeStatus): boolean {
   return TERMINAL_PROCESS_RUNTIME_STATUS_SET.has(status);
 }
 
-export function isManagedProcessTerminal(record: {
-  status: ProcessRuntimeStatus;
-  terminalWritten?: boolean;
-}): boolean {
+export function isManagedProcessTerminal(record: { status: ProcessRuntimeStatus; terminalWritten?: boolean }): boolean {
   return record.terminalWritten === true || isTerminalProcessStatus(record.status);
 }
 
-export function isManagedProcessActive(record: {
-  status: ProcessRuntimeStatus;
-  terminalWritten?: boolean;
-}): boolean {
+export function isManagedProcessActive(record: { status: ProcessRuntimeStatus; terminalWritten?: boolean }): boolean {
   return !isManagedProcessTerminal(record) && isActiveProcessStatus(record.status);
 }
 
-export function effectiveProcessStatus(record: {
-  status: ProcessRuntimeStatus;
-  terminalWritten?: boolean;
-  exitCode?: number;
-  timedOut?: boolean;
-  cancelled?: boolean;
-  finishedAt?: string;
-}, completedHint = false): ProcessRuntimeStatus {
+export function effectiveProcessStatus(
+  record: {
+    status: ProcessRuntimeStatus;
+    terminalWritten?: boolean;
+    exitCode?: number;
+    timedOut?: boolean;
+    cancelled?: boolean;
+    finishedAt?: string;
+  },
+  completedHint = false,
+): ProcessRuntimeStatus {
   if (isTerminalProcessStatus(record.status)) return record.status;
   if (!record.terminalWritten && !completedHint) return record.status;
   if (record.cancelled) return 'cancelled';
@@ -114,8 +115,6 @@ export interface ProcessResourceClaim {
   mode: 'read' | 'write' | 'exclusive';
   repoId?: string;
   checkoutId?: string;
-  /** Historical compatibility only; new Process claims never write Work attribution. */
-  workId?: string;
 }
 
 /** Durable lease ownership held by a managed process (not only recorded claims). */

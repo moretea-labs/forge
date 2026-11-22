@@ -440,7 +440,6 @@ function toResourceClaimSpecs(claims: ProcessResourceClaim[]): ResourceClaimSpec
     mode: claim.mode,
     ...(claim.repoId ? { repoId: claim.repoId } : {}),
     ...(claim.checkoutId ? { checkoutId: claim.checkoutId } : {}),
-    ...(claim.workId ? { workId: claim.workId } : {}),
   }));
 }
 
