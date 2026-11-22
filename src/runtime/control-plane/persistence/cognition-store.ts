@@ -28,11 +28,7 @@ import {
 
 export const COGNITION_STORE_SCHEMA_VERSION = 1 as const;
 const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
-const CANONICAL_TABLES = [
-  'cognition_memory_units',
-  'cognition_memory_evidence',
-  'cognition_memory_edges',
-] as const;
+const CANONICAL_TABLES = ['cognition_memory_units', 'cognition_memory_evidence', 'cognition_memory_edges'] as const;
 const CONCEPT_INDEX_TABLE = 'cognition_concept_index' as const;
 const TERM_INDEX_TABLE = 'cognition_term_index' as const;
 
@@ -45,7 +41,11 @@ interface Statement {
 
 function statement<T>(database: SqliteDatabase, sql: string, operation: (prepared: Statement) => T): T {
   const prepared = database.prepare(sql) as Statement;
-  try { return operation(prepared); } finally { prepared.finalize?.(); }
+  try {
+    return operation(prepared);
+  } finally {
+    prepared.finalize?.();
+  }
 }
 
 function scopeKey(scope: ScopeRef): [string, string] {
@@ -54,9 +54,11 @@ function scopeKey(scope: ScopeRef): [string, string] {
 
 function tablesAvailable(database: SqliteDatabase, tables: readonly string[]): boolean {
   const placeholders = tables.map(() => '?').join(',');
-  const row = statement(database,
+  const row = statement(
+    database,
     `SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN (${placeholders})`,
-    prepared => prepared.get(...tables) as { count?: number } | undefined);
+    (prepared) => prepared.get(...tables) as { count?: number } | undefined,
+  );
   return Number(row?.count ?? 0) === tables.length;
 }
 
@@ -75,12 +77,14 @@ function termIndexAvailable(database: SqliteDatabase): boolean {
 function derivedIndexesHealthy(database: SqliteDatabase): boolean {
   if (!conceptIndexAvailable(database) || !termIndexAvailable(database)) return false;
   try {
-    statement(database,
+    statement(
+      database,
       'SELECT scope_kind, scope_id, concept_id, memory_id FROM cognition_concept_index LIMIT 1',
-      prepared => prepared.get());
-    statement(database,
-      'SELECT scope_kind, scope_id, term, memory_id FROM cognition_term_index LIMIT 1',
-      prepared => prepared.get());
+      (prepared) => prepared.get(),
+    );
+    statement(database, 'SELECT scope_kind, scope_id, term, memory_id FROM cognition_term_index LIMIT 1', (prepared) =>
+      prepared.get(),
+    );
     return true;
   } catch {
     return false;
@@ -189,12 +193,14 @@ function ensureSchema(database: SqliteDatabase): void {
 
 function rowToMemory(row: Record<string, unknown>, evidenceRefs: string[], counterEvidenceRefs: string[]): MemoryUnit {
   const payloadDigest = row.payload_digest as string | null;
-  const payloadRef: MemoryPayloadRef | undefined = payloadDigest ? validateMemoryPayloadRef({
-    algorithm: 'sha256',
-    digest: payloadDigest,
-    mediaType: row.payload_media_type as string,
-    bytes: Number(row.payload_bytes),
-  }) : undefined;
+  const payloadRef: MemoryPayloadRef | undefined = payloadDigest
+    ? validateMemoryPayloadRef({
+        algorithm: 'sha256',
+        digest: payloadDigest,
+        mediaType: row.payload_media_type as string,
+        bytes: Number(row.payload_bytes),
+      })
+    : undefined;
   return validateMemoryUnit({
     schemaVersion: 1,
     id: row.memory_id as string,
@@ -217,29 +223,39 @@ function rowToMemory(row: Record<string, unknown>, evidenceRefs: string[], count
     ...(row.expires_at ? { expiresAt: row.expires_at as string } : {}),
     ...(row.supersedes_id ? { supersedesId: row.supersedes_id as string } : {}),
     counterEvidenceRefs,
-    ...(row.retracted_at ? { retractedAt: row.retracted_at as string, retractionReason: row.retraction_reason as string } : {}),
+    ...(row.retracted_at
+      ? { retractedAt: row.retracted_at as string, retractionReason: row.retraction_reason as string }
+      : {}),
   });
 }
 
-function evidenceFor(database: SqliteDatabase, scope: ScopeRef, memoryId: string): { evidence: string[]; counter: string[] } {
+function evidenceFor(
+  database: SqliteDatabase,
+  scope: ScopeRef,
+  memoryId: string,
+): { evidence: string[]; counter: string[] } {
   const [kind, id] = scopeKey(scope);
-  const rows = statement(database,
+  const rows = statement(
+    database,
     `SELECT evidence_ref, evidence_kind FROM cognition_memory_evidence
      WHERE scope_kind = ? AND scope_id = ? AND memory_id = ?
      ORDER BY evidence_kind, evidence_ref`,
-    prepared => prepared.all(kind, id, memoryId) as Array<{ evidence_ref: string; evidence_kind: string }>);
+    (prepared) => prepared.all(kind, id, memoryId) as Array<{ evidence_ref: string; evidence_kind: string }>,
+  );
   return {
-    evidence: rows.filter(row => row.evidence_kind === 'support').map(row => row.evidence_ref),
-    counter: rows.filter(row => row.evidence_kind === 'counter').map(row => row.evidence_ref),
+    evidence: rows.filter((row) => row.evidence_kind === 'support').map((row) => row.evidence_ref),
+    counter: rows.filter((row) => row.evidence_kind === 'counter').map((row) => row.evidence_ref),
   };
 }
 
 function readMemory(database: SqliteDatabase, scope: ScopeRef, memoryId: string): MemoryUnit | undefined {
   if (!canonicalSchemaAvailable(database)) return undefined;
   const [kind, id] = scopeKey(scope);
-  const row = statement(database,
+  const row = statement(
+    database,
     `SELECT * FROM cognition_memory_units WHERE scope_kind = ? AND scope_id = ? AND memory_id = ?`,
-    prepared => prepared.get(kind, id, memoryId) as Record<string, unknown> | undefined);
+    (prepared) => prepared.get(kind, id, memoryId) as Record<string, unknown> | undefined,
+  );
   if (!row) return undefined;
   const refs = evidenceFor(database, scope, memoryId);
   return rowToMemory(row, refs.evidence, refs.counter);
@@ -247,24 +263,35 @@ function readMemory(database: SqliteDatabase, scope: ScopeRef, memoryId: string)
 
 function readAddresses(database: SqliteDatabase, addresses: readonly MemoryAddress[]): MemoryUnit[] {
   if (!addresses.length || !canonicalSchemaAvailable(database)) return [];
-  const unique = [...new Map(addresses.map(address => [memoryAddressKey(address), address])).values()].slice(0, 512);
+  const unique = [...new Map(addresses.map((address) => [memoryAddressKey(address), address])).values()].slice(0, 512);
   const predicate = unique.map(() => '(scope_kind = ? AND scope_id = ? AND memory_id = ?)').join(' OR ');
-  const params = unique.flatMap(address => [address.scope.kind, address.scope.id, address.id]);
-  const rows = statement(database,
+  const params = unique.flatMap((address) => [address.scope.kind, address.scope.id, address.id]);
+  const rows = statement(
+    database,
     `SELECT * FROM cognition_memory_units WHERE ${predicate}`,
-    prepared => prepared.all(...params) as Array<Record<string, unknown>>);
+    (prepared) => prepared.all(...params) as Array<Record<string, unknown>>,
+  );
   // One indexed evidence read for the batch instead of an N+1 SELECT loop.
   // Preserve evidenceFor() ordering for stable provenance.
   if (!rows.length) return [];
-  const keys = rows.map(row => [row.scope_kind, row.scope_id, row.memory_id]);
-  const evidenceRows = statement(database, `
+  const keys = rows.map((row) => [row.scope_kind, row.scope_id, row.memory_id]);
+  const evidenceRows = statement(
+    database,
+    `
     SELECT scope_kind, scope_id, memory_id, evidence_ref, evidence_kind
     FROM cognition_memory_evidence
     WHERE (scope_kind, scope_id, memory_id) IN (VALUES ${keys.map(() => '(?, ?, ?)').join(', ')})
     ORDER BY evidence_kind, evidence_ref
-  `, prepared => prepared.all(...keys.flat()) as Array<{
-    scope_kind: string; scope_id: string; memory_id: string; evidence_ref: string; evidence_kind: string;
-  }>);
+  `,
+    (prepared) =>
+      prepared.all(...keys.flat()) as Array<{
+        scope_kind: string;
+        scope_id: string;
+        memory_id: string;
+        evidence_ref: string;
+        evidence_kind: string;
+      }>,
+  );
   const evidenceByMemory = new Map<string, { evidence: string[]; counter: string[] }>();
   const addressKey = (kind: string, scopeId: string, memoryId: string) => JSON.stringify([kind, scopeId, memoryId]);
   for (const row of evidenceRows) {
@@ -277,33 +304,43 @@ function readAddresses(database: SqliteDatabase, addresses: readonly MemoryAddre
     if (row.evidence_kind === 'support') refs.evidence.push(row.evidence_ref);
     if (row.evidence_kind === 'counter') refs.counter.push(row.evidence_ref);
   }
-  return rows.map(row => {
-    const refs = evidenceByMemory.get(addressKey(row.scope_kind as string, row.scope_id as string, row.memory_id as string));
+  return rows.map((row) => {
+    const refs = evidenceByMemory.get(
+      addressKey(row.scope_kind as string, row.scope_id as string, row.memory_id as string),
+    );
     return rowToMemory(row, refs?.evidence ?? [], refs?.counter ?? []);
   });
 }
 
 function readByIds(database: SqliteDatabase, scopes: readonly ScopeRef[], ids: readonly string[]): MemoryUnit[] {
-  const addresses = scopes.flatMap(scope => [...new Set(ids)].slice(0, 512).map(id => ({ scope, id })));
+  const addresses = scopes.flatMap((scope) => [...new Set(ids)].slice(0, 512).map((id) => ({ scope, id })));
   return readAddresses(database, addresses);
 }
 
 function replaceDerivedIndexes(database: SqliteDatabase, memory: MemoryUnit): void {
   const [kind, id] = scopeKey(memory.scope);
-  statement(database,
+  statement(
+    database,
     `DELETE FROM cognition_concept_index WHERE scope_kind = ? AND scope_id = ? AND memory_id = ?`,
-    prepared => prepared.run(kind, id, memory.id));
-  statement(database,
+    (prepared) => prepared.run(kind, id, memory.id),
+  );
+  statement(
+    database,
     `DELETE FROM cognition_term_index WHERE scope_kind = ? AND scope_id = ? AND memory_id = ?`,
-    prepared => prepared.run(kind, id, memory.id));
+    (prepared) => prepared.run(kind, id, memory.id),
+  );
 
   const concepts = database.prepare(
-    `INSERT OR IGNORE INTO cognition_concept_index (scope_kind, scope_id, concept_id, memory_id) VALUES (?, ?, ?, ?)`) as Statement;
+    `INSERT OR IGNORE INTO cognition_concept_index (scope_kind, scope_id, concept_id, memory_id) VALUES (?, ?, ?, ?)`,
+  ) as Statement;
   const terms = database.prepare(
-    `INSERT OR IGNORE INTO cognition_term_index (scope_kind, scope_id, term, memory_id) VALUES (?, ?, ?, ?)`) as Statement;
+    `INSERT OR IGNORE INTO cognition_term_index (scope_kind, scope_id, term, memory_id) VALUES (?, ?, ?, ?)`,
+  ) as Statement;
   try {
     for (const concept of memory.concepts) concepts.run(kind, id, concept, memory.id);
-    for (const term of cognitiveTerms(`${memory.canonicalText}\n${memory.concepts.join(' ')}\n${memory.facets.join(' ')}`)) {
+    for (const term of cognitiveTerms(
+      `${memory.canonicalText}\n${memory.concepts.join(' ')}\n${memory.facets.join(' ')}`,
+    )) {
       terms.run(kind, id, term, memory.id);
     }
   } finally {
@@ -328,7 +365,9 @@ function writeCognitiveMemoryUnitWithinTransaction(
   if (memory.revision !== requiredRevision) throw new Error('COGNITION_MEMORY_REVISION_INVALID');
 
   const [kind, id] = scopeKey(memory.scope);
-  statement(database, `
+  statement(
+    database,
+    `
     INSERT INTO cognition_memory_units (
       scope_kind, scope_id, memory_id, schema_version, revision, canonical_text, facets_json, concepts_json,
       confidence, utility, tier, payload_digest, payload_media_type, payload_bytes, source_kind, source_id,
@@ -342,20 +381,43 @@ function writeCognitiveMemoryUnitWithinTransaction(
       source_kind=excluded.source_kind, source_id=excluded.source_id,
       recorded_at=excluded.recorded_at, valid_from=excluded.valid_from,
       expires_at=excluded.expires_at, supersedes_id=excluded.supersedes_id, retracted_at=excluded.retracted_at,
-      retraction_reason=excluded.retraction_reason`, prepared => prepared.run(
-    kind, id, memory.id, memory.schemaVersion, memory.revision, memory.canonicalText,
-    JSON.stringify(memory.facets), JSON.stringify(memory.concepts), memory.confidence, memory.utility, memory.tier,
-    memory.payloadRef?.digest ?? null, memory.payloadRef?.mediaType ?? null, memory.payloadRef?.bytes ?? null,
-    memory.provenance.sourceKind, memory.provenance.sourceId ?? null,
-    memory.provenance.recordedAt, memory.validFrom, memory.expiresAt ?? null,
-    memory.supersedesId ?? null, memory.retractedAt ?? null, memory.retractionReason ?? null));
+      retraction_reason=excluded.retraction_reason`,
+    (prepared) =>
+      prepared.run(
+        kind,
+        id,
+        memory.id,
+        memory.schemaVersion,
+        memory.revision,
+        memory.canonicalText,
+        JSON.stringify(memory.facets),
+        JSON.stringify(memory.concepts),
+        memory.confidence,
+        memory.utility,
+        memory.tier,
+        memory.payloadRef?.digest ?? null,
+        memory.payloadRef?.mediaType ?? null,
+        memory.payloadRef?.bytes ?? null,
+        memory.provenance.sourceKind,
+        memory.provenance.sourceId ?? null,
+        memory.provenance.recordedAt,
+        memory.validFrom,
+        memory.expiresAt ?? null,
+        memory.supersedesId ?? null,
+        memory.retractedAt ?? null,
+        memory.retractionReason ?? null,
+      ),
+  );
 
-  statement(database,
+  statement(
+    database,
     `DELETE FROM cognition_memory_evidence WHERE scope_kind = ? AND scope_id = ? AND memory_id = ?`,
-    prepared => prepared.run(kind, id, memory.id));
+    (prepared) => prepared.run(kind, id, memory.id),
+  );
   const evidence = database.prepare(
     `INSERT OR IGNORE INTO cognition_memory_evidence (scope_kind, scope_id, memory_id, evidence_ref, evidence_kind)
-     VALUES (?, ?, ?, ?, ?)`) as Statement;
+     VALUES (?, ?, ?, ?, ?)`,
+  ) as Statement;
   try {
     for (const ref of memory.provenance.evidenceRefs) evidence.run(kind, id, memory.id, ref, 'support');
     for (const ref of memory.counterEvidenceRefs) evidence.run(kind, id, memory.id, ref, 'counter');
@@ -373,7 +435,9 @@ function writeCognitiveMemoryEdgeWithinTransaction(database: SqliteDatabase, edg
     throw new Error('COGNITION_EDGE_ENDPOINT_MISSING');
   }
   const [kind, id] = scopeKey(edge.scope);
-  statement(database, `
+  statement(
+    database,
+    `
     INSERT INTO cognition_memory_edges (
       scope_kind, scope_id, edge_id, from_memory_id, to_memory_id, relation, weight, evidence_json,
       recorded_at, expires_at, retracted_at
@@ -382,9 +446,21 @@ function writeCognitiveMemoryEdgeWithinTransaction(database: SqliteDatabase, edg
       from_memory_id=excluded.from_memory_id, to_memory_id=excluded.to_memory_id,
       relation=excluded.relation, weight=excluded.weight, evidence_json=excluded.evidence_json,
       recorded_at=excluded.recorded_at, expires_at=excluded.expires_at, retracted_at=excluded.retracted_at`,
-    prepared => prepared.run(kind, id, edge.id, edge.fromId, edge.toId, edge.relation, edge.weight,
-      JSON.stringify(edge.evidenceRefs),
-      edge.recordedAt, edge.expiresAt ?? null, edge.retractedAt ?? null));
+    (prepared) =>
+      prepared.run(
+        kind,
+        id,
+        edge.id,
+        edge.fromId,
+        edge.toId,
+        edge.relation,
+        edge.weight,
+        JSON.stringify(edge.evidenceRefs),
+        edge.recordedAt,
+        edge.expiresAt ?? null,
+        edge.retractedAt ?? null,
+      ),
+  );
   return edge;
 }
 
@@ -416,30 +492,36 @@ export function recordCognitiveUsageObservation(
   if (input.decision === 'rejected' && !['irrelevant', 'stale', 'contradicted'].includes(input.rejectionKind ?? '')) {
     throw new Error('COGNITION_USAGE_REJECTION_KIND_REQUIRED');
   }
-  if (input.decision === 'used' && input.rejectionKind !== undefined) throw new Error('COGNITION_USAGE_REJECTION_KIND_UNEXPECTED');
+  if (input.decision === 'used' && input.rejectionKind !== undefined)
+    throw new Error('COGNITION_USAGE_REJECTION_KIND_UNEXPECTED');
   if (!Number.isFinite(Date.parse(input.observedAt))) throw new Error('COGNITION_USAGE_TIME_INVALID');
   memoryAddressKey(input.address);
 
-  return withControlPlaneTransaction(controllerHome, database => {
+  return withControlPlaneTransaction(controllerHome, (database) => {
     ensureSchema(database);
-    if (!readMemory(database, input.address.scope, input.address.id)) throw new Error('COGNITION_USAGE_MEMORY_NOT_FOUND');
+    if (!readMemory(database, input.address.scope, input.address.id))
+      throw new Error('COGNITION_USAGE_MEMORY_NOT_FOUND');
     const [kind, id] = scopeKey(input.address.scope);
-    statement(database, `
+    statement(
+      database,
+      `
       INSERT OR IGNORE INTO cognition_memory_usage (
         scope_kind, scope_id, memory_id, observation_id, actor_id, decision,
         rejection_kind, reason, observed_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    prepared => prepared.run(
-      kind,
-      id,
-      input.address.id,
-      observationId,
-      actorId,
-      input.decision,
-      input.rejectionKind ?? null,
-      reason,
-      input.observedAt,
-    ));
+      (prepared) =>
+        prepared.run(
+          kind,
+          id,
+          input.address.id,
+          observationId,
+          actorId,
+          input.decision,
+          input.rejectionKind ?? null,
+          reason,
+          input.observedAt,
+        ),
+    );
     return {
       ...input,
       observationId,
@@ -453,12 +535,14 @@ export function readCognitiveUsageFeedback(
   controllerHome: string,
   scopes: readonly ScopeRef[],
 ): CognitiveUsageFeedback[] {
-  const uniqueScopes = [...new Map(scopes.map(scope => [`${scope.kind}:${scope.id}`, scope])).values()].slice(0, 32);
+  const uniqueScopes = [...new Map(scopes.map((scope) => [`${scope.kind}:${scope.id}`, scope])).values()].slice(0, 32);
   if (!uniqueScopes.length) return [];
-  return withControlPlaneReadDatabase(controllerHome, database => {
+  return withControlPlaneReadDatabase(controllerHome, (database) => {
     if (!tablesAvailable(database, ['cognition_memory_usage'])) return [];
     const predicate = scopePredicate(uniqueScopes);
-    const rows = statement(database, `
+    const rows = statement(
+      database,
+      `
       SELECT scope_kind, scope_id, memory_id,
         SUM(CASE WHEN decision = 'used' THEN 1 ELSE 0 END) AS used_count,
         SUM(CASE WHEN decision = 'rejected' THEN 1 ELSE 0 END) AS rejected_count,
@@ -469,16 +553,18 @@ export function readCognitiveUsageFeedback(
       GROUP BY scope_kind, scope_id, memory_id
       ORDER BY scope_kind ASC, scope_id ASC, memory_id ASC
       LIMIT 512`,
-    prepared => prepared.all(...predicate.params) as Array<{
-      scope_kind: ScopeRef['kind'];
-      scope_id: string;
-      memory_id: string;
-      used_count: number;
-      rejected_count: number;
-      conflict_count: number;
-      stale_count: number;
-    }>);
-    return rows.map(row => ({
+      (prepared) =>
+        prepared.all(...predicate.params) as Array<{
+          scope_kind: ScopeRef['kind'];
+          scope_id: string;
+          memory_id: string;
+          used_count: number;
+          rejected_count: number;
+          conflict_count: number;
+          stale_count: number;
+        }>,
+    );
+    return rows.map((row) => ({
       address: {
         scope: { schemaVersion: 1, kind: row.scope_kind, id: row.scope_id },
         id: row.memory_id,
@@ -496,14 +582,18 @@ export function cognitionMemoryStore(controllerHome: string): CognitiveMemorySto
   return {
     transaction(operation) {
       if (transaction) return operation();
-      return withControlPlaneTransaction(controllerHome, database => {
+      return withControlPlaneTransaction(controllerHome, (database) => {
         transaction = database;
-        try { return operation(); } finally { transaction = undefined; }
+        try {
+          return operation();
+        } finally {
+          transaction = undefined;
+        }
       });
     },
     read(scope, id) {
       if (transaction) return readMemory(transaction, scope, id);
-      return withControlPlaneReadDatabase(controllerHome, database => readMemory(database, scope, id));
+      return withControlPlaneReadDatabase(controllerHome, (database) => readMemory(database, scope, id));
     },
     write(memory, expectedRevision) {
       if (!transaction) throw new Error('COGNITION_TRANSACTION_REQUIRED');
@@ -562,7 +652,7 @@ function scopePredicate(scopes: readonly ScopeRef[]): { sql: string; params: unk
   if (!scopes.length) return { sql: '0', params: [] };
   return {
     sql: scopes.map(() => '(scope_kind = ? AND scope_id = ?)').join(' OR '),
-    params: scopes.flatMap(scope => [scope.kind, scope.id]),
+    params: scopes.flatMap((scope) => [scope.kind, scope.id]),
   };
 }
 
@@ -579,7 +669,9 @@ function readPortForDatabase(database: SqliteDatabase): CognitiveReadPort {
       const scope = scopePredicate(scopes);
       const uniqueConcepts = [...new Set(concepts)].slice(0, 128);
       const placeholders = uniqueConcepts.map(() => '?').join(',');
-      const rows = statement(database, `
+      const rows = statement(
+        database,
+        `
         SELECT scope_kind, scope_id, memory_id, COUNT(*) AS hits
         FROM cognition_concept_index c
         WHERE (${scope.sql}) AND concept_id IN (${placeholders})
@@ -590,15 +682,27 @@ function readPortForDatabase(database: SqliteDatabase): CognitiveReadPort {
           )
         GROUP BY scope_kind, scope_id, memory_id
         ORDER BY hits DESC, scope_kind ASC, scope_id ASC, memory_id ASC
-        LIMIT ?`, prepared => prepared.all(...scope.params, ...uniqueConcepts, activeAt, activeAt, limit) as Array<{ scope_kind: ScopeRef['kind']; scope_id: string; memory_id: string }>);
-      return readAddresses(database, rows.map(row => ({ scope: { schemaVersion: 1, kind: row.scope_kind, id: row.scope_id }, id: row.memory_id })));
+        LIMIT ?`,
+        (prepared) =>
+          prepared.all(...scope.params, ...uniqueConcepts, activeAt, activeAt, limit) as Array<{
+            scope_kind: ScopeRef['kind'];
+            scope_id: string;
+            memory_id: string;
+          }>,
+      );
+      return readAddresses(
+        database,
+        rows.map((row) => ({ scope: { schemaVersion: 1, kind: row.scope_kind, id: row.scope_id }, id: row.memory_id })),
+      );
     },
     lexical(scopes, terms, limit, activeAt = new Date().toISOString()) {
       if (!termIndexAvailable(database) || !scopes.length || !terms.length) return [];
       const scope = scopePredicate(scopes);
       const uniqueTerms = [...new Set(terms)].slice(0, 128);
       const placeholders = uniqueTerms.map(() => '?').join(',');
-      const rows = statement(database, `
+      const rows = statement(
+        database,
+        `
         SELECT scope_kind, scope_id, memory_id, COUNT(*) AS hits
         FROM cognition_term_index t
         WHERE (${scope.sql}) AND term IN (${placeholders})
@@ -609,15 +713,27 @@ function readPortForDatabase(database: SqliteDatabase): CognitiveReadPort {
           )
         GROUP BY scope_kind, scope_id, memory_id
         ORDER BY hits DESC, scope_kind ASC, scope_id ASC, memory_id ASC
-        LIMIT ?`, prepared => prepared.all(...scope.params, ...uniqueTerms, activeAt, activeAt, limit) as Array<{ scope_kind: ScopeRef['kind']; scope_id: string; memory_id: string }>);
-      return readAddresses(database, rows.map(row => ({ scope: { schemaVersion: 1, kind: row.scope_kind, id: row.scope_id }, id: row.memory_id })));
+        LIMIT ?`,
+        (prepared) =>
+          prepared.all(...scope.params, ...uniqueTerms, activeAt, activeAt, limit) as Array<{
+            scope_kind: ScopeRef['kind'];
+            scope_id: string;
+            memory_id: string;
+          }>,
+      );
+      return readAddresses(
+        database,
+        rows.map((row) => ({ scope: { schemaVersion: 1, kind: row.scope_kind, id: row.scope_id }, id: row.memory_id })),
+      );
     },
     neighbors(seeds, limit, activeAt = new Date().toISOString()) {
       if (!canonicalSchemaAvailable(database) || !seeds.length) return [];
-      const uniqueSeeds = [...new Map(seeds.map(seed => [memoryAddressKey(seed), seed])).values()].slice(0, 128);
+      const uniqueSeeds = [...new Map(seeds.map((seed) => [memoryAddressKey(seed), seed])).values()].slice(0, 128);
       const seedValues = uniqueSeeds.map(() => '(?, ?, ?)').join(',');
-      const seedParams = uniqueSeeds.flatMap(seed => [seed.scope.kind, seed.scope.id, seed.id]);
-      const rows = statement(database, `
+      const seedParams = uniqueSeeds.flatMap((seed) => [seed.scope.kind, seed.scope.id, seed.id]);
+      const rows = statement(
+        database,
+        `
         WITH seeds(scope_kind, scope_id, memory_id) AS (VALUES ${seedValues})
         SELECT e.*, s.memory_id AS seed_memory_id,
           CASE WHEN e.from_memory_id = s.memory_id THEN e.to_memory_id ELSE e.from_memory_id END AS target_memory_id
@@ -631,11 +747,18 @@ function readPortForDatabase(database: SqliteDatabase): CognitiveReadPort {
         WHERE e.retracted_at IS NULL AND (e.expires_at IS NULL OR e.expires_at > ?)
           AND m.retracted_at IS NULL AND m.valid_from <= ? AND (m.expires_at IS NULL OR m.expires_at > ?)
         ORDER BY e.weight DESC, e.recorded_at DESC, e.scope_kind ASC, e.scope_id ASC, e.edge_id ASC, s.memory_id ASC
-        LIMIT ?`, prepared => prepared.all(...seedParams, activeAt, activeAt, activeAt, limit) as Array<Record<string, unknown>>);
-      const seedKeys = new Map(uniqueSeeds.map(seed => [memoryAddressKey(seed), seed]));
+        LIMIT ?`,
+        (prepared) =>
+          prepared.all(...seedParams, activeAt, activeAt, activeAt, limit) as Array<Record<string, unknown>>,
+      );
+      const seedKeys = new Map(uniqueSeeds.map((seed) => [memoryAddressKey(seed), seed]));
       const expansions: Array<{ edge: MemoryEdge; from: MemoryAddress; target: MemoryAddress }> = [];
       for (const row of rows) {
-        const scope = { schemaVersion: 1 as const, kind: row.scope_kind as ScopeRef['kind'], id: row.scope_id as string };
+        const scope = {
+          schemaVersion: 1 as const,
+          kind: row.scope_kind as ScopeRef['kind'],
+          id: row.scope_id as string,
+        };
         const seed = seedKeys.get(memoryAddressKey({ scope, id: row.seed_memory_id as string }));
         if (!seed) continue;
         const target = { scope, id: row.target_memory_id as string };
@@ -654,16 +777,19 @@ function readPortForDatabase(database: SqliteDatabase): CognitiveReadPort {
         });
         expansions.push({ edge, from: seed, target });
       }
-      const memoryByAddress = new Map(readAddresses(database, expansions.map(item => item.target))
-        .map(memory => [memoryAddressKey({ scope: memory.scope, id: memory.id }), memory]));
-      return expansions.flatMap(item => {
+      const memoryByAddress = new Map(
+        readAddresses(
+          database,
+          expansions.map((item) => item.target),
+        ).map((memory) => [memoryAddressKey({ scope: memory.scope, id: memory.id }), memory]),
+      );
+      return expansions.flatMap((item) => {
         const memory = memoryByAddress.get(memoryAddressKey(item.target));
         return memory ? [{ edge: item.edge, from: item.from, memory }] : [];
       });
     },
   };
 }
-
 
 export interface CognitiveAuditQuery {
   scopes: readonly ScopeRef[];
@@ -704,12 +830,15 @@ function auditEdgeFromRow(row: Record<string, unknown>): MemoryEdge {
 
 export function auditCognitiveMemory(controllerHome: string, input: CognitiveAuditQuery): CognitiveAuditResult {
   const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 24), 100));
-  const uniqueScopes = [...new Map(input.scopes.map(scope => [`${scope.kind}:${scope.id}`, scope])).values()].slice(0, 32);
+  const uniqueScopes = [...new Map(input.scopes.map((scope) => [`${scope.kind}:${scope.id}`, scope])).values()].slice(
+    0,
+    32,
+  );
   if (!uniqueScopes.length) return { items: [], inspected: 0, truncated: false };
-  return withControlPlaneReadDatabase(controllerHome, database => {
+  return withControlPlaneReadDatabase(controllerHome, (database) => {
     if (!canonicalSchemaAvailable(database)) return { items: [], inspected: 0, truncated: false };
     const scopePredicate = uniqueScopes.map(() => '(scope_kind = ? AND scope_id = ?)').join(' OR ');
-    const params: unknown[] = uniqueScopes.flatMap(scope => [scope.kind, scope.id]);
+    const params: unknown[] = uniqueScopes.flatMap((scope) => [scope.kind, scope.id]);
     const clauses = [`(${scopePredicate})`];
     if (input.memoryId?.trim()) {
       clauses.push('memory_id = ?');
@@ -720,48 +849,72 @@ export function auditCognitiveMemory(controllerHome: string, input: CognitiveAud
       params.push(input.sourceKind);
     }
     const scanLimit = Math.min(512, Math.max(limit * 8, 64));
-    const rows = statement(database, `
+    const rows = statement(
+      database,
+      `
       SELECT * FROM cognition_memory_units
       WHERE ${clauses.join(' AND ')}
       ORDER BY utility DESC, confidence DESC, recorded_at DESC, scope_kind ASC, scope_id ASC, memory_id ASC
-      LIMIT ?`, prepared => prepared.all(...params, scanLimit) as Array<Record<string, unknown>>);
+      LIMIT ?`,
+      (prepared) => prepared.all(...params, scanLimit) as Array<Record<string, unknown>>,
+    );
     const exactMemoryId = input.memoryId?.trim();
     const queryTerms = cognitiveTerms(input.query?.slice(0, 8_192) ?? '');
     const concept = input.concept?.trim();
     const facet = input.facet?.trim();
-    const memories = rows.map(row => {
-      const scope = { schemaVersion: 1 as const, kind: row.scope_kind as ScopeRef['kind'], id: row.scope_id as string };
-      const refs = evidenceFor(database, scope, row.memory_id as string);
-      return rowToMemory(row, refs.evidence, refs.counter);
-    }).filter(memory => !concept || memory.concepts.includes(concept))
-      .filter(memory => !facet || memory.facets.includes(facet))
-      .filter(memory => {
+    const memories = rows
+      .map((row) => {
+        const scope = {
+          schemaVersion: 1 as const,
+          kind: row.scope_kind as ScopeRef['kind'],
+          id: row.scope_id as string,
+        };
+        const refs = evidenceFor(database, scope, row.memory_id as string);
+        return rowToMemory(row, refs.evidence, refs.counter);
+      })
+      .filter((memory) => !concept || memory.concepts.includes(concept))
+      .filter((memory) => !facet || memory.facets.includes(facet))
+      .filter((memory) => {
         if (!queryTerms.size || exactMemoryId === memory.id) return true;
-        const terms = cognitiveTerms([
-          memory.id,
-          memory.canonicalText,
-          ...memory.concepts,
-          ...memory.facets,
-          memory.provenance.sourceId ?? '',
-        ].join('\n'));
+        const terms = cognitiveTerms(
+          [
+            memory.id,
+            memory.canonicalText,
+            ...memory.concepts,
+            ...memory.facets,
+            memory.provenance.sourceId ?? '',
+          ].join('\n'),
+        );
         for (const term of queryTerms) if (terms.has(term)) return true;
         return false;
       });
     const selected = memories.slice(0, limit);
-    const relationRows = selected.length ? statement(database, `
+    const relationRows = selected.length
+      ? statement(
+          database,
+          `
       SELECT * FROM cognition_memory_edges
       WHERE ${selected.map(() => '(scope_kind = ? AND scope_id = ? AND (from_memory_id = ? OR to_memory_id = ?))').join(' OR ')}
       ORDER BY recorded_at DESC, weight DESC, edge_id ASC
-      LIMIT 512`, prepared => prepared.all(...selected.flatMap(memory => [
-        memory.scope.kind, memory.scope.id, memory.id, memory.id,
-      ])) as Array<Record<string, unknown>>) : [];
+      LIMIT 512`,
+          (prepared) =>
+            prepared.all(
+              ...selected.flatMap((memory) => [memory.scope.kind, memory.scope.id, memory.id, memory.id]),
+            ) as Array<Record<string, unknown>>,
+        )
+      : [];
     const relations = relationRows.map(auditEdgeFromRow);
     return {
-      items: selected.map(memory => ({
+      items: selected.map((memory) => ({
         memory,
-        relations: relations.filter(edge => edge.scope.kind === memory.scope.kind
-          && edge.scope.id === memory.scope.id
-          && (edge.fromId === memory.id || edge.toId === memory.id)).slice(0, 32),
+        relations: relations
+          .filter(
+            (edge) =>
+              edge.scope.kind === memory.scope.kind &&
+              edge.scope.id === memory.scope.id &&
+              (edge.fromId === memory.id || edge.toId === memory.id),
+          )
+          .slice(0, 32),
       })),
       inspected: rows.length,
       truncated: memories.length > limit || rows.length >= scanLimit,
@@ -771,11 +924,24 @@ export function auditCognitiveMemory(controllerHome: string, input: CognitiveAud
 
 export function cognitionReadPort(controllerHome: string): CognitiveReadPort {
   return {
-    readByIds: (scopes, ids) => withControlPlaneReadDatabase(controllerHome, database => readPortForDatabase(database).readByIds(scopes, ids)),
-    readByAddresses: addresses => withControlPlaneReadDatabase(controllerHome, database => readPortForDatabase(database).readByAddresses(addresses)),
-    exactByConcept: (scopes, concepts, limit, activeAt) => withControlPlaneReadDatabase(controllerHome, database => readPortForDatabase(database).exactByConcept(scopes, concepts, limit, activeAt)),
-    lexical: (scopes, terms, limit, activeAt) => withControlPlaneReadDatabase(controllerHome, database => readPortForDatabase(database).lexical(scopes, terms, limit, activeAt)),
-    neighbors: (seeds, limit, activeAt) => withControlPlaneReadDatabase(controllerHome, database => readPortForDatabase(database).neighbors(seeds, limit, activeAt)),
+    readByIds: (scopes, ids) =>
+      withControlPlaneReadDatabase(controllerHome, (database) => readPortForDatabase(database).readByIds(scopes, ids)),
+    readByAddresses: (addresses) =>
+      withControlPlaneReadDatabase(controllerHome, (database) =>
+        readPortForDatabase(database).readByAddresses(addresses),
+      ),
+    exactByConcept: (scopes, concepts, limit, activeAt) =>
+      withControlPlaneReadDatabase(controllerHome, (database) =>
+        readPortForDatabase(database).exactByConcept(scopes, concepts, limit, activeAt),
+      ),
+    lexical: (scopes, terms, limit, activeAt) =>
+      withControlPlaneReadDatabase(controllerHome, (database) =>
+        readPortForDatabase(database).lexical(scopes, terms, limit, activeAt),
+      ),
+    neighbors: (seeds, limit, activeAt) =>
+      withControlPlaneReadDatabase(controllerHome, (database) =>
+        readPortForDatabase(database).neighbors(seeds, limit, activeAt),
+      ),
   };
 }
 
@@ -785,9 +951,9 @@ export function activateCognitiveMemory(
   query: string,
   options: ActivationOptions = {},
 ): ActivationPack {
-  const derivedState = withControlPlaneReadDatabase(controllerHome, database => {
+  const derivedState = withControlPlaneReadDatabase(controllerHome, (database) => {
     if (!canonicalSchemaAvailable(database)) return 'empty' as const;
-    return derivedIndexesHealthy(database) ? 'ready' as const : 'degraded' as const;
+    return derivedIndexesHealthy(database) ? ('ready' as const) : ('degraded' as const);
   });
   let rebuilt = false;
   if (derivedState === 'degraded') {
@@ -795,16 +961,19 @@ export function activateCognitiveMemory(
       rebuildCognitionDerivedIndexes(controllerHome);
       rebuilt = true;
     } catch (error) {
-      throw new Error(`COGNITION_DERIVED_INDEX_RECOVERY_FAILED:${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `COGNITION_DERIVED_INDEX_RECOVERY_FAILED:${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
-  const pack = withControlPlaneReadDatabase(controllerHome, database =>
-    activateMemory(readPortForDatabase(database), scopes, query, options));
+  const pack = withControlPlaneReadDatabase(controllerHome, (database) =>
+    activateMemory(readPortForDatabase(database), scopes, query, options),
+  );
   return rebuilt ? { ...pack, gaps: [...new Set([...pack.gaps, 'derived_index_rebuilt'])] } : pack;
 }
 
 export function rebuildCognitionDerivedIndexes(controllerHome: string): number {
-  return withControlPlaneTransaction(controllerHome, database => {
+  return withControlPlaneTransaction(controllerHome, (database) => {
     database.exec(`
       DROP INDEX IF EXISTS cognition_concept_lookup;
       DROP INDEX IF EXISTS cognition_term_lookup;
@@ -812,9 +981,11 @@ export function rebuildCognitionDerivedIndexes(controllerHome: string): number {
       DROP TABLE IF EXISTS cognition_term_index;
     `);
     ensureSchema(database);
-    const rows = statement(database,
+    const rows = statement(
+      database,
       'SELECT * FROM cognition_memory_units ORDER BY scope_kind, scope_id, memory_id',
-      prepared => prepared.all() as Array<Record<string, unknown>>);
+      (prepared) => prepared.all() as Array<Record<string, unknown>>,
+    );
     for (const row of rows) {
       const scope = { schemaVersion: 1 as const, kind: row.scope_kind as ScopeRef['kind'], id: row.scope_id as string };
       const refs = evidenceFor(database, scope, row.memory_id as string);
