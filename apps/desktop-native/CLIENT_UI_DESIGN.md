@@ -20,19 +20,17 @@ macOS unified titlebar: [Sidebar] Project > repo/checkout     Search | Layout | 
 +----------------+----------------------------------+----------------------------------+
 ~~~
 
-Default: navigation + conversation; right work surface hidden until the user opens Changes, Files or Browser. Right pane supports resize, close, and maximize to primary area without reinitializing chat. With insufficient available width, the right target becomes a primary tab with a clear Back-to-conversation affordance; never shrink a code diff or browser into a fixed 320pt inspector or popover.
+Default at desktop width: THREE columns — project/session navigation, Agent conversation and right Changes work surface. At compact widths preserve Agent conversation and open the work surface explicitly. Right pane supports resize, close, and maximize to primary area without reinitializing chat. With insufficient available width, the right target becomes a primary tab with a clear Back-to-conversation affordance; never shrink a code diff or browser into a fixed 320pt inspector or popover.
 
 There is ONE right work-surface role with switchable tabs, not multiple permanent drawers. Planning and Knowledge remain optional lightweight context; real file editing/review and Browser belong to the work surface.
 
-## 2. Toolbar ownership and placement
+## 2. One native toolbar for the entire window
 
-- Native window toolbar: left sidebar toggle; actual Project → repository / checkout breadcrumb; global search; layout and right-pane toggle. Use macOS unified titlebar behavior.
-- Conversation toolbar (TOP OF CENTER PANE): current chat title, linked Requirement, provider/execution status; trailing plain text or icon+text commands **Changes / Files / Browser / More**. This is where session tools enter — NOT the left sidebar.
-- Work-surface tab strip: **Changes | Files | Browser**; active-tab local actions and maximize/close. Changes owns diff scope and navigation; Browser owns address/back/forward/refresh; avoid duplicate global refresh controls.
-- Composer: provider, model, effort, attachments, voice, send/stop; keep its editable state mounted while showing work surface.
-- Project workbench: list/detail inside the main window, preserving task and scroll context; creation/editing and destructive confirmation may use native sheets/dialogs.
+Leafspan is the structural reference: the macOS unified titlebar is the ONE window toolbar. It shows Product/Repository/Agent conversation context and contains Changes/Attachments switching, review-scope options, panel maximize/close and refresh. The NavigationSplitView sidebar toggle is the single native sidebar control.
 
-Browser is a future pane role only. Do not display a working Browser action until an actual supported implementation exists. Do not pretend to provide browser automation, and do not grant it extra authority; browser storage/control must be isolated by real workspace and explicit capability grants.
+No second Agent 44pt bar, no duplicate Changes tabstrip or review header, and no per-page pseudo-window toolbar. Actual content controls such as file selection, diff hunks and actions remain within their respective content areas, without a competing toolbar. Unimplemented Browser does not get a fake active action.
+
+The navigation sidebar, central Agent transcript with docked composer, and right work surface are independently scrollable, with the right surface resizable. Changing work surface, closing or maximizing must not destroy the central conversation. On narrow windows the chat remains visible by default; explicitly opening review promotes the work surface to primary.
 
 ## 3. Non-negotiable plain-button rule (P0)
 
@@ -57,7 +55,7 @@ Unify typography and geometry: session titles around 13–14pt; main body around
 ## 5. Migration map from existing SwiftUI
 
 - ForgeNativeApp.swift / ForgeWorkspaceView: keep its ONE NavigationSplitView sidebar. Converge window actions into one native toolbar.
-- ForgeNativeApp.swift / AgentPane.agentWorkspaceBar: become consistent conversation toolbar, exposing visible session tool entry points at TOP of CENTER, without boxed individual icons.
+- ForgeNativeApp.swift / ForgeWorkspaceView.unifiedWindowToolbarActions: sole owner of titlebar actions and scene-local right pane state; AgentPane has no independent toolbar.
 - AgentPane.semanticInspector: reserve for lightweight Planning/Knowledge context; do not mix it with Changes / Files / Browser.
 - AgentPane + AgentChangesPane: changes on main as a standalone replacement (adf4f28fb) and its inner navigator (13994f87d) are INTERIM. Rehost existing Diff component in tabbed right work surface while keeping its data, actions and adjustable reader; allow maximize.
 - ZenModeView.swift project navigation: stay in primary workbench, reuse Requirement return context and list position.
@@ -66,7 +64,7 @@ Unify typography and geometry: session titles around 13–14pt; main body around
 
 ## 6. Implementation order and acceptance
 
-1. Implement the shared window shell and panel contract: native toolbar, centered conversation toolbar, right tab strip and resize/close/maximize. Rehost Diff; do not implement Browser automation yet.
+1. Implement the shared three-column window shell with one native toolbar, resizable right pane, global tab selection/close/maximize. Rehost Diff; do not implement Browser automation yet.
 2. Systematically remove card-style button backgrounds from navigation, workbench, Agent, changes and settings while preserving real surfaces and accessibility.
 3. Complete Project → Requirement → Agent → Changes → Return and Agent → File → Source conversation without losing identity, scroll, composer or focus.
 4. Only then add Browser webview and Agent control under a separate scoped Requirement and explicit grants.
