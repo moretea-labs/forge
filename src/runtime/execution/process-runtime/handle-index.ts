@@ -143,7 +143,7 @@ export function recordProcessHandleIndexEntry(
       action: 'process_handle_index_record',
       skipWriteWhenMutationReturnsCurrent: true,
       mutate: (current) => {
-        const currentValue = current?.value as (ProcessHandleIndexEntry & { workId?: unknown }) | undefined;
+        const currentValue = current?.value;
         const nextPrincipal = principalId ?? (currentValue?.principalId ? currentValue.principalId : undefined);
         const nextCommand = commandId ?? currentValue?.commandId;
         if (
@@ -154,8 +154,7 @@ export function recordProcessHandleIndexEntry(
           currentValue.lane === input.lane &&
           sameProcessExecutionTarget(currentValue.target, input.target) &&
           currentValue.principalId === nextPrincipal &&
-          currentValue.commandId === nextCommand &&
-          !('workId' in currentValue && currentValue.workId !== undefined)
+          currentValue.commandId === nextCommand
         ) {
           // Locator identity unchanged: keep the current value object so the
           // control-plane writer skips revision/audit amplification (#377).
@@ -243,7 +242,7 @@ export function readProcessHandleIndexEntry(
     const value = record?.value;
     if (!value || value.schemaVersion !== PROCESS_HANDLE_INDEX_SCHEMA_VERSION || value.processId !== key)
       return undefined;
-    if (!value.target || value.target.schemaVersion !== 1) return undefined;
+    if (value.target?.schemaVersion !== 1) return undefined;
     return value;
   } catch {
     return undefined;

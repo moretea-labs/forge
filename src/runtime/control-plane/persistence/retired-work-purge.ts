@@ -58,56 +58,62 @@ function countWorkReplicas(db: SqliteDatabase, table: string): number {
   return Number(record.count);
 }
 
-interface HistoricalWorkflowRow {
+type HistoricalWorkBoundNamespace = 'workflow_run' | 'process_handle_index';
+const HISTORICAL_WORK_BOUND_NAMESPACES = ['workflow_run', 'process_handle_index'] as const;
+
+interface HistoricalWorkBoundRow {
+  namespace: HistoricalWorkBoundNamespace;
   scope: string;
   record_key: string;
-  payload: string;
 }
 
-/** Work-era WorkflowRuns are erased offline; native WorkflowRuns remain. */
-function historicalWorkWorkflowRows(db: SqliteDatabase): HistoricalWorkflowRow[] {
-  const rows = db
-    .prepare('SELECT scope, record_key, payload FROM control_plane_records WHERE namespace = ?')
-    .all('workflow_run') as HistoricalWorkflowRow[];
-  return rows.filter((row) => {
-    let payload: unknown;
-    try {
-      payload = JSON.parse(row.payload);
-    } catch {
-      throw new Error('RETIRED_WORK_WORKFLOW_UNREADABLE');
-    }
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-      throw new Error('RETIRED_WORK_WORKFLOW_INVALID');
-    }
-    return Object.hasOwn(payload, 'workId');
+/** Erase only Work-attributed historical WorkflowRuns or rebuildable Process locators. */
+function historicalWorkBoundRows(db: SqliteDatabase): HistoricalWorkBoundRow[] {
+  return HISTORICAL_WORK_BOUND_NAMESPACES.flatMap((namespace) => {
+    const rows = db
+      .prepare('SELECT scope, record_key, payload FROM control_plane_records WHERE namespace = ?')
+      .all(namespace) as Array<{ scope: string; record_key: string; payload: string }>;
+    const label = namespace === 'workflow_run' ? 'WORKFLOW' : 'PROCESS_HANDLE';
+    return rows.flatMap((row) => {
+      let payload: unknown;
+      try {
+        payload = JSON.parse(row.payload);
+      } catch {
+        throw new Error(`RETIRED_WORK_${label}_UNREADABLE`);
+      }
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        throw new Error(`RETIRED_WORK_${label}_INVALID`);
+      }
+      return Object.hasOwn(payload, 'workId') ? [{ namespace, scope: row.scope, record_key: row.record_key }] : [];
+    });
   });
 }
 
-const WORKFLOW_HISTORY_TABLES = [
+const WORK_HISTORY_TABLES = [
   'control_plane_records',
   'control_plane_audit',
   'control_plane_audit_floor',
   'control_plane_audit_record_cursor',
 ] as const;
 
-function historicalWorkflowRowsInTable(
+function historicalWorkBoundRowsInTable(
   db: SqliteDatabase,
-  table: (typeof WORKFLOW_HISTORY_TABLES)[number],
-  rows: readonly HistoricalWorkflowRow[],
+  table: (typeof WORK_HISTORY_TABLES)[number],
+  rows: readonly HistoricalWorkBoundRow[],
 ): number {
   return rows.reduce((total, row) => {
     const result = db
       .prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE namespace = ? AND scope = ? AND record_key = ?`)
-      .get('workflow_run', row.scope, row.record_key) as { count: number };
+      .get(row.namespace, row.scope, row.record_key) as { count: number };
     return total + Number(result.count);
   }, 0);
 }
 
-function eraseHistoricalWorkWorkflowRows(db: SqliteDatabase): void {
-  for (const row of historicalWorkWorkflowRows(db)) {
-    for (const table of WORKFLOW_HISTORY_TABLES) {
+function eraseHistoricalWorkBoundRows(db: SqliteDatabase): void {
+  for (const row of historicalWorkBoundRows(db)) {
+    for (const table of WORK_HISTORY_TABLES) {
       db.prepare(`DELETE FROM ${table} WHERE namespace = ? AND scope = ? AND record_key = ?`).run(
-        'workflow_run',
+        row.namespace,
         row.scope,
         row.record_key,
       );
@@ -245,26 +251,26 @@ function statistics(
   RetiredWorkPurgeReport,
   'records' | 'auditEvents' | 'auditFloors' | 'auditRecordCursors' | 'journalReferences'
 > {
-  const historicalWorkflow = historicalWorkWorkflowRows(db);
-  const historicalWorkflowCount = (table: (typeof WORKFLOW_HISTORY_TABLES)[number]) =>
-    historicalWorkflowRowsInTable(db, table, historicalWorkflow);
+  const historicalBound = historicalWorkBoundRows(db);
+  const historicalBoundCount = (table: (typeof WORK_HISTORY_TABLES)[number]) =>
+    historicalWorkBoundRowsInTable(db, table, historicalBound);
   return {
     records:
       countNamespace(db, 'control_plane_records') +
       countWorkReplicas(db, 'control_plane_records') +
-      historicalWorkflowCount('control_plane_records'),
+      historicalBoundCount('control_plane_records'),
     auditEvents:
       countNamespace(db, 'control_plane_audit') +
       countWorkReplicas(db, 'control_plane_audit') +
-      historicalWorkflowCount('control_plane_audit'),
+      historicalBoundCount('control_plane_audit'),
     auditFloors:
       countNamespace(db, 'control_plane_audit_floor') +
       countWorkReplicas(db, 'control_plane_audit_floor') +
-      historicalWorkflowCount('control_plane_audit_floor'),
+      historicalBoundCount('control_plane_audit_floor'),
     auditRecordCursors:
       countNamespace(db, 'control_plane_audit_record_cursor') +
       countWorkReplicas(db, 'control_plane_audit_record_cursor') +
-      historicalWorkflowCount('control_plane_audit_record_cursor'),
+      historicalBoundCount('control_plane_audit_record_cursor'),
     journalReferences: journalWorkReferences(db, false),
   };
 }
@@ -311,7 +317,7 @@ export function purgeRetiredWork(controllerHomeInput: string): RetiredWorkPurgeR
         );
       }
       journalWorkReferences(db, true);
-      eraseHistoricalWorkWorkflowRows(db);
+      eraseHistoricalWorkBoundRows(db);
       dropRetiredCognitionColumns(db);
     });
     // Repack after the transaction so old payload bytes are not left in SQLite

@@ -297,6 +297,72 @@ describe('full retired Work data erasure', () => {
     expect(purgeRetiredWork(home)).toMatchObject({ applied: true, records: 0 });
   });
 
+  test('erases Work-attributed Process handle locators and their audit without deleting native Process facts', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-retired-process-locator-'));
+    tempRoots.push(home);
+    const oldMarker = 'PROCESS-INDEX-WORK-ONLY-efb37b';
+    writeControlPlaneRecord(home, {
+      namespace: 'process_handle_index',
+      scope: 'instance',
+      key: 'proc-old-work',
+      schemaVersion: 1,
+      value: { schemaVersion: 1, processId: 'proc-old-work', workId: oldMarker },
+      expectedRevision: null,
+    });
+    writeControlPlaneRecord(home, {
+      namespace: 'process_handle_index',
+      scope: 'instance',
+      key: 'proc-native',
+      schemaVersion: 1,
+      value: {
+        schemaVersion: 1,
+        processId: 'proc-native',
+        lane: 'managed',
+        target: { schemaVersion: 1, scope: 'forge_instance' },
+      },
+      expectedRevision: null,
+    });
+    writeControlPlaneRecord(home, {
+      namespace: 'process_request_binding',
+      scope: 'instance',
+      key: 'proc-old-work',
+      schemaVersion: 1,
+      value: { processId: 'proc-old-work', authority: 'process_runtime' },
+      expectedRevision: null,
+    });
+    withControlPlaneTransaction(home, (db) => {
+      db.prepare(
+        'INSERT INTO control_plane_audit_floor(namespace,scope,record_key,floor_revision,updated_at) VALUES(?,?,?,?,?)',
+      ).run('process_handle_index', 'instance', 'proc-old-work', 1, '2026-11-22');
+      db.prepare(
+        'INSERT INTO control_plane_audit_record_cursor(name,namespace,scope,record_key,updated_at) VALUES(?,?,?,?,?)',
+      ).run('retired-locator-cursor', 'process_handle_index', 'instance', 'proc-old-work', '2026-11-22');
+    });
+    expect(inspectRetiredWorkPurge(home)).toMatchObject({
+      records: 1,
+      auditEvents: 1,
+      auditFloors: 1,
+      auditRecordCursors: 1,
+    });
+    expect(purgeRetiredWork(home)).toMatchObject({ applied: true, records: 1 });
+    expect(readControlPlaneRecord(home, 'process_handle_index', 'instance', 'proc-old-work')).toBeUndefined();
+    expect(readControlPlaneRecord(home, 'process_handle_index', 'instance', 'proc-native')?.value).toMatchObject({
+      processId: 'proc-native',
+    });
+    expect(readControlPlaneRecord(home, 'process_request_binding', 'instance', 'proc-old-work')?.value).toEqual({
+      processId: 'proc-old-work',
+      authority: 'process_runtime',
+    });
+    expect(inspectRetiredWorkPurge(home)).toMatchObject({
+      records: 0,
+      auditEvents: 0,
+      auditFloors: 0,
+      auditRecordCursors: 0,
+    });
+    expect(readFileSync(join(home, 'control-plane.sqlite')).includes(Buffer.from(oldMarker))).toBe(false);
+    expect(purgeRetiredWork(home)).toMatchObject({ applied: true, records: 0 });
+  });
+
   test('CLI defaults to preview, refuses active-Runtime apply and erases only with offline flag', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-retired-work-cli-'));
     tempRoots.push(home);
