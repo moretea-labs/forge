@@ -618,6 +618,71 @@ function classifyIndependentTestChild(
   return {};
 }
 
+async function runSelectedTestChild(
+  file: string,
+  testRoot: string,
+  testEnv: NodeJS.ProcessEnv,
+): Promise<BunTestFileRunResult> {
+  const independentArgs = file.endsWith('.test.mjs')
+    ? ['node', '--test', file]
+    : file.startsWith('tests/infrastructure/')
+      ? [process.execPath, 'test', '--timeout', process.env.BUN_TEST_TIMEOUT_MS ?? '60000', '--max-concurrency', '1', file]
+      : undefined;
+  if (!independentArgs) {
+    return runBunTestFile(
+      ['--timeout', process.env.BUN_TEST_TIMEOUT_MS ?? '60000', '--max-concurrency', '1', file],
+      { forwardSignals: true, cwd: testRoot, env: testEnv },
+    );
+  }
+  const [command, ...args] = independentArgs;
+  const independent = await runBoundedChild(command!, args, {
+    cwd: testRoot,
+    env: testEnv,
+    timeoutMs: Number(process.env.BUN_TEST_FILE_WALL_TIMEOUT_MS ?? 120_000),
+    stdio: 'inherit',
+    forwardSignals: true,
+  });
+  return {
+    exitCode: independent.status,
+    lingeringPids: independent.residualPids,
+    remainingPids: independent.remainingPids,
+    pidReuseFenced: independent.pidReuseFenced,
+    ...classifyIndependentTestChild(independent),
+  };
+}
+
+/** Each child binds its own pre-run input and only infrastructure failures retry. */
+async function runTestChildWithMutationGuard(
+  file: string,
+  testRoot: string,
+  testEnv: NodeJS.ProcessEnv,
+  inputDigest: string,
+): Promise<{ result: BunTestFileRunResult; attempts: number; contaminated: boolean }> {
+  let attempts = 0;
+  let result: BunTestFileRunResult;
+  do {
+    attempts += 1;
+    // Check for mutations during each child, never between unrelated runs.
+    const testWorkspaceBefore = workspaceMutationDigest(testRoot);
+    console.error(`[tests] ${file}${attempts > 1 ? ' (infrastructure retry)' : ''}`);
+    result = await runSelectedTestChild(file, testRoot, testEnv);
+    if (workspaceMutationDigest(testRoot) !== testWorkspaceBefore || testInputDigest(testRoot, file) !== inputDigest) {
+      console.error(`[tests] ${TEST_FAILURE_CODES.INFRA_WORKTREE_MUTATION}: tracked tree changed while running ${file}`);
+      return {
+        result: {
+          ...result,
+          exitCode: 1,
+          failureClass: 'infrastructure',
+          failureCode: TEST_FAILURE_CODES.INFRA_WORKTREE_MUTATION,
+        },
+        attempts,
+        contaminated: true,
+      };
+    }
+  } while (result.failureClass === 'infrastructure' && attempts < 2);
+  return { result, attempts, contaminated: false };
+}
+
 export async function runTestSelection(
   repoRoot: string,
   manifest: TestManifest,
@@ -740,73 +805,10 @@ export async function runTestSelection(
       return;
     }
 
-    let attempts = 0;
-    let result: BunTestFileRunResult;
     const startedAt = performance.now();
-    do {
-      attempts += 1;
-      // Ignore changes between child runs, but preserve the strict workspace
-      // mutation veto during each child. A simultaneous external Writer cannot
-      // be distinguished from test mutation here without process isolation.
-      const testWorkspaceBefore = workspaceMutationDigest(testRoot);
-      console.error(`[tests] ${file}${attempts > 1 ? ' (infrastructure retry)' : ''}`);
-      if (file.endsWith('.test.mjs')) {
-        const independent = await runBoundedChild('node', ['--test', file], {
-          cwd: testRoot,
-          env: testEnv,
-          timeoutMs: Number(process.env.BUN_TEST_FILE_WALL_TIMEOUT_MS ?? 120_000),
-          stdio: 'inherit',
-          forwardSignals: true,
-        });
-        result = {
-          exitCode: independent.status,
-          lingeringPids: independent.residualPids,
-          remainingPids: independent.remainingPids,
-          pidReuseFenced: independent.pidReuseFenced,
-          ...classifyIndependentTestChild(independent),
-        };
-      } else if (file.startsWith('tests/infrastructure/')) {
-        const independent = await runBoundedChild(
-          process.execPath,
-          ['test', '--timeout', process.env.BUN_TEST_TIMEOUT_MS ?? '60000', '--max-concurrency', '1', file],
-          {
-            cwd: testRoot,
-            env: testEnv,
-            timeoutMs: Number(process.env.BUN_TEST_FILE_WALL_TIMEOUT_MS ?? 120_000),
-            stdio: 'inherit',
-            forwardSignals: true,
-          },
-        );
-        result = {
-          exitCode: independent.status,
-          lingeringPids: independent.residualPids,
-          remainingPids: independent.remainingPids,
-          pidReuseFenced: independent.pidReuseFenced,
-          ...classifyIndependentTestChild(independent),
-        };
-      } else {
-        result = await runBunTestFile(
-          ['--timeout', process.env.BUN_TEST_TIMEOUT_MS ?? '60000', '--max-concurrency', '1', file],
-          { forwardSignals: true, cwd: testRoot, env: testEnv },
-        );
-      }
-      if (
-        workspaceMutationDigest(testRoot) !== testWorkspaceBefore ||
-        testInputDigest(testRoot, file) !== inputDigest
-      ) {
-        contaminated = true;
-        result = {
-          ...result,
-          exitCode: 1,
-          failureClass: 'infrastructure',
-          failureCode: TEST_FAILURE_CODES.INFRA_WORKTREE_MUTATION,
-        };
-        console.error(
-          `[tests] ${TEST_FAILURE_CODES.INFRA_WORKTREE_MUTATION}: tracked tree changed while running ${file}`,
-        );
-        break;
-      }
-    } while (result.failureClass === 'infrastructure' && attempts < 2);
+    const execution = await runTestChildWithMutationGuard(file, testRoot, testEnv, inputDigest);
+    const { result, attempts } = execution;
+    if (execution.contaminated) contaminated = true;
 
     const checkpoint: TestCheckpoint = {
       version: 2,
