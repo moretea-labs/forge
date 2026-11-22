@@ -760,23 +760,24 @@ function appendTestFailure(
   if (failureDetails.length > MAX_STRUCTURED_CHECK_FAILURE_DETAILS) failureDetails.pop();
 }
 
-export async function runTestSelection(
+function eligibleForSnapshot(entry: TestManifestEntry): boolean {
+  return (
+    entry.resource === 'pure' ||
+    entry.resource === 'temp-isolated' ||
+    (entry.resource === 'controller-home-isolated' && entry.committedSnapshot === true)
+  );
+}
+
+function testRunDigests(
   repoRoot: string,
   manifest: TestManifest,
   selection: TestSelection,
-  options: RunTestSelectionOptions = {},
-): Promise<number> {
-  const useCache = options.useCache ?? true;
-  const storage = ensureRepositoryCheckStorage(repoRoot, options.storageAuthority);
-  const eligibleForSnapshot = (entry: TestManifestEntry): boolean =>
-    entry.resource === 'pure' ||
-    entry.resource === 'temp-isolated' ||
-    (entry.resource === 'controller-home-isolated' && entry.committedSnapshot === true);
+  options: RunTestSelectionOptions,
+): { contentDigest: string; runnerDigest: string; isolatedRunnerDigest: string | undefined } {
   const fullyIsolated = Boolean(
     options.isolatedCandidateRoot && selection.files.every((file) => eligibleForSnapshot(manifest.tests[file]!)),
   );
-  // A fixed Git tree identifies committed test sources without rehashing
-  // unrelated Writer dirty. Shared/mixed suites retain the workspace digest.
+  // A committed Git tree avoids hashing unrelated Writer dirty when fully isolated.
   const committedTree = fullyIsolated
     ? requiredGit(options.isolatedCandidateRoot!, ['rev-parse', '--verify', 'HEAD^{tree}']).trim()
     : undefined;
@@ -807,6 +808,18 @@ export async function runTestSelection(
           `test-runner-v1:committed:${options.isolatedCandidateRevision ?? 'unknown'}`,
         )
       : undefined;
+  return { contentDigest, runnerDigest, isolatedRunnerDigest };
+}
+
+export async function runTestSelection(
+  repoRoot: string,
+  manifest: TestManifest,
+  selection: TestSelection,
+  options: RunTestSelectionOptions = {},
+): Promise<number> {
+  const useCache = options.useCache ?? true;
+  const storage = ensureRepositoryCheckStorage(repoRoot, options.storageAuthority);
+  const { contentDigest, runnerDigest, isolatedRunnerDigest } = testRunDigests(repoRoot, manifest, selection, options);
   const toolchain = toolchainSignature();
   const capability = capabilitySignature();
   let failures = 0;
