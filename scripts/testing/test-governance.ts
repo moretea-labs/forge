@@ -842,9 +842,22 @@ function finishTestRun(input: {
   onReceipt: RunTestSelectionOptions['onReceipt'];
 }): number {
   const {
-    selection, storageRoot, contentDigest, runnerDigest, cacheHits, cacheProvenance,
-    failures, failureClasses, failureDetails, contaminated, durationMs, serialEquivalentMs,
-    pureCount, temporaryCount, serialLanes, onReceipt,
+    selection,
+    storageRoot,
+    contentDigest,
+    runnerDigest,
+    cacheHits,
+    cacheProvenance,
+    failures,
+    failureClasses,
+    failureDetails,
+    contaminated,
+    durationMs,
+    serialEquivalentMs,
+    pureCount,
+    temporaryCount,
+    serialLanes,
+    onReceipt,
   } = input;
   const serialReduction = serialEquivalentMs > 0 ? Math.max(0, 1 - durationMs / serialEquivalentMs) : 0;
   const status = failures === 0 && !contaminated ? ('passed' as const) : ('failed' as const);

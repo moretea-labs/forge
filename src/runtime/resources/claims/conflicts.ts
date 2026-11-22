@@ -94,6 +94,10 @@ export function normalizeClaimPath(raw: string): string | null {
   const path = raw.replace(/\\/g, '/').replace(/^\.\//, '');
   // Reject absolute and parent-escape for claim paths (workspace write instead).
   if (path.startsWith('/') || path.startsWith('~/') || path.includes('\0')) return null;
+  // Shell text / command strings are not repository-relative paths. Allowing
+  // whitespace or metacharacters produced bogus claims such as
+  // `path:<checkout>:set -euo pipefail; …` under #713 concurrent admission.
+  if (/[\s;|&<>$`\n\r]/.test(path)) return null;
   const segments = path.split('/').filter((s) => s.length > 0 && s !== '.');
   const out: string[] = [];
   for (const seg of segments) {

@@ -616,7 +616,8 @@ export function looksLikeBuildOrTest(command: string | readonly string[]): boole
 /**
  * True when the command is a single argv-like invocation without shell
  * composition, redirection or interpolation. Soft claim narrowing (#713) is
- * only safe for that shape; composed shells keep the checkout-wide writer.
+ * only safe for that shape unless every composed segment is also pure
+ * build/test validation (see isPureBuildOrTestComposition).
  */
 function isSimpleNonComposedCommand(command: string | readonly string[]): boolean {
   const canonical = normalizeRepositoryCommand(command);
@@ -627,6 +628,61 @@ function isSimpleNonComposedCommand(command: string | readonly string[]): boolea
   if (shell === undefined) return true;
   if (/[;&|<>\x60$\n\r]/.test(shell)) return false;
   return shellSegments(shell).length === 1;
+}
+
+/** `set -euo pipefail` and similar option-only preludes do not mutate the checkout. */
+function isShellOptionPrelude(segment: string): boolean {
+  const words = shellWordsPreservingQuotes(segment);
+  if (words.length === 0) return false;
+  const program = words[0]!.toLowerCase();
+  if ((program === ':' || program === 'true') && words.length === 1) return true;
+  if (program !== 'set' || words.length < 2) return false;
+  for (let index = 1; index < words.length; index += 1) {
+    const word = words[index]!;
+    if (word === '-o' || word === '+o') {
+      if (index + 1 >= words.length) return false;
+      index += 1;
+      continue;
+    }
+    if (!/^[-+][a-zA-Z]+$/.test(word)) return false;
+    // `set -euo pipefail`: a flag cluster ending in `o` consumes the option name.
+    if (/[+-][a-zA-Z]*o$/.test(word) && index + 1 < words.length && !/^[-+]/.test(words[index + 1]!)) {
+      index += 1;
+    }
+  }
+  return true;
+}
+
+function segmentHasFileRedirection(segment: string): boolean {
+  return /(?:^|[^>&])>(?!&)|(?:^|[^<&])<(?!&)/.test(segment);
+}
+
+/**
+ * Pure validation composition may observe source + shared build cache without a
+ * checkout-wide writer (#713). Any non-build segment, file redirection, or
+ * emitting `tsc` keeps the conservative fence.
+ */
+function isPureBuildOrTestComposition(command: string | readonly string[]): boolean {
+  if (!looksLikeBuildOrTest(command) || isPotentiallyEmittingTypeScript(command)) return false;
+  if (isSimpleNonComposedCommand(command)) return true;
+
+  const canonical = normalizeRepositoryCommand(command);
+  const shell =
+    canonical.kind === 'shell'
+      ? canonical.shellCommand
+      : fixedShellWrapperCommand([canonical.executable!, ...(canonical.args ?? [])]);
+  if (shell === undefined) return true;
+
+  const segments = shellSegments(shell);
+  if (segments.length === 0) return false;
+  let sawValidation = false;
+  for (const segment of segments) {
+    if (isShellOptionPrelude(segment)) continue;
+    if (segmentHasFileRedirection(segment)) return false;
+    if (!looksLikeBuildOrTest(segment) || isPotentiallyEmittingTypeScript(segment)) return false;
+    sawValidation = true;
+  }
+  return sawValidation;
 }
 
 /**
@@ -934,12 +990,10 @@ function repositoryCommandClaims(
     return normalizeClaims(claims);
   }
   // Explicit Xcode derived-data identity already models cache narrowly.
-  // Heuristic build/test softens only for simple argv-like shapes: shell
-  // composition, redirection and emitting tsc keep checkout-wide writers (#713).
-  if (
-    explicitXcodeCache ||
-    (looksLikeBuildOrTest(command) && isSimpleNonComposedCommand(command) && !isPotentiallyEmittingTypeScript(command))
-  ) {
+  // Heuristic build/test softens for simple argv and for pure composed validation
+  // shells (`set -euo pipefail; bun run check:type`). Redirection, emitting tsc,
+  // and unknown side-effect segments keep checkout-wide writers (#713).
+  if (explicitXcodeCache || isPureBuildOrTestComposition(command)) {
     const paths = extractLikelyPaths(command);
     if (paths.length === 0) {
       // Opaque build/test observes source and may write shared build cache only.

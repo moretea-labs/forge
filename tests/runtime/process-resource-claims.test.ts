@@ -640,11 +640,16 @@ describe('Process Runtime fine-grained resource claims', () => {
       ['bun', 'run', 'build'],
       ['npm', 'test'],
       ['cargo', 'build'],
+      'set -euo pipefail; bun run check:type',
+      ['bash', '-lc', 'set -euo pipefail; bun run check:type && bun run check:architecture'],
+      'bun run check:type && bun run check:lint',
     ] as const) {
       const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
       expect(claims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
+      expect(claims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
       expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
       expect(claims.some((claim) => claimsConflict(claim, legacyWriter))).toBe(false);
+      expect(claims.some((claim) => claim.resourceKey.startsWith('path:co1:set'))).toBe(false);
     }
   });
 
