@@ -1,4 +1,4 @@
-import type { WorkRisk } from './types';
+import type { EngineeringRisk } from './types';
 import { validateContextClosureReceipt } from './context-closure-receipt';
 import {
   validateDesignDecisionContractReceipt,
@@ -56,7 +56,17 @@ const PROFILES: Record<EngineeringRiskClass, EngineeringWorkProfile> = {
     profileVersion: ENGINEERING_WORK_PROFILE_VERSION,
     riskClass: 'low',
     admissionEnforcement: 'observe',
-    evidenceRequirements: requirement('optional', 'optional', 'optional', 'optional', 'optional', 'optional', 'conditional', 'optional', 'optional'),
+    evidenceRequirements: requirement(
+      'optional',
+      'optional',
+      'optional',
+      'optional',
+      'optional',
+      'optional',
+      'conditional',
+      'optional',
+      'optional',
+    ),
     admissionEvidence: [],
     completionEvidence: [],
   },
@@ -65,7 +75,17 @@ const PROFILES: Record<EngineeringRiskClass, EngineeringWorkProfile> = {
     profileVersion: ENGINEERING_WORK_PROFILE_VERSION,
     riskClass: 'normal',
     admissionEnforcement: 'observe',
-    evidenceRequirements: requirement('required', 'required', 'required', 'conditional', 'optional', 'conditional', 'required', 'conditional', 'required'),
+    evidenceRequirements: requirement(
+      'required',
+      'required',
+      'required',
+      'conditional',
+      'optional',
+      'conditional',
+      'required',
+      'conditional',
+      'required',
+    ),
     admissionEvidence: ['project_contract', 'context_closure', 'product_dod'],
     completionEvidence: ['focused_validation', 'fresh_review'],
   },
@@ -76,8 +96,24 @@ const PROFILES: Record<EngineeringRiskClass, EngineeringWorkProfile> = {
     // Engineering evidence is useful model/project guidance, never a Kernel
     // mutation-admission authority. Safety/resource admission lives elsewhere.
     admissionEnforcement: 'observe',
-    evidenceRequirements: requirement('required', 'required', 'required', 'required', 'required', 'conditional', 'required', 'conditional', 'required'),
-    admissionEvidence: ['project_contract', 'context_closure', 'product_dod', 'design_decision', 'independent_critique'],
+    evidenceRequirements: requirement(
+      'required',
+      'required',
+      'required',
+      'required',
+      'required',
+      'conditional',
+      'required',
+      'conditional',
+      'required',
+    ),
+    admissionEvidence: [
+      'project_contract',
+      'context_closure',
+      'product_dod',
+      'design_decision',
+      'independent_critique',
+    ],
     completionEvidence: ['focused_validation', 'fresh_review'],
   },
   critical: {
@@ -85,21 +121,38 @@ const PROFILES: Record<EngineeringRiskClass, EngineeringWorkProfile> = {
     profileVersion: ENGINEERING_WORK_PROFILE_VERSION,
     riskClass: 'critical',
     admissionEnforcement: 'observe',
-    evidenceRequirements: requirement('required', 'required', 'required', 'required', 'required', 'required', 'required', 'required', 'required'),
-    admissionEvidence: ['project_contract', 'context_closure', 'product_dod', 'design_decision', 'independent_critique', 'semantic_tools'],
+    evidenceRequirements: requirement(
+      'required',
+      'required',
+      'required',
+      'required',
+      'required',
+      'required',
+      'required',
+      'required',
+      'required',
+    ),
+    admissionEvidence: [
+      'project_contract',
+      'context_closure',
+      'product_dod',
+      'design_decision',
+      'independent_critique',
+      'semantic_tools',
+    ],
     completionEvidence: ['focused_validation', 'real_journey', 'fresh_review'],
   },
 };
 
-export function engineeringRiskClassForWorkRisk(risk: WorkRisk): EngineeringRiskClass {
+export function engineeringRiskClassForRisk(risk: EngineeringRisk): EngineeringRiskClass {
   if (risk === 'readonly' || risk === 'low') return 'low';
   if (risk === 'medium') return 'normal';
   if (risk === 'high') return 'high';
   return 'critical';
 }
 
-export function engineeringWorkProfileForRisk(risk: WorkRisk): EngineeringWorkProfile {
-  return PROFILES[engineeringRiskClassForWorkRisk(risk)];
+export function engineeringWorkProfileForRisk(risk: EngineeringRisk): EngineeringWorkProfile {
+  return PROFILES[engineeringRiskClassForRisk(risk)];
 }
 
 function ids(values: string[] | undefined): string[] {
@@ -108,28 +161,46 @@ function ids(values: string[] | undefined): string[] {
 
 function provided(kind: EngineeringEvidenceKind, receipt: EngineeringContextReceipt): boolean {
   switch (kind) {
-    case 'project_contract': return Boolean(receipt.projectContractReceipt);
-    case 'context_closure': return receipt.evidence.contextClosureReceipt?.readiness.status === 'ready';
-    case 'product_dod': return Boolean(receipt.evidence.productDodReceipt);
-    case 'design_decision': return Boolean(receipt.evidence.designDecisionReceipt) && receipt.designState !== 'revisit_required';
-    case 'independent_critique': return receipt.evidence.independentCritiqueReceipt?.decision === 'approved' && receipt.designState !== 'revisit_required';
-    case 'semantic_tools': return receipt.evidence.semanticToolReceiptIds.length > 0;
-    case 'focused_validation': return receipt.evidence.validationReceiptIds.length > 0;
-    case 'real_journey': return receipt.evidence.journeyReceiptIds.length > 0;
-    case 'fresh_review': return Boolean(receipt.evidence.freshReviewReceiptId);
+    case 'project_contract':
+      return Boolean(receipt.projectContractReceipt);
+    case 'context_closure':
+      return receipt.evidence.contextClosureReceipt?.readiness.status === 'ready';
+    case 'product_dod':
+      return Boolean(receipt.evidence.productDodReceipt);
+    case 'design_decision':
+      return Boolean(receipt.evidence.designDecisionReceipt) && receipt.designState !== 'revisit_required';
+    case 'independent_critique':
+      return (
+        receipt.evidence.independentCritiqueReceipt?.decision === 'approved' &&
+        receipt.designState !== 'revisit_required'
+      );
+    case 'semantic_tools':
+      return receipt.evidence.semanticToolReceiptIds.length > 0;
+    case 'focused_validation':
+      return receipt.evidence.validationReceiptIds.length > 0;
+    case 'real_journey':
+      return receipt.evidence.journeyReceiptIds.length > 0;
+    case 'fresh_review':
+      return Boolean(receipt.evidence.freshReviewReceiptId);
   }
 }
 
-function requiredKinds(profile: EngineeringWorkProfile, phase: 'admission' | 'completion', conditions: EngineeringContextReceipt['conditions']): EngineeringEvidenceKind[] {
+function requiredKinds(
+  profile: EngineeringWorkProfile,
+  phase: 'admission' | 'completion',
+  conditions: EngineeringContextReceipt['conditions'],
+): EngineeringEvidenceKind[] {
   const configured = phase === 'admission' ? profile.admissionEvidence : profile.completionEvidence;
   const out = [...configured];
-  if (conditions.semanticToolsRequired && profile.evidenceRequirements.semantic_tools === 'conditional') out.push('semantic_tools');
-  if (conditions.realJourneyRequired && profile.evidenceRequirements.real_journey === 'conditional') out.push('real_journey');
+  if (conditions.semanticToolsRequired && profile.evidenceRequirements.semantic_tools === 'conditional')
+    out.push('semantic_tools');
+  if (conditions.realJourneyRequired && profile.evidenceRequirements.real_journey === 'conditional')
+    out.push('real_journey');
   return [...new Set(out)];
 }
 
 export function buildEngineeringContextReceipt(input: {
-  risk: WorkRisk;
+  risk: EngineeringRisk;
   sourceIdentity: EngineeringContextReceipt['sourceIdentity'];
   evidence?: EngineeringAdmissionEvidence;
   recordedAt: string;
@@ -139,10 +210,18 @@ export function buildEngineeringContextReceipt(input: {
   const projectContractReceipt = evidence.projectContractReceipt
     ? validateProjectEngineeringContractReceipt(evidence.projectContractReceipt)
     : undefined;
-  const contextClosureReceipt = evidence.contextClosureReceipt ? validateContextClosureReceipt(evidence.contextClosureReceipt) : undefined;
-  const productDodReceipt = evidence.productDodReceipt ? validateProductDoDReceipt(evidence.productDodReceipt) : undefined;
-  const designDecisionReceipt = evidence.designDecisionReceipt ? validateDesignDecisionContractReceipt(evidence.designDecisionReceipt) : undefined;
-  const independentCritiqueReceipt = evidence.independentCritiqueReceipt ? validateIndependentCritiqueReceipt(evidence.independentCritiqueReceipt) : undefined;
+  const contextClosureReceipt = evidence.contextClosureReceipt
+    ? validateContextClosureReceipt(evidence.contextClosureReceipt)
+    : undefined;
+  const productDodReceipt = evidence.productDodReceipt
+    ? validateProductDoDReceipt(evidence.productDodReceipt)
+    : undefined;
+  const designDecisionReceipt = evidence.designDecisionReceipt
+    ? validateDesignDecisionContractReceipt(evidence.designDecisionReceipt)
+    : undefined;
+  const independentCritiqueReceipt = evidence.independentCritiqueReceipt
+    ? validateIndependentCritiqueReceipt(evidence.independentCritiqueReceipt)
+    : undefined;
   const exactRevision = input.sourceIdentity.kind === 'revision' ? input.sourceIdentity.revision : undefined;
   for (const [kind, sourceRevision] of [
     ['PROJECT_CONTRACT', projectContractReceipt?.sourceRevision],
@@ -151,20 +230,36 @@ export function buildEngineeringContextReceipt(input: {
     ['DESIGN_DECISION', designDecisionReceipt?.sourceRevision],
     ['INDEPENDENT_CRITIQUE', independentCritiqueReceipt?.sourceRevision],
   ] as const) {
-    if (exactRevision && sourceRevision && sourceRevision !== exactRevision) throw new Error(`ENGINEERING_${kind}_SOURCE_DRIFT`);
+    if (exactRevision && sourceRevision && sourceRevision !== exactRevision)
+      throw new Error(`ENGINEERING_${kind}_SOURCE_DRIFT`);
   }
-  if (designDecisionReceipt && productDodReceipt && designDecisionReceipt.productDodReceiptId !== productDodReceipt.receiptId) {
+  if (
+    designDecisionReceipt &&
+    productDodReceipt &&
+    designDecisionReceipt.productDodReceiptId !== productDodReceipt.receiptId
+  ) {
     throw new Error('ENGINEERING_DESIGN_PRODUCT_DOD_MISMATCH');
   }
-  if (designDecisionReceipt && contextClosureReceipt && designDecisionReceipt.contextClosureReceiptId !== contextClosureReceipt.receiptId) {
+  if (
+    designDecisionReceipt &&
+    contextClosureReceipt &&
+    designDecisionReceipt.contextClosureReceiptId !== contextClosureReceipt.receiptId
+  ) {
     throw new Error('ENGINEERING_DESIGN_CONTEXT_MISMATCH');
   }
   if (independentCritiqueReceipt) {
-    if (productDodReceipt && independentCritiqueReceipt.productDodReceiptId !== productDodReceipt.receiptId) throw new Error('ENGINEERING_CRITIQUE_PRODUCT_DOD_MISMATCH');
-    if (designDecisionReceipt && independentCritiqueReceipt.designDecisionReceiptId !== designDecisionReceipt.receiptId) throw new Error('ENGINEERING_CRITIQUE_DESIGN_MISMATCH');
+    if (productDodReceipt && independentCritiqueReceipt.productDodReceiptId !== productDodReceipt.receiptId)
+      throw new Error('ENGINEERING_CRITIQUE_PRODUCT_DOD_MISMATCH');
+    if (designDecisionReceipt && independentCritiqueReceipt.designDecisionReceiptId !== designDecisionReceipt.receiptId)
+      throw new Error('ENGINEERING_CRITIQUE_DESIGN_MISMATCH');
     const contextReceiptId = contextClosureReceipt?.receiptId ?? evidence.contextClosureReceiptId?.trim();
-    if (contextReceiptId && independentCritiqueReceipt.contextClosureReceiptId !== contextReceiptId) throw new Error('ENGINEERING_CRITIQUE_CONTEXT_MISMATCH');
-    if (projectContractReceipt && independentCritiqueReceipt.projectContractDigest !== projectContractReceipt.contentDigest) throw new Error('ENGINEERING_CRITIQUE_PROJECT_CONTRACT_MISMATCH');
+    if (contextReceiptId && independentCritiqueReceipt.contextClosureReceiptId !== contextReceiptId)
+      throw new Error('ENGINEERING_CRITIQUE_CONTEXT_MISMATCH');
+    if (
+      projectContractReceipt &&
+      independentCritiqueReceipt.projectContractDigest !== projectContractReceipt.contentDigest
+    )
+      throw new Error('ENGINEERING_CRITIQUE_PROJECT_CONTRACT_MISMATCH');
   }
   const receipt: EngineeringContextReceipt = {
     schemaVersion: 1,
@@ -173,11 +268,14 @@ export function buildEngineeringContextReceipt(input: {
     sourceIdentity: input.sourceIdentity,
     projectContractReceipt,
     evidence: {
-      contextClosureReceiptId: contextClosureReceipt?.receiptId ?? (evidence.contextClosureReceiptId?.trim() || undefined),
+      contextClosureReceiptId:
+        contextClosureReceipt?.receiptId ?? (evidence.contextClosureReceiptId?.trim() || undefined),
       contextClosureReceipt,
       productDodReceiptId: productDodReceipt?.receiptId ?? (evidence.productDodReceiptId?.trim() || undefined),
-      designDecisionReceiptId: designDecisionReceipt?.receiptId ?? (evidence.designDecisionReceiptId?.trim() || undefined),
-      independentCritiqueReceiptId: independentCritiqueReceipt?.receiptId ?? (evidence.independentCritiqueReceiptId?.trim() || undefined),
+      designDecisionReceiptId:
+        designDecisionReceipt?.receiptId ?? (evidence.designDecisionReceiptId?.trim() || undefined),
+      independentCritiqueReceiptId:
+        independentCritiqueReceipt?.receiptId ?? (evidence.independentCritiqueReceiptId?.trim() || undefined),
       productDodReceipt,
       designDecisionReceipt,
       independentCritiqueReceipt,
@@ -190,18 +288,27 @@ export function buildEngineeringContextReceipt(input: {
       semanticToolsRequired: evidence.conditions?.semanticToolsRequired === true,
       realJourneyRequired: evidence.conditions?.realJourneyRequired === true,
     },
-    ...(designDecisionReceipt ? {
-      semanticScope: { keys: designDecisionReceipt.semanticScopeKeys, mutationClass: designDecisionReceipt.mutationClass },
-      complexityBudget: designDecisionReceipt.complexityBudget,
-      designState: 'ready' as const,
-    } : {}),
+    ...(designDecisionReceipt
+      ? {
+          semanticScope: {
+            keys: designDecisionReceipt.semanticScopeKeys,
+            mutationClass: designDecisionReceipt.mutationClass,
+          },
+          complexityBudget: designDecisionReceipt.complexityBudget,
+          designState: 'ready' as const,
+        }
+      : {}),
     blockerDispositions: [],
     missingAdmissionEvidence: [],
     missingCompletionEvidence: [],
     recordedAt: input.recordedAt,
   };
-  receipt.missingAdmissionEvidence = requiredKinds(profile, 'admission', receipt.conditions).filter((kind) => !provided(kind, receipt));
-  receipt.missingCompletionEvidence = requiredKinds(profile, 'completion', receipt.conditions).filter((kind) => !provided(kind, receipt));
+  receipt.missingAdmissionEvidence = requiredKinds(profile, 'admission', receipt.conditions).filter(
+    (kind) => !provided(kind, receipt),
+  );
+  receipt.missingCompletionEvidence = requiredKinds(profile, 'completion', receipt.conditions).filter(
+    (kind) => !provided(kind, receipt),
+  );
   return receipt;
 }
 
@@ -216,7 +323,6 @@ export function evaluateEngineeringAdmission(input: {
   void input;
   return { allowed: true };
 }
-
 
 export function applyEngineeringBlockerDisposition(
   receipt: EngineeringContextReceipt,

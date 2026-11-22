@@ -1238,6 +1238,11 @@ forbid(
   /\b(?:SEMANTIC_WORK_STATES|WORK_PHASES|WORK_KINDS|WorkCompletionReceipt|WorkPhaseEvidenceMap|WorkReconciliationRecord|SubmittedWorkOperation)\b/,
   'retired Work lifecycle enums and receipts belong in test-only fixtures',
 );
+forbid(
+  'packages/kernel/work/domain/types.ts',
+  /\b(?:WORK_RISKS|WorkRisk)\b/,
+  'risk enum must represent current engineering capability, not retired Work',
+);
 
 requireMissing('packages/kernel/work/domain/objective-relations.ts');
 forbid(
