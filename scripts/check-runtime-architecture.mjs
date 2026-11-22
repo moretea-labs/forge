@@ -682,29 +682,12 @@ for (const path of [
   'adapters/mcp/runtime-gateway/work-controller-recovery-operations.ts',
   'adapters/mcp/controller-round-compatibility.ts',
   'adapters/mcp/frozen-client-semantic-compatibility.ts',
+  'adapters/mcp/runtime-gateway/work-input-wire-migration.ts',
 ])
   requireMissing(path);
-requireText(
-  'adapters/mcp/runtime-gateway/work-input-wire-migration.ts',
-  "const FROZEN_SEMANTIC_V1_PREFIX = 'semantic.v1:';",
-);
-requireText(
-  'adapters/mcp/runtime-gateway/work-input-wire-migration.ts',
-  "const FROZEN_CURRENT_CONVERSATION_ENROLLMENT = 'controller.current_conversation.enroll';",
-);
-forbid(
-  'adapters/mcp/runtime-gateway/work-input-wire-migration.ts',
-  /schedule\.delete:|work\.review:|controller\.(?:authority|provider|disposition|round):|plan\.step\.retry:/,
-  'the bounded frozen-session decoder must not restore retired lifecycle carriers',
-);
-forbid(
-  'adapters/mcp/runtime-gateway/work-input-wire-migration.ts',
-  /work_revise|work_complete|work_state|work_result_refs/,
-  'frozen Work wire compatibility must remain historical read-only',
-);
 for (const path of sourceFiles('adapters/mcp')) {
-  if (path === 'adapters/mcp/runtime-gateway/work-input-wire-migration.ts') continue;
-  forbid(path, /semantic\.v1:/, 'semantic.v1 frozen-session decoding must have exactly one transport owner');
+  forbid(path, /semantic\.v1:/, 'retired semantic.v1 frozen-session decoding must not remain in MCP adapters');
+  forbid(path, /normalizeRhWorkInputWireMigration/, 'retired Work input wire migration must not remain callable');
 }
 
 const SEMANTIC_AUTHORITY_CRITICAL_ROOTS = [
@@ -2915,7 +2898,7 @@ requireMissing('src/runtime/control-plane/execution/work-evidence-policy.ts');
 // Requirement/Plan/Run/Git own their separate current state.
 requireText(
   'packages/kernel/identity/infrastructure/user-request-store.ts',
-  "throw new Error('USER_REQUEST_WORK_SCOPE_RETIRED')",
+  "throw new Error('USER_REQUEST_TARGET_SCOPE_INVALID')",
 );
 forbid(
   'src/runtime/context/cognitive-attention.ts',

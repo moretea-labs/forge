@@ -1,6 +1,5 @@
 export type CompletionReceiptSource =
   | 'direct_edit'
-  | 'controller_work'
   | 'isolated_agent_run'
   | 'workspace_run'
   | 'remote_no_change_execution';
@@ -54,13 +53,7 @@ export interface RepositoryCompletionReceipt {
   delivery: {
     kind: CompletionReceiptDeliveryKind;
     status: CompletionReceiptDeliveryStatus;
-    strategy:
-      | 'edit_session_commit'
-      | 'work_fast_forward'
-      | 'work_merge_commit'
-      | 'already_integrated'
-      | 'no_change'
-      | 'remote';
+    strategy: 'edit_session_commit' | 'already_integrated' | 'no_change' | 'remote';
     reachable: boolean;
     recordedAt: string;
   };

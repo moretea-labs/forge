@@ -37,7 +37,7 @@ function completionReceipt(receiptKey: string, targetRevision: string) {
   return {
     schemaVersion: 1 as const,
     receiptId: `receipt-${receiptKey}`,
-    source: 'controller_work' as const,
+    source: 'direct_edit' as const,
     issueId: 'ISS-goal-authority',
     taskId: 'T1',
     targetBranch: 'main',

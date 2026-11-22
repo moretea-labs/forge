@@ -124,7 +124,7 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // read surface. Refresh the exact schema fingerprint.
 // 2026-11-22 #483 follow-up: remove advertised work_id fields from rh_context /
 // rh_work input schemas (additionalProperties remains false). Refresh fingerprint.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '865c1d940969cbf9';
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'a28156e7fa4fb40e';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

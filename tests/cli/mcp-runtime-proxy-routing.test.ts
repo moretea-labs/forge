@@ -2026,7 +2026,7 @@ function postFinalizeAttributionFixture() {
       completionReceipt: {
         schemaVersion: 1,
         receiptId: 'receipt-post-finalize-readonly',
-        source: 'controller_work',
+        source: 'direct_edit',
         issueId: 'post-finalize-attribution',
         taskId: workId,
         targetBranch: 'main',
