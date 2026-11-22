@@ -1127,6 +1127,39 @@ test('Swift-only medium edit does not inject unavailable Forge package checks', 
   expect(edited.requestedChecks).toEqual([]);
 });
 
+test('protected edits do not automatically inherit Forge source-only architecture checks', () => {
+  const fx = fixture();
+  const protectedPath = 'Generated.xcodeproj/project.pbxproj';
+  mkdirSync(join(fx.repoRoot, 'Generated.xcodeproj'), { recursive: true });
+  writeFileSync(join(fx.repoRoot, protectedPath), 'value = 1;\n');
+  writeFileSync(
+    join(fx.repoRoot, 'package.json'),
+    JSON.stringify({ scripts: { 'check:runtime-architecture': 'node scripts/check-runtime-architecture.mjs' } }),
+  );
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Protected-path verification is repository-owned',
+    allowedPaths: [protectedPath],
+    binding: durableBinding(),
+  });
+  const edited = applyEditOperations(
+    fx.repoRoot,
+    fx.policy,
+    session.sessionId,
+    [
+      {
+        type: 'replace',
+        path: protectedPath,
+        expectedSha256: sha256('value = 1;\n'),
+        replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+      },
+    ],
+    { binding: durableBinding() },
+  );
+  expect(edited.assurance?.protectedPaths).toContain(protectedPath);
+  expect(edited.assurance?.verificationDepth).toBe('architecture');
+  expect(edited.assurance?.requiredChecks).toEqual([]);
+});
+
 test('available package type check is required for medium edits', () => {
   const fx = fixture();
   writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({ scripts: { 'check:type': 'tsc --noEmit' } }));

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { listControllerChecks, type ControllerCheck } from '../../src/runtime/execution/process-runtime/check-runner';
@@ -122,6 +122,29 @@ describe('check execution scheduling', () => {
             'check:runtime-architecture': 'node scripts/check-runtime-architecture.mjs',
             'check:architecture-sync': 'bun src/cli/index.ts run check-architecture-sync',
             'check:check-scheduling': 'bun test tests/runtime/check-scheduling.test.ts',
+          },
+        }),
+      );
+      // Source-repository architecture policy belongs in repository config,
+      // not in a global Runtime list of privileged check names.
+      mkdirSync(join(root, '.forge'));
+      writeFileSync(
+        join(root, '.forge/checks.json'),
+        JSON.stringify({
+          version: 1,
+          checks: {
+            'package:check:runtime-architecture': {
+              command: ['node', 'scripts/check-runtime-architecture.mjs'],
+              effects: { reads: ['.'] },
+            },
+            'package:check:architecture-sync': {
+              command: ['bun', 'src/cli/index.ts', 'run', 'check-architecture-sync'],
+              effects: { reads: ['.'], temp: 'isolated', git: 'read' },
+            },
+            'package:check:check-scheduling': {
+              command: ['bun', 'test', 'tests/runtime/check-scheduling.test.ts'],
+              effects: { reads: ['.'], temp: 'isolated', git: 'read' },
+            },
           },
         }),
       );

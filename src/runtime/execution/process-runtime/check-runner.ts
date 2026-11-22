@@ -319,17 +319,7 @@ function inferredPackageCheckEffects(name: string): ControllerCheckEffects | und
   if (normalized === 'check:stable-baseline') {
     return { reads: ['.'], hostServices: ['canonical-runtime', 'forge-recovery'] };
   }
-  if (normalized === 'check:type' || normalized === 'check:runtime-architecture') {
-    // These canonical gates are source readers: TypeScript runs with --noEmit,
-    // while runtime-architecture only inspects source/AST structure. Neither
-    // owns the shared repository build cache.
-    return { reads: ['.'] };
-  }
-  if (normalized === 'check:architecture-sync') {
-    // Architecture sync runs the queue in --check mode and inspects Git state.
-    // Its scratch space is check-local; it never mutates repository source.
-    return { reads: ['.'], temp: 'isolated', git: 'read' };
-  }
+  if (normalized === 'check:type') return { reads: ['.'] };
   const cachedStaticAnalysis = /(?:^|:)(?:typecheck|lint|format:check|mcp-compatibility|forge-runtime)$/.test(
     normalized,
   );

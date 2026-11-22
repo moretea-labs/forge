@@ -488,9 +488,6 @@ function calculateAssurance(repoRoot: string, session: EditSession, at: string):
     ...new Set([
       ...session.requestedChecks,
       ...(semanticRisk !== 'low' && available.has('package:check:type') ? ['package:check:type'] : []),
-      ...(protectedPaths.length > 0 && available.has('package:check:runtime-architecture')
-        ? ['package:check:runtime-architecture']
-        : []),
     ]),
   ].sort();
   return {
