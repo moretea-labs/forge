@@ -695,6 +695,42 @@ function isPureBuildOrTestComposition(command: string | readonly string[]): bool
   return sawValidation;
 }
 
+/** A single source-validation command may redirect stdout to one literal
+ * repository-local file without owning every source file (#713). Compound
+ * shells and nonliteral destinations remain on the conservative path.
+ */
+function scopedValidationLogOutput(
+  command: string | readonly string[],
+  repoId: string,
+  checkoutId?: string,
+): ResourceClaimSpec[] | undefined {
+  const canonical = normalizeRepositoryCommand(command);
+  const shell =
+    canonical.kind === 'shell'
+      ? canonical.shellCommand
+      : fixedShellWrapperCommand([canonical.executable!, ...(canonical.args ?? [])]);
+  if (!shell) return undefined;
+  const match = /^(.*?)\s+>>?\s*([^\s;&|<>]+)(?:\s+2>&1)?\s*$/.exec(shell);
+  if (!match) return undefined;
+  const sourceCommand = match[1]!;
+  const output = match[2]!;
+  const runner = shellWordsPreservingQuotes(sourceCommand)[0]?.toLowerCase();
+  if (
+    !['bun', 'npm', 'pnpm', 'yarn'].includes(runner ?? '') ||
+    /[;&|<>`$\n\r]/.test(sourceCommand) ||
+    /[;&|<>`$*?\[\]{}\n\r]/.test(output) ||
+    /(?:^|\s)--update-snapshots?(?:\s|=|$)/.test(sourceCommand) ||
+    normalizeClaimPath(output) === null ||
+    !isPureBuildOrTestComposition(sourceCommand)
+  )
+    return undefined;
+  return normalizeClaims([
+    claimValidationObservation(checkoutId, repoId),
+    claimBuildCacheWrite(repoId),
+    claimPathWrite(output, checkoutId, repoId),
+  ]);
+}
+
 /**
  * Emitting `tsc` (including bun x / npx wrappers) can write `.js` beside sources.
  * Soft observation claims are reserved for `--noEmit` via isTypedTypeScriptNoEmit.
@@ -955,6 +991,10 @@ function repositoryCommandClaims(
     ]);
   const hostClaims = hostOnlyCommandClaims(command, repoId, checkoutId, repoRoot);
   if (hostClaims) return hostClaims;
+  if (classification.risk !== 'destructive') {
+    const redirectedValidation = scopedValidationLogOutput(command, repoId, checkoutId);
+    if (redirectedValidation) return redirectedValidation;
+  }
 
   if (classification.risk !== 'destructive' && isCargoSourceValidationCommand(command)) {
     return normalizeClaims([claimValidationObservation(checkoutId, repoId), claimBuildCacheWrite(repoId)]);

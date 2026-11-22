@@ -653,6 +653,37 @@ describe('Process Runtime fine-grained resource claims', () => {
     }
   });
 
+  test('single validation command redirected to exact log path does not monopolize checkout (#713)', () => {
+    const foreignSourceWriter = lease('path:co1:src/independent.ts', 'write');
+    const foreignLogWriter = lease('path:co1:reports/check.log', 'write');
+    for (const command of [
+      'bun run check:type > reports/check.log 2>&1',
+      'bun test tests/runtime/smoke.test.ts >> reports/check.log',
+      ['bash', '-lc', 'bun run check:type > reports/check.log 2>&1'],
+    ]) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
+      expect(claims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
+      expect(claims).toContainEqual({ resourceKey: 'path:co1:reports/check.log', mode: 'write' });
+      expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+      expect(claims.some((claim) => claimsConflict(claim, foreignSourceWriter))).toBe(false);
+      expect(claims.some((claim) => claimsConflict(claim, foreignLogWriter))).toBe(true);
+    }
+    for (const unsafe of [
+      'bun run check:type > /tmp/global.log 2>&1',
+      'bun run check:type > reports/*.log',
+      'bun run check:type > $OUTPUT',
+      'bun run check:type > reports/check.log && touch src/other.ts',
+      'bun run check:type > reports/check.log; touch src/other.ts',
+      'bun run check:type < config.json > reports/check.log',
+    ]) {
+      expect(claimsForRepositoryCommand(unsafe, 'repo1', 'co1')).toContainEqual({
+        resourceKey: 'workspace:co1',
+        mode: 'write',
+      });
+    }
+  });
+
   test('known read-only architecture scanner composes without checkout lock, unknown Node remains fenced (#713)', () => {
     const safe = claimsForRepositoryCommand(
       ['bash', '-lc', 'set -euo pipefail; bun run check:type && node scripts/check-runtime-architecture.mjs'],
