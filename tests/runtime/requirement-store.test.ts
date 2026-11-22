@@ -17,11 +17,9 @@ import {
   reviseRequirementSemantic,
   updateRequirement,
 } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { implementationReviewChangedPathDigest } from '../helpers/historical-implementation-review';
 import { executionPlacement, scopeRef, semanticRecordMetadata } from '../../packages/kernel/identity/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { buildRequirementBoard } from '../../src/runtime/control-plane/facade/requirement-board';
-import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 import {
   createProjectIdentity,
   readProjectIdentity,
@@ -33,13 +31,6 @@ const homes: string[] = [];
 afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
-
-function createCancelledWork(
-  options: Parameters<typeof seedHistoricalWorkContract>[0],
-  input: Parameters<typeof seedHistoricalWorkContract>[1],
-) {
-  return seedHistoricalWorkContract(options, { ...input, semanticState: 'cancelled' });
-}
 
 test('keeps user Requirement lifecycle separate from its active technical plan', () => {
   const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
@@ -666,6 +657,7 @@ test('Requirement board and diagnostics preserve Plan-derived repository placeme
   };
   expect(board.requirements.map((item) => item.requirementId)).toEqual(['req-plan-placement']);
   expect(board.requirements[0]?.activePlanIds).toEqual(['plan-placement']);
+  expect(board).not.toHaveProperty('historicalWorkProjection');
 
   const diagnostics = buildExecutionDiagnostics({
     controllerHome: home,
@@ -678,4 +670,5 @@ test('Requirement board and diagnostics preserve Plan-derived repository placeme
   };
   expect(diagnostics.requirements[0]?.activePlanIds).toEqual(['plan-placement']);
   expect(diagnostics.plans.map((plan) => plan.planId)).toEqual(['plan-placement']);
+  expect(diagnostics).not.toHaveProperty('historicalWorkProjection');
 });

@@ -44,7 +44,9 @@ export interface RequirementBoardItem {
 }
 
 function boundedText(value: unknown, maxLength: number): string {
-  return String(value ?? '').trim().slice(0, maxLength);
+  return String(value ?? '')
+    .trim()
+    .slice(0, maxLength);
 }
 
 function explicitUserDecision(requirement: Requirement): string | undefined {
@@ -100,12 +102,7 @@ function projectRequirement(requirement: Requirement, plans: readonly PlanContra
 }
 
 function loadRequirements(options: RequirementBoardOptions, plans?: readonly PlanContract[]): Requirement[] {
-  return listRequirementsForRepository(
-    { controllerHome: options.controllerHome },
-    options.repoId,
-    500,
-    plans,
-  )
+  return listRequirementsForRepository({ controllerHome: options.controllerHome }, options.repoId, 500, plans)
     .map((record) => record.value)
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
@@ -120,9 +117,13 @@ export function buildRequirementBoard(options: RequirementBoardOptions): Record<
   const contracts = options.repoId?.trim()
     ? readPlanContractStore({ controllerHome: options.controllerHome, repoId: options.repoId }).contracts
     : [];
-  const activePlans = contracts.filter(isCurrentPlanContract)
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 100);
-  const allRequirements = loadRequirements(options, contracts).map((requirement) => projectRequirement(requirement, activePlans));
+  const activePlans = contracts
+    .filter(isCurrentPlanContract)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, 100);
+  const allRequirements = loadRequirements(options, contracts).map((requirement) =>
+    projectRequirement(requirement, activePlans),
+  );
   const requirements = allRequirements.slice(0, DEFAULT_REQUIREMENT_LIMIT);
   const counts = requirementCounts(allRequirements);
   return {
@@ -138,7 +139,6 @@ export function buildRequirementBoard(options: RequirementBoardOptions): Record<
     needsAttentionCount: allRequirements.filter((requirement) => requirement.needsAttention).length,
     requirements,
     requirementTruncatedCount: Math.max(0, allRequirements.length - requirements.length),
-    historicalWorkProjection: 'retired_not_projected',
     detailPointer: {
       tool: 'get_project_board',
       arguments: { detail_level: 'detail' },
@@ -178,10 +178,15 @@ export function buildExecutionDiagnostics(
     : allRequirements;
   const allPlans = contracts.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 100);
   const scopedPlans = options.requirementId
-    ? allPlans.filter((plan) => plan.requirementId === options.requirementId
-      || (!plan.requirementId && selectedRequirements.some((requirement) => requirement.activePlanId === plan.planId)))
+    ? allPlans.filter(
+        (plan) =>
+          plan.requirementId === options.requirementId ||
+          (!plan.requirementId && selectedRequirements.some((requirement) => requirement.activePlanId === plan.planId)),
+      )
     : allPlans;
-  const activePlans = allPlans.filter((plan) => !['finalized', 'superseded', 'cancelled', 'invalidated_by_drift'].includes(plan.status));
+  const activePlans = allPlans.filter(
+    (plan) => !['finalized', 'superseded', 'cancelled', 'invalidated_by_drift'].includes(plan.status),
+  );
   const requirements = selectedRequirements.map((requirement) => projectRequirement(requirement, activePlans));
   const plans = scopedPlans.slice(0, limit).map((plan) => summarizeDiagnosticPlan(plan, options.detailLevel));
   const maintenanceFindings = requirements
@@ -195,12 +200,15 @@ export function buildExecutionDiagnostics(
       source: 'requirement_attention',
     }));
   const projectionWarnings = requirements
-    .filter((requirement) => requirement.persistedState === 'waiting_for_user' && requirement.state !== 'waiting_for_user')
+    .filter(
+      (requirement) => requirement.persistedState === 'waiting_for_user' && requirement.state !== 'waiting_for_user',
+    )
     .slice(0, limit)
     .map((requirement) => ({
       code: 'USER_DECISION_REQUIRED_TEXT_MISSING',
       requirementId: requirement.requirementId,
-      summary: 'Persisted waiting_for_user was projected as planned/active because no explicit user decision was recorded.',
+      summary:
+        'Persisted waiting_for_user was projected as planned/active because no explicit user decision was recorded.',
     }));
   return {
     schemaVersion: 2,
@@ -216,9 +224,11 @@ export function buildExecutionDiagnostics(
     planCount: scopedPlans.length,
     plans,
     planTruncatedCount: Math.max(0, scopedPlans.length - plans.length),
-    historicalWorkProjection: 'retired_not_projected',
     maintenanceFindings,
-    maintenanceFindingTruncatedCount: Math.max(0, requirements.filter((requirement) => requirement.needsAttention).length - maintenanceFindings.length),
+    maintenanceFindingTruncatedCount: Math.max(
+      0,
+      requirements.filter((requirement) => requirement.needsAttention).length - maintenanceFindings.length,
+    ),
     projectionWarnings,
     technicalDetailPointers: [
       { tool: 'rh_context', arguments: { operation: 'list', detail_level: 'detail' } },
