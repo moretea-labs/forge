@@ -74,7 +74,6 @@ import {
 } from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
 import { getWorkContract } from '../../packages/kernel/work/api';
 import { snapshotControllerCheck } from '../../src/runtime/execution/process-runtime/check-runner';
-import { readWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { principalFor } from '../../src/runtime/control-plane/execution/session-execution-support';
 import {
   verificationInputFingerprint,
@@ -404,7 +403,9 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(settled).toMatchObject({ completed: true, ok: true });
     expect(existsSync(join(fx.repoRoot, 'unattributed-command.txt'))).toBe(true);
     expect(readExecutionSession(fx.controllerHome, caller)).not.toHaveProperty('activeWorkId');
-    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, historical.workId)).toBeUndefined();
+    expect(
+      readControlPlaneRecord(fx.controllerHome, 'execution_work_handle', fx.repository.repoId, historical.workId),
+    ).toBeUndefined();
   });
 
   test('historical Work session does not block Workbench read/search or ordinary focused checks', async () => {
@@ -466,7 +467,9 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     );
     expect(check?.isError).not.toBe(true);
     expect(check?.structuredContent).toMatchObject({ accepted: true });
-    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, historical.workId)).toBeUndefined();
+    expect(
+      readControlPlaneRecord(fx.controllerHome, 'execution_work_handle', fx.repository.repoId, historical.workId),
+    ).toBeUndefined();
     expect(readExecutionSession(fx.controllerHome, caller)).not.toHaveProperty('activeWorkId');
     expect(git(fx.repoRoot, ['status', '--porcelain', '--', 'src/lib.ts'])).toBe('');
   });

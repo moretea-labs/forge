@@ -1,12 +1,11 @@
 import { sanitizeFileComponent } from '../../src/runtime/shared/json-files';
 import { writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import type { WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 
 /** Test fixture only: seeds historical WorkHandle bytes for read/migration compatibility tests. */
-export function seedHistoricalWorkHandle(
+export function seedHistoricalWorkHandle<T extends { workId: string; repositoryId: string; recordRevision?: number }>(
   controllerHome: string,
-  handle: WorkHandleState,
-): WorkHandleState {
+  handle: T,
+): Omit<T, 'recordRevision'> & { recordRevision: number } {
   const { recordRevision, ...value } = handle;
   const record = writeControlPlaneRecord(controllerHome, {
     namespace: 'execution_work_handle',

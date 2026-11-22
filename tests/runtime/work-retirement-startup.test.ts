@@ -8,7 +8,6 @@ import {
   type ControlPlaneDatabaseInspection,
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { scopedOperationRoot } from '../../src/effects/controller-home';
-import { readWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import type { RuntimeReadiness, RuntimeReleaseManifest } from '../../src/runtime/root/types';
 
 describe('retired Work has no Runtime startup admission authority', () => {
@@ -41,7 +40,7 @@ describe('retired Work has no Runtime startup admission authority', () => {
     }
   });
 
-  test('historical JSON WorkHandle read does not import a WorkHandle SQLite record', () => {
+  test('Runtime startup never imports obsolete WorkHandle JSON into SQLite', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-no-work-import-'));
     const repoId = 'repo-legacy-read';
     const workId = 'work-legacy-read';
@@ -54,10 +53,23 @@ describe('retired Work has no Runtime startup admission authority', () => {
         repositoryId: repoId,
         checkoutId: 'checkout-old',
         state: 'prepared',
-      } as WorkHandleState;
+      };
       writeFileSync(path, JSON.stringify(handle));
-      expect(readWorkHandle(controllerHome, repoId, workId)).toMatchObject(handle);
-      expect(readWorkHandle(controllerHome, repoId, workId)).toMatchObject(handle);
+      const services = new RuntimeControllerServices(
+        controllerHome,
+        'retired-work-json-test',
+        { releaseId: 'test' } as RuntimeReleaseManifest,
+        () => ({}) as RuntimeReadiness,
+        () =>
+          ({
+            integrity: 'ok',
+            schemaVersion: 1,
+            recordCount: 0,
+            auditEventCount: 0,
+            orphanRecordCount: 0,
+          }) as ControlPlaneDatabaseInspection,
+      );
+      services.initialize();
       expect(readControlPlaneRecord(controllerHome, 'execution_work_handle', repoId, workId)).toBeUndefined();
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });

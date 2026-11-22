@@ -24,7 +24,6 @@ import {
   ExecutionIdentityError,
   type ResolvedExecutionIdentity,
 } from '../../src/runtime/control-plane/execution/execution-identity';
-import { resolveWorkDeliveryTargetBranch } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { spawnManagedProcess } from '../../src/runtime/execution/process-runtime';
 
 const roots: string[] = [];
@@ -65,49 +64,51 @@ function dualRepoFixture() {
   return { root, controllerHome, repoA, repoB, headA, headB, repoARoot, repoBRoot };
 }
 
-function identityFromCoordinates(
-  input: Omit<ResolvedExecutionIdentity, 'schemaVersion'>,
-): ResolvedExecutionIdentity {
+function identityFromCoordinates(input: Omit<ResolvedExecutionIdentity, 'schemaVersion'>): ResolvedExecutionIdentity {
   return Object.freeze({ schemaVersion: 1 as const, ...input });
 }
 
 describe('execution identity pre-spawn guard', () => {
-
-
   test('rejects explicit checkout A when cwd routes into repo B', () => {
     const fx = dualRepoFixture();
     const identity = executionIdentityForRepository(fx.repoA);
-    expect(() => assertExecutionIdentity({
-      controllerHome: fx.controllerHome,
-      identity,
-      cwd: fx.repoBRoot,
-      requestedRepoId: fx.repoA.repoId,
-      requestedCheckoutId: fx.repoA.activeCheckoutId,
-    })).toThrow(/CHECKOUT_ROUTE_MISMATCH|GIT_TOPLEVEL_MISMATCH/);
+    expect(() =>
+      assertExecutionIdentity({
+        controllerHome: fx.controllerHome,
+        identity,
+        cwd: fx.repoBRoot,
+        requestedRepoId: fx.repoA.repoId,
+        requestedCheckoutId: fx.repoA.activeCheckoutId,
+      }),
+    ).toThrow(/CHECKOUT_ROUTE_MISMATCH|GIT_TOPLEVEL_MISMATCH/);
   });
 
   test('rejects checkoutId mismatch against immutable identity', () => {
     const fx = dualRepoFixture();
     const identity = executionIdentityForRepository(fx.repoA);
-    expect(() => assertExecutionIdentity({
-      controllerHome: fx.controllerHome,
-      identity,
-      cwd: fx.repoARoot,
-      requestedRepoId: fx.repoA.repoId,
-      requestedCheckoutId: fx.repoB.activeCheckoutId,
-    })).toThrow(/CHECKOUT_ROUTE_MISMATCH/);
+    expect(() =>
+      assertExecutionIdentity({
+        controllerHome: fx.controllerHome,
+        identity,
+        cwd: fx.repoARoot,
+        requestedRepoId: fx.repoA.repoId,
+        requestedCheckoutId: fx.repoB.activeCheckoutId,
+      }),
+    ).toThrow(/CHECKOUT_ROUTE_MISMATCH/);
   });
 
   test('rejects repoId mismatch against immutable identity', () => {
     const fx = dualRepoFixture();
     const identity = executionIdentityForRepository(fx.repoA);
-    expect(() => assertExecutionIdentity({
-      controllerHome: fx.controllerHome,
-      identity,
-      cwd: fx.repoARoot,
-      requestedRepoId: fx.repoB.repoId,
-      requestedCheckoutId: fx.repoA.activeCheckoutId,
-    })).toThrow(/EXECUTION_IDENTITY_MISMATCH/);
+    expect(() =>
+      assertExecutionIdentity({
+        controllerHome: fx.controllerHome,
+        identity,
+        cwd: fx.repoARoot,
+        requestedRepoId: fx.repoB.repoId,
+        requestedCheckoutId: fx.repoA.activeCheckoutId,
+      }),
+    ).toThrow(/EXECUTION_IDENTITY_MISMATCH/);
   });
 
   test('rejects an execution identity for an unregistered checkout', () => {
@@ -117,11 +118,13 @@ describe('execution identity pre-spawn guard', () => {
       checkoutId: 'checkout_missing',
       canonicalRoot: fx.repoARoot,
     });
-    expect(() => assertExecutionIdentity({
-      controllerHome: fx.controllerHome,
-      identity,
-      cwd: fx.repoARoot,
-    })).toThrow(/CHECKOUT_NOT_REGISTERED/);
+    expect(() =>
+      assertExecutionIdentity({
+        controllerHome: fx.controllerHome,
+        identity,
+        cwd: fx.repoARoot,
+      }),
+    ).toThrow(/CHECKOUT_NOT_REGISTERED/);
   });
 
   test('rejects Git top-level mismatch when cwd is outside registered checkout', () => {
@@ -129,13 +132,15 @@ describe('execution identity pre-spawn guard', () => {
     const outsider = join(fx.root, 'outsider');
     initGitRepo(outsider);
     const identity = executionIdentityForRepository(fx.repoA);
-    expect(() => assertExecutionIdentity({
-      controllerHome: fx.controllerHome,
-      identity,
-      cwd: outsider,
-      requestedRepoId: fx.repoA.repoId,
-      requestedCheckoutId: fx.repoA.activeCheckoutId,
-    })).toThrow(/CHECKOUT_ROUTE_MISMATCH|GIT_TOPLEVEL_MISMATCH/);
+    expect(() =>
+      assertExecutionIdentity({
+        controllerHome: fx.controllerHome,
+        identity,
+        cwd: outsider,
+        requestedRepoId: fx.repoA.repoId,
+        requestedCheckoutId: fx.repoA.activeCheckoutId,
+      }),
+    ).toThrow(/CHECKOUT_ROUTE_MISMATCH|GIT_TOPLEVEL_MISMATCH/);
   });
 
   test('rejects a nested independent repository instead of inferring parent ownership', () => {
@@ -143,11 +148,13 @@ describe('execution identity pre-spawn guard', () => {
     const nested = join(fx.repoARoot, 'nested-repository');
     initGitRepo(nested);
     const identity = executionIdentityForRepository(fx.repoA);
-    expect(() => assertExecutionIdentity({
-      controllerHome: fx.controllerHome,
-      identity,
-      cwd: nested,
-    })).toThrow(/GIT_TOPLEVEL_MISMATCH/);
+    expect(() =>
+      assertExecutionIdentity({
+        controllerHome: fx.controllerHome,
+        identity,
+        cwd: nested,
+      }),
+    ).toThrow(/GIT_TOPLEVEL_MISMATCH/);
   });
 
   test('rejects branch drift', () => {
@@ -159,11 +166,13 @@ describe('execution identity pre-spawn guard', () => {
       branch: 'expected-feature',
       expectedHead: fx.headA,
     });
-    expect(() => assertExecutionIdentity({
-      controllerHome: fx.controllerHome,
-      identity,
-      cwd: fx.repoARoot,
-    })).toThrow(/WORK_HANDLE_BRANCH_CHANGED/);
+    expect(() =>
+      assertExecutionIdentity({
+        controllerHome: fx.controllerHome,
+        identity,
+        cwd: fx.repoARoot,
+      }),
+    ).toThrow(/WORK_HANDLE_BRANCH_CHANGED/);
   });
 
   test('rejects HEAD drift', () => {
@@ -175,11 +184,13 @@ describe('execution identity pre-spawn guard', () => {
       branch: 'main',
       expectedHead: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
     });
-    expect(() => assertExecutionIdentity({
-      controllerHome: fx.controllerHome,
-      identity,
-      cwd: fx.repoARoot,
-    })).toThrow(/WORK_HANDLE_HEAD_CHANGED/);
+    expect(() =>
+      assertExecutionIdentity({
+        controllerHome: fx.controllerHome,
+        identity,
+        cwd: fx.repoARoot,
+      }),
+    ).toThrow(/WORK_HANDLE_HEAD_CHANGED/);
   });
 
   test('symlink path alias still validates through realpath', () => {
@@ -207,7 +218,11 @@ describe('execution identity pre-spawn guard', () => {
   test('rejects archived checkout lifecycle unless explicitly allowed', () => {
     const fx = dualRepoFixture();
     const linkedWorktree = join(fx.root, 'repo-a-archived-worktree');
-    const worktreeResult = spawnSync('git', ['-C', fx.repoARoot, 'worktree', 'add', '-b', 'archived-checkout', linkedWorktree], { encoding: 'utf8' });
+    const worktreeResult = spawnSync(
+      'git',
+      ['-C', fx.repoARoot, 'worktree', 'add', '-b', 'archived-checkout', linkedWorktree],
+      { encoding: 'utf8' },
+    );
     expect(worktreeResult.status).toBe(0);
     const withCheckout = addRepositoryCheckout({
       controllerHome: fx.controllerHome,
@@ -215,7 +230,9 @@ describe('execution identity pre-spawn guard', () => {
       path: linkedWorktree,
       activate: false,
     });
-    const addedCheckout = withCheckout.checkouts.find((checkout) => checkout.canonicalRoot === realpathSync(linkedWorktree));
+    const addedCheckout = withCheckout.checkouts.find(
+      (checkout) => checkout.canonicalRoot === realpathSync(linkedWorktree),
+    );
     expect(addedCheckout).toBeTruthy();
     setRepositoryCheckoutLifecycle({
       controllerHome: fx.controllerHome,
@@ -224,7 +241,9 @@ describe('execution identity pre-spawn guard', () => {
       lifecycle: 'archived',
       reason: 'test fixture',
     });
-    const refreshed = loadRepositoryRegistry(fx.controllerHome).repositories.find((record) => record.repoId === fx.repoA.repoId)!;
+    const refreshed = loadRepositoryRegistry(fx.controllerHome).repositories.find(
+      (record) => record.repoId === fx.repoA.repoId,
+    )!;
     let selectionError: unknown;
     try {
       selectRepositoryCheckout(refreshed, addedCheckout!.checkoutId);
@@ -237,18 +256,24 @@ describe('execution identity pre-spawn guard', () => {
 
     const selected = selectRepositoryCheckout(refreshed, addedCheckout!.checkoutId, { allowArchived: true });
     const identity = executionIdentityForRepository(selected);
-    expect(() => assertExecutionIdentity({
-      controllerHome: fx.controllerHome,
-      identity,
-      cwd: linkedWorktree,
-    })).toThrow(/CHECKOUT_NOT_ACTIVE/);
+    expect(() =>
+      assertExecutionIdentity({
+        controllerHome: fx.controllerHome,
+        identity,
+        cwd: linkedWorktree,
+      }),
+    ).toThrow(/CHECKOUT_NOT_ACTIVE/);
   });
 
   test('explicit checkout identity wins over server default path without mutating registry focus', async () => {
     const fx = dualRepoFixture();
     const staleRegistry = loadRepositoryRegistry(fx.controllerHome);
     const worktree = join(fx.root, 'repo-a-worktree');
-    const worktreeResult = spawnSync('git', ['-C', fx.repoARoot, 'worktree', 'add', '-b', 'explicit-checkout', worktree], { encoding: 'utf8' });
+    const worktreeResult = spawnSync(
+      'git',
+      ['-C', fx.repoARoot, 'worktree', 'add', '-b', 'explicit-checkout', worktree],
+      { encoding: 'utf8' },
+    );
     expect(worktreeResult.status).toBe(0);
     const withCheckout = addRepositoryCheckout({
       controllerHome: fx.controllerHome,
@@ -283,50 +308,69 @@ describe('execution identity pre-spawn guard', () => {
       sessionId: 'session-explicit-checkout',
       principalId: 'principal-explicit-checkout',
     });
-    const read = await callRepositoryTool(fx.controllerHome, 'read_repository_file', {
-      repo_id: fx.repoA.repoId,
-      checkout_id: checkout!.checkoutId,
-      path: 'checkout-only.txt',
-    }, ctx);
+    const read = await callRepositoryTool(
+      fx.controllerHome,
+      'read_repository_file',
+      {
+        repo_id: fx.repoA.repoId,
+        checkout_id: checkout!.checkoutId,
+        path: 'checkout-only.txt',
+      },
+      ctx,
+    );
     expect(read).toBeTruthy();
     expect(read?.isError).not.toBe(true);
     expect(JSON.stringify(read?.structuredContent)).toContain('from explicit worktree');
 
-    const patch = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
-      repo_id: fx.repoA.repoId,
-      checkout_id: checkout!.checkoutId,
-      purpose: 'cross-surface checkout identity regression',
-      allowed_paths: ['checkout-only.txt'],
-      operations: [{
-        type: 'replace',
-        path: 'checkout-only.txt',
-        expected_sha256: createHash('sha256').update('from explicit worktree\n').digest('hex'),
-        old_text: 'from explicit worktree',
-        new_text: 'from safe patch',
-      }],
-    }, ctx);
+    const patch = await callRepositoryTool(
+      fx.controllerHome,
+      'repository_safe_patch_apply',
+      {
+        repo_id: fx.repoA.repoId,
+        checkout_id: checkout!.checkoutId,
+        purpose: 'cross-surface checkout identity regression',
+        allowed_paths: ['checkout-only.txt'],
+        operations: [
+          {
+            type: 'replace',
+            path: 'checkout-only.txt',
+            expected_sha256: createHash('sha256').update('from explicit worktree\n').digest('hex'),
+            old_text: 'from explicit worktree',
+            new_text: 'from safe patch',
+          },
+        ],
+      },
+      ctx,
+    );
     expect(patch).toBeTruthy();
     expect(patch?.isError).not.toBe(true);
-    expect(patch?.structuredContent).toEqual(expect.objectContaining({
-      repoId: fx.repoA.repoId,
-      checkoutId: checkout!.checkoutId,
-      status: 'applied',
-    }));
+    expect(patch?.structuredContent).toEqual(
+      expect.objectContaining({
+        repoId: fx.repoA.repoId,
+        checkoutId: checkout!.checkoutId,
+        status: 'applied',
+      }),
+    );
 
-    const command = await callRepositoryTool(fx.controllerHome, 'execute_command', {
-      repo_id: fx.repoA.repoId,
-      checkout_id: checkout!.checkoutId,
-      command: ['git', 'status', '--short'],
-    }, ctx);
+    const command = await callRepositoryTool(
+      fx.controllerHome,
+      'execute_command',
+      {
+        repo_id: fx.repoA.repoId,
+        checkout_id: checkout!.checkoutId,
+        command: ['git', 'status', '--short'],
+      },
+      ctx,
+    );
     expect(command).toBeTruthy();
     expect(command?.isError).not.toBe(true);
-    expect(command?.structuredContent).toEqual(expect.objectContaining({
-      repoId: fx.repoA.repoId,
-      checkoutId: checkout!.checkoutId,
-    }));
+    expect(command?.structuredContent).toEqual(
+      expect.objectContaining({
+        repoId: fx.repoA.repoId,
+        checkoutId: checkout!.checkoutId,
+      }),
+    );
   });
-
-
 
   test('classifies Git common-directory drift before failing closed', () => {
     const fx = dualRepoFixture();
@@ -346,12 +390,14 @@ describe('execution identity pre-spawn guard', () => {
 
   test('rejects an independently rooted repository before it can become a checkout identity', () => {
     const fx = dualRepoFixture();
-    expect(() => addRepositoryCheckout({
-      controllerHome: fx.controllerHome,
-      repoId: fx.repoA.repoId,
-      path: fx.repoB.canonicalRoot,
-      activate: false,
-    })).toThrow(/CHECKOUT_REPOSITORY_MISMATCH/);
+    expect(() =>
+      addRepositoryCheckout({
+        controllerHome: fx.controllerHome,
+        repoId: fx.repoA.repoId,
+        path: fx.repoB.canonicalRoot,
+        activate: false,
+      }),
+    ).toThrow(/CHECKOUT_REPOSITORY_MISMATCH/);
   });
 
   test('ephemeral workspace identity validates a non-Git root without Repository Registry ownership and rejects cwd escape', () => {
@@ -384,11 +430,13 @@ describe('execution identity pre-spawn guard', () => {
     expect(guarded.gitTopLevel).toBeUndefined();
     expect(guarded.gitCommonDirectory).toBeUndefined();
 
-    expect(() => assertExecutionIdentity({
-      controllerHome,
-      identity,
-      cwd: outside,
-    })).toThrow(/WORKSPACE_SCOPE_MISMATCH/);
+    expect(() =>
+      assertExecutionIdentity({
+        controllerHome,
+        identity,
+        cwd: outside,
+      }),
+    ).toThrow(/WORKSPACE_SCOPE_MISMATCH/);
   });
 
   test('happy path identity matches and spawn uses guarded cwd', async () => {
@@ -429,20 +477,22 @@ describe('execution identity pre-spawn guard', () => {
   test('spawn refuses wrong-repo identity without launching the command', async () => {
     const fx = dualRepoFixture();
     const identity = executionIdentityForRepository(fx.repoA);
-    await expect(spawnManagedProcess({
-      controllerHome: fx.controllerHome,
-      repoId: fx.repoA.repoId,
-      checkoutId: fx.repoA.activeCheckoutId,
-      executionIdentity: identity,
-      command: {
-        kind: 'argv',
-        executable: 'node',
-        args: ['-e', 'process.stdout.write("should-not-run"); process.exit(0)'],
-        cwd: fx.repoBRoot,
-      },
-      interactiveWaitMs: 1_000,
-      timeoutMs: 5_000,
-    })).rejects.toThrow(/CHECKOUT_ROUTE_MISMATCH|GIT_TOPLEVEL_MISMATCH|GIT_COMMON_DIR_MISMATCH/);
+    await expect(
+      spawnManagedProcess({
+        controllerHome: fx.controllerHome,
+        repoId: fx.repoA.repoId,
+        checkoutId: fx.repoA.activeCheckoutId,
+        executionIdentity: identity,
+        command: {
+          kind: 'argv',
+          executable: 'node',
+          args: ['-e', 'process.stdout.write("should-not-run"); process.exit(0)'],
+          cwd: fx.repoBRoot,
+        },
+        interactiveWaitMs: 1_000,
+        timeoutMs: 5_000,
+      }),
+    ).rejects.toThrow(/CHECKOUT_ROUTE_MISMATCH|GIT_TOPLEVEL_MISMATCH|GIT_COMMON_DIR_MISMATCH/);
   });
 
   test('structured errors expose safe expected/actual fields', () => {
@@ -488,21 +538,5 @@ describe('execution identity pre-spawn guard', () => {
     };
     // Runtime fail-closed path for incomplete identity (bypass TypeScript required field).
     await expect(spawnManagedProcess(input as any)).rejects.toThrow(/EXECUTION_IDENTITY_REQUIRED/);
-  });
-
-});
-
-describe('repository Work delivery target authority', () => {
-
-  test('uses the bound target, accepts an explicit match, rejects explicit rebinding, and preserves legacy fallback', () => {
-    const repository = { defaultBranch: 'main' };
-    const bound = { workId: 'work-bound-target', deliveryTargetBranch: 'kernel-v2/architecture' };
-    expect(resolveWorkDeliveryTargetBranch(bound, repository.defaultBranch)).toBe('kernel-v2/architecture');
-    expect(resolveWorkDeliveryTargetBranch(bound, repository.defaultBranch, 'kernel-v2/architecture')).toBe('kernel-v2/architecture');
-    expect(() => resolveWorkDeliveryTargetBranch(bound, repository.defaultBranch, 'main')).toThrow(
-      /WORK_DELIVERY_TARGET_BRANCH_MISMATCH.*kernel-v2\/architecture.*main/,
-    );
-    expect(resolveWorkDeliveryTargetBranch({ workId: 'legacy-work' }, repository.defaultBranch)).toBe('main');
-    expect(resolveWorkDeliveryTargetBranch({ workId: 'legacy-work' }, repository.defaultBranch, 'release/legacy')).toBe('release/legacy');
   });
 });

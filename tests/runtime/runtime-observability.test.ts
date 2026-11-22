@@ -56,7 +56,6 @@ import { getWorkContract, listWorkContracts } from '../../packages/kernel/work/a
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { runHandoffInboxApplication } from '../../src/runtime/control-plane/facade/handoff-inbox-application';
-import { WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { PREFERRED_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '../../adapters/mcp/toolset-names';
 import { FORGE_VERSION } from '../../src/runtime/shared/runtime-config';
 import {

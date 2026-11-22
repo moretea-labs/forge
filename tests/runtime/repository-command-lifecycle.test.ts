@@ -39,7 +39,6 @@ import { acquireControllerLock, releaseControllerLock } from '../../src/effects/
 import { persistControllerAccessMode } from '../../adapters/mcp/access-mode';
 import { classifyRepositoryCommand } from '../../src/cli/repositories/command-classifier';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
-import { readWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { getWorkContract } from '../../packages/kernel/work/api';
 import {
   classifyRepositoryCommandRoute,
@@ -291,11 +290,7 @@ test('macOS temporary repository and Controller Home aliases are accepted consis
   expect(registered.canonicalRoot).toBe(realpathSync(repoRoot));
 });
 
-function seedWorkHandle(
-  controllerHome: string,
-  repository: ReturnType<typeof seedRepo>,
-  workId: string,
-): WorkHandleState {
+function seedWorkHandle(controllerHome: string, repository: ReturnType<typeof seedRepo>, workId: string) {
   const now = new Date().toISOString();
   const head = gitOutput(repository.canonicalRoot, ['rev-parse', 'HEAD']);
   seedHistoricalWorkContract(

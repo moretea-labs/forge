@@ -1237,11 +1237,7 @@ forbid(
   /WorkExecutionConcurrencyProjection|executionConcurrency/,
   'retired Work concurrency admission projection must not be part of active domain types',
 );
-forbid(
-  'src/runtime/control-plane/execution/work-handle-store.ts',
-  /readOrImportControlPlaneRecord|\b(?:writeControlPlaneRecord|mutateControlPlaneRecord)\s*\(/,
-  'legacy WorkHandle readers must never import or mutate persisted historical records',
-);
+requireMissing('src/runtime/control-plane/execution/work-handle-store.ts');
 forbid(
   'src/runtime/root/controller-services.ts',
   /initializeWorkCandidateIndex|readActiveWorkCandidates/,
@@ -2515,10 +2511,6 @@ forbid(
   'ExecutionSession must not restore Work focus as current authority',
 );
 requireText(
-  'src/runtime/control-plane/execution/work-handle-store.ts',
-  'Historical SQLite envelope revision retained for read compatibility.',
-);
-requireText(
   'adapters/mcp/runtime-gateway/execution-tools.ts',
   "from '../../../src/runtime/control-plane/execution/session-repository-binding'",
 );
@@ -2583,11 +2575,6 @@ requireMissing('src/runtime/control-plane/execution/work-handle-history.ts');
 requireMissing('src/runtime/context/assistant-work-context.ts');
 requireMissing('src/runtime/control-plane/persistence/experience-store.ts');
 requireMissing('src/cli/commands/brain-assistant.ts');
-forbid(
-  'src/runtime/control-plane/execution/work-handle-store.ts',
-  /export function (?:writeWorkHandle|transitionWorkHandle|markWorkHandleFailed|relocateWorkHandlePlacementAtomically|rebindWorkHandleControllerIdentity|newWorkId|listValidatingWorkHandles)\b/,
-  'Historical WorkHandle storage must remain read-only in production',
-);
 requireMissing('src/runtime/control-plane/execution/direct-canonical-work-reconciliation.ts');
 requireMissing('src/runtime/control-plane/execution/work-operation-service.ts');
 requireMissing('src/runtime/control-plane/execution/work-terminal-cleanup.ts');
