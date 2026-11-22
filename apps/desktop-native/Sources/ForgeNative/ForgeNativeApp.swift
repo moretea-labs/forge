@@ -333,8 +333,6 @@ private struct ForgeWorkspaceView: View {
             .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
             .padding(.horizontal,9)
             .frame(height:31)
-            .background(selected ? ForgePalette.selection : Color.clear,
-                        in:RoundedRectangle(cornerRadius:7,style:.continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -371,8 +369,7 @@ private struct ForgeWorkspaceView: View {
             .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
             .padding(.horizontal,9)
             .frame(height:31)
-            .background(selected ? ForgePalette.selection : Color.clear,
-                        in:RoundedRectangle(cornerRadius:7,style:.continuous))
+            .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .accessibilityLabel("更多导航")
@@ -422,18 +419,14 @@ private struct ForgeWorkspaceView: View {
                 .padding(.top,8)
                 .padding(.bottom,2)
 
-            VStack(spacing:3) {
-                HStack(spacing:4) {
-                    sidebarDestinationButton(.agent).frame(maxWidth:.infinity)
-                    sidebarDestinationButton(.workbench).frame(maxWidth:.infinity)
-                }
-                HStack(spacing:4) {
-                    sidebarDestinationButton(.automations).frame(maxWidth:.infinity)
-                    sidebarSecondaryDestinationMenu.frame(maxWidth:.infinity)
-                }
+            VStack(spacing:2) {
+                sidebarDestinationButton(.agent)
+                sidebarDestinationButton(.workbench)
+                sidebarDestinationButton(.automations)
+                sidebarSecondaryDestinationMenu
             }
             .padding(.horizontal,10)
-            .padding(.bottom,6)
+            .padding(.bottom,8)
             // Leave children identifiable in AX. The old parent identifier
             // shadowed every button and broke semantic navigation.
             .accessibilityElement(children:.contain)
