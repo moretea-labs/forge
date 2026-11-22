@@ -8,7 +8,6 @@ import {
   engineeringWorkProfileForRisk,
   evaluateEngineeringAdmission,
 } from '../../packages/kernel/work/domain/engineering-profile';
-import { getWorkContract, listWorkContracts } from '../../packages/kernel/work/api/index';
 import {
   buildDesignDecisionContractReceipt,
   buildEngineeringBlockerDispositionReceipt,
@@ -16,7 +15,10 @@ import {
   buildProductDoDReceipt,
 } from '../../packages/kernel/work/domain/engineering-design';
 import { contextClosureReceiptIdentity } from '../../packages/kernel/work/domain/context-closure-receipt';
-import type { ContextClosureReceipt, EngineeringAdmissionEvidence } from '../../packages/kernel/work/domain/engineering-contracts';
+import type {
+  ContextClosureReceipt,
+  EngineeringAdmissionEvidence,
+} from '../../packages/kernel/work/domain/engineering-contracts';
 import { trustedEngineeringEvidence } from '../helpers/engineering-evidence';
 
 const recordedAt = '2026-09-03T00:00:00.000Z';
@@ -56,7 +58,13 @@ function readyClosure(sourceRevision = 'revision-a'): ContextClosureReceipt {
     guidance: { status: 'none', paths: [] },
     detected: { languages: ['typescript'], platforms: [] },
     skills: { status: 'not_required', requiredKinds: [], resolved: [], unresolvedKinds: [] },
-    semanticTools: { required: false, status: 'not_required', providers: [], reasonCodes: [], compilerEvidenceRequired: false },
+    semanticTools: {
+      required: false,
+      status: 'not_required',
+      providers: [],
+      reasonCodes: [],
+      compilerEvidenceRequired: false,
+    },
     sourceEvidence: {
       currentPaths: ['src/example.ts'],
       testPaths: ['tests/example.test.ts'],
@@ -88,20 +96,31 @@ function decisions() {
     authorizationTrust: 'Principal, authorization source, target, lifetime, invalidation, and revocation are explicit.',
     resourceFencing: 'Semantic resources use explicit claims/fencing rather than incidental repository placement.',
     deploymentTopology: 'Controller Home and ForgeInstance writer topology and transfer boundaries are explicit.',
-    schemaEvolutionDurability: 'Durable state defines schema evolution, integrity, backup/restore, and corruption behavior.',
-    idempotencyReplay: 'Side effects define request identity, receipt, retry, outcome_unknown, and reconciliation semantics.',
-    retentionGc: 'Every persisted class defines retention, quota/compaction, terminal cleanup, and active-state protection.',
-    observabilityEvidence: 'Evidence, audit, operational receipts, and verbose diagnostics have distinct authority and retention.',
-    recoveryFailureDomain: 'Recovery diagnoses and repairs fenced authority without becoming semantic success authority.',
-    capacityBackpressure: 'Capacity, fairness, starvation resistance, queue bounds, and overload degradation are explicit.',
-    releaseUpgradeRollback: 'Release activation, compatibility, rollback, failed-upgrade recovery, and retention are explicit.',
+    schemaEvolutionDurability:
+      'Durable state defines schema evolution, integrity, backup/restore, and corruption behavior.',
+    idempotencyReplay:
+      'Side effects define request identity, receipt, retry, outcome_unknown, and reconciliation semantics.',
+    retentionGc:
+      'Every persisted class defines retention, quota/compaction, terminal cleanup, and active-state protection.',
+    observabilityEvidence:
+      'Evidence, audit, operational receipts, and verbose diagnostics have distinct authority and retention.',
+    recoveryFailureDomain:
+      'Recovery diagnoses and repairs fenced authority without becoming semantic success authority.',
+    capacityBackpressure:
+      'Capacity, fairness, starvation resistance, queue bounds, and overload degradation are explicit.',
+    releaseUpgradeRollback:
+      'Release activation, compatibility, rollback, failed-upgrade recovery, and retention are explicit.',
     securityPrivacy: 'Secrets and sensitive outputs are bounded, redacted, and never promoted to semantic authority.',
     portability: 'No machine, path, browser, repository shape, or OS-service assumption becomes semantic authority.',
-    migrationRetirement: 'Compatibility is one-way with write prohibition, observability, and an explicit removal trigger.',
+    migrationRetirement:
+      'Compatibility is one-way with write prohibition, observability, and an explicit removal trigger.',
   };
 }
 
-function completeEvidence(sourceRevision = 'revision-a', critiqueDecision: 'approved' | 'changes_required' = 'approved'): EngineeringAdmissionEvidence {
+function completeEvidence(
+  sourceRevision = 'revision-a',
+  critiqueDecision: 'approved' | 'changes_required' = 'approved',
+): EngineeringAdmissionEvidence {
   const contextClosureReceipt = readyClosure(sourceRevision);
   const productDodReceipt = buildProductDoDReceipt({
     sourceRevision,
@@ -138,7 +157,8 @@ function completeEvidence(sourceRevision = 'revision-a', critiqueDecision: 'appr
     requirementDigest: 'b'.repeat(64),
     projectContractDigest: 'a'.repeat(64),
     decision: critiqueDecision,
-    findings: critiqueDecision === 'approved' ? [] : [{ severity: 'high', summary: 'Design must be revised before mutation.' }],
+    findings:
+      critiqueDecision === 'approved' ? [] : [{ severity: 'high', summary: 'Design must be revised before mutation.' }],
     recordedAt,
   });
   return {
@@ -164,23 +184,51 @@ describe('Stage7C upstream engineering authority', () => {
       },
       recordedAt,
     });
-    expect(receipt.missingAdmissionEvidence).toEqual(['context_closure', 'product_dod', 'design_decision', 'independent_critique']);
-    expect(evaluateEngineeringAdmission({ profile: engineeringWorkProfileForRisk('high'), receipt, mutation: true })).toEqual({ allowed: true });
+    expect(receipt.missingAdmissionEvidence).toEqual([
+      'context_closure',
+      'product_dod',
+      'design_decision',
+      'independent_critique',
+    ]);
+    expect(
+      evaluateEngineeringAdmission({ profile: engineeringWorkProfileForRisk('high'), receipt, mutation: true }),
+    ).toEqual({ allowed: true });
   });
 
   test('exact structured receipts remain useful context without gating mutation', () => {
     const approved = buildEngineeringContextReceipt({
-      risk: 'high', sourceIdentity: { kind: 'revision', revision: 'revision-a' }, evidence: completeEvidence(), recordedAt,
+      risk: 'high',
+      sourceIdentity: { kind: 'revision', revision: 'revision-a' },
+      evidence: completeEvidence(),
+      recordedAt,
     });
     expect(approved.missingAdmissionEvidence).toEqual([]);
-    expect(approved.semanticScope).toEqual({ keys: ['kernel.work.engineering-admission'], mutationClass: 'integration_write' });
-    expect(evaluateEngineeringAdmission({ profile: engineeringWorkProfileForRisk('high'), receipt: approved, mutation: true })).toEqual({ allowed: true });
+    expect(approved.semanticScope).toEqual({
+      keys: ['kernel.work.engineering-admission'],
+      mutationClass: 'integration_write',
+    });
+    expect(
+      evaluateEngineeringAdmission({
+        profile: engineeringWorkProfileForRisk('high'),
+        receipt: approved,
+        mutation: true,
+      }),
+    ).toEqual({ allowed: true });
 
     const changesRequired = buildEngineeringContextReceipt({
-      risk: 'high', sourceIdentity: { kind: 'revision', revision: 'revision-a' }, evidence: completeEvidence('revision-a', 'changes_required'), recordedAt,
+      risk: 'high',
+      sourceIdentity: { kind: 'revision', revision: 'revision-a' },
+      evidence: completeEvidence('revision-a', 'changes_required'),
+      recordedAt,
     });
     expect(changesRequired.missingAdmissionEvidence).toContain('independent_critique');
-    expect(evaluateEngineeringAdmission({ profile: engineeringWorkProfileForRisk('high'), receipt: changesRequired, mutation: true })).toEqual({ allowed: true });
+    expect(
+      evaluateEngineeringAdmission({
+        profile: engineeringWorkProfileForRisk('high'),
+        receipt: changesRequired,
+        mutation: true,
+      }),
+    ).toEqual({ allowed: true });
   });
 
   test('rejects source drift and cross-receipt authority mismatch', () => {
@@ -194,39 +242,76 @@ describe('Stage7C upstream engineering authority', () => {
       nonGoals: ['wrong source'],
       recordedAt,
     });
-    expect(() => buildEngineeringContextReceipt({
-      risk: 'high', sourceIdentity: { kind: 'revision', revision: 'revision-a' }, evidence, recordedAt,
-    })).toThrow('ENGINEERING_PRODUCT_DOD_SOURCE_DRIFT');
+    expect(() =>
+      buildEngineeringContextReceipt({
+        risk: 'high',
+        sourceIdentity: { kind: 'revision', revision: 'revision-a' },
+        evidence,
+        recordedAt,
+      }),
+    ).toThrow('ENGINEERING_PRODUCT_DOD_SOURCE_DRIFT');
   });
 
   test('same-root blockers force design re-entry while unrelated blockers preserve current design authority', () => {
     const base = buildEngineeringContextReceipt({
-      risk: 'high', sourceIdentity: { kind: 'revision', revision: 'revision-a' }, evidence: completeEvidence(), recordedAt,
+      risk: 'high',
+      sourceIdentity: { kind: 'revision', revision: 'revision-a' },
+      evidence: completeEvidence(),
+      recordedAt,
     });
-    const sameRoot = applyEngineeringBlockerDisposition(base, buildEngineeringBlockerDispositionReceipt({
-      sourceRevision: 'revision-a', blockerId: 'blocker-root', classification: 'same_root_cause',
-      semanticScopeKeys: ['kernel.work.engineering-admission'], rationale: 'The blocker invalidates the current design assumption.', recordedAt,
-    }));
+    const sameRoot = applyEngineeringBlockerDisposition(
+      base,
+      buildEngineeringBlockerDispositionReceipt({
+        sourceRevision: 'revision-a',
+        blockerId: 'blocker-root',
+        classification: 'same_root_cause',
+        semanticScopeKeys: ['kernel.work.engineering-admission'],
+        rationale: 'The blocker invalidates the current design assumption.',
+        recordedAt,
+      }),
+    );
     expect(sameRoot.designState).toBe('revisit_required');
-    expect(evaluateEngineeringAdmission({ profile: engineeringWorkProfileForRisk('high'), receipt: sameRoot, mutation: true })).toEqual({ allowed: true });
+    expect(
+      evaluateEngineeringAdmission({
+        profile: engineeringWorkProfileForRisk('high'),
+        receipt: sameRoot,
+        mutation: true,
+      }),
+    ).toEqual({ allowed: true });
 
     const observeOnly = buildEngineeringContextReceipt({
-      risk: 'medium', sourceIdentity: { kind: 'revision', revision: 'revision-a' }, recordedAt,
+      risk: 'medium',
+      sourceIdentity: { kind: 'revision', revision: 'revision-a' },
+      recordedAt,
     });
-    const observeOnlySameRoot = applyEngineeringBlockerDisposition(observeOnly, buildEngineeringBlockerDispositionReceipt({
-      sourceRevision: 'revision-a', blockerId: 'blocker-observe-only', classification: 'same_root_cause',
-      semanticScopeKeys: ['kernel.work.engineering-admission'], rationale: 'No prior formal design authority exists to supersede.', recordedAt,
-    }));
+    const observeOnlySameRoot = applyEngineeringBlockerDisposition(
+      observeOnly,
+      buildEngineeringBlockerDispositionReceipt({
+        sourceRevision: 'revision-a',
+        blockerId: 'blocker-observe-only',
+        classification: 'same_root_cause',
+        semanticScopeKeys: ['kernel.work.engineering-admission'],
+        rationale: 'No prior formal design authority exists to supersede.',
+        recordedAt,
+      }),
+    );
     expect(observeOnlySameRoot.designState).toBeUndefined();
     expect(observeOnlySameRoot.blockerDispositions?.at(-1)?.action).toBe('return_to_design');
 
-    const unrelated = applyEngineeringBlockerDisposition(base, buildEngineeringBlockerDispositionReceipt({
-      sourceRevision: 'revision-a', blockerId: 'blocker-unrelated', classification: 'unrelated',
-      semanticScopeKeys: ['other.scope'], linkedWorkId: 'work-linked-test', rationale: 'The blocker belongs to a disjoint product scope.', recordedAt,
-    }));
+    const unrelated = applyEngineeringBlockerDisposition(
+      base,
+      buildEngineeringBlockerDispositionReceipt({
+        sourceRevision: 'revision-a',
+        blockerId: 'blocker-unrelated',
+        classification: 'unrelated',
+        semanticScopeKeys: ['other.scope'],
+        linkedWorkId: 'work-linked-test',
+        rationale: 'The blocker belongs to a disjoint product scope.',
+        recordedAt,
+      }),
+    );
     expect(unrelated.designState).toBe('ready');
     expect(unrelated.semanticScope).toEqual(base.semanticScope);
     expect(unrelated.blockerDispositions?.at(-1)?.action).toBe('linked_work');
   });
-
 });

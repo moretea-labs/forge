@@ -3,9 +3,15 @@ import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync 
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { readForgeRuntimeStatus, schedulerHeartbeatSnapshotHealthy } from '../../src/runtime/control-plane/runtime-status-client';
+import {
+  readForgeRuntimeStatus,
+  schedulerHeartbeatSnapshotHealthy,
+} from '../../src/runtime/control-plane/runtime-status-client';
 import { createExecutionJob, executionJobRoot } from '../../src/runtime/execution/jobs/store';
-import { operationReceiptMatchesJobOwnership, type OperationReceipt } from '../../src/runtime/execution/jobs/receipt-store';
+import {
+  operationReceiptMatchesJobOwnership,
+  type OperationReceipt,
+} from '../../src/runtime/execution/jobs/receipt-store';
 import { TERMINAL_JOB_STATUSES, type ExecutionJob } from '../../src/runtime/execution/jobs/types';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
@@ -14,17 +20,32 @@ import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/runtime/repositories/registry';
-import { assertCommandPathOperandsStayInRepository, assertRepositoryCommandInputAllowed } from '../../src/runtime/repositories/command-scope';
+import {
+  assertCommandPathOperandsStayInRepository,
+  assertRepositoryCommandInputAllowed,
+} from '../../src/runtime/repositories/command-scope';
 import type { RepositoryRecord } from '../../src/core/repository/types';
-import { getWorkContract } from '../../packages/kernel/work/api';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { recordUserRequest } from '../../packages/kernel/identity/api/index';
-import { invalidateExecutionSession, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
+import {
+  invalidateExecutionSession,
+  readExecutionSession,
+  startExecutionSession,
+  updateExecutionSession,
+} from '../../src/runtime/control-plane/execution/session-store';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
 import { applyScheduleRetryableFailure } from '../../packages/kernel/scheduler/api/index';
-import { createSchedule, getOccurrence, getSchedule, reclaimStaleCreatedOccurrences, saveOccurrence, saveSchedule, updateSchedule } from '../../src/runtime/workflow/schedules/store';
+import {
+  createSchedule,
+  getOccurrence,
+  getSchedule,
+  reclaimStaleCreatedOccurrences,
+  saveOccurrence,
+  saveSchedule,
+  updateSchedule,
+} from '../../src/runtime/workflow/schedules/store';
 import {
   buildSchedulerHealthSnapshot,
   normalizeSchedulerConfig,
@@ -57,8 +78,6 @@ function passingDiagnostics() {
 }
 
 describe('repository command managed-worktree authority', () => {
-
-
   test('Forge source topology rejects branch and writable worktree creation while allowing main inspection', () => {
     const policy = { singleCanonicalBranchOnly: true };
     for (const command of [
@@ -104,13 +123,24 @@ describe('repository command managed-worktree authority', () => {
     expect(() => assertRepositoryCommandInputAllowed('git push origin main', policy)).not.toThrow();
     expect(() => assertRepositoryCommandInputAllowed('git push origin main:main', policy)).not.toThrow();
     expect(() => assertRepositoryCommandInputAllowed('git push origin refs/heads/main', policy)).not.toThrow();
-    expect(() => assertRepositoryCommandInputAllowed('git push origin +refs/heads/main', policy)).toThrow('SOURCE_BRANCH_POLICY_MAIN_ONLY');
-    expect(() => assertRepositoryCommandInputAllowed('git push origin --force-with-lease=refs/heads/main +refs/heads/main', policy)).toThrow('SOURCE_BRANCH_POLICY_MAIN_ONLY');
+    expect(() => assertRepositoryCommandInputAllowed('git push origin +refs/heads/main', policy)).toThrow(
+      'SOURCE_BRANCH_POLICY_MAIN_ONLY',
+    );
+    expect(() =>
+      assertRepositoryCommandInputAllowed(
+        'git push origin --force-with-lease=refs/heads/main +refs/heads/main',
+        policy,
+      ),
+    ).toThrow('SOURCE_BRANCH_POLICY_MAIN_ONLY');
     expect(() => assertRepositoryCommandInputAllowed('git fetch origin main', policy)).not.toThrow();
-    expect(() => assertRepositoryCommandInputAllowed('git fetch origin +refs/heads/main:refs/remotes/origin/main', policy)).not.toThrow();
+    expect(() =>
+      assertRepositoryCommandInputAllowed('git fetch origin +refs/heads/main:refs/remotes/origin/main', policy),
+    ).not.toThrow();
     expect(() => assertRepositoryCommandInputAllowed('git remote -v', policy)).not.toThrow();
     expect(() => assertRepositoryCommandInputAllowed('git config --get remote.origin.url', policy)).not.toThrow();
-    expect(() => assertRepositoryCommandInputAllowed(['bash', '-lc', 'git branch --show-current'], policy)).not.toThrow();
+    expect(() =>
+      assertRepositoryCommandInputAllowed(['bash', '-lc', 'git branch --show-current'], policy),
+    ).not.toThrow();
   });
 
   test('managed repository commands cannot bypass branch policy through wrappers, aliases, or refspecs', () => {
@@ -128,7 +158,9 @@ describe('repository command managed-worktree authority', () => {
       'git fetch origin main:refs/heads/feature/parallel',
       'git fetch origin',
     ]) {
-      expect(() => assertRepositoryCommandInputAllowed(command, policy)).toThrow('GIT_BRANCH_CREATION_REQUIRES_MANAGED_API');
+      expect(() => assertRepositoryCommandInputAllowed(command, policy)).toThrow(
+        'GIT_BRANCH_CREATION_REQUIRES_MANAGED_API',
+      );
     }
     expect(() => assertRepositoryCommandInputAllowed('git status --short', policy)).not.toThrow();
     expect(() => assertRepositoryCommandInputAllowed('git branch --show-current', policy)).not.toThrow();
@@ -144,13 +176,19 @@ describe('repository command managed-worktree authority', () => {
       const outside = join(tmpdir(), 'forge-ungranted-external-worktree');
       const command = ['git', 'worktree', 'add', '-b', 'feat/parallel', inside, 'HEAD'];
       expect(() => assertRepositoryCommandInputAllowed(command)).not.toThrow();
-      expect(() => assertCommandPathOperandsStayInRepository(
-        assertRepositoryCommandInputAllowed(command), root, root,
-      )).not.toThrow();
-      expect(() => assertRepositoryCommandInputAllowed('git worktree add -b feat/parallel _ref/parallel HEAD')).not.toThrow();
-      expect(() => assertCommandPathOperandsStayInRepository(
-        assertRepositoryCommandInputAllowed(['git', 'worktree', 'add', outside]), root, root,
-      )).toThrow('COMMAND_SCOPE_DENIED');
+      expect(() =>
+        assertCommandPathOperandsStayInRepository(assertRepositoryCommandInputAllowed(command), root, root),
+      ).not.toThrow();
+      expect(() =>
+        assertRepositoryCommandInputAllowed('git worktree add -b feat/parallel _ref/parallel HEAD'),
+      ).not.toThrow();
+      expect(() =>
+        assertCommandPathOperandsStayInRepository(
+          assertRepositoryCommandInputAllowed(['git', 'worktree', 'add', outside]),
+          root,
+          root,
+        ),
+      ).toThrow('COMMAND_SCOPE_DENIED');
       expect(() => assertRepositoryCommandInputAllowed(['git', 'worktree', 'list', '--porcelain'])).not.toThrow();
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -167,15 +205,20 @@ describe('control-plane hardening', () => {
   });
 
   test('normalizes Scheduler configuration outside the runtime lifecycle constructor', () => {
-    expect(normalizeSchedulerConfig({
-      maxWorkers: 0,
-      pollIntervalMs: 1,
-      idleBackoffMaxMs: 100,
-      heartbeatIntervalMs: 10,
-      heartbeatTimeoutMs: 500,
-      minFreeMemoryMb: 1,
-      maxLoadPerCpu: 0,
-    }, {})).toMatchObject({
+    expect(
+      normalizeSchedulerConfig(
+        {
+          maxWorkers: 0,
+          pollIntervalMs: 1,
+          idleBackoffMaxMs: 100,
+          heartbeatIntervalMs: 10,
+          heartbeatTimeoutMs: 500,
+          minFreeMemoryMb: 1,
+          maxLoadPerCpu: 0,
+        },
+        {},
+      ),
+    ).toMatchObject({
       maxWorkers: 1,
       pollIntervalMs: 50,
       idleBackoffMaxMs: 250,
@@ -185,12 +228,17 @@ describe('control-plane hardening', () => {
       maxLoadPerCpu: 0.25,
     });
 
-    expect(normalizeSchedulerConfig({}, {
-      FORGE_MAX_WORKERS: '7',
-      FORGE_IDLE_BACKOFF_MAX_MS: '3000',
-      FORGE_SCHEDULER_HEARTBEAT_INTERVAL_MS: '2000',
-      FORGE_SCHEDULER_HEARTBEAT_TIMEOUT_MS: '4000',
-    })).toMatchObject({
+    expect(
+      normalizeSchedulerConfig(
+        {},
+        {
+          FORGE_MAX_WORKERS: '7',
+          FORGE_IDLE_BACKOFF_MAX_MS: '3000',
+          FORGE_SCHEDULER_HEARTBEAT_INTERVAL_MS: '2000',
+          FORGE_SCHEDULER_HEARTBEAT_TIMEOUT_MS: '4000',
+        },
+      ),
+    ).toMatchObject({
       maxWorkers: 7,
       idleBackoffMaxMs: 3_000,
       heartbeatIntervalMs: 2_000,
@@ -199,14 +247,19 @@ describe('control-plane hardening', () => {
   });
 
   test('serializes Scheduler health without retired Git polling state', () => {
-    expect(buildSchedulerHealthSnapshot({
-      loopStartedAt: '2026-08-20T12:00:00.000Z',
-      lastHeartbeatAt: '2026-08-20T12:59:58.000Z',
-      heartbeatTimeoutMs: 60_000,
-      lastTickAt: '2026-08-20T12:59:58.000Z',
-      lastDispatchAt: '2026-08-20T12:59:00.000Z',
-      lastReconcileAt: undefined,
-    }, Date.parse('2026-08-20T13:00:00.000Z'))).toEqual({
+    expect(
+      buildSchedulerHealthSnapshot(
+        {
+          loopStartedAt: '2026-08-20T12:00:00.000Z',
+          lastHeartbeatAt: '2026-08-20T12:59:58.000Z',
+          heartbeatTimeoutMs: 60_000,
+          lastTickAt: '2026-08-20T12:59:58.000Z',
+          lastDispatchAt: '2026-08-20T12:59:00.000Z',
+          lastReconcileAt: undefined,
+        },
+        Date.parse('2026-08-20T13:00:00.000Z'),
+      ),
+    ).toEqual({
       schemaVersion: 1,
       updatedAt: '2026-08-20T13:00:00.000Z',
       loopStartedAt: '2026-08-20T12:00:00.000Z',
@@ -282,20 +335,24 @@ describe('control-plane hardening', () => {
       leaseRefs: [],
     } as unknown as ExecutionJob;
 
-    expect(evaluateSchedulerWorkerExitCandidate({
-      job: activeJob,
-      attempt: 1,
-      childPid: 20,
-      lifecycle,
-      diagnosticLifecycle,
-    })).toEqual({ kind: 'ignore', reason: 'attempt_mismatch' });
-    expect(evaluateSchedulerWorkerExitCandidate({
-      job: activeJob,
-      attempt: 2,
-      childPid: 21,
-      lifecycle,
-      diagnosticLifecycle,
-    })).toEqual({ kind: 'ignore', reason: 'pid_mismatch' });
+    expect(
+      evaluateSchedulerWorkerExitCandidate({
+        job: activeJob,
+        attempt: 1,
+        childPid: 20,
+        lifecycle,
+        diagnosticLifecycle,
+      }),
+    ).toEqual({ kind: 'ignore', reason: 'attempt_mismatch' });
+    expect(
+      evaluateSchedulerWorkerExitCandidate({
+        job: activeJob,
+        attempt: 2,
+        childPid: 21,
+        lifecycle,
+        diagnosticLifecycle,
+      }),
+    ).toEqual({ kind: 'ignore', reason: 'pid_mismatch' });
 
     const active = evaluateSchedulerWorkerExitCandidate({
       job: activeJob,
@@ -371,13 +428,26 @@ describe('control-plane hardening', () => {
 
     const terminalCalls: string[] = [];
     reconcileSchedulerWorkerExit(input, {
-      getJob: () => ({ ...activeJob, status: 'succeeded' } as ExecutionJob),
-      recoverReceipt: () => { throw new Error('must not recover terminal job'); },
-      persistTerminalLifecycle: () => { terminalCalls.push('terminal'); return true; },
-      updateJob: () => { throw new Error('must not update terminal job directly'); },
-      releaseLeases: () => { throw new Error('must not release terminal job leases'); },
-      transitionJob: () => { throw new Error('must not transition terminal job'); },
-      rebuildProjection: () => { throw new Error('must not rebuild outside terminal persistence'); },
+      getJob: () => ({ ...activeJob, status: 'succeeded' }) as ExecutionJob,
+      recoverReceipt: () => {
+        throw new Error('must not recover terminal job');
+      },
+      persistTerminalLifecycle: () => {
+        terminalCalls.push('terminal');
+        return true;
+      },
+      updateJob: () => {
+        throw new Error('must not update terminal job directly');
+      },
+      releaseLeases: () => {
+        throw new Error('must not release terminal job leases');
+      },
+      transitionJob: () => {
+        throw new Error('must not transition terminal job');
+      },
+      rebuildProjection: () => {
+        throw new Error('must not rebuild outside terminal persistence');
+      },
     });
     expect(terminalCalls).toEqual(['terminal']);
 
@@ -393,9 +463,15 @@ describe('control-plane hardening', () => {
         recoveredCalls.push('update');
         return updater({ ...activeJob, status: 'succeeded' } as ExecutionJob);
       },
-      releaseLeases: () => { throw new Error('must not release recovered job leases'); },
-      transitionJob: () => { throw new Error('must not transition recovered job'); },
-      rebuildProjection: () => { recoveredCalls.push('projection'); },
+      releaseLeases: () => {
+        throw new Error('must not release recovered job leases');
+      },
+      transitionJob: () => {
+        throw new Error('must not transition recovered job');
+      },
+      rebuildProjection: () => {
+        recoveredCalls.push('projection');
+      },
     });
     expect(recoveredCalls).toEqual(['recover', 'update', 'projection']);
 
@@ -408,16 +484,25 @@ describe('control-plane hardening', () => {
         failureCalls.push(`read-${reads}`);
         return activeJob;
       },
-      recoverReceipt: () => { failureCalls.push('recover'); return undefined; },
+      recoverReceipt: () => {
+        failureCalls.push('recover');
+        return undefined;
+      },
       persistTerminalLifecycle: () => false,
-      updateJob: () => { throw new Error('must not update abnormal exit directly'); },
-      releaseLeases: () => { failureCalls.push('release'); },
+      updateJob: () => {
+        throw new Error('must not update abnormal exit directly');
+      },
+      releaseLeases: () => {
+        failureCalls.push('release');
+      },
       transitionJob: (_home, _repoId, _jobId, status) => {
         transitionedStatus = status;
         failureCalls.push('transition');
         return activeJob;
       },
-      rebuildProjection: () => { failureCalls.push('projection'); },
+      rebuildProjection: () => {
+        failureCalls.push('projection');
+      },
     });
     expect(failureCalls).toEqual(['read-1', 'recover', 'read-2', 'release', 'transition', 'projection']);
     expect(transitionedStatus).toBe('queued');
@@ -476,20 +561,35 @@ describe('control-plane hardening', () => {
       loopStartedAt: new Date(now - 120_000).toISOString(),
       lastRepoDispatch: {},
     };
-    expect(schedulerHeartbeatSnapshotHealthy({
-      ...base,
-      lastTickAt: new Date(now - 20_000).toISOString(),
-    }, now)).toBe(true);
-    expect(schedulerHeartbeatSnapshotHealthy({
-      ...base,
-      lastHeartbeatAt: new Date(now - 20_000).toISOString(),
-      heartbeatTimeoutMs: 30_000,
-    }, now)).toBe(true);
-    expect(schedulerHeartbeatSnapshotHealthy({
-      ...base,
-      lastHeartbeatAt: new Date(now - 31_000).toISOString(),
-      heartbeatTimeoutMs: 30_000,
-    }, now)).toBe(false);
+    expect(
+      schedulerHeartbeatSnapshotHealthy(
+        {
+          ...base,
+          lastTickAt: new Date(now - 20_000).toISOString(),
+        },
+        now,
+      ),
+    ).toBe(true);
+    expect(
+      schedulerHeartbeatSnapshotHealthy(
+        {
+          ...base,
+          lastHeartbeatAt: new Date(now - 20_000).toISOString(),
+          heartbeatTimeoutMs: 30_000,
+        },
+        now,
+      ),
+    ).toBe(true);
+    expect(
+      schedulerHeartbeatSnapshotHealthy(
+        {
+          ...base,
+          lastHeartbeatAt: new Date(now - 31_000).toISOString(),
+          heartbeatTimeoutMs: 30_000,
+        },
+        now,
+      ),
+    ).toBe(false);
   });
 
   test('OperationReceipt recovery is bound to canonical Runtime and whole-release identity', () => {
@@ -545,10 +645,12 @@ describe('control-plane hardening', () => {
     ]) {
       expect(operationReceiptMatchesJobOwnership({ ...receipt, ...mismatch }, job)).toBe(false);
     }
-    expect(operationReceiptMatchesJobOwnership(receipt, {
-      ...job,
-      workerLifecycle: { ...lifecycle, runtimeInstanceId: undefined },
-    } as ExecutionJob)).toBe(false);
+    expect(
+      operationReceiptMatchesJobOwnership(receipt, {
+        ...job,
+        workerLifecycle: { ...lifecycle, runtimeInstanceId: undefined },
+      } as ExecutionJob),
+    ).toBe(false);
 
     const legacyReceipt = { ...receipt };
     delete legacyReceipt.runtimeInstanceId;
@@ -573,16 +675,18 @@ describe('control-plane hardening', () => {
 
   test('refuses new ExecutionJobs for approval-wait and controller-scope recovery paths', () => {
     const controllerHome = temp('forge-job-retired-');
-    expect(() => createExecutionJob(controllerHome, {
-      repoId: 'repo-test',
-      checkoutId: 'checkout-test',
-      type: 'mcp-tool',
-      requestId: `request-${Date.now()}`,
-      semanticKey: `test:${Date.now()}`,
-      origin: { surface: 'system', actor: 'test' },
-      payload: { operation: 'controller_ready', target: 'runtime', profile: 'controller', arguments: {} },
-      resourceClaims: [],
-    })).toThrow(/EXECUTION_JOB_RETIRED/);
+    expect(() =>
+      createExecutionJob(controllerHome, {
+        repoId: 'repo-test',
+        checkoutId: 'checkout-test',
+        type: 'mcp-tool',
+        requestId: `request-${Date.now()}`,
+        semanticKey: `test:${Date.now()}`,
+        origin: { surface: 'system', actor: 'test' },
+        payload: { operation: 'controller_ready', target: 'runtime', profile: 'controller', arguments: {} },
+        resourceClaims: [],
+      }),
+    ).toThrow(/EXECUTION_JOB_RETIRED/);
     expect(TERMINAL_JOB_STATUSES.has('waiting_for_approval')).toBe(false);
   });
 });

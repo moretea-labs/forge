@@ -1,34 +1,70 @@
 import type { CallToolResult, McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
 export type { CallToolResult, McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
-import { createHash } from "crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "fs";
-import { join } from "path";
-import { beginEditSession, applyEditOperations, createEditSavepoint, EditSessionPatchError, finalizeEditSession, getEditSession, getEditSessionDiff, listEditSessions, PREFERRED_EDIT_PATCH_BATCH_OPERATIONS, rollbackEditSession } from "../../../src/runtime/editing/edit-session";
-import { EDIT_OPERATION_INPUT_SCHEMA, normalizeEditOperations } from "../../../src/runtime/editing/edit-operation-contract";
+import { createHash } from 'crypto';
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
+import { join } from 'path';
+import {
+  beginEditSession,
+  applyEditOperations,
+  createEditSavepoint,
+  EditSessionPatchError,
+  finalizeEditSession,
+  getEditSession,
+  getEditSessionDiff,
+  listEditSessions,
+  PREFERRED_EDIT_PATCH_BATCH_OPERATIONS,
+  rollbackEditSession,
+} from '../../../src/runtime/editing/edit-session';
+import {
+  EDIT_OPERATION_INPUT_SCHEMA,
+  normalizeEditOperations,
+} from '../../../src/runtime/editing/edit-operation-contract';
 import { withRepositoryMutationExclusion } from '../../../src/runtime/resources/leases/store';
 import type { ResourceClaimSpec } from '../../../src/runtime/execution/jobs/types';
-import { listAgentJobs } from "../../../src/cli/agent-jobs/job-manager";
-import { listControllerChecks } from "../../../src/runtime/execution/process-runtime/check-runner";
-import { buildExecutionDiagnostics, buildRequirementBoard } from '../../../src/runtime/control-plane/facade/requirement-board';
-import { getWorkContract } from '../../../packages/kernel/work/api';
-import { listCapabilityDescriptors, summarizeCapabilityGroups } from '../../../src/runtime/control-plane/facade/capability-registry';
-import { exportControllerWorklog, listControllerWorklogEvents, parseWorklogCategory } from "../../../src/runtime/evidence/controller-worklog";
-import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint, formatDurationMs, normalizeAgentTimeoutMs } from "../../../src/runtime/shared/runtime-config";
-import { PREFERRED_FACADE_TOOL_NAMES } from "../toolset-names";
-import { buildLocalConnectorStatusForRepo } from "../../../src/cli/local-bridge/connector-freshness";
-import { gitSnapshot } from "../../../src/runtime/repositories/inspector";
-import { listLocalBridgeJobs } from "../../../src/cli/local-bridge/job-store";
-import { listSessions, openSession, readSession, runBrowserConsult, runBrowserFollowup } from "../../../src/cli/chatgpt-browser/engine";
-import type { BrowserProviderName, ThinkingLevel } from "../../../src/cli/chatgpt-browser/types";
-import type { NativeBrowserChannel } from "../../../src/runtime/platform/browser-product-discovery";
-import { hashMcpInput, tryWriteMcpAuditEntry } from "../audit";
-import { resolveRepoPreferredControllerHome } from "../../../src/effects/controller-home";
+import { listAgentJobs } from '../../../src/cli/agent-jobs/job-manager';
+import { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
+import {
+  buildExecutionDiagnostics,
+  buildRequirementBoard,
+} from '../../../src/runtime/control-plane/facade/requirement-board';
+import {
+  listCapabilityDescriptors,
+  summarizeCapabilityGroups,
+} from '../../../src/runtime/control-plane/facade/capability-registry';
+import {
+  exportControllerWorklog,
+  listControllerWorklogEvents,
+  parseWorklogCategory,
+} from '../../../src/runtime/evidence/controller-worklog';
+import {
+  FORGE_MCP_SCHEMA_VERSION,
+  FORGE_TOOL_SURFACE,
+  FORGE_VERSION,
+  forgeToolSurfaceFingerprint,
+  formatDurationMs,
+  normalizeAgentTimeoutMs,
+} from '../../../src/runtime/shared/runtime-config';
+import { PREFERRED_FACADE_TOOL_NAMES } from '../toolset-names';
+import { buildLocalConnectorStatusForRepo } from '../../../src/cli/local-bridge/connector-freshness';
+import { gitSnapshot } from '../../../src/runtime/repositories/inspector';
+import { listLocalBridgeJobs } from '../../../src/cli/local-bridge/job-store';
+import {
+  listSessions,
+  openSession,
+  readSession,
+  runBrowserConsult,
+  runBrowserFollowup,
+} from '../../../src/cli/chatgpt-browser/engine';
+import type { BrowserProviderName, ThinkingLevel } from '../../../src/cli/chatgpt-browser/types';
+import type { NativeBrowserChannel } from '../../../src/runtime/platform/browser-product-discovery';
+import { hashMcpInput, tryWriteMcpAuditEntry } from '../audit';
+import { resolveRepoPreferredControllerHome } from '../../../src/effects/controller-home';
 import { resolveRepositoryCheckStorage } from '../../../src/runtime/execution/process-runtime/check-storage';
 import { resolveRepositorySelection } from '../../../src/runtime/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../../src/runtime/repositories/runtime-storage';
-import { resolveMcpPath } from "../../../src/runtime/safe-tooling/path-policy";
-import { currentGitBranch, isForgeAdopted } from "../repo";
-import { redactMcpText } from "../redaction";
+import { resolveMcpPath } from '../../../src/runtime/safe-tooling/path-policy';
+import { currentGitBranch, isForgeAdopted } from '../repo';
+import { redactMcpText } from '../redaction';
 import type { ToolPolicy } from '../../../src/runtime/control-plane/tool-policy';
 
 export interface McpToolContext {
@@ -55,31 +91,25 @@ export interface McpToolContext {
   signal?: AbortSignal;
 }
 
-
-const EMPTY_SCHEMA = { type: "object", additionalProperties: false };
+const EMPTY_SCHEMA = { type: 'object', additionalProperties: false };
 
 function textResult(
   value: unknown,
-  structuredContent: unknown = typeof value === "string" ? undefined : value,
+  structuredContent: unknown = typeof value === 'string' ? undefined : value,
 ): CallToolResult {
   const normalizedStructuredContent = structuredContent as Record<string, unknown> | undefined;
   return {
     content: [
       {
-        type: "text",
-        text:
-          typeof value === "string" ? value : JSON.stringify(value, null, 2),
+        type: 'text',
+        text: typeof value === 'string' ? value : JSON.stringify(value, null, 2),
       },
     ],
     structuredContent: normalizedStructuredContent,
   };
 }
 
-function errorResult(
-  code: string,
-  message: string,
-  details?: unknown,
-): CallToolResult {
+function errorResult(code: string, message: string, details?: unknown): CallToolResult {
   const result = textResult({
     error: { code, message: redactMcpText(message).text, details },
   });
@@ -87,11 +117,10 @@ function errorResult(
   return result;
 }
 
-
 function audit(
   ctx: McpToolContext,
   tool: string,
-  status: "ok" | "blocked" | "failed",
+  status: 'ok' | 'blocked' | 'failed',
   input: unknown,
   targetPath?: string,
   error?: string,
@@ -111,7 +140,7 @@ function isProbablyBinary(bytes: Buffer): boolean {
 }
 
 function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
+  return createHash('sha256').update(value).digest('hex');
 }
 
 function editExecutionIdentity(ctx: McpToolContext): {
@@ -137,31 +166,38 @@ function editExecutionIdentity(ctx: McpToolContext): {
 function editSourceClaims(ctx: McpToolContext, paths: Iterable<string>): ResourceClaimSpec[] | undefined {
   // Unknown checkout identity keeps the existing conservative repository fence.
   const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
-  const checkoutId = ctx.checkoutId?.trim() || resolveRepositorySelection({
-    explicitPath: ctx.repoRoot, controllerHome, allowSoleRepository: true,
-  }).activeCheckoutId;
+  const checkoutId =
+    ctx.checkoutId?.trim() ||
+    resolveRepositorySelection({
+      explicitPath: ctx.repoRoot,
+      controllerHome,
+      allowSoleRepository: true,
+    }).activeCheckoutId;
   if (!checkoutId) return undefined;
   return [...new Set(paths)].filter(Boolean).map((path) => ({
-    resourceKey: `path:${checkoutId}:${path}`, mode: 'write' as const,
+    resourceKey: `path:${checkoutId}:${path}`,
+    mode: 'write' as const,
   }));
 }
 
 function withLegacyEditMutation<T>(
-  ctx: McpToolContext, operation: string, mutate: () => T, claims?: ResourceClaimSpec[],
+  ctx: McpToolContext,
+  operation: string,
+  mutate: () => T,
+  claims?: ResourceClaimSpec[],
 ): T {
   const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
-  const repoId = ctx.repoId?.trim() || resolveRepositorySelection({
-    explicitPath: ctx.repoRoot,
-    controllerHome,
-    allowSoleRepository: true,
-  }).repoId;
+  const repoId =
+    ctx.repoId?.trim() ||
+    resolveRepositorySelection({
+      explicitPath: ctx.repoRoot,
+      controllerHome,
+      allowSoleRepository: true,
+    }).repoId;
   return withRepositoryMutationExclusion(controllerHome, repoId, `mcp:${operation}`, mutate, undefined, claims);
 }
 
-function fileSummary(
-  path: string,
-  repoRoot: string,
-): { path: string; size: number; modifiedAt: string } | null {
+function fileSummary(path: string, repoRoot: string): { path: string; size: number; modifiedAt: string } | null {
   try {
     const fileStat = statSync(join(repoRoot, path));
     if (!fileStat.isFile()) return null;
@@ -185,44 +221,24 @@ function knownRunPathReplacements(
 ): Array<{ from: string; to: string }> {
   const replacements = new Map<string, string>();
   const remember = (from: string | undefined, to: string) => {
-    if (!from || !from.startsWith("/")) return;
+    if (!from || !from.startsWith('/')) return;
     replacements.set(from, to);
   };
-  remember(repoRoot, "<repo>");
-  remember(run.executionRoot, "<execution-root>");
-  remember(run.worktreePath, "<worktree>");
-  remember(run.worktree, run.worktree === repoRoot ? "<repo>" : "<worktree>");
+  remember(repoRoot, '<repo>');
+  remember(run.executionRoot, '<execution-root>');
+  remember(run.worktreePath, '<worktree>');
+  remember(run.worktree, run.worktree === repoRoot ? '<repo>' : '<worktree>');
   return [...replacements.entries()]
     .sort((left, right) => right[0].length - left[0].length)
     .map(([from, to]) => ({ from, to }));
 }
 
-
-
-
-
-
-
-
 const PROJECT_BOARD_RECENT_ISSUE_LIMIT = 5;
 const PROJECT_BOARD_TASK_LIMIT = 8;
 
-
-
-
-
 const UPDATE_TASK_SUMMARY_TASK_LIMIT = 12;
 
-
-
-
-
-function listFilesUnder(
-  repoRoot: string,
-  root: string,
-  maxFiles: number,
-  out: string[],
-): void {
+function listFilesUnder(repoRoot: string, root: string, maxFiles: number, out: string[]): void {
   if (out.length >= maxFiles) return;
   const absoluteRoot = join(repoRoot, root);
   if (!existsSync(absoluteRoot)) return;
@@ -232,9 +248,7 @@ function listFilesUnder(
     return;
   }
   if (!rootStat.isDirectory()) return;
-  for (const entry of readdirSync(absoluteRoot, { withFileTypes: true }).sort(
-    (a, b) => a.name.localeCompare(b.name),
-  )) {
+  for (const entry of readdirSync(absoluteRoot, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
     if (out.length >= maxFiles) return;
     const child = `${root}/${entry.name}`;
     if (entry.isDirectory()) {
@@ -247,23 +261,23 @@ function listFilesUnder(
 
 function workflowFileCandidates(repoRoot: string): string[] {
   const roots = [
-    "AGENTS.md",
-    "CLAUDE.md",
-    "SKILL.md",
-    "docs/spec.md",
-    "docs/domain-rules.md",
-    "docs/project/chatgpt-planning-profile.md",
-    "docs/reference-configs",
-    "docs/mvp2",
-    ".spec-workflow/specs",
-    "ios/AGENTS.md",
-    "plans",
-    "tasks",
-    ".ai/context",
-    ".ai/harness/session",
-    ".ai/harness/controller/packets",
-    ".ai/harness/projections",
-    ".ai/harness/checks",
+    'AGENTS.md',
+    'CLAUDE.md',
+    'SKILL.md',
+    'docs/spec.md',
+    'docs/domain-rules.md',
+    'docs/project/chatgpt-planning-profile.md',
+    'docs/reference-configs',
+    'docs/mvp2',
+    '.spec-workflow/specs',
+    'ios/AGENTS.md',
+    'plans',
+    'tasks',
+    '.ai/context',
+    '.ai/harness/session',
+    '.ai/harness/controller/packets',
+    '.ai/harness/projections',
+    '.ai/harness/checks',
   ];
   const files: string[] = [];
   for (const root of roots) {
@@ -278,15 +292,13 @@ function runnerTimeoutMs(ctx: McpToolContext, value: unknown): number {
   return normalizeAgentTimeoutMs(value, {
     defaultMs: ctx.policy.execution.runnerTimeoutMs,
     maxMs: ctx.policy.execution.runnerMaxTimeoutMs,
-    label: "timeout_ms",
+    label: 'timeout_ms',
   });
 }
 
 function stringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return value
-    .map((entry) => String(entry).trim())
-    .filter((entry) => entry.length > 0);
+  return value.map((entry) => String(entry).trim()).filter((entry) => entry.length > 0);
 }
 
 interface TaskVerificationLeaseConflict {
@@ -296,33 +308,20 @@ interface TaskVerificationLeaseConflict {
 }
 
 function parseThinking(value: unknown): ThinkingLevel | undefined {
-  if (value === undefined || value === null || value === "") return undefined;
-  if (
-    value === "light" ||
-    value === "standard" ||
-    value === "extended" ||
-    value === "heavy"
-  )
-    return value;
+  if (value === undefined || value === null || value === '') return undefined;
+  if (value === 'light' || value === 'standard' || value === 'extended' || value === 'heavy') return value;
   throw new Error(`invalid thinking level: ${String(value)}`);
 }
 
 function parseBrowserProvider(value: unknown): BrowserProviderName | undefined {
-  if (value === undefined || value === null || value === "") return undefined;
-  if (value === "oracle" || value === "native") return value;
+  if (value === undefined || value === null || value === '') return undefined;
+  if (value === 'oracle' || value === 'native') return value;
   throw new Error(`invalid browser provider: ${String(value)}`);
 }
 
-function parseNativeBrowserChannel(
-  value: unknown,
-): NativeBrowserChannel | undefined {
-  if (value === undefined || value === null || value === "") return undefined;
-  if (
-    value === "chrome" ||
-    value === "chrome-beta" ||
-    value === "chrome-dev" ||
-    value === "chrome-canary"
-  )
+function parseNativeBrowserChannel(value: unknown): NativeBrowserChannel | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (value === 'chrome' || value === 'chrome-beta' || value === 'chrome-dev' || value === 'chrome-canary')
     return value;
   throw new Error(`invalid browser channel: ${String(value)}`);
 }
@@ -338,122 +337,121 @@ export function buildMcpToolDefinitions(
     destructiveHint: false,
   };
   const stringPathSchema = {
-    type: "object",
-    properties: { path: { type: "string" } },
-    required: ["path"],
+    type: 'object',
+    properties: { path: { type: 'string' } },
+    required: ['path'],
     additionalProperties: false,
   };
   const browserRunSchema = {
-    type: "object",
+    type: 'object',
     properties: {
-      prompt: { type: "string" },
-      title: { type: "string" },
-      files: { type: "array", items: { type: "string" } },
-      model: { type: "string" },
+      prompt: { type: 'string' },
+      title: { type: 'string' },
+      files: { type: 'array', items: { type: 'string' } },
+      model: { type: 'string' },
       thinking: {
-        type: "string",
-        enum: ["light", "standard", "extended", "heavy"],
+        type: 'string',
+        enum: ['light', 'standard', 'extended', 'heavy'],
       },
-      provider: { type: "string", enum: ["oracle", "native"] },
+      provider: { type: 'string', enum: ['oracle', 'native'] },
       browserChannel: {
-        type: "string",
-        enum: ["chrome", "chrome-beta", "chrome-dev", "chrome-canary"],
+        type: 'string',
+        enum: ['chrome', 'chrome-beta', 'chrome-dev', 'chrome-canary'],
       },
-      followups: { type: "array", items: { type: "string" } },
-      writeOutput: { type: "string" },
-      overwriteOutput: { type: "boolean" },
-      timeoutMs: { type: "number" },
-      dryRun: { type: "boolean" },
+      followups: { type: 'array', items: { type: 'string' } },
+      writeOutput: { type: 'string' },
+      overwriteOutput: { type: 'boolean' },
+      timeoutMs: { type: 'number' },
+      dryRun: { type: 'boolean' },
     },
-    required: ["prompt"],
+    required: ['prompt'],
     additionalProperties: false,
   };
   const browserSessionSchema = {
-    type: "object",
-    properties: { sessionId: { type: "string" } },
-    required: ["sessionId"],
+    type: 'object',
+    properties: { sessionId: { type: 'string' } },
+    required: ['sessionId'],
     additionalProperties: false,
   };
   const tools: McpToolDefinition[] = [
     {
-      name: "harness_status",
-      description: "Return forge adoption and workflow status.",
+      name: 'harness_status',
+      description: 'Return forge adoption and workflow status.',
       inputSchema: EMPTY_SCHEMA,
       annotations: readOnly,
     },
     {
-      name: "harness_doctor",
-      description: "Return compact MCP setup diagnostics.",
+      name: 'harness_doctor',
+      description: 'Return compact MCP setup diagnostics.',
       inputSchema: EMPTY_SCHEMA,
       annotations: readOnly,
     },
     {
-      name: "list_workflow_files",
-      description: "List policy-readable workflow files.",
+      name: 'list_workflow_files',
+      description: 'List policy-readable workflow files.',
       inputSchema: EMPTY_SCHEMA,
       annotations: readOnly,
     },
     {
-      name: "read_workflow_file",
-      description:
-        "Read one policy-allowed workflow file by repo-relative path.",
+      name: 'read_workflow_file',
+      description: 'Read one policy-allowed workflow file by repo-relative path.',
       inputSchema: stringPathSchema,
       annotations: readOnly,
     },
     {
-      name: "latest_session_context",
-      description: "Return the latest rebuildable Forge session continuation context.",
+      name: 'latest_session_context',
+      description: 'Return the latest rebuildable Forge session continuation context.',
       inputSchema: EMPTY_SCHEMA,
       annotations: readOnly,
     },
     {
-      name: "latest_checks",
-      description: "Return latest forge check artifacts.",
+      name: 'latest_checks',
+      description: 'Return latest forge check artifacts.',
       inputSchema: EMPTY_SCHEMA,
       annotations: readOnly,
     },
   ];
 
-  if (policy.profile === "controller") {
+  if (policy.profile === 'controller') {
     const taskItemSchema = {
-      type: "object",
+      type: 'object',
       properties: {
-        title: { type: "string" },
-        objective: { type: "string" },
-        depends_on: { type: "array", items: { type: "string" } },
-        allowed_paths: { type: "array", items: { type: "string" } },
-        forbidden_paths: { type: "array", items: { type: "string" } },
-        checks: { type: "array", items: { type: "string" } },
-        acceptance_criteria: { type: "array", items: { type: "string" } },
-        risk: { type: "string", enum: ["readonly", "low", "medium", "high", "destructive"] },
-        agent: { type: "string", enum: ["codex", "claude", "github-copilot"] },
+        title: { type: 'string' },
+        objective: { type: 'string' },
+        depends_on: { type: 'array', items: { type: 'string' } },
+        allowed_paths: { type: 'array', items: { type: 'string' } },
+        forbidden_paths: { type: 'array', items: { type: 'string' } },
+        checks: { type: 'array', items: { type: 'string' } },
+        acceptance_criteria: { type: 'array', items: { type: 'string' } },
+        risk: { type: 'string', enum: ['readonly', 'low', 'medium', 'high', 'destructive'] },
+        agent: { type: 'string', enum: ['codex', 'claude', 'github-copilot'] },
       },
-      required: ["title", "objective"],
+      required: ['title', 'objective'],
       additionalProperties: false,
     };
     tools.push(
       {
-        name: "controller_capabilities",
+        name: 'controller_capabilities',
         description:
-          "Return the active controller tool-surface version and expected capabilities. Use this to detect a stale ChatGPT connector tool snapshot.",
+          'Return the active controller tool-surface version and expected capabilities. Use this to detect a stale ChatGPT connector tool snapshot.',
         inputSchema: EMPTY_SCHEMA,
         annotations: readOnly,
       },
       {
-        name: "local_bridge_status",
+        name: 'local_bridge_status',
         description:
-          "Return Local Bridge / Local Controller status. Default is a compact summary (mode, endpoint, health, job counts). Pass detail_level=detail for full recentJobs, reconciliation, and owner evidence.",
+          'Return Local Bridge / Local Controller status. Default is a compact summary (mode, endpoint, health, job counts). Pass detail_level=detail for full recentJobs, reconciliation, and owner evidence.',
         inputSchema: {
-          type: "object",
+          type: 'object',
           properties: {
             detail_level: {
-              type: "string",
-              enum: ["summary", "detail"],
-              description: "Defaults to summary. Use detail for full job lists and diagnostics.",
+              type: 'string',
+              enum: ['summary', 'detail'],
+              description: 'Defaults to summary. Use detail for full job lists and diagnostics.',
             },
             detail: {
-              type: "boolean",
-              description: "Legacy alias for detail_level=detail.",
+              type: 'boolean',
+              description: 'Legacy alias for detail_level=detail.',
             },
           },
           additionalProperties: false,
@@ -461,147 +459,154 @@ export function buildMcpToolDefinitions(
         annotations: readOnly,
       },
       {
-        name: "controller_context",
+        name: 'controller_context',
         description:
-          "Return one compact controller start-work context: Git status, current Issue focus, active Runs and Jobs, and available checks.",
+          'Return one compact controller start-work context: Git status, current Issue focus, active Runs and Jobs, and available checks.',
         inputSchema: {
-          type: "object",
+          type: 'object',
           properties: {
-            description: { type: "string" },
-            known_paths: { type: "array", items: { type: "string" } },
-            needs_dependencies: { type: "boolean" },
-            risk: { type: "string", enum: ["readonly", "low", "medium", "high", "destructive"] },
+            description: { type: 'string' },
+            known_paths: { type: 'array', items: { type: 'string' } },
+            needs_dependencies: { type: 'boolean' },
+            risk: { type: 'string', enum: ['readonly', 'low', 'medium', 'high', 'destructive'] },
           },
           additionalProperties: false,
         },
         annotations: readOnly,
       },
       {
-        name: "list_local_jobs",
-        description: "List recent local Job Tickets and execution state.",
+        name: 'list_local_jobs',
+        description: 'List recent local Job Tickets and execution state.',
         inputSchema: {
-          type: "object",
-          properties: { limit: { type: "number" } },
+          type: 'object',
+          properties: { limit: { type: 'number' } },
           additionalProperties: false,
         },
         annotations: readOnly,
       },
       {
-        name: "get_local_job",
-        description: "Read one local Job Ticket status and compact metadata.",
+        name: 'get_local_job',
+        description: 'Read one local Job Ticket status and compact metadata.',
         inputSchema: {
-          type: "object",
+          type: 'object',
           properties: {
-            job_id: { type: "string" },
-            include_events: { type: "boolean" },
+            job_id: { type: 'string' },
+            include_events: { type: 'boolean' },
           },
-          required: ["job_id"],
+          required: ['job_id'],
           additionalProperties: false,
         },
         annotations: readOnly,
       },
       {
-        name: "get_local_job_output",
-        description: "Read bounded stdout or stderr for one local Job Ticket.",
+        name: 'get_local_job_output',
+        description: 'Read bounded stdout or stderr for one local Job Ticket.',
         inputSchema: {
-          type: "object",
+          type: 'object',
           properties: {
-            job_id: { type: "string" },
-            stream: { type: "string", enum: ["stdout", "stderr"] },
-            max_bytes: { type: "number" },
+            job_id: { type: 'string' },
+            stream: { type: 'string', enum: ['stdout', 'stderr'] },
+            max_bytes: { type: 'number' },
           },
-          required: ["job_id"],
+          required: ['job_id'],
           additionalProperties: false,
         },
         annotations: readOnly,
       },
       {
-        name: "project_snapshot",
-        description:
-          "Return Git state, controller issue board, active task runs, and workflow markers.",
+        name: 'project_snapshot',
+        description: 'Return Git state, controller issue board, active task runs, and workflow markers.',
         inputSchema: EMPTY_SCHEMA,
         annotations: readOnly,
       },
       {
-        name: "list_checks",
-        description:
-          "List focused repository checks from safe package scripts and .forge/checks.json.",
+        name: 'list_checks',
+        description: 'List focused repository checks from safe package scripts and .forge/checks.json.',
         inputSchema: EMPTY_SCHEMA,
         annotations: readOnly,
       },
       {
-        name: "get_worklog_timeline",
+        name: 'get_worklog_timeline',
         description:
-          "Read the unified controller worklog across Issues, Tasks, Runs, Direct Edits, Verification, and GitHub sync.",
+          'Read the unified controller worklog across Issues, Tasks, Runs, Direct Edits, Verification, and GitHub sync.',
         inputSchema: {
-          type: "object",
+          type: 'object',
           properties: {
-            category: { type: "string", enum: ["issue", "task", "run", "verification", "edit", "github", "local_job", "system"] },
-            issue_id: { type: "string" },
-            task_id: { type: "string" },
-            run_id: { type: "string" },
-            edit_session_id: { type: "string" },
-            since: { type: "string" },
-            until: { type: "string" },
-            limit: { type: "number" },
+            category: {
+              type: 'string',
+              enum: ['issue', 'task', 'run', 'verification', 'edit', 'github', 'local_job', 'system'],
+            },
+            issue_id: { type: 'string' },
+            task_id: { type: 'string' },
+            run_id: { type: 'string' },
+            edit_session_id: { type: 'string' },
+            since: { type: 'string' },
+            until: { type: 'string' },
+            limit: { type: 'number' },
           },
           additionalProperties: false,
         },
         annotations: readOnly,
       },
       {
-        name: "export_worklog",
+        name: 'export_worklog',
         description:
-          "Export the controller worklog to a repository report under tasks/reports or another safe repo-relative path.",
+          'Export the controller worklog to a repository report under tasks/reports or another safe repo-relative path.',
         inputSchema: {
-          type: "object",
+          type: 'object',
           properties: {
-            format: { type: "string", enum: ["markdown", "json"] },
-            output_path: { type: "string" },
-            issue_id: { type: "string" },
-            task_id: { type: "string" },
-            run_id: { type: "string" },
-            edit_session_id: { type: "string" },
+            format: { type: 'string', enum: ['markdown', 'json'] },
+            output_path: { type: 'string' },
+            issue_id: { type: 'string' },
+            task_id: { type: 'string' },
+            run_id: { type: 'string' },
+            edit_session_id: { type: 'string' },
           },
           additionalProperties: false,
         },
         annotations: write,
       },
       {
-        name: "begin_edit_session",
-        description:
-          "Open a bounded direct-edit session tied to a purpose and optional Issue/Task.",
+        name: 'begin_edit_session',
+        description: 'Open a bounded direct-edit session tied to a purpose and optional Issue/Task.',
         inputSchema: {
-          type: "object",
+          type: 'object',
           properties: {
-            purpose: { type: "string" },
-            issue_id: { type: "string" },
-            task_id: { type: "string" },
-            allowed_paths: { type: "array", items: { type: "string" } },
-            max_files: { type: "number" },
-            max_changed_lines: { type: "number" },
-            checks: { type: "array", items: { type: "string" }, description: "Named checks to run before finalization." },
+            purpose: { type: 'string' },
+            issue_id: { type: 'string' },
+            task_id: { type: 'string' },
+            allowed_paths: { type: 'array', items: { type: 'string' } },
+            max_files: { type: 'number' },
+            max_changed_lines: { type: 'number' },
+            checks: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Named checks to run before finalization.',
+            },
           },
-          required: ["purpose"],
+          required: ['purpose'],
           additionalProperties: false,
         },
         annotations: write,
       },
       {
-        name: "apply_patch",
+        name: 'apply_patch',
         description:
-          "Append one bounded patch batch to an active edit session. Prefer batches of 100 operations or fewer and pass expected_revision to avoid stale revisions.",
+          'Append one bounded patch batch to an active edit session. Prefer batches of 100 operations or fewer and pass expected_revision to avoid stale revisions.',
         inputSchema: {
-          type: "object",
+          type: 'object',
           properties: {
-            session_id: { type: "string" },
-            expected_revision: { type: "number", description: "Optional current revision precondition for the edit session." },
+            session_id: { type: 'string' },
+            expected_revision: {
+              type: 'number',
+              description: 'Optional current revision precondition for the edit session.',
+            },
             operations: {
-              type: "array",
+              type: 'array',
               items: EDIT_OPERATION_INPUT_SCHEMA,
             },
           },
-          required: ["session_id", "operations"],
+          required: ['session_id', 'operations'],
           additionalProperties: false,
         },
         annotations: {
@@ -611,80 +616,80 @@ export function buildMcpToolDefinitions(
         },
       },
       {
-        name: "get_edit_session",
-        description: "Read an edit session, revisions, savepoints, and operation manifest.",
+        name: 'get_edit_session',
+        description: 'Read an edit session, revisions, savepoints, and operation manifest.',
         inputSchema: {
-          type: "object",
-          properties: { session_id: { type: "string" } },
-          required: ["session_id"],
+          type: 'object',
+          properties: { session_id: { type: 'string' } },
+          required: ['session_id'],
           additionalProperties: false,
         },
         annotations: readOnly,
       },
       {
-        name: "list_edit_sessions",
-        description: "List recent direct-edit sessions with revision, changed-file, and check summaries.",
+        name: 'list_edit_sessions',
+        description: 'List recent direct-edit sessions with revision, changed-file, and check summaries.',
         inputSchema: {
-          type: "object",
-          properties: { limit: { type: "number" } },
+          type: 'object',
+          properties: { limit: { type: 'number' } },
           additionalProperties: false,
         },
         annotations: readOnly,
       },
       {
-        name: "get_edit_session_diff",
-        description: "Read the current aggregate localized diff for one direct-edit session.",
+        name: 'get_edit_session_diff',
+        description: 'Read the current aggregate localized diff for one direct-edit session.',
         inputSchema: {
-          type: "object",
-          properties: { session_id: { type: "string" } },
-          required: ["session_id"],
+          type: 'object',
+          properties: { session_id: { type: 'string' } },
+          required: ['session_id'],
           additionalProperties: false,
         },
         annotations: readOnly,
       },
       {
-        name: "create_edit_savepoint",
-        description: "Name the current edit revision so later patch batches can be rolled back to it.",
+        name: 'create_edit_savepoint',
+        description: 'Name the current edit revision so later patch batches can be rolled back to it.',
         inputSchema: {
-          type: "object",
+          type: 'object',
           properties: {
-            session_id: { type: "string" },
-            name: { type: "string" },
+            session_id: { type: 'string' },
+            name: { type: 'string' },
           },
-          required: ["session_id", "name"],
+          required: ['session_id', 'name'],
           additionalProperties: false,
         },
         annotations: write,
       },
       {
-        name: "verify_edit_session",
-        description: "Verify the current edit revision through persisted Process Runtime checks. Retries with the same request_id reuse the original process and terminal receipts are attached to the exact revision.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            session_id: { type: "string" },
-            check_ids: { type: "array", items: { type: "string" } },
-            request_id: { type: "string" },
-            reviewer: { type: "string" },
-            note: { type: "string" },
-          },
-          required: ["session_id"],
-          additionalProperties: false,
-        },
-        annotations: write,
-      },
-      {
-        name: "rollback_edit_session",
+        name: 'verify_edit_session',
         description:
-          "Rollback an active edit session completely, to a prior revision, or to a named savepoint.",
+          'Verify the current edit revision through persisted Process Runtime checks. Retries with the same request_id reuse the original process and terminal receipts are attached to the exact revision.',
         inputSchema: {
-          type: "object",
+          type: 'object',
           properties: {
-            session_id: { type: "string" },
-            to_revision: { type: "number", description: "Keep revisions up to this value; omit for full rollback." },
-            savepoint: { type: "string", description: "Rollback to a named savepoint." },
+            session_id: { type: 'string' },
+            check_ids: { type: 'array', items: { type: 'string' } },
+            request_id: { type: 'string' },
+            reviewer: { type: 'string' },
+            note: { type: 'string' },
           },
-          required: ["session_id"],
+          required: ['session_id'],
+          additionalProperties: false,
+        },
+        annotations: write,
+      },
+      {
+        name: 'rollback_edit_session',
+        description: 'Rollback an active edit session completely, to a prior revision, or to a named savepoint.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            session_id: { type: 'string' },
+            to_revision: { type: 'number', description: 'Keep revisions up to this value; omit for full rollback.' },
+            savepoint: { type: 'string', description: 'Rollback to a named savepoint.' },
+          },
+          required: ['session_id'],
           additionalProperties: false,
         },
         annotations: {
@@ -694,18 +699,21 @@ export function buildMcpToolDefinitions(
         },
       },
       {
-        name: "finalize_edit_session",
+        name: 'finalize_edit_session',
         description:
-          "Close an active edit session. Configured checks must pass; sessions without configured checks finalize directly.",
+          'Close an active edit session. Configured checks must pass; sessions without configured checks finalize directly.',
         inputSchema: {
-          type: "object",
+          type: 'object',
           properties: {
-            session_id: { type: "string" },
-            reviewer: { type: "string" },
-            note: { type: "string" },
-            confirm_authorization: { type: "boolean", description: "Required when post-diff assurance detects protected paths or high semantic risk." },
+            session_id: { type: 'string' },
+            reviewer: { type: 'string' },
+            note: { type: 'string' },
+            confirm_authorization: {
+              type: 'boolean',
+              description: 'Required when post-diff assurance detects protected paths or high semantic risk.',
+            },
           },
-          required: ["session_id"],
+          required: ['session_id'],
           additionalProperties: false,
         },
         annotations: write,
@@ -716,9 +724,9 @@ export function buildMcpToolDefinitions(
   if (opts.enableChatgptBrowser === true) {
     tools.push(
       {
-        name: "run_chatgpt_browser_consult",
+        name: 'run_chatgpt_browser_consult',
         description:
-          "Run a local ChatGPT Web browser consult through forge. This may create a real ChatGPT Web conversation unless dryRun is true.",
+          'Run a local ChatGPT Web browser consult through forge. This may create a real ChatGPT Web conversation unless dryRun is true.',
         inputSchema: browserRunSchema,
         annotations: {
           readOnlyHint: false,
@@ -727,42 +735,39 @@ export function buildMcpToolDefinitions(
         },
       },
       {
-        name: "read_chatgpt_browser_session",
-        description:
-          "Read a saved forge ChatGPT browser consult session.",
+        name: 'read_chatgpt_browser_session',
+        description: 'Read a saved forge ChatGPT browser consult session.',
         inputSchema: browserSessionSchema,
         annotations: readOnly,
       },
       {
-        name: "list_chatgpt_browser_sessions",
-        description:
-          "List saved forge ChatGPT browser consult sessions.",
+        name: 'list_chatgpt_browser_sessions',
+        description: 'List saved forge ChatGPT browser consult sessions.',
         inputSchema: {
-          type: "object",
-          properties: { limit: { type: "number" } },
+          type: 'object',
+          properties: { limit: { type: 'number' } },
           additionalProperties: false,
         },
         annotations: readOnly,
       },
       {
-        name: "open_chatgpt_browser_session",
+        name: 'open_chatgpt_browser_session',
         description:
-          "Return the ChatGPT conversation URL for a saved browser session. The MCP tool does not launch the local browser.",
+          'Return the ChatGPT conversation URL for a saved browser session. The MCP tool does not launch the local browser.',
         inputSchema: browserSessionSchema,
         annotations: readOnly,
       },
       {
-        name: "continue_chatgpt_browser_session",
-        description:
-          "Create a follow-up ChatGPT browser consult record linked to an existing session.",
+        name: 'continue_chatgpt_browser_session',
+        description: 'Create a follow-up ChatGPT browser consult record linked to an existing session.',
         inputSchema: {
-          type: "object",
+          type: 'object',
           properties: {
-            sessionId: { type: "string" },
-            prompt: { type: "string" },
-            dryRun: { type: "boolean" },
+            sessionId: { type: 'string' },
+            prompt: { type: 'string' },
+            dryRun: { type: 'boolean' },
           },
-          required: ["sessionId", "prompt"],
+          required: ['sessionId', 'prompt'],
           additionalProperties: false,
         },
         annotations: {
@@ -783,17 +788,17 @@ export async function callMcpTool(
 ): Promise<CallToolResult> {
   try {
     switch (name) {
-      case "harness_status": {
+      case 'harness_status': {
         const roots = [
-          "docs/spec.md",
-          "plans",
-          "tasks/current.md",
-          ".ai/harness/session",
-    ".ai/harness/controller/packets",
-    ".ai/harness/projections",
-          ".ai/harness/checks",
+          'docs/spec.md',
+          'plans',
+          'tasks/current.md',
+          '.ai/harness/session',
+          '.ai/harness/controller/packets',
+          '.ai/harness/projections',
+          '.ai/harness/checks',
         ];
-        audit(ctx, name, "ok", args);
+        audit(ctx, name, 'ok', args);
         return textResult({
           repoRoot: ctx.repoRoot,
           adopted: isForgeAdopted(ctx.repoRoot),
@@ -805,35 +810,26 @@ export async function callMcpTool(
           })),
         });
       }
-      case "harness_doctor": {
-        const localConfig = existsSync(
-          join(ctx.repoRoot, ".forge", "mcp.local.json"),
-        );
-        const codexConfig = existsSync(
-          join(ctx.repoRoot, ".codex", "config.toml"),
-        );
-        audit(ctx, name, "ok", args);
+      case 'harness_doctor': {
+        const localConfig = existsSync(join(ctx.repoRoot, '.forge', 'mcp.local.json'));
+        const codexConfig = existsSync(join(ctx.repoRoot, '.codex', 'config.toml'));
+        audit(ctx, name, 'ok', args);
         return textResult({
-          status: isForgeAdopted(ctx.repoRoot)
-            ? "ready_local"
-            : "not_adopted",
+          status: isForgeAdopted(ctx.repoRoot) ? 'ready_local' : 'not_adopted',
           repo: ctx.repoRoot,
           profile: ctx.policy.profile,
           mcp: {
             localConfig,
-            policy: "builtin",
+            policy: 'builtin',
             profile: ctx.policy.profile,
-            toolSurface:
-              ctx.policy.profile === "controller"
-                ? FORGE_TOOL_SURFACE
-                : `${ctx.policy.profile}-legacy-v1`,
+            toolSurface: ctx.policy.profile === 'controller' ? FORGE_TOOL_SURFACE : `${ctx.policy.profile}-legacy-v1`,
             toolCount: buildMcpToolDefinitions(ctx.policy, {
               enableChatgptBrowser: ctx.enableChatgptBrowser === true,
             }).length,
             repositoryRead:
-              ctx.policy.profile === "controller"
-                ? "ordinary repository source and document files are readable; immutable secret and runtime paths remain denied"
-                : "workflow-scoped",
+              ctx.policy.profile === 'controller'
+                ? 'ordinary repository source and document files are readable; immutable secret and runtime paths remain denied'
+                : 'workflow-scoped',
             deniedPaths: ctx.policy.denyGlobs.length,
             runner: {
               enabled: ctx.policy.execution.agentRunner,
@@ -843,28 +839,24 @@ export async function callMcpTool(
           },
           codex: {
             configured: codexConfig,
-            fix: codexConfig
-              ? null
-              : "forge mcp setup codex --repo . --scope project",
+            fix: codexConfig ? null : 'forge mcp setup codex --repo . --scope project',
           },
           chatgpt: {
-            localEndpoint: "http://127.0.0.1:8765/mcp",
+            localEndpoint: 'http://127.0.0.1:8765/mcp',
             manualStepsRequired: true,
-            guide: "docs/forge-chatgpt-mcp-setup.md",
+            guide: 'docs/forge-chatgpt-mcp-setup.md',
           },
         });
       }
-      case "controller_capabilities": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "controller_capabilities requires the controller profile",
-          );
+      case 'controller_capabilities': {
+        if (ctx.policy.profile !== 'controller')
+          return errorResult('TOOL_DISABLED', 'controller_capabilities requires the controller profile');
         const expectedTools = ctx.publishedToolNames;
-        if (!expectedTools) return errorResult(
-          'MCP_TOOL_SURFACE_UNAVAILABLE',
-          'Controller capability diagnostics require the authoritative MCP registry projection.',
-        );
+        if (!expectedTools)
+          return errorResult(
+            'MCP_TOOL_SURFACE_UNAVAILABLE',
+            'Controller capability diagnostics require the authoritative MCP registry projection.',
+          );
         const preferredTools: string[] = [...PREFERRED_FACADE_TOOL_NAMES];
         const capabilityDescriptors = listCapabilityDescriptors();
         const connectorSnapshot = Array.isArray(args.connector_tool_names)
@@ -879,13 +871,13 @@ export async function callMcpTool(
         });
         // staleConnector only when ChatGPT snapshot is supplied and missing rh_*.
         const missingFacadeTools = connectorFreshness.missingConnectorTools;
-        const staleConnector = connectorFreshness.status === "chatgpt_snapshot_missing_facade";
+        const staleConnector = connectorFreshness.status === 'chatgpt_snapshot_missing_facade';
         const payload = {
           schemaVersion: FORGE_MCP_SCHEMA_VERSION,
           toolSurface: FORGE_TOOL_SURFACE,
           version: FORGE_VERSION,
           toolSurfaceFingerprint: forgeToolSurfaceFingerprint(expectedTools),
-          executionModel: "chatgpt-controller-execution-bridge",
+          executionModel: 'chatgpt-controller-execution-bridge',
           profile: ctx.policy.profile,
           capabilities: {
             repositoryInspection: true,
@@ -949,14 +941,10 @@ export async function callMcpTool(
             enabled: ctx.policy.execution.agentRunner,
             allowedAgents: ctx.policy.execution.allowedAgents,
             defaultTimeoutMs: ctx.policy.execution.runnerTimeoutMs,
-            defaultTimeout: formatDurationMs(
-              ctx.policy.execution.runnerTimeoutMs,
-            ),
+            defaultTimeout: formatDurationMs(ctx.policy.execution.runnerTimeoutMs),
             maxTimeoutMs: ctx.policy.execution.runnerMaxTimeoutMs,
-            maxTimeout: formatDurationMs(
-              ctx.policy.execution.runnerMaxTimeoutMs,
-            ),
-            note: "Requested timeout values are validated explicitly and are never silently reduced to the default.",
+            maxTimeout: formatDurationMs(ctx.policy.execution.runnerMaxTimeoutMs),
+            note: 'Requested timeout values are validated explicitly and are never silently reduced to the default.',
           },
           preferredTools,
           capabilityGroups: summarizeCapabilityGroups(),
@@ -970,7 +958,7 @@ export async function callMcpTool(
           },
           toolExposure: {
             preferred: preferredTools,
-            note: "Prefer the five rh_* workflow facades for orchestration. Typed repository, Git, Issue/Task, plugin, browser, iOS, artifact, and recovery tools remain available because the current MCP transport cannot load domain schemas per conversation.",
+            note: 'Prefer the five rh_* workflow facades for orchestration. Typed repository, Git, Issue/Task, plugin, browser, iOS, artifact, and recovery tools remain available because the current MCP transport cannot load domain schemas per conversation.',
             exposedToolCount: expectedTools.length,
           },
           expectedTools,
@@ -989,54 +977,52 @@ export async function callMcpTool(
             suggestedActions: connectorFreshness.suggestedActions,
           },
           docs: [
-            "docs/architecture/current/README.md",
-            "docs/architecture/history.md",
-            "docs/operations/controller-reliability-runbook.md",
-            "docs/forge-github-issue-launcher.md",
-            "docs/forge-chatgpt-mcp-setup.md",
+            'docs/architecture/current/README.md',
+            'docs/architecture/history.md',
+            'docs/operations/controller-reliability-runbook.md',
+            'docs/forge-github-issue-launcher.md',
+            'docs/forge-chatgpt-mcp-setup.md',
           ],
           staleConnectorHint: staleConnector
-            ? `Stale ChatGPT connector tool snapshot is missing facade tools: ${missingFacadeTools.join(", ")}. Refresh/reconnect MCP so tools/list reloads rh_status, rh_inbox, rh_context, and rh_work.`
-            : connectorFreshness.status === "unable_to_verify_chatgpt_snapshot"
+            ? `Stale ChatGPT connector tool snapshot is missing facade tools: ${missingFacadeTools.join(', ')}. Refresh/reconnect MCP so tools/list reloads rh_status, rh_inbox, rh_context, and rh_work.`
+            : connectorFreshness.status === 'unable_to_verify_chatgpt_snapshot'
               ? `Local MCP tool surface includes preferred facade tools. ChatGPT connector snapshot was not supplied, so freshness cannot be verified from this call. If ChatGPT tools/list is missing rh_status/rh_inbox/rh_context/rh_work, reconnect MCP. Pass connector_tool_names for an exact check.`
-              : connectorFreshness.status === "stale_fingerprint"
+              : connectorFreshness.status === 'stale_fingerprint'
                 ? `Local MCP process fingerprint/version may be stale. Restart controller/MCP, then reconnect ChatGPT if rh_* are still missing.`
-                : connectorFreshness.status === "local_mcp_missing_facade"
-                  ? `Local MCP tool surface is missing facade tools: ${connectorFreshness.missingLocalTools.join(", ")}. Restart controller/MCP.`
+                : connectorFreshness.status === 'local_mcp_missing_facade'
+                  ? `Local MCP tool surface is missing facade tools: ${connectorFreshness.missingLocalTools.join(', ')}. Restart controller/MCP.`
                   : `Connector clients must match ${FORGE_TOOL_SURFACE} version ${FORGE_VERSION} / schema ${FORGE_MCP_SCHEMA_VERSION}. Prefer rh_status/rh_inbox/rh_context/rh_work. Pass connector_tool_names to detect a stale ChatGPT tool snapshot precisely.`,
         };
-        audit(ctx, name, "ok", args);
+        audit(ctx, name, 'ok', args);
         return textResult(payload);
       }
-      case "list_local_jobs": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "list_local_jobs requires the controller profile",
-          );
-        const limit = typeof args.limit === "number" ? args.limit : 50;
+      case 'list_local_jobs': {
+        if (ctx.policy.profile !== 'controller')
+          return errorResult('TOOL_DISABLED', 'list_local_jobs requires the controller profile');
+        const limit = typeof args.limit === 'number' ? args.limit : 50;
         const jobs = listLocalBridgeJobs(ctx.repoRoot, limit);
-        audit(ctx, name, "ok", args);
+        audit(ctx, name, 'ok', args);
         return textResult({ jobs });
       }
-      case "project_snapshot": {
-        if (ctx.policy.profile !== "controller") return errorResult("TOOL_DISABLED", "project_snapshot requires the controller profile");
+      case 'project_snapshot': {
+        if (ctx.policy.profile !== 'controller')
+          return errorResult('TOOL_DISABLED', 'project_snapshot requires the controller profile');
         const markerPaths = [
-          ".ai/harness/active-plan",
-          ".ai/harness/active-sprint",
-          ".ai/harness/active-worktree",
-          "tasks/current.md",
+          '.ai/harness/active-plan',
+          '.ai/harness/active-sprint',
+          '.ai/harness/active-worktree',
+          'tasks/current.md',
         ];
         const markers = markerPaths.map((path) => {
           const absolute = join(ctx.repoRoot, path);
           if (!existsSync(absolute)) return { path, exists: false };
-          const raw = readFileSync(absolute, "utf-8");
+          const raw = readFileSync(absolute, 'utf-8');
           return {
             path,
             exists: true,
             bytes: Buffer.byteLength(raw),
             lines: raw.split(/\r?\n/).length,
-            sha256: createHash("sha256").update(raw).digest("hex").slice(0, 16),
+            sha256: createHash('sha256').update(raw).digest('hex').slice(0, 16),
             preview: redactMcpText(raw).text.slice(0, 400),
           };
         });
@@ -1045,7 +1031,7 @@ export async function callMcpTool(
         const executionDiagnostics = buildExecutionDiagnostics({
           controllerHome,
           repoId: ctx.repoId,
-          detailLevel: "detail",
+          detailLevel: 'detail',
         });
         const snapshotRuns = listAgentJobs(ctx.repoRoot, 11);
         const runs = snapshotRuns.slice(0, 10).map((run) => ({
@@ -1066,9 +1052,9 @@ export async function callMcpTool(
           requirementBoard,
           executionDiagnostics,
           legacyCompatibility: {
-            currentIssue: "deprecated_frozen",
-            issueTaskBoard: "deprecated_frozen",
-            authority: "controller-home-sqlite",
+            currentIssue: 'deprecated_frozen',
+            issueTaskBoard: 'deprecated_frozen',
+            authority: 'controller-home-sqlite',
           },
           runs,
           markers,
@@ -1076,67 +1062,61 @@ export async function callMcpTool(
             runs: snapshotRuns.length > 10,
           },
         };
-        audit(ctx, name, "ok", args);
+        audit(ctx, name, 'ok', args);
         return textResult(payload);
       }
-      case "list_checks": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "list_checks requires the controller profile",
-          );
+      case 'list_checks': {
+        if (ctx.policy.profile !== 'controller')
+          return errorResult('TOOL_DISABLED', 'list_checks requires the controller profile');
         const checks = listControllerChecks(ctx.repoRoot);
-        audit(ctx, name, "ok", args);
+        audit(ctx, name, 'ok', args);
         return textResult({ checks });
       }
-      case "get_worklog_timeline": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult("TOOL_DISABLED", "get_worklog_timeline requires the controller profile");
+      case 'get_worklog_timeline': {
+        if (ctx.policy.profile !== 'controller')
+          return errorResult('TOOL_DISABLED', 'get_worklog_timeline requires the controller profile');
         const events = listControllerWorklogEvents(ctx.repoRoot, {
           category: parseWorklogCategory(args.category),
-          issueId: typeof args.issue_id === "string" ? args.issue_id : undefined,
-          taskId: typeof args.task_id === "string" ? args.task_id : undefined,
-          runId: typeof args.run_id === "string" ? args.run_id : undefined,
-          editSessionId: typeof args.edit_session_id === "string" ? args.edit_session_id : undefined,
-          since: typeof args.since === "string" ? args.since : undefined,
-          until: typeof args.until === "string" ? args.until : undefined,
-          limit: typeof args.limit === "number" ? Math.trunc(args.limit) : undefined,
+          issueId: typeof args.issue_id === 'string' ? args.issue_id : undefined,
+          taskId: typeof args.task_id === 'string' ? args.task_id : undefined,
+          runId: typeof args.run_id === 'string' ? args.run_id : undefined,
+          editSessionId: typeof args.edit_session_id === 'string' ? args.edit_session_id : undefined,
+          since: typeof args.since === 'string' ? args.since : undefined,
+          until: typeof args.until === 'string' ? args.until : undefined,
+          limit: typeof args.limit === 'number' ? Math.trunc(args.limit) : undefined,
         });
-        audit(ctx, name, "ok", args);
+        audit(ctx, name, 'ok', args);
         return textResult({ events });
       }
-      case "export_worklog": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult("TOOL_DISABLED", "export_worklog requires the controller profile");
+      case 'export_worklog': {
+        if (ctx.policy.profile !== 'controller')
+          return errorResult('TOOL_DISABLED', 'export_worklog requires the controller profile');
         const result = exportControllerWorklog(ctx.repoRoot, {
-          format: args.format === "json" ? "json" : "markdown",
-          outputPath: typeof args.output_path === "string" ? args.output_path : undefined,
+          format: args.format === 'json' ? 'json' : 'markdown',
+          outputPath: typeof args.output_path === 'string' ? args.output_path : undefined,
           filter: {
-            issueId: typeof args.issue_id === "string" ? args.issue_id : undefined,
-            taskId: typeof args.task_id === "string" ? args.task_id : undefined,
-            runId: typeof args.run_id === "string" ? args.run_id : undefined,
-            editSessionId: typeof args.edit_session_id === "string" ? args.edit_session_id : undefined,
+            issueId: typeof args.issue_id === 'string' ? args.issue_id : undefined,
+            taskId: typeof args.task_id === 'string' ? args.task_id : undefined,
+            runId: typeof args.run_id === 'string' ? args.run_id : undefined,
+            editSessionId: typeof args.edit_session_id === 'string' ? args.edit_session_id : undefined,
           },
         });
-        audit(ctx, name, "ok", args, result.path);
+        audit(ctx, name, 'ok', args, result.path);
         return textResult(result);
       }
-      case "begin_edit_session": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "begin_edit_session requires the controller profile",
-          );
-        const purpose = String(args.purpose ?? "").trim();
+      case 'begin_edit_session': {
+        if (ctx.policy.profile !== 'controller')
+          return errorResult('TOOL_DISABLED', 'begin_edit_session requires the controller profile');
+        const purpose = String(args.purpose ?? '').trim();
         const identity = editExecutionIdentity(ctx);
         const repoId = identity.repoId;
         const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
         const allowedPaths = stringList(args.allowed_paths);
         const checks = stringList(args.checks);
-        const explicitWorkId = typeof args.work_id === "string" ? args.work_id.trim() : "";
+        const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
         if (explicitWorkId) {
           return errorResult(
-            "WORK_MUTATION_AUTHORITY_RETIRED",
+            'WORK_MUTATION_AUTHORITY_RETIRED',
             `Work ${explicitWorkId} cannot own or select a direct-edit session; use repository/checkout/principal identity.`,
           );
         }
@@ -1149,68 +1129,76 @@ export async function callMcpTool(
         if (editStorage.status === 'legacy-active' || editStorage.status === 'conflict') {
           return errorResult('EDIT_SESSION_STORAGE_NOT_READY', editStorage.message ?? editStorage.status);
         }
-        const session = withLegacyEditMutation(ctx, name, () => beginEditSession(ctx.repoRoot, {
-          purpose,
-          issueId: typeof args.issue_id === "string" ? args.issue_id : undefined,
-          taskId: typeof args.task_id === "string" ? args.task_id : undefined,
-          allowedPaths,
-          maxFiles: typeof args.max_files === "number" ? args.max_files : undefined,
-          maxChangedLines: typeof args.max_changed_lines === "number" ? args.max_changed_lines : undefined,
-          checks,
-          binding: {
-            repoId,
-            checkoutId: identity.checkoutId,
-            principalId: identity.principalId,
-          },
-        }), []);
+        const session = withLegacyEditMutation(
+          ctx,
+          name,
+          () =>
+            beginEditSession(ctx.repoRoot, {
+              purpose,
+              issueId: typeof args.issue_id === 'string' ? args.issue_id : undefined,
+              taskId: typeof args.task_id === 'string' ? args.task_id : undefined,
+              allowedPaths,
+              maxFiles: typeof args.max_files === 'number' ? args.max_files : undefined,
+              maxChangedLines: typeof args.max_changed_lines === 'number' ? args.max_changed_lines : undefined,
+              checks,
+              binding: {
+                repoId,
+                checkoutId: identity.checkoutId,
+                principalId: identity.principalId,
+              },
+            }),
+          [],
+        );
         audit(
           ctx,
           name,
-          "ok",
+          'ok',
           args,
           `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
         );
         return textResult(session);
       }
-      case "apply_patch": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "apply_patch requires the controller profile",
-          );
+      case 'apply_patch': {
+        if (ctx.policy.profile !== 'controller')
+          return errorResult('TOOL_DISABLED', 'apply_patch requires the controller profile');
         let session;
         try {
-          const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ""));
+          const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ''));
           const identity = editExecutionIdentity(ctx);
           const operations = normalizeEditOperations(args.operations);
           const claims = editSourceClaims(ctx, [
             ...current.operations.map((entry) => entry.path),
             ...operations.map((entry) => entry.path),
           ]);
-          session = withLegacyEditMutation(ctx, name, () => applyEditOperations(
-            ctx.repoRoot,
-            ctx.policy,
-            current.sessionId,
-            operations,
-            {
-              expectedRevision:
-                typeof args.expected_revision === "number"
-                  ? Math.trunc(args.expected_revision)
-                  : undefined,
-              maxBatchOperations: PREFERRED_EDIT_PATCH_BATCH_OPERATIONS,
-              // Reuse the canonical descendant/after-image/path/Lease proof.
-              allowSuccessorHeadAdoption: typeof args.expected_revision === "number",
-              controllerHome: ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot),
-              binding: {
-                repoId: identity.repoId,
-                checkoutId: identity.checkoutId,
-                principalId: identity.principalId,
-              },
-            },
-          ), claims);
+          session = withLegacyEditMutation(
+            ctx,
+            name,
+            () =>
+              applyEditOperations(ctx.repoRoot, ctx.policy, current.sessionId, operations, {
+                expectedRevision:
+                  typeof args.expected_revision === 'number' ? Math.trunc(args.expected_revision) : undefined,
+                maxBatchOperations: PREFERRED_EDIT_PATCH_BATCH_OPERATIONS,
+                // Reuse the canonical descendant/after-image/path/Lease proof.
+                allowSuccessorHeadAdoption: typeof args.expected_revision === 'number',
+                controllerHome: ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot),
+                binding: {
+                  repoId: identity.repoId,
+                  checkoutId: identity.checkoutId,
+                  principalId: identity.principalId,
+                },
+              }),
+            claims,
+          );
         } catch (error) {
           if (error instanceof EditSessionPatchError) {
-            audit(ctx, name, "failed", args, `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${error.details.sessionId}`, error.message);
+            audit(
+              ctx,
+              name,
+              'failed',
+              args,
+              `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${error.details.sessionId}`,
+              error.message,
+            );
             return errorResult(error.code, error.message, error.details);
           }
           throw error;
@@ -1218,163 +1206,157 @@ export async function callMcpTool(
         audit(
           ctx,
           name,
-          "ok",
+          'ok',
           args,
           `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
         );
         return textResult(session);
       }
-      case "get_edit_session": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "get_edit_session requires the controller profile",
-          );
-        const session = getEditSession(
-          ctx.repoRoot,
-          String(args.session_id ?? ""),
+      case 'get_edit_session': {
+        if (ctx.policy.profile !== 'controller')
+          return errorResult('TOOL_DISABLED', 'get_edit_session requires the controller profile');
+        const session = getEditSession(ctx.repoRoot, String(args.session_id ?? ''));
+        audit(
+          ctx,
+          name,
+          'ok',
+          args,
+          `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
+        );
+        return textResult(session);
+      }
+      case 'list_edit_sessions': {
+        if (ctx.policy.profile !== 'controller')
+          return errorResult('TOOL_DISABLED', 'list_edit_sessions requires the controller profile');
+        const limit = typeof args.limit === 'number' ? args.limit : 100;
+        audit(ctx, name, 'ok', args);
+        return textResult({ sessions: listEditSessions(ctx.repoRoot, limit) });
+      }
+      case 'get_edit_session_diff': {
+        if (ctx.policy.profile !== 'controller')
+          return errorResult('TOOL_DISABLED', 'get_edit_session_diff requires the controller profile');
+        const result = getEditSessionDiff(ctx.repoRoot, String(args.session_id ?? ''));
+        audit(ctx, name, 'ok', args, result.path);
+        return textResult(result);
+      }
+      case 'create_edit_savepoint': {
+        if (ctx.policy.profile !== 'controller')
+          return errorResult('TOOL_DISABLED', 'create_edit_savepoint requires the controller profile');
+        const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ''));
+        const session = withLegacyEditMutation(
+          ctx,
+          name,
+          () => createEditSavepoint(ctx.repoRoot, current.sessionId, String(args.name ?? '')),
+          editSourceClaims(
+            ctx,
+            current.operations.map((entry) => entry.path),
+          ),
         );
         audit(
           ctx,
           name,
-          "ok",
+          'ok',
           args,
           `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
         );
         return textResult(session);
       }
-      case "list_edit_sessions": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult("TOOL_DISABLED", "list_edit_sessions requires the controller profile");
-        const limit = typeof args.limit === "number" ? args.limit : 100;
-        audit(ctx, name, "ok", args);
-        return textResult({ sessions: listEditSessions(ctx.repoRoot, limit) });
-      }
-      case "get_edit_session_diff": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult("TOOL_DISABLED", "get_edit_session_diff requires the controller profile");
-        const result = getEditSessionDiff(ctx.repoRoot, String(args.session_id ?? ""));
-        audit(ctx, name, "ok", args, result.path);
-        return textResult(result);
-      }
-      case "create_edit_savepoint": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult("TOOL_DISABLED", "create_edit_savepoint requires the controller profile");
-        const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ""));
-        const session = withLegacyEditMutation(ctx, name, () => createEditSavepoint(
-          ctx.repoRoot,
-          current.sessionId,
-          String(args.name ?? ""),
-        ), editSourceClaims(ctx, current.operations.map((entry) => entry.path)));
-        audit(ctx, name, "ok", args, `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`);
-        return textResult(session);
-      }
-      case "verify_edit_session": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult("TOOL_DISABLED", "verify_edit_session requires the controller profile");
-        const session = getEditSession(ctx.repoRoot, String(args.session_id ?? ""));
-        const requestId = typeof args.request_id === "string" ? args.request_id.trim() || undefined : undefined;
-        audit(ctx, name, "blocked", args, session.diffPath);
+      case 'verify_edit_session': {
+        if (ctx.policy.profile !== 'controller')
+          return errorResult('TOOL_DISABLED', 'verify_edit_session requires the controller profile');
+        const session = getEditSession(ctx.repoRoot, String(args.session_id ?? ''));
+        const requestId = typeof args.request_id === 'string' ? args.request_id.trim() || undefined : undefined;
+        audit(ctx, name, 'blocked', args, session.diffPath);
         return errorResult(
-          "VERIFY_EDIT_SESSION_LOCAL_JOB_RETIRED",
-          "Edit-session verification no longer creates a Local Bridge Job. Run checks through Process Runtime, then finalize with the recorded evidence.",
+          'VERIFY_EDIT_SESSION_LOCAL_JOB_RETIRED',
+          'Edit-session verification no longer creates a Local Bridge Job. Run checks through Process Runtime, then finalize with the recorded evidence.',
           { sessionId: session.sessionId, revision: session.currentRevision, requestId },
         );
       }
-      case "rollback_edit_session": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "rollback_edit_session requires the controller profile",
-          );
-        const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ""));
-        const session = withLegacyEditMutation(ctx, name, () => rollbackEditSession(
-          ctx.repoRoot,
-          current.sessionId,
-          {
-            toRevision: typeof args.to_revision === "number" ? Math.trunc(args.to_revision) : undefined,
-            savepoint: typeof args.savepoint === "string" ? args.savepoint : undefined,
-          },
-        ), editSourceClaims(ctx, current.operations.map((entry) => entry.path)));
+      case 'rollback_edit_session': {
+        if (ctx.policy.profile !== 'controller')
+          return errorResult('TOOL_DISABLED', 'rollback_edit_session requires the controller profile');
+        const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ''));
+        const session = withLegacyEditMutation(
+          ctx,
+          name,
+          () =>
+            rollbackEditSession(ctx.repoRoot, current.sessionId, {
+              toRevision: typeof args.to_revision === 'number' ? Math.trunc(args.to_revision) : undefined,
+              savepoint: typeof args.savepoint === 'string' ? args.savepoint : undefined,
+            }),
+          editSourceClaims(
+            ctx,
+            current.operations.map((entry) => entry.path),
+          ),
+        );
         audit(
           ctx,
           name,
-          "ok",
+          'ok',
           args,
           `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
         );
         return textResult(session);
       }
-      case "finalize_edit_session": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "finalize_edit_session requires the controller profile",
-          );
-        const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ""));
+      case 'finalize_edit_session': {
+        if (ctx.policy.profile !== 'controller')
+          return errorResult('TOOL_DISABLED', 'finalize_edit_session requires the controller profile');
+        const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ''));
         const identity = editExecutionIdentity(ctx);
-        const session = withLegacyEditMutation(ctx, name, () => finalizeEditSession(
-          ctx.repoRoot,
-          current.sessionId,
-          {
-            reviewer: typeof args.reviewer === "string" ? args.reviewer : undefined,
-            note: typeof args.note === "string" ? args.note : undefined,
-            approvalConfirmed: args.confirm_authorization === true,
-            binding: {
-              repoId: identity.repoId,
-              checkoutId: identity.checkoutId,
-              principalId: identity.principalId,
-            },
-          },
-        ), editSourceClaims(ctx, current.operations.map((entry) => entry.path)));
+        const session = withLegacyEditMutation(
+          ctx,
+          name,
+          () =>
+            finalizeEditSession(ctx.repoRoot, current.sessionId, {
+              reviewer: typeof args.reviewer === 'string' ? args.reviewer : undefined,
+              note: typeof args.note === 'string' ? args.note : undefined,
+              approvalConfirmed: args.confirm_authorization === true,
+              binding: {
+                repoId: identity.repoId,
+                checkoutId: identity.checkoutId,
+                principalId: identity.principalId,
+              },
+            }),
+          editSourceClaims(
+            ctx,
+            current.operations.map((entry) => entry.path),
+          ),
+        );
         audit(
           ctx,
           name,
-          "ok",
+          'ok',
           args,
           `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
         );
         return textResult(session);
       }
-      case "list_workflow_files": {
+      case 'list_workflow_files': {
         const files = workflowFileCandidates(ctx.repoRoot)
-          .filter(
-            (path) => resolveMcpPath(ctx.repoRoot, path, ctx.policy, "read").ok,
-          )
+          .filter((path) => resolveMcpPath(ctx.repoRoot, path, ctx.policy, 'read').ok)
           .map((path) => fileSummary(path, ctx.repoRoot))
           .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
           .filter((entry) => entry.size <= ctx.policy.maxFileBytes);
-        audit(ctx, name, "ok", args);
+        audit(ctx, name, 'ok', args);
         return textResult({ files });
       }
-      case "read_workflow_file": {
-        const path = typeof args.path === "string" ? args.path : "";
-        const decision = resolveMcpPath(ctx.repoRoot, path, ctx.policy, "read");
+      case 'read_workflow_file': {
+        const path = typeof args.path === 'string' ? args.path : '';
+        const decision = resolveMcpPath(ctx.repoRoot, path, ctx.policy, 'read');
         if (!decision.ok || !decision.absolutePath || !decision.relativePath) {
-          audit(ctx, name, "blocked", args, path, decision.reason);
-          return errorResult(
-            "POLICY_DENIED",
-            decision.reason ?? "path denied",
-            { path },
-          );
+          audit(ctx, name, 'blocked', args, path, decision.reason);
+          return errorResult('POLICY_DENIED', decision.reason ?? 'path denied', { path });
         }
         const fileStat = statSync(decision.absolutePath);
-        if (!fileStat.isFile())
-          return errorResult(
-            "NOT_A_FILE",
-            `path is not a file: ${decision.relativePath}`,
-          );
+        if (!fileStat.isFile()) return errorResult('NOT_A_FILE', `path is not a file: ${decision.relativePath}`);
         if (fileStat.size > ctx.policy.maxFileBytes)
-          return errorResult(
-            "FILE_TOO_LARGE",
-            `file exceeds ${ctx.policy.maxFileBytes} bytes`,
-          );
+          return errorResult('FILE_TOO_LARGE', `file exceeds ${ctx.policy.maxFileBytes} bytes`);
         const bytes = readFileSync(decision.absolutePath);
-        if (isProbablyBinary(bytes))
-          return errorResult("BINARY_FILE", "binary files are not supported");
-        const raw = bytes.toString("utf-8");
+        if (isProbablyBinary(bytes)) return errorResult('BINARY_FILE', 'binary files are not supported');
+        const raw = bytes.toString('utf-8');
         const redacted = redactMcpText(raw);
-        audit(ctx, name, "ok", args, decision.relativePath);
+        audit(ctx, name, 'ok', args, decision.relativePath);
         const payload = {
           path: decision.relativePath,
           size: fileStat.size,
@@ -1389,51 +1371,37 @@ export async function callMcpTool(
           redactions: payload.redactions,
         });
       }
-      case "latest_session_context": {
-        const paths = [
-          ".ai/harness/session/resume.md",
-          ".ai/harness/session/continuation.md",
-        ];
+      case 'latest_session_context': {
+        const paths = ['.ai/harness/session/resume.md', '.ai/harness/session/continuation.md'];
         const handoff = paths.map((path) => {
-          const decision = resolveMcpPath(
-            ctx.repoRoot,
-            path,
-            ctx.policy,
-            "read",
-          );
-          if (
-            !decision.ok ||
-            !decision.absolutePath ||
-            !existsSync(decision.absolutePath)
-          )
+          const decision = resolveMcpPath(ctx.repoRoot, path, ctx.policy, 'read');
+          if (!decision.ok || !decision.absolutePath || !existsSync(decision.absolutePath))
             return { path, exists: false };
-          const content = redactMcpText(
-            readFileSync(decision.absolutePath, "utf-8"),
-          ).text;
+          const content = redactMcpText(readFileSync(decision.absolutePath, 'utf-8')).text;
           return {
             path,
             exists: true,
-            preview: content.split(/\r?\n/).slice(0, 24).join("\n"),
+            preview: content.split(/\r?\n/).slice(0, 24).join('\n'),
           };
         });
-        audit(ctx, name, "ok", args);
+        audit(ctx, name, 'ok', args);
         return textResult({ sessionContext: handoff });
       }
-      case "latest_checks": {
-        const controllerHome = ctx.runtimeControllerHome?.trim()
-          || resolveRepoPreferredControllerHome(ctx.repoRoot);
-        const repoId = ctx.repoId?.trim()
-          || resolveRepositorySelection({
+      case 'latest_checks': {
+        const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
+        const repoId =
+          ctx.repoId?.trim() ||
+          resolveRepositorySelection({
             explicitPath: ctx.repoRoot,
             controllerHome,
             allowSoleRepository: true,
           }).repoId;
         const storage = resolveRepositoryCheckStorage(ctx.repoRoot, { controllerHome, repoId });
         const relativeFiles: string[] = [];
-        listFilesUnder(storage.physicalRoot, ".", 700, relativeFiles);
+        listFilesUnder(storage.physicalRoot, '.', 700, relativeFiles);
         const files = relativeFiles
-          .map((path) => path.replace(/^\.\//, ""))
-          .filter((path) => !path.startsWith("locks/"))
+          .map((path) => path.replace(/^\.\//, ''))
+          .filter((path) => !path.startsWith('locks/'))
           .map((path) => {
             const summary = fileSummary(path, storage.physicalRoot);
             return summary ? { ...summary, path: `controller-home://checks/${path}` } : null;
@@ -1441,41 +1409,29 @@ export async function callMcpTool(
           .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
           .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt))
           .slice(0, 20);
-        audit(ctx, name, "ok", args);
+        audit(ctx, name, 'ok', args);
         return textResult({ files });
       }
-      case "run_chatgpt_browser_consult": {
+      case 'run_chatgpt_browser_consult': {
         if (ctx.enableChatgptBrowser !== true)
-          return errorResult(
-            "TOOL_DISABLED",
-            "ChatGPT browser tools require forge mcp serve --enable-chatgpt-browser",
-          );
+          return errorResult('TOOL_DISABLED', 'ChatGPT browser tools require forge mcp serve --enable-chatgpt-browser');
         const result = await runBrowserConsult({
           repoRoot: ctx.repoRoot,
-          title: typeof args.title === "string" ? args.title : undefined,
-          prompt: String(args.prompt ?? ""),
+          title: typeof args.title === 'string' ? args.title : undefined,
+          prompt: String(args.prompt ?? ''),
           files: stringList(args.files).map((path) => ({ path })),
           followups: stringList(args.followups),
-          model: typeof args.model === "string" ? args.model : undefined,
+          model: typeof args.model === 'string' ? args.model : undefined,
           thinking: parseThinking(args.thinking),
           provider: parseBrowserProvider(args.provider),
           browserChannel: parseNativeBrowserChannel(args.browserChannel),
-          writeOutput:
-            typeof args.writeOutput === "string" ? args.writeOutput : undefined,
-          writeOutputPolicy: "mcp",
+          writeOutput: typeof args.writeOutput === 'string' ? args.writeOutput : undefined,
+          writeOutputPolicy: 'mcp',
           overwriteOutput: args.overwriteOutput === true,
-          timeoutMs:
-            typeof args.timeoutMs === "number" ? args.timeoutMs : undefined,
+          timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined,
           dryRun: args.dryRun === true,
         });
-        audit(
-          ctx,
-          name,
-          result.error ? "failed" : "ok",
-          args,
-          result.meta.output.outputPath,
-          result.error?.message,
-        );
+        audit(ctx, name, result.error ? 'failed' : 'ok', args, result.meta.output.outputPath, result.error?.message);
         return textResult({
           sessionId: result.sessionId,
           status: result.status,
@@ -1490,56 +1446,40 @@ export async function callMcpTool(
           error: result.error,
         });
       }
-      case "read_chatgpt_browser_session": {
+      case 'read_chatgpt_browser_session': {
         if (ctx.enableChatgptBrowser !== true)
-          return errorResult(
-            "TOOL_DISABLED",
-            "ChatGPT browser tools require forge mcp serve --enable-chatgpt-browser",
-          );
-        const sessionId = String(args.sessionId ?? "").trim();
+          return errorResult('TOOL_DISABLED', 'ChatGPT browser tools require forge mcp serve --enable-chatgpt-browser');
+        const sessionId = String(args.sessionId ?? '').trim();
         const session = readSession(ctx.repoRoot, sessionId);
-        audit(ctx, name, "ok", args);
+        audit(ctx, name, 'ok', args);
         return textResult({
           meta: session.meta,
           output: session.output,
           transcript: session.transcript,
         });
       }
-      case "list_chatgpt_browser_sessions": {
+      case 'list_chatgpt_browser_sessions': {
         if (ctx.enableChatgptBrowser !== true)
-          return errorResult(
-            "TOOL_DISABLED",
-            "ChatGPT browser tools require forge mcp serve --enable-chatgpt-browser",
-          );
+          return errorResult('TOOL_DISABLED', 'ChatGPT browser tools require forge mcp serve --enable-chatgpt-browser');
         const limit =
-          typeof args.limit === "number" &&
-          Number.isInteger(args.limit) &&
-          args.limit > 0
-            ? args.limit
-            : 20;
+          typeof args.limit === 'number' && Number.isInteger(args.limit) && args.limit > 0 ? args.limit : 20;
         const sessions = listSessions(ctx.repoRoot, limit);
-        audit(ctx, name, "ok", args);
+        audit(ctx, name, 'ok', args);
         return textResult({ sessions });
       }
-      case "open_chatgpt_browser_session": {
+      case 'open_chatgpt_browser_session': {
         if (ctx.enableChatgptBrowser !== true)
-          return errorResult(
-            "TOOL_DISABLED",
-            "ChatGPT browser tools require forge mcp serve --enable-chatgpt-browser",
-          );
-        const sessionId = String(args.sessionId ?? "").trim();
+          return errorResult('TOOL_DISABLED', 'ChatGPT browser tools require forge mcp serve --enable-chatgpt-browser');
+        const sessionId = String(args.sessionId ?? '').trim();
         const result = openSession(ctx.repoRoot, sessionId, false);
-        audit(ctx, name, "ok", args);
+        audit(ctx, name, 'ok', args);
         return textResult({ sessionId, url: result.url, launched: false });
       }
-      case "continue_chatgpt_browser_session": {
+      case 'continue_chatgpt_browser_session': {
         if (ctx.enableChatgptBrowser !== true)
-          return errorResult(
-            "TOOL_DISABLED",
-            "ChatGPT browser tools require forge mcp serve --enable-chatgpt-browser",
-          );
-        const sessionId = String(args.sessionId ?? "").trim();
-        const prompt = String(args.prompt ?? "").trim();
+          return errorResult('TOOL_DISABLED', 'ChatGPT browser tools require forge mcp serve --enable-chatgpt-browser');
+        const sessionId = String(args.sessionId ?? '').trim();
+        const prompt = String(args.prompt ?? '').trim();
         const result = await runBrowserFollowup({
           repoRoot: ctx.repoRoot,
           sessionId,
@@ -1547,14 +1487,7 @@ export async function callMcpTool(
           prompt,
           dryRun: args.dryRun === true,
         });
-        audit(
-          ctx,
-          name,
-          result.error ? "failed" : "ok",
-          args,
-          result.meta.output.outputPath,
-          result.error?.message,
-        );
+        audit(ctx, name, result.error ? 'failed' : 'ok', args, result.meta.output.outputPath, result.error?.message);
         return textResult({
           sourceSessionId: sessionId,
           sessionId: result.sessionId,
@@ -1568,12 +1501,12 @@ export async function callMcpTool(
         });
       }
       default:
-        audit(ctx, name, "blocked", args);
-        return errorResult("UNKNOWN_TOOL", `unknown tool: ${name}`);
+        audit(ctx, name, 'blocked', args);
+        return errorResult('UNKNOWN_TOOL', `unknown tool: ${name}`);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    audit(ctx, name, "failed", args, undefined, message);
-    return errorResult("TOOL_FAILED", message);
+    audit(ctx, name, 'failed', args, undefined, message);
+    return errorResult('TOOL_FAILED', message);
   }
 }

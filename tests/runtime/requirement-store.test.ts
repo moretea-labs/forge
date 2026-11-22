@@ -1,14 +1,33 @@
 import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
-import { backupControlPlaneDatabase, restoreControlPlaneDatabase, withControlPlaneTransaction, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { createRequirement, listRequirementRevisionRecords, listRequirements, normalizeLegacyRequirementAcceptance, readRequirement, requirementSemanticView, reviseRequirementSemantic, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { implementationReviewChangedPathDigest, listWorkContracts } from '../../packages/kernel/work/api';
+import {
+  backupControlPlaneDatabase,
+  restoreControlPlaneDatabase,
+  withControlPlaneTransaction,
+  writeControlPlaneRecord,
+} from '../../src/runtime/control-plane/persistence/sqlite-store';
+import {
+  createRequirement,
+  listRequirementRevisionRecords,
+  listRequirements,
+  normalizeLegacyRequirementAcceptance,
+  readRequirement,
+  requirementSemanticView,
+  reviseRequirementSemantic,
+  updateRequirement,
+} from '../../src/runtime/control-plane/persistence/requirement-store';
+import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api';
 import { executionPlacement, scopeRef, semanticRecordMetadata } from '../../packages/kernel/identity/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { buildRequirementBoard } from '../../src/runtime/control-plane/facade/requirement-board';
 import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
-import { createProjectIdentity, readProjectIdentity, writeProjectIdentity, writeProjectPlacement } from '../../src/runtime/control-plane/workspace/workspace-store';
+import {
+  createProjectIdentity,
+  readProjectIdentity,
+  writeProjectIdentity,
+  writeProjectPlacement,
+} from '../../src/runtime/control-plane/workspace/workspace-store';
 
 const homes: string[] = [];
 afterEach(() => {
@@ -46,45 +65,145 @@ test('keeps user Requirement lifecycle separate from its active technical plan',
   expect(readRequirement(options, 'req-1')?.revision).toBe(2);
 });
 
-test('derives multiple active Plan slices from Plan.requirementId without a mutable Requirement pointer', () => { const home = mkdtempSync(join('/tmp', 'forge-requirement-')); homes.push(home); const requirementOptions = { controllerHome: home }; createRequirement(requirementOptions, { requirementId: 'req-derived-plans', title: 'Derived plan slices', outcomeStatement: 'Plan relationships are queried from Plan.requirementId.' }); createRequirement(requirementOptions, { requirementId: 'req-unrelated', repoId:'repo-other', title: 'Other repository', outcomeStatement: 'Must not leak into this repository board.' }); const planOptions = { controllerHome: home, repoId: 'repo-derived-plans' }; for (const [planId, scopeKey] of [['plan-a', 'slice-a'], ['plan-b', 'slice-b']] as const) createPlanContract(planOptions, { planId, repoId: 'repo-derived-plans', requirementId: 'req-derived-plans', scopeKey, sourceRevision: 'revision-a', goal: `Deliver ${scopeKey}`, steps: [{ id: 'step-1', objective: 'Implement slice', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: [], acceptanceCriteria: [] }] }); expect(readRequirement(requirementOptions, 'req-derived-plans')?.value.activePlanId).toBeUndefined(); const board = buildRequirementBoard({ controllerHome: home, repoId: 'repo-derived-plans' }) as { requirements: Array<{ requirementId: string; activePlanId?: string; activePlanIds: string[] }> }; const item = board.requirements.find((entry) => entry.requirementId === 'req-derived-plans'); expect(item?.activePlanIds).toEqual(['plan-b', 'plan-a']); expect(item?.activePlanId).toBe('plan-b'); expect(board.requirements.some((entry) => entry.requirementId === 'req-unrelated')).toBe(false); });
+test('derives multiple active Plan slices from Plan.requirementId without a mutable Requirement pointer', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
+  homes.push(home);
+  const requirementOptions = { controllerHome: home };
+  createRequirement(requirementOptions, {
+    requirementId: 'req-derived-plans',
+    title: 'Derived plan slices',
+    outcomeStatement: 'Plan relationships are queried from Plan.requirementId.',
+  });
+  createRequirement(requirementOptions, {
+    requirementId: 'req-unrelated',
+    repoId: 'repo-other',
+    title: 'Other repository',
+    outcomeStatement: 'Must not leak into this repository board.',
+  });
+  const planOptions = { controllerHome: home, repoId: 'repo-derived-plans' };
+  for (const [planId, scopeKey] of [
+    ['plan-a', 'slice-a'],
+    ['plan-b', 'slice-b'],
+  ] as const)
+    createPlanContract(planOptions, {
+      planId,
+      repoId: 'repo-derived-plans',
+      requirementId: 'req-derived-plans',
+      scopeKey,
+      sourceRevision: 'revision-a',
+      goal: `Deliver ${scopeKey}`,
+      steps: [
+        {
+          id: 'step-1',
+          objective: 'Implement slice',
+          dependencies: [],
+          authoritativeFiles: [],
+          allowedPaths: [],
+          forbiddenPaths: [],
+          checks: [],
+          acceptanceCriteria: [],
+        },
+      ],
+    });
+  expect(readRequirement(requirementOptions, 'req-derived-plans')?.value.activePlanId).toBeUndefined();
+  const board = buildRequirementBoard({ controllerHome: home, repoId: 'repo-derived-plans' }) as {
+    requirements: Array<{ requirementId: string; activePlanId?: string; activePlanIds: string[] }>;
+  };
+  const item = board.requirements.find((entry) => entry.requirementId === 'req-derived-plans');
+  expect(item?.activePlanIds).toEqual(['plan-b', 'plan-a']);
+  expect(item?.activePlanId).toBe('plan-b');
+  expect(board.requirements.some((entry) => entry.requirementId === 'req-unrelated')).toBe(false);
+});
 
 test('rejects reopening a completed Requirement without an explicit replacement state', async () => {
   const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
   homes.push(home);
   const options = { controllerHome: home };
   createRequirement(options, { requirementId: 'req-2', title: 'Outcome', outcomeStatement: 'Outcome statement' });
-  updateRequirement(options, { requirementId: 'req-2', action: 'activate', mutate: (current) => ({ ...current, state: 'active' }) });
-  expect(() => updateRequirement(options, { requirementId: 'req-2', action: 'complete', mutate: (current) => ({ ...current, state: 'done' }) }))
-    .toThrow(/REQUIREMENT_STATE_TRANSITION_INVALID/);
-  reviseRequirementSemantic(options, 'req-2', { expectedRevision: 1, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['review:accepted'] });
-  expect(() => updateRequirement(options, { requirementId: 'req-2', action: 'cancel_completed', mutate: (current) => ({ ...current, state: 'cancelled' }) }))
-    .toThrow(/REQUIREMENT_TERMINAL_IMMUTABLE/);
+  updateRequirement(options, {
+    requirementId: 'req-2',
+    action: 'activate',
+    mutate: (current) => ({ ...current, state: 'active' }),
+  });
+  expect(() =>
+    updateRequirement(options, {
+      requirementId: 'req-2',
+      action: 'complete',
+      mutate: (current) => ({ ...current, state: 'done' }),
+    }),
+  ).toThrow(/REQUIREMENT_STATE_TRANSITION_INVALID/);
+  reviseRequirementSemantic(options, 'req-2', {
+    expectedRevision: 1,
+    state: 'completed',
+    remainingWork: [],
+    acceptedEvidenceRefs: ['review:accepted'],
+  });
+  expect(() =>
+    updateRequirement(options, {
+      requirementId: 'req-2',
+      action: 'cancel_completed',
+      mutate: (current) => ({ ...current, state: 'cancelled' }),
+    }),
+  ).toThrow(/REQUIREMENT_TERMINAL_IMMUTABLE/);
   const completed = readRequirement(options, 'req-2')!.value;
-  expect(() => reviseRequirementSemantic(options, 'req-2', {
-    expectedRevision: completed.semanticRevision ?? 2,
-    state: 'cancelled',
-  })).toThrow(/REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN/);
-  expect(() => reviseRequirementSemantic(options, 'req-2', {
-    expectedRevision: completed.semanticRevision ?? 2,
-    outcomeStatement: 'A completed Requirement cannot be rewritten.',
-  })).toThrow(/REQUIREMENT_SEMANTIC_TERMINAL_IMMUTABLE/);
-  expect(() => updateRequirement(options, {
-    requirementId: 'req-2', action: 'rewrite_completed',
-    mutate: (current) => ({ ...current, outcomeStatement: 'Legacy writer cannot rewrite terminal facts.' }),
-  })).toThrow(/REQUIREMENT_TERMINAL_IMMUTABLE/);
-  expect(() => updateRequirement(options, { requirementId: 'req-2', action: 'reopen', mutate: (current) => ({ ...current, state: 'active' }) })).toThrow(/REQUIREMENT_TERMINAL_IMMUTABLE/);
+  expect(() =>
+    reviseRequirementSemantic(options, 'req-2', {
+      expectedRevision: completed.semanticRevision ?? 2,
+      state: 'cancelled',
+    }),
+  ).toThrow(/REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN/);
+  expect(() =>
+    reviseRequirementSemantic(options, 'req-2', {
+      expectedRevision: completed.semanticRevision ?? 2,
+      outcomeStatement: 'A completed Requirement cannot be rewritten.',
+    }),
+  ).toThrow(/REQUIREMENT_SEMANTIC_TERMINAL_IMMUTABLE/);
+  expect(() =>
+    updateRequirement(options, {
+      requirementId: 'req-2',
+      action: 'rewrite_completed',
+      mutate: (current) => ({ ...current, outcomeStatement: 'Legacy writer cannot rewrite terminal facts.' }),
+    }),
+  ).toThrow(/REQUIREMENT_TERMINAL_IMMUTABLE/);
+  expect(() =>
+    updateRequirement(options, {
+      requirementId: 'req-2',
+      action: 'reopen',
+      mutate: (current) => ({ ...current, state: 'active' }),
+    }),
+  ).toThrow(/REQUIREMENT_TERMINAL_IMMUTABLE/);
 
   // Persist actual legacy row shapes, then exercise the startup conversion and
   // the same terminal writer guards. No fixture-only acceptance writer survives.
-  const acceptance = { reviewer: 'mcp-bearer-client', rationale: 'Fixed candidate independently accepted', planIds: [], acceptedAt: '2026-09-22T06:17:53.399Z' };
+  const acceptance = {
+    reviewer: 'mcp-bearer-client',
+    rationale: 'Fixed candidate independently accepted',
+    planIds: [],
+    acceptedAt: '2026-09-22T06:17:53.399Z',
+  };
   for (const suffix of ['a', 'b', 'unproven']) {
-    const legacy = { ...completed, requirementId: `legacy-${suffix}`, acceptedEvidenceRefs: [], semanticAcceptance: suffix === 'unproven' ? { ...acceptance, reviewer: '' } : acceptance };
-    writeControlPlaneRecord(home, { namespace: 'requirement', scope: 'controller', key: legacy.requirementId, schemaVersion: 1, value: legacy });
+    const legacy = {
+      ...completed,
+      requirementId: `legacy-${suffix}`,
+      acceptedEvidenceRefs: [],
+      semanticAcceptance: suffix === 'unproven' ? { ...acceptance, reviewer: '' } : acceptance,
+    };
+    writeControlPlaneRecord(home, {
+      namespace: 'requirement',
+      scope: 'controller',
+      key: legacy.requirementId,
+      schemaVersion: 1,
+      value: legacy,
+    });
   }
   const before = readRequirement(options, 'legacy-a')!;
   const backup = join(home, 'before-normalization.sqlite');
   backupControlPlaneDatabase(home, backup);
-  withControlPlaneTransaction(home, (database) => database.exec("CREATE TRIGGER fail_normalization BEFORE INSERT ON control_plane_audit WHEN NEW.action='requirement_legacy_acceptance_normalized_v1' AND NEW.record_key='legacy-b' BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END"));
+  withControlPlaneTransaction(home, (database) =>
+    database.exec(
+      "CREATE TRIGGER fail_normalization BEFORE INSERT ON control_plane_audit WHEN NEW.action='requirement_legacy_acceptance_normalized_v1' AND NEW.record_key='legacy-b' BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END",
+    ),
+  );
   expect(() => normalizeLegacyRequirementAcceptance(options)).toThrow('injected migration failure');
   expect(readRequirement(options, 'legacy-a')).toEqual(before);
   withControlPlaneTransaction(home, (database) => database.exec('DROP TRIGGER fail_normalization'));
@@ -92,13 +211,31 @@ test('rejects reopening a completed Requirement without an explicit replacement 
   const migrated = readRequirement(options, 'legacy-a')!;
   expect(migrated.revision).toBe(before.revision);
   expect(migrated.updatedAt).toBe(before.updatedAt);
-  expect(migrated.value).toMatchObject({ state: 'done', revision: completed.revision, semanticRevision: completed.semanticRevision, semanticAcceptance: acceptance });
-  expect(migrated.value.acceptedEvidenceRefs?.[0]).toMatch(/^requirement:legacy-a:legacy-acceptance:sha256:[a-f0-9]{64}$/);
+  expect(migrated.value).toMatchObject({
+    state: 'done',
+    revision: completed.revision,
+    semanticRevision: completed.semanticRevision,
+    semanticAcceptance: acceptance,
+  });
+  expect(migrated.value.acceptedEvidenceRefs?.[0]).toMatch(
+    /^requirement:legacy-a:legacy-acceptance:sha256:[a-f0-9]{64}$/,
+  );
   expect(readRequirement(options, 'legacy-unproven')?.value.acceptedEvidenceRefs).toEqual([]);
   expect(normalizeLegacyRequirementAcceptance(options)).toBe(0);
   expect(readRequirement(options, 'legacy-a')).toEqual(migrated);
-  expect(() => reviseRequirementSemantic(options, 'legacy-a', { expectedRevision: completed.semanticRevision!, progressSummary: 'rewrite' })).toThrow(/TERMINAL_IMMUTABLE/);
-  expect(() => updateRequirement(options, { requirementId: 'legacy-a', action: 'rewrite', mutate: (value) => ({ ...value, acceptedEvidenceRefs: ['forged'] }) })).toThrow(/TERMINAL_IMMUTABLE/);
+  expect(() =>
+    reviseRequirementSemantic(options, 'legacy-a', {
+      expectedRevision: completed.semanticRevision!,
+      progressSummary: 'rewrite',
+    }),
+  ).toThrow(/TERMINAL_IMMUTABLE/);
+  expect(() =>
+    updateRequirement(options, {
+      requirementId: 'legacy-a',
+      action: 'rewrite',
+      mutate: (value) => ({ ...value, acceptedEvidenceRefs: ['forged'] }),
+    }),
+  ).toThrow(/TERMINAL_IMMUTABLE/);
   restoreControlPlaneDatabase(home, backup);
   expect(readRequirement(options, 'legacy-a')).toEqual(before);
 });
@@ -107,19 +244,27 @@ test('semantic Requirement CAS forbids cancelled-to-done terminal rewrite', () =
   const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
   homes.push(home);
   const options = { controllerHome: home };
-  createRequirement(options, { requirementId: 'req-cancelled-terminal', title: 'Outcome', outcomeStatement: 'Outcome statement' });
+  createRequirement(options, {
+    requirementId: 'req-cancelled-terminal',
+    title: 'Outcome',
+    outcomeStatement: 'Outcome statement',
+  });
   reviseRequirementSemantic(options, 'req-cancelled-terminal', { expectedRevision: 1, state: 'cancelled' });
   const cancelled = readRequirement(options, 'req-cancelled-terminal')!.value;
-  expect(() => reviseRequirementSemantic(options, 'req-cancelled-terminal', {
-    expectedRevision: cancelled.semanticRevision ?? 2,
-    state: 'completed',
-    remainingWork: [],
-    acceptedEvidenceRefs: ['review:accepted'],
-  })).toThrow(/REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN/);
-  expect(() => reviseRequirementSemantic(options, 'req-cancelled-terminal', {
-    expectedRevision: cancelled.semanticRevision ?? 2,
-    acceptanceCriteria: ['A cancelled Requirement cannot be rewritten.'],
-  })).toThrow(/REQUIREMENT_SEMANTIC_TERMINAL_IMMUTABLE/);
+  expect(() =>
+    reviseRequirementSemantic(options, 'req-cancelled-terminal', {
+      expectedRevision: cancelled.semanticRevision ?? 2,
+      state: 'completed',
+      remainingWork: [],
+      acceptedEvidenceRefs: ['review:accepted'],
+    }),
+  ).toThrow(/REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN/);
+  expect(() =>
+    reviseRequirementSemantic(options, 'req-cancelled-terminal', {
+      expectedRevision: cancelled.semanticRevision ?? 2,
+      acceptanceCriteria: ['A cancelled Requirement cannot be rewritten.'],
+    }),
+  ).toThrow(/REQUIREMENT_SEMANTIC_TERMINAL_IMMUTABLE/);
 });
 
 test('restores a verified SQLite backup without losing Requirement authority', () => {
@@ -129,11 +274,14 @@ test('restores a verified SQLite backup without losing Requirement authority', (
   const options = { controllerHome: home };
   createRequirement(options, { requirementId: 'req-backup', title: 'Backup', outcomeStatement: 'Restore this state' });
   backupControlPlaneDatabase(home, backup);
-  updateRequirement(options, { requirementId: 'req-backup', action: 'activate', mutate: (current) => ({ ...current, state: 'active' }) });
+  updateRequirement(options, {
+    requirementId: 'req-backup',
+    action: 'activate',
+    mutate: (current) => ({ ...current, state: 'active' }),
+  });
   restoreControlPlaneDatabase(home, backup);
   expect(readRequirement(options, 'req-backup')?.value.state).toBe('planned');
 });
-
 
 test('two independent sessions share one Requirement and reconcile CAS conflicts without silent overwrite', () => {
   const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
@@ -143,18 +291,29 @@ test('two independent sessions share one Requirement and reconcile CAS conflicts
   const sessionA = { controllerHome: home };
   const sessionB = { controllerHome: home };
 
-  createRequirement(sessionA, { requirementId: 'req-shared', title: 'Shared outcome', outcomeStatement: 'Two sessions attach evidence to one Requirement.' });
+  createRequirement(sessionA, {
+    requirementId: 'req-shared',
+    title: 'Shared outcome',
+    outcomeStatement: 'Two sessions attach evidence to one Requirement.',
+  });
   const located = readRequirement(sessionB, 'req-shared');
   expect(located?.value.state).toBe('planned');
 
   // Both sessions observe semantic revision 1; session A commits first.
   const baseRevision = located!.value.semanticRevision ?? 1;
-  reviseRequirementSemantic(sessionA, 'req-shared', { expectedRevision: baseRevision, progressSummary: 'Session A attached evidence.' });
+  reviseRequirementSemantic(sessionA, 'req-shared', {
+    expectedRevision: baseRevision,
+    progressSummary: 'Session A attached evidence.',
+  });
 
   // Session B's stale write is rejected with the actual current revision, and
   // nothing is silently overwritten.
-  expect(() => reviseRequirementSemantic(sessionB, 'req-shared', { expectedRevision: baseRevision, progressSummary: 'Session B stale write.' }))
-    .toThrow(/REQUIREMENT_REVISION_CONFLICT:req-shared:expected=1:actual=2/);
+  expect(() =>
+    reviseRequirementSemantic(sessionB, 'req-shared', {
+      expectedRevision: baseRevision,
+      progressSummary: 'Session B stale write.',
+    }),
+  ).toThrow(/REQUIREMENT_REVISION_CONFLICT:req-shared:expected=1:actual=2/);
   expect(readRequirement(sessionB, 'req-shared')!.value.progressSummary).toBe('Session A attached evidence.');
 
   // Session B reconciles from the current revision and appends its own evidence.
@@ -175,8 +334,16 @@ test('independent sessions register distinct active Requirements without a globa
   const sessionA = { controllerHome: home };
   const sessionB = { controllerHome: home };
 
-  const a = createRequirement(sessionA, { requirementId: 'req-issue-a', title: 'Issue A', outcomeStatement: 'Deliver A.' });
-  const b = createRequirement(sessionB, { requirementId: 'req-issue-b', title: 'Issue B', outcomeStatement: 'Deliver B.' });
+  const a = createRequirement(sessionA, {
+    requirementId: 'req-issue-a',
+    title: 'Issue A',
+    outcomeStatement: 'Deliver A.',
+  });
+  const b = createRequirement(sessionB, {
+    requirementId: 'req-issue-b',
+    title: 'Issue B',
+    outcomeStatement: 'Deliver B.',
+  });
   expect(a.state).toBe('planned');
   expect(b.state).toBe('planned');
 
@@ -186,14 +353,22 @@ test('independent sessions register distinct active Requirements without a globa
   expect(seenByA).toContain('req-issue-b');
 
   // Activating one does not block or mutate the other.
-  updateRequirement(sessionB, { requirementId: 'req-issue-b', action: 'activate', mutate: (current) => ({ ...current, state: 'active' }) });
+  updateRequirement(sessionB, {
+    requirementId: 'req-issue-b',
+    action: 'activate',
+    mutate: (current) => ({ ...current, state: 'active' }),
+  });
   expect(readRequirement(sessionA, 'req-issue-a')!.value.state).toBe('planned');
   expect(readRequirement(sessionA, 'req-issue-b')!.value.state).toBe('active');
 });
 
 test('keeps portable semantic scope separate from local execution placement', () => {
   const scope = scopeRef('requirement', 'REQ-portable');
-  const placement = executionPlacement({ forgeInstanceId: 'forge-mac', repositoryId: 'repo-local', checkoutId: 'checkout-local' });
+  const placement = executionPlacement({
+    forgeInstanceId: 'forge-mac',
+    repositoryId: 'repo-local',
+    checkoutId: 'checkout-local',
+  });
   const metadata = semanticRecordMetadata({
     scope,
     revision: 7,
@@ -203,7 +378,12 @@ test('keeps portable semantic scope separate from local execution placement', ()
     sourceRevision: 'abc123',
   });
   expect(scope).toEqual({ schemaVersion: 1, kind: 'requirement', id: 'REQ-portable' });
-  expect(placement).toEqual({ schemaVersion: 1, forgeInstanceId: 'forge-mac', repositoryId: 'repo-local', checkoutId: 'checkout-local' });
+  expect(placement).toEqual({
+    schemaVersion: 1,
+    forgeInstanceId: 'forge-mac',
+    repositoryId: 'repo-local',
+    checkoutId: 'checkout-local',
+  });
   expect(metadata.scope).toEqual(scope);
   expect(metadata.revision).toBe(7);
   expect(() => semanticRecordMetadata({ ...metadata, revision: -1 })).toThrow(/SEMANTIC_RECORD_REVISION_INVALID/);
@@ -216,20 +396,27 @@ test('task detail reads its latest revisions even when other Requirements own th
   for (let index = 0; index < 25; index++) {
     const requirementId = `req-a-noise-${String(index).padStart(2, '0')}`;
     createRequirement(options, {
-      requirementId, title: 'Unrelated task', outcomeStatement: 'Unrelated work',
+      requirementId,
+      title: 'Unrelated task',
+      outcomeStatement: 'Unrelated work',
     });
     reviseRequirementSemantic(options, requirementId, {
-      expectedRevision: 1, progressSummary: 'Unrelated task was edited.',
+      expectedRevision: 1,
+      progressSummary: 'Unrelated task was edited.',
     });
   }
   createRequirement(options, {
-    requirementId: 'req-z-history', title: 'Original user task', outcomeStatement: 'Keep its full recent history.',
+    requirementId: 'req-z-history',
+    title: 'Original user task',
+    outcomeStatement: 'Keep its full recent history.',
   });
   reviseRequirementSemantic(options, 'req-z-history', {
-    expectedRevision: 1, title: 'First task edit',
+    expectedRevision: 1,
+    title: 'First task edit',
   });
   reviseRequirementSemantic(options, 'req-z-history', {
-    expectedRevision: 2, title: 'Second task edit',
+    expectedRevision: 2,
+    title: 'Second task edit',
   });
   expect(listRequirementRevisionRecords(options, 'req-z-history', 2)).toMatchObject([
     { requirementId: 'req-z-history', revision: 2, title: 'First task edit' },
@@ -255,22 +442,36 @@ test('Project root Requirement uniqueness and parent hierarchy are atomic and se
   });
 
   const root = createRequirement(options, {
-    requirementId: 'REQ-HIERARCHY-ROOT', projectId: 'project-hierarchy', isProjectRoot: true,
-    title: 'Project root', outcomeStatement: 'Deliver the complete project outcome.',
+    requirementId: 'REQ-HIERARCHY-ROOT',
+    projectId: 'project-hierarchy',
+    isProjectRoot: true,
+    title: 'Project root',
+    outcomeStatement: 'Deliver the complete project outcome.',
   });
   expect(root.rootRequirementId).toBe(root.requirementId);
-  expect(readProjectIdentity(home, 'workspace-personal', 'project-hierarchy')?.value.rootRequirementId)
-    .toBe(root.requirementId);
-  expect(() => writeProjectIdentity({
-    controllerHome: home,
-    expectedRevision: 2,
-    value: { projectId: 'project-hierarchy', workspaceId: 'workspace-personal', displayName: 'Hierarchy', rootRequirementId: 'REQ-HIERARCHY-OTHER' },
-  })).toThrow('PROJECT_ROOT_REQUIREMENT_BINDING_REQUIRES_REQUIREMENT_TRANSACTION');
+  expect(readProjectIdentity(home, 'workspace-personal', 'project-hierarchy')?.value.rootRequirementId).toBe(
+    root.requirementId,
+  );
+  expect(() =>
+    writeProjectIdentity({
+      controllerHome: home,
+      expectedRevision: 2,
+      value: {
+        projectId: 'project-hierarchy',
+        workspaceId: 'workspace-personal',
+        displayName: 'Hierarchy',
+        rootRequirementId: 'REQ-HIERARCHY-OTHER',
+      },
+    }),
+  ).toThrow('PROJECT_ROOT_REQUIREMENT_BINDING_REQUIRES_REQUIREMENT_TRANSACTION');
 
   const child = createRequirement(options, {
-    requirementId: 'REQ-HIERARCHY-CHILD', repoId: 'repo-hierarchy', parentRequirementId: root.requirementId,
+    requirementId: 'REQ-HIERARCHY-CHILD',
+    repoId: 'repo-hierarchy',
+    parentRequirementId: root.requirementId,
     dependsOnRequirementIds: [root.requirementId],
-    title: 'Repository child', outcomeStatement: 'Deliver one repository slice.',
+    title: 'Repository child',
+    outcomeStatement: 'Deliver one repository slice.',
   });
   expect(requirementSemanticView(child)).toMatchObject({
     parentRequirementId: root.requirementId,
@@ -279,38 +480,59 @@ test('Project root Requirement uniqueness and parent hierarchy are atomic and se
   });
 
   const legacy = createRequirement(options, {
-    requirementId: 'REQ-HIERARCHY-LEGACY', projectId: 'project-hierarchy',
-    title: 'Existing task', outcomeStatement: 'Attach an existing task under the canonical root.',
+    requirementId: 'REQ-HIERARCHY-LEGACY',
+    projectId: 'project-hierarchy',
+    title: 'Existing task',
+    outcomeStatement: 'Attach an existing task under the canonical root.',
   });
   const attached = reviseRequirementSemantic(options, legacy.requirementId, {
-    expectedRevision: 1, parentRequirementId: root.requirementId,
+    expectedRevision: 1,
+    parentRequirementId: root.requirementId,
   });
   expect(requirementSemanticView(attached)).toMatchObject({
-    revision: 2, parentRequirementId: root.requirementId, rootRequirementId: root.requirementId,
+    revision: 2,
+    parentRequirementId: root.requirementId,
+    rootRequirementId: root.requirementId,
   });
   expect(listRequirementRevisionRecords(options, legacy.requirementId, 2)[0]).toMatchObject({
-    revision: 1, title: 'Existing task',
+    revision: 1,
+    title: 'Existing task',
   });
   expect(listRequirementRevisionRecords(options, legacy.requirementId, 2)[0]?.parentRequirementId).toBeUndefined();
-  expect(() => reviseRequirementSemantic(options, legacy.requirementId, {
-    expectedRevision: 2, parentRequirementId: 'REQ-OTHER-PARENT',
-  })).toThrow('REQUIREMENT_PARENT_IMMUTABLE:REQ-HIERARCHY-LEGACY');
+  expect(() =>
+    reviseRequirementSemantic(options, legacy.requirementId, {
+      expectedRevision: 2,
+      parentRequirementId: 'REQ-OTHER-PARENT',
+    }),
+  ).toThrow('REQUIREMENT_PARENT_IMMUTABLE:REQ-HIERARCHY-LEGACY');
 
-  expect(() => createRequirement(options, {
-    requirementId: 'REQ-HIERARCHY-SECOND-ROOT', projectId: 'project-hierarchy', isProjectRoot: true,
-    title: 'Second root', outcomeStatement: 'A second root must be rejected.',
-  })).toThrow(/PROJECT_ROOT_REQUIREMENT_ALREADY_BOUND:project-hierarchy:REQ-HIERARCHY-ROOT/);
+  expect(() =>
+    createRequirement(options, {
+      requirementId: 'REQ-HIERARCHY-SECOND-ROOT',
+      projectId: 'project-hierarchy',
+      isProjectRoot: true,
+      title: 'Second root',
+      outcomeStatement: 'A second root must be rejected.',
+    }),
+  ).toThrow(/PROJECT_ROOT_REQUIREMENT_ALREADY_BOUND:project-hierarchy:REQ-HIERARCHY-ROOT/);
   expect(readRequirement(options, 'REQ-HIERARCHY-SECOND-ROOT')).toBeUndefined();
 
   const foreignRoot = createRequirement(options, {
-    requirementId: 'REQ-HIERARCHY-FOREIGN-ROOT', projectId: 'project-hierarchy-other', isProjectRoot: true,
-    title: 'Foreign root', outcomeStatement: 'Belongs to another Project.',
+    requirementId: 'REQ-HIERARCHY-FOREIGN-ROOT',
+    projectId: 'project-hierarchy-other',
+    isProjectRoot: true,
+    title: 'Foreign root',
+    outcomeStatement: 'Belongs to another Project.',
   });
-  expect(() => createRequirement(options, {
-    requirementId: 'REQ-HIERARCHY-CROSS-PROJECT', repoId: 'repo-hierarchy',
-    parentRequirementId: foreignRoot.requirementId,
-    title: 'Cross-project child', outcomeStatement: 'Must not cross Project roots.',
-  })).toThrow(/REQUIREMENT_HIERARCHY_PROJECT_MISMATCH/);
+  expect(() =>
+    createRequirement(options, {
+      requirementId: 'REQ-HIERARCHY-CROSS-PROJECT',
+      repoId: 'repo-hierarchy',
+      parentRequirementId: foreignRoot.requirementId,
+      title: 'Cross-project child',
+      outcomeStatement: 'Must not cross Project roots.',
+    }),
+  ).toThrow(/REQUIREMENT_HIERARCHY_PROJECT_MISMATCH/);
 });
 
 test('Requirement task priority, assignee and status share one revisioned authority and board projection', () => {
@@ -326,14 +548,25 @@ test('Requirement task priority, assignee and status share one revisioned author
     assignee: 'greyson',
   });
   expect(requirementSemanticView(created)).toMatchObject({
-    revision: 1, state: 'open', status: 'active', priority: 'high', assignee: 'greyson',
+    revision: 1,
+    state: 'open',
+    status: 'active',
+    priority: 'high',
+    assignee: 'greyson',
   });
 
   const active = reviseRequirementSemantic(options, created.requirementId, {
-    expectedRevision: 1, status: 'active', priority: 'urgent', assignee: 'agent:codex',
+    expectedRevision: 1,
+    status: 'active',
+    priority: 'urgent',
+    assignee: 'agent:codex',
   });
   expect(requirementSemanticView(active)).toMatchObject({
-    revision: 2, state: 'open', status: 'active', priority: 'urgent', assignee: 'agent:codex',
+    revision: 2,
+    state: 'open',
+    status: 'active',
+    priority: 'urgent',
+    assignee: 'agent:codex',
   });
   expect(listRequirementRevisionRecords(options, created.requirementId, 10)).toMatchObject([
     { revision: 1, status: 'active', priority: 'high', assignee: 'greyson' },
@@ -341,58 +574,108 @@ test('Requirement task priority, assignee and status share one revisioned author
 
   const board = buildRequirementBoard({ controllerHome: home }) as { requirements: Array<Record<string, unknown>> };
   expect(board.requirements[0]).toMatchObject({
-    requirementId: created.requirementId, state: 'active', priority: 'urgent', assignee: 'agent:codex',
+    requirementId: created.requirementId,
+    state: 'active',
+    priority: 'urgent',
+    assignee: 'agent:codex',
   });
-  expect(() => reviseRequirementSemantic(options, created.requirementId, {
-    expectedRevision: 2, status: 'planned',
-  })).toThrow('REQUIREMENT_STATE_TRANSITION_INVALID');
+  expect(() =>
+    reviseRequirementSemantic(options, created.requirementId, {
+      expectedRevision: 2,
+      status: 'planned',
+    }),
+  ).toThrow('REQUIREMENT_STATE_TRANSITION_INVALID');
 
   const done = reviseRequirementSemantic(options, created.requirementId, {
-    expectedRevision: 2, status: 'done', remainingWork: [], acceptedEvidenceRefs: ['test:task-accepted'],
+    expectedRevision: 2,
+    status: 'done',
+    remainingWork: [],
+    acceptedEvidenceRefs: ['test:task-accepted'],
   });
   expect(requirementSemanticView(done)).toMatchObject({ revision: 3, state: 'completed', status: 'done' });
-  expect(() => reviseRequirementSemantic(options, created.requirementId, {
-    expectedRevision: 3, status: 'active',
-  })).toThrow('REQUIREMENT_STATUS_TERMINAL_TRANSITION_FORBIDDEN');
-  expect(() => createRequirement(options, {
-    requirementId: 'req-invalid-priority', title: 'Invalid priority', outcomeStatement: 'Reject unknown priority.', priority: 'critical' as never,
-  })).toThrow('REQUIREMENT_PRIORITY_INVALID');
-  expect(() => createRequirement(options, {
-    requirementId: 'req-invalid-initial-status', title: 'Invalid initial status', outcomeStatement: 'Terminal tasks are not created directly.', status: 'done',
-  })).toThrow('REQUIREMENT_CREATE_TERMINAL_STATUS_FORBIDDEN');
+  expect(() =>
+    reviseRequirementSemantic(options, created.requirementId, {
+      expectedRevision: 3,
+      status: 'active',
+    }),
+  ).toThrow('REQUIREMENT_STATUS_TERMINAL_TRANSITION_FORBIDDEN');
+  expect(() =>
+    createRequirement(options, {
+      requirementId: 'req-invalid-priority',
+      title: 'Invalid priority',
+      outcomeStatement: 'Reject unknown priority.',
+      priority: 'critical' as never,
+    }),
+  ).toThrow('REQUIREMENT_PRIORITY_INVALID');
+  expect(() =>
+    createRequirement(options, {
+      requirementId: 'req-invalid-initial-status',
+      title: 'Invalid initial status',
+      outcomeStatement: 'Terminal tasks are not created directly.',
+      status: 'done',
+    }),
+  ).toThrow('REQUIREMENT_CREATE_TERMINAL_STATUS_FORBIDDEN');
 });
 
 test('Requirement board and diagnostics preserve Plan-derived repository placement', async () => {
   const { buildExecutionDiagnostics } = await import('../../src/runtime/control-plane/facade/requirement-board');
   const home = mkdtempSync(join('/tmp', 'forge-requirement-board-'));
   homes.push(home);
-  createRequirement({ controllerHome: home }, {
-    requirementId: 'req-plan-placement', title: 'Portable Requirement',
-    outcomeStatement: 'Show a Requirement linked to a local Plan.',
-  });
-  createRequirement({ controllerHome: home }, {
-    requirementId: 'req-other-placement', repoId: 'repo-other',
-    title: 'Other Requirement', outcomeStatement: 'Must remain scoped.',
-  });
-  createPlanContract({ controllerHome: home, repoId: 'repo-board' }, {
-    planId: 'plan-placement', repoId: 'repo-board', requirementId: 'req-plan-placement',
-    scopeKey: 'board-slice', sourceRevision: 'base', goal: 'Deliver the linked requirement',
-    steps: [{ id: 'step-1', objective: 'Deliver', dependencies: [], authoritativeFiles: [],
-      allowedPaths: [], forbiddenPaths: [], checks: [], acceptanceCriteria: [] }],
-  });
+  createRequirement(
+    { controllerHome: home },
+    {
+      requirementId: 'req-plan-placement',
+      title: 'Portable Requirement',
+      outcomeStatement: 'Show a Requirement linked to a local Plan.',
+    },
+  );
+  createRequirement(
+    { controllerHome: home },
+    {
+      requirementId: 'req-other-placement',
+      repoId: 'repo-other',
+      title: 'Other Requirement',
+      outcomeStatement: 'Must remain scoped.',
+    },
+  );
+  createPlanContract(
+    { controllerHome: home, repoId: 'repo-board' },
+    {
+      planId: 'plan-placement',
+      repoId: 'repo-board',
+      requirementId: 'req-plan-placement',
+      scopeKey: 'board-slice',
+      sourceRevision: 'base',
+      goal: 'Deliver the linked requirement',
+      steps: [
+        {
+          id: 'step-1',
+          objective: 'Deliver',
+          dependencies: [],
+          authoritativeFiles: [],
+          allowedPaths: [],
+          forbiddenPaths: [],
+          checks: [],
+          acceptanceCriteria: [],
+        },
+      ],
+    },
+  );
   const board = buildRequirementBoard({ controllerHome: home, repoId: 'repo-board' }) as {
     requirements: Array<{ requirementId: string; activePlanIds: string[] }>;
   };
-  expect(board.requirements.map(item => item.requirementId)).toEqual(['req-plan-placement']);
+  expect(board.requirements.map((item) => item.requirementId)).toEqual(['req-plan-placement']);
   expect(board.requirements[0]?.activePlanIds).toEqual(['plan-placement']);
 
   const diagnostics = buildExecutionDiagnostics({
-    controllerHome: home, repoId: 'repo-board', detailLevel: 'detail',
+    controllerHome: home,
+    repoId: 'repo-board',
+    detailLevel: 'detail',
     requirementId: 'req-plan-placement',
   }) as {
     requirements: Array<{ requirementId: string; activePlanIds: string[] }>;
     plans: Array<{ planId: string }>;
   };
   expect(diagnostics.requirements[0]?.activePlanIds).toEqual(['plan-placement']);
-  expect(diagnostics.plans.map(plan => plan.planId)).toEqual(['plan-placement']);
+  expect(diagnostics.plans.map((plan) => plan.planId)).toEqual(['plan-placement']);
 });

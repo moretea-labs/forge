@@ -16,17 +16,18 @@ import { tmpdir } from 'os';
 import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { join, resolve } from 'path';
 import { controllerSystemRoot, FORGE_INSTANCE_SCOPE_KEY } from '../../src/effects/controller-home';
-import { createRecoveryConfig, loadRecoveryConfig, recoveryConfigPath } from '../../src/runtime/standalone-recovery/core';
+import {
+  createRecoveryConfig,
+  loadRecoveryConfig,
+  recoveryConfigPath,
+} from '../../src/runtime/standalone-recovery/core';
 import {
   disableRepository,
   getRepository,
   registerRepository,
   setRepositoryCheckoutLifecycle,
 } from '../../src/runtime/repositories/registry';
-import {
-  acquireControllerLock,
-  releaseControllerLock,
-} from '../../src/effects/controller-locks';
+import { acquireControllerLock, releaseControllerLock } from '../../src/effects/controller-locks';
 import {
   authorizeWorkspaceTargetGrant,
   getActiveWorkspaceTargetGrant,
@@ -46,11 +47,8 @@ import {
   resetLocalSystemPluginHooksForTest,
   setLocalSystemPluginHooksForTest,
 } from '../../src/runtime/plugins/local-system-adapter';
-import {
-  submitControllerPluginAction,
-} from '../../src/runtime/plugins/store';
+import { submitControllerPluginAction } from '../../src/runtime/plugins/store';
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
-import { getWorkContractByRequestId } from '../../packages/kernel/work/api';
 import {
   findActivePluginCapabilityAuthorization,
   listPluginCapabilityAuthorizations,
@@ -108,7 +106,12 @@ function registeredRemovedWorktree(controllerHome: string): {
     lifecycle: 'removed',
     reason: 'simulate historical finalizer cleanup',
   });
-  return { repositoryId: repository.repoId, canonicalRoot: realpathSync(canonicalRoot), removedWorktreeRoot: registeredWorktreeRoot, sourceCommit };
+  return {
+    repositoryId: repository.repoId,
+    canonicalRoot: realpathSync(canonicalRoot),
+    removedWorktreeRoot: registeredWorktreeRoot,
+    sourceCommit,
+  };
 }
 
 function recoveryRelease(sourceRoot: string, sourceCommit: string) {
@@ -165,44 +168,65 @@ describe('workspace target grant authority', () => {
     const rootA = temp('forge-target-lock-a-');
     const rootB = temp('forge-target-lock-b-');
     const targetA = authorizeWorkspaceTargetGrant(controllerHome, {
-      targetKey: 'a', rootPath: rootA, ownerScope: 'owner:a', access: 'read_write', reason: 'lock a',
+      targetKey: 'a',
+      rootPath: rootA,
+      ownerScope: 'owner:a',
+      access: 'read_write',
+      reason: 'lock a',
     });
     const targetB = authorizeWorkspaceTargetGrant(controllerHome, {
-      targetKey: 'b', rootPath: rootB, ownerScope: 'owner:b', access: 'read_write', reason: 'lock b',
+      targetKey: 'b',
+      rootPath: rootB,
+      ownerScope: 'owner:b',
+      access: 'read_write',
+      reason: 'lock b',
     });
 
     let sameActive = 0;
     let sameMax = 0;
-    const sameMutation = (owner: string) => withWorkspaceTargetMutationLocks(
-      controllerHome,
-      [targetA],
-      owner,
-      async () => {
-        sameActive += 1;
-        sameMax = Math.max(sameMax, sameActive);
-        await delay(40);
-        sameActive -= 1;
-      },
-      { waitMs: 1_000 },
-    );
+    const sameMutation = (owner: string) =>
+      withWorkspaceTargetMutationLocks(
+        controllerHome,
+        [targetA],
+        owner,
+        async () => {
+          sameActive += 1;
+          sameMax = Math.max(sameMax, sameActive);
+          await delay(40);
+          sameActive -= 1;
+        },
+        { waitMs: 1_000 },
+      );
     await Promise.all([sameMutation('same-a'), sameMutation('same-b')]);
     expect(sameMax).toBe(1);
 
     let differentActive = 0;
     let differentMax = 0;
     await Promise.all([
-      withWorkspaceTargetMutationLocks(controllerHome, [targetA], 'different-a', async () => {
-        differentActive += 1;
-        differentMax = Math.max(differentMax, differentActive);
-        await delay(40);
-        differentActive -= 1;
-      }, { waitMs: 1_000 }),
-      withWorkspaceTargetMutationLocks(controllerHome, [targetB], 'different-b', async () => {
-        differentActive += 1;
-        differentMax = Math.max(differentMax, differentActive);
-        await delay(40);
-        differentActive -= 1;
-      }, { waitMs: 1_000 }),
+      withWorkspaceTargetMutationLocks(
+        controllerHome,
+        [targetA],
+        'different-a',
+        async () => {
+          differentActive += 1;
+          differentMax = Math.max(differentMax, differentActive);
+          await delay(40);
+          differentActive -= 1;
+        },
+        { waitMs: 1_000 },
+      ),
+      withWorkspaceTargetMutationLocks(
+        controllerHome,
+        [targetB],
+        'different-b',
+        async () => {
+          differentActive += 1;
+          differentMax = Math.max(differentMax, differentActive);
+          await delay(40);
+          differentActive -= 1;
+        },
+        { waitMs: 1_000 },
+      ),
     ]);
     expect(differentMax).toBe(2);
   });
@@ -211,28 +235,37 @@ describe('workspace target grant authority', () => {
     const controllerHome = temp('forge-target-lock-shared-controller-');
     const root = temp('forge-target-lock-shared-root-');
     const first = authorizeWorkspaceTargetGrant(controllerHome, {
-      targetKey: 'first', rootPath: root, ownerScope: 'owner:first', access: 'read_write', reason: 'first grant',
+      targetKey: 'first',
+      rootPath: root,
+      ownerScope: 'owner:first',
+      access: 'read_write',
+      reason: 'first grant',
     });
     const second = authorizeWorkspaceTargetGrant(controllerHome, {
-      targetKey: 'second', rootPath: root, ownerScope: 'owner:second', access: 'read_write', reason: 'second grant',
+      targetKey: 'second',
+      rootPath: root,
+      ownerScope: 'owner:second',
+      access: 'read_write',
+      reason: 'second grant',
     });
     expect(first.workspaceId).not.toBe(second.workspaceId);
     expect(workspaceTargetMutationResourceId(first)).toBe(workspaceTargetMutationResourceId(second));
 
     let active = 0;
     let maxActive = 0;
-    const run = (target: typeof first, owner: string) => withWorkspaceTargetMutationLocks(
-      controllerHome,
-      [target],
-      owner,
-      async () => {
-        active += 1;
-        maxActive = Math.max(maxActive, active);
-        await delay(30);
-        active -= 1;
-      },
-      { waitMs: 1_000 },
-    );
+    const run = (target: typeof first, owner: string) =>
+      withWorkspaceTargetMutationLocks(
+        controllerHome,
+        [target],
+        owner,
+        async () => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await delay(30);
+          active -= 1;
+        },
+        { waitMs: 1_000 },
+      );
     await Promise.all([run(first, 'first-op'), run(second, 'second-op')]);
     expect(maxActive).toBe(1);
   });
@@ -242,30 +275,36 @@ describe('workspace target grant authority', () => {
     const rootA = temp('forge-target-lock-pair-a-');
     const rootB = temp('forge-target-lock-pair-b-');
     const targetA = authorizeWorkspaceTargetGrant(controllerHome, {
-      targetKey: 'a', rootPath: rootA, ownerScope: 'owner:pair', access: 'read_write', reason: 'pair a',
+      targetKey: 'a',
+      rootPath: rootA,
+      ownerScope: 'owner:pair',
+      access: 'read_write',
+      reason: 'pair a',
     });
     const targetB = authorizeWorkspaceTargetGrant(controllerHome, {
-      targetKey: 'b', rootPath: rootB, ownerScope: 'owner:pair', access: 'read_write', reason: 'pair b',
+      targetKey: 'b',
+      rootPath: rootB,
+      ownerScope: 'owner:pair',
+      access: 'read_write',
+      reason: 'pair b',
     });
 
     let active = 0;
     let maxActive = 0;
-    const run = (targets: [typeof targetA, typeof targetB], owner: string) => withWorkspaceTargetMutationLocks(
-      controllerHome,
-      targets,
-      owner,
-      async () => {
-        active += 1;
-        maxActive = Math.max(maxActive, active);
-        await delay(30);
-        active -= 1;
-      },
-      { waitMs: 1_000 },
-    );
-    await Promise.all([
-      run([targetA, targetB], 'pair-forward'),
-      run([targetB, targetA], 'pair-reverse'),
-    ]);
+    const run = (targets: [typeof targetA, typeof targetB], owner: string) =>
+      withWorkspaceTargetMutationLocks(
+        controllerHome,
+        targets,
+        owner,
+        async () => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await delay(30);
+          active -= 1;
+        },
+        { waitMs: 1_000 },
+      );
+    await Promise.all([run([targetA, targetB], 'pair-forward'), run([targetB, targetA], 'pair-reverse')]);
     expect(maxActive).toBe(1);
   });
 
@@ -280,22 +319,27 @@ describe('workspace target grant authority', () => {
     const controllerHome = temp('forge-target-legacy-');
     const root = temp('forge-target-legacy-root-');
     const path = workspaceTargetGrantStorePath(controllerHome);
-    writeFileSync(path, `${JSON.stringify({
-      schemaVersion: 1,
-      targets: [{
-        targetKey: 'legacy',
-        rootPath: root,
-        createdAt: '2026-08-07T00:00:00.000Z',
-        expiresAt: '2026-08-08T00:00:00.000Z',
-        reason: 'legacy compatibility',
-      }],
-    }, null, 2)}\n`);
-
-    const target = getActiveWorkspaceTargetGrant(
-      controllerHome,
-      'legacy',
-      new Date('2026-08-07T01:00:00.000Z'),
+    writeFileSync(
+      path,
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          targets: [
+            {
+              targetKey: 'legacy',
+              rootPath: root,
+              createdAt: '2026-08-07T00:00:00.000Z',
+              expiresAt: '2026-08-08T00:00:00.000Z',
+              reason: 'legacy compatibility',
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
     );
+
+    const target = getActiveWorkspaceTargetGrant(controllerHome, 'legacy', new Date('2026-08-07T01:00:00.000Z'));
     expect(target.access).toBe('read_write');
     expect(target.ownerScope).toBe('legacy:shared');
     expect(target.workspaceId.startsWith('workspace_')).toBe(true);
@@ -309,12 +353,13 @@ describe('workspace target grant authority', () => {
     writeFileSync(path, '{not-json\n');
 
     expectGrantCode(
-      () => authorizeWorkspaceTargetGrant(controllerHome, {
-        targetKey: 'must-not-overwrite',
-        rootPath: root,
-        ownerScope: 'principal:test',
-        reason: 'corrupt store must remain intact',
-      }),
+      () =>
+        authorizeWorkspaceTargetGrant(controllerHome, {
+          targetKey: 'must-not-overwrite',
+          rootPath: root,
+          ownerScope: 'principal:test',
+          reason: 'corrupt store must remain intact',
+        }),
       'TARGET_STORE_CORRUPT',
     );
     expect(readFileSync(path, 'utf8')).toBe('{not-json\n');
@@ -324,20 +369,22 @@ describe('workspace target grant authority', () => {
     const controllerHome = temp('forge-target-integrity-controller-');
     const root = temp('forge-target-integrity-root-');
     const path = workspaceTargetGrantStorePath(controllerHome);
-    writeFileSync(path, `${JSON.stringify({
-      schemaVersion: 1,
-      targets: [{
-        targetKey: 'malformed',
-        rootPath: root,
-        createdAt: '2026-08-07T00:00:00.000Z',
-        expiresAt: '2026-08-08T00:00:00.000Z',
-      }],
-    })}\n`);
+    writeFileSync(
+      path,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        targets: [
+          {
+            targetKey: 'malformed',
+            rootPath: root,
+            createdAt: '2026-08-07T00:00:00.000Z',
+            expiresAt: '2026-08-08T00:00:00.000Z',
+          },
+        ],
+      })}\n`,
+    );
     expectGrantCode(
-      () => listActiveWorkspaceTargetGrants(
-        controllerHome,
-        new Date('2026-08-07T01:00:00.000Z'),
-      ),
+      () => listActiveWorkspaceTargetGrants(controllerHome, new Date('2026-08-07T01:00:00.000Z')),
       'TARGET_STORE_CORRUPT',
     );
 
@@ -356,12 +403,7 @@ describe('workspace target grant authority', () => {
     persisted.targets[0]!.workspaceId = 'workspace_tampered';
     writeFileSync(cleanPath, `${JSON.stringify(persisted, null, 2)}\n`);
     expectGrantCode(
-      () => getActiveWorkspaceTargetGrant(
-        cleanHome,
-        'drift',
-        new Date('2026-08-07T01:00:00.000Z'),
-        'principal:test',
-      ),
+      () => getActiveWorkspaceTargetGrant(cleanHome, 'drift', new Date('2026-08-07T01:00:00.000Z'), 'principal:test'),
       'TARGET_IDENTITY_MISMATCH',
     );
   });
@@ -398,24 +440,24 @@ describe('workspace target grant authority', () => {
     expect(readOnly.workspaceId).not.toBe(first.workspaceId);
     expect(first.git.kind).toBe('none');
     mkdirSync(join(root, '.git'));
-    expect(getActiveWorkspaceTargetGrant(
-      controllerHome,
-      'first',
-      new Date('2026-08-07T00:03:00.000Z'),
-      'chatgpt-action:principal:test-user',
-    ).git.kind).toBe('repository_root');
+    expect(
+      getActiveWorkspaceTargetGrant(
+        controllerHome,
+        'first',
+        new Date('2026-08-07T00:03:00.000Z'),
+        'chatgpt-action:principal:test-user',
+      ).git.kind,
+    ).toBe('repository_root');
     expectGrantCode(
-      () => resolveWorkspaceTargetPath(controllerHome, 'first', '.', {
-        ownerScope: 'chatgpt-action:principal:other-user',
-        mustExist: true,
-        at: new Date('2026-08-07T00:03:00.000Z'),
-      }),
+      () =>
+        resolveWorkspaceTargetPath(controllerHome, 'first', '.', {
+          ownerScope: 'chatgpt-action:principal:other-user',
+          mustExist: true,
+          at: new Date('2026-08-07T00:03:00.000Z'),
+        }),
       'TARGET_OWNER_MISMATCH',
     );
-    expect(listActiveWorkspaceTargetGrants(
-      controllerHome,
-      new Date('2026-08-07T00:03:00.000Z'),
-    )).toHaveLength(3);
+    expect(listActiveWorkspaceTargetGrants(controllerHome, new Date('2026-08-07T00:03:00.000Z'))).toHaveLength(3);
 
     const otherOwner = authorizeWorkspaceTargetGrant(controllerHome, {
       targetKey: 'first',
@@ -426,18 +468,22 @@ describe('workspace target grant authority', () => {
       now: new Date('2026-08-07T00:04:00.000Z'),
     });
     expect(otherOwner.workspaceId).not.toBe(first.workspaceId);
-    expect(getActiveWorkspaceTargetGrant(
-      controllerHome,
-      'first',
-      new Date('2026-08-07T00:05:00.000Z'),
-      'chatgpt-action:principal:test-user',
-    ).workspaceId).toBe(first.workspaceId);
-    expect(getActiveWorkspaceTargetGrant(
-      controllerHome,
-      'first',
-      new Date('2026-08-07T00:05:00.000Z'),
-      'chatgpt-action:principal:other-user',
-    ).workspaceId).toBe(otherOwner.workspaceId);
+    expect(
+      getActiveWorkspaceTargetGrant(
+        controllerHome,
+        'first',
+        new Date('2026-08-07T00:05:00.000Z'),
+        'chatgpt-action:principal:test-user',
+      ).workspaceId,
+    ).toBe(first.workspaceId);
+    expect(
+      getActiveWorkspaceTargetGrant(
+        controllerHome,
+        'first',
+        new Date('2026-08-07T00:05:00.000Z'),
+        'chatgpt-action:principal:other-user',
+      ).workspaceId,
+    ).toBe(otherOwner.workspaceId);
   });
 
   test('revokes only the caller-owned target grant and fails closed afterward', () => {
@@ -465,12 +511,9 @@ describe('workspace target grant authority', () => {
       () => getActiveWorkspaceTargetGrant(controllerHome, 'shared-key', new Date(), 'principal:first'),
       'TARGET_OWNER_MISMATCH',
     );
-    expect(getActiveWorkspaceTargetGrant(
-      controllerHome,
-      'shared-key',
-      new Date(),
-      'principal:second',
-    ).workspaceId).toBe(second.workspaceId);
+    expect(
+      getActiveWorkspaceTargetGrant(controllerHome, 'shared-key', new Date(), 'principal:second').workspaceId,
+    ).toBe(second.workspaceId);
   });
 
   test('fails closed on concurrent grant-store mutation instead of losing an update', () => {
@@ -480,12 +523,13 @@ describe('workspace target grant authority', () => {
     const lock = acquireControllerLock(controllerHome, key, 'test-holder', 5_000);
     try {
       expectGrantCode(
-        () => authorizeWorkspaceTargetGrant(controllerHome, {
-          targetKey: 'blocked',
-          rootPath: root,
-          ownerScope: 'principal:test',
-          reason: 'must not race',
-        }),
+        () =>
+          authorizeWorkspaceTargetGrant(controllerHome, {
+            targetKey: 'blocked',
+            rootPath: root,
+            ownerScope: 'principal:test',
+            reason: 'must not race',
+          }),
         'TARGET_STORE_BUSY',
       );
       expect(listActiveWorkspaceTargetGrants(controllerHome)).toHaveLength(0);
@@ -509,40 +553,43 @@ describe('workspace target grant authority', () => {
       reason: 'path checks',
     });
 
-    expect(resolveWorkspaceTargetPath(controllerHome, 'workspace', 'src/index.ts', {
-      ownerScope: 'principal:test',
-      mustExist: true,
-      kind: 'file',
-    }).path).toBe(realpathSync(join(root, 'src', 'index.ts')));
-    expect(resolveWorkspaceTargetCwd(
-      controllerHome,
-      'workspace',
-      'principal:test',
-      'src',
-      'read',
-    ).path).toBe(realpathSync(join(root, 'src')));
-    expect(resolveWorkspaceTargetPath(controllerHome, 'workspace', 'generated/out.txt', {
-      ownerScope: 'principal:test',
-      operation: 'write',
-    }).path).toBe(join(realpathSync(root), 'generated', 'out.txt'));
-    expectGrantCode(
-      () => resolveWorkspaceTargetPath(controllerHome, 'workspace', '../outside', {
+    expect(
+      resolveWorkspaceTargetPath(controllerHome, 'workspace', 'src/index.ts', {
         ownerScope: 'principal:test',
-      }),
+        mustExist: true,
+        kind: 'file',
+      }).path,
+    ).toBe(realpathSync(join(root, 'src', 'index.ts')));
+    expect(resolveWorkspaceTargetCwd(controllerHome, 'workspace', 'principal:test', 'src', 'read').path).toBe(
+      realpathSync(join(root, 'src')),
+    );
+    expect(
+      resolveWorkspaceTargetPath(controllerHome, 'workspace', 'generated/out.txt', {
+        ownerScope: 'principal:test',
+        operation: 'write',
+      }).path,
+    ).toBe(join(realpathSync(root), 'generated', 'out.txt'));
+    expectGrantCode(
+      () =>
+        resolveWorkspaceTargetPath(controllerHome, 'workspace', '../outside', {
+          ownerScope: 'principal:test',
+        }),
       'PATH_OUTSIDE_TARGET',
     );
     expectGrantCode(
-      () => resolveWorkspaceTargetPath(controllerHome, 'workspace', 'escape/secret.txt', {
-        ownerScope: 'principal:test',
-        mustExist: true,
-      }),
+      () =>
+        resolveWorkspaceTargetPath(controllerHome, 'workspace', 'escape/secret.txt', {
+          ownerScope: 'principal:test',
+          mustExist: true,
+        }),
       'SYMLINK_ESCAPE',
     );
     expectGrantCode(
-      () => resolveWorkspaceTargetPath(controllerHome, 'workspace', 'escape/future.txt', {
-        ownerScope: 'principal:test',
-        operation: 'write',
-      }),
+      () =>
+        resolveWorkspaceTargetPath(controllerHome, 'workspace', 'escape/future.txt', {
+          ownerScope: 'principal:test',
+          operation: 'write',
+        }),
       'SYMLINK_ESCAPE',
     );
   });
@@ -558,13 +605,13 @@ describe('workspace target grant authority', () => {
       reason: 'read only',
     });
 
-    expect(resolveWorkspaceTargetCwd(controllerHome, 'readonly', 'principal:test').path)
-      .toBe(realpathSync(root));
+    expect(resolveWorkspaceTargetCwd(controllerHome, 'readonly', 'principal:test').path).toBe(realpathSync(root));
     expectGrantCode(
-      () => resolveWorkspaceTargetPath(controllerHome, 'readonly', 'new.txt', {
-        ownerScope: 'principal:test',
-        operation: 'write',
-      }),
+      () =>
+        resolveWorkspaceTargetPath(controllerHome, 'readonly', 'new.txt', {
+          ownerScope: 'principal:test',
+          operation: 'write',
+        }),
       'TARGET_ACCESS_DENIED',
     );
   });
@@ -572,19 +619,31 @@ describe('workspace target grant authority', () => {
 
 describe('plugin capability authorization grant authority', () => {
   const base = {
-    ownerScope: 'mcp:principal:test-user', repoId: 'repo-test', pluginId: 'ios', capabilityId: 'ios-physical-device',
+    ownerScope: 'mcp:principal:test-user',
+    repoId: 'repo-test',
+    pluginId: 'ios',
+    capabilityId: 'ios-physical-device',
     target: { kind: 'ios-physical-device', id: 'CORE-DEVICE-1', identityFingerprint: 'fingerprint-1' },
     scopes: ['ios.device'] as const,
   };
-  const find = (controllerHome: string, overrides: Partial<Parameters<typeof findActivePluginCapabilityAuthorization>[1]> = {}) =>
+  const find = (
+    controllerHome: string,
+    overrides: Partial<Parameters<typeof findActivePluginCapabilityAuthorization>[1]> = {},
+  ) =>
     findActivePluginCapabilityAuthorization(controllerHome, {
-      ...base, risk: 'workspace_write', at: new Date('2026-08-18T01:00:00.000Z'), ...overrides,
+      ...base,
+      risk: 'workspace_write',
+      at: new Date('2026-08-18T01:00:00.000Z'),
+      ...overrides,
     });
 
   test('requires the same principal/repo/capability/exact target/scope/risk and never grants destructive actions', () => {
     const controllerHome = temp('forge-plugin-grant-boundary-');
     const grant = recordPluginCapabilityAuthorization(controllerHome, {
-      ...base, scopes: ['ios.device', 'ios.observe'], riskCeiling: 'remote_write', expiresInMinutes: 60,
+      ...base,
+      scopes: ['ios.device', 'ios.observe'],
+      riskCeiling: 'remote_write',
+      expiresInMinutes: 60,
       now: new Date('2026-08-18T00:30:00.000Z'),
     });
     expect(find(controllerHome)?.grantId).toBe(grant.grantId);
@@ -595,26 +654,42 @@ describe('plugin capability authorization grant authority', () => {
     expect(find(controllerHome, { target: { ...base.target, identityFingerprint: 'fingerprint-2' } })).toBeUndefined();
     expect(find(controllerHome, { scopes: ['ios.device', 'ios.admin'] })).toBeUndefined();
     expect(find(controllerHome, { risk: 'destructive' })).toBeUndefined();
-    expect(() => recordPluginCapabilityAuthorization(controllerHome, {
-      ...base, riskCeiling: 'destructive', now: new Date('2026-08-18T00:30:00.000Z'),
-    })).toThrow(PluginCapabilityAuthorizationGrantError);
+    expect(() =>
+      recordPluginCapabilityAuthorization(controllerHome, {
+        ...base,
+        riskCeiling: 'destructive',
+        now: new Date('2026-08-18T00:30:00.000Z'),
+      }),
+    ).toThrow(PluginCapabilityAuthorizationGrantError);
   });
 
   test('expires and revokes without crossing owner identity', () => {
     const controllerHome = temp('forge-plugin-grant-lifecycle-');
     const expiring = recordPluginCapabilityAuthorization(controllerHome, {
-      ...base, riskCeiling: 'workspace_write', expiresInMinutes: 1, now: new Date('2026-08-18T00:00:00.000Z'),
+      ...base,
+      riskCeiling: 'workspace_write',
+      expiresInMinutes: 1,
+      now: new Date('2026-08-18T00:00:00.000Z'),
     });
     expect(find(controllerHome, { at: new Date('2026-08-18T00:00:30.000Z') })?.grantId).toBe(expiring.grantId);
     expect(find(controllerHome, { at: new Date('2026-08-18T00:02:00.000Z') })).toBeUndefined();
     const active = recordPluginCapabilityAuthorization(controllerHome, {
-      ...base, riskCeiling: 'workspace_write', expiresInMinutes: 60, now: new Date('2026-08-18T00:30:00.000Z'),
+      ...base,
+      riskCeiling: 'workspace_write',
+      expiresInMinutes: 60,
+      now: new Date('2026-08-18T00:30:00.000Z'),
     });
     revokePluginCapabilityAuthorization(controllerHome, {
-      grantId: active.grantId, ownerScope: base.ownerScope, reason: 'user revoked device control', now: new Date('2026-08-18T00:45:00.000Z'),
+      grantId: active.grantId,
+      ownerScope: base.ownerScope,
+      reason: 'user revoked device control',
+      now: new Date('2026-08-18T00:45:00.000Z'),
     });
     expect(find(controllerHome)).toBeUndefined();
-    expect(listPluginCapabilityAuthorizations(controllerHome).find((entry) => entry.grantId === active.grantId)?.revokedReason).toBe('user revoked device control');
+    expect(
+      listPluginCapabilityAuthorizations(controllerHome).find((entry) => entry.grantId === active.grantId)
+        ?.revokedReason,
+    ).toBe('user revoked device control');
   });
 
   test('fails closed on a corrupt grant store without overwriting evidence', () => {
@@ -623,16 +698,22 @@ describe('plugin capability authorization grant authority', () => {
     mkdirSync(join(controllerSystemRoot(controllerHome), 'plugin-capability-authorizations'), { recursive: true });
     writeFileSync(path, '{not-json\n');
     const assertCorrupt = (operation: () => unknown) => {
-      try { operation(); throw new Error('expected corrupt store'); }
-      catch (error) {
+      try {
+        operation();
+        throw new Error('expected corrupt store');
+      } catch (error) {
         expect(error).toBeInstanceOf(PluginCapabilityAuthorizationGrantError);
         expect((error as PluginCapabilityAuthorizationGrantError).code).toBe('PLUGIN_CAPABILITY_GRANT_STORE_CORRUPT');
       }
     };
     assertCorrupt(() => find(controllerHome));
-    assertCorrupt(() => recordPluginCapabilityAuthorization(controllerHome, {
-      ...base, riskCeiling: 'workspace_write', now: new Date('2026-08-18T00:30:00.000Z'),
-    }));
+    assertCorrupt(() =>
+      recordPluginCapabilityAuthorization(controllerHome, {
+        ...base,
+        riskCeiling: 'workspace_write',
+        now: new Date('2026-08-18T00:30:00.000Z'),
+      }),
+    );
     expect(readFileSync(path, 'utf8')).toBe('{not-json\n');
   });
 });
@@ -646,14 +727,16 @@ describe('local_system managed Recovery upgrade', () => {
     expect(action?.argumentsSchema).toEqual({ type: 'object', properties: {}, additionalProperties: false });
     expect(action?.confirmation).toBe('authorization');
     expect(action?.scopes).toEqual(['local-system.process']);
-    expect(manifest.capabilities.find((entry) => entry.capabilityId === 'local-system-recovery-upgrade')?.actions)
-      .toEqual(['upgrade_standalone_recovery']);
+    expect(
+      manifest.capabilities.find((entry) => entry.capabilityId === 'local-system-recovery-upgrade')?.actions,
+    ).toEqual(['upgrade_standalone_recovery']);
   });
 
   test('fails closed when installed Recovery has no configured primary Runtime source', async () => {
     const controllerHome = temp('local-system-recovery-unconfigured-');
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'upgrade_standalone_recovery', {})))
-      .rejects.toThrow(/primaryRuntimeSourceRoot/);
+    await expect(
+      executeLocalSystemPluginAction(input(controllerHome, 'upgrade_standalone_recovery', {})),
+    ).rejects.toThrow(/primaryRuntimeSourceRoot/);
   });
 
   test('repairs an exact removed Registry worktree source to its enabled repository canonical root after verified activation', async () => {
@@ -668,7 +751,12 @@ describe('local_system managed Recovery upgrade', () => {
     setLocalSystemPluginHooksForTest({
       recoverySourceIdentity: (sourceRoot) => {
         observed.push(`identity:${resolve(sourceRoot)}`);
-        return { sourceCommit: lineage.sourceCommit, releaseRevision: lineage.sourceCommit, cleanWorkspace: true, sourceRoot: resolve(sourceRoot) };
+        return {
+          sourceCommit: lineage.sourceCommit,
+          releaseRevision: lineage.sourceCommit,
+          cleanWorkspace: true,
+          sourceRoot: resolve(sourceRoot),
+        };
       },
       stageRecoveryRelease: ({ sourceRoot }) => {
         observed.push(`stage:${resolve(sourceRoot)}`);
@@ -680,7 +768,14 @@ describe('local_system managed Recovery upgrade', () => {
         expect(activatedCandidate).toBe(candidate);
         return {
           release: candidate,
-          verification: { ok: true, expectedReleaseRevision: lineage.sourceCommit, failures: [], gatewayPid: 101, watchdogPid: 102, healthStatus: 200 },
+          verification: {
+            ok: true,
+            expectedReleaseRevision: lineage.sourceCommit,
+            failures: [],
+            gatewayPid: 101,
+            watchdogPid: 102,
+            healthStatus: 200,
+          },
         };
       },
     });
@@ -712,8 +807,9 @@ describe('local_system managed Recovery upgrade', () => {
     createRecoveryConfig(controllerHome, { primaryRuntimeSourceRoot: missing });
     const before = readFileSync(recoveryConfigPath(controllerHome), 'utf8');
 
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'upgrade_standalone_recovery', {})))
-      .rejects.toThrow(/RECOVERY_SOURCE_REPAIR_LINEAGE_NOT_FOUND/);
+    await expect(
+      executeLocalSystemPluginAction(input(controllerHome, 'upgrade_standalone_recovery', {})),
+    ).rejects.toThrow(/RECOVERY_SOURCE_REPAIR_LINEAGE_NOT_FOUND/);
     expect(readFileSync(recoveryConfigPath(controllerHome), 'utf8')).toBe(before);
   });
 
@@ -736,8 +832,9 @@ describe('local_system managed Recovery upgrade', () => {
     createRecoveryConfig(controllerHome, { primaryRuntimeSourceRoot: registeredRoot });
     const before = readFileSync(recoveryConfigPath(controllerHome), 'utf8');
 
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'upgrade_standalone_recovery', {})))
-      .rejects.toThrow(/RECOVERY_SOURCE_REPAIR_LINEAGE_NOT_FOUND/);
+    await expect(
+      executeLocalSystemPluginAction(input(controllerHome, 'upgrade_standalone_recovery', {})),
+    ).rejects.toThrow(/RECOVERY_SOURCE_REPAIR_LINEAGE_NOT_FOUND/);
     expect(readFileSync(recoveryConfigPath(controllerHome), 'utf8')).toBe(before);
   });
 
@@ -748,8 +845,9 @@ describe('local_system managed Recovery upgrade', () => {
     createRecoveryConfig(controllerHome, { primaryRuntimeSourceRoot: lineage.removedWorktreeRoot });
     const before = readFileSync(recoveryConfigPath(controllerHome), 'utf8');
 
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'upgrade_standalone_recovery', {})))
-      .rejects.toThrow(/RECOVERY_SOURCE_REPAIR_LINEAGE_NOT_FOUND/);
+    await expect(
+      executeLocalSystemPluginAction(input(controllerHome, 'upgrade_standalone_recovery', {})),
+    ).rejects.toThrow(/RECOVERY_SOURCE_REPAIR_LINEAGE_NOT_FOUND/);
     expect(readFileSync(recoveryConfigPath(controllerHome), 'utf8')).toBe(before);
   });
 
@@ -772,7 +870,12 @@ describe('local_system managed Recovery upgrade', () => {
     });
     const result = await executeLocalSystemPluginAction(input(controllerHome, 'upgrade_standalone_recovery', {}));
     expect(calls).toEqual([controllerHome]);
-    expect(result).toMatchObject({ upgraded: true, noOp: false, verification: { ok: true }, rollback: { performed: false } });
+    expect(result).toMatchObject({
+      upgraded: true,
+      noOp: false,
+      verification: { ok: true },
+      rollback: { performed: false },
+    });
   });
 
   test('exposes and executes a zero-argument Recovery tunnel repair through installed configuration only', async () => {
@@ -790,14 +893,16 @@ describe('local_system managed Recovery upgrade', () => {
     const action = manifest.actions.find((entry) => entry.actionId === 'repair_standalone_recovery_tunnel');
     expect(action?.argumentsSchema).toEqual({ type: 'object', properties: {}, additionalProperties: false });
     expect(action?.confirmation).toBe('authorization');
-    expect(manifest.capabilities.find((entry) => entry.capabilityId === 'local-system-recovery-tunnel-repair')?.actions)
-      .toEqual(['repair_standalone_recovery_tunnel']);
+    expect(
+      manifest.capabilities.find((entry) => entry.capabilityId === 'local-system-recovery-tunnel-repair')?.actions,
+    ).toEqual(['repair_standalone_recovery_tunnel']);
 
     const observed: string[] = [];
     setLocalSystemPluginHooksForTest({
       repairPublicTunnel: async (config) => {
         const tunnel = config.recoveryTunnelService;
-        if (tunnel?.platform === 'openai-secure-tunnel') observed.push(`${tunnel.alias}:${tunnel.tunnelId}:${tunnel.mcpServerUrl}`);
+        if (tunnel?.platform === 'openai-secure-tunnel')
+          observed.push(`${tunnel.alias}:${tunnel.tunnelId}:${tunnel.mcpServerUrl}`);
         return {
           ok: true,
           attempted: true,
@@ -823,7 +928,12 @@ describe('local_system managed Recovery upgrade', () => {
     });
     const result = await executeLocalSystemPluginAction(input(controllerHome, 'repair_standalone_recovery_tunnel', {}));
     expect(observed).toEqual(['forge-recovery-test:tunnel_0123456789abcdef0123456789abcdef:http://127.0.0.1:8787/mcp']);
-    expect(result).toMatchObject({ repaired: true, noOp: false, verification: { ok: true }, localVerification: { ok: true } });
+    expect(result).toMatchObject({
+      repaired: true,
+      noOp: false,
+      verification: { ok: true },
+      localVerification: { ok: true },
+    });
   });
 });
 
@@ -883,18 +993,19 @@ describe('local_system target adapter', () => {
       now: () => new Date('2026-08-07T00:00:00.000Z'),
     });
 
-    const authorized = await executeLocalSystemPluginAction(input(controllerHome, 'authorize_target', {
-      target_key: 'project',
-      root_path: root,
-      expires_in_minutes: 60,
-      reason: 'temporary project work',
-      access: 'read_only',
-    }));
+    const authorized = await executeLocalSystemPluginAction(
+      input(controllerHome, 'authorize_target', {
+        target_key: 'project',
+        root_path: root,
+        expires_in_minutes: 60,
+        reason: 'temporary project work',
+        access: 'read_only',
+      }),
+    );
 
     expect(authorized.repositoryRegistered).toBe(false);
     expect((authorized.target as Record<string, unknown>).access).toBe('read_only');
-    expect((authorized.target as Record<string, unknown>).ownerScope)
-      .toBe('chatgpt-action:principal:test-user');
+    expect((authorized.target as Record<string, unknown>).ownerScope).toBe('chatgpt-action:principal:test-user');
 
     const genericAuthorized = await executeLocalSystemPluginAction({
       ...input(controllerHome, 'authorize_target', {
@@ -905,36 +1016,43 @@ describe('local_system target adapter', () => {
       }),
       origin: { surface: 'mcp', actor: 'plugin_action_execute' },
     });
-    expect((genericAuthorized.target as Record<string, unknown>).ownerScope)
-      .toBe('controller:shared');
+    expect((genericAuthorized.target as Record<string, unknown>).ownerScope).toBe('controller:shared');
 
-    const principalList = await executeLocalSystemPluginAction(
-      input(controllerHome, 'list_targets', {}),
-    );
+    const principalList = await executeLocalSystemPluginAction(input(controllerHome, 'list_targets', {}));
     const sharedList = await executeLocalSystemPluginAction({
       ...input(controllerHome, 'list_targets', {}),
       origin: { surface: 'mcp', actor: 'plugin_action_execute' },
     });
-    expect((principalList.targets as unknown[])).toHaveLength(1);
-    expect((sharedList.targets as unknown[])).toHaveLength(1);
+    expect(principalList.targets as unknown[]).toHaveLength(1);
+    expect(sharedList.targets as unknown[]).toHaveLength(1);
   });
 
   test('revokes an authorized target through the plugin boundary', async () => {
     const controllerHome = temp('forge-target-plugin-revoke-controller-');
     const root = temp('forge-target-plugin-revoke-root-');
-    await executeLocalSystemPluginAction(input(controllerHome, 'authorize_target', {
-      target_key: 'temporary',
-      root_path: root,
-      expires_in_minutes: 60,
-      reason: 'temporary acceptance target',
-    }));
+    await executeLocalSystemPluginAction(
+      input(controllerHome, 'authorize_target', {
+        target_key: 'temporary',
+        root_path: root,
+        expires_in_minutes: 60,
+        reason: 'temporary acceptance target',
+      }),
+    );
 
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'revoke_target', {
-      target_key: 'temporary',
-    }))).resolves.toMatchObject({ revoked: true, targetKey: 'temporary', repositoryRegistered: false });
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'list_directory', {
-      target_key: 'temporary',
-    }))).rejects.toThrow(/LOCAL_SYSTEM_TARGET_UNAVAILABLE/);
+    await expect(
+      executeLocalSystemPluginAction(
+        input(controllerHome, 'revoke_target', {
+          target_key: 'temporary',
+        }),
+      ),
+    ).resolves.toMatchObject({ revoked: true, targetKey: 'temporary', repositoryRegistered: false });
+    await expect(
+      executeLocalSystemPluginAction(
+        input(controllerHome, 'list_directory', {
+          target_key: 'temporary',
+        }),
+      ),
+    ).rejects.toThrow(/LOCAL_SYSTEM_TARGET_UNAVAILABLE/);
   });
 
   test('terminates only a PID whose command identity matches exactly enough', async () => {
@@ -944,144 +1062,216 @@ describe('local_system target adapter', () => {
       runCommand: (command, args) => {
         expect(command).toBe('ps');
         expect(args).toEqual(['-p', '96834', '-o', 'command=']);
-        return { ok: true, status: 0, stdout: '/opt/forge-fixtures/investment-decision-system/.venv/bin/python -m app.mcp.server\n', stderr: '', command: [command, ...args] };
+        return {
+          ok: true,
+          status: 0,
+          stdout: '/opt/forge-fixtures/investment-decision-system/.venv/bin/python -m app.mcp.server\n',
+          stderr: '',
+          command: [command, ...args],
+        };
       },
-      signalProcess: (pid, signal) => { signals.push({ pid, signal }); },
+      signalProcess: (pid, signal) => {
+        signals.push({ pid, signal });
+      },
     });
 
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'terminate_process', {
-      pid: 96834,
-      expected_command_contains: 'investment-decision-system/.venv/bin/python -m app.mcp.server',
-    }))).resolves.toMatchObject({ terminated: true, pid: 96834, signal: 'SIGTERM' });
+    await expect(
+      executeLocalSystemPluginAction(
+        input(controllerHome, 'terminate_process', {
+          pid: 96834,
+          expected_command_contains: 'investment-decision-system/.venv/bin/python -m app.mcp.server',
+        }),
+      ),
+    ).resolves.toMatchObject({ terminated: true, pid: 96834, signal: 'SIGTERM' });
     expect(signals).toEqual([{ pid: 96834, signal: 'SIGTERM' }]);
 
     signals.length = 0;
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'terminate_process', {
-      pid: 96834,
-      expected_command_contains: 'cloudflared',
-    }))).rejects.toThrow(/LOCAL_SYSTEM_PROCESS_IDENTITY_MISMATCH/);
+    await expect(
+      executeLocalSystemPluginAction(
+        input(controllerHome, 'terminate_process', {
+          pid: 96834,
+          expected_command_contains: 'cloudflared',
+        }),
+      ),
+    ).rejects.toThrow(/LOCAL_SYSTEM_PROCESS_IDENTITY_MISMATCH/);
     expect(signals).toHaveLength(0);
   });
 
-  test.skipIf(process.platform !== 'darwin')('restarts only a loaded user LaunchAgent whose program identity matches', async () => {
-    const controllerHome = temp('forge-local-system-launchagent-controller-');
-    const commands: string[][] = [];
-    setLocalSystemPluginHooksForTest({
-      runCommand: (command, args) => {
-        commands.push([command, ...args]);
-        if (args[0] === 'print') {
-          return { ok: true, status: 0, stdout: 'path = /opt/forge-fixtures/investment-decision-system/scripts/run-mcp-daemon.sh\n', stderr: '', command: [command, ...args] };
-        }
-        return { ok: true, status: 0, stdout: '', stderr: '', command: [command, ...args] };
-      },
-    });
+  test.skipIf(process.platform !== 'darwin')(
+    'restarts only a loaded user LaunchAgent whose program identity matches',
+    async () => {
+      const controllerHome = temp('forge-local-system-launchagent-controller-');
+      const commands: string[][] = [];
+      setLocalSystemPluginHooksForTest({
+        runCommand: (command, args) => {
+          commands.push([command, ...args]);
+          if (args[0] === 'print') {
+            return {
+              ok: true,
+              status: 0,
+              stdout: 'path = /opt/forge-fixtures/investment-decision-system/scripts/run-mcp-daemon.sh\n',
+              stderr: '',
+              command: [command, ...args],
+            };
+          }
+          return { ok: true, status: 0, stdout: '', stderr: '', command: [command, ...args] };
+        },
+      });
 
-    const result = await executeLocalSystemPluginAction(input(controllerHome, 'restart_user_launch_agent', {
-      label: 'com.greyson.investment-decision-mcp',
-      expected_program_contains: 'investment-decision-system/scripts/run-mcp-daemon.sh',
-    }));
-    expect(result).toMatchObject({ restarted: true, label: 'com.greyson.investment-decision-mcp' });
-    expect(commands).toHaveLength(2);
-    expect(commands[0][0]).toBe('/bin/launchctl');
-    expect(commands[0][1]).toBe('print');
-    expect(commands[1][1]).toBe('kickstart');
-    expect(commands[1][2]).toBe('-k');
-  });
+      const result = await executeLocalSystemPluginAction(
+        input(controllerHome, 'restart_user_launch_agent', {
+          label: 'com.greyson.investment-decision-mcp',
+          expected_program_contains: 'investment-decision-system/scripts/run-mcp-daemon.sh',
+        }),
+      );
+      expect(result).toMatchObject({ restarted: true, label: 'com.greyson.investment-decision-mcp' });
+      expect(commands).toHaveLength(2);
+      expect(commands[0][0]).toBe('/bin/launchctl');
+      expect(commands[0][1]).toBe('print');
+      expect(commands[1][1]).toBe('kickstart');
+      expect(commands[1][2]).toBe('-k');
+    },
+  );
 
-  test.skipIf(process.platform !== 'darwin')('schedules a self-restart helper instead of synchronously killing the Runtime that serves the request', async () => {
-    const controllerHome = temp('forge-local-system-self-restart-controller-');
-    const commands: string[][] = [];
-    const scheduled: string[] = [];
-    const label = forgeRuntimeServicePaths(controllerHome).label;
-    const program = '/opt/forge/runtime/service/active-forge-runtime';
-    setLocalSystemPluginHooksForTest({
-      runCommand: (command, args) => {
-        commands.push([command, ...args]);
-        if (args[0] === 'print') {
-          return { ok: true, status: 0, stdout: `program = ${program}\npid = ${process.pid + 1000}\n`, stderr: '', command: [command, ...args] };
-        }
-        throw new Error(`unexpected synchronous command: ${[command, ...args].join(' ')}`);
-      },
-      scheduleLaunchAgentRestart: (service) => { scheduled.push(service); return { pid: 424242 }; },
-    });
+  test.skipIf(process.platform !== 'darwin')(
+    'schedules a self-restart helper instead of synchronously killing the Runtime that serves the request',
+    async () => {
+      const controllerHome = temp('forge-local-system-self-restart-controller-');
+      const commands: string[][] = [];
+      const scheduled: string[] = [];
+      const label = forgeRuntimeServicePaths(controllerHome).label;
+      const program = '/opt/forge/runtime/service/active-forge-runtime';
+      setLocalSystemPluginHooksForTest({
+        runCommand: (command, args) => {
+          commands.push([command, ...args]);
+          if (args[0] === 'print') {
+            return {
+              ok: true,
+              status: 0,
+              stdout: `program = ${program}\npid = ${process.pid + 1000}\n`,
+              stderr: '',
+              command: [command, ...args],
+            };
+          }
+          throw new Error(`unexpected synchronous command: ${[command, ...args].join(' ')}`);
+        },
+        scheduleLaunchAgentRestart: (service) => {
+          scheduled.push(service);
+          return { pid: 424242 };
+        },
+      });
 
-    const result = await executeLocalSystemPluginAction(input(controllerHome, 'restart_user_launch_agent', {
-      label,
-      expected_program_contains: 'active-forge-runtime',
-    }));
-    expect(result).toMatchObject({
-      restarted: true,
-      restartScheduled: true,
-      selfRestart: true,
-      label,
-      observedPid: process.pid + 1000,
-      helperPid: 424242,
-    });
-    expect(commands).toHaveLength(1);
-    expect(commands[0]?.[1]).toBe('print');
-    expect(scheduled).toEqual([`gui/${process.getuid!()}/${label}`]);
-  });
-
-  test.skipIf(process.platform !== 'darwin')('stops and starts only a verified current-user LaunchAgent from its installed plist', async () => {
-    const controllerHome = temp('forge-local-system-launchagent-lifecycle-controller-');
-    const home = temp('forge-local-system-launchagent-home-');
-    const launchAgents = join(home, 'Library', 'LaunchAgents');
-    mkdirSync(launchAgents, { recursive: true });
-    const label = 'com.greyson.forge-recovery-watchdog';
-    const program = '/opt/forge-fixtures/forge/recovery/current/forge-recovery-watchdog';
-    writeFileSync(join(launchAgents, `${label}.plist`), `<plist><dict><key>Label</key><string>${label}</string><key>Program</key><string>${program}</string></dict></plist>`);
-    const previousHome = process.env.HOME;
-    process.env.HOME = home;
-    let loaded = true;
-    const commands: string[][] = [];
-    setLocalSystemPluginHooksForTest({
-      runCommand: (command, args) => {
-        commands.push([command, ...args]);
-        if (args[0] === 'print') {
-          return loaded
-            ? { ok: true, status: 0, stdout: `path = ${program}\n`, stderr: '', command: [command, ...args] }
-            : { ok: false, status: 113, stdout: '', stderr: 'service not found', command: [command, ...args] };
-        }
-        if (args[0] === 'bootout') loaded = false;
-        if (args[0] === 'bootstrap') loaded = true;
-        return { ok: true, status: 0, stdout: '', stderr: '', command: [command, ...args] };
-      },
-    });
-    try {
-      await expect(executeLocalSystemPluginAction(input(controllerHome, 'stop_user_launch_agent', {
+      const result = await executeLocalSystemPluginAction(
+        input(controllerHome, 'restart_user_launch_agent', {
+          label,
+          expected_program_contains: 'active-forge-runtime',
+        }),
+      );
+      expect(result).toMatchObject({
+        restarted: true,
+        restartScheduled: true,
+        selfRestart: true,
         label,
-        expected_program_contains: 'forge-recovery-watchdog',
-      }))).resolves.toMatchObject({ stopped: true, label });
-      await expect(executeLocalSystemPluginAction(input(controllerHome, 'start_user_launch_agent', {
-        label,
-        expected_program_contains: 'forge-recovery-watchdog',
-      }))).resolves.toMatchObject({ started: true, label });
-      expect(commands.map((entry) => entry[1])).toEqual(['print', 'bootout', 'print', 'bootstrap', 'enable', 'kickstart']);
-    } finally {
-      if (previousHome === undefined) delete process.env.HOME;
-      else process.env.HOME = previousHome;
-    }
-  });
+        observedPid: process.pid + 1000,
+        helperPid: 424242,
+      });
+      expect(commands).toHaveLength(1);
+      expect(commands[0]?.[1]).toBe('print');
+      expect(scheduled).toEqual([`gui/${process.getuid!()}/${label}`]);
+    },
+  );
 
-  test.skipIf(process.platform !== 'darwin')('start user LaunchAgent fails closed when the installed plist identity mismatches', async () => {
-    const controllerHome = temp('forge-local-system-launchagent-mismatch-controller-');
-    const home = temp('forge-local-system-launchagent-mismatch-home-');
-    const launchAgents = join(home, 'Library', 'LaunchAgents');
-    mkdirSync(launchAgents, { recursive: true });
-    const label = 'com.greyson.expected';
-    writeFileSync(join(launchAgents, `${label}.plist`), `<plist><dict><string>${label}</string><string>/tmp/unexpected-service</string></dict></plist>`);
-    const previousHome = process.env.HOME;
-    process.env.HOME = home;
-    try {
-      await expect(executeLocalSystemPluginAction(input(controllerHome, 'start_user_launch_agent', {
-        label,
-        expected_program_contains: 'expected-program',
-      }))).rejects.toThrow(/LOCAL_SYSTEM_LAUNCH_AGENT_IDENTITY_MISMATCH/);
-    } finally {
-      if (previousHome === undefined) delete process.env.HOME;
-      else process.env.HOME = previousHome;
-    }
-  });
+  test.skipIf(process.platform !== 'darwin')(
+    'stops and starts only a verified current-user LaunchAgent from its installed plist',
+    async () => {
+      const controllerHome = temp('forge-local-system-launchagent-lifecycle-controller-');
+      const home = temp('forge-local-system-launchagent-home-');
+      const launchAgents = join(home, 'Library', 'LaunchAgents');
+      mkdirSync(launchAgents, { recursive: true });
+      const label = 'com.greyson.forge-recovery-watchdog';
+      const program = '/opt/forge-fixtures/forge/recovery/current/forge-recovery-watchdog';
+      writeFileSync(
+        join(launchAgents, `${label}.plist`),
+        `<plist><dict><key>Label</key><string>${label}</string><key>Program</key><string>${program}</string></dict></plist>`,
+      );
+      const previousHome = process.env.HOME;
+      process.env.HOME = home;
+      let loaded = true;
+      const commands: string[][] = [];
+      setLocalSystemPluginHooksForTest({
+        runCommand: (command, args) => {
+          commands.push([command, ...args]);
+          if (args[0] === 'print') {
+            return loaded
+              ? { ok: true, status: 0, stdout: `path = ${program}\n`, stderr: '', command: [command, ...args] }
+              : { ok: false, status: 113, stdout: '', stderr: 'service not found', command: [command, ...args] };
+          }
+          if (args[0] === 'bootout') loaded = false;
+          if (args[0] === 'bootstrap') loaded = true;
+          return { ok: true, status: 0, stdout: '', stderr: '', command: [command, ...args] };
+        },
+      });
+      try {
+        await expect(
+          executeLocalSystemPluginAction(
+            input(controllerHome, 'stop_user_launch_agent', {
+              label,
+              expected_program_contains: 'forge-recovery-watchdog',
+            }),
+          ),
+        ).resolves.toMatchObject({ stopped: true, label });
+        await expect(
+          executeLocalSystemPluginAction(
+            input(controllerHome, 'start_user_launch_agent', {
+              label,
+              expected_program_contains: 'forge-recovery-watchdog',
+            }),
+          ),
+        ).resolves.toMatchObject({ started: true, label });
+        expect(commands.map((entry) => entry[1])).toEqual([
+          'print',
+          'bootout',
+          'print',
+          'bootstrap',
+          'enable',
+          'kickstart',
+        ]);
+      } finally {
+        if (previousHome === undefined) delete process.env.HOME;
+        else process.env.HOME = previousHome;
+      }
+    },
+  );
+
+  test.skipIf(process.platform !== 'darwin')(
+    'start user LaunchAgent fails closed when the installed plist identity mismatches',
+    async () => {
+      const controllerHome = temp('forge-local-system-launchagent-mismatch-controller-');
+      const home = temp('forge-local-system-launchagent-mismatch-home-');
+      const launchAgents = join(home, 'Library', 'LaunchAgents');
+      mkdirSync(launchAgents, { recursive: true });
+      const label = 'com.greyson.expected';
+      writeFileSync(
+        join(launchAgents, `${label}.plist`),
+        `<plist><dict><string>${label}</string><string>/tmp/unexpected-service</string></dict></plist>`,
+      );
+      const previousHome = process.env.HOME;
+      process.env.HOME = home;
+      try {
+        await expect(
+          executeLocalSystemPluginAction(
+            input(controllerHome, 'start_user_launch_agent', {
+              label,
+              expected_program_contains: 'expected-program',
+            }),
+          ),
+        ).rejects.toThrow(/LOCAL_SYSTEM_LAUNCH_AGENT_IDENTITY_MISMATCH/);
+      } finally {
+        if (previousHome === undefined) delete process.env.HOME;
+        else process.env.HOME = previousHome;
+      }
+    },
+  );
 
   test('never auto-opens command files or executable scripts', async () => {
     const controllerHome = temp('forge-target-open-safe-controller-');
@@ -1100,7 +1290,11 @@ describe('local_system target adapter', () => {
     mkdirSync(appBundle);
     writeFileSync(document, 'safe document\n');
     authorizeWorkspaceTargetGrant(controllerHome, {
-      targetKey: 'project', rootPath: root, ownerScope: 'chatgpt-action:principal:test-user', access: 'read_write', reason: 'document open safety',
+      targetKey: 'project',
+      rootPath: root,
+      ownerScope: 'chatgpt-action:principal:test-user',
+      access: 'read_write',
+      reason: 'document open safety',
     });
     const commands: string[][] = [];
     setLocalSystemPluginHooksForTest({
@@ -1110,28 +1304,46 @@ describe('local_system target adapter', () => {
       },
     });
 
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'open_file', {
-      target_key: 'project', path: 'run-system.command',
-    }))).rejects.toThrow(/LOCAL_SYSTEM_EXECUTABLE_OPEN_DENIED/);
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'open_file', {
-      target_key: 'project', path: 'run.sh',
-    }))).rejects.toThrow(/LOCAL_SYSTEM_EXECUTABLE_OPEN_DENIED/);
+    await expect(
+      executeLocalSystemPluginAction(
+        input(controllerHome, 'open_file', {
+          target_key: 'project',
+          path: 'run-system.command',
+        }),
+      ),
+    ).rejects.toThrow(/LOCAL_SYSTEM_EXECUTABLE_OPEN_DENIED/);
+    await expect(
+      executeLocalSystemPluginAction(
+        input(controllerHome, 'open_file', {
+          target_key: 'project',
+          path: 'run.sh',
+        }),
+      ),
+    ).rejects.toThrow(/LOCAL_SYSTEM_EXECUTABLE_OPEN_DENIED/);
     for (const path of ['installer.pkg', 'image.dmg', 'Example.app']) {
-      await expect(executeLocalSystemPluginAction(input(controllerHome, 'open_file', { target_key: 'project', path })))
-        .rejects.toThrow(/LOCAL_SYSTEM_EXECUTABLE_OPEN_DENIED/);
+      await expect(
+        executeLocalSystemPluginAction(input(controllerHome, 'open_file', { target_key: 'project', path })),
+      ).rejects.toThrow(/LOCAL_SYSTEM_EXECUTABLE_OPEN_DENIED/);
     }
     expect(commands).toHaveLength(0);
 
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'open_file', {
-      target_key: 'project', path: 'notes.txt',
-    }))).resolves.toMatchObject({ opened: true, path: 'notes.txt' });
+    await expect(
+      executeLocalSystemPluginAction(
+        input(controllerHome, 'open_file', {
+          target_key: 'project',
+          path: 'notes.txt',
+        }),
+      ),
+    ).resolves.toMatchObject({ opened: true, path: 'notes.txt' });
     expect(commands).toEqual([['open', realpathSync(document)]]);
   });
 
   test('has no duplicate local_system generic command capability', () => {
     const manifest = buildLocalSystemPluginManifest();
     expect(manifest.actions.some((action) => action.actionId === 'execute_command')).toBe(false);
-    expect(manifest.capabilities.find((capability) => capability.capabilityId === 'local-system-files')?.actions).not.toContain('execute_command');
+    expect(
+      manifest.capabilities.find((capability) => capability.capabilityId === 'local-system-files')?.actions,
+    ).not.toContain('execute_command');
   });
 
   test('executes one digest-pinned project script only after strong confirmation', async () => {
@@ -1153,23 +1365,27 @@ describe('local_system target adapter', () => {
       expected_sha256: createHash('sha256').update(content).digest('hex'),
     };
 
-    await expect(submitControllerPluginAction(controllerHome, {
-      pluginId: 'local_system',
-      actionId: 'execute_project_script',
-      requestId: 'target-project-script-no-confirm',
-      args,
-      origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
-    })).rejects.toThrow(/PLUGIN_CONFIRMATION_REQUIRED/);
+    await expect(
+      submitControllerPluginAction(controllerHome, {
+        pluginId: 'local_system',
+        actionId: 'execute_project_script',
+        requestId: 'target-project-script-no-confirm',
+        args,
+        origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
+      }),
+    ).rejects.toThrow(/PLUGIN_CONFIRMATION_REQUIRED/);
 
-    await expect(submitControllerPluginAction(controllerHome, {
-      pluginId: 'local_system',
-      actionId: 'execute_project_script',
-      requestId: 'target-project-script-wrong-digest',
-      args: { ...args, expected_sha256: '0'.repeat(64) },
-      confirmAuthorization: true,
-      confirmationText: 'execute-local-system-project-script',
-      origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
-    })).rejects.toThrow(/LOCAL_SYSTEM_SCRIPT_DIGEST_MISMATCH/);
+    await expect(
+      submitControllerPluginAction(controllerHome, {
+        pluginId: 'local_system',
+        actionId: 'execute_project_script',
+        requestId: 'target-project-script-wrong-digest',
+        args: { ...args, expected_sha256: '0'.repeat(64) },
+        confirmAuthorization: true,
+        confirmationText: 'execute-local-system-project-script',
+        origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
+      }),
+    ).rejects.toThrow(/LOCAL_SYSTEM_SCRIPT_DIGEST_MISMATCH/);
 
     const submitted = await submitControllerPluginAction(controllerHome, {
       pluginId: 'local_system',
@@ -1186,38 +1402,70 @@ describe('local_system target adapter', () => {
       scriptPath: 'check.mjs',
       repositoryRegistered: false,
     });
-    expect(String((submitted.result?.result as Record<string, unknown>).stdout))
-      .toContain('verified-project-script');
+    expect(String((submitted.result?.result as Record<string, unknown> | undefined)?.stdout)).toContain(
+      'verified-project-script',
+    );
     // Capability risk never manufactures semantic Work; the durable record is the
     // effect receipt, and the strong-confirmation authorization is its evidence.
-    expect(submitted.receipt).toMatchObject({ status: 'succeeded', pluginId: 'local_system', actionId: 'execute_project_script' });
+    expect(submitted.receipt).toMatchObject({
+      status: 'succeeded',
+      pluginId: 'local_system',
+      actionId: 'execute_project_script',
+    });
     expect(submitted.authorization).toMatchObject({ source: 'strong_confirmation' });
-    expect(getWorkContractByRequestId(controllerHome, 'target-project-script-confirmed')).toBeUndefined();
   });
 
   test('writes bounded text and initializes Git without repository registration', async () => {
     const controllerHome = temp('forge-target-write-git-controller-');
     const root = temp('forge-target-write-git-root-');
     authorizeWorkspaceTargetGrant(controllerHome, {
-      targetKey: 'project', rootPath: root, ownerScope: 'chatgpt-action:principal:test-user', access: 'read_write', reason: 'write and git init',
+      targetKey: 'project',
+      rootPath: root,
+      ownerScope: 'chatgpt-action:principal:test-user',
+      access: 'read_write',
+      reason: 'write and git init',
     });
 
-    const written = await executeLocalSystemPluginAction(input(controllerHome, 'write_text', {
-      target_key: 'project', path: 'src/a.ts', content: 'export const a = 1;\n',
-    }));
+    const written = await executeLocalSystemPluginAction(
+      input(controllerHome, 'write_text', {
+        target_key: 'project',
+        path: 'src/a.ts',
+        content: 'export const a = 1;\n',
+      }),
+    );
     expect(written).toMatchObject({ written: true, path: 'src/a.ts', repositoryRegistered: false });
     expect(readFileSync(join(root, 'src/a.ts'), 'utf8')).toBe('export const a = 1;\n');
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'write_text', {
-      target_key: 'project', path: 'src/a.ts', content: 'replace\n',
-    }))).rejects.toThrow(/LOCAL_SYSTEM_DESTINATION_EXISTS/);
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'write_text', {
-      target_key: 'project', path: 'src/a.ts', content: 'replace\n', overwrite: true,
-    }))).resolves.toMatchObject({ written: true, overwrite: true });
+    await expect(
+      executeLocalSystemPluginAction(
+        input(controllerHome, 'write_text', {
+          target_key: 'project',
+          path: 'src/a.ts',
+          content: 'replace\n',
+        }),
+      ),
+    ).rejects.toThrow(/LOCAL_SYSTEM_DESTINATION_EXISTS/);
+    await expect(
+      executeLocalSystemPluginAction(
+        input(controllerHome, 'write_text', {
+          target_key: 'project',
+          path: 'src/a.ts',
+          content: 'replace\n',
+          overwrite: true,
+        }),
+      ),
+    ).resolves.toMatchObject({ written: true, overwrite: true });
 
-    const initialized = await executeLocalSystemPluginAction(input(controllerHome, 'initialize_git', {
-      target_key: 'project', initial_branch: 'main',
-    }));
-    expect(initialized).toMatchObject({ initialized: true, repositoryRegistered: false, command: ['git', 'init', '-b', 'main'] });
+    const initialized = await executeLocalSystemPluginAction(
+      input(controllerHome, 'initialize_git', {
+        target_key: 'project',
+        initial_branch: 'main',
+      }),
+    );
+    expect(initialized).toMatchObject({
+      initialized: true,
+      repositoryRegistered: false,
+      command: ['git', 'init', '-b', 'main'],
+    });
     expect(existsSync(join(root, '.git'))).toBe(true);
   });
 
@@ -1234,13 +1482,15 @@ describe('local_system target adapter', () => {
       reason: 'bounded delete',
     });
 
-    await expect(submitControllerPluginAction(controllerHome, {
-      pluginId: 'local_system',
-      actionId: 'delete_file',
-      requestId: 'target-delete-missing-confirmation',
-      args: { target_key: 'project', path: 'delete-me.txt' },
-      origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
-    })).rejects.toThrow(/PLUGIN_CONFIRMATION_REQUIRED/);
+    await expect(
+      submitControllerPluginAction(controllerHome, {
+        pluginId: 'local_system',
+        actionId: 'delete_file',
+        requestId: 'target-delete-missing-confirmation',
+        args: { target_key: 'project', path: 'delete-me.txt' },
+        origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
+      }),
+    ).rejects.toThrow(/PLUGIN_CONFIRMATION_REQUIRED/);
     expect(existsSync(join(root, 'delete-me.txt'))).toBe(true);
 
     const submitted = await submitControllerPluginAction(controllerHome, {
@@ -1256,18 +1506,64 @@ describe('local_system target adapter', () => {
     expect(existsSync(join(root, 'keep-directory'))).toBe(true);
     expect(submitted.result?.result).toMatchObject({ deleted: true, path: 'delete-me.txt' });
     expect(submitted.receipt).toMatchObject({ status: 'succeeded', actionId: 'delete_file' });
-    expect(getWorkContractByRequestId(controllerHome, 'target-delete-confirmed')).toBeUndefined();
 
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'delete_file', {
-      target_key: 'project', path: 'keep-directory',
-    }))).rejects.toThrow(/LOCAL_SYSTEM_PATH_NOT_FILE/);
+    await expect(
+      executeLocalSystemPluginAction(
+        input(controllerHome, 'delete_file', {
+          target_key: 'project',
+          path: 'keep-directory',
+        }),
+      ),
+    ).rejects.toThrow(/LOCAL_SYSTEM_PATH_NOT_FILE/);
     expect(existsSync(join(root, 'keep-directory'))).toBe(true);
   });
 
   test('deletes only an empty non-root directory after strong confirmation', async () => {
-    const controllerHome = temp('forge-target-delete-empty-dir-controller-'); const root = temp('forge-target-delete-empty-dir-root-'); mkdirSync(join(root, 'empty-directory')); mkdirSync(join(root, 'non-empty-directory')); writeFileSync(join(root, 'non-empty-directory', 'keep.txt'), 'keep\n'); authorizeWorkspaceTargetGrant(controllerHome, { targetKey: 'project', rootPath: root, ownerScope: 'chatgpt-action:principal:test-user', access: 'read_write', reason: 'bounded empty directory delete' });
-    await expect(submitControllerPluginAction(controllerHome, { pluginId: 'local_system', actionId: 'delete_empty_directory', requestId: 'target-delete-empty-dir-missing-confirmation', args: { target_key: 'project', path: 'empty-directory' }, origin: { surface: 'chatgpt-action', actor: 'principal:test-user' } })).rejects.toThrow(/PLUGIN_CONFIRMATION_REQUIRED/); const submitted = await submitControllerPluginAction(controllerHome, { pluginId: 'local_system', actionId: 'delete_empty_directory', requestId: 'target-delete-empty-dir-confirmed', args: { target_key: 'project', path: 'empty-directory' }, confirmAuthorization: true, confirmationText: 'delete-local-system-empty-directory', origin: { surface: 'chatgpt-action', actor: 'principal:test-user' } }); expect(existsSync(join(root, 'empty-directory'))).toBe(false); expect(submitted.result?.result).toMatchObject({ deleted: true, path: 'empty-directory' }); expect(submitted.receipt).toMatchObject({ status: 'succeeded', actionId: 'delete_empty_directory' }); expect(getWorkContractByRequestId(controllerHome, 'target-delete-empty-dir-confirmed')).toBeUndefined();
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'delete_empty_directory', { target_key: 'project', path: 'non-empty-directory' }))).rejects.toThrow(/LOCAL_SYSTEM_DIRECTORY_NOT_EMPTY/); expect(existsSync(join(root, 'non-empty-directory'))).toBe(true); await expect(executeLocalSystemPluginAction(input(controllerHome, 'delete_empty_directory', { target_key: 'project', path: '.' }))).rejects.toThrow(/LOCAL_SYSTEM_TARGET_ROOT_DELETE_DENIED/); expect(existsSync(root)).toBe(true);
+    const controllerHome = temp('forge-target-delete-empty-dir-controller-');
+    const root = temp('forge-target-delete-empty-dir-root-');
+    mkdirSync(join(root, 'empty-directory'));
+    mkdirSync(join(root, 'non-empty-directory'));
+    writeFileSync(join(root, 'non-empty-directory', 'keep.txt'), 'keep\n');
+    authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'project',
+      rootPath: root,
+      ownerScope: 'chatgpt-action:principal:test-user',
+      access: 'read_write',
+      reason: 'bounded empty directory delete',
+    });
+    await expect(
+      submitControllerPluginAction(controllerHome, {
+        pluginId: 'local_system',
+        actionId: 'delete_empty_directory',
+        requestId: 'target-delete-empty-dir-missing-confirmation',
+        args: { target_key: 'project', path: 'empty-directory' },
+        origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
+      }),
+    ).rejects.toThrow(/PLUGIN_CONFIRMATION_REQUIRED/);
+    const submitted = await submitControllerPluginAction(controllerHome, {
+      pluginId: 'local_system',
+      actionId: 'delete_empty_directory',
+      requestId: 'target-delete-empty-dir-confirmed',
+      args: { target_key: 'project', path: 'empty-directory' },
+      confirmAuthorization: true,
+      confirmationText: 'delete-local-system-empty-directory',
+      origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
+    });
+    expect(existsSync(join(root, 'empty-directory'))).toBe(false);
+    expect(submitted.result?.result).toMatchObject({ deleted: true, path: 'empty-directory' });
+    expect(submitted.receipt).toMatchObject({ status: 'succeeded', actionId: 'delete_empty_directory' });
+    await expect(
+      executeLocalSystemPluginAction(
+        input(controllerHome, 'delete_empty_directory', { target_key: 'project', path: 'non-empty-directory' }),
+      ),
+    ).rejects.toThrow(/LOCAL_SYSTEM_DIRECTORY_NOT_EMPTY/);
+    expect(existsSync(join(root, 'non-empty-directory'))).toBe(true);
+    await expect(
+      executeLocalSystemPluginAction(
+        input(controllerHome, 'delete_empty_directory', { target_key: 'project', path: '.' }),
+      ),
+    ).rejects.toThrow(/LOCAL_SYSTEM_TARGET_ROOT_DELETE_DENIED/);
+    expect(existsSync(root)).toBe(true);
   });
 
   test('structured target mutations record a durable receipt without manufacturing semantic Work', async () => {
@@ -1282,18 +1578,14 @@ describe('local_system target adapter', () => {
     });
 
     const requestId = 'target-create-directory-work';
-    const submitted = await submitControllerPluginAction(
-      controllerHome,
-      {
-        pluginId: 'local_system',
-        actionId: 'create_directory',
-        requestId,
-        args: { target_key: 'project', path: 'generated' },
-        origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
-      },
-    );
+    const submitted = await submitControllerPluginAction(controllerHome, {
+      pluginId: 'local_system',
+      actionId: 'create_directory',
+      requestId,
+      args: { target_key: 'project', path: 'generated' },
+      origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
+    });
     expect(existsSync(join(root, 'generated'))).toBe(true);
     expect(submitted.receipt).toMatchObject({ status: 'succeeded', actionId: 'create_directory' });
-    expect(getWorkContractByRequestId(controllerHome, requestId)).toBeUndefined();
   });
 });
