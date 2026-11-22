@@ -555,6 +555,33 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(device.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(false);
   });
 
+  test('declared output paths never inherit missing read-scope checkout ownership (#713)', () => {
+    const scoped = claimsForCheck('custom:emit', ['node', 'generator.js'], 'repo1', 'co1', {
+      writes: ['reports/output.json'],
+      cache: 'write',
+    });
+    expect(scoped).toContainEqual({ resourceKey: 'path:co1:reports/output.json', mode: 'write' });
+    expect(scoped).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
+    expect(scoped.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+    expect(scoped.some((claim) => claimsConflict(claim, lease('path:co1:unrelated.ts', 'write')))).toBe(false);
+    expect(scoped.some((claim) => claimsConflict(claim, lease('path:co1:reports/output.json', 'write')))).toBe(true);
+    const unknown = claimsForCheck('custom:opaque', ['node', 'unknown.js'], 'repo1', 'co1', {
+      cache: 'write',
+    });
+    expect(unknown).toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+  });
+
+  test('focused snapshot refresh uses source observation instead of checkout read ownership (#713)', () => {
+    const claims = claimsForRepositoryCommand(
+      ['bun', 'test', 'tests/runtime/sample.test.ts', '--update-snapshots'],
+      'repo1',
+      'co1',
+    );
+    expect(claims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
+    expect(claims).toContainEqual({ resourceKey: 'path:co1:tests/runtime/sample.test.ts', mode: 'write' });
+    expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+  });
+
   test('workspace observation does not monopolize path writes or short Git mutations (#713)', () => {
     const pathWrite = { resourceKey: 'path:co1:src/runtime/example.ts', mode: 'write' as const };
     const indexExclusive = { resourceKey: 'git-index:co1', mode: 'exclusive' as const };

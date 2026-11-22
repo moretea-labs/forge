@@ -36,38 +36,12 @@ export function claimsRequireLiveDeviceAdmission(claims: readonly { resourceKey:
   );
 }
 
-export type ResourceClaimKind =
-  | 'workspace_read'
-  | 'path_read'
-  | 'path_write'
-  | 'build_cache_read'
-  | 'build_cache_write'
-  | 'temp'
-  | 'network'
-  | 'git_index'
-  | 'git_refs'
-  | 'integration'
-  | 'migration'
-  | 'release'
-  | 'remote_mutation'
-  | 'heavy_check'
-  | 'workspace_write';
-
 function checkoutScope(checkoutId?: string, repoId?: string): string {
   const checkout = checkoutId?.trim();
   if (checkout) return checkout;
   const repository = repoId?.trim();
   if (repository) return `repository-${repository.replace(/[^a-zA-Z0-9._-]+/g, '-')}`;
   throw new Error('RESOURCE_CLAIM_PLACEMENT_REQUIRED');
-}
-
-/**
- * Workspace read uses the same resource key as workspace write.
- * Conflict is expressed via mode (read vs write), not a separate key.
- * Legacy workspace-read:* keys are normalized in claims/conflicts.ts.
- */
-export function claimWorkspaceRead(checkoutId?: string, repoId?: string): ResourceClaimSpec {
-  return { resourceKey: `workspace:${checkoutScope(checkoutId, repoId)}`, mode: 'read' };
 }
 
 /**
@@ -572,10 +546,10 @@ function claimsForDeclaredCheckEffects(
   const hasDeclaredField = Object.keys(effects).length > 0;
   if (!hasDeclaredField) return [claimWorkspaceWrite(checkoutId, repoId)];
 
-  // Missing read scope is unknown, so custom checks fail closed. An explicit
-  // reads: [] means the command does not inspect repository content.
-  if (effects.reads === undefined) claims.push(claimWorkspaceWrite(checkoutId, repoId));
-  else if (effects.reads.length > 0) claims.push(claimValidationObservation(checkoutId, repoId));
+  // Only undeclared output scope needs checkout exclusion. Reading source
+  // never grants ownership, even when no read paths are listed (#713).
+  if (effects.reads === undefined && effects.writes === undefined) claims.push(claimWorkspaceWrite(checkoutId, repoId));
+  else if (effects.reads && effects.reads.length > 0) claims.push(claimValidationObservation(checkoutId, repoId));
   for (const path of effects.writes ?? []) claims.push(claimPathWrite(path, checkoutId, repoId));
 
   if (effects.cache === 'read') claims.push(claimBuildCacheRead(repoId));
@@ -943,7 +917,7 @@ function repositoryCommandClaims(
   }
   if (focused) {
     if (!focusedTestRequestsWorkspaceMutation(command)) return [claimValidationObservation(checkoutId, repoId)];
-    const claims: ResourceClaimSpec[] = [claimWorkspaceRead(checkoutId, repoId)];
+    const claims: ResourceClaimSpec[] = [claimValidationObservation(checkoutId, repoId)];
     for (const path of extractLikelyPaths(command).slice(0, 16)) claims.push(claimPathWrite(path, checkoutId, repoId));
     return normalizeClaims(claims);
   }
