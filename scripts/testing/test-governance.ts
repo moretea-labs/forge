@@ -811,6 +811,84 @@ function testRunDigests(
   return { contentDigest, runnerDigest, isolatedRunnerDigest };
 }
 
+type TestCacheProvenance = Array<{
+  file: string;
+  checkpointKey: string;
+  checkpointPath: string;
+  inputDigest: string;
+  testDigest: string;
+  runnerDigest: string;
+  completedAt: string;
+  durationMs: number;
+  attempts: number;
+}>;
+
+function finishTestRun(input: {
+  selection: TestSelection;
+  storageRoot: string;
+  contentDigest: string;
+  runnerDigest: string;
+  cacheHits: number;
+  cacheProvenance: TestCacheProvenance;
+  failures: number;
+  failureClasses: Set<TestFailureClass>;
+  failureDetails: StructuredCheckFailureEvidence['failureDetails'];
+  contaminated: boolean;
+  durationMs: number;
+  serialEquivalentMs: number;
+  pureCount: number;
+  temporaryCount: number;
+  serialLanes: Map<TestResource, string[]>;
+  onReceipt: RunTestSelectionOptions['onReceipt'];
+}): number {
+  const {
+    selection, storageRoot, contentDigest, runnerDigest, cacheHits, cacheProvenance,
+    failures, failureClasses, failureDetails, contaminated, durationMs, serialEquivalentMs,
+    pureCount, temporaryCount, serialLanes, onReceipt,
+  } = input;
+  const serialReduction = serialEquivalentMs > 0 ? Math.max(0, 1 - durationMs / serialEquivalentMs) : 0;
+  const status = failures === 0 && !contaminated ? ('passed' as const) : ('failed' as const);
+  const failureEvidence: StructuredCheckFailureEvidence = {
+    schemaVersion: 1,
+    producer: 'test-governance',
+    gate: selection.gate,
+    status,
+    failures,
+    failureClasses: [...failureClasses].sort(),
+    failureDetails: [...failureDetails],
+    failureDetailsTruncated: failures > failureDetails.length,
+    contaminated,
+  };
+  const receipt: TestRunReceipt = {
+    version: 1,
+    gate: selection.gate,
+    contentDigest,
+    runnerDigest,
+    status,
+    selected: selection.files.length,
+    cacheHits,
+    cacheProvenance: cacheProvenance.sort((left, right) => left.file.localeCompare(right.file)),
+    failures,
+    failureEvidence,
+    modules: selection.modules,
+    durationMs,
+    serialEquivalentMs,
+    serialReduction,
+    lanes: Object.fromEntries([
+      ['pure', pureCount],
+      ['temp-isolated', temporaryCount],
+      ...[...serialLanes.entries()].map(([resource, files]) => [resource, files.length]),
+    ]),
+    completedAt: new Date().toISOString(),
+  };
+  atomicJson(join(storageRoot, RECEIPT_SUBDIR, `${contentDigest}-${selection.gate}.json`), receipt);
+  onReceipt?.(receipt);
+  console.error(
+    `[tests] ${receipt.status}: ${selection.files.length} selected, ${cacheHits} checkpoint hit(s), ${failures} failure(s), ${(serialReduction * 100).toFixed(1)}% vs serial`,
+  );
+  return receipt.status === 'passed' ? 0 : 1;
+}
+
 export async function runTestSelection(
   repoRoot: string,
   manifest: TestManifest,
@@ -826,17 +904,7 @@ export async function runTestSelection(
   let cacheHits = 0;
   const failureClasses = new Set<TestFailureClass>();
   const failureDetails: StructuredCheckFailureEvidence['failureDetails'] = [];
-  const cacheProvenance: Array<{
-    file: string;
-    checkpointKey: string;
-    checkpointPath: string;
-    inputDigest: string;
-    testDigest: string;
-    runnerDigest: string;
-    completedAt: string;
-    durationMs: number;
-    attempts: number;
-  }> = [];
+  const cacheProvenance: TestCacheProvenance = [];
   let contaminated = false;
   let serialEquivalentMs = 0;
   const runStartedAt = performance.now();
@@ -940,47 +1008,22 @@ export async function runTestSelection(
 
   // A completed suite is not invalidated by edits made after its last child
   // exited. Each executed child was checked against its own pre-run baseline.
-  const durationMs = Math.round(performance.now() - runStartedAt);
-  const serialReduction = serialEquivalentMs > 0 ? Math.max(0, 1 - durationMs / serialEquivalentMs) : 0;
-
-  const status = failures === 0 && !contaminated ? ('passed' as const) : ('failed' as const);
-  const failureEvidence: StructuredCheckFailureEvidence = {
-    schemaVersion: 1,
-    producer: 'test-governance',
-    gate: selection.gate,
-    status,
-    failures,
-    failureClasses: [...failureClasses].sort(),
-    failureDetails: [...failureDetails],
-    failureDetailsTruncated: failures > failureDetails.length,
-    contaminated,
-  };
-  const receipt: TestRunReceipt = {
-    version: 1,
-    gate: selection.gate,
+  return finishTestRun({
+    selection,
+    storageRoot: storage.physicalRoot,
     contentDigest,
     runnerDigest,
-    status,
-    selected: selection.files.length,
     cacheHits,
-    cacheProvenance: cacheProvenance.sort((left, right) => left.file.localeCompare(right.file)),
+    cacheProvenance,
     failures,
-    failureEvidence,
-    modules: selection.modules,
-    durationMs,
+    failureClasses,
+    failureDetails,
+    contaminated,
+    durationMs: Math.round(performance.now() - runStartedAt),
     serialEquivalentMs,
-    serialReduction,
-    lanes: Object.fromEntries([
-      ['pure', pure.length],
-      ['temp-isolated', temporary.length],
-      ...[...serialLanes.entries()].map(([resource, files]) => [resource, files.length]),
-    ]),
-    completedAt: new Date().toISOString(),
-  };
-  atomicJson(join(storage.physicalRoot, RECEIPT_SUBDIR, `${contentDigest}-${selection.gate}.json`), receipt);
-  options.onReceipt?.(receipt);
-  console.error(
-    `[tests] ${receipt.status}: ${selection.files.length} selected, ${cacheHits} checkpoint hit(s), ${failures} failure(s), ${(serialReduction * 100).toFixed(1)}% vs serial`,
-  );
-  return receipt.status === 'passed' ? 0 : 1;
+    pureCount: pure.length,
+    temporaryCount: temporary.length,
+    serialLanes,
+    onReceipt: options.onReceipt,
+  });
 }
