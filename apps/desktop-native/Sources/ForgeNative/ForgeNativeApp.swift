@@ -324,22 +324,59 @@ private struct ForgeWorkspaceView: View {
         return Button {
             openSidebarDestination(destination)
         } label: {
-            Image(systemName:destination.symbol)
-                .font(.system(size:14,weight:selected ? .semibold : .regular))
-                .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
-                .frame(width:32,height:31)
-                .overlay(alignment:.bottom) {
-                    if selected {
-                        Rectangle().fill(ForgePalette.ink).frame(width:17,height:2)
-                    }
-                }
-                .contentShape(Rectangle())
+            HStack(spacing:7) {
+                Image(systemName:destination.symbol).frame(width:16)
+                Text(destination.title).lineLimit(1)
+                Spacer(minLength:0)
+            }
+            .font(.system(size:11,weight:selected ? .semibold : .medium))
+            .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
+            .padding(.horizontal,9)
+            .frame(height:31)
+            .background(selected ? ForgePalette.selection : Color.clear,
+                        in:RoundedRectangle(cornerRadius:7,style:.continuous))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(destination.title)
         .accessibilityLabel(destination.title)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
         .accessibilityIdentifier("forge.nav.\(destination.rawValue)")
+    }
+
+    private var sidebarSecondaryDestinationMenu: some View {
+        let selected = ![ForgeSidebarDestination.agent,.workbench,.automations]
+            .contains(activeSidebarDestination)
+        return Menu {
+            ForEach([ForgeSidebarDestination.resources,.analytics,.settings],id:\.self) { destination in
+                Button {
+                    openSidebarDestination(destination)
+                } label: {
+                    if activeSidebarDestination == destination {
+                        Label(destination.title,systemImage:"checkmark")
+                    } else {
+                        Label(destination.title,systemImage:destination.symbol)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing:7) {
+                Image(systemName:selected ? activeSidebarDestination.symbol : "ellipsis")
+                    .frame(width:16)
+                Text(selected ? activeSidebarDestination.title : "更多")
+                    .lineLimit(1)
+                Spacer(minLength:0)
+            }
+            .font(.system(size:11,weight:selected ? .semibold : .medium))
+            .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
+            .padding(.horizontal,9)
+            .frame(height:31)
+            .background(selected ? ForgePalette.selection : Color.clear,
+                        in:RoundedRectangle(cornerRadius:7,style:.continuous))
+        }
+        .menuStyle(.borderlessButton)
+        .accessibilityLabel("更多导航")
+        .accessibilityIdentifier("forge.nav.more")
     }
 
     private func utilitySidebarButton(_ title:String,icon:String,page:NativePage) -> some View {
@@ -385,15 +422,21 @@ private struct ForgeWorkspaceView: View {
                 .padding(.top,8)
                 .padding(.bottom,2)
 
-            HStack(spacing:3) {
-                ForEach(ForgeSidebarDestination.allCases,id:\.self) { destination in
-                    sidebarDestinationButton(destination)
-                        .frame(maxWidth:.infinity)
+            VStack(spacing:3) {
+                HStack(spacing:4) {
+                    sidebarDestinationButton(.agent).frame(maxWidth:.infinity)
+                    sidebarDestinationButton(.workbench).frame(maxWidth:.infinity)
+                }
+                HStack(spacing:4) {
+                    sidebarDestinationButton(.automations).frame(maxWidth:.infinity)
+                    sidebarSecondaryDestinationMenu.frame(maxWidth:.infinity)
                 }
             }
             .padding(.horizontal,10)
             .padding(.bottom,6)
-            .accessibilityIdentifier("forge.navigation.integrated")
+            // Leave children identifiable in AX. The old parent identifier
+            // shadowed every button and broke semantic navigation.
+            .accessibilityElement(children:.contain)
 
             // Keep contextual panes mounted across destination changes so
             // conversation search, thread scroll, and Zen state survive.
