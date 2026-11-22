@@ -346,9 +346,9 @@ describe('connected assistant learning loops', () => {
       max_files: 2,
       max_snippets: 2,
     });
-    const refreshedItem = (refreshedRecall?.structuredContent as Record<string, any>).data.learningRecall.items.find(
-      (item: any) => String(item.memoryId).includes(memoryId),
-    );
+    const refreshedItem = (
+      (refreshedRecall?.structuredContent ?? {}) as Record<string, any>
+    ).data.learningRecall.items.find((item: any) => String(item.memoryId).includes(memoryId));
     expect(refreshedItem?.recentUsage?.usedCount).toBe(1);
     expect(refreshedItem?.provenance?.sourceKind).toBe('controller');
 
@@ -508,7 +508,7 @@ describe('connected assistant learning loops', () => {
       content: [{ type: 'text', text: '{"ok":true}' }],
       structuredContent: { ok: true },
     });
-    expect((ordinaryOutcome?.structuredContent as Record<string, any>).cognitionSettlement).toMatchObject({
+    expect(((ordinaryOutcome?.structuredContent ?? {}) as Record<string, any>).cognitionSettlement).toMatchObject({
       recorded: true,
       storedMemoryIds: [expect.any(String)],
     });
