@@ -884,10 +884,6 @@
       "module": "controller",
       "resource": "temp-isolated"
     },
-    "tests/runtime/engineering-work-profile.test.ts": {
-      "module": "workflow",
-      "resource": "temp-isolated"
-    },
     "tests/runtime/executable-discovery.test.ts": {
       "module": "process-runtime",
       "resource": "pure"
@@ -976,6 +972,10 @@
     "tests/runtime/cross-project-requirement-dispatch.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
+    },
+    "tests/runtime/engineering-risk-profile.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
     }
   }
 }

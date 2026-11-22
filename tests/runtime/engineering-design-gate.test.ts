@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   applyEngineeringBlockerDisposition,
   buildEngineeringContextReceipt,
-  engineeringWorkProfileForRisk,
+  engineeringRiskProfileForRisk,
   evaluateEngineeringAdmission,
 } from '../../packages/kernel/engineering/domain/engineering-profile';
 import {
@@ -177,7 +177,7 @@ describe('Stage7C upstream engineering authority', () => {
       'independent_critique',
     ]);
     expect(
-      evaluateEngineeringAdmission({ profile: engineeringWorkProfileForRisk('high'), receipt, mutation: true }),
+      evaluateEngineeringAdmission({ profile: engineeringRiskProfileForRisk('high'), receipt, mutation: true }),
     ).toEqual({ allowed: true });
   });
 
@@ -195,7 +195,7 @@ describe('Stage7C upstream engineering authority', () => {
     });
     expect(
       evaluateEngineeringAdmission({
-        profile: engineeringWorkProfileForRisk('high'),
+        profile: engineeringRiskProfileForRisk('high'),
         receipt: approved,
         mutation: true,
       }),
@@ -210,7 +210,7 @@ describe('Stage7C upstream engineering authority', () => {
     expect(changesRequired.missingAdmissionEvidence).toContain('independent_critique');
     expect(
       evaluateEngineeringAdmission({
-        profile: engineeringWorkProfileForRisk('high'),
+        profile: engineeringRiskProfileForRisk('high'),
         receipt: changesRequired,
         mutation: true,
       }),
@@ -259,7 +259,7 @@ describe('Stage7C upstream engineering authority', () => {
     expect(sameRoot.designState).toBe('revisit_required');
     expect(
       evaluateEngineeringAdmission({
-        profile: engineeringWorkProfileForRisk('high'),
+        profile: engineeringRiskProfileForRisk('high'),
         receipt: sameRoot,
         mutation: true,
       }),

@@ -8,7 +8,7 @@ import {
 } from './engineering-design';
 import { validateProjectEngineeringContractReceipt } from './project-engineering-contract';
 import {
-  ENGINEERING_WORK_PROFILE_VERSION,
+  ENGINEERING_RISK_PROFILE_VERSION,
   type EngineeringAdmissionEvidence,
   type EngineeringContextReceipt,
   type EngineeringEvidenceKind,
@@ -18,9 +18,9 @@ import {
 
 export * from './engineering-contracts';
 
-export interface EngineeringWorkProfile {
+export interface EngineeringRiskProfile {
   schemaVersion: 1;
-  profileVersion: typeof ENGINEERING_WORK_PROFILE_VERSION;
+  profileVersion: typeof ENGINEERING_RISK_PROFILE_VERSION;
   riskClass: EngineeringRiskClass;
   admissionEnforcement: 'observe' | 'enforce';
   evidenceRequirements: Record<EngineeringEvidenceKind, EngineeringEvidenceRequirement>;
@@ -38,7 +38,7 @@ const requirement = (
   focused_validation: EngineeringEvidenceRequirement,
   real_journey: EngineeringEvidenceRequirement,
   fresh_review: EngineeringEvidenceRequirement,
-): EngineeringWorkProfile['evidenceRequirements'] => ({
+): EngineeringRiskProfile['evidenceRequirements'] => ({
   project_contract,
   context_closure,
   product_dod,
@@ -50,10 +50,10 @@ const requirement = (
   fresh_review,
 });
 
-const PROFILES: Record<EngineeringRiskClass, EngineeringWorkProfile> = {
+const PROFILES: Record<EngineeringRiskClass, EngineeringRiskProfile> = {
   low: {
     schemaVersion: 1,
-    profileVersion: ENGINEERING_WORK_PROFILE_VERSION,
+    profileVersion: ENGINEERING_RISK_PROFILE_VERSION,
     riskClass: 'low',
     admissionEnforcement: 'observe',
     evidenceRequirements: requirement(
@@ -72,7 +72,7 @@ const PROFILES: Record<EngineeringRiskClass, EngineeringWorkProfile> = {
   },
   normal: {
     schemaVersion: 1,
-    profileVersion: ENGINEERING_WORK_PROFILE_VERSION,
+    profileVersion: ENGINEERING_RISK_PROFILE_VERSION,
     riskClass: 'normal',
     admissionEnforcement: 'observe',
     evidenceRequirements: requirement(
@@ -91,7 +91,7 @@ const PROFILES: Record<EngineeringRiskClass, EngineeringWorkProfile> = {
   },
   high: {
     schemaVersion: 1,
-    profileVersion: ENGINEERING_WORK_PROFILE_VERSION,
+    profileVersion: ENGINEERING_RISK_PROFILE_VERSION,
     riskClass: 'high',
     // Engineering evidence is useful model/project guidance, never a Kernel
     // mutation-admission authority. Safety/resource admission lives elsewhere.
@@ -118,7 +118,7 @@ const PROFILES: Record<EngineeringRiskClass, EngineeringWorkProfile> = {
   },
   critical: {
     schemaVersion: 1,
-    profileVersion: ENGINEERING_WORK_PROFILE_VERSION,
+    profileVersion: ENGINEERING_RISK_PROFILE_VERSION,
     riskClass: 'critical',
     admissionEnforcement: 'observe',
     evidenceRequirements: requirement(
@@ -151,7 +151,7 @@ export function engineeringRiskClassForRisk(risk: EngineeringRisk): EngineeringR
   return 'critical';
 }
 
-export function engineeringWorkProfileForRisk(risk: EngineeringRisk): EngineeringWorkProfile {
+export function engineeringRiskProfileForRisk(risk: EngineeringRisk): EngineeringRiskProfile {
   return PROFILES[engineeringRiskClassForRisk(risk)];
 }
 
@@ -186,7 +186,7 @@ function provided(kind: EngineeringEvidenceKind, receipt: EngineeringContextRece
 }
 
 function requiredKinds(
-  profile: EngineeringWorkProfile,
+  profile: EngineeringRiskProfile,
   phase: 'admission' | 'completion',
   conditions: EngineeringContextReceipt['conditions'],
 ): EngineeringEvidenceKind[] {
@@ -205,7 +205,7 @@ export function buildEngineeringContextReceipt(input: {
   evidence?: EngineeringAdmissionEvidence;
   recordedAt: string;
 }): EngineeringContextReceipt {
-  const profile = engineeringWorkProfileForRisk(input.risk);
+  const profile = engineeringRiskProfileForRisk(input.risk);
   const evidence = input.evidence ?? {};
   const projectContractReceipt = evidence.projectContractReceipt
     ? validateProjectEngineeringContractReceipt(evidence.projectContractReceipt)
@@ -263,7 +263,7 @@ export function buildEngineeringContextReceipt(input: {
   }
   const receipt: EngineeringContextReceipt = {
     schemaVersion: 1,
-    profileVersion: ENGINEERING_WORK_PROFILE_VERSION,
+    profileVersion: ENGINEERING_RISK_PROFILE_VERSION,
     riskClass: profile.riskClass,
     sourceIdentity: input.sourceIdentity,
     projectContractReceipt,
@@ -313,7 +313,7 @@ export function buildEngineeringContextReceipt(input: {
 }
 
 export function evaluateEngineeringAdmission(input: {
-  profile: EngineeringWorkProfile;
+  profile: EngineeringRiskProfile;
   receipt: EngineeringContextReceipt;
   mutation: boolean;
 }): { allowed: true } | { allowed: false; code: string; missing: EngineeringEvidenceKind[] } {

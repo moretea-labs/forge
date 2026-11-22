@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   buildEngineeringContextReceipt,
-  engineeringWorkProfileForRisk,
+  engineeringRiskProfileForRisk,
   evaluateEngineeringAdmission,
 } from '../../packages/kernel/engineering/domain/engineering-profile';
 import { loadProjectEngineeringContract } from '../../src/runtime/context/project-engineering-contract';
@@ -24,15 +24,15 @@ function highEvidence(sourceRevision = 'revision-a') {
   return trustedEngineeringEvidence(sourceRevision);
 }
 
-describe('EngineeringWorkProfile and ProjectEngineeringContract', () => {
+describe('EngineeringRiskProfile and ProjectEngineeringContract', () => {
   test('keeps engineering evidence observational at every risk level', () => {
-    expect(engineeringWorkProfileForRisk('low')).toMatchObject({ riskClass: 'low', admissionEnforcement: 'observe' });
-    expect(engineeringWorkProfileForRisk('medium')).toMatchObject({
+    expect(engineeringRiskProfileForRisk('low')).toMatchObject({ riskClass: 'low', admissionEnforcement: 'observe' });
+    expect(engineeringRiskProfileForRisk('medium')).toMatchObject({
       riskClass: 'normal',
       admissionEnforcement: 'observe',
     });
-    expect(engineeringWorkProfileForRisk('high')).toMatchObject({ riskClass: 'high', admissionEnforcement: 'observe' });
-    expect(engineeringWorkProfileForRisk('destructive')).toMatchObject({
+    expect(engineeringRiskProfileForRisk('high')).toMatchObject({ riskClass: 'high', admissionEnforcement: 'observe' });
+    expect(engineeringRiskProfileForRisk('destructive')).toMatchObject({
       riskClass: 'critical',
       admissionEnforcement: 'observe',
     });
@@ -47,7 +47,7 @@ describe('EngineeringWorkProfile and ProjectEngineeringContract', () => {
     expect(normal.missingAdmissionEvidence).toEqual(['project_contract', 'context_closure', 'product_dod']);
     expect(
       evaluateEngineeringAdmission({
-        profile: engineeringWorkProfileForRisk('medium'),
+        profile: engineeringRiskProfileForRisk('medium'),
         receipt: normal,
         mutation: true,
       }),
@@ -59,7 +59,7 @@ describe('EngineeringWorkProfile and ProjectEngineeringContract', () => {
       recordedAt: '2026-09-03T00:00:00.000Z',
     });
     expect(
-      evaluateEngineeringAdmission({ profile: engineeringWorkProfileForRisk('high'), receipt: high, mutation: true }),
+      evaluateEngineeringAdmission({ profile: engineeringRiskProfileForRisk('high'), receipt: high, mutation: true }),
     ).toEqual({ allowed: true });
 
     const ready = buildEngineeringContextReceipt({
@@ -69,7 +69,7 @@ describe('EngineeringWorkProfile and ProjectEngineeringContract', () => {
       recordedAt: '2026-09-03T00:00:00.000Z',
     });
     expect(
-      evaluateEngineeringAdmission({ profile: engineeringWorkProfileForRisk('high'), receipt: ready, mutation: true }),
+      evaluateEngineeringAdmission({ profile: engineeringRiskProfileForRisk('high'), receipt: ready, mutation: true }),
     ).toEqual({ allowed: true });
   });
 

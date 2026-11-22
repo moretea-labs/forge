@@ -384,7 +384,7 @@ Host hook files are integration surfaces, not lifecycle or architecture authorit
 
 Engineering evidence is optional model/project context layered over Requirement/Plan and exact source facts; it is not a lifecycle or admission plane. Forge owns durable facts, execution capabilities, resource fencing, source identity, verification receipts and recovery mechanics. The model owns requirement interpretation, product/architecture decisions, root-cause judgment, verification/review strategy and semantic completion.
 
-`EngineeringWorkProfile` is a legacy type name for generic method/risk guidance; it must not create or require semantic Work. `.forge/project-engineering.json` is the source-controlled ProjectEngineeringContract and may name authority files, UX/performance/non-regression constraints, checks/journeys, platform/tooling requirements, Skill references/bindings and project exceptions.
+`EngineeringRiskProfile` is a legacy type name for generic method/risk guidance; it must not create or require semantic Work. `.forge/project-engineering.json` is the source-controlled ProjectEngineeringContract and may name authority files, UX/performance/non-regression constraints, checks/journeys, platform/tooling requirements, Skill references/bindings and project exceptions.
 
 Context Closure is derived evidence from `rh_context`, not another context database or writer. It binds the exact source revision to current source/test paths, dirty checkout context, applicable repository guidance, ProjectEngineeringContract provenance, detected language/platform, Skill/tool evidence and bounded related changes. Missing optional evidence may lower confidence, but does not invent a Work gate or replace Git/security/resource/effect authorization.
 
@@ -675,7 +675,7 @@ Review this standard against real development outcomes. Change it when evidence 
 | Responsibility          | Canonical source area                                 | Ownership                                                                     |
 | ----------------------- | ----------------------------------------------------- | ----------------------------------------------------------------------------- |
 | Requirement / Plan      | existing semantic stores and facades                  | stable semantic outcome/progress and optional planning context                |
-| Historical Work         | `packages/kernel/engineering` read API                       | compatibility/audit queries only; no current lifecycle writer                 |
+| Historical Work         | `packages/kernel/engineering` read API                | compatibility/audit queries only; no current lifecycle writer                 |
 | Repository source/edit  | Git, Checkout Registry, EditSession                   | source, placement, bounded patch transaction and CAS fences                   |
 | Process / Check         | Process Runtime and Check evidence                    | command execution identity, attachment and exact-input validation receipts    |
 | Scheduling              | `packages/kernel/scheduler`                           | trigger, occurrence and one bounded action; not model workflow decisions      |

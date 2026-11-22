@@ -7,7 +7,7 @@ import type {
   ProductDoDReceipt,
 } from './engineering-design';
 
-export const ENGINEERING_WORK_PROFILE_VERSION = 'engineering-work-profile-v1' as const;
+export const ENGINEERING_RISK_PROFILE_VERSION = 'engineering-risk-profile-v1' as const;
 export const ENGINEERING_RISK_CLASSES = ['low', 'normal', 'high', 'critical'] as const;
 export type EngineeringRiskClass = (typeof ENGINEERING_RISK_CLASSES)[number];
 export const ENGINEERING_EVIDENCE_KINDS = [
@@ -65,7 +65,7 @@ export interface EngineeringAdmissionEvidence {
 
 export interface EngineeringContextReceipt {
   schemaVersion: 1;
-  profileVersion: typeof ENGINEERING_WORK_PROFILE_VERSION;
+  profileVersion: typeof ENGINEERING_RISK_PROFILE_VERSION;
   riskClass: EngineeringRiskClass;
   sourceIdentity: { kind: 'revision'; revision: string } | { kind: 'unborn' } | { kind: 'unknown' };
   projectContractReceipt?: ProjectEngineeringContractReceipt;
