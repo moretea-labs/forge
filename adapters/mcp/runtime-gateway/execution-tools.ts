@@ -25,13 +25,6 @@ export const executionToolDefinitions: McpToolDefinition[] = [
 
 const executionToolNames = new Set(executionToolDefinitions.map((tool) => tool.name));
 
-/** No new execution operation is owned by WorkHandle. */
-const DURABLE_WORK_OPERATION_NAMES = new Set<string>();
-
-export function isDurableWorkOperation(name: string): boolean {
-  return DURABLE_WORK_OPERATION_NAMES.has(name);
-}
-
 function result(value: Record<string, unknown>, isError = false): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }], structuredContent: value, ...(isError ? { isError: true } : {}) };
 }
