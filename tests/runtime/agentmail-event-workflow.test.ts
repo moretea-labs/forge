@@ -6,9 +6,11 @@ import type { RepositoryRecord } from '../../src/core/repository/types';
 import { readWorkflowRun } from '../../src/runtime/control-plane/persistence/workflow-run-store';
 import { executeRegisteredWorkflow } from '../../src/runtime/workflows/runtime';
 import {
+  AGENTMAIL_APP_CASE_BINDINGS,
   AGENTMAIL_EVENT_WORKFLOW_ID,
   ensureAgentMailEventWorkflowInstalled,
   materializedAgentMailEventWorkflow,
+  resolveAgentMailAppCaseRoute,
 } from '../../src/runtime/workflows/first-party/agentmail-event';
 import { validateWorkflowRunInputs } from '../../packages/workflow-runtime/api/index';
 
@@ -49,7 +51,10 @@ function identity(root: string) {
 }
 
 function scopeId(): string {
-  return 'repository:repo-agentmail-event-test:checkout:checkout-agentmail-event-test:workflow:' + AGENTMAIL_EVENT_WORKFLOW_ID;
+  return (
+    'repository:repo-agentmail-event-test:checkout:checkout-agentmail-event-test:workflow:' +
+    AGENTMAIL_EVENT_WORKFLOW_ID
+  );
 }
 
 const RULE_ID = '11111111-1111-4111-8111-111111111111';
@@ -88,11 +93,38 @@ function runValidator(input: Record<string, unknown>) {
 }
 
 describe('AgentMail Watch event Workflow (#652)', () => {
+  test('resolves only the three explicit unique App-to-Case bindings', () => {
+    expect(AGENTMAIL_APP_CASE_BINDINGS).toEqual([
+      { appId: '6771288893', caseId: '30000012066543' },
+      { appId: '6831952477', caseId: '30000012078130' },
+      { appId: '6796884084', caseId: '30000015896615' },
+    ]);
+    for (const binding of AGENTMAIL_APP_CASE_BINDINGS) {
+      expect(resolveAgentMailAppCaseRoute(binding.appId)).toEqual({
+        app_id: binding.appId,
+        case_id: binding.caseId,
+      });
+    }
+    expect(() => resolveAgentMailAppCaseRoute('1234567890')).toThrow('AGENTMAIL_APP_CASE_BINDING_UNKNOWN');
+    expect(() =>
+      resolveAgentMailAppCaseRoute('6771288893', [
+        ...AGENTMAIL_APP_CASE_BINDINGS,
+        { appId: '6771288893', caseId: '30000012078130' },
+      ]),
+    ).toThrow('AGENTMAIL_APP_CASE_BINDING_AMBIGUOUS');
+    expect(() =>
+      resolveAgentMailAppCaseRoute('6771288893', [
+        ...AGENTMAIL_APP_CASE_BINDINGS,
+        { appId: '1234567890', caseId: '30000012066543' },
+      ]),
+    ).toThrow('AGENTMAIL_APP_CASE_BINDING_AMBIGUOUS');
+  });
+
   test('accepts the nested source envelope and preserves opaque long event IDs', () => {
     const asset = materializedAgentMailEventWorkflow();
     const input = event();
     expect(input.event_id.length).toBeGreaterThan(512);
-    expect(validateWorkflowRunInputs(asset, input)).toEqual(input);
+    expect(validateWorkflowRunInputs(asset, input)).toEqual({ ...input, route: null });
     expect(runValidator(input).exitCode).toBe(0);
 
     const withSubject = { ...input, ref: { ...input.ref, subject: 'must not enter the receipt' } };
@@ -100,6 +132,31 @@ describe('AgentMail Watch event Workflow (#652)', () => {
     expect(runValidator({ ...input, source: 'agentmail' }).exitCode).not.toBe(0);
     expect(runValidator({ ...input, event_id: 'x'.repeat(4097) }).exitCode).not.toBe(0);
     expect(runValidator({ ...input, ref: { ...input.ref, account_id: 'not-a-uuid' } }).exitCode).not.toBe(0);
+
+    for (const binding of AGENTMAIL_APP_CASE_BINDINGS) {
+      const route = resolveAgentMailAppCaseRoute(binding.appId);
+      const routed = runValidator({ ...input, route });
+      expect(routed.exitCode).toBe(0);
+      expect(JSON.parse(routed.stdout).route).toEqual(route);
+    }
+    expect(
+      runValidator({
+        ...input,
+        route: { app_id: '1234567890', case_id: '30000012066543' },
+      }).exitCode,
+    ).toBe(3);
+    expect(
+      runValidator({
+        ...input,
+        route: { app_id: '6771288893', case_id: '30000012078130' },
+      }).exitCode,
+    ).toBe(4);
+    expect(
+      runValidator({
+        ...input,
+        route: { app_id: '6771288893' },
+      }).exitCode,
+    ).toBe(2);
   });
 
   test('persists a safe canonical WorkflowRun receipt and rejects replay without redispatch', async () => {
@@ -143,8 +200,9 @@ describe('AgentMail Watch event Workflow (#652)', () => {
     const first = await executeRegisteredWorkflow(execution, { executeCommand: executeCommand as any });
 
     expect(first.status).toBe('succeeded');
-    await expect(executeRegisteredWorkflow(execution, { executeCommand: executeCommand as any }))
-      .rejects.toThrow('WORKFLOW_RUN_ALREADY_SUCCEEDED');
+    await expect(executeRegisteredWorkflow(execution, { executeCommand: executeCommand as any })).rejects.toThrow(
+      'WORKFLOW_RUN_ALREADY_SUCCEEDED',
+    );
     expect(commandCount).toBe(1);
 
     const stored = readWorkflowRun(controllerHome, scopeId(), 'agentmail-event-stable-run')!;

@@ -39,10 +39,11 @@ import {
   executeRepositoryCommandViaProcessRuntime,
   waitRepositoryCommandProcess,
   getRepositoryCommandProcess,
+  resolveRepositoryCommandProcessIdByRequestId,
   type RepositoryCommandProcessResult,
 } from '../execution/process-runtime/command-facade';
 import { getLightweightProcessHandle } from '../execution/process-runtime/lightweight-managed';
-import { getProcessRecord, getProcessRequestBinding } from '../execution/process-runtime/store';
+import { getProcessRecord } from '../execution/process-runtime/store';
 import { releaseExecutionLeases } from '../resources/leases/store';
 
 export interface WorkflowRuntimeExecutionDependencies {
@@ -240,7 +241,7 @@ async function executeRegisteredWorkflowLocked(
         if (!script) throw new Error(`WORKFLOW_RETAINED_SCRIPT_MISSING: ${step.stepId}`);
         const lightweight = getLightweightProcessHandle(input.controllerHome, input.repository.repoId, receiptRef);
         if (lightweight) {
-          if (lightweight.processId !== receiptRef || lightweight.requestId !== expectedRequestId
+          if (lightweight.processId !== receiptRef || lightweight.commandId !== expectedRequestId
             || lightweight.status !== 'succeeded' || lightweight.ok !== true || lightweight.timedOut || lightweight.cancelled) {
             throw new Error(`WORKFLOW_RETAINED_PROCESS_RECEIPT_MISMATCH: ${step.stepId}`);
           }
@@ -315,6 +316,7 @@ async function executeRegisteredWorkflowLocked(
           repository: input.repository,
           executionIdentity: input.executionIdentity,
           requestId: requestId(input, step.stepId, asset.contentDigest),
+          persistReceipt: true,
           command: scriptCommand(script.runtime, script.body, args),
           timeoutMs: input.timeoutMs,
         });
@@ -393,36 +395,54 @@ async function reconcileRegisteredWorkflowLocked(
   const recordedAt = new Date().toISOString();
 
   if (step.kind === 'script') {
-    const binding = getProcessRequestBinding(input.controllerHome, input.repository.repoId, input.executionIdentity.checkoutId, originalRequestId);
-    if (!binding || binding.requestId !== originalRequestId || binding.repoId !== input.repository.repoId
-      || (binding.checkoutId?.trim() || undefined) !== (input.executionIdentity.checkoutId?.trim() || undefined)) {
-      throw new Error('WORKFLOW_RECONCILIATION_EVIDENCE_REQUIRED');
+    const processId = resolveRepositoryCommandProcessIdByRequestId(
+      input.controllerHome,
+      input.repository.repoId,
+      input.executionIdentity.checkoutId,
+      originalRequestId,
+    );
+    if (!processId) throw new Error('WORKFLOW_RECONCILIATION_EVIDENCE_REQUIRED');
+
+    const lightweight = getLightweightProcessHandle(input.controllerHome, input.repository.repoId, processId);
+    let stdout: string;
+    if (lightweight) {
+      if (lightweight.processId !== processId || lightweight.commandId !== originalRequestId
+        || lightweight.status !== 'succeeded' || lightweight.ok !== true || lightweight.timedOut || lightweight.cancelled) {
+        throw new Error('WORKFLOW_RECONCILIATION_EVIDENCE_REQUIRED');
+      }
+      stdout = lightweight.stdout ?? '';
+    } else {
+      const process = getProcessRecord(input.controllerHome, input.repository.repoId, processId);
+      if (!process || process.processId !== processId || process.checkoutId !== input.executionIdentity.checkoutId
+        || process.origin?.requestId !== originalRequestId) {
+        throw new Error('WORKFLOW_RECONCILIATION_PROCESS_IDENTITY_MISMATCH');
+      }
+      // Existing Process maintenance is the only authority allowed to prove that spawn never happened.
+      if (process.status === 'failed' && process.error?.message.includes('PROCESS_PRESPAWN_ABANDONED:')) {
+        return writeWorkflowRunCheckpoint({ controllerHome: input.controllerHome, inputs: input.inputs, expectedRevision: stored.revision,
+          checkpoint: { schemaVersion: 1, binding: { scopeId: input.scopeId, runId: input.runId }, workflowId: asset.workflowId, version: asset.version, contentDigest: asset.contentDigest,
+            status: 'failed', nextStepIndex: stored.value.nextStepIndex, outputs: stored.value.outputs,
+            receipts: [...stored.value.receipts.filter(receipt => receipt.stepId !== step.stepId), { stepId: step.stepId, outcome: 'failed', receiptRef: process.processId, recordedAt }] } }).value;
+      }
+      if (process.status !== 'succeeded' || process.exitCode !== 0 || process.timedOut || process.cancelled) {
+        // Failed/timeout/stale Process does not prove absence of side effects. Keep reconciliation pending.
+        throw new Error('WORKFLOW_RECONCILIATION_EVIDENCE_REQUIRED');
+      }
+      const handle = getRepositoryCommandProcess(input.controllerHome, input.repository.repoId, process.processId);
+      if (!handle || handle.processId !== process.processId || handle.status !== 'succeeded' || handle.ok !== true || !handle.completed) {
+        throw new Error('WORKFLOW_RECONCILIATION_EVIDENCE_REQUIRED');
+      }
+      stdout = handle.stdout ?? '';
     }
-    const process = getProcessRecord(input.controllerHome, input.repository.repoId, binding.processId);
-    if (!process || process.processId !== binding.processId || process.checkoutId !== input.executionIdentity.checkoutId || process.origin?.requestId !== originalRequestId) {
-      throw new Error('WORKFLOW_RECONCILIATION_PROCESS_IDENTITY_MISMATCH');
-    }
-    // Existing Process maintenance is the only authority allowed to prove that spawn never happened.
-    if (process.status === 'failed' && process.error?.message.includes('PROCESS_PRESPAWN_ABANDONED:')) {
-      return writeWorkflowRunCheckpoint({ controllerHome: input.controllerHome, inputs: input.inputs, expectedRevision: stored.revision,
-        checkpoint: { schemaVersion: 1, binding: { scopeId: input.scopeId, runId: input.runId }, workflowId: asset.workflowId, version: asset.version, contentDigest: asset.contentDigest,
-          status: 'failed', nextStepIndex: stored.value.nextStepIndex, outputs: stored.value.outputs,
-          receipts: [...stored.value.receipts.filter(receipt => receipt.stepId !== step.stepId), { stepId: step.stepId, outcome: 'failed', receiptRef: process.processId, recordedAt }] } }).value;
-    }
-    if (process.status !== 'succeeded' || process.exitCode !== 0 || process.timedOut || process.cancelled) {
-      // Failed/timeout/stale Process does not prove absence of side effects. Keep reconciliation pending.
-      throw new Error('WORKFLOW_RECONCILIATION_EVIDENCE_REQUIRED');
-    }
-    const handle = getRepositoryCommandProcess(input.controllerHome, input.repository.repoId, process.processId);
-    if (!handle || handle.processId !== process.processId || handle.status !== 'succeeded' || handle.ok !== true || !handle.completed) {
-      throw new Error('WORKFLOW_RECONCILIATION_EVIDENCE_REQUIRED');
-    }
-    const output = scriptOutput(asset.scripts![step.scriptRef]!, handle.stdout ?? '');
+
+    const script = asset.scripts?.[step.scriptRef];
+    if (!script) throw new Error('WORKFLOW_RECONCILIATION_SCRIPT_REQUIRED');
+    const output = scriptOutput(script, stdout);
     const outputs = { ...stored.value.outputs, [step.stepId]: retainWorkflowOutput(step, output) };
     return writeWorkflowRunCheckpoint({ controllerHome: input.controllerHome, inputs: input.inputs, expectedRevision: stored.revision,
       checkpoint: { schemaVersion: 1, binding: { scopeId: input.scopeId, runId: input.runId }, workflowId: asset.workflowId, version: asset.version, contentDigest: asset.contentDigest,
         status: 'running', nextStepIndex: stored.value.nextStepIndex + 1, outputs,
-        receipts: [...stored.value.receipts.filter(receipt => receipt.stepId !== step.stepId), { stepId: step.stepId, outcome: 'succeeded', receiptRef: process.processId, recordedAt }] } }).value;
+        receipts: [...stored.value.receipts.filter(receipt => receipt.stepId !== step.stepId), { stepId: step.stepId, outcome: 'succeeded', receiptRef: processId, recordedAt }] } }).value;
   }
 
   const requestedReceiptId = input.reconciliationRequestId ?? originalRequestId;

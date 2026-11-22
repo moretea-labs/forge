@@ -610,6 +610,8 @@ export interface StartLightweightCommandInput {
   execution: ExecuteRepositoryCommandInput;
   /** Keep the mutation-free readonly executor while retaining bounded Process observation. */
   readonlyDirect?: boolean;
+  /** Persist a terminal receipt even for a fast readonly command when a durable caller must reconcile after restart. */
+  persistReceipt?: boolean;
   interactiveWaitMs: number;
   timeoutMs: number;
   maxOutputBytes?: number;
@@ -756,8 +758,8 @@ export async function startLightweightRepositoryCommand(
     abort,
     promise: undefined as never,
   };
-  // Fast readonly commands need no Process locator unless they outlive the interactive budget.
-  let publishedHandle = input.readonlyDirect !== true;
+  // Ordinary fast readonly commands need no Process locator. Durable workflow callers can opt into a bounded terminal receipt.
+  let publishedHandle = input.readonlyDirect !== true || input.persistReceipt === true;
   const onCallerAbort = () => abort.abort();
   input.execution.signal?.addEventListener('abort', onCallerAbort, { once: true });
   const executionInput: ExecuteRepositoryCommandInput = {

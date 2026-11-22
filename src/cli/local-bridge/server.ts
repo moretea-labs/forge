@@ -95,7 +95,10 @@ import { getToolPolicy } from '../../runtime/control-plane/tool-policy';
 import type { MultiRepositoryMcpToolContext } from '../../../adapters/mcp/multi-repository';
 import { createMcpToolContext as createControllerMcpToolContext } from '../../../adapters/mcp/server';
 import { callRhWorkWorkflowOperation } from '../../../adapters/mcp/runtime-gateway/rh-work-workflow-operations';
-import { AGENTMAIL_EVENT_WORKFLOW_ID } from '../../runtime/workflows/first-party/agentmail-event';
+import {
+  AGENTMAIL_EVENT_WORKFLOW_ID,
+  resolveAgentMailAppCaseRoute,
+} from '../../runtime/workflows/first-party/agentmail-event';
 import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from '../../../adapters/mcp/auth';
 import {
   loadRepositoryRegistry,
@@ -838,11 +841,6 @@ function requestRepositoryRoot(request: Request, options: LocalBridgeServerOptio
   return requestRepositorySelection(request, options, controllerHome).canonicalRoot;
 }
 
-function workspaceWriteMutationClaims(repository: ReturnType<typeof requestRepositorySelection>) {
-  const checkoutId = repository.activeCheckoutId?.trim();
-  return checkoutId ? [{ resourceKey: `workspace:${checkoutId}`, mode: 'write' as const }] : undefined;
-}
-
 function userFacingPluginStatus(plugin: LocalControllerSnapshot['assistantPlugins'][number]) {
   const health = plugin.health;
   const lifecycle = plugin.lifecycle;
@@ -1374,7 +1372,7 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
           body.event && typeof body.event === 'object' && !Array.isArray(body.event)
             ? (body.event as Record<string, unknown>)
             : {};
-        const allowedEventFields = new Set(['source', 'event_id', 'observed_at', 'ref', 'summary']);
+        const allowedEventFields = new Set(['source', 'event_id', 'observed_at', 'ref', 'summary', 'route']);
         const unknownFields = Object.keys(event).filter((key) => !allowedEventFields.has(key));
         if (unknownFields.length > 0)
           throw new Error('MOBILE_INTENT_EVENT_FIELD_UNSUPPORTED: ' + unknownFields.sort().join(','));
@@ -1417,7 +1415,19 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
         if (!isString(providerMessageId, 1024)) throw new Error('MOBILE_INTENT_EVENT_MESSAGE_INVALID');
         if (!isString(ruleId, 36) || !uuid.test(ruleId)) throw new Error('MOBILE_INTENT_EVENT_RULE_INVALID');
         if (!isString(senderEmail, 320, true)) throw new Error('MOBILE_INTENT_EVENT_SENDER_INVALID');
-        const workflowInputs = {
+        let route: ReturnType<typeof resolveAgentMailAppCaseRoute> | undefined;
+        if (event.route !== undefined) {
+          if (
+            !isRecord(event.route) ||
+            Object.keys(event.route).length !== 1 ||
+            !isString(event.route.app_id, 10) ||
+            !/^\d{10}$/.test(event.route.app_id)
+          ) {
+            throw new Error('MOBILE_INTENT_EVENT_ROUTE_INVALID');
+          }
+          route = resolveAgentMailAppCaseRoute(event.route.app_id);
+        }
+        const workflowInputs: Record<string, unknown> = {
           source,
           event_id: eventId,
           observed_at: observedAt,
@@ -1431,6 +1441,7 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
             sender_email: senderEmail,
           },
         };
+        if (route) workflowInputs.route = route;
         const workflowRunId = `agentmail-${createHash('sha256').update(eventId).digest('hex').slice(0, 40)}`;
         const workflowArguments = {
           workflow_id: AGENTMAIL_EVENT_WORKFLOW_ID,
@@ -2530,7 +2541,7 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
           () =>
             createEditSavepoint(repository.canonicalRoot, request.params.sessionId, String(request.body?.name ?? '')),
           undefined,
-          workspaceWriteMutationClaims(repository),
+          [],
         ),
       );
     } catch (error) {
@@ -2556,7 +2567,7 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
             note: queryString(request.body?.note),
           }),
         undefined,
-        workspaceWriteMutationClaims(repository),
+        [],
       );
       response.status(200).json({
         accepted: true,
@@ -2587,7 +2598,7 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
               note: queryString(request.body?.note),
             }),
           undefined,
-          workspaceWriteMutationClaims(repository),
+          [],
         ),
       );
     } catch (error) {
@@ -2629,7 +2640,7 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
               savepoint: queryString(request.body?.savepoint),
             }),
           undefined,
-          workspaceWriteMutationClaims(repository),
+          [],
         ),
       );
     } catch (error) {

@@ -24,7 +24,7 @@ import {
 } from "../../src/runtime/execution/process-runtime/check-runner";
 import { FORGE_TOOL_SURFACE } from "../../src/runtime/shared/runtime-config";
 import { createIssue, getIssue, updateTask } from "../../src/cli/controller/issue-store";
-import { readWorkflowRun, writeWorkflowRunCheckpoint } from "../../src/runtime/control-plane/persistence/workflow-run-store";
+import { readWorkflowRun, workflowInputDigest, writeWorkflowRunCheckpoint } from "../../src/runtime/control-plane/persistence/workflow-run-store";
 import { beginEditSession, applyEditOperations } from "../../src/runtime/editing/edit-session";
 import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import {
@@ -1100,9 +1100,43 @@ describe("Local Execution Bridge", () => {
       },
       summary: {
         rule_id: ruleId,
-        sender_email: "apple@example.com",
+        sender_email: "sender@example.com",
       },
+      // The App target is explicit event data; sender and Watch rule identity never select a Case.
+      route: { app_id: "6771288893" },
     };
+    const forgedCasePayload = JSON.stringify({
+      intent: "workflow_event",
+      event: {
+        ...event,
+        event_id: `${event.event_id}:forged-case`,
+        route: { app_id: "6771288893", case_id: "30000012078130" },
+      },
+    });
+    const forgedCase = await fetch(new URL("/mobile/intent", handle.url), {
+      method: "POST",
+      headers: signedHeaders(forgedCasePayload, "agentmail-event-forged-case"),
+      body: forgedCasePayload,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(forgedCase.status).toBe(400);
+    expect(forgedCase.body.error).toBe("MOBILE_INTENT_EVENT_ROUTE_INVALID");
+
+    const unknownAppPayload = JSON.stringify({
+      intent: "workflow_event",
+      event: {
+        ...event,
+        event_id: `${event.event_id}:unknown-app`,
+        route: { app_id: "1234567890" },
+      },
+    });
+    const unknownApp = await fetch(new URL("/mobile/intent", handle.url), {
+      method: "POST",
+      headers: signedHeaders(unknownAppPayload, "agentmail-event-unknown-app"),
+      body: unknownAppPayload,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(unknownApp.status).toBe(400);
+    expect(unknownApp.body.error).toBe("AGENTMAIL_APP_CASE_BINDING_UNKNOWN");
+
     expect(event.event_id.length).toBeGreaterThan(512);
     const body = JSON.stringify({ intent: "workflow_event", event });
     const first = await fetch(new URL("/mobile/intent", handle.url), {
@@ -1120,17 +1154,30 @@ describe("Local Execution Bridge", () => {
     });
     expect(first.body.workflowRunId).toBeString();
 
-    // Simulate a process restart after the script Process succeeded but before the
-    // WorkflowRun success checkpoint/HTTP ACK was persisted.
+    // The canonical WorkflowRun is durable. Restart the bridge and replay the same event;
+    // the already-succeeded run must be ACKed without executing the script again.
     const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
     const registeredRepository = resolveRepositorySelection({ explicitPath: root, controllerHome });
     const scopeId = `repository:${registeredRepository!.repoId}:checkout:${registeredRepository!.activeCheckoutId}:workflow:agentmail.mail-watch-event`;
     const stored = readWorkflowRun(controllerHome, scopeId, first.body.workflowRunId);
     expect(stored?.value.status).toBe("succeeded");
+    expect(stored?.value.outputs["validate-event"]).toMatchObject({
+      route: { app_id: "6771288893", case_id: "30000012066543" },
+    });
+    const persistedInputs = {
+      ...event,
+      route: { app_id: "6771288893", case_id: "30000012066543" },
+    };
+    expect(stored?.value.inputDigest).toBe(workflowInputDigest(persistedInputs));
+    const originalProcessReceipt = stored?.value.receipts.find((receipt) => receipt.stepId === "validate-event");
+    expect(originalProcessReceipt?.outcome).toBe("succeeded");
+
+    // Simulate a crash after the script Process succeeded but before its WorkflowRun
+    // success checkpoint was persisted. Recovery must reuse that canonical Process receipt.
     writeWorkflowRunCheckpoint({
       controllerHome,
       expectedRevision: stored!.revision,
-      inputs: event,
+      inputs: persistedInputs,
       checkpoint: {
         schemaVersion: 1,
         binding: { scopeId, runId: first.body.workflowRunId },
@@ -1154,6 +1201,7 @@ describe("Local Execution Bridge", () => {
       headers: signedHeaders(body, "agentmail-event-0002"),
       body,
     }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    if (replay.status !== 202) throw new Error(`AgentMail replay failed: ${JSON.stringify(replay.body)}`);
     expect(replay.status).toBe(202);
     expect(replay.body).toMatchObject({
       accepted: true,
@@ -1163,7 +1211,17 @@ describe("Local Execution Bridge", () => {
       status: "succeeded",
     });
     expect(replay.body.workflowRunId).toBe(first.body.workflowRunId);
-    expect(readWorkflowRun(controllerHome, scopeId, first.body.workflowRunId)?.value.status).toBe("succeeded");
+    const recoveredRun = readWorkflowRun(controllerHome, scopeId, first.body.workflowRunId);
+    expect(recoveredRun?.value.status).toBe("succeeded");
+    const recoveredProcessReceipts = recoveredRun?.value.receipts.filter((receipt) => receipt.stepId === "validate-event");
+    expect(recoveredProcessReceipts).toHaveLength(1);
+    expect(recoveredProcessReceipts?.[0]).toMatchObject({
+      outcome: "succeeded",
+      receiptRef: originalProcessReceipt?.receiptRef,
+    });
+    expect(recoveredRun?.value.outputs["validate-event"]).toMatchObject({
+      route: { app_id: "6771288893", case_id: "30000012066543" },
+    });
 
     const duplicate = await fetch(new URL("/mobile/intent", restarted.url), {
       method: "POST",
@@ -1176,7 +1234,7 @@ describe("Local Execution Bridge", () => {
 
     const changedPayload = JSON.stringify({
       intent: "workflow_event",
-      event: { ...event, summary: { ...event.summary, sender_email: "different@example.com" } },
+      event: { ...event, route: { app_id: "6831952477" } },
     });
     const conflict = await fetch(new URL("/mobile/intent", restarted.url), {
       method: "POST",
@@ -1191,7 +1249,7 @@ describe("Local Execution Bridge", () => {
     writeWorkflowRunCheckpoint({
       controllerHome,
       expectedRevision: succeededRun!.revision,
-      inputs: event,
+      inputs: persistedInputs,
       checkpoint: {
         schemaVersion: 1,
         binding: { scopeId, runId: first.body.workflowRunId },

@@ -71,6 +71,8 @@ export interface RepositoryCommandProcessInput {
   returnHandleImmediately?: boolean;
   requestId?: string;
   commandId?: string;
+  /** Persist a lightweight terminal receipt for restart-safe workflow reconciliation without changing the execution lane. */
+  persistReceipt?: boolean;
   /** Authenticated principal recorded with the process handle for principal-bound attachment. */
   principalId?: string;
   signal?: AbortSignal;
@@ -382,6 +384,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
         repository: input.repository,
         execution: directInput,
         readonlyDirect: true,
+        persistReceipt: input.persistReceipt,
         interactiveWaitMs,
         timeoutMs,
         maxOutputBytes: input.maxOutputBytes,
