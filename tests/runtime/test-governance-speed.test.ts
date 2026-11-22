@@ -331,6 +331,63 @@ describe('execution-speed test governance', () => {
     }
   });
 
+  test('source-duplication gate checks committed blobs and rejects submitted duplicates (#714)', () => {
+    const repo = temporaryRepository();
+    try {
+      mkdirSync(join(repo, 'scripts'), { recursive: true });
+      writeFileSync(
+        join(repo, 'scripts/check-source-duplication.mjs'),
+        readFileSync(join(ROOT, 'scripts/check-source-duplication.mjs')),
+      );
+      // The shared test fixture starts with three identical '{}' JSON files;
+      // give them different valid contents before asserting a clean candidate.
+      writeFileSync(join(repo, 'package.json'), '{"name":"duplicate-checker-fixture"}\n');
+      writeFileSync(join(repo, 'tsconfig.json'), '{"compilerOptions":{}}\n');
+      writeFileSync(join(repo, 'tests/test-manifest.v1.json'), '{"version":1}\n');
+      git(repo, 'add', 'scripts', 'package.json', 'tsconfig.json', 'tests/test-manifest.v1.json');
+      git(repo, 'commit', '-qm', 'duplicate checker fixture');
+      const pinned = git(repo, 'rev-parse', 'HEAD');
+
+      const check = (mode: 'committed' | 'workspace', revision = pinned) => {
+        const env = { ...process.env };
+        if (mode === 'committed') {
+          env.FORGE_CHECK_SOURCE_QUALITY_MODE = 'committed';
+          env.FORGE_CHECK_CANDIDATE_SHA = revision;
+        } else {
+          delete env.FORGE_CHECK_SOURCE_QUALITY_MODE;
+          delete env.FORGE_CHECK_CANDIDATE_SHA;
+        }
+        return spawnSync('node', ['scripts/check-source-duplication.mjs'], {
+          cwd: repo,
+          env,
+          encoding: 'utf8',
+        });
+      };
+
+      writeFileSync(join(repo, 'src/unrelated.ts'), 'export const nested = 1;\n');
+      expect(check('committed').status).toBe(0);
+      const dirty = check('workspace');
+      expect(dirty.status).toBe(1);
+      expect(dirty.stderr).toContain('unclassified exact duplicate');
+
+      git(repo, 'add', 'src/unrelated.ts');
+      git(repo, 'commit', '-qm', 'commit actual duplicate');
+      const submitted = check('committed', 'HEAD');
+      expect(submitted.status).toBe(1);
+      expect(submitted.stderr).toContain('src/unrelated.ts');
+      expect(check('committed', 'invalid-candidate').status).not.toBe(0);
+
+      const missing = spawnSync('node', ['scripts/check-source-duplication.mjs'], {
+        cwd: repo,
+        encoding: 'utf8',
+        env: { ...process.env, FORGE_CHECK_SOURCE_QUALITY_MODE: 'committed', FORGE_CHECK_CANDIDATE_SHA: '' },
+      });
+      expect(missing.status).not.toBe(0);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   test('models task, main, and release as one reusable nested gate DAG', () => {
     expect(stepsFor('task')[0]).toEqual({
       label: 'typecheck',
