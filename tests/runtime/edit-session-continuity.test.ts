@@ -389,11 +389,11 @@ test('unrelated dirty status permits an exact patch continuation and finalizatio
   expect(readFileSync(join(fx.repoRoot, 'unrelated.txt'), 'utf8')).toBe('uncommitted foreign edit\n');
 });
 
-test('auto-finalization refuses a foreign active checkout lease on successor HEAD', () => {
+test('auto-finalization refuses a foreign overlapping path lease on successor HEAD', () => {
   const fx = fixture();
   const binding = durableBinding();
   const session = beginEditSession(fx.repoRoot, {
-    purpose: 'Foreign checkout lease blocks auto-adoption',
+    purpose: 'Foreign overlapping path lease blocks auto-adoption',
     allowedPaths: ['source.ts'],
     binding,
   });
@@ -421,7 +421,7 @@ test('auto-finalization refuses a foreign active checkout lease on successor HEA
     'foreign-session',
     [
       {
-        resourceKey: 'workspace:checkout-runtime-continuity',
+        resourceKey: `path:${session.checkoutId}:source.ts`,
         mode: 'write',
         repoId: fx.repository.repoId,
         checkoutId: session.checkoutId,
@@ -469,7 +469,7 @@ test('continues the same EditSession after exact integrated after-images and rej
     'successor-owner',
     [
       {
-        resourceKey: 'workspace:checkout-runtime-continuity',
+        resourceKey: `path:${session.checkoutId}:source.ts`,
         mode: 'write',
         repoId: fx.repository.repoId,
         checkoutId: session.checkoutId,
