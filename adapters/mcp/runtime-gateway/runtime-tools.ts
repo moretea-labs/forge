@@ -1,8 +1,12 @@
-
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { result } from './result-adapter';
-import { callContextAdapter } from './context-adapter';import { callPluginAdapter } from './plugin-adapter';import { callRecoveryAdapter } from './recovery-adapter';import { callArtifactAdapter } from './artifact-adapter';import { callFilesystemAdapter } from './filesystem-adapter';import { callModelAdapter } from './model-adapter';
+import { callContextAdapter } from './context-adapter';
+import { callPluginAdapter } from './plugin-adapter';
+import { callRecoveryAdapter } from './recovery-adapter';
+import { callArtifactAdapter } from './artifact-adapter';
+import { callFilesystemAdapter } from './filesystem-adapter';
+import { callModelAdapter } from './model-adapter';
 import { callProtectedComputerAdapter } from './protected-computer-adapter';
 import { callRepositoryCompatibilityAdapter } from './repository-compat-adapter';
 import { callSchedulerAdapter } from './scheduler-adapter';
@@ -21,9 +25,13 @@ export {
   currentCallableTools,
   runtimeToolDefinitions,
 } from './runtime-tool-definitions';
-import { callWorkAdapter, runFacadeRepair } from './work-adapter';
+import { callWorkAdapter, runFacadeRepair } from './rh-work-adapter';
 
-async function callRuntimeToolUnchecked(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
+async function callRuntimeToolUnchecked(
+  ctx: MultiRepositoryMcpToolContext,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<CallToolResult | undefined> {
   try {
     const statusInbox = await callStatusInboxAdapter(ctx, name, args, { repair: runFacadeRepair });
     if (statusInbox) return statusInbox;
@@ -66,7 +74,11 @@ async function callRuntimeToolUnchecked(ctx: MultiRepositoryMcpToolContext, name
   }
 }
 
-export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
+export async function callRuntimeTool(
+  ctx: MultiRepositoryMcpToolContext,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<CallToolResult | undefined> {
   return callRuntimeToolUnchecked(ctx, name, args);
 }
 

@@ -14,14 +14,16 @@ import {
   summarizePlanContract,
 } from '../../../src/runtime/control-plane/facade';
 import { result } from './result-adapter';
-import { selected } from './shared-adapter';
+import type { selected } from './shared-adapter';
 import { controllerReadinessEvidence, repositoryRevisionContains } from './status-inbox-adapter';
 
 // Bounded rh_work repair transport orchestration. Canonical lifecycle/persistence authority remains in application services.
 export function planObligationDispositionsFromArgs(value: unknown) {
   if (!Array.isArray(value)) return undefined;
   return value
-    .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
+    .filter(
+      (entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry),
+    )
     .map((entry) => ({
       predecessorPlanId: String(entry.predecessor_plan_id ?? ''),
       obligationId: String(entry.obligation_id ?? ''),
@@ -43,12 +45,14 @@ export async function runFacadeRepair(
       repositoryRevisionContains(repository.canonicalRoot, ancestorRevision, descendantRevision),
   };
   let maintenanceSnapshot: ReturnType<typeof buildRuntimeMaintenanceStatus> | undefined;
-  let maintenanceStatus: {
-    readyForExecution?: boolean;
-    recommendedActions?: string[];
-    candidates?: Array<{ kind?: string; reason?: string; suggestedAction?: string; safe?: boolean }>;
-    warnings?: string[];
-  } | undefined;
+  let maintenanceStatus:
+    | {
+        readyForExecution?: boolean;
+        recommendedActions?: string[];
+        candidates?: Array<{ kind?: string; reason?: string; suggestedAction?: string; safe?: boolean }>;
+        warnings?: string[];
+      }
+    | undefined;
   try {
     const status = buildRuntimeMaintenanceStatus(repository, ctx.controllerHome, {
       minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
@@ -71,13 +75,16 @@ export async function runFacadeRepair(
       readyForExecution: false,
       recommendedActions: [],
       candidates: [],
-      warnings: ['runtime_maintenance_status inspection failed; treating as infrastructure issue, not acceptance failure'],
+      warnings: [
+        'runtime_maintenance_status inspection failed; treating as infrastructure issue, not acceptance failure',
+      ],
     };
   }
 
-  const repairOperation = args.repair_operation === 'repair' || args.repair_operation === 'verify' || args.repair_operation === 'handoff'
-    ? args.repair_operation
-    : 'diagnose';
+  const repairOperation =
+    args.repair_operation === 'repair' || args.repair_operation === 'verify' || args.repair_operation === 'handoff'
+      ? args.repair_operation
+      : 'diagnose';
   const dryRun = args.dry_run === undefined ? true : args.dry_run === true;
   const elevatedRepair = args.destructive === true || args.remote_write === true || args.remote_effect === true;
   const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
@@ -86,12 +93,20 @@ export async function runFacadeRepair(
   if (planId && !planStepId) {
     const plan = getPlanContract(store, planId);
     if (!plan) {
-      const facade = buildFacadeResult({ status: 'not_found', summary: `PlanContract ${planId} not found.`, data: { operation: repairOperation, dryRun, planId, repaired: false } });
+      const facade = buildFacadeResult({
+        status: 'not_found',
+        summary: `PlanContract ${planId} not found.`,
+        data: { operation: repairOperation, dryRun, planId, repaired: false },
+      });
       return result(facade as unknown as Record<string, unknown>, true);
     }
     const pendingRevision = plan.status === 'replanning' ? plan.pendingRevision : undefined;
     if (plan.status !== 'draft' && !pendingRevision) {
-      const facade = buildFacadeResult({ status: 'blocked', summary: `PLAN_DRAFT_REPAIR_STATUS_INVALID: ${plan.planId}:${plan.status}`, data: { operation: repairOperation, dryRun, planId, repaired: false } });
+      const facade = buildFacadeResult({
+        status: 'blocked',
+        summary: `PLAN_DRAFT_REPAIR_STATUS_INVALID: ${plan.planId}:${plan.status}`,
+        data: { operation: repairOperation, dryRun, planId, repaired: false },
+      });
       return result(facade as unknown as Record<string, unknown>, true);
     }
     const repairBase = pendingRevision ?? plan;
@@ -100,19 +115,42 @@ export async function runFacadeRepair(
         summary: pendingRevision
           ? `PlanContract ${plan.planId} has staged revision r${pendingRevision.revision}. Exact in-place revision repair is available; stable Plan identity and committed revision remain authoritative until approval.`
           : `PlanContract ${plan.planId} is a draft. Exact in-place repair is available; the Plan identity and Requirement authority are preserved and only a fully valid draft may be persisted.`,
-        data: { operation: repairOperation, dryRun, plan: summarizePlanContract(plan), repaired: false, repairRequired: true },
-        suggestedNextActions: [{ label: 'Repair this exact draft Plan', tool: 'rh_work', operation: 'repair', payload: { plan_id: plan.planId, repair_operation: 'repair', dry_run: false }, risk: 'workspace_write', confidence: 'high' }],
+        data: {
+          operation: repairOperation,
+          dryRun,
+          plan: summarizePlanContract(plan),
+          repaired: false,
+          repairRequired: true,
+        },
+        suggestedNextActions: [
+          {
+            label: 'Repair this exact draft Plan',
+            tool: 'rh_work',
+            operation: 'repair',
+            payload: { plan_id: plan.planId, repair_operation: 'repair', dry_run: false },
+            risk: 'workspace_write',
+            confidence: 'high',
+          },
+        ],
       });
       return result(facade as unknown as Record<string, unknown>);
     }
     const rawSteps = Array.isArray(args.plan_steps)
       ? args.plan_steps
       : repairBase.steps.map((step) => ({
-          id: step.id, objective: step.objective, dependencies: step.dependencies, authoritative_files: step.authoritativeFiles,
-          allowed_paths: step.allowedPaths, forbidden_paths: step.forbiddenPaths, check_ids: step.checks, acceptance_criteria: step.acceptanceCriteria,
+          id: step.id,
+          objective: step.objective,
+          dependencies: step.dependencies,
+          authoritative_files: step.authoritativeFiles,
+          allowed_paths: step.allowedPaths,
+          forbidden_paths: step.forbiddenPaths,
+          check_ids: step.checks,
+          acceptance_criteria: step.acceptanceCriteria,
         }));
     const steps = rawSteps
-      .filter((step): step is Record<string, unknown> => Boolean(step) && typeof step === 'object' && !Array.isArray(step))
+      .filter(
+        (step): step is Record<string, unknown> => Boolean(step) && typeof step === 'object' && !Array.isArray(step),
+      )
       .map((step) => ({
         id: String(step.id ?? ''),
         objective: String(step.objective ?? ''),
@@ -124,12 +162,22 @@ export async function runFacadeRepair(
         acceptanceCriteria: Array.isArray(step.acceptance_criteria) ? step.acceptance_criteria.map(String) : [],
       }));
     const availableChecks = listControllerChecks(repository.canonicalRoot);
-    const normalizedPlanChecks = normalizeCheckIds(steps.flatMap((step) => step.checks), availableChecks);
+    const normalizedPlanChecks = normalizeCheckIds(
+      steps.flatMap((step) => step.checks),
+      availableChecks,
+    );
     if (normalizedPlanChecks.invalidCheckIds.length > 0) {
       const facade = buildFacadeResult({
         status: 'failed',
         summary: `PLAN_CHECKS_INVALID: ${normalizedPlanChecks.invalidCheckIds.join(', ')}. Draft repair was not persisted.`,
-        data: { operation: repairOperation, dryRun: false, planId, repaired: false, normalizedChecks: normalizedPlanChecks, registeredCheckIds: availableChecks.map((check) => check.id).slice(0, 80) },
+        data: {
+          operation: repairOperation,
+          dryRun: false,
+          planId,
+          repaired: false,
+          normalizedChecks: normalizedPlanChecks,
+          registeredCheckIds: availableChecks.map((check) => check.id).slice(0, 80),
+        },
         suggestedNextActions: [],
       });
       return result(facade as unknown as Record<string, unknown>, true);
@@ -142,27 +190,60 @@ export async function runFacadeRepair(
         goal: typeof args.objective === 'string' ? args.objective : repairBase.goal,
         nonGoals: Array.isArray(args.non_goals) ? args.non_goals.map(String) : repairBase.nonGoals,
         assumptions: Array.isArray(args.assumptions) ? args.assumptions.map(String) : repairBase.assumptions,
-        resolvedDecisions: Array.isArray(args.resolved_decisions) ? args.resolved_decisions.map(String) : repairBase.resolvedDecisions,
-        stopConditions: Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : repairBase.stopConditions,
-        replanConditions: Array.isArray(args.replan_conditions) ? args.replan_conditions.map(String) : repairBase.replanConditions,
-        integrationStrategy: typeof args.integration_strategy === 'string' ? args.integration_strategy : repairBase.integrationStrategy,
-        obligationDispositions: planObligationDispositionsFromArgs(args.obligation_dispositions) ?? repairBase.obligationDispositions,
+        resolvedDecisions: Array.isArray(args.resolved_decisions)
+          ? args.resolved_decisions.map(String)
+          : repairBase.resolvedDecisions,
+        stopConditions: Array.isArray(args.stop_conditions)
+          ? args.stop_conditions.map(String)
+          : repairBase.stopConditions,
+        replanConditions: Array.isArray(args.replan_conditions)
+          ? args.replan_conditions.map(String)
+          : repairBase.replanConditions,
+        integrationStrategy:
+          typeof args.integration_strategy === 'string' ? args.integration_strategy : repairBase.integrationStrategy,
+        obligationDispositions:
+          planObligationDispositionsFromArgs(args.obligation_dispositions) ?? repairBase.obligationDispositions,
         steps,
       });
       const facade = buildFacadeResult({
-        summary: pendingRevision ? `PlanContract ${repaired.planId} staged revision repaired in place; stable Plan identity and committed authority were preserved.` : `PlanContract ${repaired.planId} draft repaired in place; identity and Requirement authority were preserved.`,
-        data: { operation: repairOperation, dryRun: false, plan: summarizePlanContract(repaired), repaired: true, replacementPlanCreated: false },
-        suggestedNextActions: [{ label: 'Read repaired Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: repaired.planId }, risk: 'readonly', confidence: 'medium' }],
+        summary: pendingRevision
+          ? `PlanContract ${repaired.planId} staged revision repaired in place; stable Plan identity and committed authority were preserved.`
+          : `PlanContract ${repaired.planId} draft repaired in place; identity and Requirement authority were preserved.`,
+        data: {
+          operation: repairOperation,
+          dryRun: false,
+          plan: summarizePlanContract(repaired),
+          repaired: true,
+          replacementPlanCreated: false,
+        },
+        suggestedNextActions: [
+          {
+            label: 'Read repaired Plan',
+            tool: 'rh_work',
+            operation: 'plan_get',
+            payload: { plan_id: repaired.planId },
+            risk: 'readonly',
+            confidence: 'medium',
+          },
+        ],
       });
       return result(facade as unknown as Record<string, unknown>);
     } catch (error) {
-      const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'PLAN_DRAFT_REPAIR_FAILED', data: { operation: repairOperation, dryRun: false, planId, repaired: false } });
+      const facade = buildFacadeResult({
+        status: 'blocked',
+        summary: error instanceof Error ? error.message : 'PLAN_DRAFT_REPAIR_FAILED',
+        data: { operation: repairOperation, dryRun: false, planId, repaired: false },
+      });
       return result(facade as unknown as Record<string, unknown>, true);
     }
   }
 
   if (planStepId && !planId) {
-    const facade = buildFacadeResult({ status: 'blocked', summary: 'PLAN_STEP_REPAIR_CONTEXT_REQUIRED: plan_id and plan_step_id are both required.', data: { operation: repairOperation, dryRun, repaired: false } });
+    const facade = buildFacadeResult({
+      status: 'blocked',
+      summary: 'PLAN_STEP_REPAIR_CONTEXT_REQUIRED: plan_id and plan_step_id are both required.',
+      data: { operation: repairOperation, dryRun, repaired: false },
+    });
     return result(facade as unknown as Record<string, unknown>, true);
   }
 
@@ -173,7 +254,11 @@ export async function runFacadeRepair(
     const plan = getPlanContract(store, planId);
     const step = plan?.steps.find((candidate) => candidate.id === planStepId);
     if (!plan || !step) {
-      const facade = buildFacadeResult({ status: 'not_found', summary: !plan ? `PlanContract ${planId} not found.` : `PLAN_STEP_NOT_FOUND: ${planStepId}`, data: { operation: repairOperation, dryRun, planId, planStepId, repaired: false } });
+      const facade = buildFacadeResult({
+        status: 'not_found',
+        summary: !plan ? `PlanContract ${planId} not found.` : `PLAN_STEP_NOT_FOUND: ${planStepId}`,
+        data: { operation: repairOperation, dryRun, planId, planStepId, repaired: false },
+      });
       return result(facade as unknown as Record<string, unknown>, true);
     }
     const facade = buildFacadeResult({
@@ -188,22 +273,30 @@ export async function runFacadeRepair(
         repairRequired: false,
         compatibilityNoop: true,
       },
-      suggestedNextActions: [{ label: 'Read current Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: planId }, risk: 'readonly', confidence: 'high' }],
+      suggestedNextActions: [
+        {
+          label: 'Read current Plan',
+          tool: 'rh_work',
+          operation: 'plan_get',
+          payload: { plan_id: planId },
+          risk: 'readonly',
+          confidence: 'high',
+        },
+      ],
     });
     return result(facade as unknown as Record<string, unknown>);
   }
-
 
   // The self-healing facade is a policy/planning surface; the authoritative
   // maintenance executor owns mutations. Execute it here only for an explicit,
   // non-dry-run repair whose entire observed candidate set is already classified
   // safe. Unsafe/destructive/remote repair continues through the approval path.
   if (
-    repairOperation === 'repair'
-    && !dryRun
-    && !elevatedRepair
-    && maintenanceSnapshot
-    && maintenanceSnapshot.candidates.length > 0
+    repairOperation === 'repair' &&
+    !dryRun &&
+    !elevatedRepair &&
+    maintenanceSnapshot &&
+    maintenanceSnapshot.candidates.length > 0
   ) {
     const applied = applyRuntimeMaintenance(repository, ctx.controllerHome, {
       actionId: 'full_maintenance_pass',
@@ -222,7 +315,9 @@ export async function runFacadeRepair(
     // Protected stale runtime temp entries are intentionally non-blocking maintenance
     // diagnostics. Keep repair completion semantics aligned with rh_status readiness so
     // their presence does not falsely report a blocked repair after safe debt is cleared.
-    const remainingCandidateCount = applied.candidates.filter((candidate) => candidate.kind !== 'stale_runtime_temp_entry').length;
+    const remainingCandidateCount = applied.candidates.filter(
+      (candidate) => candidate.kind !== 'stale_runtime_temp_entry',
+    ).length;
     const blocked = remainingCandidateCount > 0;
     const facade = buildFacadeResult({
       status: blocked ? 'blocked' : 'ok',
@@ -241,13 +336,15 @@ export async function runFacadeRepair(
         isAcceptanceFailure: false,
       },
       warnings: applied.warnings.slice(0, 5),
-      suggestedNextActions: [{
-        label: 'Verify controller status after repair',
-        tool: 'rh_status',
-        operation: 'get',
-        risk: 'readonly',
-        confidence: 'high',
-      }],
+      suggestedNextActions: [
+        {
+          label: 'Verify controller status after repair',
+          tool: 'rh_status',
+          operation: 'get',
+          risk: 'readonly',
+          confidence: 'high',
+        },
+      ],
       rawAvailable: false,
     });
     return result(facade as unknown as Record<string, unknown>, blocked);
@@ -257,7 +354,11 @@ export async function runFacadeRepair(
   let performanceSummary: string | undefined;
   try {
     const watchdog = buildWorkflowWatchdogReport(ctx.controllerHome, repository, { includeProcesses: false });
-    watchdogSummary = `status=${watchdog.status}; findings=${watchdog.findings.length}; stale=${watchdog.staleWork.length}`.slice(0, 240);
+    watchdogSummary =
+      `status=${watchdog.status}; findings=${watchdog.findings.length}; stale=${watchdog.staleWork.length}`.slice(
+        0,
+        240,
+      );
   } catch {
     watchdogSummary = undefined;
   }
@@ -296,5 +397,8 @@ export async function runFacadeRepair(
       },
     },
   );
-  return result(facade as unknown as Record<string, unknown>, facade.status === 'blocked' || facade.status === 'approval_required' || facade.status === 'failed');
+  return result(
+    facade as unknown as Record<string, unknown>,
+    facade.status === 'blocked' || facade.status === 'approval_required' || facade.status === 'failed',
+  );
 }

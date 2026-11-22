@@ -38,7 +38,7 @@ import {
   isRhWorkAcceptedOperation,
 } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
-import { callWorkAdapter } from '../../adapters/mcp/runtime-gateway/work-adapter';
+import { callWorkAdapter } from '../../adapters/mcp/runtime-gateway/rh-work-adapter';
 import { mcpServerInstructions } from '../../adapters/mcp/instructions';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

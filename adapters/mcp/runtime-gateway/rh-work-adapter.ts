@@ -12,18 +12,18 @@ import { result } from './result-adapter';
 import { selected, selectedOptional } from './shared-adapter';
 import { invalidFacadeOperation } from './status-inbox-adapter';
 import { callRhWorkScheduleAdapter, isRhWorkScheduleOperation } from './scheduler-adapter';
-import { callRhWorkRequirementOperation, isRhWorkRequirementOperation } from './work-requirement-operations';
-import { callRhWorkProjectOperation, isRhWorkProjectOperation } from './work-project-operations';
+import { callRhWorkRequirementOperation, isRhWorkRequirementOperation } from './rh-work-requirement-operations';
+import { callRhWorkProjectOperation, isRhWorkProjectOperation } from './rh-work-project-operations';
 import {
   callRhWorkPlanCreateOperation,
   callRhWorkPlanCreateWithoutRepository,
   callRhWorkPlanOperation,
   isRhWorkLightweightPlanOperation,
-} from './work-plan-operations';
-import { callRhWorkWorkflowOperation } from './work-workflow-operations';
-import { callRhWorkLearningOperation } from './work-learning-operations';
-import { callRhWorkControllerOperation } from './work-controller-operations';
-import { runFacadeRepair } from './work-repair-adapter';
+} from './rh-work-plan-operations';
+import { callRhWorkWorkflowOperation } from './rh-work-workflow-operations';
+import { callRhWorkLearningOperation } from './rh-work-learning-operations';
+import { callRhWorkControllerOperation } from './rh-work-controller-operations';
+import { runFacadeRepair } from './rh-work-repair-adapter';
 
 export { runFacadeRepair };
 export { runtimeIdentitySnapshot } from './controller-authority-adapter';

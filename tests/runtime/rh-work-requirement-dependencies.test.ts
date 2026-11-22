@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { callRhWorkRequirementOperation } from '../../adapters/mcp/runtime-gateway/work-requirement-operations';
+import { callRhWorkRequirementOperation } from '../../adapters/mcp/runtime-gateway/rh-work-requirement-operations';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import {
   createRequirement,
@@ -24,12 +24,15 @@ describe('rh_work Requirement dependencies', () => {
   });
 
   function createTask(requirementId: string, repoId: string) {
-    return createRequirement({ controllerHome }, {
-      requirementId,
-      repoId,
-      title: `Task ${requirementId}`,
-      outcomeStatement: `Deliver ${requirementId}`,
-    });
+    return createRequirement(
+      { controllerHome },
+      {
+        requirementId,
+        repoId,
+        title: `Task ${requirementId}`,
+        outcomeStatement: `Deliver ${requirementId}`,
+      },
+    );
   }
 
   it('stores cross-project dependencies through rh_work, snapshots them in history, and rejects missing, self and cyclic links', async () => {
@@ -49,64 +52,99 @@ describe('rh_work Requirement dependencies', () => {
       expected_revision: 1,
       requirement_dependencies: ['task-b'],
     });
-    const response = revised?.structuredContent as { data?: { requirement?: { dependsOnRequirementIds?: string[] } } } | undefined;
+    const response = revised?.structuredContent as
+      | { data?: { requirement?: { dependsOnRequirementIds?: string[] } } }
+      | undefined;
     expect(response?.data?.requirement?.dependsOnRequirementIds).toEqual(['task-b']);
-    expect(requirementSemanticView(readRequirement({ controllerHome }, 'task-a')!.value).dependsOnRequirementIds).toEqual(['task-b']);
+    expect(
+      requirementSemanticView(readRequirement({ controllerHome }, 'task-a')!.value).dependsOnRequirementIds,
+    ).toEqual(['task-b']);
     const listed = await callRhWorkRequirementOperation(context, undefined, 'requirement_list', { limit: 20 });
-    const listResponse = listed?.structuredContent as { data?: { requirements?: Array<{ requirementId: string; dependencyCount: number }> } } | undefined;
+    const listResponse = listed?.structuredContent as
+      | { data?: { requirements?: Array<{ requirementId: string; dependencyCount: number }> } }
+      | undefined;
     expect(listResponse?.data?.requirements?.find((row) => row.requirementId === 'task-a')?.dependencyCount).toBe(1);
     const repositoryA = { repoId: 'repo-a' };
     const detailed = await callRhWorkRequirementOperation(context, repositoryA, 'requirement_get', {
-      requirement_id: 'task-a', detail_level: 'detail',
+      requirement_id: 'task-a',
+      detail_level: 'detail',
     });
-    const detailResponse = detailed?.structuredContent as {
-      data?: {
-        requirement?: { dependsOnRequirementIds?: string[] };
-        dependencyRequirements?: Array<{ requirementId: string; title?: string; status?: string; revision?: number; repoId?: string; missing?: boolean }>;
-        revisionHistory?: Array<{ revision: number; dependsOnRequirementIds: string[] }>;
-      };
-    } | undefined;
+    const detailResponse = detailed?.structuredContent as
+      | {
+          data?: {
+            requirement?: { dependsOnRequirementIds?: string[] };
+            dependencyRequirements?: Array<{
+              requirementId: string;
+              title?: string;
+              status?: string;
+              revision?: number;
+              repoId?: string;
+              missing?: boolean;
+            }>;
+            revisionHistory?: Array<{ revision: number; dependsOnRequirementIds: string[] }>;
+          };
+        }
+      | undefined;
     expect(detailResponse?.data?.requirement?.dependsOnRequirementIds).toEqual(['task-b']);
-    expect(detailResponse?.data?.dependencyRequirements).toEqual([{
-      requirementId: 'task-b', title: 'Task task-b', status: 'planned', revision: 2, repoId: 'repo-b',
-    }]);
+    expect(detailResponse?.data?.dependencyRequirements).toEqual([
+      {
+        requirementId: 'task-b',
+        title: 'Task task-b',
+        status: 'planned',
+        revision: 2,
+        repoId: 'repo-b',
+      },
+    ]);
     expect(detailResponse?.data?.revisionHistory?.[0]?.dependsOnRequirementIds).toEqual([]);
 
     createTask('task-cancelled', 'repo-cancelled');
     reviseRequirementSemantic({ controllerHome }, 'task-cancelled', { expectedRevision: 1, status: 'cancelled' });
-    expect(() => reviseRequirementSemantic({ controllerHome }, 'task-a', {
-      expectedRevision: 2, dependsOnRequirementIds: ['task-cancelled'],
-    })).toThrow('REQUIREMENT_DEPENDENCY_CANCELLED');
+    expect(() =>
+      reviseRequirementSemantic({ controllerHome }, 'task-a', {
+        expectedRevision: 2,
+        dependsOnRequirementIds: ['task-cancelled'],
+      }),
+    ).toThrow('REQUIREMENT_DEPENDENCY_CANCELLED');
 
-    expect(() => reviseRequirementSemantic({ controllerHome }, 'task-c', {
-      expectedRevision: 1,
-      dependsOnRequirementIds: ['task-a'],
-    })).toThrow('REQUIREMENT_DEPENDENCY_CYCLE');
+    expect(() =>
+      reviseRequirementSemantic({ controllerHome }, 'task-c', {
+        expectedRevision: 1,
+        dependsOnRequirementIds: ['task-a'],
+      }),
+    ).toThrow('REQUIREMENT_DEPENDENCY_CYCLE');
 
-    expect(() => reviseRequirementSemantic({ controllerHome }, 'task-a', {
-      expectedRevision: 2,
-      dependsOnRequirementIds: ['missing-task'],
-    })).toThrow('REQUIREMENT_DEPENDENCY_NOT_FOUND');
+    expect(() =>
+      reviseRequirementSemantic({ controllerHome }, 'task-a', {
+        expectedRevision: 2,
+        dependsOnRequirementIds: ['missing-task'],
+      }),
+    ).toThrow('REQUIREMENT_DEPENDENCY_NOT_FOUND');
 
-    expect(() => reviseRequirementSemantic({ controllerHome }, 'task-a', {
-      expectedRevision: 2,
-      dependsOnRequirementIds: ['task-a'],
-    })).toThrow('REQUIREMENT_DEPENDENCY_CYCLE');
+    expect(() =>
+      reviseRequirementSemantic({ controllerHome }, 'task-a', {
+        expectedRevision: 2,
+        dependsOnRequirementIds: ['task-a'],
+      }),
+    ).toThrow('REQUIREMENT_DEPENDENCY_CYCLE');
 
     const history = listRequirementRevisionRecords({ controllerHome }, 'task-a', 10);
-    expect(history.map((entry) => ({ revision: entry.revision, dependencies: entry.dependsOnRequirementIds }))).toEqual([
-      { revision: 1, dependencies: [] },
-    ]);
+    expect(history.map((entry) => ({ revision: entry.revision, dependencies: entry.dependsOnRequirementIds }))).toEqual(
+      [{ revision: 1, dependencies: [] }],
+    );
 
     reviseRequirementSemantic({ controllerHome }, 'task-b', { expectedRevision: 2, status: 'cancelled' });
     const cancelledDependencyDetail = await callRhWorkRequirementOperation(context, repositoryA, 'requirement_get', {
-      requirement_id: 'task-a', detail_level: 'detail',
+      requirement_id: 'task-a',
+      detail_level: 'detail',
     });
-    const cancelledDependencyResponse = cancelledDependencyDetail?.structuredContent as {
-      data?: { dependencyRequirements?: Array<{ requirementId: string; status?: string }> };
-    } | undefined;
+    const cancelledDependencyResponse = cancelledDependencyDetail?.structuredContent as
+      | {
+          data?: { dependencyRequirements?: Array<{ requirementId: string; status?: string }> };
+        }
+      | undefined;
     expect(cancelledDependencyResponse?.data?.dependencyRequirements?.[0]).toMatchObject({
-      requirementId: 'task-b', status: 'cancelled',
+      requirementId: 'task-b',
+      status: 'cancelled',
     });
     const editedAfterDependencyCancellation = reviseRequirementSemantic({ controllerHome }, 'task-a', {
       expectedRevision: 2,
@@ -125,13 +163,17 @@ describe('rh_work Requirement dependencies', () => {
       dependsOnRequirementIds: [],
     });
     expect(cleared.dependsOnRequirementIds).toEqual([]);
-    expect(listRequirementRevisionRecords({ controllerHome }, 'task-a', 10)
-      .map((entry) => ({ revision: entry.revision, dependencies: entry.dependsOnRequirementIds }))).toEqual([
-        { revision: 4, dependencies: ['task-b'] },
-        { revision: 3, dependencies: ['task-b'] },
-        { revision: 2, dependencies: ['task-b'] },
-        { revision: 1, dependencies: [] },
-      ]);
+    expect(
+      listRequirementRevisionRecords({ controllerHome }, 'task-a', 10).map((entry) => ({
+        revision: entry.revision,
+        dependencies: entry.dependsOnRequirementIds,
+      })),
+    ).toEqual([
+      { revision: 4, dependencies: ['task-b'] },
+      { revision: 3, dependencies: ['task-b'] },
+      { revision: 2, dependencies: ['task-b'] },
+      { revision: 1, dependencies: [] },
+    ]);
   });
 
   it('creates dependency-bearing Requirements atomically and includes dependencies in bootstrap identity', async () => {
@@ -150,13 +192,20 @@ describe('rh_work Requirement dependencies', () => {
     };
 
     const created = await callRhWorkRequirementOperation(context, undefined, 'requirement_create', args);
-    const response = created?.structuredContent as {
-      data?: {
-        requirementCreated?: boolean;
-        admissionDecision?: string;
-        requirement?: { dependsOnRequirementIds?: string[]; legacyAliases?: string[]; status?: string; priority?: string };
-      };
-    } | undefined;
+    const response = created?.structuredContent as
+      | {
+          data?: {
+            requirementCreated?: boolean;
+            admissionDecision?: string;
+            requirement?: {
+              dependsOnRequirementIds?: string[];
+              legacyAliases?: string[];
+              status?: string;
+              priority?: string;
+            };
+          };
+        }
+      | undefined;
     expect(response?.data).toMatchObject({
       requirementCreated: true,
       admissionDecision: 'created',
@@ -170,7 +219,9 @@ describe('rh_work Requirement dependencies', () => {
     expect(readRequirement({ controllerHome }, 'child')?.value.dependsOnRequirementIds).toEqual(['parent']);
 
     const repeated = await callRhWorkRequirementOperation(context, undefined, 'requirement_create', args);
-    const repeatedData = repeated?.structuredContent as { data?: { requirementCreated?: boolean; admissionDecision?: string } } | undefined;
+    const repeatedData = repeated?.structuredContent as
+      | { data?: { requirementCreated?: boolean; admissionDecision?: string } }
+      | undefined;
     expect(repeatedData?.data).toMatchObject({ requirementCreated: false, admissionDecision: 'reuse_existing' });
 
     const conflicting = await callRhWorkRequirementOperation(context, undefined, 'requirement_create', {
@@ -212,31 +263,53 @@ describe('rh_work Requirement dependencies', () => {
     createTask('downstream-a', 'repo-a');
     createTask('downstream-b', 'repo-b');
     reviseRequirementSemantic({ controllerHome }, 'downstream-a', {
-      expectedRevision: 1, dependsOnRequirementIds: ['shared-prerequisite'],
+      expectedRevision: 1,
+      dependsOnRequirementIds: ['shared-prerequisite'],
     });
     reviseRequirementSemantic({ controllerHome }, 'downstream-b', {
-      expectedRevision: 1, dependsOnRequirementIds: ['shared-prerequisite'],
+      expectedRevision: 1,
+      dependsOnRequirementIds: ['shared-prerequisite'],
     });
 
     const context = { controllerHome } as MultiRepositoryMcpToolContext;
     const before = await callRhWorkRequirementOperation(context, undefined, 'requirement_get', {
-      requirement_id: 'shared-prerequisite', detail_level: 'detail',
+      requirement_id: 'shared-prerequisite',
+      detail_level: 'detail',
     });
-    const beforeData = before?.structuredContent as {
-      data?: {
-        dependentRequirements?: Array<{ requirementId: string; status: string; repoId?: string; blocksDependent: boolean }>;
-        dependentRequirementCount?: number;
-        dependentRequirementsTruncated?: boolean;
-      };
-    } | undefined;
+    const beforeData = before?.structuredContent as
+      | {
+          data?: {
+            dependentRequirements?: Array<{
+              requirementId: string;
+              status: string;
+              repoId?: string;
+              blocksDependent: boolean;
+            }>;
+            dependentRequirementCount?: number;
+            dependentRequirementsTruncated?: boolean;
+          };
+        }
+      | undefined;
     expect(beforeData?.data).toMatchObject({
       dependentRequirementCount: 2,
       dependentRequirementsTruncated: false,
     });
-    expect(beforeData?.data?.dependentRequirements).toEqual(expect.arrayContaining([
-      expect.objectContaining({ requirementId: 'downstream-a', repoId: 'repo-a', status: 'planned', blocksDependent: true }),
-      expect.objectContaining({ requirementId: 'downstream-b', repoId: 'repo-b', status: 'planned', blocksDependent: true }),
-    ]));
+    expect(beforeData?.data?.dependentRequirements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          requirementId: 'downstream-a',
+          repoId: 'repo-a',
+          status: 'planned',
+          blocksDependent: true,
+        }),
+        expect.objectContaining({
+          requirementId: 'downstream-b',
+          repoId: 'repo-b',
+          status: 'planned',
+          blocksDependent: true,
+        }),
+      ]),
+    );
 
     const completed = await callRhWorkRequirementOperation(context, undefined, 'requirement_revise', {
       requirement_id: 'shared-prerequisite',
@@ -248,25 +321,32 @@ describe('rh_work Requirement dependencies', () => {
     expect((completed?.structuredContent as { status?: string } | undefined)?.status).toBe('ok');
 
     const after = await callRhWorkRequirementOperation(context, undefined, 'requirement_get', {
-      requirement_id: 'shared-prerequisite', detail_level: 'detail',
+      requirement_id: 'shared-prerequisite',
+      detail_level: 'detail',
     });
-    const afterData = after?.structuredContent as {
-      data?: {
-        dependentRequirements?: Array<{ requirementId: string; blocksDependent: boolean }>;
-      };
-    } | undefined;
-    expect(afterData?.data?.dependentRequirements).toEqual(expect.arrayContaining([
-      expect.objectContaining({ requirementId: 'downstream-a', blocksDependent: false }),
-      expect.objectContaining({ requirementId: 'downstream-b', blocksDependent: false }),
-    ]));
+    const afterData = after?.structuredContent as
+      | {
+          data?: {
+            dependentRequirements?: Array<{ requirementId: string; blocksDependent: boolean }>;
+          };
+        }
+      | undefined;
+    expect(afterData?.data?.dependentRequirements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ requirementId: 'downstream-a', blocksDependent: false }),
+        expect.objectContaining({ requirementId: 'downstream-b', blocksDependent: false }),
+      ]),
+    );
 
     const blockedTasks = await callRhWorkRequirementOperation(context, undefined, 'requirement_list', {
-      dependency_filter: 'blocked', limit: 20,
+      dependency_filter: 'blocked',
+      limit: 20,
     });
-    const blockedIds = ((blockedTasks?.structuredContent as { data?: { requirements?: Array<{ requirementId: string }> } } | undefined)
-      ?.data?.requirements ?? []).map((task) => task.requirementId);
+    const blockedIds = (
+      (blockedTasks?.structuredContent as { data?: { requirements?: Array<{ requirementId: string }> } } | undefined)
+        ?.data?.requirements ?? []
+    ).map((task) => task.requirementId);
     expect(blockedIds).not.toContain('downstream-a');
     expect(blockedIds).not.toContain('downstream-b');
   });
-
 });

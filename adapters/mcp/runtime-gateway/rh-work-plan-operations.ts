@@ -20,11 +20,7 @@ import { listRepositories } from '../../../src/runtime/repositories/registry';
 import { SEMANTIC_SCOPE_KEY } from '../../../src/effects/controller-home';
 import { result } from './result-adapter';
 
-const RH_WORK_LIGHTWEIGHT_PLAN_OPERATIONS = new Set([
-  'plan_list',
-  'plan_get',
-  'plan_revise',
-]);
+const RH_WORK_LIGHTWEIGHT_PLAN_OPERATIONS = new Set(['plan_list', 'plan_get', 'plan_revise']);
 
 export function isRhWorkLightweightPlanOperation(operation: string): boolean {
   return RH_WORK_LIGHTWEIGHT_PLAN_OPERATIONS.has(operation);
@@ -37,8 +33,9 @@ function requirementBelongsToProject(
   repoId?: string,
 ): boolean {
   if (repoId ? requirement.repoId !== repoId : Boolean(requirement.repoId)) return false;
-  return listRequirementsForProject({ controllerHome }, projectId, 1_000)
-    .some((record) => record.value.requirementId === requirement.requirementId);
+  return listRequirementsForProject({ controllerHome }, projectId, 1_000).some(
+    (record) => record.value.requirementId === requirement.requirementId,
+  );
 }
 
 function planBelongsToProject(
@@ -48,7 +45,9 @@ function planBelongsToProject(
 ): boolean {
   if (plan.scopeKey !== projectId || !plan.requirementId) return false;
   const requirement = readRequirement({ controllerHome: store.controllerHome }, plan.requirementId)?.value;
-  return Boolean(requirement && requirementBelongsToProject(store.controllerHome, requirement, projectId, store.repoId));
+  return Boolean(
+    requirement && requirementBelongsToProject(store.controllerHome, requirement, projectId, store.repoId),
+  );
 }
 
 export async function callRhWorkPlanOperation(
@@ -122,7 +121,9 @@ export async function callRhWorkPlanOperation(
       const plan = revisePlanSemanticContext(store, planId, {
         expectedRevision,
         ...(typeof args.superseded_by === 'string' ? { supersededBy: args.superseded_by } : {}),
-        ...(typeof args.requirement_revision === 'number' ? { requirementBasisRevision: args.requirement_revision } : {}),
+        ...(typeof args.requirement_revision === 'number'
+          ? { requirementBasisRevision: args.requirement_revision }
+          : {}),
         ...(typeof args.source_revision === 'string' ? { sourceBasisRevision: args.source_revision } : {}),
         ...(typeof args.objective === 'string' ? { goal: args.objective } : {}),
         ...(Array.isArray(args.non_goals) ? { nonGoals: args.non_goals.map(String) } : {}),
@@ -130,25 +131,37 @@ export async function callRhWorkPlanOperation(
         ...(Array.isArray(args.resolved_decisions) ? { resolvedDecisions: args.resolved_decisions.map(String) } : {}),
         ...(Array.isArray(args.stop_conditions) ? { stopConditions: args.stop_conditions.map(String) } : {}),
         ...(Array.isArray(args.replan_conditions) ? { replanConditions: args.replan_conditions.map(String) } : {}),
-        ...(args.integration_strategy === null || typeof args.integration_strategy === 'string' ? { integrationStrategy: args.integration_strategy as string | null } : {}),
-        ...(Array.isArray(args.plan_items) ? { items: args.plan_items
-          .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
-          .map((entry) => ({
-            id: String(entry.id ?? ''),
-            objective: String(entry.objective ?? ''),
-            dependencies: Array.isArray(entry.dependencies) ? entry.dependencies.map(String) : [],
-          })) } : {}),
+        ...(args.integration_strategy === null || typeof args.integration_strategy === 'string'
+          ? { integrationStrategy: args.integration_strategy as string | null }
+          : {}),
+        ...(Array.isArray(args.plan_items)
+          ? {
+              items: args.plan_items
+                .filter(
+                  (entry): entry is Record<string, unknown> =>
+                    Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry),
+                )
+                .map((entry) => ({
+                  id: String(entry.id ?? ''),
+                  objective: String(entry.objective ?? ''),
+                  dependencies: Array.isArray(entry.dependencies) ? entry.dependencies.map(String) : [],
+                })),
+            }
+          : {}),
       });
-      return result(buildFacadeResult({
-        summary: `Plan ${plan.planId} revised atomically to semantic revision ${planSemanticView(plan).revision}; source basis remains provenance metadata and no approval/execution transition was implied.`,
-        data: { plan: planSemanticView(plan), expectedRevision },
-      }) as unknown as Record<string, unknown>);
+      return result(
+        buildFacadeResult({
+          summary: `Plan ${plan.planId} revised atomically to semantic revision ${planSemanticView(plan).revision}; source basis remains provenance metadata and no approval/execution transition was implied.`,
+          data: { plan: planSemanticView(plan), expectedRevision },
+        }) as unknown as Record<string, unknown>,
+      );
     }
 
     return undefined;
   } catch (error) {
     const currentPlanId = String(args.plan_id ?? '').trim();
-    const candidatePlan = operation === 'plan_revise' && currentPlanId ? getPlanContract(store, currentPlanId) : undefined;
+    const candidatePlan =
+      operation === 'plan_revise' && currentPlanId ? getPlanContract(store, currentPlanId) : undefined;
     const currentPlan = candidatePlan && belongsToRequestedProject(candidatePlan) ? candidatePlan : undefined;
     const facade = buildFacadeResult({
       status: 'blocked',
@@ -166,7 +179,9 @@ export async function callRhWorkPlanOperation(
 function planObligationDispositionsFromArgs(value: unknown) {
   if (!Array.isArray(value)) return undefined;
   return value
-    .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
+    .filter(
+      (entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry),
+    )
     .map((entry) => ({
       predecessorPlanId: String(entry.predecessor_plan_id ?? ''),
       obligationId: String(entry.obligation_id ?? ''),
@@ -204,28 +219,44 @@ export async function callRhWorkPlanCreateWithoutRepository(
       ? readRequirement({ controllerHome: ctx.controllerHome }, requirementId)?.value
       : undefined;
     if (!requirement) {
-      return result(buildFacadeResult({
-        status: 'blocked',
-        summary: `PLAN_PROJECT_REQUIREMENT_SCOPE_CONFLICT:${projectId}:${requirementId}`,
-        data: { projectId, requirementId, planContractCreated: false, executionStarted: false },
-      }) as unknown as Record<string, unknown>, true);
-    }
-    if (typeof args.scope_key === 'string' && args.scope_key.trim() && args.scope_key.trim() !== projectId) {
-      return result(buildFacadeResult({
-        status: 'blocked',
-        summary: `PLAN_PROJECT_SCOPE_KEY_CONFLICT:${projectId}`,
-        data: { projectId, scopeKey: args.scope_key, planContractCreated: false, executionStarted: false },
-      }) as unknown as Record<string, unknown>, true);
-    }
-    if (requirement.repoId) {
-      const repository = listRepositories(ctx.controllerHome).find((record) =>
-        record.repoId === requirement.repoId && record.enabled && !record.removedAt);
-      if (!repository || !requirementBelongsToProject(ctx.controllerHome, requirement, projectId, repository.repoId)) {
-        return result(buildFacadeResult({
+      return result(
+        buildFacadeResult({
           status: 'blocked',
           summary: `PLAN_PROJECT_REQUIREMENT_SCOPE_CONFLICT:${projectId}:${requirementId}`,
-          data: { projectId, requirementId, repoId: requirement.repoId, planContractCreated: false, executionStarted: false },
-        }) as unknown as Record<string, unknown>, true);
+          data: { projectId, requirementId, planContractCreated: false, executionStarted: false },
+        }) as unknown as Record<string, unknown>,
+        true,
+      );
+    }
+    if (typeof args.scope_key === 'string' && args.scope_key.trim() && args.scope_key.trim() !== projectId) {
+      return result(
+        buildFacadeResult({
+          status: 'blocked',
+          summary: `PLAN_PROJECT_SCOPE_KEY_CONFLICT:${projectId}`,
+          data: { projectId, scopeKey: args.scope_key, planContractCreated: false, executionStarted: false },
+        }) as unknown as Record<string, unknown>,
+        true,
+      );
+    }
+    if (requirement.repoId) {
+      const repository = listRepositories(ctx.controllerHome).find(
+        (record) => record.repoId === requirement.repoId && record.enabled && !record.removedAt,
+      );
+      if (!repository || !requirementBelongsToProject(ctx.controllerHome, requirement, projectId, repository.repoId)) {
+        return result(
+          buildFacadeResult({
+            status: 'blocked',
+            summary: `PLAN_PROJECT_REQUIREMENT_SCOPE_CONFLICT:${projectId}:${requirementId}`,
+            data: {
+              projectId,
+              requirementId,
+              repoId: requirement.repoId,
+              planContractCreated: false,
+              executionStarted: false,
+            },
+          }) as unknown as Record<string, unknown>,
+          true,
+        );
       }
       return callRhWorkPlanCreateOperation(
         { controllerHome: ctx.controllerHome, repoId: repository.repoId },
@@ -235,11 +266,14 @@ export async function callRhWorkPlanCreateWithoutRepository(
       );
     }
     if (!requirementBelongsToProject(ctx.controllerHome, requirement, projectId)) {
-      return result(buildFacadeResult({
-        status: 'blocked',
-        summary: `PLAN_PROJECT_REQUIREMENT_SCOPE_CONFLICT:${projectId}:${requirementId}`,
-        data: { projectId, requirementId, planContractCreated: false, executionStarted: false },
-      }) as unknown as Record<string, unknown>, true);
+      return result(
+        buildFacadeResult({
+          status: 'blocked',
+          summary: `PLAN_PROJECT_REQUIREMENT_SCOPE_CONFLICT:${projectId}:${requirementId}`,
+          data: { projectId, requirementId, planContractCreated: false, executionStarted: false },
+        }) as unknown as Record<string, unknown>,
+        true,
+      );
     }
     return callRhWorkPlanCreateOperation(
       { controllerHome: ctx.controllerHome, scopeKey: SEMANTIC_SCOPE_KEY },
@@ -275,15 +309,20 @@ export async function callRhWorkPlanCreateOperation(
     const requirement = requirementId
       ? readRequirement({ controllerHome: context.controllerHome }, requirementId)?.value
       : undefined;
-    const validScope = Boolean(requirement
-      && requirementBelongsToProject(context.controllerHome, requirement, projectId, store.repoId)
-      && args.scope_key === projectId);
+    const validScope = Boolean(
+      requirement &&
+        requirementBelongsToProject(context.controllerHome, requirement, projectId, store.repoId) &&
+        args.scope_key === projectId,
+    );
     if (!validScope) {
-      return result(buildFacadeResult({
-        status: 'blocked',
-        summary: `PLAN_PROJECT_REQUIREMENT_SCOPE_CONFLICT:${projectId}:${requirementId}`,
-        data: { projectId, requirementId, planContractCreated: false, executionStarted: false },
-      }) as unknown as Record<string, unknown>, true);
+      return result(
+        buildFacadeResult({
+          status: 'blocked',
+          summary: `PLAN_PROJECT_REQUIREMENT_SCOPE_CONFLICT:${projectId}:${requirementId}`,
+          data: { projectId, requirementId, planContractCreated: false, executionStarted: false },
+        }) as unknown as Record<string, unknown>,
+        true,
+      );
     }
   }
 
@@ -292,10 +331,17 @@ export async function callRhWorkPlanCreateOperation(
       const plan = createPlanSemanticContext(store, {
         planId: String(args.plan_id ?? ''),
         repoId: context.repoId,
-        requirementId: typeof args.requirement_id === 'string' && args.requirement_id.trim() ? args.requirement_id.trim() : undefined,
-        parentPlanId: typeof args.parent_plan_id === 'string' && args.parent_plan_id.trim() ? args.parent_plan_id.trim() : undefined,
+        requirementId:
+          typeof args.requirement_id === 'string' && args.requirement_id.trim()
+            ? args.requirement_id.trim()
+            : undefined,
+        parentPlanId:
+          typeof args.parent_plan_id === 'string' && args.parent_plan_id.trim()
+            ? args.parent_plan_id.trim()
+            : undefined,
         requirementBasisRevision: typeof args.requirement_revision === 'number' ? args.requirement_revision : undefined,
-        expectedRequirementRevision: typeof args.expected_requirement_revision === 'number' ? args.expected_requirement_revision : undefined,
+        expectedRequirementRevision:
+          typeof args.expected_requirement_revision === 'number' ? args.expected_requirement_revision : undefined,
         scopeKey: typeof args.scope_key === 'string' ? args.scope_key : undefined,
         sourceBasisRevision: typeof args.source_revision === 'string' ? args.source_revision : undefined,
         goal: String(args.objective ?? ''),
@@ -307,7 +353,10 @@ export async function callRhWorkPlanCreateOperation(
         integrationStrategy: typeof args.integration_strategy === 'string' ? args.integration_strategy : undefined,
         items: Array.isArray(args.plan_items)
           ? args.plan_items
-              .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
+              .filter(
+                (entry): entry is Record<string, unknown> =>
+                  Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry),
+              )
               .map((entry) => ({
                 id: String(entry.id ?? ''),
                 objective: String(entry.objective ?? ''),
@@ -315,16 +364,21 @@ export async function callRhWorkPlanCreateOperation(
               }))
           : [],
       });
-      return result(buildFacadeResult({
-        summary: `Plan ${plan.planId} created at semantic revision 1. Plan items are descriptive working memory; no approval, PlanStep, path/check, scheduling, Work, or acceptance authority was created.`,
-        data: { plan: planSemanticView(plan), planContractCreated: true, executionStarted: false },
-      }) as unknown as Record<string, unknown>);
+      return result(
+        buildFacadeResult({
+          summary: `Plan ${plan.planId} created at semantic revision 1. Plan items are descriptive working memory; no approval, PlanStep, path/check, scheduling, Work, or acceptance authority was created.`,
+          data: { plan: planSemanticView(plan), planContractCreated: true, executionStarted: false },
+        }) as unknown as Record<string, unknown>,
+      );
     } catch (error) {
-      return result(buildFacadeResult({
-        status: 'blocked',
-        summary: error instanceof Error ? error.message : 'Semantic Plan creation failed.',
-        data: { planContractCreated: false, executionStarted: false },
-      }) as unknown as Record<string, unknown>, true);
+      return result(
+        buildFacadeResult({
+          status: 'blocked',
+          summary: error instanceof Error ? error.message : 'Semantic Plan creation failed.',
+          data: { planContractCreated: false, executionStarted: false },
+        }) as unknown as Record<string, unknown>,
+        true,
+      );
     }
   }
 
@@ -332,16 +386,25 @@ export async function callRhWorkPlanCreateOperation(
     // Frozen-client compatibility only. Current model-facing schema no longer exposes plan_steps.
     const rawSteps = args.plan_steps;
     const requestedPlanId = String(args.plan_id ?? '').trim();
-    const requestedRequirementId = typeof args.requirement_id === 'string' && args.requirement_id.trim() ? args.requirement_id.trim() : undefined;
-    const requestedPlanRelation: 'extend' | 'parallel' | undefined = args.plan_relation === 'extend' || args.plan_relation === 'parallel'
-      ? args.plan_relation
-      : undefined;
-    const relatedPlanId = typeof args.related_plan_id === 'string' && args.related_plan_id.trim() ? args.related_plan_id.trim() : undefined;
-    if (requestedRequirementId && !readRequirement({ controllerHome: context.controllerHome }, requestedRequirementId)) {
+    const requestedRequirementId =
+      typeof args.requirement_id === 'string' && args.requirement_id.trim() ? args.requirement_id.trim() : undefined;
+    const requestedPlanRelation: 'extend' | 'parallel' | undefined =
+      args.plan_relation === 'extend' || args.plan_relation === 'parallel' ? args.plan_relation : undefined;
+    const relatedPlanId =
+      typeof args.related_plan_id === 'string' && args.related_plan_id.trim() ? args.related_plan_id.trim() : undefined;
+    if (
+      requestedRequirementId &&
+      !readRequirement({ controllerHome: context.controllerHome }, requestedRequirementId)
+    ) {
       const facade = buildFacadeResult({
         status: 'failed',
         summary: `PLAN_REQUIREMENT_NOT_FOUND: ${requestedRequirementId}. Plan was not persisted; create or reconcile the Requirement authority first.`,
-        data: { executionStarted: false, planContractCreated: false, admissionDecision: 'missing_requirement', requirementId: requestedRequirementId },
+        data: {
+          executionStarted: false,
+          planContractCreated: false,
+          admissionDecision: 'missing_requirement',
+          requirementId: requestedRequirementId,
+        },
       });
       return result(facade as unknown as Record<string, unknown>, true);
     }
@@ -369,36 +432,53 @@ export async function callRhWorkPlanCreateOperation(
             ...(exactDraftRepair ? { repairRequired: true } : {}),
           },
           suggestedNextActions: exactDraftRepair
-            ? [{
-                label: 'Repair this exact draft Plan',
-                tool: 'rh_work',
-                operation: 'repair',
-                payload: {
-                  plan_id: admission.plan.planId,
-                  repair_operation: 'repair',
-                  dry_run: false,
-                  scope_key: args.scope_key,
-                  source_revision: args.source_revision,
-                  objective: args.objective,
-                  plan_steps: args.plan_steps,
-                  non_goals: args.non_goals,
-                  assumptions: args.assumptions,
-                  resolved_decisions: args.resolved_decisions,
-                  stop_conditions: args.stop_conditions,
-                  replan_conditions: args.replan_conditions,
-                  integration_strategy: args.integration_strategy,
+            ? [
+                {
+                  label: 'Repair this exact draft Plan',
+                  tool: 'rh_work',
+                  operation: 'repair',
+                  payload: {
+                    plan_id: admission.plan.planId,
+                    repair_operation: 'repair',
+                    dry_run: false,
+                    scope_key: args.scope_key,
+                    source_revision: args.source_revision,
+                    objective: args.objective,
+                    plan_steps: args.plan_steps,
+                    non_goals: args.non_goals,
+                    assumptions: args.assumptions,
+                    resolved_decisions: args.resolved_decisions,
+                    stop_conditions: args.stop_conditions,
+                    replan_conditions: args.replan_conditions,
+                    integration_strategy: args.integration_strategy,
+                  },
+                  risk: 'workspace_write',
+                  confidence: 'high',
                 },
-                risk: 'workspace_write',
-                confidence: 'high',
-              }]
-            : [{ label: 'Read active Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: admission.plan.planId }, risk: 'readonly', confidence: 'high' }],
+              ]
+            : [
+                {
+                  label: 'Read active Plan',
+                  tool: 'rh_work',
+                  operation: 'plan_get',
+                  payload: { plan_id: admission.plan.planId },
+                  risk: 'readonly',
+                  confidence: 'high',
+                },
+              ],
         });
         return result(facade as unknown as Record<string, unknown>);
       }
       if (admission.reason === 'extension_target_required') {
         const facade = buildFacadeResult({
           summary: `PLAN_EXTENSION_TARGET_REQUIRED: select related_plan_id from the active Plan slices for Requirement ${requestedRequirementId}.`,
-          data: { executionStarted: false, planContractCreated: false, admissionDecision: 'resolution_required', resolutionRequired: true, candidates: admission.candidates.map(summarizePlanContract) },
+          data: {
+            executionStarted: false,
+            planContractCreated: false,
+            admissionDecision: 'resolution_required',
+            resolutionRequired: true,
+            candidates: admission.candidates.map(summarizePlanContract),
+          },
         });
         return result(facade as unknown as Record<string, unknown>);
       }
@@ -417,8 +497,10 @@ export async function callRhWorkPlanCreateOperation(
     if (preflightResult) return preflightResult;
 
     const requestedPlanCheckIds = rawSteps
-      .filter((step): step is Record<string, unknown> => Boolean(step) && typeof step === 'object' && !Array.isArray(step))
-      .flatMap((step) => Array.isArray(step.check_ids) ? step.check_ids.map(String) : []);
+      .filter(
+        (step): step is Record<string, unknown> => Boolean(step) && typeof step === 'object' && !Array.isArray(step),
+      )
+      .flatMap((step) => (Array.isArray(step.check_ids) ? step.check_ids.map(String) : []));
     const normalizedPlanChecks = normalizeCheckIds(requestedPlanCheckIds, context.checks);
     if (normalizedPlanChecks.invalidCheckIds.length > 0) {
       const facade = buildFacadeResult({
@@ -452,22 +534,27 @@ export async function callRhWorkPlanCreateOperation(
       replanConditions: Array.isArray(args.replan_conditions) ? args.replan_conditions.map(String) : undefined,
       integrationStrategy: typeof args.integration_strategy === 'string' ? args.integration_strategy : undefined,
       obligationDispositions: planObligationDispositionsFromArgs(args.obligation_dispositions),
-      steps: rawSteps.filter((step): step is Record<string, unknown> => Boolean(step) && typeof step === 'object' && !Array.isArray(step)).map((step) => ({
-        id: String(step.id ?? ''),
-        objective: String(step.objective ?? ''),
-        dependencies: Array.isArray(step.dependencies) ? step.dependencies.map(String) : [],
-        authoritativeFiles: Array.isArray(step.authoritative_files) ? step.authoritative_files.map(String) : [],
-        allowedPaths: Array.isArray(step.allowed_paths) ? step.allowed_paths.map(String) : [],
-        forbiddenPaths: Array.isArray(step.forbidden_paths) ? step.forbidden_paths.map(String) : [],
-        checks: Array.isArray(step.check_ids) ? step.check_ids.map(String) : [],
-        acceptanceCriteria: Array.isArray(step.acceptance_criteria) ? step.acceptance_criteria.map(String) : [],
-      })),
+      steps: rawSteps
+        .filter(
+          (step): step is Record<string, unknown> => Boolean(step) && typeof step === 'object' && !Array.isArray(step),
+        )
+        .map((step) => ({
+          id: String(step.id ?? ''),
+          objective: String(step.objective ?? ''),
+          dependencies: Array.isArray(step.dependencies) ? step.dependencies.map(String) : [],
+          authoritativeFiles: Array.isArray(step.authoritative_files) ? step.authoritative_files.map(String) : [],
+          allowedPaths: Array.isArray(step.allowed_paths) ? step.allowed_paths.map(String) : [],
+          forbiddenPaths: Array.isArray(step.forbidden_paths) ? step.forbidden_paths.map(String) : [],
+          checks: Array.isArray(step.check_ids) ? step.check_ids.map(String) : [],
+          acceptanceCriteria: Array.isArray(step.acceptance_criteria) ? step.acceptance_criteria.map(String) : [],
+        })),
     });
     if (admitted.reason === 'extend_existing' && admitted.plan) {
       const plan = admitted.plan;
-      const requestedLabel = requestedPlanId && requestedPlanId !== plan.planId
-        ? ` Requested compatibility plan_id ${requestedPlanId} was retained only as revision audit metadata.`
-        : '';
+      const requestedLabel =
+        requestedPlanId && requestedPlanId !== plan.planId
+          ? ` Requested compatibility plan_id ${requestedPlanId} was retained only as revision audit metadata.`
+          : '';
       const facade = buildFacadeResult({
         summary: `PLAN_REVISION_REUSED_AUTHORITY: Plan ${plan.planId} was revised in place; no successor PlanContract was created.${requestedLabel}`,
         data: {
@@ -479,7 +566,16 @@ export async function callRhWorkPlanCreateOperation(
         },
         // Plan approval is a retired ceremony no-op; the projection must not steer
         // the model back into it. Reading the current revision is the honest action.
-        suggestedNextActions: [{ label: 'Read current Plan revision', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: plan.planId }, risk: 'readonly', confidence: 'high' }],
+        suggestedNextActions: [
+          {
+            label: 'Read current Plan revision',
+            tool: 'rh_work',
+            operation: 'plan_get',
+            payload: { plan_id: plan.planId },
+            risk: 'readonly',
+            confidence: 'high',
+          },
+        ],
       });
       return result(facade as unknown as Record<string, unknown>);
     }
@@ -489,8 +585,22 @@ export async function callRhWorkPlanCreateOperation(
     const plan = admitted.plan;
     const facade = buildFacadeResult({
       summary: `PlanContract ${plan.planId} created as draft after atomic authority admission; no execution was started.`,
-      data: { plan: summarizePlanContract(plan), executionStarted: false, planContractCreated: true, admissionDecision: 'create_new' },
-      suggestedNextActions: [{ label: 'Read current Plan revision', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: plan.planId }, risk: 'readonly', confidence: 'high' }],
+      data: {
+        plan: summarizePlanContract(plan),
+        executionStarted: false,
+        planContractCreated: true,
+        admissionDecision: 'create_new',
+      },
+      suggestedNextActions: [
+        {
+          label: 'Read current Plan revision',
+          tool: 'rh_work',
+          operation: 'plan_get',
+          payload: { plan_id: plan.planId },
+          risk: 'readonly',
+          confidence: 'high',
+        },
+      ],
     });
     return result(facade as unknown as Record<string, unknown>);
   } catch (error) {

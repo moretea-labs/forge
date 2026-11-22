@@ -3,11 +3,27 @@ import type { WorkflowJsonValue } from '../../../packages/workflow-runtime/api/i
 import { selectRepositoryCheckout } from '../../../src/runtime/repositories/registry';
 import { executionIdentityForRepository } from '../../../src/runtime/control-plane/execution/execution-identity';
 import { readWorkflowRun } from '../../../src/runtime/control-plane/persistence/workflow-run-store';
-import { publicationOutcomeFollowupDueAt, schedulePublicationOutcomeCollection } from '../../../src/runtime/root/assistant-learning-loop';
-import { ensureXiaohongshuWorkflowInstalled, XIAOHONGSHU_WORKFLOW_IDS } from '../../../src/runtime/workflows/first-party/xiaohongshu';
-import { ensureReleaseGrowthWorkflowInstalled, RELEASE_GROWTH_WORKFLOW_IDS, X_EFFECT_WORKFLOW_IDS } from '../../../src/runtime/workflows/first-party/release-growth';
-import { AGENTMAIL_EVENT_WORKFLOW_ID, ensureAgentMailEventWorkflowInstalled } from '../../../src/runtime/workflows/first-party/agentmail-event';
-import { executeRegisteredWorkflow, observeAndReconcileRegisteredWorkflow } from '../../../src/runtime/workflows/runtime';
+import {
+  publicationOutcomeFollowupDueAt,
+  schedulePublicationOutcomeCollection,
+} from '../../../src/runtime/root/assistant-learning-loop';
+import {
+  ensureXiaohongshuWorkflowInstalled,
+  XIAOHONGSHU_WORKFLOW_IDS,
+} from '../../../src/runtime/workflows/first-party/xiaohongshu';
+import {
+  ensureReleaseGrowthWorkflowInstalled,
+  RELEASE_GROWTH_WORKFLOW_IDS,
+  X_EFFECT_WORKFLOW_IDS,
+} from '../../../src/runtime/workflows/first-party/release-growth';
+import {
+  AGENTMAIL_EVENT_WORKFLOW_ID,
+  ensureAgentMailEventWorkflowInstalled,
+} from '../../../src/runtime/workflows/first-party/agentmail-event';
+import {
+  executeRegisteredWorkflow,
+  observeAndReconcileRegisteredWorkflow,
+} from '../../../src/runtime/workflows/runtime';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { result } from './result-adapter';
@@ -32,23 +48,30 @@ export async function callRhWorkWorkflowOperation(
     const runId = String(args.workflow_run_id ?? '').trim();
     if (!workflowId || !runId) throw new Error('WORKFLOW_FACADE_IDENTITY_REQUIRED');
 
-    const selectedRepository = selectRepositoryCheckout(repository, typeof args.checkout_id === 'string' && args.checkout_id.trim()
-      ? args.checkout_id.trim()
-      : repository.activeCheckoutId);
+    const selectedRepository = selectRepositoryCheckout(
+      repository,
+      typeof args.checkout_id === 'string' && args.checkout_id.trim()
+        ? args.checkout_id.trim()
+        : repository.activeCheckoutId,
+    );
     const executionIdentity = executionIdentityForRepository(selectedRepository);
     const scopeId = `repository:${selectedRepository.repoId}:checkout:${selectedRepository.activeCheckoutId}:workflow:${workflowId}`;
     if (Object.values(XIAOHONGSHU_WORKFLOW_IDS).includes(workflowId as never)) {
       ensureXiaohongshuWorkflowInstalled(ctx.controllerHome, workflowId);
     }
-    if (Object.values(RELEASE_GROWTH_WORKFLOW_IDS).includes(workflowId as never) || Object.values(X_EFFECT_WORKFLOW_IDS).includes(workflowId as never)) {
+    if (
+      Object.values(RELEASE_GROWTH_WORKFLOW_IDS).includes(workflowId as never) ||
+      Object.values(X_EFFECT_WORKFLOW_IDS).includes(workflowId as never)
+    ) {
       ensureReleaseGrowthWorkflowInstalled(ctx.controllerHome, workflowId);
     }
     if (workflowId === AGENTMAIL_EVENT_WORKFLOW_ID) ensureAgentMailEventWorkflowInstalled(ctx.controllerHome);
     const projectId = typeof args.workflow_scope_project_id === 'string' ? args.workflow_scope_project_id.trim() : '';
     const registryScope = projectId ? { kind: 'project' as const, projectId } : { kind: 'controller' as const };
-    const workflowInputs = args.workflow_inputs && typeof args.workflow_inputs === 'object' && !Array.isArray(args.workflow_inputs)
-      ? args.workflow_inputs as Record<string, WorkflowJsonValue>
-      : {};
+    const workflowInputs =
+      args.workflow_inputs && typeof args.workflow_inputs === 'object' && !Array.isArray(args.workflow_inputs)
+        ? (args.workflow_inputs as Record<string, WorkflowJsonValue>)
+        : {};
     if (operation === 'workflow_execute' && workflowId === X_EFFECT_WORKFLOW_IDS.replyToComment) {
       const account = typeof workflowInputs.account === 'string' ? workflowInputs.account.trim() : '';
       const commentUrlValue = typeof workflowInputs.comment_url === 'string' ? workflowInputs.comment_url.trim() : '';
@@ -60,21 +83,22 @@ export async function callRhWorkWorkflowOperation(
       }
       const commentMatch = commentUrl.pathname.match(/^\/([A-Za-z0-9_]{1,15})\/status\/([0-9]+)$/);
       if (
-        !/^[A-Za-z0-9_]{1,15}$/.test(account)
-        || commentUrl.protocol !== 'https:'
-        || commentUrl.hostname !== 'x.com'
-        || commentUrl.username
-        || commentUrl.password
-        || commentUrl.search
-        || commentUrl.hash
-        || !commentMatch
+        !/^[A-Za-z0-9_]{1,15}$/.test(account) ||
+        commentUrl.protocol !== 'https:' ||
+        commentUrl.hostname !== 'x.com' ||
+        commentUrl.username ||
+        commentUrl.password ||
+        commentUrl.search ||
+        commentUrl.hash ||
+        !commentMatch
       ) {
         throw new Error('X_REPLY_COMMENT_IDENTITY_REQUIRED');
       }
       const expectedRunId = `x-reply-${account.toLowerCase()}-${commentMatch[2]}`;
       if (runId !== expectedRunId) throw new Error('X_REPLY_WORKFLOW_RUN_ID_MUST_BIND_COMMENT');
     }
-    const requirementId = typeof args.requirement_id === 'string' && args.requirement_id.trim() ? args.requirement_id.trim() : undefined;
+    const requirementId =
+      typeof args.requirement_id === 'string' && args.requirement_id.trim() ? args.requirement_id.trim() : undefined;
     const base = {
       controllerHome: ctx.controllerHome,
       repository: selectedRepository,
@@ -122,29 +146,40 @@ export async function callRhWorkWorkflowOperation(
       const reconciled = await observeAndReconcileRegisteredWorkflow({ ...base, reconciliationRequestId });
       if (reconciled.status === 'running') {
         const resumed = await executeRegisteredWorkflow(base);
-        return result(buildFacadeResult({
-          summary: `Workflow ${workflowId}/${runId} reconciled from canonical observation and resumed without replaying the uncertain effect.`,
-          data: { workflow: resumed, ...learningMetadata(resumed) },
-        }) as unknown as Record<string, unknown>);
+        return result(
+          buildFacadeResult({
+            summary: `Workflow ${workflowId}/${runId} reconciled from canonical observation and resumed without replaying the uncertain effect.`,
+            data: { workflow: resumed, ...learningMetadata(resumed) },
+          }) as unknown as Record<string, unknown>,
+        );
       }
-      return result(buildFacadeResult({
-        status: reconciled.status === 'failed' ? 'blocked' : 'ok',
-        summary: `Workflow ${workflowId}/${runId} reconciliation settled as ${reconciled.status}.`,
-        data: { workflow: reconciled },
-      }) as unknown as Record<string, unknown>, reconciled.status === 'failed');
+      return result(
+        buildFacadeResult({
+          status: reconciled.status === 'failed' ? 'blocked' : 'ok',
+          summary: `Workflow ${workflowId}/${runId} reconciliation settled as ${reconciled.status}.`,
+          data: { workflow: reconciled },
+        }) as unknown as Record<string, unknown>,
+        reconciled.status === 'failed',
+      );
     }
 
     const executed = await executeRegisteredWorkflow(base);
-    return result(buildFacadeResult({
-      status: executed.status === 'failed' || executed.status === 'reconcile_required' ? 'blocked' : 'ok',
-      summary: `Workflow ${workflowId}/${runId} is ${executed.status}.`,
-      data: { workflow: executed, ...learningMetadata(executed) },
-    }) as unknown as Record<string, unknown>, executed.status === 'failed' || executed.status === 'reconcile_required');
+    return result(
+      buildFacadeResult({
+        status: executed.status === 'failed' || executed.status === 'reconcile_required' ? 'blocked' : 'ok',
+        summary: `Workflow ${workflowId}/${runId} is ${executed.status}.`,
+        data: { workflow: executed, ...learningMetadata(executed) },
+      }) as unknown as Record<string, unknown>,
+      executed.status === 'failed' || executed.status === 'reconcile_required',
+    );
   } catch (error) {
-    return result(buildFacadeResult({
-      status: 'blocked',
-      summary: error instanceof Error ? error.message : 'Workflow execution failed.',
-      data: { workflowExecuted: false },
-    }) as unknown as Record<string, unknown>, true);
+    return result(
+      buildFacadeResult({
+        status: 'blocked',
+        summary: error instanceof Error ? error.message : 'Workflow execution failed.',
+        data: { workflowExecuted: false },
+      }) as unknown as Record<string, unknown>,
+      true,
+    );
   }
 }

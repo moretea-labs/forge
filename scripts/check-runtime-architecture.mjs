@@ -492,47 +492,47 @@ requireText(
   "if (name === 'rh_work') return callWorkAdapter(ctx, args);",
 );
 requireText(
-  'adapters/mcp/runtime-gateway/work-controller-operations.ts',
+  'adapters/mcp/runtime-gateway/rh-work-controller-operations.ts',
   "const RH_WORK_CONTROLLER_OPERATIONS = new Set(['launcher_start']);",
 );
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "if (operation === 'launcher_start')");
+requireText('adapters/mcp/runtime-gateway/rh-work-adapter.ts', "if (operation === 'launcher_start')");
 requireText(
-  'adapters/mcp/runtime-gateway/work-requirement-operations.ts',
+  'adapters/mcp/runtime-gateway/rh-work-requirement-operations.ts',
   'export async function callRhWorkRequirementOperation',
 );
-requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'export async function callRhWorkPlanOperation');
+requireText('adapters/mcp/runtime-gateway/rh-work-plan-operations.ts', 'export async function callRhWorkPlanOperation');
 requireText(
-  'adapters/mcp/runtime-gateway/work-plan-operations.ts',
+  'adapters/mcp/runtime-gateway/rh-work-plan-operations.ts',
   'export async function callRhWorkPlanCreateOperation',
 );
 requireText(
-  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'adapters/mcp/runtime-gateway/rh-work-adapter.ts',
   'callRhWorkRequirementOperation(ctx, repository, operation, args)',
 );
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkPlanOperation(store, operation, args)');
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkPlanCreateOperation(store, operation, args');
+requireText('adapters/mcp/runtime-gateway/rh-work-adapter.ts', 'callRhWorkPlanOperation(store, operation, args)');
+requireText('adapters/mcp/runtime-gateway/rh-work-adapter.ts', 'callRhWorkPlanCreateOperation(store, operation, args');
 forbid(
-  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'adapters/mcp/runtime-gateway/rh-work-adapter.ts',
   /operation === ['"](?:continue|verify|review|finalize|stop|delegate|controller_get_owner|controller_claim|controller_disposition|controller_release)['"]/,
   'thin rh_work must not route retired lifecycle/controller operations',
 );
 forbid(
-  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'adapters/mcp/runtime-gateway/rh-work-adapter.ts',
   /\b(?:transitionWorkHandle|writeWorkHandle|markWorkHandleFailed|executeWorkVerification|requestWorkImplementationReview)\b/,
   'rh_work must not own mechanical execution, verification or review authority',
 );
 forbid(
-  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'adapters/mcp/runtime-gateway/rh-work-adapter.ts',
   /repositoryGit(?:Commit|FinishWorkflow|MergeBranch|DeleteBranch|RebaseOnto)\s*\(/,
   'rh_work must not perform physical Git delivery',
 );
 forbid(
-  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'adapters/mcp/runtime-gateway/rh-work-adapter.ts',
   /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/,
   'rh_work must consume canonical semantic APIs instead of persistence infrastructure',
 );
 forbid(
-  'adapters/mcp/runtime-gateway/work-plan-operations.ts',
+  'adapters/mcp/runtime-gateway/rh-work-plan-operations.ts',
   /plan_approve|plan_accept_step|plan_supersede|approvePlanContractAsync|acceptPlanStepEvidence|supersedePlanContract/,
   'retired Plan approval/acceptance/supersession APIs must not remain on the runtime surface',
 );
@@ -822,7 +822,7 @@ if (semanticAuthorityGuardrailFixture) {
 const SEMANTIC_STRING_AUTHORITY_DEBT = new Set([
   `adapters/mcp/runtime-gateway/execution-tools.ts::message.includes(':')`,
   `adapters/mcp/runtime-gateway/context-adapter.ts::error.message.startsWith('PLUGIN_NOT_FOUND:')`,
-  `src/cli/local-bridge/server.ts::message.startsWith(\"REPOSITORY_SELF_PROTECTED\")`,
+  `src/cli/local-bridge/server.ts::message.startsWith('REPOSITORY_SELF_PROTECTED')`,
   `src/runtime/control-plane/facade/requirement-authority.ts::error.message.startsWith('REQUIREMENT_ALREADY_EXISTS:')`,
   `src/runtime/control-plane/global-scheduler/reconciliation.ts::message.includes(':')`,
   `src/runtime/control-plane/persistence/sqlite-store.ts::(error instanceof Error ? error.message : String(error)).startsWith('CONTROL_PLANE_SQLITE_BUSY:')`,
@@ -1153,7 +1153,7 @@ for (const path of [...sourceFiles('src/runtime/control-plane'), ...sourceFiles(
   );
 }
 forbid(
-  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'adapters/mcp/runtime-gateway/rh-work-adapter.ts',
   /executeWorkVerification|recordWorkCheckEvidence/,
   'rh_work must not execute or attribute repository checks',
 );
@@ -1242,7 +1242,7 @@ forbid(
   'repository guidance must not authorize the retired Work lifecycle',
 );
 forbid(
-  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'adapters/mcp/runtime-gateway/rh-work-adapter.ts',
   /ImplementationReview|executeWorkVerification|work_finalize/,
   'rh_work must not regain review, verification, or finalization behavior authority',
 );
@@ -1441,7 +1441,7 @@ forbid(
 );
 requireText('src/runtime/control-plane/facade/plan-contract-store.ts', 'PLAN_REQUIREMENT_TERMINAL');
 forbid(
-  'adapters/mcp/runtime-gateway/work-controller-operations.ts',
+  'adapters/mcp/runtime-gateway/rh-work-controller-operations.ts',
   /completeRequirementGoal|requirementAcceptance/,
   'Controller disposition must not complete or accept Requirement semantics',
 );
@@ -1457,7 +1457,7 @@ forbid(
 );
 requireMissing('adapters/mcp/tool-mapping/post-finalize-work-attribution.ts');
 forbid(
-  'adapters/mcp/runtime-gateway/work-controller-operations.ts',
+  'adapters/mcp/runtime-gateway/rh-work-controller-operations.ts',
   /goal_complete[^\n]{0,200}requirementId|requirementId[^\n]{0,200}goal_complete/,
   'Controller goal_complete may settle continuation but must not own Requirement completion',
 );
@@ -1606,7 +1606,7 @@ forbid(
   'Schedule must not bind an autonomous Supervisor on create or resume',
 );
 forbid(
-  'adapters/mcp/runtime-gateway/work-controller-operations.ts',
+  'adapters/mcp/runtime-gateway/rh-work-controller-operations.ts',
   /reconcileControllerProgression|bindWorkflowSupervisorConversationForWork|wakeWorkflowSupervisor/,
   'Launch Session must not enroll, wake, or reconcile autonomous Supervisor',
 );
@@ -1755,7 +1755,7 @@ forbid(
   'retired Work placement/handoff policy fields must not return as durable authority',
 );
 forbid(
-  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'adapters/mcp/runtime-gateway/rh-work-adapter.ts',
   /require_handoff_on_ambiguity|require_worktree|direct_main_prohibited/,
   'retired placement/handoff wire flags must not drive repository topology',
 );
@@ -2315,7 +2315,7 @@ forbid(
   'Local Bridge HTTP must not retain legacy Issue/Task, project-state or Agent Run writers',
 );
 requireText('src/cli/local-bridge/server.ts', 'app.post(path, retireLegacyIssueMutation)');
-requireText('src/cli/local-bridge/server.ts', 'app.patch("/api/project-state", retireLegacyIssueMutation)');
+requireText('src/cli/local-bridge/server.ts', "app.patch('/api/project-state', retireLegacyIssueMutation)");
 requireText('src/cli/local-bridge/server.ts', 'runEditSessionMutationInWorker(');
 requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'GRANT_ID_REUSE_REQUIRES_NEW_ENROLLMENT');
 requireText('src/runtime/safe-tooling/mac-keychain-write.ts', "spawnSync('/usr/bin/security', ['-i']");
@@ -2629,7 +2629,7 @@ for (const retiredShim of [
 for (const path of [
   'adapters/mcp/runtime-gateway/router.ts',
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
-  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'adapters/mcp/runtime-gateway/rh-work-adapter.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   'src/runtime/workflow/schedules/engine.ts',
   'src/runtime/workflow/schedules/browser-observation.ts',
@@ -2819,8 +2819,8 @@ const retiredPlanGateCodes =
 for (const path of [
   'src/runtime/control-plane/facade/plan-contract-store.ts',
   'src/runtime/control-plane/facade/requirement-authority.ts',
-  'adapters/mcp/runtime-gateway/work-plan-operations.ts',
-  'adapters/mcp/runtime-gateway/work-repair-adapter.ts',
+  'adapters/mcp/runtime-gateway/rh-work-plan-operations.ts',
+  'adapters/mcp/runtime-gateway/rh-work-repair-adapter.ts',
 ]) {
   if (retiredPlanGateCodes.test(text(path))) failures.push(`${path} must not reintroduce a PlanStep execution gate`);
 }
@@ -2877,7 +2877,7 @@ forbid(
   'retired Work lifecycle/write vocabulary must not remain in the accepted rh_work ABI',
 );
 forbid(
-  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'adapters/mcp/runtime-gateway/rh-work-adapter.ts',
   /callRhWorkSemanticOperation|callRhWorkListProjection|namespace: 'work_contract'/,
   'retired Work cannot be read by the rh_work carrier',
 );
@@ -2939,7 +2939,10 @@ forbid(
 // semantic CAS plus concrete target/resource/effect owners, never by a
 // Work-wide ControllerSession lease. Explicit autonomous-continuation round
 // operations retain their narrow dispatch/effect authority until Slice 4.
-for (const path of ['adapters/mcp/runtime-gateway/work-workflow-operations.ts', 'src/runtime/workflows/runtime.ts']) {
+for (const path of [
+  'adapters/mcp/runtime-gateway/rh-work-workflow-operations.ts',
+  'src/runtime/workflows/runtime.ts',
+]) {
   forbid(
     path,
     /assertFacadeControllerRoundAuthority|getControllerSession|getControllerRoundRelay|controllerSessionAuthorityMatches|WORKFLOW_CONTROLLER_AUTHORITY|WORKFLOW_CONTROLLER_NOT_OWNER/,
@@ -2947,7 +2950,7 @@ for (const path of ['adapters/mcp/runtime-gateway/work-workflow-operations.ts', 
   );
 }
 forbid(
-  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'adapters/mcp/runtime-gateway/rh-work-adapter.ts',
   /claimNewFacadeWork|mintControllerSessionAuthority|resumeControllerSession|bindFacadeControllerOwnership|currentFacadeTerminalizationAuthority|currentTerminalCleanupAuthority|withControllerSessionTerminalizationFence/,
   'ordinary Work start/continue/review/stop/finalize must not mint or require Work-wide Controller authority',
 );
@@ -3004,7 +3007,7 @@ forbid(
   'plugin store must not retain Work-attribution reject stubs once request fields are deleted (#483)',
 );
 forbid(
-  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'adapters/mcp/runtime-gateway/rh-work-adapter.ts',
   /case ['\"](?:start|revise|complete)['\"]|createWorkContract|reviseWorkSemanticContext|updateWorkContract|cancelWorkContract/,
   'rh_work adapter must not expose retired Work lifecycle writers',
 );
@@ -3056,7 +3059,7 @@ forbid(
   'mechanical Scheduler failures must remain runtime/backoff facts and must not create human-request authority',
 );
 for (const path of [
-  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'adapters/mcp/runtime-gateway/rh-work-adapter.ts',
   'adapters/mcp/runtime-gateway/repository-compat-adapter.ts',
 ]) {
   forbid(
@@ -3091,7 +3094,7 @@ requireText('packages/kernel/cognition/application/activation-service.ts', 'stru
 requireText('packages/kernel/cognition/application/activation-service.ts', 'fairScopedRead');
 requireText('packages/kernel/cognition/application/activation-service.ts', 'seenFamilies');
 
-for (const path of ['adapters/mcp/runtime-gateway/work-learning-operations.ts']) {
+for (const path of ['adapters/mcp/runtime-gateway/rh-work-learning-operations.ts']) {
   forbid(
     path,
     /assertFacadeControllerRoundAuthority|controllerSessionAuthorityMatches|getControllerSession|EXPERIENCE_CONTROLLER_NOT_OWNER|EXPERIENCE_ROUND_AUTHORITY_MISMATCH|EXPERIENCE_CLAIM_AUTHORITY_MISMATCH/,

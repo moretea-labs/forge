@@ -6,7 +6,7 @@ import { spawnSync } from 'child_process';
 import { executeWorkflow, workflowCapabilityDependencies } from '../../packages/workflow-runtime/api/index';
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { readWorkflowRegistryEntry } from '../../src/runtime/control-plane/persistence/workflow-registry-store';
-import { callRhWorkWorkflowOperation } from '../../adapters/mcp/runtime-gateway/work-workflow-operations';
+import { callRhWorkWorkflowOperation } from '../../adapters/mcp/runtime-gateway/rh-work-workflow-operations';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import {
   ensureReleaseGrowthWorkflowInstalled,
@@ -15,7 +15,9 @@ import {
 } from '../../src/runtime/workflows/first-party/release-growth';
 
 const homes: string[] = [];
-afterEach(() => { while (homes.length) rmSync(homes.pop()!, { recursive: true, force: true }); });
+afterEach(() => {
+  while (homes.length) rmSync(homes.pop()!, { recursive: true, force: true });
+});
 
 function runScript(workflowId: string, scriptId: string, input: Record<string, unknown>) {
   const asset = materializedReleaseGrowthWorkflow(workflowId);
@@ -36,7 +38,16 @@ const parentId = '2096041354891874406';
 const commentId = '2097000000000000001';
 const replyText = 'Thanks for raising this. The release is not complete until the public storefront is verified.';
 
-function capabilityOutput(stepId: string, mode: 'success' | 'unknown-submit' | 'unknown-composer' | 'duplicate' | 'wrong-comment-page' | 'wrong-parent' = 'success') {
+function capabilityOutput(
+  stepId: string,
+  mode:
+    | 'success'
+    | 'unknown-submit'
+    | 'unknown-composer'
+    | 'duplicate'
+    | 'wrong-comment-page'
+    | 'wrong-parent' = 'success',
+) {
   const profileUrl = 'https://x.com/' + account;
   const parentUrl = profileUrl + '/status/' + parentId;
   const commentUrl = 'https://x.com/other_user/status/' + commentId;
@@ -59,7 +70,10 @@ function capabilityOutput(stepId: string, mode: 'success' | 'unknown-submit' | '
       return { matched: true, observedUrl: 'https://x.com/compose/post' };
     case 'submit-post':
       return mode === 'unknown-submit'
-        ? { outcome: 'outcome_unknown', error: { code: 'BROWSER_EFFECT_OUTCOME_UNKNOWN', message: 'Submit outcome is unknown.' } }
+        ? {
+            outcome: 'outcome_unknown',
+            error: { code: 'BROWSER_EFFECT_OUTCOME_UNKNOWN', message: 'Submit outcome is unknown.' },
+          }
         : { outcome: 'succeeded', receiptRef: 'X-POST-EFFECT-1' };
     case 'verify-post-page':
       return { matched: true, observedUrl: profileUrl };
@@ -85,13 +99,19 @@ function capabilityOutput(stepId: string, mode: 'success' | 'unknown-submit' | '
       return { matches: [ownLink(parentId)], count: 1 };
     case 'open-reply-composer':
       return mode === 'unknown-composer'
-        ? { outcome: 'outcome_unknown', error: { code: 'BROWSER_EFFECT_OUTCOME_UNKNOWN', message: 'Composer state is unknown.' } }
+        ? {
+            outcome: 'outcome_unknown',
+            error: { code: 'BROWSER_EFFECT_OUTCOME_UNKNOWN', message: 'Composer state is unknown.' },
+          }
         : { outcome: 'succeeded', receiptRef: 'X-REPLY-COMPOSER-1' };
     case 'verify-reply-composer':
       return { matched: true, observedUrl: commentUrl };
     case 'submit-reply':
       return mode === 'unknown-submit'
-        ? { outcome: 'outcome_unknown', error: { code: 'BROWSER_EFFECT_OUTCOME_UNKNOWN', message: 'Reply submit outcome is unknown.' } }
+        ? {
+            outcome: 'outcome_unknown',
+            error: { code: 'BROWSER_EFFECT_OUTCOME_UNKNOWN', message: 'Reply submit outcome is unknown.' },
+          }
         : { outcome: 'succeeded', receiptRef: 'X-REPLY-EFFECT-1' };
     case 'verify-thread-after-reply':
       return { matched: true, observedUrl: commentUrl };
@@ -111,43 +131,63 @@ function capabilityOutput(stepId: string, mode: 'success' | 'unknown-submit' | '
 async function executeAsset(
   workflowId: string,
   inputs: Record<string, string>,
-  mode: 'success' | 'unknown-submit' | 'unknown-composer' | 'duplicate' | 'wrong-comment-page' | 'wrong-parent' = 'success',
+  mode:
+    | 'success'
+    | 'unknown-submit'
+    | 'unknown-composer'
+    | 'duplicate'
+    | 'wrong-comment-page'
+    | 'wrong-parent' = 'success',
 ) {
   const asset = materializedReleaseGrowthWorkflow(workflowId);
   const calls: string[] = [];
-  const result = await executeWorkflow({
-    asset,
-    binding: { scopeId: 'repository:release-growth-test', runId: workflowId + '-' + mode },
-    inputs,
-  }, {
-    executeCapability: async ({ step }) => {
-      calls.push(step.stepId);
-      const output = capabilityOutput(step.stepId, mode);
-      if (output && typeof output === 'object' && 'outcome' in output) return output as any;
-      return {
-        outcome: 'succeeded' as const,
-        receiptRef: 'CAP-' + step.stepId,
-        output: output as Record<string, unknown>,
-      };
+  const result = await executeWorkflow(
+    {
+      asset,
+      binding: { scopeId: 'repository:release-growth-test', runId: workflowId + '-' + mode },
+      inputs,
     },
-    executeScript: async ({ step, arguments: args }) => {
-      const scriptRef = step.scriptRef;
-      if (!scriptRef) throw new Error('SCRIPT_REF_MISSING');
-      const execution = runScript(asset.workflowId, scriptRef, args);
-      return execution.status === 0
-        ? { outcome: 'succeeded' as const, receiptRef: 'SCRIPT-' + step.stepId, output: JSON.parse(execution.output) }
-        : { outcome: 'failed' as const, receiptRef: 'SCRIPT-FAIL-' + step.stepId, error: { code: 'SCRIPT_FAIL_CLOSED', message: execution.error } };
+    {
+      executeCapability: async ({ step }) => {
+        calls.push(step.stepId);
+        const output = capabilityOutput(step.stepId, mode);
+        if (output && typeof output === 'object' && 'outcome' in output) return output as any;
+        return {
+          outcome: 'succeeded' as const,
+          receiptRef: 'CAP-' + step.stepId,
+          output: output as Record<string, unknown>,
+        };
+      },
+      executeScript: async ({ step, arguments: args }) => {
+        const scriptRef = step.scriptRef;
+        if (!scriptRef) throw new Error('SCRIPT_REF_MISSING');
+        const execution = runScript(asset.workflowId, scriptRef, args);
+        return execution.status === 0
+          ? { outcome: 'succeeded' as const, receiptRef: 'SCRIPT-' + step.stepId, output: JSON.parse(execution.output) }
+          : {
+              outcome: 'failed' as const,
+              receiptRef: 'SCRIPT-FAIL-' + step.stepId,
+              error: { code: 'SCRIPT_FAIL_CLOSED', message: execution.error },
+            };
+      },
     },
-  });
+  );
   return { result, calls };
 }
 
 describe('first-party X publication and reply workflows (#652)', () => {
   test('account verification rejects another handle with the approved handle as a prefix', () => {
     for (const workflowId of Object.values(X_EFFECT_WORKFLOW_IDS)) {
-      expect(runScript(workflowId, 'assertAccount', { account: 'greyson', matches: [{ text: 'Other @greyson_extra' }] }).status).not.toBe(0);
-      expect(runScript(workflowId, 'assertAccount', { account: 'greyson', matches: [{ text: 'Greyson @greyson' }] }).status).toBe(0);
-      expect(runScript(workflowId, 'assertAccount', { account: 'Greyson', matches: [{ text: 'Greyson @greyson' }] }).status).toBe(0);
+      expect(
+        runScript(workflowId, 'assertAccount', { account: 'greyson', matches: [{ text: 'Other @greyson_extra' }] })
+          .status,
+      ).not.toBe(0);
+      expect(
+        runScript(workflowId, 'assertAccount', { account: 'greyson', matches: [{ text: 'Greyson @greyson' }] }).status,
+      ).toBe(0);
+      expect(
+        runScript(workflowId, 'assertAccount', { account: 'Greyson', matches: [{ text: 'Greyson @greyson' }] }).status,
+      ).toBe(0);
     }
   });
 
@@ -162,17 +202,23 @@ describe('first-party X publication and reply workflows (#652)', () => {
       const asset = materializedReleaseGrowthWorkflow(workflowId);
       const installed = ensureReleaseGrowthWorkflowInstalled(controllerHome, workflowId);
       expect(installed.value.contentDigest).toBe(asset.contentDigest);
-      expect(installed.value.bindings.map(binding => binding.capabilityId).sort()).toEqual(workflowCapabilityDependencies(asset));
-      expect(installed.value.bindings.every(binding => binding.pluginId === 'computer')).toBe(true);
+      expect(installed.value.bindings.map((binding) => binding.capabilityId).sort()).toEqual(
+        workflowCapabilityDependencies(asset),
+      );
+      expect(installed.value.bindings.every((binding) => binding.pluginId === 'computer')).toBe(true);
       const writeActions = installed.value.bindings
-        .map(binding => binding.actionId)
+        .map((binding) => binding.actionId)
         .filter((actionId): actionId is string => actionId === 'click' || actionId === 'fill')
         .sort();
       expect(writeActions).toEqual(['click', 'fill']);
-      expect(asset.steps.filter(step => step.idempotency === 'non_idempotent').map(step => step.stepId))
-        .toEqual([...expectedEffects]);
-      expect(asset.steps.filter(step => step.idempotency === 'non_idempotent').every(step =>
-        step.reconcileWithCapabilityId === 'browser.reconcile_effect')).toBe(true);
+      expect(asset.steps.filter((step) => step.idempotency === 'non_idempotent').map((step) => step.stepId)).toEqual([
+        ...expectedEffects,
+      ]);
+      expect(
+        asset.steps
+          .filter((step) => step.idempotency === 'non_idempotent')
+          .every((step) => step.reconcileWithCapabilityId === 'browser.reconcile_effect'),
+      ).toBe(true);
       expect(asset.credentialRefs).toBeUndefined();
       const repeated = ensureReleaseGrowthWorkflowInstalled(controllerHome, workflowId);
       expect(repeated.value.contentDigest).toBe(asset.contentDigest);
@@ -211,8 +257,8 @@ describe('first-party X publication and reply workflows (#652)', () => {
       expect(response).toBeDefined();
       expect(installed?.value.status).toBe('active');
       expect(installed?.value.contentDigest).toBe(materializedReleaseGrowthWorkflow(workflowId).contentDigest);
-      expect(installed?.value.bindings.map(binding => binding.capabilityId)).toContain('browser.click');
-      expect(installed?.value.bindings.map(binding => binding.capabilityId)).toContain('browser.reconcile_effect');
+      expect(installed?.value.bindings.map((binding) => binding.capabilityId)).toContain('browser.click');
+      expect(installed?.value.bindings.map((binding) => binding.capabilityId)).toContain('browser.reconcile_effect');
     }
 
     const targetCommentId = '2097000000000000001';
@@ -256,7 +302,10 @@ describe('first-party X publication and reply workflows (#652)', () => {
     });
     expect(duplicate.status).not.toBe(0);
     const empty = runScript(id, 'assertNoDuplicate', {
-      account, match_prefix: prepared.match_prefix, articles: [], links: [],
+      account,
+      match_prefix: prepared.match_prefix,
+      articles: [],
+      links: [],
     });
     expect(empty.status).toBe(0);
     expect(JSON.parse(empty.output)).toEqual({ checked_posts: 0 });
@@ -308,48 +357,85 @@ describe('first-party X publication and reply workflows (#652)', () => {
       parent_url: inputs.post_url,
       comment_url: inputs.comment_url,
     });
-    expect(runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'validateReply', {
-      ...inputs, post_url: 'https://x.com/another_account/status/123',
-    }).status).not.toBe(0);
-    expect(runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'validateReply', {
-      ...inputs, comment_url: 'https://evil.example/status/123',
-    }).status).not.toBe(0);
-    expect(runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'validateReply', {
-      ...inputs, comment_text: 'x'.repeat(281),
-    }).status).not.toBe(0);
-    expect(runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'validateReply', {
-      ...inputs, comment_url: inputs.post_url,
-    }).status).not.toBe(0);
-    expect(runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'validateReply', {
-      ...inputs, comment_url: 'https://x.com/' + account + '/status/' + commentId,
-    }).status).not.toBe(0);
+    expect(
+      runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'validateReply', {
+        ...inputs,
+        post_url: 'https://x.com/another_account/status/123',
+      }).status,
+    ).not.toBe(0);
+    expect(
+      runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'validateReply', {
+        ...inputs,
+        comment_url: 'https://evil.example/status/123',
+      }).status,
+    ).not.toBe(0);
+    expect(
+      runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'validateReply', {
+        ...inputs,
+        comment_text: 'x'.repeat(281),
+      }).status,
+    ).not.toBe(0);
+    expect(
+      runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'validateReply', {
+        ...inputs,
+        comment_url: inputs.post_url,
+      }).status,
+    ).not.toBe(0);
+    expect(
+      runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'validateReply', {
+        ...inputs,
+        comment_url: 'https://x.com/' + account + '/status/' + commentId,
+      }).status,
+    ).not.toBe(0);
     const prepared = JSON.parse(valid.output);
-    expect(runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'assertParent', {
-      matches: [], parent_status_href: prepared.parent_status_href,
-    }).status).not.toBe(0);
-    expect(runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'assertComment', {
-      article_text: 'Other User @other_user · Nov 14 The release notes were clear and useful.',
-      comment_text: inputs.comment_text, comment_author: 'other_user', comment_id: prepared.comment_id,
-    }).status).toBe(0);
-    expect(runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'assertComment', {
-      article_text: 'Other User @different_user · Nov 14 The release notes were clear and useful.',
-      comment_text: inputs.comment_text, comment_author: 'other_user', comment_id: prepared.comment_id,
-    }).status).not.toBe(0);
-    expect(runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'assertCommentUrl', {
-      expected_url: inputs.comment_url, matched: true, observed_url: inputs.comment_url,
-    }).status).toBe(0);
-    expect(runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'assertCommentUrl', {
-      expected_url: inputs.comment_url, matched: false, observed_url: 'https://x.com/' + 'i/flow/login',
-    }).status).not.toBe(0);
-    expect(asset.steps.find(step => step.stepId === 'read-comment')).toMatchObject({
-      capabilityId: 'browser.get_text', input: { max_chars: 5000 },
+    expect(
+      runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'assertParent', {
+        matches: [],
+        parent_status_href: prepared.parent_status_href,
+      }).status,
+    ).not.toBe(0);
+    expect(
+      runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'assertComment', {
+        article_text: 'Other User @other_user · Nov 14 The release notes were clear and useful.',
+        comment_text: inputs.comment_text,
+        comment_author: 'other_user',
+        comment_id: prepared.comment_id,
+      }).status,
+    ).toBe(0);
+    expect(
+      runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'assertComment', {
+        article_text: 'Other User @different_user · Nov 14 The release notes were clear and useful.',
+        comment_text: inputs.comment_text,
+        comment_author: 'other_user',
+        comment_id: prepared.comment_id,
+      }).status,
+    ).not.toBe(0);
+    expect(
+      runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'assertCommentUrl', {
+        expected_url: inputs.comment_url,
+        matched: true,
+        observed_url: inputs.comment_url,
+      }).status,
+    ).toBe(0);
+    expect(
+      runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'assertCommentUrl', {
+        expected_url: inputs.comment_url,
+        matched: false,
+        observed_url: 'https://x.com/' + 'i/flow/login',
+      }).status,
+    ).not.toBe(0);
+    expect(asset.steps.find((step) => step.stepId === 'read-comment')).toMatchObject({
+      capabilityId: 'browser.get_text',
+      input: { max_chars: 5000 },
     });
-    expect(runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'assertNoDuplicateReply', {
-      account,
-      reply_prefix: prepared.reply_prefix,
-      articles: [{ text: 'Greyson @' + account + ' · Nov 14 ' + replyText }],
-      links: [{ href: '/' + account + '/status/2097000000000000002' }],
-    }).status).not.toBe(0);
+    expect(
+      runScript(X_EFFECT_WORKFLOW_IDS.replyToComment, 'assertNoDuplicateReply', {
+        account,
+        reply_prefix: prepared.reply_prefix,
+        articles: [{ text: 'Greyson @' + account + ' · Nov 14 ' + replyText }],
+        links: [{ href: '/' + account + '/status/2097000000000000002' }],
+      }).status,
+    ).not.toBe(0);
     expect(asset.publication).toBeUndefined();
 
     const wrongPage = await executeAsset(X_EFFECT_WORKFLOW_IDS.replyToComment, inputs, 'wrong-comment-page');

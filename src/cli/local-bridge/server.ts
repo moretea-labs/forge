@@ -1,13 +1,9 @@
-import { createHash, randomBytes } from "crypto";
-import { readFileSync } from "fs";
-import { createServer, type Server } from "http";
-import express, {
-  type NextFunction,
-  type Request,
-  type Response,
-} from "express";
-import { describeFailure } from "../../../packages/protocols/failure";
-import { ControllerLockContentionError, withControllerLock } from "../../effects/controller-locks";
+import { createHash, randomBytes } from 'crypto';
+import { readFileSync } from 'fs';
+import { createServer, type Server } from 'http';
+import express, { type NextFunction, type Request, type Response } from 'express';
+import { describeFailure } from '../../../packages/protocols/failure';
+import { ControllerLockContentionError, withControllerLock } from '../../effects/controller-locks';
 import {
   cancelAgentJob,
   getAgentJob,
@@ -15,31 +11,28 @@ import {
   getAgentJobLog,
   listAgentJobs,
   reconcileAgentJobs,
-} from "../agent-jobs/job-manager";
+} from '../agent-jobs/job-manager';
+import { cleanupIntegratedWorktree, integrateAgentJob, taskRunDiff } from '../agent-jobs/integration';
+import { listControllerChecks, runControllerCheck } from '../../runtime/execution/process-runtime/check-runner';
+import { inspectIssueReadiness, inspectTaskReadiness, projectBoard } from '../controller/issue-store';
+import { buildControllerTaskLedgerProjection } from '../controller/task-ledger';
+import { buildControllerOperationalPlan } from '../controller/operational-plan';
 import {
-  cleanupIntegratedWorktree,
-  integrateAgentJob,
-  taskRunDiff,
-} from "../agent-jobs/integration";
-import { listControllerChecks, runControllerCheck } from "../../runtime/execution/process-runtime/check-runner";
-import { inspectIssueReadiness, inspectTaskReadiness, projectBoard } from "../controller/issue-store";
-import { buildControllerTaskLedgerProjection } from "../controller/task-ledger";
-import { buildControllerOperationalPlan } from "../controller/operational-plan";
-import { exportControllerWorklog, listControllerWorklogEvents, parseWorklogCategory } from "../../runtime/evidence/controller-worklog";
-import { inspectProjectGovernance, reconcileProjectGovernance } from "../controller/governance";
-import { loadControllerProjectState } from "../controller/project-state";
-import { legacyIssueAuthorityRetired } from "../controller/legacy-issue-cutover";
-import { buildExecutionDiagnostics, buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";
+  exportControllerWorklog,
+  listControllerWorklogEvents,
+  parseWorklogCategory,
+} from '../../runtime/evidence/controller-worklog';
+import { inspectProjectGovernance, reconcileProjectGovernance } from '../controller/governance';
+import { loadControllerProjectState } from '../controller/project-state';
+import { legacyIssueAuthorityRetired } from '../controller/legacy-issue-cutover';
+import { buildExecutionDiagnostics, buildRequirementBoard } from '../../runtime/control-plane/facade/requirement-board';
 import {
   closeIssueWithGitHubPlugin,
   githubIssueSyncPort,
   publishIssueWithGitHubPlugin,
   refreshIssueWithGitHubPlugin,
-} from "../github/plugin";
-import {
-  getGitHubPluginStatus,
-  saveGitHubPluginConfig,
-} from "../../runtime/plugins/github-config";
+} from '../github/plugin';
+import { getGitHubPluginStatus, saveGitHubPluginConfig } from '../../runtime/plugins/github-config';
 import {
   cancelLocalBridgeJob,
   getLocalBridgeJob,
@@ -47,15 +40,19 @@ import {
   listLocalBridgeJobs,
   localBridgeTimeoutPolicy,
   reconcileLocalBridgeJobs,
-} from "./job-store";
+} from './job-store';
 import {
   createEditSavepoint,
   getEditSession,
   getEditSessionDiff,
   listEditSessions,
   verifyEditSession,
-} from "../../runtime/editing/edit-session";
-import { applyConsoleAutomationAction, listConsoleAutomations, summarizeConsoleAutomations } from "./console-automations";
+} from '../../runtime/editing/edit-session';
+import {
+  applyConsoleAutomationAction,
+  listConsoleAutomations,
+  summarizeConsoleAutomations,
+} from './console-automations';
 import {
   ackConsoleHandoff,
   approveConsoleHandoff,
@@ -76,50 +73,88 @@ import {
   repairConsole,
   resolveConsoleHandoff,
   setConsoleAccessPolicy,
-} from "./facade-api";
+} from './facade-api';
 import {
   FORGE_MCP_SCHEMA_VERSION,
   FORGE_TOOL_SURFACE,
   FORGE_VERSION,
   forgeToolSurfaceFingerprint,
   defaultLocalAgentRunners,
-} from "../../runtime/shared/runtime-config";
-import { taskWriteScopesConflict } from "../controller/execution-policy";
-import { applyCompletionDecision, completionDecisionQueues, finishCompletionBacklog, inspectCompletionBacklog } from "../controller/completion-backlog";
-import { finishEditSession, finishTaskRun } from "../controller/completion-orchestrator";
-import { prepareCodexContinuation } from "../controller/codex-continuation";
-import { applyStuckStateMigration, inspectStuckControllerStates } from "../controller/stuck-state-migration";
+} from '../../runtime/shared/runtime-config';
+import { taskWriteScopesConflict } from '../controller/execution-policy';
+import {
+  applyCompletionDecision,
+  completionDecisionQueues,
+  finishCompletionBacklog,
+  inspectCompletionBacklog,
+} from '../controller/completion-backlog';
+import { finishEditSession, finishTaskRun } from '../controller/completion-orchestrator';
+import { prepareCodexContinuation } from '../controller/codex-continuation';
+import { applyStuckStateMigration, inspectStuckControllerStates } from '../controller/stuck-state-migration';
 import { getToolPolicy } from '../../runtime/control-plane/tool-policy';
-import type { MultiRepositoryMcpToolContext } from "../../../adapters/mcp/multi-repository";
-import { createMcpToolContext as createControllerMcpToolContext } from "../../../adapters/mcp/server";
-import { callRhWorkWorkflowOperation } from "../../../adapters/mcp/runtime-gateway/work-workflow-operations";
-import { AGENTMAIL_EVENT_WORKFLOW_ID } from "../../runtime/workflows/first-party/agentmail-event";
-import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from "../../../adapters/mcp/auth";
-import { loadRepositoryRegistry, registerRepository, removeRepository, resolveRepositorySelection } from "../../runtime/repositories/registry";
-import { withRepositoryMutationExclusion, withRepositoryMutationExclusionAsync } from '../../runtime/resources/leases/store';
+import type { MultiRepositoryMcpToolContext } from '../../../adapters/mcp/multi-repository';
+import { createMcpToolContext as createControllerMcpToolContext } from '../../../adapters/mcp/server';
+import { callRhWorkWorkflowOperation } from '../../../adapters/mcp/runtime-gateway/rh-work-workflow-operations';
+import { AGENTMAIL_EVENT_WORKFLOW_ID } from '../../runtime/workflows/first-party/agentmail-event';
+import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from '../../../adapters/mcp/auth';
+import {
+  loadRepositoryRegistry,
+  registerRepository,
+  removeRepository,
+  resolveRepositorySelection,
+} from '../../runtime/repositories/registry';
+import {
+  withRepositoryMutationExclusion,
+  withRepositoryMutationExclusionAsync,
+} from '../../runtime/resources/leases/store';
 import { runEditSessionMutationInWorker } from './edit-session-worker';
-import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../../effects/controller-home";
-import { ensureRepositoryRuntimeStorage } from "../../runtime/repositories/runtime-storage";
-import { readForgeRuntimeStatus } from "../../runtime/control-plane/runtime-status-client";
-import { readRuntimeGeneration } from "../../runtime/control-plane/runtime-generation";
-import { findExecutionJob, listExecutionJobs } from "../../runtime/execution/jobs/store";
-import { rebuildRepositoryProjection, readRepositoryProjectionSnapshot } from "../../runtime/projections/materialized-view";
-import { getAssistantPluginManifest, listAssistantPluginManifests, listControllerPluginManifests, submitAssistantPluginAction, findPluginActionReceipt, compatibilityPluginJobFromReceipt} from "../../runtime/plugins/store";
+import { resolveControllerHome, resolveRepoPreferredControllerHome } from '../../effects/controller-home';
+import { ensureRepositoryRuntimeStorage } from '../../runtime/repositories/runtime-storage';
+import { readForgeRuntimeStatus } from '../../runtime/control-plane/runtime-status-client';
+import { readRuntimeGeneration } from '../../runtime/control-plane/runtime-generation';
+import { findExecutionJob, listExecutionJobs } from '../../runtime/execution/jobs/store';
+import {
+  rebuildRepositoryProjection,
+  readRepositoryProjectionSnapshot,
+} from '../../runtime/projections/materialized-view';
+import {
+  getAssistantPluginManifest,
+  listAssistantPluginManifests,
+  listControllerPluginManifests,
+  submitAssistantPluginAction,
+  findPluginActionReceipt,
+  compatibilityPluginJobFromReceipt,
+} from '../../runtime/plugins/store';
 import {
   createMobileIntentDevice,
   listMobileIntentDevices,
   mobileIntentHasScope,
   revokeMobileIntentDevice,
   verifyMobileIntentRequest,
-} from "./mobile-intents";
-import { buildMobileMonitorSnapshot } from "./mobile-monitor";
-import { controllerExposureSnapshot } from "../../../adapters/mcp/toolset";
-import { completeGoogleOAuthLogin } from "../../runtime/safe-tooling/google-oauth-broker";
-import { completeResendOAuthLogin } from "../../runtime/safe-tooling/resend-oauth";
-import { summarizePluginForLowInterception } from "../../runtime/safe-tooling";
-import { buildModelClientSummary, buildModelControlPlaneSummary, deepSeekControllerManifest, deepSeekFunctionToolManifest, prepareDeepSeekControllerHandoff, prepareDeepSeekControllerRequest, prepareDeepSeekToolCall } from "../../runtime/model-clients";
-import { previewRuntimeCleanup } from "../../runtime/maintenance/cleanup";
-import { assertRecoveryAuthorized, buildCapabilityRecoverySnapshot, buildRecoveryAuditRecord, executeCapabilityRecoveryAction, recoveryActionById, writeRecoveryAuditRecord } from "../../runtime/recovery";
+} from './mobile-intents';
+import { buildMobileMonitorSnapshot } from './mobile-monitor';
+import { controllerExposureSnapshot } from '../../../adapters/mcp/toolset';
+import { completeGoogleOAuthLogin } from '../../runtime/safe-tooling/google-oauth-broker';
+import { completeResendOAuthLogin } from '../../runtime/safe-tooling/resend-oauth';
+import { summarizePluginForLowInterception } from '../../runtime/safe-tooling';
+import {
+  buildModelClientSummary,
+  buildModelControlPlaneSummary,
+  deepSeekControllerManifest,
+  deepSeekFunctionToolManifest,
+  prepareDeepSeekControllerHandoff,
+  prepareDeepSeekControllerRequest,
+  prepareDeepSeekToolCall,
+} from '../../runtime/model-clients';
+import { previewRuntimeCleanup } from '../../runtime/maintenance/cleanup';
+import {
+  assertRecoveryAuthorized,
+  buildCapabilityRecoverySnapshot,
+  buildRecoveryAuditRecord,
+  executeCapabilityRecoveryAction,
+  recoveryActionById,
+  writeRecoveryAuditRecord,
+} from '../../runtime/recovery';
 
 export interface LocalBridgeServerOptions {
   /**
@@ -134,8 +169,8 @@ export interface LocalBridgeServerOptions {
   port?: number;
   token?: string;
   allowLanMobileIntents?: boolean;
-  mode?: "standalone" | "embedded" | "remote" | "disabled" | "unknown";
-  slot?: "blue" | "green";
+  mode?: 'standalone' | 'embedded' | 'remote' | 'disabled' | 'unknown';
+  slot?: 'blue' | 'green';
 }
 
 export interface LocalBridgeServerHandle {
@@ -148,23 +183,21 @@ export interface LocalBridgeServerHandle {
 }
 
 function normalizeHostname(hostname: string): string {
-  return hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return hostname.replace(/^\[|\]$/g, '').toLowerCase();
 }
 
 function isLoopbackHostname(hostname: string): boolean {
-  return ["127.0.0.1", "localhost", "::1"].includes(normalizeHostname(hostname));
+  return ['127.0.0.1', 'localhost', '::1'].includes(normalizeHostname(hostname));
 }
 
 function isWildcardBindHost(host: string): boolean {
-  return ["0.0.0.0", "::", "[::]"].includes(normalizeHostname(host));
+  return ['0.0.0.0', '::', '[::]'].includes(normalizeHostname(host));
 }
 
 function assertAllowedBindHost(host: string, allowLanMobileIntents: boolean): void {
   if (isLoopbackHostname(host)) return;
   if (allowLanMobileIntents && isWildcardBindHost(host)) return;
-  throw new Error(
-    `local controller must bind to loopback unless --mobile-lan is enabled, received: ${host}`,
-  );
+  throw new Error(`local controller must bind to loopback unless --mobile-lan is enabled, received: ${host}`);
 }
 
 function parsedRequestHost(value: string | undefined): URL | undefined {
@@ -179,11 +212,11 @@ function parsedRequestHost(value: string | undefined): URL | undefined {
 function cookieValue(request: Request, name: string): string | undefined {
   const raw = request.headers.cookie;
   if (!raw) return undefined;
-  for (const part of raw.split(";")) {
-    const [key, ...valueParts] = part.trim().split("=");
+  for (const part of raw.split(';')) {
+    const [key, ...valueParts] = part.trim().split('=');
     if (key !== name) continue;
     try {
-      return decodeURIComponent(valueParts.join("="));
+      return decodeURIComponent(valueParts.join('='));
     } catch (_error) {
       return undefined;
     }
@@ -197,7 +230,7 @@ function errorMessage(error: unknown): string {
 
 function mobileIntentFailureResponse(error: unknown): { message: string; status: number } {
   if (error instanceof ControllerLockContentionError) {
-    return { message: "MOBILE_INTENT_STORE_BUSY", status: 503 };
+    return { message: 'MOBILE_INTENT_STORE_BUSY', status: 503 };
   }
   const failure = describeFailure(error, {
     fallbackCode: 'MOBILE_INTENT_REQUEST_FAILED',
@@ -208,35 +241,33 @@ function mobileIntentFailureResponse(error: unknown): { message: string; status:
 
 function sendMobileIntentFailure(response: Response, error: unknown): void {
   const failure = mobileIntentFailureResponse(error);
-  if (failure.status === 503) response.setHeader("Retry-After", "1");
+  if (failure.status === 503) response.setHeader('Retry-After', '1');
   response.status(failure.status).json({ error: failure.message });
 }
 
-function withMobileIntentStoreLock<T>(
-  controllerHome: string,
-  repoId: string,
-  operation: () => T,
-): T {
+function withMobileIntentStoreLock<T>(controllerHome: string, repoId: string, operation: () => T): T {
   return withControllerLock(
     controllerHome,
-    { scope: "repository", repoId },
-    "local-bridge:mobile-intent-store",
+    { scope: 'repository', repoId },
+    'local-bridge:mobile-intent-store',
     operation,
   );
 }
 
 function localBridgeExecutionRetiredPayload(): Record<string, unknown> {
   return {
-    error: "LOCAL_BRIDGE_JOB_RETIRED",
-    message: "New Local Bridge Jobs are retired. Claim Work through an external Controller, or use the Process Runtime for deterministic commands and checks.",
+    error: 'LOCAL_BRIDGE_JOB_RETIRED',
+    message:
+      'New Local Bridge Jobs are retired. Claim Work through an external Controller, or use the Process Runtime for deterministic commands and checks.',
   };
 }
 
 function legacyControlPlaneMutationRetiredPayload(): Record<string, unknown> {
   return {
-    error: "LEGACY_CONTROL_PLANE_MUTATION_RETIRED",
-    message: "Issue, Task, currentIssue and legacy project-board mutation APIs are frozen after SQLite cutover. Use Requirement, Plan and Work APIs.",
-    authority: "controller-home-sqlite",
+    error: 'LEGACY_CONTROL_PLANE_MUTATION_RETIRED',
+    message:
+      'Issue, Task, currentIssue and legacy project-board mutation APIs are frozen after SQLite cutover. Use Requirement, Plan and Work APIs.',
+    authority: 'controller-home-sqlite',
     deprecated: true,
     frozen: true,
   };
@@ -244,15 +275,16 @@ function legacyControlPlaneMutationRetiredPayload(): Record<string, unknown> {
 
 function legacyProgressProjectionRetiredPayload(): Record<string, unknown> {
   return {
-    error: "LEGACY_PROGRESS_PROJECTION_RETIRED",
-    message: "Legacy Issue/Task progress projections were retired with the Local Bridge web UI. Use Requirement, Plan, Work and execution evidence APIs.",
-    authority: "controller-home-sqlite",
+    error: 'LEGACY_PROGRESS_PROJECTION_RETIRED',
+    message:
+      'Legacy Issue/Task progress projections were retired with the Local Bridge web UI. Use Requirement, Plan, Work and execution evidence APIs.',
+    authority: 'controller-home-sqlite',
     deprecated: true,
   };
 }
 
 function queryString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function controllerStateSignature(repoRoot: string): string {
@@ -279,12 +311,22 @@ function controllerStateSignature(repoRoot: string): string {
     jobs: snapshot.localJobs.map((job) => [job.jobId, job.status, job.updatedAt, job.runId]),
     worklog: latestWorklog?.id,
     projectState: snapshot.projectState,
-    edits: snapshot.editSessions.map((edit) => [edit.sessionId, edit.status, edit.updatedAt, edit.changedFiles, edit.checksPassed, edit.checksTotal]),
+    edits: snapshot.editSessions.map((edit) => [
+      edit.sessionId,
+      edit.status,
+      edit.updatedAt,
+      edit.changedFiles,
+      edit.checksPassed,
+      edit.checksTotal,
+    ]),
   });
 }
 
 const SNAPSHOT_CACHE_TTL_MS = 2_000;
-const localSnapshotCache = new Map<string, { createdAt: number; value: ReturnType<typeof buildLocalControllerSnapshot> }>();
+const localSnapshotCache = new Map<
+  string,
+  { createdAt: number; value: ReturnType<typeof buildLocalControllerSnapshot> }
+>();
 
 function cachedLocalControllerSnapshot(repoRoot: string): ReturnType<typeof buildLocalControllerSnapshot> {
   const now = Date.now();
@@ -298,7 +340,9 @@ function cachedLocalControllerSnapshot(repoRoot: string): ReturnType<typeof buil
 function runtimeControllerSnapshot(repoRoot: string) {
   const controllerHome = resolveControllerHome();
   const normalizedRoot = repoRoot.replace(/\\/g, '/');
-  const repository = loadRepositoryRegistry(controllerHome).repositories.find((entry) => entry.canonicalRoot.replace(/\\/g, '/') === normalizedRoot);
+  const repository = loadRepositoryRegistry(controllerHome).repositories.find(
+    (entry) => entry.canonicalRoot.replace(/\\/g, '/') === normalizedRoot,
+  );
   if (!repository) return { registered: false, daemon: readForgeRuntimeStatus(controllerHome) };
   return {
     registered: true,
@@ -320,7 +364,11 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     ? buildRequirementBoard({ controllerHome: authoritativeControllerHome, repoId: runtimeRepository?.repoId })
     : undefined;
   const executionDiagnostics = retiredLegacyControlPlane
-    ? buildExecutionDiagnostics({ controllerHome: authoritativeControllerHome, repoId: runtimeRepository?.repoId, detailLevel: "detail" })
+    ? buildExecutionDiagnostics({
+        controllerHome: authoritativeControllerHome,
+        repoId: runtimeRepository?.repoId,
+        detailLevel: 'detail',
+      })
     : undefined;
   const runs = listAgentJobs(repoRoot, 30);
   const editSessions = listEditSessions(repoRoot, 30);
@@ -328,8 +376,8 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
   const board = retiredLegacyControlPlane
     ? {
         schemaVersion: 1,
-        projection: "deprecated_frozen_legacy_board",
-        authority: "controller-home-sqlite",
+        projection: 'deprecated_frozen_legacy_board',
+        authority: 'controller-home-sqlite',
         deprecated: true,
         frozen: true,
         issues: [],
@@ -339,30 +387,57 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
         readyTasks: [],
         queueableTasks: [],
         archivedIssueCount: 0,
-        notice: "Requirement Board is authoritative. Legacy Issue/Task board data is intentionally omitted.",
+        notice: 'Requirement Board is authoritative. Legacy Issue/Task board data is intentionally omitted.',
       }
     : projectBoard(repoRoot);
   const taskLedger = buildControllerTaskLedgerProjection(repoRoot);
   const operationalPlan = buildControllerOperationalPlan(repoRoot, taskLedger);
   const completionBacklog = retiredLegacyControlPlane
-    ? { scannedAt: new Date().toISOString(), counts: {}, finishableRunIds: [], needsHumanReviewRunIds: [], retryTaskRefs: [], items: [], recommendations: ["Use Work and Execution Diagnostics."] }
+    ? {
+        scannedAt: new Date().toISOString(),
+        counts: {},
+        finishableRunIds: [],
+        needsHumanReviewRunIds: [],
+        retryTaskRefs: [],
+        items: [],
+        recommendations: ['Use Work and Execution Diagnostics.'],
+      }
     : inspectCompletionBacklog(repoRoot, { limit: 100 });
   const completionQueues = retiredLegacyControlPlane
-    ? { scannedAt: new Date().toISOString(), counts: {}, autoFinish: [], needsHumanReview: [], retryRequired: [], noRunEvidence: [], systemBlocked: [], recentlyTerminal: [], recommendations: ["Use Work and Execution Diagnostics."] }
+    ? {
+        scannedAt: new Date().toISOString(),
+        counts: {},
+        autoFinish: [],
+        needsHumanReview: [],
+        retryRequired: [],
+        noRunEvidence: [],
+        systemBlocked: [],
+        recentlyTerminal: [],
+        recommendations: ['Use Work and Execution Diagnostics.'],
+      }
     : completionDecisionQueues(repoRoot, { limit: 100 });
   const stuckStates = retiredLegacyControlPlane
-    ? { generatedAt: new Date().toISOString(), findings: [], counts: {}, recommendations: ["Use Work and Execution Diagnostics."] }
+    ? {
+        generatedAt: new Date().toISOString(),
+        findings: [],
+        counts: {},
+        recommendations: ['Use Work and Execution Diagnostics.'],
+      }
     : inspectStuckControllerStates(repoRoot, { limit: 100 });
   const runtime = runtimeControllerSnapshot(repoRoot);
-  const executionJobs = "executionJobs" in runtime ? (runtime.executionJobs ?? []) : [];
+  const executionJobs = 'executionJobs' in runtime ? (runtime.executionJobs ?? []) : [];
   const controllerHome = resolveControllerHome();
   const normalizedAssistantRoot = repoRoot.replace(/\\/g, '/');
   const assistantRepository = loadRepositoryRegistry(controllerHome).repositories.find(
     (entry) => entry.canonicalRoot.replace(/\\/g, '/') === normalizedAssistantRoot,
   );
-  const assistantPlugins = (assistantRepository ? listAssistantPluginManifests(controllerHome, assistantRepository, {
-    preferStored: true,
-  }) : []).map((plugin) => ({
+  const assistantPlugins = (
+    assistantRepository
+      ? listAssistantPluginManifests(controllerHome, assistantRepository, {
+          preferStored: true,
+        })
+      : []
+  ).map((plugin) => ({
     pluginId: plugin.pluginId,
     provider: plugin.provider,
     displayName: plugin.displayName,
@@ -386,52 +461,167 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     id: string;
     tasks?: Array<{ id: string; title: string; effectiveStatus: string }>;
   }>;
-  const reviewTasks = boardIssues.flatMap((issue) => (issue.tasks ?? [])
-    .filter((task) => ["review", "verified", "changes_requested"].includes(task.effectiveStatus))
-    .map((task) => ({ kind: "task", issueId: issue.id, taskId: task.id, title: task.title, status: task.effectiveStatus })));
+  const reviewTasks = boardIssues.flatMap((issue) =>
+    (issue.tasks ?? [])
+      .filter((task) => ['review', 'verified', 'changes_requested'].includes(task.effectiveStatus))
+      .map((task) => ({
+        kind: 'task',
+        issueId: issue.id,
+        taskId: task.id,
+        title: task.title,
+        status: task.effectiveStatus,
+      })),
+  );
   const decisionQueues = {
     needsAttention: [
-      ...runs.filter((run) => ["failed", "waiting_for_user", "unknown"].includes(run.status))
-        .map((run) => ({ kind: "run", id: run.runId, title: run.progress?.currentActivity ?? run.runId, status: run.status, updatedAt: run.lastHeartbeatAt })),
-      ...editSessions.filter((session) => session.status === "check_failed")
-        .map((session) => ({ kind: "edit", id: session.sessionId, title: session.purpose, status: session.status, updatedAt: session.updatedAt })),
-      ...executionJobs.filter((job) => ["human_attention_required", "failed", "orphaned", "stale"].includes(job.status))
-        .map((job) => ({ kind: "work", id: job.jobId, title: String(job.payload.operation ?? job.type), status: job.status, updatedAt: job.updatedAt })),
+      ...runs
+        .filter((run) => ['failed', 'waiting_for_user', 'unknown'].includes(run.status))
+        .map((run) => ({
+          kind: 'run',
+          id: run.runId,
+          title: run.progress?.currentActivity ?? run.runId,
+          status: run.status,
+          updatedAt: run.lastHeartbeatAt,
+        })),
+      ...editSessions
+        .filter((session) => session.status === 'check_failed')
+        .map((session) => ({
+          kind: 'edit',
+          id: session.sessionId,
+          title: session.purpose,
+          status: session.status,
+          updatedAt: session.updatedAt,
+        })),
+      ...executionJobs
+        .filter((job) => ['human_attention_required', 'failed', 'orphaned', 'stale'].includes(job.status))
+        .map((job) => ({
+          kind: 'work',
+          id: job.jobId,
+          title: String(job.payload.operation ?? job.type),
+          status: job.status,
+          updatedAt: job.updatedAt,
+        })),
     ].slice(0, 12),
     runningNow: [
-      ...runs.filter((run) => ["queued", "starting", "running"].includes(run.status))
-        .map((run) => ({ kind: "run", id: run.runId, title: run.progress?.currentActivity ?? run.runId, status: run.status, updatedAt: run.lastHeartbeatAt })),
-      ...editSessions.filter((session) => !["finalized", "rolled_back", "check_failed"].includes(session.status))
-        .map((session) => ({ kind: "edit", id: session.sessionId, title: session.purpose, status: session.status, updatedAt: session.updatedAt })),
-      ...executionJobs.filter((job) => ["queued", "dispatched", "running", "waiting_for_dependency", "waiting_for_workspace", "waiting_for_heavy_check", "waiting_for_integration"].includes(job.status))
-        .map((job) => ({ kind: "work", id: job.jobId, title: String(job.payload.operation ?? job.type), status: job.status, updatedAt: job.updatedAt })),
+      ...runs
+        .filter((run) => ['queued', 'starting', 'running'].includes(run.status))
+        .map((run) => ({
+          kind: 'run',
+          id: run.runId,
+          title: run.progress?.currentActivity ?? run.runId,
+          status: run.status,
+          updatedAt: run.lastHeartbeatAt,
+        })),
+      ...editSessions
+        .filter((session) => !['finalized', 'rolled_back', 'check_failed'].includes(session.status))
+        .map((session) => ({
+          kind: 'edit',
+          id: session.sessionId,
+          title: session.purpose,
+          status: session.status,
+          updatedAt: session.updatedAt,
+        })),
+      ...executionJobs
+        .filter((job) =>
+          [
+            'queued',
+            'dispatched',
+            'running',
+            'waiting_for_dependency',
+            'waiting_for_workspace',
+            'waiting_for_heavy_check',
+            'waiting_for_integration',
+          ].includes(job.status),
+        )
+        .map((job) => ({
+          kind: 'work',
+          id: job.jobId,
+          title: String(job.payload.operation ?? job.type),
+          status: job.status,
+          updatedAt: job.updatedAt,
+        })),
     ].slice(0, 12),
     readyForReview: [
-      ...completionQueues.autoFinish.map((item) => ({ kind: "completion", id: item.runId ?? `${item.issueId}/${item.taskId}`, runId: item.runId, issueId: item.issueId, taskId: item.taskId, title: item.title, status: item.action, updatedAt: undefined })),
+      ...completionQueues.autoFinish.map((item) => ({
+        kind: 'completion',
+        id: item.runId ?? `${item.issueId}/${item.taskId}`,
+        runId: item.runId,
+        issueId: item.issueId,
+        taskId: item.taskId,
+        title: item.title,
+        status: item.action,
+        updatedAt: undefined,
+      })),
       ...reviewTasks,
     ].slice(0, 12),
     pendingApprovals: [
-      ...completionQueues.needsHumanReview.map((item) => ({ kind: "completion-review", id: item.runId ?? `${item.issueId}/${item.taskId}`, runId: item.runId, issueId: item.issueId, taskId: item.taskId, title: item.title, status: item.action, updatedAt: undefined })),
-      ...localJobs.filter((job) => job.status === "pending_approval")
-        .map((job) => ({ kind: "local-job", id: job.jobId, title: job.action, status: job.status, updatedAt: job.updatedAt })),
-      ...executionJobs.filter((job) => job.status === "human_attention_required")
-        .map((job) => ({ kind: "work", id: job.jobId, title: String(job.payload.operation ?? job.type), status: job.status, updatedAt: job.updatedAt })),
+      ...completionQueues.needsHumanReview.map((item) => ({
+        kind: 'completion-review',
+        id: item.runId ?? `${item.issueId}/${item.taskId}`,
+        runId: item.runId,
+        issueId: item.issueId,
+        taskId: item.taskId,
+        title: item.title,
+        status: item.action,
+        updatedAt: undefined,
+      })),
+      ...localJobs
+        .filter((job) => job.status === 'pending_approval')
+        .map((job) => ({
+          kind: 'local-job',
+          id: job.jobId,
+          title: job.action,
+          status: job.status,
+          updatedAt: job.updatedAt,
+        })),
+      ...executionJobs
+        .filter((job) => job.status === 'human_attention_required')
+        .map((job) => ({
+          kind: 'work',
+          id: job.jobId,
+          title: String(job.payload.operation ?? job.type),
+          status: job.status,
+          updatedAt: job.updatedAt,
+        })),
     ].slice(0, 12),
     recentlyCompleted: [
-      ...runs.filter((run) => ["succeeded", "cancelled"].includes(run.status))
-        .map((run) => ({ kind: "run", id: run.runId, title: run.progress?.currentActivity ?? run.runId, status: run.status, updatedAt: run.finishedAt ?? run.lastHeartbeatAt })),
-      ...editSessions.filter((session) => ["finalized", "rolled_back"].includes(session.status))
-        .map((session) => ({ kind: "edit", id: session.sessionId, title: session.purpose, status: session.status, updatedAt: session.updatedAt })),
-      ...executionJobs.filter((job) => ["succeeded", "cancelled", "timed_out"].includes(job.status))
-        .map((job) => ({ kind: "work", id: job.jobId, title: String(job.payload.operation ?? job.type), status: job.status, updatedAt: job.updatedAt })),
-    ].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""))).slice(0, 12),
+      ...runs
+        .filter((run) => ['succeeded', 'cancelled'].includes(run.status))
+        .map((run) => ({
+          kind: 'run',
+          id: run.runId,
+          title: run.progress?.currentActivity ?? run.runId,
+          status: run.status,
+          updatedAt: run.finishedAt ?? run.lastHeartbeatAt,
+        })),
+      ...editSessions
+        .filter((session) => ['finalized', 'rolled_back'].includes(session.status))
+        .map((session) => ({
+          kind: 'edit',
+          id: session.sessionId,
+          title: session.purpose,
+          status: session.status,
+          updatedAt: session.updatedAt,
+        })),
+      ...executionJobs
+        .filter((job) => ['succeeded', 'cancelled', 'timed_out'].includes(job.status))
+        .map((job) => ({
+          kind: 'work',
+          id: job.jobId,
+          title: String(job.payload.operation ?? job.type),
+          status: job.status,
+          updatedAt: job.updatedAt,
+        })),
+    ]
+      .sort((left, right) => String(right.updatedAt ?? '').localeCompare(String(left.updatedAt ?? '')))
+      .slice(0, 12),
   };
   const mcpRuntime = loadMcpServiceRuntimeState(controllerHome);
   const mcpConfig = loadMcpServiceLocalConfig(controllerHome);
   const mcpExposureContext = createControllerMcpToolContext({
     repo: repoRoot,
     controllerHome,
-    profile: "controller",
+    profile: 'controller',
   }) as MultiRepositoryMcpToolContext;
   const exposure = controllerExposureSnapshot(mcpExposureContext);
   // mcp.runtime.json is lifecycle diagnostics only. In particular, its server
@@ -442,11 +632,15 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
   // Snapshot construction is synchronous. Do not infer connector health from
   // mcp.runtime.json; only an async live MCP discovery can establish it.
   const connectorHealthy = undefined;
-  const runtimeProjection = "projection" in runtime ? runtime.projection : undefined;
+  const runtimeProjection = 'projection' in runtime ? runtime.projection : undefined;
   const recovery = buildCapabilityRecoverySnapshot({
     daemonStatus: runtime.daemon.status,
     daemonError: runtime.daemon.error,
-    schedulerStatus: runtimeProjection ? (runtimeProjection.queueDepth > 0 && runtimeProjection.runningWorkers === 0 ? "degraded" : "ready") : undefined,
+    schedulerStatus: runtimeProjection
+      ? runtimeProjection.queueDepth > 0 && runtimeProjection.runningWorkers === 0
+        ? 'degraded'
+        : 'ready'
+      : undefined,
     queueDepth: runtimeProjection?.queueDepth,
     runningWorkers: runtimeProjection?.runningWorkers,
     activeLeases: runtimeProjection?.activeLeases,
@@ -469,11 +663,16 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
       warnings: plugin.health.warnings,
     })),
     recentErrors: [
-      ...localJobs.flatMap((job) => job.error ? [job.error] : []),
-      ...executionJobs.flatMap((job) => job.error?.message ? [job.error.message] : []),
+      ...localJobs.flatMap((job) => (job.error ? [job.error] : [])),
+      ...executionJobs.flatMap((job) => (job.error?.message ? [job.error.message] : [])),
     ],
     localJobs: localJobs.map((job) => ({ status: job.status, error: job.error, updatedAt: job.updatedAt })),
-    executionJobs: executionJobs.map((job) => ({ status: job.status, error: job.error, updatedAt: job.updatedAt, operation: job.payload.operation })),
+    executionJobs: executionJobs.map((job) => ({
+      status: job.status,
+      error: job.error,
+      updatedAt: job.updatedAt,
+      operation: job.payload.operation,
+    })),
   });
   return {
     generatedAt: new Date().toISOString(),
@@ -484,9 +683,8 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     toolSurfaceFingerprint: expectedFingerprint,
     connector: {
       configuredServerName: mcpConfig?.chatgpt?.serverName,
-      publicEndpoint:
-        mcpConfig?.chatgpt?.endpoint ?? mcpRuntime?.tunnel?.publicEndpoint,
-      runtimeStatus: mcpRuntime?.status ?? "not_started",
+      publicEndpoint: mcpConfig?.chatgpt?.endpoint ?? mcpRuntime?.tunnel?.publicEndpoint,
+      runtimeStatus: mcpRuntime?.status ?? 'not_started',
       runtimeProfile: null,
       runtimeSurface: null,
       runtimeSchemaVersion: null,
@@ -514,7 +712,7 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
       stuckStates,
     },
     execution: {
-      defaultMode: "direct-edit",
+      defaultMode: 'direct-edit',
       agentRunner: mcpConfig?.devMode?.agentRunner === true,
       allowedAgents: mcpConfig?.devMode?.allowedAgents ?? defaultLocalAgentRunners(),
       taskAgentBinding: false,
@@ -522,11 +720,13 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     },
     requirementBoard,
     executionDiagnostics,
-    legacyCompatibility: retiredLegacyControlPlane ? {
-      authority: "controller-home-sqlite",
-      projection: "deprecated_frozen",
-      mutationApis: "retired",
-    } : undefined,
+    legacyCompatibility: retiredLegacyControlPlane
+      ? {
+          authority: 'controller-home-sqlite',
+          projection: 'deprecated_frozen',
+          mutationApis: 'retired',
+        }
+      : undefined,
     board,
     taskLedger,
     operationalPlan,
@@ -583,13 +783,15 @@ function action(id: string, label: string): UserFacingAction {
 
 function userFacingRepositories(repoRoot: string, controllerHome = resolveControllerHome(), selectedRepoId?: string) {
   const currentRoot = normalizePathForCompare(repoRoot);
-  return loadRepositoryRegistry(controllerHome).repositories
-    .filter((record) => !record.removedAt)
+  return loadRepositoryRegistry(controllerHome)
+    .repositories.filter((record) => !record.removedAt)
     .map((record) => {
-      const checkout = record.checkouts.find((value) => value.checkoutId === record.activeCheckoutId) ?? record.checkouts[0];
+      const checkout =
+        record.checkouts.find((value) => value.checkoutId === record.activeCheckoutId) ?? record.checkouts[0];
       const current = selectedRepoId
         ? record.repoId === selectedRepoId
-        : normalizePathForCompare(record.canonicalRoot) === currentRoot || normalizePathForCompare(checkout?.canonicalRoot) === currentRoot;
+        : normalizePathForCompare(record.canonicalRoot) === currentRoot ||
+          normalizePathForCompare(checkout?.canonicalRoot) === currentRoot;
       const status = record.enabled === false ? 'disabled' : current ? 'ready' : 'available';
       return {
         id: record.repoId,
@@ -604,20 +806,25 @@ function userFacingRepositories(repoRoot: string, controllerHome = resolveContro
         lastSeenAt: record.lastSeenAt,
       };
     })
-    .sort((left, right) => Number(right.current) - Number(left.current) || String(right.lastSeenAt ?? '').localeCompare(String(left.lastSeenAt ?? '')));
+    .sort(
+      (left, right) =>
+        Number(right.current) - Number(left.current) ||
+        String(right.lastSeenAt ?? '').localeCompare(String(left.lastSeenAt ?? '')),
+    );
 }
 
 function requestRepositorySelection(request: Request, options: LocalBridgeServerOptions, controllerHome: string) {
-  const body = request.body && typeof request.body === 'object' && !Array.isArray(request.body)
-    ? request.body as Record<string, unknown>
-    : {};
-  const repoId = queryString(request.params.repoId)
-    ?? queryString(request.query.repoId)
-    ?? queryString(body.repoId)
-    ?? options.defaultRepoId;
-  const checkoutId = queryString(request.params.checkoutId)
-    ?? queryString(request.query.checkoutId)
-    ?? queryString(body.checkoutId);
+  const body =
+    request.body && typeof request.body === 'object' && !Array.isArray(request.body)
+      ? (request.body as Record<string, unknown>)
+      : {};
+  const repoId =
+    queryString(request.params.repoId) ??
+    queryString(request.query.repoId) ??
+    queryString(body.repoId) ??
+    options.defaultRepoId;
+  const checkoutId =
+    queryString(request.params.checkoutId) ?? queryString(request.query.checkoutId) ?? queryString(body.checkoutId);
   return resolveRepositorySelection({
     repoId,
     checkoutId,
@@ -633,32 +840,50 @@ function requestRepositoryRoot(request: Request, options: LocalBridgeServerOptio
 
 function workspaceWriteMutationClaims(repository: ReturnType<typeof requestRepositorySelection>) {
   const checkoutId = repository.activeCheckoutId?.trim();
-  return checkoutId
-    ? [{ resourceKey: `workspace:${checkoutId}`, mode: 'write' as const }]
-    : undefined;
+  return checkoutId ? [{ resourceKey: `workspace:${checkoutId}`, mode: 'write' as const }] : undefined;
 }
 
 function userFacingPluginStatus(plugin: LocalControllerSnapshot['assistantPlugins'][number]) {
   const health = plugin.health;
   const lifecycle = plugin.lifecycle;
-  const ready = plugin.enabled !== false && health.ready !== false && health.state !== 'error' && lifecycle.state !== 'error';
-  const needsAuthorization = [...(health.errors ?? []), ...(health.warnings ?? []), lifecycle.reason ?? '']
-    .some((entry) => /auth|token|credential|permission|scope|授权|登录/i.test(String(entry)));
-  const status = plugin.enabled === false ? 'disabled'
-    : ready ? 'ready'
-      : needsAuthorization ? 'authorization_required'
-        : health.state === 'error' || lifecycle.state === 'error' ? 'failed'
-          : 'needs_setup';
-  const nextStep = status === 'ready' ? '已连接，可用于任务执行'
-    : status === 'authorization_required' ? '需要完成授权后才能使用'
-      : status === 'disabled' ? '插件已禁用，可在高级配置中启用'
-        : '需要配置并测试连接';
+  const ready =
+    plugin.enabled !== false && health.ready !== false && health.state !== 'error' && lifecycle.state !== 'error';
+  const needsAuthorization = [...(health.errors ?? []), ...(health.warnings ?? []), lifecycle.reason ?? ''].some(
+    (entry) => /auth|token|credential|permission|scope|授权|登录/i.test(String(entry)),
+  );
+  const status =
+    plugin.enabled === false
+      ? 'disabled'
+      : ready
+        ? 'ready'
+        : needsAuthorization
+          ? 'authorization_required'
+          : health.state === 'error' || lifecycle.state === 'error'
+            ? 'failed'
+            : 'needs_setup';
+  const nextStep =
+    status === 'ready'
+      ? '已连接，可用于任务执行'
+      : status === 'authorization_required'
+        ? '需要完成授权后才能使用'
+        : status === 'disabled'
+          ? '插件已禁用，可在高级配置中启用'
+          : '需要配置并测试连接';
   return {
     id: plugin.pluginId,
     name: plugin.displayName || plugin.pluginId,
     provider: plugin.provider,
     status,
-    statusLabel: status === 'ready' ? '可用' : status === 'authorization_required' ? '待授权' : status === 'failed' ? '测试失败' : status === 'disabled' ? '已禁用' : '需配置',
+    statusLabel:
+      status === 'ready'
+        ? '可用'
+        : status === 'authorization_required'
+          ? '待授权'
+          : status === 'failed'
+            ? '测试失败'
+            : status === 'disabled'
+              ? '已禁用'
+              : '需配置',
     enabled: plugin.enabled !== false,
     actionCount: plugin.actions.length,
     description: `${plugin.actions.length} 个可用动作`,
@@ -716,7 +941,10 @@ function userFacingAttentionItems(snapshot: LocalControllerSnapshot): UserFacing
       refs: { issueId: entry.issueId, taskId: entry.taskId, runId: entry.runId },
     });
   }
-  for (const plugin of snapshot.assistantPlugins.map(userFacingPluginStatus).filter((entry) => ['authorization_required', 'failed', 'needs_setup'].includes(entry.status)).slice(0, 8)) {
+  for (const plugin of snapshot.assistantPlugins
+    .map(userFacingPluginStatus)
+    .filter((entry) => ['authorization_required', 'failed', 'needs_setup'].includes(entry.status))
+    .slice(0, 8)) {
     push({
       id: `plugin:${plugin.id}`,
       category: 'connect_plugin',
@@ -733,7 +961,9 @@ function userFacingAttentionItems(snapshot: LocalControllerSnapshot): UserFacing
   for (const issue of issues.slice(0, 40)) {
     const tasks = Array.isArray(issue.tasks) ? issue.tasks : [];
     for (const task of tasks) {
-      const effectiveStatus = String((task as Record<string, unknown>).effectiveStatus ?? (task as Record<string, unknown>).status ?? '');
+      const effectiveStatus = String(
+        (task as Record<string, unknown>).effectiveStatus ?? (task as Record<string, unknown>).status ?? '',
+      );
       if (effectiveStatus !== 'changes_requested') continue;
       push({
         id: `changes:${issue.id}:${String((task as Record<string, unknown>).id ?? '')}`,
@@ -775,18 +1005,24 @@ function userFacingRecentTasks(snapshot: LocalControllerSnapshot) {
       updatedAt: item.updatedAt,
     };
   });
-  const fromAttention = userFacingAttentionItems(snapshot).slice(0, 3).map((item) => ({
-    id: item.id,
-    title: item.title,
-    summary: item.reason,
-    status: 'attention',
-    actor: 'G',
-    updatedAt: undefined,
-  }));
+  const fromAttention = userFacingAttentionItems(snapshot)
+    .slice(0, 3)
+    .map((item) => ({
+      id: item.id,
+      title: item.title,
+      summary: item.reason,
+      status: 'attention',
+      actor: 'G',
+      updatedAt: undefined,
+    }));
   return [...fromRunning, ...fromCompleted, ...fromAttention].slice(0, 8);
 }
 
-function buildUserControllerExperienceSnapshot(repoRoot: string, controllerHome = resolveControllerHome(), selectedRepoId?: string) {
+function buildUserControllerExperienceSnapshot(
+  repoRoot: string,
+  controllerHome = resolveControllerHome(),
+  selectedRepoId?: string,
+) {
   const snapshot = cachedLocalControllerSnapshot(repoRoot);
   const repositories = userFacingRepositories(repoRoot, controllerHome, selectedRepoId);
   const currentRepository = repositories.find((entry) => entry.current) ?? repositories[0];
@@ -798,26 +1034,54 @@ function buildUserControllerExperienceSnapshot(repoRoot: string, controllerHome 
   const needsSetup = !currentRepository || currentRepository.status !== 'ready';
   const readinessState = blocked ? 'blocked' : needsSetup ? 'needs_setup' : 'ready';
   const recommendation = needsSetup
-    ? { title: '先选择或注册一个仓库', description: '仓库可用后才能执行任务。', action: action('manage_repositories', '管理仓库') }
+    ? {
+        title: '先选择或注册一个仓库',
+        description: '仓库可用后才能执行任务。',
+        action: action('manage_repositories', '管理仓库'),
+      }
     : attentionItems.length > 0
-      ? { title: '先处理高优先级事项', description: `有 ${attentionItems.length} 项需要你处理，处理后助手即可继续推进。`, action: action('handle_attention', '处理待办') }
+      ? {
+          title: '先处理高优先级事项',
+          description: `有 ${attentionItems.length} 项需要你处理，处理后助手即可继续推进。`,
+          action: action('handle_attention', '处理待办'),
+        }
       : readyPlugins.length < plugins.length
-        ? { title: '补全插件能力', description: '核心仓库能力可用，但部分助手能力还未连接。', action: action('configure_plugins', '配置插件') }
-        : { title: '创建一个新任务，让助手为你完成工作', description: '当前系统可用，你可以直接输入自然语言任务。', action: action('start_task', '执行一个任务') };
+        ? {
+            title: '补全插件能力',
+            description: '核心仓库能力可用，但部分助手能力还未连接。',
+            action: action('configure_plugins', '配置插件'),
+          }
+        : {
+            title: '创建一个新任务，让助手为你完成工作',
+            description: '当前系统可用，你可以直接输入自然语言任务。',
+            action: action('start_task', '执行一个任务'),
+          };
   return {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
     readiness: {
       state: readinessState,
       label: readinessState === 'ready' ? '系统就绪' : readinessState === 'needs_setup' ? '需要设置' : '系统阻塞',
-      title: readinessState === 'ready' ? '系统可用' : readinessState === 'needs_setup' ? '需要完成设置' : '系统暂不可用',
+      title:
+        readinessState === 'ready' ? '系统可用' : readinessState === 'needs_setup' ? '需要完成设置' : '系统暂不可用',
       description: currentRepository
         ? `仓库 ${currentRepository.name} ${readinessState === 'ready' ? '已就绪，可接受任务与调度检查' : '需要处理后才能执行任务'}`
         : '请先添加一个本地仓库。',
       chips: [
         { label: snapshot.execution.defaultMode === 'direct-edit' ? '直接执行模式' : '执行模式已设置', tone: 'green' },
-        { label: snapshot.runtime.registered ? '环境就绪' : '仓库未注册', tone: snapshot.runtime.registered ? 'green' : 'amber' },
-        { label: snapshot.connector.healthy === true ? '权限充足' : snapshot.connector.healthy === false ? '连接异常' : '连接待验证', tone: snapshot.connector.healthy === true ? 'green' : 'amber' },
+        {
+          label: snapshot.runtime.registered ? '环境就绪' : '仓库未注册',
+          tone: snapshot.runtime.registered ? 'green' : 'amber',
+        },
+        {
+          label:
+            snapshot.connector.healthy === true
+              ? '权限充足'
+              : snapshot.connector.healthy === false
+                ? '连接异常'
+                : '连接待验证',
+          tone: snapshot.connector.healthy === true ? 'green' : 'amber',
+        },
         { label: '安全防护已启用', tone: 'green' },
       ],
       primaryAction: recommendation.action,
@@ -846,25 +1110,23 @@ function buildUserControllerExperienceSnapshot(repoRoot: string, controllerHome 
   };
 }
 
-export async function startLocalBridgeServer(
-  options: LocalBridgeServerOptions,
-): Promise<LocalBridgeServerHandle> {
+export async function startLocalBridgeServer(options: LocalBridgeServerOptions): Promise<LocalBridgeServerHandle> {
   const repositoryControllerHome = resolveRepoPreferredControllerHome(options.repoRoot, options.controllerHome);
   const repository = registerRepository({ path: options.repoRoot, controllerHome: repositoryControllerHome });
   ensureRepositoryRuntimeStorage(repository, repositoryControllerHome);
   const repoRoot = repository.canonicalRoot;
-  const host = options.host ?? "127.0.0.1";
+  const host = options.host ?? '127.0.0.1';
   const requestedPort = options.port ?? 8766;
   const controllerHome = repositoryControllerHome;
   const mcpExposureContext = createControllerMcpToolContext({
     repo: repoRoot,
     controllerHome,
-    profile: "controller",
+    profile: 'controller',
   }) as MultiRepositoryMcpToolContext;
   assertAllowedBindHost(host, options.allowLanMobileIntents === true);
   reconcileAgentJobs(repoRoot);
   reconcileLocalBridgeJobs(repoRoot);
-  const token = options.token ?? randomBytes(32).toString("base64url");
+  const token = options.token ?? randomBytes(32).toString('base64url');
   const app = express();
   const streamClients = new Map<Response, { repoRoot: string; signature: string }>();
   let streamIdleTicks = 0;
@@ -879,7 +1141,7 @@ export async function startLocalBridgeServer(
       const next = controllerStateSignature(state.repoRoot);
       if (next !== state.signature) {
         streamClients.set(client, { ...state, signature: next });
-        sendStreamEvent(client, "refresh");
+        sendStreamEvent(client, 'refresh');
         refreshed = true;
       }
     }
@@ -890,67 +1152,67 @@ export async function startLocalBridgeServer(
     streamIdleTicks += 1;
     if (streamIdleTicks >= 8) {
       streamIdleTicks = 0;
-      for (const client of streamClients.keys()) sendStreamEvent(client, "heartbeat");
+      for (const client of streamClients.keys()) sendStreamEvent(client, 'heartbeat');
     }
   }, 2_000);
   streamInterval.unref();
-  const cookieName = "forge_local_token";
-  app.disable("x-powered-by");
+  const cookieName = 'forge_local_token';
+  app.disable('x-powered-by');
   app.use((request, response, next) => {
     const requestHost = parsedRequestHost(request.headers.host);
-    const mobileIntentPath = request.path === "/mobile/intent" || request.path.startsWith("/mobile/");
+    const mobileIntentPath = request.path === '/mobile/intent' || request.path.startsWith('/mobile/');
     if (!requestHost) {
-      response.status(403).json({ error: "invalid local controller host" });
+      response.status(403).json({ error: 'invalid local controller host' });
       return;
     }
     if (!isLoopbackHostname(requestHost.hostname) && !(options.allowLanMobileIntents === true && mobileIntentPath)) {
-      response.status(403).json({ error: "invalid local controller host" });
+      response.status(403).json({ error: 'invalid local controller host' });
       return;
     }
     const origin = request.headers.origin;
     if (origin) {
       try {
         const parsedOrigin = new URL(origin);
-        if (parsedOrigin.host !== requestHost.host || (!isLoopbackHostname(parsedOrigin.hostname) && !(options.allowLanMobileIntents === true && mobileIntentPath))) {
-          response.status(403).json({ error: "invalid local controller origin" });
+        if (
+          parsedOrigin.host !== requestHost.host ||
+          (!isLoopbackHostname(parsedOrigin.hostname) && !(options.allowLanMobileIntents === true && mobileIntentPath))
+        ) {
+          response.status(403).json({ error: 'invalid local controller origin' });
           return;
         }
       } catch (_error) {
-        response.status(403).json({ error: "invalid local controller origin" });
+        response.status(403).json({ error: 'invalid local controller origin' });
         return;
       }
     }
     next();
   });
-  app.use(express.json({
-    limit: "512kb",
-    verify: (request, _response, buffer) => {
-      (request as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
-    },
-  }));
+  app.use(
+    express.json({
+      limit: '512kb',
+      verify: (request, _response, buffer) => {
+        (request as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
+      },
+    }),
+  );
 
-  const requireToken = (
-    request: Request,
-    response: Response,
-    next: NextFunction,
-  ): void => {
-    const supplied =
-      request.header("x-forge-local-token") ?? cookieValue(request, cookieName);
+  const requireToken = (request: Request, response: Response, next: NextFunction): void => {
+    const supplied = request.header('x-forge-local-token') ?? cookieValue(request, cookieName);
     if (supplied !== token) {
-      response.status(403).json({ error: "invalid local controller token" });
+      response.status(403).json({ error: 'invalid local controller token' });
       return;
     }
     next();
   };
 
-  app.get("/health", (_request, response) => {
+  app.get('/health', (_request, response) => {
     const exposure = controllerExposureSnapshot(mcpExposureContext);
     const fingerprint = exposure.fingerprint;
     const runtime = readRuntimeGeneration(controllerHome);
     response.json({
-      status: "ok",
+      status: 'ok',
       localOnly: true,
-      mode: options.mode ?? "standalone",
+      mode: options.mode ?? 'standalone',
       ...(options.slot ? { slot: options.slot } : {}),
       toolSurface: FORGE_TOOL_SURFACE,
       schemaVersion: FORGE_MCP_SCHEMA_VERSION,
@@ -970,17 +1232,16 @@ export async function startLocalBridgeServer(
     });
   });
 
-
-  app.post("/mobile/v1/monitor/snapshot", (request, response) => {
+  app.post('/mobile/v1/monitor/snapshot', (request, response) => {
     try {
       const selected = repository;
       const verified = withMobileIntentStoreLock(controllerHome, selected.repoId, () =>
         verifyMobileIntentRequest(selected.canonicalRoot, request),
       );
-      if (!mobileIntentHasScope(verified.principal.scopes, "monitor:read")) {
-        throw new Error("MOBILE_INTENT_SCOPE_DENIED: monitor:read is required");
+      if (!mobileIntentHasScope(verified.principal.scopes, 'monitor:read')) {
+        throw new Error('MOBILE_INTENT_SCOPE_DENIED: monitor:read is required');
       }
-      response.setHeader("Cache-Control", "no-store");
+      response.setHeader('Cache-Control', 'no-store');
       response.json({
         ...buildMobileMonitorSnapshot({
           controllerHome,
@@ -996,49 +1257,55 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.get("/mobile/v1/monitor/events", (request, response) => {
+  app.get('/mobile/v1/monitor/events', (request, response) => {
     try {
       const selected = repository;
       const verified = withMobileIntentStoreLock(controllerHome, selected.repoId, () =>
         verifyMobileIntentRequest(selected.canonicalRoot, request),
       );
-      if (!mobileIntentHasScope(verified.principal.scopes, "monitor:read")) {
-        throw new Error("MOBILE_INTENT_SCOPE_DENIED: monitor:read is required");
+      if (!mobileIntentHasScope(verified.principal.scopes, 'monitor:read')) {
+        throw new Error('MOBILE_INTENT_SCOPE_DENIED: monitor:read is required');
       }
       response.status(200);
-      response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-      response.setHeader("Cache-Control", "no-cache, no-transform");
-      response.setHeader("Connection", "keep-alive");
+      response.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      response.setHeader('Cache-Control', 'no-cache, no-transform');
+      response.setHeader('Connection', 'keep-alive');
       response.flushHeaders();
       streamClients.set(response, { repoRoot, signature: controllerStateSignature(repoRoot) });
-      sendStreamEvent(response, "ready");
-      request.on("close", () => streamClients.delete(response));
+      sendStreamEvent(response, 'ready');
+      request.on('close', () => streamClients.delete(response));
     } catch (error) {
       sendMobileIntentFailure(response, error);
     }
   });
 
-  app.post("/mobile/intent", async (request, response) => {
+  app.post('/mobile/intent', async (request, response) => {
     try {
       const verified = withMobileIntentStoreLock(controllerHome, repository.repoId, () =>
         verifyMobileIntentRequest(repository.canonicalRoot, request),
       );
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      const intent = queryString(body.intent) ?? "plugin_action";
-      if (intent === "list_plugins") {
-        if (!mobileIntentHasScope(verified.principal.scopes, "plugins:read")) throw new Error("MOBILE_INTENT_SCOPE_DENIED: plugins:read is required");
+      const body =
+        request.body && typeof request.body === 'object' && !Array.isArray(request.body)
+          ? (request.body as Record<string, unknown>)
+          : {};
+      const intent = queryString(body.intent) ?? 'plugin_action';
+      if (intent === 'list_plugins') {
+        if (!mobileIntentHasScope(verified.principal.scopes, 'plugins:read'))
+          throw new Error('MOBILE_INTENT_SCOPE_DENIED: plugins:read is required');
         response.json({
           schemaVersion: 1,
           accepted: true,
           device: verified.principal.device,
           signatureVerified: verified.signatureVerified,
           // One canonical store; mobile discovery includes both repository and controller-scoped plugins.
-          plugins: [...new Map([
-            ...listAssistantPluginManifests(controllerHome, repository),
-            ...listControllerPluginManifests(controllerHome),
-          ].map((plugin) => [plugin.pluginId, plugin] as const)).values()].map((plugin) => ({
+          plugins: [
+            ...new Map(
+              [
+                ...listAssistantPluginManifests(controllerHome, repository),
+                ...listControllerPluginManifests(controllerHome),
+              ].map((plugin) => [plugin.pluginId, plugin] as const),
+            ).values(),
+          ].map((plugin) => ({
             pluginId: plugin.pluginId,
             displayName: plugin.displayName,
             enabled: plugin.enabled,
@@ -1056,10 +1323,11 @@ export async function startLocalBridgeServer(
         });
         return;
       }
-      if (intent === "get_plugin") {
-        if (!mobileIntentHasScope(verified.principal.scopes, "plugins:read")) throw new Error("MOBILE_INTENT_SCOPE_DENIED: plugins:read is required");
+      if (intent === 'get_plugin') {
+        if (!mobileIntentHasScope(verified.principal.scopes, 'plugins:read'))
+          throw new Error('MOBILE_INTENT_SCOPE_DENIED: plugins:read is required');
         const pluginId = queryString(body.pluginId);
-        if (!pluginId) throw new Error("MOBILE_INTENT_PLUGIN_REQUIRED: pluginId is required");
+        if (!pluginId) throw new Error('MOBILE_INTENT_PLUGIN_REQUIRED: pluginId is required');
         response.json({
           schemaVersion: 1,
           accepted: true,
@@ -1069,12 +1337,14 @@ export async function startLocalBridgeServer(
         });
         return;
       }
-      if (intent === "poll_job") {
-        if (!mobileIntentHasScope(verified.principal.scopes, "jobs:read")) throw new Error("MOBILE_INTENT_SCOPE_DENIED: jobs:read is required");
+      if (intent === 'poll_job') {
+        if (!mobileIntentHasScope(verified.principal.scopes, 'jobs:read'))
+          throw new Error('MOBILE_INTENT_SCOPE_DENIED: jobs:read is required');
         const jobId = queryString(body.jobId);
-        if (!jobId) throw new Error("MOBILE_INTENT_JOB_REQUIRED: jobId is required");
-        const job = findExecutionJob(controllerHome, jobId)
-          ?? (() => {
+        if (!jobId) throw new Error('MOBILE_INTENT_JOB_REQUIRED: jobId is required');
+        const job =
+          findExecutionJob(controllerHome, jobId) ??
+          (() => {
             const receipt = findPluginActionReceipt(controllerHome, jobId);
             return receipt ? compatibilityPluginJobFromReceipt(receipt) : undefined;
           })();
@@ -1082,38 +1352,51 @@ export async function startLocalBridgeServer(
           response.status(404).json({ error: `Execution Job not found: ${jobId}` });
           return;
         }
-        response.json({ schemaVersion: 1, accepted: true, device: verified.principal.device, signatureVerified: verified.signatureVerified, job });
+        response.json({
+          schemaVersion: 1,
+          accepted: true,
+          device: verified.principal.device,
+          signatureVerified: verified.signatureVerified,
+          job,
+        });
         return;
       }
-      if (intent === "workflow_event") {
-        if (!verified.signatureVerified) throw new Error("MOBILE_INTENT_SIGNATURE_REQUIRED: workflow events require an HMAC signature");
+      if (intent === 'workflow_event') {
+        if (!verified.signatureVerified)
+          throw new Error('MOBILE_INTENT_SIGNATURE_REQUIRED: workflow events require an HMAC signature');
         if (!mobileIntentHasScope(verified.principal.scopes, `workflow:${AGENTMAIL_EVENT_WORKFLOW_ID}:execute`)) {
           throw new Error(`MOBILE_INTENT_SCOPE_DENIED: workflow:${AGENTMAIL_EVENT_WORKFLOW_ID}:execute is required`);
         }
-        if (Object.keys(body).some((key) => !["intent", "event"].includes(key))) {
-          throw new Error("MOBILE_INTENT_EVENT_FIELDS_INVALID: only intent and event are accepted");
+        if (Object.keys(body).some((key) => !['intent', 'event'].includes(key))) {
+          throw new Error('MOBILE_INTENT_EVENT_FIELDS_INVALID: only intent and event are accepted');
         }
-        const event = body.event && typeof body.event === "object" && !Array.isArray(body.event)
-          ? body.event as Record<string, unknown>
-          : {};
-        const allowedEventFields = new Set(["source", "event_id", "observed_at", "ref", "summary"]);
+        const event =
+          body.event && typeof body.event === 'object' && !Array.isArray(body.event)
+            ? (body.event as Record<string, unknown>)
+            : {};
+        const allowedEventFields = new Set(['source', 'event_id', 'observed_at', 'ref', 'summary']);
         const unknownFields = Object.keys(event).filter((key) => !allowedEventFields.has(key));
-        if (unknownFields.length > 0) throw new Error("MOBILE_INTENT_EVENT_FIELD_UNSUPPORTED: " + unknownFields.sort().join(","));
+        if (unknownFields.length > 0)
+          throw new Error('MOBILE_INTENT_EVENT_FIELD_UNSUPPORTED: ' + unknownFields.sort().join(','));
         const isRecord = (value: unknown): value is Record<string, unknown> =>
-          value !== null && typeof value === "object" && !Array.isArray(value);
+          value !== null && typeof value === 'object' && !Array.isArray(value);
         const isString = (value: unknown, maximum: number, allowEmpty = false): value is string =>
-          typeof value === "string" && value.length <= maximum && (allowEmpty || value.length > 0);
+          typeof value === 'string' && value.length <= maximum && (allowEmpty || value.length > 0);
         const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
         const ref = isRecord(event.ref) ? event.ref : {};
         const eventSummary = isRecord(event.summary) ? event.summary : {};
-        const unknownRefFields = Object.keys(ref).filter((key) => !["provider", "account_id", "provider_message_id"].includes(key));
-        const unknownSummaryFields = Object.keys(eventSummary).filter((key) => !["rule_id", "sender_email"].includes(key));
+        const unknownRefFields = Object.keys(ref).filter(
+          (key) => !['provider', 'account_id', 'provider_message_id'].includes(key),
+        );
+        const unknownSummaryFields = Object.keys(eventSummary).filter(
+          (key) => !['rule_id', 'sender_email'].includes(key),
+        );
         if (unknownRefFields.length > 0 || unknownSummaryFields.length > 0) {
           const unsupported = [
-            ...unknownRefFields.map((key) => "ref." + key),
-            ...unknownSummaryFields.map((key) => "summary." + key),
+            ...unknownRefFields.map((key) => 'ref.' + key),
+            ...unknownSummaryFields.map((key) => 'summary.' + key),
           ];
-          throw new Error("MOBILE_INTENT_EVENT_FIELD_UNSUPPORTED: " + unsupported.sort().join(","));
+          throw new Error('MOBILE_INTENT_EVENT_FIELD_UNSUPPORTED: ' + unsupported.sort().join(','));
         }
         const source = event.source;
         const eventId = event.event_id;
@@ -1123,15 +1406,17 @@ export async function startLocalBridgeServer(
         const providerMessageId = ref.provider_message_id;
         const ruleId = eventSummary.rule_id;
         const senderEmail = eventSummary.sender_email;
-        if (source !== "mail.watch.matched") throw new Error("MOBILE_INTENT_EVENT_SOURCE_INVALID: only AgentMail Watch matches are accepted");
-        if (!isString(eventId, 4096)) throw new Error("MOBILE_INTENT_EVENT_ID_INVALID");
-        if (!isString(observedAt, 64) || !Number.isFinite(Date.parse(observedAt))) throw new Error("MOBILE_INTENT_EVENT_TIME_INVALID");
-        if (provider !== "agentmail" || !isString(accountId, 36) || !uuid.test(accountId)) {
-          throw new Error("MOBILE_INTENT_EVENT_ACCOUNT_INVALID");
+        if (source !== 'mail.watch.matched')
+          throw new Error('MOBILE_INTENT_EVENT_SOURCE_INVALID: only AgentMail Watch matches are accepted');
+        if (!isString(eventId, 4096)) throw new Error('MOBILE_INTENT_EVENT_ID_INVALID');
+        if (!isString(observedAt, 64) || !Number.isFinite(Date.parse(observedAt)))
+          throw new Error('MOBILE_INTENT_EVENT_TIME_INVALID');
+        if (provider !== 'agentmail' || !isString(accountId, 36) || !uuid.test(accountId)) {
+          throw new Error('MOBILE_INTENT_EVENT_ACCOUNT_INVALID');
         }
-        if (!isString(providerMessageId, 1024)) throw new Error("MOBILE_INTENT_EVENT_MESSAGE_INVALID");
-        if (!isString(ruleId, 36) || !uuid.test(ruleId)) throw new Error("MOBILE_INTENT_EVENT_RULE_INVALID");
-        if (!isString(senderEmail, 320, true)) throw new Error("MOBILE_INTENT_EVENT_SENDER_INVALID");
+        if (!isString(providerMessageId, 1024)) throw new Error('MOBILE_INTENT_EVENT_MESSAGE_INVALID');
+        if (!isString(ruleId, 36) || !uuid.test(ruleId)) throw new Error('MOBILE_INTENT_EVENT_RULE_INVALID');
+        if (!isString(senderEmail, 320, true)) throw new Error('MOBILE_INTENT_EVENT_SENDER_INVALID');
         const workflowInputs = {
           source,
           event_id: eventId,
@@ -1146,54 +1431,70 @@ export async function startLocalBridgeServer(
             sender_email: senderEmail,
           },
         };
-        const workflowRunId = `agentmail-${createHash("sha256").update(eventId).digest("hex").slice(0, 40)}`;
+        const workflowRunId = `agentmail-${createHash('sha256').update(eventId).digest('hex').slice(0, 40)}`;
         const workflowArguments = {
           workflow_id: AGENTMAIL_EVENT_WORKFLOW_ID,
           workflow_run_id: workflowRunId,
           workflow_inputs: workflowInputs,
         };
-        const reconciliationRequestId = `agentmail-reconcile-${createHash("sha256").update(eventId).digest("hex").slice(0, 40)}`;
-        let dispatched = await callRhWorkWorkflowOperation(mcpExposureContext, repository, "workflow_execute", workflowArguments);
+        const reconciliationRequestId = `agentmail-reconcile-${createHash('sha256').update(eventId).digest('hex').slice(0, 40)}`;
+        let dispatched = await callRhWorkWorkflowOperation(
+          mcpExposureContext,
+          repository,
+          'workflow_execute',
+          workflowArguments,
+        );
         let dispatchResult = dispatched?.structuredContent as Record<string, unknown> | undefined;
-        let dispatchData = dispatchResult?.data && typeof dispatchResult.data === "object"
-          ? dispatchResult.data as Record<string, unknown>
-          : {};
-        let workflow = dispatchData.workflow && typeof dispatchData.workflow === "object"
-          ? dispatchData.workflow as Record<string, unknown>
-          : undefined;
-        let summary = typeof dispatchResult?.summary === "string" ? dispatchResult.summary : "WORKFLOW_EVENT_RECEIPT_FAILED";
-        let durable = Boolean(workflow)
-          || summary.startsWith("WORKFLOW_RUN_RECONCILIATION_REQUIRED:")
-          || summary === "WORKFLOW_RUN_FAILED_RESTART_REQUIRES_NEW_RUN_ID"
-          || summary === "WORKFLOW_RUN_ALREADY_SUCCEEDED"
-          || summary === "WORKFLOW_RUN_IDENTITY_CONFLICT";
+        let dispatchData =
+          dispatchResult?.data && typeof dispatchResult.data === 'object'
+            ? (dispatchResult.data as Record<string, unknown>)
+            : {};
+        let workflow =
+          dispatchData.workflow && typeof dispatchData.workflow === 'object'
+            ? (dispatchData.workflow as Record<string, unknown>)
+            : undefined;
+        let summary =
+          typeof dispatchResult?.summary === 'string' ? dispatchResult.summary : 'WORKFLOW_EVENT_RECEIPT_FAILED';
+        let durable =
+          Boolean(workflow) ||
+          summary.startsWith('WORKFLOW_RUN_RECONCILIATION_REQUIRED:') ||
+          summary === 'WORKFLOW_RUN_FAILED_RESTART_REQUIRES_NEW_RUN_ID' ||
+          summary === 'WORKFLOW_RUN_ALREADY_SUCCEEDED' ||
+          summary === 'WORKFLOW_RUN_IDENTITY_CONFLICT';
         let recovered = false;
 
         // A duplicate delivery can be the recovery signal after the Process finished but
         // the WorkflowRun checkpoint/HTTP ACK was interrupted. Reconcile only from the
         // canonical Process receipt; never dispatch the uncertain script a second time.
-        if (workflow?.status === "reconcile_required"
-          || (!workflow && summary.startsWith("WORKFLOW_RUN_RECONCILIATION_REQUIRED:"))) {
+        if (
+          workflow?.status === 'reconcile_required' ||
+          (!workflow && summary.startsWith('WORKFLOW_RUN_RECONCILIATION_REQUIRED:'))
+        ) {
           recovered = true;
-          dispatched = await callRhWorkWorkflowOperation(mcpExposureContext, repository, "workflow_reconcile", {
+          dispatched = await callRhWorkWorkflowOperation(mcpExposureContext, repository, 'workflow_reconcile', {
             ...workflowArguments,
             workflow_reconciliation_request_id: reconciliationRequestId,
           });
           dispatchResult = dispatched?.structuredContent as Record<string, unknown> | undefined;
-          dispatchData = dispatchResult?.data && typeof dispatchResult.data === "object"
-            ? dispatchResult.data as Record<string, unknown>
-            : {};
-          workflow = dispatchData.workflow && typeof dispatchData.workflow === "object"
-            ? dispatchData.workflow as Record<string, unknown>
-            : undefined;
-          summary = typeof dispatchResult?.summary === "string" ? dispatchResult.summary : "WORKFLOW_EVENT_RECONCILIATION_FAILED";
+          dispatchData =
+            dispatchResult?.data && typeof dispatchResult.data === 'object'
+              ? (dispatchResult.data as Record<string, unknown>)
+              : {};
+          workflow =
+            dispatchData.workflow && typeof dispatchData.workflow === 'object'
+              ? (dispatchData.workflow as Record<string, unknown>)
+              : undefined;
+          summary =
+            typeof dispatchResult?.summary === 'string'
+              ? dispatchResult.summary
+              : 'WORKFLOW_EVENT_RECONCILIATION_FAILED';
           durable = durable || Boolean(workflow);
         }
 
         // AgentMail ACKs only after the exact event has a succeeded canonical WorkflowRun.
         // A persisted failed/running/reconcile-required record remains unacknowledged in
         // the source Outbox so it can retry or surface for recovery.
-        if (workflow?.status === "succeeded") {
+        if (workflow?.status === 'succeeded') {
           response.status(202).json({
             schemaVersion: 1,
             accepted: true,
@@ -1204,11 +1505,11 @@ export async function startLocalBridgeServer(
             workflowId: AGENTMAIL_EVENT_WORKFLOW_ID,
             workflowRunId,
             eventId,
-            status: "succeeded",
+            status: 'succeeded',
           });
           return;
         }
-        if (summary === "WORKFLOW_RUN_ALREADY_SUCCEEDED") {
+        if (summary === 'WORKFLOW_RUN_ALREADY_SUCCEEDED') {
           response.status(202).json({
             schemaVersion: 1,
             accepted: true,
@@ -1219,11 +1520,11 @@ export async function startLocalBridgeServer(
             workflowId: AGENTMAIL_EVENT_WORKFLOW_ID,
             workflowRunId,
             eventId,
-            status: "succeeded",
+            status: 'succeeded',
           });
           return;
         }
-        const conflict = summary === "WORKFLOW_RUN_IDENTITY_CONFLICT";
+        const conflict = summary === 'WORKFLOW_RUN_IDENTITY_CONFLICT';
         response.status(conflict ? 409 : 503).json({
           schemaVersion: 1,
           accepted: false,
@@ -1234,51 +1535,68 @@ export async function startLocalBridgeServer(
           workflowId: AGENTMAIL_EVENT_WORKFLOW_ID,
           workflowRunId,
           eventId,
-          status: typeof workflow?.status === "string" ? workflow.status : summary,
+          status: typeof workflow?.status === 'string' ? workflow.status : summary,
         });
         return;
       }
-      if (intent !== "plugin_action") throw new Error(`MOBILE_INTENT_UNSUPPORTED: ${intent}`);
+      if (intent !== 'plugin_action') throw new Error(`MOBILE_INTENT_UNSUPPORTED: ${intent}`);
       const pluginId = queryString(body.pluginId);
       const actionId = queryString(body.actionId);
-      if (!pluginId || !actionId) throw new Error("MOBILE_INTENT_ACTION_REQUIRED: pluginId and actionId are required");
+      if (!pluginId || !actionId) throw new Error('MOBILE_INTENT_ACTION_REQUIRED: pluginId and actionId are required');
       if (!mobileIntentHasScope(verified.principal.scopes, `plugin:${pluginId}:${actionId}`)) {
         throw new Error(`MOBILE_INTENT_SCOPE_DENIED: plugin:${pluginId}:${actionId} is required`);
       }
       const manifest = getAssistantPluginManifest(controllerHome, repository, pluginId);
       const action = manifest.actions.find((entry) => entry.actionId === actionId);
       if (!action) throw new Error(`PLUGIN_ACTION_NOT_FOUND: ${pluginId}/${actionId}`);
-      if (action.confirmation !== "none" && body.confirmAuthorization !== true) {
+      if (action.confirmation !== 'none' && body.confirmAuthorization !== true) {
         response.status(409).json({
           schemaVersion: 1,
           accepted: false,
           approvalRequired: true,
           device: verified.principal.device,
-          plugin: { pluginId, displayName: manifest.displayName, enabled: manifest.enabled, lifecycle: manifest.lifecycle, health: manifest.health },
+          plugin: {
+            pluginId,
+            displayName: manifest.displayName,
+            enabled: manifest.enabled,
+            lifecycle: manifest.lifecycle,
+            health: manifest.health,
+          },
           action: {
             actionId: action.actionId,
             risk: action.risk,
             confirmation: action.confirmation,
             requiredConfirmationText: action.requiredConfirmationText,
           },
-          message: action.confirmation === "strong_confirmation"
-            ? `Repeat the request with confirmAuthorization=true and confirmationText=${action.requiredConfirmationText}`
-            : "Repeat the request with confirmAuthorization=true after human approval.",
+          message:
+            action.confirmation === 'strong_confirmation'
+              ? `Repeat the request with confirmAuthorization=true and confirmationText=${action.requiredConfirmationText}`
+              : 'Repeat the request with confirmAuthorization=true after human approval.',
         });
         return;
       }
-      const submitted = await submitAssistantPluginAction(controllerHome, repository, {
-        pluginId,
-        actionId,
-        requestId: queryString(body.requestId) ?? `${verified.principal.deviceId}:${Date.now()}`,
-        args: body.arguments && typeof body.arguments === "object" && !Array.isArray(body.arguments)
-          ? body.arguments as Record<string, unknown>
-          : {},
-        timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : undefined,
-        confirmAuthorization: body.confirmAuthorization === true,
-        confirmationText: queryString(body.confirmationText),
-        origin: { surface: "mobile-intent", actor: verified.principal.deviceId, correlationId: queryString(body.requestId) },
-      }, { githubIssueSync: githubIssueSyncPort });
+      const submitted = await submitAssistantPluginAction(
+        controllerHome,
+        repository,
+        {
+          pluginId,
+          actionId,
+          requestId: queryString(body.requestId) ?? `${verified.principal.deviceId}:${Date.now()}`,
+          args:
+            body.arguments && typeof body.arguments === 'object' && !Array.isArray(body.arguments)
+              ? (body.arguments as Record<string, unknown>)
+              : {},
+          timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
+          confirmAuthorization: body.confirmAuthorization === true,
+          confirmationText: queryString(body.confirmationText),
+          origin: {
+            surface: 'mobile-intent',
+            actor: verified.principal.deviceId,
+            correlationId: queryString(body.requestId),
+          },
+        },
+        { githubIssueSync: githubIssueSyncPort },
+      );
       response.status(202).json({
         schemaVersion: 1,
         accepted: true,
@@ -1286,8 +1604,18 @@ export async function startLocalBridgeServer(
         device: verified.principal.device,
         signatureVerified: verified.signatureVerified,
         pollAfterMs: 2_000,
-        plugin: { pluginId: submitted.manifest.pluginId, displayName: submitted.manifest.displayName, lifecycle: submitted.manifest.lifecycle, health: submitted.manifest.health },
-        action: { actionId: submitted.action.actionId, risk: submitted.action.risk, confirmation: submitted.action.confirmation, requiredConfirmationText: submitted.action.requiredConfirmationText },
+        plugin: {
+          pluginId: submitted.manifest.pluginId,
+          displayName: submitted.manifest.displayName,
+          lifecycle: submitted.manifest.lifecycle,
+          health: submitted.manifest.health,
+        },
+        action: {
+          actionId: submitted.action.actionId,
+          risk: submitted.action.risk,
+          confirmation: submitted.action.confirmation,
+          requiredConfirmationText: submitted.action.requiredConfirmationText,
+        },
         job: submitted.job,
       });
     } catch (error) {
@@ -1295,9 +1623,9 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.get("/oauth/google/callback", async (request, response) => {
-    response.setHeader("Cache-Control", "no-store");
-    response.setHeader("Referrer-Policy", "no-referrer");
+  app.get('/oauth/google/callback', async (request, response) => {
+    response.setHeader('Cache-Control', 'no-store');
+    response.setHeader('Referrer-Policy', 'no-referrer');
     try {
       const result = await completeGoogleOAuthLogin(controllerHome, {
         state: queryString(request.query.state),
@@ -1305,15 +1633,25 @@ export async function startLocalBridgeServer(
         error: queryString(request.query.error),
         errorDescription: queryString(request.query.error_description),
       });
-      response.status(200).type("html").send(`<!doctype html><meta charset="utf-8"><title>Google authorization complete</title><h1>Google authorization complete</h1><p>${String(result.service)} is connected. You can close this window.</p>`);
+      response
+        .status(200)
+        .type('html')
+        .send(
+          `<!doctype html><meta charset="utf-8"><title>Google authorization complete</title><h1>Google authorization complete</h1><p>${String(result.service)} is connected. You can close this window.</p>`,
+        );
     } catch (error) {
-      response.status(400).type("html").send(`<!doctype html><meta charset="utf-8"><title>Google authorization failed</title><h1>Google authorization failed</h1><p>${errorMessage(error).replace(/[<>&]/g, "")}</p>`);
+      response
+        .status(400)
+        .type('html')
+        .send(
+          `<!doctype html><meta charset="utf-8"><title>Google authorization failed</title><h1>Google authorization failed</h1><p>${errorMessage(error).replace(/[<>&]/g, '')}</p>`,
+        );
     }
   });
 
-  app.get("/oauth/resend/callback", async (request, response) => {
-    response.setHeader("Cache-Control", "no-store");
-    response.setHeader("Referrer-Policy", "no-referrer");
+  app.get('/oauth/resend/callback', async (request, response) => {
+    response.setHeader('Cache-Control', 'no-store');
+    response.setHeader('Referrer-Policy', 'no-referrer');
     try {
       await completeResendOAuthLogin(controllerHome, {
         state: queryString(request.query.state),
@@ -1321,44 +1659,57 @@ export async function startLocalBridgeServer(
         error: queryString(request.query.error),
         errorDescription: queryString(request.query.error_description),
       });
-      response.status(200).type("html").send('<!doctype html><meta charset="utf-8"><title>Resend authorization complete</title><h1>Resend authorization complete</h1><p>Forge is connected to Resend. You can close this window.</p>');
+      response
+        .status(200)
+        .type('html')
+        .send(
+          '<!doctype html><meta charset="utf-8"><title>Resend authorization complete</title><h1>Resend authorization complete</h1><p>Forge is connected to Resend. You can close this window.</p>',
+        );
     } catch (error) {
-      response.status(400).type("html").send(`<!doctype html><meta charset="utf-8"><title>Resend authorization failed</title><h1>Resend authorization failed</h1><p>${errorMessage(error).replace(/[<>&]/g, "")}</p>`);
+      response
+        .status(400)
+        .type('html')
+        .send(
+          `<!doctype html><meta charset="utf-8"><title>Resend authorization failed</title><h1>Resend authorization failed</h1><p>${errorMessage(error).replace(/[<>&]/g, '')}</p>`,
+        );
     }
   });
 
-  app.use("/api", requireToken);
+  app.use('/api', requireToken);
 
   const consoleCtx = (request: Request) => {
     const repository = requestRepositorySelection(request, options, controllerHome);
     return { controllerHome, repository };
   };
 
-  app.get("/api/console/command-center", async (request, response) => {
+  app.get('/api/console/command-center', async (request, response) => {
     try {
       const ctx = consoleCtx(request);
-      const repositories = userFacingRepositories(ctx.repository.canonicalRoot, controllerHome, ctx.repository.repoId)
-        .map((entry) => {
-          const record = loadRepositoryRegistry(controllerHome).repositories.find((item) => item.repoId === entry.id);
-          if (!record) {
-            return {
-              id: entry.id,
-              name: entry.name,
-              path: entry.path,
-              statusLabel: entry.statusLabel,
-              tone: entry.current ? "green" as const : "blue" as const,
-              current: entry.current,
-            };
-          }
-          return mapRepositoryCard(record, entry.current);
-        });
+      const repositories = userFacingRepositories(
+        ctx.repository.canonicalRoot,
+        controllerHome,
+        ctx.repository.repoId,
+      ).map((entry) => {
+        const record = loadRepositoryRegistry(controllerHome).repositories.find((item) => item.repoId === entry.id);
+        if (!record) {
+          return {
+            id: entry.id,
+            name: entry.name,
+            path: entry.path,
+            statusLabel: entry.statusLabel,
+            tone: entry.current ? ('green' as const) : ('blue' as const),
+            current: entry.current,
+          };
+        }
+        return mapRepositoryCard(record, entry.current);
+      });
       response.json(await buildCommandCenter(ctx, repositories));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
 
-  app.get("/api/console/requirements", (_request, response) => {
+  app.get('/api/console/requirements', (_request, response) => {
     try {
       response.json(buildRequirementBoard({ controllerHome }));
     } catch (error) {
@@ -1366,26 +1717,30 @@ export async function startLocalBridgeServer(
     }
   });
 
-
-  app.get("/api/console/automations", (_request, response) => {
+  app.get('/api/console/automations', (_request, response) => {
     try {
       const repositories = loadRepositoryRegistry(controllerHome).repositories;
       const automations = listConsoleAutomations(controllerHome, repositories);
-      response.json({ schemaVersion: 1, generatedAt: new Date().toISOString(), summary: summarizeConsoleAutomations(automations), automations });
+      response.json({
+        schemaVersion: 1,
+        generatedAt: new Date().toISOString(),
+        summary: summarizeConsoleAutomations(automations),
+        automations,
+      });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
 
-  app.post("/api/console/automations/:source/:repoId/:automationId/:action", async (request, response) => {
+  app.post('/api/console/automations/:source/:repoId/:automationId/:action', async (request, response) => {
     try {
       const result = await applyConsoleAutomationAction(
         controllerHome,
         loadRepositoryRegistry(controllerHome).repositories,
-        String(request.params.source ?? ""),
-        String(request.params.repoId ?? ""),
-        String(request.params.automationId ?? ""),
-        String(request.params.action ?? ""),
+        String(request.params.source ?? ''),
+        String(request.params.repoId ?? ''),
+        String(request.params.automationId ?? ''),
+        String(request.params.action ?? ''),
       );
       response.json({ result });
     } catch (error) {
@@ -1393,7 +1748,7 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.get("/api/console/readiness", async (request, response) => {
+  app.get('/api/console/readiness', async (request, response) => {
     try {
       response.json(await buildSystemReadiness(consoleCtx(request)));
     } catch (error) {
@@ -1402,7 +1757,7 @@ export async function startLocalBridgeServer(
   });
 
   /** User-facing plugin/capability catalog for the console. */
-  app.get("/api/console/plugins", (request, response) => {
+  app.get('/api/console/plugins', (request, response) => {
     try {
       const ctx = consoleCtx(request);
       const plugins = listConsolePlugins(ctx);
@@ -1417,7 +1772,7 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.get("/api/console/plugins/:pluginId", (request, response) => {
+  app.get('/api/console/plugins/:pluginId', (request, response) => {
     try {
       const plugin = getConsolePlugin(consoleCtx(request), request.params.pluginId);
       if (!plugin) {
@@ -1431,7 +1786,7 @@ export async function startLocalBridgeServer(
   });
 
   /** Local MCP tool-surface self-test. Does not invent ChatGPT connector tool names. */
-  app.get("/api/console/connector/status", async (request, response) => {
+  app.get('/api/console/connector/status', async (request, response) => {
     try {
       const report = await evaluateConsoleConnectorFreshness(consoleCtx(request));
       response.json({
@@ -1448,11 +1803,12 @@ export async function startLocalBridgeServer(
    * Optional precise check when ChatGPT connector tool names are known.
    * Body: { connector_tool_names?: string[] }
    */
-  app.post("/api/console/connector/check", async (request, response) => {
+  app.post('/api/console/connector/check', async (request, response) => {
     try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
+      const body =
+        request.body && typeof request.body === 'object' && !Array.isArray(request.body)
+          ? (request.body as Record<string, unknown>)
+          : {};
       const connectorToolNames = Array.isArray(body.connector_tool_names)
         ? body.connector_tool_names.map(String)
         : Array.isArray(body.connectorToolNames)
@@ -1472,7 +1828,7 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.get("/api/console/access-policy", (request, response) => {
+  app.get('/api/console/access-policy', (request, response) => {
     try {
       response.json(getConsoleAccessPolicy(consoleCtx(request)));
     } catch (error) {
@@ -1480,37 +1836,43 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.post("/api/console/access-policy", (request, response) => {
+  app.post('/api/console/access-policy', (request, response) => {
     try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      response.json(setConsoleAccessPolicy(consoleCtx(request), {
-        mode: body.mode,
-        confirmAuthorization: body.confirmAuthorization === true,
-        confirmationText: queryString(body.confirmationText),
-      }));
+      const body =
+        request.body && typeof request.body === 'object' && !Array.isArray(request.body)
+          ? (request.body as Record<string, unknown>)
+          : {};
+      response.json(
+        setConsoleAccessPolicy(consoleCtx(request), {
+          mode: body.mode,
+          confirmAuthorization: body.confirmAuthorization === true,
+          confirmationText: queryString(body.confirmationText),
+        }),
+      );
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
 
-  app.get("/api/console/inbox", (request, response) => {
+  app.get('/api/console/inbox', (request, response) => {
     try {
-      const status = queryString(request.query.status) === "all" ? "all"
-        : queryString(request.query.status) === "active" ? "active"
-          : "pending";
+      const status =
+        queryString(request.query.status) === 'all'
+          ? 'all'
+          : queryString(request.query.status) === 'active'
+            ? 'active'
+            : 'pending';
       response.json({ items: listConsoleHandoffs(consoleCtx(request), status) });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
 
-  app.get("/api/console/inbox/:handoffId", (request, response) => {
+  app.get('/api/console/inbox/:handoffId', (request, response) => {
     try {
-      const item = getConsoleHandoff(consoleCtx(request), String(request.params.handoffId ?? ""));
+      const item = getConsoleHandoff(consoleCtx(request), String(request.params.handoffId ?? ''));
       if (!item) {
-        response.status(404).json({ error: "handoff not found" });
+        response.status(404).json({ error: 'handoff not found' });
         return;
       }
       response.json({ item });
@@ -1519,21 +1881,17 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.post("/api/console/inbox/:handoffId/ack", (request, response) => {
+  app.post('/api/console/inbox/:handoffId/ack', (request, response) => {
     try {
-      response.json({ item: ackConsoleHandoff(consoleCtx(request), String(request.params.handoffId ?? "")) });
+      response.json({ item: ackConsoleHandoff(consoleCtx(request), String(request.params.handoffId ?? '')) });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
 
-  app.post("/api/console/inbox/:handoffId/approve", async (request, response) => {
+  app.post('/api/console/inbox/:handoffId/approve', async (request, response) => {
     try {
-      const result = await approveConsoleHandoff(
-        consoleCtx(request),
-        String(request.params.handoffId ?? ""),
-        "user",
-      );
+      const result = await approveConsoleHandoff(consoleCtx(request), String(request.params.handoffId ?? ''), 'user');
       response.status(200).json({
         ...result,
         phase: 'succeeded',
@@ -1544,17 +1902,18 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.post("/api/console/inbox/:handoffId/resolve", async (request, response) => {
+  app.post('/api/console/inbox/:handoffId/resolve', async (request, response) => {
     try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
+      const body =
+        request.body && typeof request.body === 'object' && !Array.isArray(request.body)
+          ? (request.body as Record<string, unknown>)
+          : {};
       response.json({
         item: await resolveConsoleHandoff(
           consoleCtx(request),
-          String(request.params.handoffId ?? ""),
-          queryString(body.decision) ?? "resolved",
-          queryString(body.resolver) ?? "user",
+          String(request.params.handoffId ?? ''),
+          queryString(body.decision) ?? 'resolved',
+          queryString(body.resolver) ?? 'user',
         ),
       });
     } catch (error) {
@@ -1562,17 +1921,18 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.post("/api/console/inbox/:handoffId/dismiss", (request, response) => {
+  app.post('/api/console/inbox/:handoffId/dismiss', (request, response) => {
     try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
+      const body =
+        request.body && typeof request.body === 'object' && !Array.isArray(request.body)
+          ? (request.body as Record<string, unknown>)
+          : {};
       response.json({
         item: dismissConsoleHandoff(
           consoleCtx(request),
-          String(request.params.handoffId ?? ""),
-          queryString(body.decision) ?? "dismissed",
-          queryString(body.resolver) ?? "user",
+          String(request.params.handoffId ?? ''),
+          queryString(body.decision) ?? 'dismissed',
+          queryString(body.resolver) ?? 'user',
         ),
       });
     } catch (error) {
@@ -1580,63 +1940,67 @@ export async function startLocalBridgeServer(
     }
   });
 
-
-  app.post("/api/console/repair", (request, response) => {
+  app.post('/api/console/repair', (request, response) => {
     try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
+      const body =
+        request.body && typeof request.body === 'object' && !Array.isArray(request.body)
+          ? (request.body as Record<string, unknown>)
+          : {};
       const operation = queryString(body.operation);
       const result = repairConsole(consoleCtx(request), {
-        operation: operation === "repair" || operation === "verify" || operation === "handoff" || operation === "diagnose"
-          ? operation
-          : "diagnose",
+        operation:
+          operation === 'repair' || operation === 'verify' || operation === 'handoff' || operation === 'diagnose'
+            ? operation
+            : 'diagnose',
         dryRun: body.dryRun === undefined ? true : body.dryRun === true,
         approvalConfirmed: body.approvalConfirmed === true,
         destructive: body.destructive === true,
       });
-      response.status(result.status === "approval_required" || result.status === "blocked" ? 409 : 200).json({
+      response.status(result.status === 'approval_required' || result.status === 'blocked' ? 409 : 200).json({
         ...result,
-        phase: result.status === "ok" ? "succeeded" : result.status === "approval_required" ? "needs_attention" : "failed",
-        statusLabel: result.status === "ok" ? "已完成" : result.status === "approval_required" ? "需要确认" : "需要处理",
+        phase:
+          result.status === 'ok' ? 'succeeded' : result.status === 'approval_required' ? 'needs_attention' : 'failed',
+        statusLabel:
+          result.status === 'ok' ? '已完成' : result.status === 'approval_required' ? '需要确认' : '需要处理',
         terminal: true,
       });
     } catch (error) {
       response.status(400).json({
         error: errorMessage(error),
-        errorClass: "unknown_failure",
-        summary: errorMessage(error) || "操作失败，但未提供详细错误。",
-        phase: "failed",
-        statusLabel: "失败",
+        errorClass: 'unknown_failure',
+        summary: errorMessage(error) || '操作失败，但未提供详细错误。',
+        phase: 'failed',
+        statusLabel: '失败',
       });
     }
   });
 
-  app.post("/api/console/edit/apply", (request, response) => {
+  app.post('/api/console/edit/apply', (request, response) => {
     try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
+      const body =
+        request.body && typeof request.body === 'object' && !Array.isArray(request.body)
+          ? (request.body as Record<string, unknown>)
+          : {};
       const applied = applyConsoleSafePatch(consoleCtx(request), {
         operations: body.operations,
         purpose: queryString(body.purpose),
         allowedPaths: Array.isArray(body.allowedPaths) ? body.allowedPaths.map(String) : undefined,
         sessionId: queryString(body.sessionId),
       });
-      response.status(applied.phase === "failed" ? 409 : 200).json(applied);
+      response.status(applied.phase === 'failed' ? 409 : 200).json(applied);
     } catch (error) {
       response.status(400).json({
         error: errorMessage(error),
-        errorClass: "unknown_failure",
-        summary: errorMessage(error) || "同步修改失败。",
-        phase: "failed",
-        statusLabel: "失败",
+        errorClass: 'unknown_failure',
+        summary: errorMessage(error) || '同步修改失败。',
+        phase: 'failed',
+        statusLabel: '失败',
         terminal: true,
       });
     }
   });
 
-  app.get("/api/console/advanced", async (request, response) => {
+  app.get('/api/console/advanced', async (request, response) => {
     try {
       const ctx = consoleCtx(request);
       const raw = cachedLocalControllerSnapshot(ctx.repository.canonicalRoot);
@@ -1646,14 +2010,14 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.get("/api/snapshot", (request, response) => {
+  app.get('/api/snapshot', (request, response) => {
     try {
       response.json(cachedLocalControllerSnapshot(requestRepositoryRoot(request, options, controllerHome)));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/user-snapshot", (request, response) => {
+  app.get('/api/user-snapshot', (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
       response.json(buildUserControllerExperienceSnapshot(repository.canonicalRoot, controllerHome, repository.repoId));
@@ -1662,7 +2026,7 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.get("/api/repositories", (request, response) => {
+  app.get('/api/repositories', (request, response) => {
     try {
       const selectedRepoId = queryString(request.query.repoId) ?? options.defaultRepoId;
       response.json({ repositories: userFacingRepositories(repoRoot, controllerHome, selectedRepoId) });
@@ -1671,7 +2035,7 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.get("/api/repositories/:repoId/snapshot", (request, response) => {
+  app.get('/api/repositories/:repoId/snapshot', (request, response) => {
     try {
       response.json(cachedLocalControllerSnapshot(requestRepositoryRoot(request, options, controllerHome)));
     } catch (error) {
@@ -1679,7 +2043,7 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.get("/api/repositories/:repoId/user-snapshot", (request, response) => {
+  app.get('/api/repositories/:repoId/user-snapshot', (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
       response.json(buildUserControllerExperienceSnapshot(repository.canonicalRoot, controllerHome, repository.repoId));
@@ -1688,10 +2052,10 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.post("/api/repositories/register", (request, response) => {
+  app.post('/api/repositories/register', (request, response) => {
     try {
       const path = queryString(request.body?.path);
-      if (!path) throw new Error("REPOSITORY_PATH_REQUIRED");
+      if (!path) throw new Error('REPOSITORY_PATH_REQUIRED');
       const repository = registerRepository({
         path,
         controllerHome,
@@ -1700,16 +2064,23 @@ export async function startLocalBridgeServer(
         defaultBranch: queryString(request.body?.defaultBranch),
       });
       localSnapshotCache.delete(repository.canonicalRoot);
-      response.status(201).json({ repository, userSnapshot: buildUserControllerExperienceSnapshot(repository.canonicalRoot, controllerHome, repository.repoId) });
+      response.status(201).json({
+        repository,
+        userSnapshot: buildUserControllerExperienceSnapshot(
+          repository.canonicalRoot,
+          controllerHome,
+          repository.repoId,
+        ),
+      });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
 
-  app.post("/api/repositories/:repoId/remove", (request, response) => {
+  app.post('/api/repositories/:repoId/remove', (request, response) => {
     try {
       const repoId = queryString(request.params.repoId);
-      if (!repoId) throw new Error("REPOSITORY_ID_REQUIRED");
+      if (!repoId) throw new Error('REPOSITORY_ID_REQUIRED');
       const repository = removeRepository(repoId, controllerHome);
       localSnapshotCache.delete(repository.canonicalRoot);
       for (const checkout of repository.checkouts ?? []) {
@@ -1723,17 +2094,17 @@ export async function startLocalBridgeServer(
       });
     } catch (error) {
       const message = errorMessage(error);
-      if (message.startsWith("REPOSITORY_SELF_PROTECTED")) {
+      if (message.startsWith('REPOSITORY_SELF_PROTECTED')) {
         response.status(400).json({
           error: message,
-          errorMessage: "不能删除当前进程所在仓库的注册（自我保护）",
+          errorMessage: '不能删除当前进程所在仓库的注册（自我保护）',
         });
         return;
       }
       response.status(400).json({ error: message });
     }
   });
-  app.get("/api/completion/backlog", (request, response) => {
+  app.get('/api/completion/backlog', (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const limit = Number(request.query.limit);
@@ -1742,7 +2113,7 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/completion/queues", (request, response) => {
+  app.get('/api/completion/queues', (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const limit = Number(request.query.limit);
@@ -1751,15 +2122,15 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/completion/finish-ready-runs", (request, response) => {
+  app.post('/api/completion/finish-ready-runs', (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const result = finishCompletionBacklog(repoRoot, {
         dryRun: request.body?.apply !== true,
-        limit: typeof request.body?.limit === "number" ? request.body.limit : undefined,
+        limit: typeof request.body?.limit === 'number' ? request.body.limit : undefined,
         commit: request.body?.commit !== false,
         cleanup: request.body?.keepWorktree !== true,
-        reviewer: queryString(request.body?.reviewer) ?? "local-bridge-completion",
+        reviewer: queryString(request.body?.reviewer) ?? 'local-bridge-completion',
       });
       localSnapshotCache.delete(repoRoot);
       response.json(result);
@@ -1767,15 +2138,15 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/completion/decision", (request, response) => {
+  app.post('/api/completion/decision', (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const result = applyCompletionDecision(repoRoot, {
-        action: String(request.body?.action ?? "").replace(/-/g, "_") as never,
+        action: String(request.body?.action ?? '').replace(/-/g, '_') as never,
         runId: queryString(request.body?.runId) ?? queryString(request.body?.run_id),
         issueId: queryString(request.body?.issueId) ?? queryString(request.body?.issue_id),
         taskId: queryString(request.body?.taskId) ?? queryString(request.body?.task_id),
-        reviewer: queryString(request.body?.reviewer) ?? "local-bridge-completion",
+        reviewer: queryString(request.body?.reviewer) ?? 'local-bridge-completion',
         note: queryString(request.body?.note),
         commit: request.body?.commit !== false,
         cleanup: request.body?.keepWorktree !== true,
@@ -1786,7 +2157,7 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/completion/stuck", (request, response) => {
+  app.get('/api/completion/stuck', (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const limit = Number(request.query.limit);
@@ -1795,13 +2166,13 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/completion/stuck/migrate", (request, response) => {
+  app.post('/api/completion/stuck/migrate', (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const result = applyStuckStateMigration(repoRoot, {
         dryRun: request.body?.apply !== true,
-        limit: typeof request.body?.limit === "number" ? request.body.limit : undefined,
-        reviewer: queryString(request.body?.reviewer) ?? "local-bridge-stuck-migration",
+        limit: typeof request.body?.limit === 'number' ? request.body.limit : undefined,
+        reviewer: queryString(request.body?.reviewer) ?? 'local-bridge-stuck-migration',
         markRetryRequired: request.body?.markRetryRequired === true,
         markNoRunEvidence: request.body?.markNoRunEvidence === true,
       });
@@ -1811,41 +2182,43 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/controller/codex-continuation", (request, response) => {
+  app.post('/api/controller/codex-continuation', (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      response.json(prepareCodexContinuation(repoRoot, {
-        objective: queryString(request.body?.objective),
-        maxItems: typeof request.body?.maxItems === "number" ? request.body.maxItems : undefined,
-        mode: request.body?.launch === true ? "launch" : "prepare",
-      }));
+      response.json(
+        prepareCodexContinuation(repoRoot, {
+          objective: queryString(request.body?.objective),
+          maxItems: typeof request.body?.maxItems === 'number' ? request.body.maxItems : undefined,
+          mode: request.body?.launch === true ? 'launch' : 'prepare',
+        }),
+      );
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/stream", (request, response) => {
+  app.get('/api/stream', (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       response.status(200);
-      response.setHeader("Content-Type", "text/event-stream");
-      response.setHeader("Cache-Control", "no-cache, no-transform");
-      response.setHeader("Connection", "keep-alive");
+      response.setHeader('Content-Type', 'text/event-stream');
+      response.setHeader('Cache-Control', 'no-cache, no-transform');
+      response.setHeader('Connection', 'keep-alive');
       response.flushHeaders();
       streamClients.set(response, { repoRoot, signature: controllerStateSignature(repoRoot) });
-      sendStreamEvent(response, "connected");
-      request.on("close", () => streamClients.delete(response));
+      sendStreamEvent(response, 'connected');
+      request.on('close', () => streamClients.delete(response));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/governance", (request, response) => {
+  app.get('/api/governance', (request, response) => {
     try {
       response.json(inspectProjectGovernance(requestRepositoryRoot(request, options, controllerHome)));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/governance/reconcile", (request, response) => {
+  app.post('/api/governance/reconcile', (request, response) => {
     try {
       response.json(reconcileProjectGovernance(requestRepositoryRoot(request, options, controllerHome)));
     } catch (error) {
@@ -1853,7 +2226,7 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.get("/api/recovery/probe", (request, response) => {
+  app.get('/api/recovery/probe', (request, response) => {
     try {
       response.json(cachedLocalControllerSnapshot(requestRepositoryRoot(request, options, controllerHome)).recovery);
     } catch (error) {
@@ -1861,7 +2234,7 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.get("/api/recovery/plan", (request, response) => {
+  app.get('/api/recovery/plan', (request, response) => {
     try {
       const recovery = cachedLocalControllerSnapshot(requestRepositoryRoot(request, options, controllerHome)).recovery;
       response.json({
@@ -1869,7 +2242,9 @@ export async function startLocalBridgeServer(
         overallState: recovery.overallState,
         fallbackRequired: recovery.fallbackRequired,
         recommendedActions: recovery.recommendedActions,
-        blockingCapabilities: recovery.capabilities.filter((capability) => ["blocked", "unavailable", "degraded"].includes(capability.state)),
+        blockingCapabilities: recovery.capabilities.filter((capability) =>
+          ['blocked', 'unavailable', 'degraded'].includes(capability.state),
+        ),
         notes: recovery.notes,
       });
     } catch (error) {
@@ -1877,25 +2252,37 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.post("/api/recovery/apply", async (request, response) => {
+  app.post('/api/recovery/apply', async (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
       const repoRoot = repository.canonicalRoot;
-      const actionId = queryString(request.body?.actionId) ?? queryString(request.body?.action_id) ?? "";
+      const actionId = queryString(request.body?.actionId) ?? queryString(request.body?.action_id) ?? '';
       const action = recoveryActionById(actionId);
       if (!action) throw new Error(`RECOVERY_ACTION_UNKNOWN: ${actionId}`);
-      assertRecoveryAuthorized(action, action.confirmation === "none" ? action.id : request.body?.confirmAuthorization === true ? queryString(request.body?.authorization) : undefined);
-      const reason = queryString(request.body?.reason) ?? "local controller recovery action";
+      assertRecoveryAuthorized(
+        action,
+        action.confirmation === 'none'
+          ? action.id
+          : request.body?.confirmAuthorization === true
+            ? queryString(request.body?.authorization)
+            : undefined,
+      );
+      const reason = queryString(request.body?.reason) ?? 'local controller recovery action';
       let result: Record<string, unknown>;
       let affectedPaths: string[] = [];
-      if (action.id === "recovery.probe_again") {
+      if (action.id === 'recovery.probe_again') {
         result = cachedLocalControllerSnapshot(repoRoot).recovery as unknown as Record<string, unknown>;
-      } else if (action.id === "recovery.rebuild_projection" || action.id === "recovery.refresh_repository") {
+      } else if (action.id === 'recovery.rebuild_projection' || action.id === 'recovery.refresh_repository') {
         result = { projection: rebuildRepositoryProjection(controllerHome, repository.repoId) };
-        affectedPaths = [".ai/harness/controller/projections"];
-      } else if (action.id === "recovery.cleanup_preview") {
-        result = previewRuntimeCleanup(repoRoot, { includeTempDirs: true, includeTerminalLocalJobs: true, includeLegacyRuns: true, includeHistoricalAttention: true }) as unknown as Record<string, unknown>;
-      } else if (action.id === "recovery.local_jobs_reconcile") {
+        affectedPaths = ['.ai/harness/controller/projections'];
+      } else if (action.id === 'recovery.cleanup_preview') {
+        result = previewRuntimeCleanup(repoRoot, {
+          includeTempDirs: true,
+          includeTerminalLocalJobs: true,
+          includeLegacyRuns: true,
+          includeHistoricalAttention: true,
+        }) as unknown as Record<string, unknown>;
+      } else if (action.id === 'recovery.local_jobs_reconcile') {
         // Delegate to the one canonical Recovery application boundary instead of
         // running a second mutation from the HTTP transport. Authorization was
         // validated above with the same descriptor; the canonical owner rechecks
@@ -1907,24 +2294,34 @@ export async function startLocalBridgeServer(
           reason,
           confirmAuthorization: request.body?.confirmAuthorization === true,
           authorization: queryString(request.body?.authorization),
-          minAgeMinutes: typeof request.body?.minAgeMinutes === "number" ? request.body.minAgeMinutes : undefined,
-          maxCandidates: typeof request.body?.maxCandidates === "number" ? request.body.maxCandidates : undefined,
-          callStandaloneRecoveryTool: async () => { throw new Error("RECOVERY_ACTION_REQUIRES_MCP_TRANSPORT"); },
-          recoverySnapshot: async () => cachedLocalControllerSnapshot(repoRoot).recovery as unknown as Record<string, unknown>,
+          minAgeMinutes: typeof request.body?.minAgeMinutes === 'number' ? request.body.minAgeMinutes : undefined,
+          maxCandidates: typeof request.body?.maxCandidates === 'number' ? request.body.maxCandidates : undefined,
+          callStandaloneRecoveryTool: async () => {
+            throw new Error('RECOVERY_ACTION_REQUIRES_MCP_TRANSPORT');
+          },
+          recoverySnapshot: async () =>
+            cachedLocalControllerSnapshot(repoRoot).recovery as unknown as Record<string, unknown>,
         });
         localSnapshotCache.delete(repoRoot);
         response.json({ action: canonical.action, audit: canonical.audit, result: canonical.result });
         return;
       } else {
-        result = { skipped: true, reason: `${action.id} is planned but not executable from the Local Bridge HTTP process.` };
+        result = {
+          skipped: true,
+          reason: `${action.id} is planned but not executable from the Local Bridge HTTP process.`,
+        };
       }
-      const audit = writeRecoveryAuditRecord(controllerHome, repository.repoId, buildRecoveryAuditRecord({
-        actor: "local-bridge-gui",
-        action,
-        result: result.skipped === true ? "skipped" : "succeeded",
-        reason,
-        affectedPaths,
-      }));
+      const audit = writeRecoveryAuditRecord(
+        controllerHome,
+        repository.repoId,
+        buildRecoveryAuditRecord({
+          actor: 'local-bridge-gui',
+          action,
+          result: result.skipped === true ? 'skipped' : 'succeeded',
+          reason,
+          affectedPaths,
+        }),
+      );
       localSnapshotCache.delete(repoRoot);
       response.json({ action, audit, result });
     } catch (error) {
@@ -1932,17 +2329,19 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.get("/api/mobile/devices", (request, response) => {
+  app.get('/api/mobile/devices', (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(withMobileIntentStoreLock(controllerHome, repository.repoId, () =>
-        listMobileIntentDevices(repository.canonicalRoot),
-      ));
+      response.json(
+        withMobileIntentStoreLock(controllerHome, repository.repoId, () =>
+          listMobileIntentDevices(repository.canonicalRoot),
+        ),
+      );
     } catch (error) {
       sendMobileIntentFailure(response, error);
     }
   });
-  app.post("/api/mobile/devices", (request, response) => {
+  app.post('/api/mobile/devices', (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
       const created = withMobileIntentStoreLock(controllerHome, repository.repoId, () =>
@@ -1958,12 +2357,14 @@ export async function startLocalBridgeServer(
       sendMobileIntentFailure(response, error);
     }
   });
-  app.post("/api/mobile/devices/:deviceId/revoke", (request, response) => {
+  app.post('/api/mobile/devices/:deviceId/revoke', (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(withMobileIntentStoreLock(controllerHome, repository.repoId, () =>
-        revokeMobileIntentDevice(repository.canonicalRoot, request.params.deviceId),
-      ));
+      response.json(
+        withMobileIntentStoreLock(controllerHome, repository.repoId, () =>
+          revokeMobileIntentDevice(repository.canonicalRoot, request.params.deviceId),
+        ),
+      );
     } catch (error) {
       if (error instanceof ControllerLockContentionError) {
         sendMobileIntentFailure(response, error);
@@ -1972,17 +2373,17 @@ export async function startLocalBridgeServer(
       response.status(404).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/project-state", (request, response) => {
+  app.get('/api/project-state', (request, response) => {
     try {
       response.json(loadControllerProjectState(requestRepositoryRoot(request, options, controllerHome)));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/progress", (_request, response) => {
+  app.get('/api/progress', (_request, response) => {
     response.status(410).json(legacyProgressProjectionRetiredPayload());
   });
-  app.get("/api/issues/:issueId/tasks/:taskId", (_request, response) => {
+  app.get('/api/issues/:issueId/tasks/:taskId', (_request, response) => {
     response.status(410).json(legacyProgressProjectionRetiredPayload());
   });
   // All legacy Issue/Task/project-state HTTP mutations are retired for every
@@ -1991,27 +2392,28 @@ export async function startLocalBridgeServer(
   const retireLegacyIssueMutation = (_request: Request, response: Response): void => {
     response.status(410).json(legacyControlPlaneMutationRetiredPayload());
   };
-  app.patch("/api/project-state", retireLegacyIssueMutation);
+  app.patch('/api/project-state', retireLegacyIssueMutation);
   for (const path of [
-    "/api/issues/:issueId/focus",
-    "/api/issues/:issueId/archive",
-    "/api/issues/:issueId/restore",
-    "/api/issues/:issueId/tasks/:taskId/verify",
-    "/api/issues/:issueId/tasks/:taskId/accept",
-    "/api/issues/:issueId/tasks/:taskId/request-changes",
-    "/api/issues/:issueId/tasks/:taskId/cancel",
-    "/api/issues/:issueId/tasks/:taskId/dependencies",
-  ]) app.post(path, retireLegacyIssueMutation);
-  app.post("/api/tasks/launch-ready", (_request, response) => {
+    '/api/issues/:issueId/focus',
+    '/api/issues/:issueId/archive',
+    '/api/issues/:issueId/restore',
+    '/api/issues/:issueId/tasks/:taskId/verify',
+    '/api/issues/:issueId/tasks/:taskId/accept',
+    '/api/issues/:issueId/tasks/:taskId/request-changes',
+    '/api/issues/:issueId/tasks/:taskId/cancel',
+    '/api/issues/:issueId/tasks/:taskId/dependencies',
+  ])
+    app.post(path, retireLegacyIssueMutation);
+  app.post('/api/tasks/launch-ready', (_request, response) => {
     response.status(410).json(localBridgeExecutionRetiredPayload());
   });
-  app.post("/api/issues/:issueId/launch", (_request, response) => {
+  app.post('/api/issues/:issueId/launch', (_request, response) => {
     response.status(410).json(localBridgeExecutionRetiredPayload());
   });
-  app.post("/api/issues/:issueId/tasks/:taskId/launch", (_request, response) => {
+  app.post('/api/issues/:issueId/tasks/:taskId/launch', (_request, response) => {
     response.status(410).json(localBridgeExecutionRetiredPayload());
   });
-  app.get("/api/recipes/:recipeId/prepare", (request, response) => {
+  app.get('/api/recipes/:recipeId/prepare', (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const ledger = buildControllerTaskLedgerProjection(repoRoot);
@@ -2032,13 +2434,17 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.post("/api/checks/run", (request, response) => {
+  app.post('/api/checks/run', (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const requested = Array.isArray(request.body?.checkIds) ? request.body.checkIds.map(String) : [];
-      const ids: string[] = requested.length > 0 ? requested.slice(0, 8) : ["package:check:type"];
+      const ids: string[] = requested.length > 0 ? requested.slice(0, 8) : ['package:check:type'];
       const results = ids.map((checkId: string) => {
-        const result = runControllerCheck(repoRoot, checkId, typeof request.body?.timeoutMs === "number" ? request.body.timeoutMs : undefined);
+        const result = runControllerCheck(
+          repoRoot,
+          checkId,
+          typeof request.body?.timeoutMs === 'number' ? request.body.timeoutMs : undefined,
+        );
         return {
           checkId,
           ok: result.ok,
@@ -2053,7 +2459,7 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/timeline", (request, response) => {
+  app.get('/api/timeline', (request, response) => {
     try {
       response.json({
         events: listControllerWorklogEvents(requestRepositoryRoot(request, options, controllerHome), {
@@ -2071,11 +2477,11 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/worklog/export", (request, response) => {
+  app.post('/api/worklog/export', (request, response) => {
     try {
       response.json(
         exportControllerWorklog(requestRepositoryRoot(request, options, controllerHome), {
-          format: request.body?.format === "json" ? "json" : "markdown",
+          format: request.body?.format === 'json' ? 'json' : 'markdown',
           outputPath: queryString(request.body?.outputPath),
           filter: {
             issueId: queryString(request.body?.issueId),
@@ -2089,7 +2495,7 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/edit-sessions", (request, response) => {
+  app.get('/api/edit-sessions', (request, response) => {
     try {
       const limit = request.query.limit ? Number(request.query.limit) : 200;
       response.json({ sessions: listEditSessions(requestRepositoryRoot(request, options, controllerHome), limit) });
@@ -2097,54 +2503,64 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/edit-sessions/:sessionId", (request, response) => {
+  app.get('/api/edit-sessions/:sessionId', (request, response) => {
     try {
       response.json(getEditSession(requestRepositoryRoot(request, options, controllerHome), request.params.sessionId));
     } catch (error) {
       response.status(404).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/edit-sessions/:sessionId/diff", (request, response) => {
+  app.get('/api/edit-sessions/:sessionId/diff', (request, response) => {
     try {
-      response.json(getEditSessionDiff(requestRepositoryRoot(request, options, controllerHome), request.params.sessionId));
+      response.json(
+        getEditSessionDiff(requestRepositoryRoot(request, options, controllerHome), request.params.sessionId),
+      );
     } catch (error) {
       response.status(404).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/edit-sessions/:sessionId/savepoints", (request, response) => {
+  app.post('/api/edit-sessions/:sessionId/savepoints', (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(withRepositoryMutationExclusion(
-        controllerHome, repository.repoId, 'local_bridge:create_edit_savepoint',
-        () => createEditSavepoint(repository.canonicalRoot, request.params.sessionId, String(request.body?.name ?? "")),
-        undefined,
-        workspaceWriteMutationClaims(repository),
-      ));
+      response.json(
+        withRepositoryMutationExclusion(
+          controllerHome,
+          repository.repoId,
+          'local_bridge:create_edit_savepoint',
+          () =>
+            createEditSavepoint(repository.canonicalRoot, request.params.sessionId, String(request.body?.name ?? '')),
+          undefined,
+          workspaceWriteMutationClaims(repository),
+        ),
+      );
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/edit-sessions/:sessionId/verify", async (request, response) => {
+  app.post('/api/edit-sessions/:sessionId/verify', async (request, response) => {
     try {
       // Verification persists EditSession evidence and may run blocking checks.
       // The existing worker keeps those checks off the Local Bridge event loop.
       const repository = requestRepositorySelection(request, options, controllerHome);
       const verified = await withRepositoryMutationExclusionAsync(
-        controllerHome, repository.repoId, 'local_bridge:verify_edit_session',
-        () => runEditSessionMutationInWorker({
-          kind: 'verify',
-          repoRoot: repository.canonicalRoot,
-          sessionId: request.params.sessionId,
-          checkIds: Array.isArray(request.body?.checkIds) ? request.body.checkIds.map(String) : undefined,
-          reviewer: queryString(request.body?.reviewer) ?? "local-controller-human",
-          note: queryString(request.body?.note),
-        }),
+        controllerHome,
+        repository.repoId,
+        'local_bridge:verify_edit_session',
+        () =>
+          runEditSessionMutationInWorker({
+            kind: 'verify',
+            repoRoot: repository.canonicalRoot,
+            sessionId: request.params.sessionId,
+            checkIds: Array.isArray(request.body?.checkIds) ? request.body.checkIds.map(String) : undefined,
+            reviewer: queryString(request.body?.reviewer) ?? 'local-controller-human',
+            note: queryString(request.body?.note),
+          }),
         undefined,
         workspaceWriteMutationClaims(repository),
       );
       response.status(200).json({
         accepted: true,
-        status: "succeeded",
+        status: 'succeeded',
         sessionId: verified.sessionId,
         revision: verified.currentRevision,
         checkResults: verified.checkResults ?? [],
@@ -2154,33 +2570,37 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/edit-sessions/:sessionId/finalize", async (request, response) => {
+  app.post('/api/edit-sessions/:sessionId/finalize', async (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(await withRepositoryMutationExclusionAsync(
-        controllerHome, repository.repoId,
-        'local_bridge:finalize_edit_session',
-        () => runEditSessionMutationInWorker({
-          kind: 'finalize',
-          repoRoot: repository.canonicalRoot,
-          sessionId: request.params.sessionId,
-          reviewer: queryString(request.body?.reviewer) ?? "local-controller-human",
-          note: queryString(request.body?.note),
-        }),
-        undefined,
-        workspaceWriteMutationClaims(repository),
-      ));
+      response.json(
+        await withRepositoryMutationExclusionAsync(
+          controllerHome,
+          repository.repoId,
+          'local_bridge:finalize_edit_session',
+          () =>
+            runEditSessionMutationInWorker({
+              kind: 'finalize',
+              repoRoot: repository.canonicalRoot,
+              sessionId: request.params.sessionId,
+              reviewer: queryString(request.body?.reviewer) ?? 'local-controller-human',
+              note: queryString(request.body?.note),
+            }),
+          undefined,
+          workspaceWriteMutationClaims(repository),
+        ),
+      );
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/edit-sessions/:sessionId/finish", (request, response) => {
+  app.post('/api/edit-sessions/:sessionId/finish', (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const result = finishEditSession(repoRoot, {
         sessionId: request.params.sessionId,
-        decision: String(request.body?.decision ?? "auto").replace(/-/g, "_") as never,
-        reviewer: queryString(request.body?.reviewer) ?? "local-bridge-direct-edit",
+        decision: String(request.body?.decision ?? 'auto').replace(/-/g, '_') as never,
+        reviewer: queryString(request.body?.reviewer) ?? 'local-bridge-direct-edit',
         note: queryString(request.body?.note),
         checkIds: Array.isArray(request.body?.checkIds) ? request.body.checkIds.map(String) : undefined,
         commit: request.body?.commit !== false,
@@ -2191,34 +2611,39 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/edit-sessions/:sessionId/rollback", async (request, response) => {
+  app.post('/api/edit-sessions/:sessionId/rollback', async (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(await withRepositoryMutationExclusionAsync(
-        controllerHome, repository.repoId,
-        'local_bridge:rollback_edit_session',
-        () => runEditSessionMutationInWorker({
-          kind: 'rollback',
-          repoRoot: repository.canonicalRoot,
-          sessionId: request.params.sessionId,
-          toRevision: typeof request.body?.toRevision === "number" ? Math.trunc(request.body.toRevision) : undefined,
-          savepoint: queryString(request.body?.savepoint),
-        }),
-        undefined,
-        workspaceWriteMutationClaims(repository),
-      ));
+      response.json(
+        await withRepositoryMutationExclusionAsync(
+          controllerHome,
+          repository.repoId,
+          'local_bridge:rollback_edit_session',
+          () =>
+            runEditSessionMutationInWorker({
+              kind: 'rollback',
+              repoRoot: repository.canonicalRoot,
+              sessionId: request.params.sessionId,
+              toRevision:
+                typeof request.body?.toRevision === 'number' ? Math.trunc(request.body.toRevision) : undefined,
+              savepoint: queryString(request.body?.savepoint),
+            }),
+          undefined,
+          workspaceWriteMutationClaims(repository),
+        ),
+      );
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/github/plugin", (request, response) => {
+  app.get('/api/github/plugin', (request, response) => {
     try {
       response.json(getGitHubPluginStatus(requestRepositoryRoot(request, options, controllerHome)));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/toolchain/plugins/:pluginId/summary", (request, response) => {
+  app.get('/api/toolchain/plugins/:pluginId/summary', (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
       const manifest = getAssistantPluginManifest(controllerHome, repository, request.params.pluginId);
@@ -2227,61 +2652,71 @@ export async function startLocalBridgeServer(
       response.status(404).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/toolchain/model-clients", (_request, response) => {
-    response.json({ clients: buildModelClientSummary(), policyOwner: "forge" });
+  app.get('/api/toolchain/model-clients', (_request, response) => {
+    response.json({ clients: buildModelClientSummary(), policyOwner: 'forge' });
   });
-  app.get("/api/toolchain/model-control-plane", (_request, response) => {
-    response.json({ controlPlane: buildModelControlPlaneSummary(), transportEncryption: "not-configured-by-this-tool" });
+  app.get('/api/toolchain/model-control-plane', (_request, response) => {
+    response.json({
+      controlPlane: buildModelControlPlaneSummary(),
+      transportEncryption: 'not-configured-by-this-tool',
+    });
   });
-  app.get("/api/toolchain/deepseek/tools", (_request, response) => {
-    response.json({ provider: "deepseek", tools: deepSeekFunctionToolManifest(), policyOwner: "forge" });
+  app.get('/api/toolchain/deepseek/tools', (_request, response) => {
+    response.json({ provider: 'deepseek', tools: deepSeekFunctionToolManifest(), policyOwner: 'forge' });
   });
-  app.get("/api/toolchain/deepseek/controller-manifest", (_request, response) => {
+  app.get('/api/toolchain/deepseek/controller-manifest', (_request, response) => {
     response.json({ manifest: deepSeekControllerManifest() });
   });
-  app.post("/api/toolchain/deepseek/prepare", (request, response) => {
+  app.post('/api/toolchain/deepseek/prepare', (request, response) => {
     try {
-      const args = request.body?.functionArguments && typeof request.body.functionArguments === "object" && !Array.isArray(request.body.functionArguments)
-        ? request.body.functionArguments as Record<string, unknown>
-        : {};
-      response.json({ prepared: prepareDeepSeekToolCall(String(request.body?.functionName ?? "").trim(), args) });
+      const args =
+        request.body?.functionArguments &&
+        typeof request.body.functionArguments === 'object' &&
+        !Array.isArray(request.body.functionArguments)
+          ? (request.body.functionArguments as Record<string, unknown>)
+          : {};
+      response.json({ prepared: prepareDeepSeekToolCall(String(request.body?.functionName ?? '').trim(), args) });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/toolchain/deepseek/handoff", (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json({ handoff: prepareDeepSeekControllerHandoff({
-        reason: request.body?.reason,
-        objective: request.body?.objective,
-        repoId: repository.repoId,
-        currentController: request.body?.currentController,
-        blockedToolName: request.body?.blockedToolName,
-        recentSafeError: request.body?.recentSafeError,
-      }) });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/toolchain/deepseek/controller-request", (request, response) => {
+  app.post('/api/toolchain/deepseek/handoff', (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json({ preview: prepareDeepSeekControllerRequest({
-        reason: request.body?.reason,
-        objective: request.body?.objective,
-        userMessage: request.body?.userMessage,
-        repoId: repository.repoId,
-        currentController: request.body?.currentController,
-        blockedToolName: request.body?.blockedToolName,
-        recentSafeError: request.body?.recentSafeError,
-        model: request.body?.model,
-      }) });
+      response.json({
+        handoff: prepareDeepSeekControllerHandoff({
+          reason: request.body?.reason,
+          objective: request.body?.objective,
+          repoId: repository.repoId,
+          currentController: request.body?.currentController,
+          blockedToolName: request.body?.blockedToolName,
+          recentSafeError: request.body?.recentSafeError,
+        }),
+      });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/plugins", (request, response) => {
+  app.post('/api/toolchain/deepseek/controller-request', (request, response) => {
+    try {
+      const repository = requestRepositorySelection(request, options, controllerHome);
+      response.json({
+        preview: prepareDeepSeekControllerRequest({
+          reason: request.body?.reason,
+          objective: request.body?.objective,
+          userMessage: request.body?.userMessage,
+          repoId: repository.repoId,
+          currentController: request.body?.currentController,
+          blockedToolName: request.body?.blockedToolName,
+          recentSafeError: request.body?.recentSafeError,
+          model: request.body?.model,
+        }),
+      });
+    } catch (error) {
+      response.status(400).json({ error: errorMessage(error) });
+    }
+  });
+  app.get('/api/plugins', (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
       response.json({ plugins: listAssistantPluginManifests(controllerHome, repository) });
@@ -2289,7 +2724,7 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/plugins/:pluginId", (request, response) => {
+  app.get('/api/plugins/:pluginId', (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
       response.json({ plugin: getAssistantPluginManifest(controllerHome, repository, request.params.pluginId) });
@@ -2297,21 +2732,33 @@ export async function startLocalBridgeServer(
       response.status(404).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/plugins/:pluginId/actions/:actionId", async (request, response) => {
+  app.post('/api/plugins/:pluginId/actions/:actionId', async (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
-      const submitted = await submitAssistantPluginAction(controllerHome, repository, {
-        pluginId: request.params.pluginId,
-        actionId: request.params.actionId,
-        requestId: queryString(request.body?.requestId) ?? '',
-        args: request.body?.arguments && typeof request.body.arguments === "object" && !Array.isArray(request.body.arguments)
-          ? request.body.arguments as Record<string, unknown>
-          : {},
-        timeoutMs: typeof request.body?.timeoutMs === "number" ? request.body.timeoutMs : undefined,
-        confirmAuthorization: request.body?.confirmAuthorization === true,
-        confirmationText: queryString(request.body?.confirmationText),
-        origin: { surface: "local-ui", actor: "local-controller", correlationId: queryString(request.body?.requestId) },
-      }, { githubIssueSync: githubIssueSyncPort });
+      const submitted = await submitAssistantPluginAction(
+        controllerHome,
+        repository,
+        {
+          pluginId: request.params.pluginId,
+          actionId: request.params.actionId,
+          requestId: queryString(request.body?.requestId) ?? '',
+          args:
+            request.body?.arguments &&
+            typeof request.body.arguments === 'object' &&
+            !Array.isArray(request.body.arguments)
+              ? (request.body.arguments as Record<string, unknown>)
+              : {},
+          timeoutMs: typeof request.body?.timeoutMs === 'number' ? request.body.timeoutMs : undefined,
+          confirmAuthorization: request.body?.confirmAuthorization === true,
+          confirmationText: queryString(request.body?.confirmationText),
+          origin: {
+            surface: 'local-ui',
+            actor: 'local-controller',
+            correlationId: queryString(request.body?.requestId),
+          },
+        },
+        { githubIssueSync: githubIssueSyncPort },
+      );
       response.status(202).json({
         accepted: true,
         deduplicated: submitted.deduplicated,
@@ -2328,45 +2775,56 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.patch("/api/github/plugin", (request, response) => {
+  app.patch('/api/github/plugin', (request, response) => {
     try {
       const body = request.body ?? {};
       response.json(
         saveGitHubPluginConfig(requestRepositoryRoot(request, options, controllerHome), {
-          enabled: typeof body.enabled === "boolean" ? body.enabled : undefined,
-          repository: typeof body.repository === "string" ? body.repository : undefined,
-          syncMode: body.syncMode === "checkpoint" ? "checkpoint" : body.syncMode === "manual" ? "manual" : undefined,
-          includeTasks: typeof body.includeTasks === "boolean" ? body.includeTasks : undefined,
-          projectOwner: typeof body.projectOwner === "string" ? body.projectOwner : undefined,
-          projectNumber: body.projectNumber === null ? null : typeof body.projectNumber === "number" ? body.projectNumber : undefined,
+          enabled: typeof body.enabled === 'boolean' ? body.enabled : undefined,
+          repository: typeof body.repository === 'string' ? body.repository : undefined,
+          syncMode: body.syncMode === 'checkpoint' ? 'checkpoint' : body.syncMode === 'manual' ? 'manual' : undefined,
+          includeTasks: typeof body.includeTasks === 'boolean' ? body.includeTasks : undefined,
+          projectOwner: typeof body.projectOwner === 'string' ? body.projectOwner : undefined,
+          projectNumber:
+            body.projectNumber === null
+              ? null
+              : typeof body.projectNumber === 'number'
+                ? body.projectNumber
+                : undefined,
         }),
       );
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/issues/:issueId/github/publish", (request, response) => {
+  app.post('/api/issues/:issueId/github/publish', (request, response) => {
     try {
-      response.json(publishIssueWithGitHubPlugin(requestRepositoryRoot(request, options, controllerHome), request.params.issueId));
+      response.json(
+        publishIssueWithGitHubPlugin(requestRepositoryRoot(request, options, controllerHome), request.params.issueId),
+      );
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/issues/:issueId/github/refresh", (request, response) => {
+  app.post('/api/issues/:issueId/github/refresh', (request, response) => {
     try {
-      response.json(refreshIssueWithGitHubPlugin(requestRepositoryRoot(request, options, controllerHome), request.params.issueId));
+      response.json(
+        refreshIssueWithGitHubPlugin(requestRepositoryRoot(request, options, controllerHome), request.params.issueId),
+      );
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/issues/:issueId/github/close", (request, response) => {
+  app.post('/api/issues/:issueId/github/close', (request, response) => {
     try {
-      response.json(closeIssueWithGitHubPlugin(requestRepositoryRoot(request, options, controllerHome), request.params.issueId));
+      response.json(
+        closeIssueWithGitHubPlugin(requestRepositoryRoot(request, options, controllerHome), request.params.issueId),
+      );
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/jobs/:jobId", (request, response) => {
+  app.get('/api/jobs/:jobId', (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       response.json({
@@ -2377,10 +2835,10 @@ export async function startLocalBridgeServer(
       response.status(404).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/jobs", (_request, response) => {
+  app.post('/api/jobs', (_request, response) => {
     response.status(410).json(localBridgeExecutionRetiredPayload());
   });
-  app.post("/api/jobs/:jobId/cancel", (request, response) => {
+  app.post('/api/jobs/:jobId/cancel', (request, response) => {
     try {
       response.json(
         cancelLocalBridgeJob(requestRepositoryRoot(request, options, controllerHome), request.params.jobId),
@@ -2389,28 +2847,24 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/runs/:runId", (request, response) => {
+  app.get('/api/runs/:runId', (request, response) => {
     try {
       response.json(getAgentJob(requestRepositoryRoot(request, options, controllerHome), request.params.runId));
     } catch (error) {
       response.status(404).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/runs/:runId/log", (request, response) => {
+  app.get('/api/runs/:runId/log', (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const run = getAgentJob(repoRoot, request.params.runId);
-      const result = getAgentJobLog(
-        repoRoot,
-        request.params.runId,
-        false,
-      );
+      const result = getAgentJobLog(repoRoot, request.params.runId, false);
       response.json({ ...result, status: run.status, agent: run.agent });
     } catch (error) {
       response.status(404).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/runs/:runId/events", (request, response) => {
+  app.get('/api/runs/:runId/events', (request, response) => {
     try {
       response.json({
         events: getAgentJobEvents(requestRepositoryRoot(request, options, controllerHome), request.params.runId, 500),
@@ -2419,13 +2873,13 @@ export async function startLocalBridgeServer(
       response.status(404).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/runs/:runId/finish", (request, response) => {
+  app.post('/api/runs/:runId/finish', (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const result = finishTaskRun(repoRoot, {
         runId: request.params.runId,
-        decision: String(request.body?.decision ?? "auto").replace(/-/g, "_") as never,
-        reviewer: queryString(request.body?.reviewer) ?? "local-bridge-completion",
+        decision: String(request.body?.decision ?? 'auto').replace(/-/g, '_') as never,
+        reviewer: queryString(request.body?.reviewer) ?? 'local-bridge-completion',
         note: queryString(request.body?.note),
         cleanup: request.body?.keepWorktree !== true,
         commit: request.body?.commit !== false,
@@ -2436,25 +2890,18 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/runs/:runId/diff", (request, response) => {
+  app.get('/api/runs/:runId/diff', (request, response) => {
     try {
       response.json(taskRunDiff(requestRepositoryRoot(request, options, controllerHome), request.params.runId));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/runs/:runId/integrate", (request, response) => {
+  app.post('/api/runs/:runId/integrate', (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      const integrated = integrateAgentJob(
-        repoRoot,
-        getToolPolicy("controller", { repoRoot }),
-        request.params.runId,
-      );
-      const cleanup = cleanupIntegratedWorktree(
-        repoRoot,
-        request.params.runId,
-      );
+      const integrated = integrateAgentJob(repoRoot, getToolPolicy('controller', { repoRoot }), request.params.runId);
+      const cleanup = cleanupIntegratedWorktree(repoRoot, request.params.runId);
       response.json({
         integrated,
         cleanup,
@@ -2464,21 +2911,22 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/runs/:runId/cancel", (request, response) => {
+  app.post('/api/runs/:runId/cancel', (request, response) => {
     try {
       response.json(cancelAgentJob(requestRepositoryRoot(request, options, controllerHome), request.params.runId));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/runs/:runId/retry", (_request, response) => {
+  app.post('/api/runs/:runId/retry', (_request, response) => {
     // Fail closed: Kernel-managed Agent Run retry is retired. Do not probe
     // providers, mutate Task state, or create Runs/Jobs from this route.
     response.status(410).json({
-      error: "AGENT_RUN_RETIRED",
-      message: "Kernel-managed Agent Run retry is retired. Continue from the current Requirement/Plan and explicit repository/checkout through Process Runtime.",
+      error: 'AGENT_RUN_RETIRED',
+      message:
+        'Kernel-managed Agent Run retry is retired. Continue from the current Requirement/Plan and explicit repository/checkout through Process Runtime.',
       migration: {
-        path: ["Requirement/Plan", "repository/checkout", "Process Runtime"],
+        path: ['Requirement/Plan', 'repository/checkout', 'Process Runtime'],
       },
     });
   });
@@ -2486,22 +2934,21 @@ export async function startLocalBridgeServer(
   const server = createServer(app);
   server.listen(requestedPort, host);
   await new Promise<void>((resolve, reject) => {
-    server.once("listening", resolve);
-    server.once("error", reject);
+    server.once('listening', resolve);
+    server.once('error', reject);
   });
   server.keepAliveTimeout = 65_000;
   server.headersTimeout = 70_000;
   server.requestTimeout = 120_000;
-  server.on("close", () => {
+  server.on('close', () => {
     clearInterval(streamInterval);
     for (const client of streamClients.keys()) client.end();
     streamClients.clear();
     localSnapshotCache.delete(repoRoot);
   });
   const address = server.address();
-  const port =
-    typeof address === "object" && address ? address.port : requestedPort;
-  const url = `http://${host === "::1" ? "[::1]" : host}:${port}/`;
+  const port = typeof address === 'object' && address ? address.port : requestedPort;
+  const url = `http://${host === '::1' ? '[::1]' : host}:${port}/`;
   return {
     host,
     port,
