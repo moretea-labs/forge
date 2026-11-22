@@ -590,6 +590,98 @@ describe('repository command execution lifecycle', () => {
     expect(gitOutput(repoRoot, ['diff', '--cached', '--name-only'])).toBe('other.txt');
   });
 
+  test('exact-path commit ignores unrelated Process source ownership but retains path/index fences (#713)', () => {
+    const controllerHome = tempRoot('forge-713-selected-commit-home-');
+    const repoRoot = tempRoot('forge-713-selected-commit-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
+    const opts = { visibility: 'ephemeral' as const, notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false };
+    const acquire = (owner: string, key: string) => acquireExecutionLeases(
+      controllerHome, repository.repoId, owner, [{ resourceKey: key, mode: 'write' }], opts,
+    );
+
+    writeFileSync(join(repoRoot, 'README.md'), 'new reviewed content\n');
+    writeFileSync(join(repoRoot, 'unrelated.txt'), 'foreign untracked dirty\n');
+    const unrelated = acquire('foreign-unrelated', `path:${repository.activeCheckoutId}:unrelated.txt`);
+    expect(unrelated.acquired).toBe(true);
+    try {
+      const committed = commitSelectedPaths(controllerHome, repository, { paths: ['README.md'], message: 'only README' });
+      expect(committed.error).toBeUndefined();
+      expect(committed.commit?.ok).toBe(true);
+      expect(gitOutput(repoRoot, ['show', '--pretty=format:', '--name-only', 'HEAD'])).toBe('README.md');
+      expect(readFileSync(join(repoRoot, 'unrelated.txt'), 'utf8')).toBe('foreign untracked dirty\n');
+      expect(listActiveLeases(controllerHome, repository.repoId).some((lease) => lease.ownerJobId === 'foreign-unrelated')).toBe(true);
+    } finally {
+      if (unrelated.acquired) releaseExecutionLeases(controllerHome, repository.repoId, 'foreign-unrelated', unrelated.leases, opts);
+    }
+
+    writeFileSync(join(repoRoot, 'README.md'), 'another reviewed change\n');
+    for (const key of [
+      `path:${repository.activeCheckoutId}:README.md`,
+      `git-index:${repository.activeCheckoutId}`,
+      `git-refs:${repository.repoId}`,
+    ]) {
+      const held = acquire('foreign-overlap', key);
+      expect(held.acquired).toBe(true);
+      try {
+        expect(() => commitSelectedPaths(controllerHome, repository, {
+          paths: ['README.md'], message: 'must not race',
+        })).toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+      } finally {
+        if (held.acquired) releaseExecutionLeases(controllerHome, repository.repoId, 'foreign-overlap', held.leases, opts);
+      }
+    }
+  });
+
+  test('reviewed selected-path restore shares checkout with unrelated Process but observes index/ref (#713)', () => {
+    const controllerHome = tempRoot('forge-713-selected-restore-home-');
+    const repoRoot = tempRoot('forge-713-selected-restore-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
+    const opts = { visibility: 'ephemeral' as const, notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false };
+    const acquire = (owner: string, key: string) => acquireExecutionLeases(
+      controllerHome, repository.repoId, owner, [{ resourceKey: key, mode: 'write' }], opts,
+    );
+    const preview = () => selectedPathDiff(repository, { paths: ['README.md'], staged: false, maxBytes: 20_000 });
+    const restore = (reviewed: ReturnType<typeof preview>) => restoreSelectedPaths(controllerHome, repository, {
+      paths: ['README.md'],
+      expectedHead: reviewed.head,
+      expectedBranch: reviewed.branch,
+      expectedPatch: reviewed.diff,
+      confirmAuthorization: true,
+    });
+
+    writeFileSync(join(repoRoot, 'README.md'), 'reviewed rollback\n');
+    const reviewed = preview();
+    const unrelated = acquire('foreign-restore-unrelated', `path:${repository.activeCheckoutId}:other.txt`);
+    expect(unrelated.acquired).toBe(true);
+    try {
+      const result = restore(reviewed);
+      expect(result.error).toBeUndefined();
+      expect(result.execution?.ok).toBe(true);
+      expect(readFileSync(join(repoRoot, 'README.md'), 'utf8')).toBe('hello\n');
+    } finally {
+      if (unrelated.acquired) releaseExecutionLeases(controllerHome, repository.repoId, 'foreign-restore-unrelated', unrelated.leases, opts);
+    }
+
+    writeFileSync(join(repoRoot, 'README.md'), 'must preserve until lease exits\n');
+    const nextReview = preview();
+    for (const key of [
+      `path:${repository.activeCheckoutId}:README.md`,
+      `git-index:${repository.activeCheckoutId}`,
+      `git-refs:${repository.repoId}`,
+    ]) {
+      const held = acquire('foreign-restore-overlap', key);
+      expect(held.acquired).toBe(true);
+      try {
+        expect(() => restore(nextReview)).toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+        expect(readFileSync(join(repoRoot, 'README.md'), 'utf8')).toBe('must preserve until lease exits\n');
+      } finally {
+        if (held.acquired) releaseExecutionLeases(controllerHome, repository.repoId, 'foreign-restore-overlap', held.leases, opts);
+      }
+    }
+  });
+
   test('reviewed selected-path restore discards only exact tracked unstaged changes and rejects stale or staged scope', () => {
     const controllerHome = tempRoot('forge-selected-restore-home-');
     const repoRoot = tempRoot('forge-selected-restore-repo-');
@@ -894,7 +986,7 @@ describe('repository command execution lifecycle', () => {
     expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
   });
 
-  test('local shell and inline workspace writes use Process leases rather than unclaimed lightweight subprocesses', async () => {
+  test('ordinary local shell and inline writes do not create durable checkout lease state (#713)', async () => {
     const controllerHome = tempRoot('forge-cmd-opaque-home-');
     const repoRoot = tempRoot('forge-cmd-opaque-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
@@ -908,6 +1000,7 @@ describe('repository command execution lifecycle', () => {
         'inline-lightweight\n',
       ],
     ] as const) {
+      expect(classifyRepositoryCommandRoute(command).route).toBe('process_direct');
       const result = await executeRepositoryCommandViaProcessRuntime({
         controllerHome,
         repository,
@@ -915,21 +1008,23 @@ describe('repository command execution lifecycle', () => {
         timeoutMs: 10_000,
         executionIdentity: executionIdentityForRepository(repository),
       });
-      expect(result.process?.processId).not.toStartWith('lightweight:');
-      expect(result.executionMetrics).toMatchObject({ lane: 'durable_process' });
-      const terminal = result.process!.completed
-        ? result.process!
-        : await waitRepositoryCommandProcess(controllerHome, repository.repoId, result.process!.processId, {
-            timeoutMs: 10_000,
-          });
-      expect(terminal).toMatchObject({ completed: true, ok: true });
+      expect(result.process?.processId.startsWith('lightweight:') ?? true).toBe(true);
+      expect(result.executionMetrics).toMatchObject({ durableWrites: 0, leaseOperations: 0 });
+      const terminal = result.process
+        ? result.process.completed
+          ? result.process
+          : await waitRepositoryCommandProcess(controllerHome, repository.repoId, result.process.processId, {
+              timeoutMs: 10_000,
+            })
+        : result;
+      expect(terminal).toMatchObject({ ok: true });
       expect(readFileSync(join(repoRoot, marker), 'utf-8')).toBe(expected);
     }
-    expect(listProcessRecords(controllerHome, repository.repoId).length).toBeGreaterThan(processCount);
+    expect(listProcessRecords(controllerHome, repository.repoId).length).toBe(processCount);
     expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
   });
 
-  test('long ordinary local workspace mutation holds a Process resource lease', async () => {
+  test('long ordinary local command uses a lightweight handle without durable lease state (#713)', async () => {
     const controllerHome = tempRoot('forge-cmd-light-home-');
     const repoRoot = tempRoot('forge-cmd-light-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
@@ -949,10 +1044,10 @@ describe('repository command execution lifecycle', () => {
       executionIdentity: executionIdentityForRepository(repository),
     });
     expect(result.route).toBe('process_managed');
-    expect(result.process?.processId).not.toStartWith('lightweight:');
-    expect(result.executionMetrics).toMatchObject({ lane: 'durable_process' });
-    expect(listProcessRecords(controllerHome, repository.repoId).length).toBeGreaterThan(processCount);
-    expect(listActiveLeases(controllerHome, repository.repoId).length).toBeGreaterThan(0);
+    expect(result.process?.processId).toStartWith('lightweight:');
+    expect(result.executionMetrics).toMatchObject({ durableWrites: 0, leaseOperations: 0 });
+    expect(listProcessRecords(controllerHome, repository.repoId).length).toBe(processCount);
+    expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
     const terminal = await waitRepositoryCommandProcess(controllerHome, repository.repoId, result.process!.processId, {
       timeoutMs: 10_000,
     });

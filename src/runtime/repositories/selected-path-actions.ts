@@ -7,6 +7,8 @@ import { executeRepositoryGitCommand, type RepositoryGitExecution } from '../../
 import { repositoryGitStatus, resolveRepositoryGitCommitScope } from '../../runtime/repositories/structured-git';
 import { withControllerLock } from '../../effects/controller-locks';
 import { withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
+import { normalizeClaimPath } from '../../runtime/resources/claims/conflicts';
+import type { ResourceClaimSpec } from '../../runtime/execution/jobs/types';
 import type { RepositoryRecord } from '../../core/repository/types';
 
 const DEFAULT_MAX_OUTPUT_BYTES = 128 * 1024;
@@ -103,6 +105,28 @@ function normalizeSelectedPaths(repository: RepositoryRecord, input: unknown): s
     normalized.add(rel);
   }
   return [...normalized].sort();
+}
+
+/** Scope the brief Git transaction to reviewed paths and real index/ref
+ * atomicity. An unrelated Process source writer must not block integration.
+ * Unknown path identity remains conservative rather than silently bypassing.
+ */
+function selectedPathMutationClaims(
+  repository: RepositoryRecord,
+  paths: string[],
+  action: 'commit' | 'restore',
+): ResourceClaimSpec[] {
+  const sourceClaims: ResourceClaimSpec[] = paths.map((path) => {
+    const normalized = normalizeClaimPath(path);
+    return normalized
+      ? { resourceKey: `path:${repository.activeCheckoutId}:${normalized}`, mode: 'write' }
+      : { resourceKey: `workspace:${repository.activeCheckoutId}`, mode: 'write' };
+  });
+  return [
+    ...sourceClaims,
+    { resourceKey: `git-index:${repository.activeCheckoutId}`, mode: action === 'commit' ? 'exclusive' : 'read' },
+    { resourceKey: `git-refs:${repository.repoId}`, mode: action === 'commit' ? 'exclusive' : 'read' },
+  ];
 }
 
 function runGit(
@@ -348,6 +372,8 @@ export function restoreSelectedPaths(
         }
         return { paths, execution };
       },
+      undefined,
+      selectedPathMutationClaims(repository, paths, 'restore'),
     ),
   );
 }
@@ -436,6 +462,8 @@ export function commitSelectedPaths(
           : {}),
       };
       },
+      undefined,
+      selectedPathMutationClaims(repository, paths, 'commit'),
     ),
   );
 }
