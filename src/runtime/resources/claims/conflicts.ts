@@ -12,9 +12,9 @@ import type { ExecutionLease } from '../leases/types';
  *
  * Cross-key policy (#713): workspace observation (mode=read) does not
  * monopolize same-checkout path writes or short git-index/git-head mutations.
- * Workspace write/exclusive still fences the whole checkout tree. Prefer
- * validation-input:<checkout> for governed gates; workspace:read remains the
- * claim for ordinary status/test observation and must not block path edits.
+ * Workspace write/exclusive fences source paths, not independent Git index/ref
+ * metadata. Git operations must explicitly claim index/refs when mutated (#713).
+ * Prefer validation-input:<checkout> for governed gates.
  *
  * Legacy keys:
  *   workspace-read:<checkoutId>  → treated as workspace:<checkoutId> mode=read
@@ -68,12 +68,6 @@ function workspaceCheckoutId(key: string): string | undefined {
   return normalized.startsWith('workspace:') ? normalized.slice('workspace:'.length) : undefined;
 }
 
-function gitIndexCheckoutId(key: string): string | undefined {
-  if (key.startsWith('git-index:')) return key.slice('git-index:'.length);
-  if (key.startsWith('git-head:')) return key.slice('git-head:'.length);
-  return undefined;
-}
-
 function isGitRefKey(key: string): boolean {
   return key.startsWith('git-ref:') || key.startsWith('git-refs:') || key.startsWith('remote-ref:');
 }
@@ -122,10 +116,9 @@ export function pathOverlaps(left: string, right: string): boolean {
 
 /**
  * Resource key overlap for mutation ownership.
- * workspace:<checkoutId> conflicts with same-checkout path/index/head and with
- * unscoped path claims (legacy paths lack checkout identity). Repository-scoped
- * Git refs are independent from checkout-local file mutations; commands that
- * mutate both already claim their own workspace plus refs explicitly.
+ * workspace:<checkoutId> conflicts with same-checkout source paths and with
+ * unscoped legacy paths. The Git index, HEAD and refs are distinct physical
+ * resources; commands that mutate them claim them explicitly (#713).
  *
  * Note: same-key overlap is true even when modes differ; mode policy lives in
  * claimsConflict (read+read allowed).
@@ -217,19 +210,6 @@ export function resourceKeysOverlap(leftRaw: string, rightRaw: string): boolean 
     return pathCheckout === undefined || pathCheckout === rightWs;
   }
 
-  // workspace vs git-index/head for same checkout. Git refs themselves are
-  // repo-scoped but do not mutate another checkout's files; a command that
-  // touches refs and a checkout declares both claims, so same-checkout safety
-  // is still enforced by its workspace/index claim.
-  if (leftWs) {
-    const indexCheckout = gitIndexCheckoutId(right);
-    if (indexCheckout !== undefined) return indexCheckout === leftWs;
-  }
-  if (rightWs) {
-    const indexCheckout = gitIndexCheckoutId(left);
-    if (indexCheckout !== undefined) return indexCheckout === rightWs;
-  }
-
   const leftPath = pathValue(left);
   const rightPath = pathValue(right);
   if (leftPath !== undefined && rightPath !== undefined) {
@@ -249,9 +229,8 @@ export function resourceKeysOverlap(leftRaw: string, rightRaw: string): boolean 
 }
 
 /**
- * True when one side is checkout observation (workspace:read) and the other
- * is a same-checkout path or git-index/git-head mutation. Overlap remains
- * true for provenance, but observation must not serialize model edits (#713).
+ * True when checkout observation (workspace:read) encounters a source-path
+ * mutation. Read observation cannot serialize unrelated model edits (#713).
  */
 function workspaceObservationAllowsCheckoutMutation(
   leftKey: string,
@@ -261,21 +240,13 @@ function workspaceObservationAllowsCheckoutMutation(
 ): boolean {
   const leftWs = workspaceCheckoutId(leftKey);
   const rightWs = workspaceCheckoutId(rightKey);
-  if (leftWs && leftMode === 'read') {
-    if (rightKey.startsWith('path:')) {
-      const pathCheckout = pathCheckoutId(rightKey);
-      return pathCheckout === undefined || pathCheckout === leftWs;
-    }
-    const indexCheckout = gitIndexCheckoutId(rightKey);
-    return indexCheckout !== undefined && indexCheckout === leftWs;
+  if (leftWs && leftMode === 'read' && rightKey.startsWith('path:')) {
+    const pathCheckout = pathCheckoutId(rightKey);
+    return pathCheckout === undefined || pathCheckout === leftWs;
   }
-  if (rightWs && rightMode === 'read') {
-    if (leftKey.startsWith('path:')) {
-      const pathCheckout = pathCheckoutId(leftKey);
-      return pathCheckout === undefined || pathCheckout === rightWs;
-    }
-    const indexCheckout = gitIndexCheckoutId(leftKey);
-    return indexCheckout !== undefined && indexCheckout === rightWs;
+  if (rightWs && rightMode === 'read' && leftKey.startsWith('path:')) {
+    const pathCheckout = pathCheckoutId(leftKey);
+    return pathCheckout === undefined || pathCheckout === rightWs;
   }
   return false;
 }

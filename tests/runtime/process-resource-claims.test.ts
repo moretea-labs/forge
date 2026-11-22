@@ -595,7 +595,10 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claimsConflict(headExclusive, reader)).toBe(false);
     expect(claimsConflict({ resourceKey: 'workspace-read:co1', mode: 'read' }, writer)).toBe(true);
     expect(claimsConflict(pathWrite, writer)).toBe(true);
-    expect(claimsConflict(indexExclusive, writer)).toBe(true);
+    expect(claimsConflict(indexExclusive, writer)).toBe(false);
+    expect(claimsConflict(headExclusive, writer)).toBe(false);
+    expect(claimsConflict(indexExclusive, lease('git-index:co1', 'exclusive'))).toBe(true);
+    expect(claimsConflict(headExclusive, lease('git-head:co1', 'exclusive'))).toBe(true);
     expect(claimsConflict(pathWrite, foreignReader)).toBe(false);
 
     const focusedTest = claimsForRepositoryCommand(
@@ -711,8 +714,8 @@ describe('Process Runtime fine-grained resource claims', () => {
   test('path-scoped git add and git commit do not take checkout-wide writer (#713)', () => {
     const staged = claimsForRepositoryCommand(['git', 'add', 'src/alpha.ts', 'src/beta.ts'], 'repo1', 'co1');
     expect(staged).toContainEqual({ resourceKey: 'git-index:co1', mode: 'exclusive' });
-    expect(staged).toContainEqual({ resourceKey: 'path:co1:src/alpha.ts', mode: 'write' });
-    expect(staged).toContainEqual({ resourceKey: 'path:co1:src/beta.ts', mode: 'write' });
+    expect(staged).not.toContainEqual({ resourceKey: 'path:co1:src/alpha.ts', mode: 'write' });
+    expect(staged).not.toContainEqual({ resourceKey: 'path:co1:src/beta.ts', mode: 'write' });
     expect(staged.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
 
     const commit = claimsForRepositoryCommand(['git', 'commit', '-m', 'slice'], 'repo1', 'co1');
@@ -730,6 +733,99 @@ describe('Process Runtime fine-grained resource claims', () => {
     });
   });
 
+  test('Git metadata operations retire source ownership even with broad pathspecs (#713)', () => {
+    const sourceWriter = lease('path:co1:src/alpha.ts', 'write');
+    const legacyWriter = lease('workspace:co1', 'write');
+    const sharedIndex = lease('git-index:co1', 'exclusive');
+    const sharedRefs = lease('git-refs:repo1', 'exclusive');
+    for (const command of [
+      ['git', 'add', '.'],
+      ['git', 'add', '--all'],
+      ['git', 'add', 'src/alpha.ts'],
+      'git add --all -- src/alpha.ts',
+      ['bash', '-lc', 'git add .'],
+      ['git', 'rm', '--cached', 'src/alpha.ts'],
+      ['git', 'restore', '--staged', '--', 'src/alpha.ts'],
+      ['git', 'apply', '--cached', 'changes.patch'],
+    ]) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims).toEqual([{ resourceKey: 'git-index:co1', mode: 'exclusive' }]);
+      expect(claims.some((claim) => claimsConflict(claim, sourceWriter))).toBe(false);
+      expect(claims.some((claim) => claimsConflict(claim, legacyWriter))).toBe(false);
+      expect(claims.some((claim) => claimsConflict(claim, sharedIndex))).toBe(true);
+    }
+    for (const command of [
+      ['git', 'branch', 'feature'],
+      ['git', 'branch', '--delete', 'old-feature'],
+      ['git', 'tag', 'release-1'],
+      'git branch --show-current',
+    ]) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+      expect(claims.some((claim) => claimsConflict(claim, sourceWriter))).toBe(false);
+      if (command === 'git branch --show-current') continue;
+      expect(claims).toEqual([{ resourceKey: 'git-refs:repo1', mode: 'exclusive' }]);
+      expect(claims.some((claim) => claimsConflict(claim, sharedRefs))).toBe(true);
+    }
+    // Real worktree mutations still require exact source-path or conservative
+    // fallback, even when Git metadata is also changed.
+    for (const command of [
+      ['git', 'rm', '--', 'src/alpha.ts'],
+      ['git', 'restore', '--staged', '--worktree', '--', 'src/alpha.ts'],
+      ['git', 'apply', 'changes.patch'],
+      ['git', 'checkout', 'another-branch'],
+    ]) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims).not.toEqual([{ resourceKey: 'git-index:co1', mode: 'exclusive' }]);
+      expect(
+        claims.some((claim) => claim.resourceKey.startsWith('workspace:') || claim.resourceKey.startsWith('path:')),
+      ).toBe(true);
+    }
+  });
+
+  test('live lease store permits source and Git metadata Writers but never concurrent index owners (#713)', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-713-git-resource-split-'));
+    const opts = {
+      visibility: 'ephemeral' as const,
+      notifyScheduler: false,
+      invalidateProjection: false,
+      emitRuntimeEvent: false,
+    };
+    const held: Array<{ owner: string; leases: ExecutionLease[] }> = [];
+    try {
+      ensureControllerHome(home);
+      const acquire = (owner: string, claim: { resourceKey: string; mode: 'write' | 'exclusive' }) => {
+        const acquired = acquireExecutionLeases(home, 'repo1', owner, [claim], opts);
+        if (acquired.acquired) held.push({ owner, leases: acquired.leases });
+        return acquired.acquired;
+      };
+      expect(acquire('source-writer', { resourceKey: 'workspace:co1', mode: 'write' })).toBe(true);
+      expect(acquire('index-writer', { resourceKey: 'git-index:co1', mode: 'exclusive' })).toBe(true);
+      expect(acquire('ref-writer', { resourceKey: 'git-refs:repo1', mode: 'exclusive' })).toBe(true);
+      expect(acquire('other-index', { resourceKey: 'git-index:co1', mode: 'exclusive' })).toBe(false);
+      expect(acquire('other-ref', { resourceKey: 'git-refs:repo1', mode: 'exclusive' })).toBe(false);
+      expect(acquire('overlapping-source', { resourceKey: 'path:co1:src/alpha.ts', mode: 'write' })).toBe(false);
+    } finally {
+      for (const item of held) releaseExecutionLeases(home, 'repo1', item.owner, item.leases, opts);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('commands that change Git worktree still explicitly claim index/refs (#713)', () => {
+    for (const command of [
+      ['git', 'checkout', 'another-branch'],
+      ['git', 'switch', 'another-branch'],
+      ['git', 'reset', '--mixed'],
+      ['git', 'stash', 'push'],
+      ['git', 'update-index', '--refresh'],
+    ]) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims).toContainEqual({ resourceKey: 'git-index:co1', mode: 'exclusive' });
+      expect(claims).toContainEqual({ resourceKey: 'git-refs:repo1', mode: 'exclusive' });
+      expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(true);
+    }
+  });
+
   test('literal Git source pathspecs narrow index operations but patch input is not an output path (#713)', () => {
     for (const command of [
       ['git', 'add', 'README'],
@@ -743,11 +839,10 @@ describe('Process Runtime fine-grained resource claims', () => {
       expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
     }
     for (const command of [
-      ['git', 'add', '.'],
-      ['git', 'add', '--all'],
-      ['git', 'add', '--', ':!README'],
-      ['git', 'add', '--', 'src/*.ts'],
-      ['git', 'add', '--', '../outside.md'],
+      ['git', 'rm', '-r', '.'],
+      ['git', 'rm', '--', ':!README'],
+      ['git', 'rm', '--', 'src/*.ts'],
+      ['git', 'rm', '--', '../outside.md'],
       ['git', 'apply', 'change.diff'],
     ]) {
       const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');

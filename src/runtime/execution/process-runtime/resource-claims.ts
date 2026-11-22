@@ -939,6 +939,42 @@ function literalGitMutationPaths(args: readonly string[]): string[] | undefined 
     : undefined;
 }
 
+/** Git staging changes only the index; branch/tag commands change only Git
+ * metadata. Neither has source-file ownership, even without a pathspec (#713).
+ * This is independent of command authorization and preserves the short
+ * atomic Git index/ref leases.
+ */
+function gitMetadataOnlyClaims(
+  command: string | readonly string[],
+  repoId: string,
+  checkoutId?: string,
+): ResourceClaimSpec[] | undefined {
+  const canonical = normalizeRepositoryCommand(command);
+  const wrapped =
+    canonical.kind === 'argv'
+      ? fixedShellWrapperCommand([canonical.executable ?? '', ...(canonical.args ?? [])])
+      : undefined;
+  if ((canonical.kind === 'shell' || wrapped) && !isSimpleNonComposedCommand(command)) return undefined;
+  const words =
+    canonical.kind === 'argv' && !wrapped
+      ? [canonical.executable ?? '', ...(canonical.args ?? [])]
+      : shellWordsPreservingQuotes(wrapped ?? canonical.shellCommand ?? '');
+  if ((words[0] ?? '').split(/[\\/]/).at(-1)?.toLowerCase() !== 'git') return undefined;
+  const args = words.slice(1);
+  const sub = args[0]?.toLowerCase();
+  if (sub === 'add' || (sub === 'rm' && args.includes('--cached'))) {
+    return [claimGitIndex(checkoutId, repoId)];
+  }
+  if (sub === 'branch' || sub === 'tag') return [claimGitRefs(repoId)];
+  if (sub === 'restore' && args.includes('--staged') && !args.includes('--worktree')) {
+    return [claimGitIndex(checkoutId, repoId)];
+  }
+  if (sub === 'apply' && args.includes('--cached') && !args.includes('--index')) {
+    return [claimGitIndex(checkoutId, repoId)];
+  }
+  return undefined;
+}
+
 /**
  * Classify resource claims for a repository command without taking whole-repo exclusive locks
  * for ordinary readonly / focused validation commands.
@@ -1018,6 +1054,10 @@ function repositoryCommandClaims(
     // identity, idempotency and provider-target serialization.
     return [claimGitRefs(repoId)];
   }
+  // Classification may label local branch deletion as destructive. Its source
+  // effect is still zero: protect the Git ref, not every checkout file (#713).
+  const metadataOnly = gitMetadataOnlyClaims(command, repoId, checkoutId);
+  if (metadataOnly) return metadataOnly;
   if (classification.risk === 'destructive') {
     return [
       claimWorkspaceWrite(checkoutId, repoId),
@@ -1084,10 +1124,13 @@ function repositoryCommandClaims(
       // monopolize the whole checkout as an Agent admission lock (#713).
       return [claimGitIndex(checkoutId, repoId), claimGitRefs(repoId)];
     }
-    if (sub === 'checkout' || sub === 'switch' || sub === 'branch' || sub === 'tag') {
-      // A ref or branch argument is not a modified source path.
-      return [claimGitRefs(repoId), claimWorkspaceWrite(checkoutId, repoId)];
+    if (sub === 'checkout' || sub === 'switch') {
+      // Switching the worktree updates the index and refs as well as source.
+      return [claimWorkspaceWrite(checkoutId, repoId), claimGitIndex(checkoutId, repoId), claimGitRefs(repoId)];
     }
+    // Unknown Git subcommands may update index/refs; keep their *physical*
+    // atomic coordination even though workspace no longer implies Git ownership.
+    return [claimWorkspaceWrite(checkoutId, repoId), claimGitIndex(checkoutId, repoId), claimGitRefs(repoId)];
   }
 
   // Opaque mutating commands keep the conservative checkout fence. Prefer
