@@ -600,32 +600,66 @@ describe('repository command execution lifecycle', () => {
     const beta = [{ resourceKey: `path:${repository.activeCheckoutId}:other.txt`, mode: 'write' as const }];
     let notifyStarted: (() => void) | undefined;
     let releaseAlpha: (() => void) | undefined;
-    const started = new Promise<void>((resolve) => { notifyStarted = resolve; });
-    const hold = new Promise<void>((resolve) => { releaseAlpha = resolve; });
-    const writerA = withRepositoryMutationExclusionAsync(controllerHome, repository.repoId, 'async-alpha', async () => {
-      notifyStarted?.();
-      await hold;
-      writeFileSync(join(repoRoot, 'README.md'), 'alpha wrote\n');
-      return 'alpha';
-    }, undefined, alpha);
+    const started = new Promise<void>((resolve) => {
+      notifyStarted = resolve;
+    });
+    const hold = new Promise<void>((resolve) => {
+      releaseAlpha = resolve;
+    });
+    const writerA = withRepositoryMutationExclusionAsync(
+      controllerHome,
+      repository.repoId,
+      'async-alpha',
+      async () => {
+        notifyStarted?.();
+        await hold;
+        writeFileSync(join(repoRoot, 'README.md'), 'alpha wrote\n');
+        return 'alpha';
+      },
+      undefined,
+      alpha,
+    );
     try {
       await started;
       const held = listActiveLeases(controllerHome, repository.repoId);
       expect(held).toHaveLength(1);
       expect(held[0]).toMatchObject({ checkoutId: repository.activeCheckoutId });
-      const writerB = await withRepositoryMutationExclusionAsync(controllerHome, repository.repoId, 'async-beta', async () => {
-        writeFileSync(join(repoRoot, 'other.txt'), 'beta wrote\n');
-        return 'beta';
-      }, undefined, beta);
+      const writerB = await withRepositoryMutationExclusionAsync(
+        controllerHome,
+        repository.repoId,
+        'async-beta',
+        async () => {
+          writeFileSync(join(repoRoot, 'other.txt'), 'beta wrote\n');
+          return 'beta';
+        },
+        undefined,
+        beta,
+      );
       expect(writerB).toBe('beta');
       expect(readFileSync(join(repoRoot, 'other.txt'), 'utf8')).toBe('beta wrote\n');
-      await expect(withRepositoryMutationExclusionAsync(controllerHome, repository.repoId, 'async-conflict', async () => 'unsafe', undefined, alpha))
-        .rejects.toThrow('REPOSITORY_PROCESS_LEASE_HELD');
-      await expect(withRepositoryMutationExclusionAsync(controllerHome, repository.repoId, 'legacy-async', async () => 'unsafe'))
-        .rejects.toThrow('REPOSITORY_PROCESS_LEASE_HELD');
-      await expect(withRepositoryMutationExclusionAsync(controllerHome, repository.repoId, 'unscoped-async', async () => 'unsafe', undefined, [
-        { resourceKey: 'path:README.md', mode: 'write' },
-      ])).rejects.toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+      await expect(
+        withRepositoryMutationExclusionAsync(
+          controllerHome,
+          repository.repoId,
+          'async-conflict',
+          async () => 'unsafe',
+          undefined,
+          alpha,
+        ),
+      ).rejects.toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+      await expect(
+        withRepositoryMutationExclusionAsync(controllerHome, repository.repoId, 'legacy-async', async () => 'unsafe'),
+      ).rejects.toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+      await expect(
+        withRepositoryMutationExclusionAsync(
+          controllerHome,
+          repository.repoId,
+          'unscoped-async',
+          async () => 'unsafe',
+          undefined,
+          [{ resourceKey: 'path:README.md', mode: 'write' }],
+        ),
+      ).rejects.toThrow('REPOSITORY_PROCESS_LEASE_HELD');
       expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(1);
     } finally {
       releaseAlpha?.();
@@ -633,9 +667,18 @@ describe('repository command execution lifecycle', () => {
     }
     expect(readFileSync(join(repoRoot, 'README.md'), 'utf8')).toBe('alpha wrote\n');
     expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
-    await expect(withRepositoryMutationExclusionAsync(controllerHome, repository.repoId, 'async-throws', async () => {
-      throw new Error('EXPECTED_ASYNC_WRITE_FAILURE');
-    }, undefined, beta)).rejects.toThrow('EXPECTED_ASYNC_WRITE_FAILURE');
+    await expect(
+      withRepositoryMutationExclusionAsync(
+        controllerHome,
+        repository.repoId,
+        'async-throws',
+        async () => {
+          throw new Error('EXPECTED_ASYNC_WRITE_FAILURE');
+        },
+        undefined,
+        beta,
+      ),
+    ).rejects.toThrow('EXPECTED_ASYNC_WRITE_FAILURE');
     expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
   });
 

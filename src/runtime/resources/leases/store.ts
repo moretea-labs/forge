@@ -455,14 +455,17 @@ export async function withRepositoryMutationExclusionAsync<T>(
     let renewalFailure: unknown;
     // Awaited workers can outlive their initial lease. Keep the existing
     // fenced owner alive instead of silently expiring it mid-mutation.
-    const heartbeat = setInterval(() => {
-      if (renewalFailure) return;
-      try {
-        renewExecutionLeases(controllerHome, repoId, leaseOwner, leaseTtlMs, expected);
-      } catch (error) {
-        renewalFailure = error;
-      }
-    }, Math.max(1_000, Math.min(10_000, Math.trunc(leaseTtlMs / 3))));
+    const heartbeat = setInterval(
+      () => {
+        if (renewalFailure) return;
+        try {
+          renewExecutionLeases(controllerHome, repoId, leaseOwner, leaseTtlMs, expected);
+        } catch (error) {
+          renewalFailure = error;
+        }
+      },
+      Math.max(1_000, Math.min(10_000, Math.trunc(leaseTtlMs / 3))),
+    );
     heartbeat.unref?.();
     try {
       const result = await mutate();
