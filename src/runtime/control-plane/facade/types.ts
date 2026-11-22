@@ -86,55 +86,10 @@ export {
 } from '../../../../packages/protocols/handoff/index';
 import type { HandoffStatus } from '../../../../packages/protocols/handoff/index';
 
-// Kernel V2: Work domain contracts are owned by packages/kernel/work/domain.
-export {
-  SEMANTIC_WORK_STATES,
-  WORK_PHASES,
-  WORK_PHASE_EVIDENCE_STATES,
-  WORK_RISKS,
-  TERMINAL_SEMANTIC_WORK_STATES,
-  WORK_KINDS,
-  DISPATCH_STATES,
-  EVIDENCE_STATES,
-  COMPLETION_OUTCOMES,
-  WORK_RECONCILIATION_METHODS,
-  WORK_RECONCILIATION_OUTCOMES,
-  VERIFICATION_OUTCOMES,
-  isRepositoryCompletionReceipt,
-  isReadOnlyReviewCompletionReceipt,
-  isRemoteEffectCompletionReceipt,
-  isDirectEditWorkCompletionReceipt,
-  isTerminalSemanticWorkState,
-} from '../../../../packages/kernel/work/domain/types';
-export type {
-  SemanticWorkState,
-  WorkPhase,
-  WorkPhaseEvidenceState,
-  WorkPhaseEvidence,
-  WorkPhaseEvidenceMap,
-  WorkRisk,
-  WorkKind,
-  DispatchState,
-  EvidenceState,
-  CompletionOutcome,
-  ReadOnlyReviewEvidence,
-  WorkSemanticAcceptanceEvidence,
-  ReadOnlyReviewCompletionReceipt,
-  LocalEffectCompletionReceipt,
-  RemoteEffectCompletionReceipt,
-  DirectEditWorkCompletionReceipt,
-  WorkCompletionReceipt,
-  WorkReconciliationMethod,
-  WorkReconciliationOutcome,
-  VerificationOutcome,
-  WorktreePolicy,
-  EvidencePolicy,
-  ApprovalPolicy,
-  RecoveryPolicy,
-  VerificationRecord,
-  WorkReconciliationRecord,
-  SubmittedWorkOperation,
-} from '../../../../packages/kernel/work/domain/types';
+// Shared Facade/check types; the historical Work schema is test-only.
+export { WORK_RISKS, VERIFICATION_OUTCOMES } from '../../../../packages/kernel/work/domain/types';
+export type { WorkRisk, VerificationOutcome, VerificationRecord } from '../../../../packages/kernel/work/domain/types';
+
 export const HANDOFF_CREATION_REASONS = [
   'policy_approval_required',
   'ambiguous_outcome',

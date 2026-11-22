@@ -25,7 +25,7 @@ import {
   type EvidencePolicy,
   type ApprovalPolicy,
   type RecoveryPolicy,
-} from '../../packages/kernel/work/domain/types';
+} from './historical-work-domain';
 import type { ExecutionPlacement, ScopeRef } from '../../packages/kernel/identity/api/index';
 import type { WorkAccessMode } from '../../packages/kernel/work/domain/execution-snapshot';
 import type { WorkImplementationReviewRecord } from '../../packages/kernel/work/domain/implementation-review';

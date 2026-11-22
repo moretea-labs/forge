@@ -1187,16 +1187,7 @@ forbid(
 );
 
 // Historical Work records retain their stored open/completed/cancelled values for
-// audit/migration reads only. No current execution, review, verification, Git,
-// cleanup, liveness, or semantic writer may consume those values as authority.
-requireText(
-  'packages/kernel/work/domain/types.ts',
-  "export const SEMANTIC_WORK_STATES = ['open', 'completed', 'cancelled'] as const;",
-);
-requireText(
-  'packages/kernel/work/domain/types.ts',
-  'export type SemanticWorkState = (typeof SEMANTIC_WORK_STATES)[number];',
-);
+// old Work lifecycle and archival type definitions are not a production API.
 forbid(
   'packages/kernel/work/api/index.ts',
   /application\/work-service/,
@@ -1241,6 +1232,11 @@ forbid(
   'src/runtime/control-plane/facade/types.ts',
   /\bworkSemantics\b|\bWorkContract\b/,
   'Facade cannot expose historical WorkContract',
+);
+forbid(
+  'packages/kernel/work/domain/types.ts',
+  /\b(?:SEMANTIC_WORK_STATES|WORK_PHASES|WORK_KINDS|WorkCompletionReceipt|WorkPhaseEvidenceMap|WorkReconciliationRecord|SubmittedWorkOperation)\b/,
+  'retired Work lifecycle enums and receipts belong in test-only fixtures',
 );
 
 requireMissing('packages/kernel/work/domain/objective-relations.ts');
@@ -2828,16 +2824,7 @@ for (const path of [...sourceFiles('src'), ...sourceFiles('adapters')]) {
     'retired Work lifecycle operations must not return as current rh_work behavioral authority',
   );
 }
-// Historical Work records retain stored semantic states for audit/migration only.
-// Current rh_work exposes no Work lifecycle mutation operation.
-requireText(
-  'packages/kernel/work/domain/types.ts',
-  "export const SEMANTIC_WORK_STATES = ['open', 'completed', 'cancelled'] as const;",
-);
-requireText(
-  'packages/kernel/work/domain/types.ts',
-  'export type SemanticWorkState = (typeof SEMANTIC_WORK_STATES)[number];',
-);
+// No historical Work model or lifecycle interface is reintroduced on the runtime surface.
 requireMissing('adapters/mcp/runtime-gateway/work-semantic-operations.ts');
 requireMissing('adapters/mcp/runtime-gateway/work-list-projection.ts');
 requireMissing('adapters/mcp/runtime-gateway/work-detail-projection.ts');
