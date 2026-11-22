@@ -16,7 +16,7 @@ export interface McpTimingTrace {
   sessionResolutionMs?: number;
   authenticationAuthorizationMs?: number;
   repositoryResolutionMs?: number;
-  /** Claim/handle preflight duration; renamed from retired WorkHandle timing field. */
+  /** Claim/handle preflight duration. */
   handleValidationMs?: number;
   controllerQueueWaitMs?: number;
   commandExecutionMs?: number;
