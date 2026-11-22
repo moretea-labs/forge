@@ -626,13 +626,22 @@ async function runSelectedTestChild(
   const independentArgs = file.endsWith('.test.mjs')
     ? ['node', '--test', file]
     : file.startsWith('tests/infrastructure/')
-      ? [process.execPath, 'test', '--timeout', process.env.BUN_TEST_TIMEOUT_MS ?? '60000', '--max-concurrency', '1', file]
+      ? [
+          process.execPath,
+          'test',
+          '--timeout',
+          process.env.BUN_TEST_TIMEOUT_MS ?? '60000',
+          '--max-concurrency',
+          '1',
+          file,
+        ]
       : undefined;
   if (!independentArgs) {
-    return runBunTestFile(
-      ['--timeout', process.env.BUN_TEST_TIMEOUT_MS ?? '60000', '--max-concurrency', '1', file],
-      { forwardSignals: true, cwd: testRoot, env: testEnv },
-    );
+    return runBunTestFile(['--timeout', process.env.BUN_TEST_TIMEOUT_MS ?? '60000', '--max-concurrency', '1', file], {
+      forwardSignals: true,
+      cwd: testRoot,
+      env: testEnv,
+    });
   }
   const [command, ...args] = independentArgs;
   const independent = await runBoundedChild(command!, args, {
@@ -667,7 +676,9 @@ async function runTestChildWithMutationGuard(
     console.error(`[tests] ${file}${attempts > 1 ? ' (infrastructure retry)' : ''}`);
     result = await runSelectedTestChild(file, testRoot, testEnv);
     if (workspaceMutationDigest(testRoot) !== testWorkspaceBefore || testInputDigest(testRoot, file) !== inputDigest) {
-      console.error(`[tests] ${TEST_FAILURE_CODES.INFRA_WORKTREE_MUTATION}: tracked tree changed while running ${file}`);
+      console.error(
+        `[tests] ${TEST_FAILURE_CODES.INFRA_WORKTREE_MUTATION}: tracked tree changed while running ${file}`,
+      );
       return {
         result: {
           ...result,
@@ -681,6 +692,52 @@ async function runTestChildWithMutationGuard(
     }
   } while (result.failureClass === 'infrastructure' && attempts < 2);
   return { result, attempts, contaminated: false };
+}
+
+function resolveTestChildEnvironment(
+  repoRoot: string,
+  candidateRoot: string | undefined,
+  eligible: boolean,
+  runnerDigest: string,
+  isolatedRunnerDigest: string | undefined,
+): { testRoot: string; testEnv: NodeJS.ProcessEnv; checkRunnerDigest: string } {
+  // Host-dependent checks stay on the registered checkout.
+  const isolated = Boolean(candidateRoot && eligible);
+  const testRoot = isolated ? candidateRoot! : repoRoot;
+  const testEnv = isolated ? { ...process.env } : process.env;
+  if (isolated) {
+    // Publication refs describe the outer repository, not the test fixture.
+    delete testEnv.TEST_BASE_REF;
+    delete testEnv.FORGE_CHECK_CANDIDATE_SHA;
+    delete testEnv.FORGE_CHECK_SOURCE_QUALITY_MODE;
+  }
+  return {
+    testRoot,
+    testEnv,
+    checkRunnerDigest: isolated ? isolatedRunnerDigest! : runnerDigest,
+  };
+}
+
+function appendTestFailure(
+  file: string,
+  result: BunTestFileRunResult,
+  checkpoint: TestCheckpoint,
+  failureClasses: Set<TestFailureClass>,
+  failureDetails: StructuredCheckFailureEvidence['failureDetails'],
+): void {
+  const failureClass = result.failureClass ?? 'infrastructure';
+  const failureCode = result.failureCode ?? TEST_FAILURE_CODES.INFRA_UNCLASSIFIED_NONZERO;
+  failureClasses.add(failureClass);
+  failureDetails.push({
+    file,
+    failureClass,
+    failureCode,
+    attempts: checkpoint.attempts,
+    durationMs: checkpoint.durationMs,
+    ...(result.signal ? { signal: result.signal } : {}),
+  });
+  failureDetails.sort((left, right) => left.file.localeCompare(right.file));
+  if (failureDetails.length > MAX_STRUCTURED_CHECK_FAILURE_DETAILS) failureDetails.pop();
 }
 
 export async function runTestSelection(
@@ -754,20 +811,13 @@ export async function runTestSelection(
   const runOne = async (file: string): Promise<void> => {
     if (contaminated) return;
     const entry = manifest.tests[file]!;
-    // Only independent resource classes run against an immutable candidate
-    // copy. Shared/host-dependent tests retain the registered checkout until
-    // their external dependencies can be isolated without changing semantics.
-    const isolated = options.isolatedCandidateRoot && eligibleForSnapshot(entry);
-    const testRoot = isolated ? options.isolatedCandidateRoot! : repoRoot;
-    // The isolated Git fixture has its own commit identity. Outer publication
-    // baseline variables refer to the canonical repo, not this test fixture.
-    const testEnv = isolated ? { ...process.env } : process.env;
-    if (isolated) {
-      delete testEnv.TEST_BASE_REF;
-      delete testEnv.FORGE_CHECK_CANDIDATE_SHA;
-      delete testEnv.FORGE_CHECK_SOURCE_QUALITY_MODE;
-    }
-    const checkRunnerDigest = isolated ? isolatedRunnerDigest! : runnerDigest;
+    const { testRoot, testEnv, checkRunnerDigest } = resolveTestChildEnvironment(
+      repoRoot,
+      options.isolatedCandidateRoot,
+      eligibleForSnapshot(entry),
+      runnerDigest,
+      isolatedRunnerDigest,
+    );
     const testDigest = hashFiles(testRoot, [file], 'test-file-v1');
     const inputDigest = testInputDigest(testRoot, file);
     const key = createHash('sha256')
@@ -832,19 +882,7 @@ export async function runTestSelection(
     serialEquivalentMs += checkpoint.durationMs;
     if (result.exitCode !== 0) {
       failures += 1;
-      const failureClass = result.failureClass ?? 'infrastructure';
-      const failureCode = result.failureCode ?? TEST_FAILURE_CODES.INFRA_UNCLASSIFIED_NONZERO;
-      failureClasses.add(failureClass);
-      failureDetails.push({
-        file,
-        failureClass,
-        failureCode,
-        attempts,
-        durationMs: checkpoint.durationMs,
-        ...(result.signal ? { signal: result.signal } : {}),
-      });
-      failureDetails.sort((left, right) => left.file.localeCompare(right.file));
-      if (failureDetails.length > MAX_STRUCTURED_CHECK_FAILURE_DETAILS) failureDetails.pop();
+      appendTestFailure(file, result, checkpoint, failureClasses, failureDetails);
     }
   };
 
