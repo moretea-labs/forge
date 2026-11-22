@@ -1,49 +1,33 @@
 #!/usr/bin/env node
-import { chmodSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { chmodSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const WORKSPACE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CHECK_ONLY = process.argv.includes('--check');
+const COMMITTED = process.env.FORGE_CHECK_SOURCE_QUALITY_MODE === 'committed';
+if (COMMITTED && !CHECK_ONLY) throw new Error('[generated-authority] committed candidate supports --check only');
+const candidateRef = process.env.FORGE_CHECK_CANDIDATE_SHA?.trim();
+if (COMMITTED && !candidateRef) throw new Error('[generated-authority] committed check requires candidate SHA');
+const candidateRevision = COMMITTED
+  ? execFileSync('git', ['rev-parse', '--verify', '--end-of-options', candidateRef + '^{commit}'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    }).trim()
+  : '';
+if (COMMITTED && !/^[0-9a-f]{40,64}$/.test(candidateRevision))
+  throw new Error('[generated-authority] invalid candidate commit');
+if (COMMITTED) console.error('[generated-authority] checking pinned candidate ' + candidateRevision.slice(0, 12));
 
-// A publication Gate checks immutable Git objects, not concurrent Writer
-// edits to template sources, wrappers or generated targets. Everyday generation
-// remains a workspace operation and is never redirected into a snapshot.
-function sourceRootForCheck() {
-  if (process.env.FORGE_CHECK_SOURCE_QUALITY_MODE !== 'committed') return WORKSPACE_ROOT;
-  if (!CHECK_ONLY) throw new Error('[generated-authority] committed candidate supports --check only');
-  const revision = process.env.FORGE_CHECK_CANDIDATE_SHA?.trim();
-  if (!revision) throw new Error('[generated-authority] committed check requires candidate SHA');
-  const resolved = spawnSync('git', ['rev-parse', '--verify', '--end-of-options', revision + '^{commit}'], {
-    cwd: WORKSPACE_ROOT,
-    encoding: 'utf8',
-  });
-  if (resolved.error || resolved.status !== 0 || !/^[0-9a-f]{40,64}$/.test(resolved.stdout.trim())) {
-    throw new Error('[generated-authority] could not resolve committed candidate');
-  }
-  const root = mkdtempSync(join(tmpdir(), 'forge-generated-authority-'));
-  process.once('exit', () => rmSync(root, { recursive: true, force: true }));
-  const archivePath = join(root, 'source.tar');
-  const archive = spawnSync('git', ['archive', '--format=tar', '--output', archivePath, resolved.stdout.trim()], {
-    cwd: WORKSPACE_ROOT,
-  });
-  if (archive.error || archive.status !== 0) {
-    throw new Error('[generated-authority] could not archive committed candidate');
-  }
-  const extract = spawnSync('tar', ['-xf', archivePath, '-C', root], { cwd: WORKSPACE_ROOT });
-  if (extract.error || extract.status !== 0) {
-    throw new Error('[generated-authority] could not materialize committed candidate');
-  }
-  unlinkSync(archivePath);
-  console.error('[generated-authority] checking pinned candidate ' + resolved.stdout.trim().slice(0, 12));
-  return root;
-}
-
-const ROOT = sourceRootForCheck();
-
-const WORKFLOW_CONTRACT = JSON.parse(readFileSync(join(ROOT, 'assets/workflow-contract.v1.json'), 'utf8'));
+const WORKFLOW_CONTRACT = JSON.parse(
+  COMMITTED
+    ? execFileSync('git', ['show', candidateRevision + ':assets/workflow-contract.v1.json'], {
+        cwd: ROOT,
+        encoding: 'utf8',
+      })
+    : readFileSync(join(ROOT, 'assets/workflow-contract.v1.json'), 'utf8'),
+);
 const HELPER_FILES = Array.isArray(WORKFLOW_CONTRACT?.helpers?.scripts)
   ? WORKFLOW_CONTRACT.helpers.scripts
       .filter((value) => typeof value === 'string' && value.trim())
@@ -85,6 +69,74 @@ const CLAUDE_TEMPLATE_FILES = [
   'sprint.template.md',
 ];
 
+// Read only the committed projection inputs through one length-delimited Git
+// blob batch. The canonical checkout, index and concurrent Writer edits are not inputs.
+const candidateSource = new Map();
+if (COMMITTED) {
+  const paths = [
+    'package.json',
+    ...HELPER_FILES.map((name) => `scripts/${name}`),
+    ...REFERENCE_CONFIG_FILES.map((name) => `docs/reference-configs/${name}`),
+    ...CLAUDE_TEMPLATE_FILES.flatMap((name) => [`.claude/templates/${name}`, `assets/templates/${name}`]),
+  ];
+  const tree = execFileSync('git', ['ls-tree', '-r', '-z', candidateRevision], {
+    cwd: ROOT,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const byPath = new Map();
+  for (const record of tree.toString('utf8').split('\0').filter(Boolean)) {
+    const match = /^(\d{6}) (blob|commit) ([a-f0-9]{40,64})\t([\s\S]+)$/.exec(record);
+    if (!match) throw new Error('[generated-authority] malformed Git tree entry');
+    if (match[2] === 'blob') byPath.set(match[4], { mode: match[1], oid: match[3] });
+  }
+  const inputs = paths.map((path) => {
+    const entry = byPath.get(path);
+    if (!entry || !['100644', '100755'].includes(entry.mode)) {
+      throw new Error('[generated-authority] missing or nonregular committed projection: ' + path);
+    }
+    return { path, ...entry };
+  });
+  const batch = spawnSync('git', ['cat-file', '--batch'], {
+    cwd: ROOT,
+    input: inputs.map((entry) => entry.oid).join('\n') + '\n',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (batch.error || batch.status !== 0 || !batch.stdout) {
+    throw new Error('[generated-authority] cannot load committed projection blobs');
+  }
+  let cursor = 0;
+  for (const entry of inputs) {
+    const headerEnd = batch.stdout.indexOf(10, cursor);
+    if (headerEnd < 0) throw new Error('[generated-authority] truncated Git batch header');
+    const header = batch.stdout.subarray(cursor, headerEnd).toString('utf8');
+    const parsed = /^([a-f0-9]{40,64}) blob (\d+)$/.exec(header);
+    if (!parsed || parsed[1] !== entry.oid) throw new Error('[generated-authority] unexpected Git blob header');
+    const length = Number(parsed[2]);
+    const start = headerEnd + 1;
+    const end = start + length;
+    if (!Number.isSafeInteger(length) || end >= batch.stdout.length || batch.stdout[end] !== 10) {
+      throw new Error('[generated-authority] truncated Git blob');
+    }
+    candidateSource.set(entry.path, { content: batch.stdout.subarray(start, end), mode: parseInt(entry.mode, 8) });
+    cursor = end + 1;
+  }
+  if (cursor !== batch.stdout.length) throw new Error('[generated-authority] unexpected Git batch trailing bytes');
+}
+
+function sourceText(path) {
+  if (!COMMITTED) return readFileSync(join(ROOT, path), 'utf8');
+  const entry = candidateSource.get(path);
+  if (!entry) throw new Error('[generated-authority] missing committed source: ' + path);
+  return entry.content.toString('utf8');
+}
+
+function sourceMode(path) {
+  if (!COMMITTED) return statSync(join(ROOT, path)).mode;
+  const entry = candidateSource.get(path);
+  if (!entry) throw new Error('[generated-authority] missing committed source mode: ' + path);
+  return entry.mode;
+}
+
 function replaceExact(text, before, after, label) {
   const first = text.indexOf(before);
   if (first < 0) throw new Error(`[generated-authority] transform precondition missing: ${label}`);
@@ -106,7 +158,7 @@ function projectClaudeTemplate(name, source) {
   return source;
 }
 
-const PACKAGE_VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
+const PACKAGE_VERSION = JSON.parse(sourceText('package.json')).version;
 
 function referenceConfigStub(name) {
   const docId = name.replace(/\.md$/, '');
@@ -155,8 +207,8 @@ function comparableMode(mode) {
 
 function syncGeneratedText(targetRel, expected, expectedMode = 0o755) {
   const targetPath = join(ROOT, targetRel);
-  const actual = readFileSync(targetPath, 'utf8');
-  const actualMode = comparableMode(statSync(targetPath).mode);
+  const actual = sourceText(targetRel);
+  const actualMode = comparableMode(sourceMode(targetRel));
   const contentDrift = actual !== expected;
   const modeDrift = actualMode !== expectedMode;
   if (!contentDrift && !modeDrift) return false;
@@ -183,13 +235,12 @@ function syncGeneratedText(targetRel, expected, expectedMode = 0o755) {
 }
 
 function syncText(sourceRel, targetRel, transform = (value) => value) {
-  const sourcePath = join(ROOT, sourceRel);
   const targetPath = join(ROOT, targetRel);
-  const source = readFileSync(sourcePath, 'utf8');
+  const source = sourceText(sourceRel);
   const expected = transform(source);
-  const actual = readFileSync(targetPath, 'utf8');
-  const expectedMode = comparableMode(statSync(sourcePath).mode);
-  const actualMode = comparableMode(statSync(targetPath).mode);
+  const actual = sourceText(targetRel);
+  const expectedMode = comparableMode(sourceMode(sourceRel));
+  const actualMode = comparableMode(sourceMode(targetRel));
   const contentDrift = actual !== expected;
   const modeDrift = actualMode !== expectedMode;
   if (!contentDrift && !modeDrift) return false;
