@@ -436,7 +436,7 @@ type HttpSessionRegistry = McpSessionRegistry<NodeStreamableHTTPServerTransport,
 /**
  * Public HTTP transport registry. It owns transport admission/leases and
  * transport-local observability only; closing a transport session must never
- * invalidate durable execution, Work, or ControllerRound authority.
+ * invalidate durable execution authority.
  */
 export function createMcpHttpSessionRegistry<
   TTransport extends ClosableMcpTransport = NodeStreamableHTTPServerTransport,

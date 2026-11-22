@@ -379,7 +379,7 @@ describe('handoff and facade contracts', () => {
     const detached = conversationPrompt('普通聊天');
     expect(detached).not.toContain('rh_context');
     expect(detached).toContain('No repository is attached');
-    expect(attached).toContain('Work and ControllerRound are retired');
+    expect(attached).not.toContain('ControllerRound');
   });
 
   test('local conversation requires repository and exact checkout as a pair', async () => {

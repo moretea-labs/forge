@@ -41,7 +41,7 @@ export interface ActivationOptions {
   seedMemoryIds?: string[];
   seedConcepts?: string[];
   transientMemories?: readonly MemoryUnit[];
-  /** Rebuildable retrieval feedback derived from canonical ControllerRound observations. */
+  /** Rebuildable retrieval feedback derived from explicit learning_feedback observations. */
   usageFeedback?: readonly CognitiveUsageFeedback[];
   /** Small relevance prior; all scopes still compete in one candidate set. */
   scopePriors?: Partial<Record<ScopeRef['kind'], number>>;

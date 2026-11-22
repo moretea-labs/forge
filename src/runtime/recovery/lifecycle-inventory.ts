@@ -78,7 +78,7 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     cleanupAuthority:
       'Plan semantic retention is independent from disposable execution/process evidence; Runtime cleanup never rewrites Plan progress.',
     recoverySemantics:
-      'Recovery re-reads the same Plan identity/revision and never derives Plan progress or execution admission from receipts, Work lifecycle, ControllerRound or compatibility fields.',
+      'Recovery re-reads the same Plan identity/revision and never derives Plan progress or execution admission from receipts or compatibility fields.',
     closureStatus: 'existing_bounded',
     evidencePaths: [
       'src/runtime/control-plane/facade/plan-contract-store.ts',
@@ -297,7 +297,7 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     cleanupAuthority:
       'Scheduler periodic maintenance invokes the Browser disposable-artifact retention authority for one repository slot; legacy repo-local Browser artifacts remain import/cleanup-only.',
     recoverySemantics:
-      'Artifact deletion is disposable cleanup only and cannot rewrite provider-effect or ControllerRound outcome; capacity that cannot be reduced without crossing active grace remains an explicit blocker.',
+      'Artifact deletion is disposable cleanup only and cannot rewrite provider-effect outcome; capacity that cannot be reduced without crossing active grace remains an explicit blocker.',
     closureStatus: 'existing_bounded',
     evidencePaths: [
       'src/runtime/control-plane/generated-cache-retention.ts',

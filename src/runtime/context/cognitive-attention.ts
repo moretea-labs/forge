@@ -13,7 +13,6 @@ import {
 
 /**
  * Usage truth comes only from explicit direct learning_feedback observations.
- * Historical Work/ControllerRound data never grants or synthesizes current feedback.
  */
 export function cognitiveUsageFeedbackForContext(input: {
   controllerHome: string;

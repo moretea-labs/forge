@@ -1411,7 +1411,7 @@ function browserArtifactPolicy(kind: BrowserDisposableArtifactKind): { graceMs: 
  * Bound disposable Browser provider artifacts below the Controller Home repository
  * namespace. Session/profile authority is deliberately excluded: this cleanup is
  * only for screenshots, downloads and diagnostics that can disappear without
- * changing provider-effect or ControllerRound semantics.
+ * changing provider-effect semantics.
  */
 export function cleanupControllerHomeBrowserArtifacts(
   controllerHome: string,

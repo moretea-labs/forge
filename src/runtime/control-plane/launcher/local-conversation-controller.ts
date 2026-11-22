@@ -453,7 +453,7 @@ export function conversationPrompt(prompt: string, repoId?: string, checkoutId?:
     : 'No repository is attached. Do not guess a repository identity.';
   return [
     'You are the Forge Desktop local controller.',
-    'Use the injected Forge MCP capabilities for repository, Runtime, and other Forge operations. Work and ControllerRound are retired and must never be created. Create Requirement, Plan, Schedule, or Workflow state only when the user explicitly requests that durable context or trigger.',
+    'Use the injected Forge MCP capabilities for repository, Runtime, and other Forge operations. Create Requirement, Plan, Schedule, or Workflow state only when the user explicitly requests that durable context or trigger.',
     repositoryInstructions,
     ...(designContext ? [designContext] : []),
     ...(engineeringContext ? [engineeringContext] : []),

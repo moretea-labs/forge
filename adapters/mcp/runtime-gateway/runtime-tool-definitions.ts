@@ -316,7 +316,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   ),
   definition(
     'rh_work',
-    'Preferred ChatGPT facade for optional durable Requirement/Plan semantic context, Work-free Workflow execution, browser schedules, and ChatGPT Launch Session. Work / WorkHandle / WorkContract are fully retired and have no create, mutate, or read surface. Ordinary execution and validation use direct domain capabilities.',
+    'Preferred ChatGPT facade for optional durable Requirement/Plan semantic context, Workflow execution, browser schedules, and ChatGPT Launch Session. Ordinary execution and validation use direct domain capabilities.',
     {
       repo_id: repoId,
       checkout_id: {

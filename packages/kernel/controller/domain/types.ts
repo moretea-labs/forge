@@ -1,2 +1,2 @@
-/** Provider classification only. Work-bound ControllerSession/ControllerRound lifecycle is retired. */
+/** Provider classification only. */
 export type ControllerType = 'chatgpt' | 'codex' | 'grok' | 'claude' | 'human';
