@@ -2,7 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { materializeCommittedTypeScriptCandidate } from '../src/testing/source-quality-candidate';
+import { materializeCommittedTypeScriptCandidate } from './testing/source-quality-candidate';
 
 const root = resolve(import.meta.dir, '..');
 const committed = process.env.FORGE_CHECK_SOURCE_QUALITY_MODE === 'committed';

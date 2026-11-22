@@ -84,7 +84,7 @@
       "modules": ["runner"]
     },
     {
-      "prefix": "src/testing/",
+      "prefix": "scripts/testing/",
       "modules": ["runner"]
     },
     {

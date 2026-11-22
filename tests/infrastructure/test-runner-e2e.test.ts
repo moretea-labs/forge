@@ -4,9 +4,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createServer } from 'net';
-import { loadTestManifest, runTestSelection, type TestRunReceipt } from '../../src/testing/test-governance';
+import { loadTestManifest, runTestSelection, type TestRunReceipt } from '../../scripts/testing/test-governance';
 import { consumeStructuredCheckResultPath } from '../../scripts/test-governance';
-import { committedChangedPaths, materializeCommittedTestCandidate } from '../../src/testing/source-quality-candidate';
+import { committedChangedPaths, materializeCommittedTestCandidate } from '../../scripts/testing/source-quality-candidate';
 
 const ROOT = join(import.meta.dir, '../..');
 const TEST_FILE_RUNNER = join(ROOT, 'scripts', 'run-bun-test-file.ts');

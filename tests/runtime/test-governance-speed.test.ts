@@ -10,14 +10,14 @@ import {
   testInputDigest,
   testInputPaths,
   workspaceMutationDigest,
-} from '../../src/testing/test-governance';
+} from '../../scripts/testing/test-governance';
 import { gateDefinitionDigest, stepsFor } from '../../scripts/run-governed-gate';
 import { runCandidateModuleBoundaries } from '../../scripts/check-candidate-module-boundaries';
 import {
   committedSourceCandidate,
   materializeCommittedSourceCandidate,
   materializeCommittedTypeScriptCandidate,
-} from '../../src/testing/source-quality-candidate';
+} from '../../scripts/testing/source-quality-candidate';
 
 const ROOT = join(import.meta.dir, '../..');
 
@@ -287,7 +287,7 @@ describe('execution-speed test governance', () => {
   });
 
   test('test-runner checks mutation per child, not between unrelated test runs', () => {
-    const source = readFileSync(join(ROOT, 'src/testing/test-governance.ts'), 'utf8');
+    const source = readFileSync(join(ROOT, 'scripts/testing/test-governance.ts'), 'utf8');
     expect(source).toContain('const testWorkspaceBefore = workspaceMutationDigest(testRoot);');
     expect(source).toContain('workspaceMutationDigest(testRoot) !== testWorkspaceBefore');
     expect(source).toContain('testInputDigest(testRoot, file) !== inputDigest');

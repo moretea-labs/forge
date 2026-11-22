@@ -2,7 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { materializeCommittedTypeScriptCandidate } from '../src/testing/source-quality-candidate';
+import { materializeCommittedTypeScriptCandidate } from './testing/source-quality-candidate';
 
 /** Check the exact published Git tree; do not treat another Writer's dirty source as this candidate. */
 export function runCandidateModuleBoundaries(root: string, committed: boolean, revision?: string): number {

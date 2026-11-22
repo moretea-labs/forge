@@ -4,7 +4,7 @@ import { spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { runBoundedChild } from '../src/runtime/shared/bounded-child-supervisor';
-import { testContentDigest } from '../src/testing/test-governance';
+import { testContentDigest } from './testing/test-governance';
 import { resolveControllerHome } from '../src/effects/controller-home';
 
 export type Gate = 'task' | 'main' | 'release';

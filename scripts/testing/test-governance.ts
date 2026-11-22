@@ -9,16 +9,16 @@ import {
   TEST_FAILURE_CODES,
   type BunTestFileRunResult,
   type TestFailureClass,
-} from '../../scripts/run-bun-test-file';
-import { runBoundedChild, type BoundedChildRunResult } from '../runtime/shared/bounded-child-supervisor';
+} from '../run-bun-test-file';
+import { runBoundedChild, type BoundedChildRunResult } from '../../src/runtime/shared/bounded-child-supervisor';
 import {
   ensureRepositoryCheckStorage,
   type RepositoryCheckStorageAuthority,
-} from '../runtime/execution/process-runtime/check-storage';
+} from '../../src/runtime/execution/process-runtime/check-storage';
 import {
   MAX_STRUCTURED_CHECK_FAILURE_DETAILS,
   type StructuredCheckFailureEvidence,
-} from '../runtime/execution/process-runtime/check-result';
+} from '../../src/runtime/execution/process-runtime/check-result';
 
 export const TEST_MODULES = [
   'core',
@@ -645,7 +645,7 @@ export async function runTestSelection(
     MANIFEST_PATH,
     'scripts/run-bun-test-file.ts',
     'scripts/test-governance.ts',
-    'src/testing/test-governance.ts',
+    'scripts/testing/test-governance.ts',
     'src/runtime/shared/bounded-child-supervisor.ts',
     'src/runtime/shared/process-tree.ts',
   ];

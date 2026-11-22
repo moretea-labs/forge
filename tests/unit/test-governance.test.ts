@@ -12,7 +12,7 @@ import {
   testContentDigest,
   trackedTreeDigest,
   validateTestManifest,
-} from '../../src/testing/test-governance';
+} from '../../scripts/testing/test-governance';
 
 const ROOT = join(import.meta.dir, '../..');
 
@@ -61,7 +61,7 @@ describe('test governance', () => {
   });
 
   test('records auditable provenance for every reused test checkpoint', () => {
-    const source = readFileSync(join(ROOT, 'src/testing/test-governance.ts'), 'utf8');
+    const source = readFileSync(join(ROOT, 'scripts/testing/test-governance.ts'), 'utf8');
     expect(source).toContain('cacheProvenance');
     expect(source).toContain('checkpointKey: cachedCheckpoint.key');
     expect(source).toContain('completedAt: cachedCheckpoint.completedAt');

@@ -2,7 +2,7 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { dirname, isAbsolute, resolve } from 'path';
 import { ensureControllerHome } from '../src/effects/controller-home';
-import { committedChangedPaths, materializeCommittedTestCandidate } from '../src/testing/source-quality-candidate';
+import { committedChangedPaths, materializeCommittedTestCandidate } from './testing/source-quality-candidate';
 import { findRegisteredRepositoryByCheckoutRoot, registerRepository } from '../src/runtime/repositories/registry';
 import {
   collectChangedPaths,
@@ -11,7 +11,7 @@ import {
   selectTests,
   validateTestManifest,
   type TestGate,
-} from '../src/testing/test-governance';
+} from './testing/test-governance';
 import { TEST_FAILURE_CODES } from './run-bun-test-file';
 import {
   STRUCTURED_CHECK_RESULT_PATH_ENV,

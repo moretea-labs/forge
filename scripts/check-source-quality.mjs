@@ -5,9 +5,9 @@ import { dirname, resolve } from 'node:path';
 import {
   committedSourceCandidate,
   materializeCommittedSourceCandidate,
-} from '../src/testing/source-quality-candidate.ts';
+} from './testing/source-quality-candidate.ts';
 import { fileURLToPath } from 'node:url';
-import { collectChangedPaths, existingChangedFiles } from '../src/testing/test-governance.ts';
+import { collectChangedPaths, existingChangedFiles } from './testing/test-governance.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
