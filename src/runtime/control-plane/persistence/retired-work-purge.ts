@@ -58,8 +58,8 @@ function countWorkReplicas(db: SqliteDatabase, table: string): number {
   return Number(record.count);
 }
 
-type HistoricalWorkBoundNamespace = 'workflow_run' | 'process_handle_index';
-const HISTORICAL_WORK_BOUND_NAMESPACES = ['workflow_run', 'process_handle_index'] as const;
+type HistoricalWorkBoundNamespace = 'workflow_run' | 'process_handle_index' | 'output_handle_index';
+const HISTORICAL_WORK_BOUND_NAMESPACES = ['workflow_run', 'process_handle_index', 'output_handle_index'] as const;
 
 interface HistoricalWorkBoundRow {
   namespace: HistoricalWorkBoundNamespace;
@@ -67,13 +67,18 @@ interface HistoricalWorkBoundRow {
   record_key: string;
 }
 
-/** Erase only Work-attributed historical WorkflowRuns or rebuildable Process locators. */
+/** Erase only Work-attributed historical runs and rebuildable Process/Output locators. */
 function historicalWorkBoundRows(db: SqliteDatabase): HistoricalWorkBoundRow[] {
   return HISTORICAL_WORK_BOUND_NAMESPACES.flatMap((namespace) => {
     const rows = db
       .prepare('SELECT scope, record_key, payload FROM control_plane_records WHERE namespace = ?')
       .all(namespace) as Array<{ scope: string; record_key: string; payload: string }>;
-    const label = namespace === 'workflow_run' ? 'WORKFLOW' : 'PROCESS_HANDLE';
+    const label =
+      namespace === 'workflow_run'
+        ? 'WORKFLOW'
+        : namespace === 'process_handle_index'
+          ? 'PROCESS_HANDLE'
+          : 'OUTPUT_HANDLE';
     return rows.flatMap((row) => {
       let payload: unknown;
       try {

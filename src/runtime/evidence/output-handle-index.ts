@@ -27,9 +27,9 @@ export interface OutputHandleIndexEntry {
   updatedAt: string;
 }
 
-function withoutRetiredWorkFields(entry: OutputHandleIndexEntry & { workId?: unknown }): OutputHandleIndexEntry {
-  const { workId: _retiredWorkId, ...rest } = entry;
-  return rest;
+function assertNativeOutputHandleEntry(entry: OutputHandleIndexEntry): OutputHandleIndexEntry {
+  if (Object.hasOwn(entry, 'workId')) throw new Error('OUTPUT_HANDLE_RETIRED_WORK_SCOPE');
+  return entry;
 }
 
 function bounded(value: string | undefined): string | undefined {
@@ -92,9 +92,7 @@ export function recordOutputHandleIndexEntry(
     action: 'output_handle_index_record',
     skipWriteWhenMutationReturnsCurrent: true,
     mutate: (currentRecord) => {
-      const current = currentRecord?.value
-        ? withoutRetiredWorkFields(currentRecord.value as OutputHandleIndexEntry & { workId?: unknown })
-        : undefined;
+      const current = currentRecord?.value ? assertNativeOutputHandleEntry(currentRecord.value) : undefined;
       if (current) {
         if (
           current.schemaVersion !== OUTPUT_HANDLE_INDEX_SCHEMA_VERSION ||
@@ -118,8 +116,7 @@ export function recordOutputHandleIndexEntry(
           nextRepositoryId === current.repositoryId &&
           nextPrincipalId === current.principalId &&
           nextSessionId === current.sessionId &&
-          nextOperationId === current.operationId &&
-          !('workId' in (currentRecord?.value ?? {}))
+          nextOperationId === current.operationId
         ) {
           return current;
         }
@@ -148,7 +145,7 @@ export function recordOutputHandleIndexEntry(
       };
     },
   });
-  return withoutRetiredWorkFields(record.value as OutputHandleIndexEntry & { workId?: unknown });
+  return assertNativeOutputHandleEntry(record.value);
 }
 
 export function refreshOutputHandleFingerprint(
@@ -174,9 +171,7 @@ export function refreshOutputHandleFingerprint(
     schemaVersion: OUTPUT_HANDLE_INDEX_SCHEMA_VERSION,
     action: 'output_handle_index_fingerprint_refresh',
     mutate: (currentRecord) => {
-      const current = currentRecord?.value
-        ? withoutRetiredWorkFields(currentRecord.value as OutputHandleIndexEntry & { workId?: unknown })
-        : undefined;
+      const current = currentRecord?.value ? assertNativeOutputHandleEntry(currentRecord.value) : undefined;
       if (
         !current ||
         current.schemaVersion !== OUTPUT_HANDLE_INDEX_SCHEMA_VERSION ||
@@ -192,7 +187,7 @@ export function refreshOutputHandleFingerprint(
       return { ...current, fingerprint: nextFingerprint, updatedAt: now };
     },
   });
-  return withoutRetiredWorkFields(record.value as OutputHandleIndexEntry & { workId?: unknown });
+  return assertNativeOutputHandleEntry(record.value);
 }
 
 export function deleteOutputHandleIndexEntry(
@@ -208,7 +203,7 @@ export function deleteOutputHandleIndexEntry(
     handleId,
   );
   if (!record) return false;
-  const current = record.value;
+  const current = assertNativeOutputHandleEntry(record.value);
   if (
     current.schemaVersion !== OUTPUT_HANDLE_INDEX_SCHEMA_VERSION ||
     current.handleId !== handleId ||
@@ -250,5 +245,5 @@ export function readOutputHandleIndexEntry(
   if (!value.fingerprint || !value.kind || !value.storage) {
     throw new Error(`OUTPUT_HANDLE_INDEX_CORRUPT: ${key}`);
   }
-  return withoutRetiredWorkFields(value as OutputHandleIndexEntry & { workId?: unknown });
+  return assertNativeOutputHandleEntry(value);
 }

@@ -4,6 +4,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  readOutputHandleIndexEntry,
+  recordOutputHandleIndexEntry,
+} from '../../src/runtime/evidence/output-handle-index';
+import {
   inspectRetiredWorkPurge,
   purgeRetiredWork,
   RETIRED_WORK_NAMESPACES,
@@ -360,6 +364,73 @@ describe('full retired Work data erasure', () => {
       auditRecordCursors: 0,
     });
     expect(readFileSync(join(home, 'control-plane.sqlite')).includes(Buffer.from(oldMarker))).toBe(false);
+    expect(purgeRetiredWork(home)).toMatchObject({ applied: true, records: 0 });
+  });
+
+  test('rejects Work-attributed output locators and physically erases their history without deleting native output handles', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-retired-output-locator-'));
+    tempRoots.push(home);
+    const marker = 'OUTPUT-INDEX-WORK-ONLY-7cf95a';
+    writeControlPlaneRecord(home, {
+      namespace: 'output_handle_index',
+      scope: 'instance',
+      key: 'old-output',
+      schemaVersion: 1,
+      value: {
+        schemaVersion: 1,
+        handleId: 'old-output',
+        kind: 'result',
+        storage: { scope: 'instance' },
+        fingerprint: 'old-fingerprint',
+        recordedAt: '2026-11-22',
+        updatedAt: '2026-11-22',
+        workId: marker,
+      },
+      expectedRevision: null,
+    });
+    recordOutputHandleIndexEntry(home, {
+      handleId: 'native-output',
+      kind: 'result',
+      storage: { scope: 'instance' },
+      fingerprint: 'native-fingerprint',
+      now: '2026-11-22',
+    });
+    withControlPlaneTransaction(home, (db) => {
+      db.prepare(
+        'INSERT INTO control_plane_audit_floor(namespace,scope,record_key,floor_revision,updated_at) VALUES(?,?,?,?,?)',
+      ).run('output_handle_index', 'instance', 'old-output', 1, '2026-11-22');
+      db.prepare(
+        'INSERT INTO control_plane_audit_record_cursor(name,namespace,scope,record_key,updated_at) VALUES(?,?,?,?,?)',
+      ).run('retired-output-cursor', 'output_handle_index', 'instance', 'old-output', '2026-11-22');
+    });
+    expect(() => readOutputHandleIndexEntry(home, 'old-output')).toThrow('OUTPUT_HANDLE_RETIRED_WORK_SCOPE');
+    expect(() =>
+      recordOutputHandleIndexEntry(home, {
+        handleId: 'old-output',
+        kind: 'result',
+        storage: { scope: 'instance' },
+        fingerprint: 'old-fingerprint',
+      }),
+    ).toThrow('OUTPUT_HANDLE_RETIRED_WORK_SCOPE');
+    expect(inspectRetiredWorkPurge(home)).toMatchObject({
+      records: 1,
+      auditEvents: 1,
+      auditFloors: 1,
+      auditRecordCursors: 1,
+    });
+    expect(purgeRetiredWork(home)).toMatchObject({ applied: true, records: 1 });
+    expect(readControlPlaneRecord(home, 'output_handle_index', 'instance', 'old-output')).toBeUndefined();
+    expect(readOutputHandleIndexEntry(home, 'native-output')).toMatchObject({
+      handleId: 'native-output',
+      fingerprint: 'native-fingerprint',
+    });
+    expect(inspectRetiredWorkPurge(home)).toMatchObject({
+      records: 0,
+      auditEvents: 0,
+      auditFloors: 0,
+      auditRecordCursors: 0,
+    });
+    expect(readFileSync(join(home, 'control-plane.sqlite')).includes(Buffer.from(marker))).toBe(false);
     expect(purgeRetiredWork(home)).toMatchObject({ applied: true, records: 0 });
   });
 
