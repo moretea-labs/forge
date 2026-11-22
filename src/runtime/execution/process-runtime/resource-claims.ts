@@ -877,23 +877,6 @@ function repositoryCommandClaims(
   const commandProgram =
     canonical.kind === 'argv' ? (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase() : undefined;
   const commandArgs = canonical.kind === 'argv' ? (canonical.args ?? []) : [];
-  const directGate =
-    commandProgram === 'bun' && String(commandArgs[0] ?? '').replace(/^\.\//, '') === 'scripts/run-governed-gate.ts'
-      ? String(commandArgs[1] ?? '').toLowerCase()
-      : undefined;
-  const wrappedGate =
-    ['bun', 'npm'].includes(commandProgram ?? '') && commandArgs[0] === 'run'
-      ? ({ 'check:task': 'task', 'check:main': 'main', 'check:release': 'release' } as const)[
-          String(commandArgs[1] ?? '') as 'check:task' | 'check:main' | 'check:release'
-        ]
-      : undefined;
-  if ([directGate, wrappedGate].some((gate) => gate === 'task' || gate === 'main' || gate === 'release')) {
-    return normalizeClaims([
-      claimValidationObservation(checkoutId, repoId),
-      claimBuildCacheWrite(repoId),
-      claimHeavyCheck(repoId),
-    ]);
-  }
   const portablePackageCheck =
     ['bun', 'npm'].includes(commandProgram ?? '') &&
     commandArgs[0] === 'run' &&

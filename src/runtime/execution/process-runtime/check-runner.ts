@@ -319,11 +319,6 @@ function inferredPackageCheckEffects(name: string): ControllerCheckEffects | und
   if (normalized === 'check:stable-baseline') {
     return { reads: ['.'], hostServices: ['canonical-runtime', 'forge-recovery'] };
   }
-  if (normalized === 'check:task' || normalized === 'check:main') {
-    // Governed gates reject any candidate workspace mutation after every step
-    // and persist only content-bound receipts/caches outside repository source.
-    return { reads: ['.'], cache: 'write', temp: 'isolated', git: 'read' };
-  }
   if (normalized === 'check:type' || normalized === 'check:runtime-architecture') {
     // These canonical gates are source readers: TypeScript runs with --noEmit,
     // while runtime-architecture only inspects source/AST structure. Neither

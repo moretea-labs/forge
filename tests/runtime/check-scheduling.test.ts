@@ -147,7 +147,7 @@ describe('check execution scheduling', () => {
     }
   });
 
-  test('declares governed task/main gates as source-read-only while release remains conservative', () => {
+  test('does not infer Forge repository gate effects in generic package scripts', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-governed-gate-effects-'));
     try {
       writeFileSync(
@@ -162,14 +162,8 @@ describe('check execution scheduling', () => {
       );
       const checks = listControllerChecks(root);
       const byId = new Map(checks.map((entry) => [entry.id, entry]));
-      const governedEffects = {
-        reads: ['.'],
-        cache: 'write' as const,
-        temp: 'isolated' as const,
-        git: 'read' as const,
-      };
-      expect(byId.get('package:check:task')?.effects).toEqual(governedEffects);
-      expect(byId.get('package:check:main')?.effects).toEqual(governedEffects);
+      expect(byId.get('package:check:task')?.effects).toBeUndefined();
+      expect(byId.get('package:check:main')?.effects).toBeUndefined();
       expect(byId.get('package:check:release')?.effects).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });

@@ -515,36 +515,27 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(false);
   });
 
-  test('governed source gates observe candidate content without owning the workspace', () => {
+  test('Forge-specific gate names do not implicitly bypass generic repository writer claims', () => {
     const claims = claimsForRepositoryCommand(['bun', 'scripts/run-governed-gate.ts', 'main'], 'repo1', 'co1');
-    expect(claims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
-    expect(claims).toContainEqual({ resourceKey: 'heavy-check:repo1', mode: 'exclusive' });
-    expect(claims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
-    expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
-    expect(
-      claimsConflict(
-        { resourceKey: 'path:co1:src/runtime/example.ts', mode: 'write' },
-        lease('validation-input:co1', 'read'),
-      ),
-    ).toBe(false);
-    expect(
-      claimsConflict({ resourceKey: 'heavy-check:repo1', mode: 'exclusive' }, lease('heavy-check:repo1', 'exclusive')),
-    ).toBe(true);
-    for (const command of [
-      ['bun', 'run', 'check:main'],
-      ['npm', 'run', 'check:main'],
-      ['npm', 'run', 'check:portable-package'],
-    ]) {
-      const wrapped = claimsForRepositoryCommand(command, 'repo1', 'co1');
+    expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+    for (const packageManager of ['bun', 'npm']) {
+      const wrapped = claimsForRepositoryCommand([packageManager, 'run', 'check:main'], 'repo1', 'co1');
+      const ordinary = claimsForRepositoryCommand([packageManager, 'run', 'check:custom'], 'repo1', 'co1');
+      expect(wrapped).toEqual(ordinary);
       expect(wrapped).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
-      expect(wrapped.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
-      expect(
-        claimsConflict(
-          { resourceKey: 'path:co1:src/runtime/example.ts', mode: 'write' },
-          lease('validation-input:co1', 'read'),
-        ),
-      ).toBe(false);
+      expect(wrapped).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
+      expect(wrapped.some((claim) => claim.resourceKey === 'heavy-check:repo1')).toBe(false);
     }
+    // Resource declarations remain generic and explicit for any project.
+    const declared = claimsForCheck('package:check:main', ['bun', 'run', 'check:main'], 'repo1', 'co1', {
+      reads: ['.'],
+      cache: 'write',
+      temp: 'isolated',
+      git: 'read',
+    });
+    expect(declared).toContainEqual({ resourceKey: 'workspace:co1', mode: 'read' });
+    expect(declared).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
+    expect(declared.some((claim) => claim.resourceKey === 'workspace:co1' && claim.mode === 'write')).toBe(false);
   });
 
   test('workspace observation does not monopolize path writes or short Git mutations (#713)', () => {
