@@ -3308,208 +3308,73 @@ private struct AgentChangesPane: View {
                 .frame(maxWidth:.infinity,maxHeight:.infinity)
             } else if let changes = model.agentChanges {
                 let reviewed = focusedChanges ?? changes
-                ScrollView {
-                    VStack(alignment:.leading,spacing:14) {
-                        changeScopeHeader(changes)
-
-                        if !changes.untrackedFiles.isEmpty {
-                            untrackedChangesNotice(changes.untrackedFiles)
-                        }
-
-                        if changes.nameOnly.isEmpty {
-                            VStack(spacing:10) {
-                                Image(systemName:"checkmark.circle")
-                                    .font(.system(size:24,weight:.light))
-                                    .foregroundStyle(ForgePalette.secondary)
-                                Text(changes.untrackedFiles.isEmpty
-                                     ? (changes.staged ? "暂存区没有改动" : "工作区没有未提交改动")
-                                     : "没有可审查的已跟踪文件改动")
-                                    .font(.system(size:12,weight:.medium))
-                                    .foregroundStyle(ForgePalette.secondary)
-                            }
-                            .frame(maxWidth:.infinity)
-                            .padding(.vertical,48)
-                        } else {
-                            VStack(alignment:.leading,spacing:6) {
-                                Button {
-                                    focusedPath = nil
-                                    focusedChanges = nil
-                                } label: {
-                                    HStack(spacing:7) {
-                                        Image(systemName:"rectangle.stack")
-                                            .font(.system(size:10))
-                                        Text("全部改动")
-                                            .font(.system(size:10.5,weight:.medium))
-                                        Spacer(minLength:0)
-                                        Text("\(changes.nameOnly.count)")
-                                            .font(.system(size:9.5))
-                                            .foregroundStyle(.tertiary)
-                                    }
-                                    .padding(.horizontal,9)
-                                    .frame(height:29)
-                                    .background(focusedPath == nil ? ForgePalette.selectionStrong : ForgePalette.softFill,
-                                                in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                GeometryReader { geometry in
+                    if changes.nameOnly.isEmpty {
+                        ScrollView {
+                            VStack(alignment:.leading,spacing:14) {
+                                changeScopeHeader(changes)
+                                if !changes.untrackedFiles.isEmpty {
+                                    untrackedChangesNotice(changes.untrackedFiles)
                                 }
-                                .buttonStyle(.plain)
-                                .disabled(focusedLoading)
-
-                                ForEach(changes.nameOnly,id:\.self) { path in
-                                    Button {
-                                        focusedPath = path
-                                        focusedChanges = nil
-                                        focusedLoading = true
-                                        Task {
-                                            let snapshot = await model.reviewAgentChanges(paths:[path],staged:reviewStaged)
-                                            focusedLoading = false
-                                            if let snapshot {
-                                                focusedChanges = snapshot
-                                            } else {
-                                                focusedPath = nil
-                                            }
-                                        }
-                                    } label: {
-                                        HStack(spacing:8) {
-                                            Image(systemName:"doc")
-                                                .font(.system(size:10))
-                                                .foregroundStyle(ForgePalette.secondary)
-                                                .frame(width:14)
-                                            VStack(alignment:.leading,spacing:1) {
-                                                Text(fileName(path))
-                                                    .font(.system(size:10.5,weight:.medium))
-                                                    .lineLimit(1)
-                                                if !parentPath(path).isEmpty {
-                                                    Text(parentPath(path))
-                                                        .font(.system(size:9,design:.monospaced))
-                                                        .foregroundStyle(.tertiary)
-                                                        .lineLimit(1)
-                                                        .truncationMode(.middle)
-                                                }
-                                            }
-                                            Spacer(minLength:0)
-                                        }
-                                        .padding(.horizontal,9)
-                                        .frame(height:29)
-                                        .background(focusedPath == path ? ForgePalette.selectionStrong : ForgePalette.softFill,
-                                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .disabled(focusedLoading)
-                                }
-                            }
-
-                            if focusedLoading {
-                                HStack(spacing:7) {
-                                    ProgressView().controlSize(.small)
-                                    Text("读取文件改动…")
-                                        .font(.system(size:10.5))
+                                VStack(spacing:10) {
+                                    Image(systemName:"checkmark.circle")
+                                        .font(.system(size:24,weight:.light))
+                                        .foregroundStyle(ForgePalette.secondary)
+                                    Text(changes.untrackedFiles.isEmpty
+                                         ? (changes.staged ? "暂存区没有改动" : "工作区没有未提交改动")
+                                         : "没有可审查的已跟踪文件改动")
+                                        .font(.system(size:12,weight:.medium))
                                         .foregroundStyle(ForgePalette.secondary)
                                 }
-                            } else {
-                                HStack(spacing:8) {
-                                    if !reviewed.stat.isEmpty {
-                                        Text(reviewed.stat)
-                                            .font(.system(size:9.5,design:.monospaced))
-                                            .foregroundStyle(ForgePalette.secondary)
-                                            .lineLimit(1)
-                                            .textSelection(.enabled)
-                                    }
-                                    Spacer(minLength:8)
-                                    if !reviewed.patch.isEmpty {
-                                        Button {
-                                            copyAgentText(reviewed.patch)
-                                        } label: {
-                                            Label("复制改动",systemImage:"doc.on.doc")
-                                                .font(.system(size:9.5,weight:.medium))
-                                        }
-                                        .buttonStyle(.plain)
-                                        .foregroundStyle(ForgePalette.secondary)
-                                        .help("复制当前已审查改动")
-                                    }
-                                }
+                                .frame(maxWidth:.infinity)
+                                .padding(.vertical,48)
                             }
-
-                            if !focusedLoading && !reviewed.patch.isEmpty {
-                                AgentDiffPatchView(patch:reviewed.patch)
-                            }
-
-                            if reviewed.truncated {
-                                Label("改动内容过多，无法提交。请缩小本次审查范围。",systemImage:"exclamationmark.triangle")
-                                    .font(.system(size:10.5))
-                                    .foregroundStyle(ForgePalette.secondary)
-                            }
-
-                            VStack(alignment:.leading,spacing:8) {
-                                HStack {
-                                    Label("提交已审查改动",systemImage:"checkmark.seal")
-                                        .font(.system(size:11,weight:.semibold))
-                                    Spacer()
-                                    Text(focusedPath ?? "\(reviewed.nameOnly.count) 个文件")
-                                        .font(.system(size:10))
-                                        .foregroundStyle(.tertiary)
-                                }
-                                TextField("提交说明",text:$commitMessage)
-                                    .textFieldStyle(.plain)
-                                    .font(.system(size:11.5))
-                                    .padding(.horizontal,10)
-                                    .frame(height:32)
-                                    .background(ForgePalette.canvas,
-                                                in:RoundedRectangle(cornerRadius:8,style:.continuous))
-                                HStack(spacing:8) {
-                                    Text("提交前会再次确认这些改动未变化。")
-                                        .font(.system(size:9.5))
-                                        .foregroundStyle(.tertiary)
-                                        .lineLimit(2)
-                                    Spacer(minLength:8)
-                                    if reviewed.staged {
-                                        Text("已暂存改动仅支持提交")
-                                            .font(.system(size:9.5,weight:.medium))
-                                            .foregroundStyle(.tertiary)
-                                            .help("不会跨越暂存区边界放弃改动")
-                                    } else {
-                                        Button(role:.destructive) {
-                                            restoreSnapshot = reviewed
-                                        } label: {
-                                            Label("放弃",systemImage:"arrow.uturn.backward.circle")
-                                                .font(.system(size:11,weight:.semibold))
-                                                .padding(.horizontal,9)
-                                                .frame(height:29)
-                                        }
-                                        .buttonStyle(.plain)
-                                        .foregroundStyle(.red)
-                                        .disabled(model.changesLoading || focusedLoading
-                                                  || reviewed.truncated || reviewed.patch.isEmpty)
-                                        .help("放弃当前已复查的未暂存改动")
-                                    }
-                                    Button {
-                                        let snapshot = reviewed
-                                        let message = commitMessage
-                                        Task {
-                                            if await model.commitAgentChanges(snapshot,message:message) {
-                                                commitMessage = ""
-                                                focusedPath = nil
-                                                focusedChanges = nil
-                                            }
-                                        }
-                                    } label: {
-                                        Label("提交",systemImage:"checkmark.circle.fill")
-                                            .font(.system(size:11,weight:.semibold))
-                                            .padding(.horizontal,10)
-                                            .frame(height:29)
-                                            .background(ForgePalette.selectionStrong,
-                                                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .disabled(model.changesLoading || focusedLoading || reviewed.truncated
-                                              || reviewed.patch.isEmpty
-                                              || commitMessage.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
-                                }
-                            }
-                            .padding(10)
-                            .background(ForgePalette.softFill,
-                                        in:RoundedRectangle(cornerRadius:11,style:.continuous))
+                            .padding(14)
                         }
+                    } else if geometry.size.width >= 780 {
+                        // A file navigator and an independent patch reader,
+                        // both in the original reviewed checkout scope.
+                        HStack(alignment:.top,spacing:0) {
+                            ScrollView {
+                                VStack(alignment:.leading,spacing:14) {
+                                    changeScopeHeader(changes)
+                                    if !changes.untrackedFiles.isEmpty {
+                                        untrackedChangesNotice(changes.untrackedFiles)
+                                    }
+                                    changeFileNavigator(changes)
+                                }
+                                .padding(12)
+                            }
+                            .frame(width:min(300,max(230,geometry.size.width * 0.27)))
+                            .frame(maxHeight:.infinity)
+                            .background(.regularMaterial)
+                            .accessibilityIdentifier("changes.file-navigator")
+
+                            ScrollView {
+                                changeReviewContent(reviewed)
+                                    .padding(.horizontal,18)
+                                    .padding(.vertical,14)
+                            }
+                            .frame(maxWidth:.infinity,maxHeight:.infinity)
+                            .accessibilityIdentifier("changes.patch-reader")
+                        }
+                        .accessibilityIdentifier("changes.review-split")
+                    } else {
+                        // Narrow windows preserve the same action and file scope
+                        // without squeezing the diff into a fixed side inspector.
+                        ScrollView {
+                            VStack(alignment:.leading,spacing:14) {
+                                changeScopeHeader(changes)
+                                if !changes.untrackedFiles.isEmpty {
+                                    untrackedChangesNotice(changes.untrackedFiles)
+                                }
+                                changeFileNavigator(changes)
+                                changeReviewContent(reviewed)
+                            }
+                            .padding(.horizontal,14).padding(.bottom,14)
+                        }
+                        .accessibilityIdentifier("changes.review-compact")
                     }
-                    .padding(.horizontal,14).padding(.bottom,14)
                 }
             } else {
                 VStack(spacing:10) {
@@ -3555,6 +3420,196 @@ private struct AgentChangesPane: View {
         }
         .accessibilityElement(children:.contain)
         .accessibilityLabel("改动审查")
+    }
+
+    private func changeFileNavigator(_ changes:AgentGitDiff) -> some View {
+        VStack(alignment:.leading,spacing:6) {
+            Button {
+                focusedPath = nil
+                focusedChanges = nil
+            } label: {
+                HStack(spacing:7) {
+                    Image(systemName:"rectangle.stack")
+                        .font(.system(size:10))
+                    Text("全部改动")
+                        .font(.system(size:10.5,weight:.medium))
+                    Spacer(minLength:0)
+                    Text("\(changes.nameOnly.count)")
+                        .font(.system(size:9.5))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal,9)
+                .frame(height:29)
+                .background(focusedPath == nil ? ForgePalette.selectionStrong : ForgePalette.softFill,
+                            in:RoundedRectangle(cornerRadius:8,style:.continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(focusedLoading)
+
+            ForEach(changes.nameOnly,id:\.self) { path in
+                Button {
+                    focusedPath = path
+                    focusedChanges = nil
+                    focusedLoading = true
+                    Task {
+                        let snapshot = await model.reviewAgentChanges(paths:[path],staged:reviewStaged)
+                        focusedLoading = false
+                        if let snapshot {
+                            focusedChanges = snapshot
+                        } else {
+                            focusedPath = nil
+                        }
+                    }
+                } label: {
+                    HStack(spacing:8) {
+                        Image(systemName:"doc")
+                            .font(.system(size:10))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .frame(width:14)
+                        VStack(alignment:.leading,spacing:1) {
+                            Text(fileName(path))
+                                .font(.system(size:10.5,weight:.medium))
+                                .lineLimit(1)
+                            if !parentPath(path).isEmpty {
+                                Text(parentPath(path))
+                                    .font(.system(size:9,design:.monospaced))
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        }
+                        Spacer(minLength:0)
+                    }
+                    .padding(.horizontal,9)
+                    .frame(height:29)
+                    .background(focusedPath == path ? ForgePalette.selectionStrong : ForgePalette.softFill,
+                                in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(focusedLoading)
+            }
+        }
+    }
+
+    private func changeReviewContent(_ reviewed:AgentGitDiff) -> some View {
+        VStack(alignment:.leading,spacing:14) {
+            if focusedLoading {
+                HStack(spacing:7) {
+                    ProgressView().controlSize(.small)
+                    Text("读取文件改动…")
+                        .font(.system(size:10.5))
+                        .foregroundStyle(ForgePalette.secondary)
+                }
+            } else {
+                HStack(spacing:8) {
+                    if !reviewed.stat.isEmpty {
+                        Text(reviewed.stat)
+                            .font(.system(size:9.5,design:.monospaced))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .lineLimit(1)
+                            .textSelection(.enabled)
+                    }
+                    Spacer(minLength:8)
+                    if !reviewed.patch.isEmpty {
+                        Button {
+                            copyAgentText(reviewed.patch)
+                        } label: {
+                            Label("复制改动",systemImage:"doc.on.doc")
+                                .font(.system(size:9.5,weight:.medium))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(ForgePalette.secondary)
+                        .help("复制当前已审查改动")
+                    }
+                }
+            }
+
+            if !focusedLoading && !reviewed.patch.isEmpty {
+                ScrollView(.horizontal) {
+                    AgentDiffPatchView(patch:reviewed.patch)
+                        .fixedSize(horizontal:true,vertical:false)
+                }
+                .scrollIndicators(.automatic)
+                .accessibilityIdentifier("changes.patch-scroll")
+            }
+
+            if reviewed.truncated {
+                Label("改动内容过多，无法提交。请缩小本次审查范围。",systemImage:"exclamationmark.triangle")
+                    .font(.system(size:10.5))
+                    .foregroundStyle(ForgePalette.secondary)
+            }
+
+            VStack(alignment:.leading,spacing:8) {
+                HStack {
+                    Label("提交已审查改动",systemImage:"checkmark.seal")
+                        .font(.system(size:11,weight:.semibold))
+                    Spacer()
+                    Text(focusedPath ?? "\(reviewed.nameOnly.count) 个文件")
+                        .font(.system(size:10))
+                        .foregroundStyle(.tertiary)
+                }
+                TextField("提交说明",text:$commitMessage)
+                    .textFieldStyle(.plain)
+                    .font(.system(size:11.5))
+                    .padding(.horizontal,10)
+                    .frame(height:32)
+                    .background(ForgePalette.canvas,
+                                in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                HStack(spacing:8) {
+                    Text("提交前会再次确认这些改动未变化。")
+                        .font(.system(size:9.5))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                    Spacer(minLength:8)
+                    if reviewed.staged {
+                        Text("已暂存改动仅支持提交")
+                            .font(.system(size:9.5,weight:.medium))
+                            .foregroundStyle(.tertiary)
+                            .help("不会跨越暂存区边界放弃改动")
+                    } else {
+                        Button(role:.destructive) {
+                            restoreSnapshot = reviewed
+                        } label: {
+                            Label("放弃",systemImage:"arrow.uturn.backward.circle")
+                                .font(.system(size:11,weight:.semibold))
+                                .padding(.horizontal,9)
+                                .frame(height:29)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.red)
+                        .disabled(model.changesLoading || focusedLoading
+                                  || reviewed.truncated || reviewed.patch.isEmpty)
+                        .help("放弃当前已复查的未暂存改动")
+                    }
+                    Button {
+                        let snapshot = reviewed
+                        let message = commitMessage
+                        Task {
+                            if await model.commitAgentChanges(snapshot,message:message) {
+                                commitMessage = ""
+                                focusedPath = nil
+                                focusedChanges = nil
+                            }
+                        }
+                    } label: {
+                        Label("提交",systemImage:"checkmark.circle.fill")
+                            .font(.system(size:11,weight:.semibold))
+                            .padding(.horizontal,10)
+                            .frame(height:29)
+                            .background(ForgePalette.selectionStrong,
+                                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.changesLoading || focusedLoading || reviewed.truncated
+                              || reviewed.patch.isEmpty
+                              || commitMessage.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(10)
+            .background(ForgePalette.softFill,
+                        in:RoundedRectangle(cornerRadius:11,style:.continuous))
+        }
+        .frame(maxWidth:.infinity,alignment:.leading)
     }
 
     private var reviewScopeBinding: Binding<Bool> {
