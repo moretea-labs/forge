@@ -936,6 +936,38 @@ describe('Process Runtime fine-grained resource claims', () => {
     }
   });
 
+  test('stdout-only HTTP probes do not own checkout source while file-producing curl stays fenced (#713)', () => {
+    const unrelatedWriter = lease('path:co1:src/other.ts', 'write');
+    const checkoutWriter = lease('workspace:co1', 'write');
+    for (const command of [
+      ['curl', '-fsSL', 'https://example.com/status'],
+      ['curl', '--head', '--max-time', '10', 'https://example.org/'],
+      ['curl', '--silent', '--url', 'http://127.0.0.1:8080/health'],
+    ]) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims).toHaveLength(1);
+      expect(claims[0]?.mode).toBe('read');
+      expect(claims.some((claim) => claimsConflict(claim, checkoutWriter))).toBe(false);
+      expect(claims.some((claim) => claimsConflict(claim, unrelatedWriter))).toBe(false);
+    }
+    for (const unsafe of [
+      ['curl', '--output=src/other.ts', 'http://127.0.0.1:8080/health'],
+      ['curl', '-o', 'src/other.ts', 'https://example.com/'],
+      ['curl', '-O', 'https://example.com/file'],
+      ['curl', '--trace=trace.log', 'https://example.com/'],
+      ['curl', '--cookie-jar', 'cookies.txt', 'https://example.com/'],
+      ['curl', '--data', 'x=1', 'https://example.com/api'],
+      ['curl', '-X', 'POST', 'https://example.com/api'],
+      ['curl', '-K', 'curl.conf', 'https://example.com/'],
+      ['curl', 'file:///tmp/source'],
+    ]) {
+      expect(claimsForRepositoryCommand(unsafe, 'repo1', 'co1')).toContainEqual({
+        resourceKey: 'workspace:co1',
+        mode: 'write',
+      });
+    }
+  });
+
   test('Git fetch owns remote refs, not source checkout or index (#713)', () => {
     const sourceLease = lease('workspace:co1', 'write');
     const sourcePath = lease('path:co1:src/feature.ts', 'write');

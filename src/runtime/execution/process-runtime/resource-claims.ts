@@ -347,36 +347,51 @@ function localHttpServerClaims(command: string | readonly string[]): ResourceCla
   return [claimHostService(`tcp-listen:${bind}:${port}`, 'write')];
 }
 
-function loopbackCurlClaims(command: string | readonly string[], _repoId: string): ResourceClaimSpec[] | undefined {
+/** Only known stdout-only HTTP probes avoid source-file ownership (#713).
+ * A typed argv shape prevents shell redirection or interpolation; unknown
+ * options may write files and must retain checkout exclusion. This supersedes
+ * the old loopback-only heuristic, which missed --output=FILE forms.
+ */
+function stdoutOnlyCurlClaims(command: string | readonly string[]): ResourceClaimSpec[] | undefined {
   const canonical = normalizeRepositoryCommand(command);
-  if (canonical.kind !== 'argv') return undefined;
-  const program = (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase();
-  if (program !== 'curl') return undefined;
+  if (canonical.kind !== 'argv' || basename(canonical.executable ?? '').toLowerCase() !== 'curl') return undefined;
   const args = canonical.args ?? [];
-  if (
-    args.some((arg) =>
-      /^(?:-X|--request|-d|--data|--data-raw|--data-binary|-F|--form|-T|--upload-file|-o|--output|-O|--remote-name)$/i.test(
-        arg,
-      ),
+  const urls: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (/^https?:\/\//i.test(arg)) {
+      urls.push(arg);
+      continue;
+    }
+    if (/^-[sSfLIv]+$/.test(arg)) continue;
+    if (
+      ['--silent', '--show-error', '--fail', '--fail-with-body', '--location', '--head', '--compressed'].includes(arg)
     )
-  )
+      continue;
+    if (['--max-time', '--connect-timeout'].includes(arg)) {
+      const number = args[index + 1];
+      if (!number || !/^\d+(?:\.\d+)?$/.test(number)) return undefined;
+      index += 1;
+      continue;
+    }
+    if (arg === '--url') {
+      const url = args[index + 1];
+      if (!url || !/^https?:\/\//i.test(url)) return undefined;
+      urls.push(url);
+      index += 1;
+      continue;
+    }
     return undefined;
-  const explicitMethodIndex = args.findIndex((arg) => arg === '-X' || arg === '--request');
-  if (explicitMethodIndex >= 0 && !/^(?:GET|HEAD)$/i.test(args[explicitMethodIndex + 1] ?? '')) return undefined;
-  const urls = args.filter((arg) => /^https?:\/\//i.test(arg));
-  if (
-    urls.length === 0 ||
-    urls.some((url) => {
-      try {
-        const host = new URL(url).hostname.toLowerCase();
-        return !['127.0.0.1', 'localhost', '::1'].includes(host);
-      } catch {
-        return true;
-      }
-    })
-  )
+  }
+  if (urls.length !== 1) return undefined;
+  try {
+    const url = new URL(urls[0]!);
+    if (!['http:', 'https:'].includes(url.protocol) || !url.hostname) return undefined;
+    const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname.toLowerCase());
+    return [claimHostService(loopback ? 'tcp-client:loopback' : 'tcp-client:http', 'read')];
+  } catch {
     return undefined;
-  return [claimHostService('tcp-client:loopback', 'read')];
+  }
 }
 
 function simpleViteScript(script: string): boolean {
@@ -474,8 +489,8 @@ function hostOnlyCommandClaims(
 ): ResourceClaimSpec[] | undefined {
   const localServer = localHttpServerClaims(command);
   if (localServer) return localServer;
-  const loopbackCurl = loopbackCurlClaims(command, repoId);
-  if (loopbackCurl) return loopbackCurl;
+  const stdoutCurl = stdoutOnlyCurlClaims(command);
+  if (stdoutCurl) return stdoutCurl;
   const vite = viteServiceClaims(command, repoId, checkoutId, repoRoot);
   if (vite) return vite;
   const homebrew = homebrewHostMutationClaims(command);
