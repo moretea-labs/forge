@@ -7,6 +7,7 @@ import { getToolPolicy, parseToolProfile } from '../../src/runtime/control-plane
 import { redactMcpText } from '../../adapters/mcp/redaction';
 import { globMatches, normalizeMcpRelativePath, resolveMcpPath } from '../../src/runtime/safe-tooling/path-policy';
 import { buildMcpToolDefinitions } from '../../adapters/mcp/tool-mapping/tools';
+import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 
 describe('mcp policy and paths', () => {
   test('retired Agent and Local Bridge submission aliases have no public schema', () => {
@@ -22,10 +23,20 @@ describe('mcp policy and paths', () => {
     const definitions = buildMcpToolDefinitions(getToolPolicy('controller'));
     const beginEdit = definitions.find((tool) => tool.name === 'begin_edit_session');
     expect(beginEdit).toBeDefined();
-    const properties = (beginEdit?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties ?? {};
+    const properties =
+      (beginEdit?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties ?? {};
     expect(properties).not.toHaveProperty('work_id');
     expect(properties).toHaveProperty('purpose');
     expect(properties).toHaveProperty('allowed_paths');
+  });
+
+  test('preferred facades do not advertise retired work_id (#483)', () => {
+    for (const name of ['rh_context', 'rh_work'] as const) {
+      const tool = runtimeToolDefinitions.find((entry) => entry.name === name);
+      expect(tool).toBeDefined();
+      const properties = (tool?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties ?? {};
+      expect(properties).not.toHaveProperty('work_id');
+    }
   });
 
   test('matches forge workflow globs without matching sibling paths', () => {
@@ -113,18 +124,25 @@ describe('mcp policy and paths', () => {
       mkdirSync(join(tmp, '.forge'), { recursive: true });
       mkdirSync(join(tmp, 'ios', 'Domain'), { recursive: true });
       mkdirSync(join(tmp, '.ai', 'harness', 'security'), { recursive: true });
-      writeFileSync(join(tmp, '.forge', 'mcp.policy.json'), `${JSON.stringify({
-        profiles: {
-          planner: {
-            readGlobs: ['**'],
-            appendDenyGlobs: [
-              '.forge/**',
-              '.ai/harness/security/**',
-            ],
+      writeFileSync(
+        join(tmp, '.forge', 'mcp.policy.json'),
+        `${JSON.stringify(
+          {
+            profiles: {
+              planner: {
+                readGlobs: ['**'],
+                appendDenyGlobs: ['.forge/**', '.ai/harness/security/**'],
+              },
+            },
           },
-        },
-      }, null, 2)}\n`);
-      writeFileSync(join(tmp, 'ios', 'Domain', 'MedicationPlanRuntimeCoordinator.swift'), 'struct RuntimeCoordinator {}\n');
+          null,
+          2,
+        )}\n`,
+      );
+      writeFileSync(
+        join(tmp, 'ios', 'Domain', 'MedicationPlanRuntimeCoordinator.swift'),
+        'struct RuntimeCoordinator {}\n',
+      );
       writeFileSync(join(tmp, '.forge', 'mcp.oauth.json'), '{"passphrase":"secret"}\n');
       writeFileSync(join(tmp, '.ai', 'harness', 'security', 'token.txt'), 'secret\n');
 
@@ -162,7 +180,6 @@ describe('mcp policy and paths', () => {
     expect(() => parseToolProfile('orchestrator')).toThrow('invalid MCP profile');
     expect(() => getToolPolicy('orchestrator' as never)).toThrow('unknown MCP profile');
   });
-
 });
 
 describe('mcp redaction and audit', () => {
@@ -189,12 +206,14 @@ describe('mcp redaction and audit', () => {
   test('redacts launchctl arrows, CLI options, and URL userinfo while preserving safe diagnostics', () => {
     const syntheticKey = 'sk-SYNTHETICMCP0123456789ABCDEF';
     const syntheticPassword = 'synthetic-mcp-password-0123456789';
-    const result = redactMcpText([
-      `SYNTHETIC_API_KEY => ${syntheticKey}`,
-      `tool --access-token ${syntheticKey}`,
-      `SERVICE_URL=https://user:${syntheticPassword}@example.test/path`,
-      'SAFE_MODE => enabled',
-    ].join('\n'));
+    const result = redactMcpText(
+      [
+        `SYNTHETIC_API_KEY => ${syntheticKey}`,
+        `tool --access-token ${syntheticKey}`,
+        `SERVICE_URL=https://user:${syntheticPassword}@example.test/path`,
+        'SAFE_MODE => enabled',
+      ].join('\n'),
+    );
     expect(result.text).not.toContain(syntheticKey);
     expect(result.text).not.toContain(syntheticPassword);
     expect(result.text).toContain('SAFE_MODE => enabled');
@@ -225,11 +244,13 @@ describe('mcp redaction and audit', () => {
   });
 
   test('safe audit write reports failure without throwing', () => {
-    expect(tryWriteMcpAuditEntry('/dev/null/not-a-dir', {
-      timestamp: '2026-06-17T00:00:00.000Z',
-      tool: 'read_workflow_file',
-      status: 'ok',
-      inputHash: hashMcpInput({ path: 'plans/test.md' }),
-    })).toBe(false);
+    expect(
+      tryWriteMcpAuditEntry('/dev/null/not-a-dir', {
+        timestamp: '2026-06-17T00:00:00.000Z',
+        tool: 'read_workflow_file',
+        status: 'ok',
+        inputHash: hashMcpInput({ path: 'plans/test.md' }),
+      }),
+    ).toBe(false);
   });
 });

@@ -206,11 +206,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
         description:
           'Optional capability identity. For plugin.<pluginId>.<actionId>, returns the exact typed action schema/policy for plugin_action_execute.',
       },
-      work_id: {
-        type: 'string',
-        description:
-          'Retired. Work identity is fully deleted; any non-empty work_id is rejected. Use Requirement, Plan, repository, Process or Issue context instead.',
-      },
       detail_level: {
         type: 'string',
         enum: ['summary', 'detail', 'raw'],
@@ -372,16 +367,12 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
       objective: {
         type: 'string',
         description:
-          'Model-authored Plan goal for plan_create/plan_revise, or Work objective where applicable. On plan_revise this replaces the canonical Plan goal under expected_revision CAS.',
+          'Model-authored Plan goal for plan_create/plan_revise. On plan_revise this replaces the canonical Plan goal under expected_revision CAS.',
       },
       capability_id: {
         type: 'string',
         description:
           'Compatibility-only carrier. Current callers should use typed rh_work fields directly. The outer adapter accepts only the bounded frozen semantic.v1 bridge and current-conversation enrollment, validates them without persistence, and routes them into the same Thin owners.',
-      },
-      work_id: {
-        type: 'string',
-        description: 'Retired. Any non-empty work_id is rejected; Work has no remaining semantic or archival surface.',
       },
       workflow_id: {
         type: 'string',

@@ -227,9 +227,9 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     storage:
       'Controller Home repository edit-sessions namespace reached through the repository runtime-storage compatibility binding.',
     terminalCondition:
-      'Edit session is finalized, superseded or rolled back and no non-terminal Work still references the session for review/delivery.',
+      'Edit session is finalized, superseded or rolled back; Work identity is fully retired and is not a session owner.',
     activeProtection:
-      'Non-terminal sessions and terminal sessions whose workId belongs to a non-terminal Work are never physically reclaimed.',
+      'Non-terminal sessions are never physically reclaimed; terminal sessions remain until EditSession retention policy applies.',
     retentionCapacity:
       'Terminal unowned sessions retain at most the newest 200 identities and seven days of history; centralized cleanup uses bounded rotating scans/removal budgets.',
     cleanupAuthority:

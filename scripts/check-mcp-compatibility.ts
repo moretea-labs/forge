@@ -122,7 +122,9 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // 2026-11-22 #483: delete inert historical Work list/get/get_contract enum tokens
 // and advertising from the model-facing rh_work schema; Work has no remaining
 // read surface. Refresh the exact schema fingerprint.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '55b442488dd8d367';
+// 2026-11-22 #483 follow-up: remove advertised work_id fields from rh_context /
+// rh_work input schemas (additionalProperties remains false). Refresh fingerprint.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '865c1d940969cbf9';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

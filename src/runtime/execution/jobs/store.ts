@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, opendirSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { ensureRepositoryControllerLayout, repositoryControllerRoot, resolveControllerHome } from '../../../effects/controller-home';
+import {
+  ensureRepositoryControllerLayout,
+  repositoryControllerRoot,
+  resolveControllerHome,
+} from '../../../effects/controller-home';
 import { releaseControllerLock, tryAcquireControllerLock, withControllerLock } from '../../../effects/controller-locks';
 import { appendJobEvent } from '../../evidence/event-ledger';
 import { cleanupExecutionArtifactsForJob, writeExecutionArtifact } from '../../evidence/artifact-store';
@@ -23,7 +27,14 @@ import { deadlineAfter, normalizeExecutionTimeoutPolicy } from './timeouts';
 interface ActiveJobIndex {
   schemaVersion: 1;
   updatedAt: string;
-  jobs: Array<{ jobId: string; repoId: string; status: ExecutionJobStatus; priority: string; queuedAt: string; updatedAt: string }>;
+  jobs: Array<{
+    jobId: string;
+    repoId: string;
+    status: ExecutionJobStatus;
+    priority: string;
+    queuedAt: string;
+    updatedAt: string;
+  }>;
 }
 
 interface RecentJobIndex {
@@ -41,8 +52,12 @@ interface RequestIndexRecord {
   createdAt: string;
 }
 
-function now(): string { return new Date().toISOString(); }
-function safeRepoId(repoId: string): string { return sanitizeFileComponent(repoId); }
+function now(): string {
+  return new Date().toISOString();
+}
+function safeRepoId(repoId: string): string {
+  return sanitizeFileComponent(repoId);
+}
 
 /** ExecutionJobs are historical diagnostics; new work is owned by Work + Process. */
 export function executionJobCreationRetired(): boolean {
@@ -118,7 +133,11 @@ function isArtifactPointer(value: unknown): boolean {
   return typeof record.artifactId === 'string' && typeof record.artifactKind === 'string';
 }
 
-function artifactPointerFor(job: ExecutionJob, artifact: ReturnType<typeof writeExecutionArtifact>, byteLength: number): Record<string, unknown> {
+function artifactPointerFor(
+  job: ExecutionJob,
+  artifact: ReturnType<typeof writeExecutionArtifact>,
+  byteLength: number,
+): Record<string, unknown> {
   return {
     externalized: true,
     byteLength,
@@ -167,10 +186,13 @@ const INLINE_ERROR_DETAIL_KEYS = new Set([
 ]);
 
 function inlineSafeErrorDetails(details: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(details).filter(([key, value]) =>
-    INLINE_ERROR_DETAIL_KEYS.has(key)
-    && (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
-  ));
+  return Object.fromEntries(
+    Object.entries(details).filter(
+      ([key, value]) =>
+        INLINE_ERROR_DETAIL_KEYS.has(key) &&
+        (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'),
+    ),
+  );
 }
 
 function sanitizeJobForPersistence(controllerHome: string, job: ExecutionJob): ExecutionJob {
@@ -180,9 +202,7 @@ function sanitizeJobForPersistence(controllerHome: string, job: ExecutionJob): E
     if (error.details && !isArtifactPointer(error.details)) {
       const inlineDetails = inlineSafeErrorDetails(error.details);
       const pointer = externalizeJobValue(controllerHome, next, 'job-error', error.details);
-      error.details = Object.keys(inlineDetails).length > 0
-        ? { ...inlineDetails, ...pointer }
-        : pointer;
+      error.details = Object.keys(inlineDetails).length > 0 ? { ...inlineDetails, ...pointer } : pointer;
     }
     next.error = error;
   }
@@ -220,9 +240,7 @@ function writeRecentIndex(controllerHome: string, index: RecentJobIndex): void {
   writeJsonAtomic(recentIndexPath(controllerHome), {
     schemaVersion: 1,
     updatedAt: now(),
-    jobs: [...deduped.values()]
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, 5000),
+    jobs: [...deduped.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5000),
   } satisfies RecentJobIndex);
 }
 
@@ -242,56 +260,93 @@ function upsertIndexesUnlocked(controllerHome: string, job: ExecutionJob): void 
   writeActiveIndex(controllerHome, index);
   const recent = readRecentIndex(controllerHome);
   recent.jobs = recent.jobs.filter((entry) => entry.jobId !== job.jobId);
-  recent.jobs.push({ jobId: job.jobId, repoId: job.repoId, createdAt: job.createdAt, updatedAt: job.updatedAt, status: job.status });
+  recent.jobs.push({
+    jobId: job.jobId,
+    repoId: job.repoId,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    status: job.status,
+  });
   writeRecentIndex(controllerHome, recent);
 }
 
 function upsertIndexes(controllerHome: string, job: ExecutionJob): void {
-  withControllerLock(controllerHome, { scope: 'global', resource: 'execution-index' }, `execution-index:${job.jobId}`, () => {
-    upsertIndexesUnlocked(controllerHome, job);
-  }, 10_000);
+  withControllerLock(
+    controllerHome,
+    { scope: 'global', resource: 'execution-index' },
+    `execution-index:${job.jobId}`,
+    () => {
+      upsertIndexesUnlocked(controllerHome, job);
+    },
+    10_000,
+  );
 }
 
 /** Rebuild index entries from durable Job records during bounded startup recovery. */
 export function rebuildExecutionJobIndexes(controllerHome: string, repoIds: string[] = []): void {
-  withControllerLock(controllerHome, { scope: 'global', resource: 'execution-index' }, 'execution-index-rebuild', () => {
-    const targetRepos = new Set(repoIds);
-    const active = readActiveIndex(controllerHome);
-    const recent = readRecentIndex(controllerHome);
-    const activeEntries: ActiveJobIndex['jobs'] = [];
-    const recentEntries: RecentJobIndex['jobs'] = [];
-    for (const repoId of targetRepos) {
-      const records = join(executionJobRootPath(controllerHome, repoId), 'records');
-      let names: string[] = [];
-      // Startup repair must rebuild every active and request authority. Only the
-      // recent-history projection below is intentionally bounded.
-      try { names = readdirSync(records).filter((name) => name.endsWith('.json')); } catch { continue; }
-      for (const name of names) {
+  withControllerLock(
+    controllerHome,
+    { scope: 'global', resource: 'execution-index' },
+    'execution-index-rebuild',
+    () => {
+      const targetRepos = new Set(repoIds);
+      const active = readActiveIndex(controllerHome);
+      const recent = readRecentIndex(controllerHome);
+      const activeEntries: ActiveJobIndex['jobs'] = [];
+      const recentEntries: RecentJobIndex['jobs'] = [];
+      for (const repoId of targetRepos) {
+        const records = join(executionJobRootPath(controllerHome, repoId), 'records');
+        let names: string[] = [];
+        // Startup repair must rebuild every active and request authority. Only the
+        // recent-history projection below is intentionally bounded.
         try {
-          const job = readJsonFile<ExecutionJob>(join(records, name));
-          if (job.requestId) {
-            writeJsonAtomic(requestPath(controllerHome, job.requestId), {
-              schemaVersion: 1,
-              requestId: job.requestId,
-              semanticKey: job.semanticKey,
+          names = readdirSync(records).filter((name) => name.endsWith('.json'));
+        } catch {
+          continue;
+        }
+        for (const name of names) {
+          try {
+            const job = readJsonFile<ExecutionJob>(join(records, name));
+            if (job.requestId) {
+              writeJsonAtomic(requestPath(controllerHome, job.requestId), {
+                schemaVersion: 1,
+                requestId: job.requestId,
+                semanticKey: job.semanticKey,
+                jobId: job.jobId,
+                repoId: job.repoId,
+                createdAt: job.createdAt,
+              } satisfies RequestIndexRecord);
+            }
+            recentEntries.push({
               jobId: job.jobId,
               repoId: job.repoId,
               createdAt: job.createdAt,
-            } satisfies RequestIndexRecord);
+              updatedAt: job.updatedAt,
+              status: job.status,
+            });
+            if (ACTIVE_JOB_STATUSES.has(job.status)) {
+              activeEntries.push({
+                jobId: job.jobId,
+                repoId: job.repoId,
+                status: job.status,
+                priority: job.priority,
+                queuedAt: job.queuedAt,
+                updatedAt: job.updatedAt,
+              });
+            }
+          } catch {
+            /* malformed records are left for the existing repair surface */
           }
-          recentEntries.push({ jobId: job.jobId, repoId: job.repoId, createdAt: job.createdAt, updatedAt: job.updatedAt, status: job.status });
-          if (ACTIVE_JOB_STATUSES.has(job.status)) {
-            activeEntries.push({ jobId: job.jobId, repoId: job.repoId, status: job.status, priority: job.priority, queuedAt: job.queuedAt, updatedAt: job.updatedAt });
-          }
-        } catch { /* malformed records are left for the existing repair surface */ }
+        }
       }
-    }
-    const activeRepoIds = targetRepos;
-    active.jobs = active.jobs.filter((entry) => !activeRepoIds.has(entry.repoId)).concat(activeEntries);
-    recent.jobs = recent.jobs.filter((entry) => !activeRepoIds.has(entry.repoId)).concat(recentEntries);
-    writeActiveIndex(controllerHome, active);
-    writeRecentIndex(controllerHome, recent);
-  }, 10_000);
+      const activeRepoIds = targetRepos;
+      active.jobs = active.jobs.filter((entry) => !activeRepoIds.has(entry.repoId)).concat(activeEntries);
+      recent.jobs = recent.jobs.filter((entry) => !activeRepoIds.has(entry.repoId)).concat(recentEntries);
+      writeActiveIndex(controllerHome, active);
+      writeRecentIndex(controllerHome, recent);
+    },
+    10_000,
+  );
 }
 
 function persistJobRecord(controllerHome: string, job: ExecutionJob): ExecutionJob {
@@ -334,11 +389,19 @@ export function getExecutionJobByRequestId(
 export function findExecutionJob(controllerHome: string, jobId: string): ExecutionJob | undefined {
   const active = readActiveIndex(controllerHome).jobs.find((entry) => entry.jobId === jobId);
   if (active) {
-    try { return getExecutionJob(controllerHome, active.repoId, jobId); } catch { /* continue */ }
+    try {
+      return getExecutionJob(controllerHome, active.repoId, jobId);
+    } catch {
+      /* continue */
+    }
   }
   const recent = readRecentIndex(controllerHome).jobs.find((entry) => entry.jobId === jobId);
   if (recent) {
-    try { return getExecutionJob(controllerHome, recent.repoId, jobId); } catch { /* continue to legacy fallback */ }
+    try {
+      return getExecutionJob(controllerHome, recent.repoId, jobId);
+    } catch {
+      /* continue to legacy fallback */
+    }
   }
   const home = resolveControllerHome(controllerHome);
   const repositoriesRoot = join(home, 'repositories');
@@ -347,14 +410,19 @@ export function findExecutionJob(controllerHome: string, jobId: string): Executi
       const candidate = jobPath(home, repoId, jobId);
       if (existsSync(candidate)) return readJsonFile<ExecutionJob>(candidate);
     }
-  } catch { /* no repositories */ }
+  } catch {
+    /* no repositories */
+  }
   return undefined;
 }
 
-export function createExecutionJob(_controllerHome: string, _input: CreateExecutionJobInput): { job: ExecutionJob; deduplicated: boolean } {
+export function createExecutionJob(
+  _controllerHome: string,
+  _input: CreateExecutionJobInput,
+): { job: ExecutionJob; deduplicated: boolean } {
   // Fail closed at the write boundary. Historical ExecutionJobs remain readable via get/list APIs.
   throw new Error(
-    'EXECUTION_JOB_RETIRED: New ExecutionJobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.',
+    'EXECUTION_JOB_RETIRED: New ExecutionJobs are disabled. Use direct Process Runtime, repository commands, or an explicitly claimed external Controller.',
   );
 }
 
@@ -367,29 +435,42 @@ export function updateExecutionJob(
   eventData?: Record<string, unknown>,
   notifyScheduler = false,
 ): ExecutionJob {
-  return withControllerLock(controllerHome, { scope: 'task', repoId, taskId: `execution-job-${jobId}` }, `update-job:${jobId}`, () => {
-    const current = getExecutionJob(controllerHome, repoId, jobId);
-    const next = updater(structuredClone(current));
-    if (next.jobId !== current.jobId || next.repoId !== current.repoId) throw new Error('JOB_IDENTITY_IMMUTABLE');
-    next.revision = current.revision + 1;
-    next.updatedAt = now();
-    const persisted = persistJob(controllerHome, next);
-    if (eventType) appendJobEvent(controllerHome, persisted, eventType, eventData);
-    if (notifyScheduler) touchSchedulerWakeSignal(controllerHome, `job-updated:${jobId}`);
-    return persisted;
-  }, 10_000);
+  return withControllerLock(
+    controllerHome,
+    { scope: 'task', repoId, taskId: `execution-job-${jobId}` },
+    `update-job:${jobId}`,
+    () => {
+      const current = getExecutionJob(controllerHome, repoId, jobId);
+      const next = updater(structuredClone(current));
+      if (next.jobId !== current.jobId || next.repoId !== current.repoId) throw new Error('JOB_IDENTITY_IMMUTABLE');
+      next.revision = current.revision + 1;
+      next.updatedAt = now();
+      const persisted = persistJob(controllerHome, next);
+      if (eventType) appendJobEvent(controllerHome, persisted, eventType, eventData);
+      if (notifyScheduler) touchSchedulerWakeSignal(controllerHome, `job-updated:${jobId}`);
+      return persisted;
+    },
+    10_000,
+  );
 }
 
 const WAITING_JOB_STATUSES = new Set<ExecutionJobStatus>([
-  'queued', 'waiting_for_dependency', 'waiting_for_workspace', 'waiting_for_heavy_check',
-  'waiting_for_integration', 'waiting_for_release_barrier', 'waiting_for_approval',
+  'queued',
+  'waiting_for_dependency',
+  'waiting_for_workspace',
+  'waiting_for_heavy_check',
+  'waiting_for_integration',
+  'waiting_for_release_barrier',
+  'waiting_for_approval',
 ]);
 
 function writeJobState(
   controllerHome: string,
   repoId: string,
   jobId: string,
-  writer: (current: ExecutionJob) => { next: ExecutionJob; eventType?: string; eventData?: Record<string, unknown> } | undefined,
+  writer: (
+    current: ExecutionJob,
+  ) => { next: ExecutionJob; eventType?: string; eventData?: Record<string, unknown> } | undefined,
   reason: string,
 ): ExecutionJob | undefined {
   return withControllerLock(
@@ -417,14 +498,35 @@ function transitionAllowed(from: ExecutionJobStatus, to: ExecutionJobStatus): bo
   if (from === to) return true;
   if (TERMINAL_JOB_STATUSES.has(from)) return false;
   if (WAITING_JOB_STATUSES.has(from)) {
-    return WAITING_JOB_STATUSES.has(to)
-      || ['running', 'cancelled', 'timed_out', 'human_attention_required'].includes(to);
+    return (
+      WAITING_JOB_STATUSES.has(to) || ['running', 'cancelled', 'timed_out', 'human_attention_required'].includes(to)
+    );
   }
   if (from === 'running') {
-    return ['queued', 'waiting_for_approval', 'succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'stale', 'human_attention_required'].includes(to);
+    return [
+      'queued',
+      'waiting_for_approval',
+      'succeeded',
+      'failed',
+      'timed_out',
+      'cancelled',
+      'orphaned',
+      'stale',
+      'human_attention_required',
+    ].includes(to);
   }
   if (from === 'dispatched') {
-    return ['queued', 'running', 'succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'stale', 'human_attention_required'].includes(to);
+    return [
+      'queued',
+      'running',
+      'succeeded',
+      'failed',
+      'timed_out',
+      'cancelled',
+      'orphaned',
+      'stale',
+      'human_attention_required',
+    ].includes(to);
   }
   return false;
 }
@@ -446,31 +548,40 @@ export function transitionExecutionJob(
       if (isRuntimeWriteFenceError(error)) throw error;
     }
   }
-  return updateExecutionJob(controllerHome, repoId, jobId, (current) => {
-    if (!transitionAllowed(current.status, status)) {
-      if (TERMINAL_JOB_STATUSES.has(current.status)) throw new Error(`JOB_ALREADY_TERMINAL: ${jobId} is ${current.status}`);
-      throw new Error(`JOB_TRANSITION_INVALID: ${jobId} cannot move from ${current.status} to ${status}`);
-    }
-    const timestamp = now();
-    const next: ExecutionJob = { ...current, ...patch, status };
-    if (status === 'running') {
-      if (!next.startedAt) next.startedAt = timestamp;
-      if (next.timeoutPolicy) {
-        next.executionDeadlineAt = deadlineAfter(timestamp, next.timeoutPolicy.executionTimeoutMs);
-        next.deadlineAt = next.executionDeadlineAt;
+  return updateExecutionJob(
+    controllerHome,
+    repoId,
+    jobId,
+    (current) => {
+      if (!transitionAllowed(current.status, status)) {
+        if (TERMINAL_JOB_STATUSES.has(current.status))
+          throw new Error(`JOB_ALREADY_TERMINAL: ${jobId} is ${current.status}`);
+        throw new Error(`JOB_TRANSITION_INVALID: ${jobId} cannot move from ${current.status} to ${status}`);
       }
-    }
-    if (status === 'queued' && ['running', 'dispatched'].includes(current.status) && next.timeoutPolicy) {
-      next.queueDeadlineAt = deadlineAfter(timestamp, next.timeoutPolicy.queueTimeoutMs);
-      next.executionDeadlineAt = undefined;
-      next.deadlineAt = next.queueDeadlineAt;
-    }
-    if (TERMINAL_JOB_STATUSES.has(status)) {
-      next.finishedAt = timestamp;
-      next.workerPid = undefined;
-    }
-    return next;
-  }, `job_${status}`, eventData, true);
+      const timestamp = now();
+      const next: ExecutionJob = { ...current, ...patch, status };
+      if (status === 'running') {
+        if (!next.startedAt) next.startedAt = timestamp;
+        if (next.timeoutPolicy) {
+          next.executionDeadlineAt = deadlineAfter(timestamp, next.timeoutPolicy.executionTimeoutMs);
+          next.deadlineAt = next.executionDeadlineAt;
+        }
+      }
+      if (status === 'queued' && ['running', 'dispatched'].includes(current.status) && next.timeoutPolicy) {
+        next.queueDeadlineAt = deadlineAfter(timestamp, next.timeoutPolicy.queueTimeoutMs);
+        next.executionDeadlineAt = undefined;
+        next.deadlineAt = next.queueDeadlineAt;
+      }
+      if (TERMINAL_JOB_STATUSES.has(status)) {
+        next.finishedAt = timestamp;
+        next.workerPid = undefined;
+      }
+      return next;
+    },
+    `job_${status}`,
+    eventData,
+    true,
+  );
 }
 
 export function markExecutionJobSchedulerObserved(
@@ -478,27 +589,33 @@ export function markExecutionJobSchedulerObserved(
   repoId: string,
   jobId: string,
 ): ExecutionJob | undefined {
-  return writeJobState(controllerHome, repoId, jobId, (current) => {
-    if (![...WAITING_JOB_STATUSES, 'dispatched'].includes(current.status)) return undefined;
-    if (current.timings?.schedulerObservedAt) return undefined;
-    const observedAt = now();
-    const queueDeadlineAt = current.timeoutPolicy
-      ? deadlineAfter(observedAt, current.timeoutPolicy.queueTimeoutMs)
-      : current.queueDeadlineAt;
-    return {
-      next: {
-        ...current,
-        queueDeadlineAt,
-        deadlineAt: queueDeadlineAt ?? current.deadlineAt,
-        timings: {
-          ...current.timings,
-          schedulerObservedAt: observedAt,
+  return writeJobState(
+    controllerHome,
+    repoId,
+    jobId,
+    (current) => {
+      if (![...WAITING_JOB_STATUSES, 'dispatched'].includes(current.status)) return undefined;
+      if (current.timings?.schedulerObservedAt) return undefined;
+      const observedAt = now();
+      const queueDeadlineAt = current.timeoutPolicy
+        ? deadlineAfter(observedAt, current.timeoutPolicy.queueTimeoutMs)
+        : current.queueDeadlineAt;
+      return {
+        next: {
+          ...current,
+          queueDeadlineAt,
+          deadlineAt: queueDeadlineAt ?? current.deadlineAt,
+          timings: {
+            ...current.timings,
+            schedulerObservedAt: observedAt,
+          },
         },
-      },
-      eventType: 'job_scheduler_observed',
-      eventData: { queueDeadlineAt },
-    };
-  }, `observe-job:${jobId}`);
+        eventType: 'job_scheduler_observed',
+        eventData: { queueDeadlineAt },
+      };
+    },
+    `observe-job:${jobId}`,
+  );
 }
 
 export function claimExecutionJobForDispatch(
@@ -508,31 +625,38 @@ export function claimExecutionJobForDispatch(
   leaseRefs: ExecutionJob['leaseRefs'],
   eventData?: Record<string, unknown>,
 ): ExecutionJob | undefined {
-  return writeJobState(controllerHome, repoId, jobId, (current) => {
-    if (!WAITING_JOB_STATUSES.has(current.status)) return undefined;
-    const observedAt = current.timings?.schedulerObservedAt ?? now();
-    const queueDeadlineAt = current.queueDeadlineAt
-      ?? (current.timeoutPolicy ? deadlineAfter(observedAt, current.timeoutPolicy.queueTimeoutMs) : undefined);
-    return {
-      next: {
-        ...current,
-        status: 'dispatched',
-        attempt: current.attempt + 1,
-        workerPid: undefined,
-        heartbeatAt: undefined,
-        leaseRefs,
-        queueDeadlineAt,
-        deadlineAt: queueDeadlineAt ?? current.deadlineAt,
-        timings: {
-          ...current.timings,
-          schedulerObservedAt: observedAt,
-          leaseCreatedAt: leaseRefs.length > 0 ? observedAt : current.timings?.leaseCreatedAt,
+  return writeJobState(
+    controllerHome,
+    repoId,
+    jobId,
+    (current) => {
+      if (!WAITING_JOB_STATUSES.has(current.status)) return undefined;
+      const observedAt = current.timings?.schedulerObservedAt ?? now();
+      const queueDeadlineAt =
+        current.queueDeadlineAt ??
+        (current.timeoutPolicy ? deadlineAfter(observedAt, current.timeoutPolicy.queueTimeoutMs) : undefined);
+      return {
+        next: {
+          ...current,
+          status: 'dispatched',
+          attempt: current.attempt + 1,
+          workerPid: undefined,
+          heartbeatAt: undefined,
+          leaseRefs,
+          queueDeadlineAt,
+          deadlineAt: queueDeadlineAt ?? current.deadlineAt,
+          timings: {
+            ...current.timings,
+            schedulerObservedAt: observedAt,
+            leaseCreatedAt: leaseRefs.length > 0 ? observedAt : current.timings?.leaseCreatedAt,
+          },
         },
-      },
-      eventType: 'job_dispatched',
-      eventData,
-    };
-  }, `claim-job:${jobId}`);
+        eventType: 'job_dispatched',
+        eventData,
+      };
+    },
+    `claim-job:${jobId}`,
+  );
 }
 
 export function attachExecutionWorker(
@@ -541,41 +665,48 @@ export function attachExecutionWorker(
   jobId: string,
   workerPid: number,
 ): ExecutionJob | undefined {
-  return writeJobState(controllerHome, repoId, jobId, (current) => {
-    const spawnable = current.status === 'dispatched' || (current.status === 'running' && current.workerPid === undefined);
-    if (!spawnable) return current.workerPid === workerPid ? { next: current } : undefined;
-    if (current.workerPid !== undefined && current.workerPid !== workerPid) return undefined;
-    const timestamp = now();
-    const executionDeadlineAt = current.timeoutPolicy
-      ? deadlineAfter(timestamp, current.timeoutPolicy.executionTimeoutMs)
-      : current.executionDeadlineAt;
-    return {
-      next: {
-        ...current,
-        status: 'running',
-        workerPid,
-        executionDeadlineAt,
-        deadlineAt: executionDeadlineAt ?? current.deadlineAt,
-        workerLifecycle: current.workerLifecycle
-          ? {
-              ...current.workerLifecycle,
-              attachedAt: timestamp,
-              processGroupId: process.platform !== 'win32' ? workerPid : undefined,
-              workerPid,
-              startupState: 'registered',
-            }
-          : current.workerLifecycle,
-        heartbeatAt: timestamp,
-        startedAt: current.startedAt ?? timestamp,
-        timings: {
-          ...current.timings,
-          workerRunningAt: timestamp,
+  return writeJobState(
+    controllerHome,
+    repoId,
+    jobId,
+    (current) => {
+      const spawnable =
+        current.status === 'dispatched' || (current.status === 'running' && current.workerPid === undefined);
+      if (!spawnable) return current.workerPid === workerPid ? { next: current } : undefined;
+      if (current.workerPid !== undefined && current.workerPid !== workerPid) return undefined;
+      const timestamp = now();
+      const executionDeadlineAt = current.timeoutPolicy
+        ? deadlineAfter(timestamp, current.timeoutPolicy.executionTimeoutMs)
+        : current.executionDeadlineAt;
+      return {
+        next: {
+          ...current,
+          status: 'running',
+          workerPid,
+          executionDeadlineAt,
+          deadlineAt: executionDeadlineAt ?? current.deadlineAt,
+          workerLifecycle: current.workerLifecycle
+            ? {
+                ...current.workerLifecycle,
+                attachedAt: timestamp,
+                processGroupId: process.platform !== 'win32' ? workerPid : undefined,
+                workerPid,
+                startupState: 'registered',
+              }
+            : current.workerLifecycle,
+          heartbeatAt: timestamp,
+          startedAt: current.startedAt ?? timestamp,
+          timings: {
+            ...current.timings,
+            workerRunningAt: timestamp,
+          },
         },
-      },
-      eventType: 'job_running',
-      eventData: { workerPid },
-    };
-  }, `attach-worker:${jobId}`);
+        eventType: 'job_running',
+        eventData: { workerPid },
+      };
+    },
+    `attach-worker:${jobId}`,
+  );
 }
 
 function sameLeaseRefs(
@@ -594,27 +725,35 @@ export function heartbeatExecutionJob(
   workerPid: number,
   expectedAttempt?: number,
 ): ExecutionJob {
-  return withControllerLock(controllerHome, { scope: 'task', repoId, taskId: `execution-job-${jobId}` }, `heartbeat-job:${jobId}`, () => {
-    const current = getExecutionJob(controllerHome, repoId, jobId);
-    if (current.status !== 'running') throw new Error(`WORKER_OWNERSHIP_LOST: ${jobId} is ${current.status}`);
-    if (expectedAttempt !== undefined && current.attempt !== expectedAttempt) {
-      throw new Error(`WORKER_OWNERSHIP_LOST: ${jobId} attempt ${expectedAttempt} was replaced by ${current.attempt}`);
-    }
-    if (current.workerPid !== undefined && current.workerPid !== workerPid) {
-      throw new Error(`WORKER_OWNERSHIP_LOST: ${jobId} belongs to PID ${current.workerPid}`);
-    }
-    const next: ExecutionJob = {
-      ...current,
-      revision: current.revision + 1,
-      updatedAt: now(),
-      heartbeatAt: now(),
-      workerPid,
-    };
-    // Heartbeats are intentionally record-only. They must not rewrite the global
-    // active/recent indexes, dirty the repository projection, emit evidence, or
-    // wake the scheduler every few seconds.
-    return persistJobRecord(controllerHome, next);
-  }, 10_000);
+  return withControllerLock(
+    controllerHome,
+    { scope: 'task', repoId, taskId: `execution-job-${jobId}` },
+    `heartbeat-job:${jobId}`,
+    () => {
+      const current = getExecutionJob(controllerHome, repoId, jobId);
+      if (current.status !== 'running') throw new Error(`WORKER_OWNERSHIP_LOST: ${jobId} is ${current.status}`);
+      if (expectedAttempt !== undefined && current.attempt !== expectedAttempt) {
+        throw new Error(
+          `WORKER_OWNERSHIP_LOST: ${jobId} attempt ${expectedAttempt} was replaced by ${current.attempt}`,
+        );
+      }
+      if (current.workerPid !== undefined && current.workerPid !== workerPid) {
+        throw new Error(`WORKER_OWNERSHIP_LOST: ${jobId} belongs to PID ${current.workerPid}`);
+      }
+      const next: ExecutionJob = {
+        ...current,
+        revision: current.revision + 1,
+        updatedAt: now(),
+        heartbeatAt: now(),
+        workerPid,
+      };
+      // Heartbeats are intentionally record-only. They must not rewrite the global
+      // active/recent indexes, dirty the repository projection, emit evidence, or
+      // wake the scheduler every few seconds.
+      return persistJobRecord(controllerHome, next);
+    },
+    10_000,
+  );
 }
 
 export function transitionExecutionJobFromWorker(
@@ -630,22 +769,32 @@ export function transitionExecutionJobFromWorker(
   patch: Partial<ExecutionJob> = {},
   eventData?: Record<string, unknown>,
 ): ExecutionJob {
-  return updateExecutionJob(controllerHome, repoId, jobId, (current) => {
-    if (current.status !== 'running'
-      || current.workerPid !== owner.workerPid
-      || current.attempt !== owner.attempt
-      || !sameLeaseRefs(current.leaseRefs, owner.leaseRefs)) {
-      throw new Error(`WORKER_OWNERSHIP_LOST: ${jobId} attempt ${owner.attempt} may not publish a terminal state`);
-    }
-    const timestamp = now();
-    return {
-      ...current,
-      ...patch,
-      status,
-      ...(status === 'waiting_for_approval' ? { finishedAt: undefined } : { finishedAt: timestamp }),
-      workerPid: undefined,
-    };
-  }, `job_${status}`, eventData, true);
+  return updateExecutionJob(
+    controllerHome,
+    repoId,
+    jobId,
+    (current) => {
+      if (
+        current.status !== 'running' ||
+        current.workerPid !== owner.workerPid ||
+        current.attempt !== owner.attempt ||
+        !sameLeaseRefs(current.leaseRefs, owner.leaseRefs)
+      ) {
+        throw new Error(`WORKER_OWNERSHIP_LOST: ${jobId} attempt ${owner.attempt} may not publish a terminal state`);
+      }
+      const timestamp = now();
+      return {
+        ...current,
+        ...patch,
+        status,
+        ...(status === 'waiting_for_approval' ? { finishedAt: undefined } : { finishedAt: timestamp }),
+        workerPid: undefined,
+      };
+    },
+    `job_${status}`,
+    eventData,
+    true,
+  );
 }
 
 export function listActiveExecutionJobs(controllerHome: string, repoId?: string): ExecutionJob[] {
@@ -656,7 +805,9 @@ export function listActiveExecutionJobs(controllerHome: string, repoId?: string)
     try {
       const job = getExecutionJob(controllerHome, entry.repoId, entry.jobId);
       if (ACTIVE_JOB_STATUSES.has(job.status)) output.push(job);
-    } catch { /* maintenance reconciliation owns stale-index repair */ }
+    } catch {
+      /* maintenance reconciliation owns stale-index repair */
+    }
   }
   return output;
 }
@@ -667,10 +818,7 @@ export function listActiveExecutionJobs(controllerHome: string, repoId?: string)
  * read APIs remain side-effect free, while the Scheduler can remove terminal or
  * missing entries once and make subsequent idle reads genuinely cheap.
  */
-export function reconcileActiveExecutionJobIndex(
-  controllerHome: string,
-  repoId?: string,
-): ExecutionJob[] {
+export function reconcileActiveExecutionJobIndex(controllerHome: string, repoId?: string): ExecutionJob[] {
   const key = { scope: 'global' as const, resource: 'execution-index' };
   const owner = `execution-index-active-reconcile:${repoId ?? 'all'}`;
   const acquired = tryAcquireControllerLock(controllerHome, key, owner);
@@ -714,7 +862,9 @@ export function reconcileActiveExecutionJobIndex(
 function executionJobApprovalRequestId(job: ExecutionJob): string | undefined {
   if (typeof job.result?.approvalRequestId === 'string') return job.result.approvalRequestId;
   const authorization = job.result?.authorization;
-  return authorization && typeof authorization === 'object' && typeof (authorization as Record<string, unknown>).approvalRequestId === 'string'
+  return authorization &&
+    typeof authorization === 'object' &&
+    typeof (authorization as Record<string, unknown>).approvalRequestId === 'string'
     ? String((authorization as Record<string, unknown>).approvalRequestId)
     : undefined;
 }
@@ -724,25 +874,32 @@ export function resumeExecutionJobAfterApproval(
   repoId: string,
   approvalRequestId: string,
 ): ExecutionJob | undefined {
-  const waiting = listActiveExecutionJobs(controllerHome, repoId).find((job) =>
-    job.status === 'waiting_for_approval' && executionJobApprovalRequestId(job) === approvalRequestId,
+  const waiting = listActiveExecutionJobs(controllerHome, repoId).find(
+    (job) => job.status === 'waiting_for_approval' && executionJobApprovalRequestId(job) === approvalRequestId,
   );
   if (!waiting) return undefined;
   const args = waiting.payload.arguments ?? {};
-  return transitionExecutionJob(controllerHome, repoId, waiting.jobId, 'queued', {
-    payload: {
-      ...waiting.payload,
-      arguments: { ...args, approval_request_id: approvalRequestId },
+  return transitionExecutionJob(
+    controllerHome,
+    repoId,
+    waiting.jobId,
+    'queued',
+    {
+      payload: {
+        ...waiting.payload,
+        arguments: { ...args, approval_request_id: approvalRequestId },
+      },
+      result: undefined,
+      error: undefined,
+      outcome: undefined,
+      workerPid: undefined,
+      leaseRefs: [],
+      startedAt: undefined,
+      heartbeatAt: undefined,
+      finishedAt: undefined,
     },
-    result: undefined,
-    error: undefined,
-    outcome: undefined,
-    workerPid: undefined,
-    leaseRefs: [],
-    startedAt: undefined,
-    heartbeatAt: undefined,
-    finishedAt: undefined,
-  }, { approvalRequestId, resumed: true });
+    { approvalRequestId, resumed: true },
+  );
 }
 
 export function listExecutionJobs(controllerHome: string, repoId: string, limit = 100): ExecutionJob[] {
@@ -750,7 +907,11 @@ export function listExecutionJobs(controllerHome: string, repoId: string, limit 
   const output: ExecutionJob[] = [];
   for (const entry of readRecentIndex(controllerHome).jobs) {
     if (entry.repoId !== repoId) continue;
-    try { output.push(getExecutionJob(controllerHome, repoId, entry.jobId)); } catch { /* stale index entry */ }
+    try {
+      output.push(getExecutionJob(controllerHome, repoId, entry.jobId));
+    } catch {
+      /* stale index entry */
+    }
     if (output.length >= boundedLimit) break;
   }
   if (output.length > 0) return output;
@@ -767,27 +928,47 @@ export function listExecutionJobs(controllerHome: string, repoId: string, limit 
     // maintenance path; a status/read request must never acquire the global
     // execution-index lock or rewrite thousands of entries.
     return legacy;
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
-export async function cancelExecutionJob(controllerHome: string, repoId: string, jobId: string, reason = 'Cancelled by user'): Promise<ExecutionJob> {
+export async function cancelExecutionJob(
+  controllerHome: string,
+  repoId: string,
+  jobId: string,
+  reason = 'Cancelled by user',
+): Promise<ExecutionJob> {
   const current = getExecutionJob(controllerHome, repoId, jobId);
   if (TERMINAL_JOB_STATUSES.has(current.status)) return current;
-  const cancelled = transitionExecutionJob(controllerHome, repoId, jobId, 'cancelled', {
-    error: { code: 'CANCELLED', message: reason, retryable: false },
-    leaseRefs: [],
-  }, { reason });
+  const cancelled = transitionExecutionJob(
+    controllerHome,
+    repoId,
+    jobId,
+    'cancelled',
+    {
+      error: { code: 'CANCELLED', message: reason, retryable: false },
+      leaseRefs: [],
+    },
+    { reason },
+  );
   releaseExecutionLeases(controllerHome, repoId, jobId, current.leaseRefs);
   await terminateProcessTree(current.workerPid);
   return cancelled;
 }
 
 export function removeExecutionJobFromActiveIndex(controllerHome: string, job: ExecutionJob): void {
-  withControllerLock(controllerHome, { scope: 'global', resource: 'execution-index' }, `execution-index-remove:${job.jobId}`, () => {
-    const active = readActiveIndex(controllerHome);
-    active.jobs = active.jobs.filter((entry) => entry.jobId !== job.jobId);
-    writeActiveIndex(controllerHome, active);
-  }, 10_000);
+  withControllerLock(
+    controllerHome,
+    { scope: 'global', resource: 'execution-index' },
+    `execution-index-remove:${job.jobId}`,
+    () => {
+      const active = readActiveIndex(controllerHome);
+      active.jobs = active.jobs.filter((entry) => entry.jobId !== job.jobId);
+      writeActiveIndex(controllerHome, active);
+    },
+    10_000,
+  );
 }
 
 export function removeRequestIndex(controllerHome: string, requestId: string): void {
@@ -820,13 +1001,22 @@ const DEFAULT_RETIRED_JOB_REMOVALS = 32;
 export function cleanupRetiredExecutionJobs(
   controllerHome: string,
   repoId: string,
-  options: { nowMs?: number; retentionMs?: number; maxTerminalRecords?: number; maxScan?: number; maxRemovals?: number } = {},
+  options: {
+    nowMs?: number;
+    retentionMs?: number;
+    maxTerminalRecords?: number;
+    maxScan?: number;
+    maxRemovals?: number;
+  } = {},
 ): RetiredExecutionJobCleanupReport {
   assertRuntimeMayWriteOrThrow('cleanup', controllerHome);
   if (!executionJobCreationRetired()) throw new Error('EXECUTION_JOB_RETENTION_REQUIRES_RETIRED_CREATION');
   const nowMs = Number.isFinite(options.nowMs) ? Number(options.nowMs) : Date.now();
   const retentionMs = Math.max(60_000, Math.trunc(options.retentionMs ?? DEFAULT_RETIRED_JOB_RETENTION_MS));
-  const maxTerminalRecords = Math.max(0, Math.min(Math.trunc(options.maxTerminalRecords ?? DEFAULT_MAX_RETAINED_TERMINAL_JOBS), 5_000));
+  const maxTerminalRecords = Math.max(
+    0,
+    Math.min(Math.trunc(options.maxTerminalRecords ?? DEFAULT_MAX_RETAINED_TERMINAL_JOBS), 5_000),
+  );
   const maxScan = Math.max(1, Math.min(Math.trunc(options.maxScan ?? DEFAULT_RETIRED_JOB_SCAN), 5_000));
   const maxRemovals = Math.max(1, Math.min(Math.trunc(options.maxRemovals ?? DEFAULT_RETIRED_JOB_REMOVALS), 128));
   const recordsRoot = join(executionJobRoot(controllerHome, repoId), 'records');
@@ -843,19 +1033,46 @@ export function cleanupRetiredExecutionJobs(
         const entry = directory.readSync();
         if (!entry) break;
         if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-        if (inspected >= maxScan) { scanTruncated = true; break; }
+        if (inspected >= maxScan) {
+          scanTruncated = true;
+          break;
+        }
         inspected += 1;
         const path = join(recordsRoot, entry.name);
         let job: ExecutionJob;
-        try { job = readJsonFile<ExecutionJob>(path); } catch { blockers.push(`invalid_record:${entry.name}`); continue; }
-        if (job.repoId !== repoId || !job.jobId || job.schemaVersion !== 1) { blockers.push(`identity_mismatch:${entry.name}`); continue; }
-        if (!TERMINAL_JOB_STATUSES.has(job.status)) { protectedActive += 1; continue; }
+        try {
+          job = readJsonFile<ExecutionJob>(path);
+        } catch {
+          blockers.push(`invalid_record:${entry.name}`);
+          continue;
+        }
+        if (job.repoId !== repoId || !job.jobId || job.schemaVersion !== 1) {
+          blockers.push(`identity_mismatch:${entry.name}`);
+          continue;
+        }
+        if (!TERMINAL_JOB_STATUSES.has(job.status)) {
+          protectedActive += 1;
+          continue;
+        }
         const finishedAt = Date.parse(job.finishedAt ?? job.updatedAt ?? job.createdAt);
         scanned.push({ path, job, finishedAt: Number.isFinite(finishedAt) ? finishedAt : 0 });
       }
-    } finally { directory.closeSync(); }
+    } finally {
+      directory.closeSync();
+    }
   } catch {
-    return { policyVersion: 'retired-execution-job-retention-v1', inspected: 0, terminal: 0, protectedActive: 0, eligible: 0, removed: 0, retained: 0, scanTruncated: false, budgetExhausted: false, blockers: [] };
+    return {
+      policyVersion: 'retired-execution-job-retention-v1',
+      inspected: 0,
+      terminal: 0,
+      protectedActive: 0,
+      eligible: 0,
+      removed: 0,
+      retained: 0,
+      scanTruncated: false,
+      budgetExhausted: false,
+      blockers: [],
+    };
   }
 
   scanned.sort((a, b) => b.finishedAt - a.finishedAt);
@@ -866,31 +1083,56 @@ export function cleanupRetiredExecutionJobs(
     if (removed >= maxRemovals) break;
     const lockKey = { scope: 'task' as const, repoId, taskId: `execution-job-${candidate.job.jobId}` };
     const acquired = tryAcquireControllerLock(controllerHome, lockKey, `retired-job-retention:${candidate.job.jobId}`);
-    if (!acquired.acquired) { blockers.push(`lock_contended:${candidate.job.jobId}`); continue; }
+    if (!acquired.acquired) {
+      blockers.push(`lock_contended:${candidate.job.jobId}`);
+      continue;
+    }
     try {
       let current: ExecutionJob;
-      try { current = getExecutionJob(controllerHome, repoId, candidate.job.jobId); } catch { continue; }
-      if (!TERMINAL_JOB_STATUSES.has(current.status)) { protectedActive += 1; continue; }
+      try {
+        current = getExecutionJob(controllerHome, repoId, candidate.job.jobId);
+      } catch {
+        continue;
+      }
+      if (!TERMINAL_JOB_STATUSES.has(current.status)) {
+        protectedActive += 1;
+        continue;
+      }
       const currentFinishedAt = Date.parse(current.finishedAt ?? current.updatedAt ?? current.createdAt);
       const expired = !Number.isFinite(currentFinishedAt) || currentFinishedAt <= cutoff;
       const overCapacity = scanned.findIndex((entry) => entry.job.jobId === current.jobId) >= maxTerminalRecords;
       if (!expired && !overCapacity) continue;
 
       removeFile(candidate.path);
-      removeFile(join(executionJobRoot(controllerHome, repoId), 'receipts', `${sanitizeFileComponent(current.jobId)}.json`));
-      removeFile(join(repositoryControllerRoot(controllerHome, repoId), 'events', 'jobs', `${sanitizeFileComponent(current.jobId)}.jsonl`));
+      removeFile(
+        join(executionJobRoot(controllerHome, repoId), 'receipts', `${sanitizeFileComponent(current.jobId)}.json`),
+      );
+      removeFile(
+        join(
+          repositoryControllerRoot(controllerHome, repoId),
+          'events',
+          'jobs',
+          `${sanitizeFileComponent(current.jobId)}.jsonl`,
+        ),
+      );
       const artifactCleanup = cleanupExecutionArtifactsForJob(controllerHome, repoId, current.jobId);
       blockers.push(...artifactCleanup.blockers.map((blocker) => `artifact:${current.jobId}:${blocker}`));
       if (artifactCleanup.scanTruncated) blockers.push(`artifact_scan_truncated:${current.jobId}`);
       if (current.requestId) removeFile(requestPath(controllerHome, current.requestId));
-      withControllerLock(controllerHome, { scope: 'global', resource: 'execution-index' }, `retired-job-index:${current.jobId}`, () => {
-        const active = readActiveIndex(controllerHome);
-        active.jobs = active.jobs.filter((entry) => entry.jobId !== current.jobId);
-        writeActiveIndex(controllerHome, active);
-        const recent = readRecentIndex(controllerHome);
-        recent.jobs = recent.jobs.filter((entry) => entry.jobId !== current.jobId);
-        writeRecentIndex(controllerHome, recent);
-      }, 10_000);
+      withControllerLock(
+        controllerHome,
+        { scope: 'global', resource: 'execution-index' },
+        `retired-job-index:${current.jobId}`,
+        () => {
+          const active = readActiveIndex(controllerHome);
+          active.jobs = active.jobs.filter((entry) => entry.jobId !== current.jobId);
+          writeActiveIndex(controllerHome, active);
+          const recent = readRecentIndex(controllerHome);
+          recent.jobs = recent.jobs.filter((entry) => entry.jobId !== current.jobId);
+          writeRecentIndex(controllerHome, recent);
+        },
+        10_000,
+      );
       removed += 1;
     } catch (error) {
       blockers.push(error instanceof Error ? error.message : String(error));

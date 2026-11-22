@@ -1283,6 +1283,21 @@ forbid(
   /historical read-only Work|list\/get\/get_contract are historical Work reads|historical Work reads/,
   'rh_work schema must not advertise deleted historical Work readers',
 );
+forbid(
+  'adapters/mcp/runtime-gateway/runtime-tool-definitions.ts',
+  /\bwork_id\s*:/,
+  'preferred MCP facades must not advertise retired work_id fields (#483)',
+);
+forbid(
+  'src/runtime/execution/jobs/store.ts',
+  /Use WorkContract/,
+  'retired ExecutionJob guidance must not redirect callers to WorkContract (#483)',
+);
+forbid(
+  'src/cli/local-bridge/job-store.ts',
+  /WorkContract/,
+  'retired Local Bridge Job guidance must not redirect callers to WorkContract (#483)',
+);
 const rhWorkOperationContract = text('src/runtime/control-plane/facade/rh-work-operation-contract.ts');
 const rhWorkOperations = (rhWorkOperationContract.match(/RH_WORK_OPERATIONS = \[([\s\S]*?)\] as const/) ?? [])[1] ?? '';
 if (!rhWorkOperations.trim()) {
