@@ -8,15 +8,26 @@ import { memoryAddressKey } from '../../packages/kernel/cognition/api/index';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import { ensureControllerHome } from '../../src/effects/controller-home';
-import { listRepositories, registerRepository, resolveRepositorySelection } from '../../src/runtime/repositories/registry';
+import {
+  listRepositories,
+  registerRepository,
+  resolveRepositorySelection,
+} from '../../src/runtime/repositories/registry';
 import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/persistence/workflow-run-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { publicationOutcomeFollowupDueAt, schedulePublicationOutcomeCollection } from '../../src/runtime/root/assistant-learning-loop';
+import {
+  publicationOutcomeFollowupDueAt,
+  schedulePublicationOutcomeCollection,
+} from '../../src/runtime/root/assistant-learning-loop';
 import { parseControllerLearningSignalDrafts } from '../../src/runtime/context/automatic-learning';
 import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
+import {
+  writeProjectIdentity,
+  writeProjectPlacement,
+  writeWorkspaceIdentity,
+} from '../../src/runtime/control-plane/workspace/workspace-store';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { settleCognitionAfterTool } from '../../adapters/mcp/runtime-gateway/cognition-settlement';
 
@@ -41,27 +52,44 @@ function fixture(name: string, options: { knowledge?: boolean } = {}) {
   mkdirSync(join(repoRoot, '.forge'), { recursive: true });
   mkdirSync(join(repoRoot, 'docs'), { recursive: true });
   writeFileSync(join(repoRoot, 'README.md'), 'learning loop fixture\n');
-  writeFileSync(join(repoRoot, 'docs', 'strategy.md'), '小红书 推广 真实指标 经验 下一轮使用。优先使用真实发布结果，不猜测互动数据。\n');
-  writeFileSync(join(repoRoot, '.forge', 'project-engineering.json'), JSON.stringify({
-    schemaVersion: 1,
-    contractId: `learning-${name}`,
-    contractVersion: '1',
-    projectId: 'project-learning-loop',
-    authority: { product: ['docs/strategy.md'], architecture: [], source: ['src/**'] },
-    quality: { ux: [], performance: [], nonRegression: ['Learning evidence remains source-bound.'] },
-    checks: [],
-    journeys: [],
-    platforms: [],
-    tooling: [],
-    skillRefs: [],
-    exceptions: [],
-    ...(options.knowledge === false ? {} : {
-      knowledgeSources: [{
-        id: 'xhs-strategy', kind: 'repository', path: 'docs/strategy.md', required: true,
-        applicability: { channel: 'xiaohongshu', account: 'account-a', locale: 'zh-CN' },
-      }],
-    }),
-  }, null, 2));
+  writeFileSync(
+    join(repoRoot, 'docs', 'strategy.md'),
+    '小红书 推广 真实指标 经验 下一轮使用。优先使用真实发布结果，不猜测互动数据。\n',
+  );
+  writeFileSync(
+    join(repoRoot, '.forge', 'project-engineering.json'),
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        contractId: `learning-${name}`,
+        contractVersion: '1',
+        projectId: 'project-learning-loop',
+        authority: { product: ['docs/strategy.md'], architecture: [], source: ['src/**'] },
+        quality: { ux: [], performance: [], nonRegression: ['Learning evidence remains source-bound.'] },
+        checks: [],
+        journeys: [],
+        platforms: [],
+        tooling: [],
+        skillRefs: [],
+        exceptions: [],
+        ...(options.knowledge === false
+          ? {}
+          : {
+              knowledgeSources: [
+                {
+                  id: 'xhs-strategy',
+                  kind: 'repository',
+                  path: 'docs/strategy.md',
+                  required: true,
+                  applicability: { channel: 'xiaohongshu', account: 'account-a', locale: 'zh-CN' },
+                },
+              ],
+            }),
+      },
+      null,
+      2,
+    ),
+  );
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
   execFileSync('git', ['config', 'user.email', 'learning-loop@example.test'], { cwd: repoRoot });
   execFileSync('git', ['config', 'user.name', 'Learning Loop Test'], { cwd: repoRoot });
@@ -76,28 +104,48 @@ function fixture(name: string, options: { knowledge?: boolean } = {}) {
   });
   const workspaceId = 'workspace-learning-loop';
   writeWorkspaceIdentity({ controllerHome, value: { workspaceId, title: 'Learning Loop Workspace' } });
-  writeProjectIdentity({ controllerHome, value: { projectId: 'project-learning-loop', workspaceId, displayName: 'Learning Loop Project' } });
-  writeProjectPlacement({ controllerHome, value: {
-    projectId: 'project-learning-loop',
-    forgeInstanceId: instance.instanceId,
-    repositoryId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
-  } });
+  writeProjectIdentity({
+    controllerHome,
+    value: { projectId: 'project-learning-loop', workspaceId, displayName: 'Learning Loop Project' },
+  });
+  writeProjectPlacement({
+    controllerHome,
+    value: {
+      projectId: 'project-learning-loop',
+      forgeInstanceId: instance.instanceId,
+      repositoryId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+    },
+  });
   let now = time(0);
   const store = { controllerHome, repoId: repository.repoId, now: () => now };
   const workId = `work-${name}`;
   return {
-    controllerHome, repoRoot, repository, store, workId, workspaceId, forgeInstanceId: instance.instanceId,
-    setNow(value: string) { now = value; },
+    controllerHome,
+    repoRoot,
+    repository,
+    store,
+    workId,
+    workspaceId,
+    forgeInstanceId: instance.instanceId,
+    setNow(value: string) {
+      now = value;
+    },
   };
 }
 
 type Fx = ReturnType<typeof fixture>;
 
-function verificationRecord(fx: Fx, receiptId: string, recordedAt: string, semanticVersion: string, status: 'passed' | 'failed' = 'passed') {
+function verificationRecord(
+  fx: Fx,
+  receiptId: string,
+  recordedAt: string,
+  semanticVersion: string,
+  status: 'passed' | 'failed' = 'passed',
+) {
   return {
     checkId: 'package:learning-probe',
-    outcome: status === 'passed' ? 'valid_pass' as const : 'valid_fail' as const,
+    outcome: status === 'passed' ? ('valid_pass' as const) : ('valid_fail' as const),
     summary: `learning probe ${status}`,
     recordedAt,
     sourceRevision: semanticVersion,
@@ -118,7 +166,7 @@ function verificationRecord(fx: Fx, receiptId: string, recordedAt: string, seman
       checkDefinitionDigest: 'definition:learning-probe',
       checkEnvironmentFingerprint: 'environment:test',
       status,
-      runtimeStatus: status === 'passed' ? 'succeeded' as const : 'failed' as const,
+      runtimeStatus: status === 'passed' ? ('succeeded' as const) : ('failed' as const),
       ok: status === 'passed',
       exitCode: status === 'passed' ? 0 : 1,
       timedOut: false,
@@ -132,8 +180,6 @@ function verificationRecord(fx: Fx, receiptId: string, recordedAt: string, seman
 }
 
 describe('connected assistant learning loops', () => {
-
-
   test('records explicit correction with direct-read evidence and recalls it through ordinary capability context', async () => {
     const fx = fixture('direct-learning', { knowledge: false });
     const ctx = {
@@ -166,20 +212,23 @@ describe('connected assistant learning loops', () => {
     const learning = await callRuntimeTool(ctx, 'rh_work', {
       repo_id: fx.repository.repoId,
       operation: 'learning_record',
-      learning_signals: [{
-        scope_kind: 'project',
-        kind: 'correction',
-        valence: 'positive',
-        summary: 'For local filesystem discovery, prefer the Local System capability over Personal Knowledge when the target is an authorized local file.',
-        concepts: ['local-system', 'personal-knowledge', 'filesystem-routing'],
-        facets: ['capability-routing', 'user-correction'],
-        admission_source: 'explicit_human',
-        portability: 'local',
-        salience: 0.95,
-        confidence: 0.96,
-        utility: 0.93,
-        evidence_refs: [observationPayload.observationReceiptId],
-      }],
+      learning_signals: [
+        {
+          scope_kind: 'project',
+          kind: 'correction',
+          valence: 'positive',
+          summary:
+            'For local filesystem discovery, prefer the Local System capability over Personal Knowledge when the target is an authorized local file.',
+          concepts: ['local-system', 'personal-knowledge', 'filesystem-routing'],
+          facets: ['capability-routing', 'user-correction'],
+          admission_source: 'explicit_human',
+          portability: 'local',
+          salience: 0.95,
+          confidence: 0.96,
+          utility: 0.93,
+          evidence_refs: [observationPayload.observationReceiptId],
+        },
+      ],
     });
     expect(learning?.isError).not.toBe(true);
     const learningPayload = learning?.structuredContent as Record<string, any>;
@@ -190,19 +239,22 @@ describe('connected assistant learning loops', () => {
     const workspaceLearning = await callRuntimeTool(ctx, 'rh_work', {
       repo_id: fx.repository.repoId,
       operation: 'learning_record',
-      learning_signals: [{
-        scope_kind: 'workspace',
-        kind: 'principle',
-        valence: 'positive',
-        summary: 'Portable generic filesystem routing guidance may be useful when a Project has no local routing memory.',
-        concepts: ['local-system', 'filesystem-routing', 'portable-fallback'],
-        facets: ['capability-routing', 'portable-guidance'],
-        admission_source: 'explicit_human',
-        portability: 'portable',
-        salience: 0.9,
-        confidence: 0.9,
-        utility: 0.9,
-      }],
+      learning_signals: [
+        {
+          scope_kind: 'workspace',
+          kind: 'principle',
+          valence: 'positive',
+          summary:
+            'Portable generic filesystem routing guidance may be useful when a Project has no local routing memory.',
+          concepts: ['local-system', 'filesystem-routing', 'portable-fallback'],
+          facets: ['capability-routing', 'portable-guidance'],
+          admission_source: 'explicit_human',
+          portability: 'portable',
+          salience: 0.9,
+          confidence: 0.9,
+          utility: 0.9,
+        },
+      ],
     });
     expect(workspaceLearning?.isError).not.toBe(true);
     const workspaceLearningPayload = workspaceLearning?.structuredContent as Record<string, any>;
@@ -232,16 +284,20 @@ describe('connected assistant learning loops', () => {
         modelDecision: expect.any(String),
       },
     });
-    expect(recalledPayload.data.learningRecall.items).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        memoryId: expect.stringContaining(memoryId),
-        text: expect.stringContaining('Local System'),
-      }),
-    ]));
-    expect(recalledPayload.data.learningRecall.items.some((item: any) =>
-      String(item.memoryId).includes(workspaceMemoryId))).toBe(true);
+    expect(recalledPayload.data.learningRecall.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          memoryId: expect.stringContaining(memoryId),
+          text: expect.stringContaining('Local System'),
+        }),
+      ]),
+    );
+    expect(
+      recalledPayload.data.learningRecall.items.some((item: any) => String(item.memoryId).includes(workspaceMemoryId)),
+    ).toBe(true);
     const recalledItem = recalledPayload.data.learningRecall.items.find((item: any) =>
-      String(item.memoryId).includes(memoryId));
+      String(item.memoryId).includes(memoryId),
+    );
     expect(recalledItem).toBeTruthy();
 
     const routineFollowup = await callRuntimeTool(ctx, 'rh_context', {
@@ -259,11 +315,13 @@ describe('connected assistant learning loops', () => {
     const feedback = await callRuntimeTool(ctx, 'rh_work', {
       repo_id: fx.repository.repoId,
       operation: 'learning_feedback',
-      learning_feedback: [{
-        memory_address: recalledItem.memoryId,
-        decision: 'used',
-        reason: 'This routing memory directly selected the successful Local System capability.',
-      }],
+      learning_feedback: [
+        {
+          memory_address: recalledItem.memoryId,
+          decision: 'used',
+          reason: 'This routing memory directly selected the successful Local System capability.',
+        },
+      ],
     });
     expect(feedback?.isError).not.toBe(true);
     const feedbackPayload = feedback?.structuredContent as Record<string, any>;
@@ -288,19 +346,22 @@ describe('connected assistant learning loops', () => {
       max_files: 2,
       max_snippets: 2,
     });
-    const refreshedItem = (refreshedRecall?.structuredContent as Record<string, any>)
-      .data.learningRecall.items.find((item: any) => String(item.memoryId).includes(memoryId));
+    const refreshedItem = (refreshedRecall?.structuredContent as Record<string, any>).data.learningRecall.items.find(
+      (item: any) => String(item.memoryId).includes(memoryId),
+    );
     expect(refreshedItem?.recentUsage?.usedCount).toBe(1);
     expect(refreshedItem?.provenance?.sourceKind).toBe('controller');
 
     const duplicateFeedback = await callRuntimeTool(ctx, 'rh_work', {
       repo_id: fx.repository.repoId,
       operation: 'learning_feedback',
-      learning_feedback: [{
-        memory_address: recalledItem.memoryId,
-        decision: 'used',
-        reason: 'This routing memory directly selected the successful Local System capability.',
-      }],
+      learning_feedback: [
+        {
+          memory_address: recalledItem.memoryId,
+          decision: 'used',
+          reason: 'This routing memory directly selected the successful Local System capability.',
+        },
+      ],
     });
     expect(duplicateFeedback?.isError).not.toBe(true);
     const duplicateAudit = await callRuntimeTool(ctx, 'rh_context', {
@@ -351,7 +412,8 @@ describe('connected assistant learning loops', () => {
           scope_kind: 'project',
           kind: 'principle',
           valence: 'positive',
-          summary: 'Advisory memory provenance should remain independent from ControllerRound unless the learning actually came from a Work round.',
+          summary:
+            'Advisory memory provenance should remain independent from ControllerRound unless the learning actually came from a Work round.',
           concepts: ['forge.cognition', 'cognition.learning', 'thin-forge', 'lifecycle-decoupling'],
           facets: ['architecture', 'learning'],
           admission_source: 'explicit_human',
@@ -368,37 +430,78 @@ describe('connected assistant learning loops', () => {
     expect(payload.data.associatedEdgeCount).toBeGreaterThan(0);
     expect(payload.data.consolidatedMemoryIds.length).toBeGreaterThan(0);
 
-    const fullEnvelope = parseControllerLearningSignalDrafts(Array.from({ length: 32 }, (_, index) => ({
-      scope_kind: 'project', kind: `distilled-${index}`, valence: 'neutral',
-      summary: `Reusable model-authored knowledge ${index}.`, concepts: [`knowledge.${index}`], facets: [],
-      admission_source: 'controller_observation', portability: 'local', salience: 0.5, confidence: 0.5, utility: 0.5,
-    })));
+    const fullEnvelope = parseControllerLearningSignalDrafts(
+      Array.from({ length: 32 }, (_, index) => ({
+        scope_kind: 'project',
+        kind: `distilled-${index}`,
+        valence: 'neutral',
+        summary: `Reusable model-authored knowledge ${index}.`,
+        concepts: [`knowledge.${index}`],
+        facets: [],
+        admission_source: 'controller_observation',
+        portability: 'local',
+        salience: 0.5,
+        confidence: 0.5,
+        utility: 0.5,
+      })),
+    );
     expect(fullEnvelope).toHaveLength(32);
-    expect(() => parseControllerLearningSignalDrafts([...Array.from({ length: 32 }, (_, index) => ({
-      scope_kind: 'project', kind: `distilled-${index}`, valence: 'neutral',
-      summary: `Reusable model-authored knowledge ${index}.`, concepts: [`knowledge.${index}`], facets: [],
-      admission_source: 'controller_observation', portability: 'local', salience: 0.5, confidence: 0.5, utility: 0.5,
-    })), {
-      scope_kind: 'project', kind: 'overflow', valence: 'neutral', summary: 'Transport overflow only.', concepts: ['overflow'], facets: [],
-      admission_source: 'controller_observation', portability: 'local', salience: 0.5, confidence: 0.5, utility: 0.5,
-    }])).toThrow('COGNITION_CONTROLLER_LEARNING_SIGNALS_INVALID');
+    expect(() =>
+      parseControllerLearningSignalDrafts([
+        ...Array.from({ length: 32 }, (_, index) => ({
+          scope_kind: 'project',
+          kind: `distilled-${index}`,
+          valence: 'neutral',
+          summary: `Reusable model-authored knowledge ${index}.`,
+          concepts: [`knowledge.${index}`],
+          facets: [],
+          admission_source: 'controller_observation',
+          portability: 'local',
+          salience: 0.5,
+          confidence: 0.5,
+          utility: 0.5,
+        })),
+        {
+          scope_kind: 'project',
+          kind: 'overflow',
+          valence: 'neutral',
+          summary: 'Transport overflow only.',
+          concepts: ['overflow'],
+          facets: [],
+          admission_source: 'controller_observation',
+          portability: 'local',
+          salience: 0.5,
+          confidence: 0.5,
+          utility: 0.5,
+        },
+      ]),
+    ).toThrow('COGNITION_CONTROLLER_LEARNING_SIGNALS_INVALID');
 
     const stored = cognitionReadPort(fx.controllerHome).readByIds(
       [{ schemaVersion: 1, kind: 'project', id: 'project-learning-loop' }],
       payload.data.storedMemoryIds,
     );
     expect(stored).toHaveLength(2);
-    expect(stored.every(memory => memory.provenance.sourceKind === 'controller')).toBe(true);
+    expect(stored.every((memory) => memory.provenance.sourceKind === 'controller')).toBe(true);
 
     const ordinaryArgs = {
       repo_id: fx.repository.repoId,
       cognition_settlement: {
-        learning_signals: [{
-          scope_kind: 'project', kind: 'principle', valence: 'positive',
-          summary: 'Ordinary task outcomes settle reusable learning through the shared MCP envelope.',
-          concepts: ['forge.cognition', 'ordinary-project'], facets: ['architecture'],
-          admission_source: 'controller_observation', portability: 'local', salience: 0.9, confidence: 0.9, utility: 0.9,
-        }],
+        learning_signals: [
+          {
+            scope_kind: 'project',
+            kind: 'principle',
+            valence: 'positive',
+            summary: 'Ordinary task outcomes settle reusable learning through the shared MCP envelope.',
+            concepts: ['forge.cognition', 'ordinary-project'],
+            facets: ['architecture'],
+            admission_source: 'controller_observation',
+            portability: 'local',
+            salience: 0.9,
+            confidence: 0.9,
+            utility: 0.9,
+          },
+        ],
       },
     };
     const ordinaryOutcome = settleCognitionAfterTool(ctx, 'repository_git_status', ordinaryArgs, {
@@ -410,20 +513,34 @@ describe('connected assistant learning loops', () => {
       storedMemoryIds: [expect.any(String)],
     });
 
-    const primarySuccessWithSettlementFailure = settleCognitionAfterTool(ctx, 'repository_git_status', {
-      repo_id: fx.repository.repoId,
-      cognition_settlement: {
-        learning_signals: [{
-          scope_kind: 'work', kind: 'invalid-without-work', valence: 'neutral',
-          summary: 'This intentionally unreachable scope exercises non-blocking settlement failure.',
-          concepts: ['settlement.failure'], facets: [],
-          admission_source: 'controller_observation', portability: 'local', salience: 0.5, confidence: 0.5, utility: 0.5,
-        }],
+    const primarySuccessWithSettlementFailure = settleCognitionAfterTool(
+      ctx,
+      'repository_git_status',
+      {
+        repo_id: fx.repository.repoId,
+        cognition_settlement: {
+          learning_signals: [
+            {
+              scope_kind: 'work',
+              kind: 'invalid-without-work',
+              valence: 'neutral',
+              summary: 'This intentionally unreachable scope exercises non-blocking settlement failure.',
+              concepts: ['settlement.failure'],
+              facets: [],
+              admission_source: 'controller_observation',
+              portability: 'local',
+              salience: 0.5,
+              confidence: 0.5,
+              utility: 0.5,
+            },
+          ],
+        },
       },
-    }, {
-      content: [{ type: 'text', text: '{"ok":true}' }],
-      structuredContent: { ok: true },
-    });
+      {
+        content: [{ type: 'text', text: '{"ok":true}' }],
+        structuredContent: { ok: true },
+      },
+    );
     expect(primarySuccessWithSettlementFailure?.isError).not.toBe(true);
     expect(primarySuccessWithSettlementFailure?.structuredContent).toMatchObject({
       ok: true,
@@ -438,39 +555,57 @@ describe('connected assistant learning loops', () => {
     });
     expect(naturalRecall?.isError).not.toBe(true);
     const naturalPayload = naturalRecall?.structuredContent as Record<string, any>;
-    expect(naturalPayload.data.learningRecall.items.some((item: any) => item.concepts.includes('forge.cognition'))).toBe(true);
+    expect(
+      naturalPayload.data.learningRecall.items.some((item: any) => item.concepts.includes('forge.cognition')),
+    ).toBe(true);
 
     const requirementId = 'REQ-direct-learning-reachable';
-    createRequirement({ controllerHome: fx.controllerHome }, {
-      requirementId,
-      title: 'Reachable requirement learning',
-      outcomeStatement: 'Explicit Requirement identity makes its advisory learning scope reachable without Work.',
-    });
+    createRequirement(
+      { controllerHome: fx.controllerHome },
+      {
+        requirementId,
+        title: 'Reachable requirement learning',
+        outcomeStatement: 'Explicit Requirement identity makes its advisory learning scope reachable without Work.',
+      },
+    );
     const requirementLearning = await callRuntimeTool(ctx, 'rh_work', {
       repo_id: fx.repository.repoId,
       operation: 'learning_record',
       requirement_id: requirementId,
-      learning_signals: [{
-        scope_kind: 'requirement', kind: 'product-model', valence: 'positive',
-        summary: 'Requirement learning remains advisory and uses the explicit Requirement authority directly.',
-        concepts: ['requirement.reachable'], facets: ['product'], admission_source: 'controller_observation',
-        portability: 'local', salience: 0.8, confidence: 0.8, utility: 0.8,
-      }],
+      learning_signals: [
+        {
+          scope_kind: 'requirement',
+          kind: 'product-model',
+          valence: 'positive',
+          summary: 'Requirement learning remains advisory and uses the explicit Requirement authority directly.',
+          concepts: ['requirement.reachable'],
+          facets: ['product'],
+          admission_source: 'controller_observation',
+          portability: 'local',
+          salience: 0.8,
+          confidence: 0.8,
+          utility: 0.8,
+        },
+      ],
     });
     expect(requirementLearning?.isError).not.toBe(true);
     const requirementMemories = cognitionReadPort(fx.controllerHome).exactByConcept(
-      [{ schemaVersion: 1, kind: 'requirement', id: requirementId }], ['requirement.reachable'], 4,
+      [{ schemaVersion: 1, kind: 'requirement', id: requirementId }],
+      ['requirement.reachable'],
+      4,
     );
     expect(requirementMemories[0]?.provenance.sourceKind).toBe('controller');
     const requirementFeedback = await callRuntimeTool(ctx, 'rh_work', {
       repo_id: fx.repository.repoId,
       operation: 'learning_feedback',
       requirement_id: requirementId,
-      learning_feedback: [{
-        memory_address: memoryAddressKey({ scope: requirementMemories[0]!.scope, id: requirementMemories[0]!.id }),
-        decision: 'used',
-        reason: 'The Requirement-scoped memory directly informed the subsequent requirement decision.',
-      }],
+      learning_feedback: [
+        {
+          memory_address: memoryAddressKey({ scope: requirementMemories[0]!.scope, id: requirementMemories[0]!.id }),
+          decision: 'used',
+          reason: 'The Requirement-scoped memory directly informed the subsequent requirement decision.',
+        },
+      ],
     });
     expect(requirementFeedback?.isError).not.toBe(true);
   });
@@ -495,8 +630,9 @@ describe('connected assistant learning loops', () => {
     const dueAt = publicationOutcomeFollowupDueAt(publication);
     expect(dueAt).toBe(new Date(Date.parse(publishedAt) + 12 * 60 * 60 * 1000).toISOString());
     expect(publicationOutcomeFollowupDueAt({ ...publication, channel: 'xiaohongshu' })).toBeUndefined();
-    expect(() => publicationOutcomeFollowupDueAt({ ...publication, publishedAt: 'not-a-time' }))
-      .toThrow('OUTCOME_COLLECTION_PUBLICATION_TIME_INVALID');
+    expect(() => publicationOutcomeFollowupDueAt({ ...publication, publishedAt: 'not-a-time' })).toThrow(
+      'OUTCOME_COLLECTION_PUBLICATION_TIME_INVALID',
+    );
 
     const otherChannel = schedulePublicationOutcomeCollection({
       controllerHome: fx.controllerHome,
@@ -539,19 +675,21 @@ describe('connected assistant learning loops', () => {
     const learning = await callRuntimeTool(ctx, 'rh_work', {
       repo_id: fx.repository.repoId,
       operation: 'learning_record',
-      learning_signals: [{
-        scope_kind: 'project',
-        kind: 'procedure',
-        valence: 'neutral',
-        summary: 'This candidate must not persist because its claimed evidence does not exist.',
-        concepts: ['missing-evidence'],
-        admission_source: 'controller_observation',
-        portability: 'local',
-        salience: 0.5,
-        confidence: 0.5,
-        utility: 0.5,
-        evidence_refs: ['PLG-OBS-missing'],
-      }],
+      learning_signals: [
+        {
+          scope_kind: 'project',
+          kind: 'procedure',
+          valence: 'neutral',
+          summary: 'This candidate must not persist because its claimed evidence does not exist.',
+          concepts: ['missing-evidence'],
+          admission_source: 'controller_observation',
+          portability: 'local',
+          salience: 0.5,
+          confidence: 0.5,
+          utility: 0.5,
+          evidence_refs: ['PLG-OBS-missing'],
+        },
+      ],
     });
     expect(learning?.isError).toBe(true);
     const payload = learning?.structuredContent as Record<string, any>;

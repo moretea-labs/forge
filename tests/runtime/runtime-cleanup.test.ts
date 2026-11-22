@@ -1,11 +1,20 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import {
-  GlobalScheduler,
-} from '../../src/runtime/control-plane/global-scheduler/scheduler';
+import { GlobalScheduler } from '../../src/runtime/control-plane/global-scheduler/scheduler';
 import { readRepositoryGitStatusSample } from '../../src/runtime/projections/git-status-sampler';
 import type { SchedulerPeriodicCleanupSpawnResult } from '../../src/runtime/control-plane/global-scheduler/periodic-cleanup-process';
 import {
@@ -15,7 +24,11 @@ import {
 } from '../../src/runtime/control-plane/runtime-cleanup';
 import { runSchedulerPeriodicCleanup } from '../../src/runtime/control-plane/global-scheduler/maintenance';
 import { applyRuntimeCleanup, previewRuntimeCleanup } from '../../src/runtime/maintenance/cleanup';
-import { markRepositoryProjectionDirty, persistRepositoryProjectionDirty, repositoryProjectionIsDirty } from '../../src/runtime/projections/invalidation';
+import {
+  markRepositoryProjectionDirty,
+  persistRepositoryProjectionDirty,
+  repositoryProjectionIsDirty,
+} from '../../src/runtime/projections/invalidation';
 import type { RepositoryRecord } from '../../src/core/repository/types';
 import { controllerSystemRoot, repositoryControllerRoot } from '../../src/effects/controller-home';
 import { registerRepository, removeRepository } from '../../src/runtime/repositories/registry';
@@ -51,12 +64,20 @@ function cleanupEntries(home: string): RuntimeCleanupReport[] {
 function writeDaemonState(home: string, pid: number): void {
   mkdirSync(join(home, 'daemon'), { recursive: true });
   writeFileSync(join(home, 'daemon', 'controller.pid'), `${pid}\n`, 'utf8');
-  writeFileSync(join(home, 'daemon', 'state.json'), `${JSON.stringify({
-    schemaVersion: 1,
-    status: 'ready',
-    pid,
-    startedAt: new Date(Date.now() - 60_000).toISOString(),
-  }, null, 2)}\n`, 'utf8');
+  writeFileSync(
+    join(home, 'daemon', 'state.json'),
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        status: 'ready',
+        pid,
+        startedAt: new Date(Date.now() - 60_000).toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
 }
 
 function age(path: string, ageMs = 8 * 60 * 60_000): void {
@@ -69,25 +90,36 @@ afterEach(() => {
 });
 
 describe('runtime cleanup', () => {
-  test.skipIf(process.platform === 'win32')('explicit cleanup preserves relocated Runs when process inventory is unavailable', () => {
-    for (const [name, script] of [
-      ['failed', 'exit 1'], ['empty', 'exit 0'], ['malformed', 'printf "not-process-data\\n"'],
-      ['partial', 'printf "1 /sbin/launchd\\nunknown occupied command\\n"'],
-      ['hung', 'exec /bin/sleep 10'],
-    ]) {
-      const home = controllerHome();
-      const bin = join(home, 'bin');
-      const repo = join(home, 'repo');
-      const jobs = join(home, 'controller-jobs');
-      const run = join(jobs, 'RUN-retain-unknown-occupancy');
-      mkdirSync(bin, { recursive: true });
-      mkdirSync(join(repo, '.ai/harness'), { recursive: true });
-      mkdirSync(run, { recursive: true });
-      writeFileSync(join(run, 'state.json'), JSON.stringify({ status: 'waiting_for_user', note: 'nothing to integrate' }));
-      age(run);
-      symlinkSync(jobs, join(repo, '.ai/harness/jobs'));
-      writeFileSync(join(bin, 'ps'), `#!/bin/sh\n${script}\n`, { mode: 0o700 });
-      const child = spawnSync(process.execPath, ['-e', `
+  test.skipIf(process.platform === 'win32')(
+    'explicit cleanup preserves relocated Runs when process inventory is unavailable',
+    () => {
+      for (const [name, script] of [
+        ['failed', 'exit 1'],
+        ['empty', 'exit 0'],
+        ['malformed', 'printf "not-process-data\\n"'],
+        ['partial', 'printf "1 /sbin/launchd\\nunknown occupied command\\n"'],
+        ['hung', 'exec /bin/sleep 10'],
+      ]) {
+        const home = controllerHome();
+        const bin = join(home, 'bin');
+        const repo = join(home, 'repo');
+        const jobs = join(home, 'controller-jobs');
+        const run = join(jobs, 'RUN-retain-unknown-occupancy');
+        mkdirSync(bin, { recursive: true });
+        mkdirSync(join(repo, '.ai/harness'), { recursive: true });
+        mkdirSync(run, { recursive: true });
+        writeFileSync(
+          join(run, 'state.json'),
+          JSON.stringify({ status: 'waiting_for_user', note: 'nothing to integrate' }),
+        );
+        age(run);
+        symlinkSync(jobs, join(repo, '.ai/harness/jobs'));
+        writeFileSync(join(bin, 'ps'), `#!/bin/sh\n${script}\n`, { mode: 0o700 });
+        const child = spawnSync(
+          process.execPath,
+          [
+            '-e',
+            `
         import { applyRuntimeCleanup, previewRuntimeCleanup } from ${JSON.stringify(join(import.meta.dir, '../../src/runtime/maintenance/cleanup.ts'))};
         const options = { includeTempDirs: false, includeLegacyRuns: true, minAgeMinutes: 0, confirmCleanup: true };
         for (const operation of [previewRuntimeCleanup, applyRuntimeCleanup]) {
@@ -96,45 +128,77 @@ describe('runtime cleanup', () => {
         }
         try { previewRuntimeCleanup(${JSON.stringify(repo)}, { includeTempDirs: true }); console.log('unexpected_success'); }
         catch (error) { console.log(error.message); }
-      `], { env: { ...process.env, PATH: bin, FORGE_CONTROLLER_HOME: home }, encoding: 'utf8', timeout: 8_000, killSignal: 'SIGKILL' });
-      expect(child.error, name).toBeUndefined();
-      expect(child.status, name).toBe(0);
-      expect(child.stdout, name).not.toContain('unexpected_success');
-      expect(child.stdout.match(/RUNTIME_CLEANUP_PROCESS_INVENTORY_UNAVAILABLE/g), name).toHaveLength(3);
-      expect(existsSync(join(run, 'state.json')), name).toBe(true);
-    }
-  }, 20_000);
+      `,
+          ],
+          {
+            env: { ...process.env, PATH: bin, FORGE_CONTROLLER_HOME: home },
+            encoding: 'utf8',
+            timeout: 8_000,
+            killSignal: 'SIGKILL',
+          },
+        );
+        expect(child.error, name).toBeUndefined();
+        expect(child.status, name).toBe(0);
+        expect(child.stdout, name).not.toContain('unexpected_success');
+        expect(child.stdout.match(/RUNTIME_CLEANUP_PROCESS_INVENTORY_UNAVAILABLE/g), name).toHaveLength(3);
+        expect(existsSync(join(run, 'state.json')), name).toBe(true);
+      }
+    },
+    20_000,
+  );
 
-  test.skipIf(process.platform === 'win32')('explicit cleanup retains occupied Runs and removes a proven idle Run', () => {
-    const home = controllerHome();
-    const bin = join(home, 'bin');
-    const repo = join(home, 'repo');
-    const jobs = join(home, 'controller-jobs');
-    const occupied = join(jobs, 'RUN-occupied');
-    const idle = join(jobs, 'RUN-idle');
-    mkdirSync(bin, { recursive: true });
-    mkdirSync(join(repo, '.ai/harness'), { recursive: true });
-    for (const run of [occupied, idle]) {
-      mkdirSync(run, { recursive: true });
-      writeFileSync(join(run, 'state.json'), JSON.stringify({ status: 'waiting_for_user', note: 'nothing to integrate' }));
-      age(run);
-    }
-    symlinkSync(jobs, join(repo, '.ai/harness/jobs'));
-    writeFileSync(join(bin, 'ps'), `#!/bin/sh\nprintf '123 /bin/worker ${occupied}\\n'\n`, { mode: 0o700 });
-    const child = spawnSync(process.execPath, ['-e', `
+  test.skipIf(process.platform === 'win32')(
+    'explicit cleanup retains occupied Runs and removes a proven idle Run',
+    () => {
+      const home = controllerHome();
+      const bin = join(home, 'bin');
+      const repo = join(home, 'repo');
+      const jobs = join(home, 'controller-jobs');
+      const occupied = join(jobs, 'RUN-occupied');
+      const idle = join(jobs, 'RUN-idle');
+      mkdirSync(bin, { recursive: true });
+      mkdirSync(join(repo, '.ai/harness'), { recursive: true });
+      for (const run of [occupied, idle]) {
+        mkdirSync(run, { recursive: true });
+        writeFileSync(
+          join(run, 'state.json'),
+          JSON.stringify({ status: 'waiting_for_user', note: 'nothing to integrate' }),
+        );
+        age(run);
+      }
+      symlinkSync(jobs, join(repo, '.ai/harness/jobs'));
+      writeFileSync(join(bin, 'ps'), `#!/bin/sh\nprintf '123 /bin/worker ${occupied}\\n'\n`, { mode: 0o700 });
+      const child = spawnSync(
+        process.execPath,
+        [
+          '-e',
+          `
       import { applyRuntimeCleanup } from ${JSON.stringify(join(import.meta.dir, '../../src/runtime/maintenance/cleanup.ts'))};
       console.log(JSON.stringify(applyRuntimeCleanup(${JSON.stringify(repo)}, {
         includeTempDirs: false, includeLegacyRuns: true, minAgeMinutes: 0, confirmCleanup: true,
       }).applied));
-    `], { env: { ...process.env, PATH: bin, FORGE_CONTROLLER_HOME: home }, encoding: 'utf8', timeout: 5_000 });
-    expect(child.status).toBe(0);
-    expect(JSON.parse(child.stdout)).toMatchObject([{ path: join(repo, '.ai/harness/jobs/RUN-idle'), applied: true }]);
-    expect(existsSync(occupied)).toBe(true);
-    expect(existsSync(idle)).toBe(false);
-  });
+    `,
+        ],
+        { env: { ...process.env, PATH: bin, FORGE_CONTROLLER_HOME: home }, encoding: 'utf8', timeout: 5_000 },
+      );
+      expect(child.status).toBe(0);
+      expect(JSON.parse(child.stdout)).toMatchObject([
+        { path: join(repo, '.ai/harness/jobs/RUN-idle'), applied: true },
+      ]);
+      expect(existsSync(occupied)).toBe(true);
+      expect(existsSync(idle)).toBe(false);
+    },
+  );
 
   test.skipIf(process.platform === 'win32')('cleanup rechecks state and occupancy after candidate discovery', () => {
-    for (const scenario of ['local-state', 'legacy-state', 'legacy-occupancy', 'legacy-goal', 'local-recent', 'legacy-recent']) {
+    for (const scenario of [
+      'local-state',
+      'legacy-state',
+      'legacy-occupancy',
+      'legacy-goal',
+      'local-recent',
+      'legacy-recent',
+    ]) {
       const home = controllerHome();
       const repo = join(home, 'repo');
       const storage = join(home, 'runtime-storage');
@@ -142,7 +206,9 @@ describe('runtime cleanup', () => {
       const counter = join(home, 'scan-count');
       mkdirSync(bin);
       writeFileSync(counter, '0\n');
-      writeFileSync(join(bin, 'ps'), `#!/bin/sh
+      writeFileSync(
+        join(bin, 'ps'),
+        `#!/bin/sh
 count=0
 if [ -f '${counter}' ]; then read count < '${counter}'; fi
 count=$((count + 1))
@@ -152,7 +218,9 @@ if [ "$count" -gt 1 ] && [ '${scenario}' = 'legacy-occupancy' ]; then
 else
   printf '1 /sbin/launchd\\n'
 fi
-`, { mode: 0o700 });
+`,
+        { mode: 0o700 },
+      );
       const local = scenario.startsWith('local');
       const name = local ? 'terminal-job' : 'RUN-waiting';
       const candidate = join(storage, name);
@@ -160,9 +228,16 @@ fi
       mkdirSync(candidate, { recursive: true });
       mkdirSync(join(repo, '.ai/harness'), { recursive: true });
       symlinkSync(storage, join(repo, '.ai/harness', local ? 'local-jobs' : 'jobs'));
-      writeFileSync(state, JSON.stringify(local ? { status: 'failed' } : { status: 'waiting_for_user', note: 'nothing to integrate' }));
+      writeFileSync(
+        state,
+        JSON.stringify(local ? { status: 'failed' } : { status: 'waiting_for_user', note: 'nothing to integrate' }),
+      );
       age(candidate);
-      const child = spawnSync(process.execPath, ['-e', `
+      const child = spawnSync(
+        process.execPath,
+        [
+          '-e',
+          `
         import { mock } from 'bun:test';
         import * as fs from 'fs';
         const read = fs.readFileSync;
@@ -183,13 +258,20 @@ fi
           minAgeMinutes: 60, confirmCleanup: true,
         });
         console.log(JSON.stringify({ candidates: result.candidates, applied: result.applied, changed, scans: Number(read(${JSON.stringify(counter)}, 'utf8')) }));
-      `], { env: { ...process.env, PATH: bin, FORGE_CONTROLLER_HOME: home }, encoding: 'utf8', timeout: 5_000 });
+      `,
+        ],
+        { env: { ...process.env, PATH: bin, FORGE_CONTROLLER_HOME: home }, encoding: 'utf8', timeout: 5_000 },
+      );
       expect(child.status, child.stderr).toBe(0);
       const result = JSON.parse(child.stdout);
       expect(result.applied, JSON.stringify({ scenario, ...result })).toMatchObject([{ applied: false }]);
-      const expectedCode = scenario.endsWith('recent') ? 'RUNTIME_CLEANUP_DIRECTORY_CHANGED'
-        : scenario === 'legacy-occupancy' ? 'RUNTIME_CLEANUP_LEGACY_RUN_PROCESS_OCCUPIED'
-        : local ? 'RUNTIME_CLEANUP_LOCAL_JOB_STATE_CHANGED' : 'RUNTIME_CLEANUP_LEGACY_RUN_STATE_CHANGED';
+      const expectedCode = scenario.endsWith('recent')
+        ? 'RUNTIME_CLEANUP_DIRECTORY_CHANGED'
+        : scenario === 'legacy-occupancy'
+          ? 'RUNTIME_CLEANUP_LEGACY_RUN_PROCESS_OCCUPIED'
+          : local
+            ? 'RUNTIME_CLEANUP_LOCAL_JOB_STATE_CHANGED'
+            : 'RUNTIME_CLEANUP_LEGACY_RUN_STATE_CHANGED';
       expect(result.applied[0].error).toContain(expectedCode);
       expect(existsSync(state), scenario).toBe(true);
       if (scenario === 'legacy-occupancy') expect(result.scans).toBe(2);
@@ -210,17 +292,33 @@ fi
     writeFileSync(join(repositoryRoot, 'README.md'), 'scheduler retention\n');
     expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
     expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
-    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'scheduler-retention' });
+    const repository = registerRepository({
+      path: repositoryRoot,
+      controllerHome: home,
+      displayName: 'scheduler-retention',
+    });
     const schedule = createSchedule(home, {
-      requestId: 'scheduler-retention-request', repoId: repository.repoId, name: 'scheduler retention', enabled: true,
+      requestId: 'scheduler-retention-request',
+      repoId: repository.repoId,
+      name: 'scheduler retention',
+      enabled: true,
       trigger: { type: 'manual' },
       policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: true },
-      action: { operation: 'runtime_maintenance_apply', target: 'runtime', arguments: {} }, stopConditions: [],
+      action: { operation: 'runtime_maintenance_apply', target: 'runtime', arguments: {} },
+      stopConditions: [],
     });
     const now = new Date().toISOString();
     saveOccurrence(home, {
-      schemaVersion: 1, revision: 0, occurrenceId: 'OCC-ACTIVE', scheduleId: schedule.scheduleId, repoId: repository.repoId,
-      windowKey: 'active', status: 'running', decision: 'execute', createdAt: now, updatedAt: now,
+      schemaVersion: 1,
+      revision: 0,
+      occurrenceId: 'OCC-ACTIVE',
+      scheduleId: schedule.scheduleId,
+      repoId: repository.repoId,
+      windowKey: 'active',
+      status: 'running',
+      decision: 'execute',
+      createdAt: now,
+      updatedAt: now,
     });
 
     const schedules = join(controllerSystemRoot(home), 'schedules');
@@ -231,18 +329,50 @@ fi
     const staleOccurrence = join(occurrenceRoot, 'OCC-STALE.json');
     const unindexedActive = join(occurrenceRoot, 'OCC-UNINDEXED-ACTIVE.json');
     const staleDecision = join(decisionRoot, 'DEC-STALE.json');
-    writeFileSync(staleOccurrence, JSON.stringify({
-      schemaVersion: 1, revision: 1, occurrenceId: 'OCC-STALE', scheduleId: schedule.scheduleId, repoId: repository.repoId,
-      windowKey: 'stale', status: 'succeeded', decision: 'execute', createdAt: now, updatedAt: now,
-    }));
-    writeFileSync(unindexedActive, JSON.stringify({
-      schemaVersion: 1, revision: 1, occurrenceId: 'OCC-UNINDEXED-ACTIVE', scheduleId: schedule.scheduleId, repoId: repository.repoId,
-      windowKey: 'active-unindexed', status: 'running', decision: 'execute', createdAt: now, updatedAt: now,
-    }));
-    writeFileSync(staleDecision, JSON.stringify({
-      schemaVersion: 1, revision: 1, decisionId: 'DEC-STALE', occurrenceId: 'OCC-STALE', scheduleId: schedule.scheduleId,
-      repoId: repository.repoId, requestId: `${schedule.requestId}:stale`, decision: 'execute', createdAt: now,
-    }));
+    writeFileSync(
+      staleOccurrence,
+      JSON.stringify({
+        schemaVersion: 1,
+        revision: 1,
+        occurrenceId: 'OCC-STALE',
+        scheduleId: schedule.scheduleId,
+        repoId: repository.repoId,
+        windowKey: 'stale',
+        status: 'succeeded',
+        decision: 'execute',
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    writeFileSync(
+      unindexedActive,
+      JSON.stringify({
+        schemaVersion: 1,
+        revision: 1,
+        occurrenceId: 'OCC-UNINDEXED-ACTIVE',
+        scheduleId: schedule.scheduleId,
+        repoId: repository.repoId,
+        windowKey: 'active-unindexed',
+        status: 'running',
+        decision: 'execute',
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    writeFileSync(
+      staleDecision,
+      JSON.stringify({
+        schemaVersion: 1,
+        revision: 1,
+        decisionId: 'DEC-STALE',
+        occurrenceId: 'OCC-STALE',
+        scheduleId: schedule.scheduleId,
+        repoId: repository.repoId,
+        requestId: `${schedule.requestId}:stale`,
+        decision: 'execute',
+        createdAt: now,
+      }),
+    );
 
     const report = cleanupControllerRuntimeState(home, { reason: 'manual', maxEntries: 200, maxRemovals: 20 });
 
@@ -250,8 +380,12 @@ fi
     expect(existsSync(unindexedActive)).toBe(true);
     expect(existsSync(staleOccurrence)).toBe(false);
     expect(existsSync(staleDecision)).toBe(false);
-    expect(report.removedScheduleOccurrencePaths).toContain(`repositories/${repository.repoId}/schedules/occurrences/OCC-STALE.json`);
-    expect(report.removedScheduleDecisionPaths).toContain(`repositories/${repository.repoId}/schedules/decisions/DEC-STALE.json`);
+    expect(report.removedScheduleOccurrencePaths).toContain(
+      `repositories/${repository.repoId}/schedules/occurrences/OCC-STALE.json`,
+    );
+    expect(report.removedScheduleDecisionPaths).toContain(
+      `repositories/${repository.repoId}/schedules/decisions/DEC-STALE.json`,
+    );
     expect(report.lifecycleMetrics.reclaimedByClass.scheduler_occurrence_history.count).toBe(2);
     expect(report.lifecycleMetrics.reclaimedByClass.scheduler_occurrence_history.bytes).toBeGreaterThan(0);
     expect(report.lifecycleMetrics.reclaimedByClass.scheduler_occurrence_history.unknownByteCount).toBe(0);
@@ -271,7 +405,11 @@ fi
     writeFileSync(join(repositoryRoot, 'README.md'), 'namespace retention\n');
     expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
     expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
-    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'namespace-retention' });
+    const repository = registerRepository({
+      path: repositoryRoot,
+      controllerHome: home,
+      displayName: 'namespace-retention',
+    });
     const namespace = repositoryControllerRoot(home, repository.repoId);
     mkdirSync(join(namespace, 'indexes'), { recursive: true });
     writeFileSync(join(namespace, 'indexes', 'stale.bin'), 'rebuildable');
@@ -309,15 +447,34 @@ fi
     expect(spawnSync(git, ['-C', repositoryRoot, 'init', '-b', 'main']).status).toBe(0);
     writeFileSync(join(repositoryRoot, 'README.md'), 'zero budget\n');
     expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
-    expect(spawnSync(git, ['-C', repositoryRoot, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'fixture']).status).toBe(0);
-    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'namespace-zero-budget' });
+    expect(
+      spawnSync(git, [
+        '-C',
+        repositoryRoot,
+        '-c',
+        'user.name=Test',
+        '-c',
+        'user.email=test@example.com',
+        'commit',
+        '-m',
+        'fixture',
+      ]).status,
+    ).toBe(0);
+    const repository = registerRepository({
+      path: repositoryRoot,
+      controllerHome: home,
+      displayName: 'namespace-zero-budget',
+    });
     const namespace = repositoryControllerRoot(home, repository.repoId);
     mkdirSync(join(namespace, 'indexes'), { recursive: true });
     writeFileSync(join(namespace, 'indexes', 'stale.bin'), 'keep');
     removeRepository(repository.repoId, home);
 
     const report = cleanupRetiredRepositoryNamespaces(home, {
-      nowMs: Date.now() + 2 * 60_000, graceMs: 60_000, maxEntries: 100, maxRemovals: 0,
+      nowMs: Date.now() + 2 * 60_000,
+      graceMs: 60_000,
+      maxEntries: 100,
+      maxRemovals: 0,
     });
 
     expect(existsSync(join(namespace, 'indexes', 'stale.bin'))).toBe(true);
@@ -325,7 +482,6 @@ fi
     expect(report.budgetExhausted).toBe(true);
     expect(report.skippedByReason.cleanup_budget_exhausted).toBeGreaterThanOrEqual(1);
   });
-
 
   test('edit-session retention keeps active authority and bounds terminal Controller Home artifacts', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-runtime-edit-session-retention-'));
@@ -340,7 +496,11 @@ fi
     writeFileSync(join(repositoryRoot, 'README.md'), 'edit session retention\n');
     expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
     expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
-    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'edit-session-retention' });
+    const repository = registerRepository({
+      path: repositoryRoot,
+      controllerHome: home,
+      displayName: 'edit-session-retention',
+    });
     const storage = ensureRepositoryRuntimeStorage(repository, home);
     expect(storage.readyForExecution).toBe(true);
     const editRoot = join(repositoryRoot, '.ai', 'harness', 'edit-sessions');
@@ -349,7 +509,18 @@ fi
     const writeSession = (sessionId: string, status: string, workId?: string) => {
       const dir = join(editRoot, sessionId);
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, 'session.json'), JSON.stringify({ schemaVersion: 3, sessionId, purpose: sessionId, status, workId, createdAt: old, updatedAt: old }));
+      writeFileSync(
+        join(dir, 'session.json'),
+        JSON.stringify({
+          schemaVersion: 3,
+          sessionId,
+          purpose: sessionId,
+          status,
+          workId,
+          createdAt: old,
+          updatedAt: old,
+        }),
+      );
       writeFileSync(join(dir, 'changes.patch'), `${sessionId}\n`);
       return dir;
     };
@@ -358,7 +529,11 @@ fi
     const open = writeSession('EDIT-1002-open', 'open');
 
     const direct = cleanupTerminalEditSessionRecords(repositoryRoot, {
-      nowMs, retentionMs: 24 * 60 * 60_000, maxRetained: 200, maxEntries: 100, maxRemovals: 10,
+      nowMs,
+      retentionMs: 24 * 60 * 60_000,
+      maxRetained: 200,
+      maxEntries: 100,
+      maxRemovals: 10,
     });
     expect(existsSync(stale)).toBe(false);
     expect(existsSync(legacyWorkTagged)).toBe(false);
@@ -368,13 +543,19 @@ fi
 
     const central = writeSession('EDIT-1003-central', 'superseded');
     const report = cleanupControllerRuntimeState(home, {
-      reason: 'manual', nowMs, maxEntries: 200, maxRemovals: 20,
-      editSessionRetentionMs: 24 * 60 * 60_000, editSessionMaxRetained: 200,
+      reason: 'manual',
+      nowMs,
+      maxEntries: 200,
+      maxRemovals: 20,
+      editSessionRetentionMs: 24 * 60 * 60_000,
+      editSessionMaxRetained: 200,
     });
     expect(existsSync(central)).toBe(false);
     expect(existsSync(legacyWorkTagged)).toBe(false);
     expect(existsSync(open)).toBe(true);
-    expect(report.removedEditSessionPaths).toContain(`repositories/${repository.repoId}/edit-sessions/EDIT-1003-central`);
+    expect(report.removedEditSessionPaths).toContain(
+      `repositories/${repository.repoId}/edit-sessions/EDIT-1003-central`,
+    );
     expect(report.lifecycleMetrics.reclaimedByClass.edit_session.count).toBe(1);
     expect(report.lifecycleMetrics.reclaimedByClass.edit_session.bytes).toBeGreaterThan(0);
     expect(report.lifecycleMetrics.reclaimedByClass.edit_session.unknownByteCount).toBe(0);
@@ -391,10 +572,14 @@ fi
 
     expect(report.policyVersion).toBe('runtime-lifecycle-retention-v1');
     expect(report.lifecycleMetrics.reclaimedByClass.runtime_temp.count).toBeGreaterThanOrEqual(1);
-    expect(report.lifecycleMetrics.reclaimedByClass.runtime_temp.bytes).toBeGreaterThanOrEqual(Buffer.byteLength('measured-retention-bytes\n'));
+    expect(report.lifecycleMetrics.reclaimedByClass.runtime_temp.bytes).toBeGreaterThanOrEqual(
+      Buffer.byteLength('measured-retention-bytes\n'),
+    );
     expect(report.lifecycleMetrics.reclaimedByClass.runtime_temp.unknownByteCount).toBe(0);
     expect(report.lifecycleMetrics.reclaimedCount).toBeGreaterThanOrEqual(1);
-    expect(report.lifecycleMetrics.reclaimedBytes).toBeGreaterThanOrEqual(Buffer.byteLength('measured-retention-bytes\n'));
+    expect(report.lifecycleMetrics.reclaimedBytes).toBeGreaterThanOrEqual(
+      Buffer.byteLength('measured-retention-bytes\n'),
+    );
     expect(existsSync(stale)).toBe(false);
   });
 
@@ -485,29 +670,43 @@ fi
     const staleTempPath = join(home, 'repositories', 'repo-a', 'execution-jobs', 'records', 'job.json.123.tmp');
     mkdirSync(activeWorktree, { recursive: true });
     mkdirSync(orphanWorktree, { recursive: true });
-    recordOwnedResource(home, { kind: 'worktree', targetRef: orphanWorktree, creator: 'test:runtime-cleanup', repoId: 'repo-a', retentionIntent: 'temporary' });
+    recordOwnedResource(home, {
+      kind: 'worktree',
+      targetRef: orphanWorktree,
+      creator: 'test:runtime-cleanup',
+      repoId: 'repo-a',
+      retentionIntent: 'temporary',
+    });
     mkdirSync(join(home, 'repositories', 'repo-a', 'runs', 'RUN-active'), { recursive: true });
     mkdirSync(join(home, 'repositories', 'repo-a', 'execution-jobs', 'records'), { recursive: true });
-    writeFileSync(runMetaPath, `${JSON.stringify({
-      schemaVersion: 3,
-      runId: 'RUN-active',
-      issueId: 'ISS-1',
-      taskId: 'T1',
-      agent: 'codex',
-      provider: 'local',
-      executionMode: 'worktree',
-      status: 'running',
-      repoRoot: '/repo',
-      worktree: activeWorktree,
-      branch: 'controller/branch',
-      baseRevision: 'HEAD',
-      promptPath: 'prompt.md',
-      stdoutPath: 'stdout.log',
-      stderrPath: 'stderr.log',
-      resultPath: 'result.json',
-      eventsPath: 'events.jsonl',
-      createdAt: new Date().toISOString(),
-    }, null, 2)}\n`, 'utf8');
+    writeFileSync(
+      runMetaPath,
+      `${JSON.stringify(
+        {
+          schemaVersion: 3,
+          runId: 'RUN-active',
+          issueId: 'ISS-1',
+          taskId: 'T1',
+          agent: 'codex',
+          provider: 'local',
+          executionMode: 'worktree',
+          status: 'running',
+          repoRoot: '/repo',
+          worktree: activeWorktree,
+          branch: 'controller/branch',
+          baseRevision: 'HEAD',
+          promptPath: 'prompt.md',
+          stdoutPath: 'stdout.log',
+          stderrPath: 'stderr.log',
+          resultPath: 'result.json',
+          eventsPath: 'events.jsonl',
+          createdAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
     writeFileSync(staleTempPath, 'temporary\n', 'utf8');
     age(activeWorktree);
     age(orphanWorktree);
@@ -522,7 +721,9 @@ fi
     expect(existsSync(orphanWorktree)).toBe(false);
     expect(existsSync(staleTempPath)).toBe(true);
     expect(worktreePass.removedWorktrees).toContain('repositories/repo-a/worktrees/RUN-orphaned');
-    expect(worktreePass.removedTemporaryPaths).not.toContain('repositories/repo-a/execution-jobs/records/job.json.123.tmp');
+    expect(worktreePass.removedTemporaryPaths).not.toContain(
+      'repositories/repo-a/execution-jobs/records/job.json.123.tmp',
+    );
     expect(worktreePass.skippedActiveWorktrees).toContain('repositories/repo-a/worktrees/RUN-active');
 
     const temporaryPass = cleanupControllerRuntimeState(home, {
@@ -531,7 +732,9 @@ fi
     });
 
     expect(existsSync(staleTempPath)).toBe(false);
-    expect(temporaryPass.removedTemporaryPaths).toContain('repositories/repo-a/execution-jobs/records/job.json.123.tmp');
+    expect(temporaryPass.removedTemporaryPaths).toContain(
+      'repositories/repo-a/execution-jobs/records/job.json.123.tmp',
+    );
   });
 
   test('periodic cleanup migrates an idle legacy physical node_modules copy to canonical dependency reuse', () => {
@@ -544,20 +747,35 @@ fi
     expect(spawnSync(git, ['-C', repositoryRoot, 'init', '-b', 'main']).status).toBe(0);
     expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.name', 'Test']).status).toBe(0);
     expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.email', 'test@example.com']).status).toBe(0);
-    writeFileSync(join(repositoryRoot, 'package.json'), '{"name":"fixture","private":true,"dependencies":{"commander":"1.0.0"}}\n');
+    writeFileSync(
+      join(repositoryRoot, 'package.json'),
+      '{"name":"fixture","private":true,"dependencies":{"commander":"1.0.0"}}\n',
+    );
     writeFileSync(join(repositoryRoot, 'bun.lock'), '# lock\n');
     mkdirSync(join(repositoryRoot, 'node_modules', 'commander'), { recursive: true });
     writeFileSync(join(repositoryRoot, 'node_modules', 'commander', 'package.json'), '{"name":"commander"}\n');
     expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'package.json', 'bun.lock']).status).toBe(0);
     expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
-    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'dependency-migration' });
-    const workspace = ensureManagedWorkspace(home, repository, { requestId: 'dependency-migration', title: 'dependency migration' });
+    const repository = registerRepository({
+      path: repositoryRoot,
+      controllerHome: home,
+      displayName: 'dependency-migration',
+    });
+    const workspace = ensureManagedWorkspace(home, repository, {
+      requestId: 'dependency-migration',
+      title: 'dependency migration',
+    });
     const dependencyPath = join(workspace.root!, 'node_modules');
     rmSync(dependencyPath, { recursive: true, force: true });
     mkdirSync(join(dependencyPath, 'legacy-copy'), { recursive: true });
     writeFileSync(join(dependencyPath, 'legacy-copy', 'marker'), 'legacy\n');
 
-    const report = cleanupControllerRuntimeState(home, { reason: 'periodic', maxEntries: 200, maxRemovals: 20, periodicSequence: 0 });
+    const report = cleanupControllerRuntimeState(home, {
+      reason: 'periodic',
+      maxEntries: 200,
+      maxRemovals: 20,
+      periodicSequence: 0,
+    });
     expect(lstatSync(dependencyPath).isSymbolicLink()).toBe(true);
     expect(realpathSync(dependencyPath)).toBe(realpathSync(join(repositoryRoot, 'node_modules')));
     expect(report.migratedDependencyPaths.some((entry) => entry.includes('node_modules'))).toBe(true);
@@ -573,14 +791,24 @@ fi
     expect(spawnSync(git, ['-C', repositoryRoot, 'init', '-b', 'main']).status).toBe(0);
     expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.name', 'Test']).status).toBe(0);
     expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.email', 'test@example.com']).status).toBe(0);
-    writeFileSync(join(repositoryRoot, 'package.json'), '{"name":"fixture","private":true,"dependencies":{"commander":"1.0.0"}}\n');
+    writeFileSync(
+      join(repositoryRoot, 'package.json'),
+      '{"name":"fixture","private":true,"dependencies":{"commander":"1.0.0"}}\n',
+    );
     writeFileSync(join(repositoryRoot, 'bun.lock'), '# lock\n');
     mkdirSync(join(repositoryRoot, 'node_modules', 'commander'), { recursive: true });
     writeFileSync(join(repositoryRoot, 'node_modules', 'commander', 'package.json'), '{"name":"commander"}\n');
     expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'package.json', 'bun.lock']).status).toBe(0);
     expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
-    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'dependency-lease' });
-    const workspace = ensureManagedWorkspace(home, repository, { requestId: 'dependency-lease', title: 'dependency lease' });
+    const repository = registerRepository({
+      path: repositoryRoot,
+      controllerHome: home,
+      displayName: 'dependency-lease',
+    });
+    const workspace = ensureManagedWorkspace(home, repository, {
+      requestId: 'dependency-lease',
+      title: 'dependency lease',
+    });
     const dependencyPath = join(workspace.root!, 'node_modules');
     rmSync(dependencyPath, { recursive: true, force: true });
     mkdirSync(join(dependencyPath, 'legacy-copy'), { recursive: true });
@@ -588,13 +816,29 @@ fi
     const leaseRoot = join(controllerSystemRoot(home), 'execution-leases', 'active');
     mkdirSync(leaseRoot, { recursive: true });
     const now = Date.now();
-    writeFileSync(join(leaseRoot, 'LEASE-active.json'), JSON.stringify({
-      schemaVersion: 1, leaseId: 'LEASE-active', repoId: repository.repoId, checkoutId: workspace.checkoutId,
-      resourceKey: `workspace:${workspace.checkoutId}`, mode: 'read', ownerJobId: 'job-active', fencingToken: 1,
-      acquiredAt: new Date(now).toISOString(), heartbeatAt: new Date(now).toISOString(), expiresAt: new Date(now + 60_000).toISOString(),
-    }));
+    writeFileSync(
+      join(leaseRoot, 'LEASE-active.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        leaseId: 'LEASE-active',
+        repoId: repository.repoId,
+        checkoutId: workspace.checkoutId,
+        resourceKey: `workspace:${workspace.checkoutId}`,
+        mode: 'read',
+        ownerJobId: 'job-active',
+        fencingToken: 1,
+        acquiredAt: new Date(now).toISOString(),
+        heartbeatAt: new Date(now).toISOString(),
+        expiresAt: new Date(now + 60_000).toISOString(),
+      }),
+    );
 
-    const report = cleanupControllerRuntimeState(home, { reason: 'periodic', maxEntries: 200, maxRemovals: 20, periodicSequence: 0 });
+    const report = cleanupControllerRuntimeState(home, {
+      reason: 'periodic',
+      maxEntries: 200,
+      maxRemovals: 20,
+      periodicSequence: 0,
+    });
     expect(lstatSync(dependencyPath).isDirectory()).toBe(true);
     expect(lstatSync(dependencyPath).isSymbolicLink()).toBe(false);
     expect(report.migratedDependencyPaths).toEqual([]);
@@ -658,72 +902,102 @@ fi
     const unknownWorktree = join(home, 'repositories', 'repo-a', 'worktrees', 'RUN-unknown');
     const activeWorktree = join(home, 'repositories', 'repo-a', 'worktrees', 'RUN-active');
     mkdirSync(cancelledWorktree, { recursive: true });
-    recordOwnedResource(home, { kind: 'worktree', targetRef: cancelledWorktree, creator: 'test:runtime-cleanup', repoId: 'repo-a', retentionIntent: 'temporary' });
+    recordOwnedResource(home, {
+      kind: 'worktree',
+      targetRef: cancelledWorktree,
+      creator: 'test:runtime-cleanup',
+      repoId: 'repo-a',
+      retentionIntent: 'temporary',
+    });
     mkdirSync(unknownWorktree, { recursive: true });
     mkdirSync(activeWorktree, { recursive: true });
     mkdirSync(join(home, 'repositories', 'repo-a', 'runs', 'RUN-cancelled'), { recursive: true });
     mkdirSync(join(home, 'repositories', 'repo-a', 'runs', 'RUN-unknown'), { recursive: true });
     mkdirSync(join(home, 'repositories', 'repo-a', 'runs', 'RUN-active'), { recursive: true });
-    writeFileSync(join(home, 'repositories', 'repo-a', 'runs', 'RUN-cancelled', 'meta.json'), `${JSON.stringify({
-      schemaVersion: 3,
-      runId: 'RUN-cancelled',
-      issueId: 'ISS-1',
-      taskId: 'T1',
-      agent: 'codex',
-      provider: 'local',
-      executionMode: 'worktree',
-      status: 'cancelled',
-      repoRoot: '/repo',
-      worktree: cancelledWorktree,
-      branch: 'controller/cancelled',
-      baseRevision: 'HEAD',
-      promptPath: 'prompt.md',
-      stdoutPath: 'stdout.log',
-      stderrPath: 'stderr.log',
-      resultPath: 'result.json',
-      eventsPath: 'events.jsonl',
-      createdAt: new Date().toISOString(),
-    }, null, 2)}\n`, 'utf8');
-    writeFileSync(join(home, 'repositories', 'repo-a', 'runs', 'RUN-unknown', 'meta.json'), `${JSON.stringify({
-      schemaVersion: 3,
-      runId: 'RUN-unknown',
-      issueId: 'ISS-1',
-      taskId: 'T1b',
-      agent: 'codex',
-      provider: 'local',
-      executionMode: 'worktree',
-      status: 'unknown',
-      repoRoot: '/repo',
-      worktree: unknownWorktree,
-      branch: 'controller/unknown',
-      baseRevision: 'HEAD',
-      promptPath: 'prompt.md',
-      stdoutPath: 'stdout.log',
-      stderrPath: 'stderr.log',
-      resultPath: 'result.json',
-      eventsPath: 'events.jsonl',
-      createdAt: new Date().toISOString(),
-    }, null, 2)}\n`, 'utf8');
-    writeFileSync(join(home, 'repositories', 'repo-a', 'runs', 'RUN-active', 'meta.json'), `${JSON.stringify({
-      schemaVersion: 3,
-      runId: 'RUN-active',
-      issueId: 'ISS-1',
-      taskId: 'T2',
-      agent: 'codex',
-      provider: 'local',
-      executionMode: 'worktree',
-      status: 'waiting_for_user',
-      repoRoot: '/repo',
-      worktree: activeWorktree,
-      branch: 'controller/active',
-      baseRevision: 'HEAD',
-      promptPath: 'prompt.md',
-      stdoutPath: 'stdout.log',
-      stderrPath: 'stderr.log',
-      resultPath: 'result.json',
-      eventsPath: 'events.jsonl',
-      createdAt: new Date().toISOString(),
-    }, null, 2)}\n`, 'utf8');
+    writeFileSync(
+      join(home, 'repositories', 'repo-a', 'runs', 'RUN-cancelled', 'meta.json'),
+      `${JSON.stringify(
+        {
+          schemaVersion: 3,
+          runId: 'RUN-cancelled',
+          issueId: 'ISS-1',
+          taskId: 'T1',
+          agent: 'codex',
+          provider: 'local',
+          executionMode: 'worktree',
+          status: 'cancelled',
+          repoRoot: '/repo',
+          worktree: cancelledWorktree,
+          branch: 'controller/cancelled',
+          baseRevision: 'HEAD',
+          promptPath: 'prompt.md',
+          stdoutPath: 'stdout.log',
+          stderrPath: 'stderr.log',
+          resultPath: 'result.json',
+          eventsPath: 'events.jsonl',
+          createdAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+    writeFileSync(
+      join(home, 'repositories', 'repo-a', 'runs', 'RUN-unknown', 'meta.json'),
+      `${JSON.stringify(
+        {
+          schemaVersion: 3,
+          runId: 'RUN-unknown',
+          issueId: 'ISS-1',
+          taskId: 'T1b',
+          agent: 'codex',
+          provider: 'local',
+          executionMode: 'worktree',
+          status: 'unknown',
+          repoRoot: '/repo',
+          worktree: unknownWorktree,
+          branch: 'controller/unknown',
+          baseRevision: 'HEAD',
+          promptPath: 'prompt.md',
+          stdoutPath: 'stdout.log',
+          stderrPath: 'stderr.log',
+          resultPath: 'result.json',
+          eventsPath: 'events.jsonl',
+          createdAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+    writeFileSync(
+      join(home, 'repositories', 'repo-a', 'runs', 'RUN-active', 'meta.json'),
+      `${JSON.stringify(
+        {
+          schemaVersion: 3,
+          runId: 'RUN-active',
+          issueId: 'ISS-1',
+          taskId: 'T2',
+          agent: 'codex',
+          provider: 'local',
+          executionMode: 'worktree',
+          status: 'waiting_for_user',
+          repoRoot: '/repo',
+          worktree: activeWorktree,
+          branch: 'controller/active',
+          baseRevision: 'HEAD',
+          promptPath: 'prompt.md',
+          stdoutPath: 'stdout.log',
+          stderrPath: 'stderr.log',
+          resultPath: 'result.json',
+          eventsPath: 'events.jsonl',
+          createdAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
     age(cancelledWorktree);
     age(unknownWorktree);
     age(activeWorktree);
@@ -744,7 +1018,13 @@ fi
     const orphanWorktree = join(home, 'repositories', 'repo-a', 'worktrees', 'RUN-orphaned');
     const records = join(home, 'repositories', 'repo-a', 'execution-jobs', 'records');
     mkdirSync(orphanWorktree, { recursive: true });
-    recordOwnedResource(home, { kind: 'worktree', targetRef: orphanWorktree, creator: 'test:runtime-cleanup', repoId: 'repo-a', retentionIntent: 'temporary' });
+    recordOwnedResource(home, {
+      kind: 'worktree',
+      targetRef: orphanWorktree,
+      creator: 'test:runtime-cleanup',
+      repoId: 'repo-a',
+      retentionIntent: 'temporary',
+    });
     mkdirSync(records, { recursive: true });
     for (let index = 0; index < 80; index += 1) {
       writeFileSync(join(records, `EJOB-${index}.json`), '{}\n', 'utf8');
@@ -865,7 +1145,9 @@ fi
       workValidationReconcile: () => { errors: unknown[] };
       editValidationReconcile: () => Promise<{ errors: unknown[] }>;
     };
-    internal.runtimeCleanup = () => { inlineCleanupCalls += 1; };
+    internal.runtimeCleanup = () => {
+      inlineCleanupCalls += 1;
+    };
     internal.periodicCleanupSpawn = () => {
       launches += 1;
       return { ok: false, startupError: 'synthetic isolated cleanup launch' };
@@ -902,7 +1184,11 @@ fi
         return {} as RuntimeCleanupReport;
       },
       processGc: () => ({
-        ok: true, removedRecords: 0, removedLogs: 0, skippedActive: 0, reconciledStaleActive: 0,
+        ok: true,
+        removedRecords: 0,
+        removedLogs: 0,
+        skippedActive: 0,
+        reconciledStaleActive: 0,
       }),
     });
 
@@ -920,24 +1206,84 @@ fi
     mkdirSync(join(root, 'records'), { recursive: true });
     mkdirSync(join(root, 'receipts'), { recursive: true });
     mkdirSync(join(repositoryControllerRoot(home, repoId), 'events', 'jobs'), { recursive: true });
-    const base = { schemaVersion: 1, revision: 1, repoId, priority: 'P2', requestId: 'legacy-request', semanticKey: 'legacy', payload: { operation: 'legacy' }, origin: { surface: 'system' }, resourceClaims: [], dependencies: [], leaseRefs: [], createdAt: old, updatedAt: old, queuedAt: old, attempt: 1, maxAttempts: 1, evidenceIds: [] };
-    writeFileSync(join(root, 'records', `${terminalId}.json`), JSON.stringify({ ...base, jobId: terminalId, type: 'reconciliation', status: 'succeeded', finishedAt: old }));
-    writeFileSync(join(root, 'records', `${activeId}.json`), JSON.stringify({ ...base, jobId: activeId, requestId: 'active-request', type: 'reconciliation', status: 'running' }));
+    const base = {
+      schemaVersion: 1,
+      revision: 1,
+      repoId,
+      priority: 'P2',
+      requestId: 'legacy-request',
+      semanticKey: 'legacy',
+      payload: { operation: 'legacy' },
+      origin: { surface: 'system' },
+      resourceClaims: [],
+      dependencies: [],
+      leaseRefs: [],
+      createdAt: old,
+      updatedAt: old,
+      queuedAt: old,
+      attempt: 1,
+      maxAttempts: 1,
+      evidenceIds: [],
+    };
+    writeFileSync(
+      join(root, 'records', `${terminalId}.json`),
+      JSON.stringify({ ...base, jobId: terminalId, type: 'reconciliation', status: 'succeeded', finishedAt: old }),
+    );
+    writeFileSync(
+      join(root, 'records', `${activeId}.json`),
+      JSON.stringify({
+        ...base,
+        jobId: activeId,
+        requestId: 'active-request',
+        type: 'reconciliation',
+        status: 'running',
+      }),
+    );
     writeFileSync(join(root, 'receipts', `${terminalId}.json`), '{}');
     writeFileSync(join(repositoryControllerRoot(home, repoId), 'events', 'jobs', `${terminalId}.jsonl`), '{}\n');
-    const terminalArtifact = writeExecutionArtifact(home, { ...base, jobId: terminalId, type: 'reconciliation', status: 'succeeded', finishedAt: old } as any, 'job-result', { target: true });
-    const activeArtifact = writeExecutionArtifact(home, { ...base, jobId: activeId, requestId: 'active-request', type: 'reconciliation', status: 'running' } as any, 'job-result', { active: true });
+    const terminalArtifact = writeExecutionArtifact(
+      home,
+      { ...base, jobId: terminalId, type: 'reconciliation', status: 'succeeded', finishedAt: old } as any,
+      'job-result',
+      { target: true },
+    );
+    const activeArtifact = writeExecutionArtifact(
+      home,
+      { ...base, jobId: activeId, requestId: 'active-request', type: 'reconciliation', status: 'running' } as any,
+      'job-result',
+      { active: true },
+    );
 
-    const report = cleanupRetiredExecutionJobs(home, repoId, { retentionMs: 60_000, maxTerminalRecords: 500, maxRemovals: 32 });
+    const report = cleanupRetiredExecutionJobs(home, repoId, {
+      retentionMs: 60_000,
+      maxTerminalRecords: 500,
+      maxRemovals: 32,
+    });
     expect(report.removed).toBe(1);
     expect(report.protectedActive).toBe(1);
     expect(existsSync(join(root, 'records', `${terminalId}.json`))).toBe(false);
     expect(existsSync(join(root, 'receipts', `${terminalId}.json`))).toBe(false);
-    expect(existsSync(join(repositoryControllerRoot(home, repoId), 'events', 'jobs', `${terminalId}.jsonl`))).toBe(false);
-    expect(existsSync(join(controllerSystemRoot(home), 'outputs', 'artifacts', 'records', `${terminalArtifact.artifactId}.json`))).toBe(false);
-    expect(existsSync(join(controllerSystemRoot(home), 'outputs', 'artifacts', 'data', `${terminalArtifact.artifactId}.json`))).toBe(false);
-    expect(existsSync(join(controllerSystemRoot(home), 'outputs', 'artifacts', 'records', `${activeArtifact.artifactId}.json`))).toBe(true);
-    expect(existsSync(join(controllerSystemRoot(home), 'outputs', 'artifacts', 'data', `${activeArtifact.artifactId}.json`))).toBe(true);
+    expect(existsSync(join(repositoryControllerRoot(home, repoId), 'events', 'jobs', `${terminalId}.jsonl`))).toBe(
+      false,
+    );
+    expect(
+      existsSync(
+        join(controllerSystemRoot(home), 'outputs', 'artifacts', 'records', `${terminalArtifact.artifactId}.json`),
+      ),
+    ).toBe(false);
+    expect(
+      existsSync(
+        join(controllerSystemRoot(home), 'outputs', 'artifacts', 'data', `${terminalArtifact.artifactId}.json`),
+      ),
+    ).toBe(false);
+    expect(
+      existsSync(
+        join(controllerSystemRoot(home), 'outputs', 'artifacts', 'records', `${activeArtifact.artifactId}.json`),
+      ),
+    ).toBe(true);
+    expect(
+      existsSync(join(controllerSystemRoot(home), 'outputs', 'artifacts', 'data', `${activeArtifact.artifactId}.json`)),
+    ).toBe(true);
     expect(existsSync(join(root, 'records', `${activeId}.json`))).toBe(true);
   });
 
@@ -949,7 +1295,11 @@ fi
     const internal = scheduler as unknown as {
       runtimeCleanup: () => void;
       processGc: (options: { repoId: string }) => { ok: boolean };
-      editValidationReconcile: (controllerHome: string, repository: { repoId: string }, limit: number) => Promise<{ errors: unknown[] }>;
+      editValidationReconcile: (
+        controllerHome: string,
+        repository: { repoId: string },
+        limit: number,
+      ) => Promise<{ errors: unknown[] }>;
       repositoryList: () => Array<{ repoId: string; enabled: boolean; canonicalRoot: string; removedAt?: string }>;
     };
     internal.runtimeCleanup = () => undefined;
@@ -978,7 +1328,9 @@ fi
     const home = controllerHome();
     const repoId = 'repo-projection-inflight-invalidation';
     const markedAt = new Date().toISOString();
-    const initial = markRepositoryProjectionDirty(home, repoId, 'initial-state-change', { nowMs: Date.parse(markedAt) });
+    const initial = markRepositoryProjectionDirty(home, repoId, 'initial-state-change', {
+      nowMs: Date.parse(markedAt),
+    });
     expect(initial).toBeTruthy();
 
     const running = persistRepositoryProjectionDirty(home, repoId, {
@@ -1014,10 +1366,18 @@ fi
       localRoot: root,
       canonicalRoot: root,
       activeCheckoutId: 'checkout-main',
-      checkouts: [{
-        checkoutId: 'checkout-main', localRoot: root, canonicalRoot: root, worktree: false,
-        branch: 'main', createdAt: at, updatedAt: at, lastSeenAt: at,
-      }],
+      checkouts: [
+        {
+          checkoutId: 'checkout-main',
+          localRoot: root,
+          canonicalRoot: root,
+          worktree: false,
+          branch: 'main',
+          createdAt: at,
+          updatedAt: at,
+          lastSeenAt: at,
+        },
+      ],
       repositoryType: 'git',
       enabled: true,
       createdAt: at,
@@ -1055,8 +1415,9 @@ fi
     } finally {
       Date.now = actualNow;
     }
-    expect(readRepositoryGitStatusSample(home, repository.repoId, repository.activeCheckoutId)?.observedAt)
-      .toBe(sampleBefore?.observedAt);
+    expect(readRepositoryGitStatusSample(home, repository.repoId, repository.activeCheckoutId)?.observedAt).toBe(
+      sampleBefore?.observedAt,
+    );
   });
 
   test('refreshes only invalidated projections without idle Git polling', async () => {
@@ -1073,10 +1434,18 @@ fi
         localRoot: root,
         canonicalRoot: root,
         activeCheckoutId: 'checkout-main',
-        checkouts: [{
-          checkoutId: 'checkout-main', localRoot: root, canonicalRoot: root, worktree: false,
-          branch: 'main', createdAt: at, updatedAt: at, lastSeenAt: at,
-        }],
+        checkouts: [
+          {
+            checkoutId: 'checkout-main',
+            localRoot: root,
+            canonicalRoot: root,
+            worktree: false,
+            branch: 'main',
+            createdAt: at,
+            updatedAt: at,
+            lastSeenAt: at,
+          },
+        ],
         repositoryType: 'git',
         enabled: true,
         createdAt: at,
@@ -1101,7 +1470,9 @@ fi
     internal.processGc = () => ({ ok: true });
     internal.workValidationReconcile = () => ({ errors: [] });
     internal.editValidationReconcile = async () => ({ errors: [] });
-    markRepositoryProjectionDirty(home, repositoryB.repoId, 'source-change-before-idle-slot', { sourceRevision: 'def456' });
+    markRepositoryProjectionDirty(home, repositoryB.repoId, 'source-change-before-idle-slot', {
+      sourceRevision: 'def456',
+    });
     expect(repositoryProjectionIsDirty(home, repositoryB.repoId)).toBe(true);
 
     await expect(scheduler.tick()).resolves.toEqual({ activeJobs: 0 });
