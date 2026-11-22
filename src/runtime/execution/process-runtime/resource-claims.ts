@@ -825,6 +825,18 @@ function isCargoSourceValidationCommand(command: string | readonly string[]): bo
   return ['test', 'check'].includes(words[1]?.toLowerCase() ?? '');
 }
 
+/** Only literal, bounded Git pathspecs may narrow source mutation claims. */
+function literalGitMutationPaths(args: readonly string[]): string[] | undefined {
+  const separator = args.indexOf('--');
+  const paths = separator >= 0 ? args.slice(separator + 1) : args.slice(1);
+  if (paths.length === 0 || paths.length > 16 || (separator < 0 && paths.some((path) => path.startsWith('-')))) {
+    return undefined;
+  }
+  return paths.every((path) => path !== '.' && !/[:*?\[\]{}\\]/.test(path) && normalizeClaimPath(path) !== null)
+    ? [...paths]
+    : undefined;
+}
+
 /**
  * Classify resource claims for a repository command without taking whole-repo exclusive locks
  * for ordinary readonly / focused validation commands.
@@ -943,9 +955,9 @@ function repositoryCommandClaims(
     canonical.kind === 'argv' ? (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase() : undefined;
   const sub = canonical.kind === 'argv' ? canonical.args?.[0]?.toLowerCase() : undefined;
   if (program === 'git') {
-    const gitPaths = extractLikelyPaths(command).slice(0, 16);
+    const gitPaths = sub === 'apply' ? undefined : literalGitMutationPaths(canonical.args ?? []);
     if (sub === 'add' || sub === 'rm' || sub === 'mv' || sub === 'restore' || sub === 'apply') {
-      if (gitPaths.length > 0) {
+      if (gitPaths) {
         return normalizeClaims([
           claimGitIndex(checkoutId, repoId),
           ...gitPaths.map((path) => claimPathWrite(path, checkoutId, repoId)),
@@ -959,12 +971,7 @@ function repositoryCommandClaims(
       return [claimGitIndex(checkoutId, repoId), claimGitRefs(repoId)];
     }
     if (sub === 'checkout' || sub === 'switch' || sub === 'branch' || sub === 'tag') {
-      if (gitPaths.length > 0) {
-        return normalizeClaims([
-          claimGitRefs(repoId),
-          ...gitPaths.map((path) => claimPathWrite(path, checkoutId, repoId)),
-        ]);
-      }
+      // A ref or branch argument is not a modified source path.
       return [claimGitRefs(repoId), claimWorkspaceWrite(checkoutId, repoId)];
     }
   }

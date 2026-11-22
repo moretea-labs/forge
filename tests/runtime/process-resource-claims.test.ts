@@ -670,6 +670,32 @@ describe('Process Runtime fine-grained resource claims', () => {
     });
   });
 
+  test('literal Git source pathspecs narrow index operations but patch input is not an output path (#713)', () => {
+    for (const command of [
+      ['git', 'add', 'README'],
+      ['git', 'add', '--all', '--', 'README'],
+      ['git', 'rm', '--', 'docs/obsolete.md'],
+      ['git', 'mv', 'old_name', 'new_name'],
+      ['git', 'restore', '--', 'src/main.ts'],
+    ]) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims).toContainEqual({ resourceKey: 'git-index:co1', mode: 'exclusive' });
+      expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+    }
+    for (const command of [
+      ['git', 'add', '.'],
+      ['git', 'add', '--all'],
+      ['git', 'add', '--', ':!README'],
+      ['git', 'add', '--', 'src/*.ts'],
+      ['git', 'add', '--', '../outside.md'],
+      ['git', 'apply', 'change.diff'],
+    ]) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+      expect(claims).toContainEqual({ resourceKey: 'git-index:co1', mode: 'exclusive' });
+    }
+  });
+
   test('Cargo source mutation, shell composition and opaque scripts remain conservatively fenced (#713)', () => {
     for (const command of [
       'cargo test --lib && touch generated.txt',
