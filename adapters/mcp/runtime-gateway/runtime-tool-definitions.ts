@@ -4,7 +4,13 @@ import { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from '../../../src/runtime/context/
 import { RH_WORK_MODEL_OPERATIONS } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../../src/runtime/context/automatic-learning';
 
-function definition(name: string, description: string, properties: Record<string, unknown>, required: string[] = [], readOnly = true): McpToolDefinition {
+function definition(
+  name: string,
+  description: string,
+  properties: Record<string, unknown>,
+  required: string[] = [],
+  readOnly = true,
+): McpToolDefinition {
   return {
     name,
     description,
@@ -14,516 +20,1411 @@ function definition(name: string, description: string, properties: Record<string
 }
 const repoId = { type: 'string', description: 'Stable repository id.' };
 export const runtimeToolDefinitions: McpToolDefinition[] = [
-  definition('rh_status', 'Preferred ChatGPT facade: bounded controller status, capability readiness, and self-healing diagnose/repair.', {
-    repo_id: repoId,
-    operation: { type: 'string', enum: ['list', 'get', 'repair'], description: 'Defaults to get.' },
-    detail_level: { type: 'string', enum: ['summary', 'detail'], description: 'Defaults to summary.' },
-    include_maintenance: { type: 'boolean', description: 'For detail reads only. Runs the explicit bounded maintenance inspection; defaults to false so status remains a hot read.' },
-    repair_operation: { type: 'string', enum: ['diagnose', 'repair', 'verify', 'handoff'] },
-    dry_run: { type: 'boolean', description: 'Defaults to true for repair/diagnose.' },
-    approval_confirmed: { type: 'boolean' },
-    chatgpt_pull_failed: { type: 'boolean' },
-    destructive: { type: 'boolean' },
-  }),
-  definition('rh_inbox', 'Preferred ChatGPT facade: instance-level UserRequest inbox for genuine human actions/decisions. Repository-scoped handoff_id remains a legacy compatibility lookup.', {
-    repo_id: { ...repoId, description: 'Optional legacy repository context. Omit for canonical instance-level UserRequest operations.' },
-    scope: { type: 'string', enum: ['all', 'global'], description: 'List-only scope filter. global returns only unscoped instance-level UserRequests; omit/all preserves the existing canonical list.' },
-    operation: { type: 'string', enum: ['list', 'get', 'ack', 'accept', 'resolve', 'dismiss', 'create'], description: 'Defaults to list (pending).' },
-    request_id: { type: 'string', description: 'Canonical instance-level UserRequest id.' },
-    handoff_id: { type: 'string', description: 'Legacy compatibility id.' },
-    title: { type: 'string' },
-    reason: { type: 'string' },
-    summary: { type: 'string' },
-    recommended_decision: { type: 'string' },
-    recommended_prompt: { type: 'string' },
-    action_required: { type: 'string', enum: ['login', 'grant_permission', 'confirm_destructive', 'product_decision'] },
-    request_kind: { type: 'string', enum: ['user_action_request', 'user_decision_request'] },
-    root_cause_key: { type: 'string' },
-    decision: { type: 'string', description: 'Recorded on resolve/dismiss.' },
-    resolver: { type: 'string', description: 'Who resolved or dismissed the handoff.' },
-    detail_level: { type: 'string', enum: ['summary', 'detail'] },
-    limit: { type: 'number' },
-  }),
-  definition('rh_context', 'Read-only semantic repository retrieval and advisory context, including source snippets, paths, symbols, relationships and optional project knowledge. Requested compiler navigation locations are returned as bounded flat semanticEvidence.locations alongside navigation diagnostics. The model chooses whether semantic retrieval is needed and when its evidence is sufficient; no mandatory retrieval router or tool sequence is imposed. Reuse known context within the conversation; retrieve only changed or missing evidence. For cross-module changes or retirement of an old mechanism, start with broad source candidates, trace newly discovered callers/indirect entry points using targeted search and explicit semantic_navigation references, and revisit related tests and docs. When readiness identifies omitted or truncated material evidence, decide which gaps affect the original goal and read those exact paths rather than assuming the first result is complete; narrow local edits need no repeated broad search. Execution facts still require live verification at the operation boundary. This tool does not authorize execution or impose a required workflow.', {
-    repo_id: repoId,
-    checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple worktrees.' },
-    operation: { type: 'string', enum: ['list', 'get', 'search'], description: 'Defaults to get. Search returns semantic source candidates when the model selects this retrieval capability.' },
-    query: { type: 'string', description: 'Code/content intent for operation=search. For operation=list, a natural-language capability intent such as "configure Xcode provisioning" returns ranked read-only capability candidates while execution remains on the capability\'s typed executor. Frozen-schema clients may append @tsnav or @swiftnav references|definition|implementations <repo-path>:<line>:<column> for compiler/LSP-backed semantic navigation.' },
-    search_terms: { type: 'array', maxItems: 8, items: { type: 'string', maxLength: 160 }, description: 'Optional model-selected literal code-search terms, ordered by likely relevance. Preserve query as the original user intent; for non-English or descriptive questions about source written in another language, infer repository-language identifiers/phrases (such as the relevant function name, file symbol, or operation keyword) and supply them here. Forge uses bounded lexical ripgrep matching, not automatic translation or semantic embeddings. Refine terms or known_paths when initial candidates are insufficient; a broad non-English query alone may not match English identifiers.' },
-    include_learning_recall: { type: 'boolean', description: 'Defaults to true for semantic task/capability queries. Set false for routine progressive source follow-ups or micro-steps when the already recalled working set is still valid. This is a model-owned attention/cadence choice, not a Forge semantic trigger.' },
-    recall_query_variants: { type: 'array', maxItems: 3, items: { type: 'string', maxLength: 256 }, description: 'Optional model-authored equivalent Cognitive recall queries, including translations. Forge only performs bounded lexical retrieval, preserves scope and provenance, and never generates language translations, embeddings or semantic judgements. Requires a normal query and active learning recall.' },
-    knowledge_query: { type: 'string', description: 'Optional explicit read-only Cognitive audit query. Ordinary code/capability intent queries already receive a bounded relevant-learning recall; use this field for deliberate memory inspection. May be used without code query. Use "*" or omit text with filters to list learned advisory memory in scopes reachable from this repo/Work.' },
-    knowledge_memory_id: { type: 'string', description: 'Optional exact Cognitive memory id for inspection.' },
-    knowledge_scope_kind: { type: 'string', enum: ['work', 'requirement', 'plan', 'plan_step', 'project', 'workspace'], description: 'Optional Cognitive scope filter; it must already be reachable from the selected repo/Work.' },
-    knowledge_scope_id: { type: 'string', description: 'Optional Cognitive scope id paired with knowledge_scope_kind.' },
-    knowledge_concept: { type: 'string', description: 'Optional exact learned concept filter.' },
-    knowledge_facet: { type: 'string', description: 'Optional exact learned facet filter.' },
-    knowledge_source_kind: { type: 'string', enum: ['experience', 'outcome', 'knowledge', 'controller', 'system', 'external'], description: 'Optional provenance source-kind filter.' },
-    knowledge_limit: { type: 'number', minimum: 1, maximum: 100, description: 'Per-call read envelope for explicit Cognitive audit/expansion; defaults to 24. This is a context/transport budget, not a semantic claim that N memories are sufficient.' },
-    known_paths: { type: 'array', items: { type: 'string' }, description: 'Optional exact paths or globs that should receive highest retrieval priority. Prefer exact file reads when paths are already known; use retrieval only for missing or changed evidence.' },
-    include_globs: { type: 'array', items: { type: 'string' } },
-    exclude_globs: { type: 'array', items: { type: 'string' } },
-    retrieval_mode: { type: 'string', enum: ['implementation', 'plan', 'debug', 'review'], description: 'Defaults to implementation. Implementation returns current raw impact evidence for ChatGPT to judge; plan/debug/review intentionally widen evidence.' },
-    impact_domains: { type: 'array', items: { type: 'string', enum: [...CONTROLLER_CONTEXT_IMPACT_DOMAINS] }, description: 'Optional GPT-selected cross-cutting evidence dimensions. Forge expands these mechanically in the same retrieval call; it never treats them as proof of semantic completeness.' },
-    structural_context: { type: 'string', enum: ['off', 'auto', 'required'], description: 'Optional override. Defaults to off for all modes; explicitly opt in only for structural investigations.' },
-    semantic_navigation: {
-      type: 'array',
-      maxItems: 8,
-      description: 'Optional bounded semantic navigation through the provider registry. TypeScript uses a short-lived release-owned Language Service sidecar so compiler/project allocator growth never remains resident in the canonical Runtime; Swift uses SourceKit-LSP only with existing build settings; registered generic LSP providers currently cover Rust, Go, Python, and C/C++ when their language-server executable and project root markers already exist. Providers start lazily only for explicit semantic requests; Forge never installs a server, triggers a build, or treats language-server output as source authority.',
-      items: {
-        type: 'object',
-        required: ['navigation', 'path', 'line', 'column'],
-        additionalProperties: false,
-        properties: {
-          navigation: { type: 'string', enum: ['definition', 'references', 'implementations'] },
-          path: { type: 'string' },
-          line: { type: 'number' },
-          column: { type: 'number' },
-          tsconfig_path: { type: 'string' },
-          language: { type: 'string', description: 'Optional provider-routing hint. File extension remains the default routing signal.' },
+  definition(
+    'rh_status',
+    'Preferred ChatGPT facade: bounded controller status, capability readiness, and self-healing diagnose/repair.',
+    {
+      repo_id: repoId,
+      operation: { type: 'string', enum: ['list', 'get', 'repair'], description: 'Defaults to get.' },
+      detail_level: { type: 'string', enum: ['summary', 'detail'], description: 'Defaults to summary.' },
+      include_maintenance: {
+        type: 'boolean',
+        description:
+          'For detail reads only. Runs the explicit bounded maintenance inspection; defaults to false so status remains a hot read.',
+      },
+      repair_operation: { type: 'string', enum: ['diagnose', 'repair', 'verify', 'handoff'] },
+      dry_run: { type: 'boolean', description: 'Defaults to true for repair/diagnose.' },
+      approval_confirmed: { type: 'boolean' },
+      chatgpt_pull_failed: { type: 'boolean' },
+      destructive: { type: 'boolean' },
+    },
+  ),
+  definition(
+    'rh_inbox',
+    'Preferred ChatGPT facade: instance-level UserRequest inbox for genuine human actions/decisions. Repository-scoped handoff_id remains a legacy compatibility lookup.',
+    {
+      repo_id: {
+        ...repoId,
+        description: 'Optional legacy repository context. Omit for canonical instance-level UserRequest operations.',
+      },
+      scope: {
+        type: 'string',
+        enum: ['all', 'global'],
+        description:
+          'List-only scope filter. global returns only unscoped instance-level UserRequests; omit/all preserves the existing canonical list.',
+      },
+      operation: {
+        type: 'string',
+        enum: ['list', 'get', 'ack', 'accept', 'resolve', 'dismiss', 'create'],
+        description: 'Defaults to list (pending).',
+      },
+      request_id: { type: 'string', description: 'Canonical instance-level UserRequest id.' },
+      handoff_id: { type: 'string', description: 'Legacy compatibility id.' },
+      title: { type: 'string' },
+      reason: { type: 'string' },
+      summary: { type: 'string' },
+      recommended_decision: { type: 'string' },
+      recommended_prompt: { type: 'string' },
+      action_required: {
+        type: 'string',
+        enum: ['login', 'grant_permission', 'confirm_destructive', 'product_decision'],
+      },
+      request_kind: { type: 'string', enum: ['user_action_request', 'user_decision_request'] },
+      root_cause_key: { type: 'string' },
+      decision: { type: 'string', description: 'Recorded on resolve/dismiss.' },
+      resolver: { type: 'string', description: 'Who resolved or dismissed the handoff.' },
+      detail_level: { type: 'string', enum: ['summary', 'detail'] },
+      limit: { type: 'number' },
+    },
+  ),
+  definition(
+    'rh_context',
+    'Read-only semantic repository retrieval and advisory context, including source snippets, paths, symbols, relationships and optional project knowledge. Requested compiler navigation locations are returned as bounded flat semanticEvidence.locations alongside navigation diagnostics. The model chooses whether semantic retrieval is needed and when its evidence is sufficient; no mandatory retrieval router or tool sequence is imposed. Reuse known context within the conversation; retrieve only changed or missing evidence. For cross-module changes or retirement of an old mechanism, start with broad source candidates, trace newly discovered callers/indirect entry points using targeted search and explicit semantic_navigation references, and revisit related tests and docs. When readiness identifies omitted or truncated material evidence, decide which gaps affect the original goal and read those exact paths rather than assuming the first result is complete; narrow local edits need no repeated broad search. Execution facts still require live verification at the operation boundary. This tool does not authorize execution or impose a required workflow.',
+    {
+      repo_id: repoId,
+      checkout_id: {
+        type: 'string',
+        description: 'Optional checkout identity for repositories with multiple worktrees.',
+      },
+      operation: {
+        type: 'string',
+        enum: ['list', 'get', 'search'],
+        description:
+          'Defaults to get. Search returns semantic source candidates when the model selects this retrieval capability.',
+      },
+      query: {
+        type: 'string',
+        description:
+          'Code/content intent for operation=search. For operation=list, a natural-language capability intent such as "configure Xcode provisioning" returns ranked read-only capability candidates while execution remains on the capability\'s typed executor. Frozen-schema clients may append @tsnav or @swiftnav references|definition|implementations <repo-path>:<line>:<column> for compiler/LSP-backed semantic navigation.',
+      },
+      search_terms: {
+        type: 'array',
+        maxItems: 8,
+        items: { type: 'string', maxLength: 160 },
+        description:
+          'Optional model-selected literal code-search terms, ordered by likely relevance. Preserve query as the original user intent; for non-English or descriptive questions about source written in another language, infer repository-language identifiers/phrases (such as the relevant function name, file symbol, or operation keyword) and supply them here. Forge uses bounded lexical ripgrep matching, not automatic translation or semantic embeddings. Refine terms or known_paths when initial candidates are insufficient; a broad non-English query alone may not match English identifiers.',
+      },
+      include_learning_recall: {
+        type: 'boolean',
+        description:
+          'Defaults to true for semantic task/capability queries. Set false for routine progressive source follow-ups or micro-steps when the already recalled working set is still valid. This is a model-owned attention/cadence choice, not a Forge semantic trigger.',
+      },
+      recall_query_variants: {
+        type: 'array',
+        maxItems: 3,
+        items: { type: 'string', maxLength: 256 },
+        description:
+          'Optional model-authored equivalent Cognitive recall queries, including translations. Forge only performs bounded lexical retrieval, preserves scope and provenance, and never generates language translations, embeddings or semantic judgements. Requires a normal query and active learning recall.',
+      },
+      knowledge_query: {
+        type: 'string',
+        description:
+          'Optional explicit read-only Cognitive audit query. Ordinary code/capability intent queries already receive a bounded relevant-learning recall; use this field for deliberate memory inspection. May be used without code query. Use "*" or omit text with filters to list learned advisory memory in scopes reachable from this repo/Work.',
+      },
+      knowledge_memory_id: { type: 'string', description: 'Optional exact Cognitive memory id for inspection.' },
+      knowledge_scope_kind: {
+        type: 'string',
+        enum: ['work', 'requirement', 'plan', 'plan_step', 'project', 'workspace'],
+        description: 'Optional Cognitive scope filter; it must already be reachable from the selected repo/Work.',
+      },
+      knowledge_scope_id: {
+        type: 'string',
+        description: 'Optional Cognitive scope id paired with knowledge_scope_kind.',
+      },
+      knowledge_concept: { type: 'string', description: 'Optional exact learned concept filter.' },
+      knowledge_facet: { type: 'string', description: 'Optional exact learned facet filter.' },
+      knowledge_source_kind: {
+        type: 'string',
+        enum: ['experience', 'outcome', 'knowledge', 'controller', 'system', 'external'],
+        description: 'Optional provenance source-kind filter.',
+      },
+      knowledge_limit: {
+        type: 'number',
+        minimum: 1,
+        maximum: 100,
+        description:
+          'Per-call read envelope for explicit Cognitive audit/expansion; defaults to 24. This is a context/transport budget, not a semantic claim that N memories are sufficient.',
+      },
+      known_paths: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Optional exact paths or globs that should receive highest retrieval priority. Prefer exact file reads when paths are already known; use retrieval only for missing or changed evidence.',
+      },
+      include_globs: { type: 'array', items: { type: 'string' } },
+      exclude_globs: { type: 'array', items: { type: 'string' } },
+      retrieval_mode: {
+        type: 'string',
+        enum: ['implementation', 'plan', 'debug', 'review'],
+        description:
+          'Defaults to implementation. Implementation returns current raw impact evidence for ChatGPT to judge; plan/debug/review intentionally widen evidence.',
+      },
+      impact_domains: {
+        type: 'array',
+        items: { type: 'string', enum: [...CONTROLLER_CONTEXT_IMPACT_DOMAINS] },
+        description:
+          'Optional GPT-selected cross-cutting evidence dimensions. Forge expands these mechanically in the same retrieval call; it never treats them as proof of semantic completeness.',
+      },
+      structural_context: {
+        type: 'string',
+        enum: ['off', 'auto', 'required'],
+        description:
+          'Optional override. Defaults to off for all modes; explicitly opt in only for structural investigations.',
+      },
+      semantic_navigation: {
+        type: 'array',
+        maxItems: 8,
+        description:
+          'Optional bounded semantic navigation through the provider registry. TypeScript uses a short-lived release-owned Language Service sidecar so compiler/project allocator growth never remains resident in the canonical Runtime; Swift uses SourceKit-LSP only with existing build settings; registered generic LSP providers currently cover Rust, Go, Python, and C/C++ when their language-server executable and project root markers already exist. Providers start lazily only for explicit semantic requests; Forge never installs a server, triggers a build, or treats language-server output as source authority.',
+        items: {
+          type: 'object',
+          required: ['navigation', 'path', 'line', 'column'],
+          additionalProperties: false,
+          properties: {
+            navigation: { type: 'string', enum: ['definition', 'references', 'implementations'] },
+            path: { type: 'string' },
+            line: { type: 'number' },
+            column: { type: 'number' },
+            tsconfig_path: { type: 'string' },
+            language: {
+              type: 'string',
+              description: 'Optional provider-routing hint. File extension remains the default routing signal.',
+            },
+          },
         },
       },
+      max_files: { type: 'number' },
+      max_snippets: { type: 'number' },
+      requested_check_ids: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Optional execution preflight. When supplied, returns registered checks plus dependency and resource-compatible scheduling readiness; omit for source-only retrieval.',
+      },
+      capability_id: {
+        type: 'string',
+        description:
+          'Optional capability identity. For plugin.<pluginId>.<actionId>, returns the exact typed action schema/policy for plugin_action_execute.',
+      },
+      work_id: {
+        type: 'string',
+        description:
+          'Retired. Work identity is fully deleted; any non-empty work_id is rejected. Use Requirement, Plan, repository, Process or Issue context instead.',
+      },
+      detail_level: {
+        type: 'string',
+        enum: ['summary', 'detail', 'raw'],
+        description:
+          'Defaults to summary. Source search keeps snippets, exact provenance and readiness/gaps; detail/raw adds retrieval diagnostics and candidate lists. Expand only when those diagnostics can change the next decision; raw is still bounded.',
+      },
     },
-    max_files: { type: 'number' },
-    max_snippets: { type: 'number' },
-    requested_check_ids: { type: 'array', items: { type: 'string' }, description: 'Optional execution preflight. When supplied, returns registered checks plus dependency and resource-compatible scheduling readiness; omit for source-only retrieval.' },
-    capability_id: { type: 'string', description: 'Optional capability identity. For plugin.<pluginId>.<actionId>, returns the exact typed action schema/policy for plugin_action_execute.' },
-    work_id: { type: 'string', description: 'Legacy historical Work identifier for list/get/get_contract compatibility only. New execution, scheduling, learning, UserRequest, Git and Workflow paths reject Work authority.' },
-    detail_level: { type: 'string', enum: ['summary', 'detail', 'raw'], description: 'Defaults to summary. Source search keeps snippets, exact provenance and readiness/gaps; detail/raw adds retrieval diagnostics and candidate lists. Expand only when those diagnostics can change the next decision; raw is still bounded.' },
-  }),
-  definition('rh_credential', 'Authorize or revoke use of one Forge-managed credential reference. This tool never creates, reads, returns, or transports secret material; macOS Keychain/browser password manager remains the secret authority. Authorization is a canonical Identity AuthorizationGrant and is reused until expiry or revocation.', {
-    operation: { type: 'string', enum: ['status', 'authorize', 'revoke'], description: 'Defaults to status.' },
-    credential_ref: { type: 'string', description: 'Opaque stable credential binding reference. Never secret material.' },
-    endpoint: { type: 'string', description: 'Exact non-secret endpoint/origin bound to this credential authorization. Required for status/authorize.' },
-    provider: { type: 'string', enum: ['api', 'browser_password_manager'], description: 'Credential provider binding. Defaults to api.' },
-    account: { type: 'string', maxLength: 512, description: 'Exact non-secret account identifier. Required when provider=browser_password_manager; stored only in the canonical Grant constraint.' },
-    confirm_authorization: { type: 'boolean', description: 'Must be true for authorize.' },
-    expires_in_minutes: { type: 'number', minimum: 1, description: 'Authorization TTL; canonical Grant limits apply.' },
-    reason: { type: 'string', description: 'Optional revoke reason.' },
-  }, ['credential_ref'], false),
-  definition('rh_autopilot', 'Explicit optional Requirement Autopilot. Ordinary Forge use never requires a Requirement. authorize binds the exact caller-reviewed Requirement revision to a canonical AuthorizationGrant and rejects stale revisions; start/resume run a bounded Runtime-owned local execution loop over existing Repository/Git/Process owners. This tool does not create Plan progress/lifecycle state and never grants remote-write or destructive authority.', {
-    repo_id: repoId,
-    checkout_id: { type: 'string', description: 'Exact checkout selected for the authorization/execution placement.' },
-    requirement_id: { type: 'string', description: 'Required Requirement root for Autopilot. This requirement applies only to Autopilot; normal Agent/Repository use remains Requirement-optional.' },
-    operation: { type: 'string', enum: ['status', 'authorize', 'start', 'pause', 'resume', 'revoke'], description: 'Defaults to status.' },
-    confirm_authorization: { type: 'boolean', description: 'Must be true for authorize.' },
-    expected_requirement_revision: { type: 'number', minimum: 1, description: 'Required when operation=authorize. Exact Requirement revision reviewed by the user; stale approvals are rejected.' },
-    model: { type: 'string', description: 'DeepSeek model. Defaults to deepseek-chat for the first Runtime-owned provider implementation.' },
-    max_total_tokens: { type: 'number', minimum: 1000, maximum: 500000, description: 'Provider-reported token budget across the autonomous run. Forge stops starting new model turns when exhausted.' },
-    max_turns: { type: 'number', minimum: 1, maximum: 48 },
-    max_tool_calls: { type: 'number', minimum: 1, maximum: 128 },
-    checkpoint_plan_ids: { type: 'array', maxItems: 64, items: { type: 'string' }, description: 'Optional Plan nodes that pause the run for human acceptance when the model reports that current plan. Plans remain semantic structure, not progress state.' },
-    approved_checkpoint_run_id: { type: 'string', description: 'For human-checkpoint resume: exact Run ID explicitly reviewed and accepted by a person.' },
-    approved_checkpoint_plan_id: { type: 'string', description: 'For human-checkpoint resume: exact paused Plan ID explicitly reviewed and accepted by a person.' },
-    expires_in_minutes: { type: 'number', minimum: 1, description: 'Authorization TTL. Canonical Grant limits still apply.' },
-    reason: { type: 'string', description: 'Optional revoke reason.' },
-  }, ['requirement_id'], false),
-  definition('rh_work', 'Preferred ChatGPT facade for optional durable Requirement/Plan/Work semantic context, historical read-only Work records, Work-free Workflow execution, browser schedules, and ChatGPT Launch Session. Work lifecycle creation/mutation/ownership is retired; lifecycle state and authority stay internal to the semantic workflow. Ordinary execution and validation use direct domain capabilities.', {
-    repo_id: repoId,
-    checkout_id: { type: 'string', description: 'Optional exact checkout identity for repository-bound Plan, Workflow, Schedule, or historical Work reads.' },
-    operation: { type: 'string', enum: [...RH_WORK_MODEL_OPERATIONS], description: 'Project and Requirement operations manage canonical semantic records; project_attach_requirement links an existing Requirement through a selected Project repository placement without duplicating or changing its semantic state. Set repo_id when a Project has multiple repository placements. Plan operations manage delivery structure. list/get/get_contract are historical Work reads only. Workflow execution and browser schedules are Work-free; launcher_start opens a ChatGPT session or sends one explicit Prompt through its task-bound active conversation.' },
-    limit: { type: 'number', minimum: 1, maximum: 100, description: 'Bounded result limit for lists and project_get(detail) task rows (default 100 for project detail).' },
-    offset: { type: 'number', minimum: 0, maximum: 100000, description: 'Zero-based result offset for project_list, project_get(detail) task rows, or requirement_list.' },
-    search_query: { type: 'string', maxLength: 256, description: 'Case-insensitive text filter: Project ID/name for project_list; Requirement ID/title/outcome/Project ID/legacy aliases for requirement_list.' },
-    dependency_filter: { type: 'string', enum: ['blocked', 'unblocked'], description: 'Filter requirement_list by unresolved dependencies. A dependency is unresolved until its canonical Requirement status is done; includes missing/cancelled dependencies. Unblocked does not imply an executable task status.' },
-    sort_by: { type: 'string', enum: ['updated_at', 'created_at', 'priority', 'status', 'title', 'assignee'], description: 'Requirement list sort key; defaults to updated_at.' },
-    sort_order: { type: 'string', enum: ['asc', 'desc'], description: 'Requirement list sort direction; defaults to desc.' },
-    objective: { type: 'string', description: 'Model-authored Plan goal for plan_create/plan_revise, or Work objective where applicable. On plan_revise this replaces the canonical Plan goal under expected_revision CAS.' },
-    capability_id: { type: 'string', description: 'Compatibility-only carrier. Current callers should use typed rh_work fields directly. The outer adapter accepts only the bounded frozen semantic.v1 bridge and current-conversation enrollment, validates them without persistence, and routes them into the same Thin owners.' },
-    work_id: { type: 'string' },
-    workflow_id: { type: 'string', description: 'Versioned Workflow asset identity for workflow_execute/workflow_reconcile. Workflow execution is Work-free.' },
-    workflow_run_id: { type: 'string', description: 'Stable WorkflowRun identity within the selected repository/checkout/workflow scope. Reusing it resumes only the exact same workflow/content/input identity.' },
-    workflow_inputs: { type: 'object', description: 'Typed Workflow inputs validated against the installed asset contract.' },
-    workflow_scope_project_id: { type: 'string', description: 'Optional project-scoped Workflow registry identity. ProjectPlacement validates the selected repository; Work is not consulted.' },
-    workflow_reconciliation_request_id: { type: 'string', description: 'Fresh idempotency identity for one reconciliation observation. Retry the same observation with the same id; use a new id only for a later observation.' },
-    project_id: { type: 'string', maxLength: 512, description: 'Stable semantic Project identity for project_create/get/revise/project_attach_requirement, requirement_list/get/revise/create, and project-scoped plan_create/list/get/revise. The referenced Requirement must belong to this Project. For repository-backed Plans, include the matching repo_id; standalone Project Plans omit repo_id. Conflicting Repository/Project selection is rejected.' },
-    workspace_id: { type: 'string', maxLength: 512, description: 'Workspace scope for project_create/get/revise/list. Defaults to the existing Personal workspace on create.' },
-    project_display_name: { type: 'string', maxLength: 512, description: 'Project display name for project_create or project_revise.' },
-    project_status: { type: 'string', enum: ['active', 'archived'], description: 'Project lifecycle state for project_revise or status filter for project_list. Archiving preserves project identity and repository placement; it does not delete data.' },
-    project_sort_by: { type: 'string', enum: ['updated_at', 'display_name', 'status'], description: 'Sort key for project_list; defaults to updated_at.' },
-    requirement_id: { type: 'string', description: 'Stable Requirement identity for Requirement operations, project_attach_requirement, Plan provenance, or optional Workflow semantic guard.' },
-    requirement_parent_id: { type: 'string', maxLength: 160, description: 'Explicit parent Requirement in the same Project root tree for requirement_create/revise. This structural edge is separate from requirement_dependencies.' },
-    requirement_is_project_root: { type: 'boolean', description: 'For requirement_create/revise, explicitly bind this unparented Requirement as the Project\'s single canonical root. A Project cannot bind a second root.' },
-    expected_revision: { type: 'number', minimum: 1, description: 'Expected current record revision for project_revise, or semantic revision for requirement_revise/plan_revise. Stale writers fail; Forge never performs an implicit merge.' },
-    requirement_revision: { type: 'number', minimum: 1, description: 'Optional Requirement basis revision recorded by Plan create/revise.' },
-    expected_requirement_revision: { type: 'number', minimum: 1, description: 'For semantic plan_create, atomically compare the current parent Requirement semantic revision before writing the Plan. Pass the exact revision accepted by the user; stale proposals are rejected.' },
-    requirement_title: { type: 'string', description: 'Human-readable Requirement title for requirement_create/requirement_revise; revise replaces the canonical title under expected_revision CAS.' },
-    requirement_outcome: { type: 'string', description: 'Canonical outcome statement for requirement_create/requirement_revise; revise replaces the current Requirement objective under expected_revision CAS (previous revision remains in history).' },
-    requirement_acceptance_criteria: { type: 'array', maxItems: 50, items: { type: 'string' }, description: 'Complete canonical acceptance criteria for requirement_create/requirement_revise; on revise replaces the existing set under expected_revision CAS, not progress-only metadata.' },
-    requirement_delivery_references: { type: 'array', maxItems: 50, items: { type: 'string' }, description: 'Optional durable delivery/reference identifiers for requirement_create/requirement_revise.' },
-    requirement_legacy_aliases: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 160 }, description: 'Complete migration alias set for requirement_create/requirement_revise. Aliases are unique across Requirements and never become a second identity authority.' },
-    requirement_progress_summary: { type: 'string', maxLength: 2_000, description: 'Model-authored Requirement progress summary for requirement_revise; persisted with expected_revision CAS.' },
-    requirement_remaining_work: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 500 }, description: 'Remaining Requirement acceptance work for requirement_revise; a semantic description, not scheduler state.' },
-    requirement_accepted_evidence_refs: { type: 'array', maxItems: 100, items: { type: 'string', maxLength: 512 }, description: 'Verified evidence references accepted by the model for requirement_revise; not auto-inferred from Git/Work.' },
-    requirement_state: { type: 'string', enum: ['open', 'completed', 'cancelled'], description: 'Coarse semantic Requirement state retained for existing consumers.' },
-    requirement_status: { type: 'string', enum: [...REQUIREMENT_STATES], description: 'Full task lifecycle status for requirement_create/requirement_revise or exact requirement_list filter. Completing a task requires empty remaining work and accepted evidence; terminal states cannot be reopened.' },
-    requirement_priority: { type: 'string', enum: [...REQUIREMENT_PRIORITIES], description: 'Task priority for requirement_create/requirement_revise or exact requirement_list filter.' },
-    requirement_assignee: { type: 'string', maxLength: 160, description: 'Task owner label or identity for requirement_create/requirement_revise or exact requirement_list filter. Metadata only; it does not grant access.' },
-    assignment_filter: { type: 'string', enum: ['assigned', 'unassigned'], description: 'For requirement_list, show tasks with or without an assignee. The unassigned filter cannot be combined with a specific requirement_assignee.' },
-    requirement_dependencies: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 160 }, description: 'Complete set of Requirement IDs this task depends on. Dependencies may cross repositories/projects; missing, cancelled, self and cyclic references are rejected.' },
-    requirement_candidate_id: { type: 'string', description: 'Exact Cognitive memory id for operation=requirement_promote_candidate.' },
-    handoff_id: { type: 'string', description: 'Optional existing HandoffItem to include as bounded context for launcher_start.' },
-    learning_signals: { type: 'array', maxItems: CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS, items: { type: 'object', additionalProperties: false,
-      properties: {
-        scope_kind: { type: 'string', enum: ['requirement', 'project', 'workspace'] },
-        kind: { type: 'string', maxLength: 64, description: 'Compact model-authored descriptive kind (for example principle, procedure, product-model, architecture-pattern). This vocabulary is open and never an admission gate.' },
-        valence: { type: 'string', enum: ['positive', 'negative', 'neutral'] },
-        summary: { type: 'string', maxLength: 2000 },
-        concepts: { type: 'array', minItems: 1, maxItems: 32, uniqueItems: true, items: { type: 'string', maxLength: 256 } },
-        facets: { type: 'array', maxItems: 12, uniqueItems: true, items: { type: 'string', maxLength: 128 } },
-        admission_source: { type: 'string', enum: ['explicit_human', 'controller_observation', 'system_inference'] },
-        portability: { type: 'string', enum: ['local', 'portable'] },
-        salience: { type: 'number', minimum: 0, maximum: 1 },
-        confidence: { type: 'number', minimum: 0, maximum: 1 },
-        utility: { type: 'number', minimum: 0, maximum: 1 },
-        evidence_refs: { type: 'array', maxItems: 16, uniqueItems: true, items: { type: 'string', maxLength: 512 } },
-        counter_evidence_refs: { type: 'array', maxItems: 16, uniqueItems: true, items: { type: 'string', maxLength: 512 } },
-        expires_at: { type: 'string' },
+  ),
+  definition(
+    'rh_credential',
+    'Authorize or revoke use of one Forge-managed credential reference. This tool never creates, reads, returns, or transports secret material; macOS Keychain/browser password manager remains the secret authority. Authorization is a canonical Identity AuthorizationGrant and is reused until expiry or revocation.',
+    {
+      operation: { type: 'string', enum: ['status', 'authorize', 'revoke'], description: 'Defaults to status.' },
+      credential_ref: {
+        type: 'string',
+        description: 'Opaque stable credential binding reference. Never secret material.',
       },
-      required: ['scope_kind', 'kind', 'valence', 'summary', 'concepts', 'admission_source', 'portability', 'salience', 'confidence', 'utility'] },
-      description: 'Model-authored semantic deltas, never keyword/phrase-derived lessons. Learning writes are lifecycle-free and scoped to Requirement/Project/Workspace; historical Work is never a write authority.' },
-    learning_feedback: { type: 'array', maxItems: 32, items: { type: 'object', additionalProperties: false,
-      properties: {
-        memory_address: { type: 'string', maxLength: 1024, description: 'Exact stable memoryId/address returned by learningRecall or Cognitive audit.' },
-        decision: { type: 'string', enum: ['used', 'rejected'] },
-        reason: { type: 'string', maxLength: 1000 },
-        rejection_kind: { type: 'string', enum: ['irrelevant', 'stale', 'contradicted'], description: 'Required only for rejected feedback. Semantic classification is model-authored, never inferred from keywords.' },
+      endpoint: {
+        type: 'string',
+        description:
+          'Exact non-secret endpoint/origin bound to this credential authorization. Required for status/authorize.',
       },
-      required: ['memory_address', 'decision', 'reason'] },
-      description: 'Lifecycle-free advisory retrieval feedback for operation=learning_feedback. The current principal/session and repository-reachable Cognitive scope are server-derived; feedback influences retrieval utility only and never factual confidence or execution authority.' },
-    controller_type: { type: 'string', enum: ['chatgpt'], description: 'launcher_start opens or continues one task-bound ChatGPT session.' },
-    task_id: { type: 'string', maxLength: 256, description: 'Stable existing task identity for task-bound ChatGPT continuation. This binds a session; it does not create a second task ledger.' },
-    issue_number: { type: 'number', minimum: 1, description: 'Existing GitHub Issue number included in replacement-conversation recovery context.' },
-    continuation_prompt: { type: 'string', maxLength: 9000, description: 'Next bounded Prompt. Requires task_id. Reuses the active conversation/tab; a replacement is allowed only after pre-send evidence that the active conversation is unusable.' },
-    browser_session_id: { type: 'string', description: 'Stable ChatGPT browser session identity for initial launcher binding.' },
-    conversation_url: { type: 'string', description: 'Explicit https://chatgpt.com conversation URL used when no saved Forge browser session exists.' },
-    transport_conversation: { type: 'string', enum: ['bound', 'fresh'], description: 'Initial ChatGPT transport only. Later continuation resolves the task active binding and must not create a second tab unless takeover recovery is proven necessary.' },
-    schedule_id: { type: 'string', description: 'Schedule identity for schedule_get/pause/resume/delete/trigger.' },
-    schedule_name: { type: 'string', description: 'Human-readable schedule name.' },
-    schedule_request_id: { type: 'string', description: 'Stable idempotency key for schedule_create.' },
-    schedule_mode: { type: 'string', enum: ['browser_watch', 'browser_keepalive', 'supervisor_healthcheck'], description: 'Browser observation or fixed external Supervisor health patrol; no Work continuation.' },
-    probe_url: { type: 'string', description: 'Allowed URL to navigate or refresh for browser_watch/browser_keepalive.' },
-    probe_browser_session_id: { type: 'string', description: 'Existing Forge browser session used as the external observation target.' },
-    probe_selector: { type: 'string', description: 'Optional selector limiting text extraction for browser_watch.' },
-    probe_max_chars: { type: 'number', description: 'Bounded extracted text size for browser_watch.' },
-    probe_timeout_ms: { type: 'number', description: 'Bounded browser probe timeout.' },
-    include_terms: { type: 'array', items: { type: 'string' }, description: 'Optional case-insensitive terms; only matching normalized lines contribute to the observation fingerprint.' },
-    ignore_patterns: { type: 'array', items: { type: 'string' }, description: 'Optional regex patterns stripped before fingerprinting volatile text such as relative timestamps.' },
-    login_url_terms: { type: 'array', items: { type: 'string' }, description: 'Configured URL markers that classify the browser observation as authentication-required.' },
-    login_text_terms: { type: 'array', items: { type: 'string' }, description: 'Configured page-text markers that classify the browser observation as authentication-required.' },
-    wake_on_first_observation: { type: 'boolean', description: 'Defaults false so the first browser_watch occurrence records a silent baseline.' },
-    trigger_type: { type: 'string', enum: ['interval', 'cron', 'calendar', 'condition', 'repository-event', 'dependency-checkpoint', 'manual'] },
-    every_minutes: { type: 'number', description: 'Interval trigger cadence in minutes.' },
-    cron_expression: { type: 'string' },
-    schedule_timezone: { type: 'string' },
-    catch_up_minutes: { type: 'number' },
-    calendar_at: { type: 'string' },
-    condition: { type: 'object' },
-    event_name: { type: 'string' },
-    event_id: { type: 'string' },
-    event_data: { type: 'object' },
-    dependency_job_ids: { type: 'array', items: { type: 'string' } },
-    max_failures: { type: 'number' },
-    cooldown_minutes: { type: 'number' },
-    daily_budget_minutes: { type: 'number' },
-    shadow_mode: { type: 'boolean', description: 'Defaults to true. Set false only after the continuation path has been validated.' },
-    backoff_base_minutes: { type: 'number' },
-    backoff_max_minutes: { type: 'number' },
-    include_occurrences: { type: 'boolean' },
-    plan_id: { type: 'string' },
-    parent_plan_id: { type: 'string', description: 'For plan_create only: optional immutable parent Plan used to refine authored planning into a tree. Parent and child must share the same optional Requirement owner. This relation never grants execution, progress, approval, or scheduling authority.' },
-    superseded_by: { type: 'string', description: 'For plan_revise only: record the one-way successor Plan lineage. Once set it cannot be cleared or redirected; current Plan listings exclude the predecessor without restoring legacy Plan lifecycle semantics.' },
-    scope_key: { type: 'string', description: 'For project-scoped plan_create, must equal project_id. It records the Project-owned Plan lineage; it is not a repo_id, execution owner, or repository mutex.' },
-    source_revision: { type: 'string', description: 'Repository revision observed during read-only planning preflight.' },
-    plan_items: { type: 'array', maxItems: 100, items: { type: 'object', required: ['id', 'objective'], additionalProperties: false, properties: { id: { type: 'string', maxLength: 200 }, objective: { type: 'string', maxLength: 2000 }, dependencies: { type: 'array', maxItems: 100, items: { type: 'string', maxLength: 200 } } } }, description: 'Thin model-authored Plan items for plan_create/plan_revise. Items are descriptive working memory only and never own paths, checks, Work, scheduling, or acceptance.' },
-    non_goals: { type: 'array', items: { type: 'string' } },
-    assumptions: { type: 'array', items: { type: 'string' } },
-    resolved_decisions: { type: 'array', items: { type: 'string' } },
-    stop_conditions: { type: 'array', items: { type: 'string' } },
-    replan_conditions: { type: 'array', items: { type: 'string' } },
-    integration_strategy: { type: 'string' },
-    approval_confirmed: { type: 'boolean' },
-    dry_run: { type: 'boolean', description: 'Defaults to true for repair.' },
-    repair_operation: { type: 'string', enum: ['diagnose', 'repair', 'verify', 'handoff'] },
-    authorize_destructive_cleanup: { type: 'boolean' },
-    detail_level: { type: 'string', enum: ['summary', 'detail'] },
-    reason: { type: 'string', description: 'Bounded reason for a work stop or repair record.' },
-  }, [], false),
-  definition('git_diff_paths', 'Return a bounded Git diff and status for explicit repository-relative paths only.', {
-    repo_id: repoId,
-    paths: { type: 'array', items: { type: 'string' } },
-    staged: { type: 'boolean' },
-    max_bytes: { type: 'number' },
-  }, ['paths']),
-  definition('git_stage_paths', 'Stage explicit repository-relative paths only using git add --all -- <paths>.', {
-    repo_id: repoId,
-    paths: { type: 'array', items: { type: 'string' } },
-  }, ['paths'], false),
-  definition('git_commit_paths', 'Stage and commit exact paths through explicit repository/checkout identity and Git checkout/resource fences. Work is not an execution or mutation authority.', {
-    repo_id: repoId,
-    paths: { type: 'array', items: { type: 'string' } },
-    message: { type: 'string' },
-  }, ['paths', 'message'], false),
-  definition('get_job', 'Read one durable Execution Job. Summary is the default; opt in to full state only when needed.', {
-    job_id: { type: 'string' },
-    repo_id: repoId,
-    include_events: { type: 'boolean' },
-    detail_level: { type: 'string', enum: ['summary', 'full'] },
-    wait: { type: 'boolean', description: 'When true, wait for terminal status before returning digest.' },
-    wait_ms: { type: 'number' },
-  }, ['job_id']),
-  definition('get_artifact', 'Read one bounded Evidence Plane artifact/evidence handle by opaque id. repo_id is optional and used only to adopt a historical repository-partitioned handle once.', { artifact_id: { type: 'string' }, repo_id: { ...repoId, description: 'Legacy repository hint only. Omit for canonical ForgeInstance output handles.' }, max_bytes: { type: 'number' } }, ['artifact_id']),
-  definition('repository_change_verify', 'Composite: verify checkout/SHA, apply bounded patch, run checks, return first failure inline without get_job/get_artifact follow-ups.', {
-    repo_id: repoId,
-    expected_branch: { type: 'string' },
-    expected_head: { type: 'string' },
-    expected_file_shas: { type: 'object', additionalProperties: { type: 'string' } },
-    patch: { type: 'string', description: 'Unified diff applied with git apply.' },
-    allowed_paths: { type: 'array', items: { type: 'string' } },
-    checks: { type: 'array', items: { type: 'string' } },
-    check_timeout_ms: { type: 'number' },
-  }, [], false),
+      provider: {
+        type: 'string',
+        enum: ['api', 'browser_password_manager'],
+        description: 'Credential provider binding. Defaults to api.',
+      },
+      account: {
+        type: 'string',
+        maxLength: 512,
+        description:
+          'Exact non-secret account identifier. Required when provider=browser_password_manager; stored only in the canonical Grant constraint.',
+      },
+      confirm_authorization: { type: 'boolean', description: 'Must be true for authorize.' },
+      expires_in_minutes: {
+        type: 'number',
+        minimum: 1,
+        description: 'Authorization TTL; canonical Grant limits apply.',
+      },
+      reason: { type: 'string', description: 'Optional revoke reason.' },
+    },
+    ['credential_ref'],
+    false,
+  ),
+  definition(
+    'rh_autopilot',
+    'Explicit optional Requirement Autopilot. Ordinary Forge use never requires a Requirement. authorize binds the exact caller-reviewed Requirement revision to a canonical AuthorizationGrant and rejects stale revisions; start/resume run a bounded Runtime-owned local execution loop over existing Repository/Git/Process owners. This tool does not create Plan progress/lifecycle state and never grants remote-write or destructive authority.',
+    {
+      repo_id: repoId,
+      checkout_id: {
+        type: 'string',
+        description: 'Exact checkout selected for the authorization/execution placement.',
+      },
+      requirement_id: {
+        type: 'string',
+        description:
+          'Required Requirement root for Autopilot. This requirement applies only to Autopilot; normal Agent/Repository use remains Requirement-optional.',
+      },
+      operation: {
+        type: 'string',
+        enum: ['status', 'authorize', 'start', 'pause', 'resume', 'revoke'],
+        description: 'Defaults to status.',
+      },
+      confirm_authorization: { type: 'boolean', description: 'Must be true for authorize.' },
+      expected_requirement_revision: {
+        type: 'number',
+        minimum: 1,
+        description:
+          'Required when operation=authorize. Exact Requirement revision reviewed by the user; stale approvals are rejected.',
+      },
+      model: {
+        type: 'string',
+        description: 'DeepSeek model. Defaults to deepseek-chat for the first Runtime-owned provider implementation.',
+      },
+      max_total_tokens: {
+        type: 'number',
+        minimum: 1000,
+        maximum: 500000,
+        description:
+          'Provider-reported token budget across the autonomous run. Forge stops starting new model turns when exhausted.',
+      },
+      max_turns: { type: 'number', minimum: 1, maximum: 48 },
+      max_tool_calls: { type: 'number', minimum: 1, maximum: 128 },
+      checkpoint_plan_ids: {
+        type: 'array',
+        maxItems: 64,
+        items: { type: 'string' },
+        description:
+          'Optional Plan nodes that pause the run for human acceptance when the model reports that current plan. Plans remain semantic structure, not progress state.',
+      },
+      approved_checkpoint_run_id: {
+        type: 'string',
+        description: 'For human-checkpoint resume: exact Run ID explicitly reviewed and accepted by a person.',
+      },
+      approved_checkpoint_plan_id: {
+        type: 'string',
+        description: 'For human-checkpoint resume: exact paused Plan ID explicitly reviewed and accepted by a person.',
+      },
+      expires_in_minutes: {
+        type: 'number',
+        minimum: 1,
+        description: 'Authorization TTL. Canonical Grant limits still apply.',
+      },
+      reason: { type: 'string', description: 'Optional revoke reason.' },
+    },
+    ['requirement_id'],
+    false,
+  ),
+  definition(
+    'rh_work',
+    'Preferred ChatGPT facade for optional durable Requirement/Plan semantic context, Work-free Workflow execution, browser schedules, and ChatGPT Launch Session. Work / WorkHandle / WorkContract are fully retired and have no create, mutate, or read surface. Ordinary execution and validation use direct domain capabilities.',
+    {
+      repo_id: repoId,
+      checkout_id: {
+        type: 'string',
+        description: 'Optional exact checkout identity for repository-bound Plan, Workflow, or Schedule operations.',
+      },
+      operation: {
+        type: 'string',
+        enum: [...RH_WORK_MODEL_OPERATIONS],
+        description:
+          'Project and Requirement operations manage canonical semantic records; project_attach_requirement links an existing Requirement through a selected Project repository placement without duplicating or changing its semantic state. Set repo_id when a Project has multiple repository placements. Plan operations manage delivery structure. Workflow execution and browser schedules are Work-free; launcher_start opens a ChatGPT session or sends one explicit Prompt through its task-bound active conversation.',
+      },
+      limit: {
+        type: 'number',
+        minimum: 1,
+        maximum: 100,
+        description:
+          'Bounded result limit for lists and project_get(detail) task rows (default 100 for project detail).',
+      },
+      offset: {
+        type: 'number',
+        minimum: 0,
+        maximum: 100000,
+        description: 'Zero-based result offset for project_list, project_get(detail) task rows, or requirement_list.',
+      },
+      search_query: {
+        type: 'string',
+        maxLength: 256,
+        description:
+          'Case-insensitive text filter: Project ID/name for project_list; Requirement ID/title/outcome/Project ID/legacy aliases for requirement_list.',
+      },
+      dependency_filter: {
+        type: 'string',
+        enum: ['blocked', 'unblocked'],
+        description:
+          'Filter requirement_list by unresolved dependencies. A dependency is unresolved until its canonical Requirement status is done; includes missing/cancelled dependencies. Unblocked does not imply an executable task status.',
+      },
+      sort_by: {
+        type: 'string',
+        enum: ['updated_at', 'created_at', 'priority', 'status', 'title', 'assignee'],
+        description: 'Requirement list sort key; defaults to updated_at.',
+      },
+      sort_order: {
+        type: 'string',
+        enum: ['asc', 'desc'],
+        description: 'Requirement list sort direction; defaults to desc.',
+      },
+      objective: {
+        type: 'string',
+        description:
+          'Model-authored Plan goal for plan_create/plan_revise, or Work objective where applicable. On plan_revise this replaces the canonical Plan goal under expected_revision CAS.',
+      },
+      capability_id: {
+        type: 'string',
+        description:
+          'Compatibility-only carrier. Current callers should use typed rh_work fields directly. The outer adapter accepts only the bounded frozen semantic.v1 bridge and current-conversation enrollment, validates them without persistence, and routes them into the same Thin owners.',
+      },
+      work_id: {
+        type: 'string',
+        description: 'Retired. Any non-empty work_id is rejected; Work has no remaining semantic or archival surface.',
+      },
+      workflow_id: {
+        type: 'string',
+        description:
+          'Versioned Workflow asset identity for workflow_execute/workflow_reconcile. Workflow execution is Work-free.',
+      },
+      workflow_run_id: {
+        type: 'string',
+        description:
+          'Stable WorkflowRun identity within the selected repository/checkout/workflow scope. Reusing it resumes only the exact same workflow/content/input identity.',
+      },
+      workflow_inputs: {
+        type: 'object',
+        description: 'Typed Workflow inputs validated against the installed asset contract.',
+      },
+      workflow_scope_project_id: {
+        type: 'string',
+        description:
+          'Optional project-scoped Workflow registry identity. ProjectPlacement validates the selected repository; Work is not consulted.',
+      },
+      workflow_reconciliation_request_id: {
+        type: 'string',
+        description:
+          'Fresh idempotency identity for one reconciliation observation. Retry the same observation with the same id; use a new id only for a later observation.',
+      },
+      project_id: {
+        type: 'string',
+        maxLength: 512,
+        description:
+          'Stable semantic Project identity for project_create/get/revise/project_attach_requirement, requirement_list/get/revise/create, and project-scoped plan_create/list/get/revise. The referenced Requirement must belong to this Project. For repository-backed Plans, include the matching repo_id; standalone Project Plans omit repo_id. Conflicting Repository/Project selection is rejected.',
+      },
+      workspace_id: {
+        type: 'string',
+        maxLength: 512,
+        description:
+          'Workspace scope for project_create/get/revise/list. Defaults to the existing Personal workspace on create.',
+      },
+      project_display_name: {
+        type: 'string',
+        maxLength: 512,
+        description: 'Project display name for project_create or project_revise.',
+      },
+      project_status: {
+        type: 'string',
+        enum: ['active', 'archived'],
+        description:
+          'Project lifecycle state for project_revise or status filter for project_list. Archiving preserves project identity and repository placement; it does not delete data.',
+      },
+      project_sort_by: {
+        type: 'string',
+        enum: ['updated_at', 'display_name', 'status'],
+        description: 'Sort key for project_list; defaults to updated_at.',
+      },
+      requirement_id: {
+        type: 'string',
+        description:
+          'Stable Requirement identity for Requirement operations, project_attach_requirement, Plan provenance, or optional Workflow semantic guard.',
+      },
+      requirement_parent_id: {
+        type: 'string',
+        maxLength: 160,
+        description:
+          'Explicit parent Requirement in the same Project root tree for requirement_create/revise. This structural edge is separate from requirement_dependencies.',
+      },
+      requirement_is_project_root: {
+        type: 'boolean',
+        description:
+          "For requirement_create/revise, explicitly bind this unparented Requirement as the Project's single canonical root. A Project cannot bind a second root.",
+      },
+      expected_revision: {
+        type: 'number',
+        minimum: 1,
+        description:
+          'Expected current record revision for project_revise, or semantic revision for requirement_revise/plan_revise. Stale writers fail; Forge never performs an implicit merge.',
+      },
+      requirement_revision: {
+        type: 'number',
+        minimum: 1,
+        description: 'Optional Requirement basis revision recorded by Plan create/revise.',
+      },
+      expected_requirement_revision: {
+        type: 'number',
+        minimum: 1,
+        description:
+          'For semantic plan_create, atomically compare the current parent Requirement semantic revision before writing the Plan. Pass the exact revision accepted by the user; stale proposals are rejected.',
+      },
+      requirement_title: {
+        type: 'string',
+        description:
+          'Human-readable Requirement title for requirement_create/requirement_revise; revise replaces the canonical title under expected_revision CAS.',
+      },
+      requirement_outcome: {
+        type: 'string',
+        description:
+          'Canonical outcome statement for requirement_create/requirement_revise; revise replaces the current Requirement objective under expected_revision CAS (previous revision remains in history).',
+      },
+      requirement_acceptance_criteria: {
+        type: 'array',
+        maxItems: 50,
+        items: { type: 'string' },
+        description:
+          'Complete canonical acceptance criteria for requirement_create/requirement_revise; on revise replaces the existing set under expected_revision CAS, not progress-only metadata.',
+      },
+      requirement_delivery_references: {
+        type: 'array',
+        maxItems: 50,
+        items: { type: 'string' },
+        description: 'Optional durable delivery/reference identifiers for requirement_create/requirement_revise.',
+      },
+      requirement_legacy_aliases: {
+        type: 'array',
+        maxItems: 20,
+        items: { type: 'string', maxLength: 160 },
+        description:
+          'Complete migration alias set for requirement_create/requirement_revise. Aliases are unique across Requirements and never become a second identity authority.',
+      },
+      requirement_progress_summary: {
+        type: 'string',
+        maxLength: 2_000,
+        description:
+          'Model-authored Requirement progress summary for requirement_revise; persisted with expected_revision CAS.',
+      },
+      requirement_remaining_work: {
+        type: 'array',
+        maxItems: 50,
+        items: { type: 'string', maxLength: 500 },
+        description:
+          'Remaining Requirement acceptance work for requirement_revise; a semantic description, not scheduler state.',
+      },
+      requirement_accepted_evidence_refs: {
+        type: 'array',
+        maxItems: 100,
+        items: { type: 'string', maxLength: 512 },
+        description:
+          'Verified evidence references accepted by the model for requirement_revise; not auto-inferred from Git/Work.',
+      },
+      requirement_state: {
+        type: 'string',
+        enum: ['open', 'completed', 'cancelled'],
+        description: 'Coarse semantic Requirement state retained for existing consumers.',
+      },
+      requirement_status: {
+        type: 'string',
+        enum: [...REQUIREMENT_STATES],
+        description:
+          'Full task lifecycle status for requirement_create/requirement_revise or exact requirement_list filter. Completing a task requires empty remaining work and accepted evidence; terminal states cannot be reopened.',
+      },
+      requirement_priority: {
+        type: 'string',
+        enum: [...REQUIREMENT_PRIORITIES],
+        description: 'Task priority for requirement_create/requirement_revise or exact requirement_list filter.',
+      },
+      requirement_assignee: {
+        type: 'string',
+        maxLength: 160,
+        description:
+          'Task owner label or identity for requirement_create/requirement_revise or exact requirement_list filter. Metadata only; it does not grant access.',
+      },
+      assignment_filter: {
+        type: 'string',
+        enum: ['assigned', 'unassigned'],
+        description:
+          'For requirement_list, show tasks with or without an assignee. The unassigned filter cannot be combined with a specific requirement_assignee.',
+      },
+      requirement_dependencies: {
+        type: 'array',
+        maxItems: 50,
+        items: { type: 'string', maxLength: 160 },
+        description:
+          'Complete set of Requirement IDs this task depends on. Dependencies may cross repositories/projects; missing, cancelled, self and cyclic references are rejected.',
+      },
+      requirement_candidate_id: {
+        type: 'string',
+        description: 'Exact Cognitive memory id for operation=requirement_promote_candidate.',
+      },
+      handoff_id: {
+        type: 'string',
+        description: 'Optional existing HandoffItem to include as bounded context for launcher_start.',
+      },
+      learning_signals: {
+        type: 'array',
+        maxItems: CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            scope_kind: { type: 'string', enum: ['requirement', 'project', 'workspace'] },
+            kind: {
+              type: 'string',
+              maxLength: 64,
+              description:
+                'Compact model-authored descriptive kind (for example principle, procedure, product-model, architecture-pattern). This vocabulary is open and never an admission gate.',
+            },
+            valence: { type: 'string', enum: ['positive', 'negative', 'neutral'] },
+            summary: { type: 'string', maxLength: 2000 },
+            concepts: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 32,
+              uniqueItems: true,
+              items: { type: 'string', maxLength: 256 },
+            },
+            facets: { type: 'array', maxItems: 12, uniqueItems: true, items: { type: 'string', maxLength: 128 } },
+            admission_source: {
+              type: 'string',
+              enum: ['explicit_human', 'controller_observation', 'system_inference'],
+            },
+            portability: { type: 'string', enum: ['local', 'portable'] },
+            salience: { type: 'number', minimum: 0, maximum: 1 },
+            confidence: { type: 'number', minimum: 0, maximum: 1 },
+            utility: { type: 'number', minimum: 0, maximum: 1 },
+            evidence_refs: {
+              type: 'array',
+              maxItems: 16,
+              uniqueItems: true,
+              items: { type: 'string', maxLength: 512 },
+            },
+            counter_evidence_refs: {
+              type: 'array',
+              maxItems: 16,
+              uniqueItems: true,
+              items: { type: 'string', maxLength: 512 },
+            },
+            expires_at: { type: 'string' },
+          },
+          required: [
+            'scope_kind',
+            'kind',
+            'valence',
+            'summary',
+            'concepts',
+            'admission_source',
+            'portability',
+            'salience',
+            'confidence',
+            'utility',
+          ],
+        },
+        description:
+          'Model-authored semantic deltas, never keyword/phrase-derived lessons. Learning writes are lifecycle-free and scoped to Requirement/Project/Workspace; historical Work is never a write authority.',
+      },
+      learning_feedback: {
+        type: 'array',
+        maxItems: 32,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            memory_address: {
+              type: 'string',
+              maxLength: 1024,
+              description: 'Exact stable memoryId/address returned by learningRecall or Cognitive audit.',
+            },
+            decision: { type: 'string', enum: ['used', 'rejected'] },
+            reason: { type: 'string', maxLength: 1000 },
+            rejection_kind: {
+              type: 'string',
+              enum: ['irrelevant', 'stale', 'contradicted'],
+              description:
+                'Required only for rejected feedback. Semantic classification is model-authored, never inferred from keywords.',
+            },
+          },
+          required: ['memory_address', 'decision', 'reason'],
+        },
+        description:
+          'Lifecycle-free advisory retrieval feedback for operation=learning_feedback. The current principal/session and repository-reachable Cognitive scope are server-derived; feedback influences retrieval utility only and never factual confidence or execution authority.',
+      },
+      controller_type: {
+        type: 'string',
+        enum: ['chatgpt'],
+        description: 'launcher_start opens or continues one task-bound ChatGPT session.',
+      },
+      task_id: {
+        type: 'string',
+        maxLength: 256,
+        description:
+          'Stable existing task identity for task-bound ChatGPT continuation. This binds a session; it does not create a second task ledger.',
+      },
+      issue_number: {
+        type: 'number',
+        minimum: 1,
+        description: 'Existing GitHub Issue number included in replacement-conversation recovery context.',
+      },
+      continuation_prompt: {
+        type: 'string',
+        maxLength: 9000,
+        description:
+          'Next bounded Prompt. Requires task_id. Reuses the active conversation/tab; a replacement is allowed only after pre-send evidence that the active conversation is unusable.',
+      },
+      browser_session_id: {
+        type: 'string',
+        description: 'Stable ChatGPT browser session identity for initial launcher binding.',
+      },
+      conversation_url: {
+        type: 'string',
+        description: 'Explicit https://chatgpt.com conversation URL used when no saved Forge browser session exists.',
+      },
+      transport_conversation: {
+        type: 'string',
+        enum: ['bound', 'fresh'],
+        description:
+          'Initial ChatGPT transport only. Later continuation resolves the task active binding and must not create a second tab unless takeover recovery is proven necessary.',
+      },
+      schedule_id: { type: 'string', description: 'Schedule identity for schedule_get/pause/resume/delete/trigger.' },
+      schedule_name: { type: 'string', description: 'Human-readable schedule name.' },
+      schedule_request_id: { type: 'string', description: 'Stable idempotency key for schedule_create.' },
+      schedule_mode: {
+        type: 'string',
+        enum: ['browser_watch', 'browser_keepalive', 'supervisor_healthcheck'],
+        description: 'Browser observation or fixed external Supervisor health patrol; no Work continuation.',
+      },
+      probe_url: {
+        type: 'string',
+        description: 'Allowed URL to navigate or refresh for browser_watch/browser_keepalive.',
+      },
+      probe_browser_session_id: {
+        type: 'string',
+        description: 'Existing Forge browser session used as the external observation target.',
+      },
+      probe_selector: { type: 'string', description: 'Optional selector limiting text extraction for browser_watch.' },
+      probe_max_chars: { type: 'number', description: 'Bounded extracted text size for browser_watch.' },
+      probe_timeout_ms: { type: 'number', description: 'Bounded browser probe timeout.' },
+      include_terms: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Optional case-insensitive terms; only matching normalized lines contribute to the observation fingerprint.',
+      },
+      ignore_patterns: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Optional regex patterns stripped before fingerprinting volatile text such as relative timestamps.',
+      },
+      login_url_terms: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Configured URL markers that classify the browser observation as authentication-required.',
+      },
+      login_text_terms: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Configured page-text markers that classify the browser observation as authentication-required.',
+      },
+      wake_on_first_observation: {
+        type: 'boolean',
+        description: 'Defaults false so the first browser_watch occurrence records a silent baseline.',
+      },
+      trigger_type: {
+        type: 'string',
+        enum: ['interval', 'cron', 'calendar', 'condition', 'repository-event', 'dependency-checkpoint', 'manual'],
+      },
+      every_minutes: { type: 'number', description: 'Interval trigger cadence in minutes.' },
+      cron_expression: { type: 'string' },
+      schedule_timezone: { type: 'string' },
+      catch_up_minutes: { type: 'number' },
+      calendar_at: { type: 'string' },
+      condition: { type: 'object' },
+      event_name: { type: 'string' },
+      event_id: { type: 'string' },
+      event_data: { type: 'object' },
+      dependency_job_ids: { type: 'array', items: { type: 'string' } },
+      max_failures: { type: 'number' },
+      cooldown_minutes: { type: 'number' },
+      daily_budget_minutes: { type: 'number' },
+      shadow_mode: {
+        type: 'boolean',
+        description: 'Defaults to true. Set false only after the continuation path has been validated.',
+      },
+      backoff_base_minutes: { type: 'number' },
+      backoff_max_minutes: { type: 'number' },
+      include_occurrences: { type: 'boolean' },
+      plan_id: { type: 'string' },
+      parent_plan_id: {
+        type: 'string',
+        description:
+          'For plan_create only: optional immutable parent Plan used to refine authored planning into a tree. Parent and child must share the same optional Requirement owner. This relation never grants execution, progress, approval, or scheduling authority.',
+      },
+      superseded_by: {
+        type: 'string',
+        description:
+          'For plan_revise only: record the one-way successor Plan lineage. Once set it cannot be cleared or redirected; current Plan listings exclude the predecessor without restoring legacy Plan lifecycle semantics.',
+      },
+      scope_key: {
+        type: 'string',
+        description:
+          'For project-scoped plan_create, must equal project_id. It records the Project-owned Plan lineage; it is not a repo_id, execution owner, or repository mutex.',
+      },
+      source_revision: {
+        type: 'string',
+        description: 'Repository revision observed during read-only planning preflight.',
+      },
+      plan_items: {
+        type: 'array',
+        maxItems: 100,
+        items: {
+          type: 'object',
+          required: ['id', 'objective'],
+          additionalProperties: false,
+          properties: {
+            id: { type: 'string', maxLength: 200 },
+            objective: { type: 'string', maxLength: 2000 },
+            dependencies: { type: 'array', maxItems: 100, items: { type: 'string', maxLength: 200 } },
+          },
+        },
+        description:
+          'Thin model-authored Plan items for plan_create/plan_revise. Items are descriptive working memory only and never own paths, checks, Work, scheduling, or acceptance.',
+      },
+      non_goals: { type: 'array', items: { type: 'string' } },
+      assumptions: { type: 'array', items: { type: 'string' } },
+      resolved_decisions: { type: 'array', items: { type: 'string' } },
+      stop_conditions: { type: 'array', items: { type: 'string' } },
+      replan_conditions: { type: 'array', items: { type: 'string' } },
+      integration_strategy: { type: 'string' },
+      approval_confirmed: { type: 'boolean' },
+      dry_run: { type: 'boolean', description: 'Defaults to true for repair.' },
+      repair_operation: { type: 'string', enum: ['diagnose', 'repair', 'verify', 'handoff'] },
+      authorize_destructive_cleanup: { type: 'boolean' },
+      detail_level: { type: 'string', enum: ['summary', 'detail'] },
+      reason: { type: 'string', description: 'Bounded reason for a work stop or repair record.' },
+    },
+    [],
+    false,
+  ),
+  definition(
+    'git_diff_paths',
+    'Return a bounded Git diff and status for explicit repository-relative paths only.',
+    {
+      repo_id: repoId,
+      paths: { type: 'array', items: { type: 'string' } },
+      staged: { type: 'boolean' },
+      max_bytes: { type: 'number' },
+    },
+    ['paths'],
+  ),
+  definition(
+    'git_stage_paths',
+    'Stage explicit repository-relative paths only using git add --all -- <paths>.',
+    {
+      repo_id: repoId,
+      paths: { type: 'array', items: { type: 'string' } },
+    },
+    ['paths'],
+    false,
+  ),
+  definition(
+    'git_commit_paths',
+    'Stage and commit exact paths through explicit repository/checkout identity and Git checkout/resource fences. Work is not an execution or mutation authority.',
+    {
+      repo_id: repoId,
+      paths: { type: 'array', items: { type: 'string' } },
+      message: { type: 'string' },
+    },
+    ['paths', 'message'],
+    false,
+  ),
+  definition(
+    'get_job',
+    'Read one durable Execution Job. Summary is the default; opt in to full state only when needed.',
+    {
+      job_id: { type: 'string' },
+      repo_id: repoId,
+      include_events: { type: 'boolean' },
+      detail_level: { type: 'string', enum: ['summary', 'full'] },
+      wait: { type: 'boolean', description: 'When true, wait for terminal status before returning digest.' },
+      wait_ms: { type: 'number' },
+    },
+    ['job_id'],
+  ),
+  definition(
+    'get_artifact',
+    'Read one bounded Evidence Plane artifact/evidence handle by opaque id. repo_id is optional and used only to adopt a historical repository-partitioned handle once.',
+    {
+      artifact_id: { type: 'string' },
+      repo_id: {
+        ...repoId,
+        description: 'Legacy repository hint only. Omit for canonical ForgeInstance output handles.',
+      },
+      max_bytes: { type: 'number' },
+    },
+    ['artifact_id'],
+  ),
+  definition(
+    'repository_change_verify',
+    'Composite: verify checkout/SHA, apply bounded patch, run checks, return first failure inline without get_job/get_artifact follow-ups.',
+    {
+      repo_id: repoId,
+      expected_branch: { type: 'string' },
+      expected_head: { type: 'string' },
+      expected_file_shas: { type: 'object', additionalProperties: { type: 'string' } },
+      patch: { type: 'string', description: 'Unified diff applied with git apply.' },
+      allowed_paths: { type: 'array', items: { type: 'string' } },
+      checks: { type: 'array', items: { type: 'string' } },
+      check_timeout_ms: { type: 'number' },
+    },
+    [],
+    false,
+  ),
   definition('list_jobs', 'List durable Execution Jobs for one repository. Summary is the default.', {
     repo_id: repoId,
     limit: { type: 'number' },
     detail_level: { type: 'string', enum: ['summary', 'full'] },
   }),
-  definition('cancel_job', 'Cancel one queued or running durable Execution Job.', { job_id: { type: 'string' }, repo_id: repoId, reason: { type: 'string' } }, ['job_id'], false),
+  definition(
+    'cancel_job',
+    'Cancel one queued or running durable Execution Job.',
+    { job_id: { type: 'string' }, repo_id: repoId, reason: { type: 'string' } },
+    ['job_id'],
+    false,
+  ),
   definition('controller_ready', 'Return one binary Runtime readiness decision with bounded diagnostic evidence.', {
     repo_id: repoId,
   }),
-  definition('repository_runtime_snapshot', 'Read the materialized runtime projection without scanning historical state.', { repo_id: repoId }),
-  definition('schedule_dedupe_report', 'Read-only report that groups duplicate schedules by semantic trigger/action identity.', {
+  definition(
+    'repository_runtime_snapshot',
+    'Read the materialized runtime projection without scanning historical state.',
+    { repo_id: repoId },
+  ),
+  definition(
+    'schedule_dedupe_report',
+    'Read-only report that groups duplicate schedules by semantic trigger/action identity.',
+    {
+      repo_id: repoId,
+    },
+    ['repo_id'],
+  ),
+  definition(
+    'schedule_dedupe_apply',
+    'Pause duplicate schedules after explicit authorization, keeping one canonical enabled schedule per semantic identity.',
+    {
+      repo_id: repoId,
+      dry_run: { type: 'boolean', description: 'When true, only returns the proposed changes.' },
+      confirm_authorization: { type: 'boolean', description: 'Must be true unless dry_run is true.' },
+    },
+    ['repo_id'],
+  ),
+  definition(
+    'runtime_performance_diagnostics',
+    'Diagnose forge host performance, orphan workers, Local Controller presence, and cleanup candidates.',
+    {
+      repo_id: repoId,
+      include_processes: {
+        type: 'boolean',
+        description: 'Include bounded forge related process samples. Defaults to true.',
+      },
+      include_temp_dirs: {
+        type: 'boolean',
+        description: 'Include bounded forge temporary directory scan. Defaults to true.',
+      },
+      cleanup_preview: {
+        type: 'boolean',
+        description: 'Return a no-side-effect cleanup plan for orphan workers and stale temp entries.',
+      },
+    },
+  ),
+  definition(
+    'capability_recovery_probe',
+    'Read-only Runtime diagnostic evidence. This tool never starts, stops, restarts, repairs, or replaces Runtime modules.',
+    {
+      repo_id: repoId,
+      recent_errors: { type: 'array', items: { type: 'string' } },
+      command_preview_available: { type: 'boolean' },
+      command_execute_available: { type: 'boolean' },
+      issue_tools_available: { type: 'boolean' },
+      job_tools_available: { type: 'boolean' },
+    },
+  ),
+  definition(
+    'capability_recovery_plan',
+    'Return a diagnostic handoff plan without Runtime lifecycle actions or automatic source repair.',
+    {
+      repo_id: repoId,
+      recent_errors: { type: 'array', items: { type: 'string' } },
+    },
+  ),
+  definition(
+    'capability_recovery_apply',
+    'Apply one currently supported bounded recovery action after explicit authorization. Runtime lifecycle actions are outside this surface.',
+    {
+      repo_id: repoId,
+      action_id: { type: 'string' },
+      confirm_authorization: { type: 'boolean' },
+      authorization: { type: 'string', description: 'Must equal action_id for actions that require authorization.' },
+      reason: { type: 'string' },
+      min_age_minutes: { type: 'number' },
+      max_candidates: { type: 'number' },
+    },
+    ['action_id'],
+    false,
+  ),
+  definition(
+    'runtime_maintenance_status',
+    'Read the self-contained runtime maintenance plan without invoking execute_command or creating Local Job tickets.',
+    {
+      repo_id: repoId,
+      min_age_minutes: { type: 'number' },
+      max_candidates: { type: 'number' },
+      cancel_pending_approvals: { type: 'boolean' },
+    },
+  ),
+  definition(
+    'runtime_maintenance_apply',
+    'Apply one bounded runtime maintenance action without invoking execute_command or creating Local Job tickets.',
+    {
+      repo_id: repoId,
+      action_id: {
+        type: 'string',
+        enum: [
+          'local_jobs_reconcile',
+          'quarantine_unreadable_local_jobs',
+          'runtime_storage_finalize_relocation',
+          'rebuild_projection',
+          'full_maintenance_pass',
+        ],
+      },
+      confirm_maintenance: { type: 'boolean' },
+      authorization: { type: 'string', description: 'Must equal action_id.' },
+      min_age_minutes: { type: 'number' },
+      max_candidates: { type: 'number' },
+      cancel_pending_approvals: { type: 'boolean' },
+    },
+    ['action_id', 'confirm_maintenance', 'authorization'],
+    false,
+  ),
+  definition(
+    'workspace_auth_status',
+    'Summarize Workspace/Gmail auth readiness without returning or persisting secrets.',
+    {
+      repo_id: repoId,
+    },
+  ),
+  definition(
+    'workspace_auth_login_prepare',
+    'Prepare a state-protected local Google Workspace/Gmail OAuth login with PKCE and Keychain persistence.',
+    {
+      repo_id: repoId,
+      service: { type: 'string', enum: ['gmail', 'calendar', 'tasks', 'google-workspace'] },
+      scopes: { type: 'array', items: { type: 'string' } },
+      redirect_uri: { type: 'string' },
+    },
+  ),
+  definition(
+    'external_filesystem_targets_list',
+    'List pre-authorized external filesystem targets. Does not expose arbitrary absolute-path access.',
+    {
+      repo_id: repoId,
+    },
+  ),
+  definition(
+    'external_filesystem_grant_preview',
+    'Preview a read-only external filesystem grant for a narrow absolute directory without writing config.',
+    {
+      repo_id: repoId,
+      grant_key: { type: 'string' },
+      root_path: { type: 'string' },
+      mode: { type: 'string', enum: ['read', 'copy_into_repo'] },
+      expires_in_minutes: { type: 'number', description: 'Optional expiry in minutes, capped at 24h. Defaults to 8h.' },
+      reason: { type: 'string' },
+    },
+    ['grant_key', 'root_path', 'reason'],
+  ),
+  definition(
+    'external_filesystem_grant_apply',
+    'Apply a previously previewed read-only external filesystem grant with explicit authorization.',
+    {
+      repo_id: repoId,
+      grant_key: { type: 'string' },
+      root_path: { type: 'string' },
+      mode: { type: 'string', enum: ['read', 'copy_into_repo'] },
+      expires_in_minutes: { type: 'number', description: 'Optional expiry in minutes, capped at 24h. Defaults to 8h.' },
+      reason: { type: 'string' },
+      preview_ticket_id: { type: 'string' },
+      confirm_authorization: { type: 'boolean' },
+    },
+    ['grant_key', 'root_path', 'reason', 'preview_ticket_id', 'confirm_authorization'],
+    false,
+  ),
+  definition(
+    'external_filesystem_text_snapshot',
+    'Read a bounded text/directory snapshot from a pre-authorized external filesystem target key.',
+    {
+      repo_id: repoId,
+      target_key: { type: 'string' },
+      path: { type: 'string' },
+      max_chars: { type: 'number' },
+    },
+    ['target_key'],
+  ),
+  definition(
+    'runtime_storage_repair_preview',
+    'Preview repo-scoped local-jobs runtime storage repair candidates without mutation.',
+    {
+      repo_id: repoId,
+      min_age_minutes: { type: 'number' },
+      max_candidates: { type: 'number' },
+    },
+  ),
+  definition(
+    'runtime_storage_repair_apply',
+    'Apply safe repo-scoped local-jobs runtime storage repairs after explicit confirmation.',
+    {
+      repo_id: repoId,
+      candidate_ids: { type: 'array', items: { type: 'string' } },
+      min_age_minutes: { type: 'number' },
+      max_candidates: { type: 'number' },
+      confirm_repair: { type: 'boolean' },
+    },
+    ['confirm_repair'],
+    false,
+  ),
+  definition(
+    'list_plugins',
+    'List controller plugins and the selected repository plugins. When repo_id is omitted, the current repository context is included automatically; with multiple repositories, provide repo_id. Uses registered manifest snapshots with last-observed capability health; action execution independently validates provider identity and readiness.',
+    {
+      repo_id: repoId,
+    },
+  ),
+  definition(
+    'get_plugin',
+    'Read one repository or controller-scoped plugin manifest including action schemas and policy requirements.',
+    {
+      repo_id: repoId,
+      plugin_id: { type: 'string' },
+    },
+    ['plugin_id'],
+  ),
+  definition(
+    'computer_console_unlock_prepare',
+    'Prepare one protected console unlock without transporting a password through ChatGPT or Forge Runtime. Forge Desktop Operator displays a provider-local secure password field while the console is unlocked and returns only a short-lived opaque single-use handle. Requires confirm_authorization=true for every invocation.',
+    {
+      confirm_authorization: {
+        type: 'boolean',
+        description: 'Must be true to authorize this exact one-shot local credential preparation.',
+      },
+      timeout_ms: {
+        type: 'number',
+        description: 'Bounded provider/prompt timeout in milliseconds. Defaults to 15000 and is capped at 30000.',
+      },
+    },
+    ['confirm_authorization'],
+    false,
+  ),
+  definition(
+    'computer_console_unlock',
+    'Protected one-shot console unlock through computer.console.unlock.v1 using only a provider-local opaque credential handle. Raw macOS credentials never enter MCP arguments, Forge Runtime, Plugin actions, Process/Work state, receipts, audit hashes, or replayable jobs. Requires confirm_authorization=true for every invocation.',
+    {
+      credential_handle: {
+        type: 'string',
+        minLength: 36,
+        maxLength: 64,
+        description:
+          'Opaque short-lived single-use handle returned by computer_console_unlock_prepare. It is not a credential.',
+      },
+      confirm_authorization: {
+        type: 'boolean',
+        description: 'Must be true to authorize this exact one-shot console unlock invocation.',
+      },
+      timeout_ms: {
+        type: 'number',
+        description:
+          'Bounded provider/postcondition timeout in milliseconds. Defaults to 15000 and is capped at 30000.',
+      },
+    },
+    ['credential_handle', 'confirm_authorization'],
+    false,
+  ),
+  definition(
+    'computer_console_unlock_enroll',
+    'Enroll provider-local device-only protected console recovery. Credential material never enters ChatGPT, Forge Runtime, plugin receipts, or replayable jobs. Requires confirm_authorization=true for every invocation.',
+    {
+      confirm_authorization: {
+        type: 'boolean',
+        description: 'Must be true to authorize this exact provider-local enrollment invocation.',
+      },
+      timeout_ms: {
+        type: 'number',
+        description: 'Bounded provider timeout in milliseconds. Defaults to 15000 and is capped at 30000.',
+      },
+    },
+    ['confirm_authorization'],
+    false,
+  ),
+  definition(
+    'computer_console_unlock_status',
+    'Read protected console recovery enrollment and availability without exposing provider-local credential material. Requires confirm_authorization=true for every invocation.',
+    {
+      confirm_authorization: {
+        type: 'boolean',
+        description: 'Must be true to authorize this exact protected status invocation.',
+      },
+      timeout_ms: {
+        type: 'number',
+        description: 'Bounded provider timeout in milliseconds. Defaults to 15000 and is capped at 30000.',
+      },
+    },
+    ['confirm_authorization'],
+    false,
+  ),
+  definition(
+    'computer_console_unlock_recover',
+    'Recover a locked macOS console using only previously enrolled provider-local device-only credential material. No credential is transported through ChatGPT or Forge Runtime. Requires confirm_authorization=true for every invocation.',
+    {
+      confirm_authorization: {
+        type: 'boolean',
+        description: 'Must be true to authorize this exact one-shot recovery invocation.',
+      },
+      timeout_ms: {
+        type: 'number',
+        description:
+          'Bounded provider/postcondition timeout in milliseconds. Defaults to 15000 and is capped at 30000.',
+      },
+    },
+    ['confirm_authorization'],
+    false,
+  ),
+  definition(
+    'computer_console_unlock_revoke',
+    'Revoke provider-local protected console recovery enrollment. Requires confirm_authorization=true for every invocation.',
+    {
+      confirm_authorization: {
+        type: 'boolean',
+        description: 'Must be true to authorize this exact provider-local revocation invocation.',
+      },
+      timeout_ms: {
+        type: 'number',
+        description: 'Bounded provider timeout in milliseconds. Defaults to 15000 and is capped at 30000.',
+      },
+    },
+    ['confirm_authorization'],
+    false,
+  ),
+  definition(
+    'capability_execute',
+    'Execute one typed Forge core capability through its canonical substrate owner. Discover the exact action schema with rh_context capability_id first. This stable facade prevents one top-level MCP tool per atomic repository operation; plugin capabilities continue to use plugin_action_execute.',
+    {
+      repo_id: repoId,
+      checkout_id: { type: 'string', description: 'Optional exact checkout identity.' },
+      capability_id: { type: 'string', description: 'Exact core capability identity returned by rh_context.' },
+      action: { type: 'string', description: 'Exact capability action returned by rh_context.' },
+      request_id: { type: 'string', description: 'Stable idempotency identity for this invocation.' },
+      arguments: { type: 'object', description: 'Action-specific arguments validated by the capability owner.' },
+    },
+    ['capability_id', 'action', 'request_id'],
+    false,
+  ),
+  definition(
+    'plugin_action_execute',
+    'Execute one typed repository or controller-scoped plugin action through the plugin provider authority. rh_context exposes plugin schemas/policy; rh_work does not execute plugin capabilities. For confirmation=authorization, normal host permission is authoritative and an exact-target Forge capability grant may be reused; do not set confirm_authorization merely because an ordinary authorization-class action was previously allowed. Strong-confirmation actions still require their explicit confirmation contract.',
+    {
+      repo_id: repoId,
+      checkout_id: {
+        type: 'string',
+        description: 'Optional exact checkout identity for repository-scoped plugin actions.',
+      },
+      plugin_id: { type: 'string' },
+      action_id: { type: 'string' },
+      request_id: { type: 'string' },
+      arguments: { type: 'object' },
+      timeout_ms: { type: 'number' },
+      confirm_authorization: {
+        type: 'boolean',
+        description:
+          'Explicit confirmation flag for strong_confirmation actions. Ordinary confirmation=authorization actions follow the host permission model and do not require this field.',
+      },
+      confirmation_text: {
+        type: 'string',
+        description: 'Exact confirmation text for strong_confirmation actions only.',
+      },
+    },
+    ['plugin_id', 'action_id', 'request_id'],
+    false,
+  ),
+  definition(
+    'toolchain_plugin_summary',
+    'Return a redacted, low-interception plugin summary without raw config files or full action schemas.',
+    {
+      repo_id: repoId,
+      plugin_id: { type: 'string' },
+    },
+    ['plugin_id'],
+  ),
+  definition(
+    'work_result_summary',
+    'Return a redacted job result summary with failure class and suggested next actions. Does not return raw stdout or stderr.',
+    {
+      repo_id: repoId,
+      job_id: { type: 'string' },
+    },
+    ['job_id'],
+  ),
+  definition(
+    'work_status_digest',
+    'Return a redacted work status digest using a neutral work_ref. Does not return raw stdout or stderr.',
+    {
+      repo_id: repoId,
+      work_ref: { type: 'string' },
+    },
+    ['work_ref'],
+  ),
+  definition(
+    'model_clients_summary',
+    'List enabled model clients and DeepSeek adapter configuration state. Policy remains enforced by forge.',
+    {
+      repo_id: repoId,
+    },
+  ),
+  definition(
+    'model_control_plane_summary',
+    'Summarize primary and backup model controllers, handoff modes, and concurrency policy.',
+    {
+      repo_id: repoId,
+    },
+  ),
+  definition(
+    'deepseek_tool_manifest',
+    'Return DeepSeek function-calling tool manifests for the low-interception forge surface.',
+    {
+      repo_id: repoId,
+    },
+  ),
+  definition(
+    'deepseek_tool_call_prepare',
+    'Translate one DeepSeek function call into a forge operation without executing it.',
+    {
+      repo_id: repoId,
+      function_name: { type: 'string' },
+      function_arguments: { type: 'object' },
+    },
+    ['function_name', 'function_arguments'],
+  ),
+  definition(
+    'deepseek_controller_manifest',
+    'Return DeepSeek backup-controller manifest, boundaries, and function tools.',
+    {
+      repo_id: repoId,
+    },
+  ),
+  definition(
+    'deepseek_controller_handoff_prepare',
+    'Prepare a safe DeepSeek backup-controller handoff packet without calling the external model.',
+    {
+      repo_id: repoId,
+      reason: {
+        type: 'string',
+        enum: ['manual', 'chatgpt_platform_blocked', 'chatgpt_unavailable', 'parallel_review', 'local_gui_request'],
+      },
+      objective: { type: 'string' },
+      current_controller: { type: 'string' },
+      blocked_tool_name: { type: 'string' },
+      recent_safe_error: { type: 'string' },
+    },
+  ),
+  definition(
+    'deepseek_controller_request_prepare',
+    'Prepare a DeepSeek chat-completions request for backup controller mode without sending it.',
+    {
+      repo_id: repoId,
+      reason: {
+        type: 'string',
+        enum: ['manual', 'chatgpt_platform_blocked', 'chatgpt_unavailable', 'parallel_review', 'local_gui_request'],
+      },
+      objective: { type: 'string' },
+      user_message: { type: 'string' },
+      current_controller: { type: 'string' },
+      blocked_tool_name: { type: 'string' },
+      recent_safe_error: { type: 'string' },
+      model: { type: 'string' },
+    },
+  ),
+  definition(
+    'review_artifacts_prepare',
+    'Create bounded repo-local review artifact roots for browser/iOS screenshot review workflows.',
+    { repo_id: repoId },
+    [],
+    false,
+  ),
+  definition(
+    'review_artifacts_index',
+    'Index bounded repo-local browser/iOS screenshots, logs, and build reports for visual review.',
+    { repo_id: repoId, limit: { type: 'number' } },
+  ),
+  definition('browser_review_packet', 'Build a browser visual review packet from indexed browser screenshots.', {
     repo_id: repoId,
-  }, ['repo_id']),
-  definition('schedule_dedupe_apply', 'Pause duplicate schedules after explicit authorization, keeping one canonical enabled schedule per semantic identity.', {
-    repo_id: repoId,
-    dry_run: { type: 'boolean', description: 'When true, only returns the proposed changes.' },
-    confirm_authorization: { type: 'boolean', description: 'Must be true unless dry_run is true.' },
-  }, ['repo_id']),
-  definition('runtime_performance_diagnostics', 'Diagnose forge host performance, orphan workers, Local Controller presence, and cleanup candidates.', {
-    repo_id: repoId,
-    include_processes: { type: 'boolean', description: 'Include bounded forge related process samples. Defaults to true.' },
-    include_temp_dirs: { type: 'boolean', description: 'Include bounded forge temporary directory scan. Defaults to true.' },
-    cleanup_preview: { type: 'boolean', description: 'Return a no-side-effect cleanup plan for orphan workers and stale temp entries.' },
-  }),
-  definition('capability_recovery_probe', 'Read-only Runtime diagnostic evidence. This tool never starts, stops, restarts, repairs, or replaces Runtime modules.', {
-    repo_id: repoId,
-    recent_errors: { type: 'array', items: { type: 'string' } },
-    command_preview_available: { type: 'boolean' },
-    command_execute_available: { type: 'boolean' },
-    issue_tools_available: { type: 'boolean' },
-    job_tools_available: { type: 'boolean' },
-  }),
-  definition('capability_recovery_plan', 'Return a diagnostic handoff plan without Runtime lifecycle actions or automatic source repair.', {
-    repo_id: repoId,
-    recent_errors: { type: 'array', items: { type: 'string' } },
-  }),
-  definition('capability_recovery_apply', 'Apply one currently supported bounded recovery action after explicit authorization. Runtime lifecycle actions are outside this surface.', {
-    repo_id: repoId,
-    action_id: { type: 'string' },
-    confirm_authorization: { type: 'boolean' },
-    authorization: { type: 'string', description: 'Must equal action_id for actions that require authorization.' },
-    reason: { type: 'string' },
-    min_age_minutes: { type: 'number' },
-    max_candidates: { type: 'number' },
-  }, ['action_id'], false),
-  definition('runtime_maintenance_status', 'Read the self-contained runtime maintenance plan without invoking execute_command or creating Local Job tickets.', {
-    repo_id: repoId,
-    min_age_minutes: { type: 'number' },
-    max_candidates: { type: 'number' },
-    cancel_pending_approvals: { type: 'boolean' },
-  }),
-  definition('runtime_maintenance_apply', 'Apply one bounded runtime maintenance action without invoking execute_command or creating Local Job tickets.', {
-    repo_id: repoId,
-    action_id: { type: 'string', enum: ['local_jobs_reconcile', 'quarantine_unreadable_local_jobs', 'runtime_storage_finalize_relocation', 'rebuild_projection', 'full_maintenance_pass'] },
-    confirm_maintenance: { type: 'boolean' },
-    authorization: { type: 'string', description: 'Must equal action_id.' },
-    min_age_minutes: { type: 'number' },
-    max_candidates: { type: 'number' },
-    cancel_pending_approvals: { type: 'boolean' },
-  }, ['action_id', 'confirm_maintenance', 'authorization'], false),
-  definition('workspace_auth_status', 'Summarize Workspace/Gmail auth readiness without returning or persisting secrets.', {
-    repo_id: repoId,
-  }),
-  definition('workspace_auth_login_prepare', 'Prepare a state-protected local Google Workspace/Gmail OAuth login with PKCE and Keychain persistence.', {
-    repo_id: repoId,
-    service: { type: 'string', enum: ['gmail', 'calendar', 'tasks', 'google-workspace'] },
-    scopes: { type: 'array', items: { type: 'string' } },
-    redirect_uri: { type: 'string' },
-  }),
-  definition('external_filesystem_targets_list', 'List pre-authorized external filesystem targets. Does not expose arbitrary absolute-path access.', {
-    repo_id: repoId,
-  }),
-  definition('external_filesystem_grant_preview', 'Preview a read-only external filesystem grant for a narrow absolute directory without writing config.', {
-    repo_id: repoId,
-    grant_key: { type: 'string' },
-    root_path: { type: 'string' },
-    mode: { type: 'string', enum: ['read', 'copy_into_repo'] },
-    expires_in_minutes: { type: 'number', description: 'Optional expiry in minutes, capped at 24h. Defaults to 8h.' },
-    reason: { type: 'string' },
-  }, ['grant_key', 'root_path', 'reason']),
-  definition('external_filesystem_grant_apply', 'Apply a previously previewed read-only external filesystem grant with explicit authorization.', {
-    repo_id: repoId,
-    grant_key: { type: 'string' },
-    root_path: { type: 'string' },
-    mode: { type: 'string', enum: ['read', 'copy_into_repo'] },
-    expires_in_minutes: { type: 'number', description: 'Optional expiry in minutes, capped at 24h. Defaults to 8h.' },
-    reason: { type: 'string' },
-    preview_ticket_id: { type: 'string' },
-    confirm_authorization: { type: 'boolean' },
-  }, ['grant_key', 'root_path', 'reason', 'preview_ticket_id', 'confirm_authorization'], false),
-  definition('external_filesystem_text_snapshot', 'Read a bounded text/directory snapshot from a pre-authorized external filesystem target key.', {
-    repo_id: repoId,
-    target_key: { type: 'string' },
-    path: { type: 'string' },
-    max_chars: { type: 'number' },
-  }, ['target_key']),
-  definition('runtime_storage_repair_preview', 'Preview repo-scoped local-jobs runtime storage repair candidates without mutation.', {
-    repo_id: repoId,
-    min_age_minutes: { type: 'number' },
-    max_candidates: { type: 'number' },
-  }),
-  definition('runtime_storage_repair_apply', 'Apply safe repo-scoped local-jobs runtime storage repairs after explicit confirmation.', {
-    repo_id: repoId,
-    candidate_ids: { type: 'array', items: { type: 'string' } },
-    min_age_minutes: { type: 'number' },
-    max_candidates: { type: 'number' },
-    confirm_repair: { type: 'boolean' },
-  }, ['confirm_repair'], false),
-  definition('list_plugins', 'List controller plugins and the selected repository plugins. When repo_id is omitted, the current repository context is included automatically; with multiple repositories, provide repo_id. Uses registered manifest snapshots with last-observed capability health; action execution independently validates provider identity and readiness.', {
-    repo_id: repoId,
-  }),
-  definition('get_plugin', 'Read one repository or controller-scoped plugin manifest including action schemas and policy requirements.', {
-    repo_id: repoId,
-    plugin_id: { type: 'string' },
-  }, ['plugin_id']),
-  definition('computer_console_unlock_prepare', 'Prepare one protected console unlock without transporting a password through ChatGPT or Forge Runtime. Forge Desktop Operator displays a provider-local secure password field while the console is unlocked and returns only a short-lived opaque single-use handle. Requires confirm_authorization=true for every invocation.', {
-    confirm_authorization: { type: 'boolean', description: 'Must be true to authorize this exact one-shot local credential preparation.' },
-    timeout_ms: { type: 'number', description: 'Bounded provider/prompt timeout in milliseconds. Defaults to 15000 and is capped at 30000.' },
-  }, ['confirm_authorization'], false),
-  definition('computer_console_unlock', 'Protected one-shot console unlock through computer.console.unlock.v1 using only a provider-local opaque credential handle. Raw macOS credentials never enter MCP arguments, Forge Runtime, Plugin actions, Process/Work state, receipts, audit hashes, or replayable jobs. Requires confirm_authorization=true for every invocation.', {
-    credential_handle: { type: 'string', minLength: 36, maxLength: 64, description: 'Opaque short-lived single-use handle returned by computer_console_unlock_prepare. It is not a credential.' },
-    confirm_authorization: { type: 'boolean', description: 'Must be true to authorize this exact one-shot console unlock invocation.' },
-    timeout_ms: { type: 'number', description: 'Bounded provider/postcondition timeout in milliseconds. Defaults to 15000 and is capped at 30000.' },
-  }, ['credential_handle', 'confirm_authorization'], false),
-  definition('computer_console_unlock_enroll', 'Enroll provider-local device-only protected console recovery. Credential material never enters ChatGPT, Forge Runtime, plugin receipts, or replayable jobs. Requires confirm_authorization=true for every invocation.', {
-    confirm_authorization: { type: 'boolean', description: 'Must be true to authorize this exact provider-local enrollment invocation.' },
-    timeout_ms: { type: 'number', description: 'Bounded provider timeout in milliseconds. Defaults to 15000 and is capped at 30000.' },
-  }, ['confirm_authorization'], false),
-  definition('computer_console_unlock_status', 'Read protected console recovery enrollment and availability without exposing provider-local credential material. Requires confirm_authorization=true for every invocation.', {
-    confirm_authorization: { type: 'boolean', description: 'Must be true to authorize this exact protected status invocation.' },
-    timeout_ms: { type: 'number', description: 'Bounded provider timeout in milliseconds. Defaults to 15000 and is capped at 30000.' },
-  }, ['confirm_authorization'], false),
-  definition('computer_console_unlock_recover', 'Recover a locked macOS console using only previously enrolled provider-local device-only credential material. No credential is transported through ChatGPT or Forge Runtime. Requires confirm_authorization=true for every invocation.', {
-    confirm_authorization: { type: 'boolean', description: 'Must be true to authorize this exact one-shot recovery invocation.' },
-    timeout_ms: { type: 'number', description: 'Bounded provider/postcondition timeout in milliseconds. Defaults to 15000 and is capped at 30000.' },
-  }, ['confirm_authorization'], false),
-  definition('computer_console_unlock_revoke', 'Revoke provider-local protected console recovery enrollment. Requires confirm_authorization=true for every invocation.', {
-    confirm_authorization: { type: 'boolean', description: 'Must be true to authorize this exact provider-local revocation invocation.' },
-    timeout_ms: { type: 'number', description: 'Bounded provider timeout in milliseconds. Defaults to 15000 and is capped at 30000.' },
-  }, ['confirm_authorization'], false),
-  definition('capability_execute', 'Execute one typed Forge core capability through its canonical substrate owner. Discover the exact action schema with rh_context capability_id first. This stable facade prevents one top-level MCP tool per atomic repository operation; plugin capabilities continue to use plugin_action_execute.', {
-    repo_id: repoId,
-    checkout_id: { type: 'string', description: 'Optional exact checkout identity.' },
-    capability_id: { type: 'string', description: 'Exact core capability identity returned by rh_context.' },
-    action: { type: 'string', description: 'Exact capability action returned by rh_context.' },
-    request_id: { type: 'string', description: 'Stable idempotency identity for this invocation.' },
-    arguments: { type: 'object', description: 'Action-specific arguments validated by the capability owner.' },
-  }, ['capability_id', 'action', 'request_id'], false),
-  definition('plugin_action_execute', 'Execute one typed repository or controller-scoped plugin action through the plugin provider authority. rh_context exposes plugin schemas/policy; rh_work does not execute plugin capabilities. For confirmation=authorization, normal host permission is authoritative and an exact-target Forge capability grant may be reused; do not set confirm_authorization merely because an ordinary authorization-class action was previously allowed. Strong-confirmation actions still require their explicit confirmation contract.', {
-    repo_id: repoId,
-    checkout_id: { type: 'string', description: 'Optional exact checkout identity for repository-scoped plugin actions.' },
-    plugin_id: { type: 'string' },
-    action_id: { type: 'string' },
-    request_id: { type: 'string' },
-    arguments: { type: 'object' },
-    timeout_ms: { type: 'number' },
-    confirm_authorization: { type: 'boolean', description: 'Explicit confirmation flag for strong_confirmation actions. Ordinary confirmation=authorization actions follow the host permission model and do not require this field.' },
-    confirmation_text: { type: 'string', description: 'Exact confirmation text for strong_confirmation actions only.' },
-  }, ['plugin_id', 'action_id', 'request_id'], false),
-  definition('toolchain_plugin_summary', 'Return a redacted, low-interception plugin summary without raw config files or full action schemas.', {
-    repo_id: repoId,
-    plugin_id: { type: 'string' },
-  }, ['plugin_id']),
-  definition('work_result_summary', 'Return a redacted job result summary with failure class and suggested next actions. Does not return raw stdout or stderr.', {
-    repo_id: repoId,
-    job_id: { type: 'string' },
-  }, ['job_id']),
-  definition('work_status_digest', 'Return a redacted work status digest using a neutral work_ref. Does not return raw stdout or stderr.', {
-    repo_id: repoId,
-    work_ref: { type: 'string' },
-  }, ['work_ref']),
-  definition('model_clients_summary', 'List enabled model clients and DeepSeek adapter configuration state. Policy remains enforced by forge.', {
-    repo_id: repoId,
-  }),
-  definition('model_control_plane_summary', 'Summarize primary and backup model controllers, handoff modes, and concurrency policy.', {
-    repo_id: repoId,
-  }),
-  definition('deepseek_tool_manifest', 'Return DeepSeek function-calling tool manifests for the low-interception forge surface.', {
-    repo_id: repoId,
-  }),
-  definition('deepseek_tool_call_prepare', 'Translate one DeepSeek function call into a forge operation without executing it.', {
-    repo_id: repoId,
-    function_name: { type: 'string' },
-    function_arguments: { type: 'object' },
-  }, ['function_name', 'function_arguments']),
-  definition('deepseek_controller_manifest', 'Return DeepSeek backup-controller manifest, boundaries, and function tools.', {
-    repo_id: repoId,
-  }),
-  definition('deepseek_controller_handoff_prepare', 'Prepare a safe DeepSeek backup-controller handoff packet without calling the external model.', {
-    repo_id: repoId,
-    reason: { type: 'string', enum: ['manual', 'chatgpt_platform_blocked', 'chatgpt_unavailable', 'parallel_review', 'local_gui_request'] },
-    objective: { type: 'string' },
-    current_controller: { type: 'string' },
-    blocked_tool_name: { type: 'string' },
-    recent_safe_error: { type: 'string' },
-  }),
-  definition('deepseek_controller_request_prepare', 'Prepare a DeepSeek chat-completions request for backup controller mode without sending it.', {
-    repo_id: repoId,
-    reason: { type: 'string', enum: ['manual', 'chatgpt_platform_blocked', 'chatgpt_unavailable', 'parallel_review', 'local_gui_request'] },
-    objective: { type: 'string' },
-    user_message: { type: 'string' },
-    current_controller: { type: 'string' },
-    blocked_tool_name: { type: 'string' },
-    recent_safe_error: { type: 'string' },
-    model: { type: 'string' },
-  }),
-  definition('review_artifacts_prepare', 'Create bounded repo-local review artifact roots for browser/iOS screenshot review workflows.', { repo_id: repoId }, [], false),
-  definition('review_artifacts_index', 'Index bounded repo-local browser/iOS screenshots, logs, and build reports for visual review.', { repo_id: repoId, limit: { type: 'number' } }),
-  definition('browser_review_packet', 'Build a browser visual review packet from indexed browser screenshots.', { repo_id: repoId, limit: { type: 'number' } }),
-  definition('ios_review_packet', 'Build or capture an iOS visual review packet from simulator screenshots and logs.', {
-    repo_id: repoId,
-    udid: { type: 'string' },
-    label: { type: 'string' },
-    capture: { type: 'boolean' },
     limit: { type: 'number' },
-  }, [], false),
-  definition('workflow_watchdog_report', 'Diagnose stuck repository workflows across execution jobs, local bridge jobs, schedules, and runtime processes.', {
-    repo_id: repoId,
-    stale_minutes: { type: 'number' },
-    include_processes: { type: 'boolean' },
   }),
-  definition('runtime_cleanup_preview', 'Preview stale forge temp directories, terminal local jobs, and historical attention cleanup candidates.', {
-    repo_id: repoId,
-    min_age_minutes: { type: 'number' },
-    include_temp_dirs: { type: 'boolean' },
-    include_terminal_local_jobs: { type: 'boolean' },
-    include_legacy_runs: { type: 'boolean' },
-    include_historical_attention: { type: 'boolean' },
-    max_candidates: { type: 'number' },
-  }),
-  definition('runtime_cleanup_apply', 'Apply safe cleanup candidates. Requires confirm_cleanup=true and remains limited to explicit forge candidates.', {
-    repo_id: repoId,
-    min_age_minutes: { type: 'number' },
-    include_temp_dirs: { type: 'boolean' },
-    include_terminal_local_jobs: { type: 'boolean' },
-    include_legacy_runs: { type: 'boolean' },
-    include_historical_attention: { type: 'boolean' },
-    max_candidates: { type: 'number' },
-    confirm_cleanup: { type: 'boolean' },
-  }, [], false),
-  definition('request_release_gate', 'Return an explicit external-Controller handoff for release evidence. Push, tag, and publish remain separately authorized.', { repo_id: repoId, request_id: { type: 'string' } }, [], false),
+  definition(
+    'ios_review_packet',
+    'Build or capture an iOS visual review packet from simulator screenshots and logs.',
+    {
+      repo_id: repoId,
+      udid: { type: 'string' },
+      label: { type: 'string' },
+      capture: { type: 'boolean' },
+      limit: { type: 'number' },
+    },
+    [],
+    false,
+  ),
+  definition(
+    'workflow_watchdog_report',
+    'Diagnose stuck repository workflows across execution jobs, local bridge jobs, schedules, and runtime processes.',
+    {
+      repo_id: repoId,
+      stale_minutes: { type: 'number' },
+      include_processes: { type: 'boolean' },
+    },
+  ),
+  definition(
+    'runtime_cleanup_preview',
+    'Preview stale forge temp directories, terminal local jobs, and historical attention cleanup candidates.',
+    {
+      repo_id: repoId,
+      min_age_minutes: { type: 'number' },
+      include_temp_dirs: { type: 'boolean' },
+      include_terminal_local_jobs: { type: 'boolean' },
+      include_legacy_runs: { type: 'boolean' },
+      include_historical_attention: { type: 'boolean' },
+      max_candidates: { type: 'number' },
+    },
+  ),
+  definition(
+    'runtime_cleanup_apply',
+    'Apply safe cleanup candidates. Requires confirm_cleanup=true and remains limited to explicit forge candidates.',
+    {
+      repo_id: repoId,
+      min_age_minutes: { type: 'number' },
+      include_temp_dirs: { type: 'boolean' },
+      include_terminal_local_jobs: { type: 'boolean' },
+      include_legacy_runs: { type: 'boolean' },
+      include_historical_attention: { type: 'boolean' },
+      max_candidates: { type: 'number' },
+      confirm_cleanup: { type: 'boolean' },
+    },
+    [],
+    false,
+  ),
+  definition(
+    'request_release_gate',
+    'Return an explicit external-Controller handoff for release evidence. Push, tag, and publish remain separately authorized.',
+    { repo_id: repoId, request_id: { type: 'string' } },
+    [],
+    false,
+  ),
 ];
 
 export const connectorExposedTools = runtimeToolDefinitions.map((tool) => tool.name);

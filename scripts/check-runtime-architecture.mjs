@@ -1270,31 +1270,35 @@ forbid(
   'repository Git safety must not depend on Work review methodology',
 );
 
-// Frozen published MCP schema is temporarily separate from live admission.
-// Legacy get/list/get_contract enum strings are inert wire tokens only; the
-// Runtime must never route them to historic Work. Versioned schema cleanup
-// remains required before #483 can be closed.
+// #483: model-facing rh_work enum must equal the accepted operation registry.
+// Historical list/get/get_contract Work readers are deleted from the schema, not
+// retained as inert wire tokens or read-only compatibility.
 requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', '[...RH_WORK_MODEL_OPERATIONS]');
 forbid(
   'adapters/mcp/runtime-gateway/runtime-tool-definitions.ts',
   /review_decision|implementation_review_findings|review_rationale|requiredPlanStepId/,
   'the model-facing rh_work schema must not hand-write legacy lifecycle review inputs',
 );
+forbid(
+  'adapters/mcp/runtime-gateway/runtime-tool-definitions.ts',
+  /historical read-only Work|list\/get\/get_contract are historical Work reads|historical Work reads/,
+  'rh_work schema must not advertise deleted historical Work readers',
+);
 const rhWorkOperationContract = text('src/runtime/control-plane/facade/rh-work-operation-contract.ts');
 const rhWorkOperations = (rhWorkOperationContract.match(/RH_WORK_OPERATIONS = \[([\s\S]*?)\] as const/) ?? [])[1] ?? '';
 if (!rhWorkOperations.trim()) {
   failures.push('rh_work operation contract must define RH_WORK_OPERATIONS as the single operation registry');
 }
-if (
-  !/export const RH_WORK_MODEL_OPERATIONS\s*=\s*\[[\s\S]*?'get_contract'[\s\S]*?\.\.\.RH_WORK_OPERATIONS\.slice\(1\)/.test(
-    rhWorkOperationContract,
-  )
-) {
-  failures.push('frozen MCP enum must preserve old tokens until the versioned schema cutover');
+if (!/export const RH_WORK_MODEL_OPERATIONS = RH_WORK_OPERATIONS;/.test(rhWorkOperationContract)) {
+  failures.push('rh_work model enum must equal RH_WORK_OPERATIONS; do not retain inert historical Work tokens');
 }
 for (const retiredReader of ['list', 'get', 'get_contract']) {
-  if (rhWorkOperations.includes("'" + retiredReader + "'")) {
+  const token = "'" + retiredReader + "'";
+  if (rhWorkOperations.includes(token)) {
     failures.push('retired Work operation must never be accepted: ' + retiredReader);
+  }
+  if (rhWorkOperationContract.includes(token)) {
+    failures.push('retired Work reader must not remain in rh_work model contract: ' + retiredReader);
   }
 }
 for (const legacyModelVerb of [

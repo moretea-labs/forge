@@ -29,6 +29,7 @@ import {
 } from '../../src/runtime/control-plane/workspace/workspace-store';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
+import { RH_WORK_MODEL_OPERATIONS } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { readHistoricalWorkContract, seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const roots: string[] = [];
@@ -1091,6 +1092,13 @@ describe('rh_work Requirement bootstrap', () => {
       expect(response.data).not.toHaveProperty('work');
       expect(response.status).not.toBe('ok');
     }
+    expect([...RH_WORK_MODEL_OPERATIONS]).not.toEqual(expect.arrayContaining(['list', 'get', 'get_contract']));
+    const rhWork = runtimeToolDefinitions.find((tool) => tool.name === 'rh_work');
+    expect(rhWork).toBeDefined();
+    const operationEnum = (rhWork!.inputSchema as { properties?: { operation?: { enum?: string[] } } }).properties
+      ?.operation?.enum;
+    expect(operationEnum).toBeDefined();
+    expect(operationEnum).not.toEqual(expect.arrayContaining(['list', 'get', 'get_contract']));
   });
 
   test('explicitly promotes one Workspace Cognitive requirement candidate into exactly one canonical Requirement', async () => {

@@ -257,8 +257,9 @@ struct AgentAssetsDashboard: View {
     .padding(.horizontal, 10)
     .frame(height: 30)
     // An input well is a real content surface, not a button-card.
-    .background(Color.primary.opacity(0.035),
-                in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .background(
+      Color.primary.opacity(0.035),
+      in: RoundedRectangle(cornerRadius: 8, style: .continuous))
   }
 
   private var resourceFilters: some View {
@@ -304,10 +305,12 @@ struct AgentAssetsDashboard: View {
         }
       }
     } label: {
-      Label(model.projects.first(where: { $0.repoId == selectedRepoId })?.label ?? "全部仓库",
-            systemImage: "folder")
-        .font(.system(size: 11))
-        .lineLimit(1)
+      Label(
+        model.projects.first(where: { $0.repoId == selectedRepoId })?.label ?? "全部仓库",
+        systemImage: "folder"
+      )
+      .font(.system(size: 11))
+      .lineLimit(1)
     }
     .menuStyle(.borderlessButton)
     .frame(maxWidth: 155)

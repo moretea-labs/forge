@@ -169,7 +169,7 @@ function resolveRepositoryCommandTarget(
   const deprecatedWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
   if (deprecatedWorkId) {
     throw new Error(
-      `WORK_MUTATION_AUTHORITY_RETIRED: ${deprecatedWorkId}; execute_command never uses historical Work identity. Use rh_work get/get_contract for archival inspection`,
+      `WORK_MUTATION_AUTHORITY_RETIRED: ${deprecatedWorkId}; execute_command never uses Work identity. Work / WorkHandle / WorkContract are fully retired with no read or archival surface`,
     );
   }
   const workspaceRoot = typeof args.workspace_root === 'string' ? args.workspace_root.trim() : '';
@@ -934,8 +934,8 @@ export async function callRepositoryTool(
             ...(target.workspace ? { workspace: target.workspace } : {}),
           });
         }
-        let target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
-        let { repository, commandTarget, executionIdentity } = target;
+        const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
+        const { repository, commandTarget, executionIdentity } = target;
         // Repository targets keep their established identity fields. An arbitrary
         // workspace target reports a workspace scope id and never a repository id.
         const commandScopeKey = commandExecutionScopeKey(commandTarget);

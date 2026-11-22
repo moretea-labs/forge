@@ -119,7 +119,10 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // hierarchy additionally adds an explicit root-binding flag and parent edge,
 // separate from Requirement dependency edges. Refresh the exact fingerprint so
 // stale Connector schema snapshots are invalidated.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '11a6a81fa3447c0c';
+// 2026-11-22 #483: delete inert historical Work list/get/get_contract enum tokens
+// and advertising from the model-facing rh_work schema; Work has no remaining
+// read surface. Refresh the exact schema fingerprint.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'bdb2d1ac904aa1e1';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

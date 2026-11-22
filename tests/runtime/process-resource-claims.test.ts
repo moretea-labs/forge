@@ -599,6 +599,28 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(checkClaims.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(false);
   });
 
+  test('path-scoped git add and git commit do not take checkout-wide writer (#713)', () => {
+    const staged = claimsForRepositoryCommand(['git', 'add', 'src/alpha.ts', 'src/beta.ts'], 'repo1', 'co1');
+    expect(staged).toContainEqual({ resourceKey: 'git-index:co1', mode: 'exclusive' });
+    expect(staged).toContainEqual({ resourceKey: 'path:co1:src/alpha.ts', mode: 'write' });
+    expect(staged).toContainEqual({ resourceKey: 'path:co1:src/beta.ts', mode: 'write' });
+    expect(staged.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+
+    const commit = claimsForRepositoryCommand(['git', 'commit', '-m', 'slice'], 'repo1', 'co1');
+    expect(commit).toContainEqual({ resourceKey: 'git-index:co1', mode: 'exclusive' });
+    expect(commit).toContainEqual({ resourceKey: 'git-refs:repo1', mode: 'exclusive' });
+    expect(commit.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+
+    // Opaque scripts still fail closed on the checkout fence until the caller
+    // provides exact mutation_paths.
+    expect(
+      claimsForRepositoryCommand(['python3', 'scripts/rewrite.py', 'src/alpha.ts'], 'repo1', 'co1'),
+    ).toContainEqual({
+      resourceKey: 'workspace:co1',
+      mode: 'write',
+    });
+  });
+
   test('Cargo source mutation, shell composition and opaque scripts remain conservatively fenced (#713)', () => {
     for (const command of [
       'cargo test --lib && touch generated.txt',

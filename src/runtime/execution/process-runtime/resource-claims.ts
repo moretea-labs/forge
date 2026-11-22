@@ -950,18 +950,35 @@ function repositoryCommandClaims(
     canonical.kind === 'argv' ? (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase() : undefined;
   const sub = canonical.kind === 'argv' ? canonical.args?.[0]?.toLowerCase() : undefined;
   if (program === 'git') {
+    const gitPaths = extractLikelyPaths(command).slice(0, 16);
     if (sub === 'add' || sub === 'rm' || sub === 'mv' || sub === 'restore' || sub === 'apply') {
+      if (gitPaths.length > 0) {
+        return normalizeClaims([
+          claimGitIndex(checkoutId, repoId),
+          ...gitPaths.map((path) => claimPathWrite(path, checkoutId, repoId)),
+        ]);
+      }
       return [claimGitIndex(checkoutId, repoId), claimWorkspaceWrite(checkoutId, repoId)];
     }
     if (sub === 'commit' || sub === 'merge' || sub === 'rebase' || sub === 'cherry-pick' || sub === 'revert') {
-      return [claimGitIndex(checkoutId, repoId), claimGitRefs(repoId), claimWorkspaceWrite(checkoutId, repoId)];
+      // Index/ref atomicity is the real fence. A path-scoped commit must not
+      // monopolize the whole checkout as an Agent admission lock (#713).
+      return [claimGitIndex(checkoutId, repoId), claimGitRefs(repoId)];
     }
     if (sub === 'checkout' || sub === 'switch' || sub === 'branch' || sub === 'tag') {
+      if (gitPaths.length > 0) {
+        return normalizeClaims([
+          claimGitRefs(repoId),
+          ...gitPaths.map((path) => claimPathWrite(path, checkoutId, repoId)),
+        ]);
+      }
       return [claimGitRefs(repoId), claimWorkspaceWrite(checkoutId, repoId)];
     }
   }
 
-  // Unknown mutating command — workspace write, not heavy-check exclusive.
+  // Opaque mutating commands keep the conservative checkout fence. Prefer
+  // declared mutation_paths / exact Git path claims above so ordinary Agent
+  // work does not inherit this fallback as a global admission lock (#713).
   return [claimWorkspaceWrite(checkoutId, repoId)];
 }
 

@@ -37,21 +37,14 @@ export const RH_WORK_OPERATIONS = [
 ] as const;
 
 /**
- * There is intentionally no legacy lifecycle operation set.  A Runtime that
- * has rolled over to Thin Forge rejects the former verify/review/finalize and
- * controller-claim vocabulary instead of silently translating it.
+ * There is intentionally no legacy lifecycle or historical Work operation set.
+ * A Runtime that has rolled over to Thin Forge rejects the former
+ * verify/review/finalize, controller-claim, and list/get/get_contract
+ * vocabulary instead of silently translating it or advertising read-only Work.
  */
 
-// The installed MCP schema is frozen for this version; these three legacy
-// enum strings are inert wire tokens, not accepted operations or retained data.
-// A versioned MCP release must remove the strings from the model schema too.
-export const RH_WORK_MODEL_OPERATIONS = [
-  'repair',
-  'list',
-  'get',
-  'get_contract',
-  ...RH_WORK_OPERATIONS.slice(1),
-] as const;
+/** Model-facing rh_work enum is identical to the accepted operation registry. */
+export const RH_WORK_MODEL_OPERATIONS = RH_WORK_OPERATIONS;
 
 export type RhWorkOperation = (typeof RH_WORK_OPERATIONS)[number];
 
