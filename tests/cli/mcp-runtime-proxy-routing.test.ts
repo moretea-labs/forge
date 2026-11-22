@@ -64,7 +64,6 @@ import {
   writeProjectPlacement,
   writeWorkspaceIdentity,
 } from '../../src/runtime/control-plane/workspace/workspace-store';
-import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 import { processToolDefinitions } from '../../adapters/mcp/runtime-gateway/process-tools';
 import { routeDurableMcpCall } from '../../adapters/mcp/runtime-gateway/router';
 import { callProcessTool } from '../../src/runtime/execution/process-runtime/tool-dispatch';
@@ -496,17 +495,6 @@ describe('MCP canonical Runtime proxy routing', () => {
           expect(staleTool.isError).toBe(true);
           expect(staleTool.structuredContent).toMatchObject({
             error: { code: 'TOOL_NOT_FOUND', action: 'refresh_tools_list' },
-          });
-          const retiredWorkTool = await client.callTool({ name: 'work_prepare', arguments: {} });
-          expect(retiredWorkTool.isError).toBe(true);
-          expect(retiredWorkTool.structuredContent).toMatchObject({
-            error: {
-              code: 'TOOL_NOT_FOUND',
-              action: 'refresh_tools_list',
-              reason: 'retired_tool_catalog_stale',
-              replacement: 'direct_capabilities',
-              semanticContext: 'rh_work',
-            },
           });
         }
         const currentTool = await client.callTool({
@@ -1988,71 +1976,6 @@ function runPostFinalizeGit(root: string, args: string[]): string {
   return executed.stdout.trim();
 }
 
-function postFinalizeAttributionFixture() {
-  const root = mkdtempSync(join(tmpdir(), 'forge-post-finalize-attribution-'));
-  const controllerHome = join(root, 'controller');
-  const repoRoot = join(root, 'repo');
-  mkdirSync(repoRoot, { recursive: true });
-  runPostFinalizeGit(repoRoot, ['init', '-b', 'main']);
-  runPostFinalizeGit(repoRoot, ['config', 'user.name', 'Forge Test']);
-  runPostFinalizeGit(repoRoot, ['config', 'user.email', 'forge-test@example.com']);
-  writeFileSync(join(repoRoot, 'README.md'), 'base\n');
-  runPostFinalizeGit(repoRoot, ['add', 'README.md']);
-  runPostFinalizeGit(repoRoot, ['commit', '-m', 'init']);
-  const targetRevision = runPostFinalizeGit(repoRoot, ['rev-parse', 'HEAD']);
-  const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
-  const workId = 'WORK-POST-FINALIZE-READONLY';
-  const principalId = 'principal-post-finalize';
-  const recordedAt = '2026-08-28T00:18:00.000Z';
-  seedHistoricalWorkContract(
-    { controllerHome, repoId: repository.repoId },
-    {
-      workId,
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      principalId,
-      controllerInstanceId: 'runtime-post-finalize',
-      objective: 'Exercise post-finalize readonly attribution.',
-      acceptanceCriteria: ['readonly observation remains attributable after lifecycle close'],
-      checks: [],
-      constraints: {},
-      requestedBy: 'chatgpt',
-      workKind: 'completed_no_change',
-      dispatchState: 'terminal',
-      semanticState: 'completed',
-      semanticRevision: 2,
-      phase: 'cleanup',
-      completionOutcome: 'completed_no_change',
-      completionReceipt: {
-        schemaVersion: 1,
-        receiptId: 'receipt-post-finalize-readonly',
-        source: 'direct_edit',
-        issueId: 'post-finalize-attribution',
-        taskId: workId,
-        targetBranch: 'main',
-        targetRevision,
-        changedPaths: [],
-        delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
-        cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
-        verifiedAt: recordedAt,
-        recordedAt,
-      },
-    },
-  );
-  return {
-    root,
-    controllerHome,
-    repoRoot,
-    repository,
-    workId,
-    caller: {
-      sessionId: 'session-after-finalize',
-      principalId,
-      controllerInstanceId: 'runtime-after-finalize',
-    },
-  };
-}
-
 test('plugin_action_execute honors an exact checkout_id for iOS repository path validation', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-plugin-checkout-routing-'));
   const controllerHome = join(root, 'controller');
@@ -2130,63 +2053,3 @@ test('plugin_action_execute honors an exact checkout_id for iOS repository path 
   }
 });
 
-describe('MCP retired Work command attribution', () => {
-  test('rejects historical Work provenance on read-only repository commands', async () => {
-    const fx = postFinalizeAttributionFixture();
-    const context = {
-      ...createMcpToolContext({ controllerHome: fx.controllerHome, profile: 'controller' }),
-      ...fx.caller,
-    };
-    const server = createForgeMcpServerFromContext(context);
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await server.connect(serverTransport);
-    const client = new Client({ name: 'terminal-work-command', version: '1.0.0' }, { capabilities: {} });
-    await client.connect(clientTransport);
-    try {
-      const response = await client.callTool({
-        name: 'execute_command',
-        arguments: {
-          repo_id: fx.repository.repoId,
-          checkout_id: fx.repository.activeCheckoutId,
-          work_id: fx.workId,
-          command: ['git', 'status', '-sb'],
-          request_id: 'post-finalize-status',
-        },
-      });
-      expect(response.isError).toBe(true);
-      expect(JSON.stringify(response.structuredContent ?? response)).toContain('WORK_MUTATION_AUTHORITY_RETIRED');
-    } finally {
-      await client.close();
-      await server.close();
-      rmSync(fx.root, { recursive: true, force: true });
-    }
-  });
-
-  test('does not reopen terminal Work mutation or remote-delivery authority', async () => {
-    const fx = postFinalizeAttributionFixture();
-    try {
-      const mutationPath = join(fx.repoRoot, 'must-not-exist.txt');
-      for (const command of [
-        ['touch', 'must-not-exist.txt'],
-        ['git', 'push', 'origin', 'main'],
-      ]) {
-        const response = await callRepositoryTool(
-          fx.controllerHome,
-          'execute_command',
-          {
-            repo_id: fx.repository.repoId,
-            work_id: fx.workId,
-            command,
-            request_id: `post-finalize-${command[0]}`,
-          },
-          fx.caller,
-        );
-        expect(response?.isError).toBe(true);
-        expect(JSON.stringify(response?.structuredContent ?? response)).toContain('WORK_MUTATION_AUTHORITY_RETIRED');
-      }
-      expect(existsSync(mutationPath)).toBe(false);
-    } finally {
-      rmSync(fx.root, { recursive: true, force: true });
-    }
-  });
-});

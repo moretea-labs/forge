@@ -20,8 +20,6 @@ async function runEditSessionValidationViaProcessRuntime(
   args: Record<string, unknown>,
 ): Promise<CallToolResult> {
   const resolved = resolveEditValidationRepository(repository, editSessionId);
-  const explicitWorkId = typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined;
-  if (explicitWorkId) throw new Error(`WORK_MUTATION_AUTHORITY_RETIRED: ${explicitWorkId}`);
   // Historical EditSession Work provenance is audit-only. Validation binds to
   // the physical repository/checkout plus authenticated principal.
   const binding = ctx.principalId?.trim()

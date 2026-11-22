@@ -107,12 +107,6 @@ function safePatchEditBinding(
   repository: ReturnType<typeof resolveRepositorySelection>,
   args: Record<string, unknown>,
 ): EditSessionBinding | undefined {
-  const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-  if (explicitWorkId) {
-    throw new Error(
-      `WORK_MUTATION_AUTHORITY_RETIRED: ${explicitWorkId}; omit work_id and use repository/checkout/EditSession/resource authorities directly`,
-    );
-  }
   return undefined;
 }
 
@@ -124,12 +118,6 @@ function resolveRepositorySelectionWithoutWorkAuthority(
   allowCheckoutMutation = true,
 ): ReturnType<typeof resolveRepositorySelection> {
   const checkoutId = typeof args.checkout_id === 'string' ? args.checkout_id.trim() : '';
-  const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-  if (explicitWorkId && allowCheckoutMutation) {
-    throw new Error(
-      `WORK_MUTATION_AUTHORITY_RETIRED: ${explicitWorkId}; Work cannot select, recover, relocate, or own a mutation checkout`,
-    );
-  }
   return resolveRepositorySelection({
     repoId: repoIdValue || undefined,
     checkoutId: checkoutId || undefined,
@@ -166,12 +154,6 @@ function resolveRepositoryCommandTarget(
   executionIdentity: ResolvedExecutionIdentity;
   workspace?: { workspaceId: string; root: string; registered: false };
 } {
-  const deprecatedWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-  if (deprecatedWorkId) {
-    throw new Error(
-      `WORK_MUTATION_AUTHORITY_RETIRED: ${deprecatedWorkId}; execute_command never uses Work identity. Work / WorkHandle / WorkContract are fully retired with no read or archival surface`,
-    );
-  }
   const workspaceRoot = typeof args.workspace_root === 'string' ? args.workspace_root.trim() : '';
   const checkoutId = typeof args.checkout_id === 'string' ? args.checkout_id.trim() : '';
   if (workspaceRoot) {

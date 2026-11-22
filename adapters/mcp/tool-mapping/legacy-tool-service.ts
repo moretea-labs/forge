@@ -1113,13 +1113,6 @@ export async function callMcpTool(
         const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
         const allowedPaths = stringList(args.allowed_paths);
         const checks = stringList(args.checks);
-        const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-        if (explicitWorkId) {
-          return errorResult(
-            'WORK_MUTATION_AUTHORITY_RETIRED',
-            `Work ${explicitWorkId} cannot own or select a direct-edit session; use repository/checkout/principal identity.`,
-          );
-        }
         const editRepository = resolveRepositorySelection({
           repoId,
           checkoutId: identity.checkoutId,

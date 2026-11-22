@@ -34,10 +34,6 @@ export async function callRepositoryCompatibilityAdapter(ctx: MultiRepositoryMcp
               }, staged.execution.ok !== true);
             }
       case 'git_commit_paths': {
-              const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-              if (workId) {
-                throw new Error(`WORK_MUTATION_AUTHORITY_RETIRED: ${workId}; git_commit_paths uses the explicit repository/checkout and Git CAS only`);
-              }
               const repository = selected(ctx, args);
               const committed = commitSelectedPaths(ctx.controllerHome, repository, {
                 paths: args.paths,
