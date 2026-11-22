@@ -151,7 +151,6 @@ function loadTypeScriptCompiler() {
   return typeScriptCompiler;
 }
 
-
 function staticTypeScriptImportRecordsFromSources(sources) {
   const ts = loadTypeScriptCompiler();
   if (!ts) return [];
