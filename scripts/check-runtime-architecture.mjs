@@ -3010,7 +3010,16 @@ forbid(
   /status:\s*terminalRemoteEffect\s*\?\s*['\"]completed['\"]/,
   'plugin/effect delivery results must never claim semantic Work completion',
 );
-requireText('src/runtime/plugins/store.ts', "throw new Error('PLUGIN_WORK_ATTRIBUTION_RETIRED')");
+forbid(
+  'src/runtime/plugins/types.ts',
+  /\bworkId\b|\bworkRepoId\b/,
+  'plugin action requests must not carry Work attribution fields (#483)',
+);
+forbid(
+  'src/runtime/plugins/store.ts',
+  /preflightPluginActionWorkBinding|PLUGIN_WORK_ATTRIBUTION_RETIRED|PLUGIN_DIRECT_NON_PERSISTENT_WORK_ATTRIBUTION/,
+  'plugin store must not retain Work-attribution reject stubs once request fields are deleted (#483)',
+);
 forbid(
   'adapters/mcp/runtime-gateway/work-adapter.ts',
   /case ['\"](?:start|revise|complete)['\"]|createWorkContract|reviseWorkSemanticContext|updateWorkContract|cancelWorkContract/,
@@ -3275,10 +3284,10 @@ for (const path of [
 ]) {
   requireText(path, "scope: 'controller'");
 }
-requireText('src/runtime/plugins/store.ts', 'export function preflightPluginActionWorkBinding(');
-requireText(
+forbid(
   'src/runtime/plugins/action-application.ts',
-  'preflightPluginActionWorkBinding(input.controllerHome, input.scope, action, input.request);',
+  /preflightPluginActionWorkBinding|workId|workRepoId/,
+  'plugin action application must not keep Work-attribution preflight after request fields are deleted (#483)',
 );
 forbidBetween(
   'src/runtime/plugins/store.ts',

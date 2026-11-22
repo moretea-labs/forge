@@ -144,9 +144,6 @@ export interface AssistantPluginActionRequest {
   pluginId: string;
   actionId: string;
   requestId: string;
-  /** Legacy request fields are rejected for new actions; retained only to decode older callers. */
-  workId?: string;
-  workRepoId?: string;
   args: Record<string, unknown>;
   timeoutMs?: number;
   signal?: AbortSignal;

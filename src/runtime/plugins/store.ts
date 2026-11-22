@@ -1433,9 +1433,6 @@ async function executePluginDirectNonPersistentInScope(
   if (!isDirectNonPersistentPluginAction(action)) {
     throw new Error(`PLUGIN_DIRECT_NON_PERSISTENT_CONTRACT_INVALID: ${request.pluginId}/${request.actionId}`);
   }
-  if (request.workId || request.workRepoId) {
-    throw new Error(`PLUGIN_DIRECT_NON_PERSISTENT_WORK_ATTRIBUTION_FORBIDDEN: ${request.pluginId}/${request.actionId}`);
-  }
   if (action.confirmation === 'authorization' && request.confirmAuthorization !== true) {
     throw new Error(
       `PLUGIN_DIRECT_NON_PERSISTENT_AUTHORIZATION_REQUIRED: ${request.pluginId}/${request.actionId} requires confirm_authorization=true for this invocation`,
@@ -1506,7 +1503,6 @@ async function executePluginReadDirectInScope(
   result: Record<string, unknown>;
   receipt: PluginActionReceipt;
 }> {
-  if (request.workId || request.workRepoId) throw new Error('WORK_PLUGIN_RECEIPT_AUTHORITY_RETIRED');
   const manifest =
     scope.kind === 'controller'
       ? getControllerPluginManifest(controllerHome, request.pluginId)
@@ -2114,18 +2110,6 @@ export function compatibilityPluginJobFromReceipt(receipt: PluginActionReceipt, 
   return compatibilityJobFromReceipt(receipt, checkoutId);
 }
 
-/** Compatibility guard: Work attribution is retired for all new plugin actions. */
-export function preflightPluginActionWorkBinding(
-  _controllerHome: string,
-  _pluginScope: { kind: 'controller' } | { kind: 'repository'; repository: RepositoryRecord },
-  _action: AssistantPluginActionDescriptor,
-  request: AssistantPluginActionRequest,
-): void {
-  if (request.workId?.trim() || request.workRepoId?.trim()) {
-    throw new Error('PLUGIN_WORK_ATTRIBUTION_RETIRED');
-  }
-}
-
 function compatibilityJobFromReceipt(receipt: PluginActionReceipt, checkoutId: string): ExecutionJob {
   return {
     schemaVersion: 1,
@@ -2187,7 +2171,6 @@ async function submitPluginAction(
   receipt: PluginActionReceipt;
   authorization?: PluginActionAuthorizationEvidence;
 }> {
-  if (request.workId || request.workRepoId) throw new Error('WORK_PLUGIN_RECEIPT_AUTHORITY_RETIRED');
   const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
   if (!adapter) throw new Error(`PLUGIN_NOT_FOUND: ${request.pluginId}`);
   const manifest =
@@ -2203,7 +2186,6 @@ async function submitPluginAction(
   }
   const normalizedArgs = validateActionArguments(action, request.args ?? {});
   enforceConfirmation(action, { ...request, args: normalizedArgs });
-  if (request.workId?.trim() || request.workRepoId?.trim()) throw new Error('PLUGIN_WORK_ATTRIBUTION_RETIRED');
 
   const key = semanticKey(scope, request.pluginId, request.actionId, normalizedArgs);
   const requestPath = pluginActionRequestPath(controllerHome, request.requestId);

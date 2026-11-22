@@ -16,16 +16,11 @@ import {
   getControllerPluginManifest,
   isDirectNonPersistentPluginAction,
   isDirectPluginReadAction,
-  preflightPluginActionWorkBinding,
   readPluginActionReceiptForRequest,
   submitAssistantPluginAction,
   submitControllerPluginAction,
 } from './store';
-import type {
-  AssistantPluginActionDescriptor,
-  AssistantPluginActionRequest,
-  AssistantPluginManifest,
-} from './types';
+import type { AssistantPluginActionDescriptor, AssistantPluginActionRequest, AssistantPluginManifest } from './types';
 
 export const PLUGIN_ACTION_SIDECAR_SETTLEMENT_GRACE_MS = 30_000;
 
@@ -81,18 +76,21 @@ export async function executeAssistantPluginActionApplication(input: {
   wait?: boolean;
   waitMs?: number;
 }): Promise<AssistantPluginActionApplicationResult> {
-  const manifest = input.scope.kind === 'controller'
-    ? getControllerPluginManifest(input.controllerHome, input.request.pluginId)
-    : getAssistantPluginManifestForAction(input.controllerHome, input.scope.repository, input.request);
+  const manifest =
+    input.scope.kind === 'controller'
+      ? getControllerPluginManifest(input.controllerHome, input.request.pluginId)
+      : getAssistantPluginManifestForAction(input.controllerHome, input.scope.repository, input.request);
   const action = manifest.actions.find((entry) => entry.actionId === input.request.actionId);
-  const repositoryAction = input.scope.kind === 'repository'
-    ? { repoId: input.scope.repository.repoId, pluginId: input.request.pluginId, actionId: input.request.actionId }
-    : undefined;
+  const repositoryAction =
+    input.scope.kind === 'repository'
+      ? { repoId: input.scope.repository.repoId, pluginId: input.request.pluginId, actionId: input.request.actionId }
+      : undefined;
 
   if (action && isDirectPluginReadAction(action)) {
-    const direct = input.scope.kind === 'controller'
-      ? await executeControllerPluginReadDirect(input.controllerHome, input.request)
-      : await executeAssistantPluginReadDirect(input.controllerHome, input.scope.repository, input.request);
+    const direct =
+      input.scope.kind === 'controller'
+        ? await executeControllerPluginReadDirect(input.controllerHome, input.request)
+        : await executeAssistantPluginReadDirect(input.controllerHome, input.scope.repository, input.request);
     return {
       kind: 'direct_read',
       manifest: direct.manifest,
@@ -104,11 +102,14 @@ export async function executeAssistantPluginActionApplication(input: {
 
   if (action?.executionMode === 'direct_non_persistent') {
     if (!isDirectNonPersistentPluginAction(action)) {
-      throw new Error(`PLUGIN_DIRECT_NON_PERSISTENT_CONTRACT_INVALID: ${input.request.pluginId}/${input.request.actionId}`);
+      throw new Error(
+        `PLUGIN_DIRECT_NON_PERSISTENT_CONTRACT_INVALID: ${input.request.pluginId}/${input.request.actionId}`,
+      );
     }
-    const direct = input.scope.kind === 'controller'
-      ? await executeControllerPluginDirectNonPersistent(input.controllerHome, input.request)
-      : await executeAssistantPluginDirectNonPersistent(input.controllerHome, input.scope.repository, input.request);
+    const direct =
+      input.scope.kind === 'controller'
+        ? await executeControllerPluginDirectNonPersistent(input.controllerHome, input.request)
+        : await executeAssistantPluginDirectNonPersistent(input.controllerHome, input.scope.repository, input.request);
     return {
       kind: 'direct_non_persistent',
       manifest: direct.manifest,
@@ -117,20 +118,16 @@ export async function executeAssistantPluginActionApplication(input: {
     };
   }
 
-  // Work attribution is retired. Reject legacy fields before reserving a Process request ID.
-  if (action && (input.request.workId || input.request.workRepoId)) {
-    preflightPluginActionWorkBinding(input.controllerHome, input.scope, action, input.request);
-  }
-
   if (action?.executionMode === 'runtime') {
     // Stateful providers may own in-memory resources whose identity is valid only
     // inside the canonical Runtime process. Keep the normal durable request/effect
     // receipt path, but do not relocate execution into a short-lived sidecar.
     return {
       kind: 'submitted',
-      submitted: input.scope.kind === 'controller'
-        ? await submitControllerPluginAction(input.controllerHome, input.request)
-        : await submitAssistantPluginAction(input.controllerHome, input.scope.repository, input.request),
+      submitted:
+        input.scope.kind === 'controller'
+          ? await submitControllerPluginAction(input.controllerHome, input.request)
+          : await submitAssistantPluginAction(input.controllerHome, input.scope.repository, input.request),
     };
   }
 
@@ -140,35 +137,37 @@ export async function executeAssistantPluginActionApplication(input: {
       : action.defaultTimeoutMs;
     const timeoutMs = Math.min(Math.max(1_000, Math.trunc(requestedTimeoutMs)), MAX_PLUGIN_ACTION_TIMEOUT_MS);
     const sidecarTimeoutMs = pluginActionSidecarTimeoutMs(timeoutMs);
-    let { handle } = input.scope.kind === 'controller'
-      ? await startManagedControllerPluginAction({
-          controllerHome: input.controllerHome,
-          request: input.request,
-          interactiveWaitMs: input.interactiveWaitMs,
-          timeoutMs: sidecarTimeoutMs,
-        })
-      : await startManagedPluginAction({
-          controllerHome: input.controllerHome,
-          repository: input.scope.repository,
-          request: input.request,
-          interactiveWaitMs: input.interactiveWaitMs,
-          timeoutMs: sidecarTimeoutMs,
-        });
+    let { handle } =
+      input.scope.kind === 'controller'
+        ? await startManagedControllerPluginAction({
+            controllerHome: input.controllerHome,
+            request: input.request,
+            interactiveWaitMs: input.interactiveWaitMs,
+            timeoutMs: sidecarTimeoutMs,
+          })
+        : await startManagedPluginAction({
+            controllerHome: input.controllerHome,
+            repository: input.scope.repository,
+            request: input.request,
+            interactiveWaitMs: input.interactiveWaitMs,
+            timeoutMs: sidecarTimeoutMs,
+          });
     if (!handle.completed && input.wait === true) {
-      handle = input.scope.kind === 'controller'
-        ? await waitManagedControllerPluginAction(
-            input.controllerHome,
-            handle.processId,
-            Math.max(1, input.waitMs ?? 15_000),
-            input.request.signal,
-          )
-        : await waitManagedPluginAction(
-            input.controllerHome,
-            input.scope.repository.repoId,
-            handle.processId,
-            Math.max(1, input.waitMs ?? 15_000),
-            input.request.signal,
-          );
+      handle =
+        input.scope.kind === 'controller'
+          ? await waitManagedControllerPluginAction(
+              input.controllerHome,
+              handle.processId,
+              Math.max(1, input.waitMs ?? 15_000),
+              input.request.signal,
+            )
+          : await waitManagedPluginAction(
+              input.controllerHome,
+              input.scope.repository.repoId,
+              handle.processId,
+              Math.max(1, input.waitMs ?? 15_000),
+              input.request.signal,
+            );
     }
     if (!handle.completed) {
       return {
@@ -182,7 +181,10 @@ export async function executeAssistantPluginActionApplication(input: {
     // Provider settlement remains authoritative across a sidecar failure.
     // Re-enter the store below to validate exact args/scope/Work before reading
     // any recorded outcome; process failure alone never authorizes redispatch.
-    if (!handle.ok && !readPluginActionReceiptForRequest(input.controllerHome, input.request.requestId, repositoryAction)) {
+    if (
+      !handle.ok &&
+      !readPluginActionReceiptForRequest(input.controllerHome, input.request.requestId, repositoryAction)
+    ) {
       return {
         kind: 'managed_failed',
         manifest,
@@ -198,8 +200,9 @@ export async function executeAssistantPluginActionApplication(input: {
 
   return {
     kind: 'submitted',
-    submitted: input.scope.kind === 'controller'
-      ? await submitControllerPluginAction(input.controllerHome, input.request)
-      : await submitAssistantPluginAction(input.controllerHome, input.scope.repository, input.request),
+    submitted:
+      input.scope.kind === 'controller'
+        ? await submitControllerPluginAction(input.controllerHome, input.request)
+        : await submitAssistantPluginAction(input.controllerHome, input.scope.repository, input.request),
   };
 }

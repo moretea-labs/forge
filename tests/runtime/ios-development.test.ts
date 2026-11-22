@@ -35,13 +35,18 @@ afterEach(() => {
 });
 
 function result(command: string, args: string[], input: Partial<IosCommandResult> = {}): IosCommandResult {
-  const defaultSimctlInventory = command === 'xcrun' && args[0] === 'simctl' && args[1] === 'list'
-    ? JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
-      { name: 'Test iPhone', udid: 'D', state: 'Shutdown', isAvailable: true },
-      { name: 'Test iPhone 1', udid: 'D1', state: 'Shutdown', isAvailable: true },
-      { name: 'Test iPhone 2', udid: 'D2', state: 'Shutdown', isAvailable: true },
-    ] } })
-    : '';
+  const defaultSimctlInventory =
+    command === 'xcrun' && args[0] === 'simctl' && args[1] === 'list'
+      ? JSON.stringify({
+          devices: {
+            'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+              { name: 'Test iPhone', udid: 'D', state: 'Shutdown', isAvailable: true },
+              { name: 'Test iPhone 1', udid: 'D1', state: 'Shutdown', isAvailable: true },
+              { name: 'Test iPhone 2', udid: 'D2', state: 'Shutdown', isAvailable: true },
+            ],
+          },
+        })
+      : '';
   return {
     ok: input.ok ?? true,
     status: input.status ?? (input.ok === false ? 1 : 0),
@@ -74,10 +79,16 @@ describe('iOS development simulator reliability', () => {
         const timeoutMs = options?.timeoutMs ?? 0;
         probes.push({ command, args, timeoutMs });
         if (command === 'xcodebuild') {
-          return result(command, args, { ok: timeoutMs >= 2_500, stderr: 'xcodebuild version probe exceeded its startup budget' });
+          return result(command, args, {
+            ok: timeoutMs >= 2_500,
+            stderr: 'xcodebuild version probe exceeded its startup budget',
+          });
         }
         if (command === 'xcrun') {
-          return result(command, args, { ok: args[0] === '--find' && args[1] === 'simctl', stderr: 'expected xcrun path resolution' });
+          return result(command, args, {
+            ok: args[0] === '--find' && args[1] === 'simctl',
+            stderr: 'expected xcrun path resolution',
+          });
         }
         return result(command, args);
       },
@@ -102,7 +113,9 @@ describe('iOS development simulator reliability', () => {
     setIosDevelopmentHooksForTest({ platform: () => 'darwin', xcodebuildExecutable: executable });
     try {
       for (const orphan of [false, true]) {
-        writeFileSync(executable, `#!${process.execPath}
+        writeFileSync(
+          executable,
+          `#!${process.execPath}
           const fs = require('fs');
           if (process.argv.includes('-list')) {
             console.log(JSON.stringify({project:{schemes:['App']}})); process.exit(0);
@@ -113,18 +126,26 @@ describe('iOS development simulator reliability', () => {
           process.on('SIGTERM', () => {});
           ${orphan ? 'setTimeout(() => process.exit(0), 100);' : ''}
           setInterval(() => {}, 1000);
-        `);
+        `,
+        );
         chmodSync(executable, 0o700);
         let ticks = 0;
-        const heartbeat = setInterval(() => { ticks += 1; }, 10);
+        const heartbeat = setInterval(() => {
+          ticks += 1;
+        }, 10);
         let built;
-        try { built = await iosAppBuild(repo.record, { scheme: 'App', timeoutMs: 1_000 }); }
-        finally { clearInterval(heartbeat); }
+        try {
+          built = await iosAppBuild(repo.record, { scheme: 'App', timeoutMs: 1_000 });
+        } finally {
+          clearInterval(heartbeat);
+        }
         if (ticks === 0) throw new Error('build did not reach supervised execution: ' + JSON.stringify(built));
         expect(ticks).toBeGreaterThan(0);
         expect(built.ready).toBe(false);
         if (!('stderr' in built)) throw new Error('missing failure evidence');
-        expect(built.stderr.content).toContain(orphan ? 'CHILD_SUPERVISOR_RESIDUAL_PROCESS' : 'CHILD_SUPERVISOR_WALL_TIMEOUT');
+        expect(built.stderr.content).toContain(
+          orphan ? 'CHILD_SUPERVISOR_RESIDUAL_PROCESS' : 'CHILD_SUPERVISOR_WALL_TIMEOUT',
+        );
         expect(isProcessAlive(Number(readFileSync(pidPath, 'utf8')))).toBe(false);
         expect(isProcessAlive(sentinel.pid)).toBe(true);
       }
@@ -132,7 +153,11 @@ describe('iOS development simulator reliability', () => {
       sentinel.kill('SIGKILL');
       // Failed assertions must not leave a fault-injected compiler behind.
       if (existsSync(pidPath)) {
-        try { process.kill(Number(readFileSync(pidPath, 'utf8')), 'SIGKILL'); } catch { /* already reaped */ }
+        try {
+          process.kill(Number(readFileSync(pidPath, 'utf8')), 'SIGKILL');
+        } catch {
+          /* already reaped */
+        }
       }
     }
   }, 15_000);
@@ -140,12 +165,13 @@ describe('iOS development simulator reliability', () => {
   test('does not treat generic simctl Unable failures as target-state success', () => {
     setIosDevelopmentHooksForTest({
       platform: () => 'darwin',
-      runCommand: (command, args) => result(command, args, {
-        ok: false,
-        stderr: args.includes('shutdown')
-          ? 'Unable to shutdown device: operation failed'
-          : 'Unable to boot device: runtime profile not found',
-      }),
+      runCommand: (command, args) =>
+        result(command, args, {
+          ok: false,
+          stderr: args.includes('shutdown')
+            ? 'Unable to shutdown device: operation failed'
+            : 'Unable to boot device: runtime profile not found',
+        }),
     });
 
     const boot = iosSimulatorBoot({ udid: 'D', openSimulator: false });
@@ -163,7 +189,8 @@ describe('iOS development simulator reliability', () => {
     setIosDevelopmentHooksForTest({
       platform: () => 'darwin',
       runCommand: (command, args) => {
-        if (args[1] === 'boot') return result(command, args, { ok: false, stderr: 'Unable to boot device in current state: Booted' });
+        if (args[1] === 'boot')
+          return result(command, args, { ok: false, stderr: 'Unable to boot device in current state: Booted' });
         if (args[1] === 'bootstatus') return result(command, args, { ok: false, stderr: 'bootstatus timed out' });
         return result(command, args);
       },
@@ -182,12 +209,17 @@ describe('iOS development simulator reliability', () => {
       platform: () => 'darwin',
       runCommand: (command, args) => {
         commands.push([command, ...args]);
-        if (command === 'xcrun' && args[1] === 'list') return result(command, args, {
-          stdout: JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
-            { name: 'First', udid: 'D1', state: 'Booted' },
-            { name: 'Second', udid: 'D2', state: 'Booted' },
-          ] } }),
-        });
+        if (command === 'xcrun' && args[1] === 'list')
+          return result(command, args, {
+            stdout: JSON.stringify({
+              devices: {
+                'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+                  { name: 'First', udid: 'D1', state: 'Booted' },
+                  { name: 'Second', udid: 'D2', state: 'Booted' },
+                ],
+              },
+            }),
+          });
         return result(command, args);
       },
     });
@@ -210,25 +242,31 @@ describe('iOS development simulator reliability', () => {
       platform: () => 'darwin',
       runCommand: (command, args) => {
         commands.push([command, ...args]);
-        if (command === 'xcrun' && args[1] === 'list') return result(command, args, {
-          stdout: JSON.stringify({ devices: {
-            'com.apple.CoreSimulator.SimRuntime.watchOS-27-0': [
-              { name: 'Watch', udid: 'W1', state: 'Booted', isAvailable: true },
-            ],
-            'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
-              { name: 'First', udid: 'D1', state: 'Booted', isAvailable: true },
-              { name: 'Second', udid: 'D2', state: 'Booted', isAvailable: true },
-              { name: 'Third', udid: 'D3', state: 'Shutdown', isAvailable: true },
-            ],
-          } }),
-        });
+        if (command === 'xcrun' && args[1] === 'list')
+          return result(command, args, {
+            stdout: JSON.stringify({
+              devices: {
+                'com.apple.CoreSimulator.SimRuntime.watchOS-27-0': [
+                  { name: 'Watch', udid: 'W1', state: 'Booted', isAvailable: true },
+                ],
+                'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+                  { name: 'First', udid: 'D1', state: 'Booted', isAvailable: true },
+                  { name: 'Second', udid: 'D2', state: 'Booted', isAvailable: true },
+                  { name: 'Third', udid: 'D3', state: 'Shutdown', isAvailable: true },
+                ],
+              },
+            }),
+          });
         return result(command, args);
       },
     });
     const blocked = iosSimulatorBoot({ udid: 'D3', openSimulator: false });
     expect(blocked.ready).toBe(false);
     expect('error' in blocked ? blocked.error?.code : undefined).toBe('IOS_SIMULATOR_CAPACITY_REACHED');
-    expect('bootedDevices' in blocked ? blocked.bootedDevices?.map((device) => device.udid) : undefined).toEqual(['D1', 'D2']);
+    expect('bootedDevices' in blocked ? blocked.bootedDevices?.map((device) => device.udid) : undefined).toEqual([
+      'D1',
+      'D2',
+    ]);
     expect(commands.some((argv) => argv[2] === 'boot' || argv[2] === 'shutdown')).toBe(false);
   });
 
@@ -238,12 +276,17 @@ describe('iOS development simulator reliability', () => {
       platform: () => 'darwin',
       runCommand: (command, args) => {
         commands.push([command, ...args]);
-        if (command === 'xcrun' && args[1] === 'list') return result(command, args, {
-          stdout: JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
-            { name: 'First', udid: 'D1', state: 'Booted', isAvailable: true },
-            { name: 'New', udid: 'D2', state: 'Shutdown', isAvailable: true },
-          ] } }),
-        });
+        if (command === 'xcrun' && args[1] === 'list')
+          return result(command, args, {
+            stdout: JSON.stringify({
+              devices: {
+                'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+                  { name: 'First', udid: 'D1', state: 'Booted', isAvailable: true },
+                  { name: 'New', udid: 'D2', state: 'Shutdown', isAvailable: true },
+                ],
+              },
+            }),
+          });
         return result(command, args);
       },
     });
@@ -264,11 +307,15 @@ describe('iOS development simulator reliability', () => {
           commands.push([command, ...args]);
           if (command === 'xcrun' && args[1] === 'list') {
             if (failure === 'inventory') return result(command, args, { ok: false, stderr: 'simctl blocked' });
-            return result(command, args, { stdout: JSON.stringify({ devices: {
-              'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
-                { name: 'New', udid: 'D2', state: failure === 'state' ? 'Booting' : 'Shutdown', isAvailable: true },
-              ],
-            } }) });
+            return result(command, args, {
+              stdout: JSON.stringify({
+                devices: {
+                  'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+                    { name: 'New', udid: 'D2', state: failure === 'state' ? 'Booting' : 'Shutdown', isAvailable: true },
+                  ],
+                },
+              }),
+            });
           }
           return result(command, args);
         },
@@ -305,18 +352,18 @@ describe('iOS development simulator reliability', () => {
         return result(command, args);
       },
     });
-    const action = async (requestId: string, boundWork?: { workId: string; workRepoId: string }) => executeIosPluginAction({
-      ...(boundWork ?? {}),
-      controllerHome,
-      repoId: repo.record.repoId,
-      repoRoot: repo.root,
-      pluginId: 'ios',
-      actionId: 'xcode_test',
-      requestId,
-      jobId: requestId,
-      args: { scheme: 'AppTests', udid: 'D1' },
-      origin: { surface: 'cli' },
-    });
+    const action = async (requestId: string) =>
+      executeIosPluginAction({
+        controllerHome,
+        repoId: repo.record.repoId,
+        repoRoot: repo.root,
+        pluginId: 'ios',
+        actionId: 'xcode_test',
+        requestId,
+        jobId: requestId,
+        args: { scheme: 'AppTests', udid: 'D1' },
+        origin: { surface: 'cli' },
+      });
     const first = await action('JOB-ios-xcresult-1');
     expect(first.ready).toBe(true);
     const owner = first.resultBundleOwnership as { recorded: boolean; resourceId?: string };
@@ -324,10 +371,13 @@ describe('iOS development simulator reliability', () => {
     expect(owner.resourceId).toStartWith('ios-xcresult-');
     const ownedRecord = getOwnedResource(controllerHome, owner.resourceId!);
     expect(ownedRecord?.provenance.creator).toBe('forge:ios.xcode_test:JOB-ios-xcresult-1');
-    const inventory = inspectRepositoryIosTestEvidence({ canonicalRoot: repo.root, checkouts: [] }, {
-      owner: { controllerHome, repoId: repo.record.repoId },
-      maxEntries: 100,
-    });
+    const inventory = inspectRepositoryIosTestEvidence(
+      { canonicalRoot: repo.root, checkouts: [] },
+      {
+        owner: { controllerHome, repoId: repo.record.repoId },
+        maxEntries: 100,
+      },
+    );
     expect(inventory.verifiedOwnerCount).toBe(1);
     expect(inventory.ownershipUnverified).toBe(0);
 
@@ -337,27 +387,25 @@ describe('iOS development simulator reliability', () => {
     const missing = await action('JOB-ios-xcresult-2');
     expect(missing.ready).toBe(true);
     expect(missing.resultBundleOwnership).toMatchObject({
-      recorded: false, reason: 'missing_or_untrusted_result_path',
+      recorded: false,
+      reason: 'missing_or_untrusted_result_path',
     });
-    expect(inspectRepositoryIosTestEvidence({ canonicalRoot: repo.root, checkouts: [] }, {
-      owner: { controllerHome, repoId: repo.record.repoId }, maxEntries: 100,
-    }).verifiedOwnerCount).toBe(1);
+    expect(
+      inspectRepositoryIosTestEvidence(
+        { canonicalRoot: repo.root, checkouts: [] },
+        {
+          owner: { controllerHome, repoId: repo.record.repoId },
+          maxEntries: 100,
+        },
+      ).verifiedOwnerCount,
+    ).toBe(1);
 
     materializeResult = true;
-    const bound = await action('JOB-ios-xcresult-work', {
-      workId: 'work-exact-current', workRepoId: repo.record.repoId,
-    });
-    const boundOwner = bound.resultBundleOwnership as { recorded: boolean; resourceId: string };
-    expect(boundOwner.recorded).toBe(true);
-    // Plugin execution binds physical evidence to producer request/repository,
-    // not an optional semantic Work label even when supplied by a caller.
-    expect(getOwnedResource(controllerHome, boundOwner.resourceId)?.provenance.associatedWorkId).toBeUndefined();
-    const crossRepo = await action('JOB-ios-xcresult-cross-repo', {
-      workId: 'work-other-repo', workRepoId: 'repo-unrelated',
-    });
-    const crossRepoOwner = crossRepo.resultBundleOwnership as { recorded: boolean; resourceId: string };
-    expect(crossRepoOwner.recorded).toBe(true);
-    expect(getOwnedResource(controllerHome, crossRepoOwner.resourceId)?.provenance.associatedWorkId).toBeUndefined();
+    const second = await action('JOB-ios-xcresult-work');
+    const secondOwner = second.resultBundleOwnership as { recorded: boolean; resourceId: string };
+    expect(secondOwner.recorded).toBe(true);
+    // Plugin execution binds physical evidence to producer request/repository only.
+    expect(getOwnedResource(controllerHome, secondOwner.resourceId)?.provenance.associatedWorkId).toBeUndefined();
   });
 
   test('simulator inventory reports exact cross-repository Lease ownership', async () => {
@@ -365,43 +413,69 @@ describe('iOS development simulator reliability', () => {
     const controllerHome = join(repo.root, 'controller-home');
     const pro = '633B2CBC-B2A5-4DAD-A9AE-BC3B1E883A9A';
     const duo = '96EDA0C4-D3A9-407C-8692-BE28234C5F43';
-    const inventory = { devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
-      { name: 'iPhone 18 Pro', udid: pro, state: 'Booted', isAvailable: true },
-      { name: 'iPhone Duo', udid: duo, state: 'Booted', isAvailable: true },
-    ] } };
+    const inventory = {
+      devices: {
+        'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+          { name: 'iPhone 18 Pro', udid: pro, state: 'Booted', isAvailable: true },
+          { name: 'iPhone Duo', udid: duo, state: 'Booted', isAvailable: true },
+        ],
+      },
+    };
     setIosDevelopmentHooksForTest({
       platform: () => 'darwin',
-      runCommand: (command, args) => result(command, args, {
-        stdout: command === 'xcrun' && args.includes('list') ? JSON.stringify(inventory) : '',
-      }),
+      runCommand: (command, args) =>
+        result(command, args, {
+          stdout: command === 'xcrun' && args.includes('list') ? JSON.stringify(inventory) : '',
+        }),
     });
-    const list = async () => executeIosPluginAction({
-      controllerHome, repoId: repo.record.repoId, repoRoot: repo.root,
-      pluginId: 'ios', actionId: 'list_simulators', requestId: 'discover-lease',
-      args: {}, origin: { surface: 'cli' },
-    });
+    const list = async () =>
+      executeIosPluginAction({
+        controllerHome,
+        repoId: repo.record.repoId,
+        repoRoot: repo.root,
+        pluginId: 'ios',
+        actionId: 'list_simulators',
+        requestId: 'discover-lease',
+        args: {},
+        origin: { surface: 'cli' },
+      });
     const foreignRepo = 'another-project';
     const owner = 'agent-device:active-pro';
-    expect(acquireExecutionLeases(controllerHome, foreignRepo, owner,
-      [{ resourceKey: iosSimulatorResourceKey(pro), mode: 'write' }],
-      { ttlMs: 60_000 }).acquired).toBe(true);
+    expect(
+      acquireExecutionLeases(
+        controllerHome,
+        foreignRepo,
+        owner,
+        [{ resourceKey: iosSimulatorResourceKey(pro), mode: 'write' }],
+        { ttlMs: 60_000 },
+      ).acquired,
+    ).toBe(true);
     const devices = (await list()).devices as Array<{
       udid: string;
       forgeLease: { resourceKey: string; owners: Array<{ repoId: string; ownerJobId: string }> };
     }>;
-    expect(devices.find((device) => device.udid === pro)?.forgeLease.owners)
-      .toEqual([expect.objectContaining({ repoId: foreignRepo, ownerJobId: owner })]);
+    expect(devices.find((device) => device.udid === pro)?.forgeLease.owners).toEqual([
+      expect.objectContaining({ repoId: foreignRepo, ownerJobId: owner }),
+    ]);
     expect(devices.find((device) => device.udid === duo)?.forgeLease).toEqual({
-      resourceKey: iosSimulatorResourceKey(duo), owners: [],
+      resourceKey: iosSimulatorResourceKey(duo),
+      owners: [],
     });
     expect(releaseExecutionLeases(controllerHome, foreignRepo, owner)).toBe(1);
     const globalOwner = 'legacy-xctest';
-    expect(acquireExecutionLeases(controllerHome, foreignRepo, globalOwner,
-      [{ resourceKey: IOS_SIMULATOR_TEST_RESOURCE, mode: 'write' }],
-      { ttlMs: 60_000 }).acquired).toBe(true);
+    expect(
+      acquireExecutionLeases(
+        controllerHome,
+        foreignRepo,
+        globalOwner,
+        [{ resourceKey: IOS_SIMULATOR_TEST_RESOURCE, mode: 'write' }],
+        { ttlMs: 60_000 },
+      ).acquired,
+    ).toBe(true);
     const globallyBlocked = (await list()).devices as typeof devices;
-    expect(globallyBlocked.every((device) =>
-      device.forgeLease.owners.some((lease) => lease.ownerJobId === globalOwner))).toBe(true);
+    expect(
+      globallyBlocked.every((device) => device.forgeLease.owners.some((lease) => lease.ownerJobId === globalOwner)),
+    ).toBe(true);
     expect(releaseExecutionLeases(controllerHome, foreignRepo, globalOwner)).toBe(1);
     const unclaimed = (await list()).devices as typeof devices;
     expect(unclaimed.every((device) => device.forgeLease.owners.length === 0)).toBe(true);
@@ -410,19 +484,25 @@ describe('iOS development simulator reliability', () => {
   test('XCTest uses an already booted exact UDID and refuses a third implicit destination', async () => {
     const repo = repository();
     const commands: string[][] = [];
-    const inventory = { devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
-      { name: 'First', udid: 'D1', state: 'Booted', isAvailable: true },
-      { name: 'Second', udid: 'D2', state: 'Booted', isAvailable: true },
-      { name: 'Third', udid: 'D3', state: 'Shutdown', isAvailable: true },
-    ] } };
+    const inventory = {
+      devices: {
+        'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+          { name: 'First', udid: 'D1', state: 'Booted', isAvailable: true },
+          { name: 'Second', udid: 'D2', state: 'Booted', isAvailable: true },
+          { name: 'Third', udid: 'D3', state: 'Shutdown', isAvailable: true },
+        ],
+      },
+    };
     setIosDevelopmentHooksForTest({
       platform: () => 'darwin',
       runCommand: (command, args) => {
         commands.push([command, ...args]);
-        if (command === 'xcrun' && args[1] === 'list') return result(command, args, { stdout: JSON.stringify(inventory) });
-        if (command === 'xcodebuild' && args.includes('-list')) return result(command, args, {
-          stdout: JSON.stringify({ project: { schemes: ['AppTests'] } }),
-        });
+        if (command === 'xcrun' && args[1] === 'list')
+          return result(command, args, { stdout: JSON.stringify(inventory) });
+        if (command === 'xcodebuild' && args.includes('-list'))
+          return result(command, args, {
+            stdout: JSON.stringify({ project: { schemes: ['AppTests'] } }),
+          });
         return result(command, args);
       },
     });
@@ -500,18 +580,24 @@ describe('iOS development simulator reliability', () => {
     expect(first.ready).toBe(true);
     expect(second.ready).toBe(true);
     if (!('command' in first) || !first.command) throw new Error('missing build command');
-    expect(first.command.slice(first.command.indexOf('-jobs'), first.command.indexOf('-jobs') + 2)).toEqual(['-jobs', '2']);
+    expect(first.command.slice(first.command.indexOf('-jobs'), first.command.indexOf('-jobs') + 2)).toEqual([
+      '-jobs',
+      '2',
+    ]);
     expect(first.command).toContain('OTHER_SWIFT_FLAGS=$(inherited) -j 2');
-    if (!(
-      'derivedDataPath' in first
-      && 'derivedDataPath' in second
-      && 'derivedDataPath' in otherConfiguration
-      && 'derivedDataPath' in otherDestination
-      && 'derivedDataReused' in first
-      && 'derivedDataReused' in second
-      && 'newBuiltApps' in second
-      && 'appPath' in second
-    )) throw new Error('expected successful build evidence');
+    if (
+      !(
+        'derivedDataPath' in first &&
+        'derivedDataPath' in second &&
+        'derivedDataPath' in otherConfiguration &&
+        'derivedDataPath' in otherDestination &&
+        'derivedDataReused' in first &&
+        'derivedDataReused' in second &&
+        'newBuiltApps' in second &&
+        'appPath' in second
+      )
+    )
+      throw new Error('expected successful build evidence');
     expect(first.derivedDataPath).toBe(second.derivedDataPath);
     expect(first.derivedDataReused).toBe(false);
     expect(second.derivedDataReused).toBe(true);
@@ -521,8 +607,20 @@ describe('iOS development simulator reliability', () => {
     expect(otherDestination.derivedDataPath).toBe(first.derivedDataPath);
     const physical = await iosAppBuild(repo.record, { scheme: 'Old', udid: 'P1', destinationPlatform: 'ios' });
     const testRun = await iosXcodeTest(repo.record, { scheme: 'Old', udid: 'D2' });
-    const repeatTestRun = await iosXcodeTest(repo.record, { scheme: 'Old', udid: 'D1', onlyTesting: ['OldTests/example'] });
-    if (!('derivedDataPath' in physical && 'derivedDataPath' in testRun && 'resultBundlePath' in testRun && 'resultBundlePath' in repeatTestRun)) throw new Error('expected cache evidence');
+    const repeatTestRun = await iosXcodeTest(repo.record, {
+      scheme: 'Old',
+      udid: 'D1',
+      onlyTesting: ['OldTests/example'],
+    });
+    if (
+      !(
+        'derivedDataPath' in physical &&
+        'derivedDataPath' in testRun &&
+        'resultBundlePath' in testRun &&
+        'resultBundlePath' in repeatTestRun
+      )
+    )
+      throw new Error('expected cache evidence');
     expect(physical.derivedDataPath).not.toBe(first.derivedDataPath);
     expect(testRun.derivedDataPath).toBe(first.derivedDataPath);
     expect(repeatTestRun.resultBundlePath).not.toBe(testRun.resultBundlePath);
@@ -594,15 +692,26 @@ describe('iOS development simulator reliability', () => {
     });
 
     const serial = await iosXcodeTest(repo.record, { scheme: 'AppTests', udid: 'D1' });
-    const parallel = await iosXcodeTest(repo.record, { scheme: 'AppTests', udid: 'D1', parallelTesting: true, maxParallelTestingWorkers: 4 });
+    const parallel = await iosXcodeTest(repo.record, {
+      scheme: 'AppTests',
+      udid: 'D1',
+      parallelTesting: true,
+      maxParallelTestingWorkers: 4,
+    });
     expect(serial.ready).toBe(true);
     expect(parallel.ready).toBe(true);
     const testCommands = commands.filter((entry) => entry[0] === 'xcodebuild' && entry[1] === 'test');
     expect(testCommands[0]).toContain('NO');
     expect(testCommands[0]).toContain('1');
     expect(testCommands[1]).toContain('YES');
-    expect(testCommands[1]!.slice(testCommands[1]!.indexOf('-maximum-parallel-testing-workers') + 1, testCommands[1]!.indexOf('-maximum-parallel-testing-workers') + 2)).toEqual(['2']);
-    for (const command of testCommands) expect(command.slice(command.indexOf('-jobs'), command.indexOf('-jobs') + 2)).toEqual(['-jobs', '2']);
+    expect(
+      testCommands[1]!.slice(
+        testCommands[1]!.indexOf('-maximum-parallel-testing-workers') + 1,
+        testCommands[1]!.indexOf('-maximum-parallel-testing-workers') + 2,
+      ),
+    ).toEqual(['2']);
+    for (const command of testCommands)
+      expect(command.slice(command.indexOf('-jobs'), command.indexOf('-jobs') + 2)).toEqual(['-jobs', '2']);
   });
 
   test('uses collision-resistant screenshot artifact names even with a fixed clock', () => {
@@ -617,7 +726,9 @@ describe('iOS development simulator reliability', () => {
     const second = iosSimulatorScreenshot(repo.record, { udid: 'D', label: 'same' });
     expect(first.ready).toBe(true);
     expect(second.ready).toBe(true);
-    expect('screenshot' in first ? first.screenshot : undefined).not.toBe('screenshot' in second ? second.screenshot : undefined);
+    expect('screenshot' in first ? first.screenshot : undefined).not.toBe(
+      'screenshot' in second ? second.screenshot : undefined,
+    );
   });
 
   test('Duo multi-display screenshots select the reported primary and allow exact alternate display', () => {
@@ -632,9 +743,11 @@ describe('iOS development simulator reliability', () => {
       platform: () => 'darwin',
       runCommand: (command, args) => {
         calls.push([command, ...args]);
-        return result(command, args, !args.some((arg) => arg.startsWith('--display='))
-          ? { ok: false, stderr: ambiguity }
-          : {});
+        return result(
+          command,
+          args,
+          !args.some((arg) => arg.startsWith('--display=')) ? { ok: false, stderr: ambiguity } : {},
+        );
       },
     });
 
@@ -651,8 +764,12 @@ describe('iOS development simulator reliability', () => {
     expect('display' in alternate ? alternate.display : undefined).toBe(3);
     expect(calls).toHaveLength(3);
     expect(calls[2]).toContain('--display=3');
-    expect(() => iosSimulatorScreenshot(repo.record, { udid: 'DUO', display: 17 })).toThrow('IOS_SIMULATOR_DISPLAY_INVALID');
-    expect(() => iosSimulatorScreenshot(repo.record, { udid: 'DUO', display: 1.5 })).toThrow('IOS_SIMULATOR_DISPLAY_INVALID');
+    expect(() => iosSimulatorScreenshot(repo.record, { udid: 'DUO', display: 17 })).toThrow(
+      'IOS_SIMULATOR_DISPLAY_INVALID',
+    );
+    expect(() => iosSimulatorScreenshot(repo.record, { udid: 'DUO', display: 1.5 })).toThrow(
+      'IOS_SIMULATOR_DISPLAY_INVALID',
+    );
   });
 
   test('ambiguous multi-display capture without a unique primary fails closed', () => {
@@ -664,7 +781,8 @@ describe('iOS development simulator reliability', () => {
         attempts += 1;
         return result(command, args, {
           ok: false,
-          stderr: 'Cannot choose between 2 displays. Specify one with --display:\n--display=3 External\n--display=4 Inner',
+          stderr:
+            'Cannot choose between 2 displays. Specify one with --display:\n--display=3 External\n--display=4 Inner',
         });
       },
     });
@@ -694,13 +812,16 @@ describe('iOS development simulator reliability', () => {
           return result(command, args, { stdout: JSON.stringify({ project: { schemes: ['App'] } }) });
         }
         if (command === 'plutil') {
-          return result(command, args, { stdout: args.includes('CFBundleIdentifier') ? 'com.example.app\n' : 'Example\n' });
+          return result(command, args, {
+            stdout: args.includes('CFBundleIdentifier') ? 'com.example.app\n' : 'Example\n',
+          });
         }
         if (command === 'xcrun' && args[1] === 'install') {
           installedPath = args[3] ?? '';
           return result(command, args);
         }
-        if (command === 'xcrun' && args[1] === 'launch') return result(command, args, { stdout: 'com.example.app: 4242\n' });
+        if (command === 'xcrun' && args[1] === 'launch')
+          return result(command, args, { stdout: 'com.example.app: 4242\n' });
         if (command === 'xcrun' && args[1] === 'spawn' && args[3] === 'launchctl') {
           return result(command, args, { stdout: 'program path = /tmp/Example\n' });
         }
@@ -723,8 +844,12 @@ describe('iOS development simulator reliability', () => {
     expect(review.ready).toBe(true);
     expect(installedPath).toBe(controllerApp);
     expect(review.appExecutable).toBe('Example');
-    expect('appPath' in review.install! ? review.install!.appPath : undefined).toBe('controller-artifacts/ios/prebuilt/Example.app');
-    expect(() => iosAppInstall(repo.record, { udid: 'D', appPath: outsideApp, artifactRoot })).toThrow('IOS_APP_PATH_NOT_BOUNDED');
+    expect('appPath' in review.install! ? review.install!.appPath : undefined).toBe(
+      'controller-artifacts/ios/prebuilt/Example.app',
+    );
+    expect(() => iosAppInstall(repo.record, { udid: 'D', appPath: outsideApp, artifactRoot })).toThrow(
+      'IOS_APP_PATH_NOT_BOUNDED',
+    );
   });
 
   test('keeps smoke stages unique, rechecks Simulator capacity, and filters logs by app executable', async () => {
@@ -739,7 +864,9 @@ describe('iOS development simulator reliability', () => {
           return result(command, args, { stdout: JSON.stringify({ project: { schemes: ['App'] } }) });
         }
         if (command === 'plutil') {
-          return result(command, args, { stdout: args.includes('CFBundleIdentifier') ? 'com.example.app\n' : 'Example\n' });
+          return result(command, args, {
+            stdout: args.includes('CFBundleIdentifier') ? 'com.example.app\n' : 'Example\n',
+          });
         }
         if (command === 'open') return result(command, args);
         if (command === 'xcrun' && args[0] === 'simctl' && args[1] === 'list') {
@@ -763,11 +890,13 @@ describe('iOS development simulator reliability', () => {
         }
         if (command === 'xcrun' && args[1] === 'bootstatus') return result(command, args);
         if (command === 'xcrun' && args[1] === 'install') return result(command, args);
-        if (command === 'xcrun' && args[1] === 'launch') return result(command, args, { stdout: 'com.example.app: 4242\n' });
+        if (command === 'xcrun' && args[1] === 'launch')
+          return result(command, args, { stdout: 'com.example.app: 4242\n' });
         if (command === 'xcrun' && args[1] === 'spawn' && args[3] === 'launchctl') {
           return result(command, args, { stdout: 'program path = /tmp/Example\n' });
         }
-        if (command === 'xcrun' && args[1] === 'io') return result(command, args, { ok: false, stderr: 'screenshot failed' });
+        if (command === 'xcrun' && args[1] === 'io')
+          return result(command, args, { ok: false, stderr: 'screenshot failed' });
         if (command === 'xcrun' && args[1] === 'spawn' && args[3] === 'log') {
           logPredicate = args[args.indexOf('--predicate') + 1] ?? '';
           return result(command, args, { stdout: 'target app log\n' });
@@ -798,7 +927,8 @@ describe('iOS development simulator reliability', () => {
       platform: () => 'darwin',
       sleep: () => {},
       runCommand: (command, args) => {
-        if (command === 'xcrun' && args[1] === 'launch') return result(command, args, { stdout: 'com.example.app: 4242\n' });
+        if (command === 'xcrun' && args[1] === 'launch')
+          return result(command, args, { stdout: 'com.example.app: 4242\n' });
         if (command === 'xcrun' && args[1] === 'spawn' && args[3] === 'launchctl') {
           return result(command, args, {
             stdout: 'program path = (could not resolve path)\n',
