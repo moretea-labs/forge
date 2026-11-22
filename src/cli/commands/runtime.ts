@@ -33,7 +33,6 @@ import {
   assertRuntimeReleaseFiles,
   stageRuntimeReleaseFromCandidateSource,
 } from '../../runtime/root/release-materialize';
-import { inspectRetiredWorkPurge, purgeRetiredWork } from '../../runtime/control-plane/persistence/retired-work-purge';
 
 function output(value: unknown, json = true): void {
   console.log(json ? JSON.stringify(value, null, 2) : String(value));
@@ -299,24 +298,6 @@ export function buildRuntimeCommand(): Command {
         });
       },
     );
-
-  command
-    .command('purge-retired-work')
-    .description(
-      'Inspect or permanently erase obsolete Work, WorkHandle and audit history from an offline Controller Home',
-    )
-    .option('--controller-home <path>', 'Explicit Controller Home; defaults to the installed user-level Home')
-    .option('--apply', 'Permanently delete retired Work SQLite namespaces and legacy on-disk state')
-    .option('--runtime-stopped', 'Confirm every Runtime using this Controller Home is stopped')
-    .action((opts: { controllerHome?: string; apply?: boolean; runtimeStopped?: boolean }) => {
-      const controllerHome = resolveControllerHome(opts.controllerHome);
-      if (opts.apply) {
-        if (!opts.runtimeStopped) throw new Error('RETIRED_WORK_PURGE_REQUIRES_STOPPED_RUNTIME');
-        output(purgeRetiredWork(controllerHome));
-        return;
-      }
-      output(inspectRetiredWorkPurge(controllerHome));
-    });
 
   command
     .command('status')

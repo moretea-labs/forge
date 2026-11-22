@@ -351,10 +351,6 @@ function assertBundle(bundle: SemanticSyncBundle): void {
     throw new Error('SEMANTIC_SYNC_BUNDLE_SCHEMA_INVALID');
   if (!bundle.workspaceId.trim() || !bundle.projectId.trim() || !bundle.sourceForgeInstanceId.trim())
     throw new Error('SEMANTIC_SYNC_BUNDLE_IDENTITY_REQUIRED');
-  // No historical Work compatibility or imported Work replicas are allowed.
-  if (bundle.records.some((entry) => (entry.kind as string) === 'work')) {
-    throw new Error('SEMANTIC_SYNC_WORK_RETIRED');
-  }
   assertSemanticSyncRecordBounds(bundle.records);
   assertControlPlaneMetadataPayload(bundle, 'semantic_sync_bundle');
   if (Buffer.byteLength(stableJson(bundle), 'utf8') > MAX_SEMANTIC_SYNC_BUNDLE_BYTES)

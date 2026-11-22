@@ -280,23 +280,6 @@ function normalizeStep(step: CreatePlanContractInput['steps'][number]): PlanStep
   };
 }
 
-function assertNativePlanStep(step: PlanStep): PlanStep {
-  if (Object.hasOwn(step, 'workId')) throw new Error('PLAN_RETIRED_WORK_SCOPE');
-  return step;
-}
-
-function assertNativeDeliveryCarry(carry: PlanStepDeliveryCarry): PlanStepDeliveryCarry {
-  if (Object.hasOwn(carry, 'workId')) throw new Error('PLAN_RETIRED_WORK_SCOPE');
-  return carry;
-}
-
-function assertNativePlanContract(plan: PlanContract): PlanContract {
-  if (Object.hasOwn(plan, 'workId')) throw new Error('PLAN_RETIRED_WORK_SCOPE');
-  plan.steps.forEach(assertNativePlanStep);
-  plan.deliveryCarries?.forEach(assertNativeDeliveryCarry);
-  return plan;
-}
-
 function normalizeObligationDisposition(value: PlanObligationDisposition): PlanObligationDisposition {
   const disposition = value.disposition;
   if (!['keep', 'change', 'defer', 'drop'].includes(disposition))
@@ -521,7 +504,7 @@ function revisionDraftFromCandidate(
       ? structuredClone(candidate.obligationDispositions)
       : undefined,
     deliveryCarries: candidate.deliveryCarries
-      ? structuredClone(candidate.deliveryCarries).map((carry) => assertNativeDeliveryCarry(carry))
+      ? structuredClone(candidate.deliveryCarries)
       : undefined,
     createdAt: input.createdAt,
     updatedAt: input.updatedAt,
@@ -561,14 +544,13 @@ export function readPlanContractStore(options: PlanContractStoreOptions): PlanCo
   return {
     schemaVersion: 1,
     updatedAt: records[0]?.updatedAt ?? nowIso(options),
-    contracts: records.map((record) => assertNativePlanContract(record.value)),
+    contracts: records.map((record) => record.value),
   };
 }
 
 function writePlanContractStore(options: PlanContractStoreOptions, store: PlanContractStore): PlanContractStore {
   withControlPlaneTransaction(options.controllerHome, (database) => {
     for (const contract of store.contracts) {
-      assertNativePlanContract(contract);
       const current = readControlPlaneRecordWithinTransaction<PlanContract>(
         database,
         'plan_contract',

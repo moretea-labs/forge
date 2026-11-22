@@ -27,11 +27,6 @@ export interface OutputHandleIndexEntry {
   updatedAt: string;
 }
 
-function assertNativeOutputHandleEntry(entry: OutputHandleIndexEntry): OutputHandleIndexEntry {
-  if (Object.hasOwn(entry, 'workId')) throw new Error('OUTPUT_HANDLE_RETIRED_WORK_SCOPE');
-  return entry;
-}
-
 function bounded(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized ? normalized.slice(0, 512) : undefined;
@@ -92,7 +87,7 @@ export function recordOutputHandleIndexEntry(
     action: 'output_handle_index_record',
     skipWriteWhenMutationReturnsCurrent: true,
     mutate: (currentRecord) => {
-      const current = currentRecord?.value ? assertNativeOutputHandleEntry(currentRecord.value) : undefined;
+      const current = currentRecord?.value ? currentRecord.value : undefined;
       if (current) {
         if (
           current.schemaVersion !== OUTPUT_HANDLE_INDEX_SCHEMA_VERSION ||
@@ -145,7 +140,7 @@ export function recordOutputHandleIndexEntry(
       };
     },
   });
-  return assertNativeOutputHandleEntry(record.value);
+  return record.value;
 }
 
 export function refreshOutputHandleFingerprint(
@@ -171,7 +166,7 @@ export function refreshOutputHandleFingerprint(
     schemaVersion: OUTPUT_HANDLE_INDEX_SCHEMA_VERSION,
     action: 'output_handle_index_fingerprint_refresh',
     mutate: (currentRecord) => {
-      const current = currentRecord?.value ? assertNativeOutputHandleEntry(currentRecord.value) : undefined;
+      const current = currentRecord?.value ? currentRecord.value : undefined;
       if (
         !current ||
         current.schemaVersion !== OUTPUT_HANDLE_INDEX_SCHEMA_VERSION ||
@@ -187,7 +182,7 @@ export function refreshOutputHandleFingerprint(
       return { ...current, fingerprint: nextFingerprint, updatedAt: now };
     },
   });
-  return assertNativeOutputHandleEntry(record.value);
+  return record.value;
 }
 
 export function deleteOutputHandleIndexEntry(
@@ -203,7 +198,7 @@ export function deleteOutputHandleIndexEntry(
     handleId,
   );
   if (!record) return false;
-  const current = assertNativeOutputHandleEntry(record.value);
+  const current = record.value;
   if (
     current.schemaVersion !== OUTPUT_HANDLE_INDEX_SCHEMA_VERSION ||
     current.handleId !== handleId ||
@@ -245,5 +240,5 @@ export function readOutputHandleIndexEntry(
   if (!value.fingerprint || !value.kind || !value.storage) {
     throw new Error(`OUTPUT_HANDLE_INDEX_CORRUPT: ${key}`);
   }
-  return assertNativeOutputHandleEntry(value);
+  return value;
 }

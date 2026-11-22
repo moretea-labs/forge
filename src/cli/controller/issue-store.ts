@@ -227,7 +227,7 @@ function writeIssue(repoRoot: string, issue: ControllerIssue): ControllerIssue {
 function normalizeLoadedIssue(issue: ControllerIssue): ControllerIssue {
   issue.schemaVersion = issue.schemaVersion ?? 1;
   issue.tasks = (issue.tasks ?? []).map((task) => {
-    const { workId: _retiredWorkId, ...rest } = task as ControllerTask & { workId?: unknown };
+    const rest = task;
     return {
       ...rest,
       allowedPaths: rest.allowedPaths ?? [],

@@ -1723,8 +1723,7 @@ function pluginActionReceiptPath(controllerHome: string, scopeKey: string, recei
 }
 
 function normalizePluginActionReceipt(receipt: PluginActionReceipt): PluginActionReceipt {
-  const legacy = receipt as PluginActionReceipt & { workId?: unknown; workRepoId?: unknown };
-  const { workId: _workId, workRepoId: _workRepoId, ...withoutWork } = legacy;
+  const withoutWork = receipt;
   const scopeKey =
     withoutWork.scopeKey?.trim() ||
     (withoutWork.repoId === CONTROLLER_SCOPE_REPO_ID ? CONTROLLER_PLUGIN_SCOPE_KEY : withoutWork.repoId?.trim()) ||
@@ -1906,8 +1905,7 @@ function migrateControllerPluginActionReceipts(
 
     const semanticKey = migratedPluginSemanticKey(receipt, oldScopeKey);
     if (!semanticKey) return false;
-    const legacyReceipt = receipt as PluginActionReceipt & { workId?: unknown; workRepoId?: unknown };
-    const { workId: _workId, workRepoId: _workRepoId, ...receiptWithoutWork } = legacyReceipt;
+    const receiptWithoutWork = receipt;
     const nextReceipt: PluginActionReceipt = {
       ...receiptWithoutWork,
       scopeKey: CONTROLLER_PLUGIN_SCOPE_KEY,

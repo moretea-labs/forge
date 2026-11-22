@@ -483,10 +483,6 @@
       "module": "controller",
       "resource": "temp-isolated"
     },
-    "tests/runtime/retired-work-purge.test.ts": {
-      "module": "controller",
-      "resource": "controller-home-isolated"
-    },
     "tests/runtime/desktop-operator-registration.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
@@ -951,10 +947,6 @@
     "tests/runtime/deployment-topology.test.ts": {
       "module": "controller",
       "resource": "pure"
-    },
-    "tests/runtime/work-retirement-startup.test.ts": {
-      "module": "controller",
-      "resource": "temp-isolated"
     },
     "tests/runtime/workflow-asset-storage.test.ts": {
       "module": "workflow",

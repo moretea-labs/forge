@@ -69,7 +69,6 @@ export function workflowRunEvidenceRef(value: Omit<WorkflowRunRecord, 'evidenceR
 
 function validRecord(value: WorkflowRunRecord): WorkflowRunRecord {
   if (value.schemaVersion !== SCHEMA_VERSION) throw new Error('WORKFLOW_RUN_SCHEMA_VERSION_UNSUPPORTED');
-  if (Object.hasOwn(value, 'workId')) throw new Error('WORKFLOW_RUN_RETIRED_WORK_SCOPE');
   workflowRunScopeId(value);
   bounded(value.runId, 'WORKFLOW_RUN_ID_INVALID');
   bounded(value.workflowId, 'WORKFLOW_RUN_WORKFLOW_ID_INVALID');

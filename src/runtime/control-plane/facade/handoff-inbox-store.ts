@@ -130,19 +130,9 @@ export function emptyHandoffInboxStore(updatedAt: string): HandoffInboxStore {
   return { schemaVersion: 1, updatedAt, items: [] };
 }
 
-function scrubLegacyHandoffItem(item: HandoffItem & { workId?: unknown }): HandoffItem {
-  const { workId: _retiredWorkId, ...rest } = item;
-  const currentState = rest.currentState as HandoffItem['currentState'] & { workId?: unknown };
-  const { workId: _retiredStateWorkId, ...currentStateWithoutWork } = currentState;
-  return { ...rest, currentState: currentStateWithoutWork };
-}
-
 function readLegacyHandoffInboxStore(options: HandoffInboxStoreOptions): HandoffInboxStore {
   const store = readJsonFile<HandoffInboxStore>(handoffInboxPath(options), emptyHandoffInboxStore(nowIso(options)));
-  return {
-    ...store,
-    items: store.items.map((item) => scrubLegacyHandoffItem(item as HandoffItem & { workId?: unknown })),
-  };
+  return store;
 }
 
 export function shouldCreateHandoff(reason: HandoffCreationReason | string | undefined): boolean {

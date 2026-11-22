@@ -342,20 +342,6 @@ describe('Kernel V2 Workspace semantic sync', () => {
         expect(serialized).not.toContain(forbidden);
       }
 
-      const retiredWorkBundle = {
-        ...firstBundle,
-        records: [
-          ...firstBundle.records,
-          { ...firstBundle.records[0]!, kind: 'work' as (typeof firstBundle.records)[number]['kind'] },
-        ],
-      };
-      expect(() =>
-        importSemanticSyncBundle({
-          controllerHome: wslHome,
-          bundle: retiredWorkBundle,
-        }),
-      ).toThrow('SEMANTIC_SYNC_WORK_RETIRED');
-
       const firstReceipt = importSemanticSyncBundle({
         controllerHome: wslHome,
         bundle: firstBundle,
