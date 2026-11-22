@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -266,6 +266,44 @@ describe('full retired Work data erasure', () => {
     });
     expect(() => purgeRetiredWork(home)).toThrow('RETIRED_WORK_JOURNAL_INVALID');
     expect(readControlPlaneRecord(home, 'work_contract', 'repo-invalid', 'old-work')).toBeDefined();
+  });
+
+  test('refuses symbolic-link ancestor roots without removing external data', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-retired-work-symlink-home-'));
+    const external = mkdtempSync(join(tmpdir(), 'forge-retired-work-symlink-external-'));
+    tempRoots.push(home, external);
+    const foreignWorkDir = join(external, 'work-handles');
+    mkdirSync(foreignWorkDir);
+    const marker = join(foreignWorkDir, 'outside.txt');
+    writeFileSync(marker, 'retain external source');
+
+    symlinkSync(external, join(home, 'semantic'));
+    expect(() => inspectRetiredWorkPurge(home)).toThrow('RETIRED_WORK_UNSAFE_LEGACY_PATH');
+    expect(() => purgeRetiredWork(home)).toThrow('RETIRED_WORK_UNSAFE_LEGACY_PATH');
+    expect(readFileSync(marker, 'utf8')).toBe('retain external source');
+  });
+
+  test('refuses symlinked intermediate indexes directory before any DB deletion', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-retired-work-index-symlink-home-'));
+    const external = mkdtempSync(join(tmpdir(), 'forge-retired-work-index-symlink-external-'));
+    tempRoots.push(home, external);
+    const foreignIndex = join(external, 'work-contracts');
+    mkdirSync(foreignIndex);
+    const marker = join(foreignIndex, 'foreign-index.json');
+    writeFileSync(marker, 'retain external index');
+    symlinkSync(external, join(home, 'indexes'));
+    writeControlPlaneRecord(home, {
+      namespace: 'work_contract',
+      scope: 'repo-legacy',
+      key: 'old',
+      schemaVersion: 1,
+      value: { marker: 'must-not-be-deleted' },
+      expectedRevision: null,
+    });
+    expect(() => inspectRetiredWorkPurge(home)).toThrow('RETIRED_WORK_UNSAFE_LEGACY_PATH');
+    expect(() => purgeRetiredWork(home)).toThrow('RETIRED_WORK_UNSAFE_LEGACY_PATH');
+    expect(readControlPlaneRecord(home, 'work_contract', 'repo-legacy', 'old')).toBeDefined();
+    expect(readFileSync(marker, 'utf8')).toBe('retain external index');
   });
 
   test('does not create a database for an empty Controller Home', () => {

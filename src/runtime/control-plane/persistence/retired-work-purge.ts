@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, readdirSync, rmSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import {
   compactControlPlaneDatabaseOffline,
   withControlPlaneReadDatabase,
@@ -132,15 +132,39 @@ function scopedRoots(controllerHome: string): string[] {
   return roots;
 }
 
+/**
+ * Offline erasure must never traverse a symbolic-link component (including
+ * semantic/system roots and indexes parents). A symlinked parent could otherwise
+ * make rmSync delete a different directory outside this Controller Home.
+ * A missing component simply means this old directory is absent.
+ */
+function safeExistingLegacyDirectory(controllerHome: string, candidate: string): boolean {
+  const remainder = relative(controllerHome, candidate);
+  if (remainder === '..' || remainder.startsWith('..' + sep) || remainder.startsWith(sep)) {
+    throw new Error('RETIRED_WORK_UNSAFE_LEGACY_PATH: ' + candidate);
+  }
+  const components = remainder.split(sep).filter(Boolean);
+  let current = controllerHome;
+  for (const segment of ['', ...components]) {
+    if (segment) current = join(current, segment);
+    let entry: ReturnType<typeof lstatSync>;
+    try {
+      entry = lstatSync(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
+    if (!entry.isDirectory()) throw new Error('RETIRED_WORK_UNSAFE_LEGACY_PATH: ' + current);
+  }
+  return true;
+}
+
 function legacyDirectories(controllerHome: string): string[] {
   const matches: string[] = [];
   for (const root of scopedRoots(controllerHome)) {
     for (const relativePath of LEGACY_WORK_DIRECTORIES) {
       const path = join(root, relativePath);
-      if (!existsSync(path)) continue;
-      const entry = lstatSync(path);
-      if (!entry.isDirectory()) throw new Error('RETIRED_WORK_UNSAFE_LEGACY_PATH: ' + path);
-      matches.push(path);
+      if (safeExistingLegacyDirectory(controllerHome, path)) matches.push(path);
     }
   }
   return matches.sort();
@@ -211,8 +235,7 @@ export function purgeRetiredWork(controllerHomeInput: string): RetiredWorkPurgeR
     compactControlPlaneDatabaseOffline(controllerHome);
   }
   for (const directory of before.directories) {
-    if (!existsSync(directory)) continue;
-    if (!lstatSync(directory).isDirectory()) throw new Error('RETIRED_WORK_UNSAFE_LEGACY_PATH: ' + directory);
+    if (!safeExistingLegacyDirectory(controllerHome, directory)) continue;
     rmSync(directory, { recursive: true, force: true });
   }
   const after = inspectRetiredWorkPurge(controllerHome);
