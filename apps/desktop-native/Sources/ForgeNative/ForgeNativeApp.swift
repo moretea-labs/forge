@@ -1161,7 +1161,7 @@ private struct ForgeWorkspaceView: View {
                     .foregroundStyle(ForgePalette.secondary)
                     .frame(width:20)
                 VStack(alignment:.leading,spacing:2) {
-                    Text(model.project?.label ?? "选择项目")
+                    Text(model.project?.label ?? "选择代码工作区")
                         .font(.system(size:12,weight:.semibold))
                         .lineLimit(1)
                     Text(projectSwitcherSummary)
@@ -1175,6 +1175,8 @@ private struct ForgeWorkspaceView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help("代码仓库与 checkout；产品项目和任务在工作台管理")
+        .accessibilityLabel("代码工作区：\(model.project?.label ?? "未选择")")
         .popover(isPresented:$projectPickerShown,arrowEdge:.trailing) {
             projectPicker
         }
@@ -1184,8 +1186,8 @@ private struct ForgeWorkspaceView: View {
         VStack(alignment:.leading,spacing:10) {
             HStack {
                 VStack(alignment:.leading,spacing:2) {
-                    Text("项目与工作区").font(.system(size:14,weight:.semibold))
-                    Text("选择项目后，再选择要使用的工作区。")
+                    Text("代码仓库与工作区").font(.system(size:14,weight:.semibold))
+                    Text("选择仓库及其 checkout；产品项目在工作台管理。")
                         .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                 }
                 Spacer()
@@ -1647,6 +1649,7 @@ private struct AgentPane: View {
     @StateObject private var voiceDictation = AgentVoiceDictation()
     @State private var voiceBaseDraft = ""
     @State private var semanticInspector: AgentSemanticContextInspector?
+    @State private var shouldRestoreComposerFocusAfterReview = false
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -1658,7 +1661,11 @@ private struct AgentPane: View {
     private func agentContent(availableWidth:CGFloat) -> some View {
         VStack(spacing:0) {
             agentWorkspaceBar
-            ScrollViewReader { reader in
+            ZStack {
+                // The conversation stays mounted while the user reviews changes.
+                // This preserves its draft, scroll position and Voice state.
+                VStack(spacing:0) {
+                    ScrollViewReader { reader in
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:20) {
                         if model.thread?.messages.isEmpty != false {
@@ -2367,13 +2374,31 @@ private struct AgentPane: View {
             } isTargeted: { targeted in
                 isComposerDropTarget = targeted && !model.busy && !model.zenRefinementActive
             }
-            .frame(maxWidth:980)
-            .padding(.horizontal,24).padding(.bottom,16)
-            .frame(maxWidth:.infinity)
+                    .frame(maxWidth:980)
+                    .padding(.horizontal,24).padding(.bottom,16)
+                    .frame(maxWidth:.infinity)
+                }
+                .opacity(semanticInspector == .changes ? 0 : 1)
+                .allowsHitTesting(semanticInspector != .changes)
+                .accessibilityHidden(semanticInspector == .changes)
+
+                if semanticInspector == .changes {
+                    // Diff review is a primary work surface, not a 320pt inspector.
+                    // Use the existing review authority, mutations and confirmation UI.
+                    AgentChangesPane(model:model,isPresented:semanticInspectorBinding(.changes))
+                        .frame(maxWidth:.infinity,maxHeight:.infinity)
+                        .background(ForgePalette.canvas)
+                        .accessibilityIdentifier("agent.review-workspace")
+                        .transition(reduceMotion ? .identity : .opacity)
+                }
+            }
+            .frame(maxWidth:.infinity,maxHeight:.infinity)
         }
         .background(ForgePalette.canvas)
         .safeAreaInset(edge:.trailing,spacing:0) {
-            if availableWidth >= 900, let inspector = semanticInspector {
+            if availableWidth >= 900,
+               let inspector = semanticInspector,
+               inspector != .changes {
                 semanticInspectorContent(inspector,inline:true)
                     .frame(width:320)
                     .frame(maxHeight:.infinity)
@@ -2383,18 +2408,28 @@ private struct AgentPane: View {
                     .accessibilityIdentifier("agent.context-inspector")
             }
         }
-        // Compact windows float contextual tools to protect chat and composer width.
+        // Narrow windows float only lightweight Planning and Knowledge tools;
+        // a full Diff keeps its editing canvas and does not become a popover.
         .popover(isPresented:Binding(
-            get:{ availableWidth < 900 && semanticInspector != nil },
+            get:{ availableWidth < 900 && semanticInspector != nil && semanticInspector != .changes },
             set:{ if !$0 { semanticInspector = nil } }
         ),arrowEdge:.trailing) {
-            if let inspector=semanticInspector {
+            if let inspector=semanticInspector, inspector != .changes {
                 semanticInspectorContent(inspector,inline:false)
-                    .frame(width:inspector == .changes ? 440 : nil)
-                    .frame(height:inspector == .changes ? 500 : nil)
             }
         }
         .animation(reduceMotion ? nil : .easeOut(duration:0.20),value:semanticInspector)
+        .onChange(of:semanticInspector) { inspector in
+            if inspector == .changes {
+                shouldRestoreComposerFocusAfterReview = composerFocused
+                composerFocused = false
+            } else if inspector == nil && shouldRestoreComposerFocusAfterReview {
+                shouldRestoreComposerFocusAfterReview = false
+                if !model.busy && !model.zenRefinementActive && !voiceDictation.blocksSend {
+                    composerFocused = true
+                }
+            }
+        }
         .confirmationDialog(
             "将命令交给 Forge Agent？",
             isPresented:Binding(
@@ -2481,6 +2516,33 @@ private struct AgentPane: View {
         return model.thread?.repoId == nil ? Color.secondary : Color.green
     }
 
+    private var agentScopeLabel: String {
+        guard let thread=model.thread else {
+            return "新会话 · 未绑定产品项目或代码工作区"
+        }
+        let semanticName: String
+        if let projectId=thread.projectId, !projectId.isEmpty {
+            semanticName=model.semanticProjects.first(where:{$0.projectId == projectId})?.displayName
+                ?? String(projectId.prefix(18))
+        } else {
+            semanticName="未关联产品项目"
+        }
+        guard let repoId=thread.repoId, !repoId.isEmpty else {
+            return "\(semanticName) · 项目级会话"
+        }
+        let repositoryName=model.projects.first(where:{$0.repoId == repoId})?.label
+            ?? String(repoId.prefix(18))
+        let branchName: String
+        if let checkoutId=thread.checkoutId, !checkoutId.isEmpty {
+            branchName=checkoutId == model.checkoutId
+                ? (model.checkoutBranch ?? String(checkoutId.prefix(12)))
+                : String(checkoutId.prefix(12))
+        } else {
+            branchName="未选择 checkout"
+        }
+        return "\(semanticName) · \(repositoryName) / \(branchName)"
+    }
+
     private var agentWorkspaceBar: some View {
         HStack(spacing:10) {
             if model.canNavigateBack {
@@ -2497,13 +2559,23 @@ private struct AgentPane: View {
                 .accessibilityIdentifier("agent.navigation.back")
             }
 
-            Text(model.thread?.title ?? "新会话")
-                .font(.system(size:13,weight:.semibold))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .accessibilityAddTraits(.isHeader)
+            VStack(alignment:.leading,spacing:3) {
+                Text(model.thread?.title ?? "新会话")
+                    .font(.system(size:13,weight:.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .accessibilityAddTraits(.isHeader)
+                Text(agentScopeLabel)
+                    .font(.system(size:10.5))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(agentScopeLabel)
+                    .accessibilityIdentifier("agent.workspace-scope")
+            }
+            .frame(maxWidth:.infinity,alignment:.leading)
 
-            Spacer(minLength:12)
+            Spacer(minLength:6)
 
             ViewThatFits(in:.horizontal) {
                 HStack(spacing:3) {
@@ -3220,7 +3292,9 @@ private struct AgentChangesPane: View {
                                     in:RoundedRectangle(cornerRadius:8,style:.continuous))
                 }
                 .buttonStyle(.plain)
-                .help("关闭改动审查")
+                .help("返回 Agent 对话")
+                .accessibilityLabel("返回 Agent 对话")
+                .accessibilityIdentifier("changes.return-to-agent")
             }
             .padding(14)
 
