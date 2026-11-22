@@ -22,7 +22,11 @@ describe('check execution scheduling', () => {
     const schedule = buildCheckExecutionSchedule({
       checks: [
         check({ id: 'package:check:type', source: 'package-script', command: ['bun', 'x', 'tsc', '--noEmit'] }),
-        check({ id: 'package:check:mcp-compatibility', source: 'package-script', command: ['bun', 'run', 'check:mcp-compatibility'] }),
+        check({
+          id: 'package:check:mcp-compatibility',
+          source: 'package-script',
+          command: ['bun', 'run', 'check:mcp-compatibility'],
+        }),
       ],
       requestedCheckIds: ['package:check:type', 'package:check:mcp-compatibility'],
       repoId: 'repo-test',
@@ -34,15 +38,19 @@ describe('check execution scheduling', () => {
       ['package:check:mcp-compatibility'],
     ]);
     expect(schedule.conflicts).toHaveLength(1);
-    expect(schedule.conflicts[0]!.resources.some(({ left, right }) =>
-      left.resourceKey === 'build-cache:repo-test'
-      && right.resourceKey === 'build-cache:repo-test'
-      && left.mode === 'write'
-      && right.mode === 'write')).toBe(true);
+    expect(
+      schedule.conflicts[0]!.resources.some(
+        ({ left, right }) =>
+          left.resourceKey === 'build-cache:repo-test' &&
+          right.resourceKey === 'build-cache:repo-test' &&
+          left.mode === 'write' &&
+          right.mode === 'write',
+      ),
+    ).toBe(true);
     expect(schedule.guidance[0]).toContain('waves in order');
   });
 
-  test('keeps heavy-check exclusivity additive to real workspace and build-cache claims', () => {
+  test('serializes competing checks on the build cache without the retired checkout-wide read lease (#713)', () => {
     const schedule = buildCheckExecutionSchedule({
       checks: [
         check({ id: 'package:test', source: 'package-script', command: ['bun', 'run', 'test'] }),
@@ -53,28 +61,34 @@ describe('check execution scheduling', () => {
       checkoutId: 'checkout-test',
     });
 
-    expect(schedule.waves.map((wave) => wave.checkIds)).toEqual([
-      ['package:test'],
-      ['package:check:type'],
-    ]);
+    expect(schedule.waves.map((wave) => wave.checkIds)).toEqual([['package:test'], ['package:check:type']]);
     expect(schedule.conflicts).toHaveLength(1);
-    expect(schedule.conflicts[0]!.resources.some(({ left, right }) =>
-      left.resourceKey === 'workspace:checkout-test'
-      && right.resourceKey === 'workspace:checkout-test')).toBe(true);
-    expect(schedule.conflicts[0]!.resources.some(({ left, right }) =>
-      left.resourceKey === 'build-cache:repo-test'
-      && right.resourceKey === 'build-cache:repo-test')).toBe(true);
+    expect(
+      schedule.conflicts[0]!.resources.some(
+        ({ left, right }) =>
+          left.resourceKey === 'workspace:checkout-test' || right.resourceKey === 'workspace:checkout-test',
+      ),
+    ).toBe(false);
+    expect(
+      schedule.conflicts[0]!.resources.some(
+        ({ left, right }) =>
+          left.resourceKey === 'build-cache:repo-test' && right.resourceKey === 'build-cache:repo-test',
+      ),
+    ).toBe(true);
   });
 
   test('serializes compiler-intensive TypeScript latency gates even when both are source-read-only', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-check-effects-'));
     try {
-      writeFileSync(join(root, 'package.json'), JSON.stringify({
-        scripts: {
-          'check:type': 'bun x tsc --noEmit',
-          'check:typescript-navigation': 'bun scripts/benchmark-typescript-navigation.ts',
-        },
-      }));
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({
+          scripts: {
+            'check:type': 'bun x tsc --noEmit',
+            'check:typescript-navigation': 'bun scripts/benchmark-typescript-navigation.ts',
+          },
+        }),
+      );
       const checks = listControllerChecks(root);
       const schedule = buildCheckExecutionSchedule({
         checks,
@@ -100,14 +114,17 @@ describe('check execution scheduling', () => {
   test('schedules the canonical s3 verification gates in one wave from concrete effects', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-s3-check-effects-'));
     try {
-      writeFileSync(join(root, 'package.json'), JSON.stringify({
-        scripts: {
-          'check:type': 'bun x tsc --noEmit',
-          'check:runtime-architecture': 'node scripts/check-runtime-architecture.mjs',
-          'check:architecture-sync': 'bun src/cli/index.ts run check-architecture-sync',
-          'check:check-scheduling': 'bun test tests/runtime/check-scheduling.test.ts',
-        },
-      }));
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({
+          scripts: {
+            'check:type': 'bun x tsc --noEmit',
+            'check:runtime-architecture': 'node scripts/check-runtime-architecture.mjs',
+            'check:architecture-sync': 'bun src/cli/index.ts run check-architecture-sync',
+            'check:check-scheduling': 'bun test tests/runtime/check-scheduling.test.ts',
+          },
+        }),
+      );
       const checks = listControllerChecks(root);
       const requestedCheckIds = [
         'package:check:type',
@@ -133,16 +150,24 @@ describe('check execution scheduling', () => {
   test('declares governed task/main gates as source-read-only while release remains conservative', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-governed-gate-effects-'));
     try {
-      writeFileSync(join(root, 'package.json'), JSON.stringify({
-        scripts: {
-          'check:task': 'bun scripts/run-governed-gate.ts task',
-          'check:main': 'bun scripts/run-governed-gate.ts main',
-          'check:release': 'bun scripts/run-governed-gate.ts release',
-        },
-      }));
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({
+          scripts: {
+            'check:task': 'bun scripts/run-governed-gate.ts task',
+            'check:main': 'bun scripts/run-governed-gate.ts main',
+            'check:release': 'bun scripts/run-governed-gate.ts release',
+          },
+        }),
+      );
       const checks = listControllerChecks(root);
       const byId = new Map(checks.map((entry) => [entry.id, entry]));
-      const governedEffects = { reads: ['.'], cache: 'write' as const, temp: 'isolated' as const, git: 'read' as const };
+      const governedEffects = {
+        reads: ['.'],
+        cache: 'write' as const,
+        temp: 'isolated' as const,
+        git: 'read' as const,
+      };
       expect(byId.get('package:check:task')?.effects).toEqual(governedEffects);
       expect(byId.get('package:check:main')?.effects).toEqual(governedEffects);
       expect(byId.get('package:check:release')?.effects).toBeUndefined();
