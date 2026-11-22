@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { readPlanContractStore } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import {
   readOutputHandleIndexEntry,
   recordOutputHandleIndexEntry,
@@ -432,6 +433,98 @@ describe('full retired Work data erasure', () => {
     });
     expect(readFileSync(join(home, 'control-plane.sqlite')).includes(Buffer.from(marker))).toBe(false);
     expect(purgeRetiredWork(home)).toMatchObject({ applied: true, records: 0 });
+  });
+
+  test('offline removal of retired Work fields preserves native Plan identity, revision, audit and content', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-retired-plan-fields-'));
+    tempRoots.push(home);
+    const marker = 'PLAN-WORK-MARKER-6e09f2';
+    const sourcePlan = {
+      schemaVersion: 1,
+      planId: 'plan-native',
+      revision: 3,
+      scopeKey: 'repo-plan',
+      sourceRevision: 'a1b2c3',
+      goal: 'Keep the Plan.',
+      status: 'draft',
+      workId: marker,
+      steps: [{ id: 'step-one', objective: 'Deliver a feature', workId: marker }],
+      deliveryCarries: [{ predecessorPlanId: 'old-plan', workId: marker }],
+    };
+    writeControlPlaneRecord(home, {
+      namespace: 'plan_contract',
+      scope: 'repo-plan',
+      key: sourcePlan.planId,
+      schemaVersion: 1,
+      value: sourcePlan,
+      expectedRevision: null,
+    });
+    writeControlPlaneRecord(home, {
+      namespace: 'plan_contract',
+      scope: 'repo-plan',
+      key: 'plan-clean',
+      schemaVersion: 1,
+      value: { schemaVersion: 1, planId: 'plan-clean', steps: [], goal: 'Keep unchanged' },
+      expectedRevision: null,
+    });
+    const before = readControlPlaneRecord(home, 'plan_contract', 'repo-plan', sourcePlan.planId);
+    expect(() => readPlanContractStore({ controllerHome: home, repoId: 'repo-plan' })).toThrow(
+      'PLAN_RETIRED_WORK_SCOPE',
+    );
+    expect(inspectRetiredWorkPurge(home).planRecordsCleaned).toBe(1);
+    expect(purgeRetiredWork(home)).toMatchObject({ applied: true, planRecordsCleaned: 1 });
+    const after = readControlPlaneRecord(home, 'plan_contract', 'repo-plan', sourcePlan.planId);
+    expect(after?.revision).toBe(before?.revision);
+    expect(after?.value).toMatchObject({ planId: 'plan-native', revision: 3, goal: 'Keep the Plan.' });
+    expect(after?.value).not.toHaveProperty('workId');
+    expect(after?.value).not.toHaveProperty('steps.0.workId');
+    expect(after?.value).not.toHaveProperty('deliveryCarries.0.workId');
+    expect(readPlanContractStore({ controllerHome: home, repoId: 'repo-plan' }).contracts).toHaveLength(2);
+    expect(readControlPlaneRecord(home, 'plan_contract', 'repo-plan', 'plan-clean')?.value).toMatchObject({
+      planId: 'plan-clean',
+      goal: 'Keep unchanged',
+    });
+    expect(
+      withControlPlaneReadDatabase(
+        home,
+        (db) =>
+          (
+            db
+              .prepare('SELECT COUNT(*) AS count FROM control_plane_audit WHERE namespace = ? AND record_key = ?')
+              .get('plan_contract', 'plan-native') as { count: number }
+          ).count,
+      ),
+    ).toBe(1);
+    expect(readFileSync(join(home, 'control-plane.sqlite')).includes(Buffer.from(marker))).toBe(false);
+    expect(inspectRetiredWorkPurge(home).planRecordsCleaned).toBe(0);
+    expect(purgeRetiredWork(home)).toMatchObject({ planRecordsCleaned: 0 });
+  });
+
+  test('rejects retired Work attribution on a Plan step or delivery carry without a top-level workId', () => {
+    for (const field of ['steps', 'deliveryCarries'] as const) {
+      const home = mkdtempSync(join(tmpdir(), 'forge-retired-plan-child-'));
+      tempRoots.push(home);
+      writeControlPlaneRecord(home, {
+        namespace: 'plan_contract',
+        scope: 'repo-child',
+        key: 'native-plan',
+        schemaVersion: 1,
+        value: {
+          schemaVersion: 1,
+          planId: 'native-plan',
+          goal: 'Keep native Plan behavior',
+          steps: [{ id: 'step', objective: 'Ship', ...(field === 'steps' ? { workId: 'retired' } : {}) }],
+          deliveryCarries: [
+            { predecessorPlanId: 'older', ...(field === 'deliveryCarries' ? { workId: 'retired' } : {}) },
+          ],
+        },
+        expectedRevision: null,
+      });
+      expect(() => readPlanContractStore({ controllerHome: home, repoId: 'repo-child' })).toThrow(
+        'PLAN_RETIRED_WORK_SCOPE',
+      );
+      expect(inspectRetiredWorkPurge(home).planRecordsCleaned).toBe(1);
+    }
   });
 
   test('CLI defaults to preview, refuses active-Runtime apply and erases only with offline flag', () => {

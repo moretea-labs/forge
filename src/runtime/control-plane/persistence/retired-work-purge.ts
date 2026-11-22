@@ -35,6 +35,7 @@ export interface RetiredWorkPurgeReport {
   auditFloors: number;
   auditRecordCursors: number;
   journalReferences: number;
+  planRecordsCleaned: number;
   directories: string[];
   applied: boolean;
 }
@@ -124,6 +125,55 @@ function eraseHistoricalWorkBoundRows(db: SqliteDatabase): void {
       );
     }
   }
+}
+
+/**
+ * Strip retired Work attribution from native Plan payloads only during the
+ * stopped-Runtime offline purge. Preserve Plan identity, revision and audit
+ * metadata; compaction removes the old payload bytes.
+ */
+function cleanRetiredWorkFromPlans(db: SqliteDatabase, apply: boolean): number {
+  const rows = db
+    .prepare('SELECT scope, record_key, payload FROM control_plane_records WHERE namespace = ?')
+    .all('plan_contract') as Array<{ scope: string; record_key: string; payload: string }>;
+  let changed = 0;
+  for (const row of rows) {
+    let value: unknown;
+    try {
+      value = JSON.parse(row.payload);
+    } catch {
+      throw new Error('RETIRED_WORK_PLAN_UNREADABLE');
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('RETIRED_WORK_PLAN_INVALID');
+    }
+    const plan = value as Record<string, unknown>;
+    let dirty = false;
+    const strip = (item: unknown): void => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        throw new Error('RETIRED_WORK_PLAN_INVALID');
+      }
+      const record = item as Record<string, unknown>;
+      if (Object.hasOwn(record, 'workId')) {
+        delete record.workId;
+        dirty = true;
+      }
+    };
+    strip(plan);
+    for (const key of ['steps', 'deliveryCarries'] as const) {
+      if (plan[key] === undefined) continue;
+      if (!Array.isArray(plan[key])) throw new Error('RETIRED_WORK_PLAN_INVALID');
+      for (const child of plan[key]) strip(child);
+    }
+    if (!dirty) continue;
+    changed += 1;
+    if (apply) {
+      db.prepare(
+        'UPDATE control_plane_records SET payload = ? WHERE namespace = ? AND scope = ? AND record_key = ?',
+      ).run(JSON.stringify(plan), 'plan_contract', row.scope, row.record_key);
+    }
+  }
+  return changed;
 }
 
 interface SyncJournalRow {
@@ -254,7 +304,7 @@ function statistics(
   db: SqliteDatabase,
 ): Pick<
   RetiredWorkPurgeReport,
-  'records' | 'auditEvents' | 'auditFloors' | 'auditRecordCursors' | 'journalReferences'
+  'records' | 'auditEvents' | 'auditFloors' | 'auditRecordCursors' | 'journalReferences' | 'planRecordsCleaned'
 > {
   const historicalBound = historicalWorkBoundRows(db);
   const historicalBoundCount = (table: (typeof WORK_HISTORY_TABLES)[number]) =>
@@ -277,6 +327,7 @@ function statistics(
       countWorkReplicas(db, 'control_plane_audit_record_cursor') +
       historicalBoundCount('control_plane_audit_record_cursor'),
     journalReferences: journalWorkReferences(db, false),
+    planRecordsCleaned: cleanRetiredWorkFromPlans(db, false),
   };
 }
 
@@ -286,7 +337,14 @@ export function inspectRetiredWorkPurge(controllerHomeInput: string): RetiredWor
   const dbPath = join(controllerHome, 'control-plane.sqlite');
   const counts = existsSync(dbPath)
     ? withControlPlaneReadDatabase(controllerHome, statistics)
-    : { records: 0, auditEvents: 0, auditFloors: 0, auditRecordCursors: 0, journalReferences: 0 };
+    : {
+        records: 0,
+        auditEvents: 0,
+        auditFloors: 0,
+        auditRecordCursors: 0,
+        journalReferences: 0,
+        planRecordsCleaned: 0,
+      };
   return { controllerHome, directories, ...counts, applied: false };
 }
 
@@ -323,6 +381,7 @@ export function purgeRetiredWork(controllerHomeInput: string): RetiredWorkPurgeR
       }
       journalWorkReferences(db, true);
       eraseHistoricalWorkBoundRows(db);
+      cleanRetiredWorkFromPlans(db, true);
       dropRetiredCognitionColumns(db);
     });
     // Repack after the transaction so old payload bytes are not left in SQLite
@@ -340,6 +399,7 @@ export function purgeRetiredWork(controllerHomeInput: string): RetiredWorkPurgeR
     after.auditFloors ||
     after.auditRecordCursors ||
     after.journalReferences ||
+    after.planRecordsCleaned ||
     after.directories.length
   ) {
     throw new Error('RETIRED_WORK_PURGE_INCOMPLETE');

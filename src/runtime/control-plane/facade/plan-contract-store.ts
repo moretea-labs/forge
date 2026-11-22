@@ -280,24 +280,21 @@ function normalizeStep(step: CreatePlanContractInput['steps'][number]): PlanStep
   };
 }
 
-function scrubPlanStep(step: PlanStep & { workId?: unknown }): PlanStep {
-  const { workId: _retiredWorkId, ...rest } = step;
-  return rest;
+function assertNativePlanStep(step: PlanStep): PlanStep {
+  if (Object.hasOwn(step, 'workId')) throw new Error('PLAN_RETIRED_WORK_SCOPE');
+  return step;
 }
 
-function scrubDeliveryCarry(carry: PlanStepDeliveryCarry & { workId?: unknown }): PlanStepDeliveryCarry {
-  const { workId: _retiredWorkId, ...rest } = carry;
-  return rest;
+function assertNativeDeliveryCarry(carry: PlanStepDeliveryCarry): PlanStepDeliveryCarry {
+  if (Object.hasOwn(carry, 'workId')) throw new Error('PLAN_RETIRED_WORK_SCOPE');
+  return carry;
 }
 
-function scrubPlanContract(plan: PlanContract): PlanContract {
-  return {
-    ...plan,
-    steps: plan.steps.map((step) => scrubPlanStep(step)),
-    ...(plan.deliveryCarries
-      ? { deliveryCarries: plan.deliveryCarries.map((carry) => scrubDeliveryCarry(carry)) }
-      : {}),
-  };
+function assertNativePlanContract(plan: PlanContract): PlanContract {
+  if (Object.hasOwn(plan, 'workId')) throw new Error('PLAN_RETIRED_WORK_SCOPE');
+  plan.steps.forEach(assertNativePlanStep);
+  plan.deliveryCarries?.forEach(assertNativeDeliveryCarry);
+  return plan;
 }
 
 function normalizeObligationDisposition(value: PlanObligationDisposition): PlanObligationDisposition {
@@ -524,7 +521,7 @@ function revisionDraftFromCandidate(
       ? structuredClone(candidate.obligationDispositions)
       : undefined,
     deliveryCarries: candidate.deliveryCarries
-      ? structuredClone(candidate.deliveryCarries).map((carry) => scrubDeliveryCarry(carry))
+      ? structuredClone(candidate.deliveryCarries).map((carry) => assertNativeDeliveryCarry(carry))
       : undefined,
     createdAt: input.createdAt,
     updatedAt: input.updatedAt,
@@ -564,13 +561,14 @@ export function readPlanContractStore(options: PlanContractStoreOptions): PlanCo
   return {
     schemaVersion: 1,
     updatedAt: records[0]?.updatedAt ?? nowIso(options),
-    contracts: records.map((record) => scrubPlanContract(record.value)),
+    contracts: records.map((record) => assertNativePlanContract(record.value)),
   };
 }
 
 function writePlanContractStore(options: PlanContractStoreOptions, store: PlanContractStore): PlanContractStore {
   withControlPlaneTransaction(options.controllerHome, (database) => {
     for (const contract of store.contracts) {
+      assertNativePlanContract(contract);
       const current = readControlPlaneRecordWithinTransaction<PlanContract>(
         database,
         'plan_contract',
