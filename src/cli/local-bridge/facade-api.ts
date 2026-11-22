@@ -6,10 +6,7 @@ import {
   writeRepositoryAccessPolicy,
   type AccessMode,
 } from '../../runtime/control-plane/governance/access-policy';
-import {
-  persistControllerAccessMode,
-  resolveControllerAccessState,
-} from '../../../adapters/mcp/access-mode';
+import { persistControllerAccessMode, resolveControllerAccessState } from '../../../adapters/mcp/access-mode';
 import { listControllerChecks } from '../../runtime/execution/process-runtime/check-runner';
 import { createMcpToolContext, type MultiRepositoryMcpToolContext } from '../../../adapters/mcp/multi-repository';
 import { readSchedulerHealthSnapshot } from '../../runtime/control-plane/global-scheduler/scheduler';
@@ -17,7 +14,10 @@ import { observeRuntimeStatus } from '../../runtime/root/status';
 import { createSetupBootstrapControlApi } from '../commands/bootstrap-control';
 import type { BootstrapSnapshot } from '../../runtime/control-plane/bootstrap';
 import { readForgeRuntimeStatus } from '../../runtime/control-plane/runtime-status-client';
-import { evaluateActiveRuntimeSourceDrift, readRuntimeGeneration } from '../../runtime/control-plane/runtime-generation';
+import {
+  evaluateActiveRuntimeSourceDrift,
+  readRuntimeGeneration,
+} from '../../runtime/control-plane/runtime-generation';
 import {
   getAssistantPluginManifest,
   getControllerPluginManifest,
@@ -96,15 +96,24 @@ function mapSuggested(actions: SuggestedNextAction[] = []): SuggestedActionViewM
   return actions.slice(0, 8).map((action, index) => {
     const op = action.operation;
     const kind: SuggestedActionViewModel['kind'] =
-      op === 'continue' ? 'continue'
-        : op === 'verify' ? 'verify'
-          : op === 'finalize' ? 'finalize'
-            : op === 'stop' ? 'stop'
-              : op === 'delegate' ? 'delegate'
-                : op === 'repair' || op === 'diagnose' ? 'repair'
-                  : op === 'resolve' ? 'resolve'
-                    : op === 'dismiss' ? 'dismiss'
-                      : op === 'get' || op === 'list' ? 'open'
+      op === 'continue'
+        ? 'continue'
+        : op === 'verify'
+          ? 'verify'
+          : op === 'finalize'
+            ? 'finalize'
+            : op === 'stop'
+              ? 'stop'
+              : op === 'delegate'
+                ? 'delegate'
+                : op === 'repair' || op === 'diagnose'
+                  ? 'repair'
+                  : op === 'resolve'
+                    ? 'resolve'
+                    : op === 'dismiss'
+                      ? 'dismiss'
+                      : op === 'get' || op === 'list'
+                        ? 'open'
                         : 'other';
     return {
       id: `${action.tool}-${op}-${index}`,
@@ -176,14 +185,12 @@ const ERROR_COPY: Record<UserFacingErrorClass, { title: string; explanation: str
   },
 };
 
-export function describeConsoleError(
-  errorClass: UserFacingErrorClass,
-  detail?: string,
-): ConsoleErrorViewModel {
+export function describeConsoleError(errorClass: UserFacingErrorClass, detail?: string): ConsoleErrorViewModel {
   const copy = ERROR_COPY[errorClass] ?? ERROR_COPY.unknown_failure;
-  const explanation = detail && detail.trim() && detail.trim() !== 'undefined'
-    ? `${copy.explanation} ${detail.trim().slice(0, 180)}`
-    : copy.explanation;
+  const explanation =
+    detail && detail.trim() && detail.trim() !== 'undefined'
+      ? `${copy.explanation} ${detail.trim().slice(0, 180)}`
+      : copy.explanation;
   return {
     errorClass,
     title: copy.title,
@@ -200,11 +207,16 @@ export function summarizeChangedFiles(paths: readonly string[]): ChangedFilesSum
     if (path.startsWith('A ') || path.includes('(new)') || path.startsWith('+')) status = 'added';
     else if (path.startsWith('D ') || path.includes('(deleted)') || path.startsWith('-')) status = 'deleted';
     else if (path.startsWith('R ') || path.includes(' -> ')) status = 'renamed';
-    const clean = path.replace(/^[AMD?R]\s+/, '').replace(/^\+/, '').replace(/^-/, '').trim();
+    const clean = path
+      .replace(/^[AMD?R]\s+/, '')
+      .replace(/^\+/, '')
+      .replace(/^-/, '')
+      .trim();
     return {
       path: clean || path,
       status,
-      statusLabel: status === 'added' ? '新增' : status === 'deleted' ? '删除' : status === 'renamed' ? '重命名' : '修改',
+      statusLabel:
+        status === 'added' ? '新增' : status === 'deleted' ? '删除' : status === 'renamed' ? '重命名' : '修改',
     };
   });
   const added = files.filter((entry) => entry.status === 'added').length;
@@ -248,17 +260,20 @@ function describeHandoffDecision(item: HandoffItem): HandoffCardViewModel['decis
     return {
       type: 'approval',
       typeLabel: destructive ? '高风险操作审批' : '执行授权',
-      requestedAction: approvalAction?.operation === 'start' && objective
-        ? `历史任务创建请求：“${objective.slice(0, 240)}”`
-        : item.blockingDecision || item.summary,
+      requestedAction:
+        approvalAction?.operation === 'start' && objective
+          ? `历史任务创建请求：“${objective.slice(0, 240)}”`
+          : item.blockingDecision || item.summary,
       necessityLabel: '必须确认',
       necessityExplanation: destructive
         ? '此操作包含高风险或潜在不可逆副作用，系统不能替你默认同意。'
         : '当前安全策略要求显式授权；缩小范围或改为只读预览后可避免本次审批。',
-      impact: approvalAction?.operation === 'start'
-        ? `这是退役 Work 生命周期留下的历史审批。${scopeSummary}。当前只能记录决定，不会创建或续跑 Work。`
-        : '当前审批没有可执行的现行动作，只能记录决定。',
-      afterApproval: '只会记录你的决定，不会自动执行或恢复 Work。需要继续时请从 Requirement/Plan 与当前 repository/checkout 发起现行操作。',
+      impact:
+        approvalAction?.operation === 'start'
+          ? `这是退役 Work 生命周期留下的历史审批。${scopeSummary}。当前只能记录决定，不会创建或续跑 Work。`
+          : '当前审批没有可执行的现行动作，只能记录决定。',
+      afterApproval:
+        '只会记录你的决定，不会自动执行或恢复 Work。需要继续时请从 Requirement/Plan 与当前 repository/checkout 发起现行操作。',
       ifRejected: '相关操作保持未执行；你可以缩小范围、改成预览、补充信息或取消。',
       canApproveAndContinue,
       primaryActionLabel: '仅记录决定',
@@ -313,17 +328,27 @@ export function mapHandoffCard(item: HandoffItem): HandoffCardViewModel {
     reason: item.reason,
     recommendedDecision: item.recommendedDecision,
     continuationPrompt: item.recommendedContinuationPrompt || item.recommendedPrompt,
-    severityLabel: item.severity === 'needs_review' ? '需要判断'
-      : item.severity === 'blocked' ? '已阻塞'
-        : item.severity === 'failed' ? '失败'
-          : item.severity === 'ready_to_continue' ? '可继续'
-            : '提示',
+    severityLabel:
+      item.severity === 'needs_review'
+        ? '需要判断'
+        : item.severity === 'blocked'
+          ? '已阻塞'
+          : item.severity === 'failed'
+            ? '失败'
+            : item.severity === 'ready_to_continue'
+              ? '可继续'
+              : '提示',
     tone: handoffTone(item.severity),
-    statusLabel: item.status === 'pending' ? '待处理'
-      : item.status === 'acknowledged' ? '已确认'
-        : item.status === 'resolved' ? '已解决'
-          : item.status === 'dismissed' ? '已忽略'
-            : item.status,
+    statusLabel:
+      item.status === 'pending'
+        ? '待处理'
+        : item.status === 'acknowledged'
+          ? '已确认'
+          : item.status === 'resolved'
+            ? '已解决'
+            : item.status === 'dismissed'
+              ? '已忽略'
+              : item.status,
     workTitle: item.currentState.statusSummary,
     attemptedActions: item.attemptedActions ?? [],
     evidenceLabels: item.evidenceRefs.map((entry) => entry.title || '证据').slice(0, 6),
@@ -331,7 +356,6 @@ export function mapHandoffCard(item: HandoffItem): HandoffCardViewModel {
     decision: describeHandoffDecision(item),
     advanced: {
       handoffId: item.id,
-      workId: item.workId,
       creationReason: item.creationReason,
     },
   };
@@ -343,10 +367,7 @@ function displayPath(path: string): string {
   return path;
 }
 
-export function mapRepositoryCard(
-  repository: RepositoryRecord,
-  current: boolean,
-): RepositoryCardViewModel {
+export function mapRepositoryCard(repository: RepositoryRecord, current: boolean): RepositoryCardViewModel {
   let branchLabel: string | undefined;
   let dirtyLabel: string | undefined;
   let readinessLabel: string | undefined;
@@ -479,7 +500,8 @@ export function classifyBootstrapReadiness(input: {
   runtimeReady: boolean;
   repositoryEnabled: boolean;
 }): SystemReadinessViewModel['state'] {
-  const fatalBootstrap = input.bootstrap?.blockers.some((blocker) => blocker.kind === 'failed' || blocker.kind === 'unsupported') === true;
+  const fatalBootstrap =
+    input.bootstrap?.blockers.some((blocker) => blocker.kind === 'failed' || blocker.kind === 'unsupported') === true;
   if (fatalBootstrap) return 'blocked';
   if (input.bootstrap?.status === 'ready' && !input.runtimeReady) return 'blocked';
   if (!input.bootstrap || input.bootstrap.status !== 'ready' || !input.repositoryEnabled) return 'needs_setup';
@@ -506,9 +528,10 @@ export async function buildSystemReadiness(
       title: 'Forge 设置',
       statusLabel: bootstrap?.status === 'ready' ? '就绪' : bootstrap?.status === 'blocked' ? '需要处理' : '未完成',
       tone: bootstrap?.status === 'ready' ? 'green' : bootstrap ? 'amber' : 'amber',
-      detail: bootstrap?.status === 'ready'
-        ? `Bootstrap revision ${bootstrap.revision} 已就绪。`
-        : bootstrap?.blockers[0]?.summary ?? '尚未建立实例级 bootstrap 状态，请运行 forge setup。',
+      detail:
+        bootstrap?.status === 'ready'
+          ? `Bootstrap revision ${bootstrap.revision} 已就绪。`
+          : (bootstrap?.blockers[0]?.summary ?? '尚未建立实例级 bootstrap 状态，请运行 forge setup。'),
     },
     {
       id: 'controller',
@@ -567,11 +590,12 @@ export async function buildSystemReadiness(
     state,
     label: state === 'ready' ? '就绪' : state === 'needs_setup' ? '需要设置' : '暂不可用',
     headline: state === 'ready' ? '系统可用' : state === 'needs_setup' ? '完成设置后即可开始' : '系统暂不可用',
-    description: state === 'ready'
-      ? '你可以输入自然语言任务，或先处理待决定事项。'
-      : state === 'needs_setup'
-        ? (bootstrap?.blockers[0]?.summary ?? '请先完成 Forge 实例设置，并选择或注册一个可用仓库。')
-        : '请先查看系统状态并尝试诊断/修复。',
+    description:
+      state === 'ready'
+        ? '你可以输入自然语言任务，或先处理待决定事项。'
+        : state === 'needs_setup'
+          ? (bootstrap?.blockers[0]?.summary ?? '请先完成 Forge 实例设置，并选择或注册一个可用仓库。')
+          : '请先查看系统状态并尝试诊断/修复。',
     connectorLabel: freshness.connectorLabel,
     connectorTone: freshness.connectorTone,
     connectorFreshness: mapConnectorFreshnessView(freshness),
@@ -582,17 +606,15 @@ export async function buildSystemReadiness(
   };
 }
 
-function buildAutomationReadinessSection(
-  ctx: ConsoleFacadeContext,
-): SystemReadinessViewModel['sections'][number] {
+function buildAutomationReadinessSection(ctx: ConsoleFacadeContext): SystemReadinessViewModel['sections'][number] {
   const schedules = listSchedules(ctx.controllerHome, ctx.repository.repoId).filter((schedule) => schedule.enabled);
   const shadowSchedules = schedules.filter((schedule) => schedule.policy.shadowMode);
   const liveSchedules = schedules.filter((schedule) => !schedule.policy.shadowMode);
   const liveScheduleIds = new Set(liveSchedules.map((schedule) => schedule.scheduleId));
-  const activeLiveOccurrences = listActiveOccurrences(ctx.controllerHome, ctx.repository.repoId)
-    .filter((occurrence) => liveScheduleIds.has(occurrence.scheduleId)
-      && ['created', 'queued', 'running'].includes(occurrence.status))
-    .length;
+  const activeLiveOccurrences = listActiveOccurrences(ctx.controllerHome, ctx.repository.repoId).filter(
+    (occurrence) =>
+      liveScheduleIds.has(occurrence.scheduleId) && ['created', 'queued', 'running'].includes(occurrence.status),
+  ).length;
 
   if (schedules.length === 0) {
     return {
@@ -610,16 +632,19 @@ function buildAutomationReadinessSection(
       title: '自治调度',
       statusLabel: `${shadowSchedules.length} 个影子计划`,
       tone: 'amber',
-      detail: '已启用的 schedule 全部处于 shadow mode：它们只记录 would_execute / shadowed 结果，不会排队或启动 Execution Job。',
+      detail:
+        '已启用的 schedule 全部处于 shadow mode：它们只记录 would_execute / shadowed 结果，不会排队或启动 Execution Job。',
     };
   }
 
-  const liveLabel = shadowSchedules.length > 0
-    ? `live ${liveSchedules.length} / shadow ${shadowSchedules.length}`
-    : `${liveSchedules.length} 个 live 计划`;
-  const liveDetail = activeLiveOccurrences > 0
-    ? `当前有 ${activeLiveOccurrences} 个 live occurrence 正在 created/queued/running。`
-    : '当前没有 live occurrence 在 created/queued/running。';
+  const liveLabel =
+    shadowSchedules.length > 0
+      ? `live ${liveSchedules.length} / shadow ${shadowSchedules.length}`
+      : `${liveSchedules.length} 个 live 计划`;
+  const liveDetail =
+    activeLiveOccurrences > 0
+      ? `当前有 ${activeLiveOccurrences} 个 live occurrence 正在 created/queued/running。`
+      : '当前没有 live occurrence 在 created/queued/running。';
   return {
     id: 'automation',
     title: '自治调度',
@@ -654,7 +679,11 @@ function mapPluginAction(action: AssistantPluginManifest['actions'][number]): Pl
     readOnly: action.readOnly === true || action.risk === 'readonly',
     confirmation: action.confirmation,
     confirmationLabel: confirmationLabel(action.confirmation),
-    canPreview: action.readOnly === true || action.risk === 'readonly' || action.actionId === 'configure' || action.actionId === 'auth_status',
+    canPreview:
+      action.readOnly === true ||
+      action.risk === 'readonly' ||
+      action.actionId === 'configure' ||
+      action.actionId === 'auth_status',
     requiredConfirmationText: action.requiredConfirmationText,
   };
 }
@@ -662,50 +691,47 @@ function mapPluginAction(action: AssistantPluginManifest['actions'][number]): Pl
 export function mapPluginCard(manifest: AssistantPluginManifest): PluginCardViewModel {
   const health = manifest.health;
   const lifecycle = manifest.lifecycle;
-  const ready = manifest.enabled !== false
-    && health.ready !== false
-    && health.state !== 'error'
-    && lifecycle.state !== 'error';
-  const needsAuthorization = [...(health.errors ?? []), ...(health.warnings ?? []), lifecycle.reason ?? '']
-    .some((entry) => /auth|token|credential|permission|scope|授权|登录/i.test(String(entry)));
-  const status: PluginCardViewModel['status'] = manifest.enabled === false
-    ? 'disabled'
-    : ready
-      ? 'ready'
-      : needsAuthorization
-        ? 'authorization_required'
-        : health.state === 'error' || lifecycle.state === 'error'
-          ? 'failed'
-          : 'needs_setup';
-  const tone: PlainStatusTone = status === 'ready'
-    ? 'green'
-    : status === 'failed'
-      ? 'red'
-      : status === 'disabled'
-        ? 'gray'
-        : 'amber';
-  const nextStep = status === 'ready'
-    ? '已连接，可用于任务执行'
-    : status === 'authorization_required'
-      ? '需要完成授权后才能使用'
-      : status === 'disabled'
-        ? '插件已禁用'
-        : '需要配置并测试连接';
+  const ready =
+    manifest.enabled !== false && health.ready !== false && health.state !== 'error' && lifecycle.state !== 'error';
+  const needsAuthorization = [...(health.errors ?? []), ...(health.warnings ?? []), lifecycle.reason ?? ''].some(
+    (entry) => /auth|token|credential|permission|scope|授权|登录/i.test(String(entry)),
+  );
+  const status: PluginCardViewModel['status'] =
+    manifest.enabled === false
+      ? 'disabled'
+      : ready
+        ? 'ready'
+        : needsAuthorization
+          ? 'authorization_required'
+          : health.state === 'error' || lifecycle.state === 'error'
+            ? 'failed'
+            : 'needs_setup';
+  const tone: PlainStatusTone =
+    status === 'ready' ? 'green' : status === 'failed' ? 'red' : status === 'disabled' ? 'gray' : 'amber';
+  const nextStep =
+    status === 'ready'
+      ? '已连接，可用于任务执行'
+      : status === 'authorization_required'
+        ? '需要完成授权后才能使用'
+        : status === 'disabled'
+          ? '插件已禁用'
+          : '需要配置并测试连接';
   const actions = manifest.actions.map(mapPluginAction);
   return {
     id: manifest.pluginId,
     name: manifest.displayName || manifest.pluginId,
     provider: manifest.provider,
     status,
-    statusLabel: status === 'ready'
-      ? '可用'
-      : status === 'authorization_required'
-        ? '待授权'
-        : status === 'failed'
-          ? '异常'
-          : status === 'disabled'
-            ? '已禁用'
-            : '需配置',
+    statusLabel:
+      status === 'ready'
+        ? '可用'
+        : status === 'authorization_required'
+          ? '待授权'
+          : status === 'failed'
+            ? '异常'
+            : status === 'disabled'
+              ? '已禁用'
+              : '需配置',
     tone,
     enabled: manifest.enabled !== false,
     actionCount: actions.length,
@@ -751,8 +777,9 @@ export function getConsolePlugin(ctx: ConsoleFacadeContext, pluginId: string): P
 
 export function buildPluginSummary(plugins: PluginCardViewModel[]): PluginSummaryViewModel {
   const ready = plugins.filter((entry) => entry.status === 'ready').length;
-  const needsAttention = plugins.filter((entry) =>
-    entry.status === 'authorization_required' || entry.status === 'failed' || entry.status === 'needs_setup').length;
+  const needsAttention = plugins.filter(
+    (entry) => entry.status === 'authorization_required' || entry.status === 'failed' || entry.status === 'needs_setup',
+  ).length;
   return {
     ready,
     total: plugins.length,
@@ -771,9 +798,10 @@ export async function buildCommandCenter(
   const plugins = listConsolePlugins(ctx);
   const pluginSummary = buildPluginSummary(plugins);
   const access = controllerAccessStateView(ctx);
-  const banner = readiness.connectorFreshness?.severity === 'warning' || readiness.connectorFreshness?.severity === 'error'
-    ? readiness.connectorFreshness.summary
-    : undefined;
+  const banner =
+    readiness.connectorFreshness?.severity === 'warning' || readiness.connectorFreshness?.severity === 'error'
+      ? readiness.connectorFreshness.summary
+      : undefined;
   const needsSetup = readiness.state === 'needs_setup' || ctx.repository.enabled === false || !currentRepository;
   return {
     schemaVersion: 1,
@@ -792,11 +820,11 @@ export async function buildCommandCenter(
     warnings: banner ? [banner] : [],
     setupGuide: needsSetup
       ? {
-        needed: true,
-        title: '先选择或注册一个仓库',
-        body: '没有可用仓库时，无法开始开发任务。请在“仓库”页添加本地 Git 仓库并设为当前。',
-        actionLabel: '去设置仓库',
-      }
+          needed: true,
+          title: '先选择或注册一个仓库',
+          body: '没有可用仓库时，无法开始开发任务。请在“仓库”页添加本地 Git 仓库并设为当前。',
+          actionLabel: '去设置仓库',
+        }
       : { needed: false, title: '', body: '', actionLabel: '' },
   };
 }
@@ -836,12 +864,14 @@ export function repairConsole(
     destructive?: boolean;
   } = {},
 ): FacadeResult {
-  let maintenanceStatus: {
-    readyForExecution?: boolean;
-    recommendedActions?: string[];
-    candidates?: Array<{ kind?: string; reason?: string; suggestedAction?: string; safe?: boolean }>;
-    warnings?: string[];
-  } | undefined;
+  let maintenanceStatus:
+    | {
+        readyForExecution?: boolean;
+        recommendedActions?: string[];
+        candidates?: Array<{ kind?: string; reason?: string; suggestedAction?: string; safe?: boolean }>;
+        warnings?: string[];
+      }
+    | undefined;
   try {
     const status = buildRuntimeMaintenanceStatus(ctx.repository, ctx.controllerHome, { maxCandidates: 20 });
     maintenanceStatus = {
@@ -877,7 +907,10 @@ export function repairConsole(
   );
 }
 
-export function listConsoleHandoffs(ctx: ConsoleFacadeContext, status: 'pending' | 'active' | 'all' = 'pending'): HandoffCardViewModel[] {
+export function listConsoleHandoffs(
+  ctx: ConsoleFacadeContext,
+  status: 'pending' | 'active' | 'all' = 'pending',
+): HandoffCardViewModel[] {
   return listHandoffItems({ ...store(ctx), status, limit: 50 }).map(mapHandoffCard);
 }
 
@@ -890,7 +923,12 @@ export function ackConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: string) 
   return mapHandoffCard(acknowledgeHandoffItem(store(ctx), handoffId));
 }
 
-export async function resolveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: string, decision: string, resolver = 'user') {
+export async function resolveConsoleHandoff(
+  ctx: ConsoleFacadeContext,
+  handoffId: string,
+  decision: string,
+  resolver = 'user',
+) {
   const item = resolveHandoffItem(store(ctx), handoffId, { decision, resolver });
   return mapHandoffCard(item);
 }
@@ -904,9 +942,10 @@ export async function approveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId
     throw new Error(`该审批已处理（${item.status}）。`);
   }
   const resolved = resolveHandoffItem(store(ctx), handoffId, {
-    decision: item.approvalAction?.operation === 'start'
-      ? `approved_historical_work_request: ${item.approvalAction.label}`
-      : `approved_decision_only: ${item.blockingDecision || item.summary}`,
+    decision:
+      item.approvalAction?.operation === 'start'
+        ? `approved_historical_work_request: ${item.approvalAction.label}`
+        : `approved_decision_only: ${item.blockingDecision || item.summary}`,
     resolver,
   });
   return {
@@ -915,7 +954,12 @@ export async function approveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId
     summary: '已记录批准决定；历史 Work 创建/续跑动作已退役，未执行任何任务创建。',
   };
 }
-export function dismissConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: string, decision = 'dismissed', resolver = 'user') {
+export function dismissConsoleHandoff(
+  ctx: ConsoleFacadeContext,
+  handoffId: string,
+  decision = 'dismissed',
+  resolver = 'user',
+) {
   return mapHandoffCard(dismissHandoffItem(store(ctx), handoffId, { decision, resolver }));
 }
 
@@ -932,27 +976,27 @@ export function toConsoleOperationFeedback(result: FacadeResult): {
 } {
   const data = (result.data ?? {}) as Record<string, unknown>;
   const status = result.status;
-  const phase: UserFacingPhase = status === 'ok'
-    ? 'succeeded'
-    : status === 'blocked' || status === 'approval_required'
-      ? 'needs_attention'
-      : status === 'failed'
-        ? 'failed'
-        : status === 'not_found'
+  const phase: UserFacingPhase =
+    status === 'ok'
+      ? 'succeeded'
+      : status === 'blocked' || status === 'approval_required'
+        ? 'needs_attention'
+        : status === 'failed'
           ? 'failed'
-          : 'running';
-  const errorClass = status === 'ok'
-    ? undefined
-    : classifyUserFacingError({
-      code: String(data.errorClass ?? data.code ?? ''),
-      message: result.summary || String(data.errorMessage ?? ''),
-      status,
-      infrastructure: status === 'failed' && /环境|infrastructure|daemon|timeout/i.test(result.summary),
-      acceptance: /验收|acceptance|valid_fail|未通过/i.test(result.summary),
-    });
-  const changed = Array.isArray(data.changedFiles)
-    ? summarizeChangedFiles(data.changedFiles.map(String))
-    : undefined;
+          : status === 'not_found'
+            ? 'failed'
+            : 'running';
+  const errorClass =
+    status === 'ok'
+      ? undefined
+      : classifyUserFacingError({
+          code: String(data.errorClass ?? data.code ?? ''),
+          message: result.summary || String(data.errorMessage ?? ''),
+          status,
+          infrastructure: status === 'failed' && /环境|infrastructure|daemon|timeout/i.test(result.summary),
+          acceptance: /验收|acceptance|valid_fail|未通过/i.test(result.summary),
+        });
+  const changed = Array.isArray(data.changedFiles) ? summarizeChangedFiles(data.changedFiles.map(String)) : undefined;
   return {
     phase,
     statusLabel: statusLabelForPhase(phase),
@@ -997,9 +1041,7 @@ function controllerObservation(ctx: ConsoleFacadeContext): ConnectivityComponent
     'controller_daemon',
     'Forge Runtime',
     'failed',
-    daemon.error
-      ? `Forge Runtime 不可用：${daemon.error}`
-      : `Forge Runtime 当前为 ${daemon.status}。`,
+    daemon.error ? `Forge Runtime 不可用：${daemon.error}` : `Forge Runtime 当前为 ${daemon.status}。`,
     [daemon.error ? `daemon=${daemon.error}` : `status=${daemon.status}`],
   );
 }
@@ -1026,13 +1068,7 @@ function schedulerObservation(ctx: ConsoleFacadeContext): ConnectivityComponentO
       [`lastTickAt=${snapshot.lastTickAt}`],
     );
   }
-  return createConnectivityObservation(
-    'scheduler',
-    'Scheduler',
-    'unknown',
-    '尚未观察到 durable scheduler 心跳。',
-    [],
-  );
+  return createConnectivityObservation('scheduler', 'Scheduler', 'unknown', '尚未观察到 durable scheduler 心跳。', []);
 }
 
 function localMcpObservation(
@@ -1041,9 +1077,9 @@ function localMcpObservation(
 ): ConnectivityComponentObservation {
   const runtime = loadMcpServiceRuntimeState(ctx.controllerHome);
   if (
-    freshness.status === 'local_mcp_updated'
-    || freshness.status === 'chatgpt_snapshot_missing_facade'
-    || freshness.status === 'unable_to_verify_chatgpt_snapshot'
+    freshness.status === 'local_mcp_updated' ||
+    freshness.status === 'chatgpt_snapshot_missing_facade' ||
+    freshness.status === 'unable_to_verify_chatgpt_snapshot'
   ) {
     return createConnectivityObservation(
       'local_mcp',
@@ -1071,13 +1107,7 @@ function localMcpObservation(
       runtime.server.lastExit ? [`lastExit=${runtime.server.lastExit}`] : [],
     );
   }
-  return createConnectivityObservation(
-    'local_mcp',
-    'Local MCP',
-    'failed',
-    '未确认本地 MCP /health 可达。',
-    [],
-  );
+  return createConnectivityObservation('local_mcp', 'Local MCP', 'failed', '未确认本地 MCP /health 可达。', []);
 }
 
 function publicMcpObservation(ctx: ConsoleFacadeContext): ConnectivityComponentObservation {
@@ -1142,7 +1172,10 @@ function localBridgeObservation(): ConnectivityComponentObservation {
 function connectorSignals(ctx: ConsoleFacadeContext, freshness: ConnectorFreshnessReport): string[] {
   const runtime = loadMcpServiceRuntimeState(ctx.controllerHome);
   const signals: string[] = [];
-  if (freshness.status === 'chatgpt_snapshot_missing_facade' || freshness.status === 'unable_to_verify_chatgpt_snapshot') {
+  if (
+    freshness.status === 'chatgpt_snapshot_missing_facade' ||
+    freshness.status === 'unable_to_verify_chatgpt_snapshot'
+  ) {
     signals.push(freshness.summary);
   }
   if (runtime?.tunnel?.connectorNeedsReconnect === true) {
@@ -1151,10 +1184,7 @@ function connectorSignals(ctx: ConsoleFacadeContext, freshness: ConnectorFreshne
   return signals;
 }
 
-async function buildConnectivityObservability(
-  ctx: ConsoleFacadeContext,
-  freshness: ConnectorFreshnessReport,
-) {
+async function buildConnectivityObservability(ctx: ConsoleFacadeContext, freshness: ConnectorFreshnessReport) {
   const jobs = listExecutionJobs(ctx.controllerHome, ctx.repository.repoId, 6);
   return recordConnectivityProbe({
     controllerHome: ctx.controllerHome,
@@ -1187,15 +1217,16 @@ export function applyConsoleSafePatch(
     ctx.controllerHome,
     { scope: 'repository', repoId: ctx.repository.repoId },
     'console:safe_patch_apply',
-    () => applySafePatch(ctx.repository, {
-      controllerHome: ctx.controllerHome,
-      sessionId: input.sessionId,
-      purpose: input.purpose ?? 'Console interactive edit',
-      operations: input.operations,
-      allowedPaths: input.allowedPaths,
-      refreshFingerprints: false,
-      recoverStaleSession: true,
-    }),
+    () =>
+      applySafePatch(ctx.repository, {
+        controllerHome: ctx.controllerHome,
+        sessionId: input.sessionId,
+        purpose: input.purpose ?? 'Console interactive edit',
+        operations: input.operations,
+        allowedPaths: input.allowedPaths,
+        refreshFingerprints: false,
+        recoverStaleSession: true,
+      }),
     60_000,
   );
   const changedFiles = [...new Set((applied.appliedChunks ?? []).flatMap((chunk) => chunk.paths ?? []))];
@@ -1208,10 +1239,12 @@ export function applyConsoleSafePatch(
       ? `已保存修改（${changedFiles.length} 个文件）。`
       : `修改失败：${firstFailure?.message || '请检查路径或内容后重试'}`,
     changedFiles,
-    errorClass: ok ? undefined : classifyUserFacingError({
-      code: firstFailure?.code,
-      message: firstFailure?.message,
-    }),
+    errorClass: ok
+      ? undefined
+      : classifyUserFacingError({
+          code: firstFailure?.code,
+          message: firstFailure?.message,
+        }),
     errorMessage: firstFailure?.message,
   });
   return {

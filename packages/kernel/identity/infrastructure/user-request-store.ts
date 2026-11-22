@@ -1,11 +1,7 @@
 import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import type {
-  CreateUserRequestInput,
-  ResolveUserRequestInput,
-  UserRequest,
-} from '../domain/user-request';
+import type { CreateUserRequestInput, ResolveUserRequestInput, UserRequest } from '../domain/user-request';
 
 interface UserRequestStoreData {
   schemaVersion: 1;
@@ -23,7 +19,8 @@ function loadStore(controllerHome: string): UserRequestStoreData {
     const raw = JSON.parse(readFileSync(path, 'utf8'));
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('store must be an object');
     const record = raw as Record<string, unknown>;
-    if (record.schemaVersion !== 1 || !Array.isArray(record.requests)) throw new Error('schemaVersion/requests are invalid');
+    if (record.schemaVersion !== 1 || !Array.isArray(record.requests))
+      throw new Error('schemaVersion/requests are invalid');
     return { schemaVersion: 1, requests: record.requests as UserRequest[] };
   } catch (error) {
     throw new Error(`USER_REQUEST_STORE_CORRUPT: ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -65,7 +62,10 @@ function canonicalUserRequests(requests: readonly UserRequest[]): UserRequest[] 
  * return the existing record to guarantee deduplication across retries.
  */
 export function recordUserRequest(controllerHome: string, input: CreateUserRequestInput): UserRequest {
-  if (input.targetScope?.workId?.trim()) throw new Error('USER_REQUEST_WORK_SCOPE_RETIRED');
+  const legacyScope = input.targetScope as (CreateUserRequestInput['targetScope'] & { workId?: unknown }) | undefined;
+  if (typeof legacyScope?.workId === 'string' && legacyScope.workId.trim()) {
+    throw new Error('USER_REQUEST_WORK_SCOPE_RETIRED');
+  }
   const rootCauseKey = input.rootCauseKey.trim();
   if (!rootCauseKey) throw new Error('USER_REQUEST_ROOT_CAUSE_KEY_REQUIRED');
 
@@ -95,9 +95,7 @@ export function recordUserRequest(controllerHome: string, input: CreateUserReque
   }
 
   // Coalescing: return matching pending request for the same semantic root cause.
-  const existingIndex = store.requests.findIndex(
-    (r) => r.status === 'pending' && r.rootCauseKey === rootCauseKey,
-  );
+  const existingIndex = store.requests.findIndex((r) => r.status === 'pending' && r.rootCauseKey === rootCauseKey);
   if (existingIndex >= 0) {
     const existing = store.requests[existingIndex]!;
     if (input.presentation) {
@@ -145,7 +143,7 @@ export function resolveUserRequest(controllerHome: string, input: ResolveUserReq
   if (!requestId || !decision || !resolvedBy) throw new Error('RESOLVE_USER_REQUEST_ARGS_REQUIRED');
 
   const store = loadStore(controllerHome);
-  const matchingIndexes = store.requests.flatMap((request, index) => request.requestId === requestId ? [index] : []);
+  const matchingIndexes = store.requests.flatMap((request, index) => (request.requestId === requestId ? [index] : []));
   if (!matchingIndexes.length) throw new Error(`USER_REQUEST_NOT_FOUND: ${requestId}`);
   const canonicalIndex = canonicalRequestIndex(store.requests, requestId);
   const now = (input.now ?? new Date()).toISOString();
@@ -174,7 +172,10 @@ export function getUserRequest(controllerHome: string, requestId: string): UserR
   return index >= 0 ? structuredClone(store.requests[index]!) : undefined;
 }
 
-export function listUserRequests(controllerHome: string, status?: 'pending' | 'resolved' | 'cancelled' | 'all'): UserRequest[] {
+export function listUserRequests(
+  controllerHome: string,
+  status?: 'pending' | 'resolved' | 'cancelled' | 'all',
+): UserRequest[] {
   const store = loadStore(controllerHome);
   return canonicalUserRequests(store.requests)
     .filter((r) => !status || status === 'all' || r.status === status)

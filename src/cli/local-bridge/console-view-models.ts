@@ -5,7 +5,18 @@ export type PlainStatusTone = 'green' | 'amber' | 'red' | 'blue' | 'gray';
 export interface SuggestedActionViewModel {
   id: string;
   label: string;
-  kind: 'continue' | 'verify' | 'finalize' | 'stop' | 'delegate' | 'repair' | 'resolve' | 'dismiss' | 'open' | 'diagnose' | 'other';
+  kind:
+    | 'continue'
+    | 'verify'
+    | 'finalize'
+    | 'stop'
+    | 'delegate'
+    | 'repair'
+    | 'resolve'
+    | 'dismiss'
+    | 'open'
+    | 'diagnose'
+    | 'other';
   tool?: string;
   operation?: string;
   payload?: Record<string, unknown>;
@@ -52,7 +63,6 @@ export interface HandoffCardViewModel {
   /** Advanced only */
   advanced?: {
     handoffId: string;
-    workId?: string;
     creationReason?: string;
   };
 }

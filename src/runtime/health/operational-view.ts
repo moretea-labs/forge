@@ -65,11 +65,7 @@ export interface RuntimeOperationalViewInput {
   historyLimit?: number;
 }
 
-const ATTENTION_JOB_STATUSES = new Set<ExecutionJob['status']>([
-  'orphaned',
-  'human_attention_required',
-  'stale',
-]);
+const ATTENTION_JOB_STATUSES = new Set<ExecutionJob['status']>(['orphaned', 'human_attention_required', 'stale']);
 
 const INCIDENT_JOB_STATUSES = new Set<ExecutionJob['status']>([
   'failed',
@@ -93,16 +89,16 @@ function jobDisposition(job: ExecutionJob, status: AttentionDispositionStatus): 
 }
 
 function handoffDisposition(item: HandoffItem): AttentionDisposition {
-  const status: AttentionDispositionStatus = item.status === 'pending'
-    ? 'pending'
-    : item.status === 'resolved'
-      ? 'resolved'
-      : item.status === 'dismissed' || isTerminalHandoffStatus(item.status)
-        ? 'dismissed'
-        : 'acknowledged';
+  const status: AttentionDispositionStatus =
+    item.status === 'pending'
+      ? 'pending'
+      : item.status === 'resolved'
+        ? 'resolved'
+        : item.status === 'dismissed' || isTerminalHandoffStatus(item.status)
+          ? 'dismissed'
+          : 'acknowledged';
   return {
     attentionId: item.id,
-    ...(item.currentState.workId ? { sourceJobId: item.currentState.workId } : {}),
     status,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
@@ -142,7 +138,6 @@ export function buildRuntimeOperationalView(input: RuntimeOperationalViewInput):
     .filter((item) => !isTerminalHandoffStatus(item.status))
     .map((item) => ({
       attentionId: item.id,
-      ...(item.currentState.workId ? { sourceJobId: item.currentState.workId } : {}),
       title: item.title,
       severity: handoffSeverity(item),
       summary: item.summary,
@@ -167,7 +162,6 @@ export function buildRuntimeOperationalView(input: RuntimeOperationalViewInput):
       .map((item) => ({
         incidentId: `handoff:${item.id}`,
         sourceHandoffId: item.id,
-        ...(item.currentState.workId ? { sourceJobId: item.currentState.workId } : {}),
         kind: 'handoff' as const,
         status: item.status,
         summary: item.summary,

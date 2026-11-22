@@ -1,17 +1,11 @@
 export type UserRequestKind = 'user_action_request' | 'user_decision_request';
 
-export type UserActionRequired =
-  | 'login'
-  | 'grant_permission'
-  | 'confirm_destructive'
-  | 'product_decision';
+export type UserActionRequired = 'login' | 'grant_permission' | 'confirm_destructive' | 'product_decision';
 
 export interface UserRequestTargetScope {
   scopeKind: string;
   scopeId: string;
   repoId?: string;
-  /** Legacy persisted provenance only; new UserRequest writers must not target Work. */
-  workId?: string;
   requirementId?: string;
 }
 

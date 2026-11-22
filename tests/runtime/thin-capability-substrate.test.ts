@@ -392,7 +392,7 @@ describe('Thin capability substrate', () => {
           scopeId: 'work-retired',
           repoId: 'repo-example',
           workId: 'work-retired',
-        },
+        } as never,
       }),
     ).toThrow('USER_REQUEST_WORK_SCOPE_RETIRED');
     expect(listUserRequests(controllerHome, 'all')).toHaveLength(0);

@@ -1211,7 +1211,6 @@ export async function callContextAdapter(
   const attention = isSummary
     ? currentAttentionItems.map((item) => ({
         id: item.id,
-        workId: item.workId,
         title: item.title.slice(0, 96),
         severity: item.severity,
         reason: item.reason.slice(0, 160),

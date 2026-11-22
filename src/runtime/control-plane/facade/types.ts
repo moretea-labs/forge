@@ -118,7 +118,6 @@ export interface HandoffCurrentState {
   repoId: string;
   issueId?: string;
   taskId?: string;
-  workId?: string;
   statusSummary: string;
   blockedBy?: string[];
   changedFiles?: string[];
@@ -139,7 +138,6 @@ export interface HandoffItem {
   schemaVersion: 1;
   id: string;
   repoId: string;
-  workId?: string;
   /** Canonical person-only blocker/decision authority when this legacy Handoff projects one. */
   canonicalUserRequestId?: string;
   issueId?: string;

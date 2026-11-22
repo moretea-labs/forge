@@ -48,7 +48,6 @@ export interface ResolveHandoffInput {
 export interface HandoffItemSummary {
   id: string;
   repoId: string;
-  workId?: string;
   title: string;
   severity: HandoffItem['severity'];
   status: HandoffStatus;
@@ -87,11 +86,7 @@ function usesCanonicalUserRequestStore(
   return Boolean(options.controllerHome && options.repoId && !options.root);
 }
 
-function withHandoffInboxWriteLock<T>(
-  options: HandoffInboxStoreOptions,
-  owner: string,
-  operation: () => T,
-): T {
+function withHandoffInboxWriteLock<T>(options: HandoffInboxStoreOptions, owner: string, operation: () => T): T {
   if (!options.controllerHome || !options.repoId || options.root) return operation();
   return withControllerLock(
     options.controllerHome,
@@ -119,7 +114,9 @@ export function handoffInboxPath(location: HandoffInboxStoreLocation): string {
   return join(handoffInboxRootPath(location), 'index.json');
 }
 
-function handoffMigrationMarkerPath(options: HandoffInboxStoreOptions & { controllerHome: string; repoId: string }): string {
+function handoffMigrationMarkerPath(
+  options: HandoffInboxStoreOptions & { controllerHome: string; repoId: string },
+): string {
   return join(
     options.controllerHome,
     'system',
@@ -133,8 +130,19 @@ export function emptyHandoffInboxStore(updatedAt: string): HandoffInboxStore {
   return { schemaVersion: 1, updatedAt, items: [] };
 }
 
+function scrubLegacyHandoffItem(item: HandoffItem & { workId?: unknown }): HandoffItem {
+  const { workId: _retiredWorkId, ...rest } = item;
+  const currentState = rest.currentState as HandoffItem['currentState'] & { workId?: unknown };
+  const { workId: _retiredStateWorkId, ...currentStateWithoutWork } = currentState;
+  return { ...rest, currentState: currentStateWithoutWork };
+}
+
 function readLegacyHandoffInboxStore(options: HandoffInboxStoreOptions): HandoffInboxStore {
-  return readJsonFile<HandoffInboxStore>(handoffInboxPath(options), emptyHandoffInboxStore(nowIso(options)));
+  const store = readJsonFile<HandoffInboxStore>(handoffInboxPath(options), emptyHandoffInboxStore(nowIso(options)));
+  return {
+    ...store,
+    items: store.items.map((item) => scrubLegacyHandoffItem(item as HandoffItem & { workId?: unknown })),
+  };
 }
 
 export function shouldCreateHandoff(reason: HandoffCreationReason | string | undefined): boolean {
@@ -142,7 +150,9 @@ export function shouldCreateHandoff(reason: HandoffCreationReason | string | und
   return HANDOFF_ELIGIBLE_REASONS.has(reason as HandoffCreationReason);
 }
 
-function userActionForHandoff(item: Pick<HandoffItem, 'creationReason'>): CreateUserRequestInput['actionRequired'] | undefined {
+function userActionForHandoff(
+  item: Pick<HandoffItem, 'creationReason'>,
+): CreateUserRequestInput['actionRequired'] | undefined {
   return item.creationReason === 'missing_authorization' || item.creationReason === 'policy_approval_required'
     ? 'grant_permission'
     : item.creationReason === 'destructive_action_requires_confirmation'
@@ -155,7 +165,7 @@ function userActionForHandoff(item: Pick<HandoffItem, 'creationReason'>): Create
 function canonicalUserRequestInput(item: HandoffItem): CreateUserRequestInput | undefined {
   const actionRequired = userActionForHandoff(item);
   if (!actionRequired) return undefined;
-  const rootCauseKey = ['user-request', item.repoId, item.workId ?? 'repo', item.creationReason ?? 'decision', item.reason].join(':');
+  const rootCauseKey = ['user-request', item.repoId, 'repo', item.creationReason ?? 'decision', item.reason].join(':');
   return {
     requestId: item.canonicalUserRequestId?.trim() || item.id,
     kind: actionRequired === 'product_decision' ? 'user_decision_request' : 'user_action_request',
@@ -163,8 +173,6 @@ function canonicalUserRequestInput(item: HandoffItem): CreateUserRequestInput | 
     title: item.title,
     summary: item.summary,
     actionRequired,
-    // Legacy Handoff workId remains history only. The migrated UserRequest
-    // is repository-scoped and can never reactivate a Work lifecycle.
     targetScope: {
       scopeKind: 'repository',
       scopeId: item.repoId,
@@ -198,21 +206,19 @@ function projectedStatus(request: UserRequest): HandoffStatus {
 
 function projectedCreationReason(value: string | undefined): HandoffCreationReason | undefined {
   return value && HANDOFF_ELIGIBLE_REASONS.has(value as HandoffCreationReason)
-    ? value as HandoffCreationReason
+    ? (value as HandoffCreationReason)
     : undefined;
 }
 
 function projectUserRequest(request: UserRequest, fallbackRepoId: string): HandoffItem {
   const presentation = request.presentation;
   const repoId = request.targetScope?.repoId ?? fallbackRepoId;
-  const workId = request.targetScope?.workId;
   const id = presentation?.legacyHandoffId?.trim() || request.requestId;
   const status = projectedStatus(request);
   return {
     schemaVersion: 1,
     id,
     repoId,
-    ...(workId ? { workId } : {}),
     canonicalUserRequestId: request.requestId,
     title: request.title,
     severity: presentation?.severity ?? 'needs_review',
@@ -222,7 +228,6 @@ function projectUserRequest(request: UserRequest, fallbackRepoId: string): Hando
     summary: request.summary,
     currentState: (presentation?.currentState ?? {
       repoId,
-      ...(workId ? { workId } : {}),
       statusSummary: status === 'pending' ? 'waiting for user action or decision' : 'user request resolved',
     }) as unknown as HandoffItem['currentState'],
     attemptedActions: presentation?.attemptedActions ?? [],
@@ -243,8 +248,9 @@ function projectUserRequest(request: UserRequest, fallbackRepoId: string): Hando
 function userRequestsForRepository(
   options: HandoffInboxStoreOptions & { controllerHome: string; repoId: string },
 ): UserRequest[] {
-  return listUserRequests(options.controllerHome, 'all')
-    .filter((request) => request.targetScope?.repoId === options.repoId);
+  return listUserRequests(options.controllerHome, 'all').filter(
+    (request) => request.targetScope?.repoId === options.repoId,
+  );
 }
 
 function requestForHandoffId(
@@ -252,10 +258,9 @@ function requestForHandoffId(
   id: string,
 ): UserRequest | undefined {
   const normalized = sanitizeFileComponent(id);
-  return userRequestsForRepository(options).find((request) => (
-    request.requestId === normalized
-    || request.presentation?.legacyHandoffId === normalized
-  ));
+  return userRequestsForRepository(options).find(
+    (request) => request.requestId === normalized || request.presentation?.legacyHandoffId === normalized,
+  );
 }
 
 /**
@@ -323,7 +328,10 @@ export function readHandoffInboxStore(options: HandoffInboxStoreOptions): Handof
   if (!usesCanonicalUserRequestStore(options)) return readLegacyHandoffInboxStore(options);
   if (!existsSync(handoffMigrationMarkerPath(options))) return readLegacyHandoffInboxStore(options);
   const items = userRequestsForRepository(options).map((request) => projectUserRequest(request, options.repoId));
-  const updatedAt = items.reduce((latest, item) => item.updatedAt > latest ? item.updatedAt : latest, nowIso(options));
+  const updatedAt = items.reduce(
+    (latest, item) => (item.updatedAt > latest ? item.updatedAt : latest),
+    nowIso(options),
+  );
   return { schemaVersion: 1, updatedAt, items };
 }
 
@@ -345,7 +353,9 @@ export function createHandoffItem(options: HandoffInboxStoreOptions, input: Crea
     updatedAt: input.updatedAt ?? at,
   };
   if (!usesCanonicalUserRequestStore(options)) {
-    throw new Error('HANDOFF_LEGACY_STORE_READ_ONLY: provide controllerHome + repoId so UserRequest owns the durable write');
+    throw new Error(
+      'HANDOFF_LEGACY_STORE_READ_ONLY: provide controllerHome + repoId so UserRequest owns the durable write',
+    );
   }
   migrateLegacyHandoffInbox(options);
   const requestInput = canonicalUserRequestInput(item);
@@ -384,7 +394,6 @@ export function summarizeHandoffItem(item: HandoffItem): HandoffItemSummary {
   return {
     id: item.id,
     repoId: item.repoId,
-    workId: item.workId,
     title: item.title,
     severity: item.severity,
     status: item.status,
@@ -422,13 +431,14 @@ function setHandoffStatus(
   const request = requestForHandoffId(options, sanitizedId);
   if (!request) throw new Error(`handoff not found: ${sanitizedId}`);
   if (status === 'acknowledged') return projectUserRequest(request, options.repoId);
-  const resolved = request.status === 'pending'
-    ? resolveUserRequest(options.controllerHome, {
-        requestId: request.requestId,
-        decision: patch.decision?.trim() || status,
-        resolvedBy: patch.resolver?.trim() || 'system',
-      })
-    : request;
+  const resolved =
+    request.status === 'pending'
+      ? resolveUserRequest(options.controllerHome, {
+          requestId: request.requestId,
+          decision: patch.decision?.trim() || status,
+          resolvedBy: patch.resolver?.trim() || 'system',
+        })
+      : request;
   return projectUserRequest(resolved, options.repoId);
 }
 
