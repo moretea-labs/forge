@@ -252,7 +252,7 @@ function inferredCheckSelection(name: string): ControllerCheckSelection {
   if (/(?:^|:)(?:check:)?release$|full[-:]?regression/.test(normalized)) {
     return { costClass: 'L4', riskFloor: 'high', phases: ['release'] };
   }
-  if (/(?:^|:)(?:check:)?main$|(?:^|:)ci(?::|$)/.test(normalized)) {
+  if (/(?:^|:)ci(?::|$)/.test(normalized)) {
     return { costClass: 'L4', riskFloor: 'medium', phases: ['pre_finalize'] };
   }
   if (/(?:^|:)(?:browser-live|performance|journey)(?::|$)/.test(normalized)) {
@@ -260,13 +260,6 @@ function inferredCheckSelection(name: string): ControllerCheckSelection {
   }
   if (/(?:^|:)(?:integration|build)(?::|$)/.test(normalized) || normalized === 'test') {
     return { costClass: 'L2', riskFloor: 'medium', phases: ['post_edit', 'pre_finalize'] };
-  }
-  if (
-    /(?:^|:)(?:architecture-sync|check-scheduling|context-files|bootstrap-files|background-check-overlap)$/.test(
-      normalized,
-    )
-  ) {
-    return { costClass: 'L0', riskFloor: 'low', phases: ['post_edit'] };
   }
   return { costClass: 'L1', riskFloor: 'low', phases: ['post_edit'] };
 }
@@ -320,15 +313,8 @@ function inferredPackageCheckEffects(name: string): ControllerCheckEffects | und
     return { reads: ['.'], hostServices: ['canonical-runtime', 'forge-recovery'] };
   }
   if (normalized === 'check:type') return { reads: ['.'] };
-  const cachedStaticAnalysis = /(?:^|:)(?:typecheck|lint|format:check|mcp-compatibility|forge-runtime)$/.test(
-    normalized,
-  );
+  const cachedStaticAnalysis = /(?:^|:)(?:typecheck|lint|format:check)$/.test(normalized);
   if (cachedStaticAnalysis) return { reads: ['.'], cache: 'write' };
-  const isolatedReadOnlyCheck =
-    /(?:^|:)(?:quality-harness|evaluation-framework|background-check-overlap|typescript-navigation|check-scheduling|bootstrap-files)$/.test(
-      normalized,
-    );
-  if (isolatedReadOnlyCheck) return { reads: ['.'], temp: 'isolated', git: 'read' };
   const browserLive = /(?:^|:)browser-live$/.test(normalized);
   if (browserLive) {
     return {

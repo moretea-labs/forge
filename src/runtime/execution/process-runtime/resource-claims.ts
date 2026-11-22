@@ -566,9 +566,7 @@ function claimTemp(
 function staticAnalysisCheckId(checkId: string): boolean {
   const normalized = checkId.trim().toLowerCase();
   if (!normalized.startsWith('package:')) return false;
-  return /(?:^|:)(?:type|typecheck|lint|format:check|mcp-compatibility|forge-runtime)$/.test(
-    normalized.slice('package:'.length),
-  );
+  return /(?:^|:)(?:type|typecheck|lint|format:check)$/.test(normalized.slice('package:'.length));
 }
 
 function claimsForDeclaredCheckEffects(

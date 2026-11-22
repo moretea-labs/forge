@@ -5,7 +5,10 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import type { ToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import { buildControllerContextPack } from '../../src/cli/controller/context-pack';
-import { controllerCheckSelection, listControllerChecks } from '../../src/runtime/execution/process-runtime/check-runner';
+import {
+  controllerCheckSelection,
+  listControllerChecks,
+} from '../../src/runtime/execution/process-runtime/check-runner';
 import {
   GOVERNANCE_EXCEPTIONS_PATH,
   GOVERNANCE_MAX_SOURCE_BYTES,
@@ -86,7 +89,10 @@ describe('repository governance resolution', () => {
     const root = repo('forge-governance-post-edit');
     mkdirSync(join(root, 'ios/Features/Profile'), { recursive: true });
     writeFileSync(join(root, 'ios/Features/Profile/ProfileView.swift'), 'struct ProfileView {}\n');
-    writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { 'check:notify-architecture': 'echo should-not-run-during-context' } }, null, 2));
+    writeFileSync(
+      join(root, 'package.json'),
+      JSON.stringify({ scripts: { 'check:notify-architecture': 'echo should-not-run-during-context' } }, null, 2),
+    );
     writeRules(root, [notificationRule()]);
 
     const before = buildControllerContextPack(root, POLICY, {
@@ -111,9 +117,18 @@ describe('repository governance resolution', () => {
       maxSnippets: 8,
     });
     expect(after.governanceContext.activeRules.map((rule) => rule.id)).toEqual(['IOS-NOTIFY-001']);
-    expect(after.governanceContext.activeRules[0]?.matchedSignals.some((signal) => signal.includes('symbol:UNUserNotificationCenter'))).toBe(true);
+    expect(
+      after.governanceContext.activeRules[0]?.matchedSignals.some((signal) =>
+        signal.includes('symbol:UNUserNotificationCenter'),
+      ),
+    ).toBe(true);
     expect(after.governanceContext.recommendedChecks).toEqual([
-      expect.objectContaining({ checkId: 'package:check:notify-architecture', available: true, costClass: 'L1', phases: ['post_edit'] }),
+      expect.objectContaining({
+        checkId: 'package:check:notify-architecture',
+        available: true,
+        costClass: 'L1',
+        phases: ['post_edit'],
+      }),
     ]);
     expect(after.validation.checks).toEqual([]);
   });
@@ -139,30 +154,34 @@ describe('repository governance resolution', () => {
       mkdirSync(join(root, path, '..'), { recursive: true });
       writeFileSync(join(root, path), 'UNUserNotificationCenter.current()\n');
     }
-    writeRules(root, [notificationRule()], [
-      {
-        id: 'EX-LEGACY',
-        ruleId: 'IOS-NOTIFY-001',
-        paths: ['ios/Legacy/**'],
-        reason: 'Legacy migration window',
-        owner: 'ios',
-        expiresAt: '2026-12-01T00:00:00.000Z',
-      },
-      {
-        id: 'EX-EXPIRED',
-        ruleId: 'IOS-NOTIFY-001',
-        paths: ['ios/Features/**'],
-        reason: 'Expired experiment',
-        expiresAt: '2026-01-01T00:00:00.000Z',
-      },
-      {
-        id: 'EX-INVALID-EXPIRY',
-        ruleId: 'IOS-NOTIFY-001',
-        paths: ['ios/Features/**'],
-        reason: 'Malformed expiry must fail safe',
-        expiresAt: 'not-a-date',
-      },
-    ]);
+    writeRules(
+      root,
+      [notificationRule()],
+      [
+        {
+          id: 'EX-LEGACY',
+          ruleId: 'IOS-NOTIFY-001',
+          paths: ['ios/Legacy/**'],
+          reason: 'Legacy migration window',
+          owner: 'ios',
+          expiresAt: '2026-12-01T00:00:00.000Z',
+        },
+        {
+          id: 'EX-EXPIRED',
+          ruleId: 'IOS-NOTIFY-001',
+          paths: ['ios/Features/**'],
+          reason: 'Expired experiment',
+          expiresAt: '2026-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'EX-INVALID-EXPIRY',
+          ruleId: 'IOS-NOTIFY-001',
+          paths: ['ios/Features/**'],
+          reason: 'Malformed expiry must fail safe',
+          expiresAt: 'not-a-date',
+        },
+      ],
+    );
     const result = resolveRepositoryGovernance(root, POLICY, {
       targetPaths: ['ios/Legacy/Legacy.swift', 'ios/Features/New/New.swift'],
       now: new Date('2026-08-26T00:00:00.000Z'),
@@ -179,14 +198,19 @@ describe('repository governance resolution', () => {
       now: new Date('2026-08-26T00:00:00.000Z'),
     });
     expect(legacyOnly.activeRules).toHaveLength(0);
-    expect(legacyOnly.suppressedRules).toEqual([expect.objectContaining({ id: 'IOS-NOTIFY-001', exceptionIds: ['EX-LEGACY'] })]);
+    expect(legacyOnly.suppressedRules).toEqual([
+      expect.objectContaining({ id: 'IOS-NOTIFY-001', exceptionIds: ['EX-LEGACY'] }),
+    ]);
   });
 
   test('reads only a bounded prefix of large source files and reports truncation instead of skipping the file', () => {
     const root = repo('forge-governance-large-source');
     const path = 'ios/Large.swift';
     mkdirSync(join(root, 'ios'), { recursive: true });
-    writeFileSync(join(root, path), `UNUserNotificationCenter.current()\n${'x'.repeat(GOVERNANCE_MAX_SOURCE_BYTES_PER_FILE + 4096)}`);
+    writeFileSync(
+      join(root, path),
+      `UNUserNotificationCenter.current()\n${'x'.repeat(GOVERNANCE_MAX_SOURCE_BYTES_PER_FILE + 4096)}`,
+    );
     writeRules(root, [notificationRule()]);
 
     const result = resolveRepositoryGovernance(root, POLICY, { targetPaths: [path] });
@@ -204,16 +228,18 @@ describe('repository governance resolution', () => {
       mkdirSync(join(root, 'src'), { recursive: true });
       writeFileSync(join(root, path), 'export const value = 1;\n'.repeat(300));
     }
-    writeRules(root, [{
-      id: 'SCAN-BOUND-001',
-      title: 'Bounded symbol scan',
-      level: 'kernel',
-      lifecycle: 'active',
-      severity: 'warning',
-      invariant: 'Governance source inspection remains bounded.',
-      activation: { symbols: ['NeverPresentGovernanceSymbol'] },
-      validation: { checkIds: [] },
-    }]);
+    writeRules(root, [
+      {
+        id: 'SCAN-BOUND-001',
+        title: 'Bounded symbol scan',
+        level: 'kernel',
+        lifecycle: 'active',
+        severity: 'warning',
+        invariant: 'Governance source inspection remains bounded.',
+        activation: { symbols: ['NeverPresentGovernanceSymbol'] },
+        validation: { checkIds: [] },
+      },
+    ]);
     const result = resolveRepositoryGovernance(root, POLICY, { targetPaths: paths });
     expect(result.metrics.filesScanned).toBeLessThanOrEqual(GOVERNANCE_MAX_SOURCE_FILES);
     expect(result.metrics.bytesScanned).toBeLessThanOrEqual(GOVERNANCE_MAX_SOURCE_BYTES);
@@ -222,12 +248,19 @@ describe('repository governance resolution', () => {
 
   test('check registry exposes selection cost/risk/phase metadata without changing command execution semantics', () => {
     const root = repo('forge-governance-check-meta');
-    writeFileSync(join(root, 'package.json'), JSON.stringify({
-      scripts: {
-        'check:architecture-sync': 'echo architecture',
-        'check:release': 'echo release',
-      },
-    }, null, 2));
+    writeFileSync(
+      join(root, 'package.json'),
+      JSON.stringify(
+        {
+          scripts: {
+            'check:architecture-sync': 'echo architecture',
+            'check:release': 'echo release',
+          },
+        },
+        null,
+        2,
+      ),
+    );
     mkdirSync(join(root, '.forge'), { recursive: true });
     writeJson(root, '.forge/checks.json', {
       version: 1,
@@ -240,13 +273,19 @@ describe('repository governance resolution', () => {
     });
     const checks = listControllerChecks(root);
     expect(controllerCheckSelection(checks.find((check) => check.id === 'package:check:architecture-sync')!)).toEqual({
-      costClass: 'L0', riskFloor: 'low', phases: ['post_edit'],
+      costClass: 'L1',
+      riskFloor: 'low',
+      phases: ['post_edit'],
     });
     expect(controllerCheckSelection(checks.find((check) => check.id === 'package:check:release')!)).toEqual({
-      costClass: 'L4', riskFloor: 'high', phases: ['release'],
+      costClass: 'L4',
+      riskFloor: 'high',
+      phases: ['release'],
     });
     expect(controllerCheckSelection(checks.find((check) => check.id === 'custom:integration')!)).toEqual({
-      costClass: 'L2', riskFloor: 'medium', phases: ['post_edit', 'pre_finalize'],
+      costClass: 'L2',
+      riskFloor: 'medium',
+      phases: ['post_edit', 'pre_finalize'],
     });
   });
 });

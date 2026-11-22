@@ -451,10 +451,7 @@ describe('controller check provenance and failure classification', () => {
     expect(checks.find((entry) => entry.id === 'package:check:type')?.effects).toEqual({ reads: ['.'] });
     expect(checks.find((entry) => entry.id === 'package:check:runtime-architecture')?.effects).toBeUndefined();
     expect(checks.find((entry) => entry.id === 'package:check:architecture-sync')?.effects).toBeUndefined();
-    expect(checks.find((entry) => entry.id === 'package:check:mcp-compatibility')?.effects).toEqual({
-      reads: ['.'],
-      cache: 'write',
-    });
+    expect(checks.find((entry) => entry.id === 'package:check:mcp-compatibility')?.effects).toBeUndefined();
     expect(checks.find((entry) => entry.id === 'package:test:browser-live')?.effects).toEqual({
       reads: ['.'],
       temp: 'isolated',
