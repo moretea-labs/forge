@@ -68,7 +68,7 @@ export function resolveCognitiveAttention(input: {
     transientMemories: input.transientMemories ?? [],
     usageFeedback: input.usageFeedback ?? [],
     // Scope is a relevance prior only. Every reachable scope contributes candidates.
-    scopePriors: { work: 0.12, requirement: 0.1, plan_step: 0.08, plan: 0.07, project: 0.05, workspace: 0 },
+    scopePriors: { requirement: 0.1, plan_step: 0.08, plan: 0.07, project: 0.05, workspace: 0 },
   });
 }
 

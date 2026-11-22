@@ -119,13 +119,13 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
       knowledge_query: {
         type: 'string',
         description:
-          'Optional explicit read-only Cognitive audit query. Ordinary code/capability intent queries already receive a bounded relevant-learning recall; use this field for deliberate memory inspection. May be used without code query. Use "*" or omit text with filters to list learned advisory memory in scopes reachable from this repo/Work.',
+          'Optional explicit read-only Cognitive audit query. Ordinary code/capability intent queries already receive a bounded relevant-learning recall; use this field for deliberate memory inspection. May be used without code query. Use "*" or omit text with filters to list learned advisory memory in scopes reachable from this repo.',
       },
       knowledge_memory_id: { type: 'string', description: 'Optional exact Cognitive memory id for inspection.' },
       knowledge_scope_kind: {
         type: 'string',
-        enum: ['work', 'requirement', 'plan', 'plan_step', 'project', 'workspace'],
-        description: 'Optional Cognitive scope filter; it must already be reachable from the selected repo/Work.',
+        enum: ['requirement', 'plan', 'plan_step', 'project', 'workspace'],
+        description: 'Optional Cognitive scope filter; it must already be reachable from the selected repo.',
       },
       knowledge_scope_id: {
         type: 'string',

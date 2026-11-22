@@ -114,7 +114,7 @@ const IDENTIFIER = /^[a-z0-9][a-z0-9._:/-]{0,255}$/i;
 const FACET = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
 const RELATION = /^[a-z0-9][a-z0-9._:-]{0,95}$/i;
 const DIGEST = /^[a-f0-9]{64}$/;
-const VALID_SCOPE_KINDS: readonly ScopeRef['kind'][] = ['workspace', 'project', 'requirement', 'plan', 'plan_step', 'work'];
+const VALID_SCOPE_KINDS: readonly ScopeRef['kind'][] = ['workspace', 'project', 'requirement', 'plan', 'plan_step'];
 
 function requireText(value: string, label: string, max: number): void {
   if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`COGNITION_${label}_INVALID`);

@@ -71,7 +71,6 @@ const SCOPE_RANK: Record<ContextScope['kind'], number> = {
   requirement: 30,
   plan: 40,
   plan_step: 45,
-  work: 50,
 };
 
 function contextScopeKey(scope: ContextScope): string {

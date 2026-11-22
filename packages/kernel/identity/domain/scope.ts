@@ -1,5 +1,5 @@
 /** Portable semantic scope. It must never encode a local checkout or filesystem path. */
-export type ScopeKind = 'workspace' | 'project' | 'requirement' | 'plan' | 'plan_step' | 'work';
+export type ScopeKind = 'workspace' | 'project' | 'requirement' | 'plan' | 'plan_step';
 
 export interface ScopeRef {
   schemaVersion: 1;

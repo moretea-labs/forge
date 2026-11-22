@@ -38,7 +38,7 @@ export function requireExperienceText(value: string, label: string, max = 256): 
 }
 
 export function validateExperienceScope(scope: ScopeRef): void {
-  if (scope.schemaVersion !== 1 || !['workspace', 'project', 'requirement', 'plan', 'plan_step', 'work'].includes(scope.kind)) throw new Error('EXPERIENCE_SCOPE_INVALID');
+  if (scope.schemaVersion !== 1 || !['workspace', 'project', 'requirement', 'plan', 'plan_step'].includes(scope.kind)) throw new Error('EXPERIENCE_SCOPE_INVALID');
   requireExperienceText(scope.id, 'SCOPE', 512);
 }
 

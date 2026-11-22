@@ -33,7 +33,7 @@ export function canonicalGrantStorePath(controllerHome: string): string {
 }
 
 const GRANT_RISKS = new Set(['readonly', 'workspace_write', 'remote_write', 'destructive']);
-const SCOPE_KINDS = new Set(['workspace', 'project', 'requirement', 'plan', 'plan_step', 'work']);
+const SCOPE_KINDS = new Set(['workspace', 'project', 'requirement', 'plan', 'plan_step']);
 
 function validateGrantTarget(value: unknown, label: string): GrantTarget | undefined {
   if (value === undefined) return undefined;

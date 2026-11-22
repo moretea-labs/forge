@@ -521,8 +521,8 @@ describe('connected assistant learning loops', () => {
         cognition_settlement: {
           learning_signals: [
             {
-              scope_kind: 'work',
-              kind: 'invalid-without-work',
+              scope_kind: 'unknown_scope',
+              kind: 'invalid-scope',
               valence: 'neutral',
               summary: 'This intentionally unreachable scope exercises non-blocking settlement failure.',
               concepts: ['settlement.failure'],
