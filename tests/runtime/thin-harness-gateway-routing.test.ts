@@ -72,7 +72,6 @@ import {
   reconcilePendingEditValidations,
   startOrJoinEditValidation,
 } from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
-import { getWorkContract } from '../../packages/kernel/work/api';
 import { snapshotControllerCheck } from '../../src/runtime/execution/process-runtime/check-runner';
 import { principalFor } from '../../src/runtime/control-plane/execution/session-execution-support';
 import {

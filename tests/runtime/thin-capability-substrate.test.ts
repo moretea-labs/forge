@@ -29,7 +29,6 @@ import {
   getScheduleDefinition,
   getScheduleRuntimeState,
 } from '../../packages/kernel/scheduler/api/index';
-import { getWorkContract, isCurrentWorkContract, workSemanticView } from '../../packages/kernel/work/api/index';
 import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 const roots: string[] = [];
 afterEach(() => {});

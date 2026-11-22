@@ -16,7 +16,6 @@ import {
   waitForProcess,
 } from '../../src/runtime/execution/process-runtime';
 import { withControllerLockAsync } from '../../src/effects/controller-locks';
-import { getWorkContract } from '../../packages/kernel/work/api';
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
 import { executeAssistantPluginActionApplication } from '../../src/runtime/plugins/action-application';
 import {

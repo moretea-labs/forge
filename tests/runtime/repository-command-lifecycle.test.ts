@@ -39,7 +39,6 @@ import { acquireControllerLock, releaseControllerLock } from '../../src/effects/
 import { persistControllerAccessMode } from '../../adapters/mcp/access-mode';
 import { classifyRepositoryCommand } from '../../src/cli/repositories/command-classifier';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
-import { getWorkContract } from '../../packages/kernel/work/api';
 import {
   classifyRepositoryCommandRoute,
   executeRepositoryCommandViaProcessRuntime,

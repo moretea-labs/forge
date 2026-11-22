@@ -546,11 +546,6 @@ forbid(
   /planContractRoot|planContractStorePath|planRevisionStorePath|planSemanticRevisionStorePath|appendJsonPlanRevisionRecord|appendJsonPlanSemanticRevisionRecord|plan_contract_legacy_import|readJsonFile|writeJsonAtomic/,
   'Plan contract and revision persistence must use Controller Home SQLite only',
 );
-forbid(
-  'packages/kernel/work/infrastructure/work-contract-store.ts',
-  /workContractRoot|workContractStorePath|workSemanticRevisionStorePath|readWorkSemanticRevisionStore|readLegacyWorkContractStore|work_contract_legacy_import|sqliteBacked/,
-  'Work contract and semantic revision persistence must use Controller Home SQLite only',
-);
 
 // #197 MCP mega-adapter decomposition. These are debt ledgers, not target
 // architecture: entries may only disappear. New domain-authority imports or
@@ -987,9 +982,6 @@ const required = [
   'packages/kernel/work/domain/execution-snapshot.ts',
   'packages/kernel/work/domain/repository-completion-receipt.ts',
   'packages/kernel/work/domain/types.ts',
-  'packages/kernel/work/application/work-service.ts',
-  'packages/kernel/work/ports/work-contract-store.ts',
-  'packages/kernel/work/infrastructure/work-contract-store.ts',
   'packages/kernel/work/api/index.ts',
   'packages/kernel/controller/domain/types.ts',
   'packages/kernel/controller/api/index.ts',
@@ -1206,7 +1198,11 @@ requireText(
   'packages/kernel/work/domain/types.ts',
   'export type SemanticWorkState = (typeof SEMANTIC_WORK_STATES)[number];',
 );
-requireText('packages/kernel/work/api/index.ts', "export * from '../application/work-service'");
+forbid(
+  'packages/kernel/work/api/index.ts',
+  /application\/work-service/,
+  'retired WorkContract service cannot remain publicly exported',
+);
 requireText('src/runtime/repositories/selected-path-actions.ts', 'beforeCommitGuard');
 requireMissing('src/runtime/control-plane/execution/direct-edit-work-completion.ts');
 requireMissing('src/runtime/control-plane/execution/content-equivalent-commit-authority.ts');
@@ -1238,15 +1234,13 @@ forbid(
   'retired Work concurrency admission projection must not be part of active domain types',
 );
 requireMissing('src/runtime/control-plane/execution/work-handle-store.ts');
+requireMissing('packages/kernel/work/application/work-service.ts');
+requireMissing('packages/kernel/work/ports/work-contract-store.ts');
+requireMissing('packages/kernel/work/infrastructure/work-contract-store.ts');
 forbid(
   'src/runtime/root/controller-services.ts',
   /initializeWorkCandidateIndex|readActiveWorkCandidates/,
   'Runtime startup must not initialize legacy Work active-admission indexes',
-);
-forbid(
-  'packages/kernel/work/infrastructure/work-contract-store.ts',
-  /\b(?:initializeWorkCandidateIndex|readActiveWorkCandidates)\b/,
-  'historical Work storage must not rebuild an active Work admission projection',
 );
 requireText('AGENTS.md', '**Work lifecycle is retired (no opt-in).**');
 forbid(
@@ -2719,9 +2713,6 @@ const b7KernelLegacyEdges = edgeSet(b7ProductionGraph, (edge) => {
   return from.startsWith('packages/kernel/') && to.startsWith('src/');
 });
 const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
-  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/effects/controller-home.ts',
-  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/shared/json-files.ts',
-  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/effects/controller-home.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/effects/controller-locks.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/control-plane/facade/handoff-inbox-store.ts',
@@ -2927,19 +2918,6 @@ forbid(
   /writeControllerResult\([\s\S]{0,500}\bworkId\??:|readControllerResult\([\s\S]{0,500}\bworkId\??:|searchControllerResult\([\s\S]{0,500}\bworkId\??:/,
   'current Result Store API must remain session/principal scoped, not Work-scoped',
 );
-const retiredWorkBusinessWriter =
-  /\b(?:writeWorkContractStore|createWorkSemanticContext|createWorkContract|acceptSubmittedWorkContract|supersedeWorkContract|reviseWorkSemanticContext|updateWorkContract|updateWorkContractPlacementAtomically|updateWorkContractPlacement|promoteWorkToRepositoryChange|recordWorkEvidenceState|activateWorkContract|failWorkContract|cancelWorkContract|recordCancelledWorkCleanupCompleted|recordWorkScopeEvidence|transitionWorkContractPhase|recordWorkImplementationReview|appendWorkEvidence|appendWorkHandoffRef|appendVerificationRecord|recordWorkCompletionReceipt)\b/;
-for (const path of [
-  'packages/kernel/work/infrastructure/work-contract-store.ts',
-  'packages/kernel/work/application/work-service.ts',
-]) {
-  forbid(path, retiredWorkBusinessWriter, 'historical Work storage/API must remain read-only');
-}
-forbid(
-  'packages/kernel/work/infrastructure/work-contract-store.ts',
-  /writeControlPlaneRecord(?:WithinTransaction)?|mutateControlPlaneRecord|withControlPlaneTransaction/,
-  'historical Work rows must not have a production writer',
-);
 // Controller de-authority: ordinary Work/capability execution is fenced by
 // semantic CAS plus concrete target/resource/effect owners, never by a
 // Work-wide ControllerSession lease. Explicit autonomous-continuation round
@@ -3008,11 +2986,6 @@ forbid(
   'adapters/mcp/runtime-gateway/work-adapter.ts',
   /case ['\"](?:start|revise|complete)['\"]|createWorkContract|reviseWorkSemanticContext|updateWorkContract|cancelWorkContract/,
   'rh_work adapter must not expose retired Work lifecycle writers',
-);
-forbid(
-  'packages/kernel/work/application/work-service.ts',
-  /export\s*\{[\s\S]{0,400}\b(?:createWorkContract|reviseWorkSemanticContext|updateWorkContract|cancelWorkContract|recordWorkCompletionReceipt)\b/,
-  'public Work service must expose historical reads only',
 );
 for (const path of sourceFiles('src')) {
   forbid(

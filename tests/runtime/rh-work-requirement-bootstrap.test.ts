@@ -12,7 +12,6 @@ import {
   registerRepository,
   resolveRepositorySelection,
 } from '../../src/runtime/repositories/registry';
-import { getWorkContract } from '../../packages/kernel/work/api';
 import { createPlanSemanticContext, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import {
   createRequirement,
@@ -30,7 +29,7 @@ import {
 } from '../../src/runtime/control-plane/workspace/workspace-store';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
-import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
+import { readHistoricalWorkContract, seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const roots: string[] = [];
 
@@ -1620,7 +1619,7 @@ describe('rh_work Requirement bootstrap', () => {
       dispatchState: 'running',
     });
 
-    const workBeforeRepair = getWorkContract(store, 'work-active-scope');
+    const workBeforeRepair = readHistoricalWorkContract(store, 'work-active-scope');
 
     // Plan-scoped repair is a read-only fact now: it neither replans the Plan nor
     // rewrites the Work, and it never decides replacement admission.
@@ -1652,9 +1651,9 @@ describe('rh_work Requirement bootstrap', () => {
     expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R2')).toBeUndefined();
     // Compare the canonical aggregate: retired top-level allowedPaths are not
     // a scope authority. The entire Work must remain unchanged by Plan repair.
-    expect(getWorkContract(store, 'work-active-scope')).toEqual(workBeforeRepair);
+    expect(readHistoricalWorkContract(store, 'work-active-scope')).toEqual(workBeforeRepair);
 
-    expect(getWorkContract(store, 'work-active-scope')?.planSourceRevision).toBe(sourceRevision);
+    expect(readHistoricalWorkContract(store, 'work-active-scope')?.planSourceRevision).toBe(sourceRevision);
   }, 15_000);
 
   test('repairs a malformed draft Plan in place through rh_work without creating a second authority', async () => {

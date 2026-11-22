@@ -1,14 +1,29 @@
-import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import {
+  readControlPlaneRecord,
+  writeControlPlaneRecord,
+} from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { validateWorkSemantics } from '../../packages/kernel/work/domain/state-machine';
-import { WORK_PHASES, type WorkContract, type WorkPhase, type WorkPhaseEvidenceMap } from '../../packages/kernel/work/domain/types';
-import type { WorkContractStoreOptions } from '../../packages/kernel/work/ports/work-contract-store';
+import {
+  WORK_PHASES,
+  type WorkContract,
+  type WorkPhase,
+  type WorkPhaseEvidenceMap,
+} from '../../packages/kernel/work/domain/types';
+/** Test-only records. No production WorkContract store/API remains. */
+export interface HistoricalWorkStoreOptions {
+  controllerHome: string;
+  repoId?: string;
+  scopeKey?: string;
+  now?: () => string;
+}
 
-export type HistoricalWorkInput = Partial<WorkContract> & Pick<WorkContract, 'workId' | 'repoId' | 'objective'> & {
-  allowedPaths?: string[];
-  forbiddenPaths?: string[];
-};
+export type HistoricalWorkInput = Partial<WorkContract> &
+  Pick<WorkContract, 'workId' | 'repoId' | 'objective'> & {
+    allowedPaths?: string[];
+    forbiddenPaths?: string[];
+  };
 
-function scope(options: WorkContractStoreOptions): string {
+function scope(options: HistoricalWorkStoreOptions): string {
   const value = options.scopeKey?.trim() || options.repoId?.trim() || '';
   if (!value) throw new Error('TEST_HISTORICAL_WORK_SCOPE_REQUIRED');
   return value;
@@ -16,20 +31,23 @@ function scope(options: WorkContractStoreOptions): string {
 
 function phaseEvidence(phase: WorkPhase, at: string, refs: WorkContract['evidenceRefs']): WorkPhaseEvidenceMap {
   const current = WORK_PHASES.indexOf(phase);
-  return Object.fromEntries(WORK_PHASES.map((candidate, index) => [
-    candidate,
-    {
-      state: index < current ? 'satisfied' : index === current ? 'active' : 'pending',
-      source: 'recorded',
-      summary: index < current
-        ? `Historical fixture advanced past ${candidate}.`
-        : index === current
-          ? `Historical fixture recorded in ${candidate}.`
-          : `Historical fixture waiting for ${candidate}.`,
-      evidenceRefs: index <= current ? refs.slice(0, 20) : [],
-      recordedAt: at,
-    },
-  ])) as WorkPhaseEvidenceMap;
+  return Object.fromEntries(
+    WORK_PHASES.map((candidate, index) => [
+      candidate,
+      {
+        state: index < current ? 'satisfied' : index === current ? 'active' : 'pending',
+        source: 'recorded',
+        summary:
+          index < current
+            ? `Historical fixture advanced past ${candidate}.`
+            : index === current
+              ? `Historical fixture recorded in ${candidate}.`
+              : `Historical fixture waiting for ${candidate}.`,
+        evidenceRefs: index <= current ? refs.slice(0, 20) : [],
+        recordedAt: at,
+      },
+    ]),
+  ) as WorkPhaseEvidenceMap;
 }
 
 function historicalContract(input: HistoricalWorkInput, at: string): WorkContract {
@@ -100,9 +118,17 @@ function historicalContract(input: HistoricalWorkInput, at: string): WorkContrac
   return validateWorkSemantics(value);
 }
 
+/** Test-only physical read, not a runtime admission or Work API. */
+export function readHistoricalWorkContract(
+  options: HistoricalWorkStoreOptions,
+  workId: string,
+): WorkContract | undefined {
+  return readControlPlaneRecord<WorkContract>(options.controllerHome, 'work_contract', scope(options), workId)?.value;
+}
+
 /** Test fixture only: inserts one immutable historical Work row. */
 export function seedHistoricalWorkContract(
-  options: WorkContractStoreOptions,
+  options: HistoricalWorkStoreOptions,
   input: HistoricalWorkInput,
 ): WorkContract {
   const at = input.createdAt ?? input.updatedAt ?? options.now?.() ?? new Date().toISOString();
@@ -121,7 +147,7 @@ export function seedHistoricalWorkContract(
 
 /** Test fixture only: replaces an existing historical Work row by exact SQLite revision. */
 export function replaceHistoricalWorkContract(
-  options: WorkContractStoreOptions,
+  options: HistoricalWorkStoreOptions,
   input: Partial<WorkContract> & Pick<WorkContract, 'workId'>,
 ): WorkContract {
   const record = readControlPlaneRecord<WorkContract>(

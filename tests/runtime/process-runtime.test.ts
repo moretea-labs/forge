@@ -4179,13 +4179,10 @@ describe('Process Runtime real lease contention', () => {
       },
     });
     expect(sameWorkDenied.stdout).not.toContain('must-not-run');
-    const { getWorkContract } = await import('../../packages/kernel/work/api');
+    // Process leases cannot materialize the deleted WorkContract authority.
     expect(
-      Object.hasOwn(
-        getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, 'work-lease-a') ?? {},
-        'executionConcurrency',
-      ),
-    ).toBe(false);
+      readControlPlaneRecord(fx.controllerHome, 'work_contract', fx.repository.repoId, 'work-lease-a'),
+    ).toBeUndefined();
 
     // Parallel reads against a different resource key (or after release) — hold write finished.
     await waitForProcess(fx.controllerHome, fx.repository.repoId, first.processId, { timeoutMs: 10_000 });
