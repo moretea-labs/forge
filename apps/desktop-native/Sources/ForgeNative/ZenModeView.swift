@@ -521,7 +521,10 @@ struct ZenWorkspacePane: View {
 
     var body: some View {
         VStack(spacing:0) {
-            HStack(spacing:10) {
+            if showingProjectDirectory {
+                projectDirectoryPane
+            } else {
+                HStack(spacing:10) {
                 if screen == .canvas {
                     Button {
                         if let returnContext=model.restoreProjectDetailSource() {
@@ -647,6 +650,7 @@ struct ZenWorkspacePane: View {
                 }
             }
             .transition(reduceMotion ? .identity : .opacity)
+            }
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
         .background(Color(nsColor:.textBackgroundColor))
@@ -681,33 +685,6 @@ struct ZenWorkspacePane: View {
             Text(proposalProblem)
         }
         .sheet(isPresented:$showingRequirementSheet) { createRequirementSheet }
-        .sheet(isPresented:$showingProjectDirectory) {
-            ZenProjectDirectorySheet(
-                model:model,
-                initialDetailProjectId:projectDirectoryRestoreContext?.projectId,
-                restoreRepositoryId:projectDirectoryRestoreContext?.repositoryId,
-                restoreRequirementId:projectDirectoryRestoreContext?.requirementId,
-                onOpenTasks:{ projectId,repositoryId in
-                    projectDirectoryRestoreContext=nil
-                    showingProjectDirectory=false
-                    Task {
-                        await model.openProjectTasks(projectId:projectId,repositoryId:repositoryId)
-                    }
-                },
-                onOpenRequirement:{ projectId,repositoryId,requirementId in
-                    let failure=await model.openProjectRequirement(
-                        projectId:projectId,repositoryId:repositoryId,
-                        requirementId:requirementId,preserveSource:true
-                    )
-                    guard failure == nil else { return failure }
-                    projectDirectoryRestoreContext=nil
-                    showingProjectDirectory=false
-                    focusedRequirementId=requirementId
-                    navigate(.canvas)
-                    return nil
-                }
-            )
-        }
         .sheet(isPresented:$showingPlanSheet) { createPlanSheet }
         .sheet(item:$editingRecord) { item in editSheet(for:item) }
         .sheet(item:$pendingAcceptanceRecord) { item in acceptanceSheet(item) }
@@ -751,6 +728,40 @@ struct ZenWorkspacePane: View {
                 await model.refreshPlanningAutopilotStatuses()
             }
         }
+    }
+
+    // Project browsing is a workbench surface, not a transient modal.
+    private var projectDirectoryPane: some View {
+
+            ZenProjectDirectorySheet(
+                model:model,
+                onClose:{
+                    showingProjectDirectory=false
+                    projectDirectoryRestoreContext=nil
+                },
+                initialDetailProjectId:projectDirectoryRestoreContext?.projectId,
+                restoreRepositoryId:projectDirectoryRestoreContext?.repositoryId,
+                restoreRequirementId:projectDirectoryRestoreContext?.requirementId,
+                onOpenTasks:{ projectId,repositoryId in
+                    projectDirectoryRestoreContext=nil
+                    showingProjectDirectory=false
+                    Task {
+                        await model.openProjectTasks(projectId:projectId,repositoryId:repositoryId)
+                    }
+                },
+                onOpenRequirement:{ projectId,repositoryId,requirementId in
+                    let failure=await model.openProjectRequirement(
+                        projectId:projectId,repositoryId:repositoryId,
+                        requirementId:requirementId,preserveSource:true
+                    )
+                    guard failure == nil else { return failure }
+                    projectDirectoryRestoreContext=nil
+                    showingProjectDirectory=false
+                    focusedRequirementId=requirementId
+                    navigate(.canvas)
+                    return nil
+                }
+            )
     }
 
     private func selectDefaultRequirementIfNeeded(_ next:ZenScreen) {
@@ -2829,7 +2840,8 @@ private struct ZenReviewSheet: View {
 }
 
 struct ZenProjectDirectorySheet: View {
-    @Environment(\.dismiss) private var dismiss
+    // Parent workbench owns close and preserved navigation.
+    let onClose: () -> Void
     @ObservedObject var model: NativeWorkspace
     let onOpenTasks: (String,String?) -> Void
     let onOpenRequirement: (String,String?,String) async -> String?
@@ -2846,6 +2858,7 @@ struct ZenProjectDirectorySheet: View {
 
     init(
         model:NativeWorkspace,
+        onClose:@escaping () -> Void = {},
         initialDetailProjectId:String? = nil,
         restoreRepositoryId:String? = nil,
         restoreRequirementId:String? = nil,
@@ -2853,6 +2866,7 @@ struct ZenProjectDirectorySheet: View {
         onOpenRequirement:@escaping (String,String?,String) async -> String?
     ) {
         self.model=model
+        self.onClose=onClose
         self.onOpenTasks=onOpenTasks
         self.onOpenRequirement=onOpenRequirement
         _detailProjectId=State(initialValue:initialDetailProjectId)
@@ -2884,26 +2898,58 @@ struct ZenProjectDirectorySheet: View {
     }
 
     var body: some View {
-        Group {
-            if let detailProjectId {
-                ZenProjectDetailPane(
-                    model:model,projectId:detailProjectId,
-                    restoreRepositoryId:restoreRepositoryId,
-                    restoreRequirementId:restoreRequirementId,
-                    onOpenTasks:onOpenTasks,onOpenRequirement:onOpenRequirement
-                ) {
-                    self.detailProjectId=nil
-                    self.restoreRepositoryId=nil
-                    self.restoreRequirementId=nil
+        GeometryReader { geometry in
+            if geometry.size.width >= 920 {
+                HStack(spacing:0) {
+                    projectDirectory
+                        .frame(width:min(370,max(320,geometry.size.width * 0.32)))
+                        .frame(maxHeight:.infinity)
+                        .background(.regularMaterial)
+                        .accessibilityIdentifier("zen.projects.navigator")
+                    projectDetailOrEmpty
+                        .frame(maxWidth:.infinity,maxHeight:.infinity)
+                        .accessibilityIdentifier("zen.projects.preview")
                 }
-                .id(detailProjectId)
+                .accessibilityIdentifier("zen.projects.split")
             } else {
-                projectDirectory
+                if detailProjectId != nil {
+                    projectDetailOrEmpty
+                } else {
+                    projectDirectory
+                }
             }
         }
-        .frame(minWidth:540,minHeight:470)
+        .frame(maxWidth:.infinity,maxHeight:.infinity)
         .task { await model.refreshSemanticProjects() }
         .accessibilityIdentifier("zen.projects.directory")
+    }
+
+    @ViewBuilder
+    private var projectDetailOrEmpty: some View {
+        if let detailProjectId {
+            ZenProjectDetailPane(
+                model:model,projectId:detailProjectId,
+                restoreRepositoryId:restoreRepositoryId,
+                restoreRequirementId:restoreRequirementId,
+                onOpenTasks:onOpenTasks,onOpenRequirement:onOpenRequirement
+            ) {
+                self.detailProjectId=nil
+                self.restoreRepositoryId=nil
+                self.restoreRequirementId=nil
+            }
+            .id(detailProjectId)
+        } else {
+            VStack(spacing:10) {
+                Image(systemName:"sidebar.left")
+                    .font(.system(size:24,weight:.light))
+                    .foregroundStyle(.tertiary)
+                Text("选择项目查看任务与详情")
+                    .font(.system(size:13))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth:.infinity,maxHeight:.infinity)
+            .accessibilityIdentifier("zen.projects.preview.empty")
+        }
     }
 
     private var projectDirectory: some View {
@@ -2924,7 +2970,7 @@ struct ZenProjectDirectorySheet: View {
                 .help("刷新项目")
                 .accessibilityLabel("刷新项目")
                 .accessibilityIdentifier("zen.projects.refresh")
-                Button("完成") { dismiss() }
+                Button("完成") { onClose() }
                     .buttonStyle(.plain)
                     .keyboardShortcut(.cancelAction)
             }
@@ -3045,7 +3091,7 @@ struct ZenProjectDirectorySheet: View {
                         VStack(alignment:.leading,spacing:3) {
                             Button(project.displayName) {
                                 Task { await model.selectSemanticProject(project.projectId) }
-                                dismiss()
+                                onClose()
                             }
                             .buttonStyle(.plain)
                             .font(.system(size:13,weight:.medium))
@@ -3070,6 +3116,21 @@ struct ZenProjectDirectorySheet: View {
                             .font(.system(size:11)).foregroundStyle(.secondary)
                         }
                         Spacer(minLength:0)
+                        Button {
+                            detailProjectId=project.projectId
+                            restoreRepositoryId=nil
+                            restoreRequirementId=nil
+                        } label: {
+                            Image(systemName:"chevron.right")
+                                .font(.system(size:10,weight:.semibold))
+                                .foregroundStyle(detailProjectId == project.projectId ? Color.primary : Color.secondary)
+                                .frame(width:28,height:28)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("查看项目详情")
+                        .accessibilityLabel("查看 \(project.displayName) 的详情")
+                        .accessibilityIdentifier("zen.projects.preview.open.\(project.projectId)")
                         Menu {
                             Button {
                                 detailProjectId=project.projectId
@@ -3087,7 +3148,7 @@ struct ZenProjectDirectorySheet: View {
                                 Menu {
                                     Button {
                                         Task { await model.selectSemanticProject(project.projectId,projectScope:true) }
-                                        dismiss()
+                                        onClose()
                                     } label: {
                                         Label("项目级",systemImage:isSelected && model.projectRepositoryId == nil
                                               ? "checkmark.circle.fill" : "folder")
@@ -3100,7 +3161,7 @@ struct ZenProjectDirectorySheet: View {
                                                 await model.selectSemanticProject(
                                                     project.projectId,repositoryId:repositoryId)
                                             }
-                                            dismiss()
+                                            onClose()
                                         } label: {
                                             let label=model.projects.first(where:{$0.repoId == repositoryId})?.label
                                                 ?? repositoryId
