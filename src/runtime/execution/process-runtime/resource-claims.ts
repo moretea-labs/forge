@@ -799,6 +799,34 @@ function exactLeasedRemoteReviewBranchDeletion(
 }
 
 /**
+ * Cargo check/test observes source and writes Cargo build outputs, not a
+ * checkout-wide source file. A previous generic build fallback gave these
+ * commands a workspace write lease and blocked unrelated Agents (#713).
+ *
+ * Only a single, direct Cargo invocation qualifies. Shell composition,
+ * redirections, interpolation, cargo build/fix and unknown commands keep their
+ * existing conservative claims rather than silently claiming to be readonly.
+ */
+function isCargoSourceValidationCommand(command: string | readonly string[]): boolean {
+  const canonical = normalizeRepositoryCommand(command);
+  const shell =
+    canonical.kind === 'shell'
+      ? canonical.shellCommand
+      : fixedShellWrapperCommand([canonical.executable!, ...(canonical.args ?? [])]);
+  let words: readonly string[];
+  if (shell !== undefined) {
+    if (/[;&|<>\x60$\n\r]/.test(shell)) return false;
+    const segments = shellSegments(shell);
+    if (segments.length !== 1) return false;
+    words = shellWordsPreservingQuotes(segments[0]!);
+  } else {
+    words = [canonical.executable!, ...(canonical.args ?? [])];
+  }
+  if (basename(words[0] ?? '').toLowerCase() !== 'cargo') return false;
+  return ['test', 'check'].includes(words[1]?.toLowerCase() ?? '');
+}
+
+/**
  * Classify resource claims for a repository command without taking whole-repo exclusive locks
  * for ordinary readonly / focused validation commands.
  */
@@ -863,6 +891,10 @@ function repositoryCommandClaims(
     return normalizeClaims([claimWorkspaceRead(checkoutId, repoId), claimBuildCacheWrite(repoId), ...deviceClaims]);
   const hostClaims = hostOnlyCommandClaims(command, repoId, checkoutId, repoRoot);
   if (hostClaims) return hostClaims;
+
+  if (classification.risk !== 'destructive' && isCargoSourceValidationCommand(command)) {
+    return normalizeClaims([claimValidationObservation(checkoutId, repoId), claimBuildCacheWrite(repoId)]);
+  }
 
   if (classification.risk === 'readonly') {
     return [claimWorkspaceRead(checkoutId, repoId)];

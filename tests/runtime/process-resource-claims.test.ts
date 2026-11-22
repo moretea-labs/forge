@@ -494,6 +494,53 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(focusedTest.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(true);
   });
 
+  test('Cargo focused validation observes source and shares checkout with existing global writer (#713)', () => {
+    for (const command of [
+      ['cargo', 'test', '--manifest-path', 'apps/desktop/src-tauri/Cargo.toml', '--lib', 'agent'],
+      ['cargo', 'check', '--manifest-path', 'apps/desktop/src-tauri/Cargo.toml'],
+      'cargo test -p forge-agent --lib',
+      ['bash', '-lc', 'cargo test -p forge-agent --lib'],
+    ] as const) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
+      expect(claims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
+      expect(claims).toHaveLength(2);
+      expect(claims.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(false);
+      expect(claims.some((claim) => claimsConflict(claim, lease('path:co1:src/other.rs', 'write')))).toBe(false);
+      expect(claims.some((claim) => claimsConflict(claim, lease('build-cache:repo1', 'write')))).toBe(true);
+    }
+    const checkClaims = claimsForCheck(
+      'cargo:focused-agent-test',
+      ['cargo', 'test', '-p', 'forge-agent', '--lib'],
+      'repo1',
+      'co1',
+    );
+    expect(checkClaims.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(false);
+  });
+
+  test('Cargo source mutation, shell composition and opaque scripts remain conservatively fenced (#713)', () => {
+    for (const command of [
+      'cargo test --lib && touch generated.txt',
+      ['bash', '-lc', 'cargo test --lib > checked.txt'],
+      ['cargo', 'fix', '--allow-dirty'],
+    ] as const) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+    }
+    // Cargo build already has a narrower source-path claim; retain that
+    // existing safety rather than broadening it solely for this regression.
+    const buildClaims = claimsForRepositoryCommand(
+      ['cargo', 'build', '--manifest-path', 'apps/desktop/src-tauri/Cargo.toml'],
+      'repo1',
+      'co1',
+    );
+    expect(buildClaims).toContainEqual({
+      resourceKey: 'path:co1:apps/desktop/src-tauri/Cargo.toml',
+      mode: 'write',
+    });
+    expect(buildClaims.some((claim) => claim.resourceKey === 'validation-input:co1')).toBe(false);
+  });
+
   test('ordinary xcodebuild log redirection does not acquire unrelated Git-ref ownership', () => {
     const command =
       "cd /worktrees/ocr && xcodebuild -project ios/App.xcodeproj -derivedDataPath .forge/ios/ocr -jobs 2 build > .forge/ios/build.log 2>&1; rc=$?; grep 'BUILD' .forge/ios/build.log | tail -2; exit $rc";
