@@ -62,10 +62,20 @@ function canonicalUserRequests(requests: readonly UserRequest[]): UserRequest[] 
  * return the existing record to guarantee deduplication across retries.
  */
 export function recordUserRequest(controllerHome: string, input: CreateUserRequestInput): UserRequest {
-  const legacyScope = input.targetScope as (CreateUserRequestInput['targetScope'] & { workId?: unknown }) | undefined;
-  if (typeof legacyScope?.workId === 'string' && legacyScope.workId.trim()) {
-    throw new Error('USER_REQUEST_WORK_SCOPE_RETIRED');
+  // Keep only the current UserRequest scope contract, never unchecked caller
+  // properties or obsolete lifecycle attribution in persistent records.
+  const scope = input.targetScope;
+  if (scope && !['repository', 'project', 'requirement', 'workspace'].includes(scope.scopeKind)) {
+    throw new Error('USER_REQUEST_TARGET_SCOPE_INVALID');
   }
+  const targetScope = scope
+    ? {
+        scopeKind: scope.scopeKind,
+        scopeId: scope.scopeId,
+        ...(scope.repoId ? { repoId: scope.repoId } : {}),
+        ...(scope.requirementId ? { requirementId: scope.requirementId } : {}),
+      }
+    : undefined;
   const rootCauseKey = input.rootCauseKey.trim();
   if (!rootCauseKey) throw new Error('USER_REQUEST_ROOT_CAUSE_KEY_REQUIRED');
 
@@ -123,7 +133,7 @@ export function recordUserRequest(controllerHome: string, input: CreateUserReque
     title: input.title.trim(),
     summary: input.summary.trim(),
     actionRequired: input.actionRequired,
-    ...(input.targetScope ? { targetScope: input.targetScope } : {}),
+    ...(targetScope ? { targetScope } : {}),
     ...(input.options ? { options: input.options } : {}),
     ...(input.presentation ? { presentation: input.presentation } : {}),
     status: 'pending',

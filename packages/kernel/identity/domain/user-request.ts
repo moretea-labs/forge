@@ -3,7 +3,7 @@ export type UserRequestKind = 'user_action_request' | 'user_decision_request';
 export type UserActionRequired = 'login' | 'grant_permission' | 'confirm_destructive' | 'product_decision';
 
 export interface UserRequestTargetScope {
-  scopeKind: string;
+  scopeKind: 'repository' | 'project' | 'requirement' | 'workspace';
   scopeId: string;
   repoId?: string;
   requirementId?: string;

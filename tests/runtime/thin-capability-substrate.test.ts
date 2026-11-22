@@ -378,24 +378,38 @@ describe('Thin capability substrate', () => {
     expect(listUserRequests(controllerHome, 'pending')).toHaveLength(0);
   });
 
-  test('Step 4a: UserRequest writer rejects retired Work target scope', () => {
+  test('Step 4a: UserRequest stores only supported scope keys and rejects unknown scope kinds', () => {
     const controllerHome = tempHome();
+    const input = {
+      kind: 'user_action_request' as const,
+      rootCauseKey: 'scope-contract',
+      title: 'Current scope',
+      summary: 'Use the canonical repository scope.',
+      actionRequired: 'product_decision' as const,
+    };
     expect(() =>
       recordUserRequest(controllerHome, {
-        kind: 'user_action_request',
-        rootCauseKey: 'legacy-work-scope',
-        title: 'Retired Work scope',
-        summary: 'New UserRequests must use current repository/project/requirement scope.',
-        actionRequired: 'product_decision',
-        targetScope: {
-          scopeKind: 'work',
-          scopeId: 'work-retired',
-          repoId: 'repo-example',
-          workId: 'work-retired',
-        } as never,
+        ...input,
+        targetScope: { scopeKind: 'unsupported-domain', scopeId: 'orphan' } as never,
       }),
-    ).toThrow('USER_REQUEST_WORK_SCOPE_RETIRED');
+    ).toThrow('USER_REQUEST_TARGET_SCOPE_INVALID');
     expect(listUserRequests(controllerHome, 'all')).toHaveLength(0);
+
+    const stored = recordUserRequest(controllerHome, {
+      ...input,
+      targetScope: {
+        scopeKind: 'repository',
+        scopeId: 'repo-example',
+        repoId: 'repo-example',
+        unusedField: 'must-not-persist',
+      } as never,
+    });
+    expect(stored.targetScope).toEqual({
+      scopeKind: 'repository',
+      scopeId: 'repo-example',
+      repoId: 'repo-example',
+    });
+    expect(JSON.stringify(listUserRequests(controllerHome, 'all'))).not.toContain('must-not-persist');
   });
 
   test('Step 4b: requestId remains one authority across legacy duplicate rows', () => {
