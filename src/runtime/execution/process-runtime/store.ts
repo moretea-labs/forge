@@ -5,18 +5,10 @@
  */
 
 import { createHash } from 'crypto';
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from 'fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../effects/controller-home';
+import { withControllerLock } from '../../../effects/controller-locks';
 import { mutateControlPlaneRecord, readOrImportControlPlaneRecord } from '../../control-plane/persistence/sqlite-store';
 import { isSensitiveOutputKey, redactSensitiveText } from '../../evidence/sensitive-output';
 import { touchSchedulerWakeSignal } from '../../control-plane/global-scheduler/wake-signal';
@@ -31,6 +23,33 @@ import {
   type ProcessRequestBinding,
   type ProcessRuntimeStatus,
 } from './types';
+
+/** Short physical CAS fence for one Process record, never a checkout Writer lease. */
+function withProcessRecordLock<T>(
+  controllerHome: string,
+  repoId: string,
+  processId: string,
+  owner: string,
+  action: () => T,
+): T {
+  const identity = createHash('sha256')
+    .update(JSON.stringify([repoId, processId]))
+    .digest('hex');
+  return withControllerLock(controllerHome, { scope: 'global', resource: `process-record-${identity}` }, owner, action);
+}
+
+/** Wake check consumers only after terminal state is durably persisted. A failed wake never undoes the CAS. */
+function notifyCheckProcessTerminal(controllerHome: string, processId: string, record: ManagedProcessRecord): void {
+  if (!record.checkExecution && record.origin?.surface !== 'check' && !record.origin?.checkId) return;
+  try {
+    touchSchedulerWakeSignal(controllerHome, `check-process-terminal:${processId}`);
+  } catch (error) {
+    console.error(
+      `[forge scheduler] Check Process terminal wake failed for ${processId}:`,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
 
 function processesRoot(controllerHome: string, repoId: string): string {
   // Repository scopes keep the established per-repository layout. Instance and
@@ -55,7 +74,12 @@ function requestBindingsRoot(controllerHome: string, repoId: string): string {
   return dir;
 }
 
-function requestBindingPath(controllerHome: string, repoId: string, checkoutId: string | undefined, requestId: string): string {
+function requestBindingPath(
+  controllerHome: string,
+  repoId: string,
+  checkoutId: string | undefined,
+  requestId: string,
+): string {
   const key = createHash('sha256')
     .update(JSON.stringify({ repoId, checkoutId: checkoutId?.trim() || null, requestId }))
     .digest('hex');
@@ -74,7 +98,12 @@ function invocationBindingsRoot(controllerHome: string, repoId: string): string 
   return dir;
 }
 
-function invocationBindingPath(controllerHome: string, repoId: string, checkoutId: string | undefined, requestId: string): string {
+function invocationBindingPath(
+  controllerHome: string,
+  repoId: string,
+  checkoutId: string | undefined,
+  requestId: string,
+): string {
   const key = createHash('sha256')
     .update(JSON.stringify({ repoId, checkoutId: checkoutId?.trim() || null, requestId }))
     .digest('hex');
@@ -92,7 +121,10 @@ function checkExecutionBindingKey(repoId: string, scopeKey: string, cacheKey: st
 }
 
 function checkExecutionBindingPath(controllerHome: string, repoId: string, scopeKey: string, cacheKey: string): string {
-  return join(checkExecutionBindingsRoot(controllerHome, repoId), `${checkExecutionBindingKey(repoId, scopeKey, cacheKey)}.json`);
+  return join(
+    checkExecutionBindingsRoot(controllerHome, repoId),
+    `${checkExecutionBindingKey(repoId, scopeKey, cacheKey)}.json`,
+  );
 }
 
 interface ProcessRecoveryIndex {
@@ -110,9 +142,7 @@ function normalizedProcessIds(values: readonly string[]): string[] {
 }
 
 function needsPendingLeaseRelease(record: ManagedProcessRecord): boolean {
-  return isManagedProcessTerminal(record)
-    && record.leasesReleased !== true
-    && (record.leaseRefs?.length ?? 0) > 0;
+  return isManagedProcessTerminal(record) && record.leasesReleased !== true && (record.leaseRefs?.length ?? 0) > 0;
 }
 
 function processRecoveryMembership(record: ManagedProcessRecord): { active: boolean; pendingLeaseRelease: boolean } {
@@ -170,13 +200,7 @@ function rebuildRecoveryIndex(controllerHome: string, repoId: string): ProcessRe
     if (membership.active) active.push(record.processId);
     if (membership.pendingLeaseRelease) pendingLeaseRelease.push(record.processId);
   }
-  return replaceRecoveryIndex(
-    controllerHome,
-    repoId,
-    active,
-    pendingLeaseRelease,
-    'process_recovery_index_rebuild',
-  );
+  return replaceRecoveryIndex(controllerHome, repoId, active, pendingLeaseRelease, 'process_recovery_index_rebuild');
 }
 
 function ensureRecoveryIndex(controllerHome: string, repoId: string): ProcessRecoveryIndex {
@@ -205,13 +229,15 @@ function updateRecoveryIndexMembership(
       const base = current?.value ?? existing;
       const active = new Set(base.activeProcessIds);
       const pending = new Set(base.pendingLeaseReleaseIds);
-      if (membership.active) active.add(processId); else active.delete(processId);
-      if (membership.pendingLeaseRelease) pending.add(processId); else pending.delete(processId);
+      if (membership.active) active.add(processId);
+      else active.delete(processId);
+      if (membership.pendingLeaseRelease) pending.add(processId);
+      else pending.delete(processId);
       const activeProcessIds = [...active].sort();
       const pendingLeaseReleaseIds = [...pending].sort();
       if (
-        activeProcessIds.join('\0') === normalizedProcessIds(base.activeProcessIds).join('\0')
-        && pendingLeaseReleaseIds.join('\0') === normalizedProcessIds(base.pendingLeaseReleaseIds).join('\0')
+        activeProcessIds.join('\0') === normalizedProcessIds(base.activeProcessIds).join('\0') &&
+        pendingLeaseReleaseIds.join('\0') === normalizedProcessIds(base.pendingLeaseReleaseIds).join('\0')
       ) {
         return base;
       }
@@ -232,7 +258,11 @@ function atomicWrite(path: string, value: unknown): void {
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   renameSync(temporary, path);
-  try { chmodSync(path, 0o600); } catch { /* Windows or restricted filesystem. */ }
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    /* Windows or restricted filesystem. */
+  }
 }
 
 function readJson<T>(path: string): T | undefined {
@@ -244,9 +274,26 @@ function readJson<T>(path: string): T | undefined {
   }
 }
 
-const SECRET_OPTION = /^--?(?:api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|credentials?|authorization|auth[_-]?token|token|cookie)(?:=|$)/i;
+const SECRET_OPTION =
+  /^--?(?:api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|credentials?|authorization|auth[_-]?token|token|cookie)(?:=|$)/i;
 const INLINE_SCRIPT_FLAGS = new Set(['-e', '--eval', '-c', '--command']);
-const INLINE_SCRIPT_EXECUTABLES = new Set(['node', 'node.exe', 'bun', 'bun.exe', 'python', 'python3', 'python.exe', 'python3.exe', 'sh', 'bash', 'zsh', 'pwsh', 'pwsh.exe', 'powershell', 'powershell.exe']);
+const INLINE_SCRIPT_EXECUTABLES = new Set([
+  'node',
+  'node.exe',
+  'bun',
+  'bun.exe',
+  'python',
+  'python3',
+  'python.exe',
+  'python3.exe',
+  'sh',
+  'bash',
+  'zsh',
+  'pwsh',
+  'pwsh.exe',
+  'powershell',
+  'powershell.exe',
+]);
 
 function safeText(value: string | undefined): string | undefined {
   return value === undefined ? undefined : redactSensitiveText(value).text;
@@ -281,14 +328,12 @@ function sanitizeCommandArgs(args: string[] | undefined, executable: string | un
 
 function sanitizeProcessCommand(command: ManagedProcessRecord['command']): ManagedProcessRecord['command'] {
   const env = command.env
-    ? Object.fromEntries(Object.entries(command.env).map(([key, value]) => [
-      key,
-      value === undefined
-        ? undefined
-        : isSensitiveOutputKey(key)
-          ? '[REDACTED]'
-          : redactSensitiveText(value).text,
-    ]))
+    ? Object.fromEntries(
+        Object.entries(command.env).map(([key, value]) => [
+          key,
+          value === undefined ? undefined : isSensitiveOutputKey(key) ? '[REDACTED]' : redactSensitiveText(value).text,
+        ]),
+      )
     : undefined;
   return {
     ...command,
@@ -305,20 +350,26 @@ function sanitizeProcessRecord(record: ManagedProcessRecord): { record: ManagedP
     command: sanitizeProcessCommand(record.command),
     stdoutTail: safeText(record.stdoutTail),
     stderrTail: safeText(record.stderrTail),
-    error: record.error ? { code: safeText(record.error.code) ?? record.error.code, message: safeText(record.error.message) ?? '' } : undefined,
-    leaseReleaseFailure: record.leaseReleaseFailure ? {
-      ...record.leaseReleaseFailure,
-      code: safeText(record.leaseReleaseFailure.code) ?? record.leaseReleaseFailure.code,
-      message: safeText(record.leaseReleaseFailure.message) ?? '',
-    } : undefined,
-    origin: record.origin ? {
-      ...record.origin,
-      toolName: safeText(record.origin.toolName),
-      requestId: safeText(record.origin.requestId),
-      checkId: safeText(record.origin.checkId),
-      requestSemanticFingerprint: safeText(record.origin.requestSemanticFingerprint),
-      correlationId: safeText(record.origin.correlationId),
-    } : undefined,
+    error: record.error
+      ? { code: safeText(record.error.code) ?? record.error.code, message: safeText(record.error.message) ?? '' }
+      : undefined,
+    leaseReleaseFailure: record.leaseReleaseFailure
+      ? {
+          ...record.leaseReleaseFailure,
+          code: safeText(record.leaseReleaseFailure.code) ?? record.leaseReleaseFailure.code,
+          message: safeText(record.leaseReleaseFailure.message) ?? '',
+        }
+      : undefined,
+    origin: record.origin
+      ? {
+          ...record.origin,
+          toolName: safeText(record.origin.toolName),
+          requestId: safeText(record.origin.requestId),
+          checkId: safeText(record.origin.checkId),
+          requestSemanticFingerprint: safeText(record.origin.requestSemanticFingerprint),
+          correlationId: safeText(record.origin.correlationId),
+        }
+      : undefined,
   };
   return { record: next, changed: JSON.stringify(next) !== JSON.stringify(record) };
 }
@@ -364,19 +415,29 @@ export function claimProcessRequest(input: {
   };
   let existed = false;
   const existing = mutateControlPlaneRecord<ProcessRequestBinding>(input.controllerHome, {
-    namespace: 'process_request_binding', scope: input.repoId, key: bindingKey(input.repoId, input.checkoutId, requestId), schemaVersion: 1,
-    action: 'process_request_binding_claim', readLegacy: () => readJson<ProcessRequestBinding>(path),
-    mutate: (current) => { if (current) { existed = true; return current.value; } return binding; },
+    namespace: 'process_request_binding',
+    scope: input.repoId,
+    key: bindingKey(input.repoId, input.checkoutId, requestId),
+    schemaVersion: 1,
+    action: 'process_request_binding_claim',
+    readLegacy: () => readJson<ProcessRequestBinding>(path),
+    mutate: (current) => {
+      if (current) {
+        existed = true;
+        return current.value;
+      }
+      return binding;
+    },
     skipWriteWhenMutationReturnsCurrent: true,
   }).value;
   if (!existing || existing.schemaVersion !== 1 || !existing.processId || !existing.commandFingerprint) {
     throw new Error(`PROCESS_REQUEST_BINDING_CORRUPT: ${requestId}`);
   }
   if (
-    existing.repoId !== input.repoId
-    || (existing.checkoutId?.trim() || undefined) !== (input.checkoutId?.trim() || undefined)
-    || existing.requestId !== requestId
-    || existing.commandFingerprint !== input.commandFingerprint
+    existing.repoId !== input.repoId ||
+    (existing.checkoutId?.trim() || undefined) !== (input.checkoutId?.trim() || undefined) ||
+    existing.requestId !== requestId ||
+    existing.commandFingerprint !== input.commandFingerprint
   ) {
     throw new Error(`PROCESS_REQUEST_ID_CONFLICT: ${requestId}`);
   }
@@ -392,8 +453,12 @@ export function getProcessRequestBinding(
   const normalized = requestId.trim();
   if (!normalized) return undefined;
   return readOrImportControlPlaneRecord<ProcessRequestBinding>(controllerHome, {
-    namespace: 'process_request_binding', scope: repoId, key: bindingKey(repoId, checkoutId, normalized), schemaVersion: 1,
-    readLegacy: () => readJson<ProcessRequestBinding>(requestBindingPath(controllerHome, repoId, checkoutId, normalized)),
+    namespace: 'process_request_binding',
+    scope: repoId,
+    key: bindingKey(repoId, checkoutId, normalized),
+    schemaVersion: 1,
+    readLegacy: () =>
+      readJson<ProcessRequestBinding>(requestBindingPath(controllerHome, repoId, checkoutId, normalized)),
   })?.value;
 }
 
@@ -412,7 +477,8 @@ export function claimProcessCheckExecution(input: {
 }): { status: 'claimed' | 'existing' | 'reclaimed'; binding: ProcessCheckExecutionBinding } {
   const scopeKey = input.scopeKey.trim();
   const cacheKey = input.cacheKey.trim();
-  if (!scopeKey || !cacheKey) throw new Error('PROCESS_CHECK_EXECUTION_IDENTITY_REQUIRED: scopeKey/cacheKey are required');
+  if (!scopeKey || !cacheKey)
+    throw new Error('PROCESS_CHECK_EXECUTION_IDENTITY_REQUIRED: scopeKey/cacheKey are required');
   const path = checkExecutionBindingPath(input.controllerHome, input.repoId, scopeKey, cacheKey);
   const candidate: ProcessCheckExecutionBinding = {
     schemaVersion: 1,
@@ -434,7 +500,12 @@ export function claimProcessCheckExecution(input: {
     mutate: (current) => {
       if (!current) return candidate;
       const existing = current.value;
-      if (existing.repoId !== input.repoId || existing.scopeKey !== scopeKey || existing.cacheKey !== cacheKey || !existing.processId) {
+      if (
+        existing.repoId !== input.repoId ||
+        existing.scopeKey !== scopeKey ||
+        existing.cacheKey !== cacheKey ||
+        !existing.processId
+      ) {
         throw new Error(`PROCESS_CHECK_EXECUTION_BINDING_CORRUPT: ${cacheKey}`);
       }
       const record = readProcessRecord(processPath(input.controllerHome, input.repoId, existing.processId));
@@ -468,8 +539,12 @@ export function getProcessCheckExecutionBinding(
 ): ProcessCheckExecutionBinding | undefined {
   const key = checkExecutionBindingKey(repoId, scopeKey, cacheKey);
   return readOrImportControlPlaneRecord<ProcessCheckExecutionBinding>(controllerHome, {
-    namespace: 'process_check_execution_binding', scope: repoId, key, schemaVersion: 1,
-    readLegacy: () => readJson<ProcessCheckExecutionBinding>(checkExecutionBindingPath(controllerHome, repoId, scopeKey, cacheKey)),
+    namespace: 'process_check_execution_binding',
+    scope: repoId,
+    key,
+    schemaVersion: 1,
+    readLegacy: () =>
+      readJson<ProcessCheckExecutionBinding>(checkExecutionBindingPath(controllerHome, repoId, scopeKey, cacheKey)),
   })?.value;
 }
 
@@ -498,19 +573,29 @@ export function claimProcessInvocation(input: {
   };
   let existed = false;
   const existing = mutateControlPlaneRecord<ProcessInvocationBinding>(input.controllerHome, {
-    namespace: 'process_invocation_binding', scope: input.repoId, key: bindingKey(input.repoId, input.checkoutId, requestId), schemaVersion: 1,
-    action: 'process_invocation_binding_claim', readLegacy: () => readJson<ProcessInvocationBinding>(path),
-    mutate: (current) => { if (current) { existed = true; return current.value; } return binding; },
+    namespace: 'process_invocation_binding',
+    scope: input.repoId,
+    key: bindingKey(input.repoId, input.checkoutId, requestId),
+    schemaVersion: 1,
+    action: 'process_invocation_binding_claim',
+    readLegacy: () => readJson<ProcessInvocationBinding>(path),
+    mutate: (current) => {
+      if (current) {
+        existed = true;
+        return current.value;
+      }
+      return binding;
+    },
     skipWriteWhenMutationReturnsCurrent: true,
   }).value;
   if (!existing || existing.schemaVersion !== 1 || !existing.invocationFingerprint) {
     throw new Error(`PROCESS_INVOCATION_BINDING_CORRUPT: ${requestId}`);
   }
   if (
-    existing.repoId !== input.repoId
-    || (existing.checkoutId?.trim() || undefined) !== (input.checkoutId?.trim() || undefined)
-    || existing.requestId !== requestId
-    || existing.invocationFingerprint !== input.invocationFingerprint
+    existing.repoId !== input.repoId ||
+    (existing.checkoutId?.trim() || undefined) !== (input.checkoutId?.trim() || undefined) ||
+    existing.requestId !== requestId ||
+    existing.invocationFingerprint !== input.invocationFingerprint
   ) {
     throw new Error(`PROCESS_REQUEST_ID_CONFLICT: ${requestId}`);
   }
@@ -522,19 +607,21 @@ export function processLogDir(controllerHome: string, repoId: string): string {
 }
 
 export function createProcessRecord(record: ManagedProcessRecord): ManagedProcessRecord {
-  const path = processPath(record.controllerHome, record.repoId, record.processId);
-  if (existsSync(path)) {
-    throw new Error(`PROCESS_ALREADY_EXISTS: ${record.processId}`);
-  }
-  const sanitized = sanitizeProcessRecord(record).record;
-  atomicWrite(path, sanitized);
-  updateRecoveryIndexMembership(
-    record.controllerHome,
-    record.repoId,
-    record.processId,
-    processRecoveryMembership(sanitized),
-  );
-  return sanitized;
+  return withProcessRecordLock(record.controllerHome, record.repoId, record.processId, 'process-create', () => {
+    const path = processPath(record.controllerHome, record.repoId, record.processId);
+    if (existsSync(path)) {
+      throw new Error(`PROCESS_ALREADY_EXISTS: ${record.processId}`);
+    }
+    const sanitized = sanitizeProcessRecord(record).record;
+    atomicWrite(path, sanitized);
+    updateRecoveryIndexMembership(
+      record.controllerHome,
+      record.repoId,
+      record.processId,
+      processRecoveryMembership(sanitized),
+    );
+    return sanitized;
+  });
 }
 
 export function getProcessRecord(
@@ -566,47 +653,36 @@ export function tryCompleteProcessRecord(
   },
   options: { validatedExitReceipt?: boolean } = {},
 ): { ok: boolean; record?: ManagedProcessRecord; reason?: string } {
-  const path = processPath(controllerHome, repoId, processId);
-  const current = readProcessRecord(path);
-  if (!current) return { ok: false, reason: 'missing' };
-  const refineUnknown = options.validatedExitReceipt === true
-    && current.status === 'completed_unknown'
-    && ['succeeded', 'failed', 'timed_out', 'cancelled'].includes(patch.status);
-  if (current.terminalWritten && !refineUnknown) return { ok: false, reason: 'already_terminal', record: current };
-  if (current.terminalFenceToken !== fenceToken) {
-    return { ok: false, reason: 'fence_mismatch', record: current };
-  }
-  const hasLeases = (current.leaseRefs?.length ?? 0) > 0;
-  const leasesReleased = current.leasesReleased === true || !hasLeases;
-  const next: ManagedProcessRecord = {
-    ...current,
-    ...patch,
-    terminalFenceToken: current.terminalFenceToken,
-    terminalWritten: true,
-    leaseReleaseState: leasesReleased ? 'released' : 'pending',
-    leasesReleased,
-    finishedAt: patch.finishedAt ?? new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  const sanitized = sanitizeProcessRecord(next).record;
-  atomicWrite(path, sanitized);
-  updateRecoveryIndexMembership(controllerHome, repoId, processId, processRecoveryMembership(sanitized));
-  // Terminal Process persistence remains the lifecycle authority. The scheduler
-  // notification is emitted only after durable terminal state exists, and only
-  // for Check-backed Processes whose receipts can unblock Work/Edit validation.
-  // Notification failure must never reinterpret or roll back the terminal CAS;
-  // the explicit schedule deadline still provides a bounded observation path.
-  if (sanitized.checkExecution || sanitized.origin?.surface === 'check' || sanitized.origin?.checkId) {
-    try {
-      touchSchedulerWakeSignal(controllerHome, `check-process-terminal:${processId}`);
-    } catch (error) {
-      console.error(
-        `[forge scheduler] Check Process terminal wake failed for ${processId}:`,
-        error instanceof Error ? error.message : String(error),
-      );
+  return withProcessRecordLock(controllerHome, repoId, processId, 'process-terminal-cas', () => {
+    const path = processPath(controllerHome, repoId, processId);
+    const current = readProcessRecord(path);
+    if (!current) return { ok: false, reason: 'missing' };
+    const refineUnknown =
+      options.validatedExitReceipt === true &&
+      current.status === 'completed_unknown' &&
+      ['succeeded', 'failed', 'timed_out', 'cancelled'].includes(patch.status);
+    if (current.terminalWritten && !refineUnknown) return { ok: false, reason: 'already_terminal', record: current };
+    if (current.terminalFenceToken !== fenceToken) {
+      return { ok: false, reason: 'fence_mismatch', record: current };
     }
-  }
-  return { ok: true, record: sanitized };
+    const hasLeases = (current.leaseRefs?.length ?? 0) > 0;
+    const leasesReleased = current.leasesReleased === true || !hasLeases;
+    const next: ManagedProcessRecord = {
+      ...current,
+      ...patch,
+      terminalFenceToken: current.terminalFenceToken,
+      terminalWritten: true,
+      leaseReleaseState: leasesReleased ? 'released' : 'pending',
+      leasesReleased,
+      finishedAt: patch.finishedAt ?? new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const sanitized = sanitizeProcessRecord(next).record;
+    atomicWrite(path, sanitized);
+    updateRecoveryIndexMembership(controllerHome, repoId, processId, processRecoveryMembership(sanitized));
+    notifyCheckProcessTerminal(controllerHome, processId, sanitized);
+    return { ok: true, record: sanitized };
+  });
 }
 
 export function updateProcessRecord(
@@ -616,40 +692,39 @@ export function updateProcessRecord(
   patch: Partial<ManagedProcessRecord>,
   options: { requireFence?: number; allowTerminal?: boolean } = {},
 ): ManagedProcessRecord | undefined {
-  const path = processPath(controllerHome, repoId, processId);
-  const current = readProcessRecord(path);
-  if (!current) return undefined;
-  if (current.terminalWritten && !options.allowTerminal) return current;
-  if (options.requireFence !== undefined && current.terminalFenceToken !== options.requireFence) {
-    return current;
-  }
-  const next: ManagedProcessRecord = {
-    ...current,
-    ...patch,
-    // Never allow patch to clear terminal fencing once set.
-    terminalFenceToken: current.terminalFenceToken,
-    terminalWritten: current.terminalWritten || patch.terminalWritten === true,
-    updatedAt: new Date().toISOString(),
-  };
-  const sanitized = sanitizeProcessRecord(next).record;
-  atomicWrite(path, sanitized);
-  const previousMembership = processRecoveryMembership(current);
-  const nextMembership = processRecoveryMembership(sanitized);
-  if (
-    previousMembership.active !== nextMembership.active
-    || previousMembership.pendingLeaseRelease !== nextMembership.pendingLeaseRelease
-  ) {
-    updateRecoveryIndexMembership(controllerHome, repoId, processId, nextMembership);
-  }
-  return sanitized;
+  return withProcessRecordLock(controllerHome, repoId, processId, 'process-update', () => {
+    const path = processPath(controllerHome, repoId, processId);
+    const current = readProcessRecord(path);
+    if (!current) return undefined;
+    if (current.terminalWritten && !options.allowTerminal) return current;
+    if (options.requireFence !== undefined && current.terminalFenceToken !== options.requireFence) {
+      return current;
+    }
+    const next: ManagedProcessRecord = {
+      ...current,
+      ...patch,
+      // Never allow patch to clear terminal fencing once set.
+      terminalFenceToken: current.terminalFenceToken,
+      terminalWritten: current.terminalWritten || patch.terminalWritten === true,
+      updatedAt: new Date().toISOString(),
+    };
+    const sanitized = sanitizeProcessRecord(next).record;
+    atomicWrite(path, sanitized);
+    const previousMembership = processRecoveryMembership(current);
+    const nextMembership = processRecoveryMembership(sanitized);
+    if (
+      previousMembership.active !== nextMembership.active ||
+      previousMembership.pendingLeaseRelease !== nextMembership.pendingLeaseRelease
+    ) {
+      updateRecoveryIndexMembership(controllerHome, repoId, processId, nextMembership);
+    }
+    return sanitized;
+  });
 }
 
 export function listRecoverableProcessRecords(controllerHome: string, repoId: string): ManagedProcessRecord[] {
   const index = ensureRecoveryIndex(controllerHome, repoId);
-  const indexedIds = normalizedProcessIds([
-    ...index.activeProcessIds,
-    ...index.pendingLeaseReleaseIds,
-  ]);
+  const indexedIds = normalizedProcessIds([...index.activeProcessIds, ...index.pendingLeaseReleaseIds]);
   const records: ManagedProcessRecord[] = [];
   const active: string[] = [];
   const pendingLeaseRelease: string[] = [];
@@ -665,8 +740,8 @@ export function listRecoverableProcessRecords(controllerHome: string, repoId: st
   const normalizedActive = normalizedProcessIds(active);
   const normalizedPending = normalizedProcessIds(pendingLeaseRelease);
   if (
-    normalizedActive.join('\0') !== normalizedProcessIds(index.activeProcessIds).join('\0')
-    || normalizedPending.join('\0') !== normalizedProcessIds(index.pendingLeaseReleaseIds).join('\0')
+    normalizedActive.join('\0') !== normalizedProcessIds(index.activeProcessIds).join('\0') ||
+    normalizedPending.join('\0') !== normalizedProcessIds(index.pendingLeaseReleaseIds).join('\0')
   ) {
     replaceRecoveryIndex(
       controllerHome,
@@ -686,11 +761,7 @@ export function listActiveProcessIds(controllerHome: string, repoId: string): st
     .sort();
 }
 
-export function listProcessRecords(
-  controllerHome: string,
-  repoId: string,
-  limit = 100,
-): ManagedProcessRecord[] {
+export function listProcessRecords(controllerHome: string, repoId: string, limit = 100): ManagedProcessRecord[] {
   const root = processesRoot(controllerHome, repoId);
   if (!existsSync(root)) return [];
   const records: ManagedProcessRecord[] = [];
@@ -703,26 +774,24 @@ export function listProcessRecords(
   return records.slice(0, Math.max(1, limit));
 }
 
-export function deleteProcessRecord(
-  controllerHome: string,
-  repoId: string,
-  processId: string,
-): boolean {
-  const path = processPath(controllerHome, repoId, processId);
-  if (!existsSync(path)) return false;
-  unlinkSync(path);
-  updateRecoveryIndexMembership(controllerHome, repoId, processId, {
-    active: false,
-    pendingLeaseRelease: false,
+export function deleteProcessRecord(controllerHome: string, repoId: string, processId: string): boolean {
+  return withProcessRecordLock(controllerHome, repoId, processId, 'process-delete', () => {
+    const path = processPath(controllerHome, repoId, processId);
+    if (!existsSync(path)) return false;
+    unlinkSync(path);
+    updateRecoveryIndexMembership(controllerHome, repoId, processId, {
+      active: false,
+      pendingLeaseRelease: false,
+    });
+    // Handle index is a rebuildable locator; drop it with the Process record so
+    // SQLite does not retain hundreds of thousands of stale rows (#377).
+    try {
+      deleteProcessHandleIndexEntry(controllerHome, processId);
+    } catch {
+      // Locator cleanup must never revive a deleted Process record.
+    }
+    return true;
   });
-  // Handle index is a rebuildable locator; drop it with the Process record so
-  // SQLite does not retain hundreds of thousands of stale rows (#377).
-  try {
-    deleteProcessHandleIndexEntry(controllerHome, processId);
-  } catch {
-    // Locator cleanup must never revive a deleted Process record.
-  }
-  return true;
 }
 
 export function repositoryProcessesRoot(controllerHome: string, repoId: string): string {
