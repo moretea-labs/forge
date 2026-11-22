@@ -1271,3 +1271,39 @@ describe('repository command execution lifecycle', () => {
     }
   });
 });
+
+
+describe('scoped async lease heartbeat resilience (#713)', () => {
+  test('retries a transient global lease-lock collision without poisoning a live path lease', async () => {
+    const controllerHome = tempRoot('forge-713-heartbeat-contention-home-');
+    const repoRoot = tempRoot('forge-713-heartbeat-contention-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
+    const claims = [{ resourceKey: `path:${repository.activeCheckoutId}:README.md`, mode: 'write' as const }];
+    const lockKey = { scope: 'global' as const, resource: 'execution-leases' };
+
+    const result = await withRepositoryMutationExclusionAsync(
+      controllerHome,
+      repository.repoId,
+      'async-heartbeat-transient-contention',
+      async () => {
+        // Hold the existing lease-store mutex across the first 5s heartbeat.
+        // The renewal's single-try lock acquisition must fail transiently,
+        // then succeed on the next heartbeat after this short critical section.
+        const blocker = acquireControllerLock(controllerHome, lockKey, 'test-heartbeat-contention');
+        try {
+          await new Promise<void>((resolve) => setTimeout(resolve, 7_000));
+        } finally {
+          releaseControllerLock(controllerHome, lockKey, blocker.lockId);
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 5_000));
+        return 'completed-after-renewal';
+      },
+      15_000,
+      claims,
+    );
+
+    expect(result).toBe('completed-after-renewal');
+    expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
+  });
+});
