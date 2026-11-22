@@ -436,6 +436,38 @@ function modulesForChangedPath(path: string, manifest: TestManifest): TestModule
   return ['core', 'workflow'];
 }
 
+function isSelectedForGate(
+  gate: TestGate,
+  file: string,
+  entry: TestManifestEntry,
+  meaningfulChangedPaths: string[],
+  changedModules: Set<TestModule>,
+  direct: Set<string>,
+): boolean {
+  switch (gate) {
+    case 'core':
+      return Boolean(entry.smoke || (entry.module === 'core' && entry.resource === 'pure'));
+    case 'affected':
+      if (meaningfulChangedPaths.length === 0) return Boolean(entry.smoke);
+      return Boolean(
+        (direct.has(file) && !INFRASTRUCTURE_RESOURCES.has(entry.resource) && entry.resource !== 'destructive') ||
+        entry.smoke ||
+        (changedModules.has(entry.module) && entry.resource === 'pure'),
+      );
+    case 'integration':
+      return (
+        changedModules.has(entry.module) &&
+        (entry.resource === 'temp-isolated' || entry.resource === 'controller-home-isolated')
+      );
+    case 'infrastructure':
+      return INFRASTRUCTURE_RESOURCES.has(entry.resource);
+    case 'fault':
+      return entry.resource === 'destructive';
+    default:
+      return entry.resource !== 'destructive';
+  }
+}
+
 export function selectTests(
   manifest: TestManifest,
   gate: TestGate,
@@ -454,43 +486,12 @@ export function selectTests(
       ? explicitTestFiles
       : meaningfulChangedPaths.filter((path) => Boolean(manifest.tests[path])),
   );
-  const entries = Object.entries(manifest.tests);
-  let selected: string[];
-  if (explicitTestFiles.length > 0) {
-    selected = explicitTestFiles.filter((file) => Boolean(manifest.tests[file]));
-  } else if (gate === 'core') {
-    selected = entries
-      .filter(([, entry]) => entry.smoke || (entry.module === 'core' && entry.resource === 'pure'))
-      .map(([file]) => file);
-  } else if (gate === 'affected') {
-    selected =
-      meaningfulChangedPaths.length === 0
-        ? entries.filter(([, entry]) => entry.smoke).map(([file]) => file)
-        : entries
-            .filter(
-              ([file, entry]) =>
-                (direct.has(file) &&
-                  !INFRASTRUCTURE_RESOURCES.has(entry.resource) &&
-                  entry.resource !== 'destructive') ||
-                entry.smoke ||
-                (changedModules.has(entry.module) && entry.resource === 'pure'),
-            )
-            .map(([file]) => file);
-  } else if (gate === 'integration') {
-    selected = entries
-      .filter(
-        ([, entry]) =>
-          changedModules.has(entry.module) &&
-          (entry.resource === 'temp-isolated' || entry.resource === 'controller-home-isolated'),
-      )
-      .map(([file]) => file);
-  } else if (gate === 'infrastructure') {
-    selected = entries.filter(([, entry]) => INFRASTRUCTURE_RESOURCES.has(entry.resource)).map(([file]) => file);
-  } else if (gate === 'fault') {
-    selected = entries.filter(([, entry]) => entry.resource === 'destructive').map(([file]) => file);
-  } else {
-    selected = entries.filter(([, entry]) => entry.resource !== 'destructive').map(([file]) => file);
-  }
+  const selected =
+    explicitTestFiles.length > 0
+      ? explicitTestFiles.filter((file) => Boolean(manifest.tests[file]))
+      : Object.entries(manifest.tests)
+          .filter(([file, entry]) => isSelectedForGate(gate, file, entry, meaningfulChangedPaths, changedModules, direct))
+          .map(([file]) => file);
   selected.sort();
   const noChanges = meaningfulChangedPaths.length === 0;
   return {
