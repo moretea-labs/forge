@@ -807,6 +807,35 @@ describe('Process Runtime fine-grained resource claims', () => {
     }
   });
 
+  test('composed validation plus bounded Git inspections no longer owns checkout (#713)', () => {
+    const legacyWriter = lease('workspace:co1', 'write');
+    for (const command of [
+      'bun run check:type && git status --short',
+      'bun run check:type && git diff --check',
+      'set -euo pipefail; bun run check:type && git rev-parse HEAD',
+      ['bash', '-lc', 'set -euo pipefail; bun run check:type && git status --porcelain=v1'],
+    ]) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
+      expect(claims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
+      expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+      expect(claims.some((claim) => claimsConflict(claim, legacyWriter))).toBe(false);
+    }
+    for (const unsafe of [
+      'bun run check:type && git status > report.txt',
+      'bun run check:type && git diff --output=report.patch',
+      'bun run check:type && git status && touch src/changed.ts',
+      'bun run check:type && git rev-parse HEAD && git add .',
+      'bun run check:type && git status --porcelain=v2',
+      'bun run check:type && git status --short && node unknown.js',
+    ]) {
+      expect(claimsForRepositoryCommand(unsafe, 'repo1', 'co1')).toContainEqual({
+        resourceKey: 'workspace:co1',
+        mode: 'write',
+      });
+    }
+  });
+
   test('path-scoped git add and git commit do not take checkout-wide writer (#713)', () => {
     const staged = claimsForRepositoryCommand(['git', 'add', 'src/alpha.ts', 'src/beta.ts'], 'repo1', 'co1');
     expect(staged).toContainEqual({ resourceKey: 'git-index:co1', mode: 'exclusive' });

@@ -663,6 +663,23 @@ function isKnownReadOnlyArchitectureCheck(segment: string): boolean {
   return words.length === 2 && words[0] === 'node' && words[1] === 'scripts/check-runtime-architecture.mjs';
 }
 
+/** A bounded post-validation Git observation does not mutate the checkout.
+ * Restrict this to exact command shapes: arbitrary Git flags may invoke
+ * external helpers or write output and are not source-read evidence (#713).
+ */
+function isKnownReadOnlyGitValidationTail(segment: string): boolean {
+  if (/[`$<>&|;\\\n\r]/.test(segment)) return false;
+  const words = shellWordsPreservingQuotes(segment);
+  if (words[0] !== 'git') return false;
+  const args = words.slice(1);
+  return (
+    (args[0] === 'status' &&
+      (args.length === 1 || (args.length === 2 && ['--short', '--porcelain', '--porcelain=v1'].includes(args[1]!)))) ||
+    (args.length === 2 && args[0] === 'diff' && args[1] === '--check') ||
+    (args.length === 2 && args[0] === 'rev-parse' && args[1] === 'HEAD')
+  );
+}
+
 /**
  * Pure validation composition may observe source + shared build cache without a
  * checkout-wide writer (#713). Any non-build segment, file redirection, or
@@ -685,6 +702,7 @@ function isPureBuildOrTestComposition(command: string | readonly string[]): bool
   for (const segment of segments) {
     if (isShellOptionPrelude(segment)) continue;
     if (segmentHasFileRedirection(segment)) return false;
+    if (isKnownReadOnlyGitValidationTail(segment)) continue;
     if (
       !isKnownReadOnlyArchitectureCheck(segment) &&
       (!looksLikeBuildOrTest(segment) || isPotentiallyEmittingTypeScript(segment))
