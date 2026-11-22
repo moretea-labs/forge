@@ -104,6 +104,84 @@ describe('execution-speed test governance', () => {
     }
   });
 
+  test('Gate content identity hashes actual staged, unstaged, deleted and untracked bytes without commit-id churn (#714)', () => {
+    const repo = temporaryRepository();
+    try {
+      const clean = testContentDigest(repo);
+      git(repo, 'commit', '--allow-empty', '-qm', 'identity-only');
+      expect(testContentDigest(repo)).toBe(clean);
+      const path = join(repo, 'src/nested.ts');
+      writeFileSync(path, 'export const nested = 5;\n');
+      const dirty = testContentDigest(repo);
+      expect(dirty).not.toBe(clean);
+      git(repo, 'add', 'src/nested.ts');
+      expect(testContentDigest(repo)).toBe(dirty);
+      git(repo, 'commit', '-qm', 'staged content');
+      expect(testContentDigest(repo)).toBe(dirty);
+      writeFileSync(path, 'export const nested = 6;\n');
+      expect(testContentDigest(repo)).not.toBe(dirty);
+      writeFileSync(path, 'export const nested = 5;\n');
+      expect(testContentDigest(repo)).toBe(dirty);
+      rmSync(path);
+      expect(testContentDigest(repo)).not.toBe(dirty);
+      writeFileSync(path, 'export const nested = 5;\n');
+      expect(testContentDigest(repo)).toBe(dirty);
+      const untrackedPath = join(repo, 'src/new-file.ts');
+      writeFileSync(untrackedPath, 'const source = 7;\n');
+      const untracked = testContentDigest(repo);
+      expect(untracked).not.toBe(dirty);
+      git(repo, 'add', 'src/new-file.ts');
+      expect(testContentDigest(repo)).toBe(untracked);
+      git(repo, 'commit', '-qm', 'added file');
+      expect(testContentDigest(repo)).toBe(untracked);
+      rmSync(untrackedPath);
+      git(repo, 'add', '-u');
+      expect(testContentDigest(repo)).toBe(dirty);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('Gate content identity does not trust assume-unchanged or skip-worktree Git flags (#714)', () => {
+    const repo = temporaryRepository();
+    try {
+      const path = join(repo, 'src/nested.ts');
+      const initial = testContentDigest(repo);
+      git(repo, 'update-index', '--assume-unchanged', 'src/nested.ts');
+      writeFileSync(path, 'export const nested = 99;\n');
+      expect(testContentDigest(repo)).not.toBe(initial);
+      git(repo, 'update-index', '--no-assume-unchanged', 'src/nested.ts');
+      writeFileSync(path, 'export const nested = 1;\n');
+      expect(testContentDigest(repo)).toBe(initial);
+      git(repo, 'update-index', '--skip-worktree', 'src/nested.ts');
+      writeFileSync(path, 'export const nested = 66;\n');
+      expect(testContentDigest(repo)).not.toBe(initial);
+      git(repo, 'update-index', '--no-skip-worktree', 'src/nested.ts');
+      writeFileSync(path, 'export const nested = 1;\n');
+      expect(testContentDigest(repo)).toBe(initial);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('Gate content identity remains byte-exact with Git autocrlf conversion (#714)', () => {
+    const repo = temporaryRepository();
+    try {
+      git(repo, 'config', 'core.autocrlf', 'true');
+      const file = join(repo, 'src/nested.ts');
+      writeFileSync(file, 'export const nested = 8;\r\n');
+      const beforeStage = testContentDigest(repo);
+      git(repo, 'add', 'src/nested.ts');
+      expect(testContentDigest(repo)).toBe(beforeStage);
+      git(repo, 'commit', '-qm', 'normalized Git blob keeps CRLF checkout');
+      expect(testContentDigest(repo)).toBe(beforeStage);
+      writeFileSync(file, 'export const nested = 9;\r\n');
+      expect(testContentDigest(repo)).not.toBe(beforeStage);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   test('governed gate does not rescan whole Git delta after each step, but checks final candidate before caching', () => {
     const source = readFileSync(join(ROOT, 'scripts/run-governed-gate.ts'), 'utf8');
     expect(source).not.toContain('workspaceMutationDigest');

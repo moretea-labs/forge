@@ -154,12 +154,89 @@ function repositoryFiles(repoRoot: string, includeUntracked: boolean): string[] 
   return git(repoRoot, args).split('\0').filter(Boolean);
 }
 
+/**
+ * Whole-workspace content guard for Gates. Preserve every tracked/untracked
+ * input, but reuse Git's blob identity for clean regular files rather than
+ * re-reading thousands of unchanged files on each Gate boundary.
+ * Dirty, deleted and untracked content is still read from disk; neither the
+ * commit SHA nor Git index alone can stand in for the working-tree candidate.
+ */
 export function testContentDigest(repoRoot: string): string {
-  return hashFiles(
-    repoRoot,
-    repositoryFiles(repoRoot, true).filter((path) => !CONTENT_EXCLUDES.some((prefix) => path.startsWith(prefix))),
-    'forge-test-content-v1',
+  const index = new Map<string, { mode: string; blob: string; trusted: boolean }>();
+  // One Git query returns both stage data and unsafe index flags. Do not trust
+  // skip-worktree or assume-unchanged entries as proof of live file bytes.
+  for (const record of requiredGit(repoRoot, ['ls-files', '--stage', '-v', '-z']).split('\0').filter(Boolean)) {
+    const entry = /^(. )([0-7]{6}) ([0-9a-f]{40,64}) (\d)\t([\s\S]+)$/.exec(record);
+    if (!entry || entry[4] !== '0') throw new Error('Cannot fingerprint unresolved Git index entry');
+    index.set(entry[5]!, { mode: entry[2]!, blob: entry[3]!, trusted: entry[1] === 'H ' });
+  }
+  // --no-renames keeps each record one NUL-delimited status + path, including
+  // a staged rename's deleted source and newly created destination.
+  const modified = new Set<string>();
+  const untracked: string[] = [];
+  for (const record of requiredGit(repoRoot, [
+    'status',
+    '--porcelain=v1',
+    '--no-renames',
+    '-z',
+    '--untracked-files=all',
+  ])
+    .split('\0')
+    .filter(Boolean)) {
+    if (record.length < 4 || record[2] !== ' ') throw new Error('Cannot fingerprint Git working-tree status');
+    const path = record.slice(3);
+    if (record.slice(0, 2) === '??') untracked.push(path);
+    else modified.add(path);
+  }
+  const paths = [...new Set([...index.keys(), ...untracked])]
+    .filter((path) => !CONTENT_EXCLUDES.some((prefix) => path.startsWith(prefix)))
+    .sort();
+  const blobLength = index.values().next().value?.blob.length;
+  const format =
+    blobLength === 40
+      ? 'sha1'
+      : blobLength === 64
+        ? 'sha256'
+        : requiredGit(repoRoot, ['rev-parse', '--show-object-format']).trim();
+  if (format !== 'sha1' && format !== 'sha256') throw new Error('Unsupported Git object format: ' + format);
+  // Git's clean/smudge filters and line-ending conversions can make an index
+  // blob differ from the actual checked-out bytes even when status is clean.
+  // Preserve byte-exact CAS with the original full read in these repositories.
+  const attributes = spawnSync(
+    'git',
+    ['config', '--get-regexp', '^(core\\.autocrlf|core\\.eol|core\\.attributesfile|filter\\..*)'],
+    { cwd: repoRoot, encoding: 'utf8' },
   );
+  if (attributes.error || (attributes.status !== 0 && attributes.status !== 1)) {
+    throw new Error('Cannot inspect Git content conversion configuration');
+  }
+  const byteFiltersPossible =
+    attributes.status === 0 ||
+    existsSync(resolve(repoRoot, '.git/info/attributes')) ||
+    paths.some((path) => path === '.gitattributes' || path.endsWith('/.gitattributes'));
+  const digest = createHash('sha256').update('forge-test-content-v2\n');
+  for (const path of paths) {
+    digest.update(`${path}\0`);
+    const entry = index.get(path);
+    if (
+      !byteFiltersPossible &&
+      entry?.trusted &&
+      !modified.has(path) &&
+      (entry.mode === '100644' || entry.mode === '100755')
+    ) {
+      digest.update(entry.blob);
+      continue;
+    }
+    try {
+      const content = readFileSync(resolve(repoRoot, path));
+      // Match Git's blob identity exactly, so staging, committing or reverting
+      // identical bytes cannot make a content-only Gate cache miss.
+      digest.update(createHash(format).update(`blob ${content.length}\0`).update(content).digest('hex'));
+    } catch (_error) {
+      digest.update('missing');
+    }
+  }
+  return digest.digest('hex');
 }
 
 export function trackedTreeDigest(repoRoot: string): string {
