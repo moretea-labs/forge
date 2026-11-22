@@ -1,2 +1,2 @@
-/** Immutable access-policy value captured by a Work contract. */
-export type WorkAccessMode = 'request' | 'full_access';
+/** Immutable access-policy value for engineering execution snapshots. */
+export type EngineeringAccessMode = 'request' | 'full_access';

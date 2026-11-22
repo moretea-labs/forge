@@ -27,7 +27,7 @@ import {
   type RecoveryPolicy,
 } from './historical-work-domain';
 import type { ExecutionPlacement, ScopeRef } from '../../packages/kernel/identity/api/index';
-import type { WorkAccessMode } from '../../packages/kernel/engineering/domain/execution-snapshot';
+import type { EngineeringAccessMode } from '../../packages/kernel/engineering/domain/execution-snapshot';
 import type { WorkImplementationReviewRecord } from './historical-implementation-review';
 import type { EngineeringContextReceipt } from '../../packages/kernel/engineering/domain/engineering-contracts';
 
@@ -40,7 +40,7 @@ export interface WorkContractConstraints {
   allowCleanup?: boolean;
   allowDestructive?: boolean;
   /** Immutable execution-policy snapshot captured when work starts. */
-  accessMode?: WorkAccessMode;
+  accessMode?: EngineeringAccessMode;
   /** Explicit repository placement. `auto` is retained as the legacy durable-Work isolated/frozen-base default. */
   workspaceMode?: 'current' | 'isolated' | 'auto';
   /** True when a change alters the agreed architecture direction rather than only implementation details. */
