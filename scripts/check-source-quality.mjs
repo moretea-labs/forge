@@ -75,12 +75,16 @@ if (biomeFiles.length > 0) {
   }
 }
 
-// These two desktop Swift files predate a swift-format baseline. Their
-// large existing indentation/spacing debt is not an authorization for an
-// unrelated whole-file rewrite. Require syntax parsing here; other Swift
-// sources still use strict formatting.
+// These desktop Swift files predate a swift-format baseline. Their large
+// existing indentation/spacing debt is not an authorization for an unrelated
+// whole-file rewrite. Mechanical shell splits keep the same parse-only gate.
+// Require syntax parsing here; other Swift sources still use strict formatting.
 const legacySwiftPaths = new Set([
   'apps/desktop-native/Sources/ForgeNative/ForgeNativeApp.swift',
+  'apps/desktop-native/Sources/ForgeNative/ForgeClientShell.swift',
+  'apps/desktop-native/Sources/ForgeNative/ForgeClientSidebar.swift',
+  'apps/desktop-native/Sources/ForgeNative/AgentWorkbenchViews.swift',
+  'apps/desktop-native/Sources/ForgeNative/ForgeClientUtilityPanes.swift',
   'apps/desktop-native/Sources/ForgeNative/ZenModeView.swift',
 ]);
 if (swiftFiles.length > 0) {
