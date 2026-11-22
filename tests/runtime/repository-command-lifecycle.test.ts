@@ -51,6 +51,7 @@ import { waitForExecutionJob } from '../../src/runtime/execution/jobs/wait';
 import { executeExecutionJob } from '../../src/runtime/execution/workers/executor';
 import {
   acquireExecutionLeases,
+  withRepositoryMutationExclusionAsync,
   listActiveLeases,
   releaseExecutionLeases,
   renewExecutionLeases,
@@ -588,6 +589,54 @@ describe('repository command execution lifecycle', () => {
       gitOutput(repoRoot, ['show', '--pretty=format:', '--name-only', 'HEAD']).split(/\r?\n/).filter(Boolean),
     ).toEqual(['README.md']);
     expect(gitOutput(repoRoot, ['diff', '--cached', '--name-only'])).toBe('other.txt');
+  });
+
+  test('two awaited path-scoped editors overlap without repository lock and preserve conflict fencing (#713)', async () => {
+    const controllerHome = tempRoot('forge-713-async-writers-home-');
+    const repoRoot = tempRoot('forge-713-async-writers-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
+    const alpha = [{ resourceKey: `path:${repository.activeCheckoutId}:README.md`, mode: 'write' as const }];
+    const beta = [{ resourceKey: `path:${repository.activeCheckoutId}:other.txt`, mode: 'write' as const }];
+    let notifyStarted: (() => void) | undefined;
+    let releaseAlpha: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { notifyStarted = resolve; });
+    const hold = new Promise<void>((resolve) => { releaseAlpha = resolve; });
+    const writerA = withRepositoryMutationExclusionAsync(controllerHome, repository.repoId, 'async-alpha', async () => {
+      notifyStarted?.();
+      await hold;
+      writeFileSync(join(repoRoot, 'README.md'), 'alpha wrote\n');
+      return 'alpha';
+    }, undefined, alpha);
+    try {
+      await started;
+      const held = listActiveLeases(controllerHome, repository.repoId);
+      expect(held).toHaveLength(1);
+      expect(held[0]).toMatchObject({ checkoutId: repository.activeCheckoutId });
+      const writerB = await withRepositoryMutationExclusionAsync(controllerHome, repository.repoId, 'async-beta', async () => {
+        writeFileSync(join(repoRoot, 'other.txt'), 'beta wrote\n');
+        return 'beta';
+      }, undefined, beta);
+      expect(writerB).toBe('beta');
+      expect(readFileSync(join(repoRoot, 'other.txt'), 'utf8')).toBe('beta wrote\n');
+      await expect(withRepositoryMutationExclusionAsync(controllerHome, repository.repoId, 'async-conflict', async () => 'unsafe', undefined, alpha))
+        .rejects.toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+      await expect(withRepositoryMutationExclusionAsync(controllerHome, repository.repoId, 'legacy-async', async () => 'unsafe'))
+        .rejects.toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+      await expect(withRepositoryMutationExclusionAsync(controllerHome, repository.repoId, 'unscoped-async', async () => 'unsafe', undefined, [
+        { resourceKey: 'path:README.md', mode: 'write' },
+      ])).rejects.toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+      expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(1);
+    } finally {
+      releaseAlpha?.();
+      expect(await writerA).toBe('alpha');
+    }
+    expect(readFileSync(join(repoRoot, 'README.md'), 'utf8')).toBe('alpha wrote\n');
+    expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
+    await expect(withRepositoryMutationExclusionAsync(controllerHome, repository.repoId, 'async-throws', async () => {
+      throw new Error('EXPECTED_ASYNC_WRITE_FAILURE');
+    }, undefined, beta)).rejects.toThrow('EXPECTED_ASYNC_WRITE_FAILURE');
+    expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
   });
 
   test('exact-path commit ignores unrelated Process source ownership but retains path/index fences (#713)', () => {

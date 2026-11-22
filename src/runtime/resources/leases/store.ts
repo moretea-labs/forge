@@ -12,7 +12,7 @@ import type { ResourceClaimSpec } from '../../execution/jobs/types';
 import { readJsonFile, removeFile, writeJsonAtomic } from '../../shared/json-files';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { touchSchedulerWakeSignal } from '../../control-plane/global-scheduler/wake-signal';
-import { claimsConflict } from '../claims/conflicts';
+import { claimsConflict, normalizeClaimPath } from '../claims/conflicts';
 import { appendRuntimeEvent } from '../../evidence/event-ledger';
 import {
   assertRuntimeMayWrite,
@@ -399,6 +399,83 @@ export async function withRepositoryMutationExclusionAsync<T>(
   ttlMs?: number,
   mutationClaims?: ResourceClaimSpec[],
 ): Promise<T> {
+  // Only exact-path ownership can retire the repository ControllerLock for
+  // awaited work. Current Local Bridge workspace-wide edit verification and
+  // unknown source effects retain their original broad exclusion (#713).
+  const exactPaths =
+    mutationClaims &&
+    mutationClaims.length > 0 &&
+    mutationClaims.some((claim) => /^path:[^:/]+:.+/.test(claim.resourceKey)) &&
+    mutationClaims.every((claim) => {
+      if (!claim.resourceKey.startsWith('path:')) {
+        return /^(?:git-index:|git-head:|git-ref:|git-refs:)/.test(claim.resourceKey);
+      }
+      const path = /^path:([^:/]+):(.+)$/.exec(claim.resourceKey)?.[2];
+      return path !== undefined && normalizeClaimPath(path) !== null;
+    });
+  if (exactPaths) {
+    const leaseOwner = `editor:${owner}:${randomUUID()}`;
+    const effects = {
+      visibility: 'ephemeral' as const,
+      notifyScheduler: false,
+      invalidateProjection: false,
+      emitRuntimeEvent: false,
+    };
+    const scopedClaims = mutationClaims.map((claim) => {
+      const checkoutFromKey = /^(?:path|git-index|git-head):([^:]+)/.exec(claim.resourceKey)?.[1];
+      if (claim.checkoutId && checkoutFromKey && claim.checkoutId !== checkoutFromKey) {
+        throw new Error('LEASE_CHECKOUT_SCOPE_MISMATCH');
+      }
+      return {
+        ...claim,
+        repoId: claim.repoId ?? repoId,
+        ...(claim.checkoutId || checkoutFromKey ? { checkoutId: claim.checkoutId ?? checkoutFromKey } : {}),
+      };
+    });
+    const leaseTtlMs = Math.max(15_000, ttlMs ?? 60_000);
+    const acquired = await acquireExecutionLeasesAsync(controllerHome, repoId, leaseOwner, scopedClaims, {
+      ...effects,
+      ttlMs: leaseTtlMs,
+    });
+    if (!acquired.acquired) {
+      const blocker = acquired.blockers[0];
+      throw new Error(
+        `REPOSITORY_PROCESS_LEASE_HELD: ${blocker?.resourceKey ?? 'unknown-resource'}` +
+          ` owned by ${blocker?.ownerJobId ?? 'unknown-owner'}; refusing overlapping source mutation`,
+      );
+    }
+    const expected = acquired.leases.map((lease) => ({
+      leaseId: lease.leaseId,
+      fencingToken: lease.fencingToken,
+      repoId: lease.repoId,
+      checkoutId: lease.checkoutId,
+      resourceKey: lease.resourceKey,
+      ownerIdentityDigest: lease.ownerIdentityDigest,
+    }));
+    let renewalFailure: unknown;
+    // Awaited workers can outlive their initial lease. Keep the existing
+    // fenced owner alive instead of silently expiring it mid-mutation.
+    const heartbeat = setInterval(() => {
+      if (renewalFailure) return;
+      try {
+        renewExecutionLeases(controllerHome, repoId, leaseOwner, leaseTtlMs, expected);
+      } catch (error) {
+        renewalFailure = error;
+      }
+    }, Math.max(1_000, Math.min(10_000, Math.trunc(leaseTtlMs / 3))));
+    heartbeat.unref?.();
+    try {
+      const result = await mutate();
+      if (renewalFailure) throw renewalFailure;
+      // A long awaited task may outlive a runtime fence or a missed heartbeat.
+      // Accept its result only if we still own precisely the same lease tokens.
+      renewExecutionLeases(controllerHome, repoId, leaseOwner, leaseTtlMs, expected);
+      return result;
+    } finally {
+      clearInterval(heartbeat);
+      releaseExecutionLeases(controllerHome, repoId, leaseOwner, expected, effects);
+    }
+  }
   return withControllerLockAsync(
     controllerHome,
     { scope: 'repository', repoId },
