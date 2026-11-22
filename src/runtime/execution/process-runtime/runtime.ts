@@ -475,21 +475,18 @@ function expectedLeaseRefsForProcess(
   fencingToken: number;
   repoId: string;
   checkoutId?: string;
-  workId?: string;
   resourceKey: string;
 }> {
   return (record.leaseRefs ?? []).flatMap((ref) => {
     // A malformed or cross-repository reference is never eligible for cleanup.
     if (!ref.leaseId || !ref.resourceKey || (ref.repoId && ref.repoId !== repoId)) return [];
     if (ref.checkoutId && record.checkoutId && ref.checkoutId !== record.checkoutId) return [];
-    if (ref.workId && record.workId && ref.workId !== record.workId) return [];
     return [
       {
         leaseId: ref.leaseId,
         fencingToken: ref.fencingToken,
         repoId,
         ...(ref.checkoutId ? { checkoutId: ref.checkoutId } : {}),
-        ...(ref.workId ? { workId: ref.workId } : {}),
         resourceKey: ref.resourceKey,
       },
     ];
@@ -1189,7 +1186,6 @@ function recordToHandle(
       : undefined;
   return {
     processId: safeRecord.processId,
-    workId: safeRecord.workId,
     commandId: safeRecord.commandId ?? safeRecord.processId,
     status: safeRecord.status,
     contractStatus: processContractStatus(safeRecord.status),

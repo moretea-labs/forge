@@ -1655,7 +1655,7 @@ describe('rh_work Requirement bootstrap', () => {
     });
     expect(getPlanContract(store, planId)).toMatchObject({ planId, revision: 1, status: 'draft' });
     expect(getPlanContract(store, planId)?.steps[0]).toMatchObject({ allowedPaths: ['src/**'] });
-    expect(getPlanContract(store, planId)?.steps[0]?.workId).toBeUndefined();
+    expect(getPlanContract(store, planId)?.steps[0]).not.toHaveProperty('workId');
     expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R2')).toBeUndefined();
     // Compare the canonical aggregate: retired top-level allowedPaths are not
     // a scope authority. The entire Work must remain unchanged by Plan repair.

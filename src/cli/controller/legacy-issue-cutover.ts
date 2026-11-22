@@ -34,9 +34,7 @@ function repositoryIdentity(repoRoot: string): { repoId?: string } {
   if (!existsSync(path)) return {};
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as { repoId?: unknown };
-    return typeof parsed.repoId === 'string' && parsed.repoId.trim()
-      ? { repoId: parsed.repoId.trim() }
-      : {};
+    return typeof parsed.repoId === 'string' && parsed.repoId.trim() ? { repoId: parsed.repoId.trim() } : {};
   } catch {
     return {};
   }
@@ -109,7 +107,6 @@ export interface FrozenLegacyTaskProjection {
   declaredStatus: TaskStatus;
   effectiveStatus: TaskStatus;
   planStepStatus: PlanContract['steps'][number]['status'];
-  workId?: string;
   checks: string[];
   acceptanceCriteria: string[];
   evidenceRefs: EvidenceRef[];
@@ -161,9 +158,19 @@ export function frozenLegacyIssueProjection(
   if (!cutover.retired || !cutover.repoId || !cutover.migration) return undefined;
   const planId = portfolioPlanIdForIssue(issueId);
   if (!planId || !cutover.migration.sourceIssueIds.includes(issueId)) return undefined;
-  const plan = readControlPlaneRecord<PlanContract>(cutover.controllerHome, 'plan_contract', cutover.repoId, planId)?.value;
+  const plan = readControlPlaneRecord<PlanContract>(
+    cutover.controllerHome,
+    'plan_contract',
+    cutover.repoId,
+    planId,
+  )?.value;
   if (!plan?.requirementId) throw new Error(`MIGRATED_PLAN_REQUIREMENT_MISSING: ${planId}`);
-  const requirement = readControlPlaneRecord<Requirement>(cutover.controllerHome, 'requirement', 'controller', plan.requirementId)?.value;
+  const requirement = readControlPlaneRecord<Requirement>(
+    cutover.controllerHome,
+    'requirement',
+    'controller',
+    plan.requirementId,
+  )?.value;
   if (!requirement) throw new Error(`MIGRATED_REQUIREMENT_NOT_FOUND: ${plan.requirementId}`);
   const projected = projectedIssueStatus(requirement.state);
   const tasks = plan.steps.map((step) => ({
@@ -174,7 +181,6 @@ export function frozenLegacyIssueProjection(
     declaredStatus: projectedTaskStatus(step.status),
     effectiveStatus: projectedTaskStatus(step.status),
     planStepStatus: step.status,
-    workId: step.workId,
     checks: step.checks,
     acceptanceCriteria: step.acceptanceCriteria,
     evidenceRefs: detailLevel === 'full' ? step.evidenceRefs : step.evidenceRefs.slice(-3),
@@ -205,7 +211,8 @@ export function frozenLegacyIssueProjection(
     lifecycleStatus: projected.lifecycle,
     updatedAt: [requirement.updatedAt, plan.updatedAt].sort().at(-1) ?? requirement.updatedAt,
     tasks,
-    notice: 'Deprecated frozen compatibility projection. Requirement, Plan and Work records in controller-home SQLite are authoritative; repository Issue/Task file changes are ignored.',
+    notice:
+      'Deprecated frozen compatibility projection. Requirement, Plan and Work records in controller-home SQLite are authoritative; repository Issue/Task file changes are ignored.',
   };
 }
 
@@ -241,17 +248,22 @@ export interface MigratedTaskCompletionState {
   receiptId?: string;
 }
 
-function completionEvidence(receipt: CompletionReceipt, input: {
-  reviewer: string;
-  note?: string;
-  checks?: Array<{ checkId: string; ok: boolean; summary?: string }>;
-}): EvidenceRef[] {
-  const refs: EvidenceRef[] = [{
-    evidenceId: receipt.receiptId,
-    title: 'Completion receipt',
-    summary: `Delivered ${receipt.targetRevision}; delivery=${receipt.delivery.status}; cleanup=${receipt.cleanup.status}; reviewer=${input.reviewer}.`,
-    detailLevel: 'detail',
-  }];
+function completionEvidence(
+  receipt: CompletionReceipt,
+  input: {
+    reviewer: string;
+    note?: string;
+    checks?: Array<{ checkId: string; ok: boolean; summary?: string }>;
+  },
+): EvidenceRef[] {
+  const refs: EvidenceRef[] = [
+    {
+      evidenceId: receipt.receiptId,
+      title: 'Completion receipt',
+      summary: `Delivered ${receipt.targetRevision}; delivery=${receipt.delivery.status}; cleanup=${receipt.cleanup.status}; reviewer=${input.reviewer}.`,
+      detailLevel: 'detail',
+    },
+  ];
   for (const check of input.checks ?? []) {
     refs.push({
       evidenceId: `${receipt.receiptId}:${check.checkId}`,
@@ -260,7 +272,8 @@ function completionEvidence(receipt: CompletionReceipt, input: {
       detailLevel: 'detail',
     });
   }
-  if (input.note?.trim()) refs.push({ title: 'Review note', summary: input.note.trim().slice(0, 1_000), detailLevel: 'detail' });
+  if (input.note?.trim())
+    refs.push({ title: 'Review note', summary: input.note.trim().slice(0, 1_000), detailLevel: 'detail' });
   return refs.slice(0, 12);
 }
 
@@ -271,7 +284,10 @@ export interface MigratedIssueReadinessProjection {
   states: Map<string, EffectiveTaskState>;
 }
 
-function projectedIssueStatus(state: Requirement['state']): { issueStatus: IssueStatus; lifecycle: IssueLifecycleStatus } {
+function projectedIssueStatus(state: Requirement['state']): {
+  issueStatus: IssueStatus;
+  lifecycle: IssueLifecycleStatus;
+} {
   if (state === 'done') return { issueStatus: 'done', lifecycle: 'completed' };
   if (state === 'cancelled') return { issueStatus: 'cancelled', lifecycle: 'cancelled' };
   if (state === 'planned') return { issueStatus: 'planned', lifecycle: 'active' };
@@ -283,19 +299,57 @@ function planStepTaskState(
   status: PlanContract['steps'][number]['status'],
   lifecycle: IssueLifecycleStatus,
 ): EffectiveTaskState {
-  const mapping: Record<typeof status, {
-    declaredStatus: TaskStatus;
-    effectiveStatus: EffectiveTaskState['effectiveStatus'];
-    verificationStatus: VerificationStatus;
-    terminal: boolean;
-    dispatchable: boolean;
-    dependencySatisfied: boolean;
-  }> = {
-    pending: { declaredStatus: 'planned', effectiveStatus: 'ready', verificationStatus: 'not_started', terminal: false, dispatchable: true, dependencySatisfied: false },
-    ready: { declaredStatus: 'ready', effectiveStatus: 'ready', verificationStatus: 'not_started', terminal: false, dispatchable: true, dependencySatisfied: false },
-    executing: { declaredStatus: 'running', effectiveStatus: 'running', verificationStatus: 'pending', terminal: false, dispatchable: false, dependencySatisfied: false },
-    validating: { declaredStatus: 'verifying', effectiveStatus: 'verifying', verificationStatus: 'pending', terminal: false, dispatchable: false, dependencySatisfied: false },
-    completed: { declaredStatus: 'done', effectiveStatus: 'done', verificationStatus: 'passed', terminal: true, dispatchable: false, dependencySatisfied: true },
+  const mapping: Record<
+    typeof status,
+    {
+      declaredStatus: TaskStatus;
+      effectiveStatus: EffectiveTaskState['effectiveStatus'];
+      verificationStatus: VerificationStatus;
+      terminal: boolean;
+      dispatchable: boolean;
+      dependencySatisfied: boolean;
+    }
+  > = {
+    pending: {
+      declaredStatus: 'planned',
+      effectiveStatus: 'ready',
+      verificationStatus: 'not_started',
+      terminal: false,
+      dispatchable: true,
+      dependencySatisfied: false,
+    },
+    ready: {
+      declaredStatus: 'ready',
+      effectiveStatus: 'ready',
+      verificationStatus: 'not_started',
+      terminal: false,
+      dispatchable: true,
+      dependencySatisfied: false,
+    },
+    executing: {
+      declaredStatus: 'running',
+      effectiveStatus: 'running',
+      verificationStatus: 'pending',
+      terminal: false,
+      dispatchable: false,
+      dependencySatisfied: false,
+    },
+    validating: {
+      declaredStatus: 'verifying',
+      effectiveStatus: 'verifying',
+      verificationStatus: 'pending',
+      terminal: false,
+      dispatchable: false,
+      dependencySatisfied: false,
+    },
+    completed: {
+      declaredStatus: 'done',
+      effectiveStatus: 'done',
+      verificationStatus: 'passed',
+      terminal: true,
+      dispatchable: false,
+      dependencySatisfied: true,
+    },
   };
   const selected = mapping[status];
   return {
@@ -326,9 +380,19 @@ export function migratedIssueReadinessProjection(
   if (!cutover.retired || !cutover.repoId) return undefined;
   const planId = portfolioPlanIdForIssue(issue.id);
   if (!planId) return undefined;
-  const plan = readControlPlaneRecord<PlanContract>(cutover.controllerHome, 'plan_contract', cutover.repoId, planId)?.value;
+  const plan = readControlPlaneRecord<PlanContract>(
+    cutover.controllerHome,
+    'plan_contract',
+    cutover.repoId,
+    planId,
+  )?.value;
   if (!plan?.requirementId) throw new Error(`MIGRATED_PLAN_REQUIREMENT_MISSING: ${planId}`);
-  const requirement = readControlPlaneRecord<Requirement>(cutover.controllerHome, 'requirement', 'controller', plan.requirementId)?.value;
+  const requirement = readControlPlaneRecord<Requirement>(
+    cutover.controllerHome,
+    'requirement',
+    'controller',
+    plan.requirementId,
+  )?.value;
   if (!requirement) throw new Error(`MIGRATED_REQUIREMENT_NOT_FOUND: ${plan.requirementId}`);
   const projected = projectedIssueStatus(requirement.state);
   const states = new Map<string, EffectiveTaskState>();
@@ -338,15 +402,30 @@ export function migratedIssueReadinessProjection(
   return { planId, requirementId: plan.requirementId, issueStatus: projected.issueStatus, states };
 }
 
-export function migratedTaskCompletionState(repoRoot: string, issueId: string, taskId: string): MigratedTaskCompletionState {
+export function migratedTaskCompletionState(
+  repoRoot: string,
+  issueId: string,
+  taskId: string,
+): MigratedTaskCompletionState {
   const cutover = legacyIssueCutoverState(repoRoot);
   if (!cutover.retired || !cutover.repoId) return { migrated: false, completed: false };
   const planId = portfolioPlanIdForIssue(issueId);
   if (!planId) return { migrated: false, completed: false };
-  const plan = readControlPlaneRecord<PlanContract>(cutover.controllerHome, 'plan_contract', cutover.repoId, planId)?.value;
+  const plan = readControlPlaneRecord<PlanContract>(
+    cutover.controllerHome,
+    'plan_contract',
+    cutover.repoId,
+    planId,
+  )?.value;
   const step = plan?.steps.find((candidate) => candidate.id === taskId);
   const receiptId = step?.evidenceRefs.find((reference) => reference.title === 'Completion receipt')?.evidenceId;
-  return { migrated: Boolean(plan && step), completed: step?.status === 'completed', planId, requirementId: plan?.requirementId, receiptId };
+  return {
+    migrated: Boolean(plan && step),
+    completed: step?.status === 'completed',
+    planId,
+    requirementId: plan?.requirementId,
+    receiptId,
+  };
 }
 
 export function recordMigratedTaskCompletion(
@@ -367,20 +446,36 @@ export function recordMigratedTaskCompletion(
 
   return withControlPlaneTransaction(cutover.controllerHome, (database) => {
     const migration = readControlPlaneRecordWithinTransaction<RequirementPortfolioMigrationRecord>(
-      database, 'requirement_portfolio_migration', cutover.repoId!, REQUIREMENT_PORTFOLIO_MIGRATION_ID,
+      database,
+      'requirement_portfolio_migration',
+      cutover.repoId!,
+      REQUIREMENT_PORTFOLIO_MIGRATION_ID,
     );
     if (!migration) throw new Error('REQUIREMENT_PORTFOLIO_MIGRATION_NOT_FOUND');
-    const planRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', cutover.repoId!, planId);
+    const planRecord = readControlPlaneRecordWithinTransaction<PlanContract>(
+      database,
+      'plan_contract',
+      cutover.repoId!,
+      planId,
+    );
     if (!planRecord) throw new Error(`MIGRATED_PLAN_NOT_FOUND: ${planId}`);
     const stepIndex = planRecord.value.steps.findIndex((step) => step.id === input.taskId);
     if (stepIndex < 0) throw new Error(`MIGRATED_PLAN_STEP_NOT_FOUND: ${planId}/${input.taskId}`);
     const currentStep = planRecord.value.steps[stepIndex];
-    const existingReceipt = currentStep.evidenceRefs.find((reference) => reference.title === 'Completion receipt')?.evidenceId;
+    const existingReceipt = currentStep.evidenceRefs.find(
+      (reference) => reference.title === 'Completion receipt',
+    )?.evidenceId;
     if (currentStep.status === 'completed') {
       if (existingReceipt && existingReceipt !== input.receipt.receiptId) {
         throw new Error(`MIGRATED_PLAN_STEP_RECEIPT_CONFLICT: ${planId}/${input.taskId}`);
       }
-      return { migrated: true, completed: true, planId, requirementId: planRecord.value.requirementId, receiptId: existingReceipt };
+      return {
+        migrated: true,
+        completed: true,
+        planId,
+        requirementId: planRecord.value.requirementId,
+        receiptId: existingReceipt,
+      };
     }
 
     const at = input.receipt.recordedAt;
@@ -401,22 +496,39 @@ export function recordMigratedTaskCompletion(
       status: allCompleted ? 'finalized' : 'executing',
       evidenceRefs: [
         ...planRecord.value.evidenceRefs.filter((reference) => reference.evidenceId !== input.receipt.receiptId),
-        { evidenceId: input.receipt.receiptId, title: `Completed ${input.taskId}`, summary: `Integrated ${input.receipt.targetRevision}.`, detailLevel: 'detail' as const },
+        {
+          evidenceId: input.receipt.receiptId,
+          title: `Completed ${input.taskId}`,
+          summary: `Integrated ${input.receipt.targetRevision}.`,
+          detailLevel: 'detail' as const,
+        },
       ].slice(-20),
       updatedAt: at,
     };
     writeControlPlaneRecordWithinTransaction(database, {
-      namespace: 'plan_contract', scope: cutover.repoId!, key: planId, schemaVersion: 1,
-      value: nextPlan, action: 'migrated_plan_step_completed', expectedRevision: planRecord.revision,
+      namespace: 'plan_contract',
+      scope: cutover.repoId!,
+      key: planId,
+      schemaVersion: 1,
+      value: nextPlan,
+      action: 'migrated_plan_step_completed',
+      expectedRevision: planRecord.revision,
     });
 
     if (nextPlan.requirementId) {
-      const requirementRecord = readControlPlaneRecordWithinTransaction<Requirement>(database, 'requirement', 'controller', nextPlan.requirementId);
+      const requirementRecord = readControlPlaneRecordWithinTransaction<Requirement>(
+        database,
+        'requirement',
+        'controller',
+        nextPlan.requirementId,
+      );
       if (!requirementRecord) throw new Error(`MIGRATED_REQUIREMENT_NOT_FOUND: ${nextPlan.requirementId}`);
       const current = requirementRecord.value;
       const next: Requirement = {
         ...current,
-        requiredDeliveryReferences: [...new Set([...current.requiredDeliveryReferences, input.receipt.receiptId])].slice(-50),
+        requiredDeliveryReferences: [
+          ...new Set([...current.requiredDeliveryReferences, input.receipt.receiptId]),
+        ].slice(-50),
         state: allCompleted && current.activePlanId === planId ? 'done' : current.state,
         needsAttention: allCompleted && current.activePlanId === planId ? false : current.needsAttention,
         attentionSummary: allCompleted && current.activePlanId === planId ? undefined : current.attentionSummary,
@@ -425,11 +537,21 @@ export function recordMigratedTaskCompletion(
         auditRefs: [...new Set([...current.auditRefs, input.receipt.receiptId])].slice(-50),
       };
       writeControlPlaneRecordWithinTransaction(database, {
-        namespace: 'requirement', scope: 'controller', key: next.requirementId, schemaVersion: 1,
-        value: next, action: allCompleted ? 'requirement_delivery_completed' : 'requirement_plan_step_completed',
+        namespace: 'requirement',
+        scope: 'controller',
+        key: next.requirementId,
+        schemaVersion: 1,
+        value: next,
+        action: allCompleted ? 'requirement_delivery_completed' : 'requirement_plan_step_completed',
         expectedRevision: requirementRecord.revision,
       });
     }
-    return { migrated: true, completed: true, planId, requirementId: nextPlan.requirementId, receiptId: input.receipt.receiptId };
+    return {
+      migrated: true,
+      completed: true,
+      planId,
+      requirementId: nextPlan.requirementId,
+      receiptId: input.receipt.receiptId,
+    };
   });
 }

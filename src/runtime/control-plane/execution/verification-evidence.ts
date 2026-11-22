@@ -24,9 +24,9 @@ export interface EffectiveVerificationEvidence {
   staleReason?: string;
 }
 
-export interface HistoricalVerificationEvidenceIdentity extends Omit<VerificationEvidenceIdentity, 'workspaceFingerprint'> {
+export interface HistoricalVerificationEvidenceIdentity
+  extends Omit<VerificationEvidenceIdentity, 'workspaceFingerprint'> {
   repoId: string;
-  workId: string;
   checkoutId?: string;
 }
 
@@ -92,11 +92,18 @@ export function workspaceValidationFingerprint(
   root: string,
   status: Pick<RepositoryGitStatusSnapshot, 'head' | 'branch' | 'porcelain' | 'staged' | 'unstaged' | 'untracked'>,
 ): string {
-  return fingerprintWorkspace(root, status, { paths: 0, bytes: 0, gitDeadline: performance.now() + MAX_NESTED_GIT_READ_MS });
+  return fingerprintWorkspace(root, status, {
+    paths: 0,
+    bytes: 0,
+    gitDeadline: performance.now() + MAX_NESTED_GIT_READ_MS,
+  });
 }
 
 /** Git exposes embedded repositories as atomic directories, not ordinary files. */
-function nestedGitStatus(root: string, deadline: number): Pick<RepositoryGitStatusSnapshot, 'head' | 'branch' | 'porcelain' | 'staged' | 'unstaged' | 'untracked'> {
+function nestedGitStatus(
+  root: string,
+  deadline: number,
+): Pick<RepositoryGitStatusSnapshot, 'head' | 'branch' | 'porcelain' | 'staged' | 'unstaged' | 'untracked'> {
   // Never inherit a caller's alternate Git directory/index or invoke fsmonitor.
   // Optional locks are disabled so observing a nested checkout cannot refresh its index.
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
@@ -104,7 +111,9 @@ function nestedGitStatus(root: string, deadline: number): Pick<RepositoryGitStat
     const remainingMs = Math.floor(deadline - performance.now());
     if (remainingMs <= 0) throw new Error('WORK_VALIDATION_NESTED_GIT_TIMEOUT');
     const result = spawnSync('git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-C', root, ...args], {
-      encoding: 'utf8', timeout: remainingMs, maxBuffer: 512 * 1024,
+      encoding: 'utf8',
+      timeout: remainingMs,
+      maxBuffer: 512 * 1024,
       env: { ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -115,7 +124,15 @@ function nestedGitStatus(root: string, deadline: number): Pick<RepositoryGitStat
   const topLevel = read(['rev-parse', '--show-toplevel'])!.replace(/\r?\n$/, '');
   if (realpathSync(topLevel) !== realpathSync(root)) throw new Error(`WORK_VALIDATION_PATH_TYPE_UNSUPPORTED: ${root}`);
   const head = read(['rev-parse', '--verify', '--quiet', 'HEAD'], true)?.trim() ?? null;
-  const porcelain = read(['status', '--porcelain=v1', '--branch', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**'])!;
+  const porcelain = read([
+    'status',
+    '--porcelain=v1',
+    '--branch',
+    '--untracked-files=all',
+    '--',
+    '.',
+    ':(exclude).ai/harness/**',
+  ])!;
   // The branch header remains in porcelain, including detached/unborn identity.
   return { head, branch: null, porcelain, ...splitRepositoryGitStatus(porcelain) };
 }
@@ -135,12 +152,14 @@ function fingerprintWorkspace(
     throw new Error(`WORK_VALIDATION_TOO_MANY_PATHS: ${budget.paths} exceeds ${MAX_VALIDATION_PATHS}`);
   }
   const hash = createHash('sha256');
-  hash.update(JSON.stringify({
-    head: status.head,
-    branch: status.branch,
-    porcelain: status.porcelain,
-    changedPaths,
-  }));
+  hash.update(
+    JSON.stringify({
+      head: status.head,
+      branch: status.branch,
+      porcelain: status.porcelain,
+      changedPaths,
+    }),
+  );
 
   for (const path of changedPaths) {
     const absolutePath = resolve(canonicalRoot, path);
@@ -184,32 +203,42 @@ export function workValidationInputFingerprint(
   workspaceFingerprint: string,
   requestedChecks: string[],
 ): string {
-  return createHash('sha256').update(JSON.stringify({
-    sourceRevision,
-    workspaceFingerprint,
-    requestedChecks: [...requestedChecks].sort(),
-  })).digest('hex');
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        sourceRevision,
+        workspaceFingerprint,
+        requestedChecks: [...requestedChecks].sort(),
+      }),
+    )
+    .digest('hex');
 }
 
 /** Stable identity for semantic inputs that make a check result reusable. Invocation ids are audited separately. */
 export function verificationInputFingerprint(input: VerificationEvidenceIdentity): string {
-  return createHash('sha256').update(JSON.stringify({
-    sourceRevision: input.sourceRevision,
-    workspaceFingerprint: input.workspaceFingerprint ?? null,
-    checkId: input.checkId,
-    requestedChecks: [...input.requestedChecks].sort(),
-  })).digest('hex');
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        sourceRevision: input.sourceRevision,
+        workspaceFingerprint: input.workspaceFingerprint ?? null,
+        checkId: input.checkId,
+        requestedChecks: [...input.requestedChecks].sort(),
+      }),
+    )
+    .digest('hex');
 }
 
 export function commandFingerprint(checkId: string, commandId: string | undefined): string {
-  return createHash('sha256').update(JSON.stringify({ checkId, commandId: commandId ?? null })).digest('hex');
+  return createHash('sha256')
+    .update(JSON.stringify({ checkId, commandId: commandId ?? null }))
+    .digest('hex');
 }
 
 /**
- * Selects immutable Work-bound verification evidence for an explicit historical
- * revision. Unlike current-workspace reuse, the historical workspace identity
- * comes from each durable receipt record and is verified against the record's
- * persisted semantic and command fingerprints.
+ * Selects immutable repository-bound verification evidence for an explicit
+ * historical revision. Unlike current-workspace reuse, the historical workspace
+ * identity comes from each durable receipt record and is verified against the
+ * record's persisted semantic and command fingerprints.
  */
 export function historicalVerificationEvidenceAtRevision(
   records: VerificationRecord[],
@@ -221,22 +250,37 @@ export function historicalVerificationEvidenceAtRevision(
       if (record.supersedes || record.outcome === 'superseded') {
         return { record, current: false, staleReason: 'superseded' };
       }
-      if (!record.sourceRevision || !record.workspaceFingerprint || !record.verificationInputFingerprint || !record.commandFingerprint) {
+      if (
+        !record.sourceRevision ||
+        !record.workspaceFingerprint ||
+        !record.verificationInputFingerprint ||
+        !record.commandFingerprint
+      ) {
         return { record, current: false, staleReason: 'historical evidence has no exact input identity' };
       }
       if (record.sourceRevision !== expected.sourceRevision) {
-        return { record, current: false, staleReason: `source revision changed: ${record.sourceRevision} -> ${expected.sourceRevision}` };
+        return {
+          record,
+          current: false,
+          staleReason: `source revision changed: ${record.sourceRevision} -> ${expected.sourceRevision}`,
+        };
       }
       const receipt = record.receipt;
       if (
-        !receipt
-        || receipt.repoId !== expected.repoId
-        || receipt.checkId !== expected.checkId
-        || (expected.checkoutId !== undefined && receipt.checkoutId !== expected.checkoutId)
+        !receipt ||
+        receipt.repoId !== expected.repoId ||
+        receipt.checkId !== expected.checkId ||
+        (expected.checkoutId !== undefined && receipt.checkoutId !== expected.checkoutId)
       ) {
         return { record, current: false, staleReason: 'historical receipt identity changed' };
       }
-      if (receipt.status !== 'passed' || receipt.runtimeStatus !== 'succeeded' || !receipt.ok || receipt.timedOut || receipt.cancelled) {
+      if (
+        receipt.status !== 'passed' ||
+        receipt.runtimeStatus !== 'succeeded' ||
+        !receipt.ok ||
+        receipt.timedOut ||
+        receipt.cancelled
+      ) {
         return { record, current: false, staleReason: 'historical receipt is not a valid pass' };
       }
       const expectedFingerprint = verificationInputFingerprint({
@@ -257,11 +301,14 @@ export function historicalVerificationEvidenceAtRevision(
 
 /**
  * Keeps historical evidence auditable while preventing a previous revision or
- * changed check inputs from being selected as proof for the current Work.
+ * changed check inputs from being selected as proof for the current checkout.
  */
 export function effectiveVerificationEvidence(
   records: VerificationRecord[],
-  expected: Pick<VerificationEvidenceIdentity, 'sourceRevision' | 'workspaceFingerprint' | 'checkId' | 'requestedChecks'>,
+  expected: Pick<
+    VerificationEvidenceIdentity,
+    'sourceRevision' | 'workspaceFingerprint' | 'checkId' | 'requestedChecks'
+  >,
 ): EffectiveVerificationEvidence[] {
   const expectedFingerprint = verificationInputFingerprint({ ...expected });
   return records
@@ -272,7 +319,11 @@ export function effectiveVerificationEvidence(
         return { record, current: false, staleReason: 'legacy evidence has no exact input identity' };
       }
       if (record.sourceRevision !== expected.sourceRevision) {
-        return { record, current: false, staleReason: `source revision changed: ${record.sourceRevision} -> ${expected.sourceRevision}` };
+        return {
+          record,
+          current: false,
+          staleReason: `source revision changed: ${record.sourceRevision} -> ${expected.sourceRevision}`,
+        };
       }
       if (expected.workspaceFingerprint && record.workspaceFingerprint !== expected.workspaceFingerprint) {
         return { record, current: false, staleReason: 'workspace content changed' };

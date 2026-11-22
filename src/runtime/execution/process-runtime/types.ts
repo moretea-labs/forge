@@ -125,8 +125,6 @@ export interface ProcessLeaseRef {
   expiresAt?: string;
   repoId?: string;
   checkoutId?: string;
-  /** Historical compatibility only; retained so old leases remain releasable. */
-  workId?: string;
 }
 
 /** Retryable diagnostic for terminal lease cleanup; not a second lease state machine. */
@@ -188,8 +186,6 @@ export interface ManagedProcessRecord {
   checkoutId?: string;
   /** Authenticated principal that owns the handle; opaque ids never authorize by themselves. */
   principalId?: string;
-  /** Historical compatibility only; current Process writers never set Work attribution. */
-  workId?: string;
   /** Immutable pre-spawn repository/checkout authority used for execution validation. */
   executionIdentity?: ResolvedExecutionIdentity;
   /** Caller-stable command identity; defaults to processId when omitted. */
@@ -326,8 +322,6 @@ export interface SpawnManagedProcessInput {
 
 export interface ProcessHandle {
   processId: string;
-  /** Historical compatibility projection from old persisted Process records. */
-  workId?: string;
   commandId: string;
   status: ProcessRuntimeStatus;
   contractStatus: ProcessContractStatus;

@@ -202,8 +202,6 @@ export interface PlanStep {
   checks: string[];
   acceptanceCriteria: string[];
   status: PlanStepStatus;
-  /** Work currently executing this step, when materialized. */
-  workId?: string;
   evidenceRefs: EvidenceRef[];
 }
 
@@ -230,7 +228,6 @@ export interface PlanStepDeliveryCarry {
   predecessorPlanId: string;
   predecessorStepId: string;
   successorStepId: string;
-  workId: string;
   completionReceiptId: string;
   deliveredSourceRevision: string;
   recordedAt: string;

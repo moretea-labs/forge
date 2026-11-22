@@ -1,13 +1,15 @@
-import { deleteControlPlaneRecord, mutateControlPlaneRecord, readControlPlaneRecord } from '../control-plane/persistence/sqlite-store';
+import {
+  deleteControlPlaneRecord,
+  mutateControlPlaneRecord,
+  readControlPlaneRecord,
+} from '../control-plane/persistence/sqlite-store';
 
 export const OUTPUT_HANDLE_INDEX_NAMESPACE = 'output_handle_index';
 const OUTPUT_HANDLE_INDEX_SCOPE = 'instance';
 const OUTPUT_HANDLE_INDEX_SCHEMA_VERSION = 1;
 
 export type OutputHandleKind = 'result' | 'artifact' | 'evidence';
-export type OutputHandleStorage =
-  | { scope: 'instance' }
-  | { scope: 'legacy_repository'; repositoryId: string };
+export type OutputHandleStorage = { scope: 'instance' } | { scope: 'legacy_repository'; repositoryId: string };
 
 export interface OutputHandleIndexEntry {
   schemaVersion: 1;
@@ -19,11 +21,15 @@ export interface OutputHandleIndexEntry {
   /** Opaque ids locate this record; authorization is bound separately. */
   principalId?: string;
   sessionId?: string;
-  workId?: string;
   operationId?: string;
   fingerprint: string;
   recordedAt: string;
   updatedAt: string;
+}
+
+function withoutRetiredWorkFields(entry: OutputHandleIndexEntry & { workId?: unknown }): OutputHandleIndexEntry {
+  const { workId: _retiredWorkId, ...rest } = entry;
+  return rest;
 }
 
 function bounded(value: string | undefined): string | undefined {
@@ -38,13 +44,15 @@ function normalizedStorage(storage: OutputHandleStorage): OutputHandleStorage {
   return { scope: 'legacy_repository', repositoryId };
 }
 
-function bindingsConflict(current: OutputHandleIndexEntry, input: {
-  principalId?: string;
-  sessionId?: string;
-  workId?: string;
-  operationId?: string;
-}): boolean {
-  for (const key of ['principalId', 'sessionId', 'workId', 'operationId'] as const) {
+function bindingsConflict(
+  current: OutputHandleIndexEntry,
+  input: {
+    principalId?: string;
+    sessionId?: string;
+    operationId?: string;
+  },
+): boolean {
+  for (const key of ['principalId', 'sessionId', 'operationId'] as const) {
     const left = bounded(current[key]);
     const right = bounded(input[key]);
     if (left && right && left !== right) return true;
@@ -61,7 +69,6 @@ export function recordOutputHandleIndexEntry(
     repositoryId?: string;
     principalId?: string;
     sessionId?: string;
-    workId?: string;
     operationId?: string;
     fingerprint: string;
     now?: string;
@@ -75,7 +82,6 @@ export function recordOutputHandleIndexEntry(
   const repositoryId = bounded(input.repositoryId);
   const principalId = bounded(input.principalId);
   const sessionId = bounded(input.sessionId);
-  const workId = bounded(input.workId);
   const operationId = bounded(input.operationId);
 
   const record = mutateControlPlaneRecord<OutputHandleIndexEntry>(controllerHome, {
@@ -86,32 +92,34 @@ export function recordOutputHandleIndexEntry(
     action: 'output_handle_index_record',
     skipWriteWhenMutationReturnsCurrent: true,
     mutate: (currentRecord) => {
-      const current = currentRecord?.value;
+      const current = currentRecord?.value
+        ? withoutRetiredWorkFields(currentRecord.value as OutputHandleIndexEntry & { workId?: unknown })
+        : undefined;
       if (current) {
-        if (current.schemaVersion !== OUTPUT_HANDLE_INDEX_SCHEMA_VERSION
-          || current.handleId !== handleId
-          || current.kind !== input.kind
-          || current.fingerprint !== fingerprint
-          || bindingsConflict(current, { principalId, sessionId, workId, operationId })) {
+        if (
+          current.schemaVersion !== OUTPUT_HANDLE_INDEX_SCHEMA_VERSION ||
+          current.handleId !== handleId ||
+          current.kind !== input.kind ||
+          current.fingerprint !== fingerprint ||
+          bindingsConflict(current, { principalId, sessionId, operationId })
+        ) {
           throw new Error(`OUTPUT_HANDLE_ID_COLLISION: ${handleId}`);
         }
         // Identical historical duplicates collapse to one locator. Canonical
         // instance storage always outranks a legacy repository location.
-        const nextStorage = current.storage.scope === 'instance' || storage.scope !== 'instance'
-          ? current.storage
-          : storage;
+        const nextStorage =
+          current.storage.scope === 'instance' || storage.scope !== 'instance' ? current.storage : storage;
         const nextRepositoryId = current.repositoryId ?? repositoryId;
         const nextPrincipalId = current.principalId ?? principalId;
         const nextSessionId = current.sessionId ?? sessionId;
-        const nextWorkId = current.workId ?? workId;
         const nextOperationId = current.operationId ?? operationId;
         if (
-          nextStorage === current.storage
-          && nextRepositoryId === current.repositoryId
-          && nextPrincipalId === current.principalId
-          && nextSessionId === current.sessionId
-          && nextWorkId === current.workId
-          && nextOperationId === current.operationId
+          nextStorage === current.storage &&
+          nextRepositoryId === current.repositoryId &&
+          nextPrincipalId === current.principalId &&
+          nextSessionId === current.sessionId &&
+          nextOperationId === current.operationId &&
+          !('workId' in (currentRecord?.value ?? {}))
         ) {
           return current;
         }
@@ -121,7 +129,6 @@ export function recordOutputHandleIndexEntry(
           ...(nextRepositoryId ? { repositoryId: nextRepositoryId } : {}),
           ...(nextPrincipalId ? { principalId: nextPrincipalId } : {}),
           ...(nextSessionId ? { sessionId: nextSessionId } : {}),
-          ...(nextWorkId ? { workId: nextWorkId } : {}),
           ...(nextOperationId ? { operationId: nextOperationId } : {}),
           updatedAt: now,
         };
@@ -134,7 +141,6 @@ export function recordOutputHandleIndexEntry(
         ...(repositoryId ? { repositoryId } : {}),
         ...(principalId ? { principalId } : {}),
         ...(sessionId ? { sessionId } : {}),
-        ...(workId ? { workId } : {}),
         ...(operationId ? { operationId } : {}),
         fingerprint,
         recordedAt: now,
@@ -142,7 +148,7 @@ export function recordOutputHandleIndexEntry(
       };
     },
   });
-  return record.value;
+  return withoutRetiredWorkFields(record.value as OutputHandleIndexEntry & { workId?: unknown });
 }
 
 export function refreshOutputHandleFingerprint(
@@ -158,7 +164,8 @@ export function refreshOutputHandleFingerprint(
   const handleId = bounded(input.handleId);
   const expectedFingerprint = bounded(input.expectedFingerprint);
   const nextFingerprint = bounded(input.nextFingerprint);
-  if (!handleId || !expectedFingerprint || !nextFingerprint) throw new Error('OUTPUT_HANDLE_FINGERPRINT_REFRESH_REQUIRED');
+  if (!handleId || !expectedFingerprint || !nextFingerprint)
+    throw new Error('OUTPUT_HANDLE_FINGERPRINT_REFRESH_REQUIRED');
   const now = input.now ?? new Date().toISOString();
   const record = mutateControlPlaneRecord<OutputHandleIndexEntry>(controllerHome, {
     namespace: OUTPUT_HANDLE_INDEX_NAMESPACE,
@@ -167,12 +174,16 @@ export function refreshOutputHandleFingerprint(
     schemaVersion: OUTPUT_HANDLE_INDEX_SCHEMA_VERSION,
     action: 'output_handle_index_fingerprint_refresh',
     mutate: (currentRecord) => {
-      const current = currentRecord?.value;
-      if (!current
-        || current.schemaVersion !== OUTPUT_HANDLE_INDEX_SCHEMA_VERSION
-        || current.handleId !== handleId
-        || current.kind !== input.kind
-        || current.storage.scope !== 'instance') {
+      const current = currentRecord?.value
+        ? withoutRetiredWorkFields(currentRecord.value as OutputHandleIndexEntry & { workId?: unknown })
+        : undefined;
+      if (
+        !current ||
+        current.schemaVersion !== OUTPUT_HANDLE_INDEX_SCHEMA_VERSION ||
+        current.handleId !== handleId ||
+        current.kind !== input.kind ||
+        current.storage.scope !== 'instance'
+      ) {
         throw new Error(`OUTPUT_HANDLE_FINGERPRINT_REFRESH_SCOPE_MISMATCH: ${handleId}`);
       }
       if (current.fingerprint !== expectedFingerprint) {
@@ -181,7 +192,7 @@ export function refreshOutputHandleFingerprint(
       return { ...current, fingerprint: nextFingerprint, updatedAt: now };
     },
   });
-  return record.value;
+  return withoutRetiredWorkFields(record.value as OutputHandleIndexEntry & { workId?: unknown });
 }
 
 export function deleteOutputHandleIndexEntry(
@@ -198,10 +209,12 @@ export function deleteOutputHandleIndexEntry(
   );
   if (!record) return false;
   const current = record.value;
-  if (current.schemaVersion !== OUTPUT_HANDLE_INDEX_SCHEMA_VERSION
-    || current.handleId !== handleId
-    || current.kind !== input.kind
-    || current.storage.scope !== 'instance') {
+  if (
+    current.schemaVersion !== OUTPUT_HANDLE_INDEX_SCHEMA_VERSION ||
+    current.handleId !== handleId ||
+    current.kind !== input.kind ||
+    current.storage.scope !== 'instance'
+  ) {
     throw new Error(`OUTPUT_HANDLE_INDEX_DELETE_SCOPE_MISMATCH: ${handleId}`);
   }
   const expectedFingerprint = bounded(input.expectedFingerprint);
@@ -237,5 +250,5 @@ export function readOutputHandleIndexEntry(
   if (!value.fingerprint || !value.kind || !value.storage) {
     throw new Error(`OUTPUT_HANDLE_INDEX_CORRUPT: ${key}`);
   }
-  return value;
+  return withoutRetiredWorkFields(value as OutputHandleIndexEntry & { workId?: unknown });
 }

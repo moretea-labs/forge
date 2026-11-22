@@ -33,6 +33,7 @@ import {
   type PlanRevisionDraft,
   type PlanRevisionRecord,
   type PlanStep,
+  type PlanStepDeliveryCarry,
 } from './types';
 
 export interface PlanContractStoreLocation {
@@ -73,7 +74,8 @@ export interface AdmitPlanContractInput extends CreatePlanContractInput {
   relatedPlanId?: string;
 }
 
-export interface RepairDraftPlanContractInput extends Omit<CreatePlanContractInput, 'planId' | 'repoId' | 'requirementId' | 'evidenceRefs'> {
+export interface RepairDraftPlanContractInput
+  extends Omit<CreatePlanContractInput, 'planId' | 'repoId' | 'requirementId' | 'evidenceRefs'> {
   /** Source revision observed before entering the admission lock; rejects stale draft writers. */
   expectedSourceRevision?: string;
 }
@@ -100,16 +102,32 @@ function nowIso(options: PlanContractStoreOptions): string {
 }
 
 function bounded(values: readonly string[] | undefined, limit: number, maxLength = 500): string[] {
-  return (values ?? []).map((value) => String(value).trim()).filter(Boolean).slice(0, limit).map((value) => value.slice(0, maxLength));
+  return (values ?? [])
+    .map((value) => String(value).trim())
+    .filter(Boolean)
+    .slice(0, limit)
+    .map((value) => value.slice(0, maxLength));
 }
 
-function normalizePlanSemanticItems(items: readonly { id: string; objective: string; dependencies?: string[] }[] | undefined) {
+function normalizePlanSemanticItems(
+  items: readonly { id: string; objective: string; dependencies?: string[] }[] | undefined,
+) {
   const normalized = (items ?? []).slice(0, 100).map((item) => ({
     id: String(item.id).trim().slice(0, 200),
     objective: String(item.objective).trim().slice(0, 2_000),
-    dependencies: [...new Set((item.dependencies ?? []).map(String).map((value) => value.trim()).filter(Boolean))].slice(0, 100),
+    dependencies: [
+      ...new Set(
+        (item.dependencies ?? [])
+          .map(String)
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+    ].slice(0, 100),
   }));
-  if (normalized.some((item) => !item.id || !item.objective) || new Set(normalized.map((item) => item.id)).size !== normalized.length) {
+  if (
+    normalized.some((item) => !item.id || !item.objective) ||
+    new Set(normalized.map((item) => item.id)).size !== normalized.length
+  ) {
     throw new Error('PLAN_SEMANTIC_ITEMS_INVALID');
   }
   return normalized;
@@ -231,7 +249,11 @@ export function planSemanticView(plan: PlanContract): PlanSemanticView {
     stopConditions: [...semantic.stopConditions],
     replanConditions: [...semantic.replanConditions],
     integrationStrategy: semantic.integrationStrategy,
-    items: semantic.items.map((item) => ({ id: item.id, objective: item.objective, dependencies: [...item.dependencies] })),
+    items: semantic.items.map((item) => ({
+      id: item.id,
+      objective: item.objective,
+      dependencies: [...item.dependencies],
+    })),
     createdAt: plan.createdAt,
     updatedAt: plan.semanticUpdatedAt ?? plan.createdAt,
   };
@@ -241,11 +263,12 @@ function planRevisionRecordKey(planId: string, revision: number): string {
   return `${sanitizeFileComponent(planId)}:r${revision}`;
 }
 
-
 function normalizeStep(step: CreatePlanContractInput['steps'][number]): PlanStep {
   return {
     id: sanitizeFileComponent(step.id).slice(0, 120),
-    objective: String(step.objective ?? '').trim().slice(0, 1_000),
+    objective: String(step.objective ?? '')
+      .trim()
+      .slice(0, 1_000),
     dependencies: bounded(step.dependencies, 30, 120).map(sanitizeFileComponent),
     authoritativeFiles: bounded(step.authoritativeFiles, 50),
     allowedPaths: bounded(step.allowedPaths, 50),
@@ -253,20 +276,39 @@ function normalizeStep(step: CreatePlanContractInput['steps'][number]): PlanStep
     checks: bounded(step.checks, 30, 200),
     acceptanceCriteria: bounded(step.acceptanceCriteria, 20),
     status: step.status ?? 'pending',
-    // A legacy PlanStep may already carry its materialized Work link. Keep the
-    // link on read; Work remains the only execution authority and this is only
-    // a relationship/projection field.
-    workId: step.workId?.trim() || undefined,
     evidenceRefs: (step.evidenceRefs ?? []).slice(0, 20),
+  };
+}
+
+function scrubPlanStep(step: PlanStep & { workId?: unknown }): PlanStep {
+  const { workId: _retiredWorkId, ...rest } = step;
+  return rest;
+}
+
+function scrubDeliveryCarry(carry: PlanStepDeliveryCarry & { workId?: unknown }): PlanStepDeliveryCarry {
+  const { workId: _retiredWorkId, ...rest } = carry;
+  return rest;
+}
+
+function scrubPlanContract(plan: PlanContract): PlanContract {
+  return {
+    ...plan,
+    steps: plan.steps.map((step) => scrubPlanStep(step)),
+    ...(plan.deliveryCarries
+      ? { deliveryCarries: plan.deliveryCarries.map((carry) => scrubDeliveryCarry(carry)) }
+      : {}),
   };
 }
 
 function normalizeObligationDisposition(value: PlanObligationDisposition): PlanObligationDisposition {
   const disposition = value.disposition;
-  if (!['keep', 'change', 'defer', 'drop'].includes(disposition)) throw new Error(`PLAN_OBLIGATION_DISPOSITION_INVALID: ${String(disposition)}`);
+  if (!['keep', 'change', 'defer', 'drop'].includes(disposition))
+    throw new Error(`PLAN_OBLIGATION_DISPOSITION_INVALID: ${String(disposition)}`);
   return {
     predecessorPlanId: sanitizeFileComponent(value.predecessorPlanId).slice(0, 160),
-    obligationId: String(value.obligationId ?? '').trim().slice(0, 160),
+    obligationId: String(value.obligationId ?? '')
+      .trim()
+      .slice(0, 160),
     disposition,
     successorRefs: bounded(value.successorRefs, 20, 240),
     ...(value.rationale?.trim() ? { rationale: value.rationale.trim().slice(0, 1_000) } : {}),
@@ -282,7 +324,10 @@ export interface PlanObligation {
 }
 
 function planObligationId(planId: string, kind: PlanObligation['kind'], sourceRef: string, summary: string): string {
-  const digest = createHash('sha256').update(JSON.stringify({ planId, kind, sourceRef, summary })).digest('hex').slice(0, 24);
+  const digest = createHash('sha256')
+    .update(JSON.stringify({ planId, kind, sourceRef, summary }))
+    .digest('hex')
+    .slice(0, 24);
   return `obl_${digest}`;
 }
 
@@ -291,19 +336,33 @@ function listPlanObligations(plan: PlanContract, mode: 'unresolved' | 'completed
   const add = (kind: PlanObligation['kind'], sourceRef: string, summary: string) => {
     const normalized = summary.trim();
     if (!normalized) return;
-    out.push({ obligationId: planObligationId(plan.planId, kind, sourceRef, normalized), predecessorPlanId: plan.planId, kind, sourceRef, summary: normalized });
+    out.push({
+      obligationId: planObligationId(plan.planId, kind, sourceRef, normalized),
+      predecessorPlanId: plan.planId,
+      kind,
+      sourceRef,
+      summary: normalized,
+    });
   };
   for (const step of plan.steps) {
     if (mode === 'unresolved' && step.status === 'completed') continue;
     if (mode === 'completed_steps' && step.status !== 'completed') continue;
     add('step_objective', `step:${step.id}`, step.objective);
-    step.acceptanceCriteria.forEach((criterion, index) => add('step_acceptance', `step:${step.id}:acceptance:${index}`, criterion));
+    for (const [index, criterion] of step.acceptanceCriteria.entries()) {
+      add('step_acceptance', `step:${step.id}:acceptance:${index}`, criterion);
+    }
   }
   if (mode === 'unresolved') {
-    plan.nonGoals.forEach((value, index) => add('non_goal', `non_goal:${index}`, value));
-    plan.resolvedDecisions.forEach((value, index) => add('resolved_decision', `resolved_decision:${index}`, value));
-    plan.stopConditions.forEach((value, index) => add('stop_condition', `stop_condition:${index}`, value));
-    plan.replanConditions.forEach((value, index) => add('replan_condition', `replan_condition:${index}`, value));
+    for (const [index, value] of plan.nonGoals.entries()) add('non_goal', `non_goal:${index}`, value);
+    for (const [index, value] of plan.resolvedDecisions.entries()) {
+      add('resolved_decision', `resolved_decision:${index}`, value);
+    }
+    for (const [index, value] of plan.stopConditions.entries()) {
+      add('stop_condition', `stop_condition:${index}`, value);
+    }
+    for (const [index, value] of plan.replanConditions.entries()) {
+      add('replan_condition', `replan_condition:${index}`, value);
+    }
   }
   return out;
 }
@@ -311,9 +370,6 @@ function listPlanObligations(plan: PlanContract, mode: 'unresolved' | 'completed
 export function listUnresolvedPlanObligations(plan: PlanContract): PlanObligation[] {
   return listPlanObligations(plan, 'unresolved');
 }
-
-
-
 
 function updatePlanContract(
   options: PlanContractStoreOptions,
@@ -333,13 +389,16 @@ function updatePlanContract(
   if (!options.controllerHome || !planContractStoreScopeKey(options)) return apply();
   return withControllerLock(
     options.controllerHome,
-    { scope: 'task', repoId: requirePlanContractStoreScopeKey(options), taskId: `plan-${sanitizeFileComponent(planId)}` },
+    {
+      scope: 'task',
+      repoId: requirePlanContractStoreScopeKey(options),
+      taskId: `plan-${sanitizeFileComponent(planId)}`,
+    },
     'plan-contract-store',
     apply,
     15_000,
   );
 }
-
 
 function assertRequirementReference(options: PlanContractStoreOptions, requirementId: string | undefined): void {
   const normalized = requirementId?.trim();
@@ -351,14 +410,14 @@ function assertRequirementReference(options: PlanContractStoreOptions, requireme
   }
 }
 
-export function listPlanRevisionRecords(
-  options: PlanContractStoreOptions,
-  planId?: string,
-): PlanRevisionRecord[] {
+export function listPlanRevisionRecords(options: PlanContractStoreOptions, planId?: string): PlanRevisionRecord[] {
   const normalizedPlanId = planId ? sanitizeFileComponent(planId) : undefined;
   return listControlPlaneRecords<PlanRevisionRecord>(options.controllerHome, {
-    namespace: 'plan_revision', scope: requirePlanContractStoreScopeKey(options), limit: 5_000,
-  }).map((record) => record.value)
+    namespace: 'plan_revision',
+    scope: requirePlanContractStoreScopeKey(options),
+    limit: 5_000,
+  })
+    .map((record) => record.value)
     .filter((record) => !normalizedPlanId || record.planId === normalizedPlanId)
     .sort((left, right) => right.revision - left.revision);
 }
@@ -372,63 +431,115 @@ export function getPlanSemanticRevisionRecord(
   if (!Number.isInteger(revision) || revision < 1) return undefined;
   const normalizedPlanId = sanitizeFileComponent(planId);
   const record = readControlPlaneRecord<PlanSemanticRevisionRecord>(
-    options.controllerHome, 'plan_semantic_revision', requirePlanContractStoreScopeKey(options),
+    options.controllerHome,
+    'plan_semantic_revision',
+    requirePlanContractStoreScopeKey(options),
     planRevisionRecordKey(normalizedPlanId, revision),
   )?.value;
-  return record ? {
-    ...record,
-    semanticScope: record.semanticScope ?? (record.requirementId
-      ? { schemaVersion: 1, kind: 'requirement', id: record.requirementId }
-      : { schemaVersion: 1, kind: 'plan', id: record.planId }),
-  } : undefined;
+  return record
+    ? {
+        ...record,
+        semanticScope:
+          record.semanticScope ??
+          (record.requirementId
+            ? { schemaVersion: 1, kind: 'requirement', id: record.requirementId }
+            : { schemaVersion: 1, kind: 'plan', id: record.planId }),
+      }
+    : undefined;
 }
 
-export function listPlanSemanticRevisionRecords(options: PlanContractStoreOptions, planId?: string): PlanSemanticRevisionRecord[] {
+export function listPlanSemanticRevisionRecords(
+  options: PlanContractStoreOptions,
+  planId?: string,
+): PlanSemanticRevisionRecord[] {
   const normalizedPlanId = planId ? sanitizeFileComponent(planId) : undefined;
   return listControlPlaneRecords<PlanSemanticRevisionRecord>(options.controllerHome, {
-    namespace: 'plan_semantic_revision', scope: requirePlanContractStoreScopeKey(options), limit: 5_000,
-  }).map((record) => record.value)
+    namespace: 'plan_semantic_revision',
+    scope: requirePlanContractStoreScopeKey(options),
+    limit: 5_000,
+  })
+    .map((record) => record.value)
     .filter((record) => !normalizedPlanId || record.planId === normalizedPlanId)
-    .map((record) => ({
-      ...record,
-      semanticScope: record.semanticScope ?? (record.requirementId
-        ? { schemaVersion: 1, kind: 'requirement', id: record.requirementId }
-        : { schemaVersion: 1, kind: 'plan', id: record.planId }),
-    } as PlanSemanticRevisionRecord))
+    .map(
+      (record) =>
+        ({
+          ...record,
+          semanticScope:
+            record.semanticScope ??
+            (record.requirementId
+              ? { schemaVersion: 1, kind: 'requirement', id: record.requirementId }
+              : { schemaVersion: 1, kind: 'plan', id: record.planId }),
+        }) as PlanSemanticRevisionRecord,
+    )
     .sort((left, right) => right.revision - left.revision);
 }
 
-function planRevisionRecord(plan: PlanContract, input: { recordedAt: string; reason: string; requestedRevisionLabel?: string }): PlanRevisionRecord {
+function planRevisionRecord(
+  plan: PlanContract,
+  input: { recordedAt: string; reason: string; requestedRevisionLabel?: string },
+): PlanRevisionRecord {
   return {
-    schemaVersion: 1, repoId: plan.repoId, planId: plan.planId, revision: currentPlanRevision(plan),
-    requirementId: plan.requirementId, parentPlanId: plan.parentPlanId, scopeKey: plan.scopeKey, sourceRevision: plan.sourceRevision, goal: plan.goal,
-    nonGoals: [...plan.nonGoals], assumptions: [...plan.assumptions], resolvedDecisions: [...plan.resolvedDecisions],
-    stopConditions: [...plan.stopConditions], replanConditions: [...plan.replanConditions], integrationStrategy: plan.integrationStrategy,
-    status: plan.status, steps: structuredClone(plan.steps), evidenceRefs: structuredClone(plan.evidenceRefs),
+    schemaVersion: 1,
+    repoId: plan.repoId,
+    planId: plan.planId,
+    revision: currentPlanRevision(plan),
+    requirementId: plan.requirementId,
+    parentPlanId: plan.parentPlanId,
+    scopeKey: plan.scopeKey,
+    sourceRevision: plan.sourceRevision,
+    goal: plan.goal,
+    nonGoals: [...plan.nonGoals],
+    assumptions: [...plan.assumptions],
+    resolvedDecisions: [...plan.resolvedDecisions],
+    stopConditions: [...plan.stopConditions],
+    replanConditions: [...plan.replanConditions],
+    integrationStrategy: plan.integrationStrategy,
+    status: plan.status,
+    steps: structuredClone(plan.steps),
+    evidenceRefs: structuredClone(plan.evidenceRefs),
     obligationDispositions: plan.obligationDispositions ? structuredClone(plan.obligationDispositions) : undefined,
-    recordedAt: input.recordedAt, reason: input.reason.slice(0, 1_000), requestedRevisionLabel: input.requestedRevisionLabel,
+    recordedAt: input.recordedAt,
+    reason: input.reason.slice(0, 1_000),
+    requestedRevisionLabel: input.requestedRevisionLabel,
   };
 }
 
-function revisionDraftFromCandidate(candidate: PlanContract, input: { requestedRevisionLabel?: string; createdAt: string; updatedAt: string }): PlanRevisionDraft {
+function revisionDraftFromCandidate(
+  candidate: PlanContract,
+  input: { requestedRevisionLabel?: string; createdAt: string; updatedAt: string },
+): PlanRevisionDraft {
   return {
-    revision: currentPlanRevision(candidate), requestedRevisionLabel: input.requestedRevisionLabel,
-    sourceRevision: candidate.sourceRevision, goal: candidate.goal, nonGoals: [...candidate.nonGoals], assumptions: [...candidate.assumptions],
-    resolvedDecisions: [...candidate.resolvedDecisions], stopConditions: [...candidate.stopConditions], replanConditions: [...candidate.replanConditions],
-    integrationStrategy: candidate.integrationStrategy, steps: structuredClone(candidate.steps),
-    obligationDispositions: candidate.obligationDispositions ? structuredClone(candidate.obligationDispositions) : undefined,
-    deliveryCarries: candidate.deliveryCarries ? structuredClone(candidate.deliveryCarries) : undefined,
-    createdAt: input.createdAt, updatedAt: input.updatedAt,
+    revision: currentPlanRevision(candidate),
+    requestedRevisionLabel: input.requestedRevisionLabel,
+    sourceRevision: candidate.sourceRevision,
+    goal: candidate.goal,
+    nonGoals: [...candidate.nonGoals],
+    assumptions: [...candidate.assumptions],
+    resolvedDecisions: [...candidate.resolvedDecisions],
+    stopConditions: [...candidate.stopConditions],
+    replanConditions: [...candidate.replanConditions],
+    integrationStrategy: candidate.integrationStrategy,
+    steps: structuredClone(candidate.steps),
+    obligationDispositions: candidate.obligationDispositions
+      ? structuredClone(candidate.obligationDispositions)
+      : undefined,
+    deliveryCarries: candidate.deliveryCarries
+      ? structuredClone(candidate.deliveryCarries).map((carry) => scrubDeliveryCarry(carry))
+      : undefined,
+    createdAt: input.createdAt,
+    updatedAt: input.updatedAt,
   };
 }
-
 
 function assertRevisionScopeAuthority(current: PlanContract, allPlans: readonly PlanContract[]): void {
-  const conflicting = allPlans.find((plan) => plan.planId !== current.planId
-    && !isTerminalPlanContractStatus(plan.status) && plan.scopeKey === current.scopeKey);
+  const conflicting = allPlans.find(
+    (plan) =>
+      plan.planId !== current.planId &&
+      !isTerminalPlanContractStatus(plan.status) &&
+      plan.scopeKey === current.scopeKey,
+  );
   if (conflicting) throw new Error(`PLAN_SCOPE_ALREADY_OWNED: ${current.scopeKey}:${conflicting.planId}`);
 }
-
 
 export function emptyPlanContractStore(updatedAt: string): PlanContractStore {
   return { schemaVersion: 1, updatedAt, contracts: [] };
@@ -453,7 +564,7 @@ export function readPlanContractStore(options: PlanContractStoreOptions): PlanCo
   return {
     schemaVersion: 1,
     updatedAt: records[0]?.updatedAt ?? nowIso(options),
-    contracts: records.map((record) => record.value),
+    contracts: records.map((record) => scrubPlanContract(record.value)),
   };
 }
 
@@ -483,7 +594,6 @@ function writePlanContractStore(options: PlanContractStoreOptions, store: PlanCo
   return store;
 }
 
-
 function buildPlanContract(input: CreatePlanContractInput, at: string): PlanContract {
   const planId = sanitizeFileComponent(input.planId);
   if (!String(input.planId ?? '').trim() || planId === 'unknown') throw new Error('plan_id is required');
@@ -494,8 +604,12 @@ function buildPlanContract(input: CreatePlanContractInput, at: string): PlanCont
     repoId: input.repoId,
     requirementId: input.requirementId?.trim().slice(0, 160) || undefined,
     scopeKey: normalizeScopeKey(input.scopeKey),
-    sourceRevision: String(input.sourceRevision ?? '').trim().slice(0, 200),
-    goal: String(input.goal ?? '').trim().slice(0, 2_000),
+    sourceRevision: String(input.sourceRevision ?? '')
+      .trim()
+      .slice(0, 200),
+    goal: String(input.goal ?? '')
+      .trim()
+      .slice(0, 2_000),
     nonGoals: bounded(input.nonGoals, 20),
     assumptions: bounded(input.assumptions, 30),
     resolvedDecisions: bounded(input.resolvedDecisions, 30),
@@ -523,7 +637,8 @@ function draftContentErrors(plan: PlanContract): string[] {
     else if (ids.has(step.id)) errors.push(`duplicate plan step id: ${step.id}`);
     else ids.add(step.id);
     if (!step.objective) errors.push(`step ${step.id || 'unknown'} needs an objective`);
-    if (step.checks.length === 0) errors.push(`step ${step.id || 'unknown'} needs at least one machine-checkable check`);
+    if (step.checks.length === 0)
+      errors.push(`step ${step.id || 'unknown'} needs at least one machine-checkable check`);
     if (step.acceptanceCriteria.length === 0) errors.push(`step ${step.id || 'unknown'} needs acceptance criteria`);
     if (step.status !== 'pending') errors.push(`step ${step.id || 'unknown'} must be pending before approval`);
   }
@@ -531,19 +646,12 @@ function draftContentErrors(plan: PlanContract): string[] {
     for (const dependency of step.dependencies) {
       const dependencyStep = plan.steps.find((candidate) => candidate.id === dependency);
       if (!dependencyStep) errors.push(`step ${step.id} references unknown dependency ${dependency}`);
-      else if (dependencyStep.status !== 'pending') errors.push(`step ${step.id} dependency ${dependency} must be pending before approval`);
+      else if (dependencyStep.status !== 'pending')
+        errors.push(`step ${step.id} dependency ${dependency} must be pending before approval`);
     }
   }
   return [...new Set(errors)];
 }
-
-
-
-
-
-
-
-
 
 function createPlanContractUnlocked(options: PlanContractStoreOptions, input: CreatePlanContractInput): PlanContract {
   assertRequirementReference(options, input.requirementId);
@@ -569,23 +677,44 @@ function replacePlanContractUnlocked(
   const predecessorIndex = store.contracts.findIndex((contract) => contract.planId === predecessorKey);
   if (predecessorIndex < 0) throw new Error(`plan contract not found: ${predecessorKey}`);
   const current = store.contracts[predecessorIndex]!;
-  if (!isPlanExtensionPredecessor(current)) throw new Error(`plan contract ${current.planId} is terminal (${current.status})`);
+  if (!isPlanExtensionPredecessor(current))
+    throw new Error(`plan contract ${current.planId} is terminal (${current.status})`);
 
   // Draft extension keeps the stable Plan identity, but authored content is still
   // a semantic revision: the previous head is archived and the current head advances.
   if (current.status === 'draft') {
     return repairDraftPlanContractUnlocked(options, current.planId, {
-      scopeKey: input.scopeKey, sourceRevision: input.sourceRevision, goal: input.goal, nonGoals: input.nonGoals, assumptions: input.assumptions,
-      resolvedDecisions: input.resolvedDecisions, stopConditions: input.stopConditions, replanConditions: input.replanConditions,
-      integrationStrategy: input.integrationStrategy, steps: input.steps, obligationDispositions: input.obligationDispositions,
+      scopeKey: input.scopeKey,
+      sourceRevision: input.sourceRevision,
+      goal: input.goal,
+      nonGoals: input.nonGoals,
+      assumptions: input.assumptions,
+      resolvedDecisions: input.resolvedDecisions,
+      stopConditions: input.stopConditions,
+      replanConditions: input.replanConditions,
+      integrationStrategy: input.integrationStrategy,
+      steps: input.steps,
+      obligationDispositions: input.obligationDispositions,
     });
   }
-  if (current.pendingRevision) throw new Error(`PLAN_REVISION_DRAFT_ALREADY_EXISTS: ${current.planId}:r${current.pendingRevision.revision}`);
-  if (input.requirementId?.trim() !== current.requirementId?.trim()) throw new Error('PLAN_REVISION_REQUIREMENT_IDENTITY_MISMATCH');
-  if (normalizeScopeKey(input.scopeKey) !== current.scopeKey) throw new Error(`PLAN_REVISION_SCOPE_IDENTITY_MISMATCH: ${current.scopeKey}`);
+  if (current.pendingRevision)
+    throw new Error(`PLAN_REVISION_DRAFT_ALREADY_EXISTS: ${current.planId}:r${current.pendingRevision.revision}`);
+  if (input.requirementId?.trim() !== current.requirementId?.trim())
+    throw new Error('PLAN_REVISION_REQUIREMENT_IDENTITY_MISMATCH');
+  if (normalizeScopeKey(input.scopeKey) !== current.scopeKey)
+    throw new Error(`PLAN_REVISION_SCOPE_IDENTITY_MISMATCH: ${current.scopeKey}`);
 
   const candidate = {
-    ...buildPlanContract({ ...input, planId: current.planId, repoId: current.repoId, requirementId: current.requirementId, scopeKey: current.scopeKey }, at),
+    ...buildPlanContract(
+      {
+        ...input,
+        planId: current.planId,
+        repoId: current.repoId,
+        requirementId: current.requirementId,
+        scopeKey: current.scopeKey,
+      },
+      at,
+    ),
     revision: currentPlanRevision(current) + 1,
     supersedes: current.supersedes ? [...current.supersedes] : undefined,
   };
@@ -594,7 +723,9 @@ function replacePlanContractUnlocked(
   assertRevisionScopeAuthority(current, store.contracts);
   const requestedRevisionLabel = sanitizeFileComponent(input.planId);
   const pendingRevision = revisionDraftFromCandidate(candidate, {
-    requestedRevisionLabel: requestedRevisionLabel !== current.planId ? requestedRevisionLabel : undefined, createdAt: at, updatedAt: at,
+    requestedRevisionLabel: requestedRevisionLabel !== current.planId ? requestedRevisionLabel : undefined,
+    createdAt: at,
+    updatedAt: at,
   });
   const next: PlanContract = { ...current, status: 'replanning', pendingRevision, updatedAt: at };
   const contracts = [...store.contracts];
@@ -614,20 +745,26 @@ function repairDraftPlanContractUnlocked(
   if (index < 0) throw new Error(`plan contract not found: ${key}`);
   const current = store.contracts[index]!;
   const pending = current.status === 'replanning' ? current.pendingRevision : undefined;
-  if (current.status !== 'draft' && !pending) throw new Error(`PLAN_DRAFT_REPAIR_STATUS_INVALID: ${current.planId}:${current.status}`);
+  if (current.status !== 'draft' && !pending)
+    throw new Error(`PLAN_DRAFT_REPAIR_STATUS_INVALID: ${current.planId}:${current.status}`);
   const observedSourceRevision = pending?.sourceRevision ?? current.sourceRevision;
   if (input.expectedSourceRevision !== undefined && observedSourceRevision !== input.expectedSourceRevision) {
-    throw new Error(`PLAN_DRAFT_REPAIR_STALE_SOURCE: ${current.planId}:expected=${input.expectedSourceRevision}:actual=${observedSourceRevision}`);
+    throw new Error(
+      `PLAN_DRAFT_REPAIR_STALE_SOURCE: ${current.planId}:expected=${input.expectedSourceRevision}:actual=${observedSourceRevision}`,
+    );
   }
   assertRequirementReference(options, current.requirementId);
   const at = nowIso(options);
-  const candidate = buildPlanContract({
-    ...input,
-    planId: current.planId,
-    repoId: current.repoId,
-    requirementId: current.requirementId,
-    evidenceRefs: current.evidenceRefs,
-  }, at);
+  const candidate = buildPlanContract(
+    {
+      ...input,
+      planId: current.planId,
+      repoId: current.repoId,
+      requirementId: current.requirementId,
+      evidenceRefs: current.evidenceRefs,
+    },
+    at,
+  );
   const candidateWithLineage = {
     ...candidate,
     ...(current.supersedes?.length ? { supersedes: [...current.supersedes] } : {}),
@@ -637,11 +774,18 @@ function repairDraftPlanContractUnlocked(
     throw new Error(`PLAN_DRAFT_REPAIR_INVALID: ${contentErrors.join('; ')}`);
   }
   if (pending) {
-    if (normalizeScopeKey(input.scopeKey) !== current.scopeKey) throw new Error(`PLAN_REVISION_SCOPE_IDENTITY_MISMATCH: ${current.scopeKey}`);
+    if (normalizeScopeKey(input.scopeKey) !== current.scopeKey)
+      throw new Error(`PLAN_REVISION_SCOPE_IDENTITY_MISMATCH: ${current.scopeKey}`);
     assertRevisionScopeAuthority(current, store.contracts);
-    let revisionCandidate: PlanContract = { ...candidateWithLineage, revision: pending.revision, supersedes: current.supersedes ? [...current.supersedes] : undefined };
+    const revisionCandidate: PlanContract = {
+      ...candidateWithLineage,
+      revision: pending.revision,
+      supersedes: current.supersedes ? [...current.supersedes] : undefined,
+    };
     const repairedPending = revisionDraftFromCandidate(revisionCandidate, {
-      requestedRevisionLabel: pending.requestedRevisionLabel, createdAt: pending.createdAt, updatedAt: at,
+      requestedRevisionLabel: pending.requestedRevisionLabel,
+      createdAt: pending.createdAt,
+      updatedAt: at,
     });
     const repairedCurrent: PlanContract = { ...current, pendingRevision: repairedPending, updatedAt: at };
     const contracts = [...store.contracts];
@@ -650,11 +794,15 @@ function repairDraftPlanContractUnlocked(
     return repairedCurrent;
   }
   const explicitPredecessors = new Set(candidateWithLineage.supersedes ?? []);
-  const conflictingScope = store.contracts.find((existing, candidateIndex) => candidateIndex !== index
-    && !isTerminalPlanContractStatus(existing.status)
-    && existing.scopeKey === candidateWithLineage.scopeKey
-    && !explicitPredecessors.has(existing.planId));
-  if (conflictingScope) throw new Error(`PLAN_SCOPE_ALREADY_OWNED: ${candidateWithLineage.scopeKey}:${conflictingScope.planId}`);
+  const conflictingScope = store.contracts.find(
+    (existing, candidateIndex) =>
+      candidateIndex !== index &&
+      !isTerminalPlanContractStatus(existing.status) &&
+      existing.scopeKey === candidateWithLineage.scopeKey &&
+      !explicitPredecessors.has(existing.planId),
+  );
+  if (conflictingScope)
+    throw new Error(`PLAN_SCOPE_ALREADY_OWNED: ${candidateWithLineage.scopeKey}:${conflictingScope.planId}`);
   const previousSemantic = planSemanticView(current);
   const candidateSemantic = legacyPlanSemanticContext(candidateWithLineage);
   const repaired: PlanContract = {
@@ -673,23 +821,46 @@ function repairDraftPlanContractUnlocked(
   };
   return withControlPlaneTransaction(options.controllerHome, (database) => {
     const scope = requirePlanContractStoreScopeKey(options);
-    const currentRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', scope, current.planId);
+    const currentRecord = readControlPlaneRecordWithinTransaction<PlanContract>(
+      database,
+      'plan_contract',
+      scope,
+      current.planId,
+    );
     if (!currentRecord) throw new Error(`plan contract not found: ${current.planId}`);
     const actualSemanticRevision = currentPlanSemanticRevision(currentRecord.value);
     if (actualSemanticRevision !== previousSemantic.revision) {
-      throw new Error(`PLAN_REVISION_CONFLICT:${current.planId}:expected=${previousSemantic.revision}:actual=${actualSemanticRevision}`);
+      throw new Error(
+        `PLAN_REVISION_CONFLICT:${current.planId}:expected=${previousSemantic.revision}:actual=${actualSemanticRevision}`,
+      );
     }
     const semanticRevisionKey = `${current.planId}:r${previousSemantic.revision}`;
-    if (!readControlPlaneRecordWithinTransaction<PlanSemanticRevisionRecord>(database, 'plan_semantic_revision', scope, semanticRevisionKey)) {
+    if (
+      !readControlPlaneRecordWithinTransaction<PlanSemanticRevisionRecord>(
+        database,
+        'plan_semantic_revision',
+        scope,
+        semanticRevisionKey,
+      )
+    ) {
       writeControlPlaneRecordWithinTransaction(database, {
-        namespace: 'plan_semantic_revision', scope, key: semanticRevisionKey, schemaVersion: 1,
+        namespace: 'plan_semantic_revision',
+        scope,
+        key: semanticRevisionKey,
+        schemaVersion: 1,
         value: { schemaVersion: 1, ...previousSemantic, recordedAt: at },
-        action: 'plan_semantic_revision_archived', expectedRevision: null,
+        action: 'plan_semantic_revision_archived',
+        expectedRevision: null,
       });
     }
     return writeControlPlaneRecordWithinTransaction(database, {
-      namespace: 'plan_contract', scope, key: current.planId, schemaVersion: 1,
-      value: repaired, action: 'plan_semantic_revised', expectedRevision: currentRecord.revision,
+      namespace: 'plan_contract',
+      scope,
+      key: current.planId,
+      schemaVersion: 1,
+      value: repaired,
+      action: 'plan_semantic_revised',
+      expectedRevision: currentRecord.revision,
     }).value;
   });
 }
@@ -718,8 +889,12 @@ export function createPlanContract(options: PlanContractStoreOptions, input: Cre
       throw new Error(`plan contract already exists: ${planId}`);
     }
     const scopeKey = normalizeScopeKey(input.scopeKey);
-    const existingScopeAuthority = scopeKey === 'unknown' ? undefined : store.contracts.find((existing) =>
-      !isTerminalPlanContractStatus(existing.status) && existing.scopeKey === scopeKey);
+    const existingScopeAuthority =
+      scopeKey === 'unknown'
+        ? undefined
+        : store.contracts.find(
+            (existing) => !isTerminalPlanContractStatus(existing.status) && existing.scopeKey === scopeKey,
+          );
     if (existingScopeAuthority) {
       throw new Error(`PLAN_SCOPE_ALREADY_OWNED: ${scopeKey}:${existingScopeAuthority.planId}`);
     }
@@ -727,12 +902,16 @@ export function createPlanContract(options: PlanContractStoreOptions, input: Cre
   });
 }
 
-export function createPlanSemanticContext(options: PlanContractStoreOptions, input: CreatePlanSemanticInput): PlanContract {
+export function createPlanSemanticContext(
+  options: PlanContractStoreOptions,
+  input: CreatePlanSemanticInput,
+): PlanContract {
   return withPlanAdmissionLock(options, () => {
     const store = readPlanContractStore(options);
     const planId = sanitizeFileComponent(input.planId);
     if (!String(input.planId ?? '').trim() || planId === 'unknown') throw new Error('plan_id is required');
-    if (store.contracts.some((existing) => existing.planId === planId)) throw new Error(`plan contract already exists: ${planId}`);
+    if (store.contracts.some((existing) => existing.planId === planId))
+      throw new Error(`plan contract already exists: ${planId}`);
 
     // Thin Plan scope identifies one semantic planning lineage; it is not an
     // execution mutex. The same Requirement + scope has one current Plan head,
@@ -752,38 +931,49 @@ export function createPlanSemanticContext(options: PlanContractStoreOptions, inp
         throw new Error(`PLAN_PARENT_REQUIREMENT_MISMATCH:${parentPlanId}`);
       }
     }
-    const existingLineage = store.contracts.find((existing) =>
-      existing.planId !== planId
-      && isCurrentPlanContract(existing)
-      && existing.scopeKey === scopeKey
-      && (existing.requirementId?.trim() || undefined) === requirementId);
+    const existingLineage = store.contracts.find(
+      (existing) =>
+        existing.planId !== planId &&
+        isCurrentPlanContract(existing) &&
+        existing.scopeKey === scopeKey &&
+        (existing.requirementId?.trim() || undefined) === requirementId,
+    );
     if (existingLineage) {
       throw new Error(`PLAN_SEMANTIC_LINEAGE_ALREADY_EXISTS:${scopeKey}:${existingLineage.planId}`);
     }
 
-    const goal = String(input.goal ?? '').trim().slice(0, 2_000);
+    const goal = String(input.goal ?? '')
+      .trim()
+      .slice(0, 2_000);
     if (!goal) throw new Error('PLAN_GOAL_REQUIRED');
     const expectedRequirementRevision = input.expectedRequirementRevision;
-    if (expectedRequirementRevision !== undefined
-      && (!Number.isInteger(expectedRequirementRevision) || expectedRequirementRevision < 1)) {
+    if (
+      expectedRequirementRevision !== undefined &&
+      (!Number.isInteger(expectedRequirementRevision) || expectedRequirementRevision < 1)
+    ) {
       throw new Error('PLAN_REQUIREMENT_EXPECTED_REVISION_INVALID');
     }
     if (expectedRequirementRevision !== undefined && !requirementId) {
       throw new Error('PLAN_REQUIREMENT_REVISION_WITHOUT_REQUIREMENT');
     }
-    const requirementBasisRevision = input.requirementBasisRevision === undefined
-      ? expectedRequirementRevision
-      : (() => {
-          if (!Number.isInteger(input.requirementBasisRevision) || Number(input.requirementBasisRevision) < 1) {
-            throw new Error('PLAN_REQUIREMENT_BASIS_REVISION_INVALID');
-          }
-          if (expectedRequirementRevision !== undefined
-            && Number(input.requirementBasisRevision) !== expectedRequirementRevision) {
-            throw new Error('PLAN_REQUIREMENT_BASIS_REVISION_MISMATCH');
-          }
-          return Number(input.requirementBasisRevision);
-        })();
-    const sourceBasisRevision = String(input.sourceBasisRevision ?? '').trim().slice(0, 200);
+    const requirementBasisRevision =
+      input.requirementBasisRevision === undefined
+        ? expectedRequirementRevision
+        : (() => {
+            if (!Number.isInteger(input.requirementBasisRevision) || Number(input.requirementBasisRevision) < 1) {
+              throw new Error('PLAN_REQUIREMENT_BASIS_REVISION_INVALID');
+            }
+            if (
+              expectedRequirementRevision !== undefined &&
+              Number(input.requirementBasisRevision) !== expectedRequirementRevision
+            ) {
+              throw new Error('PLAN_REQUIREMENT_BASIS_REVISION_MISMATCH');
+            }
+            return Number(input.requirementBasisRevision);
+          })();
+    const sourceBasisRevision = String(input.sourceBasisRevision ?? '')
+      .trim()
+      .slice(0, 200);
     const items = normalizePlanSemanticItems(input.items);
     const at = nowIso(options);
     const semanticContext = {
@@ -855,7 +1045,10 @@ export function createPlanSemanticContext(options: PlanContractStoreOptions, inp
   });
 }
 
-function admitPlanContractUnlocked(options: PlanContractStoreOptions, input: AdmitPlanContractInput): AdmitPlanContractResult {
+function admitPlanContractUnlocked(
+  options: PlanContractStoreOptions,
+  input: AdmitPlanContractInput,
+): AdmitPlanContractResult {
   assertRequirementReference(options, input.requirementId);
   const plans = listPlanContracts({ ...options, status: 'all', limit: 100 });
   const resolution = resolvePlanAdmission(plans, {
@@ -872,11 +1065,17 @@ function admitPlanContractUnlocked(options: PlanContractStoreOptions, input: Adm
   return { ...resolution, plan: createPlanContractUnlocked(options, input) };
 }
 
-export function admitPlanContract(options: PlanContractStoreOptions, input: AdmitPlanContractInput): AdmitPlanContractResult {
+export function admitPlanContract(
+  options: PlanContractStoreOptions,
+  input: AdmitPlanContractInput,
+): AdmitPlanContractResult {
   return withPlanAdmissionLock(options, () => admitPlanContractUnlocked(options, input));
 }
 
-export async function admitPlanContractAsync(options: PlanContractStoreOptions, input: AdmitPlanContractInput): Promise<AdmitPlanContractResult> {
+export async function admitPlanContractAsync(
+  options: PlanContractStoreOptions,
+  input: AdmitPlanContractInput,
+): Promise<AdmitPlanContractResult> {
   return await withPlanAdmissionLockAsync(options, () => admitPlanContractUnlocked(options, input));
 }
 
@@ -889,37 +1088,47 @@ export function revisePlanSemanticContext(
   planIdInput: string,
   input: RevisePlanSemanticInput,
 ): PlanContract {
-  if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1) throw new Error('PLAN_EXPECTED_REVISION_INVALID');
+  if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1)
+    throw new Error('PLAN_EXPECTED_REVISION_INVALID');
   const planId = sanitizeFileComponent(planIdInput);
-  const requestedSuccessor = input.supersededBy === undefined
-    ? undefined
-    : (() => {
-        const raw = String(input.supersededBy).trim();
-        if (!raw) throw new Error('PLAN_SUCCESSOR_REQUIRED');
-        const successorId = sanitizeFileComponent(raw);
-        if (!successorId || successorId === 'unknown') throw new Error('PLAN_SUCCESSOR_INVALID');
-        if (successorId === planId) throw new Error(`PLAN_SUCCESSOR_SELF_REFERENCE:${planId}`);
-        return successorId;
-      })();
+  const requestedSuccessor =
+    input.supersededBy === undefined
+      ? undefined
+      : (() => {
+          const raw = String(input.supersededBy).trim();
+          if (!raw) throw new Error('PLAN_SUCCESSOR_REQUIRED');
+          const successorId = sanitizeFileComponent(raw);
+          if (!successorId || successorId === 'unknown') throw new Error('PLAN_SUCCESSOR_INVALID');
+          if (successorId === planId) throw new Error(`PLAN_SUCCESSOR_SELF_REFERENCE:${planId}`);
+          return successorId;
+        })();
   return withPlanAdmissionLock(options, () => {
     const applyRevision = (current: PlanContract, at: string): { previous: PlanSemanticView; next: PlanContract } => {
       const revision = currentPlanSemanticRevision(current);
-      if (revision !== input.expectedRevision) throw new Error(`PLAN_REVISION_CONFLICT:${planId}:expected=${input.expectedRevision}:actual=${revision}`);
+      if (revision !== input.expectedRevision)
+        throw new Error(`PLAN_REVISION_CONFLICT:${planId}:expected=${input.expectedRevision}:actual=${revision}`);
       const previous = planSemanticView(current);
       const existingSuccessor = current.supersededBy?.trim() || undefined;
       if (existingSuccessor && requestedSuccessor && existingSuccessor !== requestedSuccessor) {
-        throw new Error(`PLAN_SUCCESSOR_IMMUTABLE:${planId}:current=${existingSuccessor}:requested=${requestedSuccessor}`);
+        throw new Error(
+          `PLAN_SUCCESSOR_IMMUTABLE:${planId}:current=${existingSuccessor}:requested=${requestedSuccessor}`,
+        );
       }
       const supersededBy = requestedSuccessor ?? existingSuccessor;
       const goal = input.goal === undefined ? previous.goal : String(input.goal).trim().slice(0, 2_000);
       if (!goal) throw new Error('PLAN_GOAL_REQUIRED');
-      const requirementBasisRevision = input.requirementBasisRevision === undefined
-        ? previous.requirementBasisRevision
-        : (() => {
-            if (!Number.isInteger(input.requirementBasisRevision) || Number(input.requirementBasisRevision) < 1) throw new Error('PLAN_REQUIREMENT_BASIS_REVISION_INVALID');
-            return Number(input.requirementBasisRevision);
-          })();
-      const sourceBasisRevision = input.sourceBasisRevision === undefined ? previous.sourceBasisRevision : String(input.sourceBasisRevision).trim().slice(0, 200);
+      const requirementBasisRevision =
+        input.requirementBasisRevision === undefined
+          ? previous.requirementBasisRevision
+          : (() => {
+              if (!Number.isInteger(input.requirementBasisRevision) || Number(input.requirementBasisRevision) < 1)
+                throw new Error('PLAN_REQUIREMENT_BASIS_REVISION_INVALID');
+              return Number(input.requirementBasisRevision);
+            })();
+      const sourceBasisRevision =
+        input.sourceBasisRevision === undefined
+          ? previous.sourceBasisRevision
+          : String(input.sourceBasisRevision).trim().slice(0, 200);
       const items = input.items === undefined ? previous.items : normalizePlanSemanticItems(input.items);
       const semanticContext = {
         requirementBasisRevision,
@@ -927,10 +1136,18 @@ export function revisePlanSemanticContext(
         goal,
         nonGoals: input.nonGoals === undefined ? previous.nonGoals : bounded(input.nonGoals, 20),
         assumptions: input.assumptions === undefined ? previous.assumptions : bounded(input.assumptions, 30),
-        resolvedDecisions: input.resolvedDecisions === undefined ? previous.resolvedDecisions : bounded(input.resolvedDecisions, 30),
-        stopConditions: input.stopConditions === undefined ? previous.stopConditions : bounded(input.stopConditions, 20),
-        replanConditions: input.replanConditions === undefined ? previous.replanConditions : bounded(input.replanConditions, 20),
-        integrationStrategy: input.integrationStrategy === undefined ? previous.integrationStrategy : input.integrationStrategy === null ? undefined : String(input.integrationStrategy).trim().slice(0, 1_000) || undefined,
+        resolvedDecisions:
+          input.resolvedDecisions === undefined ? previous.resolvedDecisions : bounded(input.resolvedDecisions, 30),
+        stopConditions:
+          input.stopConditions === undefined ? previous.stopConditions : bounded(input.stopConditions, 20),
+        replanConditions:
+          input.replanConditions === undefined ? previous.replanConditions : bounded(input.replanConditions, 20),
+        integrationStrategy:
+          input.integrationStrategy === undefined
+            ? previous.integrationStrategy
+            : input.integrationStrategy === null
+              ? undefined
+              : String(input.integrationStrategy).trim().slice(0, 1_000) || undefined,
         items,
       };
       return {
@@ -948,26 +1165,53 @@ export function revisePlanSemanticContext(
 
     return withControlPlaneTransaction(options.controllerHome, (database) => {
       const scope = requirePlanContractStoreScopeKey(options);
-      const currentRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', scope, planId);
+      const currentRecord = readControlPlaneRecordWithinTransaction<PlanContract>(
+        database,
+        'plan_contract',
+        scope,
+        planId,
+      );
       if (!currentRecord) throw new Error(`plan contract not found: ${planId}`);
       if (requestedSuccessor) {
-        const successorRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', scope, requestedSuccessor);
+        const successorRecord = readControlPlaneRecordWithinTransaction<PlanContract>(
+          database,
+          'plan_contract',
+          scope,
+          requestedSuccessor,
+        );
         if (!successorRecord) throw new Error(`PLAN_SUCCESSOR_NOT_FOUND:${requestedSuccessor}`);
-        if (!isCurrentPlanContract(successorRecord.value)) throw new Error(`PLAN_SUCCESSOR_NOT_CURRENT:${requestedSuccessor}`);
+        if (!isCurrentPlanContract(successorRecord.value))
+          throw new Error(`PLAN_SUCCESSOR_NOT_CURRENT:${requestedSuccessor}`);
       }
       const at = nowIso(options);
       const { previous, next } = applyRevision(currentRecord.value, at);
       const semanticRevisionKey = `${planId}:r${previous.revision}`;
-      if (!readControlPlaneRecordWithinTransaction<PlanSemanticRevisionRecord>(database, 'plan_semantic_revision', scope, semanticRevisionKey)) {
+      if (
+        !readControlPlaneRecordWithinTransaction<PlanSemanticRevisionRecord>(
+          database,
+          'plan_semantic_revision',
+          scope,
+          semanticRevisionKey,
+        )
+      ) {
         writeControlPlaneRecordWithinTransaction(database, {
-          namespace: 'plan_semantic_revision', scope, key: semanticRevisionKey, schemaVersion: 1,
+          namespace: 'plan_semantic_revision',
+          scope,
+          key: semanticRevisionKey,
+          schemaVersion: 1,
           value: { schemaVersion: 1, ...previous, recordedAt: at },
-          action: 'plan_semantic_revision_archived', expectedRevision: null,
+          action: 'plan_semantic_revision_archived',
+          expectedRevision: null,
         });
       }
       return writeControlPlaneRecordWithinTransaction(database, {
-        namespace: 'plan_contract', scope, key: planId, schemaVersion: 1,
-        value: next, action: 'plan_semantic_revised', expectedRevision: currentRecord.revision,
+        namespace: 'plan_contract',
+        scope,
+        key: planId,
+        schemaVersion: 1,
+        value: next,
+        action: 'plan_semantic_revised',
+        expectedRevision: currentRecord.revision,
       }).value;
     });
   });
@@ -977,11 +1221,16 @@ export function isCurrentPlanContract(contract: PlanContract): boolean {
   return !isTerminalPlanContractStatus(contract.status) && !contract.supersededBy?.trim();
 }
 
-export function listPlanContracts(options: PlanContractStoreOptions & { status?: PlanContractStatus | 'active' | 'all'; limit?: number }): PlanContract[] {
+export function listPlanContracts(
+  options: PlanContractStoreOptions & { status?: PlanContractStatus | 'active' | 'all'; limit?: number },
+): PlanContract[] {
   const status = options.status ?? 'active';
   const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? 50), 100));
-  return readPlanContractStore(options).contracts
-    .filter((contract) => status === 'all' || (status === 'active' ? isCurrentPlanContract(contract) : contract.status === status))
+  return readPlanContractStore(options)
+    .contracts.filter(
+      (contract) =>
+        status === 'all' || (status === 'active' ? isCurrentPlanContract(contract) : contract.status === status),
+    )
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, limit);
 }

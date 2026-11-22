@@ -16,10 +16,8 @@ export interface ExecutionLease {
   schemaVersion: 1;
   leaseId: string;
   repoId: string;
-  /** Exact checkout placement. Historical persisted leases may also carry workId. */
+  /** Exact checkout placement for path/resource scoping. */
   checkoutId?: string;
-  /** Historical compatibility only; new lease acquisition never writes Work attribution. */
-  workId?: string;
   resourceKey: string;
   mode: ResourceClaimMode;
   ownerJobId: string;
@@ -48,5 +46,11 @@ export interface LeaseAcquisitionOptions {
 export interface LeaseAcquisitionResult {
   acquired: boolean;
   leases: ExecutionLease[];
-  blockers: Array<{ resourceKey: string; ownerJobId: string; leaseId: string; mode: ResourceClaimMode; ownerIdentityDigest?: string }>;
+  blockers: Array<{
+    resourceKey: string;
+    ownerJobId: string;
+    leaseId: string;
+    mode: ResourceClaimMode;
+    ownerIdentityDigest?: string;
+  }>;
 }
