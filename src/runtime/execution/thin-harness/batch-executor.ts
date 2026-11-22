@@ -122,8 +122,14 @@ export async function executeRepositoryBatch(
   // Precheck each step and compute mutation effect from router, not kind name alone.
   let hasWrite = decision.effects.mutatesWorkspace || decision.effects.mutatesGitRefs;
   let hasCommit = false;
+  // Pure source patches mutate file bytes only. The Git index/HEAD claim is
+  // reserved for steps that really stage, commit or may run arbitrary writes,
+  // so a source-only batch never serializes against another Writer's short
+  // Git critical section (#713).
+  let touchesGitIndex = false;
   for (const step of steps) {
     if (step.kind === 'commit_paths') hasCommit = true;
+    if (step.kind === 'commit_paths' || step.kind === 'stage_paths') touchesGitIndex = true;
     const stepDecision = routeExecution({
       operation: step.kind,
       mode: 'auto',
@@ -135,7 +141,10 @@ export async function executeRepositoryBatch(
       patchOperationCount: Array.isArray(step.input.operations) ? step.input.operations.length : undefined,
       defaultBranch: ctx.repository.defaultBranch,
     });
-    if (stepDecision.effects.mutatesWorkspace || stepDecision.effects.mutatesGitRefs) hasWrite = true;
+    if (stepDecision.effects.mutatesWorkspace || stepDecision.effects.mutatesGitRefs) {
+      hasWrite = true;
+      if (step.kind !== 'apply_patch') touchesGitIndex = true;
+    }
     if (stepDecision.mode !== 'fast') {
       return {
         ok: false,
@@ -473,7 +482,7 @@ export async function executeRepositoryBatch(
           ownership: {
             writePaths,
             mutatesGitRefs: hasCommit || decision.effects.mutatesGitRefs,
-            mutatesGitIndex: true,
+            mutatesGitIndex: touchesGitIndex || hasCommit || decision.effects.mutatesGitRefs,
           },
         },
         async (gate, helpers) => {

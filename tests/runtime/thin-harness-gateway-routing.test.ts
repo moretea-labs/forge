@@ -68,6 +68,7 @@ import {
   recordEditSessionProcessCheckReceipts,
 } from '../../src/runtime/editing/edit-session';
 import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
+import { executeRepositoryBatch } from '../../src/runtime/execution/thin-harness/batch-executor';
 import {
   reconcilePendingEditValidations,
   startOrJoinEditValidation,
@@ -349,6 +350,76 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       );
       expect(result.ok).toBe(true);
       expect(readFileSync(join(fx.repoRoot, 'src/lib.ts'), 'utf8')).toBe('export const n = 4;\n');
+    } finally {
+      releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, indexOwner);
+    }
+  });
+
+  test('source-only batch patch does not claim the Git index held by another Writer (#713)', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const indexOwner = 'fast:unrelated-batch-staging';
+    const indexLease = acquireExecutionLeases(
+      fx.controllerHome,
+      fx.repository.repoId,
+      indexOwner,
+      [{ resourceKey: `git-index:${fx.repository.activeCheckoutId}`, mode: 'exclusive' as const }],
+      { visibility: 'ephemeral' },
+    );
+    expect(indexLease.acquired).toBe(true);
+    try {
+      const result = await executeRepositoryBatch(
+        { controllerHome: fx.controllerHome, repository: fx.repository },
+        {
+          repoId: fx.repository.repoId,
+          requestId: 'batch-source-patch-with-index-owner',
+          steps: [
+            {
+              kind: 'apply_patch',
+              input: {
+                operations: [
+                  {
+                    type: 'replace',
+                    path: 'src/lib.ts',
+                    replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 5;' }],
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      );
+      expect(result.ok).toBe(true);
+      expect(readFileSync(join(fx.repoRoot, 'src/lib.ts'), 'utf8')).toBe('export const n = 5;\n');
+    } finally {
+      releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, indexOwner);
+    }
+  });
+
+  test('batch staging still waits for the real Git index owner (#713)', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    writeFileSync(join(fx.repoRoot, 'src/lib.ts'), 'export const n = 6;\n');
+    const indexOwner = 'fast:unrelated-batch-index-owner';
+    const indexLease = acquireExecutionLeases(
+      fx.controllerHome,
+      fx.repository.repoId,
+      indexOwner,
+      [{ resourceKey: `git-index:${fx.repository.activeCheckoutId}`, mode: 'exclusive' as const }],
+      { visibility: 'ephemeral' },
+    );
+    expect(indexLease.acquired).toBe(true);
+    try {
+      const result = await executeRepositoryBatch(
+        { controllerHome: fx.controllerHome, repository: fx.repository },
+        {
+          repoId: fx.repository.repoId,
+          requestId: 'batch-stage-with-index-owner',
+          steps: [{ kind: 'stage_paths', input: { paths: ['src/lib.ts'] } }],
+        },
+      );
+      expect(result.ok).toBe(false);
+      expect(git(fx.repoRoot, ['diff', '--cached', '--name-only'])).toBe('');
     } finally {
       releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, indexOwner);
     }

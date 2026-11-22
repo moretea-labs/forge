@@ -512,7 +512,8 @@ export async function integratePatchProposals(
       signal: options.signal,
       ownership: {
         writePaths,
-        mutatesGitIndex: true,
+        // Lane integration writes validated source bytes only; it never stages.
+        mutatesGitIndex: false,
         mutatesGitRefs: false,
       },
     },
