@@ -8,7 +8,8 @@
  * Ownership lifecycle is covered by the mutation lease alone — do NOT hold the
  * repository controller lock for the duration of the write (renew needs that lock).
  *
- * Claims cover: workspace, git-index, git-head, and optionally git-ref + paths.
+ * Claims cover exact paths when known, and workspace only for unknown changes;
+ * Git index/head/ref retain independent fences.
  */
 import { createHash } from 'crypto';
 import {
@@ -20,6 +21,7 @@ import {
 import type { ExecutionLease, ExecutionLeaseOwnerIdentity } from '../../resources/leases/types';
 import { recordGatewayLatency } from '../../../core/observability/gateway-contention-metrics';
 import type { ResourceClaimSpec } from '../../execution/jobs/types';
+import { normalizeClaimPath } from '../../resources/claims/conflicts';
 import { runBoundedGit } from './async-process';
 import { terminateProcessTree } from '../../shared/process-tree';
 
@@ -53,9 +55,7 @@ export interface MutationGateBusy {
   blockers: Array<{ kind: 'fast_gate' | 'durable_lease'; owner: string; resourceKey?: string; leaseId?: string }>;
 }
 
-export type MutationGateAcquireResult =
-  | { acquired: true; gate: CheckoutMutationGate }
-  | MutationGateBusy;
+export type MutationGateAcquireResult = { acquired: true; gate: CheckoutMutationGate } | MutationGateBusy;
 
 export interface MutationGateHelpers {
   renew: () => CheckoutMutationGate;
@@ -108,16 +108,18 @@ export function normalizeMutationOwnerIdentity(input: {
     worktreeId: supplied?.worktreeId?.trim() || input.checkoutId,
     branch: supplied?.branch?.trim() || 'unknown',
     principalId: supplied?.principalId?.trim() || `owner:${input.owner}`,
-    controllerInstanceId: supplied?.controllerInstanceId?.trim()
-      || process.env.FORGE_RUNTIME_INSTANCE_ID?.trim()
-      || process.env.FORGE_WRITER_INSTANCE_ID?.trim()
-      || process.env.FORGE_DAEMON_INSTANCE_ID?.trim()
-      || `process:${process.pid}`,
-    controllerGeneration: supplied?.controllerGeneration?.trim()
-      || process.env.FORGE_RUNTIME_INCARNATION_GENERATION?.trim()
-      || process.env.FORGE_WRITER_GENERATION?.trim()
-      || process.env.FORGE_ACTIVE_RUNTIME_REVISION?.trim()
-      || 'unbound',
+    controllerInstanceId:
+      supplied?.controllerInstanceId?.trim() ||
+      process.env.FORGE_RUNTIME_INSTANCE_ID?.trim() ||
+      process.env.FORGE_WRITER_INSTANCE_ID?.trim() ||
+      process.env.FORGE_DAEMON_INSTANCE_ID?.trim() ||
+      `process:${process.pid}`,
+    controllerGeneration:
+      supplied?.controllerGeneration?.trim() ||
+      process.env.FORGE_RUNTIME_INCARNATION_GENERATION?.trim() ||
+      process.env.FORGE_WRITER_GENERATION?.trim() ||
+      process.env.FORGE_ACTIVE_RUNTIME_REVISION?.trim() ||
+      'unbound',
   };
 }
 
@@ -125,13 +127,14 @@ export function checkoutMutationResourceKey(checkoutId: string): string {
   return `workspace:${checkoutId}`;
 }
 
-export function buildMutationClaims(
-  checkoutId: string,
-  options: MutationOwnershipOptions = {},
-): ResourceClaimSpec[] {
-  const claims: ResourceClaimSpec[] = [
-    { resourceKey: `workspace:${checkoutId}`, mode: 'write' },
-  ];
+export function buildMutationClaims(checkoutId: string, options: MutationOwnershipOptions = {}): ResourceClaimSpec[] {
+  const declaredPaths = options.writePaths ?? [];
+  const normalizedPaths = declaredPaths.map((path) => normalizeClaimPath(path));
+  // Never claim narrow ownership unless every source path is safely bounded.
+  const scoped = normalizedPaths.length > 0 && normalizedPaths.every((path): path is string => Boolean(path));
+  const claims: ResourceClaimSpec[] = scoped
+    ? (normalizedPaths as string[]).map((path) => ({ resourceKey: `path:${checkoutId}:${path}`, mode: 'write' }))
+    : [{ resourceKey: `workspace:${checkoutId}`, mode: 'write' }];
   const mutatesIndex = options.mutatesGitIndex !== false;
   if (mutatesIndex) {
     claims.push({ resourceKey: `git-index:${checkoutId}`, mode: 'write' });
@@ -141,11 +144,6 @@ export function buildMutationClaims(
     claims.push({ resourceKey: `git-ref:HEAD`, mode: 'write' });
     claims.push({ resourceKey: `git-ref:refs/heads/*`, mode: 'write' });
   }
-  for (const path of options.writePaths ?? []) {
-    const relative = path.replace(/^\.\//, '').replace(/\\/g, '/');
-    if (!relative) continue;
-    claims.push({ resourceKey: `path:${checkoutId}:${relative}`, mode: 'write' });
-  }
   // Dedupe by resourceKey, prefer exclusive/write
   const map = new Map<string, ResourceClaimSpec>();
   for (const claim of claims) {
@@ -154,20 +152,25 @@ export function buildMutationClaims(
   return [...map.values()];
 }
 
-async function snapshotHash(repoRoot: string, signal?: AbortSignal): Promise<{ head: string | null; statusHash: string | null }> {
+async function snapshotHash(
+  repoRoot: string,
+  signal?: AbortSignal,
+): Promise<{ head: string | null; statusHash: string | null }> {
   const [headResult, statusResult] = await Promise.all([
     runBoundedGit(repoRoot, ['rev-parse', '--verify', 'HEAD'], {
       timeoutMs: 5_000,
       maxOutputBytes: 4_096,
       signal,
     }),
-    runBoundedGit(repoRoot, [
-      'status', '--porcelain=v1', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**',
-    ], {
-      timeoutMs: 5_000,
-      maxOutputBytes: 128 * 1024,
-      signal,
-    }),
+    runBoundedGit(
+      repoRoot,
+      ['status', '--porcelain=v1', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**'],
+      {
+        timeoutMs: 5_000,
+        maxOutputBytes: 128 * 1024,
+        signal,
+      },
+    ),
   ]);
   if (statusResult.cancelled || headResult.cancelled) {
     throw new Error('CANCELLED: mutation snapshot aborted');
@@ -175,7 +178,7 @@ async function snapshotHash(repoRoot: string, signal?: AbortSignal): Promise<{ h
   if (!statusResult.ok) {
     throw new Error(`MUTATION_SNAPSHOT_FAILED: git status failed: ${statusResult.stderr || statusResult.exitCode}`);
   }
-  const head = headResult.ok ? (headResult.stdout.trim() || null) : null;
+  const head = headResult.ok ? headResult.stdout.trim() || null : null;
   return {
     head,
     statusHash: createHash('sha256').update(statusResult.stdout).digest('hex'),
@@ -218,7 +221,8 @@ function gateFromLeases(
     renewCount: 0,
     claims,
     ownerIdentity,
-    ownerIdentityDigest: primary.ownerIdentityDigest ?? createHash('sha256').update(JSON.stringify(ownerIdentity)).digest('hex'),
+    ownerIdentityDigest:
+      primary.ownerIdentityDigest ?? createHash('sha256').update(JSON.stringify(ownerIdentity)).digest('hex'),
   };
 }
 
@@ -244,21 +248,14 @@ export async function acquireCheckoutMutationGate(input: {
     repoId: input.repoId,
     checkoutId: input.checkoutId,
   }));
-  const ownerJobId = input.owner.startsWith('fast:') || input.owner.startsWith('JOB-')
-    ? input.owner
-    : `fast:${input.owner}`;
+  const ownerJobId =
+    input.owner.startsWith('fast:') || input.owner.startsWith('JOB-') ? input.owner : `fast:${input.owner}`;
 
-  const result = acquireExecutionLeases(
-    input.controllerHome,
-    input.repoId,
-    ownerJobId,
-    claims,
-    {
-      ...EPHEMERAL_OPTS,
-      ttlMs,
-      ownerIdentity,
-    },
-  );
+  const result = acquireExecutionLeases(input.controllerHome, input.repoId, ownerJobId, claims, {
+    ...EPHEMERAL_OPTS,
+    ttlMs,
+    ownerIdentity,
+  });
 
   if (!result.acquired || result.leases.length === 0) {
     recordGatewayLatency({
@@ -273,7 +270,7 @@ export async function acquireCheckoutMutationGate(input: {
       busy: true,
       reason: 'mutation_ownership_busy',
       blockers: result.blockers.map((blocker) => ({
-        kind: blocker.ownerJobId.startsWith('fast:') ? 'fast_gate' as const : 'durable_lease' as const,
+        kind: blocker.ownerJobId.startsWith('fast:') ? ('fast_gate' as const) : ('durable_lease' as const),
         owner: blocker.ownerJobId,
         resourceKey: blocker.resourceKey,
         leaseId: blocker.leaseId,
@@ -301,10 +298,12 @@ export async function acquireCheckoutMutationGate(input: {
     return {
       busy: true,
       reason: 'snapshot_failed',
-      blockers: [{
-        kind: 'fast_gate',
-        owner: error instanceof Error ? error.message : String(error),
-      }],
+      blockers: [
+        {
+          kind: 'fast_gate',
+          owner: error instanceof Error ? error.message : String(error),
+        },
+      ],
     };
   }
 
@@ -333,13 +332,7 @@ export function renewCheckoutMutationGate(
     fencingToken: gate.fencingTokens[leaseId] ?? gate.fencingToken,
     ownerIdentityDigest: gate.ownerIdentityDigest,
   }));
-  const renewed = renewExecutionLeases(
-    controllerHome,
-    gate.repoId,
-    gate.ownerJobId,
-    nextTtl,
-    expected,
-  );
+  const renewed = renewExecutionLeases(controllerHome, gate.repoId, gate.ownerJobId, nextTtl, expected);
   if (renewed.length === 0) {
     throw new Error(`MUTATION_RENEW_FAILED: no leases renewed for ${gate.ownerJobId}`);
   }
@@ -363,10 +356,7 @@ export function renewCheckoutMutationGate(
   };
 }
 
-export function assertCheckoutMutationGate(
-  controllerHome: string,
-  gate: CheckoutMutationGate,
-): ExecutionLease {
+export function assertCheckoutMutationGate(controllerHome: string, gate: CheckoutMutationGate): ExecutionLease {
   let primary: ExecutionLease | undefined;
   for (const leaseId of gate.leaseIds) {
     const token = gate.fencingTokens[leaseId] ?? gate.fencingToken;
@@ -399,19 +389,10 @@ export function releaseCheckoutMutationGate(
     repoId,
     checkoutId,
   }));
-  releaseExactExecutionLeases(
-    controllerHome,
-    repoId,
-    gateIdOrOwner,
-    expected,
-    EPHEMERAL_OPTS,
-  );
+  releaseExactExecutionLeases(controllerHome, repoId, gateIdOrOwner, expected, EPHEMERAL_OPTS);
 }
 
-export function releaseCheckoutMutationGateOwned(
-  controllerHome: string,
-  gate: CheckoutMutationGate,
-): void {
+export function releaseCheckoutMutationGateOwned(controllerHome: string, gate: CheckoutMutationGate): void {
   releaseExactExecutionLeases(
     controllerHome,
     gate.repoId,
@@ -564,9 +545,7 @@ export function mutationGateBusyMessage(busy: MutationGateBusy): string {
 /**
  * Build unknown-outcome payload when process stop cannot be confirmed after ownership loss.
  */
-export function unknownOwnershipOutcome(input: {
-  repositoryChanged?: boolean;
-}): {
+export function unknownOwnershipOutcome(input: { repositoryChanged?: boolean }): {
   outcome: 'unknown';
   repositoryChanged: true;
   reconciliationRequired: true;

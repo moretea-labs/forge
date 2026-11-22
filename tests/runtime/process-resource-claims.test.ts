@@ -34,13 +34,93 @@ import { ensureControllerHome, repositoryControllerRoot } from '../../src/effect
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { buildWorkflowWatchdogReport } from '../../src/runtime/watchdog/workflow-watchdog';
 import { withControllerLockAsync } from '../../src/effects/controller-locks';
-import { normalizeMutationOwnerIdentity } from '../../src/runtime/execution/thin-harness/mutation-gate';
+import {
+  acquireCheckoutMutationGate,
+  type CheckoutMutationGate,
+  buildMutationClaims,
+  normalizeMutationOwnerIdentity,
+  releaseCheckoutMutationGateOwned,
+} from '../../src/runtime/execution/thin-harness/mutation-gate';
 
 function lease(resourceKey: string, mode: 'read' | 'write' | 'exclusive'): ExecutionLease {
   return { resourceKey, mode } as ExecutionLease;
 }
 
 describe('Process Runtime fine-grained resource claims', () => {
+  test('MutationGate exact-path edits do not take checkout ownership (#713)', () => {
+    const a = buildMutationClaims('co1', { writePaths: ['src/alpha.ts'], mutatesGitIndex: false });
+    const b = buildMutationClaims('co1', { writePaths: ['./src/beta.ts'], mutatesGitIndex: false });
+    const overlap = buildMutationClaims('co1', { writePaths: ['src/alpha.ts'], mutatesGitIndex: false });
+    expect(a).toEqual([{ resourceKey: 'path:co1:src/alpha.ts', mode: 'write' }]);
+    expect(b).toEqual([{ resourceKey: 'path:co1:src/beta.ts', mode: 'write' }]);
+    expect(claimsConflict(a[0]!, lease(b[0]!.resourceKey, 'write'))).toBe(false);
+    expect(claimsConflict(a[0]!, lease(overlap[0]!.resourceKey, 'write'))).toBe(true);
+    expect(a.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+
+    const staged = buildMutationClaims('co1', {
+      writePaths: ['src/alpha.ts'],
+      mutatesGitIndex: true,
+      mutatesGitRefs: true,
+    });
+    expect(staged).toContainEqual({ resourceKey: 'path:co1:src/alpha.ts', mode: 'write' });
+    expect(staged).toContainEqual({ resourceKey: 'git-index:co1', mode: 'write' });
+    expect(staged).toContainEqual({ resourceKey: 'git-head:co1', mode: 'write' });
+    expect(staged).toContainEqual({ resourceKey: 'git-ref:HEAD', mode: 'write' });
+    expect(staged.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+  });
+
+  test('MutationGate unknown or invalid source scopes keep conservative exclusion (#713)', () => {
+    for (const options of [
+      { mutatesGitIndex: false },
+      { writePaths: [] as string[], mutatesGitIndex: false },
+      { writePaths: ['src/a.ts', '../outside'], mutatesGitIndex: false },
+      { writePaths: ['src/a.ts', '/outside'], mutatesGitIndex: false },
+      { writePaths: ['src/a.ts', '*'], mutatesGitIndex: false },
+    ]) {
+      expect(buildMutationClaims('co1', options)).toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+    }
+  });
+
+  test('two same-checkout MutationGate owners coexist on disjoint paths but never overlap (#713)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-713-mutation-home-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-713-mutation-repo-'));
+    const held: CheckoutMutationGate[] = [];
+    try {
+      ensureControllerHome(home);
+      execFileSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'pipe' });
+      writeFileSync(join(repoRoot, 'alpha.txt'), 'initial alpha');
+      writeFileSync(join(repoRoot, 'beta.txt'), 'initial beta');
+      const acquire = (owner: string, path: string) =>
+        acquireCheckoutMutationGate({
+          controllerHome: home,
+          repoId: 'repo713',
+          checkoutId: 'checkout713',
+          repoRoot,
+          owner,
+          ownership: { writePaths: [path], mutatesGitIndex: false },
+        });
+
+      const a = await acquire('fast:alpha', 'alpha.txt');
+      expect('acquired' in a && a.acquired).toBe(true);
+      if (!('acquired' in a) || !a.acquired) throw new Error('TEST_ALPHA_GATE_NOT_ACQUIRED');
+      held.push(a.gate);
+      const b = await acquire('fast:beta', 'beta.txt');
+      expect('acquired' in b && b.acquired).toBe(true);
+      if (!('acquired' in b) || !b.acquired) throw new Error('TEST_BETA_GATE_NOT_ACQUIRED');
+      held.push(b.gate);
+      writeFileSync(join(repoRoot, 'alpha.txt'), 'writer A');
+      writeFileSync(join(repoRoot, 'beta.txt'), 'writer B');
+      const blocked = await acquire('fast:overlap', 'alpha.txt');
+      expect(blocked).toMatchObject({ busy: true, reason: 'mutation_ownership_busy' });
+      expect(readFileSync(join(repoRoot, 'alpha.txt'), 'utf8')).toBe('writer A');
+      expect(readFileSync(join(repoRoot, 'beta.txt'), 'utf8')).toBe('writer B');
+    } finally {
+      for (const gate of held) releaseCheckoutMutationGateOwned(home, gate);
+      rmSync(repoRoot, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('MutationGate owner identity follows the canonical Runtime fencing claim', () => {
     const keys = [
       'FORGE_RUNTIME_INSTANCE_ID',
