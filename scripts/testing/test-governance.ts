@@ -161,17 +161,21 @@ function repositoryFiles(repoRoot: string, includeUntracked: boolean): string[] 
  * Dirty, deleted and untracked content is still read from disk; neither the
  * commit SHA nor Git index alone can stand in for the working-tree candidate.
  */
-export function testContentDigest(repoRoot: string): string {
-  const index = new Map<string, { mode: string; blob: string; trusted: boolean }>();
-  // One Git query returns both stage data and unsafe index flags. Do not trust
-  // skip-worktree or assume-unchanged entries as proof of live file bytes.
+type IndexedGitContent = { mode: string; blob: string; trusted: boolean };
+
+function indexedGitContent(repoRoot: string): Map<string, IndexedGitContent> {
+  const index = new Map<string, IndexedGitContent>();
+  // -v includes index flags: never trust skip-worktree or assume-unchanged bytes.
   for (const record of requiredGit(repoRoot, ['ls-files', '--stage', '-v', '-z']).split('\0').filter(Boolean)) {
     const entry = /^(. )([0-7]{6}) ([0-9a-f]{40,64}) (\d)\t([\s\S]+)$/.exec(record);
-    if (!entry || entry[4] !== '0') throw new Error('Cannot fingerprint unresolved Git index entry');
+    if (entry?.[4] !== '0') throw new Error('Cannot fingerprint unresolved Git index entry');
     index.set(entry[5]!, { mode: entry[2]!, blob: entry[3]!, trusted: entry[1] === 'H ' });
   }
-  // --no-renames keeps each record one NUL-delimited status + path, including
-  // a staged rename's deleted source and newly created destination.
+  return index;
+}
+
+function gitContentChanges(repoRoot: string): { modified: Set<string>; untracked: string[] } {
+  // --no-renames keeps each record one status + path, including both rename sides.
   const modified = new Set<string>();
   const untracked: string[] = [];
   for (const record of requiredGit(repoRoot, [
@@ -188,6 +192,12 @@ export function testContentDigest(repoRoot: string): string {
     if (record.slice(0, 2) === '??') untracked.push(path);
     else modified.add(path);
   }
+  return { modified, untracked };
+}
+
+export function testContentDigest(repoRoot: string): string {
+  const index = indexedGitContent(repoRoot);
+  const { modified, untracked } = gitContentChanges(repoRoot);
   const paths = [...new Set([...index.keys(), ...untracked])]
     .filter((path) => !CONTENT_EXCLUDES.some((prefix) => path.startsWith(prefix)))
     .sort();
