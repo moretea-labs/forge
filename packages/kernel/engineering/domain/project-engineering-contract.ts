@@ -84,7 +84,7 @@ export function validateProjectKnowledgeSources(value: unknown): ProjectKnowledg
 }
 
 /**
- * Source-controlled project facts consumed by the generic Engineering Workloop.
+ * Source-controlled project facts consumed by engineering design/admission.
  * Generic language/debug/review method belongs in EngineeringRiskProfile/Skills,
  * never in this project-owned contract.
  */

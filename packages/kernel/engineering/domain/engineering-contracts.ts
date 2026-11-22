@@ -24,7 +24,7 @@ export const ENGINEERING_EVIDENCE_KINDS = [
 export type EngineeringEvidenceKind = (typeof ENGINEERING_EVIDENCE_KINDS)[number];
 export type EngineeringEvidenceRequirement = 'required' | 'conditional' | 'optional';
 
-/** Exact source-bound reference persisted on Work; the project file remains authority. */
+/** Exact source-bound reference for a loaded project engineering contract; the project file remains authority. */
 export interface ProjectEngineeringContractReceipt {
   schemaVersion: 1;
   contractPath: string;
