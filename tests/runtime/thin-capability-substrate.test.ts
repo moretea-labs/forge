@@ -20,7 +20,6 @@ import {
   recordDirectActivity,
   getDirectActivity,
   listDirectActivities,
-  projectUnifiedActivityView,
 } from '../../packages/kernel/identity/api/index';
 import {
   createSchedule,
@@ -488,7 +487,6 @@ describe('Thin capability substrate', () => {
       kind: 'worktree',
       targetRef: worktreePath,
       creator: 'forge:worktree-manager',
-      associatedWorkId: 'work-abc',
       retentionIntent: 'temporary',
     });
     expect(worktreeResource.resourceId).toBeDefined();
@@ -581,52 +579,6 @@ describe('Thin capability substrate', () => {
     });
     expect(restrictedResult.success).toBe(false);
     expect(restrictedResult.error?.code).toBe('UNAUTHORIZED_CAPABILITY');
-  });
-
-  test('Step 6: Direct capability activity without Work projects to Activity/history instead of synthetic Work', () => {
-    const controllerHome = tempHome();
-
-    // 1) Record direct capability execution (no associatedWorkId)
-    const directAct = recordDirectActivity(controllerHome, {
-      capabilityId: 'repository:read_file',
-      kind: 'direct_execution',
-      targetScope: 'repository:repo-foo',
-      principalId: 'chatgpt-controller',
-      status: 'completed',
-      summary: 'Read README.md',
-    });
-    expect(directAct.activityId).toBeDefined();
-
-    // 2) Record work-bound capability execution
-    const workBoundAct = recordDirectActivity(controllerHome, {
-      capabilityId: 'repository:edit_file',
-      kind: 'work_bound',
-      targetScope: 'repository:repo-foo',
-      principalId: 'chatgpt-controller',
-      associatedWorkId: 'work-plan-1',
-      status: 'completed',
-      summary: 'Patched bug',
-    });
-
-    // 3) Project unified view
-    const view = projectUnifiedActivityView(controllerHome, [
-      {
-        type: 'work',
-        id: 'work-plan-1',
-        title: 'Fix issue',
-        status: 'completed',
-        revision: 1,
-        updatedAt: new Date().toISOString(),
-      },
-    ]);
-
-    expect(view.workTree.length).toBe(1);
-    expect(view.workTree[0].id).toBe('work-plan-1');
-
-    // Direct activities list contains only non-Work activities
-    expect(view.directActivities.length).toBe(1);
-    expect(view.directActivities[0].activityId).toBe(directAct.activityId);
-    expect(view.directActivities[0].capabilityId).toBe('repository:read_file');
   });
 
   test('Direct activity retains exact identity beyond a 200-item projection window', () => {

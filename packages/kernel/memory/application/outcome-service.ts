@@ -3,8 +3,8 @@ import { validateOutcomeObservation, type OutcomeObservation } from '../domain/e
 
 export interface OutcomeObservationStorePort {
   transaction<T>(operation: () => T): T;
-  assertWriteAuthority(scope: ScopeRef, sourceWorkId: string, sourceRoundId: string): void;
-  evidenceAvailable(ref: string, scope: ScopeRef, sourceWorkId: string): boolean;
+  assertWriteAuthority(scope: ScopeRef): void;
+  evidenceAvailable(ref: string, scope: ScopeRef): boolean;
   read(scope: ScopeRef, id: string): OutcomeObservation | undefined;
   list(scope: ScopeRef, limit: number): OutcomeObservation[];
   write(observation: OutcomeObservation): void;
@@ -35,14 +35,14 @@ export function recordOutcomeObservation(
     const value = validateOutcomeObservation(structuredClone(observation));
     const currentTime = Date.parse(now);
     if (!Number.isFinite(currentTime) || Date.parse(value.observedAt) > currentTime) throw new Error('OUTCOME_FUTURE_OBSERVATION');
-    store.assertWriteAuthority(value.scope, value.sourceWorkId, value.sourceRoundId);
+    store.assertWriteAuthority(value.scope);
     store.assertSafePayload(value);
     const existing = store.read(value.scope, value.id);
     if (existing) {
       if (!sameObservation(existing, value)) throw new Error('OUTCOME_IDENTITY_CONFLICT');
       return existing;
     }
-    if (!store.evidenceAvailable(value.evidenceRef, value.scope, value.sourceWorkId)) throw new Error('OUTCOME_EVIDENCE_UNAVAILABLE');
+    if (!store.evidenceAvailable(value.evidenceRef, value.scope)) throw new Error('OUTCOME_EVIDENCE_UNAVAILABLE');
     if (store.list(value.scope, MAX_OUTCOME_OBSERVATIONS_PER_SCOPE).length >= MAX_OUTCOME_OBSERVATIONS_PER_SCOPE) throw new Error('OUTCOME_CAPACITY_REACHED');
     store.write(value);
     return value;
@@ -66,7 +66,7 @@ export function queryOutcomeObservations(
       if (input.channel && row.remoteObject.channel !== input.channel) continue;
       if (input.account && row.remoteObject.account !== input.account) continue;
       if (since !== undefined && Date.parse(row.observedAt) < since) continue;
-      if (!store.evidenceAvailable(row.evidenceRef, scope, row.sourceWorkId)) { gaps.push(`outcome_evidence_unavailable:${row.id}`); continue; }
+      if (!store.evidenceAvailable(row.evidenceRef, scope)) { gaps.push(`outcome_evidence_unavailable:${row.id}`); continue; }
       observations.push(row);
     }
   }

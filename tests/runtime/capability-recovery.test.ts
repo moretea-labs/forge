@@ -507,7 +507,6 @@ describe('runtime maintenance executor', () => {
       kind: 'worktree',
       targetRef: registeredWorktree,
       creator: 'forge:managed-workspace',
-      associatedWorkId: 'work-contract-intentionally-absent',
       repoId: registered.repoId,
       retentionIntent: 'temporary',
     });
@@ -517,7 +516,6 @@ describe('runtime maintenance executor', () => {
       targetRef: branch,
       locator: managedBranchOwnedResourceLocator(repoRoot, checkout.checkoutId, branch),
       creator: 'forge:managed-workspace',
-      associatedWorkId: 'work-contract-intentionally-absent',
       repoId: registered.repoId,
       retentionIntent: 'retain_on_failure',
     });
@@ -1248,14 +1246,12 @@ describe('owned worktree identity across macOS remounts', () => {
       targetRef: worktree,
       creator: 'forge:managed-workspace',
       repoId: 'repo-original',
-      associatedWorkId: 'work-original',
     };
     const original = recordOwnedResource(controllerHome, input);
     expect(recordOwnedResource(controllerHome, input)).toEqual(original);
     for (const change of [
       { creator: 'other' },
       { repoId: 'other' },
-      { associatedWorkId: 'other' },
       { associatedRequirementId: 'other' },
     ]) {
       expect(() => recordOwnedResource(controllerHome, { ...input, ...change })).toThrow(

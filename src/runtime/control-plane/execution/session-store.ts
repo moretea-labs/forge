@@ -29,13 +29,6 @@ export interface ExecutionSessionContext {
   invalidationReason?: string;
 }
 
-type LegacyExecutionSessionContext = ExecutionSessionContext & { activeWorkId?: unknown };
-
-function normalizeExecutionSession(value: LegacyExecutionSessionContext): ExecutionSessionContext {
-  const { activeWorkId: _retiredWorkFocus, ...session } = value;
-  return session;
-}
-
 export interface SessionIdentity {
   sessionId?: string;
   principalId: string;
@@ -72,7 +65,7 @@ export function peekExecutionSession(controllerHome: string, sessionId: string):
   const normalizedSessionId = sessionId.trim();
   if (!normalizedSessionId) return undefined;
   const path = sessionPath(controllerHome, normalizedSessionId);
-  const stored = readOrImportControlPlaneRecord<LegacyExecutionSessionContext>(controllerHome, {
+  const stored = readOrImportControlPlaneRecord<ExecutionSessionContext>(controllerHome, {
     namespace: 'execution_session',
     scope: 'controller',
     key: sanitizeFileComponent(normalizedSessionId),
@@ -80,7 +73,7 @@ export function peekExecutionSession(controllerHome: string, sessionId: string):
     readLegacy: () => existsSync(path) ? readJsonFile<ExecutionSessionContext>(path) : undefined,
   })?.value;
   if (!stored) return undefined;
-  const session = normalizeExecutionSession(stored);
+  const session = stored;
   return session.sessionId === normalizedSessionId ? session : undefined;
 }
 
@@ -97,16 +90,16 @@ export function peekExecutionSessionWithinTransaction(
 ): ExecutionSessionContext | undefined {
   const normalizedSessionId = sessionId.trim();
   if (!normalizedSessionId) return undefined;
-  const stored = readControlPlaneRecordWithinTransaction<LegacyExecutionSessionContext>(
+  const stored = readControlPlaneRecordWithinTransaction<ExecutionSessionContext>(
     database,
     'execution_session',
     'controller',
     sanitizeFileComponent(normalizedSessionId),
   )?.value;
   const legacyPath = sessionPath(controllerHome, normalizedSessionId);
-  const raw = stored ?? (existsSync(legacyPath) ? readJsonFile<LegacyExecutionSessionContext>(legacyPath) : undefined);
+  const raw = stored ?? (existsSync(legacyPath) ? readJsonFile<ExecutionSessionContext>(legacyPath) : undefined);
   if (!raw) return undefined;
-  const session = normalizeExecutionSession(raw);
+  const session = raw;
   return session.sessionId === normalizedSessionId ? session : undefined;
 }
 
@@ -114,7 +107,7 @@ export function readExecutionSession(controllerHome: string, identity: SessionId
   const sessionId = identity.sessionId?.trim();
   if (!sessionId) return undefined;
   const path = sessionPath(controllerHome, sessionId);
-  const stored = readOrImportControlPlaneRecord<LegacyExecutionSessionContext>(controllerHome, {
+  const stored = readOrImportControlPlaneRecord<ExecutionSessionContext>(controllerHome, {
     namespace: 'execution_session',
     scope: 'controller',
     key: sanitizeFileComponent(sessionId),
@@ -122,7 +115,7 @@ export function readExecutionSession(controllerHome: string, identity: SessionId
     readLegacy: () => existsSync(path) ? readJsonFile<ExecutionSessionContext>(path) : undefined,
   })?.value;
   if (!stored) return undefined;
-  const session = normalizeExecutionSession(stored);
+  const session = stored;
   if (session.sessionId !== sessionId) throw new Error('SESSION_IDENTITY_MISMATCH');
   if (session.principalId !== normalizedPrincipal(identity.principalId)) throw new Error('SESSION_PRINCIPAL_MISMATCH');
   if (session.invalidatedAt) throw new Error(`SESSION_INVALIDATED: ${session.invalidationReason ?? 'session is no longer valid'}`);

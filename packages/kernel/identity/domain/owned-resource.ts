@@ -24,9 +24,8 @@ export type OwnedResourceKind =
 export type OwnedResourceStatus = 'active' | 'retained' | 'released' | 'failed_cleanup';
 
 export interface OwnedResourceProvenance {
-  creator: string; // e.g. 'forge:worktree-manager', 'forge:browser-pool', 'work:work-123'
+  creator: string; // e.g. 'forge:worktree-manager', 'forge:browser-pool'
   createdAt: string;
-  associatedWorkId?: string;
   associatedRequirementId?: string;
   repoId?: string;
 }
@@ -89,7 +88,6 @@ export interface RecordOwnedResourceInput {
   locator?: OwnedResourceLocator;
   identityFingerprint?: string;
   cleanupCapable?: boolean;
-  associatedWorkId?: string;
   associatedRequirementId?: string;
   repoId?: string;
   retentionIntent?: OwnedResourceRetention['intent'];

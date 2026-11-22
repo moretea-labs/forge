@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, readdirSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import type { CapabilityActivityItem, UnifiedActivityView, WorkTreeProjectionNode } from '../domain/activity-projection';
+import type { CapabilityActivityItem } from '../domain/activity-projection';
 
 function activityDir(controllerHome: string): string {
   const dir = resolve(controllerHome, 'activity-projection');
@@ -63,25 +63,4 @@ export function listDirectActivities(controllerHome: string, limit = 50): Capabi
   return items
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
     .slice(0, limit);
-}
-
-/**
- * Project unified activity view combining WorkTree with direct capability activities.
- * Direct capability activity that has no Work appears in directActivities rather than
- * being forced into synthetic Work.
- */
-export function projectUnifiedActivityView(
-  controllerHome: string,
-  workTreeNodes: WorkTreeProjectionNode[],
-  limitDirect = 50,
-): UnifiedActivityView {
-  const directActivities = listDirectActivities(controllerHome, limitDirect);
-  const now = new Date();
-
-  return {
-    workTree: workTreeNodes,
-    directActivities: directActivities.filter((act) => !act.associatedWorkId),
-    observedAt: now.toISOString(),
-    freshnessMs: 0,
-  };
 }

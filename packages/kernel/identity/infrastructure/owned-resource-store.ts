@@ -155,7 +155,6 @@ export function recordOwnedResource(controllerHome: string, input: RecordOwnedRe
       && existing.targetRef === input.targetRef
       && existing.provenance.creator === input.creator
       && existing.provenance.repoId === input.repoId
-      && existing.provenance.associatedWorkId === input.associatedWorkId
       && existing.provenance.associatedRequirementId === input.associatedRequirementId;
     if (!sameBinding) throw new Error(`OWNED_RESOURCE_IDENTITY_CONFLICT: ${resourceId}`);
     const sameIdentity = sameBinding && existing.identityFingerprint === identityFingerprint;
@@ -195,7 +194,6 @@ export function recordOwnedResource(controllerHome: string, input: RecordOwnedRe
     provenance: {
       creator: input.creator,
       createdAt: now,
-      associatedWorkId: input.associatedWorkId,
       associatedRequirementId: input.associatedRequirementId,
       repoId: input.repoId,
     },

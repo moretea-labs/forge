@@ -88,8 +88,8 @@ describe('generic cognitive memory', () => {
   });
 
   test('consolidates two corroborating memories without concatenating raw source text', () => {
-    const first = { ...draft('mem:source-a', 'Prefer interaction affordance over explanatory prose.', ['product.interaction', 'copy.invisible-rules'], 'E-1'), provenance: { ...draft('x', 'x', ['x'], 'E-1').provenance, sourceRoundId: 'round:1' } } as MemoryUnitDraft;
-    const second = { ...draft('mem:source-b', 'Use visible state and flow to make controls self explanatory.', ['product.interaction', 'ui.visible-state'], 'E-2'), provenance: { ...draft('y', 'y', ['y'], 'E-2').provenance, sourceRoundId: 'round:2' } } as MemoryUnitDraft;
+    const first = { ...draft('mem:source-a', 'Prefer interaction affordance over explanatory prose.', ['product.interaction', 'copy.invisible-rules'], 'E-1'), provenance: { ...draft('x', 'x', ['x'], 'E-1').provenance, sourceRef: 'source:1' } } as MemoryUnitDraft;
+    const second = { ...draft('mem:source-b', 'Use visible state and flow to make controls self explanatory.', ['product.interaction', 'ui.visible-state'], 'E-2'), provenance: { ...draft('y', 'y', ['y'], 'E-2').provenance, sourceRef: 'source:2' } } as MemoryUnitDraft;
     const units = [first, second].map(value => ({ ...value, schemaVersion: 1 as const, revision: 1 }));
     const result = consolidateMemories(scope, units, at);
     expect(result.candidates).toHaveLength(1);

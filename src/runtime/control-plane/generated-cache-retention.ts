@@ -968,7 +968,6 @@ export function recordProcessXcodeTestEvidenceOwner(input: {
   repoRoot: string;
   command: XcodeEvidenceProcessCommand;
   processId: string;
-  associatedWorkId?: string;
 }): { recorded: boolean; resourceId?: string; reason?: string } {
   const resultBundlePath = literalXcodeResultBundleTarget(input.command);
   if (!resultBundlePath) return { recorded: false, reason: 'unsupported_or_dynamic_xcode_result_path' };
@@ -978,7 +977,6 @@ export function recordProcessXcodeTestEvidenceOwner(input: {
     repoRoot: input.repoRoot,
     resultBundlePath,
     producerRequestId: 'process:' + input.processId,
-    ...(input.associatedWorkId ? { associatedWorkId: input.associatedWorkId } : {}),
   });
 }
 
@@ -992,7 +990,6 @@ export function recordIosTestEvidenceOwner(input: {
   repoRoot: string;
   resultBundlePath: string;
   producerRequestId: string;
-  associatedWorkId?: string;
 }): { recorded: boolean; resourceId?: string; reason?: string } {
   const target = canonical(resolve(input.repoRoot, input.resultBundlePath));
   if (!trustedIosTestEvidenceTarget(input.repoRoot, target)) {
@@ -1004,7 +1001,6 @@ export function recordIosTestEvidenceOwner(input: {
     targetRef: target,
     creator: 'forge:ios.xcode_test:' + input.producerRequestId,
     repoId: input.repoId,
-    ...(input.associatedWorkId ? { associatedWorkId: input.associatedWorkId } : {}),
     retentionIntent: 'persistent_until_explicit_release',
     cleanupCapable: true,
   });
@@ -1151,7 +1147,6 @@ export function inspectRepositoryIosTestEvidence(
  * Raw XCTest bundles are mechanical evidence, not semantic Work authority.
  * Exact producer-owned bundles enter the bounded retention policy after grace;
  * identity-unverified or explicitly retained evidence still fails closed.
- * Historical associatedWorkId is provenance only.
  */
 export interface IosTestEvidenceRetentionReport extends GeneratedCacheRetentionReport {
   policyVersion: 'ios-test-evidence-retention-v1';

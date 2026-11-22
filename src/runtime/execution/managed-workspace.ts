@@ -23,8 +23,6 @@ import { ensureForgeInstanceIdentity, getOwnedResource, ownedResourceLocatorFing
 export interface EnsureManagedWorkspaceInput {
   requestId: string;
   title: string;
-  /** Semantic Work provenance for durable ownership; never an execution mutex. */
-  associatedWorkId?: string;
   baseRef?: string;
   /** Refresh the default origin-tracking base before freezing a new workspace. */
   refreshBaseRef?: boolean;
@@ -512,7 +510,6 @@ export function ensureManagedWorkspace(
         cleanupCapable: workspaceOwnedByForge,
         creator: 'forge:managed-workspace',
         ownerForgeInstanceId,
-        associatedWorkId: input.associatedWorkId,
         repoId: repository.repoId,
         retentionIntent: 'temporary',
       });
@@ -526,7 +523,6 @@ export function ensureManagedWorkspace(
         cleanupCapable: branchOwnedByForge,
         creator: 'forge:managed-workspace',
         ownerForgeInstanceId,
-        associatedWorkId: input.associatedWorkId,
         repoId: repository.repoId,
         retentionIntent: 'retain_on_failure',
       });

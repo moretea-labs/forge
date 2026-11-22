@@ -1017,24 +1017,6 @@ describe('generated repository cache retention', () => {
     expect(existsSync(path)).toBe(true);
   });
 
-  test('preserves an explicit originating Work association in the existing inode-bound OwnedResource', () => {
-    const root = repository();
-    const controllerHome = join(root, 'controller-home');
-    const resultBundlePath = '.forge/ios/test-results/20261103T140000Z-32-2-FlowTests.xcresult';
-    mkdirSync(join(root, resultBundlePath), { recursive: true });
-    const args = { controllerHome, repoRoot: root, repoId: 'repo-work-evidence',
-      resultBundlePath, producerRequestId: 'JOB-work-evidence', associatedWorkId: 'work-exact-origin' };
-    const created = recordIosTestEvidenceOwner(args);
-    expect(created.recorded).toBe(true);
-    const stored = getOwnedResource(controllerHome, created.resourceId!);
-    expect(stored?.provenance.associatedWorkId).toBe('work-exact-origin');
-    expect(stored?.retention.intent).toBe('persistent_until_explicit_release');
-    expect(recordIosTestEvidenceOwner(args)).toEqual(created);
-    expect(() => recordIosTestEvidenceOwner({ ...args, associatedWorkId: 'work-different' }))
-      .toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
-    expect(existsSync(join(root, resultBundlePath))).toBe(true);
-  });
-
   test('records literal Process xcodebuild evidence under repo-harness but rejects nested worktrees and dynamic shell paths', () => {
     const root = repository();
     const controllerHome = join(root, 'controller-home');
@@ -1054,12 +1036,10 @@ describe('generated repository cache retention', () => {
         cwd: root,
       },
       processId: 'proc-literal-xcode',
-      associatedWorkId: 'work-literal-xcode',
     });
     expect(recorded.recorded).toBe(true);
     expect(getOwnedResource(controllerHome, recorded.resourceId!)?.provenance).toMatchObject({
       creator: 'forge:ios.xcode_test:process:proc-literal-xcode',
-      associatedWorkId: 'work-literal-xcode',
       repoId,
     });
 
@@ -1094,7 +1074,6 @@ describe('generated repository cache retention', () => {
         cwd: root,
       },
       processId: 'proc-nested-worktree',
-      associatedWorkId: 'work-nested',
     })).toEqual({ recorded: false, reason: 'missing_or_untrusted_result_path' });
 
     const dynamic = join(root, '.repo-harness', 'dynamic', 'dynamic.xcresult');
@@ -1110,7 +1089,6 @@ describe('generated repository cache retention', () => {
         cwd: root,
       },
       processId: 'proc-dynamic-xcode',
-      associatedWorkId: 'work-dynamic',
     })).toEqual({ recorded: false, reason: 'unsupported_or_dynamic_xcode_result_path' });
   });
 
@@ -1129,15 +1107,15 @@ describe('generated repository cache retention', () => {
     }
     const cancelledOwner = recordIosTestEvidenceOwner({
       controllerHome, repoId, repoRoot: root, resultBundlePath: cancelled,
-      producerRequestId: 'JOB-cancelled', associatedWorkId: 'work-cancelled',
+      producerRequestId: 'JOB-cancelled',
     });
     const activeOwner = recordIosTestEvidenceOwner({
       controllerHome, repoId, repoRoot: root, resultBundlePath: active,
-      producerRequestId: 'JOB-active', associatedWorkId: 'work-active',
+      producerRequestId: 'JOB-active',
     });
     const retainedOwner = recordIosTestEvidenceOwner({
       controllerHome, repoId, repoRoot: root, resultBundlePath: retained,
-      producerRequestId: 'JOB-retained', associatedWorkId: 'work-cancelled',
+      producerRequestId: 'JOB-retained',
     });
     markOwnedResourceRetained(controllerHome, retainedOwner.resourceId!);
 

@@ -404,8 +404,6 @@ describe('iOS development simulator reliability', () => {
     const second = await action('JOB-ios-xcresult-work');
     const secondOwner = second.resultBundleOwnership as { recorded: boolean; resourceId: string };
     expect(secondOwner.recorded).toBe(true);
-    // Plugin execution binds physical evidence to producer request/repository only.
-    expect(getOwnedResource(controllerHome, secondOwner.resourceId)?.provenance.associatedWorkId).toBeUndefined();
   });
 
   test('simulator inventory reports exact cross-repository Lease ownership', async () => {

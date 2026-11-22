@@ -29,7 +29,6 @@ export interface CapabilityInvocationInput<TArgs = Record<string, unknown>> {
   expectedRevision?: number;
   timeoutMs?: number;
   idempotencyKey?: string;
-  associatedWorkId?: string;
 }
 
 export type CapabilityExecutionKind = 'synchronous' | 'managed_handle' | 'delegated_agent';

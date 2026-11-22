@@ -10,8 +10,6 @@ export interface ExperienceRecord {
   kind: 'observation' | 'hypothesis' | 'lesson';
   statement: string;
   evidenceRefs: string[];
-  sourceWorkId: string;
-  sourceRoundId: string;
   recordedAt: string;
   expiresAt?: string;
   durableRationale?: string;
@@ -19,19 +17,15 @@ export interface ExperienceRecord {
   counterEvidenceRefs: string[];
   retractedAt?: string;
   retractionReason?: string;
-  retractionSourceWorkId?: string;
-  retractionSourceRoundId?: string;
 }
 
-export type ExperienceDraft = Omit<ExperienceRecord, 'schemaVersion' | 'revision' | 'retractedAt' | 'retractionReason' | 'retractionSourceWorkId' | 'retractionSourceRoundId'>;
+export type ExperienceDraft = Omit<ExperienceRecord, 'schemaVersion' | 'revision' | 'retractedAt' | 'retractionReason'>;
 
 /** A metric is an observation at a time, never an automatically additive total. */
 export interface OutcomeObservation {
   schemaVersion: 1;
   id: string;
   scope: ScopeRef;
-  sourceWorkId: string;
-  sourceRoundId: string;
   evidenceRef: string;
   remoteObject: { id: string; url: string; account: string; channel: string };
   observedAt: string;
@@ -55,7 +49,7 @@ export function matchesExperienceApplicability(stored: ExperienceApplicability, 
 export function validateExperience(record: ExperienceRecord): ExperienceRecord {
   if (record.schemaVersion !== 1 || !Number.isSafeInteger(record.revision) || record.revision < 1) throw new Error('EXPERIENCE_VERSION_INVALID');
   validateExperienceScope(record.scope);
-  for (const [key, value] of Object.entries({ id: record.id, work: record.sourceWorkId, round: record.sourceRoundId })) requireExperienceText(value, key);
+  for (const [key, value] of Object.entries({ id: record.id })) requireExperienceText(value, key);
   requireExperienceText(record.statement, 'STATEMENT', 4000);
   if (!['observation', 'hypothesis', 'lesson'].includes(record.kind)) throw new Error('EXPERIENCE_KIND_INVALID');
   if (!record.applicability || Object.keys(record.applicability).some(key => !['channel', 'account', 'locale'].includes(key))) throw new Error('EXPERIENCE_APPLICABILITY_INVALID');
@@ -75,8 +69,6 @@ export function validateExperience(record: ExperienceRecord): ExperienceRecord {
   if (record.retractedAt) {
     if (!Number.isFinite(Date.parse(record.retractedAt)) || Date.parse(record.retractedAt) < at) throw new Error('EXPERIENCE_RETRACTION_INVALID');
     requireExperienceText(record.retractionReason!, 'RETRACTION_REASON', 1000);
-    requireExperienceText(record.retractionSourceWorkId!, 'RETRACTION_WORK');
-    requireExperienceText(record.retractionSourceRoundId!, 'RETRACTION_ROUND');
   }
   return record;
 }
@@ -84,7 +76,7 @@ export function validateExperience(record: ExperienceRecord): ExperienceRecord {
 export function validateOutcomeObservation(value: OutcomeObservation): OutcomeObservation {
   if (value.schemaVersion !== 1) throw new Error('OUTCOME_SCHEMA_INVALID');
   validateExperienceScope(value.scope);
-  for (const text of [value.id, value.sourceWorkId, value.sourceRoundId, value.evidenceRef, value.remoteObject.id, value.remoteObject.account, value.remoteObject.channel]) requireExperienceText(text, 'OUTCOME_ID', 512);
+  for (const text of [value.id, value.evidenceRef, value.remoteObject.id, value.remoteObject.account, value.remoteObject.channel]) requireExperienceText(text, 'OUTCOME_ID', 512);
   const url = new URL(value.remoteObject.url);
   if (url.protocol !== 'https:' || url.username || url.password) throw new Error('OUTCOME_URL_INVALID');
   const times = [value.window.start, value.window.end, value.observedAt].map(Date.parse);

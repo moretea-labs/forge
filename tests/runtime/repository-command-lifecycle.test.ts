@@ -236,7 +236,6 @@ describe('structured registered worktree cleanup (#41)', () => {
       targetRef: unrelatedOwned,
       creator: 'forge:managed-workspace',
       repoId: fx.repository.repoId,
-      associatedWorkId: 'other-work',
     });
 
     git(fx.repoRoot, ['worktree', 'remove', fx.linked]);
@@ -256,7 +255,6 @@ describe('structured registered worktree cleanup (#41)', () => {
       targetRef: fx.linked,
       creator: 'forge:managed-workspace',
       repoId: fx.repository.repoId,
-      associatedWorkId: 'existing-other-work',
     });
     expect(() => fx.cleanup()).toThrow('GIT_WORKTREE_OWNED_RESOURCE_PROTECTED');
     expect(existsSync(fx.linked)).toBe(true);
