@@ -363,10 +363,9 @@ describe('repository MCP command tools', () => {
         capability_id: 'recovery.migrate_controller_home',
       });
       const payload = JSON.parse(String(response?.content?.[0]?.text ?? '{}'));
-      expect(payload.status).toBe('ok');
-      expect(payload.data).toMatchObject({ operation: 'diagnose', dryRun: true, isAcceptanceFailure: false });
+      expect(payload.status).toBe('blocked');
+      expect(payload.summary).toContain('WORK_RETIRED');
       expect(payload.data?.executionStarted).not.toBe(true);
-      expect(payload.summary).not.toContain('migrate_controller_home');
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });
@@ -442,7 +441,7 @@ describe('repository MCP command tools', () => {
     }
   });
 
-  test('documents the facade-first shortest path without widening the tool surface', () => {
+  test('documents the direct-tool-first path without restoring the Work lifecycle', () => {
     const rhContext = runtimeToolDefinitions.find((tool) => tool.name === 'rh_context');
     const rhWork = runtimeToolDefinitions.find((tool) => tool.name === 'rh_work');
     const command = repositoryToolDefinitions.find((tool) => tool.name === 'execute_command');
@@ -450,9 +449,10 @@ describe('repository MCP command tools', () => {
     const safePatchApply = repositoryToolDefinitions.find((tool) => tool.name === 'repository_safe_patch_apply');
     expect(rhContext?.description).toContain('model chooses');
     expect(rhContext?.description).not.toContain('fallback-only');
-    expect(rhWork?.description).toContain('optional durable Requirement/Plan/Work semantic context');
+    expect(rhWork?.description).toContain('optional durable Requirement/Plan semantic context');
+    expect(rhWork?.description).toContain('Work / WorkHandle / WorkContract are fully retired');
     expect(rhWork?.description).toContain('Ordinary execution and validation use direct domain capabilities');
-    expect(rhWork?.description).toContain('stay internal');
+    expect(rhWork?.description).toContain('have no create, mutate, or read surface');
     expect(command?.description).toContain('Single terminal entry');
     expect(repositoryToolDefinitions.some((tool) => tool.name === 'repository_command_execute')).toBe(false);
     const operationTypes = (tool: (typeof repositoryToolDefinitions)[number] | undefined): string[] | undefined => {

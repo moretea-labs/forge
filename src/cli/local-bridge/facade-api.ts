@@ -251,29 +251,16 @@ function describeHandoffDecision(item: HandoffItem): HandoffCardViewModel['decis
   const canApproveAndContinue = false;
   if (isApproval) {
     const destructive = reason === 'destructive_action_requires_confirmation' || approvalAction?.risk === 'destructive';
-    const payload = approvalAction?.payload ?? {};
-    const objective = typeof payload.objective === 'string' ? payload.objective.trim() : '';
-    const allowedPaths = Array.isArray(payload.allowedPaths) ? payload.allowedPaths.map(String).filter(Boolean) : [];
-    const scopeSummary = allowedPaths.length
-      ? `允许修改：${allowedPaths.slice(0, 4).join('、')}${allowedPaths.length > 4 ? ' 等' : ''}`
-      : '修改范围仍受原任务描述和仓库策略限制';
     return {
       type: 'approval',
       typeLabel: destructive ? '高风险操作审批' : '执行授权',
-      requestedAction:
-        approvalAction?.operation === 'start' && objective
-          ? `历史任务创建请求：“${objective.slice(0, 240)}”`
-          : item.blockingDecision || item.summary,
+      requestedAction: item.blockingDecision || item.summary,
       necessityLabel: '必须确认',
       necessityExplanation: destructive
         ? '此操作包含高风险或潜在不可逆副作用，系统不能替你默认同意。'
         : '当前安全策略要求显式授权；缩小范围或改为只读预览后可避免本次审批。',
-      impact:
-        approvalAction?.operation === 'start'
-          ? `这是退役 Work 生命周期留下的历史审批。${scopeSummary}。当前只能记录决定，不会创建或续跑 Work。`
-          : '当前审批没有可执行的现行动作，只能记录决定。',
-      afterApproval:
-        '只会记录你的决定，不会自动执行或恢复 Work。需要继续时请从 Requirement/Plan 与当前 repository/checkout 发起现行操作。',
+      impact: '当前审批没有可执行的现行动作，只能记录决定。',
+      afterApproval: '只会记录你的决定，不会自动执行。需要继续时请从当前任务与仓库原生能力发起操作。',
       ifRejected: '相关操作保持未执行；你可以缩小范围、改成预览、补充信息或取消。',
       canApproveAndContinue,
       primaryActionLabel: '仅记录决定',
@@ -942,16 +929,13 @@ export async function approveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId
     throw new Error(`该审批已处理（${item.status}）。`);
   }
   const resolved = resolveHandoffItem(store(ctx), handoffId, {
-    decision:
-      item.approvalAction?.operation === 'start'
-        ? `approved_historical_work_request: ${item.approvalAction.label}`
-        : `approved_decision_only: ${item.blockingDecision || item.summary}`,
+    decision: `approved_decision_only: ${item.blockingDecision || item.summary}`,
     resolver,
   });
   return {
     item: mapHandoffCard(resolved),
     continued: false,
-    summary: '已记录批准决定；历史 Work 创建/续跑动作已退役，未执行任何任务创建。',
+    summary: '已记录批准决定；没有自动执行操作。',
   };
 }
 export function dismissConsoleHandoff(
