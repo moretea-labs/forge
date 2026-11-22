@@ -1585,8 +1585,6 @@ export interface PluginActionReceipt {
   scopeKey: string;
   /** Repository provenance only; absent for controller-scoped plugin actions. */
   repoId?: string;
-  /** Work authority repository when it differs from controller/provider receipt scope. */
-  workRepoId?: string;
   pluginId: string;
   actionId: string;
   semanticKey: string;
@@ -1594,7 +1592,6 @@ export interface PluginActionReceipt {
   /** Durable semantic disposition for an attempted external/local effect. */
   effectOutcome?: AssistantPluginEffectOutcome;
   createdAt: string;
-  workId?: string;
   origin?: { surface: string; actor?: string; correlationId?: string };
   authorization?: PluginActionAuthorizationEvidence;
   result?: Record<string, unknown>;
@@ -1609,7 +1606,6 @@ interface PluginActionRequestIndex {
   requestId: string;
   scopeKey: string;
   repoId?: string;
-  workRepoId?: string;
   receiptId: string;
   semanticKey: string;
   createdAt: string;
@@ -1727,15 +1723,17 @@ function pluginActionReceiptPath(controllerHome: string, scopeKey: string, recei
 }
 
 function normalizePluginActionReceipt(receipt: PluginActionReceipt): PluginActionReceipt {
+  const legacy = receipt as PluginActionReceipt & { workId?: unknown; workRepoId?: unknown };
+  const { workId: _workId, workRepoId: _workRepoId, ...withoutWork } = legacy;
   const scopeKey =
-    receipt.scopeKey?.trim() ||
-    (receipt.repoId === CONTROLLER_SCOPE_REPO_ID ? CONTROLLER_PLUGIN_SCOPE_KEY : receipt.repoId?.trim()) ||
+    withoutWork.scopeKey?.trim() ||
+    (withoutWork.repoId === CONTROLLER_SCOPE_REPO_ID ? CONTROLLER_PLUGIN_SCOPE_KEY : withoutWork.repoId?.trim()) ||
     '';
   if (!scopeKey) throw new Error('PLUGIN_RECEIPT_SCOPE_CORRUPT');
   return {
-    ...receipt,
+    ...withoutWork,
     scopeKey,
-    ...(scopeKey === CONTROLLER_PLUGIN_SCOPE_KEY ? { repoId: undefined } : { repoId: receipt.repoId ?? scopeKey }),
+    ...(scopeKey === CONTROLLER_PLUGIN_SCOPE_KEY ? { repoId: undefined } : { repoId: withoutWork.repoId ?? scopeKey }),
   };
 }
 
@@ -1836,7 +1834,6 @@ function samePluginReceiptOutcome(left: PluginActionReceipt, right: PluginAction
     left.status === right.status &&
     left.effectOutcome === right.effectOutcome &&
     left.createdAt === right.createdAt &&
-    left.workId === right.workId &&
     JSON.stringify(canonical(left.result ?? null)) === JSON.stringify(canonical(right.result ?? null)) &&
     JSON.stringify(canonical(left.error ?? null)) === JSON.stringify(canonical(right.error ?? null)) &&
     JSON.stringify(canonical(left.authorization ?? null)) === JSON.stringify(canonical(right.authorization ?? null))
@@ -1909,13 +1906,12 @@ function migrateControllerPluginActionReceipts(
 
     const semanticKey = migratedPluginSemanticKey(receipt, oldScopeKey);
     if (!semanticKey) return false;
+    const legacyReceipt = receipt as PluginActionReceipt & { workId?: unknown; workRepoId?: unknown };
+    const { workId: _workId, workRepoId: _workRepoId, ...receiptWithoutWork } = legacyReceipt;
     const nextReceipt: PluginActionReceipt = {
-      ...receipt,
+      ...receiptWithoutWork,
       scopeKey: CONTROLLER_PLUGIN_SCOPE_KEY,
       repoId: undefined,
-      ...(receipt.workId
-        ? { workRepoId: receipt.workRepoId ?? index?.workRepoId ?? receipt.repoId ?? oldScopeKey }
-        : {}),
       semanticKey,
     };
     const destinationPath = join(globalReceiptRoot, `${sanitizeFileComponent(receipt.receiptId)}.json`);
@@ -1931,20 +1927,20 @@ function migrateControllerPluginActionReceipts(
       writeJsonAtomic(destinationPath, nextReceipt);
     }
 
-    const nextIndex: PluginActionRequestIndex = index
-      ? {
-          ...index,
-          scopeKey: CONTROLLER_PLUGIN_SCOPE_KEY,
-          repoId: undefined,
-          ...(receipt.workId
-            ? { workRepoId: index.workRepoId ?? receipt.workRepoId ?? receipt.repoId ?? oldScopeKey }
-            : {}),
-          semanticKey,
-        }
+    const legacyIndex = index as (PluginActionRequestIndex & { workRepoId?: unknown }) | undefined;
+    const nextIndex: PluginActionRequestIndex = legacyIndex
+      ? (() => {
+          const { workRepoId: _indexWorkRepoId, ...indexWithoutWork } = legacyIndex;
+          return {
+            ...indexWithoutWork,
+            scopeKey: CONTROLLER_PLUGIN_SCOPE_KEY,
+            repoId: undefined,
+            semanticKey,
+          };
+        })()
       : {
           requestId: receipt.requestId,
           scopeKey: CONTROLLER_PLUGIN_SCOPE_KEY,
-          ...(receipt.workId ? { workRepoId: receipt.workRepoId ?? receipt.repoId ?? oldScopeKey } : {}),
           receiptId: receipt.receiptId,
           semanticKey,
           createdAt: receipt.createdAt,

@@ -11,7 +11,12 @@ import {
 import { readForgeInstanceIdentity, type ScopeRef } from '../../../packages/kernel/identity/api/index';
 import { FORGE_INSTANCE_SCOPE_KEY } from '../../effects/controller-home';
 import type { RepositoryRecord } from '../../core/repository/types';
-import { cognitionMemoryStore, cognitionReadPort, recordCognitiveUsageObservation, type CognitiveUsageRejectionKind } from '../control-plane/persistence/cognition-store';
+import {
+  cognitionMemoryStore,
+  cognitionReadPort,
+  recordCognitiveUsageObservation,
+  type CognitiveUsageRejectionKind,
+} from '../control-plane/persistence/cognition-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { resolveProjectForRepositoryPlacement } from '../control-plane/workspace/workspace-store';
 import { findPluginActionReceipt } from '../plugins/store';
@@ -54,13 +59,15 @@ export function directLearningScopes(
   }
   return [
     { schemaVersion: 1, kind: 'project', id: project.projectId },
-    ...(normalizedRequirementId ? [{ schemaVersion: 1 as const, kind: 'requirement' as const, id: normalizedRequirementId }] : []),
+    ...(normalizedRequirementId
+      ? [{ schemaVersion: 1 as const, kind: 'requirement' as const, id: normalizedRequirementId }]
+      : []),
     { schemaVersion: 1, kind: 'workspace', id: project.workspaceId },
   ];
 }
 
 function semanticSignalId(signal: ControllerLearningSignalDraft, scope: ScopeRef): string {
-  const concepts = [...new Set(signal.concepts.map(value => value.trim()).filter(Boolean))].sort();
+  const concepts = [...new Set(signal.concepts.map((value) => value.trim()).filter(Boolean))].sort();
   const identity = JSON.stringify({
     scope: `${scope.kind}:${scope.id}`,
     kind: signal.kind,
@@ -85,7 +92,10 @@ function directSourceId(input: {
     input.controllerInstanceId?.trim() ?? '',
     input.sessionId?.trim() ?? '',
   ].join(':');
-  return `mcp-learning:${createHash('sha256').update(identity || 'anonymous-controller').digest('hex').slice(0, 24)}`;
+  return `mcp-learning:${createHash('sha256')
+    .update(identity || 'anonymous-controller')
+    .digest('hex')
+    .slice(0, 24)}`;
 }
 
 function directLearningAuthority(input: {
@@ -95,12 +105,14 @@ function directLearningAuthority(input: {
   principalId?: string;
   sourceId: string;
 }): CognitiveWriteAuthorityPort {
-  const scopeAllowed = (scope: ScopeRef) => input.scopes.some(candidate => sameScope(candidate, scope));
+  const scopeAllowed = (scope: ScopeRef) => input.scopes.some((candidate) => sameScope(candidate, scope));
   return {
     assertMemoryWrite(memory: MemoryUnit) {
-      if (!scopeAllowed(memory.scope)
-        || memory.provenance.sourceKind !== 'controller'
-        || memory.provenance.sourceId !== input.sourceId) {
+      if (
+        !scopeAllowed(memory.scope) ||
+        memory.provenance.sourceKind !== 'controller' ||
+        memory.provenance.sourceId !== input.sourceId
+      ) {
         throw new Error('COGNITION_DIRECT_LEARNING_AUTHORITY_INVALID');
       }
       if (memory.scope.kind === 'workspace' && !memory.facets.includes('portability.portable')) {
@@ -114,11 +126,9 @@ function directLearningAuthority(input: {
       if (!scopeAllowed(scope)) return false;
       const receipt = findPluginActionReceipt(input.controllerHome, ref);
       if (!receipt) return false;
-      if (receipt.repoId === input.repository.repoId || receipt.workRepoId === input.repository.repoId) return true;
+      if (receipt.repoId === input.repository.repoId) return true;
       const principal = input.principalId?.trim();
-      return receipt.scopeKey === FORGE_INSTANCE_SCOPE_KEY
-        && Boolean(principal)
-        && receipt.origin?.actor === principal;
+      return receipt.scopeKey === FORGE_INSTANCE_SCOPE_KEY && Boolean(principal) && receipt.origin?.actor === principal;
     },
   };
 }
@@ -159,7 +169,7 @@ export function recordDirectControllerLearningFeedback(input: {
   const interactionId = input.sessionId?.trim() || input.controllerInstanceId?.trim();
   if (!interactionId) throw new Error('COGNITION_DIRECT_FEEDBACK_SESSION_REQUIRED');
   const scopes = directLearningScopes(input.controllerHome, input.repository, input.requirementId);
-  const allowedScopes = new Set(scopes.map(scope => `${scope.kind}:${scope.id}`));
+  const allowedScopes = new Set(scopes.map((scope) => `${scope.kind}:${scope.id}`));
   const now = input.now ?? new Date().toISOString();
   const read = cognitionReadPort(input.controllerHome);
   const observations = input.feedback.map((draft, index) => {
@@ -179,15 +189,18 @@ export function recordDirectControllerLearningFeedback(input: {
       throw new Error(`COGNITION_DIRECT_FEEDBACK_REJECTION_KIND_UNEXPECTED: ${index}`);
     }
     const observationId = `usage:${createHash('sha256')
-      .update(JSON.stringify({
-        actor: principalId,
-        interaction: interactionId,
-        address: memoryAddressKey(address),
-        decision: draft.decision,
-        rejectionKind: draft.rejectionKind ?? '',
-        reason,
-      }))
-      .digest('hex').slice(0, 32)}`;
+      .update(
+        JSON.stringify({
+          actor: principalId,
+          interaction: interactionId,
+          address: memoryAddressKey(address),
+          decision: draft.decision,
+          rejectionKind: draft.rejectionKind ?? '',
+          reason,
+        }),
+      )
+      .digest('hex')
+      .slice(0, 32)}`;
     return recordCognitiveUsageObservation(input.controllerHome, {
       observationId,
       address,
@@ -198,7 +211,7 @@ export function recordDirectControllerLearningFeedback(input: {
       observedAt: now,
     });
   });
-  return { observationIds: observations.map(item => item.observationId), scopes };
+  return { observationIds: observations.map((item) => item.observationId), scopes };
 }
 
 export function persistDirectControllerLearning(input: {
@@ -221,8 +234,8 @@ export function persistDirectControllerLearning(input: {
   const scopes = directLearningScopes(input.controllerHome, input.repository, input.requirementId);
   const observedAt = input.now ?? new Date().toISOString();
   const sourceId = directSourceId(input);
-  const projectScope = scopes.find(scope => scope.kind === 'project')!;
-  const workspaceScope = scopes.find(scope => scope.kind === 'workspace')!;
+  const projectScope = scopes.find((scope) => scope.kind === 'project')!;
+  const workspaceScope = scopes.find((scope) => scope.kind === 'workspace')!;
   const store = cognitionMemoryStore(input.controllerHome);
   const authority = directLearningAuthority({
     controllerHome: input.controllerHome,
@@ -232,9 +245,10 @@ export function persistDirectControllerLearning(input: {
     sourceId,
   });
 
-  const drafts = input.signals.map(signal => {
-    const scope = scopes.find(candidate => candidate.kind === signal.scopeKind)
-      ?? (signal.scopeKind === 'project' ? projectScope : signal.scopeKind === 'workspace' ? workspaceScope : undefined);
+  const drafts = input.signals.map((signal) => {
+    const scope =
+      scopes.find((candidate) => candidate.kind === signal.scopeKind) ??
+      (signal.scopeKind === 'project' ? projectScope : signal.scopeKind === 'workspace' ? workspaceScope : undefined);
     if (!scope) {
       throw new Error(`COGNITION_LEARNING_SCOPE_UNREACHABLE: ${signal.scopeKind}`);
     }
@@ -246,8 +260,8 @@ export function persistDirectControllerLearning(input: {
       kind: signal.kind,
       valence: signal.valence,
       summary: signal.summary,
-      concepts: [...new Set(signal.concepts.map(value => value.trim()).filter(Boolean))],
-      facets: [...new Set(signal.facets.map(value => value.trim()).filter(Boolean))],
+      concepts: [...new Set(signal.concepts.map((value) => value.trim()).filter(Boolean))],
+      facets: [...new Set(signal.facets.map((value) => value.trim()).filter(Boolean))],
       admissionSource: signal.admissionSource,
       portability: signal.portability,
       salience: signal.salience,
@@ -273,17 +287,19 @@ export function persistDirectControllerLearning(input: {
     }
   }
 
-  const stored = store.transaction(() => drafts.map(draft =>
-    recordCognitiveMemory(store, authority, draft)));
+  const stored = store.transaction(() => drafts.map((draft) => recordCognitiveMemory(store, authority, draft)));
   const associatedEdgeCount = associateStoredMemories({
     controllerHome: input.controllerHome,
     memories: stored,
     now: observedAt,
   });
-  const consolidatedMemoryIds = scopes.flatMap(scope =>
-    consolidateAffectedMemories(input.controllerHome, scope, stored, observedAt).map(candidate => candidate.memory.id));
+  const consolidatedMemoryIds = scopes.flatMap((scope) =>
+    consolidateAffectedMemories(input.controllerHome, scope, stored, observedAt).map(
+      (candidate) => candidate.memory.id,
+    ),
+  );
   return {
-    storedMemoryIds: stored.map(memory => memory.id),
+    storedMemoryIds: stored.map((memory) => memory.id),
     associatedEdgeCount,
     consolidatedMemoryIds: [...new Set(consolidatedMemoryIds)],
     scopes,
