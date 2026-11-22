@@ -86,7 +86,11 @@ import {
   readExecutionSession,
   type ExecutionSessionContext,
 } from '../../src/runtime/control-plane/execution/session-store';
-import { listActiveLeases } from '../../src/runtime/resources/leases/store';
+import {
+  acquireExecutionLeases,
+  listActiveLeases,
+  releaseExecutionLeases,
+} from '../../src/runtime/resources/leases/store';
 import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 function git(root: string, args: string[]): string {
@@ -316,6 +320,39 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     });
     expect(classification.path).toBe('fast');
     expect(classification.decision?.mode).toBe('fast');
+  });
+
+  test('Fast source patch does not require Git index ownership while staging is ongoing (#713)', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const indexOwner = 'fast:unrelated-git-staging';
+    const indexClaims = [{ resourceKey: `git-index:${fx.repository.activeCheckoutId}`, mode: 'exclusive' as const }];
+    const indexLease = acquireExecutionLeases(fx.controllerHome, fx.repository.repoId, indexOwner, indexClaims, {
+      visibility: 'ephemeral',
+    });
+    expect(indexLease.acquired).toBe(true);
+    try {
+      const result = await executeFast(
+        { controllerHome: fx.controllerHome, repository: fx.repository },
+        {
+          operation: 'repository_safe_patch_apply',
+          input: {
+            operations: [
+              {
+                type: 'replace',
+                path: 'src/lib.ts',
+                replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 4;' }],
+              },
+            ],
+          },
+          requestId: 'fast-source-patch-with-index-owner',
+        },
+      );
+      expect(result.ok).toBe(true);
+      expect(readFileSync(join(fx.repoRoot, 'src/lib.ts'), 'utf8')).toBe('export const n = 4;\n');
+    } finally {
+      releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, indexOwner);
+    }
   });
 
   test('ordinary safe patch is Work-free despite a historical active execution session', async () => {

@@ -447,7 +447,12 @@ function ownershipOptionsFor(
     writePaths: writePaths.length ? writePaths : undefined,
     mutatesGitRefs:
       decision.effects.mutatesGitRefs || operation.includes('commit') || operation === 'repository_git_commit',
-    mutatesGitIndex: decision.effects.mutatesWorkspace || decision.effects.mutatesGitRefs,
+    // Pure file edits mutate source bytes, not the Git index. Stage/commit
+    // retain their exact index/ref claim; source-only edits must not serialize
+    // against another Writer's short Git critical section (#713).
+    mutatesGitIndex:
+      !['apply_patch', 'repository_safe_patch_apply', 'apply_edit_operations'].includes(operation) &&
+      (decision.effects.mutatesWorkspace || decision.effects.mutatesGitRefs),
   };
 }
 
