@@ -105,7 +105,7 @@ import {
   readLocalBridgeJobOutputSnapshot,
 } from '../../../src/runtime/local-bridge/read-model';
 import {
-  callWorkAdapter,
+  callRhWorkAdapter,
   contextRecord,
   contextText,
   runFacadeRepair,

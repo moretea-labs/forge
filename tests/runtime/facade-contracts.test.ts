@@ -38,7 +38,7 @@ import {
   isRhWorkAcceptedOperation,
 } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
-import { callWorkAdapter } from '../../adapters/mcp/runtime-gateway/rh-work-adapter';
+import { callRhWorkAdapter } from '../../adapters/mcp/runtime-gateway/rh-work-adapter';
 import { mcpServerInstructions } from '../../adapters/mcp/instructions';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -517,13 +517,13 @@ describe('handoff and facade contracts', () => {
   });
 
   test('rejects retired wire carriers and unsafe object keys instead of translating them', async () => {
-    const legacy = await callWorkAdapter({} as never, {
+    const legacy = await callRhWorkAdapter({} as never, {
       operation: 'requirement_get',
       capability_id: 'semantic.v1:{"operation":"requirement_get"}',
     });
     expect(JSON.stringify(legacy)).toContain('WORK_RETIRED');
     const polluted = JSON.parse('{"operation":"repair","nested":{"__proto__":{"polluted":true}}}');
-    const blocked = await callWorkAdapter({} as never, polluted);
+    const blocked = await callRhWorkAdapter({} as never, polluted);
     expect(JSON.stringify(blocked)).toContain('MCP_INPUT_UNSAFE_KEY');
     expect({}).not.toHaveProperty('polluted');
   });

@@ -141,7 +141,7 @@ function unsafeInputKey(value: unknown): string | undefined {
 }
 
 /** Direct semantic operations only; Work-era carrier translation is retired. */
-export async function callWorkAdapter(
+export async function callRhWorkAdapter(
   ctx: MultiRepositoryMcpToolContext,
   input: Record<string, unknown>,
 ): Promise<CallToolResult> {

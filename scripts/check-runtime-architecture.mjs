@@ -489,7 +489,7 @@ function requireExactShrinkingInventory(label, actual, allowed) {
 // delivery stay on their typed capability surfaces; old lifecycle verbs are gone.
 requireText(
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
-  "if (name === 'rh_work') return callWorkAdapter(ctx, args);",
+  "if (name === 'rh_work') return callRhWorkAdapter(ctx, args);",
 );
 requireText(
   'adapters/mcp/runtime-gateway/rh-work-controller-operations.ts',

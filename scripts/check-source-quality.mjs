@@ -2,10 +2,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import {
-  committedSourceCandidate,
-  materializeCommittedSourceCandidate,
-} from './testing/source-quality-candidate.ts';
+import { committedSourceCandidate, materializeCommittedSourceCandidate } from './testing/source-quality-candidate.ts';
 import { fileURLToPath } from 'node:url';
 import { collectChangedPaths, existingChangedFiles } from './testing/test-governance.ts';
 
