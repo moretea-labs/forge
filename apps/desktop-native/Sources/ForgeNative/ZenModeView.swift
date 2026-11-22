@@ -519,12 +519,10 @@ struct ZenWorkspacePane: View {
         }
     }
 
-    var body: some View {
-        VStack(spacing:0) {
-            if showingProjectDirectory {
-                projectDirectoryPane
-            } else {
-                HStack(spacing:10) {
+    /// Workbench actions participate in the SAME native NSWindow toolbar.
+    @ViewBuilder
+    private var zenWindowToolbarActions: some View {
+        if !showingProjectDirectory {
                 if screen == .canvas {
                     Button {
                         if let returnContext=model.restoreProjectDetailSource() {
@@ -544,11 +542,6 @@ struct ZenWorkspacePane: View {
                     .accessibilityIdentifier(model.projectDetailReturnContext == nil
                         ? "zen.canvas.back-to-board" : "zen.canvas.back-to-project-detail")
                 }
-                Text(screen == .board ? "工作台" :
-                     (requirements.first(where:{$0.recordId == focusedRequirementId})?.title ?? "Requirement"))
-                    .font(.system(size:16,weight:.semibold))
-                    .lineLimit(1)
-                Spacer(minLength:0)
                 if screen == .board {
                     Button {
                         model.clearProjectDetailReturnContext()
@@ -565,7 +558,7 @@ struct ZenWorkspacePane: View {
                     } label: {
                         Label("描述目标",systemImage:"sparkles")
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.plain)
                     .disabled(model.selectedProjectId == nil || model.busy || model.zenRefinementActive)
                     .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "描述并分析新的目标")
                     .accessibilityIdentifier("zen.goal.describe")
@@ -579,7 +572,7 @@ struct ZenWorkspacePane: View {
                         } label: {
                             Label("审阅提案",systemImage:"doc.text.magnifyingglass")
                         }
-                        .menuStyle(.borderedButton)
+                        .menuStyle(.borderlessButton)
                         .disabled(model.selectedProjectId == nil || model.busy)
                         .accessibilityIdentifier("zen.proposal.open")
                     } else {
@@ -588,7 +581,7 @@ struct ZenWorkspacePane: View {
                         } label: {
                             Label("审阅提案",systemImage:"doc.text.magnifyingglass")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.plain)
                         .disabled(model.selectedProjectId == nil || model.busy || reviewableProposals.isEmpty)
                         .accessibilityIdentifier("zen.proposal.open")
                     }
@@ -626,8 +619,22 @@ struct ZenWorkspacePane: View {
                 .disabled(model.selectedProjectId == nil || model.checkoutContextLoading)
                 .help("刷新当前项目")
                 .accessibilityLabel("刷新当前项目")
-            }
-            .padding(.horizontal,24).frame(height:54)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing:0) {
+            if showingProjectDirectory {
+                projectDirectoryPane
+            } else {
+                if screen == .canvas {
+                    Text(requirements.first(where:{$0.recordId == focusedRequirementId})?.title ?? "Requirement")
+                        .font(.system(size:16,weight:.semibold))
+                        .lineLimit(1)
+                        .padding(.horizontal,24)
+                        .padding(.top,12)
+                        .frame(maxWidth:.infinity,alignment:.leading)
+                }
 
             if let error=model.error {
                 HStack {
@@ -654,6 +661,11 @@ struct ZenWorkspacePane: View {
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
         .background(Color(nsColor:.textBackgroundColor))
+        .toolbar {
+            ToolbarItemGroup(placement:.automatic) {
+                zenWindowToolbarActions
+            }
+        }
         .onChange(of:screen) { next in
             selectDefaultRequirementIfNeeded(next)
         }
