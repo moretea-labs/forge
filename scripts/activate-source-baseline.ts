@@ -1,14 +1,7 @@
 #!/usr/bin/env bun
 import { randomUUID } from 'crypto';
 import { spawn } from 'child_process';
-import {
-  closeSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  renameSync,
-  writeFileSync,
-} from 'fs';
+import { closeSync, existsSync, mkdirSync, openSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { resolveRepoPreferredControllerHome } from '../src/effects/controller-home';
@@ -26,16 +19,6 @@ interface CheckReceipt {
   stderrTail?: string;
 }
 
-interface CleanupReceiptSummary {
-  workId: string;
-  checkoutId: string;
-  branch: string;
-  attempted: boolean;
-  complete: boolean;
-  blockers: string[];
-  reason?: string;
-}
-
 interface SourceBaselineState {
   schemaVersion: 1;
   requestId: string;
@@ -43,13 +26,12 @@ interface SourceBaselineState {
   repoRoot: string;
   controllerHome: string;
   expectedHead: string;
-  phase: 'scheduled' | 'running_checks' | 'cleaning_terminal_work' | 'succeeded' | 'failed';
+  phase: 'scheduled' | 'running_checks' | 'succeeded' | 'failed';
   requestedAt: string;
   updatedAt: string;
   coordinatorPid?: number;
   completedAt?: string;
   checks: CheckReceipt[];
-  cleanup: CleanupReceiptSummary[];
   error?: string;
 }
 
@@ -160,27 +142,6 @@ function runCheck(repoRoot: string, definition: CheckDefinition): CheckReceipt {
   };
 }
 
-function cleanupSafety(repoRoot: string, worktreePath: string): { safe: boolean; reason?: string } {
-  if (!existsSync(worktreePath)) return { safe: true };
-  const repository = runProcess('git', ['rev-parse', '--is-inside-work-tree'], {
-    cwd: worktreePath,
-    timeoutMs: 10_000,
-    maxOutputBytes: 100_000,
-  });
-  if (!repository.ok || repository.stdout.trim() !== 'true') return { safe: false, reason: 'WORKTREE_NOT_GIT_REPOSITORY' };
-  const status = git(worktreePath, ['status', '--porcelain']);
-  if (status) return { safe: false, reason: 'WORKTREE_DIRTY' };
-  const head = git(worktreePath, ['rev-parse', 'HEAD']);
-  const contained = runProcess('git', ['merge-base', '--is-ancestor', head, 'HEAD'], {
-    cwd: repoRoot,
-    timeoutMs: 10_000,
-    maxOutputBytes: 100_000,
-  });
-  return contained.ok
-    ? { safe: true }
-    : { safe: false, reason: `WORKTREE_HEAD_NOT_CONTAINED_IN_MAIN: ${head}` };
-}
-
 async function request(args: string[]): Promise<void> {
   const repoRoot = resolve(option(args, '--repo') ?? process.cwd());
   const controllerHome = resolveRepoPreferredControllerHome(repoRoot, option(args, '--controller-home'));
@@ -199,42 +160,51 @@ async function request(args: string[]): Promise<void> {
     requestedAt,
     updatedAt: requestedAt,
     checks: [],
-    cleanup: [],
   };
   const logPath = join(controllerHome, 'source-baseline', 'activate-source-baseline.log');
   mkdirSync(dirname(logPath), { recursive: true });
   const logFd = openSync(logPath, 'a');
   try {
-    const child = spawn(process.execPath, [
-      fileURLToPath(import.meta.url),
-      'run',
-      '--repo', repoRoot,
-      '--controller-home', controllerHome,
-      '--request-id', requestId,
-      '--expected-head', expectedHead,
-    ], {
-      cwd: repoRoot,
-      detached: true,
-      stdio: ['ignore', logFd, logFd],
-      env: {
-        ...process.env,
-        FORGE_CONTROLLER_HOME: controllerHome,
-        FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: repoRoot,
-        FORGE_SOURCE_ROOT: repoRoot,
+    const child = spawn(
+      process.execPath,
+      [
+        fileURLToPath(import.meta.url),
+        'run',
+        '--repo',
+        repoRoot,
+        '--controller-home',
+        controllerHome,
+        '--request-id',
+        requestId,
+        '--expected-head',
+        expectedHead,
+      ],
+      {
+        cwd: repoRoot,
+        detached: true,
+        stdio: ['ignore', logFd, logFd],
+        env: {
+          ...process.env,
+          FORGE_CONTROLLER_HOME: controllerHome,
+          FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: repoRoot,
+          FORGE_SOURCE_ROOT: repoRoot,
+        },
       },
-    });
+    );
     child.unref();
     state = updateState(state, { coordinatorPid: child.pid });
   } finally {
     closeSync(logFd);
   }
-  console.log(JSON.stringify({
-    accepted: true,
-    requestId,
-    expectedHead,
-    statePath: statePath(controllerHome, requestId),
-    coordinatorPid: state.coordinatorPid,
-  }));
+  console.log(
+    JSON.stringify({
+      accepted: true,
+      requestId,
+      expectedHead,
+      statePath: statePath(controllerHome, requestId),
+      coordinatorPid: state.coordinatorPid,
+    }),
+  );
 }
 
 async function run(args: string[]): Promise<void> {
@@ -257,7 +227,6 @@ async function run(args: string[]): Promise<void> {
     updatedAt: requestedAt,
     coordinatorPid: process.pid,
     checks: [],
-    cleanup: [],
   };
   atomicWrite(statePath(controllerHome, requestId), state);
   atomicWrite(join(controllerHome, 'source-baseline', 'current.json'), state);

@@ -237,13 +237,14 @@ describe('runtime command surface', () => {
       'utf8',
     );
     const sourceBaseline = readFileSync(join(ROOT, 'scripts/activate-source-baseline.ts'), 'utf8');
-    expect(sourceBaseline).toContain("['rev-parse', '--is-inside-work-tree']");
-    expect(sourceBaseline).toContain("reason: 'WORKTREE_NOT_GIT_REPOSITORY'");
     expect(sourceBaseline).toContain("args: ['test', '--max-concurrency', '1', `./${path}`]");
     expect(sourceBaseline).toContain("'tests/cli/mcp-http.test.ts'");
     expect(sourceBaseline).not.toContain("'tests/cli/mcp-controller.test.ts'");
     expect(sourceBaseline).toContain('findRegisteredRepositoryByCheckoutRoot');
     expect(sourceBaseline).toContain('repositoryId(repoRoot, controllerHome)');
+    expect(sourceBaseline).not.toContain('workId');
+    expect(sourceBaseline).not.toContain('cleaning_terminal_work');
+    expect(sourceBaseline).not.toContain('cleanupSafety');
     expect(sourceBaseline).not.toContain(".ai', 'harness', 'repository.json");
     expect(sourceBaseline).not.toContain("targetBranch: 'main'");
     expect(mcpCommand).toContain('bindInheritedRuntimeWriteClaimFromEnvironment');
