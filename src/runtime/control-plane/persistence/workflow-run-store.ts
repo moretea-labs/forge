@@ -1,5 +1,10 @@
 import { createHash } from 'crypto';
-import type { WorkflowCheckpoint, WorkflowJsonValue, WorkflowStepReceipt, WorkflowPublicationReceipt } from '../../../../packages/workflow-runtime/api/index';
+import type {
+  WorkflowCheckpoint,
+  WorkflowJsonValue,
+  WorkflowStepReceipt,
+  WorkflowPublicationReceipt,
+} from '../../../../packages/workflow-runtime/api/index';
 import { readControlPlaneRecord, writeControlPlaneRecord, type ControlPlaneRecord } from './sqlite-store';
 import { assertControlPlaneMetadataPayload } from './metadata-payload-policy';
 
@@ -9,10 +14,7 @@ const MAX_RECEIPTS = 128;
 
 export interface WorkflowRunRecord {
   schemaVersion: typeof SCHEMA_VERSION;
-  /** Canonical new-run scope. Historical records may instead contain workId. */
-  scopeId?: string;
-  /** Legacy read-only provenance for records created before Work retirement. Never written by the new path. */
-  workId?: string;
+  scopeId: string;
   runId: string;
   workflowId: string;
   version: string;
@@ -36,21 +38,24 @@ function bounded(value: string, code: string): string {
   return trimmed;
 }
 
-export function workflowRunScopeId(value: Pick<WorkflowRunRecord, 'scopeId' | 'workId'>): string {
-  const scopeId = value.scopeId?.trim() || value.workId?.trim() || '';
-  return bounded(scopeId, 'WORKFLOW_RUN_SCOPE_ID_INVALID');
+function workflowRunScopeId(value: Pick<WorkflowRunRecord, 'scopeId'>): string {
+  return bounded(value.scopeId, 'WORKFLOW_RUN_SCOPE_ID_INVALID');
 }
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, entry]) => [key, canonical(entry)]));
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, canonical(entry)]),
+  );
 }
 
 export function workflowInputDigest(inputs: Record<string, WorkflowJsonValue> = {}): string {
-  return `sha256:${createHash('sha256').update(JSON.stringify(canonical(inputs))).digest('hex')}`;
+  return `sha256:${createHash('sha256')
+    .update(JSON.stringify(canonical(inputs)))
+    .digest('hex')}`;
 }
 
 function evidenceContent(value: Omit<WorkflowRunRecord, 'evidenceRef'>): string {
@@ -64,6 +69,7 @@ export function workflowRunEvidenceRef(value: Omit<WorkflowRunRecord, 'evidenceR
 
 function validRecord(value: WorkflowRunRecord): WorkflowRunRecord {
   if (value.schemaVersion !== SCHEMA_VERSION) throw new Error('WORKFLOW_RUN_SCHEMA_VERSION_UNSUPPORTED');
+  if (Object.hasOwn(value, 'workId')) throw new Error('WORKFLOW_RUN_RETIRED_WORK_SCOPE');
   workflowRunScopeId(value);
   bounded(value.runId, 'WORKFLOW_RUN_ID_INVALID');
   bounded(value.workflowId, 'WORKFLOW_RUN_WORKFLOW_ID_INVALID');
@@ -71,12 +77,13 @@ function validRecord(value: WorkflowRunRecord): WorkflowRunRecord {
   bounded(value.contentDigest, 'WORKFLOW_RUN_CONTENT_DIGEST_INVALID');
   bounded(value.inputDigest, 'WORKFLOW_RUN_INPUT_DIGEST_INVALID');
   bounded(value.evidenceRef, 'WORKFLOW_RUN_EVIDENCE_REF_INVALID');
-  // Validate the exact persisted shape. Adding scopeId to a legacy Work record
-  // before this check would change its historical evidence digest.
   if (workflowRunEvidenceRef(value) !== value.evidenceRef) throw new Error('WORKFLOW_RUN_EVIDENCE_REF_MISMATCH');
-  if (!['running', 'reconcile_required', 'failed', 'succeeded'].includes(value.status)) throw new Error('WORKFLOW_RUN_STATUS_INVALID');
-  if (!Number.isInteger(value.nextStepIndex) || value.nextStepIndex < 0) throw new Error('WORKFLOW_RUN_NEXT_STEP_INVALID');
-  if (!Array.isArray(value.receipts) || value.receipts.length > MAX_RECEIPTS) throw new Error('WORKFLOW_RUN_RECEIPTS_INVALID');
+  if (!['running', 'reconcile_required', 'failed', 'succeeded'].includes(value.status))
+    throw new Error('WORKFLOW_RUN_STATUS_INVALID');
+  if (!Number.isInteger(value.nextStepIndex) || value.nextStepIndex < 0)
+    throw new Error('WORKFLOW_RUN_NEXT_STEP_INVALID');
+  if (!Array.isArray(value.receipts) || value.receipts.length > MAX_RECEIPTS)
+    throw new Error('WORKFLOW_RUN_RECEIPTS_INVALID');
   if (!Number.isFinite(Date.parse(value.updatedAt))) throw new Error('WORKFLOW_RUN_UPDATED_AT_INVALID');
   assertControlPlaneMetadataPayload(value, 'workflow_run', 256 * 1024);
   return value;

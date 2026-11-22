@@ -9,6 +9,11 @@ import {
   RETIRED_WORK_NAMESPACES,
 } from '../../src/runtime/control-plane/persistence/retired-work-purge';
 import {
+  readWorkflowRun,
+  writeWorkflowRunCheckpoint,
+  workflowRunEvidenceRef,
+} from '../../src/runtime/control-plane/persistence/workflow-run-store';
+import {
   readControlPlaneRecord,
   withControlPlaneReadDatabase,
   withControlPlaneTransaction,
@@ -185,6 +190,110 @@ describe('full retired Work data erasure', () => {
     const compacted = readFileSync(join(home, 'control-plane.sqlite'));
     expect(compacted.includes(Buffer.from('WORK-LEGACY-UNIQUE-93f4'))).toBe(false);
     expect(compacted.includes(Buffer.from('ROUND-LEGACY-UNIQUE-93f4'))).toBe(false);
+    expect(purgeRetiredWork(home)).toMatchObject({ applied: true, records: 0 });
+  });
+
+  test('WorkflowRun store rejects retired workId scope and requires native scopeId (#483)', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-workflow-run-no-work-'));
+    tempRoots.push(home);
+    const legacyContent = {
+      schemaVersion: 1 as const,
+      runId: 'legacy-only',
+      workId: 'WORK-LEGACY-SCOPE',
+      workflowId: 'wf',
+      version: '1',
+      contentDigest: 'digest',
+      inputDigest: 'input',
+      status: 'succeeded' as const,
+      nextStepIndex: 0,
+      receipts: [] as [],
+      updatedAt: '2026-11-22T00:00:00.000Z',
+      outputs: {},
+    };
+    writeControlPlaneRecord(home, {
+      namespace: 'workflow_run',
+      scope: 'legacy-work-scope',
+      key: 'legacy-only',
+      schemaVersion: 1,
+      value: {
+        ...legacyContent,
+        evidenceRef: workflowRunEvidenceRef(legacyContent as never),
+      },
+      expectedRevision: null,
+    });
+    expect(() => readWorkflowRun(home, 'legacy-work-scope', 'legacy-only')).toThrow('WORKFLOW_RUN_RETIRED_WORK_SCOPE');
+
+    const written = writeWorkflowRunCheckpoint({
+      controllerHome: home,
+      checkpoint: {
+        schemaVersion: 1,
+        binding: { scopeId: 'repository:native', runId: 'native-run' },
+        workflowId: 'wf',
+        version: '1',
+        contentDigest: 'digest',
+        status: 'succeeded',
+        nextStepIndex: 0,
+        receipts: [],
+        outputs: {},
+      },
+      expectedRevision: null,
+      now: new Date('2026-11-22T00:00:00.000Z'),
+    });
+    expect(written.value.scopeId).toBe('repository:native');
+    expect(Object.hasOwn(written.value, 'workId')).toBe(false);
+    expect(readWorkflowRun(home, 'repository:native', 'native-run')?.value.runId).toBe('native-run');
+  });
+
+  test('erases Work-scoped WorkflowRun history but preserves native WorkflowRun records', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-retired-workflow-run-'));
+    tempRoots.push(home);
+    const workMarker = 'WORKFLOW-WORK-ONLY-OLD-93fe';
+    writeControlPlaneRecord(home, {
+      namespace: 'workflow_run',
+      scope: 'legacy-work-scope',
+      key: 'legacy-workflow-run',
+      schemaVersion: 1,
+      value: { schemaVersion: 1, runId: 'legacy-workflow-run', workId: workMarker },
+      expectedRevision: null,
+    });
+    writeControlPlaneRecord(home, {
+      namespace: 'workflow_run',
+      scope: 'repository:modern-workflow',
+      key: 'modern-workflow-run',
+      schemaVersion: 1,
+      value: { schemaVersion: 1, runId: 'modern-workflow-run', scopeId: 'repository:modern-workflow' },
+      expectedRevision: null,
+    });
+    withControlPlaneTransaction(home, (db) => {
+      db.prepare(
+        'INSERT INTO control_plane_audit_floor(namespace,scope,record_key,floor_revision,updated_at) VALUES(?,?,?,?,?)',
+      ).run('workflow_run', 'legacy-work-scope', 'legacy-workflow-run', 1, '2026-11-22');
+      db.prepare(
+        'INSERT INTO control_plane_audit_record_cursor(name,namespace,scope,record_key,updated_at) VALUES(?,?,?,?,?)',
+      ).run('old-workflow-cursor', 'workflow_run', 'legacy-work-scope', 'legacy-workflow-run', '2026-11-22');
+    });
+    expect(() => readWorkflowRun(home, 'legacy-work-scope', 'legacy-workflow-run')).toThrow(
+      'WORKFLOW_RUN_RETIRED_WORK_SCOPE',
+    );
+    expect(inspectRetiredWorkPurge(home)).toMatchObject({
+      records: 1,
+      auditEvents: 1,
+      auditFloors: 1,
+      auditRecordCursors: 1,
+    });
+    expect(purgeRetiredWork(home)).toMatchObject({ applied: true, records: 1 });
+    expect(readControlPlaneRecord(home, 'workflow_run', 'legacy-work-scope', 'legacy-workflow-run')).toBeUndefined();
+    expect(
+      readControlPlaneRecord(home, 'workflow_run', 'repository:modern-workflow', 'modern-workflow-run')?.value,
+    ).toMatchObject({ scopeId: 'repository:modern-workflow', runId: 'modern-workflow-run' });
+    expect(inspectRetiredWorkPurge(home)).toMatchObject({
+      records: 0,
+      auditEvents: 0,
+      auditFloors: 0,
+      auditRecordCursors: 0,
+    });
+    const compacted = readFileSync(join(home, 'control-plane.sqlite'));
+    expect(compacted.includes(Buffer.from(workMarker))).toBe(false);
     expect(purgeRetiredWork(home)).toMatchObject({ applied: true, records: 0 });
   });
 
