@@ -914,8 +914,7 @@ function detachOwnedManagedWorktree(
       repoId: repository.repoId,
       checkoutId: inspection.checkoutId,
       lifecycle: 'removed',
-      reason:
-        'Canonical OwnedResource cleanup reconciled a WorkContract-less managed worktree whose source is already integrated.',
+      reason: 'Canonical OwnedResource cleanup reconciled a managed worktree whose source is already integrated.',
     });
     const removed = runProcess('git', ['worktree', 'remove', '--force', inspection.path], {
       cwd: repository.canonicalRoot,

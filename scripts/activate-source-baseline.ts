@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { randomUUID } from 'crypto';
 import { spawn } from 'child_process';
-import { closeSync, existsSync, mkdirSync, openSync, renameSync, writeFileSync } from 'fs';
+import { closeSync, mkdirSync, openSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { resolveRepoPreferredControllerHome } from '../src/effects/controller-home';
