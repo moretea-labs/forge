@@ -2,7 +2,10 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
 import { listRepositories } from '../../../src/runtime/repositories/registry';
-import { ensureRepositoryRuntimeStorage, inspectRepositoryRuntimeStorage } from '../../../src/runtime/repositories/runtime-storage';
+import {
+  ensureRepositoryRuntimeStorage,
+  inspectRepositoryRuntimeStorage,
+} from '../../../src/runtime/repositories/runtime-storage';
 import { cachedGitIdentity } from '../../../src/runtime/repositories/inspector';
 import { inferLocalControllerProcess } from '../../../src/runtime/diagnostics/performance';
 import { listExecutionJobs } from '../../../src/runtime/execution/jobs/store';
@@ -28,10 +31,7 @@ import {
 import { loadMcpRuntimeState } from '../auth';
 import { formatRuntimeSourceDriftMessage } from '../../../src/runtime/control-plane/runtime-generation';
 import { callStandaloneRecoveryTool } from './recovery-client-adapter';
-import {
-  controllerReadinessEvidence,
-  runtimeSourceSnapshotStatus,
-} from './status-inbox-adapter';
+import { controllerReadinessEvidence, runtimeSourceSnapshotStatus } from './status-inbox-adapter';
 import { result } from './result-adapter';
 import { selected, selectedOptional } from './shared-adapter';
 
@@ -41,38 +41,45 @@ async function capabilityRecoveryInput(
   args: Record<string, unknown>,
 ) {
   const readiness = await controllerReadinessEvidence(ctx, repository);
-  const runtimeSnapshot = repository ? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId) : undefined;
+  const runtimeSnapshot = repository
+    ? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId)
+    : undefined;
   const localBridge = repository ? loadMcpRuntimeState(repository.canonicalRoot)?.localController : undefined;
   const inferredLocalBridge = repository ? inferLocalControllerProcess(repository.canonicalRoot) : undefined;
   const contextProjectionSourceRevision = runtimeSnapshot
     ? String(runtimeSnapshot.projection.metadata?.contentRevision ?? runtimeSnapshot.projection.revision)
     : undefined;
   const contextGitIdentity = repository ? cachedGitIdentity(repository.canonicalRoot) : undefined;
-  const contextSourceIdentity = repository && contextProjectionSourceRevision !== undefined
-    ? {
-        repoId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
-        canonicalRoot: repository.canonicalRoot,
-        head: contextGitIdentity?.head,
-        branch: contextGitIdentity?.branch,
-        workingTreeFingerprint: contextGitIdentity?.workingTreeFingerprint,
-        runtimeGeneration: runtimeSnapshot?.projection.metadata?.producerGeneration,
-        sourceRevision: contextProjectionSourceRevision,
-        variant: 'summary' as const,
-        toolset: ctx.toolset,
-        profile: ctx.policy.profile,
-      }
-    : undefined;
-  const contextProjection = repository && contextSourceIdentity
-    ? readControllerContextProjection(ctx.controllerHome, repository.repoId, { sourceIdentity: contextSourceIdentity })
-    : undefined;
-  const contextProjectionStale = repository && contextProjectionSourceRevision !== undefined && contextSourceIdentity
-    ? controllerContextProjectionNeedsRefresh(
-        contextProjection,
-        contextProjectionSourceRevision,
-        contextSourceIdentity,
-      )
-    : undefined;
+  const contextSourceIdentity =
+    repository && contextProjectionSourceRevision !== undefined
+      ? {
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          canonicalRoot: repository.canonicalRoot,
+          head: contextGitIdentity?.head,
+          branch: contextGitIdentity?.branch,
+          workingTreeFingerprint: contextGitIdentity?.workingTreeFingerprint,
+          runtimeGeneration: runtimeSnapshot?.projection.metadata?.producerGeneration,
+          sourceRevision: contextProjectionSourceRevision,
+          variant: 'summary' as const,
+          toolset: ctx.toolset,
+          profile: ctx.policy.profile,
+        }
+      : undefined;
+  const contextProjection =
+    repository && contextSourceIdentity
+      ? readControllerContextProjection(ctx.controllerHome, repository.repoId, {
+          sourceIdentity: contextSourceIdentity,
+        })
+      : undefined;
+  const contextProjectionStale =
+    repository && contextProjectionSourceRevision !== undefined && contextSourceIdentity
+      ? controllerContextProjectionNeedsRefresh(
+          contextProjection,
+          contextProjectionSourceRevision,
+          contextSourceIdentity,
+        )
+      : undefined;
   const recentErrors = Array.isArray(args.recent_errors) ? args.recent_errors.map(String) : [];
   const runtimeSource = runtimeSourceSnapshotStatus(readiness.daemon.source, ctx.runtimeSourceRoot);
   let runtimeStorageReady: boolean | undefined;
@@ -87,7 +94,9 @@ async function capabilityRecoveryInput(
       runtimeStorageWarnings = [error instanceof Error ? error.message : String(error)];
     }
   }
-  const plugins = repository ? listAssistantPluginManifests(ctx.controllerHome, repository, { preferStored: true, fallbackToLive: false }) : [];
+  const plugins = repository
+    ? listAssistantPluginManifests(ctx.controllerHome, repository, { preferStored: true, fallbackToLive: false })
+    : [];
   const localJobs = repository ? listLocalBridgeJobSnapshots(repository.canonicalRoot, 30) : [];
   const executionJobs = repository ? listExecutionJobs(ctx.controllerHome, repository.repoId, 30) : [];
   return {
@@ -117,8 +126,10 @@ async function capabilityRecoveryInput(
         : 'Runtime source snapshot matches the current Controller Runtime source.',
     },
     ...(contextProjectionStale === undefined ? {} : { contextProjectionStale }),
-    commandPreviewAvailable: args.command_preview_available === undefined ? true : args.command_preview_available === true,
-    commandExecuteAvailable: args.command_execute_available === undefined ? true : args.command_execute_available === true,
+    commandPreviewAvailable:
+      args.command_preview_available === undefined ? true : args.command_preview_available === true,
+    commandExecuteAvailable:
+      args.command_execute_available === undefined ? true : args.command_execute_available === true,
     issueToolsAvailable: args.issue_tools_available === undefined ? true : args.issue_tools_available === true,
     jobToolsAvailable: args.job_tools_available === undefined ? true : args.job_tools_available === true,
     ...(repository ? { checksAvailable: listControllerChecks(repository.canonicalRoot).length > 0 } : {}),
@@ -147,7 +158,10 @@ async function capabilityRecoverySnapshot(
   repository: ReturnType<typeof selected> | undefined,
   args: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  return buildCapabilityRecoverySnapshot(await capabilityRecoveryInput(ctx, repository, args)) as unknown as Record<string, unknown>;
+  return buildCapabilityRecoverySnapshot(await capabilityRecoveryInput(ctx, repository, args)) as unknown as Record<
+    string,
+    unknown
+  >;
 }
 
 export async function callRecoveryAdapter(
@@ -159,13 +173,15 @@ export async function callRecoveryAdapter(
     case 'capability_recovery_probe': {
       const repository = selectedOptional(ctx, args);
       const snapshot = await buildCapabilityRecoverySnapshot(await capabilityRecoveryInput(ctx, repository, args));
-      const blockingCapabilityCount = snapshot.capabilities
-        .filter((capability) => ['blocked', 'unavailable', 'degraded'].includes(capability.state))
-        .length;
+      const blockingCapabilityCount = snapshot.capabilities.filter((capability) =>
+        ['blocked', 'unavailable', 'degraded'].includes(capability.state),
+      ).length;
       const ready = blockingCapabilityCount === 0 && snapshot.platformBlocked !== true;
       return result({
         ready,
-        reasonCodes: ready ? [] : [snapshot.externalLifecycleHandoff?.reasonCode ?? 'RUNTIME_DIAGNOSTICS_ATTENTION_REQUIRED'],
+        reasonCodes: ready
+          ? []
+          : [snapshot.externalLifecycleHandoff?.reasonCode ?? 'RUNTIME_DIAGNOSTICS_ATTENTION_REQUIRED'],
         // Instance-level diagnostics stay honest about missing repository context
         // instead of silently attributing repository-scoped facts to the host.
         repositoryContext: repository ? { repoId: repository.repoId, checkoutId: repository.activeCheckoutId } : null,
@@ -186,13 +202,15 @@ export async function callRecoveryAdapter(
     case 'capability_recovery_plan': {
       const repository = selectedOptional(ctx, args);
       const snapshot = await buildCapabilityRecoverySnapshot(await capabilityRecoveryInput(ctx, repository, args));
-      const blockingCapabilityCount = snapshot.capabilities
-        .filter((capability) => ['blocked', 'unavailable', 'degraded'].includes(capability.state))
-        .length;
+      const blockingCapabilityCount = snapshot.capabilities.filter((capability) =>
+        ['blocked', 'unavailable', 'degraded'].includes(capability.state),
+      ).length;
       const ready = blockingCapabilityCount === 0 && snapshot.platformBlocked !== true;
       return result({
         ready,
-        reasonCodes: ready ? [] : [snapshot.externalLifecycleHandoff?.reasonCode ?? 'RUNTIME_DIAGNOSTICS_ATTENTION_REQUIRED'],
+        reasonCodes: ready
+          ? []
+          : [snapshot.externalLifecycleHandoff?.reasonCode ?? 'RUNTIME_DIAGNOSTICS_ATTENTION_REQUIRED'],
         repositoryContext: repository ? { repoId: repository.repoId, checkoutId: repository.activeCheckoutId } : null,
         diagnostics: {
           capabilityCount: snapshot.capabilities.length,
@@ -204,7 +222,7 @@ export async function callRecoveryAdapter(
         externalLifecycleHandoff: snapshot.externalLifecycleHandoff,
         notes: snapshot.notes,
         next: ready
-          ? 'Continue through the current Runtime, repository, Requirement/Plan, Schedule, and Workflow interfaces; historical Work is read-only.'
+          ? 'Continue through the current Runtime, repository, Requirement/Plan, Schedule, and Workflow interfaces; Work is fully retired.'
           : snapshot.externalLifecycleHandoff
             ? 'Create or consume an rh_inbox handoff for the external Runtime lifecycle owner. Operate on the existing single forge-runtime only, then verify controller_ready and rh_status source coherence.'
             : 'Inspect runtime_maintenance_status and create an rh_inbox handoff when operator or external Controller action is required.',
@@ -212,48 +230,56 @@ export async function callRecoveryAdapter(
     }
     case 'runtime_maintenance_status': {
       const repository = selected(ctx, args);
-      return result(buildRuntimeMaintenanceStatus(repository, ctx.controllerHome, {
-        minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
-        maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
-        cancelPendingApprovals: args.cancel_pending_approvals === true,
-      }) as unknown as Record<string, unknown>);
+      return result(
+        buildRuntimeMaintenanceStatus(repository, ctx.controllerHome, {
+          minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
+          maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
+          cancelPendingApprovals: args.cancel_pending_approvals === true,
+        }) as unknown as Record<string, unknown>,
+      );
     }
     case 'runtime_maintenance_apply': {
       const repository = selected(ctx, args);
       const actionId = String(args.action_id ?? '').trim() as RuntimeMaintenanceActionId;
-      return result(executeRuntimeMaintenanceAction({
-        controllerHome: ctx.controllerHome,
-        repository,
-        actionId,
-        confirmMaintenance: args.confirm_maintenance === true,
-        authorization: typeof args.authorization === 'string' ? args.authorization : undefined,
-        minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
-        maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
-        cancelPendingApprovals: args.cancel_pending_approvals === true,
-      }) as unknown as Record<string, unknown>);
+      return result(
+        executeRuntimeMaintenanceAction({
+          controllerHome: ctx.controllerHome,
+          repository,
+          actionId,
+          confirmMaintenance: args.confirm_maintenance === true,
+          authorization: typeof args.authorization === 'string' ? args.authorization : undefined,
+          minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
+          maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
+          cancelPendingApprovals: args.cancel_pending_approvals === true,
+        }) as unknown as Record<string, unknown>,
+      );
     }
     case 'capability_recovery_apply': {
       const repository = selectedOptional(ctx, args);
       const actionId = String(args.action_id ?? '').trim();
-      const reason = typeof args.reason === 'string' && args.reason.trim() ? args.reason.trim() : 'manual recovery action';
+      const reason =
+        typeof args.reason === 'string' && args.reason.trim() ? args.reason.trim() : 'manual recovery action';
       try {
-        return result(await executeCapabilityRecoveryAction({
-          controllerHome: ctx.controllerHome,
-          repository,
-          actionId,
-          reason,
-          confirmAuthorization: args.confirm_authorization === true,
-          authorization: typeof args.authorization === 'string' ? args.authorization : undefined,
-          minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
-          maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
-          callStandaloneRecoveryTool: (toolName, toolArgs) => callStandaloneRecoveryTool(ctx.controllerHome, toolName, toolArgs),
-          recoverySnapshot: () => capabilityRecoverySnapshot(ctx, repository, args),
-        }) as unknown as Record<string, unknown>);
+        return result(
+          (await executeCapabilityRecoveryAction({
+            controllerHome: ctx.controllerHome,
+            repository,
+            actionId,
+            reason,
+            confirmAuthorization: args.confirm_authorization === true,
+            authorization: typeof args.authorization === 'string' ? args.authorization : undefined,
+            minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
+            maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
+            callStandaloneRecoveryTool: (toolName, toolArgs) =>
+              callStandaloneRecoveryTool(ctx.controllerHome, toolName, toolArgs),
+            recoverySnapshot: () => capabilityRecoverySnapshot(ctx, repository, args),
+          })) as unknown as Record<string, unknown>,
+        );
       } catch (error) {
-        if (error instanceof RecoveryApplicationError && (
-          error.code === 'RECOVERY_ACTION_UNKNOWN'
-          || error.code === 'RECOVERY_REPOSITORY_CONTEXT_REQUIRED'
-        )) {
+        if (
+          error instanceof RecoveryApplicationError &&
+          (error.code === 'RECOVERY_ACTION_UNKNOWN' || error.code === 'RECOVERY_REPOSITORY_CONTEXT_REQUIRED')
+        ) {
           return result({ error: { code: error.code, message: error.actionId } }, true);
         }
         throw error;
@@ -261,10 +287,12 @@ export async function callRecoveryAdapter(
     }
     case 'runtime_storage_repair_preview': {
       const repository = selected(ctx, args);
-      return result(previewRuntimeStorageRepair(repository, ctx.controllerHome, {
-        minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
-        maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
-      }) as unknown as Record<string, unknown>);
+      return result(
+        previewRuntimeStorageRepair(repository, ctx.controllerHome, {
+          minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
+          maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
+        }) as unknown as Record<string, unknown>,
+      );
     }
     case 'runtime_storage_repair_apply': {
       const repository = selected(ctx, args);

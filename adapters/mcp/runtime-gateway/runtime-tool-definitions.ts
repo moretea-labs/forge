@@ -621,7 +621,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
           ],
         },
         description:
-          'Model-authored semantic deltas, never keyword/phrase-derived lessons. Learning writes are lifecycle-free and scoped to Requirement/Project/Workspace; historical Work is never a write authority.',
+          'Model-authored semantic deltas, never keyword/phrase-derived lessons. Learning writes are lifecycle-free and scoped to Requirement/Project/Workspace; Work is fully retired and never a write authority.',
       },
       learning_feedback: {
         type: 'array',

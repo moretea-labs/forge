@@ -19,7 +19,7 @@ import {
   reviseRequirementSemantic,
   updateRequirement,
 } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
+import { implementationReviewChangedPathDigest } from '../helpers/historical-implementation-review';
 import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const homes: string[] = [];
@@ -63,28 +63,37 @@ function completionReceipt(workId: string, targetRevision: string) {
 }
 
 function activateRequirement(controllerHome: string, requirementId: string) {
-  createRequirement({ controllerHome }, {
-    requirementId,
-    title: 'Goal authority convergence',
-    outcomeStatement: 'Only explicit Controller acceptance completes the Requirement.',
-  });
-  return updateRequirement({ controllerHome }, {
-    requirementId,
-    action: 'test_activate',
-    mutate: (current) => ({ ...current, state: 'active' }),
-  });
+  createRequirement(
+    { controllerHome },
+    {
+      requirementId,
+      title: 'Goal authority convergence',
+      outcomeStatement: 'Only explicit Controller acceptance completes the Requirement.',
+    },
+  );
+  return updateRequirement(
+    { controllerHome },
+    {
+      requirementId,
+      action: 'test_activate',
+      mutate: (current) => ({ ...current, state: 'active' }),
+    },
+  );
 }
 
 describe('Goal authority convergence', () => {
   test('Requirement independently owns progress and accepted evidence across sessions with revision CAS', () => {
     const controllerHome = home();
     const requirementId = 'REQ-WITHOUT-WORK';
-    createRequirement({ controllerHome }, {
-      requirementId,
-      title: 'Requirement-first delivery',
-      outcomeStatement: 'Deliver without creating a Work, Plan or claiming a conversation.',
-      acceptanceCriteria: ['reviewed source', 'live runtime evidence'],
-    });
+    createRequirement(
+      { controllerHome },
+      {
+        requirementId,
+        title: 'Requirement-first delivery',
+        outcomeStatement: 'Deliver without creating a Work, Plan or claiming a conversation.',
+        acceptanceCriteria: ['reviewed source', 'live runtime evidence'],
+      },
+    );
     const progress = reviseRequirementSemantic({ controllerHome }, requirementId, {
       expectedRevision: 1,
       progressSummary: 'Source change under review',
@@ -92,38 +101,61 @@ describe('Goal authority convergence', () => {
       acceptedEvidenceRefs: ['git:abc123'],
     });
     expect(requirementSemanticView(progress)).toMatchObject({
-      revision: 2, state: 'open', progressSummary: 'Source change under review',
+      revision: 2,
+      state: 'open',
+      progressSummary: 'Source change under review',
       remainingWork: ['CI and fixed-HEAD review', 'Runtime activation'],
       acceptedEvidenceRefs: ['git:abc123'],
     });
-    expect(() => reviseRequirementSemantic({ controllerHome }, requirementId, {
-      expectedRevision: 1, acceptedEvidenceRefs: ['git:stale'],
-    })).toThrow('REQUIREMENT_REVISION_CONFLICT');
+    expect(() =>
+      reviseRequirementSemantic({ controllerHome }, requirementId, {
+        expectedRevision: 1,
+        acceptedEvidenceRefs: ['git:stale'],
+      }),
+    ).toThrow('REQUIREMENT_REVISION_CONFLICT');
     // A replacement controller reads the same Requirement record directly; no Work or session lineage exists.
     const resumed = requirementSemanticView(readRequirement({ controllerHome }, requirementId)!.value);
     expect(resumed.remainingWork).toEqual(['CI and fixed-HEAD review', 'Runtime activation']);
     const done = reviseRequirementSemantic({ controllerHome }, requirementId, {
-      expectedRevision: resumed.revision, state: 'completed', progressSummary: 'Live acceptance recorded',
-      remainingWork: [], acceptedEvidenceRefs: ['git:abc123', 'review:accepted', 'runtime:live'],
+      expectedRevision: resumed.revision,
+      state: 'completed',
+      progressSummary: 'Live acceptance recorded',
+      remainingWork: [],
+      acceptedEvidenceRefs: ['git:abc123', 'review:accepted', 'runtime:live'],
     });
     expect(requirementSemanticView(done)).toMatchObject({
-      state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['git:abc123', 'review:accepted', 'runtime:live'],
+      state: 'completed',
+      remainingWork: [],
+      acceptedEvidenceRefs: ['git:abc123', 'review:accepted', 'runtime:live'],
     });
     expect(listRequirementRevisionRecords({ controllerHome }, requirementId)).toMatchObject([
       { revision: 2, progressSummary: 'Source change under review' },
       { revision: 1, remainingWork: [] },
     ]);
-    expect(() => reviseRequirementSemantic({ controllerHome }, requirementId, {
-      expectedRevision: requirementSemanticView(done).revision, state: 'cancelled',
-    })).toThrow('REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN');
+    expect(() =>
+      reviseRequirementSemantic({ controllerHome }, requirementId, {
+        expectedRevision: requirementSemanticView(done).revision,
+        state: 'cancelled',
+      }),
+    ).toThrow('REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN');
 
     const cancelledId = 'REQ-CANCELLED-TERMINAL';
-    createRequirement({ controllerHome }, { requirementId: cancelledId, title: cancelledId, outcomeStatement: 'Cancelled stays terminal.' });
-    const cancelled = reviseRequirementSemantic({ controllerHome }, cancelledId, { expectedRevision: 1, state: 'cancelled' });
-    expect(() => reviseRequirementSemantic({ controllerHome }, cancelledId, {
-      expectedRevision: requirementSemanticView(cancelled).revision, state: 'completed',
-      remainingWork: [], acceptedEvidenceRefs: ['review:accepted'],
-    })).toThrow('REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN');
+    createRequirement(
+      { controllerHome },
+      { requirementId: cancelledId, title: cancelledId, outcomeStatement: 'Cancelled stays terminal.' },
+    );
+    const cancelled = reviseRequirementSemantic({ controllerHome }, cancelledId, {
+      expectedRevision: 1,
+      state: 'cancelled',
+    });
+    expect(() =>
+      reviseRequirementSemantic({ controllerHome }, cancelledId, {
+        expectedRevision: requirementSemanticView(cancelled).revision,
+        state: 'completed',
+        remainingWork: [],
+        acceptedEvidenceRefs: ['review:accepted'],
+      }),
+    ).toThrow('REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN');
   });
 
   test('persists thin Requirement/Plan semantic revisions with fail-closed CAS', () => {
@@ -131,14 +163,19 @@ describe('Goal authority convergence', () => {
     const repoId = 'repo-semantic-revision';
     const requirementId = 'REQ-SEMANTIC-REVISION';
     const planId = 'PLAN-SEMANTIC-REVISION';
-    const requirement = createRequirement({ controllerHome }, {
-      requirementId,
-      title: 'Original requirement',
-      outcomeStatement: 'Original outcome',
-      acceptanceCriteria: ['original acceptance'],
-    });
+    const requirement = createRequirement(
+      { controllerHome },
+      {
+        requirementId,
+        title: 'Original requirement',
+        outcomeStatement: 'Original outcome',
+        acceptanceCriteria: ['original acceptance'],
+      },
+    );
     expect(requirementSemanticView(requirement)).toMatchObject({
-      revision: 1, state: 'open', semanticScope: { kind: 'requirement', id: requirementId },
+      revision: 1,
+      state: 'open',
+      semanticScope: { kind: 'requirement', id: requirementId },
     });
     const revisedRequirement = reviseRequirementSemantic({ controllerHome }, requirementId, {
       expectedRevision: 1,
@@ -147,20 +184,38 @@ describe('Goal authority convergence', () => {
     });
     const revisedRequirementSemantic = requirementSemanticView(revisedRequirement);
     expect(revisedRequirementSemantic).toMatchObject({ revision: 2, title: 'Revised requirement', state: 'open' });
-    const mechanicallyUpdatedRequirement = updateRequirement({ controllerHome }, {
-      requirementId,
-      action: 'test_mechanical_wait',
-      mutate: (current) => ({ ...current, state: 'waiting_for_user', needsAttention: true, attentionSummary: 'mechanical-only wait' }),
-    });
+    const mechanicallyUpdatedRequirement = updateRequirement(
+      { controllerHome },
+      {
+        requirementId,
+        action: 'test_mechanical_wait',
+        mutate: (current) => ({
+          ...current,
+          state: 'waiting_for_user',
+          needsAttention: true,
+          attentionSummary: 'mechanical-only wait',
+        }),
+      },
+    );
     expect(requirementSemanticView(mechanicallyUpdatedRequirement)).toMatchObject({
-      revision: 2, title: 'Revised requirement', state: 'open', updatedAt: revisedRequirementSemantic.updatedAt,
+      revision: 2,
+      title: 'Revised requirement',
+      state: 'open',
+      updatedAt: revisedRequirementSemantic.updatedAt,
     });
-    const explicitlyOpenedRequirement = reviseRequirementSemantic({ controllerHome }, requirementId, { expectedRevision: 2, state: 'open' });
+    const explicitlyOpenedRequirement = reviseRequirementSemantic({ controllerHome }, requirementId, {
+      expectedRevision: 2,
+      state: 'open',
+    });
     expect(explicitlyOpenedRequirement).toMatchObject({ state: 'active', needsAttention: false });
     expect(requirementSemanticView(explicitlyOpenedRequirement)).toMatchObject({ revision: 3, state: 'open' });
-    expect(listRequirementRevisionRecords({ controllerHome }, requirementId)).toMatchObject([{ revision: 2, title: 'Revised requirement' }, { revision: 1, title: 'Original requirement' }]);
-    expect(() => reviseRequirementSemantic({ controllerHome }, requirementId, { expectedRevision: 2, title: 'stale writer' }))
-      .toThrow('REQUIREMENT_REVISION_CONFLICT');
+    expect(listRequirementRevisionRecords({ controllerHome }, requirementId)).toMatchObject([
+      { revision: 2, title: 'Revised requirement' },
+      { revision: 1, title: 'Original requirement' },
+    ]);
+    expect(() =>
+      reviseRequirementSemantic({ controllerHome }, requirementId, { expectedRevision: 2, title: 'stale writer' }),
+    ).toThrow('REQUIREMENT_REVISION_CONFLICT');
 
     const planOptions = { controllerHome, repoId, now: () => '2026-09-24T04:58:00.000Z' };
     const plan = createPlanContract(planOptions, {
@@ -170,7 +225,18 @@ describe('Goal authority convergence', () => {
       scopeKey: 'semantic-revision',
       sourceRevision: 'source-a',
       goal: 'Original plan goal',
-      steps: [{ id: 'item-a', objective: 'Keep one authored item.', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['check-semantic-compatibility'], acceptanceCriteria: ['Legacy mechanical approval remains separate from semantic Plan content.'] }],
+      steps: [
+        {
+          id: 'item-a',
+          objective: 'Keep one authored item.',
+          dependencies: [],
+          authoritativeFiles: [],
+          allowedPaths: [],
+          forbiddenPaths: [],
+          checks: ['check-semantic-compatibility'],
+          acceptanceCriteria: ['Legacy mechanical approval remains separate from semantic Plan content.'],
+        },
+      ],
     });
     expect(planSemanticView(plan)).toMatchObject({
       revision: 1,
@@ -187,10 +253,15 @@ describe('Goal authority convergence', () => {
     });
     expect(revisedPlan.revision).toBe(plan.revision);
     expect(planSemanticView(revisedPlan)).toMatchObject({
-      revision: 2, requirementBasisRevision: 3, sourceBasisRevision: 'source-b', goal: 'Revised plan goal',
+      revision: 2,
+      requirementBasisRevision: 3,
+      sourceBasisRevision: 'source-b',
+      goal: 'Revised plan goal',
       items: [{ id: 'item-b', objective: 'Replace the authored working-memory item.', dependencies: [] }],
     });
-    expect(listPlanSemanticRevisionRecords(planOptions, planId)).toMatchObject([{ revision: 1, sourceBasisRevision: 'source-a', goal: 'Original plan goal' }]);
+    expect(listPlanSemanticRevisionRecords(planOptions, planId)).toMatchObject([
+      { revision: 1, sourceBasisRevision: 'source-a', goal: 'Original plan goal' },
+    ]);
     const revisedAfterAnotherSemanticRevision = revisePlanSemanticContext(planOptions, planId, {
       expectedRevision: 2,
       goal: 'Semantic revision after mechanical approval',
@@ -201,8 +272,9 @@ describe('Goal authority convergence', () => {
       goal: 'Semantic revision after mechanical approval',
       sourceBasisRevision: 'source-b',
     });
-    expect(() => revisePlanSemanticContext(planOptions, planId, { expectedRevision: 2, goal: 'stale writer' }))
-      .toThrow('PLAN_REVISION_CONFLICT');
+    expect(() => revisePlanSemanticContext(planOptions, planId, { expectedRevision: 2, goal: 'stale writer' })).toThrow(
+      'PLAN_REVISION_CONFLICT',
+    );
   });
 
   test('advances one stable draft Plan head when compatibility extend revises authored content', () => {
@@ -210,11 +282,14 @@ describe('Goal authority convergence', () => {
     const repoId = 'repo-plan-stable-head';
     const requirementId = 'REQ-PLAN-STABLE-HEAD';
     const planId = 'PLAN-STABLE-HEAD';
-    createRequirement({ controllerHome }, {
-      requirementId,
-      title: 'Keep one Plan head',
-      outcomeStatement: 'Plan revisions reuse one stable identity.',
-    });
+    createRequirement(
+      { controllerHome },
+      {
+        requirementId,
+        title: 'Keep one Plan head',
+        outcomeStatement: 'Plan revisions reuse one stable identity.',
+      },
+    );
     const planOptions = { controllerHome, repoId, now: () => '2026-09-28T09:00:00.000Z' };
     createPlanContract(planOptions, {
       planId,
@@ -223,7 +298,18 @@ describe('Goal authority convergence', () => {
       scopeKey: 'stable-head',
       sourceRevision: 'source-a',
       goal: 'Original draft goal',
-      steps: [{ id: 'step-a', objective: 'Original step.', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['Original acceptance.'] }],
+      steps: [
+        {
+          id: 'step-a',
+          objective: 'Original step.',
+          dependencies: [],
+          authoritativeFiles: [],
+          allowedPaths: [],
+          forbiddenPaths: [],
+          checks: ['package:check:type'],
+          acceptanceCriteria: ['Original acceptance.'],
+        },
+      ],
     });
 
     const admitted = admitPlanContract(planOptions, {
@@ -235,7 +321,18 @@ describe('Goal authority convergence', () => {
       goal: 'Revised draft goal',
       planRelation: 'extend',
       relatedPlanId: planId,
-      steps: [{ id: 'step-b', objective: 'Revised step.', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['Revised acceptance.'] }],
+      steps: [
+        {
+          id: 'step-b',
+          objective: 'Revised step.',
+          dependencies: [],
+          authoritativeFiles: [],
+          allowedPaths: [],
+          forbiddenPaths: [],
+          checks: ['package:check:type'],
+          acceptanceCriteria: ['Revised acceptance.'],
+        },
+      ],
     });
 
     expect(admitted.admissionDecision).toBe('reuse_existing');
@@ -246,7 +343,10 @@ describe('Goal authority convergence', () => {
       goal: 'Revised draft goal',
       items: [{ id: 'step-b', objective: 'Revised step.', dependencies: [] }],
     });
-    expect(planSemanticView(getPlanContract(planOptions, planId)!)).toMatchObject({ revision: 2, goal: 'Revised draft goal' });
+    expect(planSemanticView(getPlanContract(planOptions, planId)!)).toMatchObject({
+      revision: 2,
+      goal: 'Revised draft goal',
+    });
     expect(listPlanSemanticRevisionRecords(planOptions, planId)).toMatchObject([
       { revision: 1, sourceBasisRevision: 'source-a', goal: 'Original draft goal' },
     ]);
@@ -256,11 +356,14 @@ describe('Goal authority convergence', () => {
     const controllerHome = home();
     const repoId = 'repo-plan-lineage';
     const requirementId = 'REQ-PLAN-LINEAGE';
-    createRequirement({ controllerHome }, {
-      requirementId,
-      title: 'One semantic lineage',
-      outcomeStatement: 'A Requirement scope has one current Plan head.',
-    });
+    createRequirement(
+      { controllerHome },
+      {
+        requirementId,
+        title: 'One semantic lineage',
+        outcomeStatement: 'A Requirement scope has one current Plan head.',
+      },
+    );
     const options = { controllerHome, repoId, now: () => '2026-09-28T09:01:00.000Z' };
     createPlanSemanticContext(options, {
       planId: 'PLAN-LINEAGE-A',
@@ -271,14 +374,16 @@ describe('Goal authority convergence', () => {
       goal: 'Current lineage head',
     });
 
-    expect(() => createPlanSemanticContext(options, {
-      planId: 'PLAN-LINEAGE-B',
-      repoId,
-      requirementId,
-      scopeKey: 'lineage-a',
-      sourceBasisRevision: 'source-b',
-      goal: 'Ambiguous sibling head',
-    })).toThrow('PLAN_SEMANTIC_LINEAGE_ALREADY_EXISTS:lineage-a:PLAN-LINEAGE-A');
+    expect(() =>
+      createPlanSemanticContext(options, {
+        planId: 'PLAN-LINEAGE-B',
+        repoId,
+        requirementId,
+        scopeKey: 'lineage-a',
+        sourceBasisRevision: 'source-b',
+        goal: 'Ambiguous sibling head',
+      }),
+    ).toThrow('PLAN_SEMANTIC_LINEAGE_ALREADY_EXISTS:lineage-a:PLAN-LINEAGE-A');
     expect(getPlanContract(options, 'PLAN-LINEAGE-A')).toBeDefined();
     expect(getPlanContract(options, 'PLAN-LINEAGE-B')).toBeUndefined();
   });
@@ -316,19 +421,25 @@ describe('Goal authority convergence', () => {
       goal: 'Historical ledger only',
       items: [],
     });
-    expect(listPlanContracts({ ...options, status: 'active', limit: 20 }).map((plan) => plan.planId)).toEqual(['PLAN-SUCCESSOR-B']);
+    expect(listPlanContracts({ ...options, status: 'active', limit: 20 }).map((plan) => plan.planId)).toEqual([
+      'PLAN-SUCCESSOR-B',
+    ]);
     expect(listPlanSemanticRevisionRecords(options, 'PLAN-SUCCESSOR-A')).toMatchObject([
       { revision: 1, goal: 'Historical predecessor' },
     ]);
 
-    expect(() => revisePlanSemanticContext(options, 'PLAN-SUCCESSOR-A', {
-      expectedRevision: 2,
-      supersededBy: '',
-    })).toThrow('PLAN_SUCCESSOR_REQUIRED');
-    expect(() => revisePlanSemanticContext(options, 'PLAN-SUCCESSOR-A', {
-      expectedRevision: 2,
-      supersededBy: 'PLAN-SUCCESSOR-A',
-    })).toThrow('PLAN_SUCCESSOR_SELF_REFERENCE');
+    expect(() =>
+      revisePlanSemanticContext(options, 'PLAN-SUCCESSOR-A', {
+        expectedRevision: 2,
+        supersededBy: '',
+      }),
+    ).toThrow('PLAN_SUCCESSOR_REQUIRED');
+    expect(() =>
+      revisePlanSemanticContext(options, 'PLAN-SUCCESSOR-A', {
+        expectedRevision: 2,
+        supersededBy: 'PLAN-SUCCESSOR-A',
+      }),
+    ).toThrow('PLAN_SUCCESSOR_SELF_REFERENCE');
 
     createPlanSemanticContext(options, {
       planId: 'PLAN-SUCCESSOR-C',
@@ -337,10 +448,12 @@ describe('Goal authority convergence', () => {
       sourceBasisRevision: 'source-c',
       goal: 'Different successor',
     });
-    expect(() => revisePlanSemanticContext(options, 'PLAN-SUCCESSOR-A', {
-      expectedRevision: 2,
-      supersededBy: 'PLAN-SUCCESSOR-C',
-    })).toThrow('PLAN_SUCCESSOR_IMMUTABLE');
+    expect(() =>
+      revisePlanSemanticContext(options, 'PLAN-SUCCESSOR-A', {
+        expectedRevision: 2,
+        supersededBy: 'PLAN-SUCCESSOR-C',
+      }),
+    ).toThrow('PLAN_SUCCESSOR_IMMUTABLE');
   });
 
   test('terminal Requirement rejects new Plan admission', () => {
@@ -349,20 +462,35 @@ describe('Goal authority convergence', () => {
     const requirementId = 'REQ-GOAL-TERMINAL';
     activateRequirement(controllerHome, requirementId);
     reviseRequirementSemantic({ controllerHome }, requirementId, {
-      expectedRevision: 1, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['review:terminal-plan-admission'],
+      expectedRevision: 1,
+      state: 'completed',
+      remainingWork: [],
+      acceptedEvidenceRefs: ['review:terminal-plan-admission'],
     });
-    expect(() => createPlanContract({ controllerHome, repoId }, {
-      planId: 'PLAN-AFTER-GOAL-COMPLETE',
-      repoId,
-      requirementId,
-      scopeKey: 'after-goal-complete',
-      sourceRevision: 'rev-a',
-      goal: 'Must never materialize after terminal Requirement.',
-      steps: [{
-        id: 'step-a', objective: 'Forbidden successor.', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [],
-        checks: ['package:check:type'], acceptanceCriteria: ['Must not be admitted.'],
-      }],
-    })).toThrow(/PLAN_REQUIREMENT_TERMINAL/);
+    expect(() =>
+      createPlanContract(
+        { controllerHome, repoId },
+        {
+          planId: 'PLAN-AFTER-GOAL-COMPLETE',
+          repoId,
+          requirementId,
+          scopeKey: 'after-goal-complete',
+          sourceRevision: 'rev-a',
+          goal: 'Must never materialize after terminal Requirement.',
+          steps: [
+            {
+              id: 'step-a',
+              objective: 'Forbidden successor.',
+              dependencies: [],
+              authoritativeFiles: [],
+              allowedPaths: [],
+              forbiddenPaths: [],
+              checks: ['package:check:type'],
+              acceptanceCriteria: ['Must not be admitted.'],
+            },
+          ],
+        },
+      ),
+    ).toThrow(/PLAN_REQUIREMENT_TERMINAL/);
   });
-
 });

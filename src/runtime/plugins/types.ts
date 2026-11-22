@@ -57,11 +57,11 @@ export interface AssistantPluginActionDescriptor {
   cancellable: boolean;
   idempotent: boolean;
   /**
-   * Successful remote-write actions normally append a durable Work receipt only.
-   * Set terminal only when this action itself is authoritative semantic completion
-   * for a bound remote_effect Work.
+   * Marks whether a successful remote-write action is intermediate provider work
+   * or authoritative remote-effect completion for Process/request reconciliation.
+   * Work attribution is retired; this flag never binds a Work identity.
    */
-  remoteEffectWorkCompletion?: 'intermediate' | 'terminal';
+  remoteEffectCompletion?: 'intermediate' | 'terminal';
   executionMode?: 'runtime' | 'lightweight_process' | 'direct_non_persistent';
   foregroundEffect?: AssistantPluginForegroundEffect;
   scopes: string[];
@@ -215,11 +215,18 @@ export interface AssistantPluginAdapter {
   repositorySurface?: boolean;
   /** Internal adapters remain exactly addressable by trusted composition but are omitted from normal user-facing plugin listings. */
   exposure?: AssistantPluginExposure;
-  buildManifest(previousRevision?: number, previousUpdatedAt?: string, repoRoot?: string, context?: AssistantPluginBuildContext): AssistantPluginManifest;
+  buildManifest(
+    previousRevision?: number,
+    previousUpdatedAt?: string,
+    repoRoot?: string,
+    context?: AssistantPluginBuildContext,
+  ): AssistantPluginManifest;
   /** Pure plugin-owned schema conversion/validation; the config store alone commits migrated bytes. */
   normalizeLegacyConfig?(raw: unknown): object;
   /** Resolve an exact stable resource identity for reusable authorization-class actions. */
-  resolveAuthorizationContext?(input: AssistantPluginActionExecutionInput): Promise<AssistantPluginAuthorizationContext | undefined>;
+  resolveAuthorizationContext?(
+    input: AssistantPluginActionExecutionInput,
+  ): Promise<AssistantPluginAuthorizationContext | undefined>;
   executeAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>>;
   /** Defaults to true. External providers can defer routine health refresh until the normal manifest cache expires. */
   shouldRefreshManifestAfterAction?(actionId: string): boolean;

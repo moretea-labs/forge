@@ -17,7 +17,7 @@ import {
   reviseRequirementSemantic,
   updateRequirement,
 } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api';
+import { implementationReviewChangedPathDigest } from '../helpers/historical-implementation-review';
 import { executionPlacement, scopeRef, semanticRecordMetadata } from '../../packages/kernel/identity/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { buildRequirementBoard } from '../../src/runtime/control-plane/facade/requirement-board';

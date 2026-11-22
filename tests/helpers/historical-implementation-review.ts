@@ -20,9 +20,9 @@ export interface WorkImplementationReviewEvidenceIdentity {
 }
 
 /**
- * Historical implementation-review evidence captured before the Thin cutover.
- * Records remain immutable/readable for audit, but never authorize or block
- * execution, Git delivery, checks, or semantic Work completion.
+ * Test-only historical implementation-review fixture from before the Thin
+ * cutover. Production no longer exports or reads these records; they never
+ * authorize or block execution, Git delivery, checks, or Issue acceptance.
  */
 export interface WorkImplementationReviewRecord {
   schemaVersion: 1;

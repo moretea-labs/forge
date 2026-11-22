@@ -1822,7 +1822,7 @@ describe('Resend first-party plugin', () => {
     const send = manifest.actions.find((candidate) => candidate.actionId === 'send_email');
     expect(send?.confirmation).toBe('strong_confirmation');
     expect(send?.requiredConfirmationText).toBe('send-resend-email');
-    expect(send?.remoteEffectWorkCompletion).toBe('terminal');
+    expect(send?.remoteEffectCompletion).toBe('terminal');
   });
 
   test('persists only non-secret defaults and derives SMTP readiness from domain verification', async () => {

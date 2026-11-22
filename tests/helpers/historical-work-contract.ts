@@ -28,7 +28,7 @@ import {
 } from './historical-work-domain';
 import type { ExecutionPlacement, ScopeRef } from '../../packages/kernel/identity/api/index';
 import type { WorkAccessMode } from '../../packages/kernel/work/domain/execution-snapshot';
-import type { WorkImplementationReviewRecord } from '../../packages/kernel/work/domain/implementation-review';
+import type { WorkImplementationReviewRecord } from './historical-implementation-review';
 import type { EngineeringContextReceipt } from '../../packages/kernel/work/domain/engineering-contracts';
 
 /** Test-only schema for archived Work bytes. NEVER export this from production. */

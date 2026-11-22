@@ -56,7 +56,7 @@ import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { addRepositoryCheckout, registerRepository } from '../../src/runtime/repositories/registry';
 import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
 import { waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
-import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
+import { implementationReviewChangedPathDigest } from '../helpers/historical-implementation-review';
 import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import {

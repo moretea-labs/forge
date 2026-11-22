@@ -52,7 +52,7 @@ import {
   repositoryLifecycleAttentionBlocksReadiness,
 } from '../../src/runtime/control-plane/execution/repository-lifecycle-audit';
 import { sampleRepositoryGitStatusForRepositories } from '../../src/runtime/projections/git-status-sampler';
-import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
+import { implementationReviewChangedPathDigest } from '../helpers/historical-implementation-review';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { runHandoffInboxApplication } from '../../src/runtime/control-plane/facade/handoff-inbox-application';
 import { PREFERRED_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '../../adapters/mcp/toolset-names';

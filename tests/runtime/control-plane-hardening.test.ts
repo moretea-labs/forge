@@ -25,7 +25,7 @@ import {
   assertRepositoryCommandInputAllowed,
 } from '../../src/runtime/repositories/command-scope';
 import type { RepositoryRecord } from '../../src/core/repository/types';
-import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
+import { implementationReviewChangedPathDigest } from '../helpers/historical-implementation-review';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { recordUserRequest } from '../../packages/kernel/identity/api/index';

@@ -14,15 +14,15 @@ Provider effect receipts, not DOM idle state, own Send outcomes. An outcome-unkn
 
 ## Retired surface and canonical migration map
 
-| Old path | Treatment |
-| --- | --- |
-| Supervisor Task/Effect/Turn/Completion/Review Watch and source root composition | Remove autonomous execution and mutation entrypoints; preserve historical persisted rows read-only until independently authorized retention |
-| Runtime unconditional Supervisor startup/stop/fail-core binding | Delete: Runtime starts Scheduler and Launch independently |
-| MCP Supervisor task, Supervisor status/proof gates, browser delivery adapter actions | Delete from public tool surface, contracts, checks and tests; no compatibility-only hidden execution path |
-| NativeMessaging Supervisor release host, Chrome provider-turn scripts and automatic receipt probing | Delete after launch callers migrate to ordinary Computer/session delivery; keep general Browser and Computer |
-| Controller progression and scheduled auto-continue/on-failure wake | Retire; persisted schedules using these actions become disabled with a recorded reason, not silently converted |
-| Launcher ChatGPT currently rejecting launch as Supervisor-owned | Route to existing authorized one-shot ChatGPT open/dispatch owner; do not make Work mandatory |
-| Scheduler/Kernel Schedule Store, general launcher, idempotent Process and authorization | Keep unchanged; no new stores or control loops |
+| Old path                                                                                            | Treatment                                                                                                                                   |
+| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Supervisor Task/Effect/Turn/Completion/Review Watch and source root composition                     | Remove autonomous execution and mutation entrypoints; preserve historical persisted rows read-only until independently authorized retention |
+| Runtime unconditional Supervisor startup/stop/fail-core binding                                     | Delete: Runtime starts Scheduler and Launch independently                                                                                   |
+| MCP Supervisor task, Supervisor status/proof gates, browser delivery adapter actions                | Delete from public tool surface, contracts, checks and tests; no compatibility-only hidden execution path                                   |
+| NativeMessaging Supervisor release host, Chrome provider-turn scripts and automatic receipt probing | Delete after launch callers migrate to ordinary Computer/session delivery; keep general Browser and Computer                                |
+| Controller progression and scheduled auto-continue/on-failure wake                                  | Retire; persisted schedules using these actions become disabled with a recorded reason, not silently converted                              |
+| Launcher ChatGPT currently rejecting launch as Supervisor-owned                                     | Route to existing authorized one-shot ChatGPT open/dispatch owner; do not make Work mandatory                                               |
+| Scheduler/Kernel Schedule Store, general launcher, idempotent Process and authorization             | Keep unchanged; no new stores or control loops                                                                                              |
 
 ## Safety and final acceptance
 
@@ -94,7 +94,7 @@ Repository commands use the selected registered checkout and Process Runtime wit
 
 The legacy MCP PRD/Sprint/Plan Markdown generators, dedicated PRD/Sprint listing tools, `summarize_forge_state` and `append_controller_plan_note` are retired. Model-authored semantic Requirement and Plan remain in Controller Home; Work is fully deleted. Intentional human-authored project documents use ordinary repository inspection and Direct Edit.
 
-Historical Work records are read-only compatibility and never current task authority. Historical Issue/Task/Local Job and compatibility projections must not become second mutable authorities. A STOPPED bootstrap draft may be replaced only from the canonical Supervisor ledger; this preserves already-recorded effect causality and does not restore Work or autonomous continuation as current authority.
+Work / WorkHandle / WorkContract have no remaining read or compatibility surface. Historical Issue/Task/Local Job and compatibility projections must not become second mutable authorities. A STOPPED bootstrap draft may be replaced only from the canonical Supervisor ledger; this preserves already-recorded effect causality and does not restore Work or autonomous continuation as current authority.
 
 The MCP Gateway does not maintain a second ExecutionJob creation authority: its uncalled `shouldCreateDurableJob` predicate and duplicate retired-creation flag have been removed. The canonical Gateway classification directly refuses retired durable submissions; `execute_command` remains under its existing Repository/Process authority. Historic ExecutionJob read, scheduler reconciliation, bounded legacy worker recovery, grants, and unknown-outcome fencing are unchanged. An empty current active index is observation, not permission to discard historical recovery. This is a source-boundary simplification, not evidence of faster end-to-end delivery.
 
@@ -267,13 +267,13 @@ Canonical authorization grants use the one Controller Home authority. An absent 
 
 Remote or non-idempotent effects are explicit boundaries. Mail MIME header fields reject control characters before encoding, and a provider idempotency key must preserve the identity of the complete request rather than silently truncate distinguishing suffixes. Ambiguous outcomes are reported as `outcome_unknown`; Forge must not silently replay a non-idempotent remote operation.
 The low-level repository command facade classifies these operations as `durable` but does not dispatch them: it returns `not_started` with `never_auto_retry`. A typed provider action or explicitly owned Durable Workflow must perform the effect and reconcile remote state before any retry after an ambiguous result.
-Effectful plugin/provider actions follow the same continuity rule. Before provider dispatch, Forge binds the stable `request_id` to one durable Process identity; the MCP/ChatGPT stream is only an observation channel. Read-only actions and explicitly `direct_non_persistent` actions may remain direct, but every other effectful plugin action executes through the managed Process sidecar. Interactive timeout, stream interruption, MCP session replacement, or Runtime rotation must reattach to the same Process/receipt and must never reacquire the provider resource for a duplicate dispatch. `apply_mode=async` requests zero interactive wait and returns the durable Process/result reference immediately. A terminal sidecar writes the authoritative plugin receipt, after which repeating the same `request_id` deterministically reads/binds that receipt without replay. Before reserving a new managed Process request ID, plugin action application reuses the canonical Work-binding validator from the plugin store: only a `remote_effect` Work may bind a remote-write receipt; an ordinary `investigation` Work calls the plugin without `work_id`. Invalid bindings fail before consuming the date-scoped idempotency key; existing receipts still follow their original reconciliation. This introduces no second authority or provider.
+Effectful plugin/provider actions follow the same continuity rule. Before provider dispatch, Forge binds the stable `request_id` to one durable Process identity; the MCP/ChatGPT stream is only an observation channel. Read-only actions and explicitly `direct_non_persistent` actions may remain direct, but every other effectful plugin action executes through the managed Process sidecar. Interactive timeout, stream interruption, MCP session replacement, or Runtime rotation must reattach to the same Process/receipt and must never reacquire the provider resource for a duplicate dispatch. `apply_mode=async` requests zero interactive wait and returns the durable Process/result reference immediately. A terminal sidecar writes the authoritative plugin receipt, after which repeating the same `request_id` deterministically reads/binds that receipt without replay. Before reserving a new managed Process request ID, plugin action application rejects Work attribution (`work_id`) and binds remote-write receipts only through the current Process/request identity. Invalid bindings fail before consuming the date-scoped idempotency key; existing receipts still follow their original reconciliation. This introduces no second authority or provider.
 
-## Requirement, Plan, and historical Work
+## Requirement, Plan, and retired Work
 
 Requirement is the canonical model-authored semantic outcome/progress aggregate. Plan is an optional revisioned planning aggregate and may reference source/Requirement provenance, but Plan approval, steps or staleness never authorize repository execution.
 
-Historical Work is compatibility evidence only. Its old objective, relations, semantic state, completion receipts and WorkHandle records remain queryable so migrations, audits and historical Issue links do not lose provenance. No current caller may use Work to create execution placement, serialize a repository writer, bind a provider/session, drive a Schedule, close a Requirement, or infer that source/release/user acceptance is complete.
+Work / WorkHandle / WorkContract are fully retired, including historical records. There is no queryable Work objective, relation, semantic state, completion receipt, or WorkHandle surface for migrations or audits. No caller may use Work to create execution placement, serialize a repository writer, bind a provider/session, drive a Schedule, close a Requirement, or infer that source/release/user acceptance is complete.
 
 ### Engineering workloop authority
 
@@ -358,12 +358,12 @@ Validation scheduling is derived from each check's concrete resource effects, no
 - Current schemas/handlers should live with their owning module. Legacy compatibility may delegate but must not independently own current business rules. Shared transport contracts and tool definitions belong in neutral contract/definition modules so the dependency direction remains transport -> application/domain authority rather than transport implementations importing one another.
 - MCP tool schemas may remain frozen for the lifetime of an already-open host conversation even when Runtime reconnects onto a newer release. A versioned frozen-session wire decoder may therefore translate only explicitly bounded historical carriers into the current semantic/controller API; it owns no lifecycle or persistence, may not restore retired verify/review/finalize/ControllerRound operations, and must preserve current CAS/authority checks. The pre-Thin `semantic.v1` and current-conversation enrollment carriers are such a migration decoder. Retire that decoder only after the minimum supported MCP client contract no longer advertises those carriers and release reconnect canaries prove no supported frozen-session consumer remains.
 - Verification is source/input-owned: Check/Process receipts bind exact source identity and command/check inputs. Reuse is allowed only when the current receipt identity exactly matches; otherwise a new Check Process is required. No Work attribution is needed to validate or reuse evidence.
-- Checkout recovery and cleanup are Git/Registry/resource operations. They use exact registered checkout identity, source-preservation proof, live Process/Lease state and Git SHA/CAS; historical WorkHandle records may be inspected only as legacy provenance and never restore placement authority.
+- Checkout recovery and cleanup are Git/Registry/resource operations. They use exact registered checkout identity, source-preservation proof, live Process/Lease state and Git SHA/CAS; WorkHandle records are deleted and cannot restore placement authority.
 - First-party external providers have one desired-contract reconciliation boundary: Controller plugin registry/manifest sync reconstructs the current Forge-owned permissions/capabilities/actions from source while preserving installed provider identity, transport target, lifecycle identity, provider/protocol version and enabled state. The canonical external-registration store remains the only fingerprint/revision persistence authority; manifest reads/execution never create a second registration authority or silently mutate durable state.
 - User plugin installation, enablement, connection configuration and reusable authorization are ForgeInstance/Controller-global facts. Repository identity may scope resource claims or appear as a typed action argument, but it cannot select a second Gmail/Google/Resend/Browser/App Store Connect manifest, config writer, or Grant domain. One-way migration admits only an unambiguous legacy value; conflicting Browser/App Store Connect identities remain preserved and require explicit resolution.
 - Product bootstrap has one instance-level desired/observed lifecycle authority behind the Bootstrap Control API. CLI setup, Local Bridge readiness, packaged Runtime install/upgrade/repair projection, and doctor observation consume that same authority rather than persisting parallel setup state. Browser/tunnel/provider implementations remain adapters beneath this API.
 - WSL ChatGPT browser bootstrap may create only a dedicated Forge-controlled Chromium profile when the runtime explicitly supports unpacked-extension startup. Ordinary user Chrome profiles are observational/existing-capability surfaces only; unsupported automatic extension loading must fail closed with a resumable user action.
-- Workspace and Project are portable semantic identities, not aliases for Repository or checkout placement. Cross-node sync may transfer only bounded revisioned semantic projections for Workspace/Project/Requirement/Plan plus explicitly supported historical Work compatibility records; destination nodes persist imported facts as semantic replicas and never acquire source-node SQLite state, leases, controller/browser sessions, check receipts, raw logs, secrets, or execution placement. Import uses optimistic revision checks and fails atomically on local semantic-authority conflict.
+- Workspace and Project are portable semantic identities, not aliases for Repository or checkout placement. Cross-node sync may transfer only bounded revisioned semantic projections for Workspace/Project/Requirement/Plan; Work records are not syncable compatibility payloads. Destination nodes persist imported facts as semantic replicas and never acquire source-node SQLite state, leases, controller/browser sessions, check receipts, raw logs, secrets, or execution placement. Import uses optimistic revision checks and fails atomically on local semantic-authority conflict.
 - The structured Context Plane is advisory runtime state, not Kernel authority. Typed preference/policy/procedure/capability-intent/credential-reference records are scoped, provenance-bearing and budgeted; resolver output may influence deterministic provider preference only where the current request did not specify one. AGENTS.md remains the stable repository constitution, dynamic context is rendered on demand, raw credential material is forbidden, and loss/corruption of Context records must degrade to default routing without mutating Requirement/Plan/authorization authority.
 - Host/platform discovery is an adapter concern, never product identity. User/profile roots, executable locations, browser products, drive mounts, service-manager availability, and Recovery deployment locations are discovered or explicitly bound; static known paths are bounded fallbacks only and may not encode a developer username, one WSL mount root, or one browser installation as semantic authority.
 - Runtime and Connector persistence consume a typed platform `ServiceManagerHost`. `launchd`, `systemd-user`, and portable-session mechanics live behind that host boundary; Runtime composition does not import OS service implementations to decide product semantics.
@@ -484,6 +484,7 @@ Issue #313 and the former Workflow Supervisor/browser-delivery implementation ar
 Current source supports only the task-bound `launcher_start` lifecycle above. It must not restore Work-bound Supervisor enrollment, ControllerRound progression, provider-delivery retry loops, or Work-owned conversation lifecycle. Every Prompt is explicit input to one bounded call; scheduling may invoke that same action but cannot infer DONE or manufacture another task. Computer/Browser exact-target and unknown-outcome receipts remain the sole provider mutation safety boundary.
 
 ## Module Boundaries and Language Evolution
+
 This policy applies to **all Forge source development**. `AGENTS.md` is the entry point. `docs/architecture/CURRENT.md` records active authorities and `docs/reference-configs/runtime-architecture-guardrails.md` defines existing correctness and release constraints. Reconcile any disagreement within the same reviewed delivery; never introduce a second authority.
 
 ## Engineering quality standard
@@ -542,18 +543,18 @@ Follow the active architecture and its mechanical module-boundary rules in this 
 
 These are **review triggers**, not mechanical quality scores or automatic instructions to split code:
 
-| Signal | Trigger | Required response |
-| --- | ---: | --- |
-| New or materially changed source file | around 800 non-generated lines | Soft prompt to review cohesion and ownership; no split is implied. |
-| Existing source file | around 1,600 non-generated lines | Review only when the change adds another responsibility or materially harms navigation/readability; no blanket extraction plan is required. |
-| Function/method | around 80 executable lines | Consider whether multiple operations, state transitions, or branches make it hard to follow. |
-| Function/method | around 120 executable lines | Stronger review prompt; extract only when a meaningful, independently understandable responsibility exists. A cohesive algorithm may remain intact. |
-| Cyclomatic complexity | around 15 | Review whether branches are understandable and adequately testable. |
-| Cyclomatic complexity | around 20 | Consider simplification when it improves comprehension or testing; a naturally complex domain algorithm may remain cohesive. |
-| Cognitive complexity | around 15 | Additional static signal from the linter; it is not interchangeable with cyclomatic complexity. |
-| Nesting | more than 4 control-flow levels | Consider guard clauses, named predicates, or restructuring when they make the flow clearer. |
-| Repeated business rule | more than one owner | Consolidate around one canonical owner; exact-file hash checks are insufficient. |
-| Dependency fan-out/fan-in | materially above neighboring modules | Review whether the module has become a central coordinator or lacks a contract boundary. |
+| Signal                                |                              Trigger | Required response                                                                                                                                   |
+| ------------------------------------- | -----------------------------------: | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| New or materially changed source file |       around 800 non-generated lines | Soft prompt to review cohesion and ownership; no split is implied.                                                                                  |
+| Existing source file                  |     around 1,600 non-generated lines | Review only when the change adds another responsibility or materially harms navigation/readability; no blanket extraction plan is required.         |
+| Function/method                       |           around 80 executable lines | Consider whether multiple operations, state transitions, or branches make it hard to follow.                                                        |
+| Function/method                       |          around 120 executable lines | Stronger review prompt; extract only when a meaningful, independently understandable responsibility exists. A cohesive algorithm may remain intact. |
+| Cyclomatic complexity                 |                            around 15 | Review whether branches are understandable and adequately testable.                                                                                 |
+| Cyclomatic complexity                 |                            around 20 | Consider simplification when it improves comprehension or testing; a naturally complex domain algorithm may remain cohesive.                        |
+| Cognitive complexity                  |                            around 15 | Additional static signal from the linter; it is not interchangeable with cyclomatic complexity.                                                     |
+| Nesting                               |      more than 4 control-flow levels | Consider guard clauses, named predicates, or restructuring when they make the flow clearer.                                                         |
+| Repeated business rule                |                  more than one owner | Consolidate around one canonical owner; exact-file hash checks are insufficient.                                                                    |
+| Dependency fan-out/fan-in             | materially above neighboring modules | Review whether the module has become a central coordinator or lacks a contract boundary.                                                            |
 
 These values are deliberately relaxed **review prompts**, not maximum sizes, quality scores, automatic refactoring requirements, CI failure conditions, or reasons to reject a change. Crossing a numeric trigger alone does not require a written exception or code change. If a file/function remains cohesive, understandable, testable, and safe to modify, keep it as-is. Refactor when there is an evidenced problem such as mixed responsibilities, confusing control flow, duplicated business rules, difficult testing, or excessive coupling—not merely to reduce a number. Do not create tiny functions, fragmented files, or speculative abstractions to satisfy a threshold.
 
@@ -671,20 +672,20 @@ Review this standard against real development outcomes. Change it when evidence 
 
 **The model owns semantic decisions. Thin Forge owns capabilities, durable facts and mechanical correctness.** Preserve one repository, one Runtime release and a modular monolith. Standalone Recovery is an independent failure domain, not another Kernel. Signed OS-native services may be separate processes to preserve platform permission identity; they do not own Requirement or Plan facts.
 
-| Responsibility | Canonical source area | Ownership |
-| --- | --- | --- |
-| Requirement / Plan | existing semantic stores and facades | stable semantic outcome/progress and optional planning context |
-| Historical Work | `packages/kernel/work` read API | compatibility/audit queries only; no current lifecycle writer |
-| Repository source/edit | Git, Checkout Registry, EditSession | source, placement, bounded patch transaction and CAS fences |
-| Process / Check | Process Runtime and Check evidence | command execution identity, attachment and exact-input validation receipts |
-| Scheduling | `packages/kernel/scheduler` | trigger, occurrence and one bounded action; not model workflow decisions |
-| Identity/grants | `packages/kernel/identity` | principal, permission and user requests |
-| Knowledge | `packages/kernel/cognition`, `packages/kernel/memory` | scoped advisory evidence and knowledge facts |
-| External effects | provider/plugin effect/request owners | exact request identity and applied/not-applied/outcome-unknown reconciliation |
-| Wire contracts | `packages/protocols` | neutral typed contract only |
-| External interfaces | `adapters/**`, migrated `src/cli/**` | translate MCP/CLI/provider calls; no duplicate durable writer |
-| Runtime composition/GUI | runtime composition root, `apps/**` | wire implementations and render state, not business transitions |
-| Recovery | standalone Recovery authority | restore the canonical release, not parallel semantic state |
+| Responsibility          | Canonical source area                                 | Ownership                                                                     |
+| ----------------------- | ----------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Requirement / Plan      | existing semantic stores and facades                  | stable semantic outcome/progress and optional planning context                |
+| Historical Work         | `packages/kernel/work` read API                       | compatibility/audit queries only; no current lifecycle writer                 |
+| Repository source/edit  | Git, Checkout Registry, EditSession                   | source, placement, bounded patch transaction and CAS fences                   |
+| Process / Check         | Process Runtime and Check evidence                    | command execution identity, attachment and exact-input validation receipts    |
+| Scheduling              | `packages/kernel/scheduler`                           | trigger, occurrence and one bounded action; not model workflow decisions      |
+| Identity/grants         | `packages/kernel/identity`                            | principal, permission and user requests                                       |
+| Knowledge               | `packages/kernel/cognition`, `packages/kernel/memory` | scoped advisory evidence and knowledge facts                                  |
+| External effects        | provider/plugin effect/request owners                 | exact request identity and applied/not-applied/outcome-unknown reconciliation |
+| Wire contracts          | `packages/protocols`                                  | neutral typed contract only                                                   |
+| External interfaces     | `adapters/**`, migrated `src/cli/**`                  | translate MCP/CLI/provider calls; no duplicate durable writer                 |
+| Runtime composition/GUI | runtime composition root, `apps/**`                   | wire implementations and render state, not business transitions               |
+| Recovery                | standalone Recovery authority                         | restore the canonical release, not parallel semantic state                    |
 
 Domain ownership is semantic, not just folder names. New cross-domain imports must use the target `packages/kernel/<domain>/api/index`; never reach into another domain's `domain/`, `application/`, `infrastructure/` or `ports/`. Kernel must not import concrete adapters, apps, Supervisor implementations or protocol transport writers. Only composition roots select implementations.
 
@@ -716,7 +717,7 @@ The initial file/function/branch/nesting review triggers are defined in the Engi
 
 ### Workflow capability dependency authority (2026-10-21)
 
-The executable Workflow step graph is the sole source for capability and reconciliation dependencies. `workflowCapabilityDependencies()` in `packages/workflow-runtime/domain/workflow-asset.ts` derives a stable, deduplicated inventory from capability steps and their `reconcileWithCapabilityId`, and first-party installation binds those capabilities rather than a second authored list. Older `requiredCapabilities` fields remain in versioned content only for existing digest identity; they are not permission or provider-binding authority. This migration deliberately leaves installed asset bytes, existing content digests, historical Work compatibility records and effect receipts unchanged. Changes to an asset's executable steps still require the existing content-digest/registry identity invalidation. Do not reintroduce a manually maintained executable-capability inventory in future Workflow integrations.
+The executable Workflow step graph is the sole source for capability and reconciliation dependencies. `workflowCapabilityDependencies()` in `packages/workflow-runtime/domain/workflow-asset.ts` derives a stable, deduplicated inventory from capability steps and their `reconcileWithCapabilityId`, and first-party installation binds those capabilities rather than a second authored list. Older `requiredCapabilities` fields remain in versioned content only for existing digest identity; they are not permission or provider-binding authority. This migration deliberately leaves installed asset bytes, existing content digests and effect receipts unchanged; Work compatibility records are not retained. Changes to an asset's executable steps still require the existing content-digest/registry identity invalidation. Do not reintroduce a manually maintained executable-capability inventory in future Workflow integrations.
 
 ## Historical autonomous-continuation regression evidence
 
@@ -726,7 +727,7 @@ Tests for retained historical readers may assert that old records remain inspect
 
 ## Acceptance-test-driven development (ATDD)
 
-1. Before editing, state observable user goal, prior *actual* success receipt, current failing counterexample, exact source/Release/loaded worker, original effect/task owner, affected paths, side-effect budget and rollback identity. Document behavior that must not change.
+1. Before editing, state observable user goal, prior _actual_ success receipt, current failing counterexample, exact source/Release/loaded worker, original effect/task owner, affected paths, side-effect budget and rollback identity. Document behavior that must not change.
 2. Reproduce RED. Prefer focused deterministic fault injection for native timeout with no onDisconnect, stale response, simultaneous RPC, postMessage throw, extension reload/source-path mismatch, wrong-tab owner, foreign draft, stream interruption, and unknown Send. Label mocks separately from real results. Do not make a second real external Send to generate RED.
 3. Minimal GREEN: verify targeted and pre-existing adjacent tests, especially safety (no wrong-tab or repeated Send) **and** liveness (legitimate pending effects eventually recover); review exact complete diff.
 4. Fixed candidate: verify CI, ownership, test manifest and relevant gates; avoid broad refactoring during a narrow repair.

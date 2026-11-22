@@ -969,7 +969,6 @@ const required = [
   'src/runtime/execution/thin-harness/execution-router.ts',
   'src/runtime/control-plane/facade/requirement-authority.ts',
   'packages/protocols/handoff/status.ts',
-  'packages/kernel/work/domain/implementation-review.ts',
   'packages/kernel/identity/domain/scope.ts',
   'packages/kernel/memory/domain/operational-prior.ts',
   'packages/kernel/memory/api/index.ts',
@@ -1204,9 +1203,9 @@ requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts
 requireMissing('src/runtime/control-plane/execution/work-revision-diff.ts');
 requireMissing('src/runtime/control-plane/execution/work-lifecycle-audit.ts');
 forbid(
-  'packages/kernel/work/domain/implementation-review.ts',
+  'tests/helpers/historical-implementation-review.ts',
   /assertImplementationReviewHistoryAppendOnly|MAX_IMPLEMENTATION_REVIEW_HISTORY/,
-  'historical Work review data must not retain lifecycle append-only mutation constraints',
+  'historical Work review fixtures must not retain lifecycle append-only mutation constraints',
 );
 forbid(
   'src/runtime/control-plane/facade/repository-tool-dispatch.ts',
@@ -1520,7 +1519,18 @@ requireMissing('adapters/controller-process/controller-host.ts');
 requireMissing('adapters/controller-process/binding-store.ts');
 requireText(
   'docs/architecture/CURRENT.md',
-  'Historical Work records are read-only compatibility and never current task authority.',
+  'Work / WorkHandle / WorkContract are fully retired, including historical records and read-only compatibility.',
+);
+forbid(
+  'docs/architecture/CURRENT.md',
+  /Historical Work records are read-only compatibility|Historical Work is compatibility evidence only|remain queryable so migrations/,
+  'architecture authority must not advertise deleted historical Work readers',
+);
+requireMissing('packages/kernel/work/domain/implementation-review.ts');
+forbid(
+  'packages/kernel/work/api/index.ts',
+  /implementation-review/,
+  'production Work kernel API must not export historical implementation-review types',
 );
 requireText(
   'src/runtime/workflow/schedules/engine.ts',
