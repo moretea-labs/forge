@@ -264,17 +264,6 @@ private struct ForgeWorkspaceView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .toolbar {
-            ToolbarItem(placement:.navigation) {
-                Button {
-                    withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
-                        visibility = visibility == .detailOnly ? .all : .detailOnly
-                    }
-                } label: {
-                    Image(systemName:"sidebar.left")
-                }
-                .help(visibility == .detailOnly ? "显示导航侧栏" : "隐藏导航侧栏")
-                .accessibilityIdentifier("forge.toolbar.sidebar")
-            }
             ToolbarItem(placement:.principal) {
                 HStack(spacing:5) {
                     Text(model.semanticProject?.displayName ?? "Forge")
@@ -294,15 +283,6 @@ private struct ForgeWorkspaceView: View {
                 .lineLimit(1)
                 .help("产品项目与代码工作区")
                 .accessibilityIdentifier("forge.toolbar.context")
-            }
-            ToolbarItem(placement:.automatic) {
-                Button {
-                    model.toggleConversationSearch()
-                } label: {
-                    Image(systemName:"magnifyingglass")
-                }
-                .help("搜索会话（⌘K）")
-                .accessibilityIdentifier("forge.toolbar.search")
             }
         }
         .task {
@@ -1664,8 +1644,8 @@ private enum AgentSemanticContextInspector: String, Identifiable {
 private enum AgentWorkSurface: String, CaseIterable, Identifiable {
     case changes, files
     var id: String { rawValue }
-    var title: String { self == .changes ? "改动" : "文件" }
-    var symbol: String { self == .changes ? "doc.text.magnifyingglass" : "folder" }
+    var title: String { self == .changes ? "改动" : "附件" }
+    var symbol: String { self == .changes ? "doc.text.magnifyingglass" : "paperclip" }
 }
 
 private struct AgentScrollMetrics: Equatable {
@@ -1721,13 +1701,19 @@ private struct AgentPane: View {
         }
     }
 
+    private var composerInputHeight: CGFloat {
+        let lines = model.draft.split(separator:"\n",omittingEmptySubsequences:false).count
+        let wrapped = max(lines, (model.draft.count + 69) / 70)
+        return min(112,max(38,CGFloat(wrapped) * 19 + 19))
+    }
+
     private func agentContent(availableWidth:CGFloat) -> some View {
         VStack(spacing:0) {
             HSplitView {
                 ZStack {
                     // Keep the composer and transcript mounted during review.
                     VStack(spacing:0) {
-                        agentWorkspaceBar
+                        agentWorkspaceBar(compact:workSurfaceVisible && availableWidth >= 960 && !workSurfaceMaximized)
                         ScrollViewReader { reader in
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:20) {
@@ -2204,7 +2190,7 @@ private struct AgentPane: View {
                         Text("输入消息或描述目标…")
                             .font(.system(size:13))
                             .foregroundStyle(.tertiary)
-                            .padding(.leading,16).padding(.top,18)
+                            .padding(.leading,16).padding(.top,14)
                             .allowsHitTesting(false)
                     }
                     TextEditor(text:$model.draft)
@@ -2212,8 +2198,8 @@ private struct AgentPane: View {
                         .font(.system(size:13))
                         .foregroundStyle(ForgePalette.ink)
                         .scrollContentBackground(.hidden)
-                        .frame(minHeight:46,maxHeight:116)
-                        .padding(.horizontal,10).padding(.top,7)
+                        .frame(height:composerInputHeight)
+                        .padding(.horizontal,10).padding(.top,5)
                         .disabled(voiceDictation.isRecording || voiceDictation.isStarting || model.zenRefinementActive)
                         .accessibilityLabel("Agent 消息")
                         .accessibilityHint("输入任务描述，按 Command Return 发送")
@@ -2390,7 +2376,7 @@ private struct AgentPane: View {
                             : "按 Command Return 发送")
                         .accessibilityIdentifier("agent.send")
                     }
-                }.padding(.horizontal,13).padding(.bottom,11)
+                }.padding(.horizontal,13).padding(.bottom,8)
                 if !model.busy,!model.zenRefinementActive,let reason = model.agentSendBlockReason {
                     HStack(alignment:.firstTextBaseline,spacing:6) {
                         Image(systemName:"info.circle")
@@ -2435,7 +2421,7 @@ private struct AgentPane: View {
                 isComposerDropTarget = targeted && !model.busy && !model.zenRefinementActive
             }
                     .frame(maxWidth:980)
-                    .padding(.horizontal,24).padding(.bottom,16)
+                    .padding(.horizontal,16).padding(.bottom,12)
                     .frame(maxWidth:.infinity)
                 }
                 // Compact and maximized work surfaces replace the *presentation*,
@@ -2637,13 +2623,13 @@ private struct AgentPane: View {
         return "\(semanticName) · \(repositoryName) / \(branchName)"
     }
 
-    private var agentWorkspaceBar: some View {
+    private func agentWorkspaceBar(compact: Bool) -> some View {
         HStack(spacing:10) {
             if model.canNavigateBack {
                 Button { model.goBack() } label: {
                     Image(systemName:"chevron.left")
-                        .font(.system(size:10.5,weight:.semibold))
-                        .frame(width:27,height:27)
+                        .font(.system(size:11,weight:.medium))
+                        .frame(width:24,height:28)
                 }
                 .buttonStyle(.plain)
                 .disabled(model.busy)
@@ -2651,48 +2637,33 @@ private struct AgentPane: View {
                 .accessibilityLabel("返回 \(model.navigationBackLabel ?? "上一页")")
                 .accessibilityIdentifier("agent.navigation.back")
             }
-
-            VStack(alignment:.leading,spacing:3) {
-                Text(model.thread?.title ?? "新会话")
-                    .font(.system(size:13,weight:.semibold))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .accessibilityAddTraits(.isHeader)
-                Text(agentScopeLabel)
-                    .font(.system(size:10.5))
-                    .foregroundStyle(ForgePalette.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(agentScopeLabel)
-                    .accessibilityIdentifier("agent.workspace-scope")
-            }
-            .frame(maxWidth:.infinity,alignment:.leading)
-
-            Spacer(minLength:6)
-
-            ViewThatFits(in:.horizontal) {
-                HStack(spacing:13) {
-                    workspaceChangesControl
-                    workspaceFilesControl
-                    planningContextControl()
-                    additionalAgentTools
-                }
-                HStack(spacing:10) {
+            Text(model.thread?.title ?? "新会话")
+                .font(.system(size:13,weight:.semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth:.infinity,alignment:.leading)
+                .help(agentScopeLabel)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("agent.workspace-scope")
+            if !compact {
+                HStack(spacing:12) {
                     workspaceChangesControl
                     workspaceFilesControl
                     additionalAgentTools
                 }
+                .fixedSize(horizontal:true,vertical:false)
             }
-
             Button { Task { await model.refresh() } } label: {
-                HStack(spacing:6) {
-                    Circle()
-                        .fill(agentWorkspaceStatusColor)
-                        .frame(width:6,height:6)
-                    Text(model.agentWorkspaceStatusLabel)
-                        .font(.system(size:10.5,weight:.medium))
-                        .foregroundStyle(ForgePalette.secondary)
+                HStack(spacing:5) {
+                    Circle().fill(agentWorkspaceStatusColor).frame(width:6,height:6)
+                    if !compact {
+                        Text(model.agentWorkspaceStatusLabel)
+                            .font(.system(size:10.5,weight:.medium))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .lineLimit(1)
+                    }
                 }
+                .frame(minWidth:18,minHeight:28)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -2701,10 +2672,8 @@ private struct AgentPane: View {
             .accessibilityValue(model.agentWorkspaceStatusLabel)
             .accessibilityIdentifier("agent.workspace-refresh")
         }
-        .frame(maxWidth:1320)
-        .padding(.horizontal,28)
-        .frame(maxWidth:.infinity)
-        .frame(height:54)
+        .padding(.horizontal,compact ? 14 : 22)
+        .frame(height:44)
         .background(ForgePalette.canvas)
         .accessibilityElement(children:.contain)
         .accessibilityIdentifier("agent.workspace-context")
@@ -2771,7 +2740,7 @@ private struct AgentPane: View {
                 openWorkSurface(.files)
             }
         } label: {
-            Label("文件",systemImage:"folder")
+            Label("附件",systemImage:"paperclip")
                 .font(.system(size:11,weight:.medium))
                 .foregroundStyle(workSurfaceVisible && selectedWorkSurface == .files
                                  ? ForgePalette.ink : ForgePalette.secondary)
@@ -2845,11 +2814,6 @@ private struct AgentPane: View {
                 ForEach(AgentWorkSurface.allCases) { surface in
                     workSurfaceTabButton(surface)
                 }
-                Text("浏览器")
-                    .font(.system(size:11))
-                    .foregroundStyle(.tertiary)
-                    .help("浏览器面板尚未接入")
-                    .accessibilityLabel("浏览器，尚未接入")
                 Spacer(minLength:6)
                 Button {
                     withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
@@ -3602,18 +3566,32 @@ private struct AgentChangesPane: View {
                         }
                         .accessibilityIdentifier("changes.review-split")
                     } else {
-                        // Narrow windows preserve the same action and file scope
-                        // without squeezing the diff into a fixed side inspector.
-                        ScrollView {
-                            VStack(alignment:.leading,spacing:14) {
-                                changeScopeHeader(changes)
-                                if !changes.untrackedFiles.isEmpty {
-                                    untrackedChangesNotice(changes.untrackedFiles)
-                                }
-                                changeFileNavigator(changes)
-                                changeReviewContent(reviewed)
+                        // Keep the diff visible at all times on a 400–700pt
+                        // right work surface; a file menu replaces stacked file rows.
+                        VStack(alignment:.leading,spacing:0) {
+                            HStack(spacing:8) {
+                                compactChangeFileMenu(changes)
+                                Spacer(minLength:8)
+                                Text("\(changes.nameOnly.count) 个文件")
+                                    .font(.system(size:10.5))
+                                    .foregroundStyle(ForgePalette.secondary)
+                                    .monospacedDigit()
                             }
-                            .padding(.horizontal,14).padding(.bottom,14)
+                            .padding(.horizontal,14)
+                            .frame(height:36)
+                            .accessibilityIdentifier("changes.compact-file-toolbar")
+
+                            ScrollView {
+                                VStack(alignment:.leading,spacing:12) {
+                                    changeReviewContent(reviewed)
+                                    if !changes.untrackedFiles.isEmpty {
+                                        untrackedChangesNotice(changes.untrackedFiles)
+                                    }
+                                }
+                                .padding(.horizontal,12).padding(.vertical,8)
+                            }
+                            .frame(maxWidth:.infinity,maxHeight:.infinity)
+                            .accessibilityIdentifier("changes.patch-reader")
                         }
                         .accessibilityIdentifier("changes.review-compact")
                     }
@@ -3664,11 +3642,75 @@ private struct AgentChangesPane: View {
         .accessibilityLabel("改动审查")
     }
 
+    private func selectReviewPath(_ path: String?) {
+        guard !focusedLoading else { return }
+        if let path {
+            focusedPath = path
+            focusedChanges = nil
+            focusedLoading = true
+            Task {
+                let snapshot = await model.reviewAgentChanges(paths:[path],staged:reviewStaged)
+                focusedLoading = false
+                if let snapshot {
+                    focusedChanges = snapshot
+                } else {
+                    focusedPath = nil
+                }
+            }
+        } else {
+            focusedPath = nil
+            focusedChanges = nil
+        }
+    }
+
+    private func compactChangeFileMenu(_ changes:AgentGitDiff) -> some View {
+        Menu {
+            Button {
+                selectReviewPath(nil)
+            } label: {
+                if focusedPath == nil {
+                    Label("全部改动",systemImage:"checkmark")
+                } else {
+                    Text("全部改动")
+                }
+            }
+            Divider()
+            ForEach(changes.nameOnly,id:\.self) { path in
+                Button {
+                    selectReviewPath(path)
+                } label: {
+                    if focusedPath == path {
+                        Label(fileName(path),systemImage:"checkmark")
+                    } else {
+                        Text(fileName(path))
+                    }
+                }
+                .help(path)
+            }
+        } label: {
+            HStack(spacing:5) {
+                Image(systemName:"doc.text")
+                Text(focusedPath.map(fileName) ?? "全部改动")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Image(systemName:"chevron.down")
+                    .font(.system(size:9,weight:.medium))
+            }
+            .font(.system(size:11,weight:.medium))
+            .foregroundStyle(ForgePalette.ink)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .frame(maxWidth:230,alignment:.leading)
+        .disabled(focusedLoading)
+        .accessibilityLabel("选择审查文件")
+        .accessibilityIdentifier("changes.file-selector")
+    }
+
     private func changeFileNavigator(_ changes:AgentGitDiff) -> some View {
         VStack(alignment:.leading,spacing:6) {
             Button {
-                focusedPath = nil
-                focusedChanges = nil
+                selectReviewPath(nil)
             } label: {
                 HStack(spacing:7) {
                     Image(systemName:"rectangle.stack")
@@ -3682,26 +3724,15 @@ private struct AgentChangesPane: View {
                 }
                 .padding(.horizontal,9)
                 .frame(height:29)
-                .background(focusedPath == nil ? ForgePalette.selectionStrong : ForgePalette.softFill,
-                            in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                .background(focusedPath == nil ? ForgePalette.selectionStrong : Color.clear,
+                             in:RoundedRectangle(cornerRadius:6,style:.continuous))
             }
             .buttonStyle(.plain)
             .disabled(focusedLoading)
 
             ForEach(changes.nameOnly,id:\.self) { path in
                 Button {
-                    focusedPath = path
-                    focusedChanges = nil
-                    focusedLoading = true
-                    Task {
-                        let snapshot = await model.reviewAgentChanges(paths:[path],staged:reviewStaged)
-                        focusedLoading = false
-                        if let snapshot {
-                            focusedChanges = snapshot
-                        } else {
-                            focusedPath = nil
-                        }
-                    }
+                    selectReviewPath(path)
                 } label: {
                     HStack(spacing:8) {
                         Image(systemName:"doc")
@@ -3724,8 +3755,8 @@ private struct AgentChangesPane: View {
                     }
                     .padding(.horizontal,9)
                     .frame(height:29)
-                    .background(focusedPath == path ? ForgePalette.selectionStrong : ForgePalette.softFill,
-                                in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                    .background(focusedPath == path ? ForgePalette.selectionStrong : Color.clear,
+                             in:RoundedRectangle(cornerRadius:6,style:.continuous))
                 }
                 .buttonStyle(.plain)
                 .disabled(focusedLoading)
@@ -3912,8 +3943,7 @@ private struct AgentChangesPane: View {
                     .foregroundStyle(changes.staged ? ForgePalette.accent : ForgePalette.secondary)
                     .padding(.horizontal,7)
                     .frame(height:20)
-                    .background(changes.staged ? ForgePalette.selectionStrong : ForgePalette.softFill,
-                                in:Capsule())
+
             }
             HStack {
                 Text("\(changes.nameOnly.count) 个文件")
@@ -3922,9 +3952,8 @@ private struct AgentChangesPane: View {
                 Spacer(minLength:0)
             }
         }
-        .padding(10)
-        .background(ForgePalette.raisedSurface,
-                    in:RoundedRectangle(cornerRadius:11,style:.continuous))
+        .padding(.horizontal,2)
+        .padding(.vertical,4)
     }
 
     private func fileName(_ path: String) -> String {
