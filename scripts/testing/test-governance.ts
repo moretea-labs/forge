@@ -461,8 +461,8 @@ function isSelectedForGate(
       if (meaningfulChangedPaths.length === 0) return Boolean(entry.smoke);
       return Boolean(
         (direct.has(file) && !INFRASTRUCTURE_RESOURCES.has(entry.resource) && entry.resource !== 'destructive') ||
-        entry.smoke ||
-        (changedModules.has(entry.module) && entry.resource === 'pure'),
+          entry.smoke ||
+          (changedModules.has(entry.module) && entry.resource === 'pure'),
       );
     case 'integration':
       return (
@@ -476,6 +476,20 @@ function isSelectedForGate(
     default:
       return entry.resource !== 'destructive';
   }
+}
+
+function testSelectionReason(
+  gate: TestGate,
+  hasExplicitFiles: boolean,
+  noChanges: boolean,
+  changedModules: Set<TestModule>,
+): string {
+  if (hasExplicitFiles) return 'explicit test files';
+  if (gate === 'full') return 'full non-destructive suite';
+  if (gate === 'infrastructure') return 'infrastructure suite';
+  if (gate === 'fault') return 'fault-injection suite';
+  if (noChanges) return 'no changes detected; core smoke only';
+  return `changed paths mapped to ${[...changedModules].sort().join(', ')}`;
 }
 
 export function selectTests(
@@ -500,7 +514,9 @@ export function selectTests(
     explicitTestFiles.length > 0
       ? explicitTestFiles.filter((file) => Boolean(manifest.tests[file]))
       : Object.entries(manifest.tests)
-          .filter(([file, entry]) => isSelectedForGate(gate, file, entry, meaningfulChangedPaths, changedModules, direct))
+          .filter(([file, entry]) =>
+            isSelectedForGate(gate, file, entry, meaningfulChangedPaths, changedModules, direct),
+          )
           .map(([file]) => file);
   selected.sort();
   const noChanges = meaningfulChangedPaths.length === 0;
@@ -509,18 +525,7 @@ export function selectTests(
     changedPaths: meaningfulChangedPaths,
     modules: [...changedModules].sort(),
     files: selected,
-    reason:
-      explicitTestFiles.length > 0
-        ? 'explicit test files'
-        : gate === 'full'
-          ? 'full non-destructive suite'
-          : gate === 'infrastructure'
-            ? 'infrastructure suite'
-            : gate === 'fault'
-              ? 'fault-injection suite'
-              : noChanges
-                ? 'no changes detected; core smoke only'
-                : `changed paths mapped to ${[...changedModules].sort().join(', ')}`,
+    reason: testSelectionReason(gate, explicitTestFiles.length > 0, noChanges, changedModules),
   };
 }
 
