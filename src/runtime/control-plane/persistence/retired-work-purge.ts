@@ -96,6 +96,18 @@ function scrubbedJournal(payload: string): {
   return { value: { ...(original as Record<string, unknown>), schemaVersion: 1, entries }, removed };
 }
 
+/** Delete legacy Work/ControllerRound columns from mixed cognition tables only while offline. */
+function dropRetiredCognitionColumns(db: SqliteDatabase): void {
+  for (const table of ['cognition_memory_units', 'cognition_memory_edges'] as const) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    for (const column of ['source_work_id', 'source_round_id'] as const) {
+      if (columns.some((entry) => entry.name === column)) {
+        db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+      }
+    }
+  }
+}
+
 function journalWorkReferences(db: SqliteDatabase, apply: boolean): number {
   const rows = db
     .prepare('SELECT scope, record_key, revision, payload FROM control_plane_records WHERE namespace = ?')
@@ -229,6 +241,7 @@ export function purgeRetiredWork(controllerHomeInput: string): RetiredWorkPurgeR
         );
       }
       journalWorkReferences(db, true);
+      dropRetiredCognitionColumns(db);
     });
     // Repack after the transaction so old payload bytes are not left in SQLite
     // free pages or the WAL. Only call while the Runtime is stopped.

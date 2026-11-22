@@ -106,8 +106,6 @@ function ensureSchema(database: SqliteDatabase): void {
       payload_bytes INTEGER,
       source_kind TEXT NOT NULL,
       source_id TEXT,
-      source_work_id TEXT,
-      source_round_id TEXT,
       recorded_at TEXT NOT NULL,
       valid_from TEXT NOT NULL,
       expires_at TEXT,
@@ -140,8 +138,6 @@ function ensureSchema(database: SqliteDatabase): void {
       relation TEXT NOT NULL,
       weight REAL NOT NULL,
       evidence_json TEXT NOT NULL,
-      source_work_id TEXT,
-      source_round_id TEXT,
       recorded_at TEXT NOT NULL,
       expires_at TEXT,
       retracted_at TEXT,
@@ -336,22 +332,22 @@ function writeCognitiveMemoryUnitWithinTransaction(
     INSERT INTO cognition_memory_units (
       scope_kind, scope_id, memory_id, schema_version, revision, canonical_text, facets_json, concepts_json,
       confidence, utility, tier, payload_digest, payload_media_type, payload_bytes, source_kind, source_id,
-      source_work_id, source_round_id, recorded_at, valid_from, expires_at, supersedes_id, retracted_at, retraction_reason
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      recorded_at, valid_from, expires_at, supersedes_id, retracted_at, retraction_reason
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(scope_kind, scope_id, memory_id) DO UPDATE SET
       schema_version=excluded.schema_version, revision=excluded.revision, canonical_text=excluded.canonical_text,
       facets_json=excluded.facets_json, concepts_json=excluded.concepts_json, confidence=excluded.confidence,
       utility=excluded.utility, tier=excluded.tier, payload_digest=excluded.payload_digest,
       payload_media_type=excluded.payload_media_type, payload_bytes=excluded.payload_bytes,
-      source_kind=excluded.source_kind, source_id=excluded.source_id, source_work_id=excluded.source_work_id,
-      source_round_id=excluded.source_round_id, recorded_at=excluded.recorded_at, valid_from=excluded.valid_from,
+      source_kind=excluded.source_kind, source_id=excluded.source_id,
+      recorded_at=excluded.recorded_at, valid_from=excluded.valid_from,
       expires_at=excluded.expires_at, supersedes_id=excluded.supersedes_id, retracted_at=excluded.retracted_at,
       retraction_reason=excluded.retraction_reason`, prepared => prepared.run(
     kind, id, memory.id, memory.schemaVersion, memory.revision, memory.canonicalText,
     JSON.stringify(memory.facets), JSON.stringify(memory.concepts), memory.confidence, memory.utility, memory.tier,
     memory.payloadRef?.digest ?? null, memory.payloadRef?.mediaType ?? null, memory.payloadRef?.bytes ?? null,
-    memory.provenance.sourceKind, memory.provenance.sourceId ?? null, null,
-    null, memory.provenance.recordedAt, memory.validFrom, memory.expiresAt ?? null,
+    memory.provenance.sourceKind, memory.provenance.sourceId ?? null,
+    memory.provenance.recordedAt, memory.validFrom, memory.expiresAt ?? null,
     memory.supersedesId ?? null, memory.retractedAt ?? null, memory.retractionReason ?? null));
 
   statement(database,
@@ -380,15 +376,14 @@ function writeCognitiveMemoryEdgeWithinTransaction(database: SqliteDatabase, edg
   statement(database, `
     INSERT INTO cognition_memory_edges (
       scope_kind, scope_id, edge_id, from_memory_id, to_memory_id, relation, weight, evidence_json,
-      source_work_id, source_round_id, recorded_at, expires_at, retracted_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      recorded_at, expires_at, retracted_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(scope_kind, scope_id, edge_id) DO UPDATE SET
       from_memory_id=excluded.from_memory_id, to_memory_id=excluded.to_memory_id,
       relation=excluded.relation, weight=excluded.weight, evidence_json=excluded.evidence_json,
-      source_work_id=excluded.source_work_id, source_round_id=excluded.source_round_id,
       recorded_at=excluded.recorded_at, expires_at=excluded.expires_at, retracted_at=excluded.retracted_at`,
     prepared => prepared.run(kind, id, edge.id, edge.fromId, edge.toId, edge.relation, edge.weight,
-      JSON.stringify(edge.evidenceRefs), null, null,
+      JSON.stringify(edge.evidenceRefs),
       edge.recordedAt, edge.expiresAt ?? null, edge.retractedAt ?? null));
   return edge;
 }

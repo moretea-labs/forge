@@ -132,6 +132,62 @@ describe('full retired Work data erasure', () => {
     expect(purgeRetiredWork(home)).toMatchObject({ applied: true, records: 0, auditEvents: 0 });
   });
 
+  test('physically removes legacy cognition Work provenance columns while preserving current memories', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-retired-cognition-provenance-'));
+    tempRoots.push(home);
+    withControlPlaneTransaction(home, (db) => {
+      db.exec(`
+        CREATE TABLE cognition_memory_units (
+          memory_id TEXT PRIMARY KEY,
+          source_kind TEXT NOT NULL,
+          source_work_id TEXT,
+          source_round_id TEXT
+        );
+        CREATE TABLE cognition_memory_edges (
+          edge_id TEXT PRIMARY KEY,
+          relation TEXT NOT NULL,
+          source_work_id TEXT,
+          source_round_id TEXT
+        );
+      `);
+      db.prepare('INSERT INTO cognition_memory_units VALUES (?, ?, ?, ?)').run(
+        'memory-current',
+        'user',
+        'WORK-LEGACY-UNIQUE-93f4',
+        'ROUND-LEGACY-UNIQUE-93f4',
+      );
+      db.prepare('INSERT INTO cognition_memory_edges VALUES (?, ?, ?, ?)').run(
+        'edge-current',
+        'supports',
+        'WORK-LEGACY-UNIQUE-93f4',
+        'ROUND-LEGACY-UNIQUE-93f4',
+      );
+    });
+    const schema = (table: string) =>
+      withControlPlaneReadDatabase(home, (db) =>
+        (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name),
+      );
+    expect(schema('cognition_memory_units')).toContain('source_work_id');
+    expect(schema('cognition_memory_edges')).toContain('source_round_id');
+    expect(purgeRetiredWork(home)).toMatchObject({ applied: true });
+    for (const table of ['cognition_memory_units', 'cognition_memory_edges']) {
+      expect(schema(table)).not.toContain('source_work_id');
+      expect(schema(table)).not.toContain('source_round_id');
+    }
+    const surviving = withControlPlaneReadDatabase(home, (db) => ({
+      memory: db.prepare('SELECT memory_id, source_kind FROM cognition_memory_units').get(),
+      edge: db.prepare('SELECT edge_id, relation FROM cognition_memory_edges').get(),
+    }));
+    expect(surviving).toEqual({
+      memory: { memory_id: 'memory-current', source_kind: 'user' },
+      edge: { edge_id: 'edge-current', relation: 'supports' },
+    });
+    const compacted = readFileSync(join(home, 'control-plane.sqlite'));
+    expect(compacted.includes(Buffer.from('WORK-LEGACY-UNIQUE-93f4'))).toBe(false);
+    expect(compacted.includes(Buffer.from('ROUND-LEGACY-UNIQUE-93f4'))).toBe(false);
+    expect(purgeRetiredWork(home)).toMatchObject({ applied: true, records: 0 });
+  });
+
   test('CLI defaults to preview, refuses active-Runtime apply and erases only with offline flag', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-retired-work-cli-'));
     tempRoots.push(home);
