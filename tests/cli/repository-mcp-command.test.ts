@@ -48,7 +48,6 @@ import {
   gitSnapshotPerformanceSnapshot,
   searchRepositoryMany,
 } from '../../src/runtime/repositories/inspector';
-import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 test('registry reads never cache old contents under a replacement file identity', () => {
   for (const scenario of ['two-replacements', 'creation', 'deletion', 'stable']) {

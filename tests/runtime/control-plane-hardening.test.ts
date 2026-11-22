@@ -54,7 +54,6 @@ import { selectSchedulerProjectionRefreshTargets } from '../../src/runtime/contr
 import { evaluateSchedulerWorkerExitCandidate } from '../../src/runtime/control-plane/global-scheduler/worker-exit-decision';
 import { reconcileSchedulerWorkerExit } from '../../src/runtime/control-plane/global-scheduler/worker-exit-reconciler';
 import { shouldWakeForSchedulerEvent } from '../../src/runtime/control-plane/global-scheduler/wake-signal';
-import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const roots: string[] = [];
 

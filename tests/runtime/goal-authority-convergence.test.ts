@@ -20,7 +20,6 @@ import {
   updateRequirement,
 } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { implementationReviewChangedPathDigest } from '../helpers/historical-implementation-review';
-import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const homes: string[] = [];
 afterEach(() => {

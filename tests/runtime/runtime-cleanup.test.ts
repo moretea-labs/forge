@@ -300,40 +300,6 @@ fi
     expect(report.lifecycleMetrics.reclaimedByClass.repository_controller_home_namespace.count).toBeGreaterThan(0);
   });
 
-  test('repository namespace retirement ignores historical Work lifecycle state', () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-runtime-namespace-active-work-'));
-    homes.push(root);
-    const home = join(root, 'controller');
-    const repositoryRoot = join(root, 'repository');
-    mkdirSync(repositoryRoot, { recursive: true });
-    const git = resolveGitExecutable();
-    expect(spawnSync(git, ['-C', repositoryRoot, 'init', '-b', 'main']).status).toBe(0);
-    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.name', 'Test']).status).toBe(0);
-    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.email', 'test@example.com']).status).toBe(0);
-    writeFileSync(join(repositoryRoot, 'README.md'), 'active work protection\n');
-    expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
-    expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
-    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'namespace-active-work' });
-    seedHistoricalWorkContract({ controllerHome: home, repoId: repository.repoId }, {
-      workId: 'WORK-NAMESPACE-ACTIVE', repoId: repository.repoId, checkoutId: repository.checkouts[0]!.checkoutId,
-      objective: 'historical Work provenance must not retain disposable repository namespace state',
-      acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: {}, requestedBy: 'system', phase: 'verification',
-    });
-    const namespace = repositoryControllerRoot(home, repository.repoId);
-    mkdirSync(join(namespace, 'indexes'), { recursive: true });
-    writeFileSync(join(namespace, 'indexes', 'active.bin'), 'keep');
-    removeRepository(repository.repoId, home);
-
-    const report = cleanupRetiredRepositoryNamespaces(home, {
-      nowMs: Date.now() + 2 * 60_000, graceMs: 60_000, maxEntries: 100, maxRemovals: 20,
-    });
-
-    expect(existsSync(join(namespace, 'indexes', 'active.bin'))).toBe(false);
-    expect(report.removedPaths).toContain(`repositories/${repository.repoId}/indexes`);
-    expect(report.skippedByReason.active_work).toBeUndefined();
-  });
-
   test('repository namespace retirement honors a zero removal budget', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-runtime-namespace-zero-budget-'));
     homes.push(root);

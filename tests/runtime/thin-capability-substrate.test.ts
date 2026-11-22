@@ -29,7 +29,6 @@ import {
   getScheduleDefinition,
   getScheduleRuntimeState,
 } from '../../packages/kernel/scheduler/api/index';
-import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 const roots: string[] = [];
 afterEach(() => {});
 while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
