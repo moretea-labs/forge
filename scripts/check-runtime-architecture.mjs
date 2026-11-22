@@ -1232,6 +1232,17 @@ requireMissing('packages/kernel/work/application/work-service.ts');
 requireMissing('packages/kernel/work/ports/work-contract-store.ts');
 requireMissing('packages/kernel/work/infrastructure/work-contract-store.ts');
 requireMissing('packages/kernel/work/domain/state-machine.ts');
+forbid(
+  'packages/kernel/work/domain/types.ts',
+  /export (?:interface|type) (?:WorkContract|WorkContractConstraints|WorkSemanticView)\b|function (?:semanticScopeRefForWork|executionPlacementForWork)\b/,
+  'retired WorkContract schema must exist only in test fixtures, not public production types',
+);
+forbid(
+  'src/runtime/control-plane/facade/types.ts',
+  /\bworkSemantics\b|\bWorkContract\b/,
+  'Facade cannot expose historical WorkContract',
+);
+
 requireMissing('packages/kernel/work/domain/objective-relations.ts');
 forbid(
   'src/runtime/root/controller-services.ts',
@@ -1394,7 +1405,11 @@ forbid(
   /\b(?:appendWorkEvidence|recordWorkCompletionReceipt)\s*\(/,
   'MCP Gateway must submit Work application commands instead of writing lifecycle/evidence records directly',
 );
-requireText('packages/kernel/work/domain/types.ts', 'predecessorWorkId?: string');
+forbid(
+  'packages/kernel/work/domain/types.ts',
+  /predecessorWorkId\?: string/,
+  'old Work lineage does not belong in production',
+);
 // V2 Goal authority convergence: lifecycle enums are canonical Kernel Goal
 // domain facts and explicit Controller goal_complete is the Requirement semantic
 // acceptance boundary. PlanStep progression is retired: Plan items are authored
@@ -2723,10 +2738,7 @@ if (
 ) {
   failures.push('Recovery Core must consume the single shared operation-lock authority');
 }
-for (const requiredEdge of [
-  'packages/kernel/work/domain/types.ts -> packages/kernel/identity/api/index.ts',
-  'packages/kernel/scheduler/domain/schedule.ts -> packages/kernel/identity/api/index.ts',
-]) {
+for (const requiredEdge of ['packages/kernel/scheduler/domain/schedule.ts -> packages/kernel/identity/api/index.ts']) {
   if (!b7ProductionEdges.has(requiredEdge))
     failures.push(
       `Portable semantic identity contract must be consumed through the Kernel Identity boundary: ${requiredEdge}`,

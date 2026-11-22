@@ -1,5 +1,4 @@
 import type {
-  WorkContract,
   VerificationOutcome,
   FacadeDetailLevel,
   EvidenceRef,
@@ -128,14 +127,12 @@ export type {
   WorkReconciliationMethod,
   WorkReconciliationOutcome,
   VerificationOutcome,
-  WorkContractConstraints,
   WorktreePolicy,
   EvidencePolicy,
   ApprovalPolicy,
   RecoveryPolicy,
   VerificationRecord,
   WorkReconciliationRecord,
-  WorkContract,
   SubmittedWorkOperation,
 } from '../../../../packages/kernel/work/domain/types';
 export const HANDOFF_CREATION_REASONS = [
@@ -168,11 +165,6 @@ export interface HandoffCurrentState {
   blockedBy?: string[];
   changedFiles?: string[];
   checks?: Array<{ checkId: string; ok: boolean; summary?: string; outcome?: VerificationOutcome }>;
-  /** Bounded durable Work semantics for a fresh controller session. */
-  workSemantics?: Pick<
-    WorkContract,
-    'semanticState' | 'phase' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome'
-  >;
   reconciliationRequired?: boolean;
   nextSafeAction?: string;
 }

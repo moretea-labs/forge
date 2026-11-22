@@ -4,10 +4,168 @@ import {
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
   WORK_PHASES,
-  type WorkContract,
   type WorkPhase,
   type WorkPhaseEvidenceMap,
+  type SemanticWorkState,
+  type WorkRisk,
+  type WorkKind,
+  type DispatchState,
+  type EvidenceState,
+  type CompletionOutcome,
+  type WorkCompletionReceipt,
+  type ReadOnlyReviewEvidence,
+  type WorkSemanticAcceptanceEvidence,
+  type EvidenceRef,
+  type SuggestedNextAction,
+  type PolicyDecision,
+  type VerificationRecord,
+  type WorkReconciliationRecord,
+  type SubmittedWorkOperation,
+  type WorktreePolicy,
+  type EvidencePolicy,
+  type ApprovalPolicy,
+  type RecoveryPolicy,
 } from '../../packages/kernel/work/domain/types';
+import type { ExecutionPlacement, ScopeRef } from '../../packages/kernel/identity/api/index';
+import type { WorkAccessMode } from '../../packages/kernel/work/domain/execution-snapshot';
+import type { WorkImplementationReviewRecord } from '../../packages/kernel/work/domain/implementation-review';
+import type { EngineeringContextReceipt } from '../../packages/kernel/work/domain/engineering-contracts';
+
+/** Test-only schema for archived Work bytes. NEVER export this from production. */
+export interface WorkContractConstraints {
+  maxChangedFiles?: number;
+  maxChangedLines?: number;
+  allowCommit?: boolean;
+  allowMerge?: boolean;
+  allowCleanup?: boolean;
+  allowDestructive?: boolean;
+  /** Immutable execution-policy snapshot captured when work starts. */
+  accessMode?: WorkAccessMode;
+  /** Explicit repository placement. `auto` is retained as the legacy durable-Work isolated/frozen-base default. */
+  workspaceMode?: 'current' | 'isolated' | 'auto';
+  /** True when a change alters the agreed architecture direction rather than only implementation details. */
+  architectureStrategyChange?: boolean;
+  /** True when the proposed change weakens the thin-harness / high-performance execution policy. */
+  conflictsWithThinHarnessPolicy?: boolean;
+  /** True when the change alters the default routing or execution mode visible to users. */
+  changesDefaultExecutionStrategy?: boolean;
+  /** Repository-change delivery must publish the exact integrated revision before Work terminalization. */
+  remoteDeliveryRequired?: boolean;
+}
+
+export interface WorkContract {
+  schemaVersion: 1 | 2 | 3 | 4;
+  workId: string;
+  /** Portable semantic scope. New records derive this from Requirement/Plan/Work identity, never local repository registration. */
+  scopeRef?: ScopeRef;
+  /** Replaceable node-local execution placement; never part of semantic Work identity. */
+  executionPlacement?: ExecutionPlacement;
+  /** Repository relationship used for local execution lookup; never semantic lifecycle authority. */
+  repoId: string;
+  /** Optional checkout relationship for local execution placement. */
+  checkoutId?: string;
+  principalId?: string;
+  controllerInstanceId?: string;
+  baseRevision?: string;
+  /** Authoritative repository baseline captured at Work admission. Absent means legacy/unknown, never implicitly unborn. */
+  repositoryBaseState?: 'revision' | 'unborn';
+  workspaceFingerprint?: string;
+  objective: string;
+  /** Independent authored-context revision. Mechanical Work writes never use the SQLite row revision as semantic CAS. */
+  semanticRevision?: number;
+  /** Timestamp of the authored semantic content; mechanical Work writes must not change it. */
+  semanticUpdatedAt?: string;
+  /** The single authored Work lifecycle state. Execution/runtime conditions never add states here. */
+  semanticState: SemanticWorkState;
+  /** Optional provenance links to the Requirement/Plan semantic revisions used when this Work was authored. */
+  requirementRevision?: number;
+  planRevision?: number;
+  /** Model/user-selected semantic result references, separate from mechanical evidence and delivery receipts. */
+  semanticResultRefs?: string[];
+  acceptanceCriteria: string[];
+  constraints: WorkContractConstraints;
+  /** Risk is immutable contract input and is projected to legacy Task reads. */
+  risk: WorkRisk;
+  /** Versioned engineering-governance requirements and exact source-bound evidence state for this Work. */
+  engineeringContext?: EngineeringContextReceipt;
+  /** Repository-execution phase observation. Never semantic Work authority. */
+  phase: WorkPhase;
+  /** Mechanical phase evidence for execution/delivery observation only. */
+  phaseEvidence: WorkPhaseEvidenceMap;
+  /** Execution/result classification. Semantic Work identity/state never depends on this field. */
+  workKind: WorkKind;
+  /** Primary is an objective-level business execution lane; execution_child is a resumable low-level operation handle owned by a primary Work or standalone caller. */
+  lifecycleRole?: 'primary' | 'execution_child';
+  /** Optional objective-level parent when this Work is only an execution child. */
+  parentWorkId?: string;
+  /** Objective decomposition parent for primary semantic Work. Never execution ownership or continuation lineage. */
+  semanticParentWorkId?: string;
+  /** Explicit objective ordering dependencies for primary semantic Work. Never inferred from Plan items. */
+  dependsOnWorkIds?: string[];
+  /** Immediate prior primary Work in the same semantic continuation lineage. Relationship evidence only; never execution or deletion authority. */
+  predecessorWorkId?: string;
+  /** Historical predecessors explicitly replaced by this Work. Relationship evidence only; never deletion authority. */
+  supersedes?: string[];
+  /** Current successor that replaced this Work. Presence makes this Work historical even before cleanup terminalizes it. */
+  supersededBy?: string;
+  /** Bounded durable reason for the supersession edge. */
+  supersessionReason?: string;
+  /** Mechanical execution/evidence projections; none may advance semanticState. */
+  dispatchState: DispatchState;
+  evidenceState: EvidenceState;
+  completionOutcome?: CompletionOutcome;
+  createdAt: string;
+  updatedAt: string;
+  /** Optional historical Issue/Task relationship identifiers; never lifecycle authority. */
+  issueId?: string;
+  taskId?: string;
+  /** Stable Requirement authority that this Work may complete. */
+  requirementId?: string;
+  /** Work-owned delivery/effect receipt. It never determines semantic completion. */
+  completionReceipt?: WorkCompletionReceipt;
+  /** Provenance for complex work dispatched from a durable PlanContract step. */
+  planId?: string;
+  planStepId?: string;
+  planSourceRevision?: string;
+  scopeSummary?: string;
+  /**
+   * Discovery evidence, never an authorization boundary. Initial guesses,
+   * inspected paths, and observed changes remain distinct so early retrieval
+   * cannot masquerade as complete implementation scope.
+   */
+  scopeEvidence?: {
+    initialLikelyPaths: string[];
+    inspectedPaths: string[];
+    actualChangedPaths: string[];
+    recordedAt: string;
+  };
+  /** Source-bound semantic findings/scope for first-class recoverable read-only review Work. */
+  readOnlyReviewEvidence?: ReadOnlyReviewEvidence;
+  /** Explicit Controller-reviewed acceptance bindings. Mechanical evidence attribution alone never writes this field. */
+  semanticAcceptanceEvidence?: WorkSemanticAcceptanceEvidence[];
+  checks: string[];
+  worktreePolicy: WorktreePolicy;
+  evidencePolicy: EvidencePolicy;
+  approvalPolicy: ApprovalPolicy;
+  recoveryPolicy: RecoveryPolicy;
+  requestedBy: 'chatgpt' | 'user' | 'system' | 'scheduler';
+  evidenceRefs: EvidenceRef[];
+  handoffRefs: string[];
+  suggestedNextActions: SuggestedNextAction[];
+  policyDecisions: PolicyDecision[];
+  checkRefs: VerificationRecord[];
+  /** Append-only Controller implementation-review authority. Generic mutation APIs cannot write this history. */
+  implementationReviews: WorkImplementationReviewRecord[];
+  /** Reviewed historical/manual integration exceptions, retained for audit. */
+  reconciliations: WorkReconciliationRecord[];
+  continuationPrompt?: string;
+  worktreeRef?: string;
+  workerRef?: string;
+  requestId?: string;
+  /** Typed execution metadata; it does not imply ExecutionJob creation. */
+  submittedOperation?: SubmittedWorkOperation;
+}
+
 /** Test-only records. No production WorkContract store/API remains. */
 export interface HistoricalWorkStoreOptions {
   controllerHome: string;
