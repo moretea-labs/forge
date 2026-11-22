@@ -24,6 +24,18 @@ describe('full retired Work data erasure', () => {
   test('deletes old records and their audit chain without touching Plan, Process or UserRequest', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-retired-work-purge-'));
     tempRoots.push(home);
+    const retiredCount = RETIRED_WORK_NAMESPACES.length;
+    expect(RETIRED_WORK_NAMESPACES).toEqual([
+      'work_contract',
+      'work_semantic_revision',
+      'execution_work_handle',
+      'execution_work_validation_index',
+      'work_prepare_request',
+      'controller_work_binding',
+      'chatgpt_work_conversation_binding',
+      'assistant_experience',
+      'assistant_outcome_observation',
+    ]);
     for (const namespace of RETIRED_WORK_NAMESPACES) {
       writeControlPlaneRecord(home, {
         namespace,
@@ -42,7 +54,14 @@ describe('full retired Work data erasure', () => {
         expectedRevision: 1,
       });
     }
-    for (const namespace of ['plan_contract', 'process_request_binding', 'user_request']) {
+    for (const namespace of [
+      'plan_contract',
+      'process_request_binding',
+      'user_request',
+      'workflow_run',
+      'workflow_registry',
+      'workspace_semantic',
+    ]) {
       writeControlPlaneRecord(home, {
         namespace,
         scope: 'repo-1',
@@ -71,14 +90,14 @@ describe('full retired Work data erasure', () => {
     const preview = inspectRetiredWorkPurge(home);
     expect(preview).toMatchObject({
       applied: false,
-      records: 5,
-      auditEvents: 10,
-      auditFloors: 5,
-      auditRecordCursors: 5,
+      records: retiredCount,
+      auditEvents: retiredCount * 2,
+      auditFloors: retiredCount,
+      auditRecordCursors: retiredCount,
     });
     expect(preview.directories).toHaveLength(2);
     const erased = purgeRetiredWork(home);
-    expect(erased).toMatchObject({ applied: true, records: 5, auditEvents: 10 });
+    expect(erased).toMatchObject({ applied: true, records: retiredCount, auditEvents: retiredCount * 2 });
     expect(existsSync(dir)).toBe(false);
     expect(existsSync(oldIndex)).toBe(false);
     // No retained raw Work payload in compacted SQLite pages/WAL.
@@ -100,7 +119,14 @@ describe('full retired Work data erasure', () => {
         ),
       ),
     ).toEqual(RETIRED_WORK_NAMESPACES.map(() => ({ count: 0 })));
-    for (const namespace of ['plan_contract', 'process_request_binding', 'user_request']) {
+    for (const namespace of [
+      'plan_contract',
+      'process_request_binding',
+      'user_request',
+      'workflow_run',
+      'workflow_registry',
+      'workspace_semantic',
+    ]) {
       expect(readControlPlaneRecord(home, namespace, 'repo-1', 'retain')?.value).toEqual({ id: namespace });
     }
     expect(purgeRetiredWork(home)).toMatchObject({ applied: true, records: 0, auditEvents: 0 });

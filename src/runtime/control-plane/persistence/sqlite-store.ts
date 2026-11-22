@@ -127,7 +127,6 @@ export const REBUILDABLE_AUDIT_NAMESPACES = [
 /** Current-record namespaces whose historical revision chain may be bounded. */
 export const REBUILDABLE_RECORD_AUDIT_NAMESPACES = [
   'computer_interaction_target_index',
-  'execution_work_validation_index',
   // One recovery-index row can accumulate 10^4–10^5 revisions; handle indexes
   // re-record on every process observation. Bound their audit tails like other
   // rebuildable locators so maintenance can converge DB size (#377).

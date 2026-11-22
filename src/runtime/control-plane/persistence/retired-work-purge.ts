@@ -15,6 +15,10 @@ export const RETIRED_WORK_NAMESPACES = [
   'work_contract',
   'work_semantic_revision',
   'execution_work_handle',
+  'execution_work_validation_index',
+  'work_prepare_request',
+  'controller_work_binding',
+  'chatgpt_work_conversation_binding',
   'assistant_experience',
   'assistant_outcome_observation',
 ] as const;

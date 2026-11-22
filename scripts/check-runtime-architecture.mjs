@@ -2870,6 +2870,12 @@ requireText(
   "const WORK_REPLICA_NAMESPACE = 'semantic_sync_replica';",
 );
 requireText('src/runtime/control-plane/persistence/retired-work-purge.ts', 'journalWorkReferences(db, true)');
+forbid(
+  'src/runtime/control-plane/persistence/sqlite-store.ts',
+  /'execution_work_validation_index'/,
+  'retired Work validation index must not be registered in live audit retention policy',
+);
+
 requireMissing('src/runtime/control-plane/execution/work-evidence-policy.ts');
 // Work and WorkHandle are fully retired, including historical data.
 // Requirement/Plan/Run/Git own their separate current state.
