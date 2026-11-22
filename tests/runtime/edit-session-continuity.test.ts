@@ -120,13 +120,15 @@ test('empty open session survives another Writer HEAD commit and resumes exact-s
     sessionId: session.sessionId,
     expectedRevision: session.currentRevision,
     binding,
-    operations: [{
-      type: 'replace',
-      path: 'source.ts',
-      expected_sha256: sha256(fx.initial),
-      old_text: 'value = 1',
-      new_text: 'value = 2',
-    }],
+    operations: [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        expected_sha256: sha256(fx.initial),
+        old_text: 'value = 1',
+        new_text: 'value = 2',
+      },
+    ],
   });
   expect(resumed.status).toBe('applied');
   expect(resumed.recoveredSession).toMatchObject({
