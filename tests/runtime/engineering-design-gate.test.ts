@@ -291,13 +291,13 @@ describe('Stage7C upstream engineering authority', () => {
         blockerId: 'blocker-unrelated',
         classification: 'unrelated',
         semanticScopeKeys: ['other.scope'],
-        linkedWorkId: 'work-linked-test',
+        linkedRequirementId: 'req-linked-test',
         rationale: 'The blocker belongs to a disjoint product scope.',
         recordedAt,
       }),
     );
     expect(unrelated.designState).toBe('ready');
     expect(unrelated.semanticScope).toEqual(base.semanticScope);
-    expect(unrelated.blockerDispositions?.at(-1)?.action).toBe('linked_work');
+    expect(unrelated.blockerDispositions?.at(-1)?.action).toBe('linked_requirement');
   });
 });

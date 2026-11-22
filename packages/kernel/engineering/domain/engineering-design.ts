@@ -46,7 +46,7 @@ export const ENGINEERING_DECISION_AREAS = [
 export type EngineeringDecisionArea = (typeof ENGINEERING_DECISION_AREAS)[number];
 export type EngineeringCritiqueDecision = 'approved' | 'changes_required' | 'blocked';
 export type EngineeringBlockerClassification = 'same_root_cause' | 'same_root_cause_scope_extension' | 'unrelated';
-export type EngineeringBlockerAction = 'return_to_design' | 'extend_candidate' | 'linked_work';
+export type EngineeringBlockerAction = 'return_to_design' | 'extend_candidate' | 'linked_requirement';
 
 const MAX_ITEMS = 64;
 const MAX_TEXT = 2_000;
@@ -280,7 +280,7 @@ export interface EngineeringBlockerDispositionReceipt {
   classification: EngineeringBlockerClassification;
   action: EngineeringBlockerAction;
   semanticScopeKeys: string[];
-  linkedWorkId?: string;
+  linkedRequirementId?: string;
   rationale: string;
   recordedAt: string;
 }
@@ -289,17 +289,17 @@ export function buildEngineeringBlockerDispositionReceipt(input: {
   blockerId: string;
   classification: EngineeringBlockerClassification;
   semanticScopeKeys?: string[];
-  linkedWorkId?: string;
+  linkedRequirementId?: string;
   rationale: string;
   recordedAt: string;
 }): EngineeringBlockerDispositionReceipt {
   if (!['same_root_cause', 'same_root_cause_scope_extension', 'unrelated'].includes(input.classification))
     throw new Error('ENGINEERING_BLOCKER_CLASSIFICATION_INVALID');
-  const linkedWorkId = input.linkedWorkId?.trim() || undefined;
+  const linkedRequirementId = input.linkedRequirementId?.trim() || undefined;
   const sameRootCause = input.classification !== 'unrelated';
-  if (input.classification === 'unrelated' && !linkedWorkId)
-    throw new Error('ENGINEERING_BLOCKER_LINKED_WORK_REQUIRED');
-  if (sameRootCause && linkedWorkId) throw new Error('ENGINEERING_BLOCKER_LINKED_WORK_FORBIDDEN');
+  if (input.classification === 'unrelated' && !linkedRequirementId)
+    throw new Error('ENGINEERING_BLOCKER_LINKED_REQUIREMENT_REQUIRED');
+  if (sameRootCause && linkedRequirementId) throw new Error('ENGINEERING_BLOCKER_LINKED_REQUIREMENT_FORBIDDEN');
   const core = {
     sourceRevision: text(input.sourceRevision, 'ENGINEERING_BLOCKER_SOURCE_REQUIRED'),
     blockerId: text(input.blockerId, 'ENGINEERING_BLOCKER_ID_REQUIRED'),
@@ -309,9 +309,11 @@ export function buildEngineeringBlockerDispositionReceipt(input: {
         ? ('return_to_design' as const)
         : input.classification === 'same_root_cause_scope_extension'
           ? ('extend_candidate' as const)
-          : ('linked_work' as const),
+          : ('linked_requirement' as const),
     semanticScopeKeys: list(input.semanticScopeKeys ?? [], 'ENGINEERING_BLOCKER_SCOPE_INVALID', false),
-    ...(linkedWorkId ? { linkedWorkId: text(linkedWorkId, 'ENGINEERING_BLOCKER_LINKED_WORK_INVALID') } : {}),
+    ...(linkedRequirementId
+      ? { linkedRequirementId: text(linkedRequirementId, 'ENGINEERING_BLOCKER_LINKED_REQUIREMENT_INVALID') }
+      : {}),
     rationale: text(input.rationale, 'ENGINEERING_BLOCKER_RATIONALE_REQUIRED'),
     recordedAt: timestamp(input.recordedAt, 'ENGINEERING_BLOCKER_RECORDED_AT_INVALID'),
   };
