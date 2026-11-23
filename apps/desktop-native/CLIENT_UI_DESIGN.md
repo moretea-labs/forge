@@ -11,6 +11,7 @@ Scope: native macOS Client window architecture, layout, navigation, typography, 
 - **Browser deferred.** Never show Browser as an active enabled control until a separate authorized pane exists.
 - **Cursor density.** Prefer quieter chrome: denser thread rows, icon-first conversation tools, flatter composer, list-header New Chat (`sidebar.thread.new`), and right-pane tab strip instead of a dropdown title.
 - **No duplicate chrome.** When the right pane is open, Changes/Files live only in its tab strip; the conversation column does not repeat those openers. Window title shows workspace scope + honest status color (orange when checkout unavailable), not a second copy of the selected thread title.
+- **Flat Cursor surfaces.** Conversation column and right tool pane share the same canvas. Prefer typography/selection fills over hairlines, card wells, pill tabs, and drop shadows. Right-pane tabs use underline selection; composer shows an edge only while focused.
 
 ## 1. Overall layout
 
@@ -40,7 +41,7 @@ Default visible columns: icon rail + list + main. Opening Changes/Files from the
 
 ## 3. Plain-button rule (P0)
 
-NO decorative card/capsule/softFill wrapping every toolbar, rail, or tab button. Globally, `.bordered` bezel buttons, pill selectors and boxed form fields are forbidden; secondary actions use `.forgeText`, forms use label-left rows. `.borderedProminent` is reserved for one primary action per surface. Icon-rail selection may use a quiet selection fill. Real surfaces remain for list selection, composer well, and diff canvas.
+NO decorative card/capsule/softFill wrapping every toolbar, rail, tab, commit form, notice, or diff shell. Globally, `.bordered` bezel buttons, pill selectors, column hairlines and boxed form fields are forbidden; secondary actions use `.forgeText`, forms use label-left rows. `.borderedProminent` is reserved for one primary action per surface. Icon-rail and list selection may use a quiet selection fill. Composer may show a focus ring only while focused; diff lines tint in place without a surrounding card.
 
 ## 4. Navigation invariants
 

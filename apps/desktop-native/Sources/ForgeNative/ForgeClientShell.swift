@@ -375,7 +375,7 @@ struct ForgeWorkspaceView: View {
             listColumn
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
-        .background(.ultraThinMaterial)
+        .background(ForgePalette.sidePanel)
     }
 
     private var projectsListColumn: some View {
@@ -1208,9 +1208,8 @@ struct ForgeWorkspaceView: View {
             projectPickerShown.toggle()
             if !projectPickerShown { projectSearch = "" }
         } label: {
-            HStack(spacing:6) {
-                Image(systemName:"folder.fill")
-                    .symbolRenderingMode(.hierarchical)
+            HStack(spacing:5) {
+                Image(systemName:"folder")
                     .font(.system(size:11,weight:.medium))
                     .foregroundStyle(ForgePalette.secondary)
                 Text(model.project?.label ?? "选择代码工作区")
@@ -1219,23 +1218,18 @@ struct ForgeWorkspaceView: View {
                     .truncationMode(.middle)
                 if let branch = model.checkoutBranch, model.project != nil {
                     Text(branch)
-                        .font(.system(size:10.5,weight:.medium))
+                        .font(.system(size:10.5))
                         .foregroundStyle(ForgePalette.secondary)
                         .lineLimit(1)
-                        .padding(.horizontal,6)
-                        .frame(height:18)
-                        .background(ForgePalette.softFill,in:Capsule())
                 }
                 Spacer(minLength:4)
                 Image(systemName:"chevron.up.chevron.down")
-                    .font(.system(size:9,weight:.semibold))
+                    .font(.system(size:8,weight:.semibold))
                     .foregroundStyle(.tertiary)
             }
-            .padding(.horizontal,8)
-            .frame(height:28)
-            .background(ForgePalette.softFill.opacity(0.55),
-                        in:RoundedRectangle(cornerRadius:7,style:.continuous))
-            .contentShape(RoundedRectangle(cornerRadius:7,style:.continuous))
+            .padding(.horizontal,4)
+            .frame(height:26)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(model.project == nil

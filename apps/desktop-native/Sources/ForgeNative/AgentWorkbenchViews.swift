@@ -169,19 +169,17 @@ struct AgentPane: View {
         .accessibilityIdentifier("agent.workspace-scope")
     }
 
-        /// Cursor-style editor tabs for the open work surface.
+    /// Cursor-style editor tabs: text weight + underline, no pill cards.
     private var rightPaneTabStrip: some View {
-        HStack(spacing:2) {
+        HStack(spacing:4) {
             ForEach(AgentWorkSurface.allCases) { surface in
                 let selected = semanticInspector == nil && selectedWorkSurface == surface
                 Button {
                     openWorkSurface(surface)
                 } label: {
                     HStack(spacing:4) {
-                        Image(systemName:surface.symbol)
-                            .font(.system(size:11,weight:.medium))
                         Text(surface.title)
-                            .font(.system(size:11,weight:selected ? .semibold : .medium))
+                            .font(.system(size:12,weight:selected ? .semibold : .regular))
                         if surface == .changes, workspaceReviewFileCount > 0 {
                             Text("\(workspaceReviewFileCount)")
                                 .font(.system(size:10)).monospacedDigit()
@@ -189,11 +187,14 @@ struct AgentPane: View {
                         }
                     }
                     .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
-                    .padding(.horizontal,8)
-                    .frame(height:26)
-                    .background(selected ? ForgePalette.selection : .clear,
-                                in:RoundedRectangle(cornerRadius:6,style:.continuous))
-                    .contentShape(RoundedRectangle(cornerRadius:6,style:.continuous))
+                    .padding(.horizontal,6)
+                    .frame(height:28)
+                    .overlay(alignment:.bottom) {
+                        Rectangle()
+                            .fill(selected ? ForgePalette.ink.opacity(0.55) : .clear)
+                            .frame(height:1.5)
+                    }
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(surface == .changes && model.checkoutId == nil)
@@ -276,11 +277,9 @@ struct AgentPane: View {
                 }
             }
             .foregroundStyle(active ? ForgePalette.ink : ForgePalette.secondary)
-            .frame(minWidth:26,minHeight:26)
-            .padding(.horizontal,workspaceReviewFileCount > 0 ? 6 : 0)
-            .background(active ? ForgePalette.selection : .clear,
-                        in:RoundedRectangle(cornerRadius:6,style:.continuous))
-            .contentShape(RoundedRectangle(cornerRadius:6,style:.continuous))
+            .frame(minWidth:24,minHeight:24)
+            .padding(.horizontal,workspaceReviewFileCount > 0 ? 4 : 0)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(model.checkoutId == nil)
@@ -302,10 +301,8 @@ struct AgentPane: View {
             Image(systemName:"paperclip")
                 .font(.system(size:12,weight:.medium))
                 .foregroundStyle(active ? ForgePalette.ink : ForgePalette.secondary)
-                .frame(width:26,height:26)
-                .background(active ? ForgePalette.selection : .clear,
-                            in:RoundedRectangle(cornerRadius:6,style:.continuous))
-                .contentShape(RoundedRectangle(cornerRadius:6,style:.continuous))
+                .frame(width:24,height:24)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("查看会话文件与图片")
@@ -1080,17 +1077,15 @@ struct AgentPane: View {
                     .accessibilityIdentifier("agent.send-block-reason")
                 }
             }
-            .background(ForgePalette.canvas,
-                        in:RoundedRectangle(cornerRadius:14,style:.continuous))
+            .background(ForgePalette.composer,
+                        in:RoundedRectangle(cornerRadius:12,style:.continuous))
             .overlay {
-                RoundedRectangle(cornerRadius:14,style:.continuous)
-                    .strokeBorder(isComposerDropTarget ? ForgePalette.accent.opacity(0.55)
-                                  : composerFocused ? ForgePalette.primaryHairlineFocused : ForgePalette.hairline,
-                                  lineWidth:isComposerDropTarget ? 1 : 0.75)
+                RoundedRectangle(cornerRadius:12,style:.continuous)
+                    .strokeBorder(isComposerDropTarget ? ForgePalette.accent.opacity(0.5)
+                                  : composerFocused ? ForgePalette.primaryHairlineFocused : Color.clear,
+                                  lineWidth:isComposerDropTarget || composerFocused ? 1 : 0)
             }
-            .shadow(color:.black.opacity(composerFocused || isComposerDropTarget ? 0.06 : 0.035),
-                    radius:composerFocused || isComposerDropTarget ? 10 : 6,x:0,y:2)
-            .animation(reduceMotion ? nil : .easeOut(duration:0.15),value:composerFocused)
+            .animation(reduceMotion ? nil : .easeOut(duration:0.12),value:composerFocused)
             .dropDestination(for:URL.self) { urls, _ in
                 guard !model.busy,!model.zenRefinementActive,!urls.isEmpty else { return false }
                 model.addDroppedAttachments(urls)
@@ -1317,13 +1312,8 @@ struct AgentPane: View {
                 .accessibilityLabel("关闭右侧分栏")
                 .accessibilityIdentifier("agent.work-surface.close")
             }
-            .padding(.horizontal,10)
-            .frame(height:32)
-            .overlay(alignment:.bottom) {
-                Rectangle()
-                    .fill(ForgePalette.hairline)
-                    .frame(height:0.5)
-            }
+            .padding(.horizontal,12)
+            .frame(height:30)
 
             ZStack {
                 AgentChangesPane(model:model)
@@ -1345,7 +1335,7 @@ struct AgentPane: View {
             }
             .frame(maxWidth:.infinity,maxHeight:.infinity)
         }
-        .background(ForgePalette.sidePanel)
+        .background(ForgePalette.canvas)
     }
 
     @ViewBuilder
@@ -1904,7 +1894,6 @@ struct AgentChangesPane: View {
                             }
                             .frame(width:min(300,max(230,geometry.size.width * 0.27)))
                             .frame(maxHeight:.infinity)
-                            .background(ForgePalette.sidePanel)
                             .accessibilityIdentifier("changes.file-navigator")
 
                             ScrollView {
@@ -1970,7 +1959,7 @@ struct AgentChangesPane: View {
             restoreSnapshot = nil
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
-        .background(ForgePalette.canvas.opacity(0.34))
+        .background(ForgePalette.canvas)
         .alert("放弃已审查改动？",isPresented:Binding(
             get:{ restoreSnapshot != nil },
             set:{ if !$0 { restoreSnapshot = nil } }
@@ -2073,10 +2062,10 @@ struct AgentChangesPane: View {
                         .font(.system(size:9.5))
                         .foregroundStyle(.tertiary)
                 }
-                .padding(.horizontal,9)
-                .frame(height:29)
-                .background(focusedPath == nil ? ForgePalette.selectionStrong : Color.clear,
-                             in:RoundedRectangle(cornerRadius:6,style:.continuous))
+                .padding(.horizontal,8)
+                .frame(height:26)
+                .background(focusedPath == nil ? ForgePalette.selection : Color.clear)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(focusedLoading)
@@ -2104,10 +2093,10 @@ struct AgentChangesPane: View {
                         }
                         Spacer(minLength:0)
                     }
-                    .padding(.horizontal,9)
-                    .frame(height:29)
-                    .background(focusedPath == path ? ForgePalette.selectionStrong : Color.clear,
-                             in:RoundedRectangle(cornerRadius:6,style:.continuous))
+                    .padding(.horizontal,8)
+                    .frame(height:26)
+                    .background(focusedPath == path ? ForgePalette.selection : Color.clear)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(focusedLoading)
@@ -2166,7 +2155,7 @@ struct AgentChangesPane: View {
 
             VStack(alignment:.leading,spacing:8) {
                 HStack {
-                    Label("提交已审查改动",systemImage:"checkmark.seal")
+                    Text("提交已审查改动")
                         .font(.system(size:11,weight:.semibold))
                     Spacer()
                     Text(focusedPath ?? "\(reviewed.nameOnly.count) 个文件")
@@ -2176,11 +2165,8 @@ struct AgentChangesPane: View {
                 TextField("提交说明",text:$commitMessage)
                     .textFieldStyle(.plain)
                     .font(.system(size:11.5))
-                    .padding(.horizontal,10)
-                    .frame(height:32)
-                    .background(ForgePalette.canvas,
-                                in:RoundedRectangle(cornerRadius:8,style:.continuous))
-                HStack(spacing:8) {
+                    .padding(.vertical,6)
+                HStack(spacing:10) {
                     Text("提交前会再次确认这些改动未变化。")
                         .font(.system(size:9.5))
                         .foregroundStyle(.tertiary)
@@ -2195,10 +2181,8 @@ struct AgentChangesPane: View {
                         Button(role:.destructive) {
                             restoreSnapshot = reviewed
                         } label: {
-                            Label("放弃",systemImage:"arrow.uturn.backward.circle")
-                                .font(.system(size:11,weight:.semibold))
-                                .padding(.horizontal,9)
-                                .frame(height:29)
+                            Text("放弃")
+                                .font(.system(size:11,weight:.medium))
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(.red)
@@ -2217,12 +2201,9 @@ struct AgentChangesPane: View {
                             }
                         }
                     } label: {
-                        Label("提交",systemImage:"checkmark.circle.fill")
+                        Text("提交")
                             .font(.system(size:11,weight:.semibold))
-                            .padding(.horizontal,10)
-                            .frame(height:29)
-                            .background(ForgePalette.selectionStrong,
-                                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                            .foregroundStyle(ForgePalette.accent)
                     }
                     .buttonStyle(.plain)
                     .disabled(model.changesLoading || focusedLoading || reviewed.truncated
@@ -2230,21 +2211,16 @@ struct AgentChangesPane: View {
                               || commitMessage.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
                 }
             }
-            .padding(10)
-            .background(ForgePalette.softFill,
-                        in:RoundedRectangle(cornerRadius:11,style:.continuous))
+            .padding(.top,4)
         }
         .frame(maxWidth:.infinity,alignment:.leading)
     }
 
     private func untrackedChangesNotice(_ paths:[String]) -> some View {
-        VStack(alignment:.leading,spacing:7) {
-            HStack(spacing:7) {
-                Image(systemName:"questionmark.square.dashed")
-                    .foregroundStyle(Color.orange)
-                Text("\(paths.count) 个新文件未纳入本次审查")
-                    .font(.system(size:10.5,weight:.semibold))
-            }
+        VStack(alignment:.leading,spacing:4) {
+            Text("\(paths.count) 个新文件未纳入本次审查")
+                .font(.system(size:10.5,weight:.medium))
+                .foregroundStyle(Color.orange.opacity(0.9))
             ForEach(Array(paths.prefix(4)),id:\.self) { path in
                 Text(path)
                     .font(.system(size:9.5,design:.monospaced))
@@ -2260,11 +2236,7 @@ struct AgentChangesPane: View {
             Text("这些文件不会自动纳入提交或放弃操作。")
                 .font(.system(size:9.5))
                 .foregroundStyle(.tertiary)
-                .lineSpacing(2)
         }
-        .padding(10)
-        .background(Color.orange.opacity(0.055),
-                    in:RoundedRectangle(cornerRadius:10,style:.continuous))
         .accessibilityIdentifier("changes.untracked")
     }
 
@@ -2318,16 +2290,13 @@ struct AgentDiffPatchView: View {
                     .font(.system(size:10,design:.monospaced))
                     .foregroundStyle(foreground(line))
                     .textSelection(.enabled)
-                    .padding(.horizontal,9)
-                    .padding(.vertical,1.5)
+                    .padding(.horizontal,2)
+                    .padding(.vertical,1)
                     .frame(maxWidth:.infinity,alignment:.leading)
                     .background(background(line))
             }
         }
-        .padding(.vertical,7)
-        .background(ForgePalette.softFill,
-                    in:RoundedRectangle(cornerRadius:10,style:.continuous))
-        .clipShape(RoundedRectangle(cornerRadius:10,style:.continuous))
+        .padding(.vertical,2)
     }
 
     private func background(_ line: String) -> Color {

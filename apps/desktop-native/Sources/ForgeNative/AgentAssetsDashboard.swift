@@ -228,8 +228,8 @@ struct AgentAssetsDashboard: View {
         }
       }
     }
-    .padding(.horizontal, compact ? 12 : 18)
-    .padding(.vertical, 10)
+    .padding(.horizontal, compact ? 12 : 14)
+    .padding(.vertical, 6)
     .accessibilityIdentifier("agent.assets.toolbar")
   }
 
@@ -262,12 +262,8 @@ struct AgentAssetsDashboard: View {
         .accessibilityLabel("清除资源搜索")
       }
     }
-    .padding(.horizontal, 10)
-    .frame(height: 30)
-    // An input well is a real content surface, not a button-card.
-    .background(
-      Color.primary.opacity(0.035),
-      in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .padding(.vertical, 4)
+    .frame(height: 28)
   }
 
   private var resourceFilters: some View {
@@ -368,21 +364,18 @@ struct AgentAssetsDashboard: View {
                     .foregroundStyle(.tertiary)
                 }
               }
-              .padding(.horizontal, 10).padding(.vertical, 12)
+              .padding(.horizontal, 10).padding(.vertical, 8)
               .frame(maxWidth: .infinity, alignment: .leading)
-              .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+              .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .background(
-              selected ? Color.primary.opacity(0.055) : Color.clear,
-              in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-            )
+            .background(selected ? ForgePalette.selection : Color.clear)
             .accessibilityLabel("预览资源：\(item.title)")
             .accessibilityIdentifier(Self.accessibilityIdentifier(for: item.id))
             .id(item.id)
           }
         }
-        .padding(.horizontal, 10).padding(.vertical, 8)
+        .padding(.horizontal, 4).padding(.vertical, 4)
       }
       .scrollIndicators(.automatic)
       .onAppear {
@@ -436,10 +429,10 @@ struct AgentAssetsDashboard: View {
         .accessibilityIdentifier(
           Self.accessibilityIdentifier(for: item.id, control: "source-thread"))
       }
-      .padding(.horizontal, 20).padding(.vertical, 14)
+      .padding(.horizontal, 14).padding(.vertical, 10)
 
       ScrollView {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
           switch item.kind {
           case .remoteImage:
             AgentRemoteImageView(
@@ -467,14 +460,14 @@ struct AgentAssetsDashboard: View {
             )
           }
         }
-        .padding(20)
+        .padding(14)
         .frame(maxWidth: 720, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .center)
       }
       .scrollIndicators(.automatic)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(Color.primary.opacity(0.012))
+    .background(ForgePalette.canvas)
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("agent.assets.preview")
   }

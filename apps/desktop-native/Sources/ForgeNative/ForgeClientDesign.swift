@@ -19,11 +19,11 @@ enum ForgePalette {
   static let raisedSurface = Color(nsColor: .controlBackgroundColor)
   static let softFill = Color.primary.opacity(0.045)
   static let composer = Color(nsColor: .controlBackgroundColor).opacity(0.95)
-  /// Near-invisible edge for floating surfaces (composer, popovers).
-  static let hairline = Color.primary.opacity(0.10)
-  static let primaryHairlineFocused = Color.primary.opacity(0.22)
-  /// Tonal side panel: separates by value, not by a rule.
-  static let sidePanel = Color.primary.opacity(0.025)
+  /// Near-invisible edge reserved for focus rings only — not column separators.
+  static let hairline = Color.primary.opacity(0.08)
+  static let primaryHairlineFocused = Color.primary.opacity(0.18)
+  /// Side tools share the same canvas as the conversation (Cursor). Prefer no tint.
+  static let sidePanel = canvas
 }
 
 /// Quiet hover feedback for plain list/starter buttons (not toolbar/rail chrome).
