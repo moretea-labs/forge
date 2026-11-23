@@ -207,7 +207,7 @@ describe('generated repository cache retention', () => {
     writeFileSync(join(swift, 'Package.swift'), '// swift-tools-version: 6.0');
     writeFileSync(join(swiftOutput, 'Modules', 'editor.swiftmodule'), 'generated');
 
-    const cargo = join(root, 'apps', 'desktop', 'src-tauri');
+    const cargo = join(root, 'apps', 'desktop-native', 'bridge');
     const cargoOutput = join(cargo, 'target', 'debug');
     mkdirSync(join(cargoOutput, '.fingerprint'), { recursive: true });
     mkdirSync(join(cargoOutput, 'deps'), { recursive: true });

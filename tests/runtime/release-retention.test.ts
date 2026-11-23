@@ -4,7 +4,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { cleanupControllerReleaseHistory } from '../../src/runtime/control-plane/release-retention';
-import { cleanupControllerRuntimeState } from '../../src/runtime/control-plane/runtime-cleanup';
+import {
+  cleanupControllerRuntimeState,
+  cleanupRemovalPhaseOrder,
+} from '../../src/runtime/control-plane/runtime-cleanup';
 import {
   backupControlPlaneDatabase,
   inspectControlPlaneDatabase,
@@ -21,6 +24,20 @@ import type { CandidateExecutionLane, StableExecutionLane } from '../../src/runt
 
 const homes: string[] = [];
 const NOW = Date.parse('2026-08-11T10:00:00.000Z');
+
+/**
+ * Periodic maintenance runs exactly one removal phase per tick (cleanupRemovalPhaseOrder).
+ * Derive the ticks that land on the `releases` phase from the production rotation instead of
+ * hard-coding sequence numbers, which silently break whenever a removal phase is added or retired.
+ */
+function releasesPhaseSequences(count: number): number[] {
+  const sequences: number[] = [];
+  for (let sequence = 0; sequences.length < count && sequence < 10_000; sequence += 1) {
+    if (cleanupRemovalPhaseOrder('periodic', sequence)[0] === 'releases') sequences.push(sequence);
+  }
+  if (sequences.length < count) throw new Error('the releases phase is not reachable by periodic rotation');
+  return sequences;
+}
 
 function controllerHome(): string {
   const value = mkdtempSync(join(tmpdir(), 'forge-release-retention-'));
@@ -368,7 +385,7 @@ describe('ReleaseSession candidate retention integration', () => {
 
     const report = cleanupControllerRuntimeState(home, {
       reason: 'periodic',
-      periodicSequence: 6,
+      periodicSequence: releasesPhaseSequences(1)[0]!,
       nowMs: NOW,
       maxEntries: 10_000,
       maxRemovals: 10,
@@ -660,7 +677,7 @@ describe('runtime cleanup release integration', () => {
 
     const report = cleanupControllerRuntimeState(home, {
       reason: 'periodic',
-      periodicSequence: 6,
+      periodicSequence: releasesPhaseSequences(1)[0]!,
       nowMs: NOW,
       maxEntries: 100,
       maxRemovals: 10,
@@ -694,7 +711,7 @@ describe('runtime cleanup release integration', () => {
     writeFileSync(staleTemp, 'temporary\n', 'utf8');
     age(staleTemp);
 
-    const reports = [6, 13, 20, 27, 34, 41].map((periodicSequence) =>
+    const reports = releasesPhaseSequences(6).map((periodicSequence) =>
       cleanupControllerRuntimeState(home, {
         reason: 'periodic',
         periodicSequence,
