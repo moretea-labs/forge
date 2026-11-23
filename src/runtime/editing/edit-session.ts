@@ -853,6 +853,20 @@ function currentHashMismatches(repoRoot: string, session: EditSession): string[]
   return mismatches;
 }
 
+/** A superseded multi-file session may still have another uniquely uncommitted
+ * after-image. Metadata retirement must never discard that recovery evidence. */
+function uncommittedMatchingAfterImages(
+  repoRoot: string,
+  session: EditSession,
+  mismatches: string[],
+): string[] {
+  const replacedPaths = new Set(mismatches);
+  return uncommittedSessionPaths(
+    repoRoot,
+    sessionTrackedPaths(session).filter((path) => !replacedPaths.has(path)),
+  );
+}
+
 function assertCurrentHashes(repoRoot: string, session: EditSession): void {
   const [path] = currentHashMismatches(repoRoot, session);
   if (path)
@@ -1219,8 +1233,11 @@ export function inspectIntegratedEditSession(
       return reject('EDIT_SESSION_LEGACY_NOT_STALE');
     if (!['dirty', 'checked', 'check_failed'].includes(session.status) || session.operations.length === 0)
       return reject('EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE');
-    if (currentHashMismatches(repoRoot, session).length === 0)
+    const mismatches = currentHashMismatches(repoRoot, session);
+    if (mismatches.length === 0)
       return reject('EDIT_SESSION_RECONCILIATION_IDENTITY_REQUIRED');
+    if (uncommittedMatchingAfterImages(repoRoot, session, mismatches).length > 0)
+      return reject('EDIT_SESSION_RECONCILIATION_PARTIAL_UNCOMMITTED_SOURCE');
     // A legacy session has no checkout identity, so compare only its tracked
     // paths against each scoped lease. Other writers' unrelated paths, builds,
     // validation inputs and retired checkout-wide workspace claims are not
@@ -1271,7 +1288,10 @@ export function inspectIntegratedEditSession(
   if (conflictingLease) return reject('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
   if (!['dirty', 'checked', 'check_failed'].includes(session.status) || session.operations.length === 0)
     return reject('EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE');
-  if (currentHashMismatches(repoRoot, session).length) {
+  const mismatches = currentHashMismatches(repoRoot, session);
+  if (mismatches.length) {
+    if (uncommittedMatchingAfterImages(repoRoot, session, mismatches).length > 0)
+      return reject('EDIT_SESSION_RECONCILIATION_PARTIAL_UNCOMMITTED_SOURCE');
     return {
       safe: true,
       reason: 'EDIT_SESSION_RECONCILIATION_SUPERSEDED',
@@ -2001,6 +2021,14 @@ export function cleanupTerminalEditSessionRecords(
     }
     if (input.onlyStatuses && !input.onlyStatuses.includes(session.status)) {
       skip('status_outside_explicit_cleanup_scope');
+      continue;
+    }
+    if (
+      input.onlyStatuses?.includes('superseded') &&
+      session.status === 'superseded' &&
+      uncommittedMatchingAfterImages(repoRoot, session, currentHashMismatches(repoRoot, session)).length > 0
+    ) {
+      skip('still_matching_uncommitted_source');
       continue;
     }
     if (input.minCreatedAgeMs !== undefined) {
