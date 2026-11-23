@@ -1035,6 +1035,69 @@ export function listControlPlaneRecords<T>(
   );
 }
 
+/**
+ * Persistently page through one current-record namespace for bounded maintenance.
+ * The cursor is deliberately outside control_plane_records/audit so advancing a
+ * cleanup scan never creates the history it is trying to bound.
+ */
+export function scanControlPlaneRecordsWithMaintenanceCursor<T>(
+  controllerHome: string,
+  input: { namespace: string; cursorName: string; limit?: number },
+): ControlPlaneRecord<T>[] {
+  const namespace = input.namespace.trim();
+  const cursorName = input.cursorName.trim();
+  if (!namespace) throw new Error('CONTROL_PLANE_MAINTENANCE_NAMESPACE_REQUIRED');
+  if (!cursorName || cursorName.length > 128) throw new Error('CONTROL_PLANE_MAINTENANCE_CURSOR_INVALID');
+  const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 1_000), 5_000));
+  return withControlPlaneTransaction(controllerHome, (database) => {
+    ensureAuditRecordCursorTable(database);
+    const cursor = withSqliteStatement(
+      database,
+      `SELECT scope, record_key FROM ${AUDIT_RECORD_CURSOR_TABLE} WHERE name = ?`,
+      (statement) => statement.get(cursorName) as { scope?: string; record_key?: string } | undefined,
+    );
+    const cursorScope = cursor?.scope ?? '';
+    const cursorKey = cursor?.record_key ?? '';
+    const scanAfter = (scope: string, key: string): StoredRecordRow[] =>
+      withSqliteStatement(
+        database,
+        `
+          SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
+          FROM control_plane_records
+          WHERE namespace = ?
+            AND (scope > ? OR (scope = ? AND record_key > ?))
+          ORDER BY scope ASC, record_key ASC
+          LIMIT ?
+        `,
+        (statement) => statement.all(namespace, scope, scope, key, limit),
+      ) as StoredRecordRow[];
+    let rows = scanAfter(cursorScope, cursorKey);
+    if (rows.length === 0 && (cursorScope || cursorKey)) {
+      // End of one durable sweep: wrap immediately instead of burning a
+      // maintenance tick only to reset the cursor.
+      rows = scanAfter('', '');
+    }
+
+    const last = rows.at(-1);
+    const nextScope = last?.scope ?? '';
+    const nextKey = last?.record_key ?? '';
+    withSqliteStatement(
+      database,
+      `
+        INSERT INTO ${AUDIT_RECORD_CURSOR_TABLE} (name, namespace, scope, record_key, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(name) DO UPDATE SET
+          namespace = excluded.namespace,
+          scope = excluded.scope,
+          record_key = excluded.record_key,
+          updated_at = excluded.updated_at
+      `,
+      (statement) => statement.run(cursorName, namespace, nextScope, nextKey, now()),
+    );
+    return rows.map((row) => rowToRecord<T>(row));
+  });
+}
+
 export interface ControlPlaneAuditEvent {
   eventId: number;
   action: string;
