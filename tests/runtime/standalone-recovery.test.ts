@@ -3259,7 +3259,7 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
   });
 });
 
-async function candidateBootedFixture(label: string) {
+async function candidateBuiltFixture(label: string) {
   const home = controllerHome();
   const sourceRoot = join(home, 'source');
   committedRecoverySource(sourceRoot);
@@ -3321,15 +3321,19 @@ async function candidateBootedFixture(label: string) {
     },
     'candidate-fixture-' + label,
   );
-  let session = prepared.releaseSession!;
-  session = advanceReleaseSession({
-    controllerHome: home,
-    sessionId: session.sessionId,
-    expectedRevision: session.revision,
+  return { home, config, session: prepared.releaseSession! };
+}
+
+async function candidateBootedFixture(label: string) {
+  const built = await candidateBuiltFixture(label);
+  const session = advanceReleaseSession({
+    controllerHome: built.home,
+    sessionId: built.session.sessionId,
+    expectedRevision: built.session.revision,
     phase: 'candidate_booted',
     receipts: [{ id: 'candidate_boot', kind: 'candidate_canary', summary: 'fixture boot checkpoint' }],
   });
-  return { home, config, session };
+  return { home: built.home, config: built.config, session };
 }
 
 function candidateRuntimeObservation(
@@ -3489,6 +3493,127 @@ test('ReleaseSession fails closed when a new invocation finds an interrupted can
   expect(result.ok).toBe(false);
   expect(result.detail).toContain('interrupted');
   expect(readReleaseSession(home, session.sessionId)?.phase).toBe('failed');
+});
+
+test('ReleaseSession Candidate B boot runs outside the Stable A lock and commits with a session CAS', async () => {
+  const { home, config, session } = await candidateBuiltFixture('boot-unlocked');
+  expect(session.phase).toBe('built');
+  let installCalls = 0;
+  let verifyCalls = 0;
+  let restartCalls = 0;
+  const result = await bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
+    config,
+    session.sessionId,
+    'candidate-boot-unlocked',
+    {
+      installCandidateService: async (booting) => {
+        installCalls += 1;
+        expect(booting.sessionId).toBe(session.sessionId);
+        expect(existsSync(recoveryOperationLockPath(home))).toBe(false);
+        expect(existsSync(recoveryOperationLockPath(session.candidate.controllerHome))).toBe(true);
+      },
+      verifyCandidateAfterStart: async () => {
+        verifyCalls += 1;
+        expect(existsSync(recoveryOperationLockPath(home))).toBe(false);
+        return candidateCanaryVerify();
+      },
+      restartCandidateRuntime: async () => {
+        restartCalls += 1;
+        return { ok: true, attempted: true, detail: 'candidate canary restart', verify: candidateCanaryVerify() };
+      },
+      observeCandidateRuntime: () => candidateRuntimeObservation(session, 'candidate-runtime-boot'),
+    },
+  );
+  expect(installCalls).toBe(1);
+  expect(verifyCalls).toBe(1);
+  expect(restartCalls).toBe(1);
+  expect(result).toMatchObject({ ok: true, releaseSession: { phase: 'cutover_eligible' } });
+  expect(readReleaseSession(home, session.sessionId)?.phase).toBe('cutover_eligible');
+  expect(existsSync(recoveryOperationLockPath(home))).toBe(false);
+  expect(existsSync(recoveryOperationLockPath(session.candidate.controllerHome))).toBe(false);
+});
+
+test('ReleaseSession Candidate B boot does not block an unrelated Stable A Recovery mutation', async () => {
+  const { home, config, session } = await candidateBuiltFixture('boot-unrelated-mutation');
+  let unrelatedAcquired = false;
+  const result = await bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
+    config,
+    session.sessionId,
+    'candidate-boot-unrelated-mutation',
+    {
+      installCandidateService: async () => {
+        const unrelated = acquireRecoveryOperationLock({
+          controllerHome: home,
+          action: 'restart_primary_runtime',
+          requestId: 'unrelated-stable-mutation',
+        });
+        unrelatedAcquired = unrelated.acquired;
+        if (unrelated.acquired) unrelated.handle.close();
+      },
+      verifyCandidateAfterStart: async () => candidateCanaryVerify(),
+      restartCandidateRuntime: async () => ({
+        ok: true,
+        attempted: true,
+        detail: 'candidate canary restart',
+        verify: candidateCanaryVerify(),
+      }),
+      observeCandidateRuntime: () => candidateRuntimeObservation(session, 'candidate-runtime-unrelated'),
+    },
+  );
+  expect(unrelatedAcquired).toBe(true);
+  expect(result.ok).toBe(true);
+});
+
+test('ReleaseSession rejects a stale Candidate B boot commit after concurrent terminalization', async () => {
+  const { home, config, session } = await candidateBuiltFixture('boot-stale');
+  let canaryCalls = 0;
+  const result = await bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
+    config,
+    session.sessionId,
+    'candidate-boot-stale',
+    {
+      installCandidateService: async () => {
+        const current = readReleaseSession(home, session.sessionId)!;
+        advanceReleaseSession({
+          controllerHome: home,
+          sessionId: current.sessionId,
+          expectedRevision: current.revision,
+          phase: 'failed',
+          receipts: [{ id: 'cancelled', kind: 'candidate_canary', summary: 'concurrent terminalization' }],
+        });
+      },
+      verifyCandidateAfterStart: async () => candidateCanaryVerify(),
+      restartCandidateRuntime: async () => {
+        canaryCalls += 1;
+        return { ok: true, attempted: true, detail: 'must not run', verify: candidateCanaryVerify() };
+      },
+    },
+  );
+  expect(result.ok).toBe(false);
+  expect(result.detail).toContain('RELEASE_SESSION_CANDIDATE_BOOT_COMPLETION_STALE');
+  expect(canaryCalls).toBe(0);
+  expect(readReleaseSession(home, session.sessionId)?.phase).toBe('failed');
+});
+
+test('ReleaseSession terminalizes the session when Candidate B boot fails outside the Stable A lock', async () => {
+  const { home, config, session } = await candidateBuiltFixture('boot-failed');
+  const result = await bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
+    config,
+    session.sessionId,
+    'candidate-boot-failed',
+    {
+      installCandidateService: async () => {
+        throw new Error('candidate install exploded');
+      },
+      restartCandidateRuntime: async () => {
+        throw new Error('canary must not run after a failed boot');
+      },
+    },
+  );
+  expect(result.ok).toBe(false);
+  expect(result.detail).toContain('candidate install exploded');
+  expect(readReleaseSession(home, session.sessionId)?.phase).toBe('failed');
+  expect(existsSync(recoveryOperationLockPath(home))).toBe(false);
 });
 
 test('ReleaseSession preparation reconciles terminal and orphan Candidate B lanes before capacity admission', async () => {

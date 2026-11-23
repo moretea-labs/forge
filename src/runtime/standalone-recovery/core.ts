@@ -5890,7 +5890,7 @@ async function failBootedReleaseSessionCandidateCanary(
       action: 'release_session_candidate_boot',
       ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
     },
-    async () => {
+    async (): Promise<ReleaseSessionCandidateBootStep> => {
       const latest = readReleaseSession(config.controllerHome, session.sessionId);
       if (!latest) {
         return { ok: false as const, attempted: true, detail: terminalDetail, releaseSession: session };
@@ -6165,6 +6165,16 @@ async function failReleaseSessionCandidateBoot(
   return { ok: false, attempted: true, detail: terminalDetail, releaseSession: session };
 }
 
+interface ReleaseSessionCandidateBootContext {
+  session: ReleaseSession;
+  candidateConfig: RecoveryConfig;
+  runCommand: CommandRunner;
+}
+
+type ReleaseSessionCandidateBootStep =
+  | (ConfiguredRuntimeActivationResult & { continueCandidateCanary?: true })
+  | { bootContext: ReleaseSessionCandidateBootContext };
+
 export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
   config: RecoveryConfig,
   sessionId: string,
@@ -6288,10 +6298,9 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
   if ('continueCandidateCanary' in locked.value && locked.value.continueCandidateCanary === true) {
     return verifyBootedReleaseSessionCandidateCanaries(config, sessionId, requestId, dependencies);
   }
-  const bootContext = 'bootContext' in locked.value ? locked.value.bootContext : undefined;
-  if (!bootContext) return locked.value;
+  if (!('bootContext' in locked.value)) return locked.value;
 
-  const { session: frozenSession, candidateConfig, runCommand } = bootContext;
+  const { session: frozenSession, candidateConfig, runCommand } = locked.value.bootContext;
   const bootIntent: RecoveryLockIntent = {
     action: 'release_session_candidate_boot',
     ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
