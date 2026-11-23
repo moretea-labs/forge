@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
+import { checkHostBuildCpu } from './host-build-admission';
 import { controllerSystemRoot } from '../../../effects/controller-home';
 import {
   ControllerLockContentionError,
@@ -554,6 +555,19 @@ export function acquireExecutionLeases(
               ],
             };
           }
+        }
+        // A single atomic CPU pressure gate protects both direct Process and
+        // iOS Plugin native builds; previous lease owners continue unchanged.
+        if (claims.some((c) => c.resourceKey === 'host-service:ios-build' && c.mode !== 'read')) {
+          const pressure = checkHostBuildCpu();
+          if (!pressure.allowed) return {
+            acquired: false, leases: [], blockers: [{
+              resourceKey: 'host-service:ios-build:cpu-pressure',
+              ownerJobId: 'host-capacity-governor',
+              leaseId: `cpu-${pressure.reason}-${pressure.ratio ?? 'unknown'}`,
+              mode: 'exclusive' as const,
+            }],
+          };
         }
         const active = listAllActiveLeases(controllerHome).filter(
           (lease) => lease.ownerJobId !== ownerJobId || lease.repoId !== repoId,
