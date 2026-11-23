@@ -42,7 +42,7 @@ import {
 } from '../../runtime/control-plane/facade';
 import { resolveHandoffItem } from '../../runtime/control-plane/facade/handoff-inbox-store';
 import { buildRuntimeMaintenanceStatus } from '../../runtime/recovery';
-import { applySafePatch } from '../../runtime/repositories/safe-patch';
+import { applySafePatch, applySessionlessSafePatch, isSessionlessTextEditBatch } from '../../runtime/repositories/safe-patch';
 import { withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
 import { claimPathWrites } from '../../runtime/execution/process-runtime/resource-claims';
 import { extractPatchPaths } from '../../runtime/execution/thin-harness/execution-router';
@@ -1197,8 +1197,13 @@ export function applyConsoleSafePatch(
     purpose?: string;
     allowedPaths?: string[];
     sessionId?: string;
+    sessionless?: boolean;
   },
 ): Record<string, unknown> {
+  const useSessionless = input.sessionless === true ||
+    (input.sessionless !== false && !input.sessionId && isSessionlessTextEditBatch(input.operations));
+  if (useSessionless && input.sessionId)
+    throw new Error('SESSIONLESS_SAFE_PATCH_LEGACY_SESSION_NOT_SUPPORTED');
   // Same exact-path claims as the MCP safe-patch entry (#713): a Console edit
   // fences only the files it writes and no longer holds the repository-wide
   // ControllerLock, which vetoed every concurrent Process source write lease.
@@ -1212,16 +1217,21 @@ export function applyConsoleSafePatch(
     ctx.repository.repoId,
     'console:safe_patch_apply',
     (leaseOwnerJobId) =>
-      applySafePatch(ctx.repository, {
-        controllerHome: ctx.controllerHome,
-        leaseOwnerJobId,
-        sessionId: input.sessionId,
-        purpose: input.purpose ?? 'Console interactive edit',
-        operations: input.operations,
-        allowedPaths: input.allowedPaths,
-        refreshFingerprints: false,
-        recoverStaleSession: true,
-      }),
+      useSessionless
+        ? applySessionlessSafePatch(ctx.repository, {
+            operations: input.operations,
+            allowedPaths: input.allowedPaths,
+          })
+        : applySafePatch(ctx.repository, {
+            controllerHome: ctx.controllerHome,
+            leaseOwnerJobId,
+            sessionId: input.sessionId,
+            purpose: input.purpose ?? 'Console interactive edit',
+            operations: input.operations,
+            allowedPaths: input.allowedPaths,
+            refreshFingerprints: false,
+            recoverStaleSession: true,
+          }),
     60_000,
     mutationClaims,
   );

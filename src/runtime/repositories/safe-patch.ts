@@ -317,6 +317,17 @@ function patchErrorFailures(error: unknown, chunkIndex: number): SafePatchPrefli
  * preflight but never opens an EditSession or writes its backups/worklog.
  * Multi-file and resumable session edits still use the legacy journaled owner.
  */
+/** Whether this batch can be written atomically without a durable edit journal. */
+export function isSessionlessTextEditBatch(operations: unknown): boolean {
+  return Array.isArray(operations) &&
+    operations.length === 1 &&
+    typeof operations[0] === 'object' &&
+    operations[0] !== null &&
+    ['replace', 'write', 'prepend', 'append', 'insert_before', 'insert_after'].includes(
+      String((operations[0] as Record<string, unknown>).type ?? ''),
+    );
+}
+
 export function applySessionlessSafePatch(repository: RepositoryRecord, input: {
   operations: unknown;
   allowedPaths?: unknown;
@@ -347,7 +358,10 @@ export function applySessionlessSafePatch(repository: RepositoryRecord, input: {
     throw new Error(`SAFE_PATCH_PATH_OUTSIDE_SCOPE: ${resolved.relativePath}`);
 
   const plan = buildSafePatchPlan(repository, { operations, chunkSize: 1 });
-  const checked = preflightChunk(repository, operations, 1, input.refreshFingerprints === true);
+  // Explicit caller SHA is an optimistic concurrency precondition, never a
+  // refresh hint. Only fill a missing fingerprint; do not silently replace a
+  // stale one even when refresh_fingerprints=true (#713).
+  const checked = preflightChunk(repository, operations, 1, false);
   const failureResult = (failures: SafePatchPreflightFailure[]) => ({
     status: 'failed' as const,
     sessionless: true as const,

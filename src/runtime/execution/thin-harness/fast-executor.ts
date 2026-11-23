@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
-import { applySafePatch } from '../../repositories/safe-patch';
+import { applySafePatch, applySessionlessSafePatch, isSessionlessTextEditBatch } from '../../repositories/safe-patch';
 import {
   executeRepositoryCommandAsync,
   previewRepositoryCommandExecutionAsync,
@@ -763,6 +763,45 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
             throw new Error(`PATH_SCOPE_REJECTED: operations target paths outside allowed scope: ${bad.join(', ')}`);
           }
         }
+        const explicitLegacyFlow = Boolean(
+          request.input.session_id ||
+          request.input.expected_revision !== undefined ||
+          request.input.validation_only === true ||
+          request.input.check_ids ||
+          request.input.validation_request_id ||
+          request.input.continue_on_error === true,
+        );
+        const useSessionless = request.input.sessionless === true ||
+          (request.input.sessionless !== false &&
+            !explicitLegacyFlow &&
+            isSessionlessTextEditBatch(request.input.operations));
+        if (useSessionless) {
+          if (explicitLegacyFlow) throw new Error('SESSIONLESS_SAFE_PATCH_LEGACY_SESSION_OR_VALIDATION_NOT_SUPPORTED');
+          const atomic = await trace.measure('executionMs', async () =>
+            applySessionlessSafePatch(ctx.repository, {
+              operations: request.input.operations,
+              allowedPaths: allowed,
+            }),
+          );
+          changedPaths = atomic.changedFiles;
+          repositoryChanged = changedPaths.length > 0;
+          ok = atomic.status === 'applied';
+          outcome = ok ? 'succeeded' : 'failed';
+          policyDecision = ok ? 'allowed' : 'failed';
+          resultPayload = ok
+            ? { applied: atomic, changedPaths, fencingToken }
+            : {
+                applied: atomic,
+                error: {
+                  code: atomic.failures[0]?.code ?? 'PATCH_FAILED',
+                  message: atomic.failures[0]?.message ?? 'Atomic patch was not applied',
+                  cleanupRequired: false,
+                  reconciliationRequired: false,
+                  repositoryChanged: false,
+                },
+              };
+        } else {
+        // Multi-file/legacy edits still need binary-safe crash recovery.
         // Create binary-safe savepoint (files, symlinks, modes, create/delete) before apply.
         let savepoint: WorkspaceSavepoint | undefined;
         try {
@@ -880,6 +919,7 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
         } else {
           discardWorkspaceSavepoint(savepoint);
           resultPayload = { applied, changedPaths, fencingToken };
+        }
         }
       } else if (operation === 'stage_paths' || operation === 'git_stage_paths') {
         helpers?.assert();

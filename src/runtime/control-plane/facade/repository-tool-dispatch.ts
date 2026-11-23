@@ -30,7 +30,7 @@ import {
 } from '../../repositories/registry';
 import { repositoryGitRemoveWorktree } from '../../repositories/structured-worktree-cleanup';
 import { buildControllerWorkbench } from '../../repositories/workbench';
-import { applySafePatch, applySessionlessSafePatch, buildSafePatchPlan } from '../../repositories/safe-patch';
+import { applySafePatch, applySessionlessSafePatch, buildSafePatchPlan, isSessionlessTextEditBatch } from '../../repositories/safe-patch';
 import {
   assertEditSessionDurableBinding,
   getEditSession,
@@ -815,8 +815,20 @@ export async function callRepositoryTool(
       case 'repository_safe_patch_apply': {
         const repository = resolveRepositorySelectionWithoutWorkAuthority(controllerHome, args, repoIdValue, caller);
         const patchPaths = extractPatchPaths(args.operations);
-        if (args.sessionless === true) {
-          if (args.session_id || args.validation_only === true || args.check_ids || args.expected_revision !== undefined || args.continue_on_error === true) {
+        const explicitLegacyFlow = Boolean(
+          args.session_id ||
+          args.validation_only === true ||
+          args.check_ids ||
+          args.validation_request_id ||
+          args.expected_revision !== undefined ||
+          args.continue_on_error === true,
+        );
+        const useSessionless = args.sessionless === true ||
+          (args.sessionless !== false &&
+            !explicitLegacyFlow &&
+            isSessionlessTextEditBatch(args.operations));
+        if (useSessionless) {
+          if (explicitLegacyFlow) {
             throw new Error('SESSIONLESS_SAFE_PATCH_LEGACY_SESSION_OR_VALIDATION_NOT_SUPPORTED');
           }
           const atomicClaims = patchPaths.length > 0

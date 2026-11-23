@@ -1545,12 +1545,16 @@ describe('repository MCP command tools', () => {
         const input = {
           operations: [{ type: 'replace', path: 'app.txt', replacements: [{ old_text: 'before', new_text: 'after' }] }],
         };
-        if (entrypoint === 'direct') applySafePatch(repository, { ...input, controllerHome });
-        else applyConsoleSafePatch({ repository, controllerHome }, input);
+        if (entrypoint === 'direct') {
+          applySafePatch(repository, { ...input, controllerHome });
+          expect(
+            realpathSync(join(repoRoot, '.ai/harness/edit-sessions')).startsWith(`${realpathSync(controllerHome)}/`),
+          ).toBe(true);
+        } else {
+          const applied = applyConsoleSafePatch({ repository, controllerHome }, input);
+          expect(applied).toMatchObject({ sessionless: true, createdSession: false });
+        }
         expect(readFileSync(join(repoRoot, 'app.txt'), 'utf8')).toBe('after\n');
-        expect(
-          realpathSync(join(repoRoot, '.ai/harness/edit-sessions')).startsWith(`${realpathSync(controllerHome)}/`),
-        ).toBe(true);
       } finally {
         if (priorHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
         else process.env.FORGE_CONTROLLER_HOME = priorHome;

@@ -1997,6 +1997,7 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
         purpose: queryString(body.purpose),
         allowedPaths: Array.isArray(body.allowedPaths) ? body.allowedPaths.map(String) : undefined,
         sessionId: queryString(body.sessionId),
+        sessionless: typeof body.sessionless === 'boolean' ? body.sessionless : undefined,
       });
       response.status(applied.phase === 'failed' ? 409 : 200).json(applied);
     } catch (error) {
