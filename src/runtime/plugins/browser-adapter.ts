@@ -15,6 +15,7 @@ import type {
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { assertCredentialUseAuthorized } from '../safe-tooling/managed-credential-authorization';
+import { inspectSavedPasswordTarget } from './browser-password-target-policy';
 import { listCanonicalGrants } from '../../../packages/kernel/identity/api/index';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { readControllerPluginConfig, writeControllerPluginConfig, type PluginConfigAdapterContext } from './config-store';
@@ -5223,6 +5224,18 @@ async function executeBrowserPluginActionInternal(
                 { retryable: false });
             }
           }
+          if (usernameSelector && expectedUsername) {
+            const accountSafety = await page.evaluate<ReturnType<typeof inspectSavedPasswordTarget>>(
+              inspectSavedPasswordTarget as unknown as (...args: unknown[]) => unknown, {
+              selector: usernameSelector, kind: 'account', expectedAccount: expectedUsername.trim(),
+            });
+            if (accountSafety.count !== 1 || !accountSafety.kindValid
+              || !accountSafety.actionable || !accountSafety.matches) {
+              throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_ACCOUNT_FIELD_NOT_ACTIONABLE',
+                'The exact authorized account input must be visible and enabled in the top-level page.',
+                { retryable: false });
+            }
+          }
           // Never read a password value into the model, Runtime, provider receipt or logs.
           // The page may return only the presence of a nonempty password field.
           const checkField = async () => await page.evaluate<{ count: number; password: boolean; filled: boolean; bounds?: { x: number; y: number; visible: boolean } }>((candidate) => {
@@ -5250,12 +5263,22 @@ async function executeBrowserPluginActionInternal(
             };
           }, selector);
           const before = await checkField();
+          const beforeSafety = await page.evaluate<ReturnType<typeof inspectSavedPasswordTarget>>(
+            inspectSavedPasswordTarget as unknown as (...args: unknown[]) => unknown, {
+            selector, kind: 'password',
+          });
           if (before.count !== 1 || !before.password) {
             throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_FIELD_INVALID',
               'Selector must identify exactly one password input in the current top-level page.', { retryable: false });
           }
-          if (!before.filled) {
-            if (!before.bounds?.visible || !Number.isFinite(before.bounds.x) || !Number.isFinite(before.bounds.y)) {
+          if (beforeSafety.count !== 1 || !beforeSafety.kindValid || !beforeSafety.actionable
+            || !beforeSafety.bounds?.visible) {
+            throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_FIELD_NOT_ACTIONABLE',
+              'Password input must be visible, enabled, unobscured and current even when pre-filled.',
+              { retryable: false });
+          }
+          if (!beforeSafety.filled) {
+            if (!beforeSafety.bounds?.visible || !Number.isFinite(beforeSafety.bounds.x) || !Number.isFinite(beforeSafety.bounds.y)) {
               throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_FIELD_NOT_ACTIONABLE',
                 'The password field is not visibly actionable in the exact foreground tab.', { retryable: false });
             }
@@ -5267,9 +5290,9 @@ async function executeBrowserPluginActionInternal(
               // Synthetic DOM click does not activate Chrome/iCloud Passwords suggestions.
               // Route a real pointer click through the existing trusted-input provider.
               if (page.trustedInput) {
-                await page.trustedInput({ kind: 'click', x: before.bounds.x, y: before.bounds.y, button: 'left', clickCount: 1 });
+                await page.trustedInput({ kind: 'click', x: beforeSafety.bounds!.x, y: beforeSafety.bounds!.y, button: 'left', clickCount: 1 });
               } else {
-                await page.mouse!.click(before.bounds.x, before.bounds.y, { button: 'left', clickCount: 1 });
+                await page.mouse!.click(beforeSafety.bounds!.x, beforeSafety.bounds!.y, { button: 'left', clickCount: 1 });
               }
             } catch {
               throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_AUTOFILL_OUTCOME_UNKNOWN',
@@ -5283,6 +5306,16 @@ async function executeBrowserPluginActionInternal(
               { retryable: false, effectOutcome: 'outcome_unknown' });
           }
           const after = await checkField();
+          const afterSafety = await page.evaluate<ReturnType<typeof inspectSavedPasswordTarget>>(
+            inspectSavedPasswordTarget as unknown as (...args: unknown[]) => unknown, {
+            selector, kind: 'password',
+          });
+          if (afterSafety.count !== 1 || !afterSafety.kindValid || !afterSafety.actionable
+            || !afterSafety.bounds?.visible || after.filled !== afterSafety.filled) {
+            throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_AUTOFILL_OUTCOME_UNKNOWN',
+              'The password target changed during autofill; inspect the session without replaying.',
+              { retryable: false, effectOutcome: 'outcome_unknown' });
+          }
           return {
             provider: browserResultProvider(connection.provider),
             sessionId: target.sessionId,
