@@ -1837,6 +1837,29 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(createRequire(dependencyAnchors[0]!)('playwright')).toEqual({ fromPackagedRuntime: true });
     expect(() => createRequire(dependencyAnchors[1]!).resolve('playwright')).toThrow();
 
+    // A standalone release binary resolves modules through its pinned
+    // FORGE_RELEASE_PATH, not its virtual import.meta.url or unrelated repo.
+    writeFileSync(join(releaseRoot, 'manifest.json'), '{"schemaVersion":1}');
+    const oldReleasePath = process.env.FORGE_RELEASE_PATH;
+    const oldSourceRoot = process.env.FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT;
+    try {
+      process.env.FORGE_RELEASE_PATH = releaseRoot;
+      delete process.env.FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT;
+      const virtualBundleUrl = 'file:///virtual/bunfs/root/forge-runtime-bundle.js';
+      const deployedAnchors = browserDependencyRequireAnchors(repoA, virtualBundleUrl);
+      expect(deployedAnchors[0]).toBe(join(releaseRoot, 'package', 'package.json'));
+      expect(createRequire(deployedAnchors[0]!)('playwright')).toEqual({ fromPackagedRuntime: true });
+      // A nonexistent release cannot supply a dependency anchor.
+      process.env.FORGE_RELEASE_PATH = join(repoA, 'missing-release');
+      expect(browserDependencyRequireAnchors(repoA, virtualBundleUrl)).not.toContain(
+        join(repoA, 'missing-release', 'package', 'package.json'));
+    } finally {
+      if (oldReleasePath === undefined) delete process.env.FORGE_RELEASE_PATH;
+      else process.env.FORGE_RELEASE_PATH = oldReleasePath;
+      if (oldSourceRoot === undefined) delete process.env.FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT;
+      else process.env.FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT = oldSourceRoot;
+    }
+
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     const extensionPath = extensionFixture(repoA);
     writeControllerPluginConfig(controllerHome, 'browser', {

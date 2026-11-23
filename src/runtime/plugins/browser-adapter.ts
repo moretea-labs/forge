@@ -367,12 +367,21 @@ type PlaywrightRuntime = {
 };
 
 export function browserDependencyRequireAnchors(repoRoot?: string, moduleUrl = import.meta.url): string[] {
-  const releasePackageManifest = join(dirname(fileURLToPath(moduleUrl)), 'package', 'package.json');
-  return [
-    existsSync(releasePackageManifest) ? releasePackageManifest : undefined,
+  // A standalone Bun executable may expose a virtual import.meta.url rather
+  // than the on-disk release root. The service explicitly pins its immutable
+  // release directory, whose package/ contains the bundled Playwright runtime.
+  const deployedReleaseRoots = [process.env.FORGE_RELEASE_PATH, process.env.FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT];
+  const deployedManifests = deployedReleaseRoots.flatMap((root) =>
+    root && isAbsolute(root) && existsSync(join(root, 'manifest.json'))
+      && existsSync(join(root, 'package', 'package.json'))
+      ? [join(root, 'package', 'package.json')] : []);
+  const moduleReleaseManifest = join(dirname(fileURLToPath(moduleUrl)), 'package', 'package.json');
+  return [...new Set([
+    ...deployedManifests,
+    existsSync(moduleReleaseManifest) ? moduleReleaseManifest : undefined,
     repoRoot ? join(repoRoot, 'package.json') : undefined,
     moduleUrl,
-  ].filter((anchor): anchor is string => typeof anchor === 'string');
+  ].filter((anchor): anchor is string => typeof anchor === 'string'))];
 }
 
 interface BrowserPluginRuntimeHooks {
