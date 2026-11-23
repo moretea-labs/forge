@@ -1,6 +1,6 @@
 # Forge Client UI Design Contract
 
-Authority: moretea-labs/forge#649 — 2026-11-23 (Cursor-density polish on four-column shell).
+Authority: moretea-labs/forge#649 — 2026-11-23 (flat-glass visual refresh on the four-column shell).
 Scope: native macOS Client window architecture, layout, navigation, typography, panels and focus. This contract does not create or change Project/Requirement/Plan, Checkout, Provider, Git or Runtime authority.
 
 ## Locked product decisions
@@ -11,7 +11,7 @@ Scope: native macOS Client window architecture, layout, navigation, typography, 
 - **Browser deferred.** Never show Browser as an active enabled control until a separate authorized pane exists.
 - **Cursor density.** Prefer quieter chrome: denser thread rows, icon-first conversation tools, flatter composer, list-header New Chat (`sidebar.thread.new`), and a persistent right activity rail instead of a titlebar tool strip.
 - **No duplicate chrome.** Titlebar shows only Changes. Files / planning / knowledge live on the right rail; the conversation column does not repeat those openers. Window title shows workspace scope + honest status color (orange when checkout unavailable), not a second copy of the selected thread title.
-- **Material sidebar + flat content.** Sidebar uses `.ultraThinMaterial` (transparent vibrancy). Keep system unified-titlebar vibrancy — never paint a solid white toolbar. Conversation/right panes stay content-first without card wells. Prefer typography/selection fills over hairlines and drop shadows. Right-rail selection uses the same quiet fill as the left rail; composer shows an edge only while focused.
+- **Whole-window flat glass.** The NSWindow is non-opaque with a shared behind-window material across the shell; rail/list columns use only a slightly stronger adaptive tonal wash. Keep system unified-titlebar vibrancy — never paint a solid toolbar or opaque main canvas. Conversation/right panes stay content-first without card wells. Prefer typography/selection fills over hairlines and drop shadows. Search/input and composer surfaces remain translucent; the composer shows an edge only while focused.
 - **Icon optical contract.** Chrome glyphs use `ForgeClientDesign.Icon`: 13pt / 28pt hit for toolbar·sidebar·composer, 15pt rail glyphs + 9pt labels; hierarchical rendering, medium weight.
 
 ## 1. Overall layout
@@ -29,7 +29,7 @@ macOS unified toolbar: traffic lights + Changes (Agent)
 +------+--------------+----------------------------------+--------+
 ~~~
 
-Default visible columns: left icon rail + list + main + right activity rail. Titlebar exposes only Changes; 附件 / 规划 / 知识 stay on the right rail. Clicking Changes or a rail tool expands the work-surface column between chat and the rail. It supports resize, close, and maximize without destroying chat state. The side-by-side threshold is 840pt (420pt conversation + 360pt work surface + 60pt native split/spacing allowance) inside the split area beside the rail; width changes switch presentation without clearing the selected surface.
+Default visible columns: left icon rail + list + main + right activity rail. The entire shell shares one adaptive translucent backdrop; rail/list depth comes from tonal material rather than separators, borders, or opaque slabs. Titlebar exposes only Changes; 附件 / 规划 / 知识 stay on the right rail. Clicking Changes or a rail tool expands the work-surface column between chat and the rail. It supports resize, close, and maximize without destroying chat state. The side-by-side threshold is 840pt (420pt conversation + 360pt work surface + 60pt native split/spacing allowance) inside the split area beside the rail; width changes switch presentation without clearing the selected surface.
 
 ## 2. Toolbar ownership
 

@@ -221,6 +221,7 @@ struct AgentPane: View {
         .padding(.vertical,8)
         .frame(width:ForgeClientDesign.Shell.iconRailWidth)
         .frame(maxHeight:.infinity)
+        .background(ForgePalette.railTint)
         .accessibilityElement(children:.contain)
         .accessibilityIdentifier("agent.right-rail")
     }

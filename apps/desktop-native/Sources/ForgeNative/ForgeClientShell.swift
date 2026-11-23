@@ -134,6 +134,7 @@ struct ForgeWorkspaceView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .forgeWindowMaterial()
         .toolbar {
             ToolbarItemGroup(placement:.automatic) {
                 unifiedWindowToolbarActions
@@ -298,6 +299,7 @@ struct ForgeWorkspaceView: View {
         .padding(.vertical,8)
         .frame(width:ForgeClientDesign.Shell.iconRailWidth)
         .frame(maxHeight:.infinity)
+        .background(ForgePalette.railTint)
         .accessibilityElement(children:.contain)
         .accessibilityIdentifier("forge.navigation.rail")
     }
@@ -349,6 +351,7 @@ struct ForgeWorkspaceView: View {
             .frame(maxWidth:.infinity,maxHeight:.infinity)
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+        .background(ForgePalette.listTint)
     }
 
     private var unifiedSidebar: some View {
@@ -391,7 +394,7 @@ struct ForgeWorkspaceView: View {
                     .textFieldStyle(.plain).font(.system(size:12))
             }
             .padding(.horizontal,9).frame(height:30)
-            .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
+            .background(ForgePalette.inputFill,in:RoundedRectangle(cornerRadius:10,style:.continuous))
             .padding(.horizontal,12)
             .padding(.bottom,8)
 
@@ -540,7 +543,7 @@ struct ForgeWorkspaceView: View {
                 }
                 .padding(.horizontal,9)
                 .frame(height:28)
-                .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                .background(ForgePalette.inputFill,in:RoundedRectangle(cornerRadius:10,style:.continuous))
                 .padding(.horizontal,10).padding(.bottom,4)
             }
 
@@ -1246,7 +1249,7 @@ struct ForgeWorkspaceView: View {
                     .textFieldStyle(.plain).font(.system(size:12))
             }
             .padding(.horizontal,9).frame(height:32)
-            .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:9,style:.continuous))
+            .background(ForgePalette.inputFill,in:RoundedRectangle(cornerRadius:10,style:.continuous))
 
             ScrollView {
                 LazyVStack(spacing:4) {

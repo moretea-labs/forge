@@ -4,7 +4,9 @@ import SwiftUI
 /// Native visual contract: content first, icon-only secondary actions, quiet selection,
 /// one consistent input surface; avoid decorative cards around navigation and status.
 enum ForgePalette {
-  static let canvas = Color(nsColor: .textBackgroundColor)
+  // The window itself is glass. Content gets only a light adaptive wash so
+  // text stays readable without turning the main workspace back into an opaque panel.
+  static let canvas = Color(nsColor: .windowBackgroundColor).opacity(0.24)
   static let ink = Color.primary
   static let secondary = Color(nsColor: .secondaryLabelColor)
   static let accent = Color(
@@ -13,17 +15,22 @@ enum ForgePalette {
         ? NSColor.controlAccentColor
         : NSColor.labelColor
     })
-  static let selection = Color.primary.opacity(0.065)
-  static let selectionStrong = Color.primary.opacity(0.095)
-  static let userBubble = Color.primary.opacity(0.05)
-  static let raisedSurface = Color(nsColor: .controlBackgroundColor)
-  static let softFill = Color.primary.opacity(0.045)
-  static let composer = Color(nsColor: .controlBackgroundColor).opacity(0.72)
+  static let selection = Color.primary.opacity(0.052)
+  static let selectionStrong = Color.primary.opacity(0.085)
+  static let userBubble = Color.primary.opacity(0.045)
+  static let raisedSurface = Color(nsColor: .controlBackgroundColor).opacity(0.46)
+  static let softFill = Color.primary.opacity(0.032)
+  static let inputFill = Color(nsColor: .controlBackgroundColor).opacity(0.32)
+  static let composer = Color(nsColor: .controlBackgroundColor).opacity(0.42)
   /// Near-invisible edge reserved for focus rings only — not column separators.
-  static let hairline = Color.primary.opacity(0.08)
-  static let primaryHairlineFocused = Color.primary.opacity(0.18)
-  /// Soft tonal lift when a material backdrop is unavailable.
-  static let sidePanel = Color.primary.opacity(0.02)
+  static let hairline = Color.primary.opacity(0.07)
+  static let primaryHairlineFocused = Color.primary.opacity(0.16)
+  /// Adaptive tonal layers over the shared behind-window material. They replace
+  /// separators/card wells and keep the rail/list readable in both appearances.
+  static let windowTint = Color(nsColor: .windowBackgroundColor).opacity(0.12)
+  static let railTint = Color.primary.opacity(0.018)
+  static let listTint = Color(nsColor: .controlBackgroundColor).opacity(0.055)
+  static let sidePanel = Color(nsColor: .controlBackgroundColor).opacity(0.12)
 }
 
 extension ForgeClientDesign {
@@ -63,7 +70,7 @@ extension Image {
 
 /// Quiet hover feedback for plain list/starter buttons (not toolbar/rail chrome).
 struct ForgeHoverFill: ViewModifier {
-  var cornerRadius: CGFloat = 8
+  var cornerRadius: CGFloat = 7
   @State private var hovering = false
   func body(content: Content) -> some View {
     content
@@ -79,11 +86,26 @@ extension View {
     modifier(ForgeHoverFill(cornerRadius: cornerRadius))
   }
 
-  /// Real behind-window vibrancy for the icon rail + list column.
+  /// Shared behind-window material for the whole application shell.
+  func forgeWindowMaterial() -> some View {
+    background {
+      ZStack {
+        ForgeVisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow)
+          .ignoresSafeArea()
+        ForgePalette.windowTint.ignoresSafeArea()
+      }
+    }
+  }
+
+  /// Slightly stronger vibrancy for navigation rails/list columns. Depth comes
+  /// from tonal material, never a separator line or opaque sidebar slab.
   func forgeSidebarMaterial() -> some View {
     background {
-      ForgeVisualEffectView(material: .sidebar, blendingMode: .behindWindow)
-        .ignoresSafeArea()
+      ZStack {
+        ForgeVisualEffectView(material: .sidebar, blendingMode: .behindWindow)
+          .ignoresSafeArea()
+        ForgePalette.sidePanel.ignoresSafeArea()
+      }
     }
   }
 }
@@ -106,6 +128,27 @@ struct ForgeVisualEffectView: NSViewRepresentable {
   func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
     nsView.material = material
     nsView.blendingMode = blendingMode
+  }
+}
+
+/// SwiftUI's WindowGroup is opaque by default. Configure the hosting NSWindow once
+/// it exists so behind-window material can remain visible across the entire client.
+struct ForgeWindowConfigurator: NSViewRepresentable {
+  func makeNSView(context: Context) -> NSView {
+    let view = NSView(frame: .zero)
+    DispatchQueue.main.async { configure(view.window) }
+    return view
+  }
+
+  func updateNSView(_ nsView: NSView, context: Context) {
+    DispatchQueue.main.async { configure(nsView.window) }
+  }
+
+  private func configure(_ window: NSWindow?) {
+    guard let window else { return }
+    window.isOpaque = false
+    window.backgroundColor = .clear
+    window.titlebarAppearsTransparent = true
   }
 }
 
