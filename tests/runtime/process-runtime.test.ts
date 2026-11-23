@@ -25,6 +25,7 @@ import {
   claimsForCheck,
   claimsForRepositoryCommand,
   fingerprintProcessCommand,
+  gcOrphanedProcessRequestBindings,
   gcTerminalProcesses,
   getProcessHandle,
   getProcessRecord,
@@ -43,6 +44,8 @@ import {
   waitForProcess,
 } from '../../src/runtime/execution/process-runtime';
 import type { ProcessHandle } from '../../src/runtime/execution/process-runtime/types';
+const sixDaysMs = 6 * 24 * 60 * 60_000;
+const eightDaysMs = 8 * 24 * 60 * 60_000;
 import {
   createProcessRecord,
   deleteProcessRecord,
@@ -60,7 +63,10 @@ import {
   recordProcessHandleIndexEntry,
   readProcessHandleIndexEntry,
 } from '../../src/runtime/execution/process-runtime/handle-index';
-import { readControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import {
+  readControlPlaneRecord,
+  writeControlPlaneRecord,
+} from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
   claimRunnerStarted,
   runProcessRunnerFromDescriptor,
@@ -1601,6 +1607,102 @@ describe('Unified Process Runtime', () => {
         origin: { surface: 'command', requestId },
       }),
     ).rejects.toThrow('PROCESS_REQUEST_INCOMPLETE');
+  });
+
+  test('orphan request binding ages out only after the idempotency retention window', () => {
+    const fx = fixture();
+    const requestId = 'aged-orphan-request';
+    const claimInput = {
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      requestId,
+      commandFingerprint: 'fingerprint-aged-orphan',
+      processId: 'proc_missing_aged_record',
+    };
+    expect(claimProcessRequest(claimInput).status).toBe('claimed');
+    const bindingKey = processBindingKey({
+      repoId: claimInput.repoId,
+      checkoutId: claimInput.checkoutId,
+      requestId,
+    });
+    const sevenDaysMs = 7 * 24 * 60 * 60_000;
+    const claimedAtMs = Date.now();
+
+    expect(gcOrphanedProcessRequestBindings(fx.controllerHome, {
+      olderThanMs: sevenDaysMs,
+      maxRows: 100,
+      nowMs: claimedAtMs + sixDaysMs,
+    })).toMatchObject({ removed: 0 });
+    expect(readControlPlaneRecord(
+      fx.controllerHome, 'process_request_binding', fx.repository.repoId, bindingKey,
+    )).toBeDefined();
+
+    expect(gcOrphanedProcessRequestBindings(fx.controllerHome, {
+      olderThanMs: sevenDaysMs,
+      maxRows: 100,
+      nowMs: claimedAtMs + eightDaysMs,
+    })).toMatchObject({ removed: 1 });
+    expect(readControlPlaneRecord(
+      fx.controllerHome, 'process_request_binding', fx.repository.repoId, bindingKey,
+    )).toBeUndefined();
+  });
+
+  test('request binding GC cursor advances past retained rows instead of starving later garbage', () => {
+    const fx = fixture();
+    const oldCreatedAt = new Date(Date.now() - 9 * 24 * 60 * 60_000).toISOString();
+    const protectedProcessId = 'proc_retained_binding';
+    const processesRoot = repositoryProcessesRoot(fx.controllerHome, fx.repository.repoId);
+    mkdirSync(processesRoot, { recursive: true });
+    writeFileSync(join(processesRoot, `${protectedProcessId}.json`), '{}');
+
+    writeControlPlaneRecord(fx.controllerHome, {
+      namespace: 'process_request_binding',
+      scope: fx.repository.repoId,
+      key: '000-protected',
+      schemaVersion: 1,
+      value: {
+        schemaVersion: 1,
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        requestId: 'protected-request',
+        commandFingerprint: 'protected',
+        processId: protectedProcessId,
+        createdAt: oldCreatedAt,
+      },
+      expectedRevision: null,
+    });
+    writeControlPlaneRecord(fx.controllerHome, {
+      namespace: 'process_request_binding',
+      scope: fx.repository.repoId,
+      key: 'fff-stale',
+      schemaVersion: 1,
+      value: {
+        schemaVersion: 1,
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        requestId: 'stale-request',
+        commandFingerprint: 'stale',
+        processId: 'proc_missing_stale_binding',
+        createdAt: oldCreatedAt,
+      },
+      expectedRevision: null,
+    });
+
+    expect(gcOrphanedProcessRequestBindings(fx.controllerHome, {
+      olderThanMs: 7 * 24 * 60 * 60_000,
+      maxRows: 1,
+    })).toMatchObject({ examined: 1, removed: 0 });
+    expect(gcOrphanedProcessRequestBindings(fx.controllerHome, {
+      olderThanMs: 7 * 24 * 60 * 60_000,
+      maxRows: 1,
+    })).toMatchObject({ examined: 1, removed: 1 });
+    expect(readControlPlaneRecord(
+      fx.controllerHome, 'process_request_binding', fx.repository.repoId, '000-protected',
+    )).toBeDefined();
+    expect(readControlPlaneRecord(
+      fx.controllerHome, 'process_request_binding', fx.repository.repoId, 'fff-stale',
+    )).toBeUndefined();
   });
 
   test('terminal fencing rejects second completion', async () => {

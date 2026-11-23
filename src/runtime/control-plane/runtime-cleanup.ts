@@ -19,6 +19,7 @@ import { cleanupControllerReleaseHistory } from './release-retention';
 import { cleanupRetiredRepositoryNamespaces } from './repository-namespace-retention';
 import { maintainControlPlaneDatabase, type ControlPlaneDatabaseMaintenanceReport } from './persistence/sqlite-store';
 import { gcOrphanedProcessHandleIndexEntries } from '../execution/process-runtime/handle-index';
+import { gcOrphanedProcessRequestBindings } from '../execution/process-runtime/store';
 import { measureReclaimablePath, RUNTIME_LIFECYCLE_RETENTION_POLICY_VERSION } from './lifecycle-retention-metrics';
 import { listReleaseSessions, releaseSessionCandidateIsRetired } from '../release/release-session';
 import { removeRetiredCandidateExecutionLane } from '../root/runtime-lane';
@@ -60,6 +61,16 @@ const PROCESS_HANDLE_INDEX_GC_MAX_ROWS = numericSetting(
   // Live hosts can accumulate >100k orphan handle locators; 500/tick converges too
   // slowly against ongoing Process churn. Keep the pass bounded for the scheduler
   // busy budget while clearing stale rows within a few dozen maintenance ticks.
+  2_500,
+  1,
+);
+const PROCESS_REQUEST_BINDING_GC_RETENTION_MS = numericSetting(
+  process.env.FORGE_PROCESS_REQUEST_BINDING_GC_RETENTION_MS,
+  7 * 24 * 60 * 60_000,
+  60_000,
+);
+const PROCESS_REQUEST_BINDING_GC_MAX_ROWS = numericSetting(
+  process.env.FORGE_PROCESS_REQUEST_BINDING_GC_MAX_ROWS,
   2_500,
   1,
 );
@@ -1405,6 +1416,19 @@ export function cleanupControllerRuntimeState(
     });
   } catch (error) {
     errors.push(errorText('process handle index GC', error));
+  }
+  try {
+    // Request-id bindings protect transport retries, but keeping them forever
+    // turns every accepted command into permanent SQLite state. Reclaim only
+    // bindings older than the retry window whose Process evidence is already
+    // gone; this preserves fail-closed idempotency for recent requests.
+    gcOrphanedProcessRequestBindings(home, {
+      olderThanMs: PROCESS_REQUEST_BINDING_GC_RETENTION_MS,
+      maxRows: PROCESS_REQUEST_BINDING_GC_MAX_ROWS,
+      nowMs,
+    });
+  } catch (error) {
+    errors.push(errorText('process request binding GC', error));
   }
   const inspectedPaths =
     referenceBudget.inspected +

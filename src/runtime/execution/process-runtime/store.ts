@@ -9,7 +9,12 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync
 import { basename, dirname, join } from 'path';
 import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../effects/controller-home';
 import { withControllerLock } from '../../../effects/controller-locks';
-import { mutateControlPlaneRecord, readOrImportControlPlaneRecord } from '../../control-plane/persistence/sqlite-store';
+import {
+  deleteControlPlaneRecord,
+  mutateControlPlaneRecord,
+  scanControlPlaneRecordsWithMaintenanceCursor,
+  readOrImportControlPlaneRecord,
+} from '../../control-plane/persistence/sqlite-store';
 import { isSensitiveOutputKey, redactSensitiveText } from '../../evidence/sensitive-output';
 import { touchSchedulerWakeSignal } from '../../control-plane/global-scheduler/wake-signal';
 import { deleteProcessHandleIndexEntry } from './handle-index';
@@ -84,6 +89,34 @@ function requestBindingPath(
     .update(JSON.stringify({ repoId, checkoutId: checkoutId?.trim() || null, requestId }))
     .digest('hex');
   return join(requestBindingsRoot(controllerHome, repoId), `${key}.json`);
+}
+
+function processRecordPathWithoutCreatingStorage(
+  controllerHome: string,
+  repoId: string,
+  processId: string,
+): string {
+  const root = isRepositoryProcessScopeKey(repoId)
+    ? repositoryControllerRoot(controllerHome, repoId)
+    : processScopeRoot(controllerHome, repoId);
+  return join(root, 'processes', `${processId}.json`);
+}
+
+function requestBindingPathWithoutCreatingStorage(
+  controllerHome: string,
+  repoId: string,
+  checkoutId: string | undefined,
+  requestId: string,
+): string {
+  const root = isRepositoryProcessScopeKey(repoId)
+    ? repositoryControllerRoot(controllerHome, repoId)
+    : processScopeRoot(controllerHome, repoId);
+  return join(
+    root,
+    'processes',
+    'request-bindings',
+    `${bindingKey(repoId, checkoutId, requestId)}.json`,
+  );
 }
 
 function bindingKey(repoId: string, checkoutId: string | undefined, requestId: string): string {
@@ -460,6 +493,74 @@ export function getProcessRequestBinding(
     readLegacy: () =>
       readJson<ProcessRequestBinding>(requestBindingPath(controllerHome, repoId, checkoutId, normalized)),
   })?.value;
+}
+
+/**
+ * Bound durable request-id idempotency state after its Process evidence is gone.
+ * The binding remains authoritative throughout the retry window, so an old
+ * request cannot be replayed merely because Process GC removed its terminal
+ * record. Once both conditions hold (old enough + Process absent), the binding
+ * is no longer useful evidence and may be reclaimed.
+ */
+export function gcOrphanedProcessRequestBindings(
+  controllerHome: string,
+  options: { olderThanMs: number; maxRows?: number; nowMs?: number } = {
+    olderThanMs: 7 * 24 * 60 * 60_000,
+  },
+): { examined: number; removed: number } {
+  const olderThanMs = Math.max(0, Math.trunc(options.olderThanMs));
+  const maxRows = Math.max(1, Math.min(Math.trunc(options.maxRows ?? 500), 5_000));
+  const cutoffMs = (options.nowMs ?? Date.now()) - olderThanMs;
+  const records = scanControlPlaneRecordsWithMaintenanceCursor<ProcessRequestBinding>(controllerHome, {
+    namespace: 'process_request_binding',
+    cursorName: 'process_request_binding_gc',
+    limit: maxRows,
+  });
+
+  let examined = 0;
+  let removed = 0;
+  for (const record of records) {
+    examined += 1;
+    const binding = record.value;
+    if (
+      !binding
+      || binding.schemaVersion !== 1
+      || binding.repoId !== record.scope
+      || !binding.requestId?.trim()
+      || !binding.processId?.trim()
+    ) continue;
+    const createdMs = Date.parse(binding.createdAt);
+    if (!Number.isFinite(createdMs) || createdMs > cutoffMs) continue;
+    if (existsSync(processRecordPathWithoutCreatingStorage(controllerHome, binding.repoId, binding.processId))) {
+      continue;
+    }
+
+    const deleted = deleteControlPlaneRecord(controllerHome, {
+      namespace: 'process_request_binding',
+      scope: record.scope,
+      key: record.key,
+      action: 'process_request_binding_gc',
+    });
+    if (!deleted) continue;
+
+    // If this row was lazily imported from the legacy JSON projection, remove
+    // that projection too; otherwise a future lookup could resurrect the same
+    // stale binding into SQLite.
+    try {
+      const legacyPath = requestBindingPathWithoutCreatingStorage(
+        controllerHome,
+        binding.repoId,
+        binding.checkoutId,
+        binding.requestId,
+      );
+      if (existsSync(legacyPath)) unlinkSync(legacyPath);
+    } catch {
+      // SQLite authority is already gone. A legacy-file cleanup failure is
+      // best-effort and must not make Process maintenance fail closed.
+    }
+    removed += 1;
+  }
+  return { examined, removed };
 }
 
 /**
