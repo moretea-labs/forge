@@ -5890,7 +5890,7 @@ async function failBootedReleaseSessionCandidateCanary(
       action: 'release_session_candidate_boot',
       ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
     },
-    async (): Promise<ReleaseSessionCandidateBootStep> => {
+    async () => {
       const latest = readReleaseSession(config.controllerHome, session.sessionId);
       if (!latest) {
         return { ok: false as const, attempted: true, detail: terminalDetail, releaseSession: session };
@@ -6187,7 +6187,7 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
       action: 'release_session_candidate_boot',
       ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
     },
-    async () => {
+    async (): Promise<ReleaseSessionCandidateBootStep> => {
       let session = readReleaseSession(config.controllerHome, sessionId);
       if (!session) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
       if (session.phase === 'candidate_booted') {
