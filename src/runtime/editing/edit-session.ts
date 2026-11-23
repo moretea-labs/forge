@@ -1933,6 +1933,10 @@ export function cleanupTerminalEditSessionRecords(
     maxEntries?: number;
     maxRemovals?: number;
     sequence?: number;
+    /** Explicit legacy migration only: leave other terminal states under normal retention. */
+    onlyStatuses?: EditSessionStatus[];
+    /** Explicit legacy migration only: require this much time since the original session began. */
+    minCreatedAgeMs?: number;
   } = {},
 ): EditSessionRetentionResult {
   const root = join(repoRoot, SESSION_ROOT);
@@ -1987,6 +1991,20 @@ export function cleanupTerminalEditSessionRecords(
     if (!['finalized', 'reconciled_unverified', 'superseded', 'rolled_back'].includes(session.status)) {
       skip('active_session');
       continue;
+    }
+    if (input.onlyStatuses && !input.onlyStatuses.includes(session.status)) {
+      skip('status_outside_explicit_cleanup_scope');
+      continue;
+    }
+    if (input.minCreatedAgeMs !== undefined) {
+      const createdMs = Date.parse(session.createdAt);
+      if (
+        !Number.isFinite(createdMs) ||
+        nowMs - createdMs < Math.max(0, input.minCreatedAgeMs)
+      ) {
+        skip('session_too_recent_for_explicit_cleanup');
+        continue;
+      }
     }
     const updatedMs = Date.parse(session.updatedAt);
     if (!Number.isFinite(updatedMs)) {

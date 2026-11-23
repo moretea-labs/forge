@@ -542,6 +542,28 @@ fi
     expect(direct.skippedByReason.active_session).toBe(1);
 
     const central = writeSession('EDIT-1003-central', 'superseded');
+    const recentlyStarted = writeSession('EDIT-1004-recent', 'superseded');
+    const recentFile = join(recentlyStarted, 'session.json');
+    const recentlyStored = JSON.parse(readFileSync(recentFile, 'utf8')) as Record<string, unknown>;
+    recentlyStored.createdAt = new Date(nowMs - 60_000).toISOString();
+    recentlyStored.updatedAt = new Date(nowMs - 60_000).toISOString();
+    writeFileSync(recentFile, JSON.stringify(recentlyStored));
+    const oldSupersededButJustTerminal = writeSession('EDIT-1005-old-now-terminal', 'superseded');
+    const terminalFile = join(oldSupersededButJustTerminal, 'session.json');
+    const terminalStored = JSON.parse(readFileSync(terminalFile, 'utf8')) as Record<string, unknown>;
+    terminalStored.updatedAt = new Date(nowMs - 60_000).toISOString();
+    writeFileSync(terminalFile, JSON.stringify(terminalStored));
+    const scoped = cleanupTerminalEditSessionRecords(repositoryRoot, {
+      nowMs,
+      onlyStatuses: ['superseded'],
+      minCreatedAgeMs: 7 * 24 * 60 * 60_000,
+      maxRetained: 0,
+      maxEntries: 100,
+      maxRemovals: 10,
+    });
+    expect(scoped.removedSessionIds).toEqual(['EDIT-1003-central', 'EDIT-1005-old-now-terminal']);
+    expect(existsSync(recentlyStarted)).toBe(true);
+    expect(existsSync(open)).toBe(true);
     const report = cleanupControllerRuntimeState(home, {
       reason: 'manual',
       nowMs,
@@ -551,13 +573,12 @@ fi
       editSessionMaxRetained: 200,
     });
     expect(existsSync(central)).toBe(false);
+    expect(existsSync(recentlyStarted)).toBe(true);
     expect(existsSync(legacyWorkTagged)).toBe(false);
     expect(existsSync(open)).toBe(true);
-    expect(report.removedEditSessionPaths).toContain(
-      `repositories/${repository.repoId}/edit-sessions/EDIT-1003-central`,
-    );
-    expect(report.lifecycleMetrics.reclaimedByClass.edit_session.count).toBe(1);
-    expect(report.lifecycleMetrics.reclaimedByClass.edit_session.bytes).toBeGreaterThan(0);
+    expect(report.removedEditSessionPaths).toEqual([]);
+    expect(report.lifecycleMetrics.reclaimedByClass.edit_session.count).toBe(0);
+    expect(report.lifecycleMetrics.reclaimedByClass.edit_session.bytes).toBe(0);
     expect(report.lifecycleMetrics.reclaimedByClass.edit_session.unknownByteCount).toBe(0);
   });
 
