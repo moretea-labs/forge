@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from 'crypto';
-import { chmodSync, existsSync, mkdirSync, readdirSync, statSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'fs';
 import { join } from 'path';
 import { controllerSystemRoot, repositoryControllerRoot } from '../../effects/controller-home';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
-import { recordOutputHandleIndexEntry, readOutputHandleIndexEntry, refreshOutputHandleFingerprint, type OutputHandleStorage } from './output-handle-index';
+import { deleteOutputHandleIndexEntry, recordOutputHandleIndexEntry, readOutputHandleIndexEntry, refreshOutputHandleFingerprint, type OutputHandleStorage } from './output-handle-index';
 import { redactSensitiveValue, type SensitiveRedactionCount } from './sensitive-output';
 
 export interface ControllerResultRecord {
@@ -312,4 +312,109 @@ export function sanitizeControllerResultStore(controllerHome: string, _repoId: s
     }
   }
   return { scanned, changed, failed, resultIds };
+}
+
+
+export interface ControllerResultStoreCleanupReport {
+  inspected: number;
+  eligible: number;
+  removed: number;
+  reclaimedBytes: number;
+  failed: number;
+  scanTruncated: boolean;
+  budgetExhausted: boolean;
+  removedResultIds: string[];
+}
+
+export function cleanupControllerResultStore(
+  controllerHome: string,
+  options: {
+    nowMs?: number;
+    ttlMs?: number;
+    maxRemovals?: number;
+    maxScan?: number;
+  } = {},
+): ControllerResultStoreCleanupReport {
+  const storage: OutputHandleStorage = { scope: 'instance' };
+  const root = canonicalResultRoot(controllerHome);
+  const recordsDir = join(root, 'records');
+  const nowMs = options.nowMs ?? Date.now();
+  const ttlMs = Math.max(60_000, Math.trunc(options.ttlMs ?? 7 * 24 * 60 * 60_000));
+  const maxRemovals = Math.max(0, Math.min(100_000, Math.trunc(options.maxRemovals ?? 1_000)));
+  const maxScan = Math.max(1, Math.min(100_000, Math.trunc(options.maxScan ?? 20_000)));
+  const recordEntries = readdirSync(recordsDir).filter((entry) => entry.endsWith('.json'));
+  const candidates = recordEntries
+    .map((entry) => {
+      const path = join(recordsDir, entry);
+      try {
+        return { entry, mtimeMs: statSync(path).mtimeMs };
+      } catch {
+        return { entry, mtimeMs: Number.POSITIVE_INFINITY };
+      }
+    })
+    .sort((left, right) => left.mtimeMs - right.mtimeMs)
+    .slice(0, maxScan);
+
+  let eligible = 0;
+  let removed = 0;
+  let reclaimedBytes = 0;
+  let failed = 0;
+  const removedResultIds: string[] = [];
+
+  for (const candidate of candidates) {
+    let record: ControllerResultRecord;
+    const recordFile = join(recordsDir, candidate.entry);
+    try {
+      record = readJsonFile<ControllerResultRecord>(recordFile);
+      if (!record?.resultId || !record.createdAt) {
+        failed += 1;
+        continue;
+      }
+    } catch {
+      failed += 1;
+      continue;
+    }
+    const createdAtMs = Date.parse(record.createdAt);
+    if (!Number.isFinite(createdAtMs) || nowMs - createdAtMs < ttlMs) continue;
+    eligible += 1;
+    if (removed >= maxRemovals) continue;
+
+    const dataFile = dataPath(controllerHome, storage, record.resultId);
+    let bytes = 0;
+    try {
+      bytes += statSync(recordFile).size;
+    } catch {}
+    try {
+      bytes += statSync(dataFile).size;
+    } catch {}
+
+    try {
+      // Drop the locator first. If cleanup is interrupted before the record is
+      // removed, the normal canonical fallback can safely recreate the index.
+      deleteOutputHandleIndexEntry(controllerHome, {
+        handleId: record.resultId,
+        kind: 'result',
+      });
+      // Remove the record before its data so an interrupted cleanup can leave at
+      // worst an unreachable data sidecar, never a canonical record with missing data.
+      rmSync(recordFile, { force: true });
+      rmSync(dataFile, { force: true });
+      removed += 1;
+      reclaimedBytes += bytes;
+      removedResultIds.push(record.resultId);
+    } catch {
+      failed += 1;
+    }
+  }
+
+  return {
+    inspected: candidates.length,
+    eligible,
+    removed,
+    reclaimedBytes,
+    failed,
+    scanTruncated: recordEntries.length > candidates.length,
+    budgetExhausted: eligible > removed && removed >= maxRemovals,
+    removedResultIds,
+  };
 }

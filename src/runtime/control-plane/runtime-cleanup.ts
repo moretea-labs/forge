@@ -20,6 +20,7 @@ import { cleanupRetiredRepositoryNamespaces } from './repository-namespace-reten
 import { maintainControlPlaneDatabase, type ControlPlaneDatabaseMaintenanceReport } from './persistence/sqlite-store';
 import { gcOrphanedProcessHandleIndexEntries } from '../execution/process-runtime/handle-index';
 import { gcOrphanedProcessRequestBindings } from '../execution/process-runtime/store';
+import { cleanupControllerResultStore, type ControllerResultStoreCleanupReport } from '../evidence/result-store';
 import { measureReclaimablePath, RUNTIME_LIFECYCLE_RETENTION_POLICY_VERSION } from './lifecycle-retention-metrics';
 import { listReleaseSessions, releaseSessionCandidateIsRetired } from '../release/release-session';
 import { removeRetiredCandidateExecutionLane } from '../root/runtime-lane';
@@ -72,6 +73,16 @@ const PROCESS_REQUEST_BINDING_GC_RETENTION_MS = numericSetting(
 const PROCESS_REQUEST_BINDING_GC_MAX_ROWS = numericSetting(
   process.env.FORGE_PROCESS_REQUEST_BINDING_GC_MAX_ROWS,
   2_500,
+  1,
+);
+const CONTROLLER_RESULT_RETENTION_MS = numericSetting(
+  process.env.FORGE_CONTROLLER_RESULT_RETENTION_MS,
+  7 * 24 * 60 * 60_000,
+  60_000,
+);
+const CONTROLLER_RESULT_GC_MAX_ROWS = numericSetting(
+  process.env.FORGE_CONTROLLER_RESULT_GC_MAX_ROWS,
+  500,
   1,
 );
 
@@ -242,6 +253,8 @@ export interface RuntimeCleanupReport {
   removedRepositoryNamespacePaths: string[];
   /** Physical SQLite checkpoint/compaction receipt; row lifecycle remains domain-owned. */
   sqliteMaintenance?: ControlPlaneDatabaseMaintenanceReport;
+  /** Ephemeral result:// payload retention; durable artifacts/evidence are separate stores. */
+  resultStoreGc?: ControllerResultStoreCleanupReport;
   skippedActiveWorktrees: string[];
   inspectedPaths: number;
   budgetExhausted: boolean;
@@ -1417,6 +1430,19 @@ export function cleanupControllerRuntimeState(
   } catch (error) {
     errors.push(errorText('process handle index GC', error));
   }
+  let resultStoreGc: ControllerResultStoreCleanupReport | undefined;
+  try {
+    // result:// values are bounded tool-output continuations, not durable user
+    // artifacts or execution evidence. Retain a one-week readback window and
+    // reclaim older canonical payloads together with their locator index rows.
+    resultStoreGc = cleanupControllerResultStore(home, {
+      ttlMs: CONTROLLER_RESULT_RETENTION_MS,
+      maxRemovals: CONTROLLER_RESULT_GC_MAX_ROWS,
+      nowMs,
+    });
+  } catch (error) {
+    errors.push(errorText('controller result store GC', error));
+  }
   try {
     // Request-id bindings protect transport retries, but keeping them forever
     // turns every accepted command into permanent SQLite state. Reclaim only
@@ -1448,7 +1474,8 @@ export function cleanupControllerRuntimeState(
     schedulerBudget.exhausted ||
     editSessionBudget.exhausted ||
     removalBudget.exhausted ||
-    releaseSessionCandidates.truncated;
+    releaseSessionCandidates.truncated ||
+    (resultStoreGc?.budgetExhausted ?? false);
   if (pidFiles.skipped.length > 0 && removalBudget.exhausted)
     skippedByReason.cleanup_budget_exhausted =
       (skippedByReason.cleanup_budget_exhausted ?? 0) + pidFiles.skipped.length;
@@ -1497,6 +1524,11 @@ export function cleanupControllerRuntimeState(
       count: removedRepositoryNamespacePaths.length,
       bytes: repositoryNamespaceRetention.reclaimedBytes,
       unknownByteCount: repositoryNamespaceRetention.unknownReclaimedByteCount,
+    },
+    controller_result: {
+      count: resultStoreGc?.removed ?? 0,
+      bytes: resultStoreGc?.reclaimedBytes ?? 0,
+      unknownByteCount: 0,
     },
     sqlite_control_plane: {
       count: sqliteMaintenance?.vacuumed ? 1 : 0,
@@ -1555,6 +1587,7 @@ export function cleanupControllerRuntimeState(
     removedEditSessionPaths,
     removedRepositoryNamespacePaths,
     sqliteMaintenance,
+    resultStoreGc,
     skippedActiveWorktrees: worktrees.skippedActive.sort(),
     inspectedPaths,
     budgetExhausted,
