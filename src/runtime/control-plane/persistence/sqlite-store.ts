@@ -196,6 +196,14 @@ export interface ControlPlaneDatabaseMaintenanceReport {
   path: string;
   checkpointMode: 'passive';
   checkpointed: boolean;
+  /** WAL size observed before maintenance. */
+  walBytesBefore: number;
+  /** WAL size observed when maintenance returns. */
+  walBytesAfter: number;
+  /** Whether a non-blocking TRUNCATE checkpoint was attempted. */
+  walTruncateAttempted: boolean;
+  /** Whether the WAL was actually reduced to zero bytes. */
+  walTruncated: boolean;
   pageSize: number;
   pageCountBefore: number;
   freePageCountBefore: number;
@@ -1770,6 +1778,28 @@ function pruneRetiredControlPlaneNamespaces(
  * writer causes a fail-closed busy skip instead of lock stealing or corruption
  * recovery.
  */
+const CONTROL_PLANE_WAL_RETRY_TRUNCATE_BYTES = 64 * 1024 * 1024;
+
+function controlPlaneWalBytes(databasePath: string): number {
+  const walPath = `${databasePath}-wal`;
+  try {
+    return existsSync(walPath) ? statSync(walPath).size : 0;
+  } catch {
+    // WAL lifecycle is concurrent with readers/writers. A vanished file is
+    // equivalent to an already-truncated WAL for maintenance accounting.
+    return 0;
+  }
+}
+
+function tryTruncateControlPlaneWal(database: SqliteDatabase, databasePath: string): boolean {
+  try {
+    database.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+  } catch (error) {
+    if (!sqliteBusyError(databasePath, error)) throw error;
+  }
+  return controlPlaneWalBytes(databasePath) === 0;
+}
+
 export function maintainControlPlaneDatabase(
   controllerHome: string,
   options: ControlPlaneDatabaseMaintenanceOptions = {},
@@ -1780,6 +1810,10 @@ export function maintainControlPlaneDatabase(
     path,
     checkpointMode: 'passive',
     checkpointed: false,
+    walBytesBefore: controlPlaneWalBytes(path),
+    walBytesAfter: controlPlaneWalBytes(path),
+    walTruncateAttempted: false,
+    walTruncated: false,
     pageSize: 0,
     pageCountBefore: 0,
     freePageCountBefore: 0,
@@ -1851,6 +1885,14 @@ export function maintainControlPlaneDatabase(
     try {
       database.exec('PRAGMA wal_checkpoint(PASSIVE);');
       report.checkpointed = true;
+      // PASSIVE never shrinks the WAL file. If an earlier VACUUM or
+      // backup-sized write left a large WAL, opportunistically retry a
+      // zero-wait TRUNCATE before deciding that no page compaction is needed.
+      if (controlPlaneWalBytes(path) >= CONTROL_PLANE_WAL_RETRY_TRUNCATE_BYTES) {
+        report.walTruncateAttempted = true;
+        report.walTruncated = tryTruncateControlPlaneWal(database, path);
+      }
+      report.walBytesAfter = controlPlaneWalBytes(path);
     } catch (error) {
       const busy = sqliteBusyError(path, error);
       if (busy) {
@@ -1913,6 +1955,13 @@ export function maintainControlPlaneDatabase(
     report.reclaimableBytesAfter = after.reclaimableBytes;
     report.reclaimableRatioAfter = after.reclaimableRatio;
     report.reclaimedBytes = Math.max(0, (before.pageCount - after.pageCount) * before.pageSize);
+    // VACUUM in WAL mode can immediately materialize a WAL roughly the
+    // size of the compacted database. Truncate it in the same maintenance pass
+    // when possible; if a concurrent reader prevents truncation, a later pass
+    // retries based on WAL size even though freelist_count is already zero.
+    report.walTruncateAttempted = true;
+    report.walTruncated = tryTruncateControlPlaneWal(database, path);
+    report.walBytesAfter = controlPlaneWalBytes(path);
     return report;
   } finally {
     database.close();

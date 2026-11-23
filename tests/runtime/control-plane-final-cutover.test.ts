@@ -152,7 +152,15 @@ describe('final SQLite control-plane cutover', () => {
         minimumReclaimableBytes: 1,
         minimumReclaimableRatio: 0,
       });
-      expect(report).toMatchObject({ checkpointed: true, vacuumEligible: true, vacuumAttempted: true, vacuumed: true });
+      expect(report).toMatchObject({
+        checkpointed: true,
+        vacuumEligible: true,
+        vacuumAttempted: true,
+        vacuumed: true,
+        walTruncateAttempted: true,
+        walTruncated: true,
+        walBytesAfter: 0,
+      });
       expect(report.freePageCountBefore).toBeGreaterThan(0);
       expect(report.freePageCountAfter).toBe(0);
       expect(report.reclaimedBytes).toBeGreaterThan(0);
