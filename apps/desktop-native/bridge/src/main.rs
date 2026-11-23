@@ -5149,10 +5149,26 @@ mod tests {
                 "reportedRounds":4,"totalRounds":4
             }));
             assert_eq!(std::fs::read_to_string(fixture.repo_root.join("fixture.txt")).unwrap(), "after\n");
-            let edit_storage = fixture.repo_root.join(".ai/harness/edit-sessions")
-                .canonicalize().expect("bound edit storage");
-            assert!(edit_storage.starts_with(fixture.controller_home.canonicalize().unwrap()),
-                "native provider edits must keep caller Controller Home: {}", edit_storage.display());
+            // Single-file text edits use sessionless CAS, so they intentionally
+            // do not create the legacy repository-relative EditSession directory.
+            // The Repository Registry must still resolve from this caller's Controller Home.
+            let repository_registry = fixture.controller_home.join("repositories.json");
+            let registry: Value = serde_json::from_str(
+                &std::fs::read_to_string(&repository_registry)
+                    .expect("caller Controller Home repository registry"),
+            ).expect("valid caller Controller Home Repository Registry");
+            let canonical_repo_root = fixture.repo_root.canonicalize()
+                .expect("canonical fixture repository");
+            let registered_repository = registry["repositories"].as_array()
+                .and_then(|repositories| repositories.iter().find(|record|
+                    record["repoId"].as_str() == Some(fixture.repo_id.as_str())
+                ))
+                .expect("registered repository in caller Controller Home");
+            assert_eq!(
+                registered_repository["canonicalRoot"].as_str(),
+                canonical_repo_root.to_str(),
+                "native provider tools must resolve the exact repository through the caller's Controller Home Registry",
+            );
             let calls = host.tool_calls.lock().unwrap();
             assert_eq!(calls.iter().take(3).map(|call| call["tool"].as_str().unwrap()).collect::<Vec<_>>(), vec!["read_file", "apply_patch", "run_command"]);
             assert!(calls.iter().take(3).all(|call| call["repoId"] == fixture.repo_id && call["checkoutId"] == fixture.checkout_id && call["allowEffects"] == true));
@@ -5754,72 +5770,138 @@ mod tests {
     }
 
     #[test]
-    fn streamed_http_delivers_first_delta_before_round_finishes() {
+    fn streamed_http_delivers_first_delta_before_round_finishes_for_all_protocols() {
         use std::{io::{Read, Write}, net::TcpListener, thread, time::Duration};
-        let listener = TcpListener::bind("127.0.0.1:0").expect("mock SSE endpoint");
-        let port = listener.local_addr().unwrap().port();
-        let server = thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            let mut bytes = Vec::new();
-            let mut chunk = [0u8; 4096];
-            let header_end = loop {
-                let n = socket.read(&mut chunk).unwrap();
-                assert!(n > 0);
-                bytes.extend_from_slice(&chunk[..n]);
-                if let Some(pos) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-                    break pos + 4;
-                }
-            };
-            let headers = String::from_utf8_lossy(&bytes[..header_end]);
-            let length = headers.lines().find_map(|line| {
-                line.to_ascii_lowercase().strip_prefix("content-length:")
-                    .and_then(|number| number.trim().parse::<usize>().ok())
-            }).expect("request Content-Length");
-            while bytes.len() - header_end < length {
-                let n = socket.read(&mut chunk).unwrap();
-                assert!(n > 0);
-                bytes.extend_from_slice(&chunk[..n]);
-            }
-            let request: Value = serde_json::from_slice(&bytes[header_end..header_end+length]).unwrap();
-            assert_eq!(request["stream"],true);
 
-            let first = format!("data: {}\r\n\r\n",
-                json!({"choices":[{"delta":{"content":"first "}}]}));
-            let rest = format!("data: {}\r\n\r\ndata: [DONE]\r\n\r\n",
-                json!({"choices":[{"delta":{"content":"second"},"finish_reason":"stop"}]}));
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                first.len() + rest.len()
-            );
-            socket.write_all(response.as_bytes()).unwrap();
-            socket.write_all(first.as_bytes()).unwrap();
-            socket.flush().unwrap();
-            thread::sleep(Duration::from_millis(180));
-            socket.write_all(rest.as_bytes()).unwrap();
-            socket.flush().unwrap();
-        });
-        let host = RecordingStreamHost::default();
-        let output = tauri::async_runtime::block_on(async {
-            let client = reqwest::Client::new();
-            let endpoint = format!("http://127.0.0.1:{port}/v1");
-            let body = json!({"stream":true,"model":"mock","messages":[]});
-            let round = request_local_api_round_stream(
-                &host,"conv-http",&client,&endpoint,"openai",None,None,&body
-            );
-            tokio::pin!(round);
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_millis(90)) => {
-                    assert!(host.events.lock().unwrap().iter().any(|item|
-                        item["kind"] == "text_delta" && item["delta"] == "first "
-                    ), "first SSE delta must reach UI before the response completes");
+        for protocol in ["openai", "anthropic", "responses"] {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("mock SSE endpoint");
+            let port = listener.local_addr().unwrap().port();
+            let protocol = protocol.to_string();
+            let server_protocol = protocol.clone();
+            let server = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut bytes = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let header_end = loop {
+                    let n = socket.read(&mut chunk).unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&chunk[..n]);
+                    if let Some(pos) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                        break pos + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                let length = headers.lines().find_map(|line| {
+                    line.to_ascii_lowercase().strip_prefix("content-length:")
+                        .and_then(|number| number.trim().parse::<usize>().ok())
+                }).expect("request Content-Length");
+                while bytes.len() - header_end < length {
+                    let n = socket.read(&mut chunk).unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&chunk[..n]);
                 }
-                result = &mut round => panic!("model round finished early: {result:?}"),
-            }
-            round.await.expect("SSE round completed")
-        });
-        assert_eq!(output["choices"][0]["message"]["content"],"first second");
-        server.join().unwrap();
+                let request: Value = serde_json::from_slice(&bytes[header_end..header_end+length]).unwrap();
+                assert_eq!(request["stream"],true, "{server_protocol}: request must stream");
+
+                let (first_frames, rest_frames) = match server_protocol.as_str() {
+                    "openai" => (
+                        vec![json!({"choices":[{"delta":{"content":"first "}}]}).to_string()],
+                        vec![
+                            json!({"choices":[{"delta":{"content":"second"},"finish_reason":"stop"}]}).to_string(),
+                            "[DONE]".to_string(),
+                        ],
+                    ),
+                    "anthropic" => (
+                        vec![
+                            json!({"type":"message_start","message":{"usage":{"input_tokens":1}}}).to_string(),
+                            json!({"type":"content_block_start","index":0,
+                                "content_block":{"type":"text","text":""}}).to_string(),
+                            json!({"type":"content_block_delta","index":0,
+                                "delta":{"type":"text_delta","text":"first "}}).to_string(),
+                        ],
+                        vec![
+                            json!({"type":"content_block_delta","index":0,
+                                "delta":{"type":"text_delta","text":"second"}}).to_string(),
+                            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"}}).to_string(),
+                            json!({"type":"message_stop"}).to_string(),
+                        ],
+                    ),
+                    "responses" => (
+                        vec![json!({"type":"response.output_text.delta","delta":"first "}).to_string()],
+                        vec![
+                            json!({"type":"response.output_text.delta","delta":"second"}).to_string(),
+                            json!({"type":"response.completed","response":{"output":[{
+                                "type":"message","content":[{"type":"output_text","text":"first second"}]
+                            }]}}).to_string(),
+                        ],
+                    ),
+                    _ => unreachable!("known provider protocol"),
+                };
+                let first = first_frames.into_iter()
+                    .map(|frame| format!("data: {frame}\r\n\r\n")).collect::<String>();
+                let rest = rest_frames.into_iter()
+                    .map(|frame| format!("data: {frame}\r\n\r\n")).collect::<String>();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    first.len() + rest.len()
+                );
+                socket.write_all(response.as_bytes()).unwrap();
+                socket.write_all(first.as_bytes()).unwrap();
+                socket.flush().unwrap();
+                thread::sleep(Duration::from_millis(180));
+                socket.write_all(rest.as_bytes()).unwrap();
+                socket.flush().unwrap();
+            });
+
+            let host = RecordingStreamHost::default();
+            let output = tauri::async_runtime::block_on(async {
+                let client = reqwest::Client::new();
+                let endpoint = format!("http://127.0.0.1:{port}/v1");
+                let body = if protocol == "responses" {
+                    json!({"stream":true,"model":"mock","input":[]})
+                } else if protocol == "anthropic" {
+                    json!({"stream":true,"model":"mock","max_tokens":16,"messages":[]})
+                } else {
+                    json!({"stream":true,"model":"mock","messages":[]})
+                };
+                let round = request_local_api_round_stream(
+                    &host,"conv-http",&client,&endpoint,&protocol,None,None,&body
+                );
+                tokio::pin!(round);
+                let first_delta = async {
+                    tokio::time::timeout(Duration::from_millis(120), async {
+                        loop {
+                            if host.events.lock().unwrap().iter().any(|item|
+                                item["kind"] == "text_delta" && item["delta"] == "first "
+                            ) {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(5)).await;
+                        }
+                    }).await.expect("first SSE delta must reach UI while the response remains open");
+                };
+                tokio::select! {
+                    _ = first_delta => {},
+                    result = &mut round => panic!("{protocol}: round finished before its first text delta: {result:?}"),
+                }
+                round.await.expect("SSE round completed")
+            });
+            let answer = match protocol.as_str() {
+                "openai" => output.pointer("/choices/0/message/content").and_then(Value::as_str),
+                "anthropic" => output.pointer("/content/0/text").and_then(Value::as_str),
+                "responses" => output.pointer("/output/0/content/0/text").and_then(Value::as_str),
+                _ => unreachable!("known provider protocol"),
+            }.expect("final provider text");
+            assert_eq!(answer, "first second", "{protocol}: complete answer must preserve both deltas");
+            let deltas = host.events.lock().unwrap().iter()
+                .filter(|item| item["kind"] == "text_delta")
+                .filter_map(|item| item["delta"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>();
+            assert_eq!(deltas, vec!["first ".to_string(), "second".to_string()],
+                "{protocol}: UI must receive text deltas in provider order");
+            server.join().unwrap();
+        }
     }
 
     #[test]
