@@ -6135,9 +6135,7 @@ async function failReleaseSessionCandidateBoot(
 ): Promise<ConfiguredRuntimeActivationResult> {
   let session = initial;
   const retirement = await stopReleaseSessionCandidateService(session, runCommand);
-  const terminalDetail = retirement.ok
-    ? detail
-    : `${detail}; Candidate B retirement failed: ${retirement.detail}`;
+  const terminalDetail = retirement.ok ? detail : `${detail}; Candidate B retirement failed: ${retirement.detail}`;
   try {
     const latest = readReleaseSession(config.controllerHome, session.sessionId) ?? session;
     session = latest;
@@ -6348,7 +6346,9 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
         // The ReleaseSession moved while Candidate B booted outside the Stable A lock.
         // Never commit over it; retire Candidate B only when the session is gone or terminal.
         const retire = !latest || releaseSessionCandidateIsRetired(latest);
-        const retirement = retire ? await stopReleaseSessionCandidateService(latest ?? frozenSession, runCommand) : undefined;
+        const retirement = retire
+          ? await stopReleaseSessionCandidateService(latest ?? frozenSession, runCommand)
+          : undefined;
         if (latest && retirement?.ok) cleanupRetiredCandidateLane(config, latest);
         return {
           ok: false as const,
