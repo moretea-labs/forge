@@ -2,27 +2,36 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-enum AgentSemanticContextInspector: String, Identifiable {
-    case planning
-    case knowledge
-    var id: String { rawValue }
-}
-
-/// Cursor-style editor tabs: only working surfaces are actionable.
-/// Browser is deliberately unavailable until an authorized web pane exists.
+/// Cursor-style right tools: Changes stays a titlebar toggle; other tools
+/// live on a persistent activity rail (same visual language as the left rail).
 enum AgentWorkSurface: String, CaseIterable, Identifiable, Equatable {
-    case changes, files
+    case changes, files, planning, knowledge
     var id: String { rawValue }
-    var title: String { self == .changes ? "改动" : "附件" }
-    var symbol: String { self == .changes ? "doc.text.magnifyingglass" : "paperclip" }
+    var title: String {
+        switch self {
+        case .changes: return "改动"
+        case .files: return "附件"
+        case .planning: return "规划"
+        case .knowledge: return "知识"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .changes: return "doc.text.magnifyingglass"
+        case .files: return "paperclip"
+        case .planning: return "list.bullet.indent"
+        case .knowledge: return "books.vertical"
+        }
+    }
+    /// Tools shown in the expanded right rail (Changes stays in the titlebar).
+    static var railTools: [AgentWorkSurface] { [.files, .planning, .knowledge] }
 }
 
-/// Stable AX ids for Agent actions hosted in the conversation toolbar.
+/// Stable AX ids: Changes is the only default titlebar action.
 enum AgentConversationToolbarContract {
     static let changesIdentifier = "agent.changes"
     static let filesIdentifier = "agent.files"
-    static let moreIdentifier = "agent.tools.more"
-    static let requiredActionIdentifiers = [changesIdentifier, filesIdentifier, moreIdentifier]
+    static let requiredActionIdentifiers = [changesIdentifier]
 }
 
 /// The split is available only when both real pane minima and native divider
@@ -82,7 +91,6 @@ struct AgentPane: View {
     @Binding var selectedWorkSurfaceRaw: String
     @Binding var workSurfaceVisible: Bool
     @Binding var workSurfaceMaximized: Bool
-    @Binding var semanticInspector: AgentSemanticContextInspector?
     @State private var showActivityDetails = false
     @State private var expandedMessageActivities: Set<String> = []
     @State private var expandedUserInstructions: Set<String> = []
@@ -110,15 +118,11 @@ struct AgentPane: View {
         GeometryReader { geometry in
             agentContent(availableWidth:geometry.size.width)
         }
-        // No titlebar content band: tools sit as plain icons with a hidden
-        // toolbar background so traffic lights + content share one surface.
+        // Cursor titlebar: only Changes is visible by default.
+        // Files / planning / knowledge live on a persistent right activity rail.
         .toolbar {
             ToolbarItemGroup(placement:.primaryAction) {
-                if !workSurfaceVisible {
-                    workspaceChangesControl
-                    workspaceFilesControl
-                    additionalAgentTools
-                }
+                workspaceChangesControl
             }
         }
         .toolbarBackground(.hidden, for:.windowToolbar)
@@ -166,61 +170,96 @@ struct AgentPane: View {
         .accessibilityIdentifier("agent.workspace-scope")
     }
 
-    /// Cursor-style editor tabs: text weight + underline, no pill cards.
-    private var rightPaneTabStrip: some View {
-        HStack(spacing:4) {
-            ForEach(AgentWorkSurface.allCases) { surface in
-                let selected = semanticInspector == nil && selectedWorkSurface == surface
+    /// Right activity rail: same visual language as the left icon rail.
+    private var rightToolRail: some View {
+        VStack(spacing:4) {
+            ForEach(AgentWorkSurface.railTools, id: \.self) { surface in
+                rightRailButton(surface)
+            }
+            Spacer(minLength:0)
+            if workSurfaceVisible {
                 Button {
-                    openWorkSurface(surface)
+                    withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
+                        workSurfaceMaximized.toggle()
+                    }
                 } label: {
-                    HStack(spacing:4) {
-                        Text(surface.title)
-                            .font(.system(size:12,weight:selected ? .semibold : .regular))
-                        if surface == .changes, workspaceReviewFileCount > 0 {
-                            Text("\(workspaceReviewFileCount)")
-                                .font(.system(size:10)).monospacedDigit()
-                                .foregroundStyle(ForgePalette.secondary)
-                        }
+                    VStack(spacing:3) {
+                        Image(systemName:workSurfaceMaximized
+                              ? "arrow.down.right.and.arrow.up.left"
+                              : "arrow.up.left.and.arrow.down.right")
+                            .forgeRailIcon(active:false)
+                        Text(workSurfaceMaximized ? "还原" : "扩展")
+                            .font(.system(size:ForgeClientDesign.Icon.railLabel,weight:.regular))
+                            .lineLimit(1)
                     }
-                    .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
-                    .padding(.horizontal,6)
-                    .frame(height:28)
-                    .overlay(alignment:.bottom) {
-                        Rectangle()
-                            .fill(selected ? ForgePalette.ink.opacity(0.55) : .clear)
-                            .frame(height:1.5)
-                    }
-                    .contentShape(Rectangle())
+                    .foregroundStyle(ForgePalette.secondary)
+                    .frame(width:44,height:ForgeClientDesign.Shell.destinationRowHeight)
+                    .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
+                    .forgeHoverFill(cornerRadius:8)
                 }
                 .buttonStyle(.plain)
-                .disabled(surface == .changes && model.checkoutId == nil)
-                .accessibilityLabel(surface.title)
-                .accessibilityAddTraits(selected ? [.isSelected] : [])
-                .accessibilityIdentifier(surface == .changes
-                                         ? "agent.right-pane.tab.changes"
-                                         : "agent.right-pane.tab.files")
+                .help(workSurfaceMaximized ? "退出扩展视图" : "扩展右侧分栏")
+                .accessibilityIdentifier("agent.work-surface.maximize")
+                Button { closeWorkSurface() } label: {
+                    VStack(spacing:3) {
+                        Image(systemName:"xmark").forgeRailIcon(active:false)
+                        Text("关闭")
+                            .font(.system(size:ForgeClientDesign.Icon.railLabel,weight:.regular))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(ForgePalette.secondary)
+                    .frame(width:44,height:ForgeClientDesign.Shell.destinationRowHeight)
+                    .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
+                    .forgeHoverFill(cornerRadius:8)
+                }
+                .buttonStyle(.plain)
+                .help("关闭右侧分栏")
+                .accessibilityLabel("关闭右侧分栏")
+                .accessibilityIdentifier("agent.work-surface.close")
             }
-            Menu {
-                Button {
-                    closeWorkSurface(); semanticInspector = .planning
-                } label: { Label("规划上下文",systemImage:"list.bullet.indent") }
-                    .disabled(model.thread?.projectId == nil)
-                Button {
-                    closeWorkSurface(); semanticInspector = .knowledge
-                } label: { Label("知识上下文",systemImage:"books.vertical") }
-                    .disabled(model.repoId == nil)
-                Divider()
-                Button("浏览器（尚未接入）") {}.disabled(true)
-            } label: {
-                Image(systemName:"ellipsis").forgeChromeIcon()
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("更多会话工具")
-            .accessibilityIdentifier("agent.right-pane.tools")
         }
+        .padding(.vertical,8)
+        .frame(width:ForgeClientDesign.Shell.iconRailWidth)
+        .frame(maxHeight:.infinity)
+        .accessibilityElement(children:.contain)
+        .accessibilityIdentifier("agent.right-rail")
+    }
+
+    private func rightRailButton(_ surface: AgentWorkSurface) -> some View {
+        let selected = selectedWorkSurface == surface
+        let disabled: Bool = {
+            switch surface {
+            case .files: return false
+            case .planning: return model.thread?.projectId == nil
+            case .knowledge: return model.repoId == nil
+            case .changes: return model.checkoutId == nil
+            }
+        }()
+        return Button {
+            toggleWorkSurface(surface)
+        } label: {
+            VStack(spacing:3) {
+                Image(systemName:surface.symbol).forgeRailIcon(active:selected)
+                Text(surface.title)
+                    .font(.system(size:ForgeClientDesign.Icon.railLabel,
+                                  weight:selected ? .semibold : .regular))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
+            .frame(width:44,height:ForgeClientDesign.Shell.destinationRowHeight)
+            .background(selected ? ForgePalette.selection : .clear,
+                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+            .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
+            .forgeHoverFill(cornerRadius:8)
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .help(surface.title)
+        .accessibilityLabel(surface.title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .accessibilityIdentifier(surface == .files
+                                 ? AgentConversationToolbarContract.filesIdentifier
+                                 : "agent.right-rail.\(surface.rawValue)")
     }
 
     private var workspaceReviewFileCount: Int {
@@ -235,13 +274,9 @@ struct AgentPane: View {
     }
 
     private var workspaceChangesControl: some View {
-        let active = workSurfaceVisible && selectedWorkSurface == .changes && semanticInspector == nil
+        let active = workSurfaceVisible && selectedWorkSurface == .changes
         return Button {
-            if workSurfaceVisible && selectedWorkSurface == .changes {
-                closeWorkSurface()
-            } else {
-                openWorkSurface(.changes)
-            }
+            toggleWorkSurface(.changes)
         } label: {
             HStack(spacing:3) {
                 Image(systemName:"doc.text.magnifyingglass").forgeChromeIcon(active:active)
@@ -262,48 +297,6 @@ struct AgentPane: View {
         .accessibilityIdentifier(AgentConversationToolbarContract.changesIdentifier)
     }
 
-    private var workspaceFilesControl: some View {
-        let active = workSurfaceVisible && selectedWorkSurface == .files && semanticInspector == nil
-        return Button {
-            if workSurfaceVisible && selectedWorkSurface == .files {
-                closeWorkSurface()
-            } else {
-                openWorkSurface(.files)
-            }
-        } label: {
-            Image(systemName:"paperclip").forgeChromeIcon(active:active)
-        }
-        .buttonStyle(.plain)
-        .help("查看会话文件与图片")
-        .accessibilityLabel("附件")
-        .accessibilityIdentifier(AgentConversationToolbarContract.filesIdentifier)
-    }
-
-    private var additionalAgentTools: some View {
-        Menu {
-            Button("规划上下文") {
-                semanticInspector = semanticInspector == .planning ? nil : .planning
-                if semanticInspector != nil { closeWorkSurface() }
-            }
-            .disabled(model.thread?.projectId == nil)
-            Button("知识上下文") {
-                semanticInspector = semanticInspector == .knowledge ? nil : .knowledge
-                if semanticInspector != nil { closeWorkSurface() }
-            }
-            .disabled(model.repoId == nil)
-            Divider()
-            Button("浏览器（尚未接入）") {}
-                .disabled(true)
-        } label: {
-            Image(systemName:"ellipsis").forgeChromeIcon()
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("更多会话工具；浏览器尚未接入")
-        .accessibilityIdentifier(AgentConversationToolbarContract.moreIdentifier)
-    }
-
     private var composerInputHeight: CGFloat {
         let lines = model.draft.split(separator:"\n",omittingEmptySubsequences:false).count
         let wrapped = max(lines, (model.draft.count + 69) / 70)
@@ -311,12 +304,13 @@ struct AgentPane: View {
     }
 
     private func agentContent(availableWidth:CGFloat) -> some View {
+        let splitWidth = max(0, availableWidth - ForgeClientDesign.Shell.iconRailWidth)
         let workSurfacePresentation = AgentWorkSurfaceLayout.presentation(
-            availableWidth:availableWidth,
+            availableWidth:splitWidth,
             isVisible:workSurfaceVisible,
             isMaximized:workSurfaceMaximized
         )
-        return VStack(spacing:0) {
+        return HStack(spacing:0) {
             HSplitView {
                 ZStack {
                     // Keep the composer and transcript mounted during review.
@@ -1053,7 +1047,7 @@ struct AgentPane: View {
                 .accessibilityHidden(workSurfacePresentation == .replacement)
 
                 if workSurfacePresentation == .replacement {
-                    workSurfacePane()
+                    workSurfaceContent()
                         .transition(reduceMotion ? .identity : .opacity)
                 }
             }
@@ -1061,44 +1055,28 @@ struct AgentPane: View {
             .frame(maxWidth:.infinity,maxHeight:.infinity)
 
             if workSurfacePresentation == .sideBySide {
-                workSurfacePane()
+                workSurfaceContent()
                     .frame(minWidth:AgentWorkSurfaceLayout.workSurfaceMinimumWidth,
-                           idealWidth:max(390,availableWidth * 0.43),
-                           maxWidth:max(480,availableWidth * 0.60))
+                           idealWidth:max(390,splitWidth * 0.43),
+                           maxWidth:max(480,splitWidth * 0.60))
             }
-        }
-        .frame(maxWidth:.infinity,maxHeight:.infinity)
+            }
+            .frame(maxWidth:.infinity,maxHeight:.infinity)
+            .overlay(alignment:.topTrailing) {
+                if !workSurfaceVisible {
+                    agentWorkspaceStatusChip
+                        .padding(.top,8)
+                        .padding(.trailing,14)
+                }
+            }
+
+            rightToolRail
+                .forgeSidebarMaterial()
         }
         .background(ForgePalette.canvas)
-        .overlay(alignment:.topTrailing) {
-            agentWorkspaceStatusChip
-                .padding(.top,8)
-                .padding(.trailing,14)
-        }
-        .safeAreaInset(edge:.trailing,spacing:0) {
-            if availableWidth >= 900, !workSurfaceVisible,
-               let inspector = semanticInspector {
-                semanticInspectorContent(inspector,inline:true)
-                    .frame(width:320)
-                    .frame(maxHeight:.infinity)
-                    .background(ForgePalette.sidePanel)
-                    .transition(reduceMotion ? .identity
-                                : .move(edge:.trailing).combined(with:.opacity))
-                    .accessibilityIdentifier("agent.context-inspector")
-            }
-        }
-        // Only Planning/Knowledge remain lightweight floating context tools.
-        .popover(isPresented:Binding(
-            get:{ availableWidth < 900 && !workSurfaceVisible && semanticInspector != nil },
-            set:{ if !$0 { semanticInspector = nil } }
-        ),arrowEdge:.trailing) {
-            if let inspector=semanticInspector {
-                semanticInspectorContent(inspector,inline:false)
-            }
-        }
         .animation(reduceMotion ? nil : .easeOut(duration:0.20),value:workSurfaceVisible)
         .onChange(of:workSurfaceVisible) { visible in
-            if visible && (!AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: availableWidth) || workSurfaceMaximized) {
+            if visible && (!AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: splitWidth) || workSurfaceMaximized) {
                 restoreComposerFocusAfterWorkSurface = composerFocused
                 composerFocused = false
             } else if !visible && restoreComposerFocusAfterWorkSurface {
@@ -1113,12 +1091,12 @@ struct AgentPane: View {
             if maximized {
                 restoreComposerFocusAfterWorkSurface = composerFocused
                 composerFocused = false
-            } else if AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: availableWidth) && restoreComposerFocusAfterWorkSurface {
+            } else if AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: splitWidth) && restoreComposerFocusAfterWorkSurface {
                 restoreComposerFocusAfterWorkSurface = false
                 if !model.busy && !voiceDictation.blocksSend { composerFocused = true }
             }
         }
-        .onChange(of:!AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: availableWidth)) { isCompact in
+        .onChange(of:!AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: splitWidth)) { isCompact in
             // Keep the selected work surface mounted and selected. Only focus
             // changes when the compact presentation temporarily replaces chat.
             guard workSurfaceVisible && !workSurfaceMaximized else { return }
@@ -1155,7 +1133,7 @@ struct AgentPane: View {
             // A restored selected surface remains selected at compact widths;
             // the layout presents it in place until side-by-side space returns.
             if !model.busy && !model.zenRefinementActive
-                && !(workSurfaceVisible && (!AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: availableWidth) || workSurfaceMaximized)) {
+                && !(workSurfaceVisible && (!AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: splitWidth) || workSurfaceMaximized)) {
                 composerFocused = true
             }
         }
@@ -1163,7 +1141,6 @@ struct AgentPane: View {
             // The draft binding already targets the newly selected thread here.
             // Clear only transient recorder state; the old thread keeps its partial transcript.
             voiceDictation.cancel()
-            semanticInspector = nil
             if workSurfaceVisible && selectedWorkSurface == .changes {
                 Task { await model.refreshAgentChanges() }
             }
@@ -1215,11 +1192,18 @@ struct AgentPane: View {
         return "描述你想完成的工作，或选择下方的常用操作。"
     }
 
+    private func toggleWorkSurface(_ surface: AgentWorkSurface) {
+        if workSurfaceVisible && selectedWorkSurface == surface {
+            closeWorkSurface()
+        } else {
+            openWorkSurface(surface)
+        }
+    }
+
     private func openWorkSurface(_ surface: AgentWorkSurface) {
         let newlyOpened = !workSurfaceVisible || selectedWorkSurface != surface
         selectedWorkSurfaceRaw = surface.rawValue
         workSurfaceVisible = true
-        semanticInspector = nil
         // Do not reset file selection when the already-selected tab is clicked.
         if newlyOpened && surface == .changes {
             Task { await model.refreshAgentChanges() }
@@ -1231,69 +1215,41 @@ struct AgentPane: View {
         workSurfaceMaximized = false
     }
 
-    private func workSurfacePane() -> some View {
-        VStack(spacing:0) {
-            HStack(spacing:6) {
-                rightPaneTabStrip
-                Spacer(minLength:6)
-                Button {
-                    withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
-                        workSurfaceMaximized.toggle()
-                    }
-                } label: {
-                    Image(systemName:workSurfaceMaximized
-                          ? "arrow.down.right.and.arrow.up.left"
-                          : "arrow.up.left.and.arrow.down.right")
-                        .forgeChromeIcon()
-                }
-                .buttonStyle(.plain)
-                .help(workSurfaceMaximized ? "退出扩展视图" : "扩展右侧分栏")
-                .accessibilityIdentifier("agent.work-surface.maximize")
-                Button {
-                    closeWorkSurface()
-                } label: {
-                    Image(systemName:"xmark").forgeChromeIcon()
-                }
-                .buttonStyle(.plain)
-                .help("关闭右侧分栏")
-                .accessibilityLabel("关闭右侧分栏")
-                .accessibilityIdentifier("agent.work-surface.close")
-            }
-            .padding(.horizontal,10)
-            .frame(height:ForgeClientDesign.Icon.hit)
+    private func workSurfaceContent() -> some View {
+        ZStack {
+            AgentChangesPane(model:model)
+                .opacity(selectedWorkSurface == .changes ? 1 : 0)
+                .allowsHitTesting(selectedWorkSurface == .changes)
+                .accessibilityHidden(selectedWorkSurface != .changes)
 
-            ZStack {
-                AgentChangesPane(model:model)
-                    .opacity(selectedWorkSurface == .changes ? 1 : 0)
-                    .allowsHitTesting(selectedWorkSurface == .changes)
-                    .accessibilityHidden(selectedWorkSurface != .changes)
+            AgentAssetsDashboard(
+                model:model,
+                selectedRepoId:$fileSelectedRepoId,
+                showLocalResources:$fileShowLocalResources,
+                showRemoteImages:$fileShowRemoteImages,
+                searchQuery:$fileSearchQuery,
+                selectedResourceID:$fileSelectedResourceID
+            )
+            .opacity(selectedWorkSurface == .files ? 1 : 0)
+            .allowsHitTesting(selectedWorkSurface == .files)
+            .accessibilityHidden(selectedWorkSurface != .files)
 
-                AgentAssetsDashboard(
-                    model:model,
-                    selectedRepoId:$fileSelectedRepoId,
-                    showLocalResources:$fileShowLocalResources,
-                    showRemoteImages:$fileShowRemoteImages,
-                    searchQuery:$fileSearchQuery,
-                    selectedResourceID:$fileSelectedResourceID
-                )
-                .opacity(selectedWorkSurface == .files ? 1 : 0)
-                .allowsHitTesting(selectedWorkSurface == .files)
-                .accessibilityHidden(selectedWorkSurface != .files)
+            AgentPlanningInspector(model:model,inline:true) {
+                closeWorkSurface()
             }
-            .frame(maxWidth:.infinity,maxHeight:.infinity)
+            .opacity(selectedWorkSurface == .planning ? 1 : 0)
+            .allowsHitTesting(selectedWorkSurface == .planning)
+            .accessibilityHidden(selectedWorkSurface != .planning)
+
+            AgentKnowledgeInspector(model:model,inline:true) {
+                closeWorkSurface()
+            }
+            .opacity(selectedWorkSurface == .knowledge ? 1 : 0)
+            .allowsHitTesting(selectedWorkSurface == .knowledge)
+            .accessibilityHidden(selectedWorkSurface != .knowledge)
         }
+        .frame(maxWidth:.infinity,maxHeight:.infinity)
         .background(ForgePalette.canvas)
-    }
-
-    @ViewBuilder
-    private func semanticInspectorContent(_ kind: AgentSemanticContextInspector,
-                                          inline:Bool) -> some View {
-        switch kind {
-        case .planning:
-            AgentPlanningInspector(model:model,inline:inline) { semanticInspector = nil }
-        case .knowledge:
-            AgentKnowledgeInspector(model:model,inline:inline) { semanticInspector = nil }
-        }
     }
 
     private func starterPromptButton(

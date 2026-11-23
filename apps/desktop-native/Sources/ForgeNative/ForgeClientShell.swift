@@ -39,7 +39,6 @@ struct ForgeWorkspaceView: View {
     @SceneStorage("forge.shell.v5.surface.visible") private var workSurfaceVisible = false
     @SceneStorage("forge.shell.v5.surface.maximized") private var workSurfaceMaximized = false
     @SceneStorage("forge.shell.v5.rail") private var primaryRailRaw = "agent"
-    @State private var agentSemanticInspector: AgentSemanticContextInspector?
 
     var body: some View {
         NavigationSplitView(columnVisibility:$visibility) {
@@ -1574,8 +1573,7 @@ struct ForgeWorkspaceView: View {
                     onChooseProject:{ projectPickerShown = true },
                     selectedWorkSurfaceRaw:$selectedWorkSurfaceRaw,
                     workSurfaceVisible:$workSurfaceVisible,
-                    workSurfaceMaximized:$workSurfaceMaximized,
-                    semanticInspector:$agentSemanticInspector
+                    workSurfaceMaximized:$workSurfaceMaximized
                 )
             case .requirement,.plan: RecordsPane(model:model)
             case .schedule: SchedulePane(model:model)

@@ -46,10 +46,18 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
         )
     }
 
-    func testWindowToolbarExposesStableAgentToolActions() {
+    func testWindowToolbarExposesOnlyChangesByDefault() {
         XCTAssertEqual(
             AgentConversationToolbarContract.requiredActionIdentifiers,
-            ["agent.changes", "agent.files", "agent.tools.more"]
+            ["agent.changes"]
+        )
+        XCTAssertEqual(
+            AgentWorkSurface.railTools.map(\.rawValue),
+            ["files", "planning", "knowledge"]
+        )
+        XCTAssertEqual(AgentConversationToolbarContract.filesIdentifier, "agent.files")
+        XCTAssertFalse(
+            AgentConversationToolbarContract.requiredActionIdentifiers.contains("agent.files")
         )
     }
 }
