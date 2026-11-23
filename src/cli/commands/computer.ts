@@ -26,6 +26,7 @@ import {
   withOfficialPluginLifecycleLock,
 } from './plugin';
 import { compareVersions } from './version-compare';
+import { inspectComputerChatgptExtensionProjection } from '../../runtime/root/computer-chatgpt-extension-projection';
 
 export const COMPUTER_PROVIDER_PLUGIN_ID = 'desktop_operator';
 const COMPUTER_PRODUCT_ID = 'computer';
@@ -316,6 +317,18 @@ export function runComputerDoctor(options: { controllerHome?: string; platform?:
       id: 'provider-platform',
       state: 'warn',
       message: `Installed Computer provider is incompatible with ${status.platform}; its live health probe was intentionally skipped.`,
+    });
+  }
+  if (platform === 'darwin') {
+    const projection = inspectComputerChatgptExtensionProjection(controllerHome);
+    checks.push({
+      id: 'chatgpt-extension-projection',
+      state: projection.projectionCurrent
+        ? 'pass'
+        : (projection.state === 'runtime_release_incomplete' ? 'warn' : 'fail'),
+      message: projection.projectionCurrent
+        ? `ChatGPT provider extension projection is current${projection.activeReleaseId ? ` for ${projection.activeReleaseId}` : ''}.`
+        : projection.detail,
     });
   }
   return {

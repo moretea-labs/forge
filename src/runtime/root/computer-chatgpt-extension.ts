@@ -12,6 +12,10 @@ import {
   type ComputerChatgptTargetIdentity,
 } from '../../../packages/plugin-runtime/computer';
 import { ChromeExtensionChatgptConversationTargetPort } from '../../../adapters/computer/chatgpt-target-provider';
+import {
+  inspectComputerChatgptExtensionProjection,
+  projectComputerChatgptExtension,
+} from './computer-chatgpt-extension-projection';
 import { runtimeComputerInteractionTargetAuthority } from './computer-target-composition';
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -329,6 +333,17 @@ function serverFor(port: ChromeExtensionChatgptConversationTargetPort, socketPat
 async function createRuntimeComputerChatgptExtension(
   controllerHome: string,
 ): Promise<RuntimeComputerChatgptExtension> {
+  // Stage the Chrome-loadable extension + Native Messaging host before the
+  // broker listens when an active Runtime release is present. Fixture/tests
+  // without a release keep the socket-only path; production Runtime always has
+  // a release and must not leave a stale unpacked extension loaded.
+  const existingProjection = inspectComputerChatgptExtensionProjection(controllerHome);
+  if (existingProjection.state !== 'runtime_release_incomplete') {
+    const projection = projectComputerChatgptExtension(controllerHome);
+    if (!projection.projectionCurrent) {
+      throw new Error(`COMPUTER_CHATGPT_EXTENSION_PROJECTION_FAILED:${projection.state}:${projection.detail}`);
+    }
+  }
   const socketPath = runtimeComputerChatgptExtensionSocketPath(controllerHome);
   await prepareSocketPath(socketPath);
   const port = new ChromeExtensionChatgptConversationTargetPort(
