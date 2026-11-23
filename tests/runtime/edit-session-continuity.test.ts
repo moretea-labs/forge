@@ -2155,6 +2155,115 @@ function durableBinding(overrides: Partial<EditSessionBinding> = {}): EditSessio
   };
 }
 
+test('legacy EditSessions retire as superseded metadata only when their original bytes are gone', () => {
+  const fx = fixture();
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Legacy identity-free supersession',
+    allowedPaths: ['source.ts'],
+  });
+  applyEditOperations(
+    fx.repoRoot,
+    fx.policy,
+    session.sessionId,
+    [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        expectedSha256: sha256(fx.initial),
+        replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+      },
+    ],
+  );
+  const sessionFile = join(fx.repoRoot, '.ai/harness/edit-sessions', session.sessionId, 'session.json');
+  const stored = JSON.parse(readFileSync(sessionFile, 'utf8')) as Record<string, unknown>;
+  stored.updatedAt = new Date(Date.now() - 48 * 60 * 60_000).toISOString();
+  writeFileSync(sessionFile, JSON.stringify(stored));
+
+  // An old unbound session still owning its exact after-image is not garbage.
+  expect(inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
+    controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+  })).toMatchObject({ safe: false, reason: 'EDIT_SESSION_RECONCILIATION_IDENTITY_REQUIRED' });
+
+  writeFileSync(join(fx.repoRoot, 'source.ts'), 'export const value = 3;\n');
+  expect(inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
+    controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+  })).toMatchObject({ safe: true, reason: 'EDIT_SESSION_LEGACY_SUPERSEDED_METADATA_ONLY' });
+  const cleaned = cleanupEditSession(fx.repoRoot, session.sessionId, {
+    controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+  });
+  expect(cleaned.status).toBe('superseded');
+  expect(cleaned.verifiedAt).toBeUndefined();
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
+});
+
+test('recent legacy sessions and sessions with any active repository lease remain protected', () => {
+  const fx = fixture();
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Legacy source lease protection',
+    allowedPaths: ['source.ts'],
+  });
+  applyEditOperations(
+    fx.repoRoot,
+    fx.policy,
+    session.sessionId,
+    [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        expectedSha256: sha256(fx.initial),
+        replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+      },
+    ],
+  );
+  writeFileSync(join(fx.repoRoot, 'source.ts'), 'export const value = 3;\n');
+  const inspect = () => inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
+    controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+  });
+  expect(inspect()).toMatchObject({ safe: false, reason: 'EDIT_SESSION_LEGACY_NOT_STALE' });
+
+  const sessionFile = join(fx.repoRoot, '.ai/harness/edit-sessions', session.sessionId, 'session.json');
+  const stored = JSON.parse(readFileSync(sessionFile, 'utf8')) as Record<string, unknown>;
+  stored.updatedAt = new Date(Date.now() - 48 * 60 * 60_000).toISOString();
+  writeFileSync(sessionFile, JSON.stringify(stored));
+  const held = acquireExecutionLeases(
+    fx.controllerHome,
+    fx.repository.repoId,
+    'unrelated-current-writer',
+    [{ resourceKey: 'path:checkout-runtime-continuity:unrelated.ts', mode: 'write' }],
+    { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+  );
+  expect(held.acquired).toBe(true);
+  try {
+    expect(inspect()).toMatchObject({ safe: false, reason: 'EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE' });
+    expect(() => cleanupEditSession(fx.repoRoot, session.sessionId, {
+      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+    })).toThrow('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
+    expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('dirty');
+  } finally {
+    releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'unrelated-current-writer');
+  }
+  expect(inspect().safe).toBe(true);
+});
+
+test('bounded EditSession listing wraps beyond the newest window without repeating entries', () => {
+  const fx = fixture();
+  for (let i = 0; i < 9; i += 1) {
+    beginEditSession(fx.repoRoot, {
+      purpose: 'Maintenance pagination ' + i,
+      allowedPaths: ['source.ts'],
+    });
+  }
+  const all = listEditSessions(fx.repoRoot, 50);
+  expect(all).toHaveLength(9);
+  const first = listEditSessions(fx.repoRoot, 3, 0).map((item) => item.sessionId);
+  const second = listEditSessions(fx.repoRoot, 3, 3).map((item) => item.sessionId);
+  const third = listEditSessions(fx.repoRoot, 3, 6).map((item) => item.sessionId);
+  expect(new Set([...first, ...second, ...third]).size).toBe(9);
+  const wrap = listEditSessions(fx.repoRoot, 3, 8).map((item) => item.sessionId);
+  expect(wrap).toHaveLength(3);
+  expect(wrap.every((id) => all.some((item) => item.sessionId === id))).toBe(true);
+});
+
 describe('edit session durable identity continuity', () => {
   test('continues and finalizes using the same repository/checkout/principal identity', () => {
     const fx = fixture();

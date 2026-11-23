@@ -1202,6 +1202,30 @@ export function inspectIntegratedEditSession(
 ): { safe: boolean; reason: string; unverifiedChecks: string[] } {
   const reject = (reason: string) => ({ safe: false, reason, unverifiedChecks: [] as string[] });
   const session = getEditSession(repoRoot, sessionId);
+  // Pre-identity sessions were stored under the repository's Forge-owned edit
+  // directory. They may be retired as superseded metadata, but can NEVER be
+  // treated as verified/committed work without the original identity.
+  const legacyUnbound = !session.repoId && !session.checkoutId && !session.principalId;
+  if (legacyUnbound) {
+    if (!hasDurableEditSessionStorageBinding(repoRoot, input.repoId))
+      return reject('EDIT_SESSION_LEGACY_STORAGE_NOT_BOUND');
+    const updatedAt = Date.parse(session.updatedAt);
+    if (!Number.isFinite(updatedAt) || Date.now() - updatedAt < 24 * 60 * 60_000)
+      return reject('EDIT_SESSION_LEGACY_NOT_STALE');
+    if (!['dirty', 'checked', 'check_failed'].includes(session.status) || session.operations.length === 0)
+      return reject('EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE');
+    if (currentHashMismatches(repoRoot, session).length === 0)
+      return reject('EDIT_SESSION_RECONCILIATION_IDENTITY_REQUIRED');
+    // No checkout identity exists for old records, so even an unrelated active
+    // repository lease conservatively blocks their retirement.
+    if (listActiveLeases(input.controllerHome, input.repoId).length > 0)
+      return reject('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
+    return {
+      safe: true,
+      reason: 'EDIT_SESSION_LEGACY_SUPERSEDED_METADATA_ONLY',
+      unverifiedChecks: [],
+    };
+  }
   if (session.repoId !== input.repoId || !session.checkoutId || !session.principalId)
     return reject('EDIT_SESSION_RECONCILIATION_IDENTITY_REQUIRED');
   // Only a lease that can still own this session's exact source paths blocks
@@ -1307,6 +1331,17 @@ export function cleanupEditSession(
 
   if (session.status === 'open' && session.operations.length === 0) {
     return rollbackEditSession(repoRoot, sessionId);
+  }
+
+  // A maintenance preview is not a write authority. Revalidate every lease,
+  // owner and source-state precondition under the caller's mutation exclusion
+  // immediately before any metadata is terminalized.
+  if (input.controllerHome && input.repoId) {
+    const safety = inspectIntegratedEditSession(repoRoot, sessionId, {
+      controllerHome: input.controllerHome,
+      repoId: input.repoId,
+    });
+    if (!safety.safe) throw new Error(safety.reason);
   }
 
   const reconciled = reconcileEditSession(repoRoot, sessionId, input);
@@ -1807,13 +1842,19 @@ export function getEditSession(repoRoot: string, sessionId: string): EditSession
   );
 }
 
-export function listEditSessions(repoRoot: string, limit = 100): EditSessionSummary[] {
+export function listEditSessions(repoRoot: string, limit = 100, offset = 0): EditSessionSummary[] {
   const root = join(repoRoot, SESSION_ROOT);
   if (!existsSync(root)) return [];
   const boundedLimit = Math.max(1, Math.min(limit, 500));
-  return readdirSync(root, { withFileTypes: true })
+  const entries = readdirSync(root, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, 'session.json')))
-    .sort((a, b) => b.name.localeCompare(a.name))
+    .sort((a, b) => b.name.localeCompare(a.name));
+  if (entries.length === 0) return [];
+  // A rotating bounded window prevents historical sessions beyond the newest
+  // 500 from being permanently invisible to maintenance. Ordinary callers
+  // retain their previous newest-first default (offset=0).
+  const start = (Number.isFinite(offset) ? Math.max(0, Math.trunc(offset)) : 0) % entries.length;
+  return [...entries.slice(start), ...entries.slice(0, start)]
     .slice(0, boundedLimit)
     .flatMap((entry) => {
       try {

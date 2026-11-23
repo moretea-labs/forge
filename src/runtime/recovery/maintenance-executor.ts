@@ -1014,7 +1014,12 @@ function scanStaleEditSessionCandidates(
   options: Required<RuntimeMaintenanceOptions>,
 ): RuntimeMaintenanceCandidate[] {
   const nowMs = Date.now();
-  return listEditSessions(repository.canonicalRoot, Math.min(options.maxCandidates * 3, 500))
+  const windowSize = Math.min(options.maxCandidates * 3, 500);
+  // Rotate by wall-clock minute without mutating state during a read-only
+  // maintenance preview. A bounded scan must eventually reach older sessions,
+  // even when the first window contains only unsafe legacy records.
+  const offset = Math.floor(nowMs / 60_000) * windowSize;
+  return listEditSessions(repository.canonicalRoot, windowSize, offset)
     .filter((summary) => ['open', 'dirty', 'checked', 'check_failed'].includes(summary.status))
     .map((session) => {
       const updatedMs = Date.parse(session.updatedAt);

@@ -804,7 +804,7 @@ describe('runtime maintenance executor', () => {
         kind: 'stale_edit_session',
         id: fx.sessionId,
         safe: true,
-        reason: 'Exact committed after-images, no live lease; missing checks remain UNVERIFIED.',
+        reason: 'Exact committed after-images, no conflicting live lease; missing checks remain UNVERIFIED.',
       }),
     );
     expect(getEditSession(fx.repoRoot, fx.sessionId)).toEqual(before);
