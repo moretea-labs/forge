@@ -58,6 +58,8 @@ export interface StartRuntimeMcpTransportOptions {
   maximumSessions?: number;
   /** Test/embedded override; production defaults to the bounded cutover grace. */
   requestDrainTimeoutMs?: number;
+  /** Opt-in: non-streaming JSON responses only for loopback Gateway proxy MCP sessions. */
+  enableGatewayJsonResponses?: boolean;
 }
 
 function authorized(request: Request, configuredToken: string): boolean {
@@ -76,6 +78,24 @@ function isInitialize(body: unknown): boolean {
   const values = Array.isArray(body) ? body : [body];
   return values.some((value) => value && typeof value === 'object'
     && (value as Record<string, unknown>).method === 'initialize');
+}
+
+/**
+ * Negotiate only the response encoding for the already-authenticated inner
+ * Gateway proxy session. Client name is not a security identity: the bearer
+ * check remains authoritative, and JSON mode grants no capabilities.
+ * Other MCP clients retain the default SSE transport and notification behavior.
+ */
+export function isLocalGatewayJsonResponseSession(body: unknown, remoteAddress?: string): boolean {
+  if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remoteAddress ?? '')) return false;
+  if (!body || Array.isArray(body) || typeof body !== 'object') return false;
+  const request = body as Record<string, unknown>;
+  if (request.method !== 'initialize') return false;
+  const params = request.params;
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return false;
+  const client = (params as Record<string, unknown>).clientInfo;
+  return Boolean(client && typeof client === 'object' && !Array.isArray(client)
+    && (client as Record<string, unknown>).name === 'forge-public-gateway-proxy');
 }
 
 function observesToolSurface(body: unknown): boolean {
@@ -313,6 +333,8 @@ export async function startRuntimeMcpTransport(
         const server = options.createServer(principal, forwardedSessionId || undefined, forwardedControllerType);
         transport = new NodeStreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
+          enableJsonResponse: options.enableGatewayJsonResponses === true
+            && isLocalGatewayJsonResponseSession(body, req.socket.remoteAddress),
           onsessioninitialized: (createdSessionId) => {
             committedSessionId = createdSessionId;
             initializingSessions = Math.max(0, initializingSessions - 1);
