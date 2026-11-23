@@ -4,13 +4,27 @@ import { mkdtempSync, rmSync } from 'fs';
 import { createServer, type Server } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { cleanupRuntimeComputerInteractionTargets, runtimeComputerInteractionTargetAuthority } from '../../src/runtime/root/computer-target-composition';
-import { disposeRuntimeComputerComposition, executeRuntimeComputerBrowserTrustedInput, executeRuntimeComputerConsoleUnlock } from '../../src/runtime/root/computer-composition';
+import {
+  cleanupRuntimeComputerInteractionTargets,
+  runtimeComputerInteractionTargetAuthority,
+} from '../../src/runtime/root/computer-target-composition';
+import {
+  disposeRuntimeComputerComposition,
+  executeRuntimeComputerBrowserTrustedInput,
+  executeRuntimeComputerConsoleUnlock,
+} from '../../src/runtime/root/computer-composition';
 import { setComputerPlatformForTest } from '../../src/runtime/platform/computer-platform';
-import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
+import {
+  computerPluginAdapter,
+  setComputerDesktopTargetProcessLivenessCheckForTest,
+} from '../../src/runtime/plugins/computer-registration';
 import { isDirectNonPersistentPluginAction, isDirectPluginReadAction } from '../../src/runtime/plugins/store';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
-import { callProtectedComputerAdapter, executeProtectedConsoleUnlockInvocation, executeProtectedConsoleUnlockPreparation } from '../../adapters/mcp/runtime-gateway/protected-computer-adapter';
+import {
+  callProtectedComputerAdapter,
+  executeProtectedConsoleUnlockInvocation,
+  executeProtectedConsoleUnlockPreparation,
+} from '../../adapters/mcp/runtime-gateway/protected-computer-adapter';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
 import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/effects/controller-home';
@@ -47,6 +61,7 @@ interface ProviderFixture {
     lastConsoleAuthorization?: Record<string, unknown>;
     failNextPressAfterDispatch: boolean;
     nextOpenBundleId?: string;
+    rejectMismatchedExactProcessId: boolean;
   };
 }
 
@@ -60,11 +75,14 @@ async function closeServer(server: Server): Promise<void> {
 
 beforeEach(() => {
   setComputerPlatformForTest('darwin');
+  // Unit fixtures use synthetic PIDs. Default them live; dead-PID tests override.
+  setComputerDesktopTargetProcessLivenessCheckForTest(() => true);
 });
 
 afterEach(async () => {
   disposeRuntimeComputerComposition();
   setComputerPlatformForTest(undefined);
+  setComputerDesktopTargetProcessLivenessCheckForTest(undefined);
   for (const fixture of fixtures.splice(0)) {
     await closeServer(fixture.server);
     rmSync(fixture.controllerHome, { recursive: true, force: true });
@@ -73,9 +91,10 @@ afterEach(async () => {
 
 async function providerFixture(): Promise<ProviderFixture> {
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-target-'));
-  const socketPath = process.platform === 'win32'
-    ? `\\\\.\\pipe\\forge-computer-target-${randomUUID()}`
-    : join(controllerHome, 'desktop.sock');
+  const socketPath =
+    process.platform === 'win32'
+      ? `\\\\.\\pipe\\forge-computer-target-${randomUUID()}`
+      : join(controllerHome, 'desktop.sock');
   const registrationInput = createDesktopOperatorRegistrationInput({
     socketPath,
     pluginVersion: '0.4.0',
@@ -109,6 +128,7 @@ async function providerFixture(): Promise<ProviderFixture> {
     lastConsoleAuthorization: undefined as Record<string, unknown> | undefined,
     failNextPressAfterDispatch: false,
     nextOpenBundleId: undefined as string | undefined,
+    rejectMismatchedExactProcessId: false,
   };
   const server = createServer((socket) => {
     state.connectionCount += 1;
@@ -122,22 +142,36 @@ async function providerFixture(): Promise<ProviderFixture> {
         buffer = buffer.slice(newline + 1);
         const request = JSON.parse(raw) as { id: string; method: string; params?: Record<string, unknown> };
         const envelopeParams = request.params ?? {};
-        const computerArguments = request.method === 'computer_execute' && envelopeParams.arguments && typeof envelopeParams.arguments === 'object'
-          ? envelopeParams.arguments as Record<string, unknown>
-          : undefined;
-        const computerCapability = request.method === 'computer_execute' && typeof envelopeParams.capability === 'string' ? envelopeParams.capability : undefined;
-        const actionId = request.method === 'execute' && typeof envelopeParams.action === 'string'
-          ? envelopeParams.action
-          : request.method === 'computer_execute'
-            ? computerCapability === 'computer.element.observe.v2'
-              ? 'observe_elements'
-              : typeof computerArguments?.action === 'string' ? computerArguments.action : request.method
-            : request.method;
-        const params = request.method === 'execute' && envelopeParams.arguments && typeof envelopeParams.arguments === 'object'
-          ? envelopeParams.arguments as Record<string, unknown>
-          : computerArguments ?? envelopeParams;
-        const respond = (result: Record<string, unknown>) => socket.write(`${JSON.stringify({ id: request.id, ok: true, result })}\n`);
-        const fail = (code: string, message: string) => socket.write(`${JSON.stringify({ id: request.id, ok: false, error: { code, message, retryable: false, domain: 'session' } })}\n`);
+        const computerArguments =
+          request.method === 'computer_execute' &&
+          envelopeParams.arguments &&
+          typeof envelopeParams.arguments === 'object'
+            ? (envelopeParams.arguments as Record<string, unknown>)
+            : undefined;
+        const computerCapability =
+          request.method === 'computer_execute' && typeof envelopeParams.capability === 'string'
+            ? envelopeParams.capability
+            : undefined;
+        const actionId =
+          request.method === 'execute' && typeof envelopeParams.action === 'string'
+            ? envelopeParams.action
+            : request.method === 'computer_execute'
+              ? computerCapability === 'computer.element.observe.v2'
+                ? 'observe_elements'
+                : typeof computerArguments?.action === 'string'
+                  ? computerArguments.action
+                  : request.method
+              : request.method;
+        const params =
+          request.method === 'execute' && envelopeParams.arguments && typeof envelopeParams.arguments === 'object'
+            ? (envelopeParams.arguments as Record<string, unknown>)
+            : (computerArguments ?? envelopeParams);
+        const respond = (result: Record<string, unknown>) =>
+          socket.write(`${JSON.stringify({ id: request.id, ok: true, result })}\n`);
+        const fail = (code: string, message: string) =>
+          socket.write(
+            `${JSON.stringify({ id: request.id, ok: false, error: { code, message, retryable: false, domain: 'session' } })}\n`,
+          );
         let result: Record<string, unknown>;
         if (actionId === 'handshake') {
           state.handshakeCount += 1;
@@ -148,12 +182,62 @@ async function providerFixture(): Promise<ProviderFixture> {
             startedAt: '2026-09-09T00:00:00.000Z',
             pluginVersion: registration.pluginVersion,
             computerCapabilities: [
-              { capabilityId: 'computer.observe.v1', protocolVersion: 1, method: 'computer_execute', actions: ['desktop_observe'] },
-              { capabilityId: 'computer.input.v1', protocolVersion: 1, method: 'computer_execute', actions: ['desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_open_url'] },
-              { capabilityId: 'computer.console.unlock.v1', protocolVersion: 1, method: 'computer_execute', actions: ['prepare_unlock_console', 'unlock_console', 'console_unlock_enroll', 'console_unlock_status', 'console_unlock_recover', 'console_unlock_revoke'] },
-              { capabilityId: 'computer.capture.v1', protocolVersion: 1, method: 'computer_execute', actions: ['desktop_screenshot'] },
-              { capabilityId: 'computer.element.observe.v2', protocolVersion: 2, method: 'computer_execute', actions: ['observe_elements'] },
-              { capabilityId: 'computer.element.action.v2', protocolVersion: 2, method: 'computer_execute', actions: ['invoke', 'click', 'focus', 'set_value', 'toggle', 'expand', 'collapse', 'select', 'open', 'show_menu', 'scroll_page_down', 'scroll_page_up'] },
+              {
+                capabilityId: 'computer.observe.v1',
+                protocolVersion: 1,
+                method: 'computer_execute',
+                actions: ['desktop_observe'],
+              },
+              {
+                capabilityId: 'computer.input.v1',
+                protocolVersion: 1,
+                method: 'computer_execute',
+                actions: ['desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_open_url'],
+              },
+              {
+                capabilityId: 'computer.console.unlock.v1',
+                protocolVersion: 1,
+                method: 'computer_execute',
+                actions: [
+                  'prepare_unlock_console',
+                  'unlock_console',
+                  'console_unlock_enroll',
+                  'console_unlock_status',
+                  'console_unlock_recover',
+                  'console_unlock_revoke',
+                ],
+              },
+              {
+                capabilityId: 'computer.capture.v1',
+                protocolVersion: 1,
+                method: 'computer_execute',
+                actions: ['desktop_screenshot'],
+              },
+              {
+                capabilityId: 'computer.element.observe.v2',
+                protocolVersion: 2,
+                method: 'computer_execute',
+                actions: ['observe_elements'],
+              },
+              {
+                capabilityId: 'computer.element.action.v2',
+                protocolVersion: 2,
+                method: 'computer_execute',
+                actions: [
+                  'invoke',
+                  'click',
+                  'focus',
+                  'set_value',
+                  'toggle',
+                  'expand',
+                  'collapse',
+                  'select',
+                  'open',
+                  'show_menu',
+                  'scroll_page_down',
+                  'scroll_page_up',
+                ],
+              },
             ],
           };
         } else if (actionId === 'manifest') {
@@ -180,6 +264,14 @@ async function providerFixture(): Promise<ProviderFixture> {
             fail('APP_NOT_RUNNING', 'Target application is not running');
             continue;
           }
+          if (
+            state.rejectMismatchedExactProcessId &&
+            typeof params.process_id === 'number' &&
+            params.process_id !== state.processId
+          ) {
+            fail('APP_PROCESS_NOT_RUNNING', 'The exact requested application process is not running');
+            continue;
+          }
           state.applicationRunning = true;
           state.sessionOpenCount += 1;
           const requestedBundle = typeof params.bundle_id === 'string' ? params.bundle_id : undefined;
@@ -199,9 +291,11 @@ async function providerFixture(): Promise<ProviderFixture> {
               ...(typeof params.process_id === 'number' && !state.omitExactProcessReceipt
                 ? { exactProcessId: params.process_id, exactBundlePathVerified: typeof params.bundle_path === 'string' }
                 : {}),
-              ...(!state.omitLaunchProvenance ? launched
-                ? { applicationOwnership: 'provider_launched', ownedProcessIdentifier: processId }
-                : { applicationOwnership: 'preexisting' } : {}),
+              ...(!state.omitLaunchProvenance
+                ? launched
+                  ? { applicationOwnership: 'provider_launched', ownedProcessIdentifier: processId }
+                  : { applicationOwnership: 'preexisting' }
+                : {}),
             };
             sessions.set(interactionId, session);
             result = session;
@@ -211,7 +305,10 @@ async function providerFixture(): Promise<ProviderFixture> {
           state.sessionCloseCount += 1;
           state.lastSessionCloseArgs = { ...params };
           const closed = typeof params.interaction_id === 'string' ? sessions.delete(params.interaction_id) : false;
-          result = { closed, termination_outcome: params.terminate_owned_pid === 4242 ? 'terminated' : 'not_requested' };
+          result = {
+            closed,
+            termination_outcome: params.terminate_owned_pid === 4242 ? 'terminated' : 'not_requested',
+          };
         } else if (actionId === 'desktop_observe') {
           if (typeof params.interaction_id !== 'string' || !sessions.has(params.interaction_id)) {
             fail('SESSION_NOT_FOUND', 'Desktop session was not found');
@@ -233,11 +330,33 @@ async function providerFixture(): Promise<ProviderFixture> {
           state.elementObserveCount += 1;
           const snapshotRevision = state.elementObserveCount * 2 - 1;
           session.snapshotRevision = snapshotRevision;
-          const target = { interactionId, pid: session.pid, bundleIdentifier: session.bundleIdentifier, appName: session.appName, windowRef: 'ax_window_1', snapshotRevision };
+          const target = {
+            interactionId,
+            pid: session.pid,
+            bundleIdentifier: session.bundleIdentifier,
+            appName: session.appName,
+            windowRef: 'ax_window_1',
+            snapshotRevision,
+          };
           result = {
-            protocolVersion: 2, interactionId, snapshotRevision, pid: session.pid, bundleIdentifier: session.bundleIdentifier, appName: session.appName,
-            truncated: false, nodeCount: 1,
-            root: { ref: `ax_${snapshotRevision}_1`, target, role: 'AXTextArea', name: 'One', description: 'Chat with ChatGPT', state: { enabled: true, focused: false }, actions: ['invoke', 'set_value'], children: [] },
+            protocolVersion: 2,
+            interactionId,
+            snapshotRevision,
+            pid: session.pid,
+            bundleIdentifier: session.bundleIdentifier,
+            appName: session.appName,
+            truncated: false,
+            nodeCount: 1,
+            root: {
+              ref: `ax_${snapshotRevision}_1`,
+              target,
+              role: 'AXTextArea',
+              name: 'One',
+              description: 'Chat with ChatGPT',
+              state: { enabled: true, focused: false },
+              actions: ['invoke', 'set_value'],
+              children: [],
+            },
           };
         } else if (actionId === 'desktop_type_text') {
           const interactionId = typeof params.interaction_id === 'string' ? params.interaction_id : '';
@@ -247,9 +366,13 @@ async function providerFixture(): Promise<ProviderFixture> {
           }
           state.typeTextCount += 1;
           state.lastTypeTextArgs = { ...params };
-          result = { characters: typeof params.text === 'string' ? params.text.length : 0, method: 'AXValue_background' };
+          result = {
+            characters: typeof params.text === 'string' ? params.text.length : 0,
+            method: 'AXValue_background',
+          };
         } else if (computerCapability === 'computer.element.action.v2') {
-          const target = params.target && typeof params.target === 'object' ? params.target as Record<string, unknown> : undefined;
+          const target =
+            params.target && typeof params.target === 'object' ? (params.target as Record<string, unknown>) : undefined;
           const interactionId = typeof target?.interactionId === 'string' ? target.interactionId : '';
           const session = sessions.get(interactionId);
           if (!session) {
@@ -265,19 +388,36 @@ async function providerFixture(): Promise<ProviderFixture> {
           result = { acted: true, action: params.action, ref: params.ref, interactionId };
         } else if (actionId === 'prepare_unlock_console') {
           state.consolePrepareCount += 1;
-          state.lastConsoleAuthorization = params.authorization && typeof params.authorization === 'object' ? params.authorization as Record<string, unknown> : undefined;
-          result = { prepared: true, credential_handle: '11111111-1111-4111-8111-111111111111', expires_in_ms: 120_000 };
+          state.lastConsoleAuthorization =
+            params.authorization && typeof params.authorization === 'object'
+              ? (params.authorization as Record<string, unknown>)
+              : undefined;
+          result = {
+            prepared: true,
+            credential_handle: '11111111-1111-4111-8111-111111111111',
+            expires_in_ms: 120_000,
+          };
         } else if (actionId === 'unlock_console') {
           state.consoleUnlockCount += 1;
           state.lastConsoleHandle = typeof params.credential_handle === 'string' ? params.credential_handle : undefined;
-          state.lastConsoleAuthorization = params.authorization && typeof params.authorization === 'object' ? params.authorization as Record<string, unknown> : undefined;
+          state.lastConsoleAuthorization =
+            params.authorization && typeof params.authorization === 'object'
+              ? (params.authorization as Record<string, unknown>)
+              : undefined;
           result = { unlocked: true, verified: true, postcondition: 'console_unlocked' };
         } else if (actionId === 'console_unlock_enroll') {
           result = { available: true, enrolled: true, persistence: 'macos_keychain_device_only' };
         } else if (actionId === 'console_unlock_status') {
           result = { available: true, enrolled: true, persistence: 'macos_keychain_device_only' };
         } else if (actionId === 'console_unlock_recover') {
-          result = { available: true, enrolled: true, recovered: true, unlocked: true, verified: true, postcondition: 'console_unlocked' };
+          result = {
+            available: true,
+            enrolled: true,
+            recovered: true,
+            unlocked: true,
+            verified: true,
+            postcondition: 'console_unlocked',
+          };
         } else if (actionId === 'console_unlock_revoke') {
           result = { available: false, enrolled: false, revoked: true, persistence: 'macos_keychain_device_only' };
         } else if (actionId === 'desktop_press') {
@@ -330,11 +470,9 @@ function actionInput(
 }
 
 async function openTarget(fixture: ProviderFixture, launch = false, bundleId = 'com.example.Editor'): Promise<string> {
-  const result = await computerPluginAdapter.executeAction(actionInput(
-    fixture.controllerHome,
-    'desktop_target_open',
-    { bundle_id: bundleId, launch, activate: false },
-  ));
+  const result = await computerPluginAdapter.executeAction(
+    actionInput(fixture.controllerHome, 'desktop_target_open', { bundle_id: bundleId, launch, activate: false }),
+  );
   expect(result.targetId).toBeString();
   return String(result.targetId);
 }
@@ -344,36 +482,45 @@ describe('Computer durable InteractionTarget authority', () => {
     const fixture = await providerFixture();
     const targetId = await openTarget(fixture);
 
-    const reopened = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_open',
-      { bundle_id: 'com.example.Editor', launch: false, activate: false },
-      'target-open-idempotent-repeat',
-    ));
+    const reopened = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { bundle_id: 'com.example.Editor', launch: false, activate: false },
+        'target-open-idempotent-repeat',
+      ),
+    );
 
     expect(reopened.targetId).toBe(targetId);
     expect(fixture.state.sessionOpenCount).toBe(1);
     expect(fixture.state.observeCount).toBe(0);
     expect(fixture.state.elementObserveCount).toBe(1);
-    expect(targetAuthority.listAllApplications(fixture.controllerHome).map((target) => target.targetId)).toEqual([targetId]);
+    expect(targetAuthority.listAllApplications(fixture.controllerHome).map((target) => target.targetId)).toEqual([
+      targetId,
+    ]);
   });
 
   test('target inventory is read-only and never exposes native provider session identifiers', async () => {
     const fixture = await providerFixture();
     const targetId = await openTarget(fixture);
 
-    const inventory = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_list',
-      { limit: 10 },
-      'target-list-readonly',
-    ));
+    const inventory = await computerPluginAdapter.executeAction(
+      actionInput(fixture.controllerHome, 'desktop_target_list', { limit: 10 }, 'target-list-readonly'),
+    );
 
     expect(inventory).toMatchObject({
       total: 1,
       returned: 1,
       truncated: false,
-      targets: [{ targetId, kind: 'application', stableIdentity: { bundleId: 'com.example.Editor' }, providerBound: true, launchOwnership: 'preexisting' }],
+      targets: [
+        {
+          targetId,
+          kind: 'application',
+          stableIdentity: { bundleId: 'com.example.Editor' },
+          providerBound: true,
+          launchOwnership: 'preexisting',
+        },
+      ],
     });
     expect((inventory.targets as Array<Record<string, unknown>>)[0]).not.toHaveProperty('providerBinding');
     expect(fixture.state.sessionOpenCount).toBe(1);
@@ -391,32 +538,35 @@ describe('Computer durable InteractionTarget authority', () => {
       stableIdentity: { bundleId: 'com.example.Other', appName: 'Other' },
     });
 
-    const firstPage = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_list',
-      { bundle_id: 'com.example.Editor', limit: 1 },
-      'target-list-filter-page-one',
-    ));
+    const firstPage = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_list',
+        { bundle_id: 'com.example.Editor', limit: 1 },
+        'target-list-filter-page-one',
+      ),
+    );
     expect(firstPage).toMatchObject({ total: 2, returned: 1, truncated: true, nextOffset: 1 });
 
-    const secondPage = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_list',
-      { bundle_id: 'com.example.Editor', limit: 1, offset: firstPage.nextOffset },
-      'target-list-filter-page-two',
-    ));
+    const secondPage = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_list',
+        { bundle_id: 'com.example.Editor', limit: 1, offset: firstPage.nextOffset },
+        'target-list-filter-page-two',
+      ),
+    );
     expect(secondPage).toMatchObject({ total: 2, returned: 1, truncated: false });
-    expect(new Set([
-      (firstPage.targets as Array<Record<string, unknown>>)[0].targetId,
-      (secondPage.targets as Array<Record<string, unknown>>)[0].targetId,
-    ])).toEqual(new Set([firstId, secondId]));
+    expect(
+      new Set([
+        (firstPage.targets as Array<Record<string, unknown>>)[0].targetId,
+        (secondPage.targets as Array<Record<string, unknown>>)[0].targetId,
+      ]),
+    ).toEqual(new Set([firstId, secondId]));
 
-    const byName = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_list',
-      { app_name: 'Other' },
-      'target-list-filter-by-name',
-    ));
+    const byName = await computerPluginAdapter.executeAction(
+      actionInput(fixture.controllerHome, 'desktop_target_list', { app_name: 'Other' }, 'target-list-filter-by-name'),
+    );
     expect(byName).toMatchObject({ total: 1, returned: 1, truncated: false });
   });
 
@@ -425,12 +575,14 @@ describe('Computer durable InteractionTarget authority', () => {
     const targetId = await openTarget(fixture);
     const before = targetAuthority.get(fixture.controllerHome, targetId);
 
-    const reopened = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_open',
-      { target_id: targetId, launch: false, activate: false },
-      'target-open-verify-exact-binding',
-    ));
+    const reopened = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { target_id: targetId, launch: false, activate: false },
+        'target-open-verify-exact-binding',
+      ),
+    );
 
     expect(reopened).toMatchObject({ targetId, processId: 4242 });
     expect(fixture.state.sessionOpenCount).toBe(1);
@@ -445,31 +597,49 @@ describe('Computer durable InteractionTarget authority', () => {
     const before = targetAuthority.get(fixture.controllerHome, targetId);
     fixture.sessions.clear();
 
-    await expect(computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome, 'desktop_observe', { target_id: targetId }, 'observe-stale-binding',
-    ))).rejects.toMatchObject({ code: 'COMPUTER_TARGET_PROVIDER_BINDING_STALE' });
-    await expect(computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome, 'desktop_element_observe', { target_id: targetId }, 'element-observe-stale-binding',
-    ))).rejects.toMatchObject({ code: 'COMPUTER_TARGET_PROVIDER_BINDING_STALE' });
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(fixture.controllerHome, 'desktop_observe', { target_id: targetId }, 'observe-stale-binding'),
+      ),
+    ).rejects.toMatchObject({ code: 'COMPUTER_TARGET_PROVIDER_BINDING_STALE' });
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_element_observe',
+          { target_id: targetId },
+          'element-observe-stale-binding',
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'COMPUTER_TARGET_PROVIDER_BINDING_STALE' });
 
     expect(fixture.state.sessionOpenCount).toBe(1);
     expect(fixture.state.observeCount).toBe(0);
     expect(fixture.state.elementObserveCount).toBe(0);
     expect(targetAuthority.get(fixture.controllerHome, targetId)).toEqual(before);
 
-    const reattached = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_open',
-      { bundle_id: 'com.example.Editor', launch: false, activate: false },
-      'target-open-explicit-reattach',
-    ));
+    const reattached = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { bundle_id: 'com.example.Editor', launch: false, activate: false },
+        'target-open-explicit-reattach',
+      ),
+    );
     expect(reattached.targetId).toBe(targetId);
     expect(fixture.state.sessionOpenCount).toBe(2);
-    expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId).toBe('provider_session_2');
+    expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId).toBe(
+      'provider_session_2',
+    );
 
-    await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome, 'desktop_element_observe', { target_id: targetId }, 'element-observe-after-reattach',
-    ));
+    await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_element_observe',
+        { target_id: targetId },
+        'element-observe-after-reattach',
+      ),
+    );
     expect(fixture.state.elementObserveCount).toBe(1);
   });
 
@@ -477,47 +647,72 @@ describe('Computer durable InteractionTarget authority', () => {
     const fixture = await providerFixture();
     const originalTargetId = await openTarget(fixture);
     const originalTarget = targetAuthority.get(fixture.controllerHome, originalTargetId);
-    const staleTargetId = targetAuthority.create(fixture.controllerHome, {
+    const siblingLiveTargetId = targetAuthority.create(fixture.controllerHome, {
       stableIdentity: { bundleId: 'com.example.Editor' },
       providerBinding: {
         providerId: 'desktop_operator',
-        providerSessionId: 'stale_provider_session',
+        providerSessionId: 'sibling_live_provider_session',
+        processId: 4343,
+        observedAt: new Date(0).toISOString(),
+      },
+    }).targetId;
+    const legacyTargetId = targetAuthority.create(fixture.controllerHome, {
+      stableIdentity: { bundleId: 'com.example.Editor' },
+      providerBinding: {
+        providerId: 'desktop_operator',
+        providerSessionId: 'legacy_unverified_provider_session',
         observedAt: new Date(0).toISOString(),
       },
     }).targetId;
     fixture.sessions.clear();
+    // Two distinct live PIDs for the same bundle remain a hard identity conflict.
+    setComputerDesktopTargetProcessLivenessCheckForTest((pid) => pid === 4242 || pid === 4343);
 
-    await expect(computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_open',
-      { bundle_id: 'com.example.Editor', launch: false, activate: false },
-      'target-open-ambiguous-identity',
-    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_IDENTITY_AMBIGUOUS' });
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_target_open',
+          { bundle_id: 'com.example.Editor', launch: false, activate: false },
+          'target-open-ambiguous-identity',
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_IDENTITY_AMBIGUOUS' });
 
-    await expect(computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_open',
-      { target_id: staleTargetId, bundle_id: 'com.example.Editor', launch: false, activate: false },
-      'target-open-conflicting-selectors',
-    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_SELECTOR_AMBIGUOUS' });
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_target_open',
+          { target_id: legacyTargetId, bundle_id: 'com.example.Editor', launch: false, activate: false },
+          'target-open-conflicting-selectors',
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_SELECTOR_AMBIGUOUS' });
 
     expect(fixture.state.sessionOpenCount).toBe(1);
-    await expect(computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_open',
-      { target_id: staleTargetId, launch: false, activate: false },
-      'target-open-unverified-legacy-id',
-    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_REQUIRED' });
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_target_open',
+          { target_id: legacyTargetId, launch: false, activate: false },
+          'target-open-unverified-legacy-id',
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_REQUIRED' });
     expect(fixture.state.sessionOpenCount).toBe(1);
 
-    const reattached = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_open',
-      { target_id: staleTargetId, process_id: 4242, launch: false, activate: false },
-      'target-open-exact-id-reattach',
-    ));
+    const reattached = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { target_id: legacyTargetId, process_id: 4242, launch: false, activate: false },
+        'target-open-exact-id-reattach',
+      ),
+    );
 
-    expect(reattached.targetId).toBe(staleTargetId);
+    expect(reattached.targetId).toBe(legacyTargetId);
     expect(reattached.processId).toBe(4242);
     expect(fixture.state.sessionOpenCount).toBe(2);
     expect(fixture.state.lastSessionOpenArgs).toMatchObject({
@@ -528,16 +723,152 @@ describe('Computer durable InteractionTarget authority', () => {
       reuse_existing: false,
     });
     expect(targetAuthority.get(fixture.controllerHome, originalTargetId)).toEqual(originalTarget);
-    expect(targetAuthority.get(fixture.controllerHome, staleTargetId)?.providerBinding?.providerSessionId).toBe('provider_session_2');
-    await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_press',
-      { target_id: staleTargetId, selector: { title: 'Save' }, semantic_action: 'press' },
-      'target-press-after-exact-id-reattach',
-    ));
+    expect(targetAuthority.get(fixture.controllerHome, siblingLiveTargetId)?.providerBinding?.processId).toBe(4343);
+    expect(targetAuthority.get(fixture.controllerHome, legacyTargetId)?.providerBinding?.providerSessionId).toBe(
+      'provider_session_2',
+    );
+    await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_press',
+        { target_id: legacyTargetId, selector: { title: 'Save' }, semantic_action: 'press' },
+        'target-press-after-exact-id-reattach',
+      ),
+    );
     expect(fixture.state.pressCount).toBe(1);
-    expect(new Set(targetAuthority.listAllApplications(fixture.controllerHome).map(target => target.targetId)))
-      .toEqual(new Set([originalTargetId, staleTargetId]));
+    expect(
+      new Set(targetAuthority.listAllApplications(fixture.controllerHome).map((target) => target.targetId)),
+    ).toEqual(new Set([originalTargetId, siblingLiveTargetId, legacyTargetId]));
+  });
+
+  test('bundle-id reopen collapses duplicate live targets that share one process id', async () => {
+    const fixture = await providerFixture();
+    const liveTargetId = await openTarget(fixture);
+    const duplicateId = targetAuthority.create(fixture.controllerHome, {
+      stableIdentity: { bundleId: 'com.example.Editor' },
+      providerBinding: {
+        providerId: 'desktop_operator',
+        providerSessionId: 'duplicate_same_pid_session',
+        processId: 4242,
+        observedAt: new Date(0).toISOString(),
+      },
+    }).targetId;
+    setComputerDesktopTargetProcessLivenessCheckForTest((pid) => pid === 4242);
+
+    const reopened = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { bundle_id: 'com.example.Editor', launch: false, activate: false },
+        'target-open-collapse-same-pid',
+      ),
+    );
+    expect(reopened).toMatchObject({ targetId: liveTargetId, processId: 4242 });
+    expect(fixture.state.sessionOpenCount).toBe(1);
+    expect(targetAuthority.get(fixture.controllerHome, duplicateId)).toBeUndefined();
+  });
+
+  test('bundle-id reopen ignores dead historical PIDs and prefers the single live binding', async () => {
+    const fixture = await providerFixture();
+    const liveTargetId = await openTarget(fixture);
+    const deadTargetId = targetAuthority.create(fixture.controllerHome, {
+      stableIdentity: { bundleId: 'com.example.Editor' },
+      providerBinding: {
+        providerId: 'desktop_operator',
+        providerSessionId: 'dead_provider_session',
+        processId: 99901,
+        observedAt: new Date(0).toISOString(),
+      },
+    }).targetId;
+    setComputerDesktopTargetProcessLivenessCheckForTest((pid) => pid === 4242);
+
+    const reopened = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { bundle_id: 'com.example.Editor', launch: false, activate: false },
+        'target-open-prefer-live-pid',
+      ),
+    );
+    expect(reopened).toMatchObject({ targetId: liveTargetId, processId: 4242 });
+    expect(fixture.state.sessionOpenCount).toBe(1);
+    expect(targetAuthority.get(fixture.controllerHome, deadTargetId)?.providerBinding?.processId).toBe(99901);
+  });
+
+  test('bundle-id reopen with only dead historical PIDs opens a fresh live binding', async () => {
+    const fixture = await providerFixture();
+    const firstDeadId = await openTarget(fixture);
+    const secondDeadId = targetAuthority.create(fixture.controllerHome, {
+      stableIdentity: { bundleId: 'com.example.Editor' },
+      providerBinding: {
+        providerId: 'desktop_operator',
+        providerSessionId: 'dead_provider_session_2',
+        processId: 99902,
+        observedAt: new Date(0).toISOString(),
+      },
+    }).targetId;
+    fixture.sessions.clear();
+    fixture.state.processId = 5252;
+    setComputerDesktopTargetProcessLivenessCheckForTest(() => false);
+
+    const opened = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { bundle_id: 'com.example.Editor', launch: false, activate: false },
+        'target-open-ignore-dead-pid-pile',
+      ),
+    );
+    expect(opened.processId).toBe(5252);
+    expect(opened.targetId).not.toBe(firstDeadId);
+    expect(opened.targetId).not.toBe(secondDeadId);
+    expect(fixture.state.sessionOpenCount).toBe(2);
+    expect(targetAuthority.get(fixture.controllerHome, firstDeadId)).toBeUndefined();
+    expect(targetAuthority.get(fixture.controllerHome, secondDeadId)).toBeUndefined();
+  });
+
+  test('bundle-id reopen with one dead historical PID opens a fresh live binding', async () => {
+    const fixture = await providerFixture();
+    const deadId = await openTarget(fixture);
+    fixture.sessions.clear();
+    fixture.state.processId = 6262;
+    setComputerDesktopTargetProcessLivenessCheckForTest(() => false);
+
+    const opened = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { bundle_id: 'com.example.Editor', launch: false, activate: false },
+        'target-open-ignore-single-dead-pid',
+      ),
+    );
+    expect(opened.processId).toBe(6262);
+    expect(opened.targetId).not.toBe(deadId);
+    expect(fixture.state.sessionOpenCount).toBe(2);
+    expect(targetAuthority.get(fixture.controllerHome, deadId)).toBeUndefined();
+  });
+
+  test('bundle-id reopen recovers when a still-live PID no longer maps to the application', async () => {
+    const fixture = await providerFixture();
+    const staleId = await openTarget(fixture);
+    fixture.sessions.clear();
+    fixture.state.processId = 7272;
+    fixture.state.rejectMismatchedExactProcessId = true;
+    // OS still reports the old PID as alive (recycle), but provider rejects that exact process.
+    setComputerDesktopTargetProcessLivenessCheckForTest(() => true);
+
+    const opened = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { bundle_id: 'com.example.Editor', launch: false, activate: false },
+        'target-open-recover-recycled-pid',
+      ),
+    );
+    expect(opened.processId).toBe(7272);
+    expect(opened.targetId).not.toBe(staleId);
+    expect(targetAuthority.get(fixture.controllerHome, staleId)).toBeUndefined();
+    expect(fixture.state.sessionOpenCount).toBe(2);
   });
 
   test('bundle-id reopen cannot reuse a drifted PID or rebind a sibling after provider session loss', async () => {
@@ -550,33 +881,48 @@ describe('Computer durable InteractionTarget authority', () => {
     // The legacy bundle lookup is not proof that the provider session stayed
     // attached to the same process when several copies share the bundle ID.
     fixture.sessions.get(sessionId!)!.pid = 4343;
-    await expect(computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome, 'desktop_target_open',
-      { bundle_id: 'com.example.Editor', launch: false, activate: false },
-      'bundle-pid-drift-reuse',
-    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH' });
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_target_open',
+          { bundle_id: 'com.example.Editor', launch: false, activate: false },
+          'bundle-pid-drift-reuse',
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH' });
     expect(fixture.state.sessionOpenCount).toBe(1);
     expect(targetAuthority.get(fixture.controllerHome, targetId)).toEqual(before);
 
     fixture.sessions.clear();
     fixture.state.processId = 4343;
-    await expect(computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome, 'desktop_target_open',
-      { bundle_id: 'com.example.Editor', launch: false, activate: false },
-      'bundle-stale-session-other-running-pid',
-    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_REBIND_IDENTITY_MISMATCH' });
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_target_open',
+          { bundle_id: 'com.example.Editor', launch: false, activate: false },
+          'bundle-stale-session-other-running-pid',
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_REBIND_IDENTITY_MISMATCH' });
     expect(fixture.state.lastSessionOpenArgs).toMatchObject({
-      process_id: 4242, launch: false, reuse_existing: false,
+      process_id: 4242,
+      launch: false,
+      reuse_existing: false,
     });
     expect(fixture.state.sessionCloseCount).toBe(1);
     expect(targetAuthority.get(fixture.controllerHome, targetId)).toEqual(before);
 
     fixture.state.processId = 4242;
-    const recovered = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome, 'desktop_target_open',
-      { bundle_id: 'com.example.Editor', launch: false, activate: false },
-      'bundle-exact-original-pid-recovered',
-    ));
+    const recovered = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { bundle_id: 'com.example.Editor', launch: false, activate: false },
+        'bundle-exact-original-pid-recovered',
+      ),
+    );
     expect(recovered).toMatchObject({ targetId, processId: 4242 });
     expect(fixture.state.sessionOpenCount).toBe(3);
     expect(fixture.state.pressCount).toBe(0);
@@ -589,21 +935,29 @@ describe('Computer durable InteractionTarget authority', () => {
     const providerSessionId = before?.providerBinding?.providerSessionId;
     expect(providerSessionId).toBeString();
 
-    const reused = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome, 'desktop_target_open',
-      { target_id: targetId, launch: false, activate: false },
-      'target-live-exact-pid-observe',
-    ));
+    const reused = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { target_id: targetId, launch: false, activate: false },
+        'target-live-exact-pid-observe',
+      ),
+    );
     expect(reused).toMatchObject({ targetId, processId: 4242 });
     expect(fixture.state.sessionOpenCount).toBe(1);
     expect(fixture.state.elementObserveCount).toBe(1);
 
     fixture.sessions.get(providerSessionId!)!.pid = 4343;
-    await expect(computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome, 'desktop_target_open',
-      { target_id: targetId, launch: false, activate: false },
-      'target-drifted-provider-pid',
-    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH' });
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_target_open',
+          { target_id: targetId, launch: false, activate: false },
+          'target-drifted-provider-pid',
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH' });
     expect(fixture.state.sessionOpenCount).toBe(1);
     expect(targetAuthority.get(fixture.controllerHome, targetId)).toEqual(before);
     expect(fixture.state.pressCount).toBe(0);
@@ -614,11 +968,14 @@ describe('Computer durable InteractionTarget authority', () => {
     const targetId = await openTarget(fixture);
     const before = targetAuthority.get(fixture.controllerHome, targetId);
     fixture.sessions.clear();
-    const reattached = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome, 'desktop_target_open',
-      { target_id: targetId, launch: false, activate: false },
-      'target-stale-pid-rebind',
-    ));
+    const reattached = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { target_id: targetId, launch: false, activate: false },
+        'target-stale-pid-rebind',
+      ),
+    );
     expect(reattached).toMatchObject({ targetId, processId: 4242 });
     expect(fixture.state.sessionOpenCount).toBe(2);
     expect(fixture.state.lastSessionOpenArgs).toMatchObject({
@@ -629,8 +986,9 @@ describe('Computer durable InteractionTarget authority', () => {
       reuse_existing: false,
     });
     expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.processId).toBe(4242);
-    expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId)
-      .not.toBe(before?.providerBinding?.providerSessionId);
+    expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId).not.toBe(
+      before?.providerBinding?.providerSessionId,
+    );
   });
 
   test('exact PID disambiguates same-bundle targets and returns the bound PID', async () => {
@@ -645,15 +1003,22 @@ describe('Computer durable InteractionTarget authority', () => {
         observedAt: new Date(0).toISOString(),
       },
     });
-    const selected = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome, 'desktop_target_open',
-      { bundle_id: 'com.example.Editor', process_id: 4242, bundle_path: '/tmp/Forge-preview.app', launch: false },
-      'target-exact-pid-selected',
-    ));
+    const selected = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { bundle_id: 'com.example.Editor', process_id: 4242, bundle_path: '/tmp/Forge-preview.app', launch: false },
+        'target-exact-pid-selected',
+      ),
+    );
     expect(selected).toMatchObject({ targetId, processId: 4242 });
     expect(fixture.state.lastSessionOpenArgs).toMatchObject({
-      bundle_id: 'com.example.Editor', process_id: 4242, bundle_path: '/tmp/Forge-preview.app',
-      launch: false, activate: false, reuse_existing: false,
+      bundle_id: 'com.example.Editor',
+      process_id: 4242,
+      bundle_path: '/tmp/Forge-preview.app',
+      launch: false,
+      activate: false,
+      reuse_existing: false,
     });
     expect(targetAuthority.listAllApplications(fixture.controllerHome)).toHaveLength(2);
   });
@@ -661,32 +1026,47 @@ describe('Computer durable InteractionTarget authority', () => {
   test('exact PID refuses a target bound to another process before dispatch', async () => {
     const fixture = await providerFixture();
     const targetId = await openTarget(fixture);
-    await expect(computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome, 'desktop_target_open',
-      { target_id: targetId, process_id: 4343, launch: false },
-      'target-wrong-bound-pid',
-    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH' });
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_target_open',
+          { target_id: targetId, process_id: 4343, launch: false },
+          'target-wrong-bound-pid',
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH' });
     expect(fixture.state.sessionOpenCount).toBe(1);
   });
 
   test('exact PID and path fail closed when native proof is absent or PID changes', async () => {
     const fixture = await providerFixture();
     fixture.state.omitExactProcessReceipt = true;
-    await expect(computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome, 'desktop_target_open',
-      { bundle_id: 'com.example.Editor', process_id: 4242, bundle_path: '/tmp/Forge-preview.app', launch: false },
-      'target-unverified-exact-pid',
-    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH' });
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_target_open',
+          { bundle_id: 'com.example.Editor', process_id: 4242, bundle_path: '/tmp/Forge-preview.app', launch: false },
+          'target-unverified-exact-pid',
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH' });
     expect(fixture.state.sessionCloseCount).toBe(1);
     expect(targetAuthority.listAllApplications(fixture.controllerHome)).toHaveLength(0);
 
     fixture.state.omitExactProcessReceipt = false;
     fixture.state.processId = 4343;
-    await expect(computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome, 'desktop_target_open',
-      { bundle_id: 'com.example.Editor', process_id: 4242, bundle_path: '/tmp/Forge-preview.app', launch: false },
-      'target-wrong-process-returned',
-    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH' });
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_target_open',
+          { bundle_id: 'com.example.Editor', process_id: 4242, bundle_path: '/tmp/Forge-preview.app', launch: false },
+          'target-wrong-process-returned',
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH' });
     expect(fixture.state.sessionCloseCount).toBe(2);
     expect(targetAuthority.listAllApplications(fixture.controllerHome)).toHaveLength(0);
   });
@@ -698,20 +1078,28 @@ describe('Computer durable InteractionTarget authority', () => {
     fixture.state.applicationRunning = false;
     fixture.state.processId = 4343;
 
-    await expect(computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_open',
-      { bundle_id: 'com.example.Editor', launch: false, activate: false },
-      'target-open-reattach-stopped',
-    ))).rejects.toMatchObject({ code: 'APP_NOT_RUNNING' });
-    expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId).toBe('provider_session_1');
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_target_open',
+          { bundle_id: 'com.example.Editor', launch: false, activate: false },
+          'target-open-reattach-stopped',
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'APP_NOT_RUNNING' });
+    expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId).toBe(
+      'provider_session_1',
+    );
 
-    const reopened = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_open',
-      { bundle_id: 'com.example.Editor', launch: true, activate: false },
-      'target-open-relaunch-stopped',
-    ));
+    const reopened = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { bundle_id: 'com.example.Editor', launch: true, activate: false },
+        'target-open-relaunch-stopped',
+      ),
+    );
     expect(reopened.targetId).toBe(targetId);
     expect(fixture.state.lastSessionOpenArgs).toMatchObject({ launch: true, activate: false });
     expect(fixture.state.sessionOpenCount).toBe(2);
@@ -720,9 +1108,9 @@ describe('Computer durable InteractionTarget authority', () => {
       providerBinding: { processId: 4343, providerSessionId: 'provider_session_2' },
     });
 
-    await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome, 'desktop_target_close', { target_id: targetId }, 'target-close-relaunched',
-    ));
+    await computerPluginAdapter.executeAction(
+      actionInput(fixture.controllerHome, 'desktop_target_close', { target_id: targetId }, 'target-close-relaunched'),
+    );
     expect(fixture.state.lastSessionCloseArgs?.terminate_owned_pid).toBe(4343);
   });
 
@@ -730,26 +1118,40 @@ describe('Computer durable InteractionTarget authority', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-target-unsupported-'));
     setComputerPlatformForTest('win32');
     try {
-      await expect(computerPluginAdapter.executeAction(actionInput(
-        controllerHome,
-        'desktop_target_open',
-        { bundle_id: 'com.example.Editor', launch: false, activate: false },
-        'target-unsupported-platform',
-      ))).rejects.toThrow('PLUGIN_COMPUTER_DESKTOP_PLATFORM_UNSUPPORTED');
-      await expect(computerPluginAdapter.executeAction(actionInput(
-        controllerHome, 'create_session',
-        { url: 'https://example.com/', browser_mode: 'managed_persistent' },
-        'computer-must-not-launch-playwright',
-      ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_BROWSER_SCRIPT_MODE_SEPARATE' });
-      await expect(computerPluginAdapter.executeAction(actionInput(
-        controllerHome, 'install_unpacked_extension', { extension_path: '/tmp/no-script-extension' },
-        'computer-no-script-extension',
-      ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_BROWSER_SCRIPT_ACTION_SEPARATE' });
+      await expect(
+        computerPluginAdapter.executeAction(
+          actionInput(
+            controllerHome,
+            'desktop_target_open',
+            { bundle_id: 'com.example.Editor', launch: false, activate: false },
+            'target-unsupported-platform',
+          ),
+        ),
+      ).rejects.toThrow('PLUGIN_COMPUTER_DESKTOP_PLATFORM_UNSUPPORTED');
+      await expect(
+        computerPluginAdapter.executeAction(
+          actionInput(
+            controllerHome,
+            'create_session',
+            { url: 'https://example.com/', browser_mode: 'managed_persistent' },
+            'computer-must-not-launch-playwright',
+          ),
+        ),
+      ).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_BROWSER_SCRIPT_MODE_SEPARATE' });
+      await expect(
+        computerPluginAdapter.executeAction(
+          actionInput(
+            controllerHome,
+            'install_unpacked_extension',
+            { extension_path: '/tmp/no-script-extension' },
+            'computer-no-script-extension',
+          ),
+        ),
+      ).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_BROWSER_SCRIPT_ACTION_SEPARATE' });
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
   });
-
 
   test('owns browser surfaces in the same durable authority while treating session and tab handles as compatibility/binding data', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-surface-target-'));
@@ -783,7 +1185,9 @@ describe('Computer durable InteractionTarget authority', () => {
         stableIdentity: { surfaceType: 'browser-tab', ownership: 'plugin_owned' },
         providerBinding: { providerId: 'macos-apple-events', browserProduct: 'chrome', windowId: '7', tabId: '9' },
       });
-      expect(targetAuthority.findSurfaceByAlias(controllerHome, 'legacy-session-a', 'repo-a')?.targetId).toBe(surface.targetId);
+      expect(targetAuthority.findSurfaceByAlias(controllerHome, 'legacy-session-a', 'repo-a')?.targetId).toBe(
+        surface.targetId,
+      );
       expect(targetAuthority.findSurfaceByAlias(controllerHome, 'legacy-session-a', 'repo-b')).toBeUndefined();
 
       await targetAuthority.withSurfaceLease(controllerHome, surface.targetId, async (lease) => {
@@ -802,8 +1206,12 @@ describe('Computer durable InteractionTarget authority', () => {
       expect(rebound.compatibilityAliases).toEqual(['legacy-session-a', 'legacy-session-b']);
       expect(rebound.repositoryIds).toEqual(['repo-a', 'repo-b']);
       expect(rebound.providerBinding).toMatchObject({ windowId: '99', tabId: '9' });
-      expect(targetAuthority.findSurfaceByAlias(controllerHome, 'legacy-session-b', 'repo-b')?.targetId).toBe(surface.targetId);
-      expect(targetAuthority.listSurfaces(controllerHome, { repoId: 'repo-a' }).map((target) => target.targetId)).toContain(surface.targetId);
+      expect(targetAuthority.findSurfaceByAlias(controllerHome, 'legacy-session-b', 'repo-b')?.targetId).toBe(
+        surface.targetId,
+      );
+      expect(
+        targetAuthority.listSurfaces(controllerHome, { repoId: 'repo-a' }).map((target) => target.targetId),
+      ).toContain(surface.targetId);
 
       await targetAuthority.withSurfaceLease(controllerHome, surface.targetId, async (lease) => {
         lease.putCompatibility({
@@ -821,12 +1229,14 @@ describe('Computer durable InteractionTarget authority', () => {
         stableIdentity: surface.stableIdentity,
         compatibilityAliases: ['legacy-session-b', 'legacy-session-c'],
         repositoryIds: ['repo-b', 'repo-c'],
-        compatibilityRecords: [{
-          namespace: 'browser.session.v1',
-          schemaVersion: 1,
-          value: { sessionId: 'legacy-session-c', url: 'https://example.com/new' },
-          updatedAt: '2026-09-10T10:03:00.000Z',
-        }],
+        compatibilityRecords: [
+          {
+            namespace: 'browser.session.v1',
+            schemaVersion: 1,
+            value: { sessionId: 'legacy-session-c', url: 'https://example.com/new' },
+            updatedAt: '2026-09-10T10:03:00.000Z',
+          },
+        ],
         providerBinding: {
           providerId: 'macos-apple-events',
           observedAt: '2026-09-10T10:03:00.000Z',
@@ -842,14 +1252,18 @@ describe('Computer durable InteractionTarget authority', () => {
       expect(converged.target.repositoryIds).toContain('repo-c');
       expect(converged.target.providerBinding).toMatchObject({ windowId: '111', tabId: '9' });
 
-      await targetAuthority.withSurfaceLease(controllerHome, surface.targetId, async (lease) => { lease.tombstone(); });
+      await targetAuthority.withSurfaceLease(controllerHome, surface.targetId, async (lease) => {
+        lease.tombstone();
+      });
       expect(targetAuthority.getSurface(controllerHome, surface.targetId)).toBeUndefined();
       expect(targetAuthority.findSurfaceByAlias(controllerHome, 'legacy-session-a', 'repo-a')).toBeUndefined();
 
-      expect(() => targetAuthority.createSurface(controllerHome, {
-        stableIdentity: { surfaceType: 'browser-tab', ownership: 'user_owned' },
-        compatibilityAliases: Array.from({ length: 65 }, (_, index) => `alias-${index}`),
-      })).toThrow('COMPUTER_SURFACE_ALIAS_LIMIT_EXCEEDED');
+      expect(() =>
+        targetAuthority.createSurface(controllerHome, {
+          stableIdentity: { surfaceType: 'browser-tab', ownership: 'user_owned' },
+          compatibilityAliases: Array.from({ length: 65 }, (_, index) => `alias-${index}`),
+        }),
+      ).toThrow('COMPUTER_SURFACE_ALIAS_LIMIT_EXCEEDED');
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
@@ -875,11 +1289,15 @@ describe('Computer durable InteractionTarget authority', () => {
       repositoryIds: ['repo-index-idempotency'],
       providerBinding: binding,
     };
-    const snapshot = () => persistence.list(controllerHome, {
-      namespace: 'computer_interaction_target_index',
-      scope: 'controller',
-      limit: 100,
-    }).map(({ key, revision }) => ({ key, revision })).sort((left, right) => left.key.localeCompare(right.key));
+    const snapshot = () =>
+      persistence
+        .list(controllerHome, {
+          namespace: 'computer_interaction_target_index',
+          scope: 'controller',
+          limit: 100,
+        })
+        .map(({ key, revision }) => ({ key, revision }))
+        .sort((left, right) => left.key.localeCompare(right.key));
 
     try {
       const created = targetAuthority.upsertSurface(controllerHome, input);
@@ -903,7 +1321,9 @@ describe('Computer durable InteractionTarget authority', () => {
       });
       expect(snapshot()).toEqual(initialIndexes);
 
-      await targetAuthority.withSurfaceLease(controllerHome, created.target.targetId, async (lease) => { lease.clearBinding(); });
+      await targetAuthority.withSurfaceLease(controllerHome, created.target.targetId, async (lease) => {
+        lease.clearBinding();
+      });
       expect(snapshot()).toEqual(initialIndexes.filter((record) => !record.key.startsWith('binding-')));
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
@@ -925,26 +1345,49 @@ describe('Computer durable InteractionTarget authority', () => {
       observedAt: '2026-10-08T06:00:00.000Z',
     };
     try {
-      const first = targetAuthority.upsertSurface(controllerHome, { stableIdentity: stable('task-a'), providerBinding: binding });
+      const first = targetAuthority.upsertSurface(controllerHome, {
+        stableIdentity: stable('task-a'),
+        providerBinding: binding,
+      });
       expect(targetAuthority.tombstoneSurface(controllerHome, first.target.targetId)).toBe(true);
-      const second = targetAuthority.upsertSurface(controllerHome, { stableIdentity: stable('task-b'), providerBinding: binding });
+      const second = targetAuthority.upsertSurface(controllerHome, {
+        stableIdentity: stable('task-b'),
+        providerBinding: binding,
+      });
       expect(second.created).toBe(true);
       expect(second.target.targetId).not.toBe(first.target.targetId);
-      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding)?.targetId).toBe(second.target.targetId);
-      expect(() => targetAuthority.upsertSurface(controllerHome, {
-        stableIdentity: stable('task-c'), providerBinding: binding,
-      })).toThrow('COMPUTER_SURFACE_STABLE_IDENTITY_CONFLICT');
-      expect(targetAuthority.findSurfaceByStableIdentity(controllerHome, stable('task-b'))?.targetId).toBe(second.target.targetId);
+      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding)?.targetId).toBe(
+        second.target.targetId,
+      );
+      expect(() =>
+        targetAuthority.upsertSurface(controllerHome, {
+          stableIdentity: stable('task-c'),
+          providerBinding: binding,
+        }),
+      ).toThrow('COMPUTER_SURFACE_STABLE_IDENTITY_CONFLICT');
+      expect(targetAuthority.findSurfaceByStableIdentity(controllerHome, stable('task-b'))?.targetId).toBe(
+        second.target.targetId,
+      );
       expect(targetAuthority.findSurfaceByStableIdentity(controllerHome, stable('task-c'))).toBeUndefined();
       const revived = targetAuthority.upsertSurface(controllerHome, {
-        stableIdentity: stable('task-a'), reactivate: true,
+        stableIdentity: stable('task-a'),
+        reactivate: true,
       });
       expect(revived.target.targetId).toBe(first.target.targetId);
       expect(revived.target.providerBinding).toBeUndefined();
-      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding)?.targetId).toBe(second.target.targetId);
-      await targetAuthority.withSurfaceLease(controllerHome, second.target.targetId, async (lease) => { lease.tombstone(); });
-      const third = targetAuthority.upsertSurface(controllerHome, { stableIdentity: stable('task-c'), providerBinding: binding });
-      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding)?.targetId).toBe(third.target.targetId);
+      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding)?.targetId).toBe(
+        second.target.targetId,
+      );
+      await targetAuthority.withSurfaceLease(controllerHome, second.target.targetId, async (lease) => {
+        lease.tombstone();
+      });
+      const third = targetAuthority.upsertSurface(controllerHome, {
+        stableIdentity: stable('task-c'),
+        providerBinding: binding,
+      });
+      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding)?.targetId).toBe(
+        third.target.targetId,
+      );
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
@@ -975,24 +1418,34 @@ describe('Computer durable InteractionTarget authority', () => {
         providerBinding: binding('forge-browser-owned:session-a'),
       });
       expect(sameOwner.target.targetId).toBe(first.target.targetId);
-      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding('forge-browser-owned:session-a'))?.targetId)
-        .toBe(first.target.targetId);
-      await expect(targetAuthority.withSurfaceLease(controllerHome, first.target.targetId, async (lease) => {
-        lease.bind(binding('forge-browser-owned:session-b'));
-      })).rejects.toThrow('COMPUTER_SURFACE_PROVIDER_BINDING_OWNERSHIP_CONFLICT');
-      expect(() => targetAuthority.upsertSurface(controllerHome, {
-        stableIdentity,
-        compatibilityAliases: ['session-b'],
-        repositoryIds: ['repo-c'],
-        providerBinding: binding('forge-browser-owned:session-b'),
-      })).toThrow('COMPUTER_SURFACE_PROVIDER_BINDING_OWNERSHIP_CONFLICT');
-      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding('forge-browser-owned:session-b'))).toBeUndefined();
+      expect(
+        targetAuthority.findSurfaceByProviderBinding(controllerHome, binding('forge-browser-owned:session-a'))
+          ?.targetId,
+      ).toBe(first.target.targetId);
+      await expect(
+        targetAuthority.withSurfaceLease(controllerHome, first.target.targetId, async (lease) => {
+          lease.bind(binding('forge-browser-owned:session-b'));
+        }),
+      ).rejects.toThrow('COMPUTER_SURFACE_PROVIDER_BINDING_OWNERSHIP_CONFLICT');
+      expect(() =>
+        targetAuthority.upsertSurface(controllerHome, {
+          stableIdentity,
+          compatibilityAliases: ['session-b'],
+          repositoryIds: ['repo-c'],
+          providerBinding: binding('forge-browser-owned:session-b'),
+        }),
+      ).toThrow('COMPUTER_SURFACE_PROVIDER_BINDING_OWNERSHIP_CONFLICT');
+      expect(
+        targetAuthority.findSurfaceByProviderBinding(controllerHome, binding('forge-browser-owned:session-b')),
+      ).toBeUndefined();
       expect(targetAuthority.findSurfaceByAlias(controllerHome, 'session-b', 'repo-c')).toBeUndefined();
-      expect(() => targetAuthority.upsertSurface(controllerHome, {
-        stableIdentity,
-        compatibilityAliases: ['session-without-token'],
-        providerBinding: { ...binding(''), ownerToken: undefined },
-      })).toThrow('COMPUTER_SURFACE_NATIVE_OWNER_TOKEN_REQUIRED');
+      expect(() =>
+        targetAuthority.upsertSurface(controllerHome, {
+          stableIdentity,
+          compatibilityAliases: ['session-without-token'],
+          providerBinding: { ...binding(''), ownerToken: undefined },
+        }),
+      ).toThrow('COMPUTER_SURFACE_NATIVE_OWNER_TOKEN_REQUIRED');
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
@@ -1013,39 +1466,61 @@ describe('Computer durable InteractionTarget authority', () => {
       observedAt: '2026-10-08T06:00:00.000Z',
     };
     try {
-      const first = targetAuthority.upsertSurface(controllerHome, { stableIdentity: stable('legacy'), providerBinding: binding });
+      const first = targetAuthority.upsertSurface(controllerHome, {
+        stableIdentity: stable('legacy'),
+        providerBinding: binding,
+      });
       const persistence = createRuntimeComputerTargetPersistence();
       const previous = persistence.read<ComputerInteractionTargetEntry>(
-        controllerHome, 'computer_interaction_target', 'controller', first.target.targetId,
+        controllerHome,
+        'computer_interaction_target',
+        'controller',
+        first.target.targetId,
       );
       if (!previous) throw new Error('fixture Surface missing');
       const tombstonedAt = '2026-10-08T06:01:00.000Z';
       // Recreate an actual pre-fix tombstone: retained record and binding index.
       persistence.write(controllerHome, {
-        namespace: 'computer_interaction_target', scope: 'controller', key: first.target.targetId,
+        namespace: 'computer_interaction_target',
+        scope: 'controller',
+        key: first.target.targetId,
         schemaVersion: 1,
         value: { schemaVersion: 1, status: 'tombstoned', target: first.target, tombstonedAt },
         action: 'fixture_legacy_surface_terminal',
         expectedRevision: previous.revision,
       });
-      const second = targetAuthority.upsertSurface(controllerHome, { stableIdentity: stable('successor'), providerBinding: binding });
+      const second = targetAuthority.upsertSurface(controllerHome, {
+        stableIdentity: stable('successor'),
+        providerBinding: binding,
+      });
       expect(second.created).toBe(true);
-      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding)?.targetId).toBe(second.target.targetId);
-      expect(targetAuthority.upsertSurface(controllerHome, {
-        stableIdentity: stable('legacy'), reactivate: true,
-      }).target.providerBinding).toBeUndefined();
-      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding)?.targetId).toBe(second.target.targetId);
+      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding)?.targetId).toBe(
+        second.target.targetId,
+      );
+      expect(
+        targetAuthority.upsertSurface(controllerHome, {
+          stableIdentity: stable('legacy'),
+          reactivate: true,
+        }).target.providerBinding,
+      ).toBeUndefined();
+      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding)?.targetId).toBe(
+        second.target.targetId,
+      );
       const importedBinding = { ...binding, tabId: '903' };
       const imported = targetAuthority.upsertSurface(controllerHome, {
-        stableIdentity: stable('imported'), providerBinding: importedBinding,
+        stableIdentity: stable('imported'),
+        providerBinding: importedBinding,
         initialStatus: 'tombstoned',
       });
       expect(imported.status).toBe('tombstoned');
       const next = targetAuthority.upsertSurface(controllerHome, {
-        stableIdentity: stable('import-successor'), providerBinding: importedBinding,
+        stableIdentity: stable('import-successor'),
+        providerBinding: importedBinding,
       });
       expect(next.created).toBe(true);
-      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, importedBinding)?.targetId).toBe(next.target.targetId);
+      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, importedBinding)?.targetId).toBe(
+        next.target.targetId,
+      );
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
@@ -1054,13 +1529,23 @@ describe('Computer durable InteractionTarget authority', () => {
   test('routes native Browser trusted text through exact Unified Computer element authority without legacy Browser input', async () => {
     const fixture = await providerFixture();
 
-    const result = await executeRuntimeComputerBrowserTrustedInput({
-      action: 'trusted_input',
-      product: 'vivaldi',
-      ref: { windowId: '77', tabId: '88' },
-      input: { kind: 'text', text: 'continue safely' },
-      semanticTarget: { domRole: 'textbox', accessibleName: 'Chat with ChatGPT', editable: true, focused: true, multiline: true },
-    }, 10_000, fixture.controllerHome);
+    const result = await executeRuntimeComputerBrowserTrustedInput(
+      {
+        action: 'trusted_input',
+        product: 'vivaldi',
+        ref: { windowId: '77', tabId: '88' },
+        input: { kind: 'text', text: 'continue safely' },
+        semanticTarget: {
+          domRole: 'textbox',
+          accessibleName: 'Chat with ChatGPT',
+          editable: true,
+          focused: true,
+          multiline: true,
+        },
+      },
+      10_000,
+      fixture.controllerHome,
+    );
 
     expect(result).toMatchObject({ performed: true, transport: 'computer', inputKind: 'text' });
     expect(fixture.state.sessionOpenCount).toBe(1);
@@ -1087,27 +1572,38 @@ describe('Computer durable InteractionTarget authority', () => {
     fixture.sessions.clear();
     const observeArgs = { target_id: targetId, max_depth: 2, max_nodes: 20 };
     const stale = await Promise.allSettled([
-      computerPluginAdapter.executeAction(actionInput(fixture.controllerHome, 'desktop_observe', observeArgs, 'observe-a')),
-      computerPluginAdapter.executeAction(actionInput(fixture.controllerHome, 'desktop_observe', observeArgs, 'observe-b')),
+      computerPluginAdapter.executeAction(
+        actionInput(fixture.controllerHome, 'desktop_observe', observeArgs, 'observe-a'),
+      ),
+      computerPluginAdapter.executeAction(
+        actionInput(fixture.controllerHome, 'desktop_observe', observeArgs, 'observe-b'),
+      ),
     ]);
     expect(stale).toHaveLength(2);
     for (const result of stale) {
       expect(result.status).toBe('rejected');
-      if (result.status === 'rejected') expect(result.reason).toMatchObject({ code: 'COMPUTER_TARGET_PROVIDER_BINDING_STALE' });
+      if (result.status === 'rejected')
+        expect(result.reason).toMatchObject({ code: 'COMPUTER_TARGET_PROVIDER_BINDING_STALE' });
     }
     expect(fixture.state.sessionOpenCount).toBe(1);
     expect(fixture.state.observeCount).toBe(0);
     expect(targetAuthority.get(fixture.controllerHome, targetId)).toEqual(before);
 
-    await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_open',
-      { bundle_id: 'com.example.Editor', launch: false, activate: false },
-      'explicit-target-reattach',
-    ));
+    await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { bundle_id: 'com.example.Editor', launch: false, activate: false },
+        'explicit-target-reattach',
+      ),
+    );
     const observeAfterReattach = await Promise.all([
-      computerPluginAdapter.executeAction(actionInput(fixture.controllerHome, 'desktop_observe', observeArgs, 'observe-after-a')),
-      computerPluginAdapter.executeAction(actionInput(fixture.controllerHome, 'desktop_observe', observeArgs, 'observe-after-b')),
+      computerPluginAdapter.executeAction(
+        actionInput(fixture.controllerHome, 'desktop_observe', observeArgs, 'observe-after-a'),
+      ),
+      computerPluginAdapter.executeAction(
+        actionInput(fixture.controllerHome, 'desktop_observe', observeArgs, 'observe-after-b'),
+      ),
     ]);
     expect(observeAfterReattach).toHaveLength(2);
     expect(fixture.state.sessionOpenCount).toBe(2);
@@ -1115,7 +1611,9 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(fixture.state.observeCount).toBe(2);
     expect(fixture.state.handshakeCount).toBe(1);
     expect(fixture.sessions.size).toBe(1);
-    expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId).toBe('provider_session_2');
+    expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId).toBe(
+      'provider_session_2',
+    );
   });
 
   test('reuses one negotiated provider connection across warm semantic actions with no manifest/status preflight', async () => {
@@ -1125,12 +1623,14 @@ describe('Computer durable InteractionTarget authority', () => {
     const baselineManifest = fixture.state.manifestCount;
 
     for (let index = 0; index < 5; index += 1) {
-      await computerPluginAdapter.executeAction(actionInput(
-        fixture.controllerHome,
-        'desktop_observe',
-        { target_id: targetId, max_depth: 1, max_nodes: 5 },
-        `warm-observe-${index}`,
-      ));
+      await computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_observe',
+          { target_id: targetId, max_depth: 1, max_nodes: 5 },
+          `warm-observe-${index}`,
+        ),
+      );
     }
 
     expect(fixture.state.handshakeCount).toBe(1);
@@ -1146,45 +1646,57 @@ describe('Computer durable InteractionTarget authority', () => {
     const before = targetAuthority.get(fixture.controllerHome, targetId);
     fixture.sessions.clear();
 
-    await expect(computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_press',
-      { target_id: targetId, selector: { title: 'Save' } },
-      'press-stale-binding',
-    ))).rejects.toMatchObject({ code: 'COMPUTER_TARGET_PROVIDER_BINDING_STALE' });
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_press',
+          { target_id: targetId, selector: { title: 'Save' } },
+          'press-stale-binding',
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'COMPUTER_TARGET_PROVIDER_BINDING_STALE' });
 
     expect(fixture.state.sessionOpenCount).toBe(1);
     expect(fixture.state.pressCount).toBe(0);
     expect(targetAuthority.get(fixture.controllerHome, targetId)).toEqual(before);
 
-    await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_open',
-      { bundle_id: 'com.example.Editor', launch: false, activate: false },
-      'target-open-before-press-retry',
-    ));
-    await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_press',
-      { target_id: targetId, selector: { title: 'Save' } },
-      'press-after-explicit-reattach',
-    ));
+    await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { bundle_id: 'com.example.Editor', launch: false, activate: false },
+        'target-open-before-press-retry',
+      ),
+    );
+    await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_press',
+        { target_id: targetId, selector: { title: 'Save' } },
+        'press-after-explicit-reattach',
+      ),
+    );
 
     expect(fixture.state.sessionOpenCount).toBe(2);
     expect(fixture.state.pressCount).toBe(1);
-    expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId).toBe('provider_session_2');
+    expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId).toBe(
+      'provider_session_2',
+    );
   });
 
   test('round-trips exact element v2 observation authority and rejects stale refs after semantic mutation', async () => {
     const fixture = await providerFixture();
     const targetId = await openTarget(fixture);
 
-    const observed = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_element_observe',
-      { target_id: targetId, max_depth: 2, max_nodes: 20 },
-      'element-observe-v2',
-    ));
+    const observed = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_element_observe',
+        { target_id: targetId, max_depth: 2, max_nodes: 20 },
+        'element-observe-v2',
+      ),
+    );
     const root = observed.root as Record<string, unknown>;
     const elementTarget = root.target as Record<string, unknown>;
     const ref = String(root.ref);
@@ -1192,51 +1704,65 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(observed.snapshotRevision).toBe(1);
     expect(elementTarget.interactionId).toBe('provider_session_1');
 
-    const acted = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_element_action',
-      { target_id: targetId, target: elementTarget, ref, action: 'invoke' },
-      'element-action-v2',
-    ));
+    const acted = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_element_action',
+        { target_id: targetId, target: elementTarget, ref, action: 'invoke' },
+        'element-action-v2',
+      ),
+    );
     expect(acted).toMatchObject({ acted: true, action: 'invoke', ref });
     expect(fixture.state.sessionOpenCount).toBe(1);
     expect(fixture.state.elementActionCount).toBe(1);
 
-    await expect(computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_element_action',
-      { target_id: targetId, target: elementTarget, ref, action: 'invoke' },
-      'element-action-v2-stale-replay',
-    ))).rejects.toThrow('COMPUTER_ELEMENT_OBSERVATION_STALE');
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_element_action',
+          { target_id: targetId, target: elementTarget, ref, action: 'invoke' },
+          'element-action-v2-stale-replay',
+        ),
+      ),
+    ).rejects.toThrow('COMPUTER_ELEMENT_OBSERVATION_STALE');
     expect(fixture.state.sessionOpenCount).toBe(1);
     expect(fixture.state.elementActionCount).toBe(1);
 
-    const refreshed = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_element_observe',
-      { target_id: targetId, max_depth: 2, max_nodes: 20 },
-      'element-reobserve-v2',
-    ));
+    const refreshed = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_element_observe',
+        { target_id: targetId, max_depth: 2, max_nodes: 20 },
+        'element-reobserve-v2',
+      ),
+    );
     expect(refreshed.snapshotRevision).toBe(3);
     expect(fixture.state.elementObserveCount).toBe(2);
     expect(fixture.state.sessionOpenCount).toBe(1);
 
     const refreshedRoot = refreshed.root as Record<string, unknown>;
-    const clicked = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_element_action',
-      { target_id: targetId, target: refreshedRoot.target, ref: refreshedRoot.ref, action: 'click' },
-      'element-click-v2',
-    ));
+    const clicked = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_element_action',
+        { target_id: targetId, target: refreshedRoot.target, ref: refreshedRoot.ref, action: 'click' },
+        'element-click-v2',
+      ),
+    );
     expect(clicked).toMatchObject({ acted: true, action: 'click', ref: refreshedRoot.ref });
     expect(fixture.state.elementActionCount).toBe(2);
 
-    await expect(computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_element_action',
-      { target_id: targetId, target: refreshedRoot.target, ref: refreshedRoot.ref, action: 'click' },
-      'element-click-v2-stale-replay',
-    ))).rejects.toThrow('COMPUTER_ELEMENT_OBSERVATION_STALE');
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_element_action',
+          { target_id: targetId, target: refreshedRoot.target, ref: refreshedRoot.ref, action: 'click' },
+          'element-click-v2-stale-replay',
+        ),
+      ),
+    ).rejects.toThrow('COMPUTER_ELEMENT_OBSERVATION_STALE');
     expect(fixture.state.elementActionCount).toBe(2);
   });
 
@@ -1245,12 +1771,9 @@ describe('Computer durable InteractionTarget authority', () => {
     const targetId = await openTarget(fixture);
     expect(targetAuthority.get(fixture.controllerHome, targetId)?.launchProvenance).toEqual({ kind: 'preexisting' });
 
-    const closed = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_close',
-      { target_id: targetId },
-      'target-close-direct',
-    ));
+    const closed = await computerPluginAdapter.executeAction(
+      actionInput(fixture.controllerHome, 'desktop_target_close', { target_id: targetId }, 'target-close-direct'),
+    );
 
     expect(closed.retired).toBe(true);
     expect(fixture.state.statusCount).toBe(0);
@@ -1262,14 +1785,19 @@ describe('Computer durable InteractionTarget authority', () => {
   test('closing a provider-launched target terminates only the process it owns', async () => {
     const fixture = await providerFixture();
     const targetId = await openTarget(fixture, true);
-    expect(targetAuthority.get(fixture.controllerHome, targetId)?.launchProvenance).toEqual({ kind: 'provider_launched', processId: 4242 });
+    expect(targetAuthority.get(fixture.controllerHome, targetId)?.launchProvenance).toEqual({
+      kind: 'provider_launched',
+      processId: 4242,
+    });
 
-    const closed = await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_close',
-      { target_id: targetId },
-      'target-close-provider-owned',
-    ));
+    const closed = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_close',
+        { target_id: targetId },
+        'target-close-provider-owned',
+      ),
+    );
 
     expect(closed.retired).toBe(true);
     expect(fixture.state.sessionCloseCount).toBe(1);
@@ -1280,15 +1808,20 @@ describe('Computer durable InteractionTarget authority', () => {
   test('preserves durable launch ownership across provider-session rebind while refreshing process binding', async () => {
     const fixture = await providerFixture();
     const targetId = await openTarget(fixture, true);
-    expect(targetAuthority.get(fixture.controllerHome, targetId)?.launchProvenance).toEqual({ kind: 'provider_launched', processId: 4242 });
+    expect(targetAuthority.get(fixture.controllerHome, targetId)?.launchProvenance).toEqual({
+      kind: 'provider_launched',
+      processId: 4242,
+    });
     fixture.sessions.clear();
 
-    await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_open',
-      { bundle_id: 'com.example.Editor', launch: false, activate: false },
-      'owned-target-explicit-rebind',
-    ));
+    await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_target_open',
+        { bundle_id: 'com.example.Editor', launch: false, activate: false },
+        'owned-target-explicit-rebind',
+      ),
+    );
 
     const rebound = targetAuthority.get(fixture.controllerHome, targetId);
     expect(rebound?.launchProvenance).toEqual({ kind: 'provider_launched', processId: 4242 });
@@ -1301,12 +1834,9 @@ describe('Computer durable InteractionTarget authority', () => {
     const targetId = await openTarget(fixture, true);
     expect(targetAuthority.get(fixture.controllerHome, targetId)?.launchProvenance).toBeUndefined();
 
-    await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_close',
-      { target_id: targetId },
-      'legacy-target-close',
-    ));
+    await computerPluginAdapter.executeAction(
+      actionInput(fixture.controllerHome, 'desktop_target_close', { target_id: targetId }, 'legacy-target-close'),
+    );
     expect(fixture.state.lastSessionCloseArgs?.terminate_owned_pid).toBeUndefined();
   });
 
@@ -1315,26 +1845,39 @@ describe('Computer durable InteractionTarget authority', () => {
     const activeTargetId = await openTarget(fixture, false, 'com.example.Active');
     const staleTargetId = await openTarget(fixture, false, 'com.example.Stale');
     const freshTargetId = await openTarget(fixture, false, 'com.example.Fresh');
-    await targetAuthority.withLease(fixture.controllerHome, staleTargetId, async (lease) => { lease.tombstone(); });
-    await targetAuthority.withLease(fixture.controllerHome, freshTargetId, async (lease) => { lease.tombstone(); });
+    await targetAuthority.withLease(fixture.controllerHome, staleTargetId, async (lease) => {
+      lease.tombstone();
+    });
+    await targetAuthority.withLease(fixture.controllerHome, freshTargetId, async (lease) => {
+      lease.tombstone();
+    });
 
     const nowMs = Date.now();
     const first = await cleanupRuntimeComputerInteractionTargets(fixture.controllerHome, {
-      nowMs, ttlMs: 60_000, maxTombstones: 256, maxRemovals: 32,
+      nowMs,
+      ttlMs: 60_000,
+      maxTombstones: 256,
+      maxRemovals: 32,
     });
     expect(first.activeProtected).toBe(1);
     expect(first.removed).toBe(0);
     expect(targetAuthority.get(fixture.controllerHome, activeTargetId)?.targetId).toBe(activeTargetId);
 
     const second = await cleanupRuntimeComputerInteractionTargets(fixture.controllerHome, {
-      nowMs: nowMs + 61_000, ttlMs: 60_000, maxTombstones: 1, maxRemovals: 32,
+      nowMs: nowMs + 61_000,
+      ttlMs: 60_000,
+      maxTombstones: 1,
+      maxRemovals: 32,
     });
     expect(second.removed).toBe(2);
     expect(second.overCapacity).toBe(false);
     expect(targetAuthority.get(fixture.controllerHome, activeTargetId)?.targetId).toBe(activeTargetId);
 
     const third = await cleanupRuntimeComputerInteractionTargets(fixture.controllerHome, {
-      nowMs: nowMs + 62_000, ttlMs: 60_000, maxTombstones: 1, maxRemovals: 32,
+      nowMs: nowMs + 62_000,
+      ttlMs: 60_000,
+      maxTombstones: 1,
+      maxRemovals: 32,
     });
     expect(third.removed).toBe(0);
   });
@@ -1345,12 +1888,14 @@ describe('Computer durable InteractionTarget authority', () => {
     fixture.state.failNextPressAfterDispatch = true;
 
     try {
-      await computerPluginAdapter.executeAction(actionInput(
-        fixture.controllerHome,
-        'desktop_press',
-        { target_id: targetId, selector: { title: 'Save' } },
-        'press-outcome-unknown',
-      ));
+      await computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_press',
+          { target_id: targetId, selector: { title: 'Save' } },
+          'press-outcome-unknown',
+        ),
+      );
       throw new Error('expected unknown provider outcome');
     } catch (error) {
       expect(error).toBeInstanceOf(Error);
@@ -1366,12 +1911,16 @@ describe('Computer durable InteractionTarget authority', () => {
     const fixture = await providerFixture();
     fixture.state.nextOpenBundleId = 'com.example.Other';
 
-    await expect(computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_open',
-      { bundle_id: 'com.example.Editor', launch: false, activate: false },
-      'target-identity-drift',
-    ))).rejects.toThrow('PLUGIN_COMPUTER_TARGET_IDENTITY_MISMATCH');
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_target_open',
+          { bundle_id: 'com.example.Editor', launch: false, activate: false },
+          'target-identity-drift',
+        ),
+      ),
+    ).rejects.toThrow('PLUGIN_COMPUTER_TARGET_IDENTITY_MISMATCH');
 
     expect(fixture.state.sessionOpenCount).toBe(1);
     expect(fixture.state.sessionCloseCount).toBe(1);
@@ -1379,21 +1928,28 @@ describe('Computer durable InteractionTarget authority', () => {
   });
 });
 
-
 describe('protected Computer console unlock composition', () => {
   test('protected MCP prepare/unlock require explicit authorization and expose only an opaque handle', async () => {
     const fixture = await providerFixture();
 
-    await expect(executeProtectedConsoleUnlockPreparation({
-      confirmAuthorization: false,
-      timeoutMs: 5_000,
-    }, fixture.controllerHome)).rejects.toThrow('COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED');
+    await expect(
+      executeProtectedConsoleUnlockPreparation(
+        {
+          confirmAuthorization: false,
+          timeoutMs: 5_000,
+        },
+        fixture.controllerHome,
+      ),
+    ).rejects.toThrow('COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED');
     expect(fixture.state.consolePrepareCount).toBe(0);
 
-    const prepared = await executeProtectedConsoleUnlockPreparation({
-      confirmAuthorization: true,
-      timeoutMs: 5_000,
-    }, fixture.controllerHome);
+    const prepared = await executeProtectedConsoleUnlockPreparation(
+      {
+        confirmAuthorization: true,
+        timeoutMs: 5_000,
+      },
+      fixture.controllerHome,
+    );
     expect(prepared).toMatchObject({
       capability: 'computer.console.unlock.v1',
       action: 'prepare_unlock_console',
@@ -1403,11 +1959,14 @@ describe('protected Computer console unlock composition', () => {
     expect(typeof prepared.invocationId).toBe('string');
     expect(fixture.state.consolePrepareCount).toBe(1);
 
-    const result = await executeProtectedConsoleUnlockInvocation({
-      credentialHandle: String(prepared.credentialHandle),
-      confirmAuthorization: true,
-      timeoutMs: 5_000,
-    }, fixture.controllerHome);
+    const result = await executeProtectedConsoleUnlockInvocation(
+      {
+        credentialHandle: String(prepared.credentialHandle),
+        confirmAuthorization: true,
+        timeoutMs: 5_000,
+      },
+      fixture.controllerHome,
+    );
     expect(result).toMatchObject({
       capability: 'computer.console.unlock.v1',
       action: 'unlock_console',
@@ -1431,7 +1990,11 @@ describe('protected Computer console unlock composition', () => {
       confirm_authorization: true,
       timeout_ms: 5_000,
     });
-    expect(prepared?.structuredContent).toMatchObject({ accepted: true, action: 'prepare_unlock_console', prepared: true });
+    expect(prepared?.structuredContent).toMatchObject({
+      accepted: true,
+      action: 'prepare_unlock_console',
+      prepared: true,
+    });
     const preparedContent = prepared?.structuredContent as Record<string, unknown> | undefined;
     const handle = String(preparedContent?.credentialHandle ?? '');
     expect(handle).toMatch(/^[0-9a-f-]{36}$/i);
@@ -1441,7 +2004,12 @@ describe('protected Computer console unlock composition', () => {
       confirm_authorization: true,
       timeout_ms: 5_000,
     });
-    expect(unlocked?.structuredContent).toMatchObject({ accepted: true, action: 'unlock_console', unlocked: true, verified: true });
+    expect(unlocked?.structuredContent).toMatchObject({
+      accepted: true,
+      action: 'unlock_console',
+      unlocked: true,
+      verified: true,
+    });
 
     const rejected = await callProtectedComputerAdapter(ctx, 'computer_console_unlock', {
       credential: 'not-an-opaque-handle',
@@ -1465,11 +2033,17 @@ describe('protected Computer console unlock composition', () => {
       ['computer_console_unlock_recover', 'console_unlock_recover'],
       ['computer_console_unlock_revoke', 'console_unlock_revoke'],
     ] as const) {
-      const response = await callProtectedComputerAdapter(ctx, tool, { confirm_authorization: true, timeout_ms: 5_000 });
+      const response = await callProtectedComputerAdapter(ctx, tool, {
+        confirm_authorization: true,
+        timeout_ms: 5_000,
+      });
       expect(response?.structuredContent).toMatchObject({ accepted: true, action });
     }
 
-    const rejected = await callProtectedComputerAdapter(ctx, 'computer_console_unlock_status', { confirm_authorization: false, timeout_ms: 5_000 });
+    const rejected = await callProtectedComputerAdapter(ctx, 'computer_console_unlock_status', {
+      confirm_authorization: false,
+      timeout_ms: 5_000,
+    });
     expect(rejected?.structuredContent).toMatchObject({
       accepted: false,
       action: 'console_unlock_status',
@@ -1485,12 +2059,14 @@ describe('protected Computer console unlock composition', () => {
       action: 'unlock_console' as const,
       credentialHandle: '11111111-1111-4111-8111-111111111111',
     };
-    await expect(executeRuntimeComputerConsoleUnlock(
-      request,
-      { kind: 'explicit_single_use', confirmed: true, invocationId: 'not-a-uuid' },
-      5_000,
-      fixture.controllerHome,
-    )).rejects.toMatchObject({ code: 'COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED' });
+    await expect(
+      executeRuntimeComputerConsoleUnlock(
+        request,
+        { kind: 'explicit_single_use', confirmed: true, invocationId: 'not-a-uuid' },
+        5_000,
+        fixture.controllerHome,
+      ),
+    ).rejects.toMatchObject({ code: 'COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED' });
     expect(fixture.state.connectionCount).toBe(0);
 
     const result = await executeRuntimeComputerConsoleUnlock(
@@ -1506,7 +2082,6 @@ describe('protected Computer console unlock composition', () => {
     disposeRuntimeComputerComposition();
   });
 });
-
 
 describe('protected Computer stable plugin transport', () => {
   test('non-idempotent authorized desktop screenshots retain the managed Process request fence', () => {
@@ -1551,15 +2126,37 @@ describe('protected Computer stable plugin transport', () => {
         expect(action.executionMode).toBe('direct_non_persistent');
         expect(action.resourceClaims).toEqual([]);
       }
-      expect(prepare).toMatchObject({ readOnly: false, risk: 'workspace_write', confirmation: 'authorization', idempotent: false });
-      expect(unlock).toMatchObject({ readOnly: false, risk: 'workspace_write', confirmation: 'authorization', idempotent: false });
-      expect(status).toMatchObject({ readOnly: true, risk: 'readonly', confirmation: 'authorization', idempotent: true });
+      expect(prepare).toMatchObject({
+        readOnly: false,
+        risk: 'workspace_write',
+        confirmation: 'authorization',
+        idempotent: false,
+      });
+      expect(unlock).toMatchObject({
+        readOnly: false,
+        risk: 'workspace_write',
+        confirmation: 'authorization',
+        idempotent: false,
+      });
+      expect(status).toMatchObject({
+        readOnly: true,
+        risk: 'readonly',
+        confirmation: 'authorization',
+        idempotent: true,
+      });
       expect(isDirectPluginReadAction(status)).toBe(false);
-      expect(recover).toMatchObject({ readOnly: false, risk: 'workspace_write', confirmation: 'authorization', idempotent: false });
+      expect(recover).toMatchObject({
+        readOnly: false,
+        risk: 'workspace_write',
+        confirmation: 'authorization',
+        idempotent: false,
+      });
 
       expect(isDirectNonPersistentPluginAction({ ...status, confirmation: 'authorization' })).toBe(true);
       expect(isDirectNonPersistentPluginAction({ ...recover, risk: 'remote_write' })).toBe(false);
-      expect(isDirectNonPersistentPluginAction({ ...recover, risk: 'destructive', confirmation: 'strong_confirmation' })).toBe(false);
+      expect(
+        isDirectNonPersistentPluginAction({ ...recover, risk: 'destructive', confirmation: 'strong_confirmation' }),
+      ).toBe(false);
 
       expect(prepare.argumentsSchema).toMatchObject({
         type: 'object',
