@@ -1,15 +1,34 @@
 import { loadMcpLocalConfig, loadMcpServiceLocalConfig } from './auth';
 import { getToolPolicy, parseToolProfile } from '../../src/runtime/control-plane/tool-policy';
-import { buildMcpToolDefinitions, callMcpTool, type CallToolResult, type McpToolContext, type McpToolDefinition } from './tool-mapping/tools';
-import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_TIMEOUT_MS, normalizeAgentTimeoutMs } from '../../src/runtime/shared/runtime-config';
+import {
+  buildMcpToolDefinitions,
+  callMcpTool,
+  type CallToolResult,
+  type McpToolContext,
+  type McpToolDefinition,
+} from './tool-mapping/tools';
+import {
+  DEFAULT_AGENT_TIMEOUT_MS,
+  MAX_AGENT_TIMEOUT_MS,
+  normalizeAgentTimeoutMs,
+} from '../../src/runtime/shared/runtime-config';
 import type { ToolAgentRunnerName } from '../../src/runtime/control-plane/tool-policy';
 import { realpathSync } from 'fs';
 import { resolve } from 'path';
 import { ensureRepoPreferredControllerHome } from '../../src/effects/controller-home';
 import { bindRepositoryEntities } from '../../src/runtime/repositories/entity-migration';
-import { withControllerLockAsync } from '../../src/effects/controller-locks';
-import { listRepositories, registerRepository, repositorySummary, resolveRepositorySelection, selectRepositoryCheckout } from '../../src/runtime/repositories/registry';
-import { ensureRepositoryRuntimeStorage, inspectRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../src/runtime/repositories/runtime-storage';
+import {
+  listRepositories,
+  registerRepository,
+  repositorySummary,
+  resolveRepositorySelection,
+  selectRepositoryCheckout,
+} from '../../src/runtime/repositories/registry';
+import {
+  ensureRepositoryRuntimeStorage,
+  inspectRepositoryRuntimeStorage,
+  type RepositoryRuntimeStorageReport,
+} from '../../src/runtime/repositories/runtime-storage';
 import type { RepositoryRecord } from '../../src/core/repository/types';
 import {
   compactErrorMessage,
@@ -68,21 +87,27 @@ const EXECUTION_STORAGE_TOOLS = new Set([
 
 // Legacy edit mutations lock inside withLegacyEditMutation, including the
 // canonical Process-lease check. Do not acquire this physical lock a second time.
-const REPOSITORY_LOCKED_TOOLS = new Set([
-  'verify_edit_session',
-  'submit_local_bridge_job',
-  'execute_local_bridge_job',
-]);
-
+// The former repository-wide ControllerLock wrapper for verify_edit_session and
+// Local Bridge job submission is retired (#713): those tools no longer mutate
+// source, and holding the repository lock made every concurrent Process source
+// write lease fail with `repository-writer` for the whole call.
 
 function repositoryForExplicitPath(path: string, controllerHome: string): RepositoryRecord | undefined {
   const selectedPath = (() => {
-    try { return realpathSync(path); } catch { return resolve(path); }
+    try {
+      return realpathSync(path);
+    } catch {
+      return resolve(path);
+    }
   })();
   for (const repository of listRepositories(controllerHome, { includeRemoved: true })) {
     const checkout = repository.checkouts.find((candidate) => {
       const candidatePath = (() => {
-        try { return realpathSync(candidate.canonicalRoot); } catch { return resolve(candidate.canonicalRoot); }
+        try {
+          return realpathSync(candidate.canonicalRoot);
+        } catch {
+          return resolve(candidate.canonicalRoot);
+        }
       })();
       return candidatePath === selectedPath && candidate.lifecycle !== 'removed';
     });
@@ -101,16 +126,21 @@ function parseBooleanSetting(value: string | undefined): boolean | undefined {
 
 function parseAgentList(value: unknown): ToolAgentRunnerName[] {
   const raw = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
-  return Array.from(new Set(raw
-    .map((entry) => String(entry).trim().toLowerCase())
-    .filter((entry): entry is ToolAgentRunnerName => entry === 'claude')));
+  return Array.from(
+    new Set(
+      raw
+        .map((entry) => String(entry).trim().toLowerCase())
+        .filter((entry): entry is ToolAgentRunnerName => entry === 'claude'),
+    ),
+  );
 }
 
 export function runtimePolicy(repoRoot: string, opts: McpServerOptions) {
   const profile = parseToolProfile(opts.profile ?? 'controller');
-  const config = profile === 'controller' && opts.controllerHome
-    ? loadMcpServiceLocalConfig(opts.controllerHome)
-    : loadMcpLocalConfig(repoRoot);
+  const config =
+    profile === 'controller' && opts.controllerHome
+      ? loadMcpServiceLocalConfig(opts.controllerHome)
+      : loadMcpLocalConfig(repoRoot);
   const envDevRunner = parseBooleanSetting(process.env.FORGE_MCP_DEV_RUNNER);
   const configuredDevRunner = envDevRunner ?? config?.devMode?.agentRunner === true;
   const devAgentRunner = opts.enableDevRunner === true || configuredDevRunner;
@@ -160,9 +190,7 @@ function injectRepositoryContext(tool: McpToolDefinition): McpToolDefinition {
   };
 }
 
-export function buildMultiRepositoryToolDefinitions(
-  ctx: MultiRepositoryMcpToolContext,
-): McpToolDefinition[] {
+export function buildMultiRepositoryToolDefinitions(ctx: MultiRepositoryMcpToolContext): McpToolDefinition[] {
   return buildMcpToolDefinitions(ctx.policy, {
     enableChatgptBrowser: ctx.enableChatgptBrowser === true,
   }).map(injectRepositoryContext);
@@ -175,7 +203,10 @@ function errorResult(error: unknown): ToolResult {
     error: {
       code,
       message,
-      retryable: /(?:^|_)(?:502|503|429|ECONNRESET|ETIMEDOUT|EAI_AGAIN)|server_busy|session_capacity|gateway.*unavailable|transient/i.test(message),
+      retryable:
+        /(?:^|_)(?:502|503|429|ECONNRESET|ETIMEDOUT|EAI_AGAIN)|server_busy|session_capacity|gateway.*unavailable|transient/i.test(
+          message,
+        ),
     },
   };
   return {
@@ -213,13 +244,18 @@ function withRepositoryEnvelope(
   runtimeStorage: RepositoryRuntimeStorageSummary,
 ): ToolResult {
   const envelope = compactEnvelopePayload(repository, runtimeStorage);
-  if (result.structuredContent && typeof result.structuredContent === 'object' && !Array.isArray(result.structuredContent)) {
+  if (
+    result.structuredContent &&
+    typeof result.structuredContent === 'object' &&
+    !Array.isArray(result.structuredContent)
+  ) {
     const existing = result.structuredContent as Record<string, unknown>;
-    const omitHeavyEnvelope = existing.omitEnvelope === true
-      || existing.mode === 'process_direct'
-      || existing.route === 'process_direct'
-      || (existing.detailLevel === 'summary' && existing.endpointConfigured !== undefined)
-      || existing.localBridgeSummary === true;
+    const omitHeavyEnvelope =
+      existing.omitEnvelope === true ||
+      existing.mode === 'process_direct' ||
+      existing.route === 'process_direct' ||
+      (existing.detailLevel === 'summary' && existing.endpointConfigured !== undefined) ||
+      existing.localBridgeSummary === true;
     // Compact fast-path / status summaries: keep repoId only (no repository/runtimeStorage dump).
     if (omitHeavyEnvelope) {
       const { omitEnvelope: _omit, localBridgeSummary: _summary, ...rest } = existing;
@@ -238,12 +274,12 @@ function withRepositoryEnvelope(
     const structuredContent: Record<string, unknown> = {
       ...existing,
       repoId: typeof existing.repoId === 'string' ? existing.repoId : envelope.repoId,
-      repository: existing.repository && typeof existing.repository === 'object'
-        ? existing.repository
-        : envelope.repository,
-      runtimeStorage: existing.runtimeStorage && typeof existing.runtimeStorage === 'object'
-        ? existing.runtimeStorage
-        : envelope.runtimeStorage,
+      repository:
+        existing.repository && typeof existing.repository === 'object' ? existing.repository : envelope.repository,
+      runtimeStorage:
+        existing.runtimeStorage && typeof existing.runtimeStorage === 'object'
+          ? existing.runtimeStorage
+          : envelope.runtimeStorage,
     };
     // Prefer compact JSON without pretty-print bloat for default responses.
     let text = JSON.stringify(structuredContent);
@@ -267,10 +303,7 @@ function withRepositoryEnvelope(
   }
   return {
     ...result,
-    content: [
-      ...result.content,
-      { type: 'text', text: JSON.stringify(envelope) },
-    ],
+    content: [...result.content, { type: 'text', text: JSON.stringify(envelope) }],
   };
 }
 
@@ -284,9 +317,10 @@ export function repositoryScopedToolArgs(
   const args: Record<string, unknown> = {
     ...input,
     repo_id: repository.repoId,
-    checkout_id: typeof input.checkout_id === 'string' && input.checkout_id.trim()
-      ? input.checkout_id
-      : repository.activeCheckoutId,
+    checkout_id:
+      typeof input.checkout_id === 'string' && input.checkout_id.trim()
+        ? input.checkout_id
+        : repository.activeCheckoutId,
   };
 
   const github = repository.github;
@@ -294,18 +328,25 @@ export function repositoryScopedToolArgs(
   if (githubRepo && name === 'publish_issue_to_github' && args.repo === undefined) {
     args.repo = githubRepo;
   }
-  if (githubRepo && ['dispatch_task', 'launch_issue', 'dispatch_ready_tasks'].includes(name) && args.github_repo === undefined) {
+  if (
+    githubRepo &&
+    ['dispatch_task', 'launch_issue', 'dispatch_ready_tasks'].includes(name) &&
+    args.github_repo === undefined
+  ) {
     args.github_repo = githubRepo;
   }
-  if (repository.defaultBranch
-    && ['dispatch_task', 'launch_issue', 'dispatch_ready_tasks'].includes(name)
-    && args.base_ref === undefined) {
+  if (
+    repository.defaultBranch &&
+    ['dispatch_task', 'launch_issue', 'dispatch_ready_tasks'].includes(name) &&
+    args.base_ref === undefined
+  ) {
     args.base_ref = repository.defaultBranch;
   }
   if (name === 'publish_issue_to_github' && github) {
     if (args.labels === undefined && github.labels?.length) args.labels = [...github.labels];
     if (args.project_owner === undefined && github.projectOwner) args.project_owner = github.projectOwner;
-    if (args.project_number === undefined && github.projectNumber !== undefined) args.project_number = github.projectNumber;
+    if (args.project_number === undefined && github.projectNumber !== undefined)
+      args.project_number = github.projectNumber;
   }
   return args;
 }
@@ -313,15 +354,15 @@ export function repositoryScopedToolArgs(
 export function createMcpToolContext(opts: McpServerOptions): MultiRepositoryMcpToolContext {
   const controllerHome = ensureRepoPreferredControllerHome(opts.repo, opts.controllerHome);
   const explicitRepository = opts.repo?.trim()
-    ? repositoryForExplicitPath(opts.repo, controllerHome)
-      ?? (() => {
+    ? (repositoryForExplicitPath(opts.repo, controllerHome) ??
+      (() => {
         // Fresh registration is an install-time migration boundary. Run the
         // one-time legacy entity bind here; repeat connects and ordinary reads
         // never rescan historical state.
         const repository = registerRepository({ path: opts.repo, controllerHome });
         bindRepositoryEntities(repository);
         return repository;
-      })()
+      })())
     : undefined;
   const policyRoot = explicitRepository?.canonicalRoot ?? controllerHome;
   const policy = runtimePolicy(policyRoot, { ...opts, controllerHome });
@@ -394,16 +435,7 @@ export async function callMultiRepositoryTool(
       checkoutId: repository.activeCheckoutId,
       publishedToolNames: ctx.publishedToolNames,
     };
-    const invoke = async () => await callMcpTool(scopedContext, name, scopedArgs) as ToolResult;
-    const result = REPOSITORY_LOCKED_TOOLS.has(name)
-      ? await withControllerLockAsync(
-        ctx.controllerHome,
-        { scope: 'repository', repoId: repository.repoId },
-        `mcp:${name}`,
-        invoke,
-        60_000,
-      )
-      : await invoke();
+    const result = (await callMcpTool(scopedContext, name, scopedArgs)) as ToolResult;
     if (rebindEntities) bindRepositoryEntities(repository);
     return withRepositoryEnvelope(result, repository, runtimeStorage);
   } catch (error) {
