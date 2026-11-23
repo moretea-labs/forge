@@ -17,6 +17,7 @@ enum AgentWorkSurface: String, CaseIterable, Identifiable, Equatable {
     var symbol: String { self == .changes ? "doc.text.magnifyingglass" : "paperclip" }
 }
 
+/// Stable AX ids for Agent tools hosted in the unified window toolbar.
 enum AgentConversationToolbarContract {
     static let changesIdentifier = "agent.changes"
     static let filesIdentifier = "agent.files"
@@ -109,11 +110,18 @@ struct AgentPane: View {
         GeometryReader { geometry in
             agentContent(availableWidth:geometry.size.width)
         }
-        // The window toolbar owns the session title; session actions stay
-        // in the middle conversation column above the transcript.
+        // Cursor-style: one unified window toolbar owns scope + Changes/Files/More.
+        // Content starts immediately below — no second in-pane tool strip.
         .toolbar {
             ToolbarItem(placement:.navigation) { agentToolbarTitle }
+            ToolbarItemGroup(placement:.primaryAction) {
+                workspaceChangesControl
+                workspaceFilesControl
+                additionalAgentTools
+            }
         }
+        .toolbarBackground(ForgePalette.canvas, for:.windowToolbar)
+        .toolbarBackground(.visible, for:.windowToolbar)
         .task(id: workSurfaceVisible && selectedWorkSurface == .changes
               ? model.checkoutId : nil) {
             // Right pane stays hidden until Changes/Files is opened.
@@ -138,34 +146,29 @@ struct AgentPane: View {
         return ForgePalette.secondary
     }
 
-    /// Window title prefers workspace scope; the selected thread already lives in the list.
+    /// Quiet scope + status in the unified titlebar (no second header row).
     private var agentToolbarTitle: some View {
-        HStack(spacing:8) {
-            Text(agentScopeLabel.isEmpty ? (model.thread?.title ?? "新会话") : agentScopeLabel)
-                .font(.system(size:12,weight:.medium))
-                .foregroundStyle(ForgePalette.ink)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Button { Task { await model.refresh() } } label: {
-                HStack(spacing:5) {
-                    Circle().fill(agentWorkspaceStatusColor).frame(width:5,height:5)
-                    Text(model.agentWorkspaceStatusLabel)
-                        .font(.system(size:10.5,weight:.medium))
-                        .foregroundStyle(ForgePalette.secondary)
-                        .lineLimit(1)
-                }
-                .contentShape(Rectangle())
+        Button { Task { await model.refresh() } } label: {
+            HStack(spacing:6) {
+                Text(agentScopeLabel.isEmpty ? (model.thread?.title ?? "Forge") : agentScopeLabel)
+                    .font(.system(size:12,weight:.medium))
+                    .foregroundStyle(ForgePalette.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Circle().fill(agentWorkspaceStatusColor).frame(width:5,height:5)
+                Text(model.agentWorkspaceStatusLabel)
+                    .font(.system(size:10.5))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .lineLimit(1)
             }
-            .buttonStyle(.plain)
-            .help("\(model.agentWorkspaceStatusDetail)\n点击刷新会话状态和模型服务")
-            .accessibilityLabel("Agent 状态")
-            .accessibilityValue(model.agentWorkspaceStatusLabel)
-            .accessibilityIdentifier("agent.workspace-refresh")
+            .contentShape(Rectangle())
         }
-        .frame(maxWidth:520,alignment:.leading)
-        .padding(.leading,4)
-        .help(agentScopeLabel.isEmpty ? model.agentWorkspaceStatusDetail : agentScopeLabel)
-        .accessibilityElement(children:.contain)
+        .buttonStyle(.plain)
+        .frame(maxWidth:480,alignment:.leading)
+        .help("\(agentScopeLabel.isEmpty ? model.agentWorkspaceStatusDetail : agentScopeLabel)\n\(model.agentWorkspaceStatusDetail)\n点击刷新")
+        .accessibilityLabel("工作区")
+        .accessibilityValue("\(agentScopeLabel.isEmpty ? (model.thread?.title ?? "Forge") : agentScopeLabel) · \(model.agentWorkspaceStatusLabel)")
+        .accessibilityHint("点击刷新会话状态和模型服务")
         .accessibilityIdentifier("agent.workspace-scope")
     }
 
@@ -227,23 +230,6 @@ struct AgentPane: View {
             .fixedSize()
             .help("更多会话工具")
             .accessibilityIdentifier("agent.right-pane.tools")
-        }
-    }
-
-    @ViewBuilder
-    private var agentToolbarActions: some View {
-        // When the right pane is open, its tab strip owns Changes/Files.
-        // Keep only the openers in the conversation column to avoid duplicate chrome.
-        if !workSurfaceVisible {
-            HStack(spacing:6) {
-                workspaceChangesControl
-                workspaceFilesControl
-                additionalAgentTools
-                Spacer(minLength:0)
-            }
-            .frame(maxWidth:.infinity,alignment:.leading)
-            .accessibilityElement(children:.contain)
-            .accessibilityIdentifier("agent.workspace-context")
         }
     }
 
@@ -355,13 +341,8 @@ struct AgentPane: View {
             HSplitView {
                 ZStack {
                     // Keep the composer and transcript mounted during review.
+                    // Tools live in the window toolbar — content starts flush below.
                     VStack(spacing:0) {
-                        if !workSurfaceVisible {
-                            agentToolbarActions
-                                .frame(maxWidth:.infinity,alignment:.leading)
-                                .padding(.horizontal,14)
-                                .frame(height:30)
-                        }
                         ScrollViewReader { reader in
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:16) {

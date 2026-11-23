@@ -46,7 +46,7 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
         )
     }
 
-    func testConversationToolbarExposesStableMiddleColumnActions() {
+    func testWindowToolbarExposesStableAgentToolActions() {
         XCTAssertEqual(
             AgentConversationToolbarContract.requiredActionIdentifiers,
             ["agent.changes", "agent.files", "agent.tools.more"]

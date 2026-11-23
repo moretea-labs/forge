@@ -28,16 +28,16 @@ macOS unified toolbar: sidebar / title / breadcrumb / navigation
 +------+--------------+----------------------------------+------------------+
 ~~~
 
-Default visible columns: icon rail + list + main. Opening Changes/Files from the **middle conversation toolbar** reveals the right pane; it supports resize, close, and maximize without destroying chat state. The side-by-side threshold is 840pt (420pt conversation + 360pt work surface + 60pt native split/spacing allowance); width changes switch presentation without clearing the selected surface.
+Default visible columns: icon rail + list + main. Opening Changes/Files from the **unified window toolbar** reveals the right pane; it supports resize, close, and maximize without destroying chat state. The side-by-side threshold is 840pt (420pt conversation + 360pt work surface + 60pt native split/spacing allowance); width changes switch presentation without clearing the selected surface.
 
 ## 2. Toolbar ownership
 
-- **Window toolbar:** global navigation chrome: sidebar toggle, session title and `project › repo › branch` context, plus back when available. Agent-specific Changes/Files/More actions do not live here.
-- **Middle conversation toolbar (Agent main):** icon-first Changes / Files / More when the right pane is closed. Stable action identifiers are `agent.changes`, `agent.files`, and `agent.tools.more`. Hidden while the right pane is open.
-- **Right pane:** tab strip is the only Changes | Files switcher while open; maximize and close stay as plain icon buttons. Empty Files pane omits search chrome until there is something to filter. Browser remains deferred and disabled.
+- **Window toolbar (single top chrome, Cursor-style):** sidebar toggle, quiet workspace scope + status, and Agent Changes / Files / More as plain icon actions. Stable identifiers remain `agent.changes`, `agent.files`, and `agent.tools.more`. Toolbar background matches the content canvas — no second in-pane tool strip under the titlebar.
+- **No middle conversation toolbar.** Content starts flush below the window toolbar.
+- **Right pane:** underline tab strip switches Changes | Files while open; maximize and close stay as plain icon buttons. Empty Files pane omits search chrome until there is something to filter. Browser remains deferred and disabled.
 - **List header (会话):** New Chat, Search, Inbox — New Chat uses `sidebar.thread.new`.
-- **Window toolbar, other pages and 看板:** sidebar toggle, back, Project › repository breadcrumb, page refresh.
-- **Composer:** provider/model/attachments/voice/send; single quiet shadow; remains mounted while the right pane replaces its presentation at compact widths.
+- **Window toolbar, other pages and 看板:** sidebar toggle, back, quiet project breadcrumb, page refresh.
+- **Composer:** provider/model/attachments/voice/send; focus ring only while focused; remains mounted while the right pane replaces its presentation at compact widths.
 
 ## 3. Plain-button rule (P0)
 
@@ -67,8 +67,8 @@ NO decorative card/capsule/softFill wrapping every toolbar, rail, tab, commit fo
 
 1. Cold start shows Agent with right pane closed.
 2. Icon rail switches 会话 / 项目 / 看板 without losing draft or return context.
-3. The middle conversation toolbar exposes Changes / Files / More with the stable AX identifiers above; list header exposes New Chat (`sidebar.thread.new`).
-4. The right pane opens from the middle toolbar, shows a Changes|Files tab strip, stays selected through wide → compact → wide transitions, and can close or maximize without losing chat state.
+3. The unified window toolbar exposes Changes / Files / More with the stable AX identifiers above; list header exposes New Chat (`sidebar.thread.new`). There is no second tool strip inside the conversation column.
+4. The right pane opens from the window toolbar, shows a Changes|Files tab strip, stays selected through wide → compact → wide transitions, and can close or maximize without losing chat state.
 5. `swift test` / `swift build`; GUI/AX at 860 / 1100 / 1260 / 1440 / 1800+ when authorized.
 
 Do not replace the installed App or activate Runtime without separate authorization.

@@ -134,23 +134,20 @@ struct ForgeWorkspaceView: View {
         .navigationSplitViewStyle(.balanced)
         .toolbar {
             ToolbarItem(placement:.principal) {
-                // Agent supplies its own title (thread + scope) in the
-                // navigation slot; other pages keep the breadcrumb.
+                // Agent owns the navigation title slot; other pages keep a quiet breadcrumb.
                 if model.zenMode || model.page != .agent {
-                HStack(spacing:7) {
+                HStack(spacing:6) {
                     Text(model.semanticProject?.displayName ?? "Forge")
                         .font(.system(size:12,weight:.medium))
                         .lineLimit(1)
                     if let repository = model.project {
-                        Image(systemName:"chevron.right")
-                            .font(.system(size:9))
-                            .foregroundStyle(.tertiary)
                         Text(repository.label)
+                            .font(.system(size:12))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                 }
-                .frame(maxWidth:550)
+                .frame(maxWidth:480)
                 .accessibilityIdentifier("forge.toolbar.context")
                 }
             }
@@ -158,6 +155,8 @@ struct ForgeWorkspaceView: View {
                 unifiedWindowToolbarActions
             }
         }
+        .toolbarBackground(ForgePalette.canvas, for:.windowToolbar)
+        .toolbarBackground(.visible, for:.windowToolbar)
         .task {
             if model.zenMode { model.show(.requirement) }
         }
