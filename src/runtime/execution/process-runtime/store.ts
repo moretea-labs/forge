@@ -10,8 +10,8 @@ import { basename, dirname, join } from 'path';
 import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../effects/controller-home';
 import { withControllerLock } from '../../../effects/controller-locks';
 import {
-  deleteControlPlaneRecord,
   mutateControlPlaneRecord,
+  purgeExpiredRebuildableControlPlaneRecord,
   scanControlPlaneRecordsWithMaintenanceCursor,
   readOrImportControlPlaneRecord,
 } from '../../control-plane/persistence/sqlite-store';
@@ -535,12 +535,19 @@ export function gcOrphanedProcessRequestBindings(
       continue;
     }
 
-    const deleted = deleteControlPlaneRecord(controllerHome, {
-      namespace: 'process_request_binding',
-      scope: record.scope,
-      key: record.key,
-      action: 'process_request_binding_gc',
-    });
+    let deleted = false;
+    try {
+      deleted = purgeExpiredRebuildableControlPlaneRecord(controllerHome, {
+        namespace: 'process_request_binding',
+        scope: record.scope,
+        key: record.key,
+        expectedRevision: record.revision,
+      });
+    } catch {
+      // A concurrent retry refreshed or replaced the binding after this scan.
+      // Fail closed: preserve the newer authority and revisit it later.
+      continue;
+    }
     if (!deleted) continue;
 
     // If this row was lazily imported from the legacy JSON projection, remove

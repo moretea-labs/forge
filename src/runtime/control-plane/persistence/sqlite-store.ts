@@ -917,6 +917,58 @@ export function deleteControlPlaneRecord(
   );
 }
 
+const PHYSICALLY_PURGEABLE_REBUILDABLE_NAMESPACES = new Set([
+  'process_request_binding',
+  'process_handle_index',
+]);
+
+/**
+ * Physically purge expired rebuildable mechanics after their domain retention
+ * checks have already proven the row is no longer authority. This deliberately
+ * does not append a delete audit event: doing so would turn GC itself into a
+ * new unbounded history source. The allowlist is intentionally tiny so
+ * semantic namespaces can never use this path.
+ */
+export function purgeExpiredRebuildableControlPlaneRecord(
+  controllerHome: string,
+  input: { namespace: string; scope: string; key: string; expectedRevision: number },
+): boolean {
+  if (!PHYSICALLY_PURGEABLE_REBUILDABLE_NAMESPACES.has(input.namespace)) {
+    throw new Error(`CONTROL_PLANE_PHYSICAL_PURGE_NAMESPACE_DENIED: ${input.namespace}`);
+  }
+  return withControlPlaneTransaction(controllerHome, (database) => {
+    const existing = selectRecord(database, input.namespace, input.scope, input.key);
+    if (!existing) return false;
+    if (existing.revision !== input.expectedRevision) {
+      throw new ControlPlaneConflictError(
+        input.namespace,
+        input.scope,
+        input.key,
+        input.expectedRevision,
+        existing.revision,
+      );
+    }
+    withSqliteStatement(
+      database,
+      'DELETE FROM control_plane_records WHERE namespace = ? AND scope = ? AND record_key = ?',
+      (statement) => statement.run(input.namespace, input.scope, input.key),
+    );
+    withSqliteStatement(
+      database,
+      'DELETE FROM control_plane_audit WHERE namespace = ? AND scope = ? AND record_key = ?',
+      (statement) => statement.run(input.namespace, input.scope, input.key),
+    );
+    if (tableExists(database, AUDIT_FLOOR_TABLE)) {
+      withSqliteStatement(
+        database,
+        `DELETE FROM ${AUDIT_FLOOR_TABLE} WHERE namespace = ? AND scope = ? AND record_key = ?`,
+        (statement) => statement.run(input.namespace, input.scope, input.key),
+      );
+    }
+    return true;
+  });
+}
+
 export function deleteControlPlaneRecordsWithinTransaction(
   database: SqliteDatabase,
   input: { namespace: string; scope: string; action?: string },

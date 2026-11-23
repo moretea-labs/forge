@@ -19,6 +19,7 @@ import { repositoryControllerRoot, workspaceScopeRoot } from '../../../effects/c
 import {
   deleteControlPlaneRecord,
   mutateControlPlaneRecord,
+  purgeExpiredRebuildableControlPlaneRecord,
   readControlPlaneRecord,
   scanControlPlaneRecordsWithMaintenanceCursor,
 } from '../../control-plane/persistence/sqlite-store';
@@ -221,7 +222,17 @@ export function gcOrphanedProcessHandleIndexEntries(
     if (!entry || entry.schemaVersion !== PROCESS_HANDLE_INDEX_SCHEMA_VERSION) continue;
     const processPath = processRecordPathForHandle(controllerHome, entry);
     if (processPath && existsSync(processPath)) continue;
-    if (deleteProcessHandleIndexEntry(controllerHome, entry.processId)) removed += 1;
+    try {
+      if (purgeExpiredRebuildableControlPlaneRecord(controllerHome, {
+        namespace: PROCESS_HANDLE_INDEX_NAMESPACE,
+        scope: record.scope,
+        key: record.key,
+        expectedRevision: record.revision,
+      })) removed += 1;
+    } catch {
+      // A refreshed locator won the race with this stale scan. Leave the
+      // current authority intact and let a later maintenance sweep re-evaluate.
+    }
   }
   return { examined, removed };
 }

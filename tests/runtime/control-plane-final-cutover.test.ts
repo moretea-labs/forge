@@ -14,6 +14,7 @@ import {
   listControlPlaneRecordsExcludingPayloadTextValues,
   initializeControlPlanePayloadTextExclusionIndex,
   maintainControlPlaneDatabase,
+  purgeExpiredRebuildableControlPlaneRecord,
   readControlPlaneRecord,
   restoreControlPlaneDatabase,
   writeControlPlaneRecord,
@@ -60,6 +61,68 @@ describe('final SQLite control-plane cutover', () => {
       expect(readControlPlaneRecord(controllerHome, 'requirement', 'controller', 'REQ-CAS')).toMatchObject({
         revision: winner.revision,
         value: { state: 'done' },
+      });
+    });
+  });
+
+  test('expired rebuildable physical purge removes obsolete audit without opening a semantic delete path', () => {
+    withHome((controllerHome) => {
+      const first = writeControlPlaneRecord(controllerHome, {
+        namespace: 'process_request_binding',
+        scope: 'repo-gc',
+        key: 'request-a',
+        schemaVersion: 1,
+        value: { state: 'claimed' },
+        expectedRevision: null,
+      });
+      const current = writeControlPlaneRecord(controllerHome, {
+        namespace: 'process_request_binding',
+        scope: 'repo-gc',
+        key: 'request-a',
+        schemaVersion: 1,
+        value: { state: 'settled' },
+        expectedRevision: first.revision,
+      });
+
+      expect(() => purgeExpiredRebuildableControlPlaneRecord(controllerHome, {
+        namespace: 'process_request_binding',
+        scope: 'repo-gc',
+        key: 'request-a',
+        expectedRevision: first.revision,
+      })).toThrow('CONTROL_PLANE_REVISION_CONFLICT');
+      expect(readControlPlaneRecord(
+        controllerHome, 'process_request_binding', 'repo-gc', 'request-a',
+      )?.revision).toBe(current.revision);
+
+      expect(purgeExpiredRebuildableControlPlaneRecord(controllerHome, {
+        namespace: 'process_request_binding',
+        scope: 'repo-gc',
+        key: 'request-a',
+        expectedRevision: current.revision,
+      })).toBe(true);
+      expect(readControlPlaneRecord(
+        controllerHome, 'process_request_binding', 'repo-gc', 'request-a',
+      )).toBeUndefined();
+
+      const database = new Database(controlPlaneDatabasePath(controllerHome), { readonly: true });
+      try {
+        const auditCount = database.query(
+          'SELECT COUNT(*) AS count FROM control_plane_audit WHERE namespace = ? AND scope = ? AND record_key = ?',
+        ).get('process_request_binding', 'repo-gc', 'request-a') as { count: number };
+        expect(auditCount.count).toBe(0);
+      } finally {
+        database.close();
+      }
+
+      expect(() => purgeExpiredRebuildableControlPlaneRecord(controllerHome, {
+        namespace: 'requirement',
+        scope: 'controller',
+        key: 'REQ-never-physical-purge',
+        expectedRevision: 1,
+      })).toThrow('CONTROL_PLANE_PHYSICAL_PURGE_NAMESPACE_DENIED');
+      expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({
+        integrity: 'ok',
+        orphanRecordCount: 0,
       });
     });
   });
